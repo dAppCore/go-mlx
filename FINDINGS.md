@@ -114,3 +114,66 @@ Tested on Mac Studio M3 Ultra (32-core CPU, 60-core GPU, 96GB unified memory):
 Available on `/Volumes/Data/lem/safetensors/`:
 - Gemma3-1B, Gemma3-4B, Gemma3-27B
 - Qwen3-8B (used by LEM Lab)
+
+---
+
+## 2026-02-19: Go 1.26 Impact Assessment
+
+Source: https://go.dev/doc/go1.26
+
+### High Impact (free performance, no code changes)
+
+**CGO call overhead reduced ~30%**
+Every MLX operation (MatMul, Add, Softmax, RoPE, etc.) crosses the CGO boundary. The runtime previously used a dedicated syscall P state for cgo calls; Go 1.26 removes that and checks goroutine status instead. This is a direct, automatic performance win for the entire package.
+
+**Green Tea GC now default (10-40% less GC overhead)**
+Critical for go-mlx because `Array` objects use `runtime.SetFinalizer` for C-side deallocation via `mlx_*_free()`. Reduced GC overhead means:
+- More timely finaliser execution during sustained inference
+- Less memory pressure from stale Array objects waiting for GC
+- The FINDINGS.md concern about "GC not keeping up under high throughput" is partially mitigated
+- Opt-out: `GOEXPERIMENT=nogreenteagc` (temporary, removed in 1.27)
+
+### Medium Impact
+
+**Slice stack allocation in more situations**
+The compiler can now allocate slice backing stores on the stack more often. Benefits small temporary slices in `Collect()`, shape manipulation, and internal ops helpers. Debug: `-compile=variablemakehash` flag.
+
+**`testing.B.Loop` inlining fix**
+When we add benchmarks (Phase 1), `b.Loop()` style now properly inlines loop bodies. Important for micro-benchmarks of small ops like Add, Multiply.
+
+**Heap base address randomisation (64-bit)**
+Security improvement for CGO programs. Randomises heap base at startup. Disable: `GOEXPERIMENT=norandomizedheapbase64`.
+
+### Clarification on Range-over-func
+
+Virgil's Phase 6 TODO mentions "if 1.26 stabilises range-over-func". **Range-over-func has been stable since Go 1.23** and the `iter` package was added in 1.23. Since go.mod is already at Go 1.25.5, `Array.Iter() iter.Seq[float32]` can be implemented today without a version bump. Go 1.26 adds no new iterator features beyond what 1.23-1.25 provide.
+
+### Recommendation
+
+No Go version bump needed for the performance wins — they're automatic at runtime. The only code-level Go 1.26 feature that matters is `testing.ArtifactDir()` for benchmark result storage, which is minor. Focus remains on Phase 1 hardening.
+
+---
+
+## 2026-02-19: go-ai Split Context
+
+Virgil is splitting go-ai into sub-packages, with go-ai becoming a meta/catch-all for ML features. go-mlx was the first extraction. This means:
+- More packages will follow the go-mlx pattern (standalone module, own build, own tests)
+- go-ai will eventually be a thin layer importing sub-packages
+- The `replace` directive approach works for development; published modules for releases
+
+---
+
+## 2026-02-19: Floats()/DataInt32() Unsafe on Non-Contiguous Arrays
+
+**Discovery**: `Array.Floats()` and `Array.DataInt32()` read `Size()` elements from the raw C data pointer (`mlx_array_data_float32`). For non-contiguous arrays (transpose, broadcast, slice views), the physical memory layout doesn't match the logical layout. Reading `Size()` contiguous elements returns incorrect data or reads past the physical buffer.
+
+**Affected operations**: `Transpose()`, `BroadcastTo()`, `SliceAxis()`, `Slice()`, `AsStrided()` — any operation that creates a view rather than a copy.
+
+**Workaround**: `Reshape(arr, totalSize)` forces a contiguous copy before reading flat data. All tests use this pattern for view operations.
+
+**Fix needed (Phase 4)**: Either:
+1. Add a `Contiguous()` method that wraps `mlx_contiguous` (if available in mlx-c)
+2. Or have `Floats()`/`DataInt32()` automatically force contiguity before reading
+3. Document the behaviour clearly if views are intentionally lazy
+
+This is a data correctness issue — silent wrong results, not a crash.

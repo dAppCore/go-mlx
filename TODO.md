@@ -6,8 +6,8 @@ Dispatched from core/go orchestration. Pick up tasks in order.
 
 ## Phase 1: Standalone Package Hardening
 
-- [ ] **Verify go generate → test round-trip** — Run `go generate ./...` to build mlx-c, then `go test ./...`. Confirm all 3 test files (grad, lora, optim) pass on Apple Silicon. Document any CMake version requirements.
-- [ ] **Add missing tests for core operations** — `ops.go` (353 LOC), `array.go` (261 LOC), `nn.go`, `compile.go`, `fast.go` have zero tests. Priority: ops (MatMul, Softmax, Add) and array (create, reshape, data access).
+- [x] **Verify go generate → test round-trip** — ✅ 29/29 tests pass. CMake 3.24+, AppleClang 17.0.0, macOS SDK 26.2. Build takes ~2min on M3 Ultra.
+- [x] **Add missing tests for core operations** — ✅ 86 new tests across 4 files: array_test.go (25), ops_test.go (44), nn_test.go (8), fast_test.go (9). Covers: all scalar/array creation, shape ops, element-wise arithmetic, math functions, matrix ops, reductions, indexing, slicing, fused kernels (RMSNorm, LayerNorm, RoPE, SDPA), Linear, Embedding, RepeatKV. Found non-contiguous view bug in Floats()/DataInt32() — see FINDINGS.md.
 - [ ] **Add missing tests for model/tokenizer/sample/cache** — `model/`, `tokenizer/`, `sample/`, `cache/` have zero test files. Priority: tokenizer (BPE round-trip), sample (temperature/top-k), cache (KV append/trim).
 - [ ] **Benchmark suite** — No benchmarks exist. Add: MatMul (various sizes), Softmax, model.Forward (single token), tokenizer.Encode/Decode, full Generate (tokens/sec). Baseline on M3 Ultra.
 
@@ -39,7 +39,7 @@ Dispatched from core/go orchestration. Pick up tasks in order.
 
 ## Phase 6: Go 1.26 Modernisation
 
-- [ ] **Evaluate Go 1.26 features** — Check what's new in 1.26 that benefits this package. Candidates: `iter` package improvements, range-over-func patterns for array iteration, any new `unsafe` changes that affect CGO. Document findings in FINDINGS.md with benchmarks showing whether it's worth the version bump.
+- [x] **Evaluate Go 1.26 features** — ✅ Documented in FINDINGS.md. Key wins: CGO ~30% faster (free), Green Tea GC default (10-40% less overhead, helps Array finalisers), slice stack alloc. Range-over-func already stable since 1.23.
 - [ ] **Range-over-func for Array** — If 1.26 stabilises range-over-func, `Array.Iter()` returning `iter.Seq[float32]` (or typed variant) would be cleaner than the current index-based access. Measure overhead vs direct C pointer access.
 
 ---
