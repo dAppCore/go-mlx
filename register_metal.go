@@ -6,11 +6,12 @@ import (
 	"context"
 	"iter"
 
+	"forge.lthn.ai/core/go-inference"
 	"forge.lthn.ai/core/go-mlx/internal/metal"
 )
 
 func init() {
-	Register(&metalBackend{})
+	inference.Register(&metalBackend{})
 }
 
 // MetalAvailable reports whether native Metal inference is available.
@@ -34,12 +35,13 @@ func GetPeakMemory() uint64 { return metal.GetPeakMemory() }
 // ClearCache clears the Metal memory cache.
 func ClearCache() { metal.ClearCache() }
 
-// metalBackend implements Backend for native Metal inference.
+// metalBackend implements inference.Backend for native Metal inference.
 type metalBackend struct{}
 
-func (b *metalBackend) Name() string { return "metal" }
+func (b *metalBackend) Name() string      { return "metal" }
+func (b *metalBackend) Available() bool    { return true }
 
-func (b *metalBackend) LoadModel(path string, opts ...LoadOption) (TextModel, error) {
+func (b *metalBackend) LoadModel(path string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	m, err := metal.LoadAndInit(path)
 	if err != nil {
 		return nil, err
@@ -47,46 +49,48 @@ func (b *metalBackend) LoadModel(path string, opts ...LoadOption) (TextModel, er
 	return &metalAdapter{m: m}, nil
 }
 
-// metalAdapter wraps metal.Model to implement TextModel.
+// metalAdapter wraps metal.Model to implement inference.TextModel.
 type metalAdapter struct {
 	m *metal.Model
 }
 
-func (a *metalAdapter) Generate(ctx context.Context, prompt string, opts ...GenerateOption) iter.Seq[Token] {
-	cfg := ApplyGenerateOpts(opts)
+func (a *metalAdapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+	cfg := inference.ApplyGenerateOpts(opts)
 	mcfg := metal.GenerateConfig{
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		TopK:        cfg.TopK,
-		TopP:        cfg.TopP,
-		StopTokens:  cfg.StopTokens,
+		MaxTokens:     cfg.MaxTokens,
+		Temperature:   cfg.Temperature,
+		TopK:          cfg.TopK,
+		TopP:          cfg.TopP,
+		StopTokens:    cfg.StopTokens,
+		RepeatPenalty: cfg.RepeatPenalty,
 	}
-	return func(yield func(Token) bool) {
+	return func(yield func(inference.Token) bool) {
 		for tok := range a.m.Generate(ctx, prompt, mcfg) {
-			if !yield(Token{ID: tok.ID, Text: tok.Text}) {
+			if !yield(inference.Token{ID: tok.ID, Text: tok.Text}) {
 				return
 			}
 		}
 	}
 }
 
-func (a *metalAdapter) Chat(ctx context.Context, messages []Message, opts ...GenerateOption) iter.Seq[Token] {
-	cfg := ApplyGenerateOpts(opts)
+func (a *metalAdapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+	cfg := inference.ApplyGenerateOpts(opts)
 	mcfg := metal.GenerateConfig{
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		TopK:        cfg.TopK,
-		TopP:        cfg.TopP,
-		StopTokens:  cfg.StopTokens,
+		MaxTokens:     cfg.MaxTokens,
+		Temperature:   cfg.Temperature,
+		TopK:          cfg.TopK,
+		TopP:          cfg.TopP,
+		StopTokens:    cfg.StopTokens,
+		RepeatPenalty: cfg.RepeatPenalty,
 	}
 	// Convert messages
 	mmsgs := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		mmsgs[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
-	return func(yield func(Token) bool) {
+	return func(yield func(inference.Token) bool) {
 		for tok := range a.m.Chat(ctx, mmsgs, mcfg) {
-			if !yield(Token{ID: tok.ID, Text: tok.Text}) {
+			if !yield(inference.Token{ID: tok.ID, Text: tok.Text}) {
 				return
 			}
 		}

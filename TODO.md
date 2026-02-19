@@ -57,11 +57,16 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 
 ---
 
+## go-inference Integration — ✅ COMPLETE (19 Feb 2026)
+
+All types (`TextModel`, `Backend`, `Token`, `Message`, options) moved to shared `forge.lthn.ai/core/go-inference` package. go-mlx is now a pure backend implementation — import `_ "forge.lthn.ai/core/go-mlx"` to register the `"metal"` backend. See FINDINGS.md for migration details.
+
 ## Upstream Dependencies
 
 - **go-i18n Phase 2a** is blocked on this package providing working Gemma3-1B inference
-- **go-ml/backend_mlx.go** needs updating to use new API: `mlx.LoadModel()` + `m.Generate()`. Old imports (`mlx.Array`, `model.LoadModel`, sub-packages) are now internal.
+- **go-ml/backend_mlx.go** needs updating to use `inference.LoadModel()` + `m.Generate()` (types from go-inference, `_ "go-mlx"` for Metal registration)
 - **go-ai** has a `replace` directive pointing at `../go-mlx`. No code changes needed in go-ai itself.
+- **go-rocm** — sibling backend for AMD GPUs, implements same `inference.Backend` interface
 - **LEM Lab** uses `MLXBackend` via go-ml. Migration transparent once go-ml updates.
 
 ## Functional Options Convention

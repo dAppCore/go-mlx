@@ -7,17 +7,23 @@ import (
 	"os"
 	"testing"
 
-	"forge.lthn.ai/core/go-mlx"
+	"forge.lthn.ai/core/go-inference"
+	_ "forge.lthn.ai/core/go-mlx"
 )
 
 func TestMetalAvailable(t *testing.T) {
-	if !mlx.MetalAvailable() {
-		t.Fatal("MetalAvailable() = false on darwin/arm64")
+	// Metal backend should be registered via init()
+	b, ok := inference.Get("metal")
+	if !ok {
+		t.Fatal("metal backend not registered")
+	}
+	if !b.Available() {
+		t.Fatal("metal backend reports not available on darwin/arm64")
 	}
 }
 
 func TestDefaultBackend(t *testing.T) {
-	b, err := mlx.Default()
+	b, err := inference.Default()
 	if err != nil {
 		t.Fatalf("Default() error: %v", err)
 	}
@@ -27,7 +33,7 @@ func TestDefaultBackend(t *testing.T) {
 }
 
 func TestGetBackend(t *testing.T) {
-	b, ok := mlx.Get("metal")
+	b, ok := inference.Get("metal")
 	if !ok {
 		t.Fatal("Get(\"metal\") returned false")
 	}
@@ -35,33 +41,47 @@ func TestGetBackend(t *testing.T) {
 		t.Errorf("Name() = %q, want %q", b.Name(), "metal")
 	}
 
-	_, ok = mlx.Get("nonexistent")
+	_, ok = inference.Get("nonexistent")
 	if ok {
 		t.Error("Get(\"nonexistent\") should return false")
 	}
 }
 
+func TestListBackends(t *testing.T) {
+	names := inference.List()
+	found := false
+	for _, name := range names {
+		if name == "metal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("List() = %v, want \"metal\" included", names)
+	}
+}
+
 func TestLoadModel_NoBackend(t *testing.T) {
-	_, err := mlx.LoadModel("/nonexistent/path")
+	_, err := inference.LoadModel("/nonexistent/path")
 	if err == nil {
 		t.Error("expected error for nonexistent model path")
 	}
 }
 
 func TestLoadModel_WithBackend(t *testing.T) {
-	_, err := mlx.LoadModel("/nonexistent/path", mlx.WithBackend("nonexistent"))
+	_, err := inference.LoadModel("/nonexistent/path", inference.WithBackend("nonexistent"))
 	if err == nil {
 		t.Error("expected error for nonexistent backend")
 	}
 }
 
 func TestOptions(t *testing.T) {
-	cfg := mlx.ApplyGenerateOpts([]mlx.GenerateOption{
-		mlx.WithMaxTokens(64),
-		mlx.WithTemperature(0.7),
-		mlx.WithTopK(40),
-		mlx.WithTopP(0.9),
-		mlx.WithStopTokens(1, 2, 3),
+	cfg := inference.ApplyGenerateOpts([]inference.GenerateOption{
+		inference.WithMaxTokens(64),
+		inference.WithTemperature(0.7),
+		inference.WithTopK(40),
+		inference.WithTopP(0.9),
+		inference.WithStopTokens(1, 2, 3),
+		inference.WithRepeatPenalty(1.1),
 	})
 	if cfg.MaxTokens != 64 {
 		t.Errorf("MaxTokens = %d, want 64", cfg.MaxTokens)
@@ -78,15 +98,42 @@ func TestOptions(t *testing.T) {
 	if len(cfg.StopTokens) != 3 {
 		t.Errorf("StopTokens len = %d, want 3", len(cfg.StopTokens))
 	}
+	if cfg.RepeatPenalty != 1.1 {
+		t.Errorf("RepeatPenalty = %f, want 1.1", cfg.RepeatPenalty)
+	}
 }
 
 func TestDefaults(t *testing.T) {
-	cfg := mlx.DefaultGenerateConfig()
+	cfg := inference.DefaultGenerateConfig()
 	if cfg.MaxTokens != 256 {
 		t.Errorf("default MaxTokens = %d, want 256", cfg.MaxTokens)
 	}
 	if cfg.Temperature != 0.0 {
 		t.Errorf("default Temperature = %f, want 0.0", cfg.Temperature)
+	}
+}
+
+func TestLoadOptions(t *testing.T) {
+	cfg := inference.ApplyLoadOpts([]inference.LoadOption{
+		inference.WithBackend("metal"),
+		inference.WithContextLen(4096),
+		inference.WithGPULayers(32),
+	})
+	if cfg.Backend != "metal" {
+		t.Errorf("Backend = %q, want %q", cfg.Backend, "metal")
+	}
+	if cfg.ContextLen != 4096 {
+		t.Errorf("ContextLen = %d, want 4096", cfg.ContextLen)
+	}
+	if cfg.GPULayers != 32 {
+		t.Errorf("GPULayers = %d, want 32", cfg.GPULayers)
+	}
+}
+
+func TestLoadOptionsDefaults(t *testing.T) {
+	cfg := inference.ApplyLoadOpts(nil)
+	if cfg.GPULayers != -1 {
+		t.Errorf("default GPULayers = %d, want -1", cfg.GPULayers)
 	}
 }
 
@@ -97,7 +144,7 @@ func TestLoadModel_Generate(t *testing.T) {
 		t.Skip("model not available at", modelPath)
 	}
 
-	m, err := mlx.LoadModel(modelPath)
+	m, err := inference.LoadModel(modelPath)
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
@@ -109,7 +156,7 @@ func TestLoadModel_Generate(t *testing.T) {
 
 	ctx := context.Background()
 	var count int
-	for tok := range m.Generate(ctx, "What is 2+2?", mlx.WithMaxTokens(16)) {
+	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(16)) {
 		count++
 		t.Logf("[%d] %q", tok.ID, tok.Text)
 	}

@@ -4,7 +4,7 @@
 
 Native Apple Metal GPU inference via mlx-c bindings. Module: `forge.lthn.ai/core/go-mlx`
 
-Pure Go + CGO package that wraps Apple's [MLX framework](https://github.com/ml-explore/mlx) through the [mlx-c](https://github.com/ml-explore/mlx-c) C API. Runs LLM inference on Apple Silicon GPUs (M1-M4) using Metal compute shaders.
+Implements the `inference.Backend` interface from [`forge.lthn.ai/core/go-inference`](https://forge.lthn.ai/core/go-inference) for Apple Silicon (M1-M4) GPUs using Metal compute shaders via the [mlx-c](https://github.com/ml-explore/mlx-c) C API.
 
 ## Platform
 
@@ -41,12 +41,9 @@ CMake installs to `dist/` inside the package directory. The `#cgo` directives in
 go-mlx/
 ├── Public API (compiles on all platforms)
 │   ├── mlx.go              — Package doc + go:generate CMake directives
-│   ├── textmodel.go        — TextModel interface, Token, Message types
-│   ├── options.go          — GenerateOption, LoadOption functional options
-│   ├── backend.go          — Backend interface, Register/Get/Default/LoadModel
-│   ├── register_metal.go   — //go:build darwin && arm64 — auto-registers metal
+│   ├── register_metal.go   — //go:build darwin && arm64 — auto-registers metal backend
 │   ├── mlx_stub.go         — //go:build !darwin || !arm64 — MetalAvailable() false
-│   └── mlx_test.go         — Integration tests (public API)
+│   └── mlx_test.go         — Integration tests (public API via go-inference)
 │
 ├── internal/metal/          — All CGO code (darwin/arm64 only)
 │   ├── metal.go            — Init, Materialize, error handler, stream
@@ -81,46 +78,50 @@ go-mlx/
 └── docs/plans/              — Design and implementation docs
 ```
 
-## Public API
+## Usage
 
 ```go
-import "forge.lthn.ai/core/go-mlx"
+import (
+    "forge.lthn.ai/core/go-inference"
+    _ "forge.lthn.ai/core/go-mlx" // register Metal backend
+)
 
-// Load and generate
-m, err := mlx.LoadModel("/path/to/model/")
+// Load and generate — types come from go-inference
+m, err := inference.LoadModel("/path/to/model/")
 if err != nil { log.Fatal(err) }
 defer m.Close()
 
 ctx := context.Background()
-for tok := range m.Generate(ctx, "What is 2+2?", mlx.WithMaxTokens(128)) {
+for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(128)) {
     fmt.Print(tok.Text)
 }
 if err := m.Err(); err != nil { log.Fatal(err) }
 
 // Chat with template formatting
-for tok := range m.Chat(ctx, []mlx.Message{
+for tok := range m.Chat(ctx, []inference.Message{
     {Role: "user", Content: "Hello"},
-}, mlx.WithMaxTokens(64)) {
+}, inference.WithMaxTokens(64)) {
     fmt.Print(tok.Text)
 }
 
-// Memory controls
+// Metal-specific memory controls (from mlx package directly)
 mlx.SetCacheLimit(4 * 1024 * 1024 * 1024) // 4GB
 mlx.ClearCache()
 ```
 
 ## Dependencies
 
+- **[`forge.lthn.ai/core/go-inference`](https://forge.lthn.ai/core/go-inference)** — shared Backend/TextModel interfaces
 - **mlx-c v0.4.1** (fetched by CMake at build time)
 - **Apple frameworks**: Foundation, Metal, Accelerate
-- **Go stdlib only** — no external Go dependencies
 
 ## Downstream Consumers
 
-- `forge.lthn.ai/core/go-ml` — `backend_mlx.go` uses `mlx.LoadModel()` + `m.Generate()`
+- `forge.lthn.ai/core/go-ml` — imports go-inference + go-mlx for Metal backend
 - `forge.lthn.ai/core/go-i18n` — Phase 2a needs Gemma3-1B inference for domain classification
+- `forge.lthn.ai/core/go-rocm` — sibling backend for AMD GPUs, same go-inference interfaces
 
-The old API (`Array`, `MatMul`, `model.LoadModel`, etc.) is no longer public — all CGO is in `internal/metal/`. Consumers use the clean `TextModel` interface.
+Import `_ "forge.lthn.ai/core/go-mlx"` to register the Metal backend. All types (`TextModel`, `Token`, `Backend`, options) come from `go-inference`.
 
 ## Model Format
 

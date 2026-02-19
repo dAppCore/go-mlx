@@ -233,3 +233,65 @@ for tok := range m.Generate(ctx, sentence, mlx.WithMaxTokens(32)) { ... }
 - 148 existing tests moved to `internal/metal/` — all pass
 - 7 new integration tests for public API — all pass
 - Total: 155 tests passing
+
+---
+
+## 2026-02-19: Migration to go-inference Shared Interfaces
+
+### What changed
+
+go-mlx no longer defines its own `TextModel`, `Backend`, `Token`, `Message`, `GenerateConfig`, `GenerateOption`, `LoadConfig`, `LoadOption` types. These are now provided by `forge.lthn.ai/core/go-inference`, a zero-dependency shared interface package.
+
+### Files removed
+
+- `textmodel.go` — `Token`, `Message`, `TextModel` now in go-inference
+- `options.go` — `GenerateConfig`, `GenerateOption`, `LoadConfig`, `LoadOption` now in go-inference
+- `backend.go` — `Backend`, `Register`, `Get`, `Default`, `LoadModel` now in go-inference
+
+### Files updated
+
+- `register_metal.go` — implements `inference.Backend` (added `Available() bool`), adapts `inference.Token`/`inference.Message`
+- `mlx_test.go` — all tests use `inference.*` types, added `TestListBackends`, `TestLoadOptions`, `TestLoadOptionsDefaults`
+- `mlx.go` — package doc updated to show go-inference import pattern
+- `go.mod` — added `forge.lthn.ai/core/go-inference` dependency (replace directive for local dev)
+- `internal/metal/generate.go` — `GenerateConfig` gained `RepeatPenalty float32`
+
+### What go-mlx still exports
+
+- `MetalAvailable() bool` — convenience check
+- `SetCacheLimit`, `SetMemoryLimit`, `GetActiveMemory`, `GetPeakMemory`, `ClearCache` — Metal-specific memory controls
+- Side-effect import (`_ "forge.lthn.ai/core/go-mlx"`) registers the `"metal"` backend into go-inference's registry
+
+### Consumer migration
+
+Before:
+```go
+import "forge.lthn.ai/core/go-mlx"
+m, _ := mlx.LoadModel(path)
+for tok := range m.Generate(ctx, prompt, mlx.WithMaxTokens(128)) { ... }
+```
+
+After:
+```go
+import (
+    "forge.lthn.ai/core/go-inference"
+    _ "forge.lthn.ai/core/go-mlx" // register Metal backend
+)
+m, _ := inference.LoadModel(path)
+for tok := range m.Generate(ctx, prompt, inference.WithMaxTokens(128)) { ... }
+```
+
+### New go-inference features available
+
+- `inference.List()` — returns all registered backend names
+- `inference.Backend.Available()` — hardware availability check
+- `inference.WithRepeatPenalty(p)` — repetition penalty option
+- `inference.WithContextLen(n)` — context window size
+- `inference.WithGPULayers(n)` — GPU layer offload control (-1 = all)
+- `inference.LoadConfig.GPULayers` defaults to -1 (full GPU offload)
+
+### Test results
+
+- 148 internal/metal tests — all pass
+- 11 root integration tests — all pass
+- Total: 159 tests passing

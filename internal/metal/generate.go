@@ -21,11 +21,12 @@ type ChatMessage struct {
 
 // GenerateConfig holds generation parameters.
 type GenerateConfig struct {
-	MaxTokens   int
-	Temperature float32
-	TopK        int
-	TopP        float32
-	StopTokens  []int32
+	MaxTokens     int
+	Temperature   float32
+	TopK          int
+	TopP          float32
+	StopTokens    []int32
+	RepeatPenalty float32
 }
 
 // Model wraps a loaded transformer model for text generation.
