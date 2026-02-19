@@ -180,37 +180,56 @@ This is a data correctness issue — silent wrong results, not a crash.
 
 ---
 
-## 2026-02-19: Backend Abstraction — API Breaking Change
+## 2026-02-19: Backend Abstraction — COMPLETED
 
 **Design doc:** `docs/plans/2026-02-19-backend-abstraction-design.md`
+**Implementation plan:** `docs/plans/2026-02-19-backend-abstraction-plan.md`
 
-### What's changing
+### What changed
 
-The entire public API is being replaced. All CGO code moves to `internal/metal/`. The root package becomes a clean interface layer:
+The entire public API has been replaced. All CGO code is now in `internal/metal/`. The root package is a clean interface layer:
 
 ```go
 m, _ := mlx.LoadModel("/path/to/model/")
 defer m.Close()
-for tok := range m.Generate("prompt", mlx.WithMaxTokens(128)) {
+ctx := context.Background()
+for tok := range m.Generate(ctx, "prompt", mlx.WithMaxTokens(128)) {
     fmt.Print(tok.Text)
 }
+if err := m.Err(); err != nil { log.Fatal(err) }
 ```
 
-The old API (`Array`, `MatMul`, `model.LoadModel`, `model.Model`, etc.) will no longer be public.
+The old API (`Array`, `MatMul`, `model.LoadModel`, `model.Model`, sub-packages `model/`, `tokenizer/`, `sample/`, `cache/`) is no longer public. All moved to `internal/metal/`.
 
-### Impact on go-ai
+### Architecture note: import cycle resolution
 
-`backend_mlx.go` currently imports root-level Array, ops, model types. These move to `internal/metal/` and become inaccessible. Migration: replace direct tensor manipulation with `mlx.LoadModel()` + `mlx.TextModel.Generate()`.
+`internal/metal/` cannot import the root package (circular dependency). Solution: internal/metal defines its own concrete types (`metal.Token`, `metal.GenerateConfig`, `metal.Model`), and `register_metal.go` in root provides a thin adapter (`metalAdapter`) that converts between root types (`mlx.Token`) and metal types.
+
+### Impact on go-ml
+
+`backend_mlx.go` must migrate from direct tensor manipulation to:
+```go
+m, _ := mlx.LoadModel(path)
+ctx := context.Background()
+for tok := range m.Generate(ctx, prompt, mlx.WithMaxTokens(n)) { ... }
+if err := m.Err(); err != nil { ... }
+```
+253 LOC → ~60 LOC. Memory controls: `mlx.SetCacheLimit()`, `mlx.ClearCache()`, etc.
 
 ### Impact on go-i18n
 
-The API for Gemma3-1B domain classification will be:
 ```go
 m, _ := mlx.LoadModel("/path/to/gemma-3-1b/")
-for tok := range m.Generate(sentence, mlx.WithMaxTokens(32)) { ... }
+ctx := context.Background()
+for tok := range m.Generate(ctx, sentence, mlx.WithMaxTokens(32)) { ... }
 ```
-Streaming via `iter.Seq[Token]`. No tokenisation or sampling to handle.
 
-### Memory leak fix included
+### Memory management status
 
-The refactor includes deterministic memory management — `TextModel.Close()` for model weights and per-step intermediate cleanup during generation. This addresses the current production blocker.
+`Close()` stub is in place but does not yet explicitly free model weights. Per-step intermediate cleanup (`ClearCache()` per decode step) is implemented in the generate loop. Full deterministic cleanup awaits CLion Claude research on `mlx_array_free` safety (see `cpp/TODO.md`).
+
+### Test results
+
+- 148 existing tests moved to `internal/metal/` — all pass
+- 7 new integration tests for public API — all pass
+- Total: 155 tests passing
