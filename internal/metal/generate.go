@@ -63,6 +63,41 @@ func (m *Model) Err() error { return m.lastErr }
 // LastMetrics returns performance metrics from the last inference operation.
 func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
+// ModelInfo holds metadata about a loaded model.
+type ModelInfo struct {
+	Architecture string
+	VocabSize    int
+	NumLayers    int
+	HiddenSize   int
+	QuantBits    int
+	QuantGroup   int
+}
+
+// Info returns metadata about the loaded model.
+func (m *Model) Info() ModelInfo {
+	info := ModelInfo{
+		Architecture: m.modelType,
+		NumLayers:    m.model.NumLayers(),
+	}
+	switch v := m.model.(type) {
+	case *GemmaModel:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	case *Qwen3Model:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	}
+	return info
+}
+
 // Close releases all model weight arrays and associated resources.
 // After Close, the Model must not be used for generation.
 func (m *Model) Close() error {

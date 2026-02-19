@@ -443,6 +443,40 @@ func TestLlama_Inference(t *testing.T) {
 	}
 }
 
+// --- ModelInfo tests ---
+
+func TestModelInfo(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	info := m.Info()
+	if info.Architecture != "gemma3" {
+		t.Errorf("Architecture = %q, want %q", info.Architecture, "gemma3")
+	}
+	if info.VocabSize == 0 {
+		t.Error("VocabSize should be > 0")
+	}
+	if info.NumLayers == 0 {
+		t.Error("NumLayers should be > 0")
+	}
+	if info.HiddenSize == 0 {
+		t.Error("HiddenSize should be > 0")
+	}
+	// Gemma3-1B 4-bit should report quantisation.
+	if info.QuantBits == 0 {
+		t.Log("Model is not quantised (or quantisation not detected)")
+	}
+
+	t.Logf("ModelInfo: arch=%s vocab=%d layers=%d hidden=%d quant=%d-bit group=%d",
+		info.Architecture, info.VocabSize, info.NumLayers, info.HiddenSize,
+		info.QuantBits, info.QuantGroup)
+}
+
 // --- Metrics tests ---
 
 // TestGenerate_Metrics validates that metrics are populated after generation.

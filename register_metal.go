@@ -180,5 +180,16 @@ func (a *metalAdapter) Metrics() inference.GenerateMetrics {
 }
 
 func (a *metalAdapter) ModelType() string { return a.m.ModelType() }
+func (a *metalAdapter) Info() inference.ModelInfo {
+	i := a.m.Info()
+	return inference.ModelInfo{
+		Architecture: i.Architecture,
+		VocabSize:    i.VocabSize,
+		NumLayers:    i.NumLayers,
+		HiddenSize:   i.HiddenSize,
+		QuantBits:    i.QuantBits,
+		QuantGroup:   i.QuantGroup,
+	}
+}
 func (a *metalAdapter) Err() error        { return a.m.Err() }
 func (a *metalAdapter) Close() error      { return a.m.Close() }
