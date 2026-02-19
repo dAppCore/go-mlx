@@ -295,3 +295,50 @@ for tok := range m.Generate(ctx, prompt, inference.WithMaxTokens(128)) { ... }
 - 148 internal/metal tests — all pass
 - 11 root integration tests — all pass
 - Total: 159 tests passing
+
+---
+
+## 2026-02-19: CLion Claude Research Applied
+
+### Contiguous Array Fix (data correctness bug)
+
+`Floats()`, `DataInt32()`, and `Ints()` now automatically handle non-contiguous arrays. Previously, reading data from view arrays (Transpose, BroadcastTo, SliceAxis) returned silently wrong results.
+
+**Fix**: Bound `mlx_contiguous` and `_mlx_array_is_row_contiguous` from mlx-c. The `ensureContiguous()` helper checks `IsRowContiguous()` and makes a contiguous copy when needed before accessing the raw data pointer.
+
+The old workaround of `Reshape(arr, totalSize)` to force contiguity is no longer needed.
+
+### TopP (Nucleus) Sampling Implemented
+
+Was a stub that passed logits through unchanged. Now fully implemented:
+1. Softmax to get probabilities
+2. Argsort descending to get sorted indices
+3. CumSum of sorted probabilities
+4. Mask tokens where cumulative probability (excluding current) exceeds threshold
+5. Scatter mask back to original positions via PutAlongAxis + argsort indices
+
+### MinP Sampling Implemented
+
+Was a stub. Now masks tokens whose probability is below `min_p * max_prob`. Uses MaxAxis to find the peak probability per position.
+
+### New Bindings
+
+| Function | Header | Purpose |
+|----------|--------|---------|
+| `mlx_contiguous` | ops.h | Force row-major contiguous layout |
+| `_mlx_array_is_row_contiguous` | array.h | Check contiguity without copying |
+| `mlx_cumsum` | ops.h | Cumulative sum (forward/reverse, inclusive/exclusive) |
+| `mlx_sort_axis` | ops.h | Sort along axis |
+| `mlx_argsort_axis` | ops.h | Indices that would sort |
+| `mlx_greater` | ops.h | Element-wise comparison |
+| `mlx_max_axis` | ops.h | Maximum along axis |
+| `mlx_get_cache_memory` | memory.h | Current allocator cache size |
+| `mlx_reset_peak_memory` | memory.h | Reset peak memory tracking |
+| `mlx_set_wired_limit` | memory.h | Wired memory limit control |
+| `mlx_metal_device_info` | metal.h | GPU hardware info |
+
+### Test results
+
+- 165 internal/metal tests — all pass
+- 11 root integration tests — all pass
+- Total: 176 tests passing

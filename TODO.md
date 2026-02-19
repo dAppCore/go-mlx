@@ -38,8 +38,8 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 - [x] **All CGO moved to `internal/metal/`** — 19 source files, 10 test files, 148 tests passing.
 - [x] **Public API: `TextModel`, `Backend`, functional options** — Clean root package, compiles on all platforms.
 - [x] **Integration tests** — 7 tests for public API (backend registration, options, LoadModel paths).
-- [ ] **Error handling audit** — `checkError()` still logs + swallows. Needs conversion to error returns. Low priority — existing behaviour, not a regression.
-- [ ] **Memory management — deterministic cleanup** — `Close()` stub in place. Needs CLion Claude research on `mlx_array_free` safety before implementing per-step cleanup. See `cpp/TODO.md`.
+- [ ] **Error handling audit** — `checkError()` still logs + swallows. Needs conversion to error returns (return code 0/1 + stored error string pattern confirmed by CLion Claude). Low priority — existing behaviour, not a regression.
+- [ ] **Memory management — deterministic cleanup** — `Close()` stub in place. CLion Claude confirmed `mlx_array_free()` is safe on graph-referenced arrays (refcounted via shared_ptr). Double-free is UB. Can now implement per-step cleanup.
 - [ ] **Documentation** — Public API has godoc but needs examples for common workflows.
 
 ## Phase 5: Ecosystem Integration (Virgil wishlist)
