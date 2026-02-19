@@ -5,20 +5,21 @@ package metal
 
 /*
 #cgo CXXFLAGS: -std=c++17
-#cgo CFLAGS: -mmacosx-version-min=26.0
+#cgo CFLAGS: -mmacosx-version-min=13.3
 #cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
 #cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
 #cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
 
-static const char *last_mlx_error = NULL;
+static _Atomic(const char *) last_mlx_error = NULL;
 
 static void mlx_go_error_handler(const char *msg, void *data) {
-    last_mlx_error = msg;
+    atomic_store_explicit(&last_mlx_error, msg, memory_order_release);
 }
 
 static void set_error_handler() {
@@ -26,9 +27,7 @@ static void set_error_handler() {
 }
 
 static const char* get_and_clear_last_error() {
-    const char *msg = last_mlx_error;
-    last_mlx_error = NULL;
-    return msg;
+    return atomic_exchange_explicit(&last_mlx_error, NULL, memory_order_acquire);
 }
 */
 import "C"

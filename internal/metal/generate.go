@@ -32,10 +32,11 @@ type GenerateConfig struct {
 
 // Model wraps a loaded transformer model for text generation.
 type Model struct {
-	model     InternalModel
-	tokenizer *Tokenizer
-	modelType string
-	lastErr   error
+	model      InternalModel
+	tokenizer  *Tokenizer
+	modelType  string
+	contextLen int // 0 = unbounded (model default)
+	lastErr    error
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
@@ -73,7 +74,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 	return func(yield func(Token) bool) {
 		tokens := m.tokenizer.Encode(prompt)
-		caches := m.model.NewCache()
+		caches := m.newCaches()
 		sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
 
 		// Prefill: process entire prompt
@@ -129,6 +130,22 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 		}
 	}
+}
+
+// newCaches creates per-layer KV caches. If contextLen is set, all unbounded
+// caches are replaced with RotatingKVCache to cap memory usage.
+func (m *Model) newCaches() []Cache {
+	caches := m.model.NewCache()
+	if m.contextLen <= 0 {
+		return caches
+	}
+	for i, c := range caches {
+		// Only replace unbounded caches — rotating caches already have a limit.
+		if _, ok := c.(*KVCache); ok {
+			caches[i] = NewRotatingKVCache(m.contextLen)
+		}
+	}
+	return caches
 }
 
 // formatChat applies the model's native chat template.

@@ -38,6 +38,48 @@ func TestLastError_NoError(t *testing.T) {
 	}
 }
 
+func TestNewCaches_ContextLen(t *testing.T) {
+	// When contextLen is set, unbounded KVCaches should become RotatingKVCaches.
+	m := &Model{
+		model: &fakeModel{numLayers: 4},
+	}
+
+	// Without contextLen — should get plain KVCaches.
+	caches := m.newCaches()
+	for i, c := range caches {
+		if _, ok := c.(*KVCache); !ok {
+			t.Errorf("cache[%d] without contextLen: got %T, want *KVCache", i, c)
+		}
+	}
+
+	// With contextLen — should get RotatingKVCaches.
+	m.contextLen = 2048
+	caches = m.newCaches()
+	for i, c := range caches {
+		if _, ok := c.(*RotatingKVCache); !ok {
+			t.Errorf("cache[%d] with contextLen=2048: got %T, want *RotatingKVCache", i, c)
+		}
+	}
+}
+
+// fakeModel is a minimal InternalModel for testing cache creation.
+type fakeModel struct {
+	numLayers int
+}
+
+func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array     { return nil }
+func (f *fakeModel) NewCache() []Cache {
+	caches := make([]Cache, f.numLayers)
+	for i := range caches {
+		caches[i] = NewKVCache()
+	}
+	return caches
+}
+func (f *fakeModel) NumLayers() int                   { return f.numLayers }
+func (f *fakeModel) Tokenizer() *Tokenizer            { return nil }
+func (f *fakeModel) ModelType() string                 { return "fake" }
+func (f *fakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
 func TestLoadAllSafetensors_MissingFile(t *testing.T) {
 	_, err := LoadAllSafetensors("/nonexistent/path/model.safetensors")
 	if err == nil {

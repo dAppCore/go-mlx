@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"log/slog"
 
 	"forge.lthn.ai/core/go-inference"
 	"forge.lthn.ai/core/go-mlx/internal/metal"
@@ -57,7 +58,13 @@ func (b *metalBackend) Name() string      { return "metal" }
 func (b *metalBackend) Available() bool    { return true }
 
 func (b *metalBackend) LoadModel(path string, opts ...inference.LoadOption) (inference.TextModel, error) {
-	m, err := metal.LoadAndInit(path)
+	cfg := inference.ApplyLoadOpts(opts)
+	if cfg.GPULayers == 0 {
+		slog.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
+	}
+	m, err := metal.LoadAndInit(path, metal.LoadConfig{
+		ContextLen: cfg.ContextLen,
+	})
 	if err != nil {
 		return nil, err
 	}

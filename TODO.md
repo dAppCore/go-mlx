@@ -83,11 +83,11 @@ Full codebase review after Phase 4 completion + go-inference integration. Groupe
 
 ### Critical — Fix Before Phase 2
 
-- [ ] **Error handler thread safety** — `last_mlx_error` in metal.go is a bare C `static const char*` with no synchronisation. If MLX ever calls the error handler from a background thread (e.g. async eval completion), this is a data race. Fix: use `_Atomic(const char*)` or a `pthread_mutex_t`. Even if MLX currently serialises error callbacks, this is a time bomb. Low-effort fix, high protection.
+- [x] **Error handler thread safety** — ✅ `last_mlx_error` now uses `_Atomic(const char*)` with `atomic_store_explicit` (release) / `atomic_exchange_explicit` (acquire). Thread-safe even if MLX calls the error handler from background threads.
 
-- [ ] **`-mmacosx-version-min=26.0` is wrong** — metal.go line 8 sets `CGO_CFLAGS: -mmacosx-version-min=26.0`. macOS 26 is Tahoe (mid-2025+). This locks out macOS 15 Sequoia users entirely. Should be `15.0` or `14.0` depending on minimum Metal feature level needed. MLX itself targets macOS 13.3+.
+- [x] **`-mmacosx-version-min=26.0` is wrong** — ✅ Changed to `13.3` (MLX's own minimum). No longer locks out macOS 14/15 users.
 
-- [ ] **`LoadOption` is ignored in `metalBackend.LoadModel()`** — `register_metal.go:59` accepts `...inference.LoadOption` but never calls `inference.ApplyLoadOpts()`. `WithContextLen()`, `WithGPULayers()`, `WithBackend()` are all silently dropped. At minimum, apply the config and pass `ContextLen` through to cache sizing.
+- [x] **`LoadOption` is ignored in `metalBackend.LoadModel()`** — ✅ Now calls `inference.ApplyLoadOpts()`. `ContextLen` passed through to `metal.LoadConfig` → stored on `Model` → replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` in generate loop. `GPULayers=0` logs a warning (Metal always uses full GPU offload). New test: `TestNewCaches_ContextLen`.
 
 ### Important — Should Fix
 
