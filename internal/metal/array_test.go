@@ -321,6 +321,102 @@ func TestFree_NilSafe(t *testing.T) {
 	}
 }
 
+// --- Contiguous handling ---
+
+func TestIsRowContiguous_Fresh(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	Materialize(a)
+
+	if !a.IsRowContiguous() {
+		t.Error("freshly created array should be row-contiguous")
+	}
+}
+
+func TestIsRowContiguous_Transposed(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	b := Transpose(a)
+	Materialize(b)
+
+	if b.IsRowContiguous() {
+		t.Error("transposed array should not be row-contiguous")
+	}
+}
+
+func TestContiguous_MakesContiguous(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	b := Transpose(a) // non-contiguous
+	c := Contiguous(b)
+	Materialize(c)
+
+	if !c.IsRowContiguous() {
+		t.Error("Contiguous() result should be row-contiguous")
+	}
+	shape := c.Shape()
+	if shape[0] != 3 || shape[1] != 2 {
+		t.Errorf("shape = %v, want [3 2]", shape)
+	}
+}
+
+func TestFloats_NonContiguous(t *testing.T) {
+	// [[1 2 3], [4 5 6]] transposed → [[1 4], [2 5], [3 6]]
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	b := Transpose(a)
+	Materialize(b)
+
+	// Previously this returned wrong data without Reshape workaround
+	got := b.Floats()
+	want := []float32{1, 4, 2, 5, 3, 6}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Floats()[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestDataInt32_NonContiguous(t *testing.T) {
+	a := FromValues([]int32{1, 2, 3, 4, 5, 6}, 2, 3)
+	b := Transpose(a)
+	Materialize(b)
+
+	got := b.DataInt32()
+	want := []int32{1, 4, 2, 5, 3, 6}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("DataInt32()[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFloats_BroadcastView(t *testing.T) {
+	// BroadcastTo creates a non-contiguous view
+	a := FromValues([]float32{1, 2, 3}, 1, 3)
+	b := BroadcastTo(a, []int32{2, 3})
+	Materialize(b)
+
+	got := b.Floats()
+	want := []float32{1, 2, 3, 1, 2, 3}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Floats()[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFloats_SliceView(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	// Slice columns 1:3 — creates a non-contiguous view
+	b := SliceAxis(a, 1, 1, 3)
+	Materialize(b)
+
+	got := b.Floats()
+	want := []float32{2, 3, 5, 6}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Floats()[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
 // --- Data extraction edge cases ---
 
 func TestArray_Ints(t *testing.T) {

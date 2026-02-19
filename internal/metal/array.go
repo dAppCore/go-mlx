@@ -218,28 +218,62 @@ func (t Array) Float() float64 {
 	}
 }
 
+// IsRowContiguous reports whether the array's physical memory layout is
+// row-major contiguous. Non-contiguous arrays (from Transpose, BroadcastTo,
+// SliceAxis, etc.) must be made contiguous before reading raw data.
+func (t Array) IsRowContiguous() bool {
+	var res C.bool
+	C._mlx_array_is_row_contiguous(&res, t.ctx)
+	return bool(res)
+}
+
+// Contiguous returns a row-major contiguous copy of the array.
+// If the array is already row-contiguous, this is a no-op.
+func Contiguous(a *Array) *Array {
+	out := New("CONTIGUOUS", a)
+	C.mlx_contiguous(&out.ctx, a.ctx, C._Bool(false), DefaultStream().ctx)
+	return out
+}
+
+// ensureContiguous returns a row-contiguous array, making a copy if needed.
+// This must be called before any mlx_array_data_* access.
+func ensureContiguous(a *Array) *Array {
+	if a.IsRowContiguous() {
+		return a
+	}
+	c := Contiguous(a)
+	Materialize(c)
+	return c
+}
+
 // Ints extracts all elements as int slice (from int32 data).
-func (t Array) Ints() []int {
-	ints := make([]int, t.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_int32(t.ctx), len(ints)) {
+// Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+func (t *Array) Ints() []int {
+	src := ensureContiguous(t)
+	ints := make([]int, src.Size())
+	for i, f := range unsafe.Slice(C.mlx_array_data_int32(src.ctx), len(ints)) {
 		ints[i] = int(f)
 	}
 	return ints
 }
 
 // DataInt32 extracts all elements as int32 slice.
-func (t Array) DataInt32() []int32 {
-	data := make([]int32, t.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_int32(t.ctx), len(data)) {
+// Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+func (t *Array) DataInt32() []int32 {
+	src := ensureContiguous(t)
+	data := make([]int32, src.Size())
+	for i, f := range unsafe.Slice(C.mlx_array_data_int32(src.ctx), len(data)) {
 		data[i] = int32(f)
 	}
 	return data
 }
 
 // Floats extracts all elements as float32 slice.
-func (t Array) Floats() []float32 {
-	floats := make([]float32, t.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_float32(t.ctx), len(floats)) {
+// Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+func (t *Array) Floats() []float32 {
+	src := ensureContiguous(t)
+	floats := make([]float32, src.Size())
+	for i, f := range unsafe.Slice(C.mlx_array_data_float32(src.ctx), len(floats)) {
 		floats[i] = float32(f)
 	}
 	return floats
