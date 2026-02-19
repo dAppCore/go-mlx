@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"time"
 )
 
 // ClassifyResult holds the output for a single prompt in batch classification.
@@ -24,16 +25,22 @@ type BatchResult struct {
 // Classify runs batched prefill-only inference. Each prompt gets a single
 // forward pass and the token at the last position is sampled.
 func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConfig, returnLogits bool) ([]ClassifyResult, error) {
+	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
 		return nil, nil
 	}
 
+	totalStart := time.Now()
+	ResetPeakMemory()
+
 	// Tokenise all prompts.
 	encoded := make([][]int32, len(prompts))
 	lengths := make([]int, len(prompts))
+	totalPromptTokens := 0
 	for i, p := range prompts {
 		encoded[i] = m.tokenizer.Encode(p)
 		lengths[i] = len(encoded[i])
+		totalPromptTokens += lengths[i]
 	}
 
 	// Sort by length descending for minimal padding. Track original indices.
@@ -111,21 +118,40 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		results[origIdx] = sortedResults[si]
 	}
 
+	totalDur := time.Since(totalStart)
+	m.lastMetrics = Metrics{
+		PromptTokens:    totalPromptTokens,
+		GeneratedTokens: int(N), // One token sampled per prompt
+		PrefillDuration: totalDur,
+		TotalDuration:   totalDur,
+		PeakMemoryBytes: GetPeakMemory(),
+		ActiveMemoryBytes: GetActiveMemory(),
+	}
+	if totalDur > 0 {
+		m.lastMetrics.PrefillTokensPerSec = float64(totalPromptTokens) / totalDur.Seconds()
+	}
+
 	return results, nil
 }
 
 // BatchGenerate runs batched autoregressive generation.
 func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
+	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
 		return nil, nil
 	}
 
+	totalStart := time.Now()
+	ResetPeakMemory()
+
 	// Tokenise all prompts.
 	encoded := make([][]int32, len(prompts))
 	lengths := make([]int, len(prompts))
+	totalPromptTokens := 0
 	for i, p := range prompts {
 		encoded[i] = m.tokenizer.Encode(p)
 		lengths[i] = len(encoded[i])
+		totalPromptTokens += lengths[i]
 	}
 
 	// Sort by length descending.
@@ -156,6 +182,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	}
 
 	// Prefill with mask.
+	prefillStart := time.Now()
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
@@ -163,6 +190,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	if err := Eval(logits); err != nil {
 		return nil, fmt.Errorf("batch prefill: %w", err)
 	}
+	prefillDur := time.Since(prefillStart)
 
 	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
 	eosID := m.tokenizer.EOSToken()
@@ -258,12 +286,32 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 
 	// Unsort results back to original order.
 	sortedResults := make([]BatchResult, N)
+	totalGenerated := 0
 	for si := range states {
 		sortedResults[si] = BatchResult{Tokens: states[si].tokens}
+		totalGenerated += len(states[si].tokens)
 	}
 	results := make([]BatchResult, N)
 	for si, origIdx := range indices {
 		results[origIdx] = sortedResults[si]
+	}
+
+	totalDur := time.Since(totalStart)
+	decodeDur := totalDur - prefillDur
+	m.lastMetrics = Metrics{
+		PromptTokens:    totalPromptTokens,
+		GeneratedTokens: totalGenerated,
+		PrefillDuration: prefillDur,
+		DecodeDuration:  decodeDur,
+		TotalDuration:   totalDur,
+		PeakMemoryBytes: GetPeakMemory(),
+		ActiveMemoryBytes: GetActiveMemory(),
+	}
+	if prefillDur > 0 {
+		m.lastMetrics.PrefillTokensPerSec = float64(totalPromptTokens) / prefillDur.Seconds()
+	}
+	if decodeDur > 0 {
+		m.lastMetrics.DecodeTokensPerSec = float64(totalGenerated) / decodeDur.Seconds()
 	}
 
 	return results, nil

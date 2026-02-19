@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"time"
 )
 
 // Token represents a single generated token.
@@ -30,6 +31,19 @@ type GenerateConfig struct {
 	RepeatPenalty float32
 }
 
+// Metrics holds performance metrics from the last inference operation.
+type Metrics struct {
+	PromptTokens        int
+	GeneratedTokens     int
+	PrefillDuration     time.Duration
+	DecodeDuration      time.Duration
+	TotalDuration       time.Duration
+	PrefillTokensPerSec float64
+	DecodeTokensPerSec  float64
+	PeakMemoryBytes     uint64
+	ActiveMemoryBytes   uint64
+}
+
 // Model wraps a loaded transformer model for text generation.
 type Model struct {
 	model      InternalModel
@@ -37,6 +51,7 @@ type Model struct {
 	modelType  string
 	contextLen int // 0 = unbounded (model default)
 	lastErr    error
+	lastMetrics Metrics
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
@@ -44,6 +59,9 @@ func (m *Model) ModelType() string { return m.modelType }
 
 // Err returns the error from the last Generate/Chat call, if any.
 func (m *Model) Err() error { return m.lastErr }
+
+// LastMetrics returns performance metrics from the last inference operation.
+func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
 // Close releases all model weight arrays and associated resources.
 // After Close, the Model must not be used for generation.
@@ -75,13 +93,41 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 // Metal memory promptly rather than waiting for GC finalisers.
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	m.lastErr = nil
+	m.lastMetrics = Metrics{}
 
 	return func(yield func(Token) bool) {
+		totalStart := time.Now()
+		ResetPeakMemory()
+
 		tokens := m.tokenizer.Encode(prompt)
+		promptLen := len(tokens)
 		caches := m.newCaches()
 		sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+		var genCount int
+		var prefillDur time.Duration
+
+		defer func() {
+			decodeDur := time.Since(totalStart) - prefillDur
+			totalDur := time.Since(totalStart)
+			m.lastMetrics = Metrics{
+				PromptTokens:    promptLen,
+				GeneratedTokens: genCount,
+				PrefillDuration: prefillDur,
+				DecodeDuration:  decodeDur,
+				TotalDuration:   totalDur,
+				PeakMemoryBytes: GetPeakMemory(),
+				ActiveMemoryBytes: GetActiveMemory(),
+			}
+			if prefillDur > 0 {
+				m.lastMetrics.PrefillTokensPerSec = float64(promptLen) / prefillDur.Seconds()
+			}
+			if decodeDur > 0 {
+				m.lastMetrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
+			}
+		}()
 
 		// Prefill: process entire prompt
+		prefillStart := time.Now()
 		input := FromValues(tokens, len(tokens))
 		input = Reshape(input, 1, int32(len(tokens)))
 		logits := m.model.Forward(input, caches)
@@ -89,6 +135,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			m.lastErr = fmt.Errorf("prefill: %w", err)
 			return
 		}
+		prefillDur = time.Since(prefillStart)
 
 		// Track generated token IDs for repeat penalty.
 		var history []int32
@@ -129,6 +176,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 				}
 			}
 
+			genCount++
 			text := m.tokenizer.DecodeToken(id)
 			if !yield(Token{ID: id, Text: text}) {
 				return

@@ -164,6 +164,21 @@ func (a *metalAdapter) BatchGenerate(ctx context.Context, prompts []string, opts
 	return out, nil
 }
 
+func (a *metalAdapter) Metrics() inference.GenerateMetrics {
+	m := a.m.LastMetrics()
+	return inference.GenerateMetrics{
+		PromptTokens:        m.PromptTokens,
+		GeneratedTokens:     m.GeneratedTokens,
+		PrefillDuration:     m.PrefillDuration,
+		DecodeDuration:      m.DecodeDuration,
+		TotalDuration:       m.TotalDuration,
+		PrefillTokensPerSec: m.PrefillTokensPerSec,
+		DecodeTokensPerSec:  m.DecodeTokensPerSec,
+		PeakMemoryBytes:     m.PeakMemoryBytes,
+		ActiveMemoryBytes:   m.ActiveMemoryBytes,
+	}
+}
+
 func (a *metalAdapter) ModelType() string { return a.m.ModelType() }
 func (a *metalAdapter) Err() error        { return a.m.Err() }
 func (a *metalAdapter) Close() error      { return a.m.Close() }

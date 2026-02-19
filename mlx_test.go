@@ -443,6 +443,57 @@ func TestLlama_Inference(t *testing.T) {
 	}
 }
 
+// --- Metrics tests ---
+
+// TestGenerate_Metrics validates that metrics are populated after generation.
+func TestGenerate_Metrics(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	ctx := context.Background()
+	var count int
+	for range m.Generate(ctx, "Hello world", inference.WithMaxTokens(8)) {
+		count++
+	}
+	if err := m.Err(); err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	met := m.Metrics()
+	if met.PromptTokens == 0 {
+		t.Error("PromptTokens should be > 0")
+	}
+	if met.GeneratedTokens != count {
+		t.Errorf("GeneratedTokens = %d, want %d", met.GeneratedTokens, count)
+	}
+	if met.PrefillDuration == 0 {
+		t.Error("PrefillDuration should be > 0")
+	}
+	if met.TotalDuration == 0 {
+		t.Error("TotalDuration should be > 0")
+	}
+	if met.PrefillTokensPerSec == 0 {
+		t.Error("PrefillTokensPerSec should be > 0")
+	}
+	if met.DecodeTokensPerSec == 0 {
+		t.Error("DecodeTokensPerSec should be > 0")
+	}
+	if met.PeakMemoryBytes == 0 {
+		t.Error("PeakMemoryBytes should be > 0")
+	}
+
+	t.Logf("Metrics: prompt=%d tokens, generated=%d tokens", met.PromptTokens, met.GeneratedTokens)
+	t.Logf("  Prefill: %s (%.0f tok/s)", met.PrefillDuration, met.PrefillTokensPerSec)
+	t.Logf("  Decode:  %s (%.1f tok/s)", met.DecodeDuration, met.DecodeTokensPerSec)
+	t.Logf("  Total:   %s", met.TotalDuration)
+	t.Logf("  Peak memory: %.1f MB", float64(met.PeakMemoryBytes)/(1024*1024))
+}
+
 // --- Batch Inference tests (Gemma3-1B) ---
 
 // TestClassify_Batch validates batched prefill-only classification.
