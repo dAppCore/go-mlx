@@ -443,6 +443,31 @@ func TestLlama_Inference(t *testing.T) {
 	}
 }
 
+// --- Discover tests ---
+
+func TestDiscover(t *testing.T) {
+	// Scan the safetensors directory for available models.
+	baseDir := "/Volumes/Data/lem"
+	if _, err := os.Stat(baseDir); err != nil {
+		t.Skipf("model directory not available: %s", baseDir)
+	}
+
+	models, err := inference.Discover(baseDir)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+
+	if len(models) == 0 {
+		t.Skip("no models found")
+	}
+
+	for _, m := range models {
+		t.Logf("Found: %s (type=%s, quant=%d-bit, files=%d)",
+			m.Path, m.ModelType, m.QuantBits, m.NumFiles)
+	}
+	t.Logf("Total: %d models discovered", len(models))
+}
+
 // --- ModelInfo tests ---
 
 func TestModelInfo(t *testing.T) {
