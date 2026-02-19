@@ -28,6 +28,14 @@ Tasks for the CLion Claude session. Written by GoLand Claude or Virgil.
 
 - [ ] **API gap analysis** — When the GoLand Claude needs a C function that isn't exposed by mlx-c, document the gap here and research if upstream mlx-c supports it or if a patch is needed.
 
+## On-Demand Tasks (activate when needed)
+
+- [ ] **mlx-c version bump validation** — When upstream mlx-c releases v0.4.2+ or v0.5.0, update `CMakeLists.txt` GIT_TAG, rebuild, and document any API changes, additions, or breaking changes. Check if new ops could benefit go-mlx (e.g. fused attention variants, new quantisation modes).
+- [ ] **Batch evaluation patterns** — Research how mlx-c handles multiple independent forward passes. Does `mlx_eval` with a vector of arrays from separate graphs batch them? Or does MLX need explicit batching at the tensor level? Needed for Phase 5 batch inference API.
+- [ ] **GPU profiling/capture** — Document `mlx_metal_start_capture()` / `mlx_metal_stop_capture()` usage for GPU debugging. Research how to generate Metal GPU traces for performance analysis of the inference pipeline.
+- [ ] **Quantised matmul variants** — Survey all quantisation-related functions in ops.h beyond what Go currently binds. Document supported bit widths (2-bit, 3-bit?), group sizes, and affine vs symmetric modes. Relevant for model quantisation awareness (Phase 5).
+- [ ] **Streaming/async patterns** — Research `mlx_async_eval` and multi-stream patterns. Can separate encode/decode streams overlap? Does MLX support concurrent GPU work from multiple goroutines via separate streams?
+
 ---
 
 ## Workflow
