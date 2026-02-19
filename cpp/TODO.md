@@ -6,23 +6,23 @@ Tasks for the CLion Claude session. Written by GoLand Claude or Virgil.
 
 ## Orientation (First Session)
 
-- [ ] **Map the mlx-c API surface** — Read all 27 headers in `build/_deps/mlx-c-src/mlx/c/`. Document which functions the Go side currently binds (cross-reference with Go files) vs which are available but unused. Priority headers: `ops.h`, `fast.h`, `array.h`, `transforms.h`.
-- [ ] **Understand the error model** — `error.h` provides `mlx_set_error_handler()`. The Go side registers a handler that logs to stderr. Research: can we get structured error info (error codes, categories)? Is the error string stable or does it vary?
-- [ ] **Check memory management patterns** — `mlx_*_free()` functions exist for each type. Verify: is double-free safe? What happens if you free during async eval? Document for the Go finaliser integration.
+- [x] **Map the mlx-c API surface** — Read all 27 headers. Full map in FINDINGS.md: ~180 ops functions, Go binds ~40. Identified 8 high-priority unbound functions. *(Done 2026-02-19)*
+- [x] **Understand the error model** — Free-form strings only (`"<msg> at <file>:<line>"`). No error codes or categories. Handler stores string, Go checks return code. Details in FINDINGS.md. *(Done 2026-02-19)*
+- [x] **Check memory management patterns** — Arrays are refcounted via `shared_ptr<ArrayDesc>`. Double-free is UB. Free during async is safe. NULL-free is safe. Details in FINDINGS.md. *(Done 2026-02-19)*
 
 ## Priority Tasks (from GoLand Claude)
 
-- [ ] **Find `mlx_contiguous` or equivalent** — `Floats()`/`DataInt32()` on non-contiguous arrays (transpose, broadcast, slice views) returns wrong data because `mlx_array_data_float32` returns the physical buffer, not the logical layout. Need a C function that copies a non-contiguous array to contiguous memory. Check if `mlx_contiguous` exists in mlx-c headers or if we need `mlx_reshape` to force a copy. This is a data correctness bug — see FINDINGS.md in project root.
-- [ ] **Verify `mlx_array_data_*` eval semantics** — Does `mlx_array_data_float32()` trigger evaluation (like C++ `array::data()` does), or must we call `mlx_eval` first? The Go side calls `Materialize()` before data access but some code paths might skip it.
-- [ ] **Check if `mlx_cumsum` exists** — The Go TopP (nucleus) sampler in `sample/sample.go` is a stub because it needs cumulative sum along an axis. Check if `mlx_cumsum` or equivalent is in `ops.h`. If so, the GoLand Claude can implement proper TopP sampling.
-- [ ] **Survey `mlx_contiguous` / `mlx_flatten` / `mlx_copy`** — We need a way to force an array into contiguous row-major memory. Check all of: `mlx_contiguous`, `mlx_flatten`, `mlx_copy`, `mlx_as_contiguous`. Any of these would fix the Floats() bug.
+- [x] **Find `mlx_contiguous` or equivalent** — **FOUND**: `mlx_contiguous(res, a, allow_col_major, stream)` at `ops.h:220`. Plus `_mlx_array_is_row_contiguous()` for checking. GoLand Claude: see FINDINGS.md for recommended pattern. *(Done 2026-02-19)*
+- [x] **Verify `mlx_array_data_*` eval semantics** — Does NOT auto-evaluate. Returns raw buffer pointer (crash/garbage if unevaluated). `Materialise()` before data access is essential. `item()` auto-evaluates but `data()` does not. *(Done 2026-02-19)*
+- [x] **Check if `mlx_cumsum` exists** — **FOUND**: `mlx_cumsum(res, a, axis, reverse, inclusive, stream)` at `ops.h:344`. GoLand Claude can now implement proper TopP sampling. *(Done 2026-02-19)*
+- [x] **Survey `mlx_contiguous` / `mlx_flatten` / `mlx_copy`** — All three exist. `mlx_contiguous` is the correct tool (forces row-major). `mlx_copy` may preserve non-contiguous layout. `mlx_flatten` works but changes shape semantics. *(Done 2026-02-19)*
 
 ## Memory Management Research (from Backend Abstraction Design)
 
-- [ ] **What does `mlx_clear_cache()` release?** — The Go side needs to call this per decode step to free intermediate arrays (logits, attention, MLP activations). Does it release GPU memory? Does it release the allocator pool? Can it be called safely mid-generation without breaking the computation graph?
-- [ ] **Is `mlx_array_free()` safe on graph-referenced arrays?** — During generation, intermediate arrays may be inputs to other pending lazy ops. If we free an intermediate after materialising it, does MLX handle the reference correctly or does it segfault? This determines whether we can do per-step deterministic cleanup.
-- [ ] **MLX allocator pool behaviour** — Does `mlx_array_free()` return memory to the system or to an internal pool? Under sustained inference (1000+ tokens), we need memory to plateau, not grow. Document the allocator's reuse strategy.
-- [ ] **Research structured error info** — The Go side is moving from `checkError()` (log and swallow) to proper error returns. Can `mlx_set_error_handler()` give us error codes or categories, or is it always a free-form string? Is the string format stable across mlx-c versions?
+- [x] **What does `mlx_clear_cache()` release?** — Releases allocator pool cache back to system. Does NOT touch active memory. Safe mid-generation. *(Done 2026-02-19)*
+- [x] **Is `mlx_array_free()` safe on graph-referenced arrays?** — Yes, safe. Arrays use `shared_ptr<ArrayDesc>`. Freeing the C handle just decrements refcount. Graph computation continues normally. *(Done 2026-02-19)*
+- [x] **MLX allocator pool behaviour** — `mlx_array_free()` returns memory to internal pool (not system). Pool reuses allocations. Under sustained inference, memory should plateau. Call `mlx_clear_cache()` to release pool to system if needed. *(Done 2026-02-19)*
+- [x] **Research structured error info** — No structured info available. Free-form string only. Format is stable: `"<message> at <file>:<line>"`. GoLand Claude should use return code (0/1) + stored error string pattern. *(Done 2026-02-19)*
 
 ## Standing Tasks
 
