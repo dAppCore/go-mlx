@@ -415,3 +415,42 @@ Was a stub. Now masks tokens whose probability is below `min_p * max_prob`. Uses
 3. **SDPA efficient**: 32-head seq=512 attention at 1.8ms is practical for real-time inference.
 4. **Sampling overhead**: Full chain (TopP+MinP+TopK) adds ~560μs over greedy — acceptable per token.
 5. **Linear layer**: Single-token forward through 2048→2048 at 181μs suggests ~5500 layers/sec ceiling for per-token decode.
+
+---
+
+## 2026-02-19: Error Handling Audit — COMPLETED
+
+### What changed
+
+The old `checkError()` function logged errors via `slog.Error` and swallowed them. The mlx-c error handler (`mlx_go_error_handler`) stored the error string in a C static variable, but no Go code read it back as an error value.
+
+### New error model
+
+1. **`lastError() error`** — reads and clears the C-level error string. Returns `fmt.Errorf("mlx: %s", msg)` or nil. All callers now get real MLX error messages instead of generic "failed" strings.
+
+2. **`Eval(...*Array) error`** — error-returning variant of Materialize. Checks `mlx_eval` return code and surfaces errors through `lastError()`. The key error surface for GPU computation failures (OOM, invalid graph, etc.).
+
+3. **`EvalAsync(...*Array) error`** — same for async evaluation.
+
+4. **`Materialize()` unchanged** — delegates to `Eval()`, logs errors. 237 existing callsites (mostly tests) unchanged.
+
+### Error propagation paths
+
+| Path | Before | After |
+|------|--------|-------|
+| Generate loop | Silent failure | `Eval()` → `m.lastErr` → `model.Err()` |
+| Safetensors load | Silent zero results | `LoadAllSafetensors` returns error; `LoadSafetensors` checks rc |
+| Model load (gemma3/qwen3) | Missing weights panic | Check `lastError()` after each safetensors file |
+| VJP/JVP/ValueAndGrad | Generic "vjp failed" | Real MLX error message via `lastError()` |
+| LoRA save | Generic "save failed" | Real MLX error message via `lastError()` |
+
+### C-level changes
+
+- Removed `fprintf(stderr, ...)` from error handler — errors now surface through Go, not stderr
+- Added `get_and_clear_last_error()` — reads and atomically clears the stored error string
+- Old `get_last_error()` removed (never cleared, so stale errors persisted across operations)
+
+### Test results
+
+- 180 tests passing (176 existing + 4 new error handling tests)
+- New tests: Eval success, Eval nil safety, lastError no-error, LoadAllSafetensors missing file

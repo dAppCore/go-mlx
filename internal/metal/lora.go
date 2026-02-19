@@ -230,8 +230,10 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 
 	rc := C.mlx_save_safetensors(cPath, cMap, cMeta)
 	if rc != 0 {
-		checkError()
-		return fmt.Errorf("mlx: save safetensors failed: %s", path)
+		if err := lastError(); err != nil {
+			return err
+		}
+		return fmt.Errorf("mlx: save safetensors failed: %s (rc=%d)", path, rc)
 	}
 	return nil
 }

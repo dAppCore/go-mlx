@@ -182,6 +182,9 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr
 		}
+		if err := lastError(); err != nil {
+			return nil, fmt.Errorf("gemma3: load weights %s: %w", filepath.Base(path), err)
+		}
 	}
 
 	// Helper to resolve weight with language_model. prefix fallback

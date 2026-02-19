@@ -101,8 +101,10 @@ func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (out
 
 	rc := C.mlx_vjp(&outVec, &vjpVec, closure, primalsVec, cotangentsVec)
 	if rc != 0 {
-		checkError()
-		return nil, nil, fmt.Errorf("mlx: vjp failed")
+		if err := lastError(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("mlx: vjp failed (rc=%d)", rc)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -143,8 +145,10 @@ func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outpu
 
 	rc := C.mlx_jvp(&outVec, &jvpVec, closure, primalsVec, tangentsVec)
 	if rc != 0 {
-		checkError()
-		return nil, nil, fmt.Errorf("mlx: jvp failed")
+		if err := lastError(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("mlx: jvp failed (rc=%d)", rc)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -209,8 +213,10 @@ func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err e
 
 	rc := C.mlx_closure_value_and_grad_apply(&valVec, &gradVec, g.cls, inputVec)
 	if rc != 0 {
-		checkError()
-		return nil, nil, fmt.Errorf("mlx: value_and_grad apply failed")
+		if err := lastError(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("mlx: value_and_grad apply failed (rc=%d)", rc)
 	}
 
 	values = vectorToArrays(valVec)

@@ -4,6 +4,7 @@ package metal
 
 import (
 	"context"
+	"fmt"
 	"iter"
 )
 
@@ -68,7 +69,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		input := FromValues(tokens, len(tokens))
 		input = Reshape(input, 1, int32(len(tokens)))
 		logits := m.model.Forward(input, caches)
-		Materialize(logits)
+		if err := Eval(logits); err != nil {
+			m.lastErr = fmt.Errorf("prefill: %w", err)
+			return
+		}
 
 		for i := 0; i < cfg.MaxTokens; i++ {
 			select {
@@ -82,7 +86,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			lastPos := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
 			lastPos = Reshape(lastPos, 1, int32(lastPos.Dim(2)))
 			next := sampler.Sample(lastPos)
-			Materialize(next)
+			if err := Eval(next); err != nil {
+				m.lastErr = fmt.Errorf("sample step %d: %w", i, err)
+				return
+			}
 
 			id := int32(next.Int())
 
@@ -105,7 +112,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			nextInput := FromValues([]int32{id}, 1)
 			nextInput = Reshape(nextInput, 1, 1)
 			logits = m.model.Forward(nextInput, caches)
-			Materialize(logits)
+			if err := Eval(logits); err != nil {
+				m.lastErr = fmt.Errorf("decode step %d: %w", i, err)
+				return
+			}
 		}
 	}
 }

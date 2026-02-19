@@ -250,7 +250,10 @@ func TestSaveSafetensors(t *testing.T) {
 	}
 
 	// Load it back
-	loaded := LoadAllSafetensors(path)
+	loaded, err := LoadAllSafetensors(path)
+	if err != nil {
+		t.Fatalf("LoadAllSafetensors: %v", err)
+	}
 	Materialize(loaded["layer.lora_a"], loaded["layer.lora_b"])
 
 	aLoaded := loaded["layer.lora_a"].Floats()
@@ -290,7 +293,10 @@ func TestLoRAAdapter_Save(t *testing.T) {
 	}
 
 	// Load and verify
-	loaded := LoadAllSafetensors(path)
+	loaded, err := LoadAllSafetensors(path)
+	if err != nil {
+		t.Fatalf("LoadAllSafetensors: %v", err)
+	}
 	aKey := "model.layers.0.self_attn.q_proj.lora_a"
 	bKey := "model.layers.0.self_attn.q_proj.lora_b"
 

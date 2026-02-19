@@ -9,6 +9,7 @@ package metal
 import "C"
 
 import (
+	"fmt"
 	"iter"
 	"runtime"
 	"unsafe"
@@ -16,6 +17,7 @@ import (
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator
 // over (name, array) pairs. Tensors are loaded lazily on the CPU stream.
+// Use [LoadAllSafetensors] for an error-returning variant.
 func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 	Init()
 	return func(yield func(string, *Array) bool) {
@@ -31,7 +33,11 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 		cpu := C.mlx_default_cpu_stream_new()
 		defer C.mlx_stream_free(cpu)
 
-		C.mlx_load_safetensors(&string2array, &string2string, cPath, cpu)
+		rc := C.mlx_load_safetensors(&string2array, &string2string, cPath, cpu)
+		if rc != 0 {
+			// Error will surface via lastError(); caller iterates zero tensors.
+			return
+		}
 
 		it := C.mlx_map_string_to_array_iterator_new(string2array)
 		defer C.mlx_map_string_to_array_iterator_free(it)
@@ -54,10 +60,17 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 }
 
 // LoadAllSafetensors loads all tensors from a .safetensors file into a map.
-func LoadAllSafetensors(path string) map[string]*Array {
+// Returns an error if the file cannot be loaded.
+func LoadAllSafetensors(path string) (map[string]*Array, error) {
 	tensors := make(map[string]*Array)
 	for name, arr := range LoadSafetensors(path) {
 		tensors[name] = arr
 	}
-	return tensors
+	if len(tensors) == 0 {
+		if err := lastError(); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("mlx: no tensors loaded from %s", path)
+	}
+	return tensors, nil
 }

@@ -122,6 +122,9 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr
 		}
+		if err := lastError(); err != nil {
+			return nil, fmt.Errorf("qwen3: load weights %s: %w", filepath.Base(path), err)
+		}
 	}
 
 	w := func(name string) *Array { return resolveWeight(weights, name) }
