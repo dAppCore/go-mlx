@@ -63,7 +63,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 	}
 
 	switch probe.ModelType {
-	case "qwen3", "qwen2":
+	case "qwen3", "qwen2", "llama":
 		return LoadQwen3(modelPath)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)

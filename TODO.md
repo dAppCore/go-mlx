@@ -16,7 +16,7 @@ Dispatched from core/go orchestration. Pick up tasks in order.
 - [x] **Gemma3-1B inference validation** — ✅ End-to-end inference works. 4-bit quantised Gemma3-1B loads and generates coherently at **46 tok/s** on M3 Ultra. Fixed: `model_type: "gemma3_text"` not matched in architecture dispatch, GPT-2 BPE false detection on 262K SentencePiece vocab (checked `Ġthe` instead of bare `Ġ`). 3 new tests: inference (greedy, timing), chat template, context cancellation.
 - [x] **Model loading robustness** — ✅ 24 new tests in model_test.go covering: missing/invalid config.json, unsupported architecture, `gemma3_text` dispatch, missing tokenizer, missing safetensors (was a nil-pointer panic — fixed with early error return in both LoadGemma3 and LoadQwen3), config parsing defaults/quantization/nested text_config, `isLayerSliding`, `resolveWeight` with prefix fallback.
 - [x] **Add Qwen2 model support** — ✅ Qwen2 architecture (used by DeepSeek R1) now supported. Shares Qwen3 loader with optional Q/K RMS normalization (Qwen3 has it, Qwen2 does not). Auto-detected from weight presence. DeepSeek R1 7B: **27 tok/s** on M3 Ultra. 2 new tests.
-- [ ] **Add Llama model support** — Llama architecture would cover Meta's model family (Llama 3, CodeLlama). Needs safetensors model on disk for validation (e.g. `mlx-community/Meta-Llama-3.1-8B-Instruct-4bit`).
+- [x] **Add Llama model support** — ✅ Llama 3 architecture shares Qwen3 loader (same decoder: pre-norm, SwiGLU, GQA, no Q/K norm). Model type detected from config.json `model_type` field. Llama 3 chat template (`<|start_header_id|>`) and EOS token (`<|eot_id|>` id=128009) added. Llama 3.1 8B 4-bit: **30 tok/s** on M3 Ultra. 2 new tests.
 
 ## Phase 3: Training Pipeline
 

@@ -139,6 +139,14 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	if id, ok := t.special["<|im_start|>"]; ok {
 		t.bosToken = id
 	}
+	// Llama 3: <|eot_id|> is the turn-end token
+	if id, ok := t.special["<|eot_id|>"]; ok {
+		t.eosToken = id
+	}
+	// Llama 3 BOS: <|begin_of_text|>
+	if id, ok := t.special["<|begin_of_text|>"]; ok {
+		t.bosToken = id
+	}
 
 	return t, nil
 }

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"forge.lthn.ai/core/go-inference"
-	_ "forge.lthn.ai/core/go-mlx"
+	mlx "forge.lthn.ai/core/go-mlx"
 )
 
 func TestMetalAvailable(t *testing.T) {
@@ -163,7 +163,7 @@ func TestLoadModel_Generate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
 
 	if m.ModelType() != "gemma3" {
 		t.Errorf("ModelType() = %q, want %q", m.ModelType(), "gemma3")
@@ -195,7 +195,7 @@ func TestGemma3_1B_Inference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
 	t.Logf("Model loaded in %s", loadDur)
 
 	if m.ModelType() != "gemma3" {
@@ -247,7 +247,7 @@ func TestGemma3_1B_Chat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
 	var output strings.Builder
@@ -275,7 +275,7 @@ func TestGemma3_1B_ContextCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -321,7 +321,7 @@ func TestQwen2_Inference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
 	t.Logf("Model loaded in %s", loadDur)
 
 	if m.ModelType() != "qwen2" {
@@ -363,7 +363,95 @@ func TestQwen2_Chat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	defer m.Close()
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	ctx := context.Background()
+	var output strings.Builder
+	var count int
+	for tok := range m.Chat(ctx, []inference.Message{
+		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
+	}, inference.WithMaxTokens(32)) {
+		output.WriteString(tok.Text)
+		count++
+	}
+	if err := m.Err(); err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("Chat produced no tokens")
+	}
+	t.Logf("Chat output (%d tokens): %s", count, output.String())
+}
+
+// --- Llama 3.1 8B tests ---
+
+func llamaModelPath(t *testing.T) string {
+	t.Helper()
+	paths := []string{
+		"/Volumes/Data/lem/Llama-3.1-8B-Instruct-4bit",
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("no Llama model available")
+	return ""
+}
+
+// TestLlama_Inference validates Llama 3.1 8B end-to-end.
+func TestLlama_Inference(t *testing.T) {
+	modelPath := llamaModelPath(t)
+
+	loadStart := time.Now()
+	m, err := inference.LoadModel(modelPath)
+	loadDur := time.Since(loadStart)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+	t.Logf("Model loaded in %s", loadDur)
+
+	if m.ModelType() != "llama" {
+		t.Errorf("ModelType() = %q, want %q", m.ModelType(), "llama")
+	}
+
+	ctx := context.Background()
+	genStart := time.Now()
+	var tokens []inference.Token
+	var output strings.Builder
+	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(32)) {
+		tokens = append(tokens, tok)
+		output.WriteString(tok.Text)
+	}
+	genDur := time.Since(genStart)
+
+	if err := m.Err(); err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	nTokens := len(tokens)
+	if nTokens == 0 {
+		t.Fatal("Generate produced no tokens")
+	}
+
+	tps := float64(nTokens) / genDur.Seconds()
+	t.Logf("Generated %d tokens in %s (%.1f tok/s)", nTokens, genDur, tps)
+	t.Logf("Output: %s", output.String())
+	for i, tok := range tokens {
+		t.Logf("  [%d] id=%d %q", i, tok.ID, tok.Text)
+	}
+}
+
+// TestLlama_Chat validates chat template for Llama 3 models.
+func TestLlama_Chat(t *testing.T) {
+	modelPath := llamaModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
 	var output strings.Builder

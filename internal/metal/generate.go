@@ -200,6 +200,8 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
 		return formatQwenChat(messages)
+	case "llama":
+		return formatLlamaChat(messages)
 	default:
 		var s string
 		for _, msg := range messages {
@@ -231,5 +233,14 @@ func formatQwenChat(messages []ChatMessage) string {
 		s += "<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n"
 	}
 	s += "<|im_start|>assistant\n"
+	return s
+}
+
+func formatLlamaChat(messages []ChatMessage) string {
+	s := "<|begin_of_text|>"
+	for _, msg := range messages {
+		s += "<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>"
+	}
+	s += "<|start_header_id|>assistant<|end_header_id|>\n\n"
 	return s
 }
