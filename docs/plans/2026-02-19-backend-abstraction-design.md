@@ -1,7 +1,7 @@
 # Backend Abstraction Design
 
 **Date:** 2026-02-19
-**Status:** Approved
+**Status:** Approved (Virgil-reviewed 19 Feb 2026)
 **Author:** GoLand Claude (domain expert, go-mlx)
 
 ## Problem
@@ -87,9 +87,28 @@ type Token struct {
 }
 
 type TextModel interface {
-    Generate(prompt string, opts ...GenerateOption) iter.Seq[Token]
+    // Generate streams tokens for the given prompt. Respects ctx cancellation.
+    Generate(ctx context.Context, prompt string, opts ...GenerateOption) iter.Seq[Token]
+
+    // Chat formats messages using the model's native template, then generates.
+    // Deferred to Phase 5 if needed — model owns its chat template.
+    Chat(ctx context.Context, messages []Message, opts ...GenerateOption) iter.Seq[Token]
+
+    // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
     ModelType() string
+
+    // Err returns the last generation error (OOM, C-level failure, etc.).
+    // Distinguishes normal stop (EOS, max tokens) from errors.
+    Err() error
+
+    // Close releases all resources (GPU memory, caches, subprocess).
     Close() error
+}
+
+// Message represents a chat turn for Chat().
+type Message struct {
+    Role    string // "user", "assistant", "system"
+    Content string
 }
 ```
 
@@ -98,6 +117,14 @@ type TextModel interface {
 ```go
 func LoadModel(path string, opts ...LoadOption) (TextModel, error)
 func MetalAvailable() bool
+
+// Hardware-level memory controls (delegate to internal/metal).
+// These are not model-level — they control the Metal allocator directly.
+func SetCacheLimit(limit uint64) uint64
+func SetMemoryLimit(limit uint64) uint64
+func GetActiveMemory() uint64
+func GetPeakMemory() uint64
+func ClearCache()
 ```
 
 ### Functional options
