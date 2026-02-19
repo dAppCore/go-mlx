@@ -323,6 +323,10 @@ func isLayerSliding(layerIdx, pattern int32) bool {
 
 // Forward runs the text model forward pass.
 func (m *GemmaModel) Forward(tokens *Array, caches []Cache) *Array {
+	return m.ForwardMasked(tokens, nil, caches)
+}
+
+func (m *GemmaModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
 	shape := tokens.Shape()
 	B, L := shape[0], shape[1]
 
@@ -330,15 +334,15 @@ func (m *GemmaModel) Forward(tokens *Array, caches []Cache) *Array {
 	h = MulScalar(h, float32(math.Sqrt(float64(m.Cfg.HiddenSize))))
 
 	for i, layer := range m.Layers {
-		h = layer.forward(h, caches[i], B, L, m.Cfg)
+		h = layer.forward(h, caches[i], B, L, mask, m.Cfg)
 	}
 
 	return m.Output.Forward(RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps))
 }
 
-func (l *DecoderLayer) forward(x *Array, c Cache, B, L int32, cfg *TextConfig) *Array {
+func (l *DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *TextConfig) *Array {
 	normed := RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
-	attnOut := l.Attention.forward(normed, c, B, L, l.IsSliding, cfg)
+	attnOut := l.Attention.forward(normed, c, B, L, l.IsSliding, mask, cfg)
 	attnOut = RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
 	h := Add(x, attnOut)
 
@@ -348,7 +352,7 @@ func (l *DecoderLayer) forward(x *Array, c Cache, B, L int32, cfg *TextConfig) *
 	return Add(h, mlpOut)
 }
 
-func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, cfg *TextConfig) *Array {
+func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask *Array, cfg *TextConfig) *Array {
 	q := a.QProj.Forward(x)
 	k := a.KProj.Forward(x)
 	v := a.VProj.Forward(x)
@@ -386,7 +390,12 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, cfg *
 	}
 
 	// Scaled dot-product attention
-	out := ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+	var out *Array
+	if mask != nil {
+		out = ScaledDotProductAttentionWithMask(q, k, v, mask, cfg.Scale)
+	} else {
+		out = ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+	}
 	out = Reshape(Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
 	return a.OProj.Forward(out)
 }

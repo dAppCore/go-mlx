@@ -119,6 +119,51 @@ func (a *metalAdapter) Chat(ctx context.Context, messages []inference.Message, o
 	}
 }
 
+func (a *metalAdapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+	cfg := inference.ApplyGenerateOpts(opts)
+	mcfg := metal.GenerateConfig{
+		Temperature: cfg.Temperature,
+		TopK:        cfg.TopK,
+	}
+	results, err := a.m.Classify(ctx, prompts, mcfg, cfg.ReturnLogits)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]inference.ClassifyResult, len(results))
+	for i, r := range results {
+		out[i] = inference.ClassifyResult{
+			Token:  inference.Token{ID: r.Token.ID, Text: r.Token.Text},
+			Logits: r.Logits,
+		}
+	}
+	return out, nil
+}
+
+func (a *metalAdapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+	cfg := inference.ApplyGenerateOpts(opts)
+	mcfg := metal.GenerateConfig{
+		MaxTokens:     cfg.MaxTokens,
+		Temperature:   cfg.Temperature,
+		TopK:          cfg.TopK,
+		TopP:          cfg.TopP,
+		StopTokens:    cfg.StopTokens,
+		RepeatPenalty: cfg.RepeatPenalty,
+	}
+	results, err := a.m.BatchGenerate(ctx, prompts, mcfg)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]inference.BatchResult, len(results))
+	for i, r := range results {
+		tokens := make([]inference.Token, len(r.Tokens))
+		for j, t := range r.Tokens {
+			tokens[j] = inference.Token{ID: t.ID, Text: t.Text}
+		}
+		out[i] = inference.BatchResult{Tokens: tokens, Err: r.Err}
+	}
+	return out, nil
+}
+
 func (a *metalAdapter) ModelType() string { return a.m.ModelType() }
 func (a *metalAdapter) Err() error        { return a.m.Err() }
 func (a *metalAdapter) Close() error      { return a.m.Close() }

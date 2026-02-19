@@ -443,6 +443,116 @@ func TestLlama_Inference(t *testing.T) {
 	}
 }
 
+// --- Batch Inference tests (Gemma3-1B) ---
+
+// TestClassify_Batch validates batched prefill-only classification.
+func TestClassify_Batch(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	ctx := context.Background()
+	prompts := []string{
+		"The capital of France is",
+		"2 + 2 =",
+		"The colour of the sky is",
+		"Go is a programming",
+	}
+
+	start := time.Now()
+	results, err := m.Classify(ctx, prompts)
+	dur := time.Since(start)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	if len(results) != len(prompts) {
+		t.Fatalf("Classify returned %d results, want %d", len(results), len(prompts))
+	}
+
+	for i, r := range results {
+		if r.Token.ID == 0 {
+			t.Errorf("prompt %d: got pad token (id=0)", i)
+		}
+		t.Logf("prompt %d %q → token %d %q", i, prompts[i], r.Token.ID, r.Token.Text)
+	}
+	t.Logf("Classified %d prompts in %s (%.1f prompts/s)", len(prompts), dur, float64(len(prompts))/dur.Seconds())
+}
+
+// TestClassify_WithLogits validates that logits are returned when requested.
+func TestClassify_WithLogits(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	ctx := context.Background()
+	results, err := m.Classify(ctx, []string{"Hello world"}, inference.WithLogits())
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if len(results[0].Logits) == 0 {
+		t.Fatal("expected non-empty logits with WithLogits()")
+	}
+	t.Logf("Logits length: %d (vocab size)", len(results[0].Logits))
+}
+
+// TestBatchGenerate validates batched autoregressive generation.
+func TestBatchGenerate(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer func() { m.Close(); mlx.ClearCache() }()
+
+	ctx := context.Background()
+	prompts := []string{
+		"The capital of France is",
+		"2 + 2 =",
+	}
+
+	start := time.Now()
+	results, err := m.BatchGenerate(ctx, prompts, inference.WithMaxTokens(16))
+	dur := time.Since(start)
+	if err != nil {
+		t.Fatalf("BatchGenerate: %v", err)
+	}
+
+	if len(results) != len(prompts) {
+		t.Fatalf("BatchGenerate returned %d results, want %d", len(results), len(prompts))
+	}
+
+	for i, r := range results {
+		if r.Err != nil {
+			t.Errorf("prompt %d error: %v", i, r.Err)
+			continue
+		}
+		if len(r.Tokens) == 0 {
+			t.Errorf("prompt %d: no tokens generated", i)
+			continue
+		}
+		var output strings.Builder
+		for _, tok := range r.Tokens {
+			output.WriteString(tok.Text)
+		}
+		t.Logf("prompt %d %q → %d tokens: %s", i, prompts[i], len(r.Tokens), output.String())
+	}
+	t.Logf("Batch generated in %s", dur)
+}
+
 // TestLlama_Chat validates chat template for Llama 3 models.
 func TestLlama_Chat(t *testing.T) {
 	modelPath := llamaModelPath(t)

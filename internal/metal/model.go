@@ -14,6 +14,11 @@ type InternalModel interface {
 	// Forward runs the model forward pass on token IDs with KV caches.
 	Forward(tokens *Array, caches []Cache) *Array
 
+	// ForwardMasked runs the forward pass with an explicit attention mask.
+	// mask shape: [B, 1, L, L] — additive mask (0 = attend, -inf = ignore).
+	// Used for batched inference with padded sequences.
+	ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array
+
 	// NewCache creates per-layer KV caches for generation.
 	NewCache() []Cache
 

@@ -67,7 +67,8 @@ type fakeModel struct {
 	numLayers int
 }
 
-func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array     { return nil }
+func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array                  { return nil }
+func (f *fakeModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array  { return nil }
 func (f *fakeModel) NewCache() []Cache {
 	caches := make([]Cache, f.numLayers)
 	for i := range caches {

@@ -249,22 +249,29 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 // Forward runs the Qwen 3 forward pass.
 // Unlike Gemma, Qwen does NOT scale embeddings by sqrt(hidden_size).
 func (m *Qwen3Model) Forward(tokens *Array, caches []Cache) *Array {
+	return m.ForwardMasked(tokens, nil, caches)
+}
+
+// ForwardMasked runs the forward pass with an explicit attention mask.
+// mask shape: [B, 1, L, L] — additive mask (0 = attend, -inf = ignore).
+// When mask is nil, standard causal attention is used.
+func (m *Qwen3Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
 	shape := tokens.Shape()
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
 
 	for i, layer := range m.Layers {
-		h = layer.forward(h, caches[i], B, L, m.Cfg)
+		h = layer.forward(h, caches[i], B, L, mask, m.Cfg)
 	}
 
 	return m.Output.Forward(m.Norm.Forward(h, m.Cfg.RMSNormEps))
 }
 
-func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, cfg *Qwen3Config) *Array {
+func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
 	// Pre-attention norm → attention → residual add
 	normed := l.InputNorm.Forward(x, cfg.RMSNormEps)
-	attnOut := l.Attention.forward(normed, c, B, L, cfg)
+	attnOut := l.Attention.forward(normed, c, B, L, mask, cfg)
 	h := Add(x, attnOut)
 
 	// Pre-MLP norm → MLP → residual add
@@ -273,7 +280,7 @@ func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, cfg *Qwen3Con
 	return Add(h, mlpOut)
 }
 
-func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, cfg *Qwen3Config) *Array {
+func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
 	q := a.QProj.Forward(x)
 	k := a.KProj.Forward(x)
 	v := a.VProj.Forward(x)
@@ -309,7 +316,12 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, cfg *Qwen3Config
 	}
 
 	// Scaled dot-product attention
-	out := ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+	var out *Array
+	if mask != nil {
+		out = ScaledDotProductAttentionWithMask(q, k, v, mask, cfg.Scale)
+	} else {
+		out = ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+	}
 	out = Reshape(Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
 	return a.OProj.Forward(out)
 }
