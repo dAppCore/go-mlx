@@ -1,27 +1,15 @@
 //go:build darwin && arm64
 
-// Package mlx provides Go bindings for Apple's MLX framework via mlx-c.
-//
-// Build mlx-c before use:
-//
-//	cd pkg/mlx && go generate ./...
-//
-// Build (MLX is auto-enabled on darwin/arm64):
-//
-//	go build -o core .
-package mlx
-
-//go:generate cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
-//go:generate cmake --build build --parallel
-//go:generate cmake --install build
+// Package metal provides Go bindings for Apple's MLX framework via mlx-c.
+package metal
 
 /*
 #cgo CXXFLAGS: -std=c++17
 #cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo CPPFLAGS: -I${SRCDIR}/dist/include
-#cgo LDFLAGS: -L${SRCDIR}/dist/lib -lmlxc -lmlx
+#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
+#cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
-#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/dist/lib
+#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
 
 #include <stdio.h>
 #include <stdlib.h>
