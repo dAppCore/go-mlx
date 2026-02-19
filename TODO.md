@@ -41,7 +41,7 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 - [x] **Integration tests** — 7 tests for public API (backend registration, options, LoadModel paths).
 - [x] **Error handling audit** — ✅ `checkError()` replaced with `lastError() error` (reads + clears C-level error string). Added `Eval(...*Array) error` and `EvalAsync(...*Array) error` as error-returning variants of Materialize. Generate loop propagates errors via `m.lastErr`. `LoadAllSafetensors` returns `(map, error)`. Model loaders (gemma3, qwen3) check `lastError()` after safetensors load. grad.go/lora.go now surface real MLX error messages. 4 new tests in error_test.go.
 - [x] **Memory management — deterministic cleanup** — ✅ `Model.Close()` now walks the full model tree (GemmaModel/Qwen3Model) and explicitly frees all weight arrays via `Free()`. Helpers: `freeLinear`, `freeEmbedding`, `freeRMSNorm`, `freeCaches`, `closeGemma`, `closeQwen3` in close.go. Handles tied output weights (skip double-free), nil safety, idempotent Close(). 8 new tests in close_test.go.
-- [ ] **Documentation** — Public API has godoc but needs examples for common workflows.
+- [x] **Documentation** — ✅ Package docs expanded with examples for all common workflows: Generate, Chat, Classify, BatchGenerate, Metrics, ModelInfo, Discover, memory controls. Both go-mlx and go-inference package docs updated with godoc heading sections.
 
 ## Phase 5: Ecosystem Integration (Virgil wishlist)
 
