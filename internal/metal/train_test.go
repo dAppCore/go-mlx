@@ -276,3 +276,98 @@ func TestLoRA_GradientCheckpointing(t *testing.T) {
 
 	ClearCache()
 }
+
+// TestLoRA_MixedPrecision validates training with BFloat16 LoRA parameters.
+// The base model stays in its native dtype; LoRA A/B are BFloat16.
+// MLX auto-promotes for cross-dtype operations.
+func TestLoRA_MixedPrecision(t *testing.T) {
+	modelPath := gemma3Path(t)
+
+	model, err := loadModel(modelPath)
+	if err != nil {
+		t.Fatalf("loadModel: %v", err)
+	}
+
+	gemma := model.(*GemmaModel)
+	tok := gemma.Tokenizer()
+
+	// Apply LoRA with BFloat16 parameters.
+	cfg := DefaultLoRAConfig()
+	cfg.DType = DTypeBFloat16
+	adapter := gemma.ApplyLoRA(cfg)
+
+	// Verify A/B are actually BFloat16.
+	for name, layer := range adapter.Layers {
+		if layer.A.Dtype() != DTypeBFloat16 {
+			t.Errorf("%s: A dtype = %v, want bfloat16", name, layer.A.Dtype())
+		}
+		if layer.B.Dtype() != DTypeBFloat16 {
+			t.Errorf("%s: B dtype = %v, want bfloat16", name, layer.B.Dtype())
+		}
+		break // just check first layer
+	}
+
+	t.Logf("LoRA BFloat16: %d trainable params (half memory vs Float32)",
+		adapter.TotalParams())
+
+	inputIDs := tok.Encode("The capital of France is Paris")
+	seqLen := len(inputIDs) - 1
+	inputTokens := FromValues(inputIDs[:seqLen], 1, seqLen)
+	targetTokens := FromValues(inputIDs[1:], 1, seqLen)
+	Materialize(inputTokens, targetTokens)
+
+	params := adapter.AllTrainableParams()
+	argnums := make([]int, len(params))
+	for i := range argnums {
+		argnums[i] = i
+	}
+
+	opt := NewAdamW(1e-4)
+	var initialLoss, finalLoss float64
+	const numSteps = 5
+
+	for step := 0; step < numSteps; step++ {
+		caches := gemma.NewCache()
+
+		lossFn := func(inputs []*Array) []*Array {
+			adapter.SetAllParams(inputs)
+			logits := gemma.Forward(inputTokens, caches)
+			loss := CrossEntropyLoss(logits, targetTokens)
+			return []*Array{loss}
+		}
+
+		grad := ValueAndGrad(lossFn, argnums...)
+		values, grads, err := grad.Apply(params...)
+		grad.Free()
+		if err != nil {
+			t.Fatalf("step %d: ValueAndGrad failed: %v", step, err)
+		}
+
+		Materialize(append(values, grads...)...)
+
+		loss := values[0].Float()
+		t.Logf("step %d: loss = %.4f (bf16)", step, loss)
+
+		if step == 0 {
+			initialLoss = loss
+			if math.IsNaN(loss) || math.IsInf(loss, 0) {
+				t.Fatalf("initial loss is %f — bf16 may have caused NaN", loss)
+			}
+		}
+		finalLoss = loss
+
+		updated := opt.Step(params, grads)
+		for i := range updated {
+			Materialize(updated[i])
+		}
+		params = updated
+		adapter.SetAllParams(params)
+	}
+
+	t.Logf("bf16 loss: %.4f → %.4f", initialLoss, finalLoss)
+	if finalLoss >= initialLoss {
+		t.Errorf("loss did not decrease with bf16: %.4f → %.4f", initialLoss, finalLoss)
+	}
+
+	ClearCache()
+}

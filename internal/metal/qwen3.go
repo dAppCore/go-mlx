@@ -360,7 +360,7 @@ func (m *Qwen3Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 				proj = layer.Attention.OProj
 			}
 			if proj != nil {
-				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha)
+				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
 				proj.LoRA = lora
 				adapter.Layers[prefix+"."+target] = lora
 			}

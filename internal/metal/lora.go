@@ -36,7 +36,12 @@ type LoRALinear struct {
 // NewLoRALinear wraps an existing Linear layer with LoRA adapters.
 // rank: decomposition rank (typically 4, 8, or 16)
 // alpha: scaling factor (typically 2*rank)
-func NewLoRALinear(base *Linear, rank int, alpha float32) *LoRALinear {
+// dtype: optional training dtype (pass 0 or DTypeFloat32 for default)
+func NewLoRALinear(base *Linear, rank int, alpha float32, dtype ...DType) *LoRALinear {
+	dt := DTypeFloat32
+	if len(dtype) > 0 && dtype[0] != 0 {
+		dt = dtype[0]
+	}
 	// Determine dimensions from the base weight.
 	// Weight shape is [out_features, in_features] for standard linear,
 	// or quantized shape which we handle via the base layer.
@@ -56,10 +61,10 @@ func NewLoRALinear(base *Linear, rank int, alpha float32) *LoRALinear {
 
 	// A: Kaiming normal initialisation — N(0, 1/sqrt(in_features))
 	stddev := float32(1.0 / math.Sqrt(float64(inFeatures)))
-	a := RandomNormal(0, stddev, []int32{int32(rank), inFeatures}, DTypeFloat32)
+	a := RandomNormal(0, stddev, []int32{int32(rank), inFeatures}, dt)
 
 	// B: zero initialisation — LoRA starts as identity (no change to base)
-	b := Zeros([]int32{outFeatures, int32(rank)}, DTypeFloat32)
+	b := Zeros([]int32{outFeatures, int32(rank)}, dt)
 
 	Materialize(a, b)
 
@@ -112,6 +117,7 @@ type LoRAConfig struct {
 	Rank       int      // Decomposition rank (default 8)
 	Alpha      float32  // Scaling factor (default 16)
 	TargetKeys []string // Weight name suffixes to target (default: q_proj, v_proj)
+	DType      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
@@ -120,6 +126,7 @@ func DefaultLoRAConfig() LoRAConfig {
 		Rank:       8,
 		Alpha:      16,
 		TargetKeys: []string{"q_proj", "v_proj"},
+		DType:      DTypeFloat32,
 	}
 }
 
