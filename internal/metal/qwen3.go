@@ -120,6 +120,9 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("qwen3: no .safetensors files found in %s", modelPath)
+	}
 	for _, path := range matches {
 		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr

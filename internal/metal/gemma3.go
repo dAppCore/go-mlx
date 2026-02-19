@@ -178,6 +178,9 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("gemma3: no .safetensors files found in %s", modelPath)
+	}
 	for _, path := range matches {
 		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr
