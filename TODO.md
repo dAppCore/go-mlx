@@ -29,6 +29,19 @@ Dispatched from core/go orchestration. Pick up tasks in order.
 - [ ] **Memory management audit** — Array finalizers use `runtime.SetFinalizer`. Verify no leaks under sustained inference (1000+ tokens). Check C-side deallocation.
 - [ ] **Documentation** — Public API has minimal godoc. Add examples for common workflows: load model, generate text, fine-tune with LoRA.
 
+## Phase 5: Ecosystem Integration (Virgil wishlist)
+
+- [ ] **Streaming token iterator** — `model.Generate()` should return an `iter.Seq[Token]` (or channel) for token-by-token streaming. LEM Lab chat UI needs this for real-time output. Currently the generate path is batch-only.
+- [ ] **Batch inference API** — go-i18n Phase 2a wants ~5K sentences/sec through Gemma3-1B. Single-request inference won't hit that. Add a batch API that processes N prompts concurrently on the GPU. Even batching 8-16 at a time would help throughput significantly.
+- [ ] **Inference metrics** — Expose tokens/sec, peak memory, GPU utilisation as structured data. LEM Lab dashboard and go-ai scoring engine both want this. A simple `Stats` struct returned alongside generation results.
+- [ ] **Model quantisation awareness** — MLX supports 4-bit and 8-bit quantised models. The `model.LoadModel()` path should detect and handle quantised safetensors. This matters for running 27B models on 32GB Macs.
+- [ ] **Embed-friendly model loading** — For the Core native app (FrankenPHP + Wails), models are on disk but the path discovery needs to be clean. Add `model.Discover(baseDir)` that scans for available models and returns metadata (name, params, quant level, size).
+
+## Phase 6: Go 1.26 Modernisation
+
+- [ ] **Evaluate Go 1.26 features** — Check what's new in 1.26 that benefits this package. Candidates: `iter` package improvements, range-over-func patterns for array iteration, any new `unsafe` changes that affect CGO. Document findings in FINDINGS.md with benchmarks showing whether it's worth the version bump.
+- [ ] **Range-over-func for Array** — If 1.26 stabilises range-over-func, `Array.Iter()` returning `iter.Seq[float32]` (or typed variant) would be cleaner than the current index-based access. Measure overhead vs direct C pointer access.
+
 ---
 
 ## Upstream Dependencies
