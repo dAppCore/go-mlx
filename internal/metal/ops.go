@@ -14,7 +14,7 @@ import "unsafe"
 
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
-	out := New("ADD", a, b)
+	out := newArray("ADD", a, b)
 	C.mlx_add(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -27,7 +27,7 @@ func AddScalar(a *Array, s float32) *Array {
 
 // Mul returns element-wise a * b.
 func Mul(a, b *Array) *Array {
-	out := New("MUL", a, b)
+	out := newArray("MUL", a, b)
 	C.mlx_multiply(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -40,21 +40,21 @@ func MulScalar(a *Array, s float32) *Array {
 
 // Divide returns element-wise a / b.
 func Divide(a, b *Array) *Array {
-	out := New("DIV", a, b)
+	out := newArray("DIV", a, b)
 	C.mlx_divide(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Subtract returns element-wise a - b.
 func Subtract(a, b *Array) *Array {
-	out := New("SUB", a, b)
+	out := newArray("SUB", a, b)
 	C.mlx_subtract(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Negative returns element-wise -a.
 func Negative(a *Array) *Array {
-	out := New("NEG", a)
+	out := newArray("NEG", a)
 	C.mlx_negative(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -63,14 +63,14 @@ func Negative(a *Array) *Array {
 
 // Exp returns element-wise exp(a).
 func Exp(a *Array) *Array {
-	out := New("EXP", a)
+	out := newArray("EXP", a)
 	C.mlx_exp(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Sigmoid returns element-wise 1/(1+exp(-a)).
 func Sigmoid(a *Array) *Array {
-	out := New("SIGMOID", a)
+	out := newArray("SIGMOID", a)
 	C.mlx_sigmoid(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -82,56 +82,56 @@ func SiLU(a *Array) *Array {
 
 // Tanh returns element-wise tanh(a).
 func Tanh(a *Array) *Array {
-	out := New("TANH", a)
+	out := newArray("TANH", a)
 	C.mlx_tanh(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Sqrt returns element-wise sqrt(a).
 func Sqrt(a *Array) *Array {
-	out := New("SQRT", a)
+	out := newArray("SQRT", a)
 	C.mlx_sqrt(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Rsqrt returns element-wise 1/sqrt(a).
 func Rsqrt(a *Array) *Array {
-	out := New("RSQRT", a)
+	out := newArray("RSQRT", a)
 	C.mlx_rsqrt(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Reciprocal returns element-wise 1/a.
 func Reciprocal(a *Array) *Array {
-	out := New("RECIPROCAL", a)
+	out := newArray("RECIPROCAL", a)
 	C.mlx_reciprocal(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Square returns element-wise a^2.
 func Square(a *Array) *Array {
-	out := New("SQUARE", a)
+	out := newArray("SQUARE", a)
 	C.mlx_square(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Power returns element-wise a^b.
 func Power(a, b *Array) *Array {
-	out := New("POWER", a, b)
+	out := newArray("POWER", a, b)
 	C.mlx_power(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Maximum returns element-wise max(a, b).
 func Maximum(a, b *Array) *Array {
-	out := New("MAX", a, b)
+	out := newArray("MAX", a, b)
 	C.mlx_maximum(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Minimum returns element-wise min(a, b).
 func Minimum(a, b *Array) *Array {
-	out := New("MIN", a, b)
+	out := newArray("MIN", a, b)
 	C.mlx_minimum(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
@@ -140,14 +140,14 @@ func Minimum(a, b *Array) *Array {
 
 // Matmul returns the matrix product of a and b.
 func Matmul(a, b *Array) *Array {
-	out := New("MATMUL", a, b)
+	out := newArray("MATMUL", a, b)
 	C.mlx_matmul(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
-	out := New("QMATMUL", x, w, scales, biases)
+	out := newArray("QMATMUL", x, w, scales, biases)
 	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
 	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
 	mode := C.CString("affine")
@@ -164,7 +164,7 @@ func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bit
 
 // Softmax returns softmax along the last axis.
 func Softmax(a *Array) *Array {
-	out := New("SOFTMAX", a)
+	out := newArray("SOFTMAX", a)
 	axis := []C.int{C.int(-1)}
 	C.mlx_softmax_axes(&out.ctx, a.ctx, &axis[0], C.size_t(1), C._Bool(false), DefaultStream().ctx)
 	return out
@@ -172,21 +172,21 @@ func Softmax(a *Array) *Array {
 
 // Argmax returns the index of the maximum value along an axis.
 func Argmax(a *Array, axis int, keepDims bool) *Array {
-	out := New("ARGMAX", a)
+	out := newArray("ARGMAX", a)
 	C.mlx_argmax_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
 
 // TopK returns the top k values along the last axis.
 func TopK(a *Array, k int) *Array {
-	out := New("TOPK", a)
+	out := newArray("TOPK", a)
 	C.mlx_topk_axis(&out.ctx, a.ctx, C.int(k), C.int(-1), DefaultStream().ctx)
 	return out
 }
 
 // Sum reduces by summation along the given axis.
 func Sum(a *Array, axis int, keepDims bool) *Array {
-	out := New("SUM", a)
+	out := newArray("SUM", a)
 	axes := []C.int{C.int(axis)}
 	C.mlx_sum_axes(&out.ctx, a.ctx, &axes[0], C.size_t(1), C._Bool(keepDims), DefaultStream().ctx)
 	return out
@@ -194,7 +194,7 @@ func Sum(a *Array, axis int, keepDims bool) *Array {
 
 // Mean reduces by averaging along the given axis.
 func Mean(a *Array, axis int, keepDims bool) *Array {
-	out := New("MEAN", a)
+	out := newArray("MEAN", a)
 	axes := []C.int{C.int(axis)}
 	C.mlx_mean_axes(&out.ctx, a.ctx, &axes[0], C.size_t(1), C._Bool(keepDims), DefaultStream().ctx)
 	return out
@@ -204,7 +204,7 @@ func Mean(a *Array, axis int, keepDims bool) *Array {
 
 // Reshape changes the shape of an array.
 func Reshape(a *Array, shape ...int32) *Array {
-	out := New("RESHAPE", a)
+	out := newArray("RESHAPE", a)
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)
@@ -215,7 +215,7 @@ func Reshape(a *Array, shape ...int32) *Array {
 
 // Transpose permutes dimensions. If no axes given, reverses all dims.
 func Transpose(a *Array, axes ...int) *Array {
-	out := New("TRANSPOSE", a)
+	out := newArray("TRANSPOSE", a)
 	if len(axes) == 0 {
 		C.mlx_transpose(&out.ctx, a.ctx, DefaultStream().ctx)
 	} else {
@@ -230,14 +230,14 @@ func Transpose(a *Array, axes ...int) *Array {
 
 // ExpandDims inserts a new axis at the given position.
 func ExpandDims(a *Array, axis int) *Array {
-	out := New("EXPAND_DIMS", a)
+	out := newArray("EXPAND_DIMS", a)
 	C.mlx_expand_dims(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Squeeze removes dimensions of size 1.
 func Squeeze(a *Array, axes ...int) *Array {
-	out := New("SQUEEZE", a)
+	out := newArray("SQUEEZE", a)
 	cAxes := make([]C.int, len(axes))
 	for i, ax := range axes {
 		cAxes[i] = C.int(ax)
@@ -257,14 +257,14 @@ func Concatenate(arrays []*Array, axis int) *Array {
 		inputs[i] = a
 	}
 
-	out := New("CONCAT", inputs...)
+	out := newArray("CONCAT", inputs...)
 	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // BroadcastTo broadcasts an array to the given shape.
 func BroadcastTo(a *Array, shape []int32) *Array {
-	out := New("BROADCAST", a)
+	out := newArray("BROADCAST", a)
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)
@@ -275,14 +275,14 @@ func BroadcastTo(a *Array, shape []int32) *Array {
 
 // AsType casts an array to a different dtype.
 func AsType(a *Array, dtype DType) *Array {
-	out := New("ASTYPE", a)
+	out := newArray("ASTYPE", a)
 	C.mlx_astype(&out.ctx, a.ctx, C.mlx_dtype(dtype), DefaultStream().ctx)
 	return out
 }
 
 // AsStrided creates a view with custom strides.
 func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
-	out := New("AS_STRIDED", a)
+	out := newArray("AS_STRIDED", a)
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)
@@ -297,28 +297,28 @@ func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
 
 // Take gathers elements from a along axis using indices.
 func Take(a, indices *Array, axis int) *Array {
-	out := New("TAKE", a, indices)
+	out := newArray("TAKE", a, indices)
 	C.mlx_take_axis(&out.ctx, a.ctx, indices.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Where selects elements from a or b based on condition.
 func Where(condition, a, b *Array) *Array {
-	out := New("WHERE", condition, a, b)
+	out := newArray("WHERE", condition, a, b)
 	C.mlx_where(&out.ctx, condition.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // Argpartition partially sorts and returns indices for top-k selection.
 func Argpartition(a *Array, kth, axis int) *Array {
-	out := New("ARGPARTITION", a)
+	out := newArray("ARGPARTITION", a)
 	C.mlx_argpartition_axis(&out.ctx, a.ctx, C.int(kth), C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Dequantize restores a quantized array to full precision.
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
-	out := New("DEQUANTIZE", w, scales, biases)
+	out := newArray("DEQUANTIZE", w, scales, biases)
 	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
 	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
 	mode := C.CString("affine")
@@ -330,7 +330,7 @@ func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
 
 // PutAlongAxis places values into array at indices along axis.
 func PutAlongAxis(a, indices, values *Array, axis int) *Array {
-	out := New("PUT_ALONG_AXIS", a, indices, values)
+	out := newArray("PUT_ALONG_AXIS", a, indices, values)
 	// Use scatter approach: src[indices] = values
 	C.mlx_put_along_axis(&out.ctx, a.ctx, indices.ctx, values.ctx, C.int(axis), DefaultStream().ctx)
 	return out
@@ -339,7 +339,7 @@ func PutAlongAxis(a, indices, values *Array, axis int) *Array {
 // TakeAlongAxis gathers elements from a along axis using indices.
 // Unlike Take, this uses the same number of dimensions for indices and input.
 func TakeAlongAxis(a, indices *Array, axis int) *Array {
-	out := New("TAKE_ALONG_AXIS", a, indices)
+	out := newArray("TAKE_ALONG_AXIS", a, indices)
 	C.mlx_take_along_axis(&out.ctx, a.ctx, indices.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -347,7 +347,7 @@ func TakeAlongAxis(a, indices *Array, axis int) *Array {
 // LogSumExp computes log(sum(exp(a))) along the given axis.
 // Numerically stable reduction for cross-entropy loss.
 func LogSumExp(a *Array, axis int, keepDims bool) *Array {
-	out := New("LOGSUMEXP", a)
+	out := newArray("LOGSUMEXP", a)
 	C.mlx_logsumexp_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
@@ -355,35 +355,35 @@ func LogSumExp(a *Array, axis int, keepDims bool) *Array {
 // CumSum returns the cumulative sum along the given axis.
 // reverse=false for forward, inclusive=true to include the current element.
 func CumSum(a *Array, axis int, reverse, inclusive bool) *Array {
-	out := New("CUMSUM", a)
+	out := newArray("CUMSUM", a)
 	C.mlx_cumsum(&out.ctx, a.ctx, C.int(axis), C._Bool(reverse), C._Bool(inclusive), DefaultStream().ctx)
 	return out
 }
 
 // Sort returns the array sorted along the given axis.
 func Sort(a *Array, axis int) *Array {
-	out := New("SORT", a)
+	out := newArray("SORT", a)
 	C.mlx_sort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Argsort returns the indices that would sort the array along the given axis.
 func Argsort(a *Array, axis int) *Array {
-	out := New("ARGSORT", a)
+	out := newArray("ARGSORT", a)
 	C.mlx_argsort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 
 // Greater returns element-wise a > b as a bool array.
 func Greater(a, b *Array) *Array {
-	out := New("GREATER", a, b)
+	out := newArray("GREATER", a, b)
 	C.mlx_greater(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
 // MaxAxis returns the maximum value along the given axis.
 func MaxAxis(a *Array, axis int, keepDims bool) *Array {
-	out := New("MAX_AXIS", a)
+	out := newArray("MAX_AXIS", a)
 	C.mlx_max_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }

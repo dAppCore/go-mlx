@@ -10,7 +10,7 @@ import "C"
 // RandomCategorical samples from a categorical distribution defined by logprobs.
 // Returns indices sampled according to the log-probability distribution along the last axis.
 func RandomCategorical(logprobs *Array) *Array {
-	out := New("RANDOM_CATEGORICAL", logprobs)
+	out := newArray("RANDOM_CATEGORICAL", logprobs)
 	key := C.mlx_array_new()
 	defer C.mlx_array_free(key)
 	C.mlx_random_categorical(
@@ -25,7 +25,7 @@ func RandomCategorical(logprobs *Array) *Array {
 
 // RandomUniform generates uniform random values in [low, high).
 func RandomUniform(low, high float32, shape []int32, dtype DType) *Array {
-	out := New("RANDOM_UNIFORM")
+	out := newArray("RANDOM_UNIFORM")
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)

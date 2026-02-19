@@ -60,7 +60,7 @@ go-mlx/
 │       ├── lora.go         LoRA adapters
 │       ├── optim.go        AdamW
 │       ├── generate.go     NEW: autoregressive generation loop
-│       └── backend.go      Implements mlx.TextModel, exports New()
+│       └── backend.go      Implements mlx.TextModel, exports newArray()
 │
 ├── mlxlm/                  Future: Python subprocess backend
 │   └── backend.go          Implements mlx.Backend via core/go/pkg/process
@@ -174,7 +174,7 @@ func Get(name string) (Backend, bool)
 func Default() (Backend, error)
 
 // register_metal.go (//go:build darwin && arm64)
-func init() { Register(metal.New()) }
+func init() { Register(metal.newArray()) }
 func MetalAvailable() bool { return true }
 ```
 
@@ -294,9 +294,9 @@ Thin subprocess wrapper using `core/go/pkg/process`. Implements `mlx.Backend`. R
 ## Testing
 
 - All 148 existing tests move into `internal/metal/` and must pass
-- New `generate_test.go` — autoregressive loop with Gemma3-1B from `/Volumes/Data/lem/safetensors/`
-- New `backend_test.go` — end-to-end LoadModel + Generate
-- New `memory_test.go` — 1000-token generation, assert GetPeakMemory() bounded
+- newArray `generate_test.go` — autoregressive loop with Gemma3-1B from `/Volumes/Data/lem/safetensors/`
+- newArray `backend_test.go` — end-to-end LoadModel + Generate
+- newArray `memory_test.go` — 1000-token generation, assert GetPeakMemory() bounded
 - Root `mlx_test.go` — integration via public mlx.LoadModel() API
 
 ## Communication

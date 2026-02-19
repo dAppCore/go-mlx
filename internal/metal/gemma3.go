@@ -350,7 +350,9 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, cfg *
 	k := a.KProj.Forward(x)
 	v := a.VProj.Forward(x)
 
-	// Reshape to [B, num_heads, L, head_dim]
+	// Virtual transpose [B,L,H*D] → [B,H,L,D] via stride manipulation.
+	// Strides: batch = L*H*D (full sequence), head = D (adjacent heads in memory),
+	// seq = H*D (jump one full row of heads), elem = 1 (contiguous within head).
 	q = AsStrided(q, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumAttentionHeads * cfg.HeadDim), 1}, 0)
 	k = AsStrided(k, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},

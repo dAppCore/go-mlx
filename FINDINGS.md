@@ -281,7 +281,7 @@ m, _ := inference.LoadModel(path)
 for tok := range m.Generate(ctx, prompt, inference.WithMaxTokens(128)) { ... }
 ```
 
-### New go-inference features available
+### newArray go-inference features available
 
 - `inference.List()` — returns all registered backend names
 - `inference.Backend.Available()` — hardware availability check
@@ -321,7 +321,7 @@ Was a stub that passed logits through unchanged. Now fully implemented:
 
 Was a stub. Now masks tokens whose probability is below `min_p * max_prob`. Uses MaxAxis to find the peak probability per position.
 
-### New Bindings
+### newArray Bindings
 
 | Function | Header | Purpose |
 |----------|--------|---------|
@@ -424,7 +424,7 @@ Was a stub. Now masks tokens whose probability is below `min_p * max_prob`. Uses
 
 The old `checkError()` function logged errors via `slog.Error` and swallowed them. The mlx-c error handler (`mlx_go_error_handler`) stored the error string in a C static variable, but no Go code read it back as an error value.
 
-### New error model
+### newArray error model
 
 1. **`lastError() error`** — reads and clears the C-level error string. Returns `fmt.Errorf("mlx: %s", msg)` or nil. All callers now get real MLX error messages instead of generic "failed" strings.
 
@@ -453,4 +453,4 @@ The old `checkError()` function logged errors via `slog.Error` and swallowed the
 ### Test results
 
 - 180 tests passing (176 existing + 4 new error handling tests)
-- New tests: Eval success, Eval nil safety, lastError no-error, LoadAllSafetensors missing file
+- newArray tests: Eval success, Eval nil safety, lastError no-error, LoadAllSafetensors missing file

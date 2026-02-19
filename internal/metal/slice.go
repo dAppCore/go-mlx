@@ -10,7 +10,7 @@ import "C"
 // Slice extracts a sub-array using start and end indices for each dimension.
 // starts and ends must have the same length as the array's dimensions.
 func Slice(a *Array, starts, ends []int32) *Array {
-	out := New("SLICE", a)
+	out := newArray("SLICE", a)
 	cStarts := make([]C.int, len(starts))
 	cEnds := make([]C.int, len(ends))
 	for i := range starts {
@@ -47,7 +47,7 @@ func SliceAxis(a *Array, axis int, start, end int32) *Array {
 // SliceUpdateInplace updates a slice of the array in-place.
 // This is critical for KV cache updates.
 func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
-	out := New("SLICE_UPDATE", a, update)
+	out := newArray("SLICE_UPDATE", a, update)
 	cStarts := make([]C.int, len(starts))
 	cEnds := make([]C.int, len(ends))
 	for i := range starts {

@@ -40,7 +40,7 @@ func goGradFunc(outputs *C.mlx_vector_array, inputs C.mlx_vector_array, payload 
 	nInputs := int(C.mlx_vector_array_size(inputs))
 	goInputs := make([]*Array, nInputs)
 	for i := 0; i < nInputs; i++ {
-		a := New("GRAD_INPUT")
+		a := newArray("GRAD_INPUT")
 		C.mlx_vector_array_get(&a.ctx, inputs, C.size_t(i))
 		goInputs[i] = a
 	}
@@ -325,7 +325,7 @@ func vectorToArrays(vec C.mlx_vector_array) []*Array {
 	n := int(C.mlx_vector_array_size(vec))
 	out := make([]*Array, n)
 	for i := 0; i < n; i++ {
-		a := New("VEC_OUT")
+		a := newArray("VEC_OUT")
 		C.mlx_vector_array_get(&a.ctx, vec, C.size_t(i))
 		out[i] = a
 	}
@@ -334,7 +334,7 @@ func vectorToArrays(vec C.mlx_vector_array) []*Array {
 
 // Log returns element-wise natural logarithm.
 func Log(a *Array) *Array {
-	out := New("LOG", a)
+	out := newArray("LOG", a)
 	C.mlx_log(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
@@ -353,7 +353,7 @@ func MeanAll(a *Array) *Array {
 
 // OnesLike creates an array of ones with the same shape and type as the input.
 func OnesLike(a *Array) *Array {
-	out := New("ONES_LIKE", a)
+	out := newArray("ONES_LIKE", a)
 	C.mlx_ones_like(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }

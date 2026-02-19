@@ -75,7 +75,9 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	var wrapper struct {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
-	json.Unmarshal(data, &wrapper)
+	if err := json.Unmarshal(data, &wrapper); err != nil {
+		return nil, fmt.Errorf("qwen3: parse quantization: %w", err)
+	}
 	cfg.Quantization = wrapper.Quantization
 
 	// Compute scale

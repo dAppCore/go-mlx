@@ -109,8 +109,8 @@ func (l *LoRALinear) ParamCount() int {
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank       int     // Decomposition rank (default 8)
-	Alpha      float32 // Scaling factor (default 16)
+	Rank       int      // Decomposition rank (default 8)
+	Alpha      float32  // Scaling factor (default 16)
 	TargetKeys []string // Weight name suffixes to target (default: q_proj, v_proj)
 }
 
@@ -187,7 +187,7 @@ func (a *LoRAAdapter) Save(path string) error {
 // RandomNormal generates normal (Gaussian) random values with given mean and stddev.
 func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	Init()
-	out := New("RANDOM_NORMAL")
+	out := newArray("RANDOM_NORMAL")
 	cShape := make([]C.int, len(shape))
 	for i, s := range shape {
 		cShape[i] = C.int(s)

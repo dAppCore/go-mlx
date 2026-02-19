@@ -26,10 +26,10 @@ type Array struct {
 	name string // debug label
 }
 
-// New creates a named Array and registers a GC finalizer.
+// newArray creates a named Array and registers a GC finalizer.
 // The inputs parameter is accepted for API compatibility but not stored —
 // MLX-C tracks inter-array references via its own refcounting.
-func New(name string, inputs ...*Array) *Array {
+func newArray(name string, inputs ...*Array) *Array {
 	t := &Array{name: name}
 	runtime.SetFinalizer(t, finalizeArray)
 	return t
@@ -50,7 +50,7 @@ type scalarTypes interface {
 // FromValue creates a scalar Array from a Go value.
 func FromValue[T scalarTypes](t T) *Array {
 	Init()
-	tt := New("")
+	tt := newArray("")
 	switch v := any(t).(type) {
 	case bool:
 		tt.ctx = C.mlx_array_new_bool(C.bool(v))
@@ -122,7 +122,7 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 		panic(err)
 	}
 
-	tt := New("")
+	tt := newArray("")
 	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&bts[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
 	return tt
 }
@@ -134,7 +134,7 @@ func Zeros(shape []int32, dtype DType) *Array {
 	for i, s := range shape {
 		cShape[i] = C.int(s)
 	}
-	tt := New("ZEROS")
+	tt := newArray("ZEROS")
 	C.mlx_zeros(&tt.ctx, unsafe.SliceData(cShape), C.size_t(len(cShape)), C.mlx_dtype(dtype), DefaultStream().ctx)
 	return tt
 }
@@ -146,7 +146,7 @@ func (t *Array) Set(other *Array) {
 
 // Clone creates a new Go wrapper sharing the same C handle (increments C refcount).
 func (t *Array) Clone() *Array {
-	tt := New(t.name)
+	tt := newArray(t.name)
 	C.mlx_array_set(&tt.ctx, t.ctx)
 	return tt
 }
@@ -231,7 +231,7 @@ func (t Array) IsRowContiguous() bool {
 // Contiguous returns a row-major contiguous copy of the array.
 // If the array is already row-contiguous, this is a no-op.
 func Contiguous(a *Array) *Array {
-	out := New("CONTIGUOUS", a)
+	out := newArray("CONTIGUOUS", a)
 	C.mlx_contiguous(&out.ctx, a.ctx, C._Bool(false), DefaultStream().ctx)
 	return out
 }

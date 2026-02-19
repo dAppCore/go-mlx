@@ -312,7 +312,7 @@ Copy core CGO bridge from `mlx.go` to `internal/metal/metal.go`. Change:
 
 Copy `array.go` to `internal/metal/array.go`. Change:
 - `package mlx` → `package metal`
-- All types (`Array`, `New`, `FromValue`, `FromValues`, `Zeros`, `Free`) stay exported within the internal package
+- All types (`Array`, `newArray`, `FromValue`, `FromValues`, `Zeros`, `Free`) stay exported within the internal package
 
 **Step 5: Move stream.go → internal/metal/stream.go**
 
@@ -456,7 +456,7 @@ Check for conflicts when flattening:
 - `tokenizer.Load` → rename to `loadTokenizer`
 - `tokenizer.Tokenizer` struct → stays `Tokenizer`
 - `sample.Sampler` interface → stays `Sampler`
-- `sample.New` → rename to `newSampler`
+- `sample.newArray` → rename to `newSampler`
 - `cache.Cache` interface → stays `Cache`
 
 **Step 3: Delete old sub-package directories**

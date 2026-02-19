@@ -120,17 +120,6 @@ func MaterializeAsync(outputs ...*Array) {
 	}
 }
 
-// Collect gathers all valid arrays from a variadic list for batch Materialize.
-func Collect(arrays ...*Array) []*Array {
-	var out []*Array
-	for _, a := range arrays {
-		if a != nil && a.Valid() {
-			out = append(out, a)
-		}
-	}
-	return out
-}
-
 // MetalAvailable reports whether Metal GPU is available.
 func MetalAvailable() bool {
 	Init()

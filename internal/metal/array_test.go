@@ -452,15 +452,3 @@ func TestArray_Float_DTypeFloat64(t *testing.T) {
 	}
 }
 
-// --- Collect ---
-
-func TestCollect_FiltersNilAndInvalid(t *testing.T) {
-	a := FromValue(float32(1.0))
-	b := FromValue(float32(2.0))
-	Materialize(a, b)
-
-	result := Collect(a, nil, b)
-	if len(result) != 2 {
-		t.Errorf("Collect returned %d arrays, want 2", len(result))
-	}
-}

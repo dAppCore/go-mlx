@@ -42,5 +42,5 @@ Tasks for the CLion Claude session. Written by GoLand Claude or Virgil.
 
 1. GoLand Claude or Virgil writes tasks here
 2. Pick up in order, mark `[x]` when done
-3. New findings → `cpp/FINDINGS.md`
+3. newArray findings → `cpp/FINDINGS.md`
 4. If Go changes needed → note in FINDINGS.md for GoLand Claude

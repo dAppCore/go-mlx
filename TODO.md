@@ -87,7 +87,7 @@ Full codebase review after Phase 4 completion + go-inference integration. Groupe
 
 - [x] **`-mmacosx-version-min=26.0` is wrong** — ✅ Changed to `13.3` (MLX's own minimum). No longer locks out macOS 14/15 users.
 
-- [x] **`LoadOption` is ignored in `metalBackend.LoadModel()`** — ✅ Now calls `inference.ApplyLoadOpts()`. `ContextLen` passed through to `metal.LoadConfig` → stored on `Model` → replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` in generate loop. `GPULayers=0` logs a warning (Metal always uses full GPU offload). New test: `TestNewCaches_ContextLen`.
+- [x] **`LoadOption` is ignored in `metalBackend.LoadModel()`** — ✅ Now calls `inference.ApplyLoadOpts()`. `ContextLen` passed through to `metal.LoadConfig` → stored on `Model` → replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` in generate loop. `GPULayers=0` logs a warning (Metal always uses full GPU offload). newArray test: `TestNewCaches_ContextLen`.
 
 ### Important — Should Fix
 
@@ -103,13 +103,13 @@ Full codebase review after Phase 4 completion + go-inference integration. Groupe
 
 ### Minor — Nice to Have
 
-- [ ] **Rename `New()` → `newArray()`** — `array.go:32`: `New("INPUT")` is exported but only used internally as a pre-allocation pattern before C fills in `ctx`. Since this is `internal/metal`, exporting is harmless, but `newArray` better signals intent.
+- [x] **Rename `New()` → `newArray()`** — ✅ Renamed via IDE refactoring (112 usages updated). Unexported, signals internal-only intent.
 
-- [ ] **`Collect()` is unused** — `metal.go:125-133` defines `Collect()` to gather valid arrays for batch Materialize, but nothing in the codebase calls it. Dead code.
+- [x] **`Collect()` is unused** — ✅ Removed function and its test. Dead code eliminated.
 
-- [ ] **`qwen3.go` / `gemma3.go` — second `json.Unmarshal` error discarded** — Both model configs parse quantization with a second unmarshal whose error is silently dropped. Probably fine (same data already parsed successfully), but inconsistent with the first unmarshal which returns errors.
+- [x] **`qwen3.go` — second `json.Unmarshal` error discarded** — ✅ Now checks and returns the error. gemma3.go already handled it correctly.
 
-- [ ] **Document `AsStrided` stride formula** — `gemma3.go:354-359` uses stride manipulation for `[B,L,H*D]` → `[B,H,L,D]` virtual transpose. The formula is correct but non-obvious. A one-line comment explaining the stride derivation prevents future confusion.
+- [x] **Document `AsStrided` stride formula** — ✅ Added comment explaining the stride derivation for the `[B,L,H*D]` → `[B,H,L,D]` virtual transpose.
 
 ### Questions for You to Consider
 
@@ -124,4 +124,4 @@ Full codebase review after Phase 4 completion + go-inference integration. Groupe
 1. Virgil in core/go writes tasks here after research
 2. This repo's session picks up tasks in phase order
 3. Mark `[x]` when done, note commit hash
-4. New discoveries → add tasks, flag in FINDINGS.md
+4. newArray discoveries → add tasks, flag in FINDINGS.md
