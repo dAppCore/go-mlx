@@ -1,6 +1,6 @@
 //go:build darwin && arm64
 
-package mlx
+package metal
 
 // Linear is a fully-connected layer: y = x @ W.T + bias.
 // For quantized models, set Scales/Biases/GroupSize/Bits to use QuantizedMatmul.

@@ -1,6 +1,6 @@
 //go:build darwin && arm64
 
-package mlx
+package metal
 
 import "math"
 
