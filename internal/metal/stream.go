@@ -77,3 +77,41 @@ func GetPeakMemory() uint64 {
 func ClearCache() {
 	C.mlx_clear_cache()
 }
+
+// GetCacheMemory returns the current Metal cache memory in bytes.
+func GetCacheMemory() uint64 {
+	var mem C.size_t
+	C.mlx_get_cache_memory(&mem)
+	return uint64(mem)
+}
+
+// ResetPeakMemory resets the peak memory high-water mark.
+func ResetPeakMemory() {
+	C.mlx_reset_peak_memory()
+}
+
+// SetWiredLimit sets the Metal wired memory limit. Returns the previous limit.
+func SetWiredLimit(limit uint64) uint64 {
+	var prev C.size_t
+	C.mlx_set_wired_limit(&prev, C.size_t(limit))
+	return uint64(prev)
+}
+
+// DeviceInfo holds Metal GPU hardware information.
+type DeviceInfo struct {
+	Architecture                string
+	MaxBufferLength             uint64
+	MaxRecommendedWorkingSetSize uint64
+	MemorySize                  uint64
+}
+
+// GetDeviceInfo returns Metal GPU hardware information.
+func GetDeviceInfo() DeviceInfo {
+	info := C.mlx_metal_device_info()
+	return DeviceInfo{
+		Architecture:                C.GoString(&info.architecture[0]),
+		MaxBufferLength:             uint64(info.max_buffer_length),
+		MaxRecommendedWorkingSetSize: uint64(info.max_recommended_working_set_size),
+		MemorySize:                  uint64(info.memory_size),
+	}
+}

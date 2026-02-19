@@ -35,6 +35,21 @@ func GetPeakMemory() uint64 { return metal.GetPeakMemory() }
 // ClearCache clears the Metal memory cache.
 func ClearCache() { metal.ClearCache() }
 
+// GetCacheMemory returns the current Metal cache memory in bytes.
+func GetCacheMemory() uint64 { return metal.GetCacheMemory() }
+
+// ResetPeakMemory resets the peak memory high-water mark.
+func ResetPeakMemory() { metal.ResetPeakMemory() }
+
+// SetWiredLimit sets the Metal wired memory limit. Returns the previous value.
+func SetWiredLimit(limit uint64) uint64 { return metal.SetWiredLimit(limit) }
+
+// DeviceInfo holds Metal GPU hardware information.
+type DeviceInfo = metal.DeviceInfo
+
+// GetDeviceInfo returns Metal GPU hardware information.
+func GetDeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
+
 // metalBackend implements inference.Backend for native Metal inference.
 type metalBackend struct{}
 
