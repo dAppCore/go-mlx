@@ -1,0 +1,16 @@
+# Build artifacts
+build/
+*.dylib
+*.so
+*.a
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# IDE
+.idea/
+.vscode/
+*.swp
