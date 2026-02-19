@@ -515,6 +515,87 @@ func TestAdd_Broadcasting(t *testing.T) {
 
 // --- Random ---
 
+// --- Cumulative and sorting ops ---
+
+func TestCumSum(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	c := CumSum(a, -1, false, true)
+	Materialize(c)
+	floatSliceApprox(t, c.Floats(), []float32{1, 3, 6, 10})
+}
+
+func TestCumSum_Exclusive(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	c := CumSum(a, -1, false, false) // exclusive
+	Materialize(c)
+	floatSliceApprox(t, c.Floats(), []float32{0, 1, 3, 6})
+}
+
+func TestCumSum_Reverse(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	c := CumSum(a, -1, true, true) // reverse
+	Materialize(c)
+	floatSliceApprox(t, c.Floats(), []float32{10, 9, 7, 4})
+}
+
+func TestSort(t *testing.T) {
+	a := FromValues([]float32{3, 1, 4, 1, 5}, 1, 5)
+	c := Sort(a, -1)
+	Materialize(c)
+	floatSliceApprox(t, c.Floats(), []float32{1, 1, 3, 4, 5})
+}
+
+func TestArgsort(t *testing.T) {
+	a := FromValues([]float32{3, 1, 4, 1, 5}, 1, 5)
+	c := Argsort(a, -1)
+	Materialize(c)
+	// indices of sorted order: [1, 3, 0, 2, 4]
+	got := c.Ints()
+	want := []int{1, 3, 0, 2, 4}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Argsort[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestGreater(t *testing.T) {
+	a := FromValues([]float32{1, 5, 3}, 3)
+	b := FromValues([]float32{2, 2, 3}, 3)
+	c := Greater(a, b)
+	// Greater returns bool dtype — cast to int32 for data extraction
+	c = AsType(c, DTypeInt32)
+	Materialize(c)
+	// 1>2=false, 5>2=true, 3>3=false
+	got := c.DataInt32()
+	want := []int32{0, 1, 0}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Greater[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestMaxAxis(t *testing.T) {
+	a := FromValues([]float32{1, 5, 3, 4, 2, 6}, 2, 3)
+	c := MaxAxis(a, -1, false) // max per row
+	Materialize(c)
+	floatSliceApprox(t, c.Floats(), []float32{5, 6})
+}
+
+func TestMaxAxis_KeepDims(t *testing.T) {
+	a := FromValues([]float32{1, 5, 3, 4, 2, 6}, 2, 3)
+	c := MaxAxis(a, -1, true)
+	Materialize(c)
+
+	shape := c.Shape()
+	if shape[0] != 2 || shape[1] != 1 {
+		t.Errorf("shape = %v, want [2 1]", shape)
+	}
+}
+
+// --- Random ---
+
 func TestRandomCategorical(t *testing.T) {
 	// Heavily weighted towards index 2
 	logprobs := FromValues([]float32{-100, -100, 0}, 1, 3)

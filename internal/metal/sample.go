@@ -68,20 +68,65 @@ func (k TopKSampler) Sample(logits *Array) *Array {
 	return PutAlongAxis(logits, mask, FromValue(float32(math.Inf(-1))), -1)
 }
 
-// TopP implements nucleus sampling (cumulative probability threshold).
+// TopP implements nucleus (top-p) sampling.
+// Keeps the smallest set of tokens whose cumulative probability exceeds p.
 type TopP float32
 
 func (p TopP) Sample(logits *Array) *Array {
-	// TODO: full nucleus sampling requires cumsum which mlx-c doesn't expose directly.
-	// For now, pass through. TopK + Temperature covers most use cases.
-	return logits
+	// Convert logits to probabilities
+	probs := Softmax(logits)
+
+	// Sort descending via argsort of negated probs
+	neg := Negative(probs)
+	sortIdx := Argsort(neg, -1)
+	sortedProbs := TakeAlongAxis(probs, sortIdx, -1)
+
+	// Cumulative sum of sorted probabilities
+	cumProbs := CumSum(sortedProbs, -1, false, true)
+
+	// Mask in sorted space: keep tokens where cumprob (excluding current) <= threshold
+	shiftedCum := Subtract(cumProbs, sortedProbs)
+	threshold := FromValue(float32(p))
+	sortedMask := Where(
+		Greater(shiftedCum, threshold),
+		FromValue(float32(math.Inf(-1))),
+		FromValue(float32(0)),
+	)
+
+	// Scatter mask back to original positions
+	mask := PutAlongAxis(
+		Zeros(logits.Shape(), DTypeFloat32),
+		sortIdx,
+		sortedMask,
+		-1,
+	)
+
+	// Apply mask: -inf where excluded, original logit where kept
+	return Where(
+		Greater(FromValue(float32(0)), mask),
+		FromValue(float32(math.Inf(-1))),
+		logits,
+	)
 }
 
-// MinPSampler masks tokens below min_p * max_prob.
+// MinPSampler masks tokens whose probability is below min_p * max_prob.
 type MinPSampler float32
 
 func (p MinPSampler) Sample(logits *Array) *Array {
-	// For now, pass through — MinP is an optimization over TopP.
-	// Full implementation requires finding max prob and masking below threshold.
-	return logits
+	// Convert logits to probabilities
+	probs := Softmax(logits)
+
+	// Find the maximum probability
+	maxProb := MaxAxis(probs, -1, true)
+
+	// Threshold = min_p * max_prob
+	threshold := MulScalar(maxProb, float32(p))
+
+	// Mask tokens below threshold
+	mask := Where(
+		Greater(threshold, probs),
+		FromValue(float32(math.Inf(-1))),
+		logits,
+	)
+	return mask
 }

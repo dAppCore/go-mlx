@@ -351,3 +351,39 @@ func LogSumExp(a *Array, axis int, keepDims bool) *Array {
 	C.mlx_logsumexp_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
+
+// CumSum returns the cumulative sum along the given axis.
+// reverse=false for forward, inclusive=true to include the current element.
+func CumSum(a *Array, axis int, reverse, inclusive bool) *Array {
+	out := New("CUMSUM", a)
+	C.mlx_cumsum(&out.ctx, a.ctx, C.int(axis), C._Bool(reverse), C._Bool(inclusive), DefaultStream().ctx)
+	return out
+}
+
+// Sort returns the array sorted along the given axis.
+func Sort(a *Array, axis int) *Array {
+	out := New("SORT", a)
+	C.mlx_sort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
+	return out
+}
+
+// Argsort returns the indices that would sort the array along the given axis.
+func Argsort(a *Array, axis int) *Array {
+	out := New("ARGSORT", a)
+	C.mlx_argsort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
+	return out
+}
+
+// Greater returns element-wise a > b as a bool array.
+func Greater(a, b *Array) *Array {
+	out := New("GREATER", a, b)
+	C.mlx_greater(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// MaxAxis returns the maximum value along the given axis.
+func MaxAxis(a *Array, axis int, keepDims bool) *Array {
+	out := New("MAX_AXIS", a)
+	C.mlx_max_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}

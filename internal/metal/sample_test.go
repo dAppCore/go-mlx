@@ -89,26 +89,60 @@ func TestNew_Chain(t *testing.T) {
 	}
 }
 
-func TestTopP_PassThrough(t *testing.T) {
-	// TopP is currently a stub — verify it doesn't break the chain
+func TestTopP_DominantLogit(t *testing.T) {
+	// With one dominant logit, TopP should always pick it
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
-	s := newSampler(0.5, 0.9, 0, 0) // topP=0.9 (stub), temp=0.5
+	s := newSampler(0.5, 0.9, 0, 0) // topP=0.9, temp=0.5
 	token := s.Sample(logits)
 	Materialize(token)
 
 	if token.Int() != 2 {
-		t.Errorf("topP stub + temp sample = %d, want 2", token.Int())
+		t.Errorf("topP dominant sample = %d, want 2", token.Int())
 	}
 }
 
-func TestMinP_PassThrough(t *testing.T) {
-	// MinP is currently a stub — verify it doesn't break the chain
+func TestTopP_RestrictsOptions(t *testing.T) {
+	// Two equal high logits, two low. TopP=0.5 should mostly restrict to top tokens.
+	logits := FromValues([]float32{10, 10, -100, -100}, 1, 4)
+	s := newSampler(1.0, 0.5, 0, 0) // topP=0.5, temp=1.0
+
+	seen := map[int]bool{}
+	for range 30 {
+		token := s.Sample(logits)
+		Materialize(token)
+		seen[token.Int()] = true
+	}
+
+	// Should only pick indices 0 or 1 (the two high-probability tokens)
+	for idx := range seen {
+		if idx != 0 && idx != 1 {
+			t.Errorf("topP=0.5 sampled index %d, expected only 0 or 1", idx)
+		}
+	}
+}
+
+func TestMinP_DominantLogit(t *testing.T) {
+	// With one dominant logit, MinP should always pick it
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
-	s := newSampler(0.5, 0, 0.1, 0) // minP=0.1 (stub), temp=0.5
+	s := newSampler(0.5, 0, 0.1, 0) // minP=0.1, temp=0.5
 	token := s.Sample(logits)
 	Materialize(token)
 
 	if token.Int() != 2 {
-		t.Errorf("minP stub + temp sample = %d, want 2", token.Int())
+		t.Errorf("minP dominant sample = %d, want 2", token.Int())
+	}
+}
+
+func TestMinP_RestrictsOptions(t *testing.T) {
+	// One very high logit, rest are low. MinP=0.1 should mask the low tokens.
+	logits := FromValues([]float32{-100, 50, -100, -100}, 1, 4)
+	s := newSampler(1.0, 0, 0.1, 0) // minP=0.1, temp=1.0
+
+	for range 20 {
+		token := s.Sample(logits)
+		Materialize(token)
+		if token.Int() != 1 {
+			t.Errorf("minP with dominant logit sampled %d, want 1", token.Int())
+		}
 	}
 }
