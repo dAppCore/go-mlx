@@ -77,6 +77,48 @@ Virgil confirms: the `WithMaxTokens(n)` functional option pattern is the right c
 
 Virgil confirms: no changes needed. The process package provides everything needed for the mlxlm subprocess backend.
 
+## Virgil Code Review — 19 Feb 2026
+
+Full codebase review after Phase 4 completion + go-inference integration. Grouped by priority.
+
+### Critical — Fix Before Phase 2
+
+- [ ] **Error handler thread safety** — `last_mlx_error` in metal.go is a bare C `static const char*` with no synchronisation. If MLX ever calls the error handler from a background thread (e.g. async eval completion), this is a data race. Fix: use `_Atomic(const char*)` or a `pthread_mutex_t`. Even if MLX currently serialises error callbacks, this is a time bomb. Low-effort fix, high protection.
+
+- [ ] **`-mmacosx-version-min=26.0` is wrong** — metal.go line 8 sets `CGO_CFLAGS: -mmacosx-version-min=26.0`. macOS 26 is Tahoe (mid-2025+). This locks out macOS 15 Sequoia users entirely. Should be `15.0` or `14.0` depending on minimum Metal feature level needed. MLX itself targets macOS 13.3+.
+
+- [ ] **`LoadOption` is ignored in `metalBackend.LoadModel()`** — `register_metal.go:59` accepts `...inference.LoadOption` but never calls `inference.ApplyLoadOpts()`. `WithContextLen()`, `WithGPULayers()`, `WithBackend()` are all silently dropped. At minimum, apply the config and pass `ContextLen` through to cache sizing.
+
+### Important — Should Fix
+
+- [ ] **KV cache leak between turns** — After `Generate()` returns, the KV cache arrays (allocated inside the closure at `generate.go:76`) are abandoned to GC finalizers. For multi-turn chat in LEM Lab, each turn allocates a new cache and the old one only gets freed when the GC eventually runs finalisers. Options: (a) accept a `*Cache` parameter so callers can reuse across turns, (b) add `Model.ResetCache()`, or (c) call `ClearCache()` after each turn. Document the expected pattern either way.
+
+- [ ] **`RepeatPenalty` is accepted but never applied** — `GenerateConfig.RepeatPenalty` flows through from go-inference options and is stored in the config, but the generate loop has no token history and never applies it. Either implement it (track last N token IDs, penalise logits) or remove the field and document it as unsupported.
+
+- [ ] **`DefaultGPUStream()` / `DefaultCPUStream()` leak and mislead** — `stream.go:32-41`: These create a new `C.mlx_stream` on every call but never free it. The names suggest they return *the* default stream (like `DefaultStream()` does with `sync.Once`), but they actually allocate. Either cache them like `DefaultStream()` or rename to `NewGPUStream()` / `NewCPUStream()` and add a `Free()` method.
+
+- [ ] **Tokenizer `Encode()` is character-level only** — BPE merges are parsed and stored (`tokenizer.go:77-96`) but never applied in `Encode()` or `encodeGPT2()`. Both methods fall back to single-character lookup. This produces far more tokens than a real BPE encoder, drastically reducing effective context length and increasing prefill time. For Phase 2 model validation this will need fixing, especially for Gemma3-1B at 5K sentences/sec.
+
+- [ ] **`CompileShapeless` is dead code** — `compile.go:82-89`: `Call()` bypasses the C closure entirely and just calls `cf.fn(inputs)` directly. The C closure, callback, and `sync.Map` registration are all unused overhead. The `shapeless` param is ignored. Either implement actual `mlx_compile` call-through or simplify to a plain function wrapper.
+
+### Minor — Nice to Have
+
+- [ ] **Rename `New()` → `newArray()`** — `array.go:32`: `New("INPUT")` is exported but only used internally as a pre-allocation pattern before C fills in `ctx`. Since this is `internal/metal`, exporting is harmless, but `newArray` better signals intent.
+
+- [ ] **`Collect()` is unused** — `metal.go:125-133` defines `Collect()` to gather valid arrays for batch Materialize, but nothing in the codebase calls it. Dead code.
+
+- [ ] **`qwen3.go` / `gemma3.go` — second `json.Unmarshal` error discarded** — Both model configs parse quantization with a second unmarshal whose error is silently dropped. Probably fine (same data already parsed successfully), but inconsistent with the first unmarshal which returns errors.
+
+- [ ] **Document `AsStrided` stride formula** — `gemma3.go:354-359` uses stride manipulation for `[B,L,H*D]` → `[B,H,L,D]` virtual transpose. The formula is correct but non-obvious. A one-line comment explaining the stride derivation prevents future confusion.
+
+### Questions for You to Consider
+
+1. **Per-step intermediate freeing**: The design doc mentions `freeIntermediates(logits)` per decode step to reduce GC pressure. This isn't implemented — the generate loop creates ~500 intermediate arrays per forward pass that rely on GC finalizers. Is Go 1.26 Green Tea GC considered sufficient, or is explicit per-step freeing still planned?
+
+2. **SentencePiece BPE**: The `merges` field is parsed but never used. For Gemma3's SentencePiece tokenizer, is character-level encoding sufficient (because the vocab contains full token strings), or is merge application a known gap for Phase 2?
+
+3. **`nextID` in compile.go**: `nextID` is a `uintptr` used as `unsafe.Pointer` key into `sync.Map`. This works but `uintptr(0)` is never valid (starts at 1 after first increment). If `CompileShapeless` is kept, consider using `atomic.AddUint64` instead of mutex + plain increment.
+
 ## Workflow
 
 1. Virgil in core/go writes tasks here after research
