@@ -10,6 +10,7 @@ import "C"
 
 import (
 	"encoding/binary"
+	"iter"
 	"reflect"
 	"runtime"
 	"strings"
@@ -292,4 +293,20 @@ func Free(s ...*Array) int {
 		}
 	}
 	return n
+}
+
+// Iter returns an iterator over the array's float32 elements.
+// The array must be materialised and contain float32 data.
+// Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+func (t *Array) Iter() iter.Seq[float32] {
+	src := ensureContiguous(t)
+	n := src.Size()
+	ptr := C.mlx_array_data_float32(src.ctx)
+	return func(yield func(float32) bool) {
+		for i := range n {
+			if !yield(float32(unsafe.Slice(ptr, n)[i])) {
+				return
+			}
+		}
+	}
 }

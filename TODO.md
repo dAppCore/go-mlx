@@ -39,7 +39,7 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 - [x] **Public API: `TextModel`, `Backend`, functional options** — Clean root package, compiles on all platforms.
 - [x] **Integration tests** — 7 tests for public API (backend registration, options, LoadModel paths).
 - [x] **Error handling audit** — ✅ `checkError()` replaced with `lastError() error` (reads + clears C-level error string). Added `Eval(...*Array) error` and `EvalAsync(...*Array) error` as error-returning variants of Materialize. Generate loop propagates errors via `m.lastErr`. `LoadAllSafetensors` returns `(map, error)`. Model loaders (gemma3, qwen3) check `lastError()` after safetensors load. grad.go/lora.go now surface real MLX error messages. 4 new tests in error_test.go.
-- [ ] **Memory management — deterministic cleanup** — `Close()` stub in place. CLion Claude confirmed `mlx_array_free()` is safe on graph-referenced arrays (refcounted via shared_ptr). Double-free is UB. Can now implement per-step cleanup.
+- [x] **Memory management — deterministic cleanup** — ✅ `Model.Close()` now walks the full model tree (GemmaModel/Qwen3Model) and explicitly frees all weight arrays via `Free()`. Helpers: `freeLinear`, `freeEmbedding`, `freeRMSNorm`, `freeCaches`, `closeGemma`, `closeQwen3` in close.go. Handles tied output weights (skip double-free), nil safety, idempotent Close(). 8 new tests in close_test.go.
 - [ ] **Documentation** — Public API has godoc but needs examples for common workflows.
 
 ## Phase 5: Ecosystem Integration (Virgil wishlist)
@@ -53,7 +53,7 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 ## Phase 6: Go 1.26 Modernisation
 
 - [x] **Evaluate Go 1.26 features** — ✅ Documented in FINDINGS.md. Key wins: CGO ~30% faster (free), Green Tea GC default (10-40% less overhead, helps Array finalisers), slice stack alloc.
-- [ ] **Range-over-func for Array** — `Array.Iter()` returning `iter.Seq[float32]` for cleaner iteration. Measure overhead vs direct C pointer access.
+- [x] **Range-over-func for Array** — ✅ `Array.Iter() iter.Seq[float32]` implemented in array.go. Handles non-contiguous arrays via ensureContiguous(). Supports early break. 4 tests: basic, 2D flatten, transposed, early break.
 
 ---
 

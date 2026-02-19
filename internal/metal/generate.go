@@ -44,9 +44,20 @@ func (m *Model) ModelType() string { return m.modelType }
 // Err returns the error from the last Generate/Chat call, if any.
 func (m *Model) Err() error { return m.lastErr }
 
-// Close releases all resources.
+// Close releases all model weight arrays and associated resources.
+// After Close, the Model must not be used for generation.
 func (m *Model) Close() error {
-	// TODO(task10): explicit Free() on model weights and caches
+	if m.model == nil {
+		return nil
+	}
+	switch v := m.model.(type) {
+	case *GemmaModel:
+		closeGemma(v)
+	case *Qwen3Model:
+		closeQwen3(v)
+	}
+	m.model = nil
+	m.tokenizer = nil
 	return nil
 }
 
