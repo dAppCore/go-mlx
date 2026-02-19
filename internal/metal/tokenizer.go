@@ -1,7 +1,6 @@
 //go:build darwin && arm64
 
-// Package tokenizer provides BPE tokenization for transformer models.
-package tokenizer
+package metal
 
 import (
 	"encoding/json"
@@ -46,8 +45,8 @@ type tokenizerJSON struct {
 	} `json:"added_tokens"`
 }
 
-// Load reads a tokenizer.json file and creates a Tokenizer.
-func Load(path string) (*Tokenizer, error) {
+// LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
+func LoadTokenizer(path string) (*Tokenizer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("tokenizer: read %s: %w", path, err)
@@ -294,7 +293,7 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 		return t.decodeGPT2Bytes(text)
 	}
 
-	// SentencePiece: replace ▁ with space but keep it (it's the word boundary)
+	// SentencePiece: replace with space but keep it (it's the word boundary)
 	return strings.ReplaceAll(text, "▁", " ")
 }
 

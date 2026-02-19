@@ -1,39 +1,34 @@
 //go:build darwin && arm64
 
-// Package model provides transformer model architectures for MLX inference.
-package model
+package metal
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"forge.lthn.ai/core/go-mlx"
-	"forge.lthn.ai/core/go-mlx/cache"
-	"forge.lthn.ai/core/go-mlx/tokenizer"
 )
 
-// Model is the common interface for all transformer model architectures.
-type Model interface {
+// InternalModel is the common interface for all transformer model architectures.
+type InternalModel interface {
 	// Forward runs the model forward pass on token IDs with KV caches.
-	Forward(tokens *mlx.Array, caches []cache.Cache) *mlx.Array
+	Forward(tokens *Array, caches []Cache) *Array
 
 	// NewCache creates per-layer KV caches for generation.
-	NewCache() []cache.Cache
+	NewCache() []Cache
 
 	// NumLayers returns the number of transformer layers.
 	NumLayers() int
 
 	// Tokenizer returns the model's tokenizer.
-	Tokenizer() *tokenizer.Tokenizer
+	Tokenizer() *Tokenizer
 
 	// ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
 	ModelType() string
 
 	// ApplyLoRA wraps target projection layers with LoRA adapters for training.
 	// Returns the adapter which holds references to all LoRA layers.
-	ApplyLoRA(cfg mlx.LoRAConfig) *mlx.LoRAAdapter
+	ApplyLoRA(cfg LoRAConfig) *LoRAAdapter
 }
 
 // QuantizationConfig holds quantization parameters from config.json.
@@ -43,7 +38,7 @@ type QuantizationConfig struct {
 }
 
 // resolveWeight looks up a weight with optional "language_model." prefix.
-func resolveWeight(weights map[string]*mlx.Array, name string) *mlx.Array {
+func resolveWeight(weights map[string]*Array, name string) *Array {
 	if w, ok := weights[name]; ok {
 		return w
 	}
@@ -53,8 +48,8 @@ func resolveWeight(weights map[string]*mlx.Array, name string) *mlx.Array {
 	return nil
 }
 
-// LoadModel auto-detects the model architecture from config.json and loads it.
-func LoadModel(modelPath string) (Model, error) {
+// loadModel auto-detects the model architecture from config.json and loads it.
+func loadModel(modelPath string) (InternalModel, error) {
 	data, err := os.ReadFile(filepath.Join(modelPath, "config.json"))
 	if err != nil {
 		return nil, fmt.Errorf("model: load config: %w", err)

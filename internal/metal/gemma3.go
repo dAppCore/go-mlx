@@ -1,7 +1,6 @@
 //go:build darwin && arm64
 
-// Package model provides transformer model architectures for MLX inference.
-package model
+package metal
 
 import (
 	"encoding/json"
@@ -10,10 +9,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-
-	"forge.lthn.ai/core/go-mlx"
-	"forge.lthn.ai/core/go-mlx/cache"
-	"forge.lthn.ai/core/go-mlx/tokenizer"
 )
 
 // TextConfig holds Gemma 3 text model configuration.
@@ -38,32 +33,32 @@ type TextConfig struct {
 
 // GemmaModel is the Gemma 3 text model.
 type GemmaModel struct {
-	EmbedTokens *mlx.Embedding
+	EmbedTokens *Embedding
 	Layers      []*DecoderLayer
-	Norm        *mlx.RMSNormModule
-	Output      *mlx.Linear // Tied to EmbedTokens
+	Norm        *RMSNormModule
+	Output      *Linear // Tied to EmbedTokens
 
 	// Precomputed (1 + weight) for Gemma-style RMSNorm
-	NormScaled *mlx.Array
+	NormScaled *Array
 
-	Tok *tokenizer.Tokenizer
+	Tok *Tokenizer
 	Cfg *TextConfig
 }
 
 // DecoderLayer is a single transformer block.
 type DecoderLayer struct {
-	InputNorm    *mlx.RMSNormModule
+	InputNorm    *RMSNormModule
 	Attention    *Attention
-	PostAttnNorm *mlx.RMSNormModule
-	PreFFNorm    *mlx.RMSNormModule
+	PostAttnNorm *RMSNormModule
+	PreFFNorm    *RMSNormModule
 	MLP          *MLP
-	PostFFNorm   *mlx.RMSNormModule
+	PostFFNorm   *RMSNormModule
 
 	// Precomputed scaled weights
-	InputNormScaled    *mlx.Array
-	PostAttnNormScaled *mlx.Array
-	PreFFNormScaled    *mlx.Array
-	PostFFNormScaled   *mlx.Array
+	InputNormScaled    *Array
+	PostAttnNormScaled *Array
+	PreFFNormScaled    *Array
+	PostFFNormScaled   *Array
 
 	IsSliding bool
 	LayerIdx  int32
@@ -71,31 +66,31 @@ type DecoderLayer struct {
 
 // Attention implements Gemma 3 attention with Q/K normalization.
 type Attention struct {
-	QProj *mlx.Linear
-	KProj *mlx.Linear
-	VProj *mlx.Linear
-	OProj *mlx.Linear
-	QNorm *mlx.RMSNormModule
-	KNorm *mlx.RMSNormModule
+	QProj *Linear
+	KProj *Linear
+	VProj *Linear
+	OProj *Linear
+	QNorm *RMSNormModule
+	KNorm *RMSNormModule
 
-	QNormScaled *mlx.Array
-	KNormScaled *mlx.Array
+	QNormScaled *Array
+	KNormScaled *Array
 }
 
 // MLP is the feed-forward network.
 type MLP struct {
-	GateProj *mlx.Linear
-	UpProj   *mlx.Linear
-	DownProj *mlx.Linear
+	GateProj *Linear
+	UpProj   *Linear
+	DownProj *Linear
 }
 
 // compiledGELU is a singleton for the compiled GELU function.
-var compiledGELU *mlx.CompiledFunc
+var compiledGELU *CompiledFunc
 
-func getCompiledGELU() *mlx.CompiledFunc {
+func getCompiledGELU() *CompiledFunc {
 	if compiledGELU == nil {
-		compiledGELU = mlx.CompileShapeless(func(inputs []*mlx.Array) []*mlx.Array {
-			return []*mlx.Array{geluApprox(inputs[0])}
+		compiledGELU = CompileShapeless(func(inputs []*Array) []*Array {
+			return []*Array{geluApprox(inputs[0])}
 		}, true)
 	}
 	return compiledGELU
@@ -103,16 +98,16 @@ func getCompiledGELU() *mlx.CompiledFunc {
 
 // geluApprox computes GELU using the tanh approximation:
 // 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
-func geluApprox(x *mlx.Array) *mlx.Array {
+func geluApprox(x *Array) *Array {
 	const sqrt2OverPi = 0.7978845608028654
 	const coeff = 0.044715
 
-	x3 := mlx.Mul(mlx.Mul(x, x), x)
-	inner := mlx.Add(x, mlx.MulScalar(x3, coeff))
-	scaled := mlx.MulScalar(inner, sqrt2OverPi)
-	t := mlx.Tanh(scaled)
-	onePlusT := mlx.AddScalar(t, 1.0)
-	return mlx.Mul(mlx.MulScalar(x, 0.5), onePlusT)
+	x3 := Mul(Mul(x, x), x)
+	inner := Add(x, MulScalar(x3, coeff))
+	scaled := MulScalar(inner, sqrt2OverPi)
+	t := Tanh(scaled)
+	onePlusT := AddScalar(t, 1.0)
+	return Mul(MulScalar(x, 0.5), onePlusT)
 }
 
 // parseConfig handles both flat and nested (text_config) Gemma 3 configs.
@@ -175,22 +170,22 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	}
 
 	// Load tokenizer
-	tok, err := tokenizer.Load(filepath.Join(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(filepath.Join(modelPath, "tokenizer.json"))
 	if err != nil {
 		return nil, fmt.Errorf("gemma3: load tokenizer: %w", err)
 	}
 
 	// Load weights from all safetensors files
-	weights := make(map[string]*mlx.Array)
+	weights := make(map[string]*Array)
 	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
 	for _, path := range matches {
-		for name, arr := range mlx.LoadSafetensors(path) {
+		for name, arr := range LoadSafetensors(path) {
 			weights[name] = arr
 		}
 	}
 
 	// Helper to resolve weight with language_model. prefix fallback
-	w := func(name string) *mlx.Array { return resolveWeight(weights, name) }
+	w := func(name string) *Array { return resolveWeight(weights, name) }
 
 	// Infer head_dim from q_proj weight shape when not in config.
 	// Gemma 3 uses head_dim=256 which differs from hidden_size/num_heads.
@@ -211,18 +206,18 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	if q != nil {
 		slog.Info("mlx: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
 	}
-	linear := func(prefix string) *mlx.Linear {
+	linear := func(prefix string) *Linear {
 		weight := w(prefix + ".weight")
 		scales := w(prefix + ".scales")
 		biases := w(prefix + ".biases")
 		if scales != nil && q != nil {
-			return mlx.NewQuantizedLinear(weight, scales, biases, nil, q.GroupSize, q.Bits)
+			return NewQuantizedLinear(weight, scales, biases, nil, q.GroupSize, q.Bits)
 		}
-		return mlx.NewLinear(weight, nil)
+		return NewLinear(weight, nil)
 	}
 
 	// Create embedding (quantized or dense)
-	embed := &mlx.Embedding{Weight: w("model.embed_tokens.weight")}
+	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
 		embed.Scales = embedScales
 		embed.Biases = w("model.embed_tokens.biases")
@@ -233,7 +228,7 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	m := &GemmaModel{
 		EmbedTokens: embed,
 		Layers:      make([]*DecoderLayer, cfg.NumHiddenLayers),
-		Norm:        &mlx.RMSNormModule{Weight: w("model.norm.weight")},
+		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
 	}
@@ -242,17 +237,17 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := fmt.Sprintf("model.layers.%d", i)
 		m.Layers[i] = &DecoderLayer{
-			InputNorm:    &mlx.RMSNormModule{Weight: w(prefix + ".input_layernorm.weight")},
-			PostAttnNorm: &mlx.RMSNormModule{Weight: w(prefix + ".post_attention_layernorm.weight")},
-			PreFFNorm:    &mlx.RMSNormModule{Weight: w(prefix + ".pre_feedforward_layernorm.weight")},
-			PostFFNorm:   &mlx.RMSNormModule{Weight: w(prefix + ".post_feedforward_layernorm.weight")},
+			InputNorm:    &RMSNormModule{Weight: w(prefix + ".input_layernorm.weight")},
+			PostAttnNorm: &RMSNormModule{Weight: w(prefix + ".post_attention_layernorm.weight")},
+			PreFFNorm:    &RMSNormModule{Weight: w(prefix + ".pre_feedforward_layernorm.weight")},
+			PostFFNorm:   &RMSNormModule{Weight: w(prefix + ".post_feedforward_layernorm.weight")},
 			Attention: &Attention{
 				QProj: linear(prefix + ".self_attn.q_proj"),
 				KProj: linear(prefix + ".self_attn.k_proj"),
 				VProj: linear(prefix + ".self_attn.v_proj"),
 				OProj: linear(prefix + ".self_attn.o_proj"),
-				QNorm: &mlx.RMSNormModule{Weight: w(prefix + ".self_attn.q_norm.weight")},
-				KNorm: &mlx.RMSNormModule{Weight: w(prefix + ".self_attn.k_norm.weight")},
+				QNorm: &RMSNormModule{Weight: w(prefix + ".self_attn.q_norm.weight")},
+				KNorm: &RMSNormModule{Weight: w(prefix + ".self_attn.k_norm.weight")},
 			},
 			MLP: &MLP{
 				GateProj: linear(prefix + ".mlp.gate_proj"),
@@ -269,9 +264,9 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	if lmHeadWeight != nil {
 		lmHeadScales := w("lm_head.scales")
 		if lmHeadScales != nil && q != nil {
-			m.Output = mlx.NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, q.GroupSize, q.Bits)
+			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, q.GroupSize, q.Bits)
 		} else {
-			m.Output = mlx.NewLinear(lmHeadWeight, nil)
+			m.Output = NewLinear(lmHeadWeight, nil)
 		}
 	} else {
 		// Tied embeddings — reuse embed_tokens weights (with quantization if present)
@@ -279,11 +274,11 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	}
 
 	// Materialize all weights
-	var allArrays []*mlx.Array
+	var allArrays []*Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
-	mlx.Materialize(allArrays...)
+	Materialize(allArrays...)
 
 	// Precompute (1 + weight) for Gemma-style RMSNorm
 	precomputeScaledWeights(m)
@@ -292,25 +287,25 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 }
 
 func precomputeScaledWeights(m *GemmaModel) {
-	m.NormScaled = mlx.AddScalar(m.Norm.Weight, 1.0)
+	m.NormScaled = AddScalar(m.Norm.Weight, 1.0)
 
 	for _, layer := range m.Layers {
-		layer.InputNormScaled = mlx.AddScalar(layer.InputNorm.Weight, 1.0)
-		layer.PostAttnNormScaled = mlx.AddScalar(layer.PostAttnNorm.Weight, 1.0)
-		layer.PreFFNormScaled = mlx.AddScalar(layer.PreFFNorm.Weight, 1.0)
-		layer.PostFFNormScaled = mlx.AddScalar(layer.PostFFNorm.Weight, 1.0)
-		layer.Attention.QNormScaled = mlx.AddScalar(layer.Attention.QNorm.Weight, 1.0)
-		layer.Attention.KNormScaled = mlx.AddScalar(layer.Attention.KNorm.Weight, 1.0)
+		layer.InputNormScaled = AddScalar(layer.InputNorm.Weight, 1.0)
+		layer.PostAttnNormScaled = AddScalar(layer.PostAttnNorm.Weight, 1.0)
+		layer.PreFFNormScaled = AddScalar(layer.PreFFNorm.Weight, 1.0)
+		layer.PostFFNormScaled = AddScalar(layer.PostFFNorm.Weight, 1.0)
+		layer.Attention.QNormScaled = AddScalar(layer.Attention.QNorm.Weight, 1.0)
+		layer.Attention.KNormScaled = AddScalar(layer.Attention.KNorm.Weight, 1.0)
 	}
 
-	var scaled []*mlx.Array
+	var scaled []*Array
 	scaled = append(scaled, m.NormScaled)
 	for _, layer := range m.Layers {
 		scaled = append(scaled, layer.InputNormScaled, layer.PostAttnNormScaled,
 			layer.PreFFNormScaled, layer.PostFFNormScaled,
 			layer.Attention.QNormScaled, layer.Attention.KNormScaled)
 	}
-	mlx.Materialize(scaled...)
+	Materialize(scaled...)
 }
 
 func isLayerSliding(layerIdx, pattern int32) bool {
@@ -321,56 +316,56 @@ func isLayerSliding(layerIdx, pattern int32) bool {
 }
 
 // Forward runs the text model forward pass.
-func (m *GemmaModel) Forward(tokens *mlx.Array, caches []cache.Cache) *mlx.Array {
+func (m *GemmaModel) Forward(tokens *Array, caches []Cache) *Array {
 	shape := tokens.Shape()
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
-	h = mlx.MulScalar(h, float32(math.Sqrt(float64(m.Cfg.HiddenSize))))
+	h = MulScalar(h, float32(math.Sqrt(float64(m.Cfg.HiddenSize))))
 
 	for i, layer := range m.Layers {
 		h = layer.forward(h, caches[i], B, L, m.Cfg)
 	}
 
-	return m.Output.Forward(mlx.RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps))
+	return m.Output.Forward(RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps))
 }
 
-func (l *DecoderLayer) forward(x *mlx.Array, c cache.Cache, B, L int32, cfg *TextConfig) *mlx.Array {
-	normed := mlx.RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
+func (l *DecoderLayer) forward(x *Array, c Cache, B, L int32, cfg *TextConfig) *Array {
+	normed := RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
 	attnOut := l.Attention.forward(normed, c, B, L, l.IsSliding, cfg)
-	attnOut = mlx.RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
-	h := mlx.Add(x, attnOut)
+	attnOut = RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
+	h := Add(x, attnOut)
 
-	normed = mlx.RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
+	normed = RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 	mlpOut := l.MLP.forward(normed)
-	mlpOut = mlx.RMSNorm(mlpOut, l.PostFFNormScaled, cfg.RMSNormEps)
-	return mlx.Add(h, mlpOut)
+	mlpOut = RMSNorm(mlpOut, l.PostFFNormScaled, cfg.RMSNormEps)
+	return Add(h, mlpOut)
 }
 
-func (a *Attention) forward(x *mlx.Array, c cache.Cache, B, L int32, isSliding bool, cfg *TextConfig) *mlx.Array {
+func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, cfg *TextConfig) *Array {
 	q := a.QProj.Forward(x)
 	k := a.KProj.Forward(x)
 	v := a.VProj.Forward(x)
 
 	// Reshape to [B, num_heads, L, head_dim]
-	q = mlx.AsStrided(q, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
+	q = AsStrided(q, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumAttentionHeads * cfg.HeadDim), 1}, 0)
-	k = mlx.AsStrided(k, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
+	k = AsStrided(k, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
-	v = mlx.AsStrided(v, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
+	v = AsStrided(v, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
 
 	// Q/K normalization
-	q = mlx.RMSNorm(q, a.QNormScaled, cfg.RMSNormEps)
-	k = mlx.RMSNorm(k, a.KNormScaled, cfg.RMSNormEps)
+	q = RMSNorm(q, a.QNormScaled, cfg.RMSNormEps)
+	k = RMSNorm(k, a.KNormScaled, cfg.RMSNormEps)
 
 	// RoPE with appropriate theta
 	ropeTheta := cfg.RopeTheta
 	if isSliding {
 		ropeTheta = cfg.RopeLocalBaseFreq
 	}
-	q = mlx.RoPE(q, int(cfg.HeadDim), false, ropeTheta, 1.0, c.Offset())
-	k = mlx.RoPE(k, int(cfg.HeadDim), false, ropeTheta, 1.0, c.Offset())
+	q = RoPE(q, int(cfg.HeadDim), false, ropeTheta, 1.0, c.Offset())
+	k = RoPE(k, int(cfg.HeadDim), false, ropeTheta, 1.0, c.Offset())
 
 	// Update cache
 	k, v = c.Update(k, v, int(L))
@@ -378,29 +373,29 @@ func (a *Attention) forward(x *mlx.Array, c cache.Cache, B, L int32, isSliding b
 	// GQA: repeat K/V heads
 	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
 	if repeatFactor > 1 {
-		k = mlx.RepeatKV(k, repeatFactor)
-		v = mlx.RepeatKV(v, repeatFactor)
+		k = RepeatKV(k, repeatFactor)
+		v = RepeatKV(v, repeatFactor)
 	}
 
 	// Scaled dot-product attention
-	out := mlx.ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
-	out = mlx.Reshape(mlx.Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
+	out := ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+	out = Reshape(Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
 	return a.OProj.Forward(out)
 }
 
-func (m *MLP) forward(x *mlx.Array) *mlx.Array {
+func (m *MLP) forward(x *Array) *Array {
 	gate := getCompiledGELU().Call(m.GateProj.Forward(x))[0]
-	return m.DownProj.Forward(mlx.Mul(gate, m.UpProj.Forward(x)))
+	return m.DownProj.Forward(Mul(gate, m.UpProj.Forward(x)))
 }
 
 // NewCache creates per-layer caches for generation.
-func (m *GemmaModel) NewCache() []cache.Cache {
-	caches := make([]cache.Cache, len(m.Layers))
+func (m *GemmaModel) NewCache() []Cache {
+	caches := make([]Cache, len(m.Layers))
 	for i := range caches {
 		if m.Layers[i].IsSliding {
-			caches[i] = cache.NewRotatingKVCache(int(m.Cfg.SlidingWindow))
+			caches[i] = NewRotatingKVCache(int(m.Cfg.SlidingWindow))
 		} else {
-			caches[i] = cache.NewKVCache()
+			caches[i] = NewKVCache()
 		}
 	}
 	return caches
@@ -410,22 +405,22 @@ func (m *GemmaModel) NewCache() []cache.Cache {
 func (m *GemmaModel) NumLayers() int { return len(m.Layers) }
 
 // Tokenizer returns the model's tokenizer.
-func (m *GemmaModel) Tokenizer() *tokenizer.Tokenizer { return m.Tok }
+func (m *GemmaModel) Tokenizer() *Tokenizer { return m.Tok }
 
 // ModelType returns the architecture identifier.
 func (m *GemmaModel) ModelType() string { return "gemma3" }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
-func (m *GemmaModel) ApplyLoRA(cfg mlx.LoRAConfig) *mlx.LoRAAdapter {
-	adapter := &mlx.LoRAAdapter{
-		Layers: make(map[string]*mlx.LoRALinear),
+func (m *GemmaModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
+	adapter := &LoRAAdapter{
+		Layers: make(map[string]*LoRALinear),
 		Config: cfg,
 	}
 
 	for i, layer := range m.Layers {
 		prefix := fmt.Sprintf("model.layers.%d.self_attn", i)
 		for _, target := range cfg.TargetKeys {
-			var proj *mlx.Linear
+			var proj *Linear
 			switch target {
 			case "q_proj":
 				proj = layer.Attention.QProj
@@ -437,7 +432,7 @@ func (m *GemmaModel) ApplyLoRA(cfg mlx.LoRAConfig) *mlx.LoRAAdapter {
 				proj = layer.Attention.OProj
 			}
 			if proj != nil {
-				lora := mlx.NewLoRALinear(proj, cfg.Rank, cfg.Alpha)
+				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha)
 				proj.LoRA = lora
 				adapter.Layers[prefix+"."+target] = lora
 			}
