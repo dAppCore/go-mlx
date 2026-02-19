@@ -342,3 +342,76 @@ Was a stub. Now masks tokens whose probability is below `min_p * max_prob`. Uses
 - 165 internal/metal tests — all pass
 - 11 root integration tests — all pass
 - Total: 176 tests passing
+
+---
+
+## 2026-02-19: Benchmark Baseline — M3 Ultra
+
+29 benchmarks in `internal/metal/bench_test.go`. All times in ns/op, measured with `go test -bench=. -benchtime=2s`.
+
+### Matrix Multiply
+
+| Shape | ns/op | Notes |
+|-------|------:|-------|
+| 128×128 | 194,467 | CGO overhead dominates at small sizes |
+| 512×512 | 255,288 | GPU starting to amortise |
+| 1024×1024 | 474,900 | Sweet spot for Metal throughput |
+| 2048×2048 | 4,173,797 | ~4ms — good for decode step |
+| 4096×4096 | 10,715,051 | ~10.7ms — large context attention |
+| 1×2048 → 32000 (token proj) | 626,087 | Output projection per token |
+
+### Fused Metal Kernels
+
+| Operation | Shape | ns/op |
+|-----------|-------|------:|
+| RMSNorm | 1×2048 | 156,696 |
+| RMSNorm | 32×2048 | 225,164 |
+| LayerNorm | 32×2048 | 184,514 |
+| RoPE | 1×1×32×128 (decode) | 176,605 |
+| RoPE | 1×32×512×128 (prefill) | 1,443,803 |
+| SDPA causal | 1 head, seq=32 | 200,926 |
+| SDPA causal | 32 heads, seq=128 | 515,477 |
+| SDPA causal | 32 heads, seq=512 | 1,815,073 |
+
+### Softmax & Reductions
+
+| Operation | Shape | ns/op |
+|-----------|-------|------:|
+| Softmax | 1×1024 | 173,811 |
+| Softmax | 32×32000 | 948,660 |
+| Softmax | 1×128000 | 270,022 |
+| Sum | 1M elements | 175,204 |
+| Argmax | 1×32000 | 171,327 |
+
+### Element-wise (1M elements)
+
+| Operation | ns/op |
+|-----------|------:|
+| Add | 651,687 |
+| Mul | 394,941 |
+| SiLU | 1,192,843 |
+
+### Layers
+
+| Operation | Shape | ns/op |
+|-----------|-------|------:|
+| Linear | 1×2048 → 2048 | 181,417 |
+| Linear | 32×2048 → 8192 | 471,038 |
+| Embedding | 32 tokens, 32K vocab, 2048 dim | 219,154 |
+
+### Sampling (vocab=32000)
+
+| Strategy | ns/op |
+|----------|------:|
+| Greedy (argmax) | 172,698 |
+| TopK=50, temp=1.0 | 542,635 |
+| TopP=0.9, temp=1.0 | 713,538 |
+| Full (TopP+MinP+TopK) | 731,118 |
+
+### Key Observations
+
+1. **CGO floor ~170μs**: All operations have a ~170μs minimum (greedy sample, RMSNorm single row, Sum 1M). This is the CGO call + Metal command buffer overhead.
+2. **MatMul scales well**: 128² → 4096² is only ~55× slower for 1024× more work, showing good GPU utilisation.
+3. **SDPA efficient**: 32-head seq=512 attention at 1.8ms is practical for real-time inference.
+4. **Sampling overhead**: Full chain (TopP+MinP+TopK) adds ~560μs over greedy — acceptable per token.
+5. **Linear layer**: Single-token forward through 2048→2048 at 181μs suggests ~5500 layers/sec ceiling for per-token decode.
