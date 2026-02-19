@@ -191,3 +191,88 @@ func TestLoRA_EndToEnd(t *testing.T) {
 
 	ClearCache()
 }
+
+// TestLoRA_GradientCheckpointing validates that wrapping the forward pass in
+// Checkpoint produces correct gradients (same loss decrease as non-checkpointed).
+func TestLoRA_GradientCheckpointing(t *testing.T) {
+	modelPath := gemma3Path(t)
+
+	model, err := loadModel(modelPath)
+	if err != nil {
+		t.Fatalf("loadModel: %v", err)
+	}
+
+	gemma := model.(*GemmaModel)
+	tok := gemma.Tokenizer()
+
+	adapter := gemma.ApplyLoRA(DefaultLoRAConfig())
+	t.Logf("LoRA: %d trainable params", adapter.TotalParams())
+
+	inputIDs := tok.Encode("The capital of France is Paris")
+	seqLen := len(inputIDs) - 1
+	inputTokens := FromValues(inputIDs[:seqLen], 1, seqLen)
+	targetTokens := FromValues(inputIDs[1:], 1, seqLen)
+	Materialize(inputTokens, targetTokens)
+
+	params := adapter.AllTrainableParams()
+	argnums := make([]int, len(params))
+	for i := range argnums {
+		argnums[i] = i
+	}
+
+	opt := NewAdamW(1e-4)
+	var initialLoss, finalLoss float64
+	const numSteps = 3
+
+	for step := 0; step < numSteps; step++ {
+		caches := gemma.NewCache()
+
+		// Wrap the model forward pass in Checkpoint to recompute activations
+		// during backward instead of storing them.
+		checkpointedForward := Checkpoint(func(inputs []*Array) []*Array {
+			adapter.SetAllParams(inputs)
+			logits := gemma.Forward(inputTokens, caches)
+			return []*Array{logits}
+		})
+
+		lossFn := func(inputs []*Array) []*Array {
+			logits := checkpointedForward(inputs)[0]
+			loss := CrossEntropyLoss(logits, targetTokens)
+			return []*Array{loss}
+		}
+
+		grad := ValueAndGrad(lossFn, argnums...)
+		values, grads, err := grad.Apply(params...)
+		grad.Free()
+		if err != nil {
+			t.Fatalf("step %d: ValueAndGrad failed: %v", step, err)
+		}
+
+		Materialize(append(values, grads...)...)
+
+		loss := values[0].Float()
+		t.Logf("step %d: loss = %.4f (checkpointed)", step, loss)
+
+		if step == 0 {
+			initialLoss = loss
+			if math.IsNaN(loss) || math.IsInf(loss, 0) {
+				t.Fatalf("initial loss is %f", loss)
+			}
+		}
+		finalLoss = loss
+
+		updated := opt.Step(params, grads)
+		for i := range updated {
+			Materialize(updated[i])
+		}
+		params = updated
+		adapter.SetAllParams(params)
+	}
+
+	t.Logf("checkpointed loss: %.4f → %.4f", initialLoss, finalLoss)
+	if finalLoss >= initialLoss {
+		t.Errorf("loss did not decrease with checkpointing: %.4f → %.4f", initialLoss, finalLoss)
+	}
+
+	ClearCache()
+}

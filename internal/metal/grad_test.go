@@ -309,6 +309,45 @@ func TestCheckpoint(t *testing.T) {
 	}
 }
 
+func TestCheckpoint_GradientFlows(t *testing.T) {
+	// Checkpoint should produce correct gradients (same as non-checkpointed).
+	// f(x) = sum(x^2), df/dx = 2x. At x=[1,2,3]: grad=[2,4,6].
+	fn := func(inputs []*Array) []*Array {
+		x := inputs[0]
+		return []*Array{SumAll(Mul(x, x))}
+	}
+	cpFn := Checkpoint(fn)
+
+	x := FromValues([]float32{1.0, 2.0, 3.0}, 3)
+
+	// Gradient through checkpointed function.
+	grad := ValueAndGrad(func(inputs []*Array) []*Array {
+		return cpFn(inputs)
+	})
+	defer grad.Free()
+
+	values, grads, err := grad.Apply(x)
+	if err != nil {
+		t.Fatalf("ValueAndGrad through Checkpoint: %v", err)
+	}
+	Materialize(values[0], grads[0])
+
+	// Value: 1+4+9 = 14
+	val := values[0].Float()
+	if math.Abs(val-14.0) > 1e-4 {
+		t.Errorf("value = %f, want 14.0", val)
+	}
+
+	// Gradients: [2, 4, 6]
+	gFloats := grads[0].Floats()
+	expected := []float32{2.0, 4.0, 6.0}
+	for i, exp := range expected {
+		if math.Abs(float64(gFloats[i]-exp)) > 1e-4 {
+			t.Errorf("grad[%d] = %f, want %f", i, gFloats[i], exp)
+		}
+	}
+}
+
 func TestSumAll(t *testing.T) {
 	a := FromValues([]float32{1.0, 2.0, 3.0, 4.0}, 2, 2)
 	result := SumAll(a)
