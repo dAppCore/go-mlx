@@ -45,7 +45,7 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 
 ## Phase 5: Ecosystem Integration (Virgil wishlist)
 
-- [ ] **Batch inference API** — go-i18n Phase 2a wants ~5K sentences/sec through Gemma3-1B. Single-prompt `Generate(..., WithMaxTokens(1))` works functionally for classification but won't hit 5K/sec. True batch inference (multiple prompts through one forward pass) is needed.
+- [x] **Batch inference API** — ✅ `Classify` (prefill-only, fast path) and `BatchGenerate` (autoregressive) implemented. Added `ForwardMasked` to InternalModel interface, threaded attention masks through Gemma3 and Qwen3 decoders. Mask: `[N, 1, L, L]` combining causal + padding (0=attend, -inf=ignore). Right-padded, sorted by length. Gemma3-1B 4-bit: **152 prompts/s** classify (4 prompts), BatchGenerate produces coherent per-prompt output. Types (`ClassifyResult`, `BatchResult`, `WithLogits`) in go-inference. 6 new tests (3 mask unit, 3 model). Design doc: `docs/plans/2026-02-19-batch-inference-design.md`.
 - [ ] **Inference metrics** — Expose tokens/sec, peak memory, GPU utilisation as structured data. LEM Lab dashboard and go-ai scoring engine both want this.
 - [ ] **Model quantisation awareness** — MLX supports 4-bit and 8-bit quantised models. The loader already handles quantised safetensors (GroupSize, Bits in config).
 - [ ] **Embed-friendly model loading** — Add `Discover(baseDir)` that scans for available models and returns metadata.
