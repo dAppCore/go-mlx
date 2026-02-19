@@ -198,7 +198,7 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	switch m.modelType {
 	case "gemma3":
 		return formatGemmaChat(messages)
-	case "qwen3":
+	case "qwen2", "qwen3":
 		return formatQwenChat(messages)
 	default:
 		var s string

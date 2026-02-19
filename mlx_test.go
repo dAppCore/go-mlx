@@ -294,3 +294,91 @@ func TestGemma3_1B_ContextCancel(t *testing.T) {
 	}
 	t.Logf("Stopped after %d tokens", count)
 }
+
+// --- Qwen2 (DeepSeek R1 7B) tests ---
+
+func qwen2ModelPath(t *testing.T) string {
+	t.Helper()
+	paths := []string{
+		"/Volumes/Data/lem/LEK-DeepSeek-R1-7B",
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("no Qwen2/DeepSeek model available")
+	return ""
+}
+
+// TestQwen2_Inference validates Qwen2 arch (DeepSeek R1 7B) end-to-end.
+func TestQwen2_Inference(t *testing.T) {
+	modelPath := qwen2ModelPath(t)
+
+	loadStart := time.Now()
+	m, err := inference.LoadModel(modelPath)
+	loadDur := time.Since(loadStart)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	t.Logf("Model loaded in %s", loadDur)
+
+	if m.ModelType() != "qwen2" {
+		t.Errorf("ModelType() = %q, want %q", m.ModelType(), "qwen2")
+	}
+
+	ctx := context.Background()
+	genStart := time.Now()
+	var tokens []inference.Token
+	var output strings.Builder
+	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(32)) {
+		tokens = append(tokens, tok)
+		output.WriteString(tok.Text)
+	}
+	genDur := time.Since(genStart)
+
+	if err := m.Err(); err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	nTokens := len(tokens)
+	if nTokens == 0 {
+		t.Fatal("Generate produced no tokens")
+	}
+
+	tps := float64(nTokens) / genDur.Seconds()
+	t.Logf("Generated %d tokens in %s (%.1f tok/s)", nTokens, genDur, tps)
+	t.Logf("Output: %s", output.String())
+	for i, tok := range tokens {
+		t.Logf("  [%d] id=%d %q", i, tok.ID, tok.Text)
+	}
+}
+
+// TestQwen2_Chat validates chat template for Qwen2 models.
+func TestQwen2_Chat(t *testing.T) {
+	modelPath := qwen2ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+
+	ctx := context.Background()
+	var output strings.Builder
+	var count int
+	for tok := range m.Chat(ctx, []inference.Message{
+		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
+	}, inference.WithMaxTokens(32)) {
+		output.WriteString(tok.Text)
+		count++
+	}
+	if err := m.Err(); err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("Chat produced no tokens")
+	}
+	t.Logf("Chat output (%d tokens): %s", count, output.String())
+}

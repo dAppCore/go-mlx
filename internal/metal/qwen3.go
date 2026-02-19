@@ -28,15 +28,17 @@ type Qwen3Config struct {
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
 }
 
-// Qwen3Model is the Qwen 3 text model.
+// Qwen3Model is the Qwen 2/3 text model.
+// Qwen 2 and 3 share the same architecture; Qwen 3 adds Q/K RMS normalization.
 type Qwen3Model struct {
 	EmbedTokens *Embedding
 	Layers      []*Qwen3DecoderLayer
 	Norm        *RMSNormModule
 	Output      *Linear
 
-	Tok *Tokenizer
-	Cfg *Qwen3Config
+	Tok       *Tokenizer
+	Cfg       *Qwen3Config
+	modelType string // "qwen2" or "qwen3"
 }
 
 // Qwen3DecoderLayer is a single transformer block.
@@ -100,7 +102,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	return &cfg, nil
 }
 
-// LoadQwen3 loads a Qwen 3 model from a safetensors directory.
+// LoadQwen3 loads a Qwen 2 or 3 model from a safetensors directory.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	data, err := os.ReadFile(filepath.Join(modelPath, "config.json"))
 	if err != nil {
@@ -159,12 +161,20 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		embed.Bits = q.Bits
 	}
 
+	// Detect Qwen 2 vs 3 by presence of Q/K normalization weights.
+	hasQKNorm := w("model.layers.0.self_attn.q_norm.weight") != nil
+	detectedType := "qwen3"
+	if !hasQKNorm {
+		detectedType = "qwen2"
+	}
+
 	m := &Qwen3Model{
 		EmbedTokens: embed,
 		Layers:      make([]*Qwen3DecoderLayer, cfg.NumHiddenLayers),
 		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
+		modelType:   detectedType,
 	}
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
@@ -260,9 +270,13 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, cfg *Qwen3Config
 	v = AsStrided(v, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
 
-	// Q/K RMS normalization (Qwen 3 has this)
-	q = a.QNorm.Forward(q, cfg.RMSNormEps)
-	k = a.KNorm.Forward(k, cfg.RMSNormEps)
+	// Q/K RMS normalization (Qwen 3 has this; Qwen 2 does not)
+	if a.QNorm != nil && a.QNorm.Weight != nil {
+		q = a.QNorm.Forward(q, cfg.RMSNormEps)
+	}
+	if a.KNorm != nil && a.KNorm.Weight != nil {
+		k = a.KNorm.Forward(k, cfg.RMSNormEps)
+	}
 
 	// RoPE — single theta for all layers (no sliding window)
 	q = RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
@@ -305,8 +319,8 @@ func (m *Qwen3Model) NumLayers() int { return len(m.Layers) }
 // Tokenizer returns the model's tokenizer.
 func (m *Qwen3Model) Tokenizer() *Tokenizer { return m.Tok }
 
-// ModelType returns the architecture identifier.
-func (m *Qwen3Model) ModelType() string { return "qwen3" }
+// ModelType returns the architecture identifier ("qwen2" or "qwen3").
+func (m *Qwen3Model) ModelType() string { return m.modelType }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
 func (m *Qwen3Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
