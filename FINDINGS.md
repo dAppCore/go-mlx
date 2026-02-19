@@ -177,3 +177,40 @@ Virgil is splitting go-ai into sub-packages, with go-ai becoming a meta/catch-al
 3. Document the behaviour clearly if views are intentionally lazy
 
 This is a data correctness issue — silent wrong results, not a crash.
+
+---
+
+## 2026-02-19: Backend Abstraction — API Breaking Change
+
+**Design doc:** `docs/plans/2026-02-19-backend-abstraction-design.md`
+
+### What's changing
+
+The entire public API is being replaced. All CGO code moves to `internal/metal/`. The root package becomes a clean interface layer:
+
+```go
+m, _ := mlx.LoadModel("/path/to/model/")
+defer m.Close()
+for tok := range m.Generate("prompt", mlx.WithMaxTokens(128)) {
+    fmt.Print(tok.Text)
+}
+```
+
+The old API (`Array`, `MatMul`, `model.LoadModel`, `model.Model`, etc.) will no longer be public.
+
+### Impact on go-ai
+
+`backend_mlx.go` currently imports root-level Array, ops, model types. These move to `internal/metal/` and become inaccessible. Migration: replace direct tensor manipulation with `mlx.LoadModel()` + `mlx.TextModel.Generate()`.
+
+### Impact on go-i18n
+
+The API for Gemma3-1B domain classification will be:
+```go
+m, _ := mlx.LoadModel("/path/to/gemma-3-1b/")
+for tok := range m.Generate(sentence, mlx.WithMaxTokens(32)) { ... }
+```
+Streaming via `iter.Seq[Token]`. No tokenisation or sampling to handle.
+
+### Memory leak fix included
+
+The refactor includes deterministic memory management — `TextModel.Close()` for model weights and per-step intermediate cleanup during generation. This addresses the current production blocker.

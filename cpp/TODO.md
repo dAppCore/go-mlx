@@ -17,6 +17,13 @@ Tasks for the CLion Claude session. Written by GoLand Claude or Virgil.
 - [ ] **Check if `mlx_cumsum` exists** — The Go TopP (nucleus) sampler in `sample/sample.go` is a stub because it needs cumulative sum along an axis. Check if `mlx_cumsum` or equivalent is in `ops.h`. If so, the GoLand Claude can implement proper TopP sampling.
 - [ ] **Survey `mlx_contiguous` / `mlx_flatten` / `mlx_copy`** — We need a way to force an array into contiguous row-major memory. Check all of: `mlx_contiguous`, `mlx_flatten`, `mlx_copy`, `mlx_as_contiguous`. Any of these would fix the Floats() bug.
 
+## Memory Management Research (from Backend Abstraction Design)
+
+- [ ] **What does `mlx_clear_cache()` release?** — The Go side needs to call this per decode step to free intermediate arrays (logits, attention, MLP activations). Does it release GPU memory? Does it release the allocator pool? Can it be called safely mid-generation without breaking the computation graph?
+- [ ] **Is `mlx_array_free()` safe on graph-referenced arrays?** — During generation, intermediate arrays may be inputs to other pending lazy ops. If we free an intermediate after materialising it, does MLX handle the reference correctly or does it segfault? This determines whether we can do per-step deterministic cleanup.
+- [ ] **MLX allocator pool behaviour** — Does `mlx_array_free()` return memory to the system or to an internal pool? Under sustained inference (1000+ tokens), we need memory to plateau, not grow. Document the allocator's reuse strategy.
+- [ ] **Research structured error info** — The Go side is moving from `checkError()` (log and swallow) to proper error returns. Can `mlx_set_error_handler()` give us error codes or categories, or is it always a free-form string? Is the string format stable across mlx-c versions?
+
 ## Standing Tasks
 
 - [ ] **API gap analysis** — When the GoLand Claude needs a C function that isn't exposed by mlx-c, document the gap here and research if upstream mlx-c supports it or if a patch is needed.
