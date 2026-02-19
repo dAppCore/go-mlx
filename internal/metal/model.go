@@ -65,7 +65,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 	switch probe.ModelType {
 	case "qwen3":
 		return LoadQwen3(modelPath)
-	case "gemma3", "gemma2":
+	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	default:
 		return nil, fmt.Errorf("model: unsupported architecture %q", probe.ModelType)

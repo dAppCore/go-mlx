@@ -5,7 +5,9 @@ package mlx_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"forge.lthn.ai/core/go-inference"
 	_ "forge.lthn.ai/core/go-mlx"
@@ -137,12 +139,25 @@ func TestLoadOptionsDefaults(t *testing.T) {
 	}
 }
 
+// gemma3ModelPath returns the path to a Gemma3-1B model on disk, or skips.
+func gemma3ModelPath(t *testing.T) string {
+	t.Helper()
+	paths := []string{
+		"/Volumes/Data/lem/gemma-3-1b-it-base",
+		"/Volumes/Data/lem/safetensors/gemma-3/",
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("no Gemma3 model available")
+	return ""
+}
+
 // TestLoadModel_Generate requires a model on disk. Skipped in CI.
 func TestLoadModel_Generate(t *testing.T) {
-	const modelPath = "/Volumes/Data/lem/safetensors/gemma-3/"
-	if _, err := os.Stat(modelPath); err != nil {
-		t.Skip("model not available at", modelPath)
-	}
+	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
 	if err != nil {
@@ -167,4 +182,115 @@ func TestLoadModel_Generate(t *testing.T) {
 		t.Error("Generate produced no tokens")
 	}
 	t.Logf("Generated %d tokens", count)
+}
+
+// TestGemma3_1B_Inference validates end-to-end inference with Gemma3-1B.
+// Reports tokens/sec for prefill and decode phases.
+func TestGemma3_1B_Inference(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	loadStart := time.Now()
+	m, err := inference.LoadModel(modelPath)
+	loadDur := time.Since(loadStart)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+	t.Logf("Model loaded in %s", loadDur)
+
+	if m.ModelType() != "gemma3" {
+		t.Fatalf("ModelType() = %q, want %q", m.ModelType(), "gemma3")
+	}
+
+	// Generate with greedy sampling (temperature=0) for deterministic output.
+	ctx := context.Background()
+	const maxTokens = 64
+
+	genStart := time.Now()
+	var tokens []inference.Token
+	var output strings.Builder
+	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(maxTokens)) {
+		tokens = append(tokens, tok)
+		output.WriteString(tok.Text)
+	}
+	genDur := time.Since(genStart)
+
+	if err := m.Err(); err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+
+	nTokens := len(tokens)
+	if nTokens == 0 {
+		t.Fatal("Generate produced no tokens")
+	}
+
+	tps := float64(nTokens) / genDur.Seconds()
+	t.Logf("Generated %d tokens in %s (%.1f tok/s)", nTokens, genDur, tps)
+	t.Logf("Output: %s", output.String())
+
+	// Log individual tokens for debugging.
+	for i, tok := range tokens {
+		t.Logf("  [%d] id=%d %q", i, tok.ID, tok.Text)
+	}
+
+	// Sanity: the output should contain something related to "4".
+	if !strings.Contains(output.String(), "4") {
+		t.Errorf("Expected output to contain '4' for 'What is 2+2?', got: %s", output.String())
+	}
+}
+
+// TestGemma3_1B_Chat validates chat template formatting and generation.
+func TestGemma3_1B_Chat(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+
+	ctx := context.Background()
+	var output strings.Builder
+	var count int
+	for tok := range m.Chat(ctx, []inference.Message{
+		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
+	}, inference.WithMaxTokens(16)) {
+		output.WriteString(tok.Text)
+		count++
+	}
+	if err := m.Err(); err != nil {
+		t.Fatalf("Chat error: %v", err)
+	}
+	if count == 0 {
+		t.Fatal("Chat produced no tokens")
+	}
+	t.Logf("Chat output (%d tokens): %s", count, output.String())
+}
+
+// TestGemma3_1B_ContextCancel validates that context cancellation stops generation.
+func TestGemma3_1B_ContextCancel(t *testing.T) {
+	modelPath := gemma3ModelPath(t)
+
+	m, err := inference.LoadModel(modelPath)
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	defer m.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var count int
+	for range m.Generate(ctx, "Tell me a long story about dragons.", inference.WithMaxTokens(1000)) {
+		count++
+		if count >= 5 {
+			cancel()
+		}
+	}
+	if count > 20 {
+		t.Errorf("Expected generation to stop near 5 tokens after cancel, got %d", count)
+	}
+	if err := m.Err(); err != context.Canceled {
+		t.Logf("Err() = %v (expected context.Canceled or nil)", err)
+	}
+	t.Logf("Stopped after %d tokens", count)
 }

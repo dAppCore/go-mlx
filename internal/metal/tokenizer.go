@@ -111,8 +111,11 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		t.invVocab[tok.ID] = tok.Content
 	}
 
-	// Detect GPT-2 byte-level BPE (Qwen, GPT, Llama use Ġ for space)
-	if _, ok := t.vocab["Ġ"]; ok {
+	// Detect GPT-2 byte-level BPE (Qwen, GPT, DeepSeek use Ġ for space).
+	// Check for "Ġthe" rather than bare "Ġ" — large SentencePiece vocabs
+	// (Gemma3 262K) may include Ġ as an obscure character without using
+	// GPT-2 byte encoding.
+	if _, ok := t.vocab["Ġthe"]; ok {
 		t.isGPT2BPE = true
 		t.gpt2Decoder, t.gpt2Encoder = buildGPT2ByteMaps()
 	}
