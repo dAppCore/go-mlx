@@ -14,6 +14,8 @@ Tasks for the CLion Claude session. Written by GoLand Claude or Virgil.
 
 - [ ] **Find `mlx_contiguous` or equivalent** — `Floats()`/`DataInt32()` on non-contiguous arrays (transpose, broadcast, slice views) returns wrong data because `mlx_array_data_float32` returns the physical buffer, not the logical layout. Need a C function that copies a non-contiguous array to contiguous memory. Check if `mlx_contiguous` exists in mlx-c headers or if we need `mlx_reshape` to force a copy. This is a data correctness bug — see FINDINGS.md in project root.
 - [ ] **Verify `mlx_array_data_*` eval semantics** — Does `mlx_array_data_float32()` trigger evaluation (like C++ `array::data()` does), or must we call `mlx_eval` first? The Go side calls `Materialize()` before data access but some code paths might skip it.
+- [ ] **Check if `mlx_cumsum` exists** — The Go TopP (nucleus) sampler in `sample/sample.go` is a stub because it needs cumulative sum along an axis. Check if `mlx_cumsum` or equivalent is in `ops.h`. If so, the GoLand Claude can implement proper TopP sampling.
+- [ ] **Survey `mlx_contiguous` / `mlx_flatten` / `mlx_copy`** — We need a way to force an array into contiguous row-major memory. Check all of: `mlx_contiguous`, `mlx_flatten`, `mlx_copy`, `mlx_as_contiguous`. Any of these would fix the Floats() bug.
 
 ## Standing Tasks
 

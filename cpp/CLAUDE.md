@@ -14,28 +14,40 @@ You are the C++ specialist for `forge.lthn.ai/core/go-mlx`. This Go package wrap
 
 ## Project Layout
 
+This directory (`cpp/`) is your CLion project root. It has its own CMakeLists.txt that fetches mlx-c v0.4.1 independently.
+
 ```
-go-mlx/                          ← CMakeLists.txt lives here (CLion project root)
-├── CMakeLists.txt               ← Fetches mlx-c v0.4.1, builds to dist/
-├── cpp/                         ← YOUR workspace docs (this directory)
-│   ├── CLAUDE.md                ← This file
-│   ├── TODO.md                  ← C++ task queue
-│   └── FINDINGS.md              ← C++ research notes
-│
-├── build/                       ← CMake build directory (gitignored)
-│   └── _deps/
-│       ├── mlx-c-src/           ← mlx-c v0.4.1 source (24 .cpp, 27 .h)
-│       │   └── mlx/c/           ← The C API headers + implementations
-│       └── mlx-src/             ← MLX C++ framework source (Metal shaders, ops)
-│
-├── dist/                        ← Installed artifacts (gitignored)
-│   ├── include/mlx/c/           ← Headers used by Go CGO
-│   └── lib/                     ← libmlxc.dylib, libmlx.dylib
-│
-└── *.go                         ← Go bindings (GoLand Claude's domain)
+cpp/                              ← CLion project root (this directory)
+├── CLAUDE.md                     ← This file
+├── TODO.md                       ← C++ task queue
+├── FINDINGS.md                   ← C++ research notes
+├── CMakeLists.txt                ← Standalone CMake, fetches mlx-c v0.4.1
+└── build/                        ← CMake build dir (after first build)
+    └── _deps/
+        ├── mlx-c-src/            ← mlx-c v0.4.1 source (24 .cpp, 27 .h)
+        │   └── mlx/c/            ← The C API headers + implementations
+        └── mlx-src/              ← MLX C++ framework source
+
+../                               ← Parent: go-mlx (GoLand Claude's domain)
+├── CMakeLists.txt                ← Go side's CMake (same mlx-c version)
+├── *.go                          ← Go bindings
+├── dist/                         ← Go side's installed libs
+└── build/                        ← Go side's CMake build
 ```
 
-## Key Files
+## Build
+
+```bash
+# From cpp/ directory:
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+
+# Source lands in: build/_deps/mlx-c-src/mlx/c/
+```
+
+After first build, all mlx-c headers and source are available for reading and indexing.
+
+## Key Files (after build)
 
 ### mlx-c Headers (the API surface Go binds to)
 - `build/_deps/mlx-c-src/mlx/c/array.h` — Array creation, data access, shape
@@ -50,26 +62,8 @@ go-mlx/                          ← CMakeLists.txt lives here (CLion project ro
 - `build/_deps/mlx-c-src/mlx/c/memory.h` — Memory management
 
 ### CMake
-- `go-mlx/CMakeLists.txt` — Top-level, fetches mlx-c v0.4.1 from GitHub
+- `cpp/CMakeLists.txt` — This project's build config (standalone)
 - `build/_deps/mlx-c-src/CMakeLists.txt` — mlx-c's own build config
-
-## Build
-
-```bash
-# From go-mlx root:
-cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
-cmake --install build
-
-# Or via Go:
-go generate ./...
-```
-
-### CMake Settings
-- `MLX_BUILD_SAFETENSORS=ON`
-- `MLX_BUILD_GGUF=OFF`
-- `BUILD_SHARED_LIBS=ON`
-- macOS deployment target: 26.0
 
 ## How Go Binds to mlx-c
 
@@ -87,8 +81,8 @@ Each Go function calls the corresponding `mlx_*` C function. The pattern is:
 
 ## Communication Protocol
 
-- **Receiving work**: Tasks appear in `cpp/TODO.md`, written by the GoLand Claude or Virgil
-- **Reporting findings**: Write to `cpp/FINDINGS.md`
+- **Receiving work**: Tasks appear in `TODO.md`, written by the GoLand Claude or Virgil
+- **Reporting findings**: Write to `FINDINGS.md`
 - **Requesting Go changes**: Describe what the GoLand Claude needs to change in FINDINGS.md
 - **Completing tasks**: Mark `[x]` in TODO.md with notes
 
