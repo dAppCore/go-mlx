@@ -94,7 +94,62 @@ func TestEncode_ProducesTokens(t *testing.T) {
 	if tokens[0] != tok.BOSToken() {
 		t.Errorf("first token = %d, want BOS (%d)", tokens[0], tok.BOSToken())
 	}
-	t.Logf("Encode(\"hello\") = %v", tokens)
+	// With BPE merges ("h e" → "he", "l l" → "ll"), "hello" with ▁ prefix becomes:
+	// "▁" "h" "e" "l" "l" "o" → merge "h e" → "▁" "he" "l" "l" "o"
+	// → merge "l l" → "▁" "he" "ll" "o"
+	// No further merges. But "▁" is not "▁h" so it stays as "▁".
+	// Vocab: ▁=4, he=5, ll=6, o=3. Expected: [BOS, 4, 5, 6, 3]
+	want := []int32{100, 4, 5, 6, 3}
+	if len(tokens) != len(want) {
+		t.Fatalf("Encode(\"hello\") = %v, want %v", tokens, want)
+	}
+	for i := range tokens {
+		if tokens[i] != want[i] {
+			t.Errorf("tokens[%d] = %d, want %d", i, tokens[i], want[i])
+		}
+	}
+}
+
+func TestBPEMerge(t *testing.T) {
+	tok := &Tokenizer{
+		mergeRanks: map[string]int{
+			"h e":  0,
+			"l l":  1,
+			"he l": 2,
+		},
+	}
+
+	// "h" "e" "l" "l" "o" → merge "h e" (rank 0) → "he" "l" "l" "o"
+	// → merge "l l" (rank 1) → "he" "ll" "o"
+	// → merge "he l" does NOT match "he ll" — stops here.
+	symbols := []string{"h", "e", "l", "l", "o"}
+	got := tok.bpeMerge(symbols)
+	want := []string{"he", "ll", "o"}
+	if len(got) != len(want) {
+		t.Fatalf("bpeMerge = %v, want %v", got, want)
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("bpeMerge[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestBPEMerge_NoMerges(t *testing.T) {
+	tok := &Tokenizer{mergeRanks: map[string]int{}}
+	symbols := []string{"a", "b", "c"}
+	got := tok.bpeMerge(symbols)
+	if len(got) != 3 {
+		t.Errorf("bpeMerge with no merges = %v, want [a b c]", got)
+	}
+}
+
+func TestBPEMerge_SingleSymbol(t *testing.T) {
+	tok := &Tokenizer{mergeRanks: map[string]int{"a b": 0}}
+	got := tok.bpeMerge([]string{"x"})
+	if len(got) != 1 || got[0] != "x" {
+		t.Errorf("bpeMerge single = %v, want [x]", got)
+	}
 }
 
 func TestDecode_SpecialTokensSkipped(t *testing.T) {

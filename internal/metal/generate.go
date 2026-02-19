@@ -69,6 +69,10 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 }
 
 // Generate streams tokens for the given prompt.
+//
+// Each call allocates fresh KV caches that are released to GC when the iterator
+// completes. For multi-turn chat, call [ClearCache] between turns to reclaim
+// Metal memory promptly rather than waiting for GC finalisers.
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	m.lastErr = nil
 
@@ -86,6 +90,9 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			return
 		}
 
+		// Track generated token IDs for repeat penalty.
+		var history []int32
+
 		for i := 0; i < cfg.MaxTokens; i++ {
 			select {
 			case <-ctx.Done():
@@ -97,6 +104,12 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			// Sample from last position logits
 			lastPos := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
 			lastPos = Reshape(lastPos, 1, int32(lastPos.Dim(2)))
+
+			// Apply repeat penalty before sampling.
+			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
+				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
+			}
+
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
 				m.lastErr = fmt.Errorf("sample step %d: %w", i, err)
@@ -104,6 +117,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 
 			id := int32(next.Int())
+			history = append(history, id)
 
 			// Check stop conditions
 			if id == m.tokenizer.EOSToken() {
@@ -130,6 +144,37 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 		}
 	}
+}
+
+// applyRepeatPenalty modifies logits to discourage repeated tokens.
+// For each unique token ID in history: positive logits are divided by penalty,
+// negative logits are multiplied by penalty. Both make the token less likely.
+func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array {
+	// Deduplicate history to get unique token IDs.
+	seen := make(map[int32]bool, len(history))
+	var indices []int32
+	for _, id := range history {
+		if !seen[id] {
+			seen[id] = true
+			indices = append(indices, id)
+		}
+	}
+
+	idx := FromValues(indices, 1, len(indices))
+	gathered := TakeAlongAxis(logits, idx, -1)
+
+	zero := FromValue(float32(0))
+	invPenalty := FromValue(1.0 / penalty)
+	penaltyVal := FromValue(penalty)
+
+	// Positive logits: divide by penalty. Negative logits: multiply by penalty.
+	penalised := Where(
+		Greater(gathered, zero),
+		Mul(gathered, invPenalty),
+		Mul(gathered, penaltyVal),
+	)
+
+	return PutAlongAxis(logits, idx, penalised, -1)
 }
 
 // newCaches creates per-layer KV caches. If contextLen is set, all unbounded

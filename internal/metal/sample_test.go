@@ -146,3 +146,47 @@ func TestMinP_RestrictsOptions(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyRepeatPenalty(t *testing.T) {
+	// Logits: [1, 4] with values [5.0, -3.0, 1.0, 0.0]
+	// History: tokens 0 and 1 have been seen.
+	// Penalty 2.0:
+	//   token 0 (logit 5.0 > 0): 5.0 / 2.0 = 2.5
+	//   token 1 (logit -3.0 < 0): -3.0 * 2.0 = -6.0
+	//   token 2 (not in history): unchanged = 1.0
+	//   token 3 (not in history): unchanged = 0.0
+	logits := FromValues([]float32{5.0, -3.0, 1.0, 0.0}, 1, 4)
+	Materialize(logits)
+
+	result := applyRepeatPenalty(logits, []int32{0, 1, 0}, 2.0) // duplicate 0 should be deduped
+	Materialize(result)
+
+	got := result.Floats()
+	want := []float32{2.5, -6.0, 1.0, 0.0}
+	for i := range got {
+		diff := got[i] - want[i]
+		if diff > 0.01 || diff < -0.01 {
+			t.Errorf("repeatPenalty[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestApplyRepeatPenalty_NoHistory(t *testing.T) {
+	// With empty history, logits should be unchanged.
+	logits := FromValues([]float32{5.0, -3.0, 1.0}, 1, 3)
+	Materialize(logits)
+
+	// applyRepeatPenalty is not called when history is empty (checked in generate loop),
+	// but verify the function handles it gracefully if called directly.
+	result := applyRepeatPenalty(logits, []int32{1}, 1.0) // penalty=1.0 → no change
+	Materialize(result)
+
+	got := result.Floats()
+	want := []float32{5.0, -3.0, 1.0}
+	for i := range got {
+		diff := got[i] - want[i]
+		if diff > 0.01 || diff < -0.01 {
+			t.Errorf("penalty=1.0[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}

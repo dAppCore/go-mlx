@@ -11,10 +11,11 @@ import (
 
 // Tokenizer handles text-to-token and token-to-text conversion.
 type Tokenizer struct {
-	vocab    map[string]int32
-	invVocab map[int32]string
-	merges   []mergePair
-	special  map[string]int32
+	vocab      map[string]int32
+	invVocab   map[int32]string
+	merges     []mergePair
+	mergeRanks map[string]int // "a b" → rank for O(1) merge lookup
+	special    map[string]int32
 
 	bosToken int32
 	eosToken int32
@@ -95,6 +96,12 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		}
 	}
 
+	// Build merge rank lookup for BPE.
+	t.mergeRanks = make(map[string]int, len(t.merges))
+	for _, m := range t.merges {
+		t.mergeRanks[m.a+" "+m.b] = m.rank
+	}
+
 	// Parse special tokens
 	for _, tok := range tj.AddedTokens {
 		if tok.Special {
@@ -166,17 +173,44 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 	return
 }
 
+// bpeMerge applies BPE merges to a sequence of symbols until no more merges apply.
+// Uses the standard algorithm: repeatedly find the lowest-rank adjacent pair and merge it.
+func (t *Tokenizer) bpeMerge(symbols []string) []string {
+	for len(symbols) > 1 {
+		// Find the pair with the lowest merge rank.
+		bestRank := -1
+		bestIdx := -1
+		for i := 0; i < len(symbols)-1; i++ {
+			key := symbols[i] + " " + symbols[i+1]
+			if rank, ok := t.mergeRanks[key]; ok {
+				if bestRank < 0 || rank < bestRank {
+					bestRank = rank
+					bestIdx = i
+				}
+			}
+		}
+		if bestIdx < 0 {
+			break // No more merges available.
+		}
+		// Merge the pair at bestIdx.
+		merged := symbols[bestIdx] + symbols[bestIdx+1]
+		symbols = append(symbols[:bestIdx], append([]string{merged}, symbols[bestIdx+2:]...)...)
+	}
+	return symbols
+}
+
 // Encode converts text to token IDs. Prepends BOS token.
 func (t *Tokenizer) Encode(text string) []int32 {
-	tokens := []int32{t.bosToken}
-
 	if t.isGPT2BPE {
 		return t.encodeGPT2(text)
 	}
 
-	// SentencePiece style encoding
+	tokens := []int32{t.bosToken}
+
+	// SentencePiece style: split into segments around special tokens, then BPE each segment.
 	remaining := text
 	for remaining != "" {
+		// Check for special tokens at the current position.
 		found := false
 		for tok, id := range t.special {
 			if strings.HasPrefix(remaining, tok) {
@@ -186,15 +220,35 @@ func (t *Tokenizer) Encode(text string) []int32 {
 				break
 			}
 		}
-		if !found {
-			r := []rune(remaining)
-			ch := "▁" + string(r[0])
-			if id, ok := t.vocab[ch]; ok {
-				tokens = append(tokens, id)
-			} else if id, ok := t.vocab[string(r[0])]; ok {
+		if found {
+			continue
+		}
+
+		// Find the next special token boundary (or end of string).
+		end := len(remaining)
+		for tok := range t.special {
+			if idx := strings.Index(remaining, tok); idx > 0 && idx < end {
+				end = idx
+			}
+		}
+		segment := remaining[:end]
+		remaining = remaining[end:]
+
+		// SentencePiece: prefix the segment with ▁ (space marker) and split into characters.
+		spText := "▁" + segment
+		symbols := make([]string, 0, len([]rune(spText)))
+		for _, r := range spText {
+			symbols = append(symbols, string(r))
+		}
+
+		// Apply BPE merges.
+		symbols = t.bpeMerge(symbols)
+
+		// Look up merged symbols in vocab.
+		for _, sym := range symbols {
+			if id, ok := t.vocab[sym]; ok {
 				tokens = append(tokens, id)
 			}
-			remaining = string(r[1:])
 		}
 	}
 
@@ -205,45 +259,56 @@ func (t *Tokenizer) Encode(text string) []int32 {
 func (t *Tokenizer) encodeGPT2(text string) []int32 {
 	tokens := []int32{t.bosToken}
 
-	// Convert text bytes to GPT-2 Unicode representation
-	var encoded strings.Builder
-	for _, b := range []byte(text) {
-		if r, ok := t.gpt2Encoder[b]; ok {
-			encoded.WriteRune(r)
-		}
-	}
-	gpt2Text := encoded.String()
-
-	// Scan for special tokens and regular text
-	remaining := gpt2Text
+	// Split text around special tokens (matched in original form, not byte-encoded).
+	remaining := text
 	for remaining != "" {
-		// Check special tokens (these are stored as-is, not byte-encoded)
+		// Check for special tokens at the current position.
 		found := false
 		for tok, id := range t.special {
-			// Special tokens in GPT-2 tokenizers are stored in their original form
-			// Convert the special token to GPT-2 encoding for matching
-			var encTok strings.Builder
-			for _, b := range []byte(tok) {
-				if r, ok := t.gpt2Encoder[b]; ok {
-					encTok.WriteRune(r)
-				}
-			}
-			encStr := encTok.String()
-			if strings.HasPrefix(remaining, encStr) {
+			if strings.HasPrefix(remaining, tok) {
 				tokens = append(tokens, id)
-				remaining = remaining[len(encStr):]
+				remaining = remaining[len(tok):]
 				found = true
 				break
 			}
 		}
-		if !found {
-			// Character-by-character lookup (simplified BPE)
-			r := []rune(remaining)
-			ch := string(r[0])
-			if id, ok := t.vocab[ch]; ok {
+		if found {
+			continue
+		}
+
+		// Find the next special token boundary (or end of string).
+		end := len(remaining)
+		for tok := range t.special {
+			if idx := strings.Index(remaining, tok); idx > 0 && idx < end {
+				end = idx
+			}
+		}
+		segment := remaining[:end]
+		remaining = remaining[end:]
+
+		// Convert segment bytes to GPT-2 Unicode representation.
+		var encoded strings.Builder
+		for _, b := range []byte(segment) {
+			if r, ok := t.gpt2Encoder[b]; ok {
+				encoded.WriteRune(r)
+			}
+		}
+
+		// Split into individual runes (GPT-2 BPE operates on Unicode chars).
+		runes := []rune(encoded.String())
+		symbols := make([]string, len(runes))
+		for i, r := range runes {
+			symbols[i] = string(r)
+		}
+
+		// Apply BPE merges.
+		symbols = t.bpeMerge(symbols)
+
+		// Look up merged symbols in vocab.
+		for _, sym := range symbols {
+			if id, ok := t.vocab[sym]; ok {
 				tokens = append(tokens, id)
 			}
-			remaining = string(r[1:])
 		}
 	}
 

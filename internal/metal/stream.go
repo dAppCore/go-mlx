@@ -17,6 +17,12 @@ type Stream struct {
 var (
 	defaultStream     *Stream
 	defaultStreamOnce sync.Once
+
+	defaultGPUStream     *Stream
+	defaultGPUStreamOnce sync.Once
+
+	defaultCPUStream     *Stream
+	defaultCPUStreamOnce sync.Once
 )
 
 // DefaultStream returns the default GPU stream, creating it on first use.
@@ -28,16 +34,22 @@ func DefaultStream() *Stream {
 	return defaultStream
 }
 
-// DefaultGPUStream returns a new GPU stream.
+// DefaultGPUStream returns the cached default GPU stream.
 func DefaultGPUStream() *Stream {
-	Init()
-	return &Stream{ctx: C.mlx_default_gpu_stream_new()}
+	defaultGPUStreamOnce.Do(func() {
+		Init()
+		defaultGPUStream = &Stream{ctx: C.mlx_default_gpu_stream_new()}
+	})
+	return defaultGPUStream
 }
 
-// DefaultCPUStream returns a new CPU stream.
+// DefaultCPUStream returns the cached default CPU stream.
 func DefaultCPUStream() *Stream {
-	Init()
-	return &Stream{ctx: C.mlx_default_cpu_stream_new()}
+	defaultCPUStreamOnce.Do(func() {
+		Init()
+		defaultCPUStream = &Stream{ctx: C.mlx_default_cpu_stream_new()}
+	})
+	return defaultCPUStream
 }
 
 // Synchronize waits for all operations on the stream to complete.
