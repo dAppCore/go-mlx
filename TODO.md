@@ -55,7 +55,7 @@ Python subprocess wrapper implementing `mlx.Backend`. Uses stdlib `os/exec` (no 
 
 #### 5.5.1 Python Helper Script (`mlxlm/bridge.py`)
 
-- [ ] **Create `mlxlm/bridge.py`** — Thin Python script embedded in Go binary via `//go:embed`:
+- [x] **Create `mlxlm/bridge.py`** — Thin Python script embedded in Go binary via `//go:embed`:
   - Reads JSON Lines from stdin, writes JSON Lines to stdout
   - **`load` command**: `{"cmd":"load","path":"/path/to/model","max_tokens":128}` → loads model + tokenizer, responds `{"ok":true,"model_type":"gemma3","vocab_size":262144}`
   - **`generate` command**: `{"cmd":"generate","prompt":"Hello","max_tokens":128,"temperature":0.7,"top_k":40,"top_p":0.9}` → streams `{"token":"Hello","token_id":123}` per token, then `{"done":true,"tokens_generated":42}`
@@ -68,7 +68,7 @@ Python subprocess wrapper implementing `mlx.Backend`. Uses stdlib `os/exec` (no 
 
 #### 5.5.2 Go Backend (`mlxlm/backend.go`)
 
-- [ ] **Create `mlxlm/backend.go`** — Go subprocess wrapper:
+- [x] **Create `mlxlm/backend.go`** — Go subprocess wrapper:
   - `type mlxlmBackend struct{}` — implements `mlx.Backend`
   - `func init()` — auto-registers via `mlx.Register(&mlxlmBackend{})`. Use build tag `//go:build !nomxlm` so consumers can opt out
   - `func (b *mlxlmBackend) Name() string` — returns `"mlx_lm"`
@@ -95,13 +95,13 @@ Python subprocess wrapper implementing `mlx.Backend`. Uses stdlib `os/exec` (no 
 
 #### 5.5.3 Tests (`mlxlm/backend_test.go`)
 
-- [ ] **Create mock Python script for testing** — A minimal Python script (in `testdata/mock_bridge.py` or inline) that:
+- [x] **Create mock Python script for testing** — A minimal Python script (in `testdata/mock_bridge.py` or inline) that:
   - Responds to `load` with fake model info
   - Responds to `generate` with 5 fixed tokens then `done`
   - Responds to `info` with fake metadata
   - Responds to `chat` same as generate
   - Tests don't need `mlx_lm` installed — pure mock
-- [ ] **Tests** using mock script:
+- [x] **Tests** using mock script:
   - (a) `Name()` returns `"mlx_lm"`
   - (b) `LoadModel` spawns subprocess, sends load command, gets response
   - (c) `Generate` streams tokens from subprocess, all tokens received
