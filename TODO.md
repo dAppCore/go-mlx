@@ -49,7 +49,69 @@ Implementation plan: `docs/plans/2026-02-19-backend-abstraction-plan.md`
 - [x] **Inference metrics** — ✅ `GenerateMetrics` type in go-inference with `Metrics()` on `TextModel`. Captures: prefill/decode timing, token counts, throughput (tok/s), peak and active GPU memory. Instrumented Generate, Classify, and BatchGenerate. Gemma3-1B 4-bit: prefill 246 tok/s, decode 82 tok/s, peak 6.2 GB. 1 new test.
 - [x] **Model quantisation awareness** — ✅ `ModelInfo` type in go-inference with `Info()` on `TextModel`. Exposes architecture, vocab size, layer count, hidden dimension, quantisation bits and group size. Loader already handles quantised safetensors transparently. 1 new test.
 - [x] **Embed-friendly model loading** — ✅ `Discover(baseDir)` in go-inference scans for model directories (config.json + *.safetensors). Returns `DiscoveredModel` with path, architecture, quantisation, file count. Finds 20 models across the lab. 1 new test.
-- [ ] **mlxlm/ backend** — Python subprocess wrapper via `core/go/pkg/process`. Implements `mlx.Backend` for mlx_lm compatibility.
+### 5.5 mlxlm/ Subprocess Backend
+
+Python subprocess wrapper implementing `mlx.Backend`. Uses stdlib `os/exec` (no core/go dependency). Communicates via JSON Lines over stdin/stdout.
+
+#### 5.5.1 Python Helper Script (`mlxlm/bridge.py`)
+
+- [ ] **Create `mlxlm/bridge.py`** — Thin Python script embedded in Go binary via `//go:embed`:
+  - Reads JSON Lines from stdin, writes JSON Lines to stdout
+  - **`load` command**: `{"cmd":"load","path":"/path/to/model","max_tokens":128}` → loads model + tokenizer, responds `{"ok":true,"model_type":"gemma3","vocab_size":262144}`
+  - **`generate` command**: `{"cmd":"generate","prompt":"Hello","max_tokens":128,"temperature":0.7,"top_k":40,"top_p":0.9}` → streams `{"token":"Hello","token_id":123}` per token, then `{"done":true,"tokens_generated":42}`
+  - **`chat` command**: `{"cmd":"chat","messages":[{"role":"user","content":"Hi"}],"max_tokens":128}` → same streaming output as generate
+  - **`info` command**: `{"cmd":"info"}` → responds with `{"model_type":"...","vocab_size":...,"layers":...}`
+  - **Error handling**: Malformed JSON → `{"error":"parse error: ..."}`. Model errors → `{"error":"..."}`
+  - Uses `mlx_lm.load()`, `mlx_lm.generate()`, `mlx_lm.stream_generate()` from the `mlx-lm` Python package
+  - Flushes stdout after every JSON line (critical for streaming)
+  - Imports only `mlx_lm`, `json`, `sys` — minimal Python deps
+
+#### 5.5.2 Go Backend (`mlxlm/backend.go`)
+
+- [ ] **Create `mlxlm/backend.go`** — Go subprocess wrapper:
+  - `type mlxlmBackend struct{}` — implements `mlx.Backend`
+  - `func init()` — auto-registers via `mlx.Register(&mlxlmBackend{})`. Use build tag `//go:build !nomxlm` so consumers can opt out
+  - `func (b *mlxlmBackend) Name() string` — returns `"mlx_lm"`
+  - `func (b *mlxlmBackend) LoadModel(path string, opts ...mlx.LoadOption) (mlx.TextModel, error)`:
+    1. Extract bridge.py from `//go:embed` to temp file (or use `-c` flag to pass script inline)
+    2. Spawn `python3 bridge.py` via `exec.CommandContext(ctx, "python3", tempScript)`
+    3. Pipe: `stdin` for JSON requests, `stdout` for JSON responses, `stderr` for Python tracebacks
+    4. Send `{"cmd":"load","path":path}` → wait for `{"ok":true,...}` response
+    5. Return `&mlxlmModel{cmd: cmd, stdin: stdinPipe, stdout: scanner, modelType: resp.ModelType}`
+  - `type mlxlmModel struct` — subprocess-backed `TextModel`:
+    - `cmd *exec.Cmd`, `stdin io.WriteCloser`, `stdout *bufio.Scanner`, `stderr *bufio.Scanner`
+    - `modelType string`, `lastErr error`, `mu sync.Mutex` (serialise Generate calls)
+  - `Generate(ctx, prompt, opts) iter.Seq[Token]`:
+    1. Lock `mu` (one generation at a time per subprocess)
+    2. Write JSON request to stdin
+    3. Range over stdout lines, parse JSON tokens, yield `mlx.Token{}`
+    4. On `ctx.Done()`: send `{"cmd":"cancel"}` to stdin, drain remaining output
+    5. On `{"done":true}`: return
+    6. On `{"error":"..."}`: set `m.lastErr`, return
+  - `Chat(ctx, messages, opts)`: format messages, call Generate
+  - `ModelType()`: return stored `m.modelType`
+  - `Err()`: return `m.lastErr`
+  - `Close()`: send `{"cmd":"quit"}` to stdin, wait 2s, then `cmd.Process.Kill()`
+
+#### 5.5.3 Tests (`mlxlm/backend_test.go`)
+
+- [ ] **Create mock Python script for testing** — A minimal Python script (in `testdata/mock_bridge.py` or inline) that:
+  - Responds to `load` with fake model info
+  - Responds to `generate` with 5 fixed tokens then `done`
+  - Responds to `info` with fake metadata
+  - Responds to `chat` same as generate
+  - Tests don't need `mlx_lm` installed — pure mock
+- [ ] **Tests** using mock script:
+  - (a) `Name()` returns `"mlx_lm"`
+  - (b) `LoadModel` spawns subprocess, sends load command, gets response
+  - (c) `Generate` streams tokens from subprocess, all tokens received
+  - (d) `Generate` with context cancellation stops early
+  - (e) `Chat` formats messages correctly
+  - (f) `Close` kills subprocess cleanly
+  - (g) `Err()` returns error on subprocess failure
+  - (h) `LoadModel` with invalid path returns error
+  - (i) Backend auto-registers (check `mlx.Get("mlx_lm")`)
+  - (j) Concurrent Generate calls are serialised (mu lock)
 
 ## Phase 6: Go 1.26 Modernisation
 
