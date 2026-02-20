@@ -1,0 +1,41 @@
+# go-mlx
+
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors format, with fused Metal kernels for RMSNorm, RoPE, and scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+
+**Module**: `forge.lthn.ai/core/go-mlx`
+**Licence**: EUPL-1.2
+**Language**: Go 1.25
+
+## Quick Start
+
+```go
+import (
+    "forge.lthn.ai/core/go-inference"
+    _ "forge.lthn.ai/core/go-mlx"  // registers "metal" backend via init()
+)
+
+model, err := inference.LoadModel("/Volumes/Data/lem/safetensors/gemma-3-1b/")
+defer model.Close()
+
+for tok := range model.Generate(ctx, "Hello", inference.WithMaxTokens(256)) {
+    fmt.Print(tok.Text)
+}
+```
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — CGO binding, model architectures, weight loading, KV cache, attention, batch inference, LoRA training, mlxlm backend
+- [Development Guide](docs/development.md) — prerequisites (mlx-c CMake build), CGO flags, test patterns, benchmarks
+- [Project History](docs/history.md) — completed phases, commit hashes, known limitations
+
+## Build & Test
+
+```bash
+go generate ./...        # builds mlx-c C library (required first time)
+go test ./...
+go build ./...
+```
+
+## Licence
+
+European Union Public Licence 1.2 — see [LICENCE](LICENCE) for details.
