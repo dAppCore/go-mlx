@@ -17,3 +17,9 @@ dist/
 .idea/
 .vscode/
 *.swp
+
+# macOS
+.DS_Store
+
+# Knowledge base
+KB/
