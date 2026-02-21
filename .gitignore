@@ -10,8 +10,9 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# CMake install output
-dist/
+# CMake install output (keep headers for Go module consumers)
+dist/*
+!dist/include/
 
 # IDE
 .idea/
