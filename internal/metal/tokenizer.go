@@ -173,7 +173,7 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 
 	// Non-self-mapping: control chars, space, DEL, and gaps
 	n := 0
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		if _, ok := encoder[byte(b)]; !ok {
 			r := rune(256 + n)
 			encoder[byte(b)] = r

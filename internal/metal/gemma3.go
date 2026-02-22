@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -182,9 +183,7 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		return nil, fmt.Errorf("gemma3: no .safetensors files found in %s", modelPath)
 	}
 	for _, path := range matches {
-		for name, arr := range LoadSafetensors(path) {
-			weights[name] = arr
-		}
+		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
 			return nil, fmt.Errorf("gemma3: load weights %s: %w", filepath.Base(path), err)
 		}

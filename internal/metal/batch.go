@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"time"
 )
@@ -86,7 +87,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 
 	// Gather logits at each prompt's last real token position and sample.
 	sortedResults := make([]ClassifyResult, N)
-	for si := int32(0); si < N; si++ {
+	for si := range N {
 		lastPos := sortedLengths[si] - 1
 
 		// Extract [1, vocab] at position lastPos for this batch element.
@@ -120,11 +121,11 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 
 	totalDur := time.Since(totalStart)
 	m.lastMetrics = Metrics{
-		PromptTokens:    totalPromptTokens,
-		GeneratedTokens: int(N), // One token sampled per prompt
-		PrefillDuration: totalDur,
-		TotalDuration:   totalDur,
-		PeakMemoryBytes: GetPeakMemory(),
+		PromptTokens:      totalPromptTokens,
+		GeneratedTokens:   int(N), // One token sampled per prompt
+		PrefillDuration:   totalDur,
+		TotalDuration:     totalDur,
+		PeakMemoryBytes:   GetPeakMemory(),
 		ActiveMemoryBytes: GetActiveMemory(),
 	}
 	if totalDur > 0 {
@@ -227,7 +228,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		nextIDs := make([]int32, N)
 		allFinished := true
 
-		for si := int32(0); si < N; si++ {
+		for si := range N {
 			if states[si].finished {
 				nextIDs[si] = 0 // pad
 				continue
@@ -259,11 +260,8 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 				states[si].finished = true
 				continue
 			}
-			for _, stop := range cfg.StopTokens {
-				if id == stop {
-					states[si].finished = true
-					break
-				}
+			if slices.Contains(cfg.StopTokens, id) {
+				states[si].finished = true
 			}
 			if !states[si].finished {
 				text := m.tokenizer.DecodeToken(id)
@@ -299,12 +297,12 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	totalDur := time.Since(totalStart)
 	decodeDur := totalDur - prefillDur
 	m.lastMetrics = Metrics{
-		PromptTokens:    totalPromptTokens,
-		GeneratedTokens: totalGenerated,
-		PrefillDuration: prefillDur,
-		DecodeDuration:  decodeDur,
-		TotalDuration:   totalDur,
-		PeakMemoryBytes: GetPeakMemory(),
+		PromptTokens:      totalPromptTokens,
+		GeneratedTokens:   totalGenerated,
+		PrefillDuration:   prefillDur,
+		DecodeDuration:    decodeDur,
+		TotalDuration:     totalDur,
+		PeakMemoryBytes:   GetPeakMemory(),
 		ActiveMemoryBytes: GetActiveMemory(),
 	}
 	if prefillDur > 0 {
@@ -324,11 +322,11 @@ func buildBatchMask(N, L int32, promptLens []int32) *Array {
 	negInf := float32(math.Inf(-1))
 	data := make([]float32, int(N)*int(L)*int(L))
 
-	for b := int32(0); b < N; b++ {
+	for b := range N {
 		pLen := promptLens[b]
 		base := int(b) * int(L) * int(L)
-		for i := int32(0); i < L; i++ {
-			for j := int32(0); j < L; j++ {
+		for i := range L {
+			for j := range L {
 				if j <= i && j < pLen {
 					data[base+int(i)*int(L)+int(j)] = 0
 				} else {

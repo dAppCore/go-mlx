@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -46,11 +48,11 @@ type Metrics struct {
 
 // Model wraps a loaded transformer model for text generation.
 type Model struct {
-	model      InternalModel
-	tokenizer  *Tokenizer
-	modelType  string
-	contextLen int // 0 = unbounded (model default)
-	lastErr    error
+	model       InternalModel
+	tokenizer   *Tokenizer
+	modelType   string
+	contextLen  int // 0 = unbounded (model default)
+	lastErr     error
 	lastMetrics Metrics
 }
 
@@ -145,12 +147,12 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			decodeDur := time.Since(totalStart) - prefillDur
 			totalDur := time.Since(totalStart)
 			m.lastMetrics = Metrics{
-				PromptTokens:    promptLen,
-				GeneratedTokens: genCount,
-				PrefillDuration: prefillDur,
-				DecodeDuration:  decodeDur,
-				TotalDuration:   totalDur,
-				PeakMemoryBytes: GetPeakMemory(),
+				PromptTokens:      promptLen,
+				GeneratedTokens:   genCount,
+				PrefillDuration:   prefillDur,
+				DecodeDuration:    decodeDur,
+				TotalDuration:     totalDur,
+				PeakMemoryBytes:   GetPeakMemory(),
 				ActiveMemoryBytes: GetActiveMemory(),
 			}
 			if prefillDur > 0 {
@@ -205,10 +207,8 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			if id == m.tokenizer.EOSToken() {
 				return
 			}
-			for _, stop := range cfg.StopTokens {
-				if id == stop {
-					return
-				}
+			if slices.Contains(cfg.StopTokens, id) {
+				return
 			}
 
 			genCount++
@@ -286,44 +286,45 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	case "llama":
 		return formatLlamaChat(messages)
 	default:
-		var s string
+		var s strings.Builder
 		for _, msg := range messages {
-			s += msg.Content + "\n"
+			s.WriteString(msg.Content + "\n")
 		}
-		return s
+		return s.String()
 	}
 }
 
 func formatGemmaChat(messages []ChatMessage) string {
-	var s string
+	var s strings.Builder
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			s += "<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n"
+			s.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
 		case "user":
-			s += "<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n"
+			s.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
 		case "assistant":
-			s += "<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n"
+			s.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
 		}
 	}
-	s += "<start_of_turn>model\n"
-	return s
+	s.WriteString("<start_of_turn>model\n")
+	return s.String()
 }
 
 func formatQwenChat(messages []ChatMessage) string {
-	var s string
+	var s strings.Builder
 	for _, msg := range messages {
-		s += "<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n"
+		s.WriteString("<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n")
 	}
-	s += "<|im_start|>assistant\n"
-	return s
+	s.WriteString("<|im_start|>assistant\n")
+	return s.String()
 }
 
 func formatLlamaChat(messages []ChatMessage) string {
-	s := "<|begin_of_text|>"
+	var s strings.Builder
+	s.WriteString("<|begin_of_text|>")
 	for _, msg := range messages {
-		s += "<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>"
+		s.WriteString("<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
 	}
-	s += "<|start_header_id|>assistant<|end_header_id|>\n\n"
-	return s
+	s.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
+	return s.String()
 }

@@ -239,7 +239,7 @@ func TestBuildGPT2ByteMaps(t *testing.T) {
 	}
 
 	// Round-trip: every byte should survive encode → decode
-	for b := 0; b < 256; b++ {
+	for b := range 256 {
 		r := encoder[byte(b)]
 		got := decoder[r]
 		if got != byte(b) {

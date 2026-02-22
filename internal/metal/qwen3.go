@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -44,10 +45,10 @@ type Qwen3Model struct {
 // Qwen3DecoderLayer is a single transformer block.
 // Qwen 3 uses standard pre-norm residual: norm→attn→add, norm→mlp→add.
 type Qwen3DecoderLayer struct {
-	InputNorm   *RMSNormModule // Pre-attention norm
+	InputNorm    *RMSNormModule // Pre-attention norm
 	PostAttnNorm *RMSNormModule // Pre-MLP norm (confusingly named post_attention_layernorm)
-	Attention   *Qwen3Attention
-	MLP         *Qwen3MLP
+	Attention    *Qwen3Attention
+	MLP          *Qwen3MLP
 }
 
 // Qwen3Attention implements Qwen 3 GQA with Q/K RMS normalization.
@@ -136,9 +137,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, fmt.Errorf("qwen3: no .safetensors files found in %s", modelPath)
 	}
 	for _, path := range matches {
-		for name, arr := range LoadSafetensors(path) {
-			weights[name] = arr
-		}
+		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
 			return nil, fmt.Errorf("qwen3: load weights %s: %w", filepath.Base(path), err)
 		}

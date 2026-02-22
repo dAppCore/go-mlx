@@ -5,6 +5,7 @@ package metal
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -318,5 +319,432 @@ func TestDefaultLoRAConfig(t *testing.T) {
 	}
 	if len(cfg.TargetKeys) != 2 {
 		t.Errorf("TargetKeys = %v, want [q_proj, v_proj]", cfg.TargetKeys)
+	}
+}
+
+// --- parseLoRAWeightName ---
+
+func TestParseLoRAWeightName_Good(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantIdx  int
+		wantProj string
+		wantSuf  string
+	}{
+		{
+			"standard_lora_a",
+			"layers.0.self_attn.q_proj.lora_a",
+			0, "self_attn.q_proj", "lora_a",
+		},
+		{
+			"standard_lora_b",
+			"layers.5.self_attn.v_proj.lora_b",
+			5, "self_attn.v_proj", "lora_b",
+		},
+		{
+			"with_model_prefix",
+			"model.layers.12.self_attn.q_proj.lora_a",
+			12, "self_attn.q_proj", "lora_a",
+		},
+		{
+			"k_proj",
+			"layers.3.self_attn.k_proj.lora_b",
+			3, "self_attn.k_proj", "lora_b",
+		},
+		{
+			"o_proj",
+			"layers.7.self_attn.o_proj.lora_a",
+			7, "self_attn.o_proj", "lora_a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, proj, suf := parseLoRAWeightName(tt.input)
+			if idx != tt.wantIdx {
+				t.Errorf("layerIdx = %d, want %d", idx, tt.wantIdx)
+			}
+			if proj != tt.wantProj {
+				t.Errorf("projPath = %q, want %q", proj, tt.wantProj)
+			}
+			if suf != tt.wantSuf {
+				t.Errorf("suffix = %q, want %q", suf, tt.wantSuf)
+			}
+		})
+	}
+}
+
+func TestParseLoRAWeightName_Bad(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"no_lora_suffix", "layers.0.self_attn.q_proj.weight"},
+		{"no_layers_prefix", "self_attn.q_proj.lora_a"},
+		{"empty", ""},
+		{"just_layers", "layers."},
+		{"no_dot_after_idx", "layers.0lora_a"},
+		{"non_numeric_idx", "layers.abc.self_attn.q_proj.lora_a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, _, _ := parseLoRAWeightName(tt.input)
+			if idx != -1 {
+				t.Errorf("expected -1 for %q, got %d", tt.input, idx)
+			}
+		})
+	}
+}
+
+// --- parseAdapterConfig ---
+
+func TestParseAdapterConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `{
+		"rank": 16,
+		"alpha": 32.0,
+		"num_layers": 4,
+		"lora_layers": ["self_attn.q_proj", "self_attn.v_proj"]
+	}`
+	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+
+	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if parsed.Rank != 16 {
+		t.Errorf("Rank = %d, want 16", parsed.Rank)
+	}
+	if parsed.Alpha != 32.0 {
+		t.Errorf("Alpha = %f, want 32.0", parsed.Alpha)
+	}
+	if parsed.NumLayers != 4 {
+		t.Errorf("NumLayers = %d, want 4", parsed.NumLayers)
+	}
+	if len(parsed.TargetKeys) != 2 {
+		t.Errorf("TargetKeys = %v, want 2 entries", parsed.TargetKeys)
+	}
+}
+
+func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
+	dir := t.TempDir()
+	// Minimal config — rank and alpha should get defaults.
+	cfg := `{}`
+	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+
+	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if parsed.Rank != 8 {
+		t.Errorf("default Rank = %d, want 8", parsed.Rank)
+	}
+	if parsed.Alpha != 16.0 {
+		t.Errorf("default Alpha = %f, want 16.0 (2 * rank)", parsed.Alpha)
+	}
+}
+
+func TestParseAdapterConfig_Bad_MissingFile(t *testing.T) {
+	_, err := parseAdapterConfig("/nonexistent/adapter_config.json")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
+func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte("{broken"), 0644)
+
+	_, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+// --- loadAdapterWeights ---
+
+func TestLoadAdapterWeights_Bad_NoFiles(t *testing.T) {
+	dir := t.TempDir()
+	_, err := loadAdapterWeights(dir)
+	if err == nil {
+		t.Fatal("expected error for directory with no safetensors files")
+	}
+}
+
+func TestLoadAdapterWeights_Good(t *testing.T) {
+	dir := t.TempDir()
+
+	// Save a small adapter file.
+	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
+	Materialize(a, b)
+
+	err := SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+		"layers.0.self_attn.q_proj.lora_a": a,
+		"layers.0.self_attn.q_proj.lora_b": b,
+	})
+	if err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	weights, err := loadAdapterWeights(dir)
+	if err != nil {
+		t.Fatalf("loadAdapterWeights: %v", err)
+	}
+	if len(weights) != 2 {
+		t.Errorf("loaded %d weights, want 2", len(weights))
+	}
+	if _, ok := weights["layers.0.self_attn.q_proj.lora_a"]; !ok {
+		t.Error("missing lora_a weight")
+	}
+	if _, ok := weights["layers.0.self_attn.q_proj.lora_b"]; !ok {
+		t.Error("missing lora_b weight")
+	}
+}
+
+// --- applyLoadedLoRA integration ---
+
+func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
+	// Create a simple base Linear layer and save LoRA weights for it,
+	// then load them back with applyLoadedLoRA.
+
+	// Create a small "model" with 1 layer and known dimensions.
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	linear := NewLinear(w, nil)
+
+	// Train a LoRA on this linear, then save.
+	lora := NewLoRALinear(linear, 4, 8.0)
+	// Set A and B to non-zero values so we can verify they load correctly.
+	newA := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6,
+		1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4,
+		2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1, 3.2,
+	}, 4, 8) // [rank=4, in=8]
+	newB := FromValues([]float32{
+		0.1, 0.2, 0.3, 0.4,
+		0.5, 0.6, 0.7, 0.8,
+		0.9, 1.0, 1.1, 1.2,
+		1.3, 1.4, 1.5, 1.6,
+	}, 4, 4) // [out=4, rank=4]
+	Materialize(newA, newB)
+	lora.A = newA
+	lora.B = newB
+
+	// Save the adapter weights.
+	adapterDir := t.TempDir()
+	err := SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+		"layers.0.self_attn.q_proj.lora_a": lora.A,
+		"layers.0.self_attn.q_proj.lora_b": lora.B,
+	})
+	if err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	// Write adapter_config.json.
+	configJSON := `{"rank": 4, "alpha": 8.0, "num_layers": 1, "lora_layers": ["self_attn.q_proj"]}`
+	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"), []byte(configJSON), 0644)
+
+	// Now create a fresh linear with the same base weights (no LoRA).
+	linear2 := NewLinear(w, nil)
+	if linear2.LoRA != nil {
+		t.Fatal("fresh linear should not have LoRA")
+	}
+
+	// Build a minimal model for resolveLinear to work.
+	qwen := &Qwen3Model{
+		Layers: []*Qwen3DecoderLayer{
+			{
+				Attention: &Qwen3Attention{
+					QProj: linear2,
+					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					OProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+				},
+			},
+		},
+	}
+
+	// Apply the loaded adapter.
+	err = applyLoadedLoRA(qwen, adapterDir)
+	if err != nil {
+		t.Fatalf("applyLoadedLoRA: %v", err)
+	}
+
+	// Verify LoRA was injected.
+	if linear2.LoRA == nil {
+		t.Fatal("LoRA should have been injected into q_proj")
+	}
+
+	// Verify rank and scale.
+	if linear2.LoRA.Rank != 4 {
+		t.Errorf("Rank = %d, want 4", linear2.LoRA.Rank)
+	}
+	expectedScale := float32(8.0) / float32(4) // alpha / rank = 2.0
+	if math.Abs(float64(linear2.LoRA.Scale-expectedScale)) > 1e-5 {
+		t.Errorf("Scale = %f, want %f", linear2.LoRA.Scale, expectedScale)
+	}
+
+	// Verify the loaded A weights match what we saved.
+	Materialize(linear2.LoRA.A, linear2.LoRA.B)
+	loadedA := linear2.LoRA.A.Floats()
+	origA := newA.Floats()
+	if len(loadedA) != len(origA) {
+		t.Fatalf("A size mismatch: %d vs %d", len(loadedA), len(origA))
+	}
+	for i := range origA {
+		if math.Abs(float64(loadedA[i]-origA[i])) > 1e-5 {
+			t.Errorf("A[%d] = %f, want %f", i, loadedA[i], origA[i])
+			break
+		}
+	}
+
+	// Verify the loaded B weights match.
+	loadedB := linear2.LoRA.B.Floats()
+	origB := newB.Floats()
+	if len(loadedB) != len(origB) {
+		t.Fatalf("B size mismatch: %d vs %d", len(loadedB), len(origB))
+	}
+	for i := range origB {
+		if math.Abs(float64(loadedB[i]-origB[i])) > 1e-5 {
+			t.Errorf("B[%d] = %f, want %f", i, loadedB[i], origB[i])
+			break
+		}
+	}
+}
+
+func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	// Write safetensors but no config.
+	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	Materialize(a)
+	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{"x": a})
+
+	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
+	err := applyLoadedLoRA(qwen, dir)
+	if err == nil {
+		t.Fatal("expected error for missing adapter_config.json")
+	}
+}
+
+func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
+	dir := t.TempDir()
+	// Write config but no safetensors.
+	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 8}`), 0644)
+
+	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
+	err := applyLoadedLoRA(qwen, dir)
+	if err == nil {
+		t.Fatal("expected error for missing safetensors")
+	}
+}
+
+func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 4, "alpha": 8.0}`), 0644)
+
+	// Save weights that reference layer 99 (which won't exist).
+	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
+	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
+	Materialize(a, b)
+	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+		"layers.99.self_attn.q_proj.lora_a": a,
+		"layers.99.self_attn.q_proj.lora_b": b,
+	})
+
+	qwen := &Qwen3Model{
+		Layers: []*Qwen3DecoderLayer{
+			{
+				Attention: &Qwen3Attention{
+					QProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+				},
+			},
+		},
+	}
+	err := applyLoadedLoRA(qwen, dir)
+	if err == nil {
+		t.Fatal("expected error when no layers are injected")
+	}
+}
+
+// TestApplyLoadedLoRA_Good_ForwardProducesOutput validates that a model with a
+// loaded LoRA adapter produces different output than the base model alone.
+func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
+	// Create base linear [4, 8].
+	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	linear := NewLinear(w, nil)
+
+	// Compute base output.
+	x := RandomNormal(0, 1, []int32{1, 2, 8}, DTypeFloat32)
+	Materialize(x)
+	baseOut := linear.Forward(x)
+	Materialize(baseOut)
+	baseFloats := baseOut.Floats()
+
+	// Create and save non-trivial adapter weights.
+	rank := 4
+	loraA := RandomNormal(0, 0.1, []int32{int32(rank), 8}, DTypeFloat32)
+	loraB := RandomNormal(0, 0.1, []int32{4, int32(rank)}, DTypeFloat32)
+	Materialize(loraA, loraB)
+
+	adapterDir := t.TempDir()
+	SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+		"layers.0.self_attn.q_proj.lora_a": loraA,
+		"layers.0.self_attn.q_proj.lora_b": loraB,
+	})
+	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"),
+		[]byte(`{"rank": 4, "alpha": 8.0}`), 0644)
+
+	// Build a model and apply adapter.
+	qwen := &Qwen3Model{
+		Layers: []*Qwen3DecoderLayer{
+			{
+				Attention: &Qwen3Attention{
+					QProj: linear,
+					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					OProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+				},
+			},
+		},
+	}
+
+	err := applyLoadedLoRA(qwen, adapterDir)
+	if err != nil {
+		t.Fatalf("applyLoadedLoRA: %v", err)
+	}
+
+	// Now forward should go through LoRA path.
+	loraOut := linear.Forward(x)
+	Materialize(loraOut)
+	loraFloats := loraOut.Floats()
+
+	// Outputs should differ since B is non-zero.
+	allSame := true
+	for i := range baseFloats {
+		if math.Abs(float64(baseFloats[i]-loraFloats[i])) > 1e-6 {
+			allSame = false
+			break
+		}
+	}
+	if allSame {
+		t.Error("expected LoRA output to differ from base output with non-zero B weights")
+	}
+}
+
+// --- LoadAndInit with adapter ---
+
+func TestLoadAndInit_Bad_AdapterMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeMinimalConfig(t, dir, "qwen3")
+	writeMinimalTokenizer(t, dir)
+
+	// Create a minimal safetensors file so model loading proceeds.
+	// The adapter path doesn't exist, so it should fail at the adapter step.
+	_, err := LoadAndInit(dir, LoadConfig{AdapterPath: "/nonexistent/adapter"})
+	if err == nil {
+		t.Fatal("expected error for missing adapter")
 	}
 }

@@ -9,9 +9,14 @@ package metal
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"unsafe"
 )
 
@@ -210,6 +215,238 @@ func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 		DefaultStream().ctx,
 	)
 	return out
+}
+
+// --- Adapter Loading (Inference) ---
+
+// adapterConfig holds the metadata from adapter_config.json produced by mlx-lm training.
+type adapterConfig struct {
+	Rank       int      `json:"rank"`
+	Alpha      float32  `json:"alpha"`
+	NumLayers  int      `json:"num_layers"`
+	TargetKeys []string `json:"lora_layers"` // e.g. ["self_attn.q_proj", "self_attn.v_proj"]
+}
+
+// parseAdapterConfig reads and parses an adapter_config.json file.
+func parseAdapterConfig(path string) (*adapterConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read adapter_config.json: %w", err)
+	}
+	var cfg adapterConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse adapter_config.json: %w", err)
+	}
+	// Apply defaults matching mlx-lm conventions.
+	if cfg.Rank == 0 {
+		cfg.Rank = 8
+	}
+	if cfg.Alpha == 0 {
+		cfg.Alpha = float32(cfg.Rank) * 2 // mlx-lm default: alpha = 2 * rank
+	}
+	return &cfg, nil
+}
+
+// loadAdapterWeights loads all safetensors files from an adapter directory into a flat weight map.
+func loadAdapterWeights(dir string) (map[string]*Array, error) {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.safetensors"))
+	if err != nil {
+		return nil, fmt.Errorf("glob adapter safetensors: %w", err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("no .safetensors files found in %s", dir)
+	}
+
+	weights := make(map[string]*Array)
+	for _, path := range matches {
+		for name, arr := range LoadSafetensors(path) {
+			weights[name] = arr
+		}
+		if err := lastError(); err != nil {
+			return nil, fmt.Errorf("load adapter weights %s: %w", filepath.Base(path), err)
+		}
+	}
+	return weights, nil
+}
+
+// resolveLinear returns the *Linear for a given projection path within a model.
+// projPath is e.g. "self_attn.q_proj" and the function resolves layer index + field.
+func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
+	switch m := model.(type) {
+	case *Qwen3Model:
+		if layerIdx >= len(m.Layers) {
+			return nil
+		}
+		layer := m.Layers[layerIdx]
+		switch projPath {
+		case "self_attn.q_proj":
+			return layer.Attention.QProj
+		case "self_attn.k_proj":
+			return layer.Attention.KProj
+		case "self_attn.v_proj":
+			return layer.Attention.VProj
+		case "self_attn.o_proj":
+			return layer.Attention.OProj
+		}
+	case *GemmaModel:
+		if layerIdx >= len(m.Layers) {
+			return nil
+		}
+		layer := m.Layers[layerIdx]
+		switch projPath {
+		case "self_attn.q_proj":
+			return layer.Attention.QProj
+		case "self_attn.k_proj":
+			return layer.Attention.KProj
+		case "self_attn.v_proj":
+			return layer.Attention.VProj
+		case "self_attn.o_proj":
+			return layer.Attention.OProj
+		}
+	}
+	return nil
+}
+
+// parseLoRAWeightName extracts the layer index, projection path, and A/B suffix
+// from an adapter weight name. Returns (-1, "", "") if the name is not a recognised
+// LoRA weight.
+//
+// Examples:
+//
+//	"layers.0.self_attn.q_proj.lora_a" → (0, "self_attn.q_proj", "lora_a")
+//	"model.layers.12.self_attn.v_proj.lora_b" → (12, "self_attn.v_proj", "lora_b")
+func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
+	// Strip optional "model." prefix.
+	name = strings.TrimPrefix(name, "model.")
+
+	// Must start with "layers.{N}."
+	if !strings.HasPrefix(name, "layers.") {
+		return -1, "", ""
+	}
+
+	// Must end with ".lora_a" or ".lora_b".
+	if strings.HasSuffix(name, ".lora_a") {
+		suffix = "lora_a"
+	} else if strings.HasSuffix(name, ".lora_b") {
+		suffix = "lora_b"
+	} else {
+		return -1, "", ""
+	}
+
+	// Remove "layers." prefix and ".lora_X" suffix.
+	inner := name[len("layers."):]
+	inner = inner[:len(inner)-len("."+suffix)]
+
+	// Split off the layer index.
+	dotIdx := strings.Index(inner, ".")
+	if dotIdx < 0 {
+		return -1, "", ""
+	}
+	idxStr := inner[:dotIdx]
+	projPath = inner[dotIdx+1:]
+
+	var idx int
+	if _, err := fmt.Sscanf(idxStr, "%d", &idx); err != nil {
+		return -1, "", ""
+	}
+
+	return idx, projPath, suffix
+}
+
+// applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model
+// for inference. The adapter weights are frozen (no gradients needed).
+func applyLoadedLoRA(model InternalModel, adapterDir string) error {
+	// Step 1: Read adapter configuration.
+	cfg, err := parseAdapterConfig(filepath.Join(adapterDir, "adapter_config.json"))
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Load adapter safetensors.
+	weights, err := loadAdapterWeights(adapterDir)
+	if err != nil {
+		return err
+	}
+
+	// Materialise all adapter weights onto Metal.
+	var allArrays []*Array
+	for _, a := range weights {
+		allArrays = append(allArrays, a)
+	}
+	Materialize(allArrays...)
+
+	// Step 3: Group weights by (layerIdx, projPath) and inject LoRA.
+	type loraKey struct {
+		layerIdx int
+		projPath string
+	}
+	type loraPair struct {
+		a *Array
+		b *Array
+	}
+	pairs := make(map[loraKey]*loraPair)
+
+	for name, arr := range weights {
+		layerIdx, projPath, suffix := parseLoRAWeightName(name)
+		if layerIdx < 0 {
+			slog.Warn("adapter: skipping unrecognised weight", "name", name)
+			continue
+		}
+		key := loraKey{layerIdx, projPath}
+		pair, ok := pairs[key]
+		if !ok {
+			pair = &loraPair{}
+			pairs[key] = pair
+		}
+		switch suffix {
+		case "lora_a":
+			pair.a = arr
+		case "lora_b":
+			pair.b = arr
+		}
+	}
+
+	scale := cfg.Alpha / float32(cfg.Rank)
+	injected := 0
+
+	for key, pair := range pairs {
+		if pair.a == nil || pair.b == nil {
+			slog.Warn("adapter: incomplete LoRA pair, skipping",
+				"layer", key.layerIdx, "proj", key.projPath)
+			continue
+		}
+
+		linear := resolveLinear(model, key.layerIdx, key.projPath)
+		if linear == nil {
+			slog.Warn("adapter: target layer not found, skipping",
+				"layer", key.layerIdx, "proj", key.projPath)
+			continue
+		}
+
+		lora := &LoRALinear{
+			Base:  linear,
+			A:     pair.a,
+			B:     pair.b,
+			Scale: scale,
+			Rank:  cfg.Rank,
+			Alpha: cfg.Alpha,
+		}
+		linear.LoRA = lora
+		injected++
+	}
+
+	if injected == 0 {
+		return fmt.Errorf("no LoRA layers injected from %s", adapterDir)
+	}
+
+	slog.Info("adapter loaded",
+		"path", adapterDir,
+		"rank", cfg.Rank,
+		"alpha", cfg.Alpha,
+		"scale", scale,
+		"layers_injected", injected,
+	)
+	return nil
 }
 
 // --- SaveSafetensors ---

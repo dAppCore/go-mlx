@@ -6,7 +6,8 @@ import "fmt"
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
-	ContextLen int // Context window size (0 = model default, unbounded KV cache)
+	ContextLen  int    // Context window size (0 = model default, unbounded KV cache)
+	AdapterPath string // Path to LoRA adapter directory (empty = no adapter)
 }
 
 // LoadAndInit initialises Metal and loads a model from the given path.
@@ -22,8 +23,15 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		tokenizer: im.Tokenizer(),
 		modelType: im.ModelType(),
 	}
-	if len(cfg) > 0 && cfg[0].ContextLen > 0 {
-		m.contextLen = cfg[0].ContextLen
+	if len(cfg) > 0 {
+		if cfg[0].ContextLen > 0 {
+			m.contextLen = cfg[0].ContextLen
+		}
+		if cfg[0].AdapterPath != "" {
+			if err := applyLoadedLoRA(im, cfg[0].AdapterPath); err != nil {
+				return nil, fmt.Errorf("metal: load adapter: %w", err)
+			}
+		}
 	}
 	return m, nil
 }

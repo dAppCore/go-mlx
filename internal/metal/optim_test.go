@@ -14,7 +14,7 @@ func TestAdamW_BasicStep(t *testing.T) {
 
 	opt := NewAdamW(0.1)
 
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		// Gradient of x^2 is 2x
 		lossFn := func(inputs []*Array) []*Array {
 			p := inputs[0]
@@ -48,7 +48,7 @@ func TestAdamW_MultiParam(t *testing.T) {
 
 	opt := NewAdamW(0.1)
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		lossFn := func(inputs []*Array) []*Array {
 			return []*Array{Add(Mul(inputs[0], inputs[0]), Mul(inputs[1], inputs[1]))}
 		}
@@ -85,7 +85,7 @@ func TestAdamW_WeightDecay(t *testing.T) {
 	zeroGrad := FromValue(float32(0.0))
 	Materialize(zeroGrad)
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		updated := opt.Step([]*Array{x}, []*Array{zeroGrad})
 		x = updated[0]
 		Materialize(x)
@@ -137,7 +137,7 @@ func TestAdamW_WithLoRA(t *testing.T) {
 
 	var initialLoss, finalLoss float64
 
-	for step := 0; step < 50; step++ {
+	for step := range 50 {
 		lossFn := func(inputs []*Array) []*Array {
 			lora.A = inputs[0]
 			lora.B = inputs[1]

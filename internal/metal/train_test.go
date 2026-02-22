@@ -75,7 +75,7 @@ func TestLoRA_EndToEnd(t *testing.T) {
 	var initialLoss, finalLoss float64
 	const numSteps = 5
 
-	for step := 0; step < numSteps; step++ {
+	for step := range numSteps {
 		// Fresh caches each step (stateful — can't reuse across gradient calls).
 		caches := gemma.NewCache()
 
@@ -224,7 +224,7 @@ func TestLoRA_GradientCheckpointing(t *testing.T) {
 	var initialLoss, finalLoss float64
 	const numSteps = 3
 
-	for step := 0; step < numSteps; step++ {
+	for step := range numSteps {
 		caches := gemma.NewCache()
 
 		// Wrap the model forward pass in Checkpoint to recompute activations
@@ -326,7 +326,7 @@ func TestLoRA_MixedPrecision(t *testing.T) {
 	var initialLoss, finalLoss float64
 	const numSteps = 5
 
-	for step := 0; step < numSteps; step++ {
+	for step := range numSteps {
 		caches := gemma.NewCache()
 
 		lossFn := func(inputs []*Array) []*Array {

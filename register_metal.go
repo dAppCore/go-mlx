@@ -63,7 +63,8 @@ func (b *metalBackend) LoadModel(path string, opts ...inference.LoadOption) (inf
 		slog.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
 	}
 	m, err := metal.LoadAndInit(path, metal.LoadConfig{
-		ContextLen: cfg.ContextLen,
+		ContextLen:  cfg.ContextLen,
+		AdapterPath: cfg.AdapterPath,
 	})
 	if err != nil {
 		return nil, err
