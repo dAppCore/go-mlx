@@ -1,5 +1,5 @@
-forge.lthn.ai/core/go-inference v0.0.0-20260220151119-1576f744d105 h1:CVUVxp1BfUI8wmlEUW0Nay8w4hADR54nqBmeF+KK2Ac=
-forge.lthn.ai/core/go-inference v0.0.0-20260220151119-1576f744d105/go.mod h1:hmLtynfw1yo0ByuX3pslLZMgCdqJH2r+2+wGJDhmmi0=
+forge.lthn.ai/core/go-inference v0.0.1 h1:87kCwOS0wWAE38zyKz/UDWjv2rfI9gQaYXvrUBPzcEY=
+forge.lthn.ai/core/go-inference v0.0.1/go.mod h1:hmLtynfw1yo0ByuX3pslLZMgCdqJH2r+2+wGJDhmmi0=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
