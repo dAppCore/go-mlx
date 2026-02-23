@@ -1,3 +1,7 @@
+[![Go Reference](https://pkg.go.dev/badge/forge.lthn.ai/core/go-mlx.svg)](https://pkg.go.dev/forge.lthn.ai/core/go-mlx)
+[![License: EUPL-1.2](https://img.shields.io/badge/License-EUPL--1.2-blue.svg)](LICENSE.md)
+[![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go)](go.mod)
+
 # go-mlx
 
 Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors format, with fused Metal kernels for RMSNorm, RoPE, and scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
