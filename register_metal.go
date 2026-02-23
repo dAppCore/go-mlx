@@ -192,5 +192,21 @@ func (a *metalAdapter) Info() inference.ModelInfo {
 		QuantGroup:   i.QuantGroup,
 	}
 }
+// InspectAttention implements inference.AttentionInspector.
+func (a *metalAdapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+	result, err := a.m.InspectAttention(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	return &inference.AttentionSnapshot{
+		NumLayers:    result.NumLayers,
+		NumHeads:     result.NumHeads,
+		SeqLen:       result.SeqLen,
+		HeadDim:      result.HeadDim,
+		Keys:         result.Keys,
+		Architecture: result.Architecture,
+	}, nil
+}
+
 func (a *metalAdapter) Err() error        { return a.m.Err() }
 func (a *metalAdapter) Close() error      { return a.m.Close() }

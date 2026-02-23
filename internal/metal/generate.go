@@ -229,6 +229,87 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 	}
 }
 
+// InspectAttention runs a single prefill pass and extracts K vectors from each layer's KV cache.
+// Returns the post-RoPE K tensors as CPU float32 slices indexed [layer][head][seq_len*head_dim].
+func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
+	tokens := m.tokenizer.Encode(prompt)
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("empty prompt after tokenisation")
+	}
+
+	caches := m.newCaches()
+
+	// Single prefill pass — populates KV caches for all layers.
+	input := FromValues(tokens, len(tokens))
+	input = Reshape(input, 1, int32(len(tokens)))
+	logits := m.model.Forward(input, caches)
+	if err := Eval(logits); err != nil {
+		return nil, fmt.Errorf("prefill: %w", err)
+	}
+
+	info := m.Info()
+	seqLen := len(tokens)
+
+	// Extract K vectors from each layer's cache.
+	keys := make([][][]float32, info.NumLayers)
+	var numHeads, headDim int
+
+	for i := 0; i < info.NumLayers && i < len(caches); i++ {
+		state := caches[i].State()
+		if len(state) < 1 {
+			continue
+		}
+		kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
+		shape := kArray.Shape()
+		if len(shape) != 4 {
+			continue
+		}
+		numHeads = int(shape[1])
+		headDim = int(shape[3])
+
+		// Slice to valid tokens only (cache may have pre-allocated padding).
+		validLen := min(caches[i].Len(), seqLen)
+		kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
+		if err := Eval(kSliced); err != nil {
+			continue
+		}
+
+		// Extract all floats then reshape per head.
+		flat := kSliced.Floats() // len = 1 * H * validLen * D
+		keys[i] = make([][]float32, numHeads)
+		stride := validLen * headDim
+		for h := 0; h < numHeads; h++ {
+			start := h * stride
+			end := start + stride
+			if end > len(flat) {
+				break
+			}
+			head := make([]float32, stride)
+			copy(head, flat[start:end])
+			keys[i][h] = head
+		}
+	}
+
+	return &AttentionResult{
+		NumLayers:    info.NumLayers,
+		NumHeads:     numHeads,
+		SeqLen:       seqLen,
+		HeadDim:      headDim,
+		Keys:         keys,
+		Architecture: info.Architecture,
+	}, nil
+}
+
+// AttentionResult holds extracted K vectors from the KV cache.
+type AttentionResult struct {
+	NumLayers    int
+	NumHeads     int
+	SeqLen       int
+	HeadDim      int
+	Keys         [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
+	Architecture string
+}
+
 // applyRepeatPenalty modifies logits to discourage repeated tokens.
 // For each unique token ID in history: positive logits are divided by penalty,
 // negative logits are multiplied by penalty. Both make the token less likely.
