@@ -22,7 +22,9 @@ func Add(a, b *Array) *Array {
 // AddScalar returns a + scalar (broadcast).
 func AddScalar(a *Array, s float32) *Array {
 	scalar := FromValue(s)
-	return Add(a, scalar)
+	res := Add(a, scalar)
+	Free(scalar)
+	return res
 }
 
 // Mul returns element-wise a * b.
@@ -35,7 +37,9 @@ func Mul(a, b *Array) *Array {
 // MulScalar returns a * scalar (broadcast).
 func MulScalar(a *Array, s float32) *Array {
 	scalar := FromValue(s)
-	return Mul(a, scalar)
+	res := Mul(a, scalar)
+	Free(scalar)
+	return res
 }
 
 // Divide returns element-wise a / b.

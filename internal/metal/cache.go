@@ -50,20 +50,25 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		newV := Zeros([]int32{B, H, int32(nSteps * c.step), Dv}, v.Dtype())
 
 		if c.keys != nil {
+			oldK, oldV := c.keys, c.values
 			if prev%c.step != 0 {
-				c.keys = Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dk})
-				c.values = Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dv})
+				oldK = Slice(oldK, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dk})
+				oldV = Slice(oldV, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dv})
+				Free(c.keys, c.values)
 			}
-			c.keys = Concatenate([]*Array{c.keys, newK}, 2)
-			c.values = Concatenate([]*Array{c.values, newV}, 2)
+			c.keys = Concatenate([]*Array{oldK, newK}, 2)
+			c.values = Concatenate([]*Array{oldV, newV}, 2)
+			Free(oldK, oldV, newK, newV)
 		} else {
 			c.keys, c.values = newK, newV
 		}
 	}
 
 	c.offset += seqLen
+	oldK, oldV := c.keys, c.values
 	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, int32(prev), 0}, []int32{B, H, int32(c.offset), Dk})
 	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, int32(prev), 0}, []int32{B, H, int32(c.offset), Dv})
+	Free(oldK, oldV)
 
 	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.offset), Dk}),
 		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.offset), Dv})
@@ -127,8 +132,10 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		newK := Zeros([]int32{B, H, int32(newSize), Dk}, k.Dtype())
 		newV := Zeros([]int32{B, H, int32(newSize), Dv}, v.Dtype())
 		if c.keys != nil {
-			c.keys = Concatenate([]*Array{c.keys, newK}, 2)
-			c.values = Concatenate([]*Array{c.values, newV}, 2)
+			oldK, oldV := c.keys, c.values
+			c.keys = Concatenate([]*Array{oldK, newK}, 2)
+			c.values = Concatenate([]*Array{oldV, newV}, 2)
+			Free(oldK, oldV, newK, newV)
 		} else {
 			c.keys, c.values = newK, newV
 		}
@@ -138,8 +145,10 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		c.idx = 0
 	}
 
+	oldK, oldV := c.keys, c.values
 	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dk})
 	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dv})
+	Free(oldK, oldV)
 
 	c.offset++
 	c.idx++
@@ -163,17 +172,21 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	Dv := v.Shape()[3]
 
 	if c.keys == nil {
-		c.keys, c.values = k, v
+		c.keys, c.values = k.Clone(), v.Clone()
 	} else {
-		c.keys = Concatenate([]*Array{c.keys, k}, 2)
-		c.values = Concatenate([]*Array{c.values, v}, 2)
+		oldK, oldV := c.keys, c.values
+		c.keys = Concatenate([]*Array{oldK, k}, 2)
+		c.values = Concatenate([]*Array{oldV, v}, 2)
+		Free(oldK, oldV)
 	}
 	c.offset += seqLen
 
 	cap := int(c.keys.Shape()[2])
 	if trim := cap - c.maxSize; trim > 0 {
+		oldK, oldV := c.keys, c.values
 		c.keys = Slice(c.keys, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
 		c.values = Slice(c.values, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
+		Free(oldK, oldV)
 	}
 
 	c.idx = int(c.keys.Shape()[2])

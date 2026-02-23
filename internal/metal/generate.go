@@ -139,6 +139,8 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		tokens := m.tokenizer.Encode(prompt)
 		promptLen := len(tokens)
 		caches := m.newCaches()
+		defer freeCaches(caches)
+
 		sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
 		var genCount int
 		var prefillDur time.Duration
@@ -165,9 +167,11 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 		// Prefill: process entire prompt
 		prefillStart := time.Now()
-		input := FromValues(tokens, len(tokens))
-		input = Reshape(input, 1, int32(len(tokens)))
+		vInput := FromValues(tokens, len(tokens))
+		input := Reshape(vInput, 1, int32(len(tokens)))
 		logits := m.model.Forward(input, caches)
+		Free(vInput, input)
+
 		if err := Eval(logits); err != nil {
 			m.lastErr = fmt.Errorf("prefill: %w", err)
 			return
@@ -176,6 +180,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 		// Track generated token IDs for repeat penalty.
 		var history []int32
+
+		defer func() {
+			Free(logits)
+		}()
 
 		for i := 0; i < cfg.MaxTokens; i++ {
 			select {
@@ -186,41 +194,55 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 
 			// Sample from last position logits
-			lastPos := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
-			lastPos = Reshape(lastPos, 1, int32(lastPos.Dim(2)))
+			l1 := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
+			lastPos := Reshape(l1, 1, int32(l1.Dim(2)))
+			Free(l1)
 
 			// Apply repeat penalty before sampling.
 			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
+				oldLastPos := lastPos
 				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
+				Free(oldLastPos)
 			}
 
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
 				m.lastErr = fmt.Errorf("sample step %d: %w", i, err)
+				Free(lastPos, next)
 				return
 			}
 
 			id := int32(next.Int())
 			history = append(history, id)
+			Free(lastPos)
 
 			// Check stop conditions
 			if id == m.tokenizer.EOSToken() {
+				Free(next)
 				return
 			}
 			if slices.Contains(cfg.StopTokens, id) {
+				Free(next)
 				return
 			}
 
 			genCount++
 			text := m.tokenizer.DecodeToken(id)
 			if !yield(Token{ID: id, Text: text}) {
+				Free(next)
 				return
 			}
+			Free(next)
 
 			// Next step input
-			nextInput := FromValues([]int32{id}, 1)
-			nextInput = Reshape(nextInput, 1, 1)
+			vNextInput := FromValues([]int32{id}, 1)
+			nextInput := Reshape(vNextInput, 1, 1)
+			Free(vNextInput)
+
+			oldLogits := logits
 			logits = m.model.Forward(nextInput, caches)
+			Free(nextInput, oldLogits)
+
 			if err := Eval(logits); err != nil {
 				m.lastErr = fmt.Errorf("decode step %d: %w", i, err)
 				return
@@ -238,6 +260,7 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	}
 
 	caches := m.newCaches()
+	defer freeCaches(caches)
 
 	// Single prefill pass — populates KV caches for all layers.
 	input := FromValues(tokens, len(tokens))
@@ -271,11 +294,14 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 		validLen := min(caches[i].Len(), seqLen)
 		kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
 		if err := Eval(kSliced); err != nil {
+			Free(kSliced)
 			continue
 		}
 
 		// Extract all floats then reshape per head.
 		flat := kSliced.Floats() // len = 1 * H * validLen * D
+		Free(kSliced)
+
 		keys[i] = make([][]float32, numHeads)
 		stride := validLen * headDim
 		for h := 0; h < numHeads; h++ {
@@ -332,13 +358,15 @@ func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array 
 	penaltyVal := FromValue(penalty)
 
 	// Positive logits: divide by penalty. Negative logits: multiply by penalty.
-	penalised := Where(
-		Greater(gathered, zero),
-		Mul(gathered, invPenalty),
-		Mul(gathered, penaltyVal),
-	)
+	gt := Greater(gathered, zero)
+	m1 := Mul(gathered, invPenalty)
+	m2 := Mul(gathered, penaltyVal)
+	penalised := Where(gt, m1, m2)
+	Free(gt, m1, m2)
 
-	return PutAlongAxis(logits, idx, penalised, -1)
+	res := PutAlongAxis(logits, idx, penalised, -1)
+	Free(idx, gathered, zero, invPenalty, penaltyVal, penalised)
+	return res
 }
 
 // newCaches creates per-layer KV caches. If contextLen is set, all unbounded

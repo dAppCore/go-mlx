@@ -36,11 +36,20 @@ func newSampler(temp, topP, minP float32, topK int) Sampler {
 type chain []Sampler
 
 func (c chain) Sample(logits *Array) *Array {
+	curr := logits
 	for _, s := range c {
-		logits = s.Sample(logits)
+		next := s.Sample(curr)
+		if curr != logits {
+			Free(curr)
+		}
+		curr = next
 	}
 	// Final categorical sample from log-probabilities
-	return RandomCategorical(logits)
+	res := RandomCategorical(curr)
+	if curr != logits {
+		Free(curr)
+	}
+	return res
 }
 
 // greedy returns the argmax token.
@@ -62,10 +71,15 @@ type TopKSampler int
 
 func (k TopKSampler) Sample(logits *Array) *Array {
 	neg := Negative(logits)
-	mask := Argpartition(neg, int(k)-1, -1)
+	maskIdx := Argpartition(neg, int(k)-1, -1)
+	Free(neg)
 	// Slice the indices beyond top-k
-	mask = SliceAxis(mask, -1, int32(k), int32(logits.Dim(-1)))
-	return PutAlongAxis(logits, mask, FromValue(float32(math.Inf(-1))), -1)
+	mask := SliceAxis(maskIdx, -1, int32(k), int32(logits.Dim(-1)))
+	Free(maskIdx)
+	inf := FromValue(float32(math.Inf(-1)))
+	res := PutAlongAxis(logits, mask, inf, -1)
+	Free(mask, inf)
+	return res
 }
 
 // TopP implements nucleus (top-p) sampling.
@@ -79,6 +93,7 @@ func (p TopP) Sample(logits *Array) *Array {
 	// Sort descending via argsort of negated probs
 	neg := Negative(probs)
 	sortIdx := Argsort(neg, -1)
+	Free(neg)
 	sortedProbs := TakeAlongAxis(probs, sortIdx, -1)
 
 	// Cumulative sum of sorted probabilities
@@ -87,26 +102,26 @@ func (p TopP) Sample(logits *Array) *Array {
 	// Mask in sorted space: keep tokens where cumprob (excluding current) <= threshold
 	shiftedCum := Subtract(cumProbs, sortedProbs)
 	threshold := FromValue(float32(p))
-	sortedMask := Where(
-		Greater(shiftedCum, threshold),
-		FromValue(float32(math.Inf(-1))),
-		FromValue(float32(0)),
-	)
+	inf := FromValue(float32(math.Inf(-1)))
+	zero := FromValue(float32(0))
+
+	gt := Greater(shiftedCum, threshold)
+	sortedMask := Where(gt, inf, zero)
+	Free(gt, inf, zero, threshold, shiftedCum, cumProbs, sortedProbs)
 
 	// Scatter mask back to original positions
-	mask := PutAlongAxis(
-		Zeros(logits.Shape(), DTypeFloat32),
-		sortIdx,
-		sortedMask,
-		-1,
-	)
+	emptyMask := Zeros(logits.Shape(), DTypeFloat32)
+	mask := PutAlongAxis(emptyMask, sortIdx, sortedMask, -1)
+	Free(emptyMask, sortIdx, sortedMask)
 
 	// Apply mask: -inf where excluded, original logit where kept
-	return Where(
-		Greater(FromValue(float32(0)), mask),
-		FromValue(float32(math.Inf(-1))),
-		logits,
-	)
+	zeroArr := FromValue(float32(0))
+	gt0 := Greater(zeroArr, mask)
+	inf2 := FromValue(float32(math.Inf(-1)))
+	res := Where(gt0, inf2, logits)
+	Free(zeroArr, gt0, inf2, mask, probs)
+
+	return res
 }
 
 // MinPSampler masks tokens whose probability is below min_p * max_prob.
@@ -121,12 +136,12 @@ func (p MinPSampler) Sample(logits *Array) *Array {
 
 	// Threshold = min_p * max_prob
 	threshold := MulScalar(maxProb, float32(p))
+	Free(maxProb)
 
 	// Mask tokens below threshold
-	mask := Where(
-		Greater(threshold, probs),
-		FromValue(float32(math.Inf(-1))),
-		logits,
-	)
+	inf := FromValue(float32(math.Inf(-1)))
+	gt := Greater(threshold, probs)
+	mask := Where(gt, inf, logits)
+	Free(probs, threshold, inf, gt)
 	return mask
 }
