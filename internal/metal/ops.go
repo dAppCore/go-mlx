@@ -63,6 +63,15 @@ func Negative(a *Array) *Array {
 	return out
 }
 
+// Copy creates a deep copy of an array, breaking the computation graph chain.
+// The returned array has the same data but no references to parent graph nodes,
+// allowing Metal memory from prior graph operations to be freed.
+func Copy(a *Array) *Array {
+	out := newArray("COPY", a)
+	C.mlx_copy(&out.ctx, a.ctx, DefaultStream().ctx)
+	return out
+}
+
 // --- Math functions ---
 
 // Exp returns element-wise exp(a).
@@ -81,7 +90,10 @@ func Sigmoid(a *Array) *Array {
 
 // SiLU returns element-wise x * sigmoid(x) (Swish activation).
 func SiLU(a *Array) *Array {
-	return Mul(a, Sigmoid(a))
+	s := Sigmoid(a)
+	res := Mul(a, s)
+	Free(s)
+	return res
 }
 
 // Tanh returns element-wise tanh(a).

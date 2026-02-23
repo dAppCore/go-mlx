@@ -50,10 +50,14 @@ func (l *Linear) baseForward(x *Array) *Array {
 	if l.Scales != nil {
 		out = QuantizedMatmul(x, l.Weight, l.Scales, l.Biases, true, l.GroupSize, l.Bits)
 	} else {
-		out = Matmul(x, Transpose(l.Weight))
+		wT := Transpose(l.Weight)
+		out = Matmul(x, wT)
+		Free(wT)
 	}
 	if l.Bias != nil && l.Bias.Valid() {
+		oldOut := out
 		out = Add(out, l.Bias)
+		Free(oldOut)
 	}
 	return out
 }
@@ -72,7 +76,9 @@ type Embedding struct {
 func (e *Embedding) Forward(indices *Array) *Array {
 	if e.Scales != nil {
 		w := Dequantize(e.Weight, e.Scales, e.Biases, e.GroupSize, e.Bits)
-		return Take(w, indices, 0)
+		res := Take(w, indices, 0)
+		Free(w)
+		return res
 	}
 	return Take(e.Weight, indices, 0)
 }
@@ -110,6 +116,10 @@ func RepeatKV(x *Array, factor int32) *Array {
 
 	// Expand: [B, H, 1, L, D] then broadcast to [B, H, factor, L, D]
 	expanded := ExpandDims(x, 2)
-	expanded = BroadcastTo(expanded, []int32{B, H, factor, L, D})
-	return Reshape(expanded, B, H*factor, L, D)
+	broadcasted := BroadcastTo(expanded, []int32{B, H, factor, L, D})
+	Free(expanded)
+
+	res := Reshape(broadcasted, B, H*factor, L, D)
+	Free(broadcasted)
+	return res
 }

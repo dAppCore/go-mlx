@@ -177,6 +177,13 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			m.lastErr = fmt.Errorf("prefill: %w", err)
 			return
 		}
+		// Detach logits and cache arrays to release the entire prefill computation
+		// graph. After Eval, data is materialised — graph connections only pin Metal
+		// memory from intermediate tensors (34 layers × ~20 ops each).
+		Detach(logits)
+		for _, c := range caches {
+			c.Detach()
+		}
 		prefillDur = time.Since(prefillStart)
 
 		// Track generated token IDs for repeat penalty.
@@ -248,6 +255,15 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 				m.lastErr = fmt.Errorf("decode step %d: %w", i, err)
 				return
 			}
+
+			// Detach logits and cache arrays to break the computation graph.
+			// Without this, each step's logits holds shared_ptrs through the
+			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
+			// Metal buffers per step that accumulate to tens of GB.
+			Detach(logits)
+			for _, c := range caches {
+				c.Detach()
+			}
 		}
 	}
 }
@@ -264,9 +280,11 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	defer freeCaches(caches)
 
 	// Single prefill pass — populates KV caches for all layers.
-	input := FromValues(tokens, len(tokens))
-	input = Reshape(input, 1, int32(len(tokens)))
+	vInput := FromValues(tokens, len(tokens))
+	input := Reshape(vInput, 1, int32(len(tokens)))
+	Free(vInput)
 	logits := m.model.Forward(input, caches)
+	Free(input)
 	if err := Eval(logits); err != nil {
 		return nil, fmt.Errorf("prefill: %w", err)
 	}

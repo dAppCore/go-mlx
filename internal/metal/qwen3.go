@@ -261,74 +261,114 @@ func (m *Qwen3Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *
 	h := m.EmbedTokens.Forward(tokens)
 
 	for i, layer := range m.Layers {
-		h = layer.forward(h, caches[i], B, L, mask, m.Cfg)
+		hNext := layer.forward(h, caches[i], B, L, mask, m.Cfg)
+		Free(h)
+		h = hNext
 	}
 
-	return m.Output.Forward(m.Norm.Forward(h, m.Cfg.RMSNormEps))
+	normed := m.Norm.Forward(h, m.Cfg.RMSNormEps)
+	out := m.Output.Forward(normed)
+	Free(h, normed)
+	return out
 }
 
 func (l *Qwen3DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
 	// Pre-attention norm → attention → residual add
 	normed := l.InputNorm.Forward(x, cfg.RMSNormEps)
 	attnOut := l.Attention.forward(normed, c, B, L, mask, cfg)
+	Free(normed)
 	h := Add(x, attnOut)
+	Free(attnOut)
 
 	// Pre-MLP norm → MLP → residual add
-	normed = l.PostAttnNorm.Forward(h, cfg.RMSNormEps)
-	mlpOut := l.MLP.forward(normed)
-	return Add(h, mlpOut)
+	normed2 := l.PostAttnNorm.Forward(h, cfg.RMSNormEps)
+	mlpOut := l.MLP.forward(normed2)
+	Free(normed2)
+	result := Add(h, mlpOut)
+	Free(h, mlpOut)
+	return result
 }
 
 func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg *Qwen3Config) *Array {
-	q := a.QProj.Forward(x)
-	k := a.KProj.Forward(x)
-	v := a.VProj.Forward(x)
+	qProj := a.QProj.Forward(x)
+	kProj := a.KProj.Forward(x)
+	vProj := a.VProj.Forward(x)
 
-	// Reshape to [B, num_heads, L, head_dim]
-	q = AsStrided(q, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
+	// Reshape to [B, num_heads, L, head_dim] via stride manipulation.
+	// AsStrided creates a view (C refcount keeps source alive), so Free source after.
+	q := AsStrided(qProj, []int32{B, cfg.NumAttentionHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumAttentionHeads * cfg.HeadDim), 1}, 0)
-	k = AsStrided(k, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
+	Free(qProj)
+	k := AsStrided(kProj, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
-	v = AsStrided(v, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
+	Free(kProj)
+	v := AsStrided(vProj, []int32{B, cfg.NumKeyValueHeads, L, cfg.HeadDim},
 		[]int64{int64(L * cfg.NumKeyValueHeads * cfg.HeadDim), int64(cfg.HeadDim), int64(cfg.NumKeyValueHeads * cfg.HeadDim), 1}, 0)
+	Free(vProj)
 
 	// Q/K RMS normalization (Qwen 3 has this; Qwen 2 does not)
 	if a.QNorm != nil && a.QNorm.Weight != nil {
+		oldQ := q
 		q = a.QNorm.Forward(q, cfg.RMSNormEps)
+		Free(oldQ)
 	}
 	if a.KNorm != nil && a.KNorm.Weight != nil {
+		oldK := k
 		k = a.KNorm.Forward(k, cfg.RMSNormEps)
+		Free(oldK)
 	}
 
 	// RoPE — single theta for all layers (no sliding window)
+	oldQ := q
 	q = RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
+	Free(oldQ)
+	oldK := k
 	k = RoPE(k, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
+	Free(oldK)
 
-	// Update KV cache
+	// Update KV cache — returns Slice views into cache buffer; free our pre-update handles.
+	oldK, oldV := k, v
 	k, v = c.Update(k, v, int(L))
+	Free(oldK, oldV)
 
 	// GQA: repeat K/V heads to match Q heads
 	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
+	kAttn, vAttn := k, v
 	if repeatFactor > 1 {
-		k = RepeatKV(k, repeatFactor)
-		v = RepeatKV(v, repeatFactor)
+		kAttn = RepeatKV(k, repeatFactor)
+		vAttn = RepeatKV(v, repeatFactor)
+		Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
 	}
 
 	// Scaled dot-product attention
 	var out *Array
 	if mask != nil {
-		out = ScaledDotProductAttentionWithMask(q, k, v, mask, cfg.Scale)
+		out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
 	} else {
-		out = ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1)
+		out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
 	}
-	out = Reshape(Transpose(out, 0, 2, 1, 3), B, L, cfg.NumAttentionHeads*cfg.HeadDim)
-	return a.OProj.Forward(out)
+	Free(q, kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
+
+	transposed := Transpose(out, 0, 2, 1, 3)
+	Free(out)
+	reshaped := Reshape(transposed, B, L, cfg.NumAttentionHeads*cfg.HeadDim)
+	Free(transposed)
+	result := a.OProj.Forward(reshaped)
+	Free(reshaped)
+	return result
 }
 
 // forward computes SwiGLU: down(silu(gate(x)) * up(x)).
 func (m *Qwen3MLP) forward(x *Array) *Array {
-	gate := SiLU(m.GateProj.Forward(x))
-	return m.DownProj.Forward(Mul(gate, m.UpProj.Forward(x)))
+	gateProj := m.GateProj.Forward(x)
+	gate := SiLU(gateProj)
+	Free(gateProj)
+	upProj := m.UpProj.Forward(x)
+	activated := Mul(gate, upProj)
+	Free(gate, upProj)
+	result := m.DownProj.Forward(activated)
+	Free(activated)
+	return result
 }
 
 // NewCache creates per-layer KV caches. Qwen 3 uses global attention only.

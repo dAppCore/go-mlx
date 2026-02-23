@@ -14,6 +14,9 @@ type Cache interface {
 	State() []*Array
 	// Reset clears the cache for a new generation session.
 	Reset()
+	// Detach replaces internal K/V arrays with copies that have no graph parents.
+	// Call after Eval to allow Metal memory from prior graph operations to be freed.
+	Detach()
 }
 
 // KVCache implements an unbounded cache that grows as needed.
@@ -88,6 +91,13 @@ func (c *KVCache) Reset() {
 	c.keys = nil
 	c.values = nil
 	c.offset = 0
+}
+
+func (c *KVCache) Detach() {
+	if c.keys == nil {
+		return
+	}
+	Detach(c.keys, c.values)
 }
 
 // RotatingKVCache implements a bounded sliding window cache.
@@ -190,7 +200,10 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	}
 
 	c.idx = int(c.keys.Shape()[2])
-	return c.keys, c.values
+	// Return Slice views so callers can Free them without destroying the cache.
+	// (updateInPlace and KVCache.Update already return Slice views.)
+	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk}),
+		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
 }
 
 func (c *RotatingKVCache) State() []*Array {
@@ -208,4 +221,11 @@ func (c *RotatingKVCache) Reset() {
 	c.values = nil
 	c.offset = 0
 	c.idx = 0
+}
+
+func (c *RotatingKVCache) Detach() {
+	if c.keys == nil {
+		return
+	}
+	Detach(c.keys, c.values)
 }

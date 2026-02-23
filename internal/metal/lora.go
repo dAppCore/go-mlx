@@ -91,11 +91,20 @@ func (l *LoRALinear) Forward(x *Array) *Array {
 	baseOut := l.Base.baseForward(x)
 
 	// LoRA path: x @ A^T gives [B, L, rank], then @ B^T gives [B, L, out]
-	loraOut := Matmul(x, Transpose(l.A))
-	loraOut = Matmul(loraOut, Transpose(l.B))
-	loraOut = MulScalar(loraOut, l.Scale)
+	ta := Transpose(l.A)
+	loraOut := Matmul(x, ta)
+	Free(ta)
 
-	return Add(baseOut, loraOut)
+	tb := Transpose(l.B)
+	loraOut2 := Matmul(loraOut, tb)
+	Free(loraOut, tb)
+
+	loraOut3 := MulScalar(loraOut2, l.Scale)
+	Free(loraOut2)
+
+	res := Add(baseOut, loraOut3)
+	Free(baseOut, loraOut3)
+	return res
 }
 
 // TrainableParams returns the LoRA A and B arrays for gradient computation.
