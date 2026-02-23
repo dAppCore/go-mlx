@@ -39,6 +39,28 @@ def _error(msg):
     _write({"error": str(msg)})
 
 
+def _build_gen_kwargs(req):
+    """Build sampler and logits_processors kwargs for stream_generate."""
+    from mlx_lm.sample_utils import make_sampler, make_logits_processors
+
+    temperature = req.get("temperature", 0.0)
+    top_p = req.get("top_p", 0.0)
+    top_k = req.get("top_k", 0)
+    repeat_penalty = req.get("repeat_penalty", 0.0)
+
+    kwargs = {
+        "max_tokens": req.get("max_tokens", 256),
+        "sampler": make_sampler(temp=temperature, top_p=top_p, top_k=top_k),
+    }
+
+    if repeat_penalty > 1.0:
+        kwargs["logits_processors"] = make_logits_processors(
+            repetition_penalty=repeat_penalty,
+        )
+
+    return kwargs
+
+
 def handle_load(req):
     global _model, _tokeniser, _model_type, _vocab_size
 
@@ -73,22 +95,12 @@ def handle_generate(req):
         return
 
     prompt = req.get("prompt", "")
-    max_tokens = req.get("max_tokens", 256)
-    temperature = req.get("temperature", 0.0)
-    top_p = req.get("top_p", 1.0)
-
     _cancelled = False
 
     try:
         import mlx_lm
 
-        kwargs = {
-            "max_tokens": max_tokens,
-        }
-        if temperature > 0:
-            kwargs["temp"] = temperature
-        if top_p < 1.0:
-            kwargs["top_p"] = top_p
+        kwargs = _build_gen_kwargs(req)
 
         count = 0
         for response in mlx_lm.stream_generate(
@@ -115,10 +127,6 @@ def handle_chat(req):
         return
 
     messages = req.get("messages", [])
-    max_tokens = req.get("max_tokens", 256)
-    temperature = req.get("temperature", 0.0)
-    top_p = req.get("top_p", 1.0)
-
     _cancelled = False
 
     try:
@@ -136,13 +144,7 @@ def handle_chat(req):
                 for m in messages
             )
 
-        kwargs = {
-            "max_tokens": max_tokens,
-        }
-        if temperature > 0:
-            kwargs["temp"] = temperature
-        if top_p < 1.0:
-            kwargs["top_p"] = top_p
+        kwargs = _build_gen_kwargs(req)
 
         count = 0
         for response in mlx_lm.stream_generate(

@@ -233,6 +233,9 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 		if cfg.TopP > 0 {
 			req["top_p"] = cfg.TopP
 		}
+		if cfg.RepeatPenalty > 1.0 {
+			req["repeat_penalty"] = cfg.RepeatPenalty
+		}
 
 		if err := m.send(req); err != nil {
 			m.lastErr = fmt.Errorf("mlxlm: send generate: %w", err)
@@ -313,6 +316,9 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 		}
 		if cfg.TopP > 0 {
 			req["top_p"] = cfg.TopP
+		}
+		if cfg.RepeatPenalty > 1.0 {
+			req["repeat_penalty"] = cfg.RepeatPenalty
 		}
 
 		if err := m.send(req); err != nil {
