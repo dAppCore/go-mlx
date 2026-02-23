@@ -495,6 +495,28 @@ for tok := range m.Generate(ctx, "prompt", inference.WithMaxTokens(128)) {
 - `ContextLen` — replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers
 - `GPULayers` — logged as a warning if set to 0 (Metal always uses full GPU offload)
 
+### AttentionInspector (Q/K Bone Orientation)
+
+`metalAdapter` implements the optional `inference.AttentionInspector` interface, enabling Q/K Bone Orientation analysis from the KV cache.
+
+```go
+inspector, ok := model.(inference.AttentionInspector)
+snap, err := inspector.InspectAttention(ctx, "What is kindness?")
+// snap.Keys[layer][head] → post-RoPE K vectors as flat float32
+```
+
+**How it works:**
+
+1. The prompt is tokenised and a single prefill pass populates all layer KV caches
+2. For each layer, `cache.State()[0]` returns the K tensor with shape `[1, num_kv_heads, seq_alloc, head_dim]`
+3. The tensor is sliced to valid token positions (cache may pre-allocate padding beyond `seq_len`)
+4. K vectors are copied to CPU float32 slices via `.Floats()` and reshaped to `[head][seq_len * head_dim]`
+5. GPU arrays are freed immediately after extraction
+
+The K tensors are post-RoPE — rotary position embeddings have already been applied during the attention forward pass. This is the same data the model uses for attention scoring, making it suitable for coherence analysis.
+
+For GQA models (Gemma3), `num_kv_heads` may be 1 per layer while `num_query_heads` is 8+. The returned snapshot reflects the KV head count, not query heads.
+
 ---
 
 ## mlxlm Subprocess Backend
