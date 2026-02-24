@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -152,12 +153,7 @@ func (a *LoRAAdapter) TotalParams() int {
 
 // SortedNames returns layer names in deterministic sorted order.
 func (a *LoRAAdapter) SortedNames() []string {
-	names := make([]string, 0, len(a.Layers))
-	for name := range a.Layers {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	return names
+	return slices.Sorted(maps.Keys(a.Layers))
 }
 
 // AllTrainableParams returns all trainable arrays (A and B from every layer),
