@@ -15,7 +15,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"unsafe"
 )
@@ -156,7 +156,7 @@ func (a *LoRAAdapter) SortedNames() []string {
 	for name := range a.Layers {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
