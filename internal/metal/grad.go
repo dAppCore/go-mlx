@@ -39,7 +39,7 @@ func goGradFunc(outputs *C.mlx_vector_array, inputs C.mlx_vector_array, payload 
 
 	nInputs := int(C.mlx_vector_array_size(inputs))
 	goInputs := make([]*Array, nInputs)
-	for i := 0; i < nInputs; i++ {
+	for i := range nInputs {
 		a := newArray("GRAD_INPUT")
 		C.mlx_vector_array_get(&a.ctx, inputs, C.size_t(i))
 		goInputs[i] = a
@@ -324,7 +324,7 @@ func MSELoss(predictions, targets *Array) *Array {
 func vectorToArrays(vec C.mlx_vector_array) []*Array {
 	n := int(C.mlx_vector_array_size(vec))
 	out := make([]*Array, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		a := newArray("VEC_OUT")
 		C.mlx_vector_array_get(&a.ctx, vec, C.size_t(i))
 		out[i] = a

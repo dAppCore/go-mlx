@@ -208,7 +208,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		maxTokens = 256
 	}
 
-	for step := 0; step < maxTokens; step++ {
+	for step := range maxTokens {
 		select {
 		case <-ctx.Done():
 			// Return partial results on cancellation.

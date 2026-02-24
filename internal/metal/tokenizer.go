@@ -191,7 +191,7 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 		// Find the pair with the lowest merge rank.
 		bestRank := -1
 		bestIdx := -1
-		for i := 0; i < len(symbols)-1; i++ {
+		for i := range len(symbols) - 1 {
 			key := symbols[i] + " " + symbols[i+1]
 			if rank, ok := t.mergeRanks[key]; ok {
 				if bestRank < 0 || rank < bestRank {
