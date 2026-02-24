@@ -4,6 +4,7 @@ package metal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
@@ -256,7 +257,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("empty prompt after tokenisation")
+		return nil, errors.New("empty prompt after tokenisation")
 	}
 
 	caches := m.newCaches()
