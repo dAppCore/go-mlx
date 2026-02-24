@@ -4,6 +4,7 @@ package metal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"slices"
@@ -185,7 +186,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			Free(logits)
 		}()
 
-		for i := 0; i < cfg.MaxTokens; i++ {
+		for i := range cfg.MaxTokens {
 			select {
 			case <-ctx.Done():
 				m.lastErr = ctx.Err()
@@ -256,7 +257,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("empty prompt after tokenisation")
+		return nil, errors.New("empty prompt after tokenisation")
 	}
 
 	caches := m.newCaches()
@@ -304,7 +305,7 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 
 		keys[i] = make([][]float32, numHeads)
 		stride := validLen * headDim
-		for h := 0; h < numHeads; h++ {
+		for h := range numHeads {
 			start := h * stride
 			end := start + stride
 			if end > len(flat) {

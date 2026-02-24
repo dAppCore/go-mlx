@@ -3,11 +3,11 @@
 package metal
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
 	"slices"
-	"sort"
 	"time"
 )
 
@@ -49,8 +49,8 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	for i := range indices {
 		indices[i] = i
 	}
-	sort.Slice(indices, func(a, b int) bool {
-		return lengths[indices[a]] > lengths[indices[b]]
+	slices.SortFunc(indices, func(a, b int) int {
+		return cmp.Compare(lengths[b], lengths[a])
 	})
 
 	maxLen := lengths[indices[0]]
@@ -160,8 +160,8 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	for i := range indices {
 		indices[i] = i
 	}
-	sort.Slice(indices, func(a, b int) bool {
-		return lengths[indices[a]] > lengths[indices[b]]
+	slices.SortFunc(indices, func(a, b int) int {
+		return cmp.Compare(lengths[b], lengths[a])
 	})
 
 	N := int32(len(prompts))
@@ -208,7 +208,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		maxTokens = 256
 	}
 
-	for step := 0; step < maxTokens; step++ {
+	for step := range maxTokens {
 		select {
 		case <-ctx.Done():
 			// Return partial results on cancellation.

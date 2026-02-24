@@ -31,7 +31,7 @@ func SliceAxis(a *Array, axis int, start, end int32) *Array {
 	ndim := a.NumDims()
 	starts := make([]int32, ndim)
 	ends := make([]int32, ndim)
-	for i := 0; i < ndim; i++ {
+	for i := range ndim {
 		starts[i] = 0
 		ends[i] = int32(a.Dim(i))
 	}
