@@ -82,7 +82,7 @@ The `#cgo` directives in `internal/metal/metal.go` set all required flags automa
 
 ```c
 #cgo CXXFLAGS: -std=c++17
-#cgo CFLAGS: -mmacosx-version-min=13.3
+#cgo CFLAGS: -mmacosx-version-min=26.0
 #cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
 #cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
