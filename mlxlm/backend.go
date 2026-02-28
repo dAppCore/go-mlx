@@ -27,11 +27,13 @@ import (
 	"bufio"
 	"context"
 	"embed"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -453,6 +455,95 @@ func (m *mlxlmModel) drain() {
 			return
 		}
 	}
+}
+
+// InspectAttention implements inference.AttentionInspector.
+func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	req := map[string]any{
+		"cmd":    "inspect",
+		"prompt": prompt,
+	}
+	if err := m.send(req); err != nil {
+		return nil, fmt.Errorf("mlxlm: send inspect: %w", err)
+	}
+
+	resp, err := m.recv()
+	if err != nil {
+		return nil, fmt.Errorf("mlxlm: recv inspect: %w", err)
+	}
+	if errMsg, ok := resp["error"].(string); ok {
+		return nil, fmt.Errorf("mlxlm: %s", errMsg)
+	}
+
+	// Parse metadata.
+	dir, _ := resp["dir"].(string)
+	numLayers := int(resp["num_layers"].(float64))
+	numKVHeads := int(resp["num_kv_heads"].(float64))
+	numQHeads := int(resp["num_q_heads"].(float64))
+	seqLen := int(resp["seq_len"].(float64))
+	headDim := int(resp["head_dim"].(float64))
+	arch, _ := resp["architecture"].(string)
+
+	// Read binary files from temp dir.
+	keys := make([][][]float32, numLayers)
+	queries := make([][][]float32, numLayers)
+
+	for layer := range numLayers {
+		kPath := filepath.Join(dir, fmt.Sprintf("keys_%02d.bin", layer))
+		kData, err := os.ReadFile(kPath)
+		if err != nil {
+			continue
+		}
+		keys[layer] = reshapeFloat32(kData, numKVHeads, seqLen*headDim)
+
+		qPath := filepath.Join(dir, fmt.Sprintf("queries_%02d.bin", layer))
+		qData, err := os.ReadFile(qPath)
+		if err != nil {
+			continue
+		}
+		queries[layer] = reshapeFloat32(qData, numQHeads, seqLen*headDim)
+	}
+
+	// Clean up temp dir.
+	os.RemoveAll(dir)
+
+	return &inference.AttentionSnapshot{
+		NumLayers:     numLayers,
+		NumHeads:      numKVHeads,
+		NumQueryHeads: numQHeads,
+		SeqLen:        seqLen,
+		HeadDim:       headDim,
+		Keys:          keys,
+		Queries:       queries,
+		Architecture:  arch,
+	}, nil
+}
+
+// reshapeFloat32 reads raw little-endian float32 bytes and reshapes into
+// [numHeads][stride] slices.
+func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
+	total := len(data) / 4
+	flat := make([]float32, total)
+	for i := range flat {
+		bits := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
+		flat[i] = math.Float32frombits(bits)
+	}
+
+	heads := make([][]float32, numHeads)
+	for h := range numHeads {
+		start := h * stride
+		end := start + stride
+		if end > len(flat) {
+			break
+		}
+		head := make([]float32, stride)
+		copy(head, flat[start:end])
+		heads[h] = head
+	}
+	return heads
 }
 
 // kill terminates the subprocess immediately. Used during load failures.

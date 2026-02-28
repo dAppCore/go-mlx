@@ -106,6 +106,63 @@ def main():
                 "hidden_size": 2048,
             })
 
+        elif cmd == "inspect":
+            if not _loaded:
+                _error("inspect: no model loaded")
+                continue
+
+            prompt = req.get("prompt", "")
+            if "ERROR" in prompt:
+                _error("inspect: simulated inspect error")
+                continue
+
+            import tempfile
+            import struct
+            import os
+
+            # Mock dimensions (small for testing).
+            num_layers = 4
+            num_kv_heads = 2
+            num_q_heads = 8
+            seq_len = 3
+            head_dim = 4
+
+            out_dir = tempfile.mkdtemp(prefix="mlxlm-inspect-mock-")
+
+            for layer in range(num_layers):
+                # Keys: num_kv_heads * seq_len * head_dim floats
+                k_count = num_kv_heads * seq_len * head_dim
+                k_data = struct.pack(
+                    f"<{k_count}f",
+                    *[float(layer * 100 + h * 10 + i) / 1000.0
+                      for h in range(num_kv_heads)
+                      for i in range(seq_len * head_dim)]
+                )
+                with open(os.path.join(out_dir, f"keys_{layer:02d}.bin"), "wb") as f:
+                    f.write(k_data)
+
+                # Queries: num_q_heads * seq_len * head_dim floats
+                q_count = num_q_heads * seq_len * head_dim
+                q_data = struct.pack(
+                    f"<{q_count}f",
+                    *[float(layer * 100 + h * 10 + i) / 1000.0
+                      for h in range(num_q_heads)
+                      for i in range(seq_len * head_dim)]
+                )
+                with open(os.path.join(out_dir, f"queries_{layer:02d}.bin"), "wb") as f:
+                    f.write(q_data)
+
+            _write({
+                "ok": True,
+                "dir": out_dir,
+                "num_layers": num_layers,
+                "num_kv_heads": num_kv_heads,
+                "num_q_heads": num_q_heads,
+                "seq_len": seq_len,
+                "head_dim": head_dim,
+                "architecture": "mock_model",
+            })
+
         elif cmd == "cancel":
             # No-op in mock — real bridge sets a flag.
             pass

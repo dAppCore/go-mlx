@@ -282,3 +282,75 @@ func TestGenerate_MaxTokens(t *testing.T) {
 		t.Errorf("got %d tokens, want 3", count)
 	}
 }
+
+func TestInspectAttention_Good(t *testing.T) {
+	m := loadMock(t, "/fake/model/path")
+
+	inspector, ok := m.(inference.AttentionInspector)
+	if !ok {
+		t.Fatal("mlxlmModel does not implement AttentionInspector")
+	}
+
+	snap, err := inspector.InspectAttention(context.Background(), "Hello")
+	if err != nil {
+		t.Fatalf("InspectAttention: %v", err)
+	}
+
+	if snap.NumLayers != 4 {
+		t.Errorf("NumLayers = %d, want 4", snap.NumLayers)
+	}
+	if snap.NumHeads != 2 {
+		t.Errorf("NumHeads (KV) = %d, want 2", snap.NumHeads)
+	}
+	if snap.NumQueryHeads != 8 {
+		t.Errorf("NumQueryHeads = %d, want 8", snap.NumQueryHeads)
+	}
+	if snap.SeqLen != 3 {
+		t.Errorf("SeqLen = %d, want 3", snap.SeqLen)
+	}
+	if snap.HeadDim != 4 {
+		t.Errorf("HeadDim = %d, want 4", snap.HeadDim)
+	}
+	if snap.Architecture != "mock_model" {
+		t.Errorf("Architecture = %q, want %q", snap.Architecture, "mock_model")
+	}
+
+	// Verify K arrays.
+	if len(snap.Keys) != 4 {
+		t.Fatalf("len(Keys) = %d, want 4", len(snap.Keys))
+	}
+	for i, layer := range snap.Keys {
+		if len(layer) != 2 {
+			t.Errorf("Keys[%d] has %d heads, want 2", i, len(layer))
+		}
+		for j, head := range layer {
+			wantLen := 3 * 4 // seq_len * head_dim
+			if len(head) != wantLen {
+				t.Errorf("Keys[%d][%d] len = %d, want %d", i, j, len(head), wantLen)
+			}
+		}
+	}
+
+	// Verify Q arrays.
+	if !snap.HasQueries() {
+		t.Fatal("expected HasQueries() == true")
+	}
+	if len(snap.Queries) != 4 {
+		t.Fatalf("len(Queries) = %d, want 4", len(snap.Queries))
+	}
+	for i, layer := range snap.Queries {
+		if len(layer) != 8 {
+			t.Errorf("Queries[%d] has %d heads, want 8", i, len(layer))
+		}
+	}
+}
+
+func TestInspectAttention_Error(t *testing.T) {
+	m := loadMock(t, "/fake/model/path")
+	inspector := m.(inference.AttentionInspector)
+
+	_, err := inspector.InspectAttention(context.Background(), "ERROR trigger")
+	if err == nil {
+		t.Fatal("expected error for ERROR prompt")
+	}
+}
