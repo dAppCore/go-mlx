@@ -470,6 +470,8 @@ func (m *GemmaModel) Tokenizer() *Tokenizer { return m.Tok }
 func (m *GemmaModel) ModelType() string { return "gemma3" }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
+// Supports attention targets (q_proj, k_proj, v_proj, o_proj) and
+// MLP targets (gate_proj, up_proj, down_proj).
 func (m *GemmaModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 	adapter := &LoRAAdapter{
 		Layers: make(map[string]*LoRALinear),
@@ -477,18 +479,31 @@ func (m *GemmaModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 	}
 
 	for i, layer := range m.Layers {
-		prefix := fmt.Sprintf("model.layers.%d.self_attn", i)
 		for _, target := range cfg.TargetKeys {
 			var proj *Linear
+			var prefix string
 			switch target {
 			case "q_proj":
+				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.QProj
 			case "k_proj":
+				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.KProj
 			case "v_proj":
+				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.VProj
 			case "o_proj":
+				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.OProj
+			case "gate_proj":
+				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				proj = layer.MLP.GateProj
+			case "up_proj":
+				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				proj = layer.MLP.UpProj
+			case "down_proj":
+				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				proj = layer.MLP.DownProj
 			}
 			if proj != nil {
 				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
