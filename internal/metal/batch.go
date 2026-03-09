@@ -79,6 +79,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	tokens := FromValues(padded, int(N), int(L))
 	logits := m.model.ForwardMasked(tokens, mask, m.newCachesN(int(N)))
 	if err := Eval(logits); err != nil {
+		Free(tokens, mask)
 		return nil, fmt.Errorf("classify prefill: %w", err)
 	}
 
@@ -93,10 +94,11 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		// Extract [1, vocab] at position lastPos for this batch element.
 		batchLogits := SliceAxis(logits, 0, si, si+1) // [1, L, vocab]
 		posLogits := SliceAxis(batchLogits, 1, lastPos, lastPos+1)
-		posLogits = Reshape(posLogits, 1, int32(posLogits.Dim(2))) // [1, vocab]
+		posLogitsReshaped := Reshape(posLogits, 1, int32(posLogits.Dim(2))) // [1, vocab]
 
-		next := sampler.Sample(posLogits)
+		next := sampler.Sample(posLogitsReshaped)
 		if err := Eval(next); err != nil {
+			Free(batchLogits, posLogits, posLogitsReshaped)
 			return nil, fmt.Errorf("classify sample %d: %w", si, err)
 		}
 
@@ -105,13 +107,17 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		sortedResults[si].Token = Token{ID: id, Text: text}
 
 		if returnLogits {
-			posLogits = Reshape(posLogits, int32(posLogits.Dim(1)))
-			if err := Eval(posLogits); err != nil {
+			logitsFlat := Reshape(posLogitsReshaped, int32(posLogitsReshaped.Dim(1)))
+			if err := Eval(logitsFlat); err != nil {
+				Free(batchLogits, posLogits, posLogitsReshaped, next, logitsFlat)
 				return nil, fmt.Errorf("classify logits %d: %w", si, err)
 			}
-			sortedResults[si].Logits = posLogits.Floats()
+			sortedResults[si].Logits = logitsFlat.Floats()
+			Free(logitsFlat)
 		}
+		Free(batchLogits, posLogits, posLogitsReshaped, next)
 	}
+	Free(logits, tokens, mask)
 
 	// Unsort results back to original prompt order.
 	results := make([]ClassifyResult, N)
@@ -235,20 +241,22 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			}
 
 			var posLogits *Array
+			var batchL, posL *Array
 			if step == 0 {
 				// First step: gather from prefill at each prompt's last real position.
 				lastPos := sortedLengths[si] - 1
-				batchLogits := SliceAxis(logits, 0, si, si+1)
-				posLogits = SliceAxis(batchLogits, 1, lastPos, lastPos+1)
+				batchL = SliceAxis(logits, 0, si, si+1)
+				posL = SliceAxis(batchL, 1, lastPos, lastPos+1)
 			} else {
 				// Subsequent steps: logits shape [N, 1, vocab].
-				posLogits = SliceAxis(logits, 0, si, si+1)
-				posLogits = SliceAxis(posLogits, 1, 0, 1)
+				batchL = SliceAxis(logits, 0, si, si+1)
+				posL = SliceAxis(batchL, 1, 0, 1)
 			}
-			posLogits = Reshape(posLogits, 1, int32(posLogits.Dim(posLogits.NumDims()-1)))
+			posLogits = Reshape(posL, 1, int32(posL.Dim(posL.NumDims()-1)))
 
 			next := sampler.Sample(posLogits)
 			if err := Eval(next); err != nil {
+				Free(batchL, posL, posLogits, next)
 				return nil, fmt.Errorf("batch sample step %d seq %d: %w", step, si, err)
 			}
 
@@ -258,9 +266,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			// Check stop conditions.
 			if id == eosID {
 				states[si].finished = true
-				continue
-			}
-			if slices.Contains(cfg.StopTokens, id) {
+			} else if slices.Contains(cfg.StopTokens, id) {
 				states[si].finished = true
 			}
 			if !states[si].finished {
@@ -268,18 +274,23 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 				states[si].tokens = append(states[si].tokens, Token{ID: id, Text: text})
 				allFinished = false
 			}
+			Free(batchL, posL, posLogits, next)
 		}
 
 		if allFinished {
+			Free(logits)
 			break
 		}
 
 		// Feed next tokens [N, 1] through the model.
 		nextInput := FromValues(nextIDs, int(N), 1)
+		oldLogits := logits
 		logits = m.model.Forward(nextInput, caches)
 		if err := Eval(logits); err != nil {
+			Free(nextInput, oldLogits)
 			return nil, fmt.Errorf("batch decode step %d: %w", step, err)
 		}
+		Free(nextInput, oldLogits)
 	}
 
 	// Unsort results back to original order.

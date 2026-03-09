@@ -8,14 +8,18 @@ package metal
 // Callback for gradient closures — same signature as goCompiledFunc.
 extern int goGradFunc(mlx_vector_array *outputs, const mlx_vector_array inputs, void *payload);
 
+// Destructor for closure payload to prevent leaks in gradFuncs.
+extern void goGradDestructor(void *payload);
+
 static mlx_closure new_grad_closure(void *payload) {
-    return mlx_closure_new_func_payload(&goGradFunc, payload, NULL);
+    return mlx_closure_new_func_payload(&goGradFunc, payload, &goGradDestructor);
 }
 */
 import "C"
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -51,11 +55,19 @@ func goGradFunc(outputs *C.mlx_vector_array, inputs C.mlx_vector_array, payload 
 	// Create a valid vector, fill it, then copy to the output pointer.
 	tmp := C.mlx_vector_array_new()
 	for _, out := range goOutputs {
-		C.mlx_vector_array_append_value(tmp, out.ctx)
+		if out != nil && out.Valid() {
+			C.mlx_vector_array_append_value(tmp, out.ctx)
+		}
 	}
 	C.mlx_vector_array_set(outputs, tmp)
 	C.mlx_vector_array_free(tmp)
 	return 0
+}
+
+//export goGradDestructor
+func goGradDestructor(payload unsafe.Pointer) {
+	id := uintptr(payload)
+	gradFuncs.Delete(id)
 }
 
 // newClosure registers a Go function as an MLX closure for autograd.
@@ -242,19 +254,22 @@ func Checkpoint(fn func([]*Array) []*Array) func([]*Array) []*Array {
 	Init()
 
 	closure := newClosure(fn)
-	defer C.mlx_closure_free(closure)
+	// Do NOT free closure here, it's needed by mlx_checkpoint and its result.
 
 	var checkpointed C.mlx_closure
 	C.mlx_checkpoint(&checkpointed, closure)
+	C.mlx_closure_free(closure) // checkpointed increments refcount if needed
 
-	// Register the checkpointed closure so it stays alive
-	id := gradNextID.Add(1)
-	cpClosure := checkpointed // capture for the returned function
+	// Wrap in a Go struct to manage checkpointed closure lifetime
+	type cpWrapper struct {
+		cls C.mlx_closure
+	}
+	cp := &cpWrapper{cls: checkpointed}
+	runtime.SetFinalizer(cp, func(c *cpWrapper) {
+		C.mlx_closure_free(c.cls)
+	})
 
-	// Return a Go function that calls through the checkpointed closure
 	return func(inputs []*Array) []*Array {
-		_ = id // prevent GC of closure reference
-
 		inputVec := C.mlx_vector_array_new()
 		defer C.mlx_vector_array_free(inputVec)
 		for _, in := range inputs {
@@ -264,7 +279,7 @@ func Checkpoint(fn func([]*Array) []*Array) func([]*Array) []*Array {
 		outVec := C.mlx_vector_array_new()
 		defer C.mlx_vector_array_free(outVec)
 
-		C.mlx_closure_apply(&outVec, cpClosure, inputVec)
+		C.mlx_closure_apply(&outVec, cp.cls, inputVec)
 		return vectorToArrays(outVec)
 	}
 }

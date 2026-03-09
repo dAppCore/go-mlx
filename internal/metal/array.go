@@ -124,6 +124,8 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 
 	tt := newArray("")
 	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&bts[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	runtime.KeepAlive(bts)
+	runtime.KeepAlive(cShape)
 	return tt
 }
 
@@ -251,10 +253,13 @@ func ensureContiguous(a *Array) *Array {
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
 func (t *Array) Ints() []int {
 	src := ensureContiguous(t)
-	ints := make([]int, src.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_int32(src.ctx), len(ints)) {
+	n := src.Size()
+	ptr := C.mlx_array_data_int32(src.ctx)
+	ints := make([]int, n)
+	for i, f := range unsafe.Slice(ptr, n) {
 		ints[i] = int(f)
 	}
+	runtime.KeepAlive(src)
 	return ints
 }
 
@@ -262,10 +267,13 @@ func (t *Array) Ints() []int {
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
 func (t *Array) DataInt32() []int32 {
 	src := ensureContiguous(t)
-	data := make([]int32, src.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_int32(src.ctx), len(data)) {
+	n := src.Size()
+	ptr := C.mlx_array_data_int32(src.ctx)
+	data := make([]int32, n)
+	for i, f := range unsafe.Slice(ptr, n) {
 		data[i] = int32(f)
 	}
+	runtime.KeepAlive(src)
 	return data
 }
 
@@ -273,10 +281,13 @@ func (t *Array) DataInt32() []int32 {
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
 func (t *Array) Floats() []float32 {
 	src := ensureContiguous(t)
-	floats := make([]float32, src.Size())
-	for i, f := range unsafe.Slice(C.mlx_array_data_float32(src.ctx), len(floats)) {
+	n := src.Size()
+	ptr := C.mlx_array_data_float32(src.ctx)
+	floats := make([]float32, n)
+	for i, f := range unsafe.Slice(ptr, n) {
 		floats[i] = float32(f)
 	}
+	runtime.KeepAlive(src)
 	return floats
 }
 
@@ -303,6 +314,7 @@ func (t *Array) Iter() iter.Seq[float32] {
 	n := src.Size()
 	ptr := C.mlx_array_data_float32(src.ctx)
 	return func(yield func(float32) bool) {
+		defer runtime.KeepAlive(src)
 		for i := range n {
 			if !yield(float32(unsafe.Slice(ptr, n)[i])) {
 				return
