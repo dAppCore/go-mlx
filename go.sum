@@ -1,7 +1,7 @@
-forge.lthn.ai/core/go-inference v0.1.3 h1:Raztl2aaMcBMEpVeQrKgGpxSWjvHkpDk+e5jTY3wIRI=
-forge.lthn.ai/core/go-inference v0.1.3/go.mod h1:jfWz+IJX55wAH98+ic6FEqqGB6/P31CHlg7VY7pxREw=
-forge.lthn.ai/core/go-io v0.1.3 h1:2DeH60V2kRqYGjCEvdze2FvqiryscgkQm9zOgqes20o=
-forge.lthn.ai/core/go-io v0.1.3/go.mod h1:PbNKW1Q25ywSOoQXeGdQHbV5aiIrTXvHIQ5uhplA//g=
+forge.lthn.ai/core/go-inference v0.1.5 h1:Az/Euv1DusJQJz/Eca0Ey7sVXQkFLPHW0TBrs9g+Qwg=
+forge.lthn.ai/core/go-inference v0.1.5/go.mod h1:jfWz+IJX55wAH98+ic6FEqqGB6/P31CHlg7VY7pxREw=
+forge.lthn.ai/core/go-io v0.1.5 h1:+XJ1YhaGGFLGtcNbPtVlndTjk+pO0Ydi2hRDj5/cHOM=
+forge.lthn.ai/core/go-io v0.1.5/go.mod h1:FRtXSsi8W+U9vewCU+LBAqqbIj3wjXA4dBdSv3SAtWI=
 forge.lthn.ai/core/go-log v0.0.4 h1:KTuCEPgFmuM8KJfnyQ8vPOU1Jg654W74h8IJvfQMfv0=
 forge.lthn.ai/core/go-log v0.0.4/go.mod h1:r14MXKOD3LF/sI8XUJQhRk/SZHBE7jAFVuCfgkXoZPw=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
