@@ -4,9 +4,10 @@ package metal
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
 	"path/filepath"
+
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // InternalModel is the common interface for all transformer model architectures.
@@ -55,16 +56,17 @@ func resolveWeight(weights map[string]*Array, name string) *Array {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 func loadModel(modelPath string) (InternalModel, error) {
-	data, err := os.ReadFile(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
 	if err != nil {
-		return nil, fmt.Errorf("model: load config: %w", err)
+		return nil, coreerr.E("model.loadModel", "load config", err)
 	}
+	data := []byte(str)
 
 	var probe struct {
 		ModelType string `json:"model_type"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("model: parse model_type: %w", err)
+		return nil, coreerr.E("model.loadModel", "parse model_type", err)
 	}
 
 	switch probe.ModelType {
@@ -73,6 +75,6 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	default:
-		return nil, fmt.Errorf("model: unsupported architecture %q", probe.ModelType)
+		return nil, coreerr.E("model.loadModel", "unsupported architecture: "+probe.ModelType, nil)
 	}
 }

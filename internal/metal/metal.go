@@ -33,9 +33,10 @@ static const char* get_and_clear_last_error() {
 import "C"
 
 import (
-	"fmt"
 	"log/slog"
 	"sync"
+
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 var initOnce sync.Once
@@ -55,7 +56,7 @@ func lastError() error {
 	if msg == nil {
 		return nil
 	}
-	return fmt.Errorf("mlx: %s", C.GoString(msg))
+	return coreerr.E("mlx.lastError", C.GoString(msg), nil)
 }
 
 // Eval synchronously evaluates arrays on the GPU and returns any error.
@@ -77,7 +78,7 @@ func Eval(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return fmt.Errorf("mlx: eval failed (rc=%d)", rc)
+		return coreerr.E("mlx.Eval", "eval failed", nil)
 	}
 	return nil
 }
@@ -99,7 +100,7 @@ func EvalAsync(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return fmt.Errorf("mlx: async eval failed (rc=%d)", rc)
+		return coreerr.E("mlx.EvalAsync", "async eval failed", nil)
 	}
 	return nil
 }

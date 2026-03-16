@@ -2,7 +2,7 @@
 
 package metal
 
-import "fmt"
+import coreerr "forge.lthn.ai/core/go-log"
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
@@ -16,7 +16,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	Init()
 	im, err := loadModel(path)
 	if err != nil {
-		return nil, fmt.Errorf("metal: %w", err)
+		return nil, coreerr.E("metal.LoadAndInit", "load model", err)
 	}
 	m := &Model{
 		model:     im,
@@ -29,7 +29,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		}
 		if cfg[0].AdapterPath != "" {
 			if err := applyLoadedLoRA(im, cfg[0].AdapterPath); err != nil {
-				return nil, fmt.Errorf("metal: load adapter: %w", err)
+				return nil, coreerr.E("metal.LoadAndInit", "load adapter", err)
 			}
 		}
 	}

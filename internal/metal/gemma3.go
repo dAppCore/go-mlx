@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"maps"
 	"math"
-	"os"
 	"path/filepath"
+
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // TextConfig holds Gemma 3 text model configuration.
@@ -160,32 +162,33 @@ func parseConfig(data []byte) (*TextConfig, error) {
 
 // LoadGemma3 loads a Gemma 3 text model from a directory.
 func LoadGemma3(modelPath string) (*GemmaModel, error) {
-	data, err := os.ReadFile(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
 	if err != nil {
-		return nil, fmt.Errorf("gemma3: load config: %w", err)
+		return nil, coreerr.E("gemma3.LoadGemma3", "load config", err)
 	}
+	data := []byte(str)
 
 	cfg, err := parseConfig(data)
 	if err != nil {
-		return nil, fmt.Errorf("gemma3: parse config: %w", err)
+		return nil, coreerr.E("gemma3.LoadGemma3", "parse config", err)
 	}
 
 	// Load tokenizer
 	tok, err := LoadTokenizer(filepath.Join(modelPath, "tokenizer.json"))
 	if err != nil {
-		return nil, fmt.Errorf("gemma3: load tokenizer: %w", err)
+		return nil, coreerr.E("gemma3.LoadGemma3", "load tokenizer", err)
 	}
 
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("gemma3: no .safetensors files found in %s", modelPath)
+		return nil, coreerr.E("gemma3.LoadGemma3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, fmt.Errorf("gemma3: load weights %s: %w", filepath.Base(path), err)
+			return nil, coreerr.E("gemma3.LoadGemma3", "load weights "+filepath.Base(path), err)
 		}
 	}
 

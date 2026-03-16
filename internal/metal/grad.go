@@ -18,11 +18,12 @@ static mlx_closure new_grad_closure(void *payload) {
 import "C"
 
 import (
-	"fmt"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // --- Closure registry (separate from compile.go's registry) ---
@@ -116,7 +117,7 @@ func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (out
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, fmt.Errorf("mlx: vjp failed (rc=%d)", rc)
+		return nil, nil, coreerr.E("mlx.VJP", "vjp failed", nil)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -160,7 +161,7 @@ func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outpu
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, fmt.Errorf("mlx: jvp failed (rc=%d)", rc)
+		return nil, nil, coreerr.E("mlx.JVP", "jvp failed", nil)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -228,7 +229,7 @@ func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err e
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, fmt.Errorf("mlx: value_and_grad apply failed (rc=%d)", rc)
+		return nil, nil, coreerr.E("mlx.GradFn.Apply", "value_and_grad apply failed", nil)
 	}
 
 	values = vectorToArrays(valVec)

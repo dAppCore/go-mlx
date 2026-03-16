@@ -14,11 +14,13 @@ import (
 	"log/slog"
 	"maps"
 	"math"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"unsafe"
+
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.
@@ -234,13 +236,13 @@ type adapterConfig struct {
 
 // parseAdapterConfig reads and parses an adapter_config.json file.
 func parseAdapterConfig(path string) (*adapterConfig, error) {
-	data, err := os.ReadFile(path)
+	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, fmt.Errorf("read adapter_config.json: %w", err)
+		return nil, coreerr.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
 	var cfg adapterConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parse adapter_config.json: %w", err)
+	if err := json.Unmarshal([]byte(str), &cfg); err != nil {
+		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", err)
 	}
 	// Apply defaults matching mlx-lm conventions.
 	if cfg.Rank == 0 {
@@ -256,10 +258,10 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 func loadAdapterWeights(dir string) (map[string]*Array, error) {
 	matches, err := filepath.Glob(filepath.Join(dir, "*.safetensors"))
 	if err != nil {
-		return nil, fmt.Errorf("glob adapter safetensors: %w", err)
+		return nil, coreerr.E("lora.loadAdapterWeights", "glob adapter safetensors", err)
 	}
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("no .safetensors files found in %s", dir)
+		return nil, coreerr.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
 	}
 
 	weights := make(map[string]*Array)
@@ -268,7 +270,7 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 			weights[name] = arr
 		}
 		if err := lastError(); err != nil {
-			return nil, fmt.Errorf("load adapter weights %s: %w", filepath.Base(path), err)
+			return nil, coreerr.E("lora.loadAdapterWeights", "load adapter weights "+filepath.Base(path), err)
 		}
 	}
 	return weights, nil
@@ -441,7 +443,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	}
 
 	if injected == 0 {
-		return fmt.Errorf("no LoRA layers injected from %s", adapterDir)
+		return coreerr.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
 	}
 
 	slog.Info("adapter loaded",
@@ -482,7 +484,7 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return fmt.Errorf("mlx: save safetensors failed: %s (rc=%d)", path, rc)
+		return coreerr.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
 	}
 	return nil
 }

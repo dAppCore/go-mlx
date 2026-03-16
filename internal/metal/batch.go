@@ -9,6 +9,8 @@ import (
 	"math"
 	"slices"
 	"time"
+
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // ClassifyResult holds the output for a single prompt in batch classification.
@@ -80,7 +82,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	logits := m.model.ForwardMasked(tokens, mask, m.newCachesN(int(N)))
 	if err := Eval(logits); err != nil {
 		Free(tokens, mask)
-		return nil, fmt.Errorf("classify prefill: %w", err)
+		return nil, coreerr.E("Model.Classify", "classify prefill", err)
 	}
 
 	// logits shape: [N, L, vocab]
@@ -99,7 +101,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		next := sampler.Sample(posLogitsReshaped)
 		if err := Eval(next); err != nil {
 			Free(batchLogits, posLogits, posLogitsReshaped)
-			return nil, fmt.Errorf("classify sample %d: %w", si, err)
+			return nil, coreerr.E("Model.Classify", fmt.Sprintf("classify sample %d", si), err)
 		}
 
 		id := int32(next.Int())
@@ -110,7 +112,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 			logitsFlat := Reshape(posLogitsReshaped, int32(posLogitsReshaped.Dim(1)))
 			if err := Eval(logitsFlat); err != nil {
 				Free(batchLogits, posLogits, posLogitsReshaped, next, logitsFlat)
-				return nil, fmt.Errorf("classify logits %d: %w", si, err)
+				return nil, coreerr.E("Model.Classify", fmt.Sprintf("classify logits %d", si), err)
 			}
 			sortedResults[si].Logits = logitsFlat.Floats()
 			Free(logitsFlat)
@@ -195,7 +197,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	caches := m.newCachesN(int(N))
 	logits := m.model.ForwardMasked(tokens, mask, caches)
 	if err := Eval(logits); err != nil {
-		return nil, fmt.Errorf("batch prefill: %w", err)
+		return nil, coreerr.E("Model.BatchGenerate", "batch prefill", err)
 	}
 	prefillDur := time.Since(prefillStart)
 
@@ -257,7 +259,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			next := sampler.Sample(posLogits)
 			if err := Eval(next); err != nil {
 				Free(batchL, posL, posLogits, next)
-				return nil, fmt.Errorf("batch sample step %d seq %d: %w", step, si, err)
+				return nil, coreerr.E("Model.BatchGenerate", fmt.Sprintf("batch sample step %d seq %d", step, si), err)
 			}
 
 			id := int32(next.Int())
@@ -288,7 +290,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		logits = m.model.Forward(nextInput, caches)
 		if err := Eval(logits); err != nil {
 			Free(nextInput, oldLogits)
-			return nil, fmt.Errorf("batch decode step %d: %w", step, err)
+			return nil, coreerr.E("Model.BatchGenerate", fmt.Sprintf("batch decode step %d", step), err)
 		}
 		Free(nextInput, oldLogits)
 	}

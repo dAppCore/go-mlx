@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"maps"
 	"math"
-	"os"
 	"path/filepath"
+
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // Qwen3Config holds Qwen 3 model configuration.
@@ -79,7 +81,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
 	if err := json.Unmarshal(data, &wrapper); err != nil {
-		return nil, fmt.Errorf("qwen3: parse quantization: %w", err)
+		return nil, coreerr.E("qwen3.parseConfig", "parse quantization", err)
 	}
 	cfg.Quantization = wrapper.Quantization
 
@@ -107,39 +109,40 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 // Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
 // SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
-	data, err := os.ReadFile(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
 	if err != nil {
-		return nil, fmt.Errorf("qwen3: load config: %w", err)
+		return nil, coreerr.E("qwen3.LoadQwen3", "load config", err)
 	}
+	data := []byte(str)
 
 	// Read model_type from config for architecture identification.
 	var probe struct {
 		ModelType string `json:"model_type"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("qwen3: parse model_type: %w", err)
+		return nil, coreerr.E("qwen3.LoadQwen3", "parse model_type", err)
 	}
 
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
-		return nil, fmt.Errorf("qwen3: parse config: %w", err)
+		return nil, coreerr.E("qwen3.LoadQwen3", "parse config", err)
 	}
 
 	tok, err := LoadTokenizer(filepath.Join(modelPath, "tokenizer.json"))
 	if err != nil {
-		return nil, fmt.Errorf("qwen3: load tokenizer: %w", err)
+		return nil, coreerr.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, fmt.Errorf("qwen3: no .safetensors files found in %s", modelPath)
+		return nil, coreerr.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, fmt.Errorf("qwen3: load weights %s: %w", filepath.Base(path), err)
+			return nil, coreerr.E("qwen3.LoadQwen3", "load weights "+filepath.Base(path), err)
 		}
 	}
 

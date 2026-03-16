@@ -5,8 +5,10 @@ package metal
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
+
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // Tokenizer handles text-to-token and token-to-text conversion.
@@ -48,14 +50,15 @@ type tokenizerJSON struct {
 
 // LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
 func LoadTokenizer(path string) (*Tokenizer, error) {
-	data, err := os.ReadFile(path)
+	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, fmt.Errorf("tokenizer: read %s: %w", path, err)
+		return nil, coreerr.E("tokenizer.LoadTokenizer", "read "+path, err)
 	}
+	data := []byte(str)
 
 	var tj tokenizerJSON
 	if err := json.Unmarshal(data, &tj); err != nil {
-		return nil, fmt.Errorf("tokenizer: parse: %w", err)
+		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", err)
 	}
 
 	t := &Tokenizer{
@@ -67,7 +70,7 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	// Parse vocab
 	var vocab map[string]int32
 	if err := json.Unmarshal(tj.Model.Vocab, &vocab); err != nil {
-		return nil, fmt.Errorf("tokenizer: parse vocab: %w", err)
+		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", err)
 	}
 	t.vocab = vocab
 	for k, v := range vocab {

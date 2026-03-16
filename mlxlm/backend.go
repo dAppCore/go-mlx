@@ -29,7 +29,6 @@ import (
 	"embed"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -41,6 +40,8 @@ import (
 	"time"
 
 	"forge.lthn.ai/core/go-inference"
+	coreio "forge.lthn.ai/core/go-io"
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 //go:embed bridge.py
@@ -58,17 +59,17 @@ func extractScript() (string, error) {
 	scriptOnce.Do(func() {
 		data, err := bridgeFS.ReadFile("bridge.py")
 		if err != nil {
-			scriptErr = fmt.Errorf("mlxlm: read embedded bridge.py: %w", err)
+			scriptErr = coreerr.E("mlxlm.extractScript", "read embedded bridge.py", err)
 			return
 		}
 		dir, err := os.MkdirTemp("", "mlxlm-*")
 		if err != nil {
-			scriptErr = fmt.Errorf("mlxlm: create temp dir: %w", err)
+			scriptErr = coreerr.E("mlxlm.extractScript", "create temp dir", err)
 			return
 		}
 		p := filepath.Join(dir, "bridge.py")
-		if err := os.WriteFile(p, data, 0o644); err != nil {
-			scriptErr = fmt.Errorf("mlxlm: write bridge.py: %w", err)
+		if err := coreio.Local.Write(p, string(data)); err != nil {
+			scriptErr = coreerr.E("mlxlm.extractScript", "write bridge.py", err)
 			return
 		}
 		scriptPath = p
@@ -119,15 +120,15 @@ func loadModel(ctx context.Context, modelPath, scriptOverride string, opts ...in
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("mlxlm: stdin pipe: %w", err)
+		return nil, coreerr.E("mlxlm.loadModel", "stdin pipe", err)
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, fmt.Errorf("mlxlm: stdout pipe: %w", err)
+		return nil, coreerr.E("mlxlm.loadModel", "stdout pipe", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("mlxlm: start python3: %w", err)
+		return nil, coreerr.E("mlxlm.loadModel", "start python3", err)
 	}
 
 	scanner := bufio.NewScanner(stdoutPipe)
@@ -147,18 +148,18 @@ func loadModel(ctx context.Context, modelPath, scriptOverride string, opts ...in
 	}
 	if err := m.send(loadReq); err != nil {
 		m.kill()
-		return nil, fmt.Errorf("mlxlm: send load: %w", err)
+		return nil, coreerr.E("mlxlm.loadModel", "send load", err)
 	}
 
 	resp, err := m.recv()
 	if err != nil {
 		m.kill()
-		return nil, fmt.Errorf("mlxlm: recv load response: %w", err)
+		return nil, coreerr.E("mlxlm.loadModel", "recv load response", err)
 	}
 
 	if errMsg, ok := resp["error"].(string); ok {
 		m.kill()
-		return nil, fmt.Errorf("mlxlm: %s", errMsg)
+		return nil, coreerr.E("mlxlm.loadModel", errMsg, nil)
 	}
 
 	if modelType, ok := resp["model_type"].(string); ok {
@@ -200,13 +201,13 @@ func (m *mlxlmModel) send(obj map[string]any) error {
 func (m *mlxlmModel) recv() (map[string]any, error) {
 	if !m.stdout.Scan() {
 		if err := m.stdout.Err(); err != nil {
-			return nil, fmt.Errorf("mlxlm: scanner: %w", err)
+			return nil, coreerr.E("mlxlm.recv", "scanner", err)
 		}
-		return nil, errors.New("mlxlm: subprocess closed stdout")
+		return nil, coreerr.E("mlxlm.recv", "subprocess closed stdout", nil)
 	}
 	var obj map[string]any
 	if err := json.Unmarshal(m.stdout.Bytes(), &obj); err != nil {
-		return nil, fmt.Errorf("mlxlm: parse response: %w", err)
+		return nil, coreerr.E("mlxlm.recv", "parse response", err)
 	}
 	return obj, nil
 }
@@ -240,7 +241,7 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 		}
 
 		if err := m.send(req); err != nil {
-			m.lastErr = fmt.Errorf("mlxlm: send generate: %w", err)
+			m.lastErr = coreerr.E("mlxlm.Generate", "send generate", err)
 			return
 		}
 
@@ -263,7 +264,7 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 			}
 
 			if errMsg, ok := resp["error"].(string); ok {
-				m.lastErr = errors.New(errMsg)
+				m.lastErr = coreerr.E("mlxlm.Generate", errMsg, nil)
 				return
 			}
 
@@ -324,7 +325,7 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 		}
 
 		if err := m.send(req); err != nil {
-			m.lastErr = fmt.Errorf("mlxlm: send chat: %w", err)
+			m.lastErr = coreerr.E("mlxlm.Chat", "send chat", err)
 			return
 		}
 
@@ -345,7 +346,7 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 			}
 
 			if errMsg, ok := resp["error"].(string); ok {
-				m.lastErr = errors.New(errMsg)
+				m.lastErr = coreerr.E("mlxlm.Chat", errMsg, nil)
 				return
 			}
 
@@ -371,13 +372,13 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 // Classify is not supported by the subprocess backend.
 // Returns an error indicating that classification requires the native Metal backend.
 func (m *mlxlmModel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, errors.New("mlxlm: Classify not supported (use native Metal backend)")
+	return nil, coreerr.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
 }
 
 // BatchGenerate is not supported by the subprocess backend.
 // Returns an error indicating that batch generation requires the native Metal backend.
 func (m *mlxlmModel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, errors.New("mlxlm: BatchGenerate not supported (use native Metal backend)")
+	return nil, coreerr.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 }
 
 // ModelType returns the architecture identifier reported by the subprocess.
@@ -467,15 +468,15 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 		"prompt": prompt,
 	}
 	if err := m.send(req); err != nil {
-		return nil, fmt.Errorf("mlxlm: send inspect: %w", err)
+		return nil, coreerr.E("mlxlm.InspectAttention", "send inspect", err)
 	}
 
 	resp, err := m.recv()
 	if err != nil {
-		return nil, fmt.Errorf("mlxlm: recv inspect: %w", err)
+		return nil, coreerr.E("mlxlm.InspectAttention", "recv inspect", err)
 	}
 	if errMsg, ok := resp["error"].(string); ok {
-		return nil, fmt.Errorf("mlxlm: %s", errMsg)
+		return nil, coreerr.E("mlxlm.InspectAttention", errMsg, nil)
 	}
 
 	// Parse metadata.
@@ -493,18 +494,18 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 
 	for layer := range numLayers {
 		kPath := filepath.Join(dir, fmt.Sprintf("keys_%02d.bin", layer))
-		kData, err := os.ReadFile(kPath)
+		kStr, err := coreio.Local.Read(kPath)
 		if err != nil {
 			continue
 		}
-		keys[layer] = reshapeFloat32(kData, numKVHeads, seqLen*headDim)
+		keys[layer] = reshapeFloat32([]byte(kStr), numKVHeads, seqLen*headDim)
 
 		qPath := filepath.Join(dir, fmt.Sprintf("queries_%02d.bin", layer))
-		qData, err := os.ReadFile(qPath)
+		qStr, err := coreio.Local.Read(qPath)
 		if err != nil {
 			continue
 		}
-		queries[layer] = reshapeFloat32(qData, numQHeads, seqLen*headDim)
+		queries[layer] = reshapeFloat32([]byte(qStr), numQHeads, seqLen*headDim)
 	}
 
 	// Clean up temp dir.

@@ -9,10 +9,11 @@ package metal
 import "C"
 
 import (
-	"fmt"
 	"iter"
 	"runtime"
 	"unsafe"
+
+	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator
@@ -70,7 +71,7 @@ func LoadAllSafetensors(path string) (map[string]*Array, error) {
 		if err := lastError(); err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("mlx: no tensors loaded from %s", path)
+		return nil, coreerr.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)
 	}
 	return tensors, nil
 }
