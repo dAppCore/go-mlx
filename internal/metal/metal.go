@@ -33,6 +33,7 @@ static const char* get_and_clear_last_error() {
 import "C"
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -78,7 +79,7 @@ func Eval(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.Eval", "eval failed", nil)
+		return coreerr.E("mlx.Eval", fmt.Sprintf("eval failed (rc=%d)", rc), nil)
 	}
 	return nil
 }
@@ -100,7 +101,7 @@ func EvalAsync(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.EvalAsync", "async eval failed", nil)
+		return coreerr.E("mlx.EvalAsync", fmt.Sprintf("async eval failed (rc=%d)", rc), nil)
 	}
 	return nil
 }
