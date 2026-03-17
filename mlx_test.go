@@ -452,20 +452,17 @@ func TestDiscover(t *testing.T) {
 		t.Skipf("model directory not available: %s", baseDir)
 	}
 
-	models, err := inference.Discover(baseDir)
-	if err != nil {
-		t.Fatalf("Discover: %v", err)
-	}
-
-	if len(models) == 0 {
-		t.Skip("no models found")
-	}
-
-	for _, m := range models {
+	var count int
+	for m := range inference.Discover(baseDir) {
+		count++
 		t.Logf("Found: %s (type=%s, quant=%d-bit, files=%d)",
 			m.Path, m.ModelType, m.QuantBits, m.NumFiles)
 	}
-	t.Logf("Total: %d models discovered", len(models))
+
+	if count == 0 {
+		t.Skip("no models found")
+	}
+	t.Logf("Total: %d models discovered", count)
 }
 
 // --- ModelInfo tests ---

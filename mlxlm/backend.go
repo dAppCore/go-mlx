@@ -509,7 +509,7 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 	}
 
 	// Clean up temp dir.
-	os.RemoveAll(dir)
+	coreio.Local.DeleteAll(dir)
 
 	return &inference.AttentionSnapshot{
 		NumLayers:     numLayers,
