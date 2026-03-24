@@ -197,8 +197,10 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	caches := m.newCachesN(int(N))
 	logits := m.model.ForwardMasked(tokens, mask, caches)
 	if err := Eval(logits); err != nil {
+		Free(tokens, mask)
 		return nil, coreerr.E("Model.BatchGenerate", "batch prefill", err)
 	}
+	Free(tokens, mask) // No longer needed after prefill
 	prefillDur := time.Since(prefillStart)
 
 	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
@@ -280,7 +282,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		}
 
 		if allFinished {
-			Free(logits)
 			break
 		}
 
@@ -294,6 +295,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		}
 		Free(nextInput, oldLogits)
 	}
+	Free(logits)
 
 	// Unsort results back to original order.
 	sortedResults := make([]BatchResult, N)
