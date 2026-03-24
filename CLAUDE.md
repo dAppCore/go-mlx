@@ -34,7 +34,7 @@ golangci-lint run ./...
 rm -rf build dist && go generate ./...
 ```
 
-The `dist/` directory (headers + shared libs) is gitignored and must be rebuilt on each fresh checkout.
+The compiled libraries (`dist/lib/`) are gitignored and must be rebuilt on each fresh checkout. Headers in `dist/include/` are committed for Go module consumers.
 
 ## Go Workspace
 
