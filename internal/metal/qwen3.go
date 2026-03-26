@@ -3,12 +3,11 @@
 package metal
 
 import (
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"maps"
 	"math"
-	"path/filepath"
+
+	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
 	coreerr "forge.lthn.ai/core/go-log"
@@ -72,16 +71,16 @@ type Qwen3MLP struct {
 
 func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	var cfg Qwen3Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+	if r := core.JSONUnmarshal(data, &cfg); !r.OK {
+		return nil, coreerr.E("qwen3.parseConfig", "parse config", nil)
 	}
 
 	// Top-level quantization
 	var wrapper struct {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
-	if err := json.Unmarshal(data, &wrapper); err != nil {
-		return nil, coreerr.E("qwen3.parseConfig", "parse quantization", err)
+	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
+		return nil, coreerr.E("qwen3.parseConfig", "parse quantization", nil)
 	}
 	cfg.Quantization = wrapper.Quantization
 
@@ -109,7 +108,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 // Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
 // SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
-	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
 		return nil, coreerr.E("qwen3.LoadQwen3", "load config", err)
 	}
@@ -119,8 +118,8 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	var probe struct {
 		ModelType string `json:"model_type"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "parse model_type", err)
+	if r := core.JSONUnmarshal(data, &probe); !r.OK {
+		return nil, coreerr.E("qwen3.LoadQwen3", "parse model_type", nil)
 	}
 
 	cfg, err := parseQwen3Config(data)
@@ -128,21 +127,21 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, coreerr.E("qwen3.LoadQwen3", "parse config", err)
 	}
 
-	tok, err := LoadTokenizer(filepath.Join(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
 	if err != nil {
 		return nil, coreerr.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
-	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
+	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
 		return nil, coreerr.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("qwen3.LoadQwen3", "load weights "+filepath.Base(path), err)
+			return nil, coreerr.E("qwen3.LoadQwen3", "load weights "+core.PathBase(path), err)
 		}
 	}
 
@@ -195,7 +194,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	}
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
-		p := fmt.Sprintf("model.layers.%d", i)
+		p := core.Sprintf("model.layers.%d", i)
 		m.Layers[i] = &Qwen3DecoderLayer{
 			InputNorm:    &RMSNormModule{Weight: w(p + ".input_layernorm.weight")},
 			PostAttnNorm: &RMSNormModule{Weight: w(p + ".post_attention_layernorm.weight")},
@@ -407,25 +406,25 @@ func (m *Qwen3Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 			var prefix string
 			switch target {
 			case "q_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.QProj
 			case "k_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.KProj
 			case "v_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.VProj
 			case "o_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.OProj
 			case "gate_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.GateProj
 			case "up_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.UpProj
 			case "down_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.DownProj
 			}
 			if proj != nil {

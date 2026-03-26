@@ -28,16 +28,15 @@ import (
 	"context"
 	"embed"
 	"encoding/binary"
-	"encoding/json"
-	"fmt"
 	"io"
 	"iter"
 	"math"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"dappco.re/go/core"
 
 	"forge.lthn.ai/core/go-inference"
 	coreio "forge.lthn.ai/core/go-io"
@@ -67,7 +66,7 @@ func extractScript() (string, error) {
 			scriptErr = coreerr.E("mlxlm.extractScript", "create temp dir", err)
 			return
 		}
-		p := filepath.Join(dir, "bridge.py")
+		p := core.JoinPath(dir, "bridge.py")
 		if err := coreio.Local.Write(p, string(data)); err != nil {
 			scriptErr = coreerr.E("mlxlm.extractScript", "write bridge.py", err)
 			return
@@ -188,12 +187,12 @@ type mlxlmModel struct {
 
 // send writes a JSON object as a single line to the subprocess stdin.
 func (m *mlxlmModel) send(obj map[string]any) error {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		return err
+	r := core.JSONMarshal(obj)
+	if !r.OK {
+		return coreerr.E("mlxlm.send", "marshal", nil)
 	}
-	data = append(data, '\n')
-	_, err = m.stdin.Write(data)
+	data := append(r.Value.([]byte), '\n')
+	_, err := m.stdin.Write(data)
 	return err
 }
 
@@ -206,8 +205,8 @@ func (m *mlxlmModel) recv() (map[string]any, error) {
 		return nil, coreerr.E("mlxlm.recv", "subprocess closed stdout", nil)
 	}
 	var obj map[string]any
-	if err := json.Unmarshal(m.stdout.Bytes(), &obj); err != nil {
-		return nil, coreerr.E("mlxlm.recv", "parse response", err)
+	if r := core.JSONUnmarshal(m.stdout.Bytes(), &obj); !r.OK {
+		return nil, coreerr.E("mlxlm.recv", "parse response", nil)
 	}
 	return obj, nil
 }
@@ -493,14 +492,14 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 	queries := make([][][]float32, numLayers)
 
 	for layer := range numLayers {
-		kPath := filepath.Join(dir, fmt.Sprintf("keys_%02d.bin", layer))
+		kPath := core.JoinPath(dir, core.Sprintf("keys_%02d.bin", layer))
 		kStr, err := coreio.Local.Read(kPath)
 		if err != nil {
 			continue
 		}
 		keys[layer] = reshapeFloat32([]byte(kStr), numKVHeads, seqLen*headDim)
 
-		qPath := filepath.Join(dir, fmt.Sprintf("queries_%02d.bin", layer))
+		qPath := core.JoinPath(dir, core.Sprintf("queries_%02d.bin", layer))
 		qStr, err := coreio.Local.Read(qPath)
 		if err != nil {
 			continue

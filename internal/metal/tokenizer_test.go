@@ -4,8 +4,9 @@ package metal
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
+
+	"dappco.re/go/core"
 )
 
 // minimalTokenizerJSON is a valid HuggingFace tokenizer.json with a tiny vocab.
@@ -34,7 +35,7 @@ const minimalTokenizerJSON = `{
 func writeTestTokenizer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "tokenizer.json")
+	path := core.JoinPath(dir, "tokenizer.json")
 	if err := os.WriteFile(path, []byte(minimalTokenizerJSON), 0644); err != nil {
 		t.Fatalf("write test tokenizer: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestLoad_MissingFile(t *testing.T) {
 
 func TestLoad_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "tokenizer.json")
+	path := core.JoinPath(dir, "tokenizer.json")
 	os.WriteFile(path, []byte("not json"), 0644)
 
 	_, err := LoadTokenizer(path)

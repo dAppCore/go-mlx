@@ -4,9 +4,9 @@ package metal
 
 import (
 	"os"
-	"path/filepath"
-	"strings"
 	"testing"
+
+	"dappco.re/go/core"
 )
 
 // --- loadModel dispatch ---
@@ -17,14 +17,14 @@ func TestLoadModel_MissingConfigJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing config.json")
 	}
-	if !strings.Contains(err.Error(), "config") {
+	if !core.Contains(err.Error(), "config") {
 		t.Errorf("error should mention config, got: %v", err)
 	}
 }
 
 func TestLoadModel_InvalidConfigJSON(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{invalid"), 0644)
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte("{invalid"), 0644)
 
 	_, err := loadModel(dir)
 	if err == nil {
@@ -34,13 +34,13 @@ func TestLoadModel_InvalidConfigJSON(t *testing.T) {
 
 func TestLoadModel_UnsupportedArchitecture(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type": "gpt99"}`), 0644)
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte(`{"model_type": "gpt99"}`), 0644)
 
 	_, err := loadModel(dir)
 	if err == nil {
 		t.Fatal("expected error for unsupported architecture")
 	}
-	if !strings.Contains(err.Error(), "gpt99") {
+	if !core.Contains(err.Error(), "gpt99") {
 		t.Errorf("error should mention architecture name, got: %v", err)
 	}
 }
@@ -49,7 +49,7 @@ func TestLoadModel_Gemma3TextType(t *testing.T) {
 	// "gemma3_text" should route to Gemma3 loader (will fail on missing tokenizer, but
 	// that proves the dispatch happened).
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte(`{
 		"model_type": "gemma3_text",
 		"hidden_size": 1152,
 		"num_hidden_layers": 2,
@@ -64,7 +64,7 @@ func TestLoadModel_Gemma3TextType(t *testing.T) {
 		t.Fatal("expected error (missing tokenizer), but dispatch should have reached gemma3")
 	}
 	// If the error mentions "tokenizer" or "gemma3", dispatch worked correctly.
-	if !strings.Contains(err.Error(), "tokenizer") && !strings.Contains(err.Error(), "gemma3") {
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "gemma3") {
 		t.Errorf("expected gemma3 loader error, got: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestLoadModel_Gemma3TextType(t *testing.T) {
 
 func TestLoadGemma3_MissingTokenizer(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte(`{
 		"model_type": "gemma3",
 		"hidden_size": 1152,
 		"num_hidden_layers": 1,
@@ -86,14 +86,14 @@ func TestLoadGemma3_MissingTokenizer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing tokenizer")
 	}
-	if !strings.Contains(err.Error(), "tokenizer") {
+	if !core.Contains(err.Error(), "tokenizer") {
 		t.Errorf("error should mention tokenizer, got: %v", err)
 	}
 }
 
 func TestLoadGemma3_InvalidConfig(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte("not json"), 0644)
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte("not json"), 0644)
 
 	_, err := LoadGemma3(dir)
 	if err == nil {
@@ -110,7 +110,7 @@ func TestLoadGemma3_NoSafetensors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing safetensors files")
 	}
-	if !strings.Contains(err.Error(), "safetensors") {
+	if !core.Contains(err.Error(), "safetensors") {
 		t.Errorf("error should mention safetensors, got: %v", err)
 	}
 }
@@ -127,7 +127,7 @@ func TestLoadQwen3_MissingConfig(t *testing.T) {
 
 func TestLoadQwen3_InvalidConfig(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte("{broken"), 0644)
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte("{broken"), 0644)
 
 	_, err := LoadQwen3(dir)
 	if err == nil {
@@ -137,7 +137,7 @@ func TestLoadQwen3_InvalidConfig(t *testing.T) {
 
 func TestLoadQwen3_MissingTokenizer(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte(`{
 		"model_type": "qwen3",
 		"hidden_size": 1024,
 		"num_hidden_layers": 1,
@@ -150,7 +150,7 @@ func TestLoadQwen3_MissingTokenizer(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing tokenizer")
 	}
-	if !strings.Contains(err.Error(), "tokenizer") {
+	if !core.Contains(err.Error(), "tokenizer") {
 		t.Errorf("error should mention tokenizer, got: %v", err)
 	}
 }
@@ -164,7 +164,7 @@ func TestLoadQwen3_NoSafetensors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing safetensors files")
 	}
-	if !strings.Contains(err.Error(), "safetensors") {
+	if !core.Contains(err.Error(), "safetensors") {
 		t.Errorf("error should mention safetensors, got: %v", err)
 	}
 }
@@ -180,13 +180,13 @@ func TestLoadAndInit_MissingPath(t *testing.T) {
 
 func TestLoadAndInit_UnsupportedArch(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"model_type": "falcon"}`), 0644)
+	os.WriteFile(core.JoinPath(dir, "config.json"), []byte(`{"model_type": "falcon"}`), 0644)
 
 	_, err := LoadAndInit(dir)
 	if err == nil {
 		t.Fatal("expected error for unsupported architecture")
 	}
-	if !strings.Contains(err.Error(), "falcon") {
+	if !core.Contains(err.Error(), "falcon") {
 		t.Errorf("error should mention architecture, got: %v", err)
 	}
 }
@@ -387,7 +387,7 @@ func writeMinimalConfig(t *testing.T, dir string, modelType string) {
 		"vocab_size": 100,
 		"rms_norm_eps": 1e-6
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0644); err != nil {
+	if err := os.WriteFile(core.JoinPath(dir, "config.json"), []byte(config), 0644); err != nil {
 		t.Fatalf("write config.json: %v", err)
 	}
 }
@@ -407,7 +407,7 @@ func writeMinimalTokenizer(t *testing.T, dir string) {
 			{"id": 2, "content": "<bos>", "special": true}
 		]
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "tokenizer.json"), []byte(tokenizer), 0644); err != nil {
+	if err := os.WriteFile(core.JoinPath(dir, "tokenizer.json"), []byte(tokenizer), 0644); err != nil {
 		t.Fatalf("write tokenizer.json: %v", err)
 	}
 }

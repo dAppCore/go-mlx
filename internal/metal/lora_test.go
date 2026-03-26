@@ -5,8 +5,9 @@ package metal
 import (
 	"math"
 	"os"
-	"path/filepath"
 	"testing"
+
+	"dappco.re/go/core"
 )
 
 func TestNewLoRALinear(t *testing.T) {
@@ -406,9 +407,9 @@ func TestParseAdapterConfig_Good(t *testing.T) {
 		"num_layers": 4,
 		"lora_layers": ["self_attn.q_proj", "self_attn.v_proj"]
 	}`
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(cfg), 0644)
 
-	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err != nil {
 		t.Fatalf("parseAdapterConfig: %v", err)
 	}
@@ -430,9 +431,9 @@ func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal config — rank and alpha should get defaults.
 	cfg := `{}`
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(cfg), 0644)
 
-	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err != nil {
 		t.Fatalf("parseAdapterConfig: %v", err)
 	}
@@ -453,9 +454,9 @@ func TestParseAdapterConfig_Bad_MissingFile(t *testing.T) {
 
 func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte("{broken"), 0644)
+	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte("{broken"), 0644)
 
-	_, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	_, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -479,7 +480,7 @@ func TestLoadAdapterWeights_Good(t *testing.T) {
 	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
 	Materialize(a, b)
 
-	err := SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+	err := SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": a,
 		"layers.0.self_attn.q_proj.lora_b": b,
 	})
@@ -534,7 +535,7 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 
 	// Save the adapter weights.
 	adapterDir := t.TempDir()
-	err := SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+	err := SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": lora.A,
 		"layers.0.self_attn.q_proj.lora_b": lora.B,
 	})
@@ -544,7 +545,7 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 
 	// Write adapter_config.json.
 	configJSON := `{"rank": 4, "alpha": 8.0, "num_layers": 1, "lora_layers": ["self_attn.q_proj"]}`
-	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"), []byte(configJSON), 0644)
+	os.WriteFile(core.JoinPath(adapterDir, "adapter_config.json"), []byte(configJSON), 0644)
 
 	// Now create a fresh linear with the same base weights (no LoRA).
 	linear2 := NewLinear(w, nil)
@@ -619,7 +620,7 @@ func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	// Write safetensors but no config.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	Materialize(a)
-	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{"x": a})
+	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{"x": a})
 
 	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
@@ -631,7 +632,7 @@ func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	dir := t.TempDir()
 	// Write config but no safetensors.
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 8}`), 0644)
+	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(`{"rank": 8}`), 0644)
 
 	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
@@ -642,13 +643,13 @@ func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 
 func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 4, "alpha": 8.0}`), 0644)
+	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(`{"rank": 4, "alpha": 8.0}`), 0644)
 
 	// Save weights that reference layer 99 (which won't exist).
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
 	Materialize(a, b)
-	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{
 		"layers.99.self_attn.q_proj.lora_a": a,
 		"layers.99.self_attn.q_proj.lora_b": b,
 	})
@@ -690,11 +691,11 @@ func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 	Materialize(loraA, loraB)
 
 	adapterDir := t.TempDir()
-	SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+	SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": loraA,
 		"layers.0.self_attn.q_proj.lora_b": loraB,
 	})
-	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"),
+	os.WriteFile(core.JoinPath(adapterDir, "adapter_config.json"),
 		[]byte(`{"rank": 4, "alpha": 8.0}`), 0644)
 
 	// Build a model and apply adapter.

@@ -13,8 +13,9 @@ import (
 	"iter"
 	"reflect"
 	"runtime"
-	"strings"
 	"unsafe"
+
+	"dappco.re/go/core"
 )
 
 // Array wraps an mlx_array handle.
@@ -163,7 +164,7 @@ func (t *Array) String() string {
 	str := C.mlx_string_new()
 	defer C.mlx_string_free(str)
 	C.mlx_array_tostring(&str, t.ctx)
-	return strings.TrimSpace(C.GoString(C.mlx_string_data(str)))
+	return core.Trim(C.GoString(C.mlx_string_data(str)))
 }
 
 // Shape returns the dimensions as int32 slice.

@@ -3,12 +3,11 @@
 package metal
 
 import (
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"maps"
 	"math"
-	"path/filepath"
+
+	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
 	coreerr "forge.lthn.ai/core/go-log"
@@ -121,16 +120,16 @@ func parseConfig(data []byte) (*TextConfig, error) {
 		ModelType    string              `json:"model_type"`
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
-	if err := json.Unmarshal(data, &wrapper); err != nil {
-		return nil, err
+	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
+		return nil, coreerr.E("gemma3.parseConfig", "parse config", nil)
 	}
 
 	cfg := wrapper.TextConfig
 
 	// If text_config was empty, try top-level
 	if cfg.NumHiddenLayers == 0 {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			return nil, err
+		if r := core.JSONUnmarshal(data, &cfg); !r.OK {
+			return nil, coreerr.E("gemma3.parseConfig", "parse top-level config", nil)
 		}
 	}
 
@@ -162,7 +161,7 @@ func parseConfig(data []byte) (*TextConfig, error) {
 
 // LoadGemma3 loads a Gemma 3 text model from a directory.
 func LoadGemma3(modelPath string) (*GemmaModel, error) {
-	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
 		return nil, coreerr.E("gemma3.LoadGemma3", "load config", err)
 	}
@@ -174,21 +173,21 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	}
 
 	// Load tokenizer
-	tok, err := LoadTokenizer(filepath.Join(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
 	if err != nil {
 		return nil, coreerr.E("gemma3.LoadGemma3", "load tokenizer", err)
 	}
 
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
-	matches, _ := filepath.Glob(filepath.Join(modelPath, "*.safetensors"))
+	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
 		return nil, coreerr.E("gemma3.LoadGemma3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("gemma3.LoadGemma3", "load weights "+filepath.Base(path), err)
+			return nil, coreerr.E("gemma3.LoadGemma3", "load weights "+core.PathBase(path), err)
 		}
 	}
 
@@ -243,7 +242,7 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 
 	// Initialize layers
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
-		prefix := fmt.Sprintf("model.layers.%d", i)
+		prefix := core.Sprintf("model.layers.%d", i)
 		m.Layers[i] = &DecoderLayer{
 			InputNorm:    &RMSNormModule{Weight: w(prefix + ".input_layernorm.weight")},
 			PostAttnNorm: &RMSNormModule{Weight: w(prefix + ".post_attention_layernorm.weight")},
@@ -487,25 +486,25 @@ func (m *GemmaModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 			var prefix string
 			switch target {
 			case "q_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.QProj
 			case "k_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.KProj
 			case "v_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.VProj
 			case "o_proj":
-				prefix = fmt.Sprintf("model.layers.%d.self_attn", i)
+				prefix = core.Sprintf("model.layers.%d.self_attn", i)
 				proj = layer.Attention.OProj
 			case "gate_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.GateProj
 			case "up_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.UpProj
 			case "down_proj":
-				prefix = fmt.Sprintf("model.layers.%d.mlp", i)
+				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.DownProj
 			}
 			if proj != nil {

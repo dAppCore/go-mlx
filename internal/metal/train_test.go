@@ -5,8 +5,9 @@ package metal
 import (
 	"math"
 	"os"
-	"path/filepath"
 	"testing"
+
+	"dappco.re/go/core"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.
@@ -123,7 +124,7 @@ func TestLoRA_EndToEnd(t *testing.T) {
 	}
 
 	// Step 5: Save adapter.
-	savePath := filepath.Join(t.TempDir(), "adapter.safetensors")
+	savePath := core.JoinPath(t.TempDir(), "adapter.safetensors")
 	if err := adapter.Save(savePath); err != nil {
 		t.Fatalf("adapter.Save: %v", err)
 	}

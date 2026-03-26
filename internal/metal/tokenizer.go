@@ -4,8 +4,9 @@ package metal
 
 import (
 	"encoding/json"
-	"fmt"
 	"strings"
+
+	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
 	coreerr "forge.lthn.ai/core/go-log"
@@ -57,8 +58,8 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	data := []byte(str)
 
 	var tj tokenizerJSON
-	if err := json.Unmarshal(data, &tj); err != nil {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", err)
+	if r := core.JSONUnmarshal(data, &tj); !r.OK {
+		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", nil)
 	}
 
 	t := &Tokenizer{
@@ -69,8 +70,8 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 
 	// Parse vocab
 	var vocab map[string]int32
-	if err := json.Unmarshal(tj.Model.Vocab, &vocab); err != nil {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", err)
+	if r := core.JSONUnmarshal(tj.Model.Vocab, &vocab); !r.OK {
+		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", nil)
 	}
 	t.vocab = vocab
 	for k, v := range vocab {
@@ -80,16 +81,16 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	// Parse merges — supports both ["a b", ...] and [["a","b"], ...] formats
 	if len(tj.Model.Merges) > 0 {
 		var stringMerges []string
-		if err := json.Unmarshal(tj.Model.Merges, &stringMerges); err == nil {
+		if r := core.JSONUnmarshal(tj.Model.Merges, &stringMerges); r.OK {
 			for rank, merge := range stringMerges {
-				parts := strings.SplitN(merge, " ", 2)
+				parts := core.SplitN(merge, " ", 2)
 				if len(parts) == 2 {
 					t.merges = append(t.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
 				}
 			}
 		} else {
 			var arrayMerges [][]string
-			if err := json.Unmarshal(tj.Model.Merges, &arrayMerges); err == nil {
+			if r := core.JSONUnmarshal(tj.Model.Merges, &arrayMerges); r.OK {
 				for rank, pair := range arrayMerges {
 					if len(pair) == 2 {
 						t.merges = append(t.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
@@ -227,7 +228,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 		// Check for special tokens at the current position.
 		found := false
 		for tok, id := range t.special {
-			if strings.HasPrefix(remaining, tok) {
+			if core.HasPrefix(remaining, tok) {
 				tokens = append(tokens, id)
 				remaining = remaining[len(tok):]
 				found = true
@@ -279,7 +280,7 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 		// Check for special tokens at the current position.
 		found := false
 		for tok, id := range t.special {
-			if strings.HasPrefix(remaining, tok) {
+			if core.HasPrefix(remaining, tok) {
 				tokens = append(tokens, id)
 				remaining = remaining[len(tok):]
 				found = true
@@ -301,7 +302,7 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 		remaining = remaining[end:]
 
 		// Convert segment bytes to GPT-2 Unicode representation.
-		var encoded strings.Builder
+		encoded := core.NewBuilder()
 		for _, b := range []byte(segment) {
 			if r, ok := t.gpt2Encoder[b]; ok {
 				encoded.WriteRune(r)
@@ -332,7 +333,7 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 // Decode converts token IDs back to text.
 // For full-sequence decoding, the SentencePiece leading space is stripped.
 func (t *Tokenizer) Decode(tokens []int32) string {
-	var sb strings.Builder
+	sb := core.NewBuilder()
 	for _, id := range tokens {
 		if text, ok := t.invVocab[id]; ok {
 			// Skip special tokens in decode output
@@ -349,8 +350,8 @@ func (t *Tokenizer) Decode(tokens []int32) string {
 	}
 
 	// SentencePiece style
-	result := strings.ReplaceAll(raw, "▁", " ")
-	if strings.HasPrefix(result, " ") {
+	result := core.Replace(raw, "▁", " ")
+	if core.HasPrefix(result, " ") {
 		result = result[1:]
 	}
 	return result
@@ -373,7 +374,7 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 	}
 
 	// SentencePiece: replace with space but keep it (it's the word boundary)
-	return strings.ReplaceAll(text, "▁", " ")
+	return core.Replace(text, "▁", " ")
 }
 
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.
@@ -398,5 +399,5 @@ func (t *Tokenizer) EOSToken() int32 { return t.eosToken }
 
 // FormatGemmaPrompt applies the Gemma 3 chat template.
 func FormatGemmaPrompt(prompt string) string {
-	return fmt.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
+	return core.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
 }

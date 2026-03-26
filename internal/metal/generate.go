@@ -4,11 +4,11 @@ package metal
 
 import (
 	"context"
-	"fmt"
 	"iter"
 	"slices"
-	"strings"
 	"time"
+
+	"dappco.re/go/core"
 
 	coreerr "forge.lthn.ai/core/go-log"
 )
@@ -216,7 +216,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", fmt.Sprintf("sample step %d", i), err)
+				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("sample step %d", i), err)
 				Free(lastPos, next)
 				return
 			}
@@ -253,7 +253,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			Free(nextInput, oldLogits)
 
 			if err := Eval(logits); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", fmt.Sprintf("decode step %d", i), err)
+				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("decode step %d", i), err)
 				return
 			}
 
@@ -415,7 +415,7 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	case "llama":
 		return formatLlamaChat(messages)
 	default:
-		var s strings.Builder
+		s := core.NewBuilder()
 		for _, msg := range messages {
 			s.WriteString(msg.Content + "\n")
 		}
@@ -424,7 +424,7 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 }
 
 func formatGemmaChat(messages []ChatMessage) string {
-	var s strings.Builder
+	s := core.NewBuilder()
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
@@ -440,7 +440,7 @@ func formatGemmaChat(messages []ChatMessage) string {
 }
 
 func formatQwenChat(messages []ChatMessage) string {
-	var s strings.Builder
+	s := core.NewBuilder()
 	for _, msg := range messages {
 		s.WriteString("<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n")
 	}
@@ -449,7 +449,7 @@ func formatQwenChat(messages []ChatMessage) string {
 }
 
 func formatLlamaChat(messages []ChatMessage) string {
-	var s strings.Builder
+	s := core.NewBuilder()
 	s.WriteString("<|begin_of_text|>")
 	for _, msg := range messages {
 		s.WriteString("<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")

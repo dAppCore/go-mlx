@@ -3,8 +3,7 @@
 package metal
 
 import (
-	"encoding/json"
-	"path/filepath"
+	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
 	coreerr "forge.lthn.ai/core/go-log"
@@ -56,7 +55,7 @@ func resolveWeight(weights map[string]*Array, name string) *Array {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 func loadModel(modelPath string) (InternalModel, error) {
-	str, err := coreio.Local.Read(filepath.Join(modelPath, "config.json"))
+	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
 		return nil, coreerr.E("model.loadModel", "load config", err)
 	}
@@ -65,8 +64,8 @@ func loadModel(modelPath string) (InternalModel, error) {
 	var probe struct {
 		ModelType string `json:"model_type"`
 	}
-	if err := json.Unmarshal(data, &probe); err != nil {
-		return nil, coreerr.E("model.loadModel", "parse model_type", err)
+	if r := core.JSONUnmarshal(data, &probe); !r.OK {
+		return nil, coreerr.E("model.loadModel", "parse model_type", nil)
 	}
 
 	switch probe.ModelType {

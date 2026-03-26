@@ -9,15 +9,15 @@ package metal
 import "C"
 
 import (
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"maps"
 	"math"
-	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unsafe"
+
+	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
 	coreerr "forge.lthn.ai/core/go-log"
@@ -241,8 +241,8 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 		return nil, coreerr.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
 	var cfg adapterConfig
-	if err := json.Unmarshal([]byte(str), &cfg); err != nil {
-		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", err)
+	if r := core.JSONUnmarshal([]byte(str), &cfg); !r.OK {
+		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
 	if cfg.Rank == 0 {
@@ -256,10 +256,7 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 
 // loadAdapterWeights loads all safetensors files from an adapter directory into a flat weight map.
 func loadAdapterWeights(dir string) (map[string]*Array, error) {
-	matches, err := filepath.Glob(filepath.Join(dir, "*.safetensors"))
-	if err != nil {
-		return nil, coreerr.E("lora.loadAdapterWeights", "glob adapter safetensors", err)
-	}
+	matches := core.PathGlob(core.JoinPath(dir, "*.safetensors"))
 	if len(matches) == 0 {
 		return nil, coreerr.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
 	}
@@ -270,7 +267,7 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 			weights[name] = arr
 		}
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("lora.loadAdapterWeights", "load adapter weights "+filepath.Base(path), err)
+			return nil, coreerr.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
 		}
 	}
 	return weights, nil
@@ -324,17 +321,17 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 //	"model.layers.12.self_attn.v_proj.lora_b" → (12, "self_attn.v_proj", "lora_b")
 func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 	// Strip optional "model." prefix.
-	name = strings.TrimPrefix(name, "model.")
+	name = core.TrimPrefix(name, "model.")
 
 	// Must start with "layers.{N}."
-	if !strings.HasPrefix(name, "layers.") {
+	if !core.HasPrefix(name, "layers.") {
 		return -1, "", ""
 	}
 
 	// Must end with ".lora_a" or ".lora_b".
-	if strings.HasSuffix(name, ".lora_a") {
+	if core.HasSuffix(name, ".lora_a") {
 		suffix = "lora_a"
-	} else if strings.HasSuffix(name, ".lora_b") {
+	} else if core.HasSuffix(name, ".lora_b") {
 		suffix = "lora_b"
 	} else {
 		return -1, "", ""
@@ -352,8 +349,8 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 	idxStr := inner[:dotIdx]
 	projPath = inner[dotIdx+1:]
 
-	var idx int
-	if _, err := fmt.Sscanf(idxStr, "%d", &idx); err != nil {
+	idx, err := strconv.Atoi(idxStr)
+	if err != nil {
 		return -1, "", ""
 	}
 
@@ -364,7 +361,7 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 // for inference. The adapter weights are frozen (no gradients needed).
 func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	// Step 1: Read adapter configuration.
-	cfg, err := parseAdapterConfig(filepath.Join(adapterDir, "adapter_config.json"))
+	cfg, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
 	if err != nil {
 		return err
 	}

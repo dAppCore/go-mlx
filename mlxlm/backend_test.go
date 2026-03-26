@@ -6,11 +6,11 @@ package mlxlm
 
 import (
 	"context"
-	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
+
+	"dappco.re/go/core"
 
 	"forge.lthn.ai/core/go-inference"
 )
@@ -22,7 +22,7 @@ func mockScript(t *testing.T) string {
 	if !ok {
 		t.Fatal("cannot determine test file path")
 	}
-	return filepath.Join(filepath.Dir(file), "testdata", "mock_bridge.py")
+	return core.JoinPath(core.PathDir(file), "testdata", "mock_bridge.py")
 }
 
 // loadMock spawns a model backed by the mock Python script.
@@ -157,7 +157,7 @@ func TestGenerate_Error(t *testing.T) {
 	}
 	if err := m.Err(); err == nil {
 		t.Fatal("expected non-nil Err()")
-	} else if !strings.Contains(err.Error(), "simulated model error") {
+	} else if !core.Contains(err.Error(), "simulated model error") {
 		t.Errorf("Err() = %q, want to contain %q", err.Error(), "simulated model error")
 	}
 }
@@ -168,7 +168,7 @@ func TestLoadModel_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for FAIL path")
 	}
-	if !strings.Contains(err.Error(), "cannot open model") {
+	if !core.Contains(err.Error(), "cannot open model") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "cannot open model")
 	}
 }
@@ -221,7 +221,7 @@ func TestClassify_Unsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from Classify")
 	}
-	if !strings.Contains(err.Error(), "not supported") {
+	if !core.Contains(err.Error(), "not supported") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "not supported")
 	}
 }
@@ -233,7 +233,7 @@ func TestBatchGenerate_Unsupported(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from BatchGenerate")
 	}
-	if !strings.Contains(err.Error(), "not supported") {
+	if !core.Contains(err.Error(), "not supported") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "not supported")
 	}
 }

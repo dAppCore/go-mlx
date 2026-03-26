@@ -5,9 +5,10 @@ package mlx_test
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 	"time"
+
+	"dappco.re/go/core"
 
 	"forge.lthn.ai/core/go-inference"
 	mlx "forge.lthn.ai/core/go-mlx"
@@ -208,7 +209,7 @@ func TestGemma3_1B_Inference(t *testing.T) {
 
 	genStart := time.Now()
 	var tokens []inference.Token
-	var output strings.Builder
+	output := core.NewBuilder()
 	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(maxTokens)) {
 		tokens = append(tokens, tok)
 		output.WriteString(tok.Text)
@@ -234,7 +235,7 @@ func TestGemma3_1B_Inference(t *testing.T) {
 	}
 
 	// Sanity: the output should contain something related to "4".
-	if !strings.Contains(output.String(), "4") {
+	if !core.Contains(output.String(), "4") {
 		t.Errorf("Expected output to contain '4' for 'What is 2+2?', got: %s", output.String())
 	}
 }
@@ -250,7 +251,7 @@ func TestGemma3_1B_Chat(t *testing.T) {
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
-	var output strings.Builder
+	output := core.NewBuilder()
 	var count int
 	for tok := range m.Chat(ctx, []inference.Message{
 		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
@@ -331,7 +332,7 @@ func TestQwen2_Inference(t *testing.T) {
 	ctx := context.Background()
 	genStart := time.Now()
 	var tokens []inference.Token
-	var output strings.Builder
+	output := core.NewBuilder()
 	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(32)) {
 		tokens = append(tokens, tok)
 		output.WriteString(tok.Text)
@@ -366,7 +367,7 @@ func TestQwen2_Chat(t *testing.T) {
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
-	var output strings.Builder
+	output := core.NewBuilder()
 	var count int
 	for tok := range m.Chat(ctx, []inference.Message{
 		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
@@ -419,7 +420,7 @@ func TestLlama_Inference(t *testing.T) {
 	ctx := context.Background()
 	genStart := time.Now()
 	var tokens []inference.Token
-	var output strings.Builder
+	output := core.NewBuilder()
 	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(32)) {
 		tokens = append(tokens, tok)
 		output.WriteString(tok.Text)
@@ -651,7 +652,7 @@ func TestBatchGenerate(t *testing.T) {
 			t.Errorf("prompt %d: no tokens generated", i)
 			continue
 		}
-		var output strings.Builder
+		output := core.NewBuilder()
 		for _, tok := range r.Tokens {
 			output.WriteString(tok.Text)
 		}
@@ -671,7 +672,7 @@ func TestLlama_Chat(t *testing.T) {
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
-	var output strings.Builder
+	output := core.NewBuilder()
 	var count int
 	for tok := range m.Chat(ctx, []inference.Message{
 		{Role: "user", Content: "Reply with exactly one word: the capital of France."},
