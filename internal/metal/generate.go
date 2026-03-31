@@ -59,12 +59,19 @@ type Model struct {
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
+//
+//	switch m.ModelType() { case "gemma3": ...; case "qwen3": ... }
 func (m *Model) ModelType() string { return m.modelType }
 
 // Err returns the error from the last Generate/Chat call, if any.
+//
+//	if err := m.Err(); err != nil { log.Fatal(err) }
 func (m *Model) Err() error { return m.lastErr }
 
-// LastMetrics returns performance metrics from the last inference operation.
+// LastMetrics returns performance metrics from the last inference call.
+//
+//	met := m.LastMetrics()
+//	fmt.Printf("decode: %.0f tok/s, peak GPU: %d MB\n", met.DecodeTokensPerSec, met.PeakMemoryBytes/1024/1024)
 func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
 // ModelInfo holds metadata about a loaded model.
@@ -102,8 +109,7 @@ func (m *Model) Info() ModelInfo {
 	return info
 }
 
-// Close releases all model weight arrays and associated resources.
-// After Close, the Model must not be used for generation.
+// Close releases all model weight arrays. After Close, the Model must not be used.
 func (m *Model) Close() error {
 	if m.model == nil {
 		return nil
@@ -119,17 +125,22 @@ func (m *Model) Close() error {
 	return nil
 }
 
-// Chat formats messages using the model's native template, then generates.
+// Chat formats messages using the model's native template and streams tokens.
+//
+//	for tok := range m.Chat(ctx, []metal.ChatMessage{{Role: "user", Content: "Hello"}}, cfg) {
+//	    fmt.Print(tok.Text)
+//	}
 func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateConfig) iter.Seq[Token] {
 	prompt := m.formatChat(messages)
 	return m.Generate(ctx, prompt, cfg)
 }
 
 // Generate streams tokens for the given prompt.
+// Each call allocates fresh KV caches released when the iterator completes.
 //
-// Each call allocates fresh KV caches that are released to GC when the iterator
-// completes. For multi-turn chat, call [ClearCache] between turns to reclaim
-// Metal memory promptly rather than waiting for GC finalisers.
+//	for tok := range m.Generate(ctx, "What is 2+2?", metal.GenerateConfig{MaxTokens: 64}) {
+//	    fmt.Print(tok.Text)
+//	}
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	m.lastErr = nil
 	m.lastMetrics = Metrics{}
@@ -167,7 +178,6 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 		}()
 
-		// Prefill: process entire prompt
 		prefillStart := time.Now()
 		vInput := FromValues(tokens, len(tokens))
 		input := Reshape(vInput, 1, int32(len(tokens)))
@@ -187,8 +197,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		}
 		prefillDur = time.Since(prefillStart)
 
-		// Track generated token IDs for repeat penalty.
-		var history []int32
+		var history []int32 // for repeat penalty
 
 		defer func() {
 			Free(logits)
@@ -202,12 +211,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			default:
 			}
 
-			// Sample from last position logits
 			l1 := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
 			lastPos := Reshape(l1, 1, int32(l1.Dim(2)))
 			Free(l1)
 
-			// Apply repeat penalty before sampling.
 			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
 				oldLastPos := lastPos
 				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
@@ -225,7 +232,6 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			history = append(history, id)
 			Free(lastPos)
 
-			// Check stop conditions
 			if id == m.tokenizer.EOSToken() {
 				Free(next)
 				return
@@ -243,7 +249,6 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 			Free(next)
 
-			// Next step input
 			vNextInput := FromValues([]int32{id}, 1)
 			nextInput := Reshape(vNextInput, 1, 1)
 			Free(vNextInput)
@@ -269,8 +274,11 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 	}
 }
 
-// InspectAttention runs a single prefill pass and extracts K vectors from each layer's KV cache.
-// Returns the post-RoPE K tensors as CPU float32 slices indexed [layer][head][seq_len*head_dim].
+// InspectAttention runs a single prefill pass and returns post-RoPE K tensors.
+// Result.Keys is indexed [layer][head], each slice is seq_len*head_dim float32.
+//
+//	result, err := m.InspectAttention(ctx, "What is kindness?")
+//	fmt.Printf("layers=%d heads=%d seq=%d\n", result.NumLayers, result.NumHeads, result.SeqLen)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
@@ -280,7 +288,6 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	caches := m.newCaches()
 	defer freeCaches(caches)
 
-	// Single prefill pass — populates KV caches for all layers.
 	vInput := FromValues(tokens, len(tokens))
 	input := Reshape(vInput, 1, int32(len(tokens)))
 	Free(vInput)
@@ -293,7 +300,6 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	info := m.Info()
 	seqLen := len(tokens)
 
-	// Extract K vectors from each layer's cache.
 	keys := make([][][]float32, info.NumLayers)
 	var numHeads, headDim int
 
@@ -310,7 +316,6 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 		numHeads = int(shape[1])
 		headDim = int(shape[3])
 
-		// Slice to valid tokens only (cache may have pre-allocated padding).
 		validLen := min(caches[i].Len(), seqLen)
 		kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
 		if err := Eval(kSliced); err != nil {
@@ -318,7 +323,6 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 			continue
 		}
 
-		// Extract all floats then reshape per head.
 		flat := kSliced.Floats() // len = 1 * H * validLen * D
 		Free(kSliced)
 

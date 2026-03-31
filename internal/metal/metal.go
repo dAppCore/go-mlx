@@ -43,7 +43,9 @@ import (
 
 var initOnce sync.Once
 
-// Init sets up the MLX error handler. Called automatically on first use.
+// Init sets up the MLX error handler and is called automatically on first use.
+//
+//	metal.Init() // idempotent; safe to call multiple times
 func Init() {
 	initOnce.Do(func() {
 		C.set_error_handler()
@@ -51,8 +53,7 @@ func Init() {
 	})
 }
 
-// lastError reads and clears the most recent MLX-C error.
-// Returns nil if no error occurred since the last call.
+// lastError reads and clears the most recent MLX-C error, or nil if none.
 func lastError() error {
 	msg := C.get_and_clear_last_error()
 	if msg == nil {
@@ -61,9 +62,10 @@ func lastError() error {
 	return coreerr.E("mlx.lastError", C.GoString(msg), nil)
 }
 
-// Eval synchronously evaluates arrays on the GPU and returns any error.
-// This is the error-returning variant of Materialize. Use it in code paths
-// that need to propagate errors (e.g. the generate loop).
+// Eval synchronously evaluates arrays on the GPU.
+// Use in code paths that need to propagate errors; see also Materialize.
+//
+//	if err := metal.Eval(logits); err != nil { return err }
 func Eval(outputs ...*Array) error {
 	Init()
 	vector := C.mlx_vector_array_new()
@@ -85,7 +87,9 @@ func Eval(outputs ...*Array) error {
 	return nil
 }
 
-// EvalAsync queues arrays for asynchronous GPU evaluation and returns any error.
+// EvalAsync queues arrays for asynchronous GPU evaluation.
+//
+//	if err := metal.EvalAsync(output); err != nil { return err }
 func EvalAsync(outputs ...*Array) error {
 	Init()
 	vector := C.mlx_vector_array_new()
@@ -107,23 +111,28 @@ func EvalAsync(outputs ...*Array) error {
 	return nil
 }
 
-// Materialize synchronously evaluates arrays, computing their values on the GPU.
-// Errors are logged but not returned — use [Eval] when error propagation is needed.
+// Materialize synchronously evaluates arrays on the GPU; errors are logged only.
+// Use [Eval] when error propagation is needed.
+//
+//	metal.Materialize(a, b, c)
 func Materialize(outputs ...*Array) {
 	if err := Eval(outputs...); err != nil {
 		slog.Error("mlx: materialize", "error", err)
 	}
 }
 
-// MaterializeAsync queues arrays for asynchronous GPU evaluation.
-// Errors are logged but not returned — use [EvalAsync] when error propagation is needed.
+// MaterializeAsync queues arrays for asynchronous GPU evaluation; errors are logged only.
+//
+//	metal.MaterializeAsync(output)
 func MaterializeAsync(outputs ...*Array) {
 	if err := EvalAsync(outputs...); err != nil {
 		slog.Error("mlx: materialize async", "error", err)
 	}
 }
 
-// MetalAvailable reports whether Metal GPU is available.
+// MetalAvailable reports whether Metal GPU is available on this device.
+//
+//	if metal.MetalAvailable() { /* GPU path */ }
 func MetalAvailable() bool {
 	Init()
 	var available C.bool

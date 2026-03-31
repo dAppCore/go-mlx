@@ -127,8 +127,6 @@ func (l *LoRALinear) ParamCount() int {
 	return int(aShape[0]*aShape[1] + bShape[0]*bShape[1])
 }
 
-// --- LoRA Application to Models ---
-
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
 	Rank       int      // Decomposition rank (default 8)
@@ -154,6 +152,8 @@ type LoRAAdapter struct {
 }
 
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
+//
+//	fmt.Printf("trainable params: %d\n", adapter.TotalParams()) // e.g. 6291456 for rank-8
 func (a *LoRAAdapter) TotalParams() int {
 	total := 0
 	for _, l := range a.Layers {
@@ -163,6 +163,8 @@ func (a *LoRAAdapter) TotalParams() int {
 }
 
 // SortedNames returns layer names in deterministic sorted order.
+//
+//	for _, name := range adapter.SortedNames() { /* process layers in stable order */ }
 func (a *LoRAAdapter) SortedNames() []string {
 	return slices.Sorted(maps.Keys(a.Layers))
 }
@@ -181,6 +183,8 @@ func (a *LoRAAdapter) AllTrainableParams() []*Array {
 
 // SetAllParams updates all LoRA A and B arrays from a flat slice,
 // in the same deterministic order as AllTrainableParams.
+//
+//	adapter.SetAllParams(updatedParams) // write optimiser output back into the model
 func (a *LoRAAdapter) SetAllParams(params []*Array) {
 	names := a.SortedNames()
 	for i, name := range names {
@@ -192,6 +196,8 @@ func (a *LoRAAdapter) SetAllParams(params []*Array) {
 
 // Save writes the LoRA adapter weights to a safetensors file.
 // Only saves the A and B matrices — not the frozen base weights.
+//
+//	if err := adapter.Save("/Volumes/Data/lem/my-lora/adapter.safetensors"); err != nil { ... }
 func (a *LoRAAdapter) Save(path string) error {
 	weights := make(map[string]*Array)
 	for name, l := range a.Layers {
@@ -201,9 +207,9 @@ func (a *LoRAAdapter) Save(path string) error {
 	return SaveSafetensors(path, weights)
 }
 
-// --- Random Normal ---
-
 // RandomNormal generates normal (Gaussian) random values with given mean and stddev.
+//
+//	a := metal.RandomNormal(0, 1/math.Sqrt(float64(inFeatures)), []int32{rank, inFeatures}, DTypeFloat32)
 func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	Init()
 	out := newArray("RANDOM_NORMAL")
@@ -223,8 +229,6 @@ func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	)
 	return out
 }
-
-// --- Adapter Loading (Inference) ---
 
 // adapterConfig holds the metadata from adapter_config.json produced by mlx-lm training.
 type adapterConfig struct {
@@ -360,26 +364,22 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 // applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model
 // for inference. The adapter weights are frozen (no gradients needed).
 func applyLoadedLoRA(model InternalModel, adapterDir string) error {
-	// Step 1: Read adapter configuration.
 	cfg, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
 	if err != nil {
 		return err
 	}
 
-	// Step 2: Load adapter safetensors.
 	weights, err := loadAdapterWeights(adapterDir)
 	if err != nil {
 		return err
 	}
 
-	// Materialise all adapter weights onto Metal.
 	var allArrays []*Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
 	Materialize(allArrays...)
 
-	// Step 3: Group weights by (layerIdx, projPath) and inject LoRA.
 	type loraKey struct {
 		layerIdx int
 		projPath string
@@ -453,9 +453,9 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	return nil
 }
 
-// --- SaveSafetensors ---
-
 // SaveSafetensors saves a map of named arrays to a .safetensors file.
+//
+//	err := metal.SaveSafetensors("/path/to/output.safetensors", map[string]*Array{"weight": w})
 func SaveSafetensors(path string, weights map[string]*Array) error {
 	Init()
 

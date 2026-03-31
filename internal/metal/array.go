@@ -143,11 +143,15 @@ func Zeros(shape []int32, dtype DType) *Array {
 }
 
 // Set replaces this array's C handle with another's.
+//
+//	a.Set(b) // a now wraps the same C array as b
 func (t *Array) Set(other *Array) {
 	C.mlx_array_set(&t.ctx, other.ctx)
 }
 
 // Clone creates a new Go wrapper sharing the same C handle (increments C refcount).
+//
+//	saved := a.Clone() // independent Go handle, same Metal buffer
 func (t *Array) Clone() *Array {
 	tt := newArray(t.name)
 	C.mlx_array_set(&tt.ctx, t.ctx)
@@ -155,11 +159,15 @@ func (t *Array) Clone() *Array {
 }
 
 // Valid reports whether this Array has a non-nil mlx handle.
+//
+//	if !a.Valid() { return } // guard before any ops on uninitialised arrays
 func (t *Array) Valid() bool {
 	return t.ctx.ctx != nil
 }
 
 // String returns a human-readable representation of the array.
+//
+//	fmt.Println(a.String()) // "array([1.0, 2.0, 3.0], dtype=float32)"
 func (t *Array) String() string {
 	str := C.mlx_string_new()
 	defer C.mlx_string_free(str)
@@ -168,6 +176,8 @@ func (t *Array) String() string {
 }
 
 // Shape returns the dimensions as int32 slice.
+//
+//	shape := logits.Shape() // e.g. []int32{1, 512, 32000} for [batch, seq, vocab]
 func (t *Array) Shape() []int32 {
 	dims := make([]int32, t.NumDims())
 	for i := range dims {
@@ -177,18 +187,28 @@ func (t *Array) Shape() []int32 {
 }
 
 // Size returns the total number of elements.
+//
+//	n := weights.Size() // e.g. 4096*4096 = 16777216
 func (t Array) Size() int { return int(C.mlx_array_size(t.ctx)) }
 
 // NumBytes returns the total byte size.
+//
+//	mb := float64(a.NumBytes()) / 1e6 // memory footprint in MB
 func (t Array) NumBytes() int { return int(C.mlx_array_nbytes(t.ctx)) }
 
 // NumDims returns the number of dimensions.
+//
+//	if a.NumDims() == 4 { /* BHLД layout */ }
 func (t Array) NumDims() int { return int(C.mlx_array_ndim(t.ctx)) }
 
 // Dim returns the size of dimension i.
+//
+//	seqLen := logits.Dim(1) // middle dimension of [batch, seq, vocab]
 func (t Array) Dim(i int) int { return int(C.mlx_array_dim(t.ctx, C.int(i))) }
 
 // Dims returns all dimensions as int slice.
+//
+//	B, L, V := dims[0], dims[1], dims[2] // unpack [batch, seq, vocab]
 func (t Array) Dims() []int {
 	dims := make([]int, t.NumDims())
 	for i := range dims {
@@ -198,9 +218,13 @@ func (t Array) Dims() []int {
 }
 
 // Dtype returns the array's data type.
+//
+//	if a.Dtype() == DTypeBFloat16 { /* mixed precision path */ }
 func (t Array) Dtype() DType { return DType(C.mlx_array_dtype(t.ctx)) }
 
 // Int extracts a scalar int64 value.
+//
+//	id := int32(next.Int()) // read sampled token ID from argmax output
 func (t Array) Int() int {
 	var item C.int64_t
 	C.mlx_array_item_int64(&item, t.ctx)
@@ -209,6 +233,8 @@ func (t Array) Int() int {
 
 // Float extracts a scalar float64 value.
 // Handles both float32 and float64 array dtypes.
+//
+//	loss := lossArr.Float() // read scalar loss value after Eval
 func (t Array) Float() float64 {
 	switch t.Dtype() {
 	case DTypeFloat32:
@@ -233,6 +259,8 @@ func (t Array) IsRowContiguous() bool {
 
 // Contiguous returns a row-major contiguous copy of the array.
 // If the array is already row-contiguous, this is a no-op.
+//
+//	c := metal.Contiguous(transposed) // required before reading raw float data
 func Contiguous(a *Array) *Array {
 	out := newArray("CONTIGUOUS", a)
 	C.mlx_contiguous(&out.ctx, a.ctx, C._Bool(false), DefaultStream().ctx)
@@ -252,6 +280,8 @@ func ensureContiguous(a *Array) *Array {
 
 // Ints extracts all elements as int slice (from int32 data).
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+//
+//	ids := tokenIDs.Ints() // read token ID list from a 1-D int32 array
 func (t *Array) Ints() []int {
 	src := ensureContiguous(t)
 	n := src.Size()
@@ -266,6 +296,8 @@ func (t *Array) Ints() []int {
 
 // DataInt32 extracts all elements as int32 slice.
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+//
+//	ids := cacheKeys.DataInt32() // read int32 indices from an attention index array
 func (t *Array) DataInt32() []int32 {
 	src := ensureContiguous(t)
 	n := src.Size()
@@ -280,6 +312,8 @@ func (t *Array) DataInt32() []int32 {
 
 // Floats extracts all elements as float32 slice.
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+//
+//	flat := kSliced.Floats() // read KV cache values for attention inspection
 func (t *Array) Floats() []float32 {
 	src := ensureContiguous(t)
 	n := src.Size()

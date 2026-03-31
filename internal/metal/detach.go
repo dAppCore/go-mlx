@@ -13,6 +13,9 @@ import "C"
 
 // Detach breaks an array's graph connections after evaluation.
 // This allows Metal memory from parent operations to be freed.
+//
+//	metal.Detach(logits)              // after Eval — release prefill graph
+//	for _, c := range caches { c.Detach() } // break cache graph chains each step
 func Detach(arrays ...*Array) {
 	for _, a := range arrays {
 		if a != nil && a.ctx.ctx != nil {

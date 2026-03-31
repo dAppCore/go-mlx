@@ -50,6 +50,8 @@ type tokenizerJSON struct {
 }
 
 // LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
+//
+//	tok, err := metal.LoadTokenizer("/path/to/model/tokenizer.json")
 func LoadTokenizer(path string) (*Tokenizer, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
@@ -68,7 +70,6 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		special:  make(map[string]int32),
 	}
 
-	// Parse vocab
 	var vocab map[string]int32
 	if r := core.JSONUnmarshal(tj.Model.Vocab, &vocab); !r.OK {
 		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", nil)
@@ -78,7 +79,7 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		t.invVocab[v] = k
 	}
 
-	// Parse merges — supports both ["a b", ...] and [["a","b"], ...] formats
+	// supports both ["a b", ...] and [["a","b"], ...] merge formats
 	if len(tj.Model.Merges) > 0 {
 		var stringMerges []string
 		if r := core.JSONUnmarshal(tj.Model.Merges, &stringMerges); r.OK {
@@ -100,13 +101,11 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		}
 	}
 
-	// Build merge rank lookup for BPE.
 	t.mergeRanks = make(map[string]int, len(t.merges))
 	for _, m := range t.merges {
 		t.mergeRanks[m.a+" "+m.b] = m.rank
 	}
 
-	// Parse special tokens
 	for _, tok := range tj.AddedTokens {
 		if tok.Special {
 			t.special[tok.Content] = tok.ID
@@ -124,7 +123,6 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		t.gpt2Decoder, t.gpt2Encoder = buildGPT2ByteMaps()
 	}
 
-	// Set BOS/EOS — detect model family from special tokens
 	if id, ok := t.special["<bos>"]; ok {
 		t.bosToken = id
 	}
@@ -214,7 +212,9 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 	return symbols
 }
 
-// Encode converts text to token IDs. Prepends BOS token.
+// Encode converts text to token IDs (prepends BOS token).
+//
+//	ids := tok.Encode("Hello world") // → []int32{2, 9906, 1917}
 func (t *Tokenizer) Encode(text string) []int32 {
 	if t.isGPT2BPE {
 		return t.encodeGPT2(text)
@@ -330,8 +330,9 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 	return tokens
 }
 
-// Decode converts token IDs back to text.
-// For full-sequence decoding, the SentencePiece leading space is stripped.
+// Decode converts token IDs back to text (strips SentencePiece leading space).
+//
+//	text := tok.Decode([]int32{9906, 1917}) // → "Hello world"
 func (t *Tokenizer) Decode(tokens []int32) string {
 	sb := core.NewBuilder()
 	for _, id := range tokens {
@@ -358,8 +359,9 @@ func (t *Tokenizer) Decode(tokens []int32) string {
 }
 
 // DecodeToken converts a single token ID to text for streaming.
-// Unlike Decode, it preserves the leading space (word boundary) so that
-// token-by-token output maintains correct spacing between words.
+// Preserves the leading space (word boundary) for correct inter-token spacing.
+//
+//	text := tok.DecodeToken(1917) // → " world" (note leading space)
 func (t *Tokenizer) DecodeToken(id int32) string {
 	text, ok := t.invVocab[id]
 	if !ok {
@@ -394,7 +396,7 @@ func (t *Tokenizer) decodeGPT2Bytes(s string) string {
 // BOSToken returns the beginning-of-sequence token ID.
 func (t *Tokenizer) BOSToken() int32 { return t.bosToken }
 
-// EOSToken returns the end-of-sequence token ID.
+// EOSToken returns the end-of-sequence (generation stop) token ID.
 func (t *Tokenizer) EOSToken() int32 { return t.eosToken }
 
 // FormatGemmaPrompt applies the Gemma 3 chat template.

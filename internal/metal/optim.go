@@ -26,6 +26,8 @@ type AdamW struct {
 }
 
 // NewAdamW creates an AdamW optimiser with default hyperparameters.
+//
+//	opt := metal.NewAdamW(1e-4) // lr=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01
 func NewAdamW(lr float64) *AdamW {
 	return &AdamW{
 		LR:          lr,
@@ -39,6 +41,8 @@ func NewAdamW(lr float64) *AdamW {
 // Step performs one optimisation step: updates params using gradients.
 // params and grads must be parallel slices of the same length.
 // Returns the updated parameter arrays (params are replaced in-place).
+//
+//	params = opt.Step(params, grads) // one Adam step per mini-batch
 func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 	o.step++
 
@@ -99,6 +103,8 @@ func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 }
 
 // Reset clears the optimiser state (moments and step counter).
+//
+//	opt.Reset() // start a new training run from scratch
 func (o *AdamW) Reset() {
 	o.step = 0
 	o.m = nil

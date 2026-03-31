@@ -11,6 +11,8 @@ import "C"
 import "unsafe"
 
 // RMSNorm applies Root Mean Square normalization using a fused Metal kernel.
+//
+//	normed := metal.RMSNorm(x, layer.InputNormScaled, 1e-6) // pre-attention normalisation
 func RMSNorm(x, weight *Array, eps float32) *Array {
 	out := newArray("FAST_RMSNORM", x)
 	C.mlx_fast_rms_norm(&out.ctx, x.ctx, weight.ctx, C.float(eps), DefaultStream().ctx)
@@ -18,6 +20,8 @@ func RMSNorm(x, weight *Array, eps float32) *Array {
 }
 
 // LayerNorm applies Layer normalization using a fused Metal kernel.
+//
+//	normed := metal.LayerNorm(x, weight, bias, 1e-5) // standard layer norm with affine params
 func LayerNorm(x, weight, bias *Array, eps float32) *Array {
 	out := newArray("FAST_LAYERNORM", x)
 	C.mlx_fast_layer_norm(&out.ctx, x.ctx, weight.ctx, bias.ctx, C.float(eps), DefaultStream().ctx)
@@ -25,6 +29,8 @@ func LayerNorm(x, weight, bias *Array, eps float32) *Array {
 }
 
 // RoPE applies Rotary Position Embeddings using a fused Metal kernel.
+//
+//	q = metal.RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, cache.Offset())
 func RoPE(x *Array, dims int, traditional bool, base float32, scale float32, offset int) *Array {
 	out := newArray("FAST_ROPE", x)
 	freqs := C.mlx_array_new()
@@ -47,6 +53,8 @@ func RoPE(x *Array, dims int, traditional bool, base float32, scale float32, off
 }
 
 // ScaledDotProductAttention computes attention using a fused Metal kernel.
+//
+//	out := metal.ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1) // causal when seqLen > 1
 func ScaledDotProductAttention(query, key, value *Array, scale float32, causal bool) *Array {
 	mode := ""
 	if causal {
@@ -66,6 +74,8 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 }
 
 // ScaledDotProductAttentionWithMask computes attention with an explicit mask.
+//
+//	out := metal.ScaledDotProductAttentionWithMask(q, k, v, batchMask, cfg.Scale)
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
 	cMode := C.CString("array")
 	defer C.free(unsafe.Pointer(cMode))

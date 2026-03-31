@@ -46,14 +46,15 @@ import (
 //go:embed bridge.py
 var bridgeFS embed.FS
 
-// scriptPath holds the extracted bridge.py temp path. Created once per process.
 var (
 	scriptOnce sync.Once
-	scriptPath string
+	scriptPath string // extracted bridge.py temp path (created once per process)
 	scriptErr  error
 )
 
 // extractScript writes the embedded bridge.py to a temp file and returns its path.
+//
+//	path, err := extractScript() // called automatically by LoadModel
 func extractScript() (string, error) {
 	scriptOnce.Do(func() {
 		data, err := bridgeFS.ReadFile("bridge.py")
@@ -80,19 +81,19 @@ func init() {
 	inference.Register(&mlxlmBackend{})
 }
 
-// mlxlmBackend implements inference.Backend for mlx-lm via subprocess.
 type mlxlmBackend struct{}
 
 func (b *mlxlmBackend) Name() string { return "mlx_lm" }
 
-// Available reports whether python3 is found on PATH.
+// Available reports whether python3 is on PATH.
 func (b *mlxlmBackend) Available() bool {
 	_, err := exec.LookPath("python3")
 	return err == nil
 }
 
-// LoadModel spawns a Python subprocess running bridge.py, loads the model,
-// and returns a TextModel backed by the subprocess.
+// LoadModel spawns bridge.py as a subprocess and returns a TextModel backed by it.
+//
+//	m, err := inference.LoadModel("/path/to/model", inference.WithBackend("mlx_lm"))
 func (b *mlxlmBackend) LoadModel(path string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	return loadModel(context.Background(), path, "", opts...)
 }

@@ -11,7 +11,9 @@ type LoadConfig struct {
 }
 
 // LoadAndInit initialises Metal and loads a model from the given path.
-// Returns a *Model ready for generation.
+//
+//	m, err := metal.LoadAndInit("/Volumes/Data/lem/gemma-3-1b-it-base")
+//	m, err := metal.LoadAndInit(path, metal.LoadConfig{ContextLen: 4096})
 func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	Init()
 	im, err := loadModel(path)

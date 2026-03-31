@@ -16,46 +16,64 @@ func init() {
 }
 
 // MetalAvailable reports whether native Metal inference is available.
+//
+//	if mlx.MetalAvailable() { /* run on GPU */ }
 func MetalAvailable() bool { return true }
 
-// Hardware-level memory controls — delegate to internal/metal.
-// These are not model-level; they control the Metal allocator directly.
-
 // SetCacheLimit sets the Metal memory cache limit. Returns the previous value.
+//
+//	mlx.SetCacheLimit(4 << 30) // 4 GB cache limit
 func SetCacheLimit(limit uint64) uint64 { return metal.SetCacheLimit(limit) }
 
-// SetMemoryLimit sets the Metal memory limit. Returns the previous value.
+// SetMemoryLimit sets the Metal memory hard limit. Returns the previous value.
+//
+//	mlx.SetMemoryLimit(32 << 30) // 32 GB hard limit
 func SetMemoryLimit(limit uint64) uint64 { return metal.SetMemoryLimit(limit) }
 
 // GetActiveMemory returns the current active Metal memory usage in bytes.
+//
+//	fmt.Printf("active: %d MB\n", mlx.GetActiveMemory()/1024/1024)
 func GetActiveMemory() uint64 { return metal.GetActiveMemory() }
 
 // GetPeakMemory returns the peak Metal memory usage in bytes.
+//
+//	fmt.Printf("peak: %d MB\n", mlx.GetPeakMemory()/1024/1024)
 func GetPeakMemory() uint64 { return metal.GetPeakMemory() }
 
-// ClearCache clears the Metal memory cache.
+// ClearCache releases Metal memory held in the allocator cache.
+// Call between chat turns to reclaim prompt cache memory promptly.
+//
+//	mlx.ClearCache()
 func ClearCache() { metal.ClearCache() }
 
 // GetCacheMemory returns the current Metal cache memory in bytes.
+//
+//	fmt.Printf("cache: %d MB\n", mlx.GetCacheMemory()/1024/1024)
 func GetCacheMemory() uint64 { return metal.GetCacheMemory() }
 
-// ResetPeakMemory resets the peak memory high-water mark.
+// ResetPeakMemory resets the peak memory high-water mark to zero.
+//
+//	mlx.ResetPeakMemory()
 func ResetPeakMemory() { metal.ResetPeakMemory() }
 
 // SetWiredLimit sets the Metal wired memory limit. Returns the previous value.
+//
+//	mlx.SetWiredLimit(8 << 30) // 8 GB wired limit
 func SetWiredLimit(limit uint64) uint64 { return metal.SetWiredLimit(limit) }
 
 // DeviceInfo holds Metal GPU hardware information.
 type DeviceInfo = metal.DeviceInfo
 
 // GetDeviceInfo returns Metal GPU hardware information.
+//
+//	info := mlx.GetDeviceInfo()
+//	fmt.Printf("%s %d MB\n", info.Architecture, info.MemorySize/1024/1024)
 func GetDeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
 
-// metalBackend implements inference.Backend for native Metal inference.
 type metalBackend struct{}
 
-func (b *metalBackend) Name() string      { return "metal" }
-func (b *metalBackend) Available() bool    { return true }
+func (b *metalBackend) Name() string   { return "metal" }
+func (b *metalBackend) Available() bool { return true }
 
 func (b *metalBackend) LoadModel(path string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	cfg := inference.ApplyLoadOpts(opts)
@@ -72,7 +90,6 @@ func (b *metalBackend) LoadModel(path string, opts ...inference.LoadOption) (inf
 	return &metalAdapter{m: m}, nil
 }
 
-// metalAdapter wraps metal.Model to implement inference.TextModel.
 type metalAdapter struct {
 	m *metal.Model
 }
@@ -106,7 +123,6 @@ func (a *metalAdapter) Chat(ctx context.Context, messages []inference.Message, o
 		StopTokens:    cfg.StopTokens,
 		RepeatPenalty: cfg.RepeatPenalty,
 	}
-	// Convert messages
 	mmsgs := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		mmsgs[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -192,7 +208,6 @@ func (a *metalAdapter) Info() inference.ModelInfo {
 		QuantGroup:   i.QuantGroup,
 	}
 }
-// InspectAttention implements inference.AttentionInspector.
 func (a *metalAdapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
 	result, err := a.m.InspectAttention(ctx, prompt)
 	if err != nil {
@@ -208,5 +223,5 @@ func (a *metalAdapter) InspectAttention(ctx context.Context, prompt string, opts
 	}, nil
 }
 
-func (a *metalAdapter) Err() error        { return a.m.Err() }
-func (a *metalAdapter) Close() error      { return a.m.Close() }
+func (a *metalAdapter) Err() error   { return a.m.Err() }
+func (a *metalAdapter) Close() error { return a.m.Close() }

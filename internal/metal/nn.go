@@ -17,11 +17,15 @@ type Linear struct {
 }
 
 // NewLinear creates a dense Linear layer with optional bias.
+//
+//	proj := metal.NewLinear(weights["q_proj.weight"], nil) // attention query projection
 func NewLinear(weight, bias *Array) *Linear {
 	return &Linear{Weight: weight, Bias: bias}
 }
 
 // NewQuantizedLinear creates a quantized Linear layer.
+//
+//	proj := metal.NewQuantizedLinear(w, scales, biases, nil, 64, 4) // 4-bit, group=64
 func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int) *Linear {
 	return &Linear{
 		Weight:    weight,
@@ -84,6 +88,8 @@ func (e *Embedding) Forward(indices *Array) *Array {
 }
 
 // AsLinear returns a Linear layer using the embedding weights (for tied output).
+//
+//	output := embed.AsLinear() // share embed_tokens weights with lm_head (Gemma3)
 func (e *Embedding) AsLinear() *Linear {
 	return &Linear{
 		Weight:    e.Weight,
