@@ -28,7 +28,7 @@ func gemma3Path(t *testing.T) string {
 
 // TestLoRA_EndToEnd validates the full LoRA training pipeline:
 // load base model → apply LoRA → train on small data → save adapter → reload.
-func TestLoRA_EndToEnd(t *testing.T) {
+func TestLoRA_EndToEnd_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	// Step 1: Load base model.
@@ -195,7 +195,7 @@ func TestLoRA_EndToEnd(t *testing.T) {
 
 // TestLoRA_GradientCheckpointing validates that wrapping the forward pass in
 // Checkpoint produces correct gradients (same loss decrease as non-checkpointed).
-func TestLoRA_GradientCheckpointing(t *testing.T) {
+func TestLoRA_GradientCheckpointing_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	model, err := loadModel(modelPath)
@@ -281,7 +281,7 @@ func TestLoRA_GradientCheckpointing(t *testing.T) {
 // TestLoRA_MixedPrecision validates training with BFloat16 LoRA parameters.
 // The base model stays in its native dtype; LoRA A/B are BFloat16.
 // MLX auto-promotes for cross-dtype operations.
-func TestLoRA_MixedPrecision(t *testing.T) {
+func TestLoRA_MixedPrecision_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	model, err := loadModel(modelPath)

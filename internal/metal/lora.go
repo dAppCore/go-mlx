@@ -110,6 +110,9 @@ func (l *LoRALinear) Forward(x *Array) *Array {
 }
 
 // TrainableParams returns the LoRA A and B arrays for gradient computation.
+//
+//	grad := metal.ValueAndGrad(lossFn, 0, 1)
+//	_, grads, _ := grad.Apply(lora.TrainableParams()...)
 func (l *LoRALinear) TrainableParams() []*Array {
 	return []*Array{l.A, l.B}
 }
@@ -121,6 +124,8 @@ func (l *LoRALinear) SetParams(a, b *Array) {
 }
 
 // ParamCount returns the number of trainable parameters.
+//
+//	fmt.Printf("layer params: %d\n", lora.ParamCount()) // e.g. 1536 for rank=8 on [64,128]
 func (l *LoRALinear) ParamCount() int {
 	aShape := l.A.Shape()
 	bShape := l.B.Shape()
@@ -171,6 +176,8 @@ func (a *LoRAAdapter) SortedNames() []string {
 
 // AllTrainableParams returns all trainable arrays (A and B from every layer),
 // in a deterministic order sorted by layer name.
+//
+//	params := adapter.AllTrainableParams() // pass to ValueAndGrad or opt.Step
 func (a *LoRAAdapter) AllTrainableParams() []*Array {
 	names := a.SortedNames()
 	params := make([]*Array, 0, len(names)*2)

@@ -14,7 +14,7 @@ import (
 	mlx "forge.lthn.ai/core/go-mlx"
 )
 
-func TestMetalAvailable(t *testing.T) {
+func TestMetalAvailable_Good(t *testing.T) {
 	// Metal backend should be registered via init()
 	b, ok := inference.Get("metal")
 	if !ok {
@@ -25,7 +25,7 @@ func TestMetalAvailable(t *testing.T) {
 	}
 }
 
-func TestDefaultBackend(t *testing.T) {
+func TestDefaultBackend_Good(t *testing.T) {
 	b, err := inference.Default()
 	if err != nil {
 		t.Fatalf("Default() error: %v", err)
@@ -35,7 +35,7 @@ func TestDefaultBackend(t *testing.T) {
 	}
 }
 
-func TestGetBackend(t *testing.T) {
+func TestGetBackend_Good(t *testing.T) {
 	b, ok := inference.Get("metal")
 	if !ok {
 		t.Fatal("Get(\"metal\") returned false")
@@ -50,7 +50,7 @@ func TestGetBackend(t *testing.T) {
 	}
 }
 
-func TestListBackends(t *testing.T) {
+func TestListBackends_Good(t *testing.T) {
 	names := inference.List()
 	found := false
 	for _, name := range names {
@@ -63,21 +63,21 @@ func TestListBackends(t *testing.T) {
 	}
 }
 
-func TestLoadModel_NoBackend(t *testing.T) {
+func TestLoadModel_NoBackend_Bad(t *testing.T) {
 	_, err := inference.LoadModel("/nonexistent/path")
 	if err == nil {
 		t.Error("expected error for nonexistent model path")
 	}
 }
 
-func TestLoadModel_WithBackend(t *testing.T) {
+func TestLoadModel_WithBackend_Bad(t *testing.T) {
 	_, err := inference.LoadModel("/nonexistent/path", inference.WithBackend("nonexistent"))
 	if err == nil {
 		t.Error("expected error for nonexistent backend")
 	}
 }
 
-func TestOptions(t *testing.T) {
+func TestOptions_Good(t *testing.T) {
 	cfg := inference.ApplyGenerateOpts([]inference.GenerateOption{
 		inference.WithMaxTokens(64),
 		inference.WithTemperature(0.7),
@@ -106,7 +106,7 @@ func TestOptions(t *testing.T) {
 	}
 }
 
-func TestDefaults(t *testing.T) {
+func TestDefaults_Good(t *testing.T) {
 	cfg := inference.DefaultGenerateConfig()
 	if cfg.MaxTokens != 256 {
 		t.Errorf("default MaxTokens = %d, want 256", cfg.MaxTokens)
@@ -116,7 +116,7 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadOptions(t *testing.T) {
+func TestLoadOptions_Good(t *testing.T) {
 	cfg := inference.ApplyLoadOpts([]inference.LoadOption{
 		inference.WithBackend("metal"),
 		inference.WithContextLen(4096),
@@ -133,7 +133,7 @@ func TestLoadOptions(t *testing.T) {
 	}
 }
 
-func TestLoadOptionsDefaults(t *testing.T) {
+func TestLoadOptionsDefaults_Good(t *testing.T) {
 	cfg := inference.ApplyLoadOpts(nil)
 	if cfg.GPULayers != -1 {
 		t.Errorf("default GPULayers = %d, want -1", cfg.GPULayers)
@@ -157,7 +157,7 @@ func gemma3ModelPath(t *testing.T) string {
 }
 
 // TestLoadModel_Generate requires a model on disk. Skipped in CI.
-func TestLoadModel_Generate(t *testing.T) {
+func TestLoadModel_Generate_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -187,7 +187,7 @@ func TestLoadModel_Generate(t *testing.T) {
 
 // TestGemma3_1B_Inference validates end-to-end inference with Gemma3-1B.
 // Reports tokens/sec for prefill and decode phases.
-func TestGemma3_1B_Inference(t *testing.T) {
+func TestGemma3_1B_Inference_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	loadStart := time.Now()
@@ -241,7 +241,7 @@ func TestGemma3_1B_Inference(t *testing.T) {
 }
 
 // TestGemma3_1B_Chat validates chat template formatting and generation.
-func TestGemma3_1B_Chat(t *testing.T) {
+func TestGemma3_1B_Chat_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -269,7 +269,7 @@ func TestGemma3_1B_Chat(t *testing.T) {
 }
 
 // TestGemma3_1B_ContextCancel validates that context cancellation stops generation.
-func TestGemma3_1B_ContextCancel(t *testing.T) {
+func TestGemma3_1B_ContextCancel_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -313,7 +313,7 @@ func qwen2ModelPath(t *testing.T) string {
 }
 
 // TestQwen2_Inference validates Qwen2 arch (DeepSeek R1 7B) end-to-end.
-func TestQwen2_Inference(t *testing.T) {
+func TestQwen2_Inference_Good(t *testing.T) {
 	modelPath := qwen2ModelPath(t)
 
 	loadStart := time.Now()
@@ -357,7 +357,7 @@ func TestQwen2_Inference(t *testing.T) {
 }
 
 // TestQwen2_Chat validates chat template for Qwen2 models.
-func TestQwen2_Chat(t *testing.T) {
+func TestQwen2_Chat_Good(t *testing.T) {
 	modelPath := qwen2ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -401,7 +401,7 @@ func llamaModelPath(t *testing.T) string {
 }
 
 // TestLlama_Inference validates Llama 3.1 8B end-to-end.
-func TestLlama_Inference(t *testing.T) {
+func TestLlama_Inference_Good(t *testing.T) {
 	modelPath := llamaModelPath(t)
 
 	loadStart := time.Now()
@@ -446,7 +446,7 @@ func TestLlama_Inference(t *testing.T) {
 
 // --- Discover tests ---
 
-func TestDiscover(t *testing.T) {
+func TestDiscover_Good(t *testing.T) {
 	// Scan the safetensors directory for available models.
 	baseDir := "/Volumes/Data/lem"
 	if _, err := os.Stat(baseDir); err != nil {
@@ -468,7 +468,7 @@ func TestDiscover(t *testing.T) {
 
 // --- ModelInfo tests ---
 
-func TestModelInfo(t *testing.T) {
+func TestModelInfo_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -503,7 +503,7 @@ func TestModelInfo(t *testing.T) {
 // --- Metrics tests ---
 
 // TestGenerate_Metrics validates that metrics are populated after generation.
-func TestGenerate_Metrics(t *testing.T) {
+func TestGenerate_Metrics_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -554,7 +554,7 @@ func TestGenerate_Metrics(t *testing.T) {
 // --- Batch Inference tests (Gemma3-1B) ---
 
 // TestClassify_Batch validates batched prefill-only classification.
-func TestClassify_Batch(t *testing.T) {
+func TestClassify_Batch_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -592,7 +592,7 @@ func TestClassify_Batch(t *testing.T) {
 }
 
 // TestClassify_WithLogits validates that logits are returned when requested.
-func TestClassify_WithLogits(t *testing.T) {
+func TestClassify_WithLogits_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -617,7 +617,7 @@ func TestClassify_WithLogits(t *testing.T) {
 }
 
 // TestBatchGenerate validates batched autoregressive generation.
-func TestBatchGenerate(t *testing.T) {
+func TestBatchGenerate_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)
@@ -662,7 +662,7 @@ func TestBatchGenerate(t *testing.T) {
 }
 
 // TestLlama_Chat validates chat template for Llama 3 models.
-func TestLlama_Chat(t *testing.T) {
+func TestLlama_Chat_Good(t *testing.T) {
 	modelPath := llamaModelPath(t)
 
 	m, err := inference.LoadModel(modelPath)

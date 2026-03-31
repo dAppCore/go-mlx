@@ -40,6 +40,8 @@ func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int
 // Forward computes the linear transformation.
 // If a LoRA adapter is attached, routes through it instead (base + low-rank delta).
 // Uses QuantizedMatmul when quantization parameters are present.
+//
+//	y := proj.Forward(x) // x: [B, L, in_dim] → y: [B, L, out_dim]
 func (l *Linear) Forward(x *Array) *Array {
 	if l.LoRA != nil {
 		return l.LoRA.Forward(x)
@@ -77,6 +79,8 @@ type Embedding struct {
 }
 
 // Forward looks up embeddings for the given token indices.
+//
+//	y := emb.Forward(tokenIDs) // tokenIDs: [B, L] int32 → y: [B, L, hidden_dim]
 func (e *Embedding) Forward(indices *Array) *Array {
 	if e.Scales != nil {
 		w := Dequantize(e.Weight, e.Scales, e.Biases, e.GroupSize, e.Bits)
@@ -106,6 +110,8 @@ type RMSNormModule struct {
 }
 
 // Forward applies RMS normalization.
+//
+//	normed := norm.Forward(x, 1e-6) // x: [B, L, hidden] → normed: same shape
 func (r *RMSNormModule) Forward(x *Array, eps float32) *Array {
 	return RMSNorm(x, r.Weight, eps)
 }
