@@ -517,8 +517,11 @@ func (model *mlxlmModel) InspectAttention(ctx context.Context, prompt string, op
 	}, nil
 }
 
-// reshapeFloat32 reads raw little-endian float32 bytes and reshapes into
-// [numHeads][stride] slices.
+// reshapeFloat32 reads raw little-endian float32 bytes and reshapes them into
+// [numHeads][stride] slices, one slice per attention head.
+//
+//	// 8 heads, seqLen=5, headDim=64 → stride=320 floats per head
+//	heads := reshapeFloat32(rawBytes, 8, 5*64)
 func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 	total := len(data) / 4
 	flat := make([]float32, total)

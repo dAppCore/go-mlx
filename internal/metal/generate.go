@@ -85,6 +85,9 @@ type ModelInfo struct {
 }
 
 // Info returns metadata about the loaded model.
+//
+//	info := m.Info()
+//	fmt.Printf("arch=%s vocab=%d layers=%d quant=%d-bit\n", info.Architecture, info.VocabSize, info.NumLayers, info.QuantBits)
 func (m *Model) Info() ModelInfo {
 	info := ModelInfo{
 		Architecture: m.modelType,

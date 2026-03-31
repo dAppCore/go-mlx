@@ -324,6 +324,9 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 // buildBatchMask constructs a combined causal + padding attention mask.
 // Shape: [N, 1, L, L]. Values: 0.0 = attend, -inf = ignore.
 // mask[b, 0, i, j] = 0.0 if j <= i AND j < promptLen[b], else -inf.
+//
+//	// N=2, L=4, lengths=[4, 2]: first seq uses all 4 positions, second only 2
+//	mask := buildBatchMask(2, 4, []int32{4, 2}) // shape [2, 1, 4, 4]
 func buildBatchMask(N, L int32, promptLens []int32) *Array {
 	negInf := float32(math.Inf(-1))
 	data := make([]float32, int(N)*int(L)*int(L))
@@ -346,9 +349,10 @@ func buildBatchMask(N, L int32, promptLens []int32) *Array {
 	return mask
 }
 
-// newCachesN creates N independent sets of per-layer caches for batched inference.
-// Since our KV cache implementation handles batch dimension internally,
-// we create a single set of caches (same as non-batched).
+// newCachesN creates caches for N-batch inference.
+// The KV cache handles the batch dimension via array shapes, so a single set suffices.
+//
+//	caches := m.newCachesN(4) // prepare for a batch of 4 prompts
 func (m *Model) newCachesN(n int) []Cache {
 	// KV caches handle the batch dimension automatically via the key/value
 	// array shapes. A single cache set works for any batch size.

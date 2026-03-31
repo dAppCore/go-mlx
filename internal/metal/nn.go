@@ -116,9 +116,12 @@ func (norm *RMSNormModule) Forward(input *Array, eps float32) *Array {
 	return RMSNorm(input, norm.Weight, eps)
 }
 
-// RepeatKV repeats key/value heads for grouped-query attention.
-// Input shape: [B, num_kv_heads, L, D]
-// Output shape: [B, num_kv_heads * factor, L, D]
+// RepeatKV repeats key/value heads for grouped-query attention (GQA).
+// Input shape: [B, num_kv_heads, L, D] → output: [B, num_kv_heads*factor, L, D].
+//
+//	// Gemma3: 16 KV heads, 16 query groups → factor=1 (no-op)
+//	// Qwen3:   8 KV heads, 32 query heads  → factor=4
+//	kExpanded := metal.RepeatKV(k, int32(numQueryHeads/numKVHeads))
 func RepeatKV(input *Array, factor int32) *Array {
 	if factor <= 1 {
 		return input

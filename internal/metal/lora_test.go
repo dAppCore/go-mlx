@@ -325,7 +325,7 @@ func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 
 // --- parseLoRAWeightName ---
 
-func TestParseLoRAWeightName_Good(t *testing.T) {
+func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -375,7 +375,7 @@ func TestParseLoRAWeightName_Good(t *testing.T) {
 	}
 }
 
-func TestParseLoRAWeightName_Bad(t *testing.T) {
+func TestLora_ParseLoRAWeightName_Bad(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -399,7 +399,7 @@ func TestParseLoRAWeightName_Bad(t *testing.T) {
 
 // --- parseAdapterConfig ---
 
-func TestParseAdapterConfig_Good(t *testing.T) {
+func TestLora_ParseAdapterConfig_Good(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `{
 		"rank": 16,
@@ -427,7 +427,7 @@ func TestParseAdapterConfig_Good(t *testing.T) {
 	}
 }
 
-func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
+func TestLora_ParseAdapterConfig_Good_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal config — rank and alpha should get defaults.
 	cfg := `{}`
@@ -445,14 +445,14 @@ func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
 	}
 }
 
-func TestParseAdapterConfig_Bad_MissingFile(t *testing.T) {
+func TestLora_ParseAdapterConfig_Bad_MissingFile(t *testing.T) {
 	_, err := parseAdapterConfig("/nonexistent/adapter_config.json")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }
 
-func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
+func TestLora_ParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte("{broken"), 0644)
 
@@ -464,7 +464,7 @@ func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
 
 // --- loadAdapterWeights ---
 
-func TestLoadAdapterWeights_Bad_NoFiles(t *testing.T) {
+func TestLora_LoadAdapterWeights_Bad_NoFiles(t *testing.T) {
 	dir := t.TempDir()
 	_, err := loadAdapterWeights(dir)
 	if err == nil {
@@ -472,7 +472,7 @@ func TestLoadAdapterWeights_Bad_NoFiles(t *testing.T) {
 	}
 }
 
-func TestLoadAdapterWeights_Good(t *testing.T) {
+func TestLora_LoadAdapterWeights_Good(t *testing.T) {
 	dir := t.TempDir()
 
 	// Save a small adapter file.
@@ -505,7 +505,7 @@ func TestLoadAdapterWeights_Good(t *testing.T) {
 
 // --- applyLoadedLoRA integration ---
 
-func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	// Create a simple base Linear layer and save LoRA weights for it,
 	// then load them back with applyLoadedLoRA.
 
@@ -615,7 +615,7 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	// Write safetensors but no config.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
@@ -629,7 +629,7 @@ func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	dir := t.TempDir()
 	// Write config but no safetensors.
 	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(`{"rank": 8}`), 0644)
@@ -641,7 +641,7 @@ func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(core.JoinPath(dir, "adapter_config.json"), []byte(`{"rank": 4, "alpha": 8.0}`), 0644)
 
@@ -669,9 +669,9 @@ func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	}
 }
 
-// TestApplyLoadedLoRA_Good_ForwardProducesOutput validates that a model with a
+// TestLora_ApplyLoadedLoRA_Good_ForwardProducesOutput validates that a model with a
 // loaded LoRA adapter produces different output than the base model alone.
-func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 	// Create base linear [4, 8].
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)

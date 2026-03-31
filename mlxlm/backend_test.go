@@ -37,7 +37,7 @@ func loadMock(t *testing.T, modelPath string) inference.TextModel {
 }
 
 // (a) Name returns "mlx_lm".
-func TestBackendName_Good(t *testing.T) {
+func TestBackend_Name_Good(t *testing.T) {
 	b := &mlxlmBackend{}
 	if got := b.Name(); got != "mlx_lm" {
 		t.Errorf("Name() = %q, want %q", got, "mlx_lm")
@@ -45,7 +45,7 @@ func TestBackendName_Good(t *testing.T) {
 }
 
 // (b) LoadModel spawns subprocess, sends load command, gets response.
-func TestLoadModel_Good(t *testing.T) {
+func TestBackend_LoadModel_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	if m.ModelType() != "mock_model" {
 		t.Errorf("ModelType() = %q, want %q", m.ModelType(), "mock_model")
@@ -53,7 +53,7 @@ func TestLoadModel_Good(t *testing.T) {
 }
 
 // (c) Generate streams tokens from subprocess, all tokens received.
-func TestGenerate_Good(t *testing.T) {
+func TestBackend_Generate_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx := context.Background()
@@ -82,7 +82,7 @@ func TestGenerate_Good(t *testing.T) {
 }
 
 // (d) Generate with context cancellation stops early.
-func TestGenerate_Cancel_Good(t *testing.T) {
+func TestBackend_Generate_Cancel_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -105,7 +105,7 @@ func TestGenerate_Cancel_Good(t *testing.T) {
 }
 
 // (e) Chat formats messages correctly and streams tokens.
-func TestChat_Good(t *testing.T) {
+func TestBackend_Chat_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx := context.Background()
@@ -132,7 +132,7 @@ func TestChat_Good(t *testing.T) {
 }
 
 // (f) Close kills subprocess cleanly.
-func TestClose_Good(t *testing.T) {
+func TestBackend_Close_Good(t *testing.T) {
 	m, err := loadModel(context.Background(), "/fake/model/path", mockScript(t))
 	if err != nil {
 		t.Fatalf("loadModel: %v", err)
@@ -144,7 +144,7 @@ func TestClose_Good(t *testing.T) {
 }
 
 // (g) Err returns error on subprocess failure.
-func TestGenerate_Error_Bad(t *testing.T) {
+func TestBackend_Generate_Error_Bad(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx := context.Background()
@@ -163,7 +163,7 @@ func TestGenerate_Error_Bad(t *testing.T) {
 }
 
 // (h) LoadModel with invalid path returns error.
-func TestLoadModel_Bad(t *testing.T) {
+func TestBackend_LoadModel_Bad(t *testing.T) {
 	_, err := loadModel(context.Background(), "/path/with/FAIL/in/it", mockScript(t))
 	if err == nil {
 		t.Fatal("expected error for FAIL path")
@@ -174,7 +174,7 @@ func TestLoadModel_Bad(t *testing.T) {
 }
 
 // (i) Backend auto-registers (check inference.Get("mlx_lm")).
-func TestAutoRegister_Good(t *testing.T) {
+func TestBackend_AutoRegister_Good(t *testing.T) {
 	b, ok := inference.Get("mlx_lm")
 	if !ok {
 		t.Fatal("mlx_lm backend not registered")
@@ -185,7 +185,7 @@ func TestAutoRegister_Good(t *testing.T) {
 }
 
 // (j) Concurrent Generate calls are serialised (mu lock).
-func TestGenerate_Concurrent_Good(t *testing.T) {
+func TestBackend_Generate_Concurrent_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx := context.Background()
@@ -215,7 +215,7 @@ func TestGenerate_Concurrent_Good(t *testing.T) {
 }
 
 // Additional: Classify returns unsupported error.
-func TestClassify_Unsupported_Bad(t *testing.T) {
+func TestBackend_Classify_Unsupported_Bad(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	_, err := m.Classify(context.Background(), []string{"test"})
 	if err == nil {
@@ -227,7 +227,7 @@ func TestClassify_Unsupported_Bad(t *testing.T) {
 }
 
 // Additional: BatchGenerate returns unsupported error.
-func TestBatchGenerate_Unsupported_Bad(t *testing.T) {
+func TestBackend_BatchGenerate_Unsupported_Bad(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	_, err := m.BatchGenerate(context.Background(), []string{"test"})
 	if err == nil {
@@ -239,7 +239,7 @@ func TestBatchGenerate_Unsupported_Bad(t *testing.T) {
 }
 
 // Additional: Info returns model metadata.
-func TestInfo_Good(t *testing.T) {
+func TestBackend_Info_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	info := m.Info()
 	if info.Architecture != "mock_model" {
@@ -257,7 +257,7 @@ func TestInfo_Good(t *testing.T) {
 }
 
 // Additional: Metrics returns zero values (not tracked by subprocess).
-func TestMetrics_Zero_Good(t *testing.T) {
+func TestBackend_Metrics_Zero_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	met := m.Metrics()
 	if met.PromptTokens != 0 || met.GeneratedTokens != 0 {
@@ -267,7 +267,7 @@ func TestMetrics_Zero_Good(t *testing.T) {
 }
 
 // Additional: Generate with fewer max_tokens than available tokens.
-func TestGenerate_MaxTokens_Good(t *testing.T) {
+func TestBackend_Generate_MaxTokens_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	ctx := context.Background()
@@ -283,7 +283,7 @@ func TestGenerate_MaxTokens_Good(t *testing.T) {
 	}
 }
 
-func TestInspectAttention_Good(t *testing.T) {
+func TestBackend_InspectAttention_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 
 	inspector, ok := m.(inference.AttentionInspector)
@@ -345,7 +345,7 @@ func TestInspectAttention_Good(t *testing.T) {
 	}
 }
 
-func TestInspectAttention_Error_Bad(t *testing.T) {
+func TestBackend_InspectAttention_Error_Bad(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	inspector := m.(inference.AttentionInspector)
 
