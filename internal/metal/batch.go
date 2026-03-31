@@ -26,8 +26,10 @@ type BatchResult struct {
 	Err    error
 }
 
-// Classify runs batched prefill-only inference. Each prompt gets a single
-// forward pass and the token at the last position is sampled.
+// Classify runs batched prefill-only inference.
+// Each prompt gets one forward pass; the token at the last position is sampled.
+//
+//	results, err := m.Classify(ctx, []string{"The capital of France is", "2+2="}, cfg, false)
 func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConfig, returnLogits bool) ([]ClassifyResult, error) {
 	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
@@ -37,7 +39,6 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	totalStart := time.Now()
 	ResetPeakMemory()
 
-	// Tokenise all prompts.
 	encoded := make([][]int32, len(prompts))
 	lengths := make([]int, len(prompts))
 	totalPromptTokens := 0
@@ -47,7 +48,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		totalPromptTokens += lengths[i]
 	}
 
-	// Sort by length descending for minimal padding. Track original indices.
+	// Sort by length descending for minimal padding.
 	indices := make([]int, len(prompts))
 	for i := range indices {
 		indices[i] = i
@@ -60,7 +61,6 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	N := int32(len(prompts))
 	L := int32(maxLen)
 
-	// Build padded token matrix [N, maxLen] and prompt lengths (sorted order).
 	padded := make([]int32, int(N)*int(L))
 	sortedLengths := make([]int32, N)
 	for si, origIdx := range indices {
@@ -75,10 +75,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	default:
 	}
 
-	// Build attention mask [N, 1, L, L].
 	mask := buildBatchMask(N, L, sortedLengths)
-
-	// Single forward pass.
 	tokens := FromValues(padded, int(N), int(L))
 	logits := m.model.ForwardMasked(tokens, mask, m.newCachesN(int(N)))
 	if err := Eval(logits); err != nil {
@@ -86,10 +83,8 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		return nil, coreerr.E("Model.Classify", "classify prefill", err)
 	}
 
-	// logits shape: [N, L, vocab]
+	// logits shape: [N, L, vocab] — gather at each prompt's last real position
 	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
-
-	// Gather logits at each prompt's last real token position and sample.
 	sortedResults := make([]ClassifyResult, N)
 	for si := range N {
 		lastPos := sortedLengths[si] - 1
@@ -122,7 +117,6 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	}
 	Free(logits, tokens, mask)
 
-	// Unsort results back to original prompt order.
 	results := make([]ClassifyResult, N)
 	for si, origIdx := range indices {
 		results[origIdx] = sortedResults[si]
@@ -145,6 +139,9 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 }
 
 // BatchGenerate runs batched autoregressive generation.
+//
+//	results, err := m.BatchGenerate(ctx, []string{"The capital of France is", "2+2="}, cfg)
+//	for _, r := range results { fmt.Println(r.Tokens) }
 func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
 	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
@@ -154,7 +151,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	totalStart := time.Now()
 	ResetPeakMemory()
 
-	// Tokenise all prompts.
 	encoded := make([][]int32, len(prompts))
 	lengths := make([]int, len(prompts))
 	totalPromptTokens := 0
@@ -164,7 +160,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		totalPromptTokens += lengths[i]
 	}
 
-	// Sort by length descending.
+	// Sort descending for minimal padding.
 	indices := make([]int, len(prompts))
 	for i := range indices {
 		indices[i] = i
@@ -177,7 +173,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	maxLen := lengths[indices[0]]
 	L := int32(maxLen)
 
-	// Build padded token matrix and lengths.
 	padded := make([]int32, int(N)*int(L))
 	sortedLengths := make([]int32, N)
 	for si, origIdx := range indices {
@@ -191,7 +186,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	default:
 	}
 
-	// Prefill with mask.
 	prefillStart := time.Now()
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
@@ -235,7 +229,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		default:
 		}
 
-		// Sample next token for each sequence from last position logits.
 		nextIDs := make([]int32, N)
 		allFinished := true
 
@@ -268,7 +261,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			id := int32(next.Int())
 			nextIDs[si] = id
 
-			// Check stop conditions.
 			if id == eosID {
 				states[si].finished = true
 			} else if slices.Contains(cfg.StopTokens, id) {
@@ -286,7 +278,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			break
 		}
 
-		// Feed next tokens [N, 1] through the model.
 		nextInput := FromValues(nextIDs, int(N), 1)
 		oldLogits := logits
 		logits = m.model.Forward(nextInput, caches)
@@ -298,7 +289,6 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	}
 	Free(logits)
 
-	// Unsort results back to original order.
 	sortedResults := make([]BatchResult, N)
 	totalGenerated := 0
 	for si := range states {

@@ -114,7 +114,6 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	}
 	data := []byte(str)
 
-	// Read model_type from config for architecture identification.
 	var probe struct {
 		ModelType string `json:"model_type"`
 	}
@@ -132,7 +131,6 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, coreerr.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
-	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
@@ -147,7 +145,6 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 
 	w := func(name string) *Array { return resolveWeight(weights, name) }
 
-	// Quantization setup
 	q := cfg.Quantization
 	if q != nil {
 		slog.Info("qwen3: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
@@ -163,7 +160,6 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return NewLinear(weight, bias)
 	}
 
-	// Embedding
 	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
 		embed.Scales = embedScales
@@ -172,8 +168,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		embed.Bits = q.Bits
 	}
 
-	// Determine model variant. Use config's model_type when available;
-	// fall back to weight-based detection for Qwen 2 vs 3.
+	// Detect qwen2 vs qwen3 by presence of q_norm weight when model_type is absent.
 	detectedType := probe.ModelType
 	if detectedType == "" {
 		hasQKNorm := w("model.layers.0.self_attn.q_norm.weight") != nil
@@ -214,7 +209,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		}
 	}
 
-	// Output head — Qwen 3 has tie_word_embeddings=false, so lm_head is separate
+	// lm_head: Qwen3 has tie_word_embeddings=false; use tied embed_tokens as fallback
 	lmHeadWeight := w("lm_head.weight")
 	if lmHeadWeight != nil {
 		lmHeadScales := w("lm_head.scales")
@@ -227,13 +222,11 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		m.Output = m.EmbedTokens.AsLinear()
 	}
 
-	// Materialise all weights onto Metal
 	var allArrays []*Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
 	Materialize(allArrays...)
-
 	slog.Info("model loaded",
 		"arch", detectedType,
 		"layers", cfg.NumHiddenLayers,

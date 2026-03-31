@@ -191,7 +191,6 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		}
 	}
 
-	// Helper to resolve weight with language_model. prefix fallback
 	w := func(name string) *Array { return resolveWeight(weights, name) }
 
 	// Infer head_dim from q_proj weight shape when not in config.
@@ -208,7 +207,6 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		}
 	}
 
-	// Helper to create linear layer (quantized or dense)
 	q := cfg.Quantization
 	if q != nil {
 		slog.Info("mlx: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
@@ -223,7 +221,6 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		return NewLinear(weight, nil)
 	}
 
-	// Create embedding (quantized or dense)
 	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
 	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
 		embed.Scales = embedScales
@@ -240,7 +237,6 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		Cfg:         cfg,
 	}
 
-	// Initialize layers
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
 		m.Layers[i] = &DecoderLayer{
@@ -266,7 +262,7 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		}
 	}
 
-	// Output head — check for separate lm_head first, else tie to embeddings
+	// lm_head: separate weight if present, else tied to embed_tokens
 	lmHeadWeight := w("lm_head.weight")
 	if lmHeadWeight != nil {
 		lmHeadScales := w("lm_head.scales")
@@ -276,19 +272,15 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 			m.Output = NewLinear(lmHeadWeight, nil)
 		}
 	} else {
-		// Tied embeddings — reuse embed_tokens weights (with quantization if present)
-		m.Output = m.EmbedTokens.AsLinear()
+		m.Output = m.EmbedTokens.AsLinear() // tied embeddings
 	}
 
-	// Materialize all weights
 	var allArrays []*Array
 	for _, a := range weights {
 		allArrays = append(allArrays, a)
 	}
 	Materialize(allArrays...)
-
-	// Precompute (1 + weight) for Gemma-style RMSNorm
-	precomputeScaledWeights(m)
+	precomputeScaledWeights(m) // Gemma-style: weight → (1 + weight)
 
 	return m, nil
 }

@@ -98,8 +98,8 @@ func (b *mlxlmBackend) LoadModel(path string, opts ...inference.LoadOption) (inf
 	return loadModel(context.Background(), path, "", opts...)
 }
 
-// loadModel is the internal implementation, accepting an optional scriptOverride
-// for testing (uses the mock bridge script instead of the embedded one).
+// loadModel is the internal implementation. scriptOverride substitutes the embedded
+// bridge.py for testing.
 func loadModel(ctx context.Context, modelPath, scriptOverride string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	cfg := inference.ApplyLoadOpts(opts)
 	_ = cfg // reserved for future use (context length, etc.)
@@ -141,7 +141,6 @@ func loadModel(ctx context.Context, modelPath, scriptOverride string, opts ...in
 		raw:    stdoutPipe,
 	}
 
-	// Send load command.
 	loadReq := map[string]any{
 		"cmd":  "load",
 		"path": modelPath,
@@ -172,7 +171,6 @@ func loadModel(ctx context.Context, modelPath, scriptOverride string, opts ...in
 	return m, nil
 }
 
-// mlxlmModel is a subprocess-backed TextModel.
 type mlxlmModel struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
@@ -186,7 +184,7 @@ type mlxlmModel struct {
 	mu      sync.Mutex // serialise Generate/Chat calls
 }
 
-// send writes a JSON object as a single line to the subprocess stdin.
+// send writes a JSON object as a newline-terminated line to subprocess stdin.
 func (m *mlxlmModel) send(obj map[string]any) error {
 	r := core.JSONMarshal(obj)
 	if !r.OK {
@@ -197,7 +195,7 @@ func (m *mlxlmModel) send(obj map[string]any) error {
 	return err
 }
 
-// recv reads and parses a single JSON line from the subprocess stdout.
+// recv reads and parses one JSON line from subprocess stdout.
 func (m *mlxlmModel) recv() (map[string]any, error) {
 	if !m.stdout.Scan() {
 		if err := m.stdout.Err(); err != nil {
@@ -213,7 +211,11 @@ func (m *mlxlmModel) recv() (map[string]any, error) {
 }
 
 // Generate streams tokens from the subprocess for the given prompt.
-// Only one Generate or Chat call runs at a time per model (mu lock).
+// Calls are serialised per model (mu lock).
+//
+//	for tok := range m.Generate(ctx, "Hello", inference.WithMaxTokens(64)) {
+//	    fmt.Print(tok.Text)
+//	}
 func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	cfg := inference.ApplyGenerateOpts(opts)
 
@@ -249,9 +251,7 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 			select {
 			case <-ctx.Done():
 				m.lastErr = ctx.Err()
-				// Tell subprocess to stop.
 				_ = m.send(map[string]any{"cmd": "cancel"})
-				// Drain until done or error.
 				m.drain()
 				return
 			default:
@@ -279,7 +279,6 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 			}
 
 			if !yield(inference.Token{ID: id, Text: text}) {
-				// Consumer stopped early — send cancel and drain.
 				_ = m.send(map[string]any{"cmd": "cancel"})
 				m.drain()
 				return
@@ -288,7 +287,11 @@ func (m *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...infere
 	}
 }
 
-// Chat streams tokens from a multi-turn conversation.
+// Chat streams tokens from a multi-turn conversation via the subprocess.
+//
+//	for tok := range m.Chat(ctx, []inference.Message{{Role: "user", Content: "Hello"}}, opts...) {
+//	    fmt.Print(tok.Text)
+//	}
 func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	cfg := inference.ApplyGenerateOpts(opts)
 
@@ -297,7 +300,6 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 		defer m.mu.Unlock()
 		m.lastErr = nil
 
-		// Convert messages to JSON-safe format.
 		msgs := make([]map[string]string, len(messages))
 		for i, msg := range messages {
 			msgs[i] = map[string]string{
@@ -370,13 +372,13 @@ func (m *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opt
 }
 
 // Classify is not supported by the subprocess backend.
-// Returns an error indicating that classification requires the native Metal backend.
+// Use the native Metal backend for classification.
 func (m *mlxlmModel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	return nil, coreerr.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
 }
 
 // BatchGenerate is not supported by the subprocess backend.
-// Returns an error indicating that batch generation requires the native Metal backend.
+// Use the native Metal backend for batch generation.
 func (m *mlxlmModel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	return nil, coreerr.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 }
@@ -384,7 +386,6 @@ func (m *mlxlmModel) BatchGenerate(_ context.Context, _ []string, _ ...inference
 // ModelType returns the architecture identifier reported by the subprocess.
 func (m *mlxlmModel) ModelType() string { return m.modelType }
 
-// Info returns metadata about the loaded model.
 func (m *mlxlmModel) Info() inference.ModelInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -413,7 +414,7 @@ func (m *mlxlmModel) Info() inference.ModelInfo {
 	return info
 }
 
-// Metrics returns empty metrics — the subprocess backend does not track timing.
+// Metrics returns empty metrics; the subprocess backend does not track timing.
 func (m *mlxlmModel) Metrics() inference.GenerateMetrics {
 	return inference.GenerateMetrics{}
 }
@@ -421,14 +422,10 @@ func (m *mlxlmModel) Metrics() inference.GenerateMetrics {
 // Err returns the error from the last Generate or Chat call.
 func (m *mlxlmModel) Err() error { return m.lastErr }
 
-// Close sends a quit command and waits for the subprocess to exit.
-// If the subprocess does not exit within 2 seconds, it is killed.
+// Close sends quit and waits up to 2 seconds for the subprocess to exit, then kills it.
 func (m *mlxlmModel) Close() error {
-	// Send quit — ignore errors (subprocess may already be dead).
-	_ = m.send(map[string]any{"cmd": "quit"})
+	_ = m.send(map[string]any{"cmd": "quit"}) // ignore errors — subprocess may be dead
 	_ = m.stdin.Close()
-
-	// Wait with timeout.
 	done := make(chan error, 1)
 	go func() { done <- m.cmd.Wait() }()
 
@@ -441,8 +438,7 @@ func (m *mlxlmModel) Close() error {
 	}
 }
 
-// drain reads and discards subprocess output until a "done" or "error" line,
-// or the scanner stops. Used after cancellation to keep the protocol in sync.
+// drain discards subprocess output until "done" or "error", keeping the protocol in sync.
 func (m *mlxlmModel) drain() {
 	for {
 		resp, err := m.recv()
@@ -479,7 +475,6 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 		return nil, coreerr.E("mlxlm.InspectAttention", errMsg, nil)
 	}
 
-	// Parse metadata.
 	dir, _ := resp["dir"].(string)
 	numLayers := int(resp["num_layers"].(float64))
 	numKVHeads := int(resp["num_kv_heads"].(float64))
@@ -488,7 +483,6 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 	headDim := int(resp["head_dim"].(float64))
 	arch, _ := resp["architecture"].(string)
 
-	// Read binary files from temp dir.
 	keys := make([][][]float32, numLayers)
 	queries := make([][][]float32, numLayers)
 
@@ -508,7 +502,6 @@ func (m *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts .
 		queries[layer] = reshapeFloat32([]byte(qStr), numQHeads, seqLen*headDim)
 	}
 
-	// Clean up temp dir.
 	coreio.Local.DeleteAll(dir)
 
 	return &inference.AttentionSnapshot{
@@ -547,7 +540,7 @@ func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 	return heads
 }
 
-// kill terminates the subprocess immediately. Used during load failures.
+// kill terminates the subprocess immediately (used during load failures).
 func (m *mlxlmModel) kill() {
 	_ = m.stdin.Close()
 	if m.cmd.Process != nil {
