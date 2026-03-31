@@ -20,14 +20,14 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	if err != nil {
 		return nil, coreerr.E("metal.LoadAndInit", "load model", err)
 	}
-	m := &Model{
+	model := &Model{
 		model:     im,
 		tokenizer: im.Tokenizer(),
 		modelType: im.ModelType(),
 	}
 	if len(cfg) > 0 {
 		if cfg[0].ContextLen > 0 {
-			m.contextLen = cfg[0].ContextLen
+			model.contextLen = cfg[0].ContextLen
 		}
 		if cfg[0].AdapterPath != "" {
 			if err := applyLoadedLoRA(im, cfg[0].AdapterPath); err != nil {
@@ -35,5 +35,5 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 			}
 		}
 	}
-	return m, nil
+	return model, nil
 }

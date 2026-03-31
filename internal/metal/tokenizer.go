@@ -3,9 +3,6 @@
 package metal
 
 import (
-	"encoding/json"
-	"strings"
-
 	"dappco.re/go/core"
 
 	coreio "forge.lthn.ai/core/go-io"
@@ -37,16 +34,37 @@ type mergePair struct {
 // tokenizerJSON is the HuggingFace tokenizer.json format.
 type tokenizerJSON struct {
 	Model struct {
-		Type         string          `json:"type"`
-		Vocab        json.RawMessage `json:"vocab"`
-		Merges       json.RawMessage `json:"merges"`
-		ByteFallback bool            `json:"byte_fallback"`
+		Type         string `json:"type"`
+		Vocab        []byte `json:"vocab"`
+		Merges       []byte `json:"merges"`
+		ByteFallback bool   `json:"byte_fallback"`
 	} `json:"model"`
 	AddedTokens []struct {
 		ID      int32  `json:"id"`
 		Content string `json:"content"`
 		Special bool   `json:"special"`
 	} `json:"added_tokens"`
+}
+
+// indexIn returns the byte position of substr in s, or -1 if not found.
+// Replaces strings.Index without importing the strings package.
+//
+//	pos := indexIn("hello world", "world") // → 6
+//	pos := indexIn("hello", "xyz")         // → -1
+func indexIn(s, substr string) int {
+	subLen := len(substr)
+	if subLen == 0 {
+		return 0
+	}
+	if subLen > len(s) {
+		return -1
+	}
+	for i := range len(s) - subLen + 1 {
+		if s[i:i+subLen] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 // LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
@@ -64,7 +82,7 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", nil)
 	}
 
-	t := &Tokenizer{
+	tokenizer := &Tokenizer{
 		vocab:    make(map[string]int32),
 		invVocab: make(map[int32]string),
 		special:  make(map[string]int32),
@@ -74,9 +92,9 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	if r := core.JSONUnmarshal(tj.Model.Vocab, &vocab); !r.OK {
 		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", nil)
 	}
-	t.vocab = vocab
-	for k, v := range vocab {
-		t.invVocab[v] = k
+	tokenizer.vocab = vocab
+	for tokenText, tokenID := range vocab {
+		tokenizer.invVocab[tokenID] = tokenText
 	}
 
 	// supports both ["a b", ...] and [["a","b"], ...] merge formats
@@ -86,7 +104,7 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 			for rank, merge := range stringMerges {
 				parts := core.SplitN(merge, " ", 2)
 				if len(parts) == 2 {
-					t.merges = append(t.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
+					tokenizer.merges = append(tokenizer.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
 				}
 			}
 		} else {
@@ -94,63 +112,63 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 			if r := core.JSONUnmarshal(tj.Model.Merges, &arrayMerges); r.OK {
 				for rank, pair := range arrayMerges {
 					if len(pair) == 2 {
-						t.merges = append(t.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
+						tokenizer.merges = append(tokenizer.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
 					}
 				}
 			}
 		}
 	}
 
-	t.mergeRanks = make(map[string]int, len(t.merges))
-	for _, m := range t.merges {
-		t.mergeRanks[m.a+" "+m.b] = m.rank
+	tokenizer.mergeRanks = make(map[string]int, len(tokenizer.merges))
+	for _, merge := range tokenizer.merges {
+		tokenizer.mergeRanks[merge.a+" "+merge.b] = merge.rank
 	}
 
-	for _, tok := range tj.AddedTokens {
-		if tok.Special {
-			t.special[tok.Content] = tok.ID
+	for _, added := range tj.AddedTokens {
+		if added.Special {
+			tokenizer.special[added.Content] = added.ID
 		}
-		t.vocab[tok.Content] = tok.ID
-		t.invVocab[tok.ID] = tok.Content
+		tokenizer.vocab[added.Content] = added.ID
+		tokenizer.invVocab[added.ID] = added.Content
 	}
 
 	// Detect GPT-2 byte-level BPE (Qwen, GPT, DeepSeek use Ġ for space).
 	// Check for "Ġthe" rather than bare "Ġ" — large SentencePiece vocabs
 	// (Gemma3 262K) may include Ġ as an obscure character without using
 	// GPT-2 byte encoding.
-	if _, ok := t.vocab["Ġthe"]; ok {
-		t.isGPT2BPE = true
-		t.gpt2Decoder, t.gpt2Encoder = buildGPT2ByteMaps()
+	if _, ok := tokenizer.vocab["Ġthe"]; ok {
+		tokenizer.isGPT2BPE = true
+		tokenizer.gpt2Decoder, tokenizer.gpt2Encoder = buildGPT2ByteMaps()
 	}
 
-	if id, ok := t.special["<bos>"]; ok {
-		t.bosToken = id
+	if id, ok := tokenizer.special["<bos>"]; ok {
+		tokenizer.bosToken = id
 	}
-	if id, ok := t.special["<eos>"]; ok {
-		t.eosToken = id
+	if id, ok := tokenizer.special["<eos>"]; ok {
+		tokenizer.eosToken = id
 	}
 	// Gemma: <end_of_turn> is the generation stop token
-	if id, ok := t.special["<end_of_turn>"]; ok {
-		t.eosToken = id
+	if id, ok := tokenizer.special["<end_of_turn>"]; ok {
+		tokenizer.eosToken = id
 	}
 	// Qwen3: <|im_end|> is the generation stop token
-	if id, ok := t.special["<|im_end|>"]; ok {
-		t.eosToken = id
+	if id, ok := tokenizer.special["<|im_end|>"]; ok {
+		tokenizer.eosToken = id
 	}
 	// Qwen3 BOS: <|im_start|>
-	if id, ok := t.special["<|im_start|>"]; ok {
-		t.bosToken = id
+	if id, ok := tokenizer.special["<|im_start|>"]; ok {
+		tokenizer.bosToken = id
 	}
 	// Llama 3: <|eot_id|> is the turn-end token
-	if id, ok := t.special["<|eot_id|>"]; ok {
-		t.eosToken = id
+	if id, ok := tokenizer.special["<|eot_id|>"]; ok {
+		tokenizer.eosToken = id
 	}
 	// Llama 3 BOS: <|begin_of_text|>
-	if id, ok := t.special["<|begin_of_text|>"]; ok {
-		t.bosToken = id
+	if id, ok := tokenizer.special["<|begin_of_text|>"]; ok {
+		tokenizer.bosToken = id
 	}
 
-	return t, nil
+	return tokenizer, nil
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
@@ -174,13 +192,13 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 	selfMap(174, 255) // ® through ÿ
 
 	// Non-self-mapping: control chars, space, DEL, and gaps
-	n := 0
+	nonSelfMapped := 0
 	for b := range 256 {
 		if _, ok := encoder[byte(b)]; !ok {
-			r := rune(256 + n)
-			encoder[byte(b)] = r
-			decoder[r] = byte(b)
-			n++
+			mappedRune := rune(256 + nonSelfMapped)
+			encoder[byte(b)] = mappedRune
+			decoder[mappedRune] = byte(b)
+			nonSelfMapped++
 		}
 	}
 	return
@@ -242,7 +260,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 		// Find the next special token boundary (or end of string).
 		end := len(remaining)
 		for tok := range t.special {
-			if idx := strings.Index(remaining, tok); idx > 0 && idx < end {
+			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
 				end = idx
 			}
 		}
@@ -294,7 +312,7 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 		// Find the next special token boundary (or end of string).
 		end := len(remaining)
 		for tok := range t.special {
-			if idx := strings.Index(remaining, tok); idx > 0 && idx < end {
+			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
 				end = idx
 			}
 		}

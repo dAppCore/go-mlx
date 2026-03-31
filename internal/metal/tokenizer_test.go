@@ -3,10 +3,11 @@
 package metal
 
 import (
-	"os"
 	"testing"
 
 	"dappco.re/go/core"
+
+	coreio "forge.lthn.ai/core/go-io"
 )
 
 // minimalTokenizerJSON is a valid HuggingFace tokenizer.json with a tiny vocab.
@@ -36,7 +37,7 @@ func writeTestTokenizer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := core.JoinPath(dir, "tokenizer.json")
-	if err := os.WriteFile(path, []byte(minimalTokenizerJSON), 0644); err != nil {
+	if err := coreio.Local.Write(path, minimalTokenizerJSON); err != nil {
 		t.Fatalf("write test tokenizer: %v", err)
 	}
 	return path
@@ -63,7 +64,7 @@ func TestTokenizer_LoadTokenizer_MissingFile_Bad(t *testing.T) {
 func TestTokenizer_LoadTokenizer_InvalidJSON_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	path := core.JoinPath(dir, "tokenizer.json")
-	os.WriteFile(path, []byte("not json"), 0644)
+	_ = coreio.Local.Write(path, "not json")
 
 	_, err := LoadTokenizer(path)
 	if err == nil {
@@ -269,5 +270,69 @@ func TestTokenizer_BuildGPT2ByteMaps_ControlChars_Good(t *testing.T) {
 	}
 	if encoder[byte(0)] == rune(0) {
 		t.Error("null (0) should not self-map in GPT-2 encoding")
+	}
+}
+
+// TestTokenizer_Encode_EmptyString_Ugly tests encoding an empty string.
+// Should return only the BOS token (no panic, no out-of-bounds).
+func TestTokenizer_Encode_EmptyString_Ugly(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	tokens := tok.Encode("")
+	// Empty input: only BOS token expected
+	if len(tokens) == 0 {
+		t.Fatal("Encode(\"\") returned empty slice — expected at least BOS token")
+	}
+	if tokens[0] != tok.BOSToken() {
+		t.Errorf("first token = %d, want BOS (%d)", tokens[0], tok.BOSToken())
+	}
+}
+
+// TestTokenizer_Decode_EmptySlice_Ugly tests decoding an empty token slice.
+// Should return empty string without panicking.
+func TestTokenizer_Decode_EmptySlice_Ugly(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	text := tok.Decode([]int32{})
+	if text != "" {
+		t.Errorf("Decode(empty) = %q, want empty string", text)
+	}
+}
+
+// TestTokenizer_DecodeToken_UnknownID_Ugly tests decoding a token ID outside vocab range.
+// Should return empty string without panicking.
+func TestTokenizer_DecodeToken_UnknownID_Ugly(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	// Use a large ID well outside any realistic vocab range
+	text := tok.DecodeToken(1<<30)
+	if text != "" {
+		t.Errorf("DecodeToken(huge id) = %q, want empty", text)
+	}
+}
+
+// TestTokenizer_BPEMerge_NilSymbols_Ugly tests bpeMerge with an empty symbols slice.
+// Should return empty slice without panicking.
+func TestTokenizer_BPEMerge_NilSymbols_Ugly(t *testing.T) {
+	tok := &Tokenizer{mergeRanks: map[string]int{"a b": 0}}
+	got := tok.bpeMerge([]string{})
+	if len(got) != 0 {
+		t.Errorf("bpeMerge(empty) = %v, want empty", got)
+	}
+}
+
+// TestTokenizer_LoadTokenizer_EmptyFile_Ugly tests loading a tokenizer from an empty file.
+// Should return a parse error, not panic.
+func TestTokenizer_LoadTokenizer_EmptyFile_Ugly(t *testing.T) {
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	_ = coreio.Local.Write(path, "")
+
+	_, err := LoadTokenizer(path)
+	if err == nil {
+		t.Error("expected error for empty tokenizer file")
 	}
 }

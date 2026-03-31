@@ -422,45 +422,45 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	case "llama":
 		return formatLlamaChat(messages)
 	default:
-		s := core.NewBuilder()
+		builder := core.NewBuilder()
 		for _, msg := range messages {
-			s.WriteString(msg.Content + "\n")
+			builder.WriteString(msg.Content + "\n")
 		}
-		return s.String()
+		return builder.String()
 	}
 }
 
 func formatGemmaChat(messages []ChatMessage) string {
-	s := core.NewBuilder()
+	builder := core.NewBuilder()
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			s.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
+			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
 		case "user":
-			s.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
+			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
 		case "assistant":
-			s.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
+			builder.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
 		}
 	}
-	s.WriteString("<start_of_turn>model\n")
-	return s.String()
+	builder.WriteString("<start_of_turn>model\n")
+	return builder.String()
 }
 
 func formatQwenChat(messages []ChatMessage) string {
-	s := core.NewBuilder()
+	builder := core.NewBuilder()
 	for _, msg := range messages {
-		s.WriteString("<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n")
+		builder.WriteString("<|im_start|>" + msg.Role + "\n" + msg.Content + "<|im_end|>\n")
 	}
-	s.WriteString("<|im_start|>assistant\n")
-	return s.String()
+	builder.WriteString("<|im_start|>assistant\n")
+	return builder.String()
 }
 
 func formatLlamaChat(messages []ChatMessage) string {
-	s := core.NewBuilder()
-	s.WriteString("<|begin_of_text|>")
+	builder := core.NewBuilder()
+	builder.WriteString("<|begin_of_text|>")
 	for _, msg := range messages {
-		s.WriteString("<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
+		builder.WriteString("<|start_header_id|>" + msg.Role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
 	}
-	s.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
-	return s.String()
+	builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
+	return builder.String()
 }

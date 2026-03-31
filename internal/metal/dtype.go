@@ -5,7 +5,7 @@ package metal
 // #include "mlx/c/mlx.h"
 import "C"
 
-import "encoding/json"
+import "dappco.re/go/core"
 
 // DType represents an MLX array data type.
 type DType C.mlx_dtype
@@ -69,12 +69,12 @@ var dtypeFromString = map[string]DType{
 }
 
 // UnmarshalJSON parses a DType from JSON strings like "F32", "BF16", etc.
-func (d *DType) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
+func (d *DType) UnmarshalJSON(raw []byte) error {
+	var typeName string
+	if result := core.JSONUnmarshal(raw, &typeName); !result.OK {
+		return result.Value.(error)
 	}
-	if dt, ok := dtypeFromString[s]; ok {
+	if dt, ok := dtypeFromString[typeName]; ok {
 		*d = dt
 		return nil
 	}

@@ -191,14 +191,14 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		}
 	}
 
-	w := func(name string) *Array { return resolveWeight(weights, name) }
+	weight := func(name string) *Array { return resolveWeight(weights, name) }
 
 	// Infer head_dim from q_proj weight shape when not in config.
 	// Gemma 3 uses head_dim=256 which differs from hidden_size/num_heads.
 	if cfg.HeadDim == 0 {
-		qWeight := w("model.layers.0.self_attn.q_proj.weight")
-		if qWeight != nil {
-			qShape := qWeight.Shape()
+		qProjWeight := weight("model.layers.0.self_attn.q_proj.weight")
+		if qProjWeight != nil {
+			qShape := qProjWeight.Shape()
 			if len(qShape) > 0 {
 				cfg.HeadDim = qShape[0] / cfg.NumAttentionHeads
 				cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
@@ -207,50 +207,50 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		}
 	}
 
-	q := cfg.Quantization
-	if q != nil {
-		slog.Info("mlx: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
+	quantConfig := cfg.Quantization
+	if quantConfig != nil {
+		slog.Info("mlx: using quantized inference", "bits", quantConfig.Bits, "group_size", quantConfig.GroupSize)
 	}
 	linear := func(prefix string) *Linear {
-		weight := w(prefix + ".weight")
-		scales := w(prefix + ".scales")
-		biases := w(prefix + ".biases")
-		if scales != nil && q != nil {
-			return NewQuantizedLinear(weight, scales, biases, nil, q.GroupSize, q.Bits)
+		layerWeight := weight(prefix + ".weight")
+		scales := weight(prefix + ".scales")
+		biases := weight(prefix + ".biases")
+		if scales != nil && quantConfig != nil {
+			return NewQuantizedLinear(layerWeight, scales, biases, nil, quantConfig.GroupSize, quantConfig.Bits)
 		}
-		return NewLinear(weight, nil)
+		return NewLinear(layerWeight, nil)
 	}
 
-	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
-	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
+	embed := &Embedding{Weight: weight("model.embed_tokens.weight")}
+	if embedScales := weight("model.embed_tokens.scales"); embedScales != nil && quantConfig != nil {
 		embed.Scales = embedScales
-		embed.Biases = w("model.embed_tokens.biases")
-		embed.GroupSize = q.GroupSize
-		embed.Bits = q.Bits
+		embed.Biases = weight("model.embed_tokens.biases")
+		embed.GroupSize = quantConfig.GroupSize
+		embed.Bits = quantConfig.Bits
 	}
 
-	m := &GemmaModel{
+	gemmaModel := &GemmaModel{
 		EmbedTokens: embed,
 		Layers:      make([]*DecoderLayer, cfg.NumHiddenLayers),
-		Norm:        &RMSNormModule{Weight: w("model.norm.weight")},
+		Norm:        &RMSNormModule{Weight: weight("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
 	}
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
-		m.Layers[i] = &DecoderLayer{
-			InputNorm:    &RMSNormModule{Weight: w(prefix + ".input_layernorm.weight")},
-			PostAttnNorm: &RMSNormModule{Weight: w(prefix + ".post_attention_layernorm.weight")},
-			PreFFNorm:    &RMSNormModule{Weight: w(prefix + ".pre_feedforward_layernorm.weight")},
-			PostFFNorm:   &RMSNormModule{Weight: w(prefix + ".post_feedforward_layernorm.weight")},
+		gemmaModel.Layers[i] = &DecoderLayer{
+			InputNorm:    &RMSNormModule{Weight: weight(prefix + ".input_layernorm.weight")},
+			PostAttnNorm: &RMSNormModule{Weight: weight(prefix + ".post_attention_layernorm.weight")},
+			PreFFNorm:    &RMSNormModule{Weight: weight(prefix + ".pre_feedforward_layernorm.weight")},
+			PostFFNorm:   &RMSNormModule{Weight: weight(prefix + ".post_feedforward_layernorm.weight")},
 			Attention: &Attention{
 				QProj: linear(prefix + ".self_attn.q_proj"),
 				KProj: linear(prefix + ".self_attn.k_proj"),
 				VProj: linear(prefix + ".self_attn.v_proj"),
 				OProj: linear(prefix + ".self_attn.o_proj"),
-				QNorm: &RMSNormModule{Weight: w(prefix + ".self_attn.q_norm.weight")},
-				KNorm: &RMSNormModule{Weight: w(prefix + ".self_attn.k_norm.weight")},
+				QNorm: &RMSNormModule{Weight: weight(prefix + ".self_attn.q_norm.weight")},
+				KNorm: &RMSNormModule{Weight: weight(prefix + ".self_attn.k_norm.weight")},
 			},
 			MLP: &MLP{
 				GateProj: linear(prefix + ".mlp.gate_proj"),
@@ -263,26 +263,26 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	}
 
 	// lm_head: separate weight if present, else tied to embed_tokens
-	lmHeadWeight := w("lm_head.weight")
+	lmHeadWeight := weight("lm_head.weight")
 	if lmHeadWeight != nil {
-		lmHeadScales := w("lm_head.scales")
-		if lmHeadScales != nil && q != nil {
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, q.GroupSize, q.Bits)
+		lmHeadScales := weight("lm_head.scales")
+		if lmHeadScales != nil && quantConfig != nil {
+			gemmaModel.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, weight("lm_head.biases"), nil, quantConfig.GroupSize, quantConfig.Bits)
 		} else {
-			m.Output = NewLinear(lmHeadWeight, nil)
+			gemmaModel.Output = NewLinear(lmHeadWeight, nil)
 		}
 	} else {
-		m.Output = m.EmbedTokens.AsLinear() // tied embeddings
+		gemmaModel.Output = gemmaModel.EmbedTokens.AsLinear() // tied embeddings
 	}
 
 	var allArrays []*Array
-	for _, a := range weights {
-		allArrays = append(allArrays, a)
+	for _, arr := range weights {
+		allArrays = append(allArrays, arr)
 	}
 	Materialize(allArrays...)
-	precomputeScaledWeights(m) // Gemma-style: weight → (1 + weight)
+	precomputeScaledWeights(gemmaModel) // Gemma-style: weight → (1 + weight)
 
-	return m, nil
+	return gemmaModel, nil
 }
 
 func precomputeScaledWeights(m *GemmaModel) {
@@ -324,8 +324,8 @@ func (m *GemmaModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
-	s := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
-	h2 := MulScalar(h, s)
+	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
+	h2 := MulScalar(h, embeddingScale)
 	Free(h)
 	h = h2
 

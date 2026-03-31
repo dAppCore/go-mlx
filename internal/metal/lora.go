@@ -14,7 +14,6 @@ import (
 	"math"
 	"slices"
 	"strconv"
-	"strings"
 	"unsafe"
 
 	"dappco.re/go/core"
@@ -69,17 +68,17 @@ func NewLoRALinear(base *Linear, rank int, alpha float32, dtype ...DType) *LoRAL
 
 	// A: Kaiming normal initialisation — N(0, 1/sqrt(in_features))
 	stddev := float32(1.0 / math.Sqrt(float64(inFeatures)))
-	a := RandomNormal(0, stddev, []int32{int32(rank), inFeatures}, dt)
+	matrixA := RandomNormal(0, stddev, []int32{int32(rank), inFeatures}, dt)
 
 	// B: zero initialisation — LoRA starts as identity (no change to base)
-	zeroBMatrix := Zeros([]int32{outFeatures, int32(rank)}, dt)
+	matrixB := Zeros([]int32{outFeatures, int32(rank)}, dt)
 
-	Materialize(a, zeroBMatrix)
+	Materialize(matrixA, matrixB)
 
 	return &LoRALinear{
 		Base:  base,
-		A:     a,
-		B:     zeroBMatrix,
+		A:     matrixA,
+		B:     matrixB,
 		Scale: alpha / float32(rank),
 		Rank:  rank,
 		Alpha: alpha,
@@ -353,7 +352,7 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 	inner = inner[:len(inner)-len("."+suffix)]
 
 	// Split off the layer index.
-	dotIdx := strings.Index(inner, ".")
+	dotIdx := indexIn(inner, ".")
 	if dotIdx < 0 {
 		return -1, "", ""
 	}
@@ -392,8 +391,8 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 		projPath string
 	}
 	type loraPair struct {
-		a *Array
-		b *Array
+		matrixA *Array
+		matrixB *Array
 	}
 	pairs := make(map[loraKey]*loraPair)
 
@@ -411,9 +410,9 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 		}
 		switch suffix {
 		case "lora_a":
-			pair.a = arr
+			pair.matrixA = arr
 		case "lora_b":
-			pair.b = arr
+			pair.matrixB = arr
 		}
 	}
 
@@ -421,7 +420,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	injected := 0
 
 	for key, pair := range pairs {
-		if pair.a == nil || pair.b == nil {
+		if pair.matrixA == nil || pair.matrixB == nil {
 			slog.Warn("adapter: incomplete LoRA pair, skipping",
 				"layer", key.layerIdx, "proj", key.projPath)
 			continue
@@ -436,8 +435,8 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 
 		lora := &LoRALinear{
 			Base:  linear,
-			A:     pair.a,
-			B:     pair.b,
+			A:     pair.matrixA,
+			B:     pair.matrixB,
 			Scale: scale,
 			Rank:  config.Rank,
 			Alpha: config.Alpha,

@@ -187,9 +187,9 @@ func ValueAndGrad(fn func([]*Array) []*Array, argnums ...int) *GradFn {
 		cArgs[i] = C.int(a)
 	}
 
-	g := &GradFn{}
-	C.mlx_value_and_grad(&g.cls, closure, &cArgs[0], C.size_t(len(cArgs)))
-	return g
+	gradFn := &GradFn{}
+	C.mlx_value_and_grad(&gradFn.cls, closure, &cArgs[0], C.size_t(len(cArgs)))
+	return gradFn
 }
 
 // Apply calls the gradient function with the given inputs.

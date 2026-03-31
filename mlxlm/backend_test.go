@@ -354,3 +354,42 @@ func TestBackend_InspectAttention_Error_Bad(t *testing.T) {
 		t.Fatal("expected error for ERROR prompt")
 	}
 }
+
+// TestBackend_Generate_EmptyPrompt_Ugly validates behaviour with an empty prompt string.
+// The model should still produce tokens (or at least not panic).
+func TestBackend_Generate_EmptyPrompt_Ugly(t *testing.T) {
+	m := loadMock(t, "/fake/model/path")
+
+	ctx := context.Background()
+	var count int
+	for range m.Generate(ctx, "", inference.WithMaxTokens(5)) {
+		count++
+	}
+	// No panic is the key invariant; token count may vary with empty prompt.
+	if err := m.Err(); err != nil {
+		t.Logf("Err() = %v (empty prompt may not be supported — acceptable)", err)
+	}
+}
+
+// TestBackend_Chat_EmptyMessages_Ugly validates behaviour with no messages in a Chat call.
+// Should not panic; may return error or zero tokens.
+func TestBackend_Chat_EmptyMessages_Ugly(t *testing.T) {
+	m := loadMock(t, "/fake/model/path")
+
+	ctx := context.Background()
+	var count int
+	for range m.Chat(ctx, []inference.Message{}, inference.WithMaxTokens(5)) {
+		count++
+	}
+	// No panic is the key invariant; error or zero tokens are both acceptable.
+	t.Logf("empty chat produced %d tokens, Err()=%v", count, m.Err())
+}
+
+// TestBackend_LoadModel_NonexistentScript_Ugly validates behaviour when the bridge
+// script path does not exist. Should return an error on load or first use.
+func TestBackend_LoadModel_NonexistentScript_Ugly(t *testing.T) {
+	_, err := loadModel(context.Background(), "/fake/model/path", "/nonexistent/bridge.py")
+	if err == nil {
+		t.Fatal("expected error when bridge script does not exist")
+	}
+}

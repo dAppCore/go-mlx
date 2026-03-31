@@ -4,10 +4,11 @@ package metal
 
 import (
 	"math"
-	"os"
 	"testing"
 
 	"dappco.re/go/core"
+
+	coreio "forge.lthn.ai/core/go-io"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.
@@ -18,7 +19,7 @@ func gemma3Path(t *testing.T) string {
 		"/Volumes/Data/lem/safetensors/gemma-3/",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
+		if coreio.Local.Exists(p) {
 			return p
 		}
 	}
@@ -129,11 +130,11 @@ func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 		t.Fatalf("adapter.Save: %v", err)
 	}
 
-	info, err := os.Stat(savePath)
+	adapterInfo, err := coreio.Local.Stat(savePath)
 	if err != nil {
 		t.Fatalf("saved adapter not found: %v", err)
 	}
-	t.Logf("adapter saved: %s (%d bytes)", savePath, info.Size())
+	t.Logf("adapter saved: %s (%d bytes)", savePath, adapterInfo.Size())
 
 	// Step 6: Reload and verify weights match.
 	loaded, err := LoadAllSafetensors(savePath)

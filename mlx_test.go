@@ -4,13 +4,13 @@ package mlx_test
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"dappco.re/go/core"
 
 	"forge.lthn.ai/core/go-inference"
+	coreio "forge.lthn.ai/core/go-io"
 	mlx "forge.lthn.ai/core/go-mlx"
 )
 
@@ -148,7 +148,7 @@ func gemma3ModelPath(t *testing.T) string {
 		"/Volumes/Data/lem/safetensors/gemma-3/",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
+		if coreio.Local.Exists(p) {
 			return p
 		}
 	}
@@ -304,7 +304,7 @@ func qwen2ModelPath(t *testing.T) string {
 		"/Volumes/Data/lem/LEK-DeepSeek-R1-7B",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
+		if coreio.Local.Exists(p) {
 			return p
 		}
 	}
@@ -392,7 +392,7 @@ func llamaModelPath(t *testing.T) string {
 		"/Volumes/Data/lem/Llama-3.1-8B-Instruct-4bit",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
+		if coreio.Local.Exists(p) {
 			return p
 		}
 	}
@@ -449,7 +449,7 @@ func TestLlama_Inference_Good(t *testing.T) {
 func TestDiscover_Good(t *testing.T) {
 	// Scan the safetensors directory for available models.
 	baseDir := "/Volumes/Data/lem"
-	if _, err := os.Stat(baseDir); err != nil {
+	if !coreio.Local.Exists(baseDir) {
 		t.Skipf("model directory not available: %s", baseDir)
 	}
 

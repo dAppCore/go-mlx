@@ -32,7 +32,6 @@ import (
 	"io"
 	"iter"
 	"math"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -63,9 +62,9 @@ func extractScript() (string, error) {
 			bridgeScriptError = coreerr.E("mlxlm.extractScript", "read embedded bridge.py", err)
 			return
 		}
-		dir, err := os.MkdirTemp("", "mlxlm-*")
-		if err != nil {
-			bridgeScriptError = coreerr.E("mlxlm.extractScript", "create temp dir", err)
+		dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
+		if dir == "" {
+			bridgeScriptError = coreerr.E("mlxlm.extractScript", "create temp dir", nil)
 			return
 		}
 		p := core.JoinPath(dir, "bridge.py")
