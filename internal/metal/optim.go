@@ -27,10 +27,10 @@ type AdamW struct {
 
 // NewAdamW creates an AdamW optimiser with default hyperparameters.
 //
-//	opt := metal.NewAdamW(1e-4) // lr=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01
-func NewAdamW(lr float64) *AdamW {
+//	optimizer := metal.NewAdamW(1e-4) // lr=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01
+func NewAdamW(learningRate float64) *AdamW {
 	return &AdamW{
-		LR:          lr,
+		LR:          learningRate,
 		Beta1:       0.9,
 		Beta2:       0.999,
 		Eps:         1e-8,
@@ -38,46 +38,46 @@ func NewAdamW(lr float64) *AdamW {
 	}
 }
 
-// Step performs one optimisation step: updates params using gradients.
-// params and grads must be parallel slices of the same length.
-// Returns the updated parameter arrays (params are replaced in-place).
+// Step performs one optimisation step: updates parameters using gradients.
+// Parameters and gradients must be parallel slices of the same length.
+// Returns the updated parameter arrays (parameters are replaced in-place).
 //
-//	params = opt.Step(params, grads) // one Adam step per mini-batch
-func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
-	o.step++
+//	parameters = optimizer.Step(parameters, gradients) // one Adam step per mini-batch
+func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
+	optimizer.step++
 
 	// Bias correction factors: compensate for zero-initialised moments.
-	biasCorrection1 := 1.0 - math.Pow(o.Beta1, float64(o.step))
-	biasCorrection2 := 1.0 - math.Pow(o.Beta2, float64(o.step))
+	biasCorrection1 := 1.0 - math.Pow(optimizer.Beta1, float64(optimizer.step))
+	biasCorrection2 := 1.0 - math.Pow(optimizer.Beta2, float64(optimizer.step))
 
-	updated := make([]*Array, len(params))
+	updated := make([]*Array, len(parameters))
 
 	// Grow moment slices if needed (first call or param count increased)
-	for len(o.m) < len(params) {
-		o.m = append(o.m, nil)
-		o.v = append(o.v, nil)
+	for len(optimizer.m) < len(parameters) {
+		optimizer.m = append(optimizer.m, nil)
+		optimizer.v = append(optimizer.v, nil)
 	}
 
-	for i, param := range params {
-		grad := grads[i]
+	for i, parameter := range parameters {
+		gradient := gradients[i]
 
 		// Initialise moments on first use
-		if o.m[i] == nil {
-			shape := param.Shape()
-			o.m[i] = Zeros(shape, param.Dtype())
-			o.v[i] = Zeros(shape, param.Dtype())
+		if optimizer.m[i] == nil {
+			shape := parameter.Shape()
+			optimizer.m[i] = Zeros(shape, parameter.Dtype())
+			optimizer.v[i] = Zeros(shape, parameter.Dtype())
 		}
 
 		// m = beta1 * m + (1 - beta1) * grad
 		m := Add(
-			MulScalar(o.m[i], float32(o.Beta1)),
-			MulScalar(grad, float32(1.0-o.Beta1)),
+			MulScalar(optimizer.m[i], float32(optimizer.Beta1)),
+			MulScalar(gradient, float32(1.0-optimizer.Beta1)),
 		)
 
 		// v = beta2 * v + (1 - beta2) * grad^2
 		v := Add(
-			MulScalar(o.v[i], float32(o.Beta2)),
-			MulScalar(Square(grad), float32(1.0-o.Beta2)),
+			MulScalar(optimizer.v[i], float32(optimizer.Beta2)),
+			MulScalar(Square(gradient), float32(1.0-optimizer.Beta2)),
 		)
 
 		// Bias-corrected estimates
@@ -85,16 +85,16 @@ func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 		vHat := MulScalar(v, float32(1.0/biasCorrection2))
 
 		// Weight decay: param = param * (1 - lr * weight_decay)
-		decayed := MulScalar(param, float32(1.0-o.LR*o.WeightDecay))
+		decayed := MulScalar(parameter, float32(1.0-optimizer.LR*optimizer.WeightDecay))
 
 		// Update: param = decayed - lr * m_hat / (sqrt(v_hat) + eps)
-		denom := AddScalar(Sqrt(vHat), float32(o.Eps))
-		step := MulScalar(Divide(mHat, denom), float32(o.LR))
+		denom := AddScalar(Sqrt(vHat), float32(optimizer.Eps))
+		step := MulScalar(Divide(mHat, denom), float32(optimizer.LR))
 		newParam := Subtract(decayed, step)
 
 		// Store updated moments
-		o.m[i] = m
-		o.v[i] = v
+		optimizer.m[i] = m
+		optimizer.v[i] = v
 
 		updated[i] = newParam
 	}
@@ -104,9 +104,9 @@ func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 
 // Reset clears the optimiser state (moments and step counter).
 //
-//	opt.Reset() // start a new training run from scratch
-func (o *AdamW) Reset() {
-	o.step = 0
-	o.m = nil
-	o.v = nil
+//	optimizer.Reset() // start a new training run from scratch
+func (optimizer *AdamW) Reset() {
+	optimizer.step = 0
+	optimizer.m = nil
+	optimizer.v = nil
 }

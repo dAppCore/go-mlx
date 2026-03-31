@@ -12,48 +12,48 @@
 //
 // # Generate text
 //
-//	m, err := inference.LoadModel("/path/to/model/")
+//	model, err := inference.LoadModel("/path/to/model/")
 //	if err != nil { log.Fatal(err) }
-//	defer m.Close()
+//	defer model.Close()
 //
 //	ctx := context.Background()
-//	for tok := range m.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(128)) {
-//	    fmt.Print(tok.Text)
+//	for token := range model.Generate(ctx, "What is 2+2?", inference.WithMaxTokens(128)) {
+//	    fmt.Print(token.Text)
 //	}
-//	if err := m.Err(); err != nil { log.Fatal(err) }
+//	if err := model.Err(); err != nil { log.Fatal(err) }
 //
 // # Multi-turn chat
 //
 // Chat applies the model's native template (Gemma3, Qwen3, Llama3):
 //
-//	for tok := range m.Chat(ctx, []inference.Message{
+//	for token := range model.Chat(ctx, []inference.Message{
 //	    {Role: "system", Content: "You are a helpful assistant."},
 //	    {Role: "user", Content: "Translate 'hello' to French."},
 //	}, inference.WithMaxTokens(64)) {
-//	    fmt.Print(tok.Text)
+//	    fmt.Print(token.Text)
 //	}
 //
 // # Batch classification
 //
 // Classify runs a single forward pass per prompt (prefill only, no decoding):
 //
-//	results, err := m.Classify(ctx, []string{
+//	results, err := model.Classify(ctx, []string{
 //	    "Bonjour, comment allez-vous?",
 //	    "The quarterly report shows growth.",
 //	}, inference.WithTemperature(0))
-//	for i, r := range results {
-//	    fmt.Printf("prompt %d → %q\n", i, r.Token.Text)
+//	for index, result := range results {
+//	    fmt.Printf("prompt %d → %q\n", index, result.Token.Text)
 //	}
 //
 // # Batch generation
 //
-//	results, err := m.BatchGenerate(ctx, []string{
+//	results, err := model.BatchGenerate(ctx, []string{
 //	    "The capital of France is",
 //	    "Water boils at",
 //	}, inference.WithMaxTokens(32))
-//	for i, r := range results {
-//	    for _, tok := range r.Tokens {
-//	        fmt.Print(tok.Text)
+//	for index, result := range results {
+//	    for _, token := range result.Tokens {
+//	        fmt.Print(token.Text)
 //	    }
 //	    fmt.Println()
 //	}
@@ -62,24 +62,24 @@
 //
 // After any inference call, retrieve timing and memory statistics:
 //
-//	for tok := range m.Generate(ctx, prompt, inference.WithMaxTokens(128)) {
-//	    fmt.Print(tok.Text)
+//	for token := range model.Generate(ctx, prompt, inference.WithMaxTokens(128)) {
+//	    fmt.Print(token.Text)
 //	}
-//	met := m.Metrics()
+//	metrics := model.Metrics()
 //	fmt.Printf("decode: %.0f tok/s, peak GPU: %d MB\n",
-//	    met.DecodeTokensPerSec, met.PeakMemoryBytes/1024/1024)
+//	    metrics.DecodeTokensPerSec, metrics.PeakMemoryBytes/1024/1024)
 //
 // # Model info
 //
-//	info := m.Info()
+//	modelInfo := model.Info()
 //	fmt.Printf("%s %d-layer, %d-bit quantised\n",
-//	    info.Architecture, info.NumLayers, info.QuantBits)
+//	    modelInfo.Architecture, modelInfo.NumLayers, modelInfo.QuantBits)
 //
 // # Model discovery
 //
-//	models, err := inference.Discover("/path/to/models/")
-//	for _, d := range models {
-//	    fmt.Printf("%s (%s, %d-bit)\n", d.Path, d.ModelType, d.QuantBits)
+//	discoveredModels, err := inference.Discover("/path/to/models/")
+//	for _, discoveredModel := range discoveredModels {
+//	    fmt.Printf("%s (%s, %d-bit)\n", discoveredModel.Path, discoveredModel.ModelType, discoveredModel.QuantBits)
 //	}
 //
 // # Metal memory controls

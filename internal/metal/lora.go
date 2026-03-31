@@ -25,7 +25,7 @@ import (
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.
 //
-// Forward: base(x) + scale * (x @ A^T) @ B^T
+// Forward: base(input) + scale * (input @ A^T) @ B^T
 //
 // A is [rank, in_features]  — initialised with Kaiming normal
 // B is [out_features, rank] — initialised to zero
@@ -86,49 +86,49 @@ func NewLoRALinear(base *Linear, rank int, alpha float32, dtype ...DType) *LoRAL
 	}
 }
 
-// Forward computes: base(x) + scale * (x @ A^T) @ B^T
+// Forward computes: base(input) + scale * (input @ A^T) @ B^T
 // Calls baseForward on the underlying Linear to avoid infinite recursion
 // when the Linear's Forward method dispatches through LoRA.
-func (l *LoRALinear) Forward(x *Array) *Array {
-	baseOut := l.Base.baseForward(x)
+func (layer *LoRALinear) Forward(input *Array) *Array {
+	baseOutput := layer.Base.baseForward(input)
 
-	// LoRA path: x @ A^T gives [B, L, rank], then @ B^T gives [B, L, out]
-	ta := Transpose(l.A)
-	loraOut := Matmul(x, ta)
-	Free(ta)
+	// LoRA path: input @ A^T gives [B, L, rank], then @ B^T gives [B, L, out]
+	transposedA := Transpose(layer.A)
+	loraProjection := Matmul(input, transposedA)
+	Free(transposedA)
 
-	tb := Transpose(l.B)
-	loraOut2 := Matmul(loraOut, tb)
-	Free(loraOut, tb)
+	transposedB := Transpose(layer.B)
+	loraOutput := Matmul(loraProjection, transposedB)
+	Free(loraProjection, transposedB)
 
-	loraOut3 := MulScalar(loraOut2, l.Scale)
-	Free(loraOut2)
+	scaledLoRA := MulScalar(loraOutput, layer.Scale)
+	Free(loraOutput)
 
-	res := Add(baseOut, loraOut3)
-	Free(baseOut, loraOut3)
-	return res
+	result := Add(baseOutput, scaledLoRA)
+	Free(baseOutput, scaledLoRA)
+	return result
 }
 
 // TrainableParams returns the LoRA A and B arrays for gradient computation.
 //
-//	grad := metal.ValueAndGrad(lossFn, 0, 1)
-//	_, grads, _ := grad.Apply(lora.TrainableParams()...)
-func (l *LoRALinear) TrainableParams() []*Array {
-	return []*Array{l.A, l.B}
+//	grad := metal.ValueAndGrad(lossFunction, 0, 1)
+//	_, grads, _ := grad.Apply(loraLayer.TrainableParams()...)
+func (layer *LoRALinear) TrainableParams() []*Array {
+	return []*Array{layer.A, layer.B}
 }
 
 // SetParams updates the LoRA A and B arrays (used by optimiser after gradient step).
-func (l *LoRALinear) SetParams(a, b *Array) {
-	l.A = a
-	l.B = b
+func (layer *LoRALinear) SetParams(aWeights, bWeights *Array) {
+	layer.A = aWeights
+	layer.B = bWeights
 }
 
 // ParamCount returns the number of trainable parameters.
 //
-//	fmt.Printf("layer params: %d\n", lora.ParamCount()) // e.g. 1536 for rank=8 on [64,128]
-func (l *LoRALinear) ParamCount() int {
-	aShape := l.A.Shape()
-	bShape := l.B.Shape()
+//	fmt.Printf("layer params: %d\n", loraLayer.ParamCount()) // e.g. 1536 for rank=8 on [64,128]
+func (layer *LoRALinear) ParamCount() int {
+	aShape := layer.A.Shape()
+	bShape := layer.B.Shape()
 	return int(aShape[0]*aShape[1] + bShape[0]*bShape[1])
 }
 
@@ -159,10 +159,10 @@ type LoRAAdapter struct {
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
 //
 //	fmt.Printf("trainable params: %d\n", adapter.TotalParams()) // e.g. 6291456 for rank-8
-func (a *LoRAAdapter) TotalParams() int {
+func (adapter *LoRAAdapter) TotalParams() int {
 	total := 0
-	for _, l := range a.Layers {
-		total += l.ParamCount()
+	for _, layer := range adapter.Layers {
+		total += layer.ParamCount()
 	}
 	return total
 }
@@ -170,20 +170,20 @@ func (a *LoRAAdapter) TotalParams() int {
 // SortedNames returns layer names in deterministic sorted order.
 //
 //	for _, name := range adapter.SortedNames() { /* process layers in stable order */ }
-func (a *LoRAAdapter) SortedNames() []string {
-	return slices.Sorted(maps.Keys(a.Layers))
+func (adapter *LoRAAdapter) SortedNames() []string {
+	return slices.Sorted(maps.Keys(adapter.Layers))
 }
 
 // AllTrainableParams returns all trainable arrays (A and B from every layer),
 // in a deterministic order sorted by layer name.
 //
 //	params := adapter.AllTrainableParams() // pass to ValueAndGrad or opt.Step
-func (a *LoRAAdapter) AllTrainableParams() []*Array {
-	names := a.SortedNames()
+func (adapter *LoRAAdapter) AllTrainableParams() []*Array {
+	names := adapter.SortedNames()
 	params := make([]*Array, 0, len(names)*2)
 	for _, name := range names {
-		l := a.Layers[name]
-		params = append(params, l.A, l.B)
+		layer := adapter.Layers[name]
+		params = append(params, layer.A, layer.B)
 	}
 	return params
 }
@@ -192,12 +192,12 @@ func (a *LoRAAdapter) AllTrainableParams() []*Array {
 // in the same deterministic order as AllTrainableParams.
 //
 //	adapter.SetAllParams(updatedParams) // write optimiser output back into the model
-func (a *LoRAAdapter) SetAllParams(params []*Array) {
-	names := a.SortedNames()
+func (adapter *LoRAAdapter) SetAllParams(params []*Array) {
+	names := adapter.SortedNames()
 	for i, name := range names {
-		l := a.Layers[name]
-		l.A = params[i*2]
-		l.B = params[i*2+1]
+		layer := adapter.Layers[name]
+		layer.A = params[i*2]
+		layer.B = params[i*2+1]
 	}
 }
 
@@ -205,18 +205,18 @@ func (a *LoRAAdapter) SetAllParams(params []*Array) {
 // Only saves the A and B matrices — not the frozen base weights.
 //
 //	if err := adapter.Save("/Volumes/Data/lem/my-lora/adapter.safetensors"); err != nil { ... }
-func (a *LoRAAdapter) Save(path string) error {
+func (adapter *LoRAAdapter) Save(path string) error {
 	weights := make(map[string]*Array)
-	for name, l := range a.Layers {
-		weights[name+".lora_a"] = l.A
-		weights[name+".lora_b"] = l.B
+	for name, layer := range adapter.Layers {
+		weights[name+".lora_a"] = layer.A
+		weights[name+".lora_b"] = layer.B
 	}
 	return SaveSafetensors(path, weights)
 }
 
 // RandomNormal generates normal (Gaussian) random values with given mean and stddev.
 //
-//	a := metal.RandomNormal(0, 1/math.Sqrt(float64(inFeatures)), []int32{rank, inFeatures}, DTypeFloat32)
+//	randomTensor := metal.RandomNormal(0, 1/math.Sqrt(float64(inFeatures)), []int32{rank, inFeatures}, DTypeFloat32)
 func RandomNormal(mean, stddev float32, shape []int32, dtype DType) *Array {
 	Init()
 	out := newArray("RANDOM_NORMAL")
@@ -251,18 +251,18 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 	if err != nil {
 		return nil, coreerr.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
-	var cfg adapterConfig
-	if r := core.JSONUnmarshal([]byte(str), &cfg); !r.OK {
+	var config adapterConfig
+	if r := core.JSONUnmarshal([]byte(str), &config); !r.OK {
 		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
-	if cfg.Rank == 0 {
-		cfg.Rank = 8
+	if config.Rank == 0 {
+		config.Rank = 8
 	}
-	if cfg.Alpha == 0 {
-		cfg.Alpha = float32(cfg.Rank) * 2 // mlx-lm default: alpha = 2 * rank
+	if config.Alpha == 0 {
+		config.Alpha = float32(config.Rank) * 2 // mlx-lm default: alpha = 2 * rank
 	}
-	return &cfg, nil
+	return &config, nil
 }
 
 // loadAdapterWeights loads all safetensors files from an adapter directory into a flat weight map.
@@ -287,12 +287,12 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 // resolveLinear returns the *Linear for a given projection path within a model.
 // projPath is e.g. "self_attn.q_proj" and the function resolves layer index + field.
 func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
-	switch m := model.(type) {
+	switch concreteModel := model.(type) {
 	case *Qwen3Model:
-		if layerIdx >= len(m.Layers) {
+		if layerIdx >= len(concreteModel.Layers) {
 			return nil
 		}
-		layer := m.Layers[layerIdx]
+		layer := concreteModel.Layers[layerIdx]
 		switch projPath {
 		case "self_attn.q_proj":
 			return layer.Attention.QProj
@@ -304,10 +304,10 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 			return layer.Attention.OProj
 		}
 	case *GemmaModel:
-		if layerIdx >= len(m.Layers) {
+		if layerIdx >= len(concreteModel.Layers) {
 			return nil
 		}
-		layer := m.Layers[layerIdx]
+		layer := concreteModel.Layers[layerIdx]
 		switch projPath {
 		case "self_attn.q_proj":
 			return layer.Attention.QProj
@@ -371,7 +371,7 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 // applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model
 // for inference. The adapter weights are frozen (no gradients needed).
 func applyLoadedLoRA(model InternalModel, adapterDir string) error {
-	cfg, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
+	config, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
 	if err != nil {
 		return err
 	}
@@ -417,7 +417,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 		}
 	}
 
-	scale := cfg.Alpha / float32(cfg.Rank)
+	scale := config.Alpha / float32(config.Rank)
 	injected := 0
 
 	for key, pair := range pairs {
@@ -439,8 +439,8 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 			A:     pair.a,
 			B:     pair.b,
 			Scale: scale,
-			Rank:  cfg.Rank,
-			Alpha: cfg.Alpha,
+			Rank:  config.Rank,
+			Alpha: config.Alpha,
 		}
 		linear.LoRA = lora
 		injected++
@@ -452,8 +452,8 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 
 	slog.Info("adapter loaded",
 		"path", adapterDir,
-		"rank", cfg.Rank,
-		"alpha", cfg.Alpha,
+		"rank", config.Rank,
+		"alpha", config.Alpha,
 		"scale", scale,
 		"layers_injected", injected,
 	)
