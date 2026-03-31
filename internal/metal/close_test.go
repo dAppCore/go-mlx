@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestFreeLinear(t *testing.T) {
+func TestClose_FreeLinear_Good(t *testing.T) {
 	w := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	bias := FromValues([]float32{0.1, 0.2}, 2)
 	Materialize(w, bias)
@@ -22,11 +22,11 @@ func TestFreeLinear(t *testing.T) {
 	}
 }
 
-func TestFreeLinear_Nil(t *testing.T) {
+func TestClose_FreeLinear_Nil_Good(t *testing.T) {
 	freeLinear(nil) // should not panic
 }
 
-func TestFreeEmbedding(t *testing.T) {
+func TestClose_FreeEmbedding_Good(t *testing.T) {
 	w := FromValues([]float32{1, 2, 3, 4, 5, 6}, 3, 2)
 	Materialize(w)
 
@@ -38,7 +38,7 @@ func TestFreeEmbedding(t *testing.T) {
 	}
 }
 
-func TestFreeRMSNorm(t *testing.T) {
+func TestClose_FreeRMSNorm_Good(t *testing.T) {
 	w := FromValues([]float32{1, 1, 1, 1}, 4)
 	Materialize(w)
 
@@ -50,7 +50,7 @@ func TestFreeRMSNorm(t *testing.T) {
 	}
 }
 
-func TestCloseGemma_MinimalModel(t *testing.T) {
+func TestClose_CloseGemma_MinimalModel_Good(t *testing.T) {
 	// Build a minimal GemmaModel with one layer to test cleanup.
 	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	normW := FromValues([]float32{1, 1}, 2)
@@ -110,7 +110,7 @@ func TestCloseGemma_MinimalModel(t *testing.T) {
 	}
 }
 
-func TestCloseQwen3_MinimalModel(t *testing.T) {
+func TestClose_CloseQwen3_MinimalModel_Good(t *testing.T) {
 	embedW := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	normW := FromValues([]float32{1, 1}, 2)
 	outW := FromValues([]float32{1, 0, 0, 1}, 2, 2)
@@ -168,7 +168,7 @@ func TestCloseQwen3_MinimalModel(t *testing.T) {
 	}
 }
 
-func TestModelClose_Idempotent(t *testing.T) {
+func TestClose_ModelClose_Idempotent_Good(t *testing.T) {
 	// Close on a model with nil internals should not panic.
 	m := &Model{}
 	if err := m.Close(); err != nil {
@@ -180,7 +180,7 @@ func TestModelClose_Idempotent(t *testing.T) {
 	}
 }
 
-func TestFreeCaches(t *testing.T) {
+func TestClose_FreeCaches_Good(t *testing.T) {
 	c := NewKVCache()
 	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
 	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 2, 2)

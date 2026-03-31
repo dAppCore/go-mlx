@@ -9,7 +9,7 @@ import (
 
 // --- Linear ---
 
-func TestLinear_Dense(t *testing.T) {
+func TestLinear_Dense_Good(t *testing.T) {
 	// y = x @ W.T + bias
 	// x: [1, 3], W: [2, 3], bias: [2]
 	// Result: [1, 2]
@@ -35,7 +35,7 @@ func TestLinear_Dense(t *testing.T) {
 	}
 }
 
-func TestLinear_NoBias(t *testing.T) {
+func TestLinear_NoBias_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3}, 1, 3)
 	w := FromValues([]float32{1, 1, 1, 2, 2, 2}, 2, 3)
 
@@ -53,7 +53,7 @@ func TestLinear_NoBias(t *testing.T) {
 	}
 }
 
-func TestLinear_LoRARouting(t *testing.T) {
+func TestLinear_LoRARouting_Good(t *testing.T) {
 	// When LoRA is attached, Forward should route through it
 	w := FromValues([]float32{1, 0, 0, 1}, 2, 2)
 	l := NewLinear(w, nil)
@@ -73,7 +73,7 @@ func TestLinear_LoRARouting(t *testing.T) {
 
 // --- Embedding ---
 
-func TestEmbedding_Forward(t *testing.T) {
+func TestEmbedding_Forward_Good(t *testing.T) {
 	// 4 tokens, 3-dim embeddings
 	w := FromValues([]float32{
 		0, 0, 0, // token 0
@@ -100,7 +100,7 @@ func TestEmbedding_Forward(t *testing.T) {
 	floatSliceApprox(t, got, want)
 }
 
-func TestEmbedding_AsLinear(t *testing.T) {
+func TestEmbedding_AsLinear_Good(t *testing.T) {
 	w := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	emb := &Embedding{Weight: w}
 	l := emb.AsLinear()
@@ -112,7 +112,7 @@ func TestEmbedding_AsLinear(t *testing.T) {
 
 // --- RMSNormModule ---
 
-func TestRMSNormModule_Forward(t *testing.T) {
+func TestRMSNormModule_Forward_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	weight := FromValues([]float32{1, 1, 1, 1}, 4)
 
@@ -138,7 +138,7 @@ func TestRMSNormModule_Forward(t *testing.T) {
 
 // --- RepeatKV ---
 
-func TestRepeatKV_Factor1(t *testing.T) {
+func TestRepeatKV_Factor1_Good(t *testing.T) {
 	// factor=1 should return input unchanged
 	x := FromValues(make([]float32, 24), 1, 2, 3, 4)
 	y := RepeatKV(x, 1)
@@ -148,7 +148,7 @@ func TestRepeatKV_Factor1(t *testing.T) {
 	}
 }
 
-func TestRepeatKV_Factor2(t *testing.T) {
+func TestRepeatKV_Factor2_Good(t *testing.T) {
 	// [B=1, H=2, L=1, D=2] with factor=2 -> [1, 4, 1, 2]
 	data := []float32{1, 2, 3, 4}
 	x := FromValues(data, 1, 2, 1, 2)

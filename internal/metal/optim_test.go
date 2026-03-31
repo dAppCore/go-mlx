@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestAdamW_BasicStep(t *testing.T) {
+func TestOptim_AdamW_BasicStep_Good(t *testing.T) {
 	// Simple test: minimise f(x) = x^2, starting at x=10
 	x := FromValue(float32(10.0))
 	Materialize(x)
@@ -40,7 +40,7 @@ func TestAdamW_BasicStep(t *testing.T) {
 	t.Logf("final x = %f (started at 10.0)", final)
 }
 
-func TestAdamW_MultiParam(t *testing.T) {
+func TestOptim_AdamW_MultiParam_Good(t *testing.T) {
 	// Minimise f(x, y) = x^2 + y^2
 	x := FromValue(float32(5.0))
 	y := FromValue(float32(-3.0))
@@ -74,7 +74,7 @@ func TestAdamW_MultiParam(t *testing.T) {
 	t.Logf("final x=%f, y=%f", xFinal, yFinal)
 }
 
-func TestAdamW_WeightDecay(t *testing.T) {
+func TestOptim_AdamW_WeightDecay_Good(t *testing.T) {
 	// With large weight decay and zero gradient, param should decay toward 0
 	x := FromValue(float32(10.0))
 	Materialize(x)
@@ -101,7 +101,7 @@ func TestAdamW_WeightDecay(t *testing.T) {
 	t.Logf("after 10 steps with weight_decay=0.5: x = %f (started at 10.0)", final)
 }
 
-func TestAdamW_Reset(t *testing.T) {
+func TestOptim_AdamW_Reset_Good(t *testing.T) {
 	opt := NewAdamW(0.01)
 
 	x := FromValue(float32(5.0))
@@ -122,7 +122,7 @@ func TestAdamW_Reset(t *testing.T) {
 	}
 }
 
-func TestAdamW_WithLoRA(t *testing.T) {
+func TestOptim_AdamW_WithLoRA_Good(t *testing.T) {
 	// End-to-end: create LoRA layer, compute gradients, update with AdamW
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)

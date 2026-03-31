@@ -10,7 +10,7 @@ import (
 	"dappco.re/go/core"
 )
 
-func TestNewLoRALinear(t *testing.T) {
+func TestLora_NewLoRALinear_Good(t *testing.T) {
 	// Create a simple base linear layer: [4, 8] weight
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -44,7 +44,7 @@ func TestNewLoRALinear(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ForwardMatchesBase(t *testing.T) {
+func TestLora_LoRALinear_ForwardMatchesBase_Good(t *testing.T) {
 	// With B=0, LoRA forward should equal base forward
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -76,7 +76,7 @@ func TestLoRALinear_ForwardMatchesBase(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ForwardWithAdapter(t *testing.T) {
+func TestLora_LoRALinear_ForwardWithAdapter_Good(t *testing.T) {
 	// Set A and B to known values and verify output changes
 	w := Zeros([]int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -111,7 +111,7 @@ func TestLoRALinear_ForwardWithAdapter(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ParamCount(t *testing.T) {
+func TestLora_LoRALinear_ParamCount_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{64, 128}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -124,7 +124,7 @@ func TestLoRALinear_ParamCount(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_TrainableParams(t *testing.T) {
+func TestLora_LoRALinear_TrainableParams_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -145,7 +145,7 @@ func TestLoRALinear_TrainableParams(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_GradientFlows(t *testing.T) {
+func TestLora_LoRALinear_GradientFlows_Good(t *testing.T) {
 	// Verify that gradients flow through the LoRA path
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -208,7 +208,7 @@ func TestLoRALinear_GradientFlows(t *testing.T) {
 	t.Logf("gradA has non-zero: %v, gradB has non-zero: %v", hasNonZeroA, hasNonZeroB)
 }
 
-func TestRandomNormal(t *testing.T) {
+func TestLora_RandomNormal_Good(t *testing.T) {
 	arr := RandomNormal(0, 1, []int32{100}, DTypeFloat32)
 	Materialize(arr)
 
@@ -228,7 +228,7 @@ func TestRandomNormal(t *testing.T) {
 	}
 }
 
-func TestSaveSafetensors(t *testing.T) {
+func TestLora_SaveSafetensors_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{5, 6, 7, 8, 9, 10}, 3, 2)
 	Materialize(a, b)
@@ -276,7 +276,7 @@ func TestSaveSafetensors(t *testing.T) {
 	}
 }
 
-func TestLoRAAdapter_Save(t *testing.T) {
+func TestLora_LoRAAdapter_Save_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -310,7 +310,7 @@ func TestLoRAAdapter_Save(t *testing.T) {
 	}
 }
 
-func TestDefaultLoRAConfig(t *testing.T) {
+func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 	cfg := DefaultLoRAConfig()
 	if cfg.Rank != 8 {
 		t.Errorf("Rank = %d, want 8", cfg.Rank)
@@ -737,7 +737,7 @@ func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 
 // --- LoadAndInit with adapter ---
 
-func TestLoadAndInit_Bad_AdapterMissing(t *testing.T) {
+func TestLora_LoadAndInit_AdapterMissing_Bad(t *testing.T) {
 	dir := t.TempDir()
 	writeMinimalConfig(t, dir, "qwen3")
 	writeMinimalTokenizer(t, dir)

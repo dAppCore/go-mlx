@@ -42,7 +42,7 @@ func writeTestTokenizer(t *testing.T) string {
 	return path
 }
 
-func TestLoad(t *testing.T) {
+func TestTokenizer_LoadTokenizer_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, err := LoadTokenizer(path)
 	if err != nil {
@@ -53,14 +53,14 @@ func TestLoad(t *testing.T) {
 	}
 }
 
-func TestLoad_MissingFile(t *testing.T) {
+func TestTokenizer_LoadTokenizer_MissingFile_Bad(t *testing.T) {
 	_, err := LoadTokenizer("/nonexistent/tokenizer.json")
 	if err == nil {
 		t.Error("expected error for missing file")
 	}
 }
 
-func TestLoad_InvalidJSON(t *testing.T) {
+func TestTokenizer_LoadTokenizer_InvalidJSON_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	path := core.JoinPath(dir, "tokenizer.json")
 	os.WriteFile(path, []byte("not json"), 0644)
@@ -71,7 +71,7 @@ func TestLoad_InvalidJSON(t *testing.T) {
 	}
 }
 
-func TestBOSEOS(t *testing.T) {
+func TestTokenizer_BOSEOS_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -83,7 +83,7 @@ func TestBOSEOS(t *testing.T) {
 	}
 }
 
-func TestEncode_ProducesTokens(t *testing.T) {
+func TestTokenizer_Encode_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -111,7 +111,7 @@ func TestEncode_ProducesTokens(t *testing.T) {
 	}
 }
 
-func TestBPEMerge(t *testing.T) {
+func TestTokenizer_BPEMerge_Good(t *testing.T) {
 	tok := &Tokenizer{
 		mergeRanks: map[string]int{
 			"h e":  0,
@@ -136,7 +136,7 @@ func TestBPEMerge(t *testing.T) {
 	}
 }
 
-func TestBPEMerge_NoMerges(t *testing.T) {
+func TestTokenizer_BPEMerge_NoMerges_Good(t *testing.T) {
 	tok := &Tokenizer{mergeRanks: map[string]int{}}
 	symbols := []string{"a", "b", "c"}
 	got := tok.bpeMerge(symbols)
@@ -145,7 +145,7 @@ func TestBPEMerge_NoMerges(t *testing.T) {
 	}
 }
 
-func TestBPEMerge_SingleSymbol(t *testing.T) {
+func TestTokenizer_BPEMerge_SingleSymbol_Good(t *testing.T) {
 	tok := &Tokenizer{mergeRanks: map[string]int{"a b": 0}}
 	got := tok.bpeMerge([]string{"x"})
 	if len(got) != 1 || got[0] != "x" {
@@ -153,7 +153,7 @@ func TestBPEMerge_SingleSymbol(t *testing.T) {
 	}
 }
 
-func TestDecode_SpecialTokensSkipped(t *testing.T) {
+func TestTokenizer_Decode_SpecialTokensSkipped_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -164,7 +164,7 @@ func TestDecode_SpecialTokensSkipped(t *testing.T) {
 	}
 }
 
-func TestDecode_RegularTokens(t *testing.T) {
+func TestTokenizer_Decode_RegularTokens_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -175,7 +175,7 @@ func TestDecode_RegularTokens(t *testing.T) {
 	}
 }
 
-func TestDecodeToken_Regular(t *testing.T) {
+func TestTokenizer_DecodeToken_Regular_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -186,7 +186,7 @@ func TestDecodeToken_Regular(t *testing.T) {
 	}
 }
 
-func TestDecodeToken_Special(t *testing.T) {
+func TestTokenizer_DecodeToken_Special_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -197,7 +197,7 @@ func TestDecodeToken_Special(t *testing.T) {
 	}
 }
 
-func TestDecodeToken_SentencePieceSpace(t *testing.T) {
+func TestTokenizer_DecodeToken_SentencePieceSpace_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -208,7 +208,7 @@ func TestDecodeToken_SentencePieceSpace(t *testing.T) {
 	}
 }
 
-func TestDecodeToken_Unknown(t *testing.T) {
+func TestTokenizer_DecodeToken_Unknown_Bad(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
 
@@ -218,7 +218,7 @@ func TestDecodeToken_Unknown(t *testing.T) {
 	}
 }
 
-func TestFormatGemmaPrompt(t *testing.T) {
+func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 	got := FormatGemmaPrompt("What is 2+2?")
 	want := "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
 	if got != want {
@@ -228,7 +228,7 @@ func TestFormatGemmaPrompt(t *testing.T) {
 
 // --- GPT-2 byte maps ---
 
-func TestBuildGPT2ByteMaps(t *testing.T) {
+func TestTokenizer_BuildGPT2ByteMaps_Good(t *testing.T) {
 	decoder, encoder := buildGPT2ByteMaps()
 
 	// All 256 bytes must be mapped
@@ -249,7 +249,7 @@ func TestBuildGPT2ByteMaps(t *testing.T) {
 	}
 }
 
-func TestBuildGPT2ByteMaps_PrintableASCII(t *testing.T) {
+func TestTokenizer_BuildGPT2ByteMaps_PrintableASCII_Good(t *testing.T) {
 	_, encoder := buildGPT2ByteMaps()
 
 	// Printable ASCII (33-126) should self-map
@@ -260,7 +260,7 @@ func TestBuildGPT2ByteMaps_PrintableASCII(t *testing.T) {
 	}
 }
 
-func TestBuildGPT2ByteMaps_ControlChars(t *testing.T) {
+func TestTokenizer_BuildGPT2ByteMaps_ControlChars_Good(t *testing.T) {
 	_, encoder := buildGPT2ByteMaps()
 
 	// Space (32) and control chars (0-31) should NOT self-map

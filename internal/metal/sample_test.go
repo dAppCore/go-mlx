@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestGreedy(t *testing.T) {
+func TestSample_Greedy_Good(t *testing.T) {
 	// Logits heavily favour index 2
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0, 0, 0, 0) // temp=0 → greedy
@@ -18,7 +18,7 @@ func TestGreedy(t *testing.T) {
 	}
 }
 
-func TestTemperature_HighTemp(t *testing.T) {
+func TestSample_Temperature_HighTemp_Good(t *testing.T) {
 	// High temperature should still produce a valid index
 	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	s := newSampler(100.0, 0, 0, 0) // very high temp → near uniform
@@ -31,7 +31,7 @@ func TestTemperature_HighTemp(t *testing.T) {
 	}
 }
 
-func TestTemperature_LowTemp(t *testing.T) {
+func TestSample_Temperature_LowTemp_Good(t *testing.T) {
 	// Very low temperature should behave like greedy
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0.001, 0, 0, 0) // near-zero temp → near-greedy
@@ -43,7 +43,7 @@ func TestTemperature_LowTemp(t *testing.T) {
 	}
 }
 
-func TestSampler_TopK(t *testing.T) {
+func TestSample_TopKSampler_Good(t *testing.T) {
 	// TopK=1 with clear winner should always pick that token
 	logits := FromValues([]float32{-100, 100, -100, -100}, 1, 4)
 	s := newSampler(1.0, 0, 0, 1) // topK=1
@@ -55,7 +55,7 @@ func TestSampler_TopK(t *testing.T) {
 	}
 }
 
-func TestSampler_TopK_MultipleTokens(t *testing.T) {
+func TestSample_TopKSampler_MultipleTokens_Good(t *testing.T) {
 	// TopK=2, both high logits — should pick one of them
 	logits := FromValues([]float32{-100, 50, 50, -100}, 1, 4)
 	s := newSampler(1.0, 0, 0, 2) // topK=2
@@ -75,7 +75,7 @@ func TestSampler_TopK_MultipleTokens(t *testing.T) {
 	}
 }
 
-func TestNew_Chain(t *testing.T) {
+func TestSample_Chain_Good(t *testing.T) {
 	// Full chain: topK + temperature
 	logits := FromValues([]float32{1, 2, 3, 4, 5}, 1, 5)
 	s := newSampler(0.5, 0, 0, 3) // temp=0.5, topK=3
@@ -89,7 +89,7 @@ func TestNew_Chain(t *testing.T) {
 	}
 }
 
-func TestTopP_DominantLogit(t *testing.T) {
+func TestSample_TopP_DominantLogit_Good(t *testing.T) {
 	// With one dominant logit, TopP should always pick it
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0.5, 0.9, 0, 0) // topP=0.9, temp=0.5
@@ -101,7 +101,7 @@ func TestTopP_DominantLogit(t *testing.T) {
 	}
 }
 
-func TestTopP_RestrictsOptions(t *testing.T) {
+func TestSample_TopP_RestrictsOptions_Good(t *testing.T) {
 	// Two equal high logits, two low. TopP=0.5 should mostly restrict to top tokens.
 	logits := FromValues([]float32{10, 10, -100, -100}, 1, 4)
 	s := newSampler(1.0, 0.5, 0, 0) // topP=0.5, temp=1.0
@@ -121,7 +121,7 @@ func TestTopP_RestrictsOptions(t *testing.T) {
 	}
 }
 
-func TestMinP_DominantLogit(t *testing.T) {
+func TestSample_MinP_DominantLogit_Good(t *testing.T) {
 	// With one dominant logit, MinP should always pick it
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)
 	s := newSampler(0.5, 0, 0.1, 0) // minP=0.1, temp=0.5
@@ -133,7 +133,7 @@ func TestMinP_DominantLogit(t *testing.T) {
 	}
 }
 
-func TestMinP_RestrictsOptions(t *testing.T) {
+func TestSample_MinP_RestrictsOptions_Good(t *testing.T) {
 	// One very high logit, rest are low. MinP=0.1 should mask the low tokens.
 	logits := FromValues([]float32{-100, 50, -100, -100}, 1, 4)
 	s := newSampler(1.0, 0, 0.1, 0) // minP=0.1, temp=1.0
@@ -147,7 +147,7 @@ func TestMinP_RestrictsOptions(t *testing.T) {
 	}
 }
 
-func TestApplyRepeatPenalty(t *testing.T) {
+func TestSample_ApplyRepeatPenalty_Good(t *testing.T) {
 	// Logits: [1, 4] with values [5.0, -3.0, 1.0, 0.0]
 	// History: tokens 0 and 1 have been seen.
 	// Penalty 2.0:
@@ -171,7 +171,7 @@ func TestApplyRepeatPenalty(t *testing.T) {
 	}
 }
 
-func TestApplyRepeatPenalty_NoHistory(t *testing.T) {
+func TestSample_ApplyRepeatPenalty_NoHistory_Good(t *testing.T) {
 	// With empty history, logits should be unchanged.
 	logits := FromValues([]float32{5.0, -3.0, 1.0}, 1, 3)
 	Materialize(logits)

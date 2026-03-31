@@ -46,9 +46,9 @@ func NewAdamW(lr float64) *AdamW {
 func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 	o.step++
 
-	// Bias correction factors
-	bc1 := 1.0 - math.Pow(o.Beta1, float64(o.step))
-	bc2 := 1.0 - math.Pow(o.Beta2, float64(o.step))
+	// Bias correction factors: compensate for zero-initialised moments.
+	biasCorrection1 := 1.0 - math.Pow(o.Beta1, float64(o.step))
+	biasCorrection2 := 1.0 - math.Pow(o.Beta2, float64(o.step))
 
 	updated := make([]*Array, len(params))
 
@@ -81,8 +81,8 @@ func (o *AdamW) Step(params []*Array, grads []*Array) []*Array {
 		)
 
 		// Bias-corrected estimates
-		mHat := MulScalar(m, float32(1.0/bc1))
-		vHat := MulScalar(v, float32(1.0/bc2))
+		mHat := MulScalar(m, float32(1.0/biasCorrection1))
+		vHat := MulScalar(v, float32(1.0/biasCorrection2))
 
 		// Weight decay: param = param * (1 - lr * weight_decay)
 		decayed := MulScalar(param, float32(1.0-o.LR*o.WeightDecay))

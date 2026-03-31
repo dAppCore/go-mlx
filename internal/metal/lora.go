@@ -72,14 +72,14 @@ func NewLoRALinear(base *Linear, rank int, alpha float32, dtype ...DType) *LoRAL
 	a := RandomNormal(0, stddev, []int32{int32(rank), inFeatures}, dt)
 
 	// B: zero initialisation — LoRA starts as identity (no change to base)
-	b := Zeros([]int32{outFeatures, int32(rank)}, dt)
+	zeroBMatrix := Zeros([]int32{outFeatures, int32(rank)}, dt)
 
-	Materialize(a, b)
+	Materialize(a, zeroBMatrix)
 
 	return &LoRALinear{
 		Base:  base,
 		A:     a,
-		B:     b,
+		B:     zeroBMatrix,
 		Scale: alpha / float32(rank),
 		Rank:  rank,
 		Alpha: alpha,
