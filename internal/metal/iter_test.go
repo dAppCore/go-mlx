@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestArray_Iter(t *testing.T) {
+func TestArray_Iter_Good(t *testing.T) {
 	a := FromValues([]float32{1.5, 2.5, 3.5, 4.5}, 4)
 	Materialize(a)
 
@@ -26,7 +26,7 @@ func TestArray_Iter(t *testing.T) {
 	}
 }
 
-func TestArray_Iter_2D(t *testing.T) {
+func TestArray_Iter_2D_Good(t *testing.T) {
 	// Iter flattens — [2,3] yields 6 elements.
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	Materialize(a)
@@ -46,7 +46,7 @@ func TestArray_Iter_2D(t *testing.T) {
 	}
 }
 
-func TestArray_Iter_Transposed(t *testing.T) {
+func TestArray_Iter_Transposed_Good(t *testing.T) {
 	// Iter on a non-contiguous (transposed) array should still work.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2) // [[1,2],[3,4]]
 	tr := Transpose(a)                             // [[1,3],[2,4]]
@@ -68,7 +68,7 @@ func TestArray_Iter_Transposed(t *testing.T) {
 	}
 }
 
-func TestArray_Iter_EarlyBreak(t *testing.T) {
+func TestArray_Iter_EarlyBreak_Good(t *testing.T) {
 	a := FromValues([]float32{10, 20, 30, 40, 50}, 5)
 	Materialize(a)
 

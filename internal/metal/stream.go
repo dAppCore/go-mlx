@@ -25,7 +25,9 @@ var (
 	defaultCPUStreamOnce sync.Once
 )
 
-// DefaultStream returns the default GPU stream, creating it on first use.
+// DefaultStream returns the default GPU stream (created on first use).
+//
+//	C.mlx_zeros(&out.ctx, ..., metal.DefaultStream().ctx)
 func DefaultStream() *Stream {
 	defaultStreamOnce.Do(func() {
 		Init()
@@ -35,6 +37,8 @@ func DefaultStream() *Stream {
 }
 
 // DefaultGPUStream returns the cached default GPU stream.
+//
+//	s := metal.DefaultGPUStream()
 func DefaultGPUStream() *Stream {
 	defaultGPUStreamOnce.Do(func() {
 		Init()
@@ -44,6 +48,8 @@ func DefaultGPUStream() *Stream {
 }
 
 // DefaultCPUStream returns the cached default CPU stream.
+//
+//	s := metal.DefaultCPUStream() // used for CPU-side tensor loads
 func DefaultCPUStream() *Stream {
 	defaultCPUStreamOnce.Do(func() {
 		Init()
@@ -52,12 +58,16 @@ func DefaultCPUStream() *Stream {
 	return defaultCPUStream
 }
 
-// Synchronize waits for all operations on the stream to complete.
+// Synchronize waits for all pending operations on the stream to complete.
+//
+//	metal.Synchronize(metal.DefaultStream())
 func Synchronize(s *Stream) {
 	C.mlx_synchronize(s.ctx)
 }
 
 // SetMemoryLimit sets the Metal memory limit. Returns the previous limit.
+//
+//	prev := metal.SetMemoryLimit(32 << 30) // 32 GB hard limit
 func SetMemoryLimit(limit uint64) uint64 {
 	var prev C.size_t
 	C.mlx_set_memory_limit(&prev, C.size_t(limit))
@@ -65,6 +75,8 @@ func SetMemoryLimit(limit uint64) uint64 {
 }
 
 // SetCacheLimit sets the Metal cache limit. Returns the previous limit.
+//
+//	prev := metal.SetCacheLimit(4 << 30) // 4 GB cache limit
 func SetCacheLimit(limit uint64) uint64 {
 	var prev C.size_t
 	C.mlx_set_cache_limit(&prev, C.size_t(limit))
@@ -72,6 +84,8 @@ func SetCacheLimit(limit uint64) uint64 {
 }
 
 // GetActiveMemory returns the current Metal memory usage in bytes.
+//
+//	fmt.Printf("active: %d MB\n", metal.GetActiveMemory()/1024/1024)
 func GetActiveMemory() uint64 {
 	var mem C.size_t
 	C.mlx_get_active_memory(&mem)
@@ -79,6 +93,8 @@ func GetActiveMemory() uint64 {
 }
 
 // GetPeakMemory returns the peak Metal memory usage in bytes.
+//
+//	fmt.Printf("peak: %d MB\n", metal.GetPeakMemory()/1024/1024)
 func GetPeakMemory() uint64 {
 	var mem C.size_t
 	C.mlx_get_peak_memory(&mem)
@@ -86,23 +102,31 @@ func GetPeakMemory() uint64 {
 }
 
 // ClearCache releases Metal memory held in the MLX allocator cache.
+//
+//	metal.ClearCache() // between chat turns to reclaim prompt cache memory
 func ClearCache() {
 	C.mlx_clear_cache()
 }
 
 // GetCacheMemory returns the current Metal cache memory in bytes.
+//
+//	fmt.Printf("cache: %d MB\n", metal.GetCacheMemory()/1024/1024)
 func GetCacheMemory() uint64 {
 	var mem C.size_t
 	C.mlx_get_cache_memory(&mem)
 	return uint64(mem)
 }
 
-// ResetPeakMemory resets the peak memory high-water mark.
+// ResetPeakMemory resets the peak memory high-water mark to zero.
+//
+//	metal.ResetPeakMemory() // before each generate call to measure per-call peak
 func ResetPeakMemory() {
 	C.mlx_reset_peak_memory()
 }
 
 // SetWiredLimit sets the Metal wired memory limit. Returns the previous limit.
+//
+//	prev := metal.SetWiredLimit(8 << 30) // 8 GB wired memory limit
 func SetWiredLimit(limit uint64) uint64 {
 	var prev C.size_t
 	C.mlx_set_wired_limit(&prev, C.size_t(limit))

@@ -17,11 +17,15 @@ type Linear struct {
 }
 
 // NewLinear creates a dense Linear layer with optional bias.
+//
+//	projection := metal.NewLinear(weights["q_proj.weight"], nil) // attention query projection
 func NewLinear(weight, bias *Array) *Linear {
 	return &Linear{Weight: weight, Bias: bias}
 }
 
 // NewQuantizedLinear creates a quantized Linear layer.
+//
+//	projection := metal.NewQuantizedLinear(w, scales, biases, nil, 64, 4) // 4-bit, group=64
 func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int) *Linear {
 	return &Linear{
 		Weight:    weight,
@@ -36,27 +40,29 @@ func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int
 // Forward computes the linear transformation.
 // If a LoRA adapter is attached, routes through it instead (base + low-rank delta).
 // Uses QuantizedMatmul when quantization parameters are present.
-func (l *Linear) Forward(x *Array) *Array {
-	if l.LoRA != nil {
-		return l.LoRA.Forward(x)
+//
+//	y := projection.Forward(input) // input: [B, L, in_dim] → y: [B, L, out_dim]
+func (linear *Linear) Forward(input *Array) *Array {
+	if linear.LoRA != nil {
+		return linear.LoRA.Forward(input)
 	}
-	return l.baseForward(x)
+	return linear.baseForward(input)
 }
 
 // baseForward is the raw linear transformation without LoRA.
 // Used internally by LoRALinear to avoid infinite recursion.
-func (l *Linear) baseForward(x *Array) *Array {
+func (linear *Linear) baseForward(input *Array) *Array {
 	var out *Array
-	if l.Scales != nil {
-		out = QuantizedMatmul(x, l.Weight, l.Scales, l.Biases, true, l.GroupSize, l.Bits)
+	if linear.Scales != nil {
+		out = QuantizedMatmul(input, linear.Weight, linear.Scales, linear.Biases, true, linear.GroupSize, linear.Bits)
 	} else {
-		wT := Transpose(l.Weight)
-		out = Matmul(x, wT)
-		Free(wT)
+		weightTranspose := Transpose(linear.Weight)
+		out = Matmul(input, weightTranspose)
+		Free(weightTranspose)
 	}
-	if l.Bias != nil && l.Bias.Valid() {
+	if linear.Bias != nil && linear.Bias.Valid() {
 		oldOut := out
-		out = Add(out, l.Bias)
+		out = Add(out, linear.Bias)
 		Free(oldOut)
 	}
 	return out
@@ -73,24 +79,28 @@ type Embedding struct {
 }
 
 // Forward looks up embeddings for the given token indices.
-func (e *Embedding) Forward(indices *Array) *Array {
-	if e.Scales != nil {
-		w := Dequantize(e.Weight, e.Scales, e.Biases, e.GroupSize, e.Bits)
-		res := Take(w, indices, 0)
+//
+//	y := emb.Forward(tokenIDs) // tokenIDs: [B, L] int32 → y: [B, L, hidden_dim]
+func (embedding *Embedding) Forward(tokenIDs *Array) *Array {
+	if embedding.Scales != nil {
+		w := Dequantize(embedding.Weight, embedding.Scales, embedding.Biases, embedding.GroupSize, embedding.Bits)
+		res := Take(w, tokenIDs, 0)
 		Free(w)
 		return res
 	}
-	return Take(e.Weight, indices, 0)
+	return Take(embedding.Weight, tokenIDs, 0)
 }
 
 // AsLinear returns a Linear layer using the embedding weights (for tied output).
-func (e *Embedding) AsLinear() *Linear {
+//
+//	output := embedding.AsLinear() // share embed_tokens weights with lm_head (Gemma3)
+func (embedding *Embedding) AsLinear() *Linear {
 	return &Linear{
-		Weight:    e.Weight,
-		Scales:    e.Scales,
-		Biases:    e.Biases,
-		GroupSize: e.GroupSize,
-		Bits:      e.Bits,
+		Weight:    embedding.Weight,
+		Scales:    embedding.Scales,
+		Biases:    embedding.Biases,
+		GroupSize: embedding.GroupSize,
+		Bits:      embedding.Bits,
 	}
 }
 
@@ -100,22 +110,27 @@ type RMSNormModule struct {
 }
 
 // Forward applies RMS normalization.
-func (r *RMSNormModule) Forward(x *Array, eps float32) *Array {
-	return RMSNorm(x, r.Weight, eps)
+//
+//	normed := norm.Forward(input, 1e-6) // input: [B, L, hidden] → normed: same shape
+func (norm *RMSNormModule) Forward(input *Array, eps float32) *Array {
+	return RMSNorm(input, norm.Weight, eps)
 }
 
-// RepeatKV repeats key/value heads for grouped-query attention.
-// Input shape: [B, num_kv_heads, L, D]
-// Output shape: [B, num_kv_heads * factor, L, D]
-func RepeatKV(x *Array, factor int32) *Array {
+// RepeatKV repeats key/value heads for grouped-query attention (GQA).
+// Input shape: [B, num_kv_heads, L, D] → output: [B, num_kv_heads*factor, L, D].
+//
+//	// Gemma3: 16 KV heads, 16 query groups → factor=1 (no-op)
+//	// Qwen3:   8 KV heads, 32 query heads  → factor=4
+//	kExpanded := metal.RepeatKV(k, int32(numQueryHeads/numKVHeads))
+func RepeatKV(input *Array, factor int32) *Array {
 	if factor <= 1 {
-		return x
+		return input
 	}
-	shape := x.Shape()
+	shape := input.Shape()
 	B, H, L, D := shape[0], shape[1], shape[2], shape[3]
 
 	// Expand: [B, H, 1, L, D] then broadcast to [B, H, factor, L, D]
-	expanded := ExpandDims(x, 2)
+	expanded := ExpandDims(input, 2)
 	broadcasted := BroadcastTo(expanded, []int32{B, H, factor, L, D})
 	Free(expanded)
 

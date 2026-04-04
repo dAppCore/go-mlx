@@ -4,12 +4,14 @@ package metal
 
 import (
 	"math"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"dappco.re/go/core"
+
+	coreio "forge.lthn.ai/core/go-io"
 )
 
-func TestNewLoRALinear(t *testing.T) {
+func TestLora_NewLoRALinear_Good(t *testing.T) {
 	// Create a simple base linear layer: [4, 8] weight
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -43,7 +45,7 @@ func TestNewLoRALinear(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ForwardMatchesBase(t *testing.T) {
+func TestLora_LoRALinear_ForwardMatchesBase_Good(t *testing.T) {
 	// With B=0, LoRA forward should equal base forward
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -75,7 +77,7 @@ func TestLoRALinear_ForwardMatchesBase(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ForwardWithAdapter(t *testing.T) {
+func TestLora_LoRALinear_ForwardWithAdapter_Good(t *testing.T) {
 	// Set A and B to known values and verify output changes
 	w := Zeros([]int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -110,7 +112,7 @@ func TestLoRALinear_ForwardWithAdapter(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_ParamCount(t *testing.T) {
+func TestLora_LoRALinear_ParamCount_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{64, 128}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -123,7 +125,7 @@ func TestLoRALinear_ParamCount(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_TrainableParams(t *testing.T) {
+func TestLora_LoRALinear_TrainableParams_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -144,7 +146,7 @@ func TestLoRALinear_TrainableParams(t *testing.T) {
 	}
 }
 
-func TestLoRALinear_GradientFlows(t *testing.T) {
+func TestLora_LoRALinear_GradientFlows_Good(t *testing.T) {
 	// Verify that gradients flow through the LoRA path
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -207,7 +209,7 @@ func TestLoRALinear_GradientFlows(t *testing.T) {
 	t.Logf("gradA has non-zero: %v, gradB has non-zero: %v", hasNonZeroA, hasNonZeroB)
 }
 
-func TestRandomNormal(t *testing.T) {
+func TestLora_RandomNormal_Good(t *testing.T) {
 	arr := RandomNormal(0, 1, []int32{100}, DTypeFloat32)
 	Materialize(arr)
 
@@ -227,7 +229,7 @@ func TestRandomNormal(t *testing.T) {
 	}
 }
 
-func TestSaveSafetensors(t *testing.T) {
+func TestLora_SaveSafetensors_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{5, 6, 7, 8, 9, 10}, 3, 2)
 	Materialize(a, b)
@@ -242,11 +244,11 @@ func TestSaveSafetensors(t *testing.T) {
 	}
 
 	// Verify file exists
-	info, err := os.Stat(path)
+	fileInfo, err := coreio.Local.Stat(path)
 	if err != nil {
 		t.Fatalf("saved file not found: %v", err)
 	}
-	if info.Size() == 0 {
+	if fileInfo.Size() == 0 {
 		t.Error("saved file is empty")
 	}
 
@@ -275,7 +277,7 @@ func TestSaveSafetensors(t *testing.T) {
 	}
 }
 
-func TestLoRAAdapter_Save(t *testing.T) {
+func TestLora_LoRAAdapter_Save_Good(t *testing.T) {
 	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
 	base := NewLinear(w, nil)
@@ -309,7 +311,7 @@ func TestLoRAAdapter_Save(t *testing.T) {
 	}
 }
 
-func TestDefaultLoRAConfig(t *testing.T) {
+func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 	cfg := DefaultLoRAConfig()
 	if cfg.Rank != 8 {
 		t.Errorf("Rank = %d, want 8", cfg.Rank)
@@ -324,7 +326,7 @@ func TestDefaultLoRAConfig(t *testing.T) {
 
 // --- parseLoRAWeightName ---
 
-func TestParseLoRAWeightName_Good(t *testing.T) {
+func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
@@ -374,7 +376,7 @@ func TestParseLoRAWeightName_Good(t *testing.T) {
 	}
 }
 
-func TestParseLoRAWeightName_Bad(t *testing.T) {
+func TestLora_ParseLoRAWeightName_Bad(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -398,7 +400,7 @@ func TestParseLoRAWeightName_Bad(t *testing.T) {
 
 // --- parseAdapterConfig ---
 
-func TestParseAdapterConfig_Good(t *testing.T) {
+func TestLora_ParseAdapterConfig_Good(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `{
 		"rank": 16,
@@ -406,9 +408,9 @@ func TestParseAdapterConfig_Good(t *testing.T) {
 		"num_layers": 4,
 		"lora_layers": ["self_attn.q_proj", "self_attn.v_proj"]
 	}`
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), cfg)
 
-	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err != nil {
 		t.Fatalf("parseAdapterConfig: %v", err)
 	}
@@ -426,13 +428,13 @@ func TestParseAdapterConfig_Good(t *testing.T) {
 	}
 }
 
-func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
+func TestLora_ParseAdapterConfig_Good_Defaults(t *testing.T) {
 	dir := t.TempDir()
 	// Minimal config — rank and alpha should get defaults.
 	cfg := `{}`
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(cfg), 0644)
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), cfg)
 
-	parsed, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	parsed, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err != nil {
 		t.Fatalf("parseAdapterConfig: %v", err)
 	}
@@ -444,18 +446,18 @@ func TestParseAdapterConfig_Good_Defaults(t *testing.T) {
 	}
 }
 
-func TestParseAdapterConfig_Bad_MissingFile(t *testing.T) {
+func TestLora_ParseAdapterConfig_Bad_MissingFile(t *testing.T) {
 	_, err := parseAdapterConfig("/nonexistent/adapter_config.json")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
 }
 
-func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
+func TestLora_ParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte("{broken"), 0644)
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), "{broken")
 
-	_, err := parseAdapterConfig(filepath.Join(dir, "adapter_config.json"))
+	_, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -463,7 +465,7 @@ func TestParseAdapterConfig_Bad_InvalidJSON(t *testing.T) {
 
 // --- loadAdapterWeights ---
 
-func TestLoadAdapterWeights_Bad_NoFiles(t *testing.T) {
+func TestLora_LoadAdapterWeights_Bad_NoFiles(t *testing.T) {
 	dir := t.TempDir()
 	_, err := loadAdapterWeights(dir)
 	if err == nil {
@@ -471,7 +473,7 @@ func TestLoadAdapterWeights_Bad_NoFiles(t *testing.T) {
 	}
 }
 
-func TestLoadAdapterWeights_Good(t *testing.T) {
+func TestLora_LoadAdapterWeights_Good(t *testing.T) {
 	dir := t.TempDir()
 
 	// Save a small adapter file.
@@ -479,7 +481,7 @@ func TestLoadAdapterWeights_Good(t *testing.T) {
 	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
 	Materialize(a, b)
 
-	err := SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+	err := SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": a,
 		"layers.0.self_attn.q_proj.lora_b": b,
 	})
@@ -504,7 +506,7 @@ func TestLoadAdapterWeights_Good(t *testing.T) {
 
 // --- applyLoadedLoRA integration ---
 
-func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	// Create a simple base Linear layer and save LoRA weights for it,
 	// then load them back with applyLoadedLoRA.
 
@@ -534,7 +536,7 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 
 	// Save the adapter weights.
 	adapterDir := t.TempDir()
-	err := SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+	err := SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": lora.A,
 		"layers.0.self_attn.q_proj.lora_b": lora.B,
 	})
@@ -544,7 +546,7 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 
 	// Write adapter_config.json.
 	configJSON := `{"rank": 4, "alpha": 8.0, "num_layers": 1, "lora_layers": ["self_attn.q_proj"]}`
-	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"), []byte(configJSON), 0644)
+	_ = coreio.Local.Write(core.JoinPath(adapterDir, "adapter_config.json"), configJSON)
 
 	// Now create a fresh linear with the same base weights (no LoRA).
 	linear2 := NewLinear(w, nil)
@@ -614,12 +616,12 @@ func TestApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	// Write safetensors but no config.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	Materialize(a)
-	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{"x": a})
+	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{"x": a})
 
 	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
@@ -628,10 +630,10 @@ func TestApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	dir := t.TempDir()
 	// Write config but no safetensors.
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 8}`), 0644)
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank": 8}`)
 
 	qwen := &Qwen3Model{Layers: []*Qwen3DecoderLayer{}}
 	err := applyLoadedLoRA(qwen, dir)
@@ -640,15 +642,15 @@ func TestApplyLoadedLoRA_Bad_MissingSafetensors(t *testing.T) {
 	}
 }
 
-func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "adapter_config.json"), []byte(`{"rank": 4, "alpha": 8.0}`), 0644)
+	_ = coreio.Local.Write(core.JoinPath(dir, "adapter_config.json"), `{"rank": 4, "alpha": 8.0}`)
 
 	// Save weights that reference layer 99 (which won't exist).
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{5, 6, 7, 8}, 2, 2)
 	Materialize(a, b)
-	SaveSafetensors(filepath.Join(dir, "adapters.safetensors"), map[string]*Array{
+	SaveSafetensors(core.JoinPath(dir, "adapters.safetensors"), map[string]*Array{
 		"layers.99.self_attn.q_proj.lora_a": a,
 		"layers.99.self_attn.q_proj.lora_b": b,
 	})
@@ -668,9 +670,9 @@ func TestApplyLoadedLoRA_Bad_NoMatchingLayers(t *testing.T) {
 	}
 }
 
-// TestApplyLoadedLoRA_Good_ForwardProducesOutput validates that a model with a
+// TestLora_ApplyLoadedLoRA_Good_ForwardProducesOutput validates that a model with a
 // loaded LoRA adapter produces different output than the base model alone.
-func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
+func TestLora_ApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 	// Create base linear [4, 8].
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -690,12 +692,12 @@ func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 	Materialize(loraA, loraB)
 
 	adapterDir := t.TempDir()
-	SaveSafetensors(filepath.Join(adapterDir, "adapters.safetensors"), map[string]*Array{
+	SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
 		"layers.0.self_attn.q_proj.lora_a": loraA,
 		"layers.0.self_attn.q_proj.lora_b": loraB,
 	})
-	os.WriteFile(filepath.Join(adapterDir, "adapter_config.json"),
-		[]byte(`{"rank": 4, "alpha": 8.0}`), 0644)
+	_ = coreio.Local.Write(core.JoinPath(adapterDir, "adapter_config.json"),
+		`{"rank": 4, "alpha": 8.0}`)
 
 	// Build a model and apply adapter.
 	qwen := &Qwen3Model{
@@ -736,7 +738,7 @@ func TestApplyLoadedLoRA_Good_ForwardProducesOutput(t *testing.T) {
 
 // --- LoadAndInit with adapter ---
 
-func TestLoadAndInit_Bad_AdapterMissing(t *testing.T) {
+func TestLora_LoadAndInit_AdapterMissing_Bad(t *testing.T) {
 	dir := t.TempDir()
 	writeMinimalConfig(t, dir, "qwen3")
 	writeMinimalTokenizer(t, dir)

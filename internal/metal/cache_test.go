@@ -20,7 +20,7 @@ func makeKV(seqLen int) (*Array, *Array) {
 
 // --- KVCache ---
 
-func TestKVCache_New(t *testing.T) {
+func TestKVCache_New_Good(t *testing.T) {
 	c := NewKVCache()
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -33,7 +33,7 @@ func TestKVCache_New(t *testing.T) {
 	}
 }
 
-func TestKVCache_SingleUpdate(t *testing.T) {
+func TestKVCache_SingleUpdate_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(3) // 3 tokens
 
@@ -54,7 +54,7 @@ func TestKVCache_SingleUpdate(t *testing.T) {
 	}
 }
 
-func TestKVCache_MultipleUpdates(t *testing.T) {
+func TestKVCache_MultipleUpdates_Good(t *testing.T) {
 	c := NewKVCache()
 
 	// Prompt: 5 tokens
@@ -81,7 +81,7 @@ func TestKVCache_MultipleUpdates(t *testing.T) {
 	}
 }
 
-func TestKVCache_Reset(t *testing.T) {
+func TestKVCache_Reset_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(3)
 	c.Update(k, v, 3)
@@ -96,7 +96,7 @@ func TestKVCache_Reset(t *testing.T) {
 	}
 }
 
-func TestKVCache_State(t *testing.T) {
+func TestKVCache_State_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)
 	c.Update(k, v, 2)
@@ -113,7 +113,7 @@ func TestKVCache_State(t *testing.T) {
 
 // --- RotatingKVCache ---
 
-func TestRotatingKVCache_New(t *testing.T) {
+func TestRotatingKVCache_New_Good(t *testing.T) {
 	c := NewRotatingKVCache(16)
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -123,7 +123,7 @@ func TestRotatingKVCache_New(t *testing.T) {
 	}
 }
 
-func TestRotatingKVCache_SingleToken(t *testing.T) {
+func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
 	c := NewRotatingKVCache(8)
 	k, v := makeKV(1)
 
@@ -138,7 +138,7 @@ func TestRotatingKVCache_SingleToken(t *testing.T) {
 	}
 }
 
-func TestRotatingKVCache_MultiTokenPrompt(t *testing.T) {
+func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
 	c := NewRotatingKVCache(16)
 	k, v := makeKV(5)
 
@@ -153,7 +153,7 @@ func TestRotatingKVCache_MultiTokenPrompt(t *testing.T) {
 	}
 }
 
-func TestRotatingKVCache_Bounded(t *testing.T) {
+func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 	c := NewRotatingKVCache(4)
 
 	// Fill with 4-token prompt (at max)
@@ -179,7 +179,7 @@ func TestRotatingKVCache_Bounded(t *testing.T) {
 	}
 }
 
-func TestRotatingKVCache_Reset(t *testing.T) {
+func TestRotatingKVCache_Reset_Good(t *testing.T) {
 	c := NewRotatingKVCache(8)
 	k, v := makeKV(3)
 	c.Update(k, v, 3)

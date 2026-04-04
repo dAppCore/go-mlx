@@ -3,6 +3,12 @@
 package metal
 
 // Cache manages key-value pairs for transformer attention layers.
+//
+//	cache := metal.NewKVCache()              // unbounded — grows with context
+//	cache := metal.NewRotatingKVCache(4096)  // bounded — slides at maxSize tokens
+//
+//	k, v = cache.Update(k, v, seqLen)       // append new tokens; returns full K/V slice
+//	cache.Detach()                           // break graph after Eval to free Metal memory
 type Cache interface {
 	// Update adds new key/value tensors and returns the full cached K/V.
 	Update(k, v *Array, seqLen int) (*Array, *Array)

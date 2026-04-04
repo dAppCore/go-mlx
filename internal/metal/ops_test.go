@@ -25,7 +25,7 @@ func floatSliceApprox(t *testing.T, got []float32, want []float32) {
 
 // --- Element-wise arithmetic ---
 
-func TestAdd(t *testing.T) {
+func TestOps_Add_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 3)
 	b := FromValues([]float32{4, 5, 6}, 3)
 	c := Add(a, b)
@@ -33,14 +33,14 @@ func TestAdd(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{5, 7, 9})
 }
 
-func TestAddScalar(t *testing.T) {
+func TestOps_AddScalar_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 3)
 	c := AddScalar(a, 10.0)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{11, 12, 13})
 }
 
-func TestMul(t *testing.T) {
+func TestOps_Mul_Good(t *testing.T) {
 	a := FromValues([]float32{2, 3, 4}, 3)
 	b := FromValues([]float32{5, 6, 7}, 3)
 	c := Mul(a, b)
@@ -48,14 +48,14 @@ func TestMul(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{10, 18, 28})
 }
 
-func TestMulScalar(t *testing.T) {
+func TestOps_MulScalar_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 3)
 	c := MulScalar(a, 3.0)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{3, 6, 9})
 }
 
-func TestDivide(t *testing.T) {
+func TestOps_Divide_Good(t *testing.T) {
 	a := FromValues([]float32{10, 20, 30}, 3)
 	b := FromValues([]float32{2, 5, 10}, 3)
 	c := Divide(a, b)
@@ -63,7 +63,7 @@ func TestDivide(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{5, 4, 3})
 }
 
-func TestSubtract(t *testing.T) {
+func TestOps_Subtract_Good(t *testing.T) {
 	a := FromValues([]float32{10, 20, 30}, 3)
 	b := FromValues([]float32{1, 2, 3}, 3)
 	c := Subtract(a, b)
@@ -71,7 +71,7 @@ func TestSubtract(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{9, 18, 27})
 }
 
-func TestNegative(t *testing.T) {
+func TestOps_Negative_Good(t *testing.T) {
 	a := FromValues([]float32{1, -2, 3}, 3)
 	c := Negative(a)
 	Materialize(c)
@@ -80,7 +80,7 @@ func TestNegative(t *testing.T) {
 
 // --- Math functions ---
 
-func TestExp(t *testing.T) {
+func TestOps_Exp_Good(t *testing.T) {
 	a := FromValues([]float32{0, 1, 2}, 3)
 	c := Exp(a)
 	Materialize(c)
@@ -93,7 +93,7 @@ func TestExp(t *testing.T) {
 	}
 }
 
-func TestSigmoid(t *testing.T) {
+func TestOps_Sigmoid_Good(t *testing.T) {
 	a := FromValues([]float32{0, 100, -100}, 3)
 	c := Sigmoid(a)
 	Materialize(c)
@@ -110,7 +110,7 @@ func TestSigmoid(t *testing.T) {
 	}
 }
 
-func TestSiLU(t *testing.T) {
+func TestOps_SiLU_Good(t *testing.T) {
 	// SiLU(x) = x * sigmoid(x)
 	a := FromValues([]float32{0, 1, -1}, 3)
 	c := SiLU(a)
@@ -127,7 +127,7 @@ func TestSiLU(t *testing.T) {
 	}
 }
 
-func TestTanh(t *testing.T) {
+func TestOps_Tanh_Good(t *testing.T) {
 	a := FromValues([]float32{0, 1, -1}, 3)
 	c := Tanh(a)
 	Materialize(c)
@@ -140,35 +140,35 @@ func TestTanh(t *testing.T) {
 	}
 }
 
-func TestSqrt(t *testing.T) {
+func TestOps_Sqrt_Good(t *testing.T) {
 	a := FromValues([]float32{1, 4, 9, 16}, 4)
 	c := Sqrt(a)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1, 2, 3, 4})
 }
 
-func TestRsqrt(t *testing.T) {
+func TestOps_Rsqrt_Good(t *testing.T) {
 	a := FromValues([]float32{1, 4, 16}, 3)
 	c := Rsqrt(a)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1.0, 0.5, 0.25})
 }
 
-func TestReciprocal(t *testing.T) {
+func TestOps_Reciprocal_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 4, 5}, 4)
 	c := Reciprocal(a)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1.0, 0.5, 0.25, 0.2})
 }
 
-func TestSquare(t *testing.T) {
+func TestOps_Square_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, -4}, 4)
 	c := Square(a)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1, 4, 9, 16})
 }
 
-func TestPower(t *testing.T) {
+func TestOps_Power_Good(t *testing.T) {
 	a := FromValues([]float32{2, 3, 4}, 3)
 	b := FromValues([]float32{3, 2, 0.5}, 3)
 	c := Power(a, b)
@@ -176,7 +176,7 @@ func TestPower(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{8, 9, 2})
 }
 
-func TestMaximum(t *testing.T) {
+func TestOps_Maximum_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3}, 3)
 	b := FromValues([]float32{4, 2, 6}, 3)
 	c := Maximum(a, b)
@@ -184,7 +184,7 @@ func TestMaximum(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{4, 5, 6})
 }
 
-func TestMinimum(t *testing.T) {
+func TestOps_Minimum_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3}, 3)
 	b := FromValues([]float32{4, 2, 6}, 3)
 	c := Minimum(a, b)
@@ -194,7 +194,7 @@ func TestMinimum(t *testing.T) {
 
 // --- Matrix operations ---
 
-func TestMatmul(t *testing.T) {
+func TestOps_Matmul_Good(t *testing.T) {
 	// [1 2] @ [5 6]T = [1*5+2*7, 1*6+2*8] = [19, 22]
 	// [3 4]   [7 8]    [3*5+4*7, 3*6+4*8]   [43, 50]
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
@@ -204,7 +204,7 @@ func TestMatmul(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{19, 22, 43, 50})
 }
 
-func TestMatmul_VectorMatrix(t *testing.T) {
+func TestOps_Matmul_VectorMatrix_Good(t *testing.T) {
 	// [1 2 3] @ [[1],[2],[3]] = [14]
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	b := FromValues([]float32{1, 2, 3}, 3, 1)
@@ -221,7 +221,7 @@ func TestMatmul_VectorMatrix(t *testing.T) {
 
 // --- Reductions ---
 
-func TestSoftmax(t *testing.T) {
+func TestOps_Softmax_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	c := Softmax(a)
 	Materialize(c)
@@ -241,7 +241,7 @@ func TestSoftmax(t *testing.T) {
 	}
 }
 
-func TestArgmax(t *testing.T) {
+func TestOps_Argmax_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3, 2}, 1, 4)
 	c := Argmax(a, -1, false)
 	Materialize(c)
@@ -251,7 +251,7 @@ func TestArgmax(t *testing.T) {
 	}
 }
 
-func TestTopK(t *testing.T) {
+func TestOps_TopK_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3, 7, 2}, 1, 5)
 	c := TopK(a, 2)
 	Materialize(c)
@@ -275,7 +275,7 @@ func TestTopK(t *testing.T) {
 	}
 }
 
-func TestSum(t *testing.T) {
+func TestOps_Sum_Good(t *testing.T) {
 	// 2x3 matrix, sum along axis 1
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	c := Sum(a, 1, false)
@@ -284,7 +284,7 @@ func TestSum(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{6, 15})
 }
 
-func TestSum_KeepDims(t *testing.T) {
+func TestOps_Sum_KeepDims_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	c := Sum(a, 1, true)
 	Materialize(c)
@@ -298,7 +298,7 @@ func TestSum_KeepDims(t *testing.T) {
 	}
 }
 
-func TestMean(t *testing.T) {
+func TestOps_Mean_Good(t *testing.T) {
 	a := FromValues([]float32{2, 4, 6, 8}, 2, 2)
 	c := Mean(a, 1, false)
 	Materialize(c)
@@ -306,7 +306,7 @@ func TestMean(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{3, 7})
 }
 
-func TestLogSumExp_Axis(t *testing.T) {
+func TestOps_LogSumExp_Axis_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	c := LogSumExp(a, -1, false)
 	Materialize(c)
@@ -320,7 +320,7 @@ func TestLogSumExp_Axis(t *testing.T) {
 
 // --- Shape operations ---
 
-func TestReshape(t *testing.T) {
+func TestOps_Reshape_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 6)
 	c := Reshape(a, 2, 3)
 	Materialize(c)
@@ -333,7 +333,7 @@ func TestReshape(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{1, 2, 3, 4, 5, 6})
 }
 
-func TestTranspose(t *testing.T) {
+func TestOps_Transpose_Good(t *testing.T) {
 	// [[1 2 3], [4 5 6]] transposed -> shape [3 2]
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	c := Transpose(a)
@@ -350,7 +350,7 @@ func TestTranspose(t *testing.T) {
 	floatSliceApprox(t, flat.Floats(), []float32{1, 4, 2, 5, 3, 6})
 }
 
-func TestTranspose_WithAxes(t *testing.T) {
+func TestOps_Transpose_WithAxes_Good(t *testing.T) {
 	// 3D: (2,3,4) with axes (0,2,1) -> (2,4,3)
 	data := make([]float32, 24)
 	for i := range data {
@@ -366,7 +366,7 @@ func TestTranspose_WithAxes(t *testing.T) {
 	}
 }
 
-func TestExpandDims(t *testing.T) {
+func TestOps_ExpandDims_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 3)
 	c := ExpandDims(a, 0)
 	Materialize(c)
@@ -377,7 +377,7 @@ func TestExpandDims(t *testing.T) {
 	}
 }
 
-func TestSqueeze(t *testing.T) {
+func TestOps_Squeeze_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	c := Squeeze(a, 0)
 	Materialize(c)
@@ -388,7 +388,7 @@ func TestSqueeze(t *testing.T) {
 	}
 }
 
-func TestConcatenate(t *testing.T) {
+func TestOps_Concatenate_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2}, 2)
 	b := FromValues([]float32{3, 4, 5}, 3)
 	c := Concatenate([]*Array{a, b}, 0)
@@ -400,7 +400,7 @@ func TestConcatenate(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{1, 2, 3, 4, 5})
 }
 
-func TestBroadcastTo(t *testing.T) {
+func TestOps_BroadcastTo_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	c := BroadcastTo(a, []int32{4, 3})
 	Materialize(c)
@@ -421,7 +421,7 @@ func TestBroadcastTo(t *testing.T) {
 	floatSliceApprox(t, got, want)
 }
 
-func TestAsType(t *testing.T) {
+func TestOps_AsType_Good(t *testing.T) {
 	a := FromValues([]float32{1.5, 2.7, 3.9}, 3)
 	c := AsType(a, DTypeInt32)
 	Materialize(c)
@@ -441,7 +441,7 @@ func TestAsType(t *testing.T) {
 
 // --- Indexing ---
 
-func TestTake(t *testing.T) {
+func TestOps_Take_Good(t *testing.T) {
 	a := FromValues([]float32{10, 20, 30, 40, 50}, 5)
 	indices := FromValues([]int32{0, 2, 4}, 3)
 	c := Take(a, indices, 0)
@@ -449,7 +449,7 @@ func TestTake(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{10, 30, 50})
 }
 
-func TestWhere(t *testing.T) {
+func TestOps_Where_Good(t *testing.T) {
 	cond := FromValues([]bool{true, false, true}, 3)
 	a := FromValues([]float32{1, 2, 3}, 3)
 	b := FromValues([]float32{4, 5, 6}, 3)
@@ -458,7 +458,7 @@ func TestWhere(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{1, 5, 3})
 }
 
-func TestTakeAlongAxis(t *testing.T) {
+func TestOps_TakeAlongAxis_Good(t *testing.T) {
 	// 2x3 matrix, pick one element per row along axis 1
 	a := FromValues([]float32{10, 20, 30, 40, 50, 60}, 2, 3)
 	indices := FromValues([]int32{2, 0}, 2, 1) // row 0 pick col 2, row 1 pick col 0
@@ -469,7 +469,7 @@ func TestTakeAlongAxis(t *testing.T) {
 
 // --- Slicing ---
 
-func TestSlice(t *testing.T) {
+func TestOps_Slice_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	// Extract first row: [0:1, 0:3]
 	c := Slice(a, []int32{0, 0}, []int32{1, 3})
@@ -477,7 +477,7 @@ func TestSlice(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{1, 2, 3})
 }
 
-func TestSliceAxis(t *testing.T) {
+func TestOps_SliceAxis_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	// Slice columns 1:3 from all rows
 	c := SliceAxis(a, 1, 1, 3)
@@ -493,7 +493,7 @@ func TestSliceAxis(t *testing.T) {
 	floatSliceApprox(t, flat.Floats(), []float32{2, 3, 5, 6})
 }
 
-func TestSliceUpdateInplace(t *testing.T) {
+func TestOps_SliceUpdateInplace_Good(t *testing.T) {
 	a := Zeros([]int32{2, 3}, DTypeFloat32)
 	update := FromValues([]float32{7, 8, 9}, 1, 3)
 	// Put [7 8 9] in second row
@@ -504,7 +504,7 @@ func TestSliceUpdateInplace(t *testing.T) {
 
 // --- Broadcasting arithmetic ---
 
-func TestAdd_Broadcasting(t *testing.T) {
+func TestOps_Add_Broadcasting_Good(t *testing.T) {
 	// [2,3] + [1,3] should broadcast
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	b := FromValues([]float32{10, 20, 30}, 1, 3)
@@ -517,35 +517,35 @@ func TestAdd_Broadcasting(t *testing.T) {
 
 // --- Cumulative and sorting ops ---
 
-func TestCumSum(t *testing.T) {
+func TestOps_CumSum_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	c := CumSum(a, -1, false, true)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1, 3, 6, 10})
 }
 
-func TestCumSum_Exclusive(t *testing.T) {
+func TestOps_CumSum_Exclusive_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	c := CumSum(a, -1, false, false) // exclusive
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{0, 1, 3, 6})
 }
 
-func TestCumSum_Reverse(t *testing.T) {
+func TestOps_CumSum_Reverse_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	c := CumSum(a, -1, true, true) // reverse
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{10, 9, 7, 4})
 }
 
-func TestSort(t *testing.T) {
+func TestOps_Sort_Good(t *testing.T) {
 	a := FromValues([]float32{3, 1, 4, 1, 5}, 1, 5)
 	c := Sort(a, -1)
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{1, 1, 3, 4, 5})
 }
 
-func TestArgsort(t *testing.T) {
+func TestOps_Argsort_Good(t *testing.T) {
 	a := FromValues([]float32{3, 1, 4, 1, 5}, 1, 5)
 	c := Argsort(a, -1)
 	Materialize(c)
@@ -559,7 +559,7 @@ func TestArgsort(t *testing.T) {
 	}
 }
 
-func TestGreater(t *testing.T) {
+func TestOps_Greater_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3}, 3)
 	b := FromValues([]float32{2, 2, 3}, 3)
 	c := Greater(a, b)
@@ -576,14 +576,14 @@ func TestGreater(t *testing.T) {
 	}
 }
 
-func TestMaxAxis(t *testing.T) {
+func TestOps_MaxAxis_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3, 4, 2, 6}, 2, 3)
 	c := MaxAxis(a, -1, false) // max per row
 	Materialize(c)
 	floatSliceApprox(t, c.Floats(), []float32{5, 6})
 }
 
-func TestMaxAxis_KeepDims(t *testing.T) {
+func TestOps_MaxAxis_KeepDims_Good(t *testing.T) {
 	a := FromValues([]float32{1, 5, 3, 4, 2, 6}, 2, 3)
 	c := MaxAxis(a, -1, true)
 	Materialize(c)
@@ -596,7 +596,7 @@ func TestMaxAxis_KeepDims(t *testing.T) {
 
 // --- Random ---
 
-func TestRandomCategorical(t *testing.T) {
+func TestOps_RandomCategorical_Good(t *testing.T) {
 	// Heavily weighted towards index 2
 	logprobs := FromValues([]float32{-100, -100, 0}, 1, 3)
 	sample := RandomCategorical(logprobs)
@@ -608,7 +608,7 @@ func TestRandomCategorical(t *testing.T) {
 	}
 }
 
-func TestRandomUniform(t *testing.T) {
+func TestOps_RandomUniform_Good(t *testing.T) {
 	a := RandomUniform(0, 1, []int32{100}, DTypeFloat32)
 	Materialize(a)
 

@@ -10,8 +10,6 @@ import "C"
 
 import "unsafe"
 
-// --- Element-wise arithmetic ---
-
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
 	out := newArray("ADD", a, b)
@@ -66,13 +64,13 @@ func Negative(a *Array) *Array {
 // Copy creates a deep copy of an array, breaking the computation graph chain.
 // The returned array has the same data but no references to parent graph nodes,
 // allowing Metal memory from prior graph operations to be freed.
+//
+//	snapshot := metal.Copy(activations) // preserve values, release graph parents
 func Copy(a *Array) *Array {
 	out := newArray("COPY", a)
 	C.mlx_copy(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }
-
-// --- Math functions ---
 
 // Exp returns element-wise exp(a).
 func Exp(a *Array) *Array {
@@ -152,9 +150,9 @@ func Minimum(a, b *Array) *Array {
 	return out
 }
 
-// --- Matrix operations ---
-
 // Matmul returns the matrix product of a and b.
+//
+//	out := metal.Matmul(x, wT) // [B, L, hidden] @ [hidden, out] → [B, L, out]
 func Matmul(a, b *Array) *Array {
 	out := newArray("MATMUL", a, b)
 	C.mlx_matmul(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
@@ -176,9 +174,9 @@ func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bit
 	return out
 }
 
-// --- Reductions ---
-
 // Softmax returns softmax along the last axis.
+//
+//	probs := metal.Softmax(logits) // convert raw logits to probability distribution
 func Softmax(a *Array) *Array {
 	out := newArray("SOFTMAX", a)
 	axis := []C.int{C.int(-1)}
@@ -187,6 +185,8 @@ func Softmax(a *Array) *Array {
 }
 
 // Argmax returns the index of the maximum value along an axis.
+//
+//	tokenID := metal.Argmax(logits, -1, false) // greedy decoding: pick most likely token
 func Argmax(a *Array, axis int, keepDims bool) *Array {
 	out := newArray("ARGMAX", a)
 	C.mlx_argmax_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
@@ -216,9 +216,9 @@ func Mean(a *Array, axis int, keepDims bool) *Array {
 	return out
 }
 
-// --- Shape operations ---
-
 // Reshape changes the shape of an array.
+//
+//	input := metal.Reshape(tokens, 1, int32(len(tokens))) // add batch dim: [L] → [1, L]
 func Reshape(a *Array, shape ...int32) *Array {
 	out := newArray("RESHAPE", a)
 	cShape := make([]C.int, len(shape))
@@ -333,6 +333,8 @@ func Argpartition(a *Array, kth, axis int) *Array {
 }
 
 // Dequantize restores a quantized array to full precision.
+//
+//	fullW := metal.Dequantize(w, scales, biases, 64, 4) // 4-bit weights, group=64
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
 	out := newArray("DEQUANTIZE", w, scales, biases)
 	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
@@ -377,6 +379,8 @@ func CumSum(a *Array, axis int, reverse, inclusive bool) *Array {
 }
 
 // Sort returns the array sorted along the given axis.
+//
+//	sortedProbs := metal.Sort(probs, -1) // sort probability distribution ascending
 func Sort(a *Array, axis int) *Array {
 	out := newArray("SORT", a)
 	C.mlx_sort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
@@ -384,6 +388,8 @@ func Sort(a *Array, axis int) *Array {
 }
 
 // Argsort returns the indices that would sort the array along the given axis.
+//
+//	sortIdx := metal.Argsort(negProbs, -1) // descending sort for top-p nucleus sampling
 func Argsort(a *Array, axis int) *Array {
 	out := newArray("ARGSORT", a)
 	C.mlx_argsort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)

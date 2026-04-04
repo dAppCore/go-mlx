@@ -9,6 +9,8 @@ import "C"
 
 // RandomCategorical samples from a categorical distribution defined by logprobs.
 // Returns indices sampled according to the log-probability distribution along the last axis.
+//
+//	tokenID := metal.RandomCategorical(scaledLogits) // sample next token
 func RandomCategorical(logprobs *Array) *Array {
 	out := newArray("RANDOM_CATEGORICAL", logprobs)
 	key := C.mlx_array_new()
@@ -24,6 +26,8 @@ func RandomCategorical(logprobs *Array) *Array {
 }
 
 // RandomUniform generates uniform random values in [low, high).
+//
+//	noise := metal.RandomUniform(0, 1, []int32{batchSize, hiddenSize}, DTypeFloat32)
 func RandomUniform(low, high float32, shape []int32, dtype DType) *Array {
 	out := newArray("RANDOM_UNIFORM")
 	cShape := make([]C.int, len(shape))

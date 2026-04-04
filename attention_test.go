@@ -10,7 +10,7 @@ import (
 	mlx "forge.lthn.ai/core/go-mlx"
 )
 
-func TestMetalAdapterImplementsAttentionInspector(t *testing.T) {
+func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {
 	// Load a real model and verify the adapter implements AttentionInspector.
 	b, ok := inference.Get("metal")
 	if !ok {

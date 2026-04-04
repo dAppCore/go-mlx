@@ -7,12 +7,19 @@ import (
 )
 
 // Sampler transforms logits into a sampled token index.
+//
+//	s := newSampler(0.7, 0.9, 0, 40) // temp=0.7, topP=0.9, minP=0, topK=40
+//	tokenID := s.Sample(logits)
 type Sampler interface {
 	Sample(logits *Array) *Array
 }
 
 // newSampler creates a composable sampler chain from the given parameters.
 // Order: TopP -> MinP -> TopK -> Temperature -> categorical sample.
+//
+//	s := newSampler(0, 0, 0, 0)        // greedy (temp=0)
+//	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
+//	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
 	if temp == 0 {
 		return greedy{}
@@ -32,7 +39,9 @@ func newSampler(temp, topP, minP float32, topK int) Sampler {
 	return chain(samplers)
 }
 
-// chain applies a sequence of samplers, then samples from the result.
+// chain applies a sequence of samplers in order, then draws a categorical sample.
+//
+//	chain{TopP(0.9), TopKSampler(40), Temperature(0.7)}.Sample(logits)
 type chain []Sampler
 
 func (c chain) Sample(logits *Array) *Array {
@@ -52,21 +61,30 @@ func (c chain) Sample(logits *Array) *Array {
 	return res
 }
 
-// greedy returns the argmax token.
+// greedy returns the argmax token (deterministic, no sampling).
+//
+//	greedy{}.Sample(logits) // picks the single most likely token
 type greedy struct{}
 
 func (greedy) Sample(logits *Array) *Array {
 	return Argmax(logits, -1, false)
 }
 
-// Temperature scales logits by 1/temp.
+// Temperature scales logits by 1/temp before categorical sampling.
+// Higher values produce more random output; lower values approach greedy.
+//
+//	Temperature(0.7).Sample(logits) // moderate creativity
+//	Temperature(0.1).Sample(logits) // near-greedy, focused output
 type Temperature float32
 
 func (t Temperature) Sample(logits *Array) *Array {
 	return MulScalar(logits, 1.0/float32(t))
 }
 
-// TopKSampler masks all but the top-k logits.
+// TopKSampler masks all but the top-k logits, setting the rest to -inf.
+//
+//	TopKSampler(40).Sample(logits) // keep only top 40 candidates
+//	TopKSampler(10).Sample(logits) // very focused — top 10 only
 type TopKSampler int
 
 func (k TopKSampler) Sample(logits *Array) *Array {
@@ -84,6 +102,9 @@ func (k TopKSampler) Sample(logits *Array) *Array {
 
 // TopP implements nucleus (top-p) sampling.
 // Keeps the smallest set of tokens whose cumulative probability exceeds p.
+//
+//	TopP(0.9).Sample(logits) // include tokens covering 90% of probability mass
+//	TopP(0.5).Sample(logits) // conservative — only highest-probability half
 type TopP float32
 
 func (p TopP) Sample(logits *Array) *Array {
@@ -124,7 +145,11 @@ func (p TopP) Sample(logits *Array) *Array {
 	return res
 }
 
-// MinPSampler masks tokens whose probability is below min_p * max_prob.
+// MinPSampler masks tokens whose probability falls below min_p * max_prob.
+// Adapts the threshold relative to the best token, so the cut-off scales with confidence.
+//
+//	MinPSampler(0.05).Sample(logits) // drop tokens less than 5% of top-token probability
+//	MinPSampler(0.1).Sample(logits)  // stricter — drop tokens below 10% of max
 type MinPSampler float32
 
 func (p MinPSampler) Sample(logits *Array) *Array {

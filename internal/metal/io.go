@@ -19,6 +19,10 @@ import (
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator
 // over (name, array) pairs. Tensors are loaded lazily on the CPU stream.
 // Use [LoadAllSafetensors] for an error-returning variant.
+//
+//	for name, arr := range metal.LoadSafetensors("/path/to/model.safetensors") {
+//	    weights[name] = arr
+//	}
 func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 	Init()
 	return func(yield func(string, *Array) bool) {
@@ -62,6 +66,8 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 
 // LoadAllSafetensors loads all tensors from a .safetensors file into a map.
 // Returns an error if the file cannot be loaded.
+//
+//	weights, err := metal.LoadAllSafetensors("/path/to/model-00001-of-00004.safetensors")
 func LoadAllSafetensors(path string) (map[string]*Array, error) {
 	tensors := make(map[string]*Array)
 	for name, arr := range LoadSafetensors(path) {

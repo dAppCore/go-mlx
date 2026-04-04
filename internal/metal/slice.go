@@ -9,6 +9,8 @@ import "C"
 
 // Slice extracts a sub-array using start and end indices for each dimension.
 // starts and ends must have the same length as the array's dimensions.
+//
+//	kValid := metal.Slice(kCache, []int32{0,0,0,0}, []int32{B,H,int32(offset),D})
 func Slice(a *Array, starts, ends []int32) *Array {
 	out := newArray("SLICE", a)
 	cStarts := make([]C.int, len(starts))
@@ -26,6 +28,8 @@ func Slice(a *Array, starts, ends []int32) *Array {
 }
 
 // SliceAxis extracts a sub-array along a single axis.
+//
+//	lastPos := metal.SliceAxis(logits, 1, seqLen-1, seqLen) // last token logits [1,1,V]
 func SliceAxis(a *Array, axis int, start, end int32) *Array {
 	// Build full slice parameters
 	ndim := a.NumDims()
@@ -46,6 +50,8 @@ func SliceAxis(a *Array, axis int, start, end int32) *Array {
 
 // SliceUpdateInplace updates a slice of the array in-place.
 // This is critical for KV cache updates.
+//
+//	newK := metal.SliceUpdateInplace(kBuf, k, []int32{0,0,int32(prev),0}, []int32{B,H,int32(offset),D})
 func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
 	out := newArray("SLICE_UPDATE", a, update)
 	cStarts := make([]C.int, len(starts))

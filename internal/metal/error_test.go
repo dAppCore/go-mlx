@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestEval_Success(t *testing.T) {
+func TestMetal_Eval_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3}, 3)
 	b := FromValues([]float32{4, 5, 6}, 3)
 	c := Add(a, b)
@@ -24,21 +24,21 @@ func TestEval_Success(t *testing.T) {
 	}
 }
 
-func TestEval_NilArray(t *testing.T) {
+func TestMetal_Eval_NilArray_Good(t *testing.T) {
 	// Eval should handle nil arrays gracefully.
 	if err := Eval(nil); err != nil {
 		t.Fatalf("Eval(nil) should not error: %v", err)
 	}
 }
 
-func TestLastError_NoError(t *testing.T) {
+func TestMetal_LastError_NoError_Good(t *testing.T) {
 	// When no error has occurred, lastError should return nil.
 	if err := lastError(); err != nil {
 		t.Errorf("lastError should be nil when no error occurred, got: %v", err)
 	}
 }
 
-func TestNewCaches_ContextLen(t *testing.T) {
+func TestMetal_NewCaches_ContextLen_Good(t *testing.T) {
 	// When contextLen is set, unbounded KVCaches should become RotatingKVCaches.
 	m := &Model{
 		model: &fakeModel{numLayers: 4},
@@ -81,7 +81,7 @@ func (f *fakeModel) Tokenizer() *Tokenizer            { return nil }
 func (f *fakeModel) ModelType() string                 { return "fake" }
 func (f *fakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
-func TestLoadAllSafetensors_MissingFile(t *testing.T) {
+func TestMetal_LoadAllSafetensors_MissingFile_Bad(t *testing.T) {
 	_, err := LoadAllSafetensors("/nonexistent/path/model.safetensors")
 	if err == nil {
 		t.Fatal("LoadAllSafetensors should fail for missing file")

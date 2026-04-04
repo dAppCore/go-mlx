@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestRMSNorm(t *testing.T) {
+func TestFast_RMSNorm_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	weight := FromValues([]float32{1, 1, 1, 1}, 4)
 
@@ -24,7 +24,7 @@ func TestRMSNorm(t *testing.T) {
 	}
 }
 
-func TestRMSNorm_WithScaling(t *testing.T) {
+func TestFast_RMSNorm_WithScaling_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	weight := FromValues([]float32{2, 2, 2, 2}, 4)
 
@@ -41,7 +41,7 @@ func TestRMSNorm_WithScaling(t *testing.T) {
 	}
 }
 
-func TestLayerNorm(t *testing.T) {
+func TestFast_LayerNorm_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	weight := FromValues([]float32{1, 1, 1, 1}, 4)
 	bias := FromValues([]float32{0, 0, 0, 0}, 4)
@@ -62,7 +62,7 @@ func TestLayerNorm(t *testing.T) {
 	}
 }
 
-func TestLayerNorm_WithBias(t *testing.T) {
+func TestFast_LayerNorm_WithBias_Good(t *testing.T) {
 	x := FromValues([]float32{1, 2, 3, 4}, 1, 4)
 	weight := FromValues([]float32{1, 1, 1, 1}, 4)
 	bias := FromValues([]float32{10, 10, 10, 10}, 4)
@@ -82,7 +82,7 @@ func TestLayerNorm_WithBias(t *testing.T) {
 	}
 }
 
-func TestRoPE(t *testing.T) {
+func TestFast_RoPE_Good(t *testing.T) {
 	// RoPE on a small input: [B=1, L=1, H=1, D=4]
 	x := FromValues([]float32{1, 0, 1, 0}, 1, 1, 1, 4)
 	y := RoPE(x, 4, false, 10000.0, 1.0, 0)
@@ -101,7 +101,7 @@ func TestRoPE(t *testing.T) {
 	}
 }
 
-func TestRoPE_ShapePreserved(t *testing.T) {
+func TestFast_RoPE_ShapePreserved_Good(t *testing.T) {
 	// Larger shape: [B=2, L=4, H=8, D=64]
 	data := make([]float32, 2*4*8*64)
 	for i := range data {
@@ -117,7 +117,7 @@ func TestRoPE_ShapePreserved(t *testing.T) {
 	}
 }
 
-func TestScaledDotProductAttention_Causal(t *testing.T) {
+func TestFast_ScaledDotProductAttention_Causal_Good(t *testing.T) {
 	// [B=1, H=1, L=3, D=2]
 	q := FromValues([]float32{1, 0, 0, 1, 1, 1}, 1, 1, 3, 2)
 	k := FromValues([]float32{1, 0, 0, 1, 1, 1}, 1, 1, 3, 2)
@@ -145,7 +145,7 @@ func TestScaledDotProductAttention_Causal(t *testing.T) {
 	}
 }
 
-func TestScaledDotProductAttention_NonCausal(t *testing.T) {
+func TestFast_ScaledDotProductAttention_NonCausal_Good(t *testing.T) {
 	// Non-causal: all positions attend to all
 	q := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	k := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
@@ -161,7 +161,7 @@ func TestScaledDotProductAttention_NonCausal(t *testing.T) {
 	}
 }
 
-func TestScaledDotProductAttentionWithMask(t *testing.T) {
+func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 	q := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	k := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	v := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)

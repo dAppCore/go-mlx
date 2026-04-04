@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestVJP_SimpleSquare(t *testing.T) {
+func TestGrad_VJP_SimpleSquare_Good(t *testing.T) {
 	// f(x) = x^2, df/dx = 2x
 	// At x=3: f(3)=9, df/dx=6
 	fn := func(inputs []*Array) []*Array {
@@ -36,7 +36,7 @@ func TestVJP_SimpleSquare(t *testing.T) {
 	}
 }
 
-func TestVJP_Addition(t *testing.T) {
+func TestGrad_VJP_Addition_Good(t *testing.T) {
 	// f(x, y) = x + y, df/dx = 1, df/dy = 1
 	fn := func(inputs []*Array) []*Array {
 		return []*Array{Add(inputs[0], inputs[1])}
@@ -61,7 +61,7 @@ func TestVJP_Addition(t *testing.T) {
 	}
 }
 
-func TestVJP_MatmulGrad(t *testing.T) {
+func TestGrad_VJP_MatmulGrad_Good(t *testing.T) {
 	// f(W) = sum(W @ x) — gradient of sum(matmul) w.r.t. W
 	// For W=[2,2], x=[2,1]: dL/dW = ones @ x^T
 	x := FromValues([]float32{1.0, 2.0}, 2, 1)
@@ -98,7 +98,7 @@ func TestVJP_MatmulGrad(t *testing.T) {
 	}
 }
 
-func TestJVP_SimpleSquare(t *testing.T) {
+func TestGrad_JVP_SimpleSquare_Good(t *testing.T) {
 	// f(x) = x^2, JVP with tangent v: df = 2x * v
 	// At x=3, v=1: df = 6
 	fn := func(inputs []*Array) []*Array {
@@ -127,7 +127,7 @@ func TestJVP_SimpleSquare(t *testing.T) {
 	}
 }
 
-func TestValueAndGrad_Quadratic(t *testing.T) {
+func TestGrad_ValueAndGrad_Quadratic_Good(t *testing.T) {
 	// f(x) = x^2 + 2x + 1 = (x+1)^2
 	// f'(x) = 2x + 2
 	// At x=3: f(3) = 16, f'(3) = 8
@@ -161,7 +161,7 @@ func TestValueAndGrad_Quadratic(t *testing.T) {
 	}
 }
 
-func TestValueAndGrad_MultiArg(t *testing.T) {
+func TestGrad_ValueAndGrad_MultiArg_Good(t *testing.T) {
 	// f(x, y) = x*y, df/dx = y, df/dy = x
 	// At x=3, y=4: f=12, dx=4, dy=3
 	fn := func(inputs []*Array) []*Array {
@@ -197,7 +197,7 @@ func TestValueAndGrad_MultiArg(t *testing.T) {
 	}
 }
 
-func TestValueAndGrad_Reusable(t *testing.T) {
+func TestGrad_ValueAndGrad_Reusable_Good(t *testing.T) {
 	// Verify GradFn can be called multiple times
 	fn := func(inputs []*Array) []*Array {
 		x := inputs[0]
@@ -230,7 +230,7 @@ func TestValueAndGrad_Reusable(t *testing.T) {
 	}
 }
 
-func TestCrossEntropyLoss(t *testing.T) {
+func TestGrad_CrossEntropyLoss_Good(t *testing.T) {
 	// Simple 3-class classification
 	// logits = [1.0, 2.0, 3.0], target = 2 (class index)
 	// Manual: logsumexp([1,2,3]) = 3 + log(exp(-2)+exp(-1)+1)
@@ -249,7 +249,7 @@ func TestCrossEntropyLoss(t *testing.T) {
 	}
 }
 
-func TestMSELoss(t *testing.T) {
+func TestGrad_MSELoss_Good(t *testing.T) {
 	pred := FromValues([]float32{1.0, 2.0, 3.0}, 3)
 	target := FromValues([]float32{1.5, 2.5, 3.5}, 3)
 
@@ -263,7 +263,7 @@ func TestMSELoss(t *testing.T) {
 	}
 }
 
-func TestLogSumExp(t *testing.T) {
+func TestGrad_LogSumExp_Good(t *testing.T) {
 	// logsumexp([1, 2, 3]) along axis -1
 	a := FromValues([]float32{1.0, 2.0, 3.0}, 1, 3)
 	result := LogSumExp(a, -1, false)
@@ -277,7 +277,7 @@ func TestLogSumExp(t *testing.T) {
 	}
 }
 
-func TestOnesLike(t *testing.T) {
+func TestGrad_OnesLike_Good(t *testing.T) {
 	a := FromValues([]float32{1.0, 2.0, 3.0}, 3)
 	ones := OnesLike(a)
 	Materialize(ones)
@@ -290,7 +290,7 @@ func TestOnesLike(t *testing.T) {
 	}
 }
 
-func TestCheckpoint(t *testing.T) {
+func TestGrad_Checkpoint_Good(t *testing.T) {
 	// Checkpoint should produce the same result as the original function
 	fn := func(inputs []*Array) []*Array {
 		x := inputs[0]
@@ -309,7 +309,7 @@ func TestCheckpoint(t *testing.T) {
 	}
 }
 
-func TestCheckpoint_GradientFlows(t *testing.T) {
+func TestGrad_Checkpoint_GradientFlows_Good(t *testing.T) {
 	// Checkpoint should produce correct gradients (same as non-checkpointed).
 	// f(x) = sum(x^2), df/dx = 2x. At x=[1,2,3]: grad=[2,4,6].
 	fn := func(inputs []*Array) []*Array {
@@ -348,7 +348,7 @@ func TestCheckpoint_GradientFlows(t *testing.T) {
 	}
 }
 
-func TestSumAll(t *testing.T) {
+func TestGrad_SumAll_Good(t *testing.T) {
 	a := FromValues([]float32{1.0, 2.0, 3.0, 4.0}, 2, 2)
 	result := SumAll(a)
 	Materialize(result)
@@ -359,7 +359,7 @@ func TestSumAll(t *testing.T) {
 	}
 }
 
-func TestMeanAll(t *testing.T) {
+func TestGrad_MeanAll_Good(t *testing.T) {
 	a := FromValues([]float32{2.0, 4.0, 6.0, 8.0}, 2, 2)
 	result := MeanAll(a)
 	Materialize(result)

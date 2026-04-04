@@ -9,7 +9,7 @@ import (
 
 // --- Scalar creation (FromValue) ---
 
-func TestFromValue_Float32(t *testing.T) {
+func TestArray_FromValue_Float32_Good(t *testing.T) {
 	a := FromValue(float32(3.14))
 	Materialize(a)
 
@@ -27,7 +27,7 @@ func TestFromValue_Float32(t *testing.T) {
 	}
 }
 
-func TestFromValue_Float64(t *testing.T) {
+func TestArray_FromValue_Float64_Good(t *testing.T) {
 	a := FromValue(float64(2.718281828))
 	Materialize(a)
 
@@ -39,7 +39,7 @@ func TestFromValue_Float64(t *testing.T) {
 	}
 }
 
-func TestFromValue_Int(t *testing.T) {
+func TestArray_FromValue_Int_Good(t *testing.T) {
 	a := FromValue(42)
 	Materialize(a)
 
@@ -51,7 +51,7 @@ func TestFromValue_Int(t *testing.T) {
 	}
 }
 
-func TestFromValue_Bool(t *testing.T) {
+func TestArray_FromValue_Bool_Good(t *testing.T) {
 	a := FromValue(true)
 	Materialize(a)
 
@@ -63,7 +63,7 @@ func TestFromValue_Bool(t *testing.T) {
 	}
 }
 
-func TestFromValue_Complex64(t *testing.T) {
+func TestArray_FromValue_Complex64_Good(t *testing.T) {
 	a := FromValue(complex64(3 + 4i))
 	Materialize(a)
 
@@ -77,7 +77,7 @@ func TestFromValue_Complex64(t *testing.T) {
 
 // --- Slice creation (FromValues) ---
 
-func TestFromValues_Float32_1D(t *testing.T) {
+func TestArray_FromValues_Float32_1D_Good(t *testing.T) {
 	data := []float32{1.0, 2.0, 3.0, 4.0}
 	a := FromValues(data, 4)
 	Materialize(a)
@@ -103,7 +103,7 @@ func TestFromValues_Float32_1D(t *testing.T) {
 	}
 }
 
-func TestFromValues_Float32_2D(t *testing.T) {
+func TestArray_FromValues_Float32_2D_Good(t *testing.T) {
 	data := []float32{1, 2, 3, 4, 5, 6}
 	a := FromValues(data, 2, 3) // 2x3 matrix
 	Materialize(a)
@@ -127,7 +127,7 @@ func TestFromValues_Float32_2D(t *testing.T) {
 	}
 }
 
-func TestFromValues_Int32(t *testing.T) {
+func TestArray_FromValues_Int32_Good(t *testing.T) {
 	data := []int32{10, 20, 30}
 	a := FromValues(data, 3)
 	Materialize(a)
@@ -143,7 +143,7 @@ func TestFromValues_Int32(t *testing.T) {
 	}
 }
 
-func TestFromValues_Int64(t *testing.T) {
+func TestArray_FromValues_Int64_Good(t *testing.T) {
 	data := []int64{100, 200, 300}
 	a := FromValues(data, 3)
 	Materialize(a)
@@ -156,7 +156,7 @@ func TestFromValues_Int64(t *testing.T) {
 	}
 }
 
-func TestFromValues_Bool(t *testing.T) {
+func TestArray_FromValues_Bool_Good(t *testing.T) {
 	data := []bool{true, false, true}
 	a := FromValues(data, 3)
 	Materialize(a)
@@ -169,7 +169,7 @@ func TestFromValues_Bool(t *testing.T) {
 	}
 }
 
-func TestFromValues_Uint8(t *testing.T) {
+func TestArray_FromValues_Uint8_Good(t *testing.T) {
 	data := []uint8{0, 127, 255}
 	a := FromValues(data, 3)
 	Materialize(a)
@@ -179,7 +179,7 @@ func TestFromValues_Uint8(t *testing.T) {
 	}
 }
 
-func TestFromValues_PanicsWithoutShape(t *testing.T) {
+func TestArray_FromValues_PanicsWithoutShape_Ugly(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic when shape is missing")
@@ -190,7 +190,7 @@ func TestFromValues_PanicsWithoutShape(t *testing.T) {
 
 // --- Zeros ---
 
-func TestZeros(t *testing.T) {
+func TestArray_Zeros_Good(t *testing.T) {
 	a := Zeros([]int32{2, 3}, DTypeFloat32)
 	Materialize(a)
 
@@ -212,7 +212,7 @@ func TestZeros(t *testing.T) {
 	}
 }
 
-func TestZeros_Int32(t *testing.T) {
+func TestArray_Zeros_Int32_Good(t *testing.T) {
 	a := Zeros([]int32{4}, DTypeInt32)
 	Materialize(a)
 
@@ -228,7 +228,7 @@ func TestZeros_Int32(t *testing.T) {
 
 // --- Shape and metadata ---
 
-func TestArray_Shape3D(t *testing.T) {
+func TestArray_Shape3D_Good(t *testing.T) {
 	data := make([]float32, 24)
 	a := FromValues(data, 2, 3, 4)
 	Materialize(a)
@@ -250,7 +250,7 @@ func TestArray_Shape3D(t *testing.T) {
 
 // --- String representation ---
 
-func TestArray_String(t *testing.T) {
+func TestArray_String_Good(t *testing.T) {
 	a := FromValue(float32(42.0))
 	Materialize(a)
 
@@ -264,7 +264,7 @@ func TestArray_String(t *testing.T) {
 
 // --- Clone and Set ---
 
-func TestArray_Clone(t *testing.T) {
+func TestArray_Clone_Good(t *testing.T) {
 	a := FromValue(float32(7.0))
 	b := a.Clone()
 	Materialize(a, b)
@@ -274,7 +274,7 @@ func TestArray_Clone(t *testing.T) {
 	}
 }
 
-func TestArray_Set(t *testing.T) {
+func TestArray_Set_Good(t *testing.T) {
 	a := FromValue(float32(1.0))
 	b := FromValue(float32(2.0))
 	Materialize(a, b)
@@ -289,7 +289,7 @@ func TestArray_Set(t *testing.T) {
 
 // --- Valid and Free ---
 
-func TestArray_Valid(t *testing.T) {
+func TestArray_Valid_Good(t *testing.T) {
 	a := FromValue(float32(1.0))
 	Materialize(a)
 
@@ -303,7 +303,7 @@ func TestArray_Valid(t *testing.T) {
 	}
 }
 
-func TestFree_ReturnsBytes(t *testing.T) {
+func TestArray_Free_ReturnsBytes_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 4)
 	Materialize(a)
 
@@ -313,7 +313,7 @@ func TestFree_ReturnsBytes(t *testing.T) {
 	}
 }
 
-func TestFree_NilSafe(t *testing.T) {
+func TestArray_Free_NilSafe_Good(t *testing.T) {
 	// Should not panic on nil
 	n := Free(nil)
 	if n != 0 {
@@ -323,7 +323,7 @@ func TestFree_NilSafe(t *testing.T) {
 
 // --- Contiguous handling ---
 
-func TestIsRowContiguous_Fresh(t *testing.T) {
+func TestArray_IsRowContiguous_Fresh_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	Materialize(a)
 
@@ -332,7 +332,7 @@ func TestIsRowContiguous_Fresh(t *testing.T) {
 	}
 }
 
-func TestIsRowContiguous_Transposed(t *testing.T) {
+func TestArray_IsRowContiguous_Transposed_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	b := Transpose(a)
 	Materialize(b)
@@ -342,7 +342,7 @@ func TestIsRowContiguous_Transposed(t *testing.T) {
 	}
 }
 
-func TestContiguous_MakesContiguous(t *testing.T) {
+func TestArray_Contiguous_MakesContiguous_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	b := Transpose(a) // non-contiguous
 	c := Contiguous(b)
@@ -357,7 +357,7 @@ func TestContiguous_MakesContiguous(t *testing.T) {
 	}
 }
 
-func TestFloats_NonContiguous(t *testing.T) {
+func TestArray_Floats_NonContiguous_Good(t *testing.T) {
 	// [[1 2 3], [4 5 6]] transposed → [[1 4], [2 5], [3 6]]
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	b := Transpose(a)
@@ -373,7 +373,7 @@ func TestFloats_NonContiguous(t *testing.T) {
 	}
 }
 
-func TestDataInt32_NonContiguous(t *testing.T) {
+func TestArray_DataInt32_NonContiguous_Good(t *testing.T) {
 	a := FromValues([]int32{1, 2, 3, 4, 5, 6}, 2, 3)
 	b := Transpose(a)
 	Materialize(b)
@@ -387,7 +387,7 @@ func TestDataInt32_NonContiguous(t *testing.T) {
 	}
 }
 
-func TestFloats_BroadcastView(t *testing.T) {
+func TestArray_Floats_BroadcastView_Good(t *testing.T) {
 	// BroadcastTo creates a non-contiguous view
 	a := FromValues([]float32{1, 2, 3}, 1, 3)
 	b := BroadcastTo(a, []int32{2, 3})
@@ -402,7 +402,7 @@ func TestFloats_BroadcastView(t *testing.T) {
 	}
 }
 
-func TestFloats_SliceView(t *testing.T) {
+func TestArray_Floats_SliceView_Good(t *testing.T) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	// Slice columns 1:3 — creates a non-contiguous view
 	b := SliceAxis(a, 1, 1, 3)
@@ -419,7 +419,7 @@ func TestFloats_SliceView(t *testing.T) {
 
 // --- Data extraction edge cases ---
 
-func TestArray_Ints(t *testing.T) {
+func TestArray_Ints_Good(t *testing.T) {
 	data := []int32{10, 20, 30, 40}
 	a := FromValues(data, 4)
 	Materialize(a)
@@ -432,7 +432,7 @@ func TestArray_Ints(t *testing.T) {
 	}
 }
 
-func TestArray_Float_DTypeFloat32(t *testing.T) {
+func TestArray_Float_DTypeFloat32_Good(t *testing.T) {
 	a := FromValue(float32(1.5))
 	Materialize(a)
 
@@ -442,7 +442,7 @@ func TestArray_Float_DTypeFloat32(t *testing.T) {
 	}
 }
 
-func TestArray_Float_DTypeFloat64(t *testing.T) {
+func TestArray_Float_DTypeFloat64_Good(t *testing.T) {
 	a := FromValue(float64(1.5))
 	Materialize(a)
 

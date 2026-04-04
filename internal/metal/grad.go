@@ -26,8 +26,6 @@ import (
 	coreerr "forge.lthn.ai/core/go-log"
 )
 
-// --- Closure registry (separate from compile.go's registry) ---
-
 var (
 	gradFuncs  sync.Map
 	gradNextID atomic.Uintptr
@@ -78,34 +76,28 @@ func newClosure(fn func([]*Array) []*Array) C.mlx_closure {
 	return C.new_grad_closure(unsafe.Pointer(id))
 }
 
-// --- VJP (Vector-Jacobian Product) — Reverse Mode ---
-
 // VJP computes the vector-Jacobian product (reverse-mode autodiff).
-// Given a function fn, input primals, and output cotangents (upstream gradients),
-// returns (outputs, gradients) where gradients are w.r.t. the primals.
+// Returns (outputs, gradients w.r.t. primals).
 //
-// This is the fundamental backward pass operation.
+//	out, grads, err := metal.VJP(fn, primals, cotangents)
 func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (outputs []*Array, vjps []*Array, err error) {
 	Init()
 
 	closure := newClosure(fn)
 	defer C.mlx_closure_free(closure)
 
-	// Pack primals into vector
 	primalsVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(primalsVec)
 	for _, p := range primals {
 		C.mlx_vector_array_append_value(primalsVec, p.ctx)
 	}
 
-	// Pack cotangents into vector
 	cotangentsVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(cotangentsVec)
 	for _, c := range cotangents {
 		C.mlx_vector_array_append_value(cotangentsVec, c.ctx)
 	}
 
-	// Call mlx_vjp
 	var outVec, vjpVec C.mlx_vector_array
 	outVec = C.mlx_vector_array_new()
 	vjpVec = C.mlx_vector_array_new()
@@ -125,13 +117,10 @@ func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (out
 	return outputs, vjps, nil
 }
 
-// --- JVP (Jacobian-Vector Product) — Forward Mode ---
-
 // JVP computes the Jacobian-vector product (forward-mode autodiff).
-// Given a function fn, input primals, and input tangents (perturbation directions),
-// returns (outputs, output_tangents).
+// Returns (outputs, output_tangents). Useful for directional derivatives.
 //
-// Useful for directional derivatives and Hessian-vector products.
+//	out, jvps, err := metal.JVP(fn, primals, tangents)
 func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outputs []*Array, jvps []*Array, err error) {
 	Init()
 
@@ -169,11 +158,7 @@ func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outpu
 	return outputs, jvps, nil
 }
 
-// --- ValueAndGrad — Combined Forward + Backward ---
-
-// GradFn is a function that computes both the loss value and gradients
-// with respect to specified arguments. Call it with inputs to get
-// (values, gradients).
+// GradFn computes both the loss value and gradients for specified arguments.
 type GradFn struct {
 	cls C.mlx_closure_value_and_grad
 }
@@ -193,7 +178,6 @@ func ValueAndGrad(fn func([]*Array) []*Array, argnums ...int) *GradFn {
 	closure := newClosure(fn)
 	defer C.mlx_closure_free(closure)
 
-	// Default: differentiate w.r.t. first argument
 	if len(argnums) == 0 {
 		argnums = []int{0}
 	}
@@ -203,14 +187,15 @@ func ValueAndGrad(fn func([]*Array) []*Array, argnums ...int) *GradFn {
 		cArgs[i] = C.int(a)
 	}
 
-	g := &GradFn{}
-	C.mlx_value_and_grad(&g.cls, closure, &cArgs[0], C.size_t(len(cArgs)))
-	return g
+	gradFn := &GradFn{}
+	C.mlx_value_and_grad(&gradFn.cls, closure, &cArgs[0], C.size_t(len(cArgs)))
+	return gradFn
 }
 
 // Apply calls the gradient function with the given inputs.
-// Returns (values, gradients) where values are the function outputs
-// and gradients are w.r.t. the arguments specified in ValueAndGrad.
+// Returns (function outputs, gradients w.r.t. argnums specified in ValueAndGrad).
+//
+//	values, grads, err := grad.Apply(params...)
 func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err error) {
 	inputVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(inputVec)
@@ -237,15 +222,15 @@ func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err e
 	return values, grads, nil
 }
 
-// Free releases the underlying C closure.
+// Free releases the underlying C closure. Call when the GradFn is no longer needed.
+//
+//	defer gradFn.Free() // release closure after training loop
 func (g *GradFn) Free() {
 	if g.cls.ctx != nil {
 		C.mlx_closure_value_and_grad_free(g.cls)
 		g.cls.ctx = nil
 	}
 }
-
-// --- Checkpoint — Memory-Efficient Gradient Recomputation ---
 
 // Checkpoint wraps a function so that during backward pass, intermediate
 // activations are recomputed rather than stored. Trades compute for memory.
@@ -284,8 +269,6 @@ func Checkpoint(fn func([]*Array) []*Array) func([]*Array) []*Array {
 		return vectorToArrays(outVec)
 	}
 }
-
-// --- Loss Functions ---
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
 // logits: [..., V] (raw model output, pre-softmax, last dim = vocab)
@@ -333,8 +316,6 @@ func MSELoss(predictions, targets *Array) *Array {
 	sq := Square(diff)
 	return MeanAll(sq)
 }
-
-// --- Helpers ---
 
 // vectorToArrays extracts all arrays from an mlx_vector_array.
 func vectorToArrays(vec C.mlx_vector_array) []*Array {

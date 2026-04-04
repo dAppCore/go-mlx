@@ -4,7 +4,7 @@ package metal
 
 import "testing"
 
-func TestCopy_BreaksGraph(t *testing.T) {
+func TestCopy_Copy_BreaksGraph_Good(t *testing.T) {
 	// Create a chain: a -> b -> c
 	a := FromValue(float32(1.0))
 	b := Add(a, FromValue(float32(2.0)))

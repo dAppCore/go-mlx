@@ -4,9 +4,11 @@ package metal
 
 import (
 	"math"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"dappco.re/go/core"
+
+	coreio "forge.lthn.ai/core/go-io"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.
@@ -17,7 +19,7 @@ func gemma3Path(t *testing.T) string {
 		"/Volumes/Data/lem/safetensors/gemma-3/",
 	}
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
+		if coreio.Local.Exists(p) {
 			return p
 		}
 	}
@@ -25,9 +27,9 @@ func gemma3Path(t *testing.T) string {
 	return ""
 }
 
-// TestLoRA_EndToEnd validates the full LoRA training pipeline:
+// TestTraining_LoRA_EndToEnd validates the full LoRA training pipeline:
 // load base model → apply LoRA → train on small data → save adapter → reload.
-func TestLoRA_EndToEnd(t *testing.T) {
+func TestTraining_LoRA_EndToEnd_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	// Step 1: Load base model.
@@ -123,16 +125,16 @@ func TestLoRA_EndToEnd(t *testing.T) {
 	}
 
 	// Step 5: Save adapter.
-	savePath := filepath.Join(t.TempDir(), "adapter.safetensors")
+	savePath := core.JoinPath(t.TempDir(), "adapter.safetensors")
 	if err := adapter.Save(savePath); err != nil {
 		t.Fatalf("adapter.Save: %v", err)
 	}
 
-	info, err := os.Stat(savePath)
+	adapterInfo, err := coreio.Local.Stat(savePath)
 	if err != nil {
 		t.Fatalf("saved adapter not found: %v", err)
 	}
-	t.Logf("adapter saved: %s (%d bytes)", savePath, info.Size())
+	t.Logf("adapter saved: %s (%d bytes)", savePath, adapterInfo.Size())
 
 	// Step 6: Reload and verify weights match.
 	loaded, err := LoadAllSafetensors(savePath)
@@ -192,9 +194,9 @@ func TestLoRA_EndToEnd(t *testing.T) {
 	ClearCache()
 }
 
-// TestLoRA_GradientCheckpointing validates that wrapping the forward pass in
+// TestTraining_LoRA_GradientCheckpointing validates that wrapping the forward pass in
 // Checkpoint produces correct gradients (same loss decrease as non-checkpointed).
-func TestLoRA_GradientCheckpointing(t *testing.T) {
+func TestTraining_LoRA_GradientCheckpointing_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	model, err := loadModel(modelPath)
@@ -277,10 +279,10 @@ func TestLoRA_GradientCheckpointing(t *testing.T) {
 	ClearCache()
 }
 
-// TestLoRA_MixedPrecision validates training with BFloat16 LoRA parameters.
+// TestTraining_LoRA_MixedPrecision validates training with BFloat16 LoRA parameters.
 // The base model stays in its native dtype; LoRA A/B are BFloat16.
 // MLX auto-promotes for cross-dtype operations.
-func TestLoRA_MixedPrecision(t *testing.T) {
+func TestTraining_LoRA_MixedPrecision_Good(t *testing.T) {
 	modelPath := gemma3Path(t)
 
 	model, err := loadModel(modelPath)

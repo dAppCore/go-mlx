@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestBuildBatchMask_Shape(t *testing.T) {
+func TestBatch_BuildBatchMask_Shape_Good(t *testing.T) {
 	// 2 prompts, max length 4, prompt lengths [3, 2].
 	mask := buildBatchMask(2, 4, []int32{3, 2})
 	if err := Eval(mask); err != nil {
@@ -26,7 +26,7 @@ func TestBuildBatchMask_Shape(t *testing.T) {
 	}
 }
 
-func TestBuildBatchMask_Values(t *testing.T) {
+func TestBatch_BuildBatchMask_Values_Good(t *testing.T) {
 	// Single prompt of length 3, padded to 4.
 	// Expected mask [1, 1, 4, 4]:
 	//   row 0: [0, -inf, -inf, -inf]  (can only attend to pos 0)
@@ -69,7 +69,7 @@ func TestBuildBatchMask_Values(t *testing.T) {
 	}
 }
 
-func TestBuildBatchMask_MultipleBatches(t *testing.T) {
+func TestBatch_BuildBatchMask_MultipleBatches_Good(t *testing.T) {
 	// 2 prompts: lengths [2, 1], max length 2.
 	mask := buildBatchMask(2, 2, []int32{2, 1})
 	if err := Eval(mask); err != nil {

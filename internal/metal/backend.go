@@ -11,21 +11,23 @@ type LoadConfig struct {
 }
 
 // LoadAndInit initialises Metal and loads a model from the given path.
-// Returns a *Model ready for generation.
+//
+//	m, err := metal.LoadAndInit("/Volumes/Data/lem/gemma-3-1b-it-base")
+//	m, err := metal.LoadAndInit(path, metal.LoadConfig{ContextLen: 4096})
 func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	Init()
 	im, err := loadModel(path)
 	if err != nil {
 		return nil, coreerr.E("metal.LoadAndInit", "load model", err)
 	}
-	m := &Model{
+	model := &Model{
 		model:     im,
 		tokenizer: im.Tokenizer(),
 		modelType: im.ModelType(),
 	}
 	if len(cfg) > 0 {
 		if cfg[0].ContextLen > 0 {
-			m.contextLen = cfg[0].ContextLen
+			model.contextLen = cfg[0].ContextLen
 		}
 		if cfg[0].AdapterPath != "" {
 			if err := applyLoadedLoRA(im, cfg[0].AdapterPath); err != nil {
@@ -33,5 +35,5 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 			}
 		}
 	}
-	return m, nil
+	return model, nil
 }
