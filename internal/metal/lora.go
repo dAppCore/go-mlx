@@ -18,8 +18,8 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
-	coreerr "forge.lthn.ai/core/go-log"
+	coreio "dappco.re/go/core/io"
+	coreerr "dappco.re/go/core/log"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.

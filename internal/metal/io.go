@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	coreerr "forge.lthn.ai/core/go-log"
+	coreerr "dappco.re/go/core/log"
 )
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator

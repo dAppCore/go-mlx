@@ -7,7 +7,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/core/io"
 )
 
 // minimalTokenizerJSON is a valid HuggingFace tokenizer.json with a tiny vocab.

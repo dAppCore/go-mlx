@@ -8,7 +8,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/core/io"
 )
 
 func TestLora_NewLoRALinear_Good(t *testing.T) {

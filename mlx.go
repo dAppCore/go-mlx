@@ -1,10 +1,10 @@
 // Package mlx provides Apple Metal GPU inference via mlx-c bindings.
 //
 // This package implements the [inference.Backend] interface from
-// forge.lthn.ai/core/go-inference for Apple Silicon (M1-M4) GPUs.
+// dappco.re/go/core/inference for Apple Silicon (M1-M4) GPUs.
 // Import it blank to register the "metal" backend automatically:
 //
-//	import _ "forge.lthn.ai/core/go-mlx"
+//	import _ "dappco.re/go/core/mlx"
 //
 // Build mlx-c before use:
 //

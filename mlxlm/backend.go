@@ -13,7 +13,7 @@
 //
 // # Usage
 //
-//	import _ "forge.lthn.ai/core/go-mlx/mlxlm"
+//	import _ "dappco.re/go/core/mlx/mlxlm"
 //
 //	ctx := context.Background()
 //	model, err := inference.LoadModel("/path/to/model", inference.WithBackend("mlx_lm"))
@@ -38,9 +38,9 @@ import (
 
 	"dappco.re/go/core"
 
-	"forge.lthn.ai/core/go-inference"
-	coreio "forge.lthn.ai/core/go-io"
-	coreerr "forge.lthn.ai/core/go-log"
+	"dappco.re/go/core/inference"
+	coreio "dappco.re/go/core/io"
+	coreerr "dappco.re/go/core/log"
 )
 
 //go:embed bridge.py

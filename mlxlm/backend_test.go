@@ -12,7 +12,7 @@ import (
 
 	"dappco.re/go/core"
 
-	"forge.lthn.ai/core/go-inference"
+	"dappco.re/go/core/inference"
 )
 
 // mockScript returns the absolute path to testdata/mock_bridge.py.

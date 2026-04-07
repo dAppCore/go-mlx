@@ -10,7 +10,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreerr "forge.lthn.ai/core/go-log"
+	coreerr "dappco.re/go/core/log"
 )
 
 // Token represents a single generated token.

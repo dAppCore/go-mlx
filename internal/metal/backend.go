@@ -2,7 +2,7 @@
 
 package metal
 
-import coreerr "forge.lthn.ai/core/go-log"
+import coreerr "dappco.re/go/core/log"
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {

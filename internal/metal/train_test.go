@@ -8,7 +8,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/core/io"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.

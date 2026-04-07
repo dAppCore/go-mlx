@@ -3,8 +3,8 @@
 package mlx
 
 import (
-	"forge.lthn.ai/core/go-inference"
-	"forge.lthn.ai/core/go-mlx/internal/metal"
+	"dappco.re/go/core/inference"
+	"dappco.re/go/core/mlx/internal/metal"
 )
 
 // Array is a Metal GPU tensor.

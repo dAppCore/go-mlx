@@ -9,9 +9,9 @@ import (
 
 	"dappco.re/go/core"
 
-	"forge.lthn.ai/core/go-inference"
-	coreio "forge.lthn.ai/core/go-io"
-	mlx "forge.lthn.ai/core/go-mlx"
+	"dappco.re/go/core/inference"
+	coreio "dappco.re/go/core/io"
+	mlx "dappco.re/go/core/mlx"
 )
 
 func TestMetalAvailable_Good(t *testing.T) {

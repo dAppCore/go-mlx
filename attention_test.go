@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"forge.lthn.ai/core/go-inference"
-	mlx "forge.lthn.ai/core/go-mlx"
+	"dappco.re/go/core/inference"
+	mlx "dappco.re/go/core/mlx"
 )
 
 func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {

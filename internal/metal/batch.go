@@ -11,7 +11,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreerr "forge.lthn.ai/core/go-log"
+	coreerr "dappco.re/go/core/log"
 )
 
 // ClassifyResult holds the output for a single prompt in batch classification.
