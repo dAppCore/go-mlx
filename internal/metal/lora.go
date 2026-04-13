@@ -9,7 +9,6 @@ package metal
 import "C"
 
 import (
-	"log/slog"
 	"maps"
 	"math"
 	"slices"
@@ -19,7 +18,6 @@ import (
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.
@@ -248,11 +246,11 @@ type adapterConfig struct {
 func parseAdapterConfig(path string) (*adapterConfig, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, coreerr.E("lora.parseAdapterConfig", "read adapter_config.json", err)
+		return nil, core.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
 	var config adapterConfig
 	if r := core.JSONUnmarshal([]byte(str), &config); !r.OK {
-		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
+		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
 	if config.Rank == 0 {
@@ -268,7 +266,7 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 func loadAdapterWeights(dir string) (map[string]*Array, error) {
 	matches := core.PathGlob(core.JoinPath(dir, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, coreerr.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
+		return nil, core.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
 	}
 
 	weights := make(map[string]*Array)
@@ -277,7 +275,7 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 			weights[name] = arr
 		}
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
+			return nil, core.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
 		}
 	}
 	return weights, nil
@@ -399,7 +397,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	for name, arr := range weights {
 		layerIdx, projPath, suffix := parseLoRAWeightName(name)
 		if layerIdx < 0 {
-			slog.Warn("adapter: skipping unrecognised weight", "name", name)
+			core.Warn("adapter: skipping unrecognised weight", "name", name)
 			continue
 		}
 		key := loraKey{layerIdx, projPath}
@@ -421,14 +419,14 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 
 	for key, pair := range pairs {
 		if pair.matrixA == nil || pair.matrixB == nil {
-			slog.Warn("adapter: incomplete LoRA pair, skipping",
+			core.Warn("adapter: incomplete LoRA pair, skipping",
 				"layer", key.layerIdx, "proj", key.projPath)
 			continue
 		}
 
 		linear := resolveLinear(model, key.layerIdx, key.projPath)
 		if linear == nil {
-			slog.Warn("adapter: target layer not found, skipping",
+			core.Warn("adapter: target layer not found, skipping",
 				"layer", key.layerIdx, "proj", key.projPath)
 			continue
 		}
@@ -446,15 +444,12 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	}
 
 	if injected == 0 {
-		return coreerr.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
+		return core.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
 	}
 
-	slog.Info("adapter loaded",
-		"path", adapterDir,
-		"rank", config.Rank,
-		"alpha", config.Alpha,
-		"scale", scale,
-		"layers_injected", injected,
+	core.Info("adapter loaded",
+		"path", adapterDir, "rank", config.Rank, "alpha", config.Alpha,
+		"scale", scale, "layers_injected", injected,
 	)
 	return nil
 }
@@ -487,7 +482,7 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
+		return core.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
 	}
 	return nil
 }

@@ -88,6 +88,9 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 		cShape[i] = C.int(shape[i])
 	}
 
+	// reflect.TypeOf is required here to map Go generic type parameters to MLX-C
+	// dtype constants. Type assertions cannot recover the element type from a
+	// generic ~[]E constraint at runtime. CGo tensor boundary — not business logic.
 	var dtype DType
 	switch reflect.TypeOf(s).Elem().Kind() {
 	case reflect.Bool:
@@ -246,6 +249,32 @@ func (t Array) Float() float64 {
 		C.mlx_array_item_float64(&item, t.ctx)
 		return float64(item)
 	}
+}
+
+// Bool extracts a scalar boolean value from a bool-dtype array.
+//
+//	if metal.Any(mask, false); result.Bool() { /* at least one true */ }
+func (t Array) Bool() bool {
+	var item C.bool
+	C.mlx_array_item_bool(&item, t.ctx)
+	return bool(item)
+}
+
+// SetFloat64 replaces this array with a float64 scalar value.
+//
+//	a.SetFloat64(3.14159) // overwrite array with a new scalar
+func (t *Array) SetFloat64(v float64) {
+	C.mlx_array_set_float64(&t.ctx, C.double(v))
+}
+
+// ShapeRaw returns a pointer to the C shape array and the number of dimensions.
+// This avoids allocation when only direct dimension access is needed.
+// The returned pointer is valid only while the array is alive.
+//
+//	ndim := a.NumDims()
+//	ptr := a.ShapeRaw() // *C.int, read ptr[0..ndim-1]
+func (t Array) ShapeRaw() unsafe.Pointer {
+	return unsafe.Pointer(C.mlx_array_shape(t.ctx))
 }
 
 // IsRowContiguous reports whether the array's physical memory layout is

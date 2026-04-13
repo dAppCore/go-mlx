@@ -1,0 +1,12 @@
+[submodule "lib/mlx-c"]
+	path = lib/mlx-c
+	url = https://github.com/ml-explore/mlx-c.git
+[submodule "lib/mlx"]
+	path = lib/mlx
+	url = https://github.com/ml-explore/mlx.git
+[submodule "lib/fmt"]
+	path = lib/fmt
+	url = https://github.com/fmtlib/fmt.git
+[submodule "lib/json"]
+	path = lib/json
+	url = https://github.com/nlohmann/json.git

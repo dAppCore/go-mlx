@@ -6,7 +6,6 @@ import (
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 // InternalModel is the common interface for all transformer model architectures.
@@ -58,7 +57,7 @@ func resolveWeight(weights map[string]*Array, name string) *Array {
 func loadModel(modelPath string) (InternalModel, error) {
 	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
-		return nil, coreerr.E("model.loadModel", "load config", err)
+		return nil, core.E("model.loadModel", "load config", err)
 	}
 	data := []byte(str)
 
@@ -66,7 +65,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 		ModelType string `json:"model_type"`
 	}
 	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return nil, coreerr.E("model.loadModel", "parse model_type", nil)
+		return nil, core.E("model.loadModel", "parse model_type", nil)
 	}
 
 	switch probe.ModelType {
@@ -75,6 +74,6 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	default:
-		return nil, coreerr.E("model.loadModel", "unsupported architecture: "+probe.ModelType, nil)
+		return nil, core.E("model.loadModel", "unsupported architecture: "+probe.ModelType, nil)
 	}
 }

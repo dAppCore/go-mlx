@@ -3,14 +3,12 @@
 package metal
 
 import (
-	"log/slog"
 	"maps"
 	"math"
 
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 // TextConfig holds Gemma 3 text model configuration.
@@ -104,12 +102,23 @@ func geluApprox(x *Array) *Array {
 	const sqrt2OverPi = 0.7978845608028654
 	const coeff = 0.044715
 
-	x3 := Mul(Mul(x, x), x)
-	inner := Add(x, MulScalar(x3, coeff))
+	xSquared := Mul(x, x)
+	x3 := Mul(xSquared, x)
+	Free(xSquared)
+	x3Scaled := MulScalar(x3, coeff)
+	Free(x3)
+	inner := Add(x, x3Scaled)
+	Free(x3Scaled)
 	scaled := MulScalar(inner, sqrt2OverPi)
+	Free(inner)
 	t := Tanh(scaled)
+	Free(scaled)
 	onePlusT := AddScalar(t, 1.0)
-	return Mul(MulScalar(x, 0.5), onePlusT)
+	Free(t)
+	halfX := MulScalar(x, 0.5)
+	result := Mul(halfX, onePlusT)
+	Free(halfX, onePlusT)
+	return result
 }
 
 // parseConfig handles both flat and nested (text_config) Gemma 3 configs.
@@ -121,7 +130,7 @@ func parseConfig(data []byte) (*TextConfig, error) {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
-		return nil, coreerr.E("gemma3.parseConfig", "parse config", nil)
+		return nil, core.E("gemma3.parseConfig", "parse config", nil)
 	}
 
 	cfg := wrapper.TextConfig
@@ -129,7 +138,7 @@ func parseConfig(data []byte) (*TextConfig, error) {
 	// If text_config was empty, try top-level
 	if cfg.NumHiddenLayers == 0 {
 		if r := core.JSONUnmarshal(data, &cfg); !r.OK {
-			return nil, coreerr.E("gemma3.parseConfig", "parse top-level config", nil)
+			return nil, core.E("gemma3.parseConfig", "parse top-level config", nil)
 		}
 	}
 
@@ -163,31 +172,31 @@ func parseConfig(data []byte) (*TextConfig, error) {
 func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
-		return nil, coreerr.E("gemma3.LoadGemma3", "load config", err)
+		return nil, core.E("gemma3.LoadGemma3", "load config", err)
 	}
 	data := []byte(str)
 
 	cfg, err := parseConfig(data)
 	if err != nil {
-		return nil, coreerr.E("gemma3.LoadGemma3", "parse config", err)
+		return nil, core.E("gemma3.LoadGemma3", "parse config", err)
 	}
 
 	// Load tokenizer
 	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
 	if err != nil {
-		return nil, coreerr.E("gemma3.LoadGemma3", "load tokenizer", err)
+		return nil, core.E("gemma3.LoadGemma3", "load tokenizer", err)
 	}
 
 	// Load weights from all safetensors files
 	weights := make(map[string]*Array)
 	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, coreerr.E("gemma3.LoadGemma3", "no .safetensors files found in "+modelPath, nil)
+		return nil, core.E("gemma3.LoadGemma3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("gemma3.LoadGemma3", "load weights "+core.PathBase(path), err)
+			return nil, core.E("gemma3.LoadGemma3", "load weights "+core.PathBase(path), err)
 		}
 	}
 
@@ -202,14 +211,14 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 			if len(qShape) > 0 {
 				cfg.HeadDim = qShape[0] / cfg.NumAttentionHeads
 				cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
-				slog.Info("mlx: inferred head_dim from q_proj weight", "head_dim", cfg.HeadDim)
+				core.Info("mlx: inferred head_dim from q_proj weight", "head_dim", cfg.HeadDim)
 			}
 		}
 	}
 
 	quantConfig := cfg.Quantization
 	if quantConfig != nil {
-		slog.Info("mlx: using quantized inference", "bits", quantConfig.Bits, "group_size", quantConfig.GroupSize)
+		core.Info("mlx: using quantized inference", "bits", quantConfig.Bits, "group_size", quantConfig.GroupSize)
 	}
 	linear := func(prefix string) *Linear {
 		layerWeight := weight(prefix + ".weight")

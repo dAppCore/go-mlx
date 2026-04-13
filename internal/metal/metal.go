@@ -4,22 +4,32 @@
 package metal
 
 /*
-#cgo CXXFLAGS: -std=c++17
-#cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
-#cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
-#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
+#cgo CXXFLAGS: -std=gnu++17 -O2 -DNDEBUG -include ${SRCDIR}/mlx_build_config.h
+#cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_USE_ACCELERATE
+#cgo CFLAGS: -mmacosx-version-min=14.0
+#cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx
+#cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../lib/fmt/include
+#cgo CPPFLAGS: -I${SRCDIR}/../../lib/json/single_include/nlohmann
+#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include/metal_cpp
+#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
+#cgo darwin LDFLAGS: -lc++
 
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "mlx/c/mlx.h"
 
-static _Atomic(const char *) last_mlx_error = NULL;
+static _Atomic(char *) last_mlx_error = NULL;
 
+// mlx_go_error_handler copies the error message because MLX-C frees the
+// original buffer after the handler returns (_mlx_error uses stack-local
+// std::vector<char>).
 static void mlx_go_error_handler(const char *msg, void *data) {
-    atomic_store_explicit(&last_mlx_error, msg, memory_order_release);
+    char *copy = strdup(msg);
+    char *prev = atomic_exchange_explicit(&last_mlx_error, copy, memory_order_acq_rel);
+    free(prev); // free any previous uncollected error
 }
 
 static void set_error_handler() {
@@ -33,33 +43,48 @@ static const char* get_and_clear_last_error() {
 import "C"
 
 import (
-	"log/slog"
+	"os"
+	"runtime"
 	"sync"
+	"unsafe"
 
 	"dappco.re/go/core"
-
-	coreerr "dappco.re/go/core/log"
 )
 
 var initOnce sync.Once
 
-// Init sets up the MLX error handler and is called automatically on first use.
+// Init sets up the MLX error handler and metallib path.
+// Called automatically on first use. Safe to call multiple times.
 //
 //	metal.Init() // idempotent; safe to call multiple times
 func Init() {
 	initOnce.Do(func() {
+		// Set the metallib path before any Metal operation triggers device
+		// initialisation. runtime.Caller gives the absolute source file path,
+		// from which we derive the dist/lib/mlx.metallib location.
+		// os.Setenv is required here — core has no SetEnv, and Metal device init
+		// reads this env var before any CGo call. Legitimate hardware boundary.
+		if core.Env("MLX_METALLIB_PATH") == "" {
+			_, thisFile, _, _ := runtime.Caller(0)
+			metallib := core.JoinPath(core.PathDir(thisFile), "..", "..", "dist", "lib", "mlx.metallib")
+			os.Setenv("MLX_METALLIB_PATH", metallib)
+		}
+
 		C.set_error_handler()
-		slog.Debug("mlx: initialised with Metal backend")
 	})
 }
 
 // lastError reads and clears the most recent MLX-C error, or nil if none.
+// The returned error message is heap-allocated by strdup in the C error handler,
+// so we free it after copying to a Go string.
 func lastError() error {
 	msg := C.get_and_clear_last_error()
 	if msg == nil {
 		return nil
 	}
-	return coreerr.E("mlx.lastError", C.GoString(msg), nil)
+	goMsg := C.GoString(msg)
+	C.free(unsafe.Pointer(msg))
+	return core.E("mlx.lastError", goMsg, nil)
 }
 
 // Eval synchronously evaluates arrays on the GPU.
@@ -82,7 +107,7 @@ func Eval(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.Eval", core.Sprintf("eval failed (rc=%d)", rc), nil)
+		return core.E("mlx.Eval", core.Sprintf("eval failed (rc=%d)", rc), nil)
 	}
 	return nil
 }
@@ -106,7 +131,7 @@ func EvalAsync(outputs ...*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.EvalAsync", core.Sprintf("async eval failed (rc=%d)", rc), nil)
+		return core.E("mlx.EvalAsync", core.Sprintf("async eval failed (rc=%d)", rc), nil)
 	}
 	return nil
 }
@@ -117,7 +142,7 @@ func EvalAsync(outputs ...*Array) error {
 //	metal.Materialize(a, b, c)
 func Materialize(outputs ...*Array) {
 	if err := Eval(outputs...); err != nil {
-		slog.Error("mlx: materialize", "error", err)
+		core.Error("mlx: materialize", "error", err)
 	}
 }
 
@@ -126,7 +151,7 @@ func Materialize(outputs ...*Array) {
 //	metal.MaterializeAsync(output)
 func MaterializeAsync(outputs ...*Array) {
 	if err := EvalAsync(outputs...); err != nil {
-		slog.Error("mlx: materialize async", "error", err)
+		core.Error("mlx: materialize async", "error", err)
 	}
 }
 
@@ -138,4 +163,15 @@ func MetalAvailable() bool {
 	var available C.bool
 	C.mlx_metal_is_available(&available)
 	return bool(available)
+}
+
+// Version returns the MLX framework version string (e.g. "0.24.0").
+//
+//	fmt.Printf("MLX version: %s\n", metal.Version())
+func Version() string {
+	Init()
+	str := C.mlx_string_new()
+	defer C.mlx_string_free(str)
+	C.mlx_version(&str)
+	return C.GoString(C.mlx_string_data(str))
 }

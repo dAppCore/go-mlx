@@ -409,3 +409,43 @@ func MaxAxis(a *Array, axis int, keepDims bool) *Array {
 	C.mlx_max_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
 	return out
 }
+
+// Any reduces with logical OR over all elements. Returns a scalar bool array.
+// Set keepDims to preserve the reduced dimension as size 1.
+//
+//	hasTrues := metal.Any(mask, false) // check if any element is true
+func Any(a *Array, keepDims bool) *Array {
+	out := newArray("ANY", a)
+	C.mlx_any(&out.ctx, a.ctx, C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}
+
+// AnyAxis reduces with logical OR along the given axis.
+//
+//	rowHasTrue := metal.AnyAxis(mask, 1, false) // per-row OR reduction
+func AnyAxis(a *Array, axis int, keepDims bool) *Array {
+	out := newArray("ANY_AXIS", a)
+	C.mlx_any_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}
+
+// Arange creates a 1-D array with evenly spaced values in [start, stop) with the given step.
+// Similar to numpy.arange.
+//
+//	indices := metal.Arange(0, 10, 1, DTypeInt32)   // [0, 1, 2, ..., 9]
+//	halves  := metal.Arange(0, 3, 0.5, DTypeFloat32) // [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+func Arange(start, stop, step float64, dtype DType) *Array {
+	Init()
+	out := newArray("ARANGE")
+	C.mlx_arange(&out.ctx, C.double(start), C.double(stop), C.double(step), C.mlx_dtype(dtype), DefaultStream().ctx)
+	return out
+}
+
+// IsNaN returns a boolean array indicating which elements are NaN.
+//
+//	nanMask := metal.IsNaN(logits) // detect NaN values before sampling
+func IsNaN(a *Array) *Array {
+	out := newArray("ISNAN", a)
+	C.mlx_isnan(&out.ctx, a.ctx, DefaultStream().ctx)
+	return out
+}

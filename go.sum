@@ -4,8 +4,6 @@ dappco.re/go/core/inference v0.3.0 h1:ANFnlVO1LEYDipeDeBgqmb8CHvOTUFhMPyfyHGqO0I
 dappco.re/go/core/inference v0.3.0/go.mod h1:wbRY0v6iwOoJCpTvcBFarAM08bMgpPcrF6yv3vccYoA=
 dappco.re/go/core/io v0.4.1 h1:15dm7ldhFIAuZOrBiQG6XVZDpSvCxtZsUXApwTAB3wQ=
 dappco.re/go/core/io v0.4.1/go.mod h1:w71dukyunczLb8frT9JOd5B78PjwWQD3YAXiCt3AcPA=
-dappco.re/go/core/log v0.1.2 h1:pQSZxKD8VycdvjNJmatXbPSq2OxcP2xHbF20zgFIiZI=
-dappco.re/go/core/log v0.1.2/go.mod h1:Nkqb8gsXhZAO8VLpx7B8i1iAmohhzqA20b9Zr8VUcJs=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=

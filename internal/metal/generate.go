@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"dappco.re/go/core"
-
-	coreerr "dappco.re/go/core/log"
 )
 
 // Token represents a single generated token.
@@ -188,7 +186,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		Free(vInput, input)
 
 		if err := Eval(logits); err != nil {
-			m.lastErr = coreerr.E("Model.Generate", "prefill", err)
+			m.lastErr = core.E("Model.Generate", "prefill", err)
 			return
 		}
 		// Detach logits and cache arrays to release the entire prefill computation
@@ -226,7 +224,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("sample step %d", i), err)
+				m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
 				Free(lastPos, next)
 				return
 			}
@@ -261,7 +259,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			Free(nextInput, oldLogits)
 
 			if err := Eval(logits); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("decode step %d", i), err)
+				m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
 				return
 			}
 
@@ -285,7 +283,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
-		return nil, coreerr.E("Model.InspectAttention", "empty prompt after tokenisation", nil)
+		return nil, core.E("Model.InspectAttention", "empty prompt after tokenisation", nil)
 	}
 
 	caches := m.newCaches()
@@ -297,7 +295,7 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	logits := m.model.Forward(input, caches)
 	Free(input)
 	if err := Eval(logits); err != nil {
-		return nil, coreerr.E("Model.InspectAttention", "prefill", err)
+		return nil, core.E("Model.InspectAttention", "prefill", err)
 	}
 
 	info := m.Info()

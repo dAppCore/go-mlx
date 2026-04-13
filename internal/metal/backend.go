@@ -2,7 +2,7 @@
 
 package metal
 
-import coreerr "dappco.re/go/core/log"
+import "dappco.re/go/core"
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
@@ -18,7 +18,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	Init()
 	im, err := loadModel(path)
 	if err != nil {
-		return nil, coreerr.E("metal.LoadAndInit", "load model", err)
+		return nil, core.E("metal.LoadAndInit", "load model", err)
 	}
 	model := &Model{
 		model:     im,
@@ -31,7 +31,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		}
 		if cfg[0].AdapterPath != "" {
 			if err := applyLoadedLoRA(im, cfg[0].AdapterPath); err != nil {
-				return nil, coreerr.E("metal.LoadAndInit", "load adapter", err)
+				return nil, core.E("metal.LoadAndInit", "load adapter", err)
 			}
 		}
 	}

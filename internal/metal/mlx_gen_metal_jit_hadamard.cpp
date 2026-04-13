@@ -1,0 +1,1 @@
+../../lib/generated/metal/jit/hadamard.cpp

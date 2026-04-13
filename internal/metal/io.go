@@ -13,7 +13,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	coreerr "dappco.re/go/core/log"
+	"dappco.re/go/core"
 )
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator
@@ -77,7 +77,7 @@ func LoadAllSafetensors(path string) (map[string]*Array, error) {
 		if err := lastError(); err != nil {
 			return nil, err
 		}
-		return nil, coreerr.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)
+		return nil, core.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)
 	}
 	return tensors, nil
 }

@@ -40,7 +40,6 @@ import (
 
 	"dappco.re/go/core/inference"
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 //go:embed bridge.py
@@ -59,17 +58,17 @@ func extractScript() (string, error) {
 	bridgeScriptOnce.Do(func() {
 		data, err := bridgeFS.ReadFile("bridge.py")
 		if err != nil {
-			bridgeScriptError = coreerr.E("mlxlm.extractScript", "read embedded bridge.py", err)
+			bridgeScriptError = core.E("mlxlm.extractScript", "read embedded bridge.py", err)
 			return
 		}
 		dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
 		if dir == "" {
-			bridgeScriptError = coreerr.E("mlxlm.extractScript", "create temp dir", nil)
+			bridgeScriptError = core.E("mlxlm.extractScript", "create temp dir", nil)
 			return
 		}
 		p := core.JoinPath(dir, "bridge.py")
 		if err := coreio.Local.Write(p, string(data)); err != nil {
-			bridgeScriptError = coreerr.E("mlxlm.extractScript", "write bridge.py", err)
+			bridgeScriptError = core.E("mlxlm.extractScript", "write bridge.py", err)
 			return
 		}
 		bridgeScriptPath = p
@@ -120,15 +119,15 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return nil, coreerr.E("mlxlm.loadModel", "stdin pipe", err)
+		return nil, core.E("mlxlm.loadModel", "stdin pipe", err)
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return nil, coreerr.E("mlxlm.loadModel", "stdout pipe", err)
+		return nil, core.E("mlxlm.loadModel", "stdout pipe", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, coreerr.E("mlxlm.loadModel", "start python3", err)
+		return nil, core.E("mlxlm.loadModel", "start python3", err)
 	}
 
 	scanner := bufio.NewScanner(stdoutPipe)
@@ -147,18 +146,18 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 	}
 	if err := model.send(loadRequest); err != nil {
 		model.kill()
-		return nil, coreerr.E("mlxlm.loadModel", "send load", err)
+		return nil, core.E("mlxlm.loadModel", "send load", err)
 	}
 
 	response, err := model.recv()
 	if err != nil {
 		model.kill()
-		return nil, coreerr.E("mlxlm.loadModel", "recv load response", err)
+		return nil, core.E("mlxlm.loadModel", "recv load response", err)
 	}
 
 	if errMsg, ok := response["error"].(string); ok {
 		model.kill()
-		return nil, coreerr.E("mlxlm.loadModel", errMsg, nil)
+		return nil, core.E("mlxlm.loadModel", errMsg, nil)
 	}
 
 	if modelType, ok := response["model_type"].(string); ok {
@@ -188,7 +187,7 @@ type mlxlmModel struct {
 func (model *mlxlmModel) send(obj map[string]any) error {
 	encoded := core.JSONMarshal(obj)
 	if !encoded.OK {
-		return coreerr.E("mlxlm.send", "marshal", nil)
+		return core.E("mlxlm.send", "marshal", nil)
 	}
 	data := append(encoded.Value.([]byte), '\n')
 	_, err := model.stdin.Write(data)
@@ -199,13 +198,13 @@ func (model *mlxlmModel) send(obj map[string]any) error {
 func (model *mlxlmModel) recv() (map[string]any, error) {
 	if !model.stdout.Scan() {
 		if err := model.stdout.Err(); err != nil {
-			return nil, coreerr.E("mlxlm.recv", "scanner", err)
+			return nil, core.E("mlxlm.recv", "scanner", err)
 		}
-		return nil, coreerr.E("mlxlm.recv", "subprocess closed stdout", nil)
+		return nil, core.E("mlxlm.recv", "subprocess closed stdout", nil)
 	}
 	var obj map[string]any
 	if r := core.JSONUnmarshal(model.stdout.Bytes(), &obj); !r.OK {
-		return nil, coreerr.E("mlxlm.recv", "parse response", nil)
+		return nil, core.E("mlxlm.recv", "parse response", nil)
 	}
 	return obj, nil
 }
@@ -243,7 +242,7 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 		}
 
 		if err := model.send(request); err != nil {
-			model.lastErr = coreerr.E("mlxlm.Generate", "send generate", err)
+			model.lastErr = core.E("mlxlm.Generate", "send generate", err)
 			return
 		}
 
@@ -264,7 +263,7 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 			}
 
 			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = coreerr.E("mlxlm.Generate", errMsg, nil)
+				model.lastErr = core.E("mlxlm.Generate", errMsg, nil)
 				return
 			}
 
@@ -327,7 +326,7 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 		}
 
 		if err := model.send(request); err != nil {
-			model.lastErr = coreerr.E("mlxlm.Chat", "send chat", err)
+			model.lastErr = core.E("mlxlm.Chat", "send chat", err)
 			return
 		}
 
@@ -348,7 +347,7 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 			}
 
 			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = coreerr.E("mlxlm.Chat", errMsg, nil)
+				model.lastErr = core.E("mlxlm.Chat", errMsg, nil)
 				return
 			}
 
@@ -374,13 +373,13 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 // Classify is not supported by the subprocess backend.
 // Use the native Metal backend for classification.
 func (model *mlxlmModel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, coreerr.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
+	return nil, core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
 }
 
 // BatchGenerate is not supported by the subprocess backend.
 // Use the native Metal backend for batch generation.
 func (model *mlxlmModel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, coreerr.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
+	return nil, core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 }
 
 // ModelType returns the architecture identifier reported by the subprocess.
@@ -464,15 +463,15 @@ func (model *mlxlmModel) InspectAttention(ctx context.Context, prompt string, op
 		"prompt": prompt,
 	}
 	if err := model.send(request); err != nil {
-		return nil, coreerr.E("mlxlm.InspectAttention", "send inspect", err)
+		return nil, core.E("mlxlm.InspectAttention", "send inspect", err)
 	}
 
 	response, err := model.recv()
 	if err != nil {
-		return nil, coreerr.E("mlxlm.InspectAttention", "recv inspect", err)
+		return nil, core.E("mlxlm.InspectAttention", "recv inspect", err)
 	}
 	if errMsg, ok := response["error"].(string); ok {
-		return nil, coreerr.E("mlxlm.InspectAttention", errMsg, nil)
+		return nil, core.E("mlxlm.InspectAttention", errMsg, nil)
 	}
 
 	snapshotDir, _ := response["dir"].(string)

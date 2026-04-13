@@ -6,7 +6,6 @@ import (
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 // Tokenizer handles text-to-token and token-to-text conversion.
@@ -35,8 +34,8 @@ type mergePair struct {
 type tokenizerJSON struct {
 	Model struct {
 		Type         string `json:"type"`
-		Vocab        []byte `json:"vocab"`
-		Merges       []byte `json:"merges"`
+		Vocab        any    `json:"vocab"`
+		Merges       any    `json:"merges"`
 		ByteFallback bool   `json:"byte_fallback"`
 	} `json:"model"`
 	AddedTokens []struct {
@@ -73,13 +72,13 @@ func indexIn(s, substr string) int {
 func LoadTokenizer(path string) (*Tokenizer, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "read "+path, err)
+		return nil, core.E("tokenizer.LoadTokenizer", "read "+path, err)
 	}
 	data := []byte(str)
 
 	var tj tokenizerJSON
 	if r := core.JSONUnmarshal(data, &tj); !r.OK {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", nil)
+		return nil, core.E("tokenizer.LoadTokenizer", "parse", nil)
 	}
 
 	tokenizer := &Tokenizer{
@@ -88,31 +87,43 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		special:  make(map[string]int32),
 	}
 
-	var vocab map[string]int32
-	if r := core.JSONUnmarshal(tj.Model.Vocab, &vocab); !r.OK {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", nil)
-	}
-	tokenizer.vocab = vocab
-	for tokenText, tokenID := range vocab {
-		tokenizer.invVocab[tokenID] = tokenText
+	// Vocab arrives as any (map[string]interface{} from JSON) — convert
+	// to map[string]int32 by re-marshalling through core.JSONMarshal.
+	if tj.Model.Vocab != nil {
+		vocabBytes := core.JSONMarshal(tj.Model.Vocab)
+		if !vocabBytes.OK {
+			return nil, core.E("tokenizer.LoadTokenizer", "re-encode vocab", nil)
+		}
+		var vocab map[string]int32
+		if r := core.JSONUnmarshal(vocabBytes.Value.([]byte), &vocab); !r.OK {
+			return nil, core.E("tokenizer.LoadTokenizer", "parse vocab", nil)
+		}
+		tokenizer.vocab = vocab
+		for tokenText, tokenID := range vocab {
+			tokenizer.invVocab[tokenID] = tokenText
+		}
 	}
 
-	// supports both ["a b", ...] and [["a","b"], ...] merge formats
-	if len(tj.Model.Merges) > 0 {
-		var stringMerges []string
-		if r := core.JSONUnmarshal(tj.Model.Merges, &stringMerges); r.OK {
-			for rank, merge := range stringMerges {
-				parts := core.SplitN(merge, " ", 2)
-				if len(parts) == 2 {
-					tokenizer.merges = append(tokenizer.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
+	// Merges arrives as any — supports both ["a b", ...] and [["a","b"], ...]
+	if tj.Model.Merges != nil {
+		mergeBytes := core.JSONMarshal(tj.Model.Merges)
+		if mergeBytes.OK {
+			raw := mergeBytes.Value.([]byte)
+			var stringMerges []string
+			if r := core.JSONUnmarshal(raw, &stringMerges); r.OK {
+				for rank, merge := range stringMerges {
+					parts := core.SplitN(merge, " ", 2)
+					if len(parts) == 2 {
+						tokenizer.merges = append(tokenizer.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
+					}
 				}
-			}
-		} else {
-			var arrayMerges [][]string
-			if r := core.JSONUnmarshal(tj.Model.Merges, &arrayMerges); r.OK {
-				for rank, pair := range arrayMerges {
-					if len(pair) == 2 {
-						tokenizer.merges = append(tokenizer.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
+			} else {
+				var arrayMerges [][]string
+				if r := core.JSONUnmarshal(raw, &arrayMerges); r.OK {
+					for rank, pair := range arrayMerges {
+						if len(pair) == 2 {
+							tokenizer.merges = append(tokenizer.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
+						}
 					}
 				}
 			}

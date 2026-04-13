@@ -3,6 +3,7 @@
 package metal
 
 /*
+#include <stdint.h>
 #include "mlx/c/mlx.h"
 
 // Callback for gradient closures — same signature as goCompiledFunc.
@@ -11,8 +12,9 @@ extern int goGradFunc(mlx_vector_array *outputs, const mlx_vector_array inputs, 
 // Destructor for closure payload to prevent leaks in gradFuncs.
 extern void goGradDestructor(void *payload);
 
-static mlx_closure new_grad_closure(void *payload) {
-    return mlx_closure_new_func_payload(&goGradFunc, payload, &goGradDestructor);
+// Accepts uintptr_t to avoid Go unsafe.Pointer conversion from integer.
+static mlx_closure new_grad_closure(uintptr_t id) {
+    return mlx_closure_new_func_payload(&goGradFunc, (void*)id, &goGradDestructor);
 }
 */
 import "C"
@@ -23,7 +25,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	coreerr "dappco.re/go/core/log"
+	"dappco.re/go/core"
 )
 
 var (
@@ -73,7 +75,7 @@ func goGradDestructor(payload unsafe.Pointer) {
 func newClosure(fn func([]*Array) []*Array) C.mlx_closure {
 	id := gradNextID.Add(1)
 	gradFuncs.Store(id, fn)
-	return C.new_grad_closure(unsafe.Pointer(id))
+	return C.new_grad_closure(C.uintptr_t(id))
 }
 
 // VJP computes the vector-Jacobian product (reverse-mode autodiff).
@@ -109,7 +111,7 @@ func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (out
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, coreerr.E("mlx.VJP", "vjp failed", nil)
+		return nil, nil, core.E("mlx.VJP", "vjp failed", nil)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -150,7 +152,7 @@ func JVP(fn func([]*Array) []*Array, primals []*Array, tangents []*Array) (outpu
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, coreerr.E("mlx.JVP", "jvp failed", nil)
+		return nil, nil, core.E("mlx.JVP", "jvp failed", nil)
 	}
 
 	outputs = vectorToArrays(outVec)
@@ -214,7 +216,7 @@ func (g *GradFn) Apply(inputs ...*Array) (values []*Array, grads []*Array, err e
 		if err := lastError(); err != nil {
 			return nil, nil, err
 		}
-		return nil, nil, coreerr.E("mlx.GradFn.Apply", "value_and_grad apply failed", nil)
+		return nil, nil, core.E("mlx.GradFn.Apply", "value_and_grad apply failed", nil)
 	}
 
 	values = vectorToArrays(valVec)

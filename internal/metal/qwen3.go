@@ -3,14 +3,12 @@
 package metal
 
 import (
-	"log/slog"
 	"maps"
 	"math"
 
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
-	coreerr "dappco.re/go/core/log"
 )
 
 // Qwen3Config holds Qwen 3 model configuration.
@@ -72,7 +70,7 @@ type Qwen3MLP struct {
 func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	var cfg Qwen3Config
 	if r := core.JSONUnmarshal(data, &cfg); !r.OK {
-		return nil, coreerr.E("qwen3.parseConfig", "parse config", nil)
+		return nil, core.E("qwen3.parseConfig", "parse config", nil)
 	}
 
 	// Top-level quantization
@@ -80,7 +78,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
-		return nil, coreerr.E("qwen3.parseConfig", "parse quantization", nil)
+		return nil, core.E("qwen3.parseConfig", "parse quantization", nil)
 	}
 	cfg.Quantization = wrapper.Quantization
 
@@ -110,7 +108,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "load config", err)
+		return nil, core.E("qwen3.LoadQwen3", "load config", err)
 	}
 	data := []byte(str)
 
@@ -118,28 +116,28 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		ModelType string `json:"model_type"`
 	}
 	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return nil, coreerr.E("qwen3.LoadQwen3", "parse model_type", nil)
+		return nil, core.E("qwen3.LoadQwen3", "parse model_type", nil)
 	}
 
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "parse config", err)
+		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
 	}
 
 	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "load tokenizer", err)
+		return nil, core.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
 	weights := make(map[string]*Array)
 	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, coreerr.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
+		return nil, core.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
 	}
 	for _, path := range matches {
 		maps.Insert(weights, LoadSafetensors(path))
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("qwen3.LoadQwen3", "load weights "+core.PathBase(path), err)
+			return nil, core.E("qwen3.LoadQwen3", "load weights "+core.PathBase(path), err)
 		}
 	}
 
@@ -147,7 +145,7 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 
 	q := cfg.Quantization
 	if q != nil {
-		slog.Info("qwen3: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
+		core.Info("qwen3: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
 	}
 	linear := func(prefix string) *Linear {
 		weight := w(prefix + ".weight")
@@ -227,14 +225,10 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		allArrays = append(allArrays, a)
 	}
 	Materialize(allArrays...)
-	slog.Info("model loaded",
-		"arch", detectedType,
-		"layers", cfg.NumHiddenLayers,
-		"hidden", cfg.HiddenSize,
-		"heads", cfg.NumAttentionHeads,
-		"kv_heads", cfg.NumKeyValueHeads,
-		"head_dim", cfg.HeadDim,
-		"vocab", cfg.VocabSize,
+	core.Info("model loaded",
+		"arch", detectedType, "layers", cfg.NumHiddenLayers, "hidden", cfg.HiddenSize,
+		"heads", cfg.NumAttentionHeads, "kv_heads", cfg.NumKeyValueHeads,
+		"head_dim", cfg.HeadDim, "vocab", cfg.VocabSize,
 	)
 
 	return m, nil

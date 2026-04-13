@@ -1,0 +1,1 @@
+../../lib/mlx/mlx/backend/metal/indexing.cpp

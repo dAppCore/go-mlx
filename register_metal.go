@@ -5,8 +5,8 @@ package mlx
 import (
 	"context"
 	"iter"
-	"log/slog"
 
+	"dappco.re/go/core"
 	"dappco.re/go/core/inference"
 	"dappco.re/go/core/mlx/internal/metal"
 )
@@ -77,7 +77,7 @@ func (backend *metalBackend) Available() bool { return true }
 func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
 	if loadOptions.GPULayers == 0 {
-		slog.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
+		core.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
 	}
 	model, err := metal.LoadAndInit(modelPath, metal.LoadConfig{
 		ContextLen:  loadOptions.ContextLen,
