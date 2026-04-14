@@ -121,8 +121,9 @@ func TestAPILoadOptions_Good(t *testing.T) {
 		WithContextLength(8192),
 		WithQuantization(4),
 		WithDevice("cpu"),
+		WithAdapterPath("/models/lora/demo"),
 	})
-	if cfg.ContextLength != 8192 || cfg.Quantization != 4 || cfg.Device != "cpu" {
+	if cfg.ContextLength != 8192 || cfg.Quantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
 		t.Fatalf("unexpected load config: %+v", cfg)
 	}
 }
@@ -462,6 +463,29 @@ func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
 	}
 }
 
+func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.AdapterPath != "/models/lora/demo" {
+			t.Fatalf("AdapterPath = %q, want /models/lora/demo", cfg.AdapterPath)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithAdapterPath("/models/lora/demo"))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
 	originalLoadNativeModel := loadNativeModel
 	originalReadGGUFInfo := readGGUFInfo
@@ -552,13 +576,21 @@ func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 	if err := medium.Write("models/demo/model.gguf", "stub"); err != nil {
 		t.Fatalf("write weights: %v", err)
 	}
+	if err := medium.Write("adapters/demo/adapter_config.json", `{"rank":8,"alpha":16}`); err != nil {
+		t.Fatalf("write adapter config: %v", err)
+	}
+	if err := medium.Write("adapters/demo/adapter.safetensors", "stub"); err != nil {
+		t.Fatalf("write adapter weights: %v", err)
+	}
 
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
 
 	var stagedPath string
+	var stagedAdapterPath string
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 		stagedPath = modelPath
+		stagedAdapterPath = cfg.AdapterPath
 		if cfg.ContextLen != 2048 {
 			t.Fatalf("ContextLen = %d, want 2048", cfg.ContextLen)
 		}
@@ -571,10 +603,24 @@ func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(modelPath, "model.gguf")); err != nil {
 			t.Fatalf("staged weights missing: %v", err)
 		}
+		if cfg.AdapterPath == "" {
+			t.Fatal("expected staged adapter path to be passed to native loader")
+		}
+		if _, err := os.Stat(filepath.Join(cfg.AdapterPath, "adapter_config.json")); err != nil {
+			t.Fatalf("staged adapter config missing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(cfg.AdapterPath, "adapter.safetensors")); err != nil {
+			t.Fatalf("staged adapter weights missing: %v", err)
+		}
 		return &fakeNativeModel{}, nil
 	}
 
-	model, err := LoadModel("models/demo", WithMedium(medium), WithContextLength(2048))
+	model, err := LoadModel(
+		"models/demo",
+		WithMedium(medium),
+		WithContextLength(2048),
+		WithAdapterPath("adapters/demo"),
+	)
 	if err != nil {
 		t.Fatalf("LoadModel() error = %v", err)
 	}
@@ -582,10 +628,16 @@ func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 	if stagedPath == "" {
 		t.Fatal("expected staged path to be passed to native loader")
 	}
+	if stagedAdapterPath == "" {
+		t.Fatal("expected staged adapter path to be passed to native loader")
+	}
 	if err := model.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
 	if _, err := os.Stat(stagedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("staged path should be removed on Close, stat err = %v", err)
+	}
+	if _, err := os.Stat(stagedAdapterPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged adapter path should be removed on Close, stat err = %v", err)
 	}
 }

@@ -149,6 +149,7 @@ type LoadConfig struct {
 	ContextLength int
 	Quantization  int
 	Device        string
+	AdapterPath   string
 	Medium        coreio.Medium
 }
 
@@ -173,6 +174,11 @@ func WithQuantization(bits int) LoadOption {
 // WithDevice selects the execution device: "gpu" or "cpu".
 func WithDevice(device string) LoadOption {
 	return func(c *LoadConfig) { c.Device = device }
+}
+
+// WithAdapterPath injects a LoRA adapter directory at model load time.
+func WithAdapterPath(path string) LoadOption {
+	return func(c *LoadConfig) { c.AdapterPath = path }
 }
 
 // WithMedium stages model files from the supplied io.Medium before loading.

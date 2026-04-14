@@ -41,6 +41,20 @@ var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel,
 
 var readGGUFInfo = ReadGGUFInfo
 
+func appendCleanup(cleanup *func() error, next func() error) {
+	if next == nil {
+		return
+	}
+	if *cleanup == nil {
+		*cleanup = next
+		return
+	}
+	prev := *cleanup
+	*cleanup = func() error {
+		return errors.Join(prev(), next())
+	}
+}
+
 // LoadModel loads a model directly through go-mlx without going through go-inference.
 func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
@@ -49,17 +63,28 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 
 	resolvedPath := modelPath
+	resolvedAdapterPath := cfg.AdapterPath
 	cleanup := func() error { return nil }
 	if cfg.Medium != nil {
 		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
 		if err != nil {
 			return nil, err
 		}
+		if cfg.AdapterPath != "" {
+			var adapterCleanup func() error
+			resolvedAdapterPath, adapterCleanup, err = stagePathFromMedium(cfg.Medium, cfg.AdapterPath)
+			if err != nil {
+				_ = cleanup()
+				return nil, err
+			}
+			appendCleanup(&cleanup, adapterCleanup)
+		}
 	}
 
 	native, err := loadNativeModel(resolvedPath, metal.LoadConfig{
-		ContextLen: cfg.ContextLength,
-		Device:     metal.DeviceType(cfg.Device),
+		ContextLen:  cfg.ContextLength,
+		AdapterPath: resolvedAdapterPath,
+		Device:      metal.DeviceType(cfg.Device),
 	})
 	if err != nil {
 		_ = cleanup()

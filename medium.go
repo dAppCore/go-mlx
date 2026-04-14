@@ -23,18 +23,22 @@ func LoadModelFromMedium(medium coreio.Medium, modelPath string, opts ...LoadOpt
 }
 
 func stageModelFromMedium(medium coreio.Medium, modelPath string) (string, func() error, error) {
+	return stagePathFromMedium(medium, modelPath)
+}
+
+func stagePathFromMedium(medium coreio.Medium, path string) (string, func() error, error) {
 	if medium == nil {
-		return "", nil, core.E("mlx.stageModelFromMedium", "medium is nil", nil)
+		return "", nil, core.E("mlx.stagePathFromMedium", "medium is nil", nil)
 	}
 
-	root := mediumModelRoot(modelPath)
+	root := mediumModelRoot(path)
 	if root != "" && !medium.Exists(root) {
-		return "", nil, core.E("mlx.stageModelFromMedium", "model path not found in medium: "+root, nil)
+		return "", nil, core.E("mlx.stagePathFromMedium", "path not found in medium: "+root, nil)
 	}
 
 	stageDir, err := os.MkdirTemp("", "mlx-medium-*")
 	if err != nil {
-		return "", nil, core.E("mlx.stageModelFromMedium", "create staging dir", err)
+		return "", nil, core.E("mlx.stagePathFromMedium", "create staging dir", err)
 	}
 
 	cleanup := func() error {
@@ -43,10 +47,10 @@ func stageModelFromMedium(medium coreio.Medium, modelPath string) (string, func(
 
 	if err := copyMediumTree(medium, root, stageDir); err != nil {
 		_ = cleanup()
-		return "", nil, core.E("mlx.stageModelFromMedium", "stage model tree", err)
+		return "", nil, core.E("mlx.stagePathFromMedium", "stage path tree", err)
 	}
 
-	relative := mediumRelativePath(root, cleanMediumPath(modelPath))
+	relative := mediumRelativePath(root, cleanMediumPath(path))
 	if relative == "" {
 		return stageDir, cleanup, nil
 	}
