@@ -345,42 +345,29 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 	seqLen := len(tokens)
 
 	keys := make([][][]float32, info.NumLayers)
+	cacheIndexByLayer := attentionCacheIndexByLayer(m.model, info.NumLayers, len(caches))
+	cacheSnapshots := make(map[int]attentionCacheSnapshot, len(caches))
 	var numHeads, headDim int
 
-	for i := 0; i < info.NumLayers && i < len(caches); i++ {
-		state := caches[i].State()
-		if len(state) < 1 {
+	for layerIdx, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx < 0 {
 			continue
 		}
-		kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
-		shape := kArray.Shape()
-		if len(shape) != 4 {
-			continue
-		}
-		numHeads = int(shape[1])
-		headDim = int(shape[3])
-
-		validLen := min(caches[i].Len(), seqLen)
-		kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
-		if err := Eval(kSliced); err != nil {
-			Free(kSliced)
-			continue
-		}
-
-		flat := kSliced.Floats() // len = 1 * H * validLen * D
-		Free(kSliced)
-
-		keys[i] = make([][]float32, numHeads)
-		stride := validLen * headDim
-		for h := range numHeads {
-			start := h * stride
-			end := start + stride
-			if end > len(flat) {
-				break
+		snapshot, ok := cacheSnapshots[cacheIdx]
+		if !ok {
+			var extracted bool
+			snapshot, extracted = inspectAttentionCache(caches[cacheIdx], seqLen)
+			if !extracted {
+				continue
 			}
-			head := make([]float32, stride)
-			copy(head, flat[start:end])
-			keys[i][h] = head
+			cacheSnapshots[cacheIdx] = snapshot
+		}
+		keys[layerIdx] = cloneAttentionHeads(snapshot.Keys)
+		if numHeads == 0 {
+			numHeads = snapshot.NumHeads
+		}
+		if headDim == 0 {
+			headDim = snapshot.HeadDim
 		}
 	}
 
@@ -392,6 +379,111 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 		Keys:         keys,
 		Architecture: info.Architecture,
 	}, nil
+}
+
+type attentionCacheSnapshot struct {
+	NumHeads int
+	HeadDim  int
+	Keys     [][]float32
+}
+
+func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) []int {
+	cacheIndexByLayer := make([]int, numLayers)
+	for i := range cacheIndexByLayer {
+		cacheIndexByLayer[i] = -1
+	}
+
+	switch concrete := model.(type) {
+	case *Gemma4Model:
+		concrete.ensureCacheLayout()
+		for layerIdx := 0; layerIdx < numLayers && layerIdx < len(concrete.PreviousKVs); layerIdx++ {
+			ownerIdx := int(concrete.PreviousKVs[layerIdx])
+			if ownerIdx < 0 || ownerIdx >= len(concrete.CacheIndexByLayer) {
+				continue
+			}
+			cacheIdx := int(concrete.CacheIndexByLayer[ownerIdx])
+			if cacheIdx < 0 || cacheIdx >= numCaches {
+				continue
+			}
+			cacheIndexByLayer[layerIdx] = cacheIdx
+		}
+	default:
+		limit := numLayers
+		if numCaches < limit {
+			limit = numCaches
+		}
+		for i := 0; i < limit; i++ {
+			cacheIndexByLayer[i] = i
+		}
+	}
+
+	return cacheIndexByLayer
+}
+
+func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, bool) {
+	if cache == nil {
+		return attentionCacheSnapshot{}, false
+	}
+	state := cache.State()
+	if len(state) < 1 {
+		return attentionCacheSnapshot{}, false
+	}
+	kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
+	shape := kArray.Shape()
+	if len(shape) != 4 {
+		return attentionCacheSnapshot{}, false
+	}
+
+	numHeads := int(shape[1])
+	headDim := int(shape[3])
+	validLen := min(cache.Len(), seqLen)
+	if validLen <= 0 {
+		return attentionCacheSnapshot{}, false
+	}
+
+	kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
+	if err := Eval(kSliced); err != nil {
+		Free(kSliced)
+		return attentionCacheSnapshot{}, false
+	}
+
+	flat := kSliced.Floats() // len = 1 * H * validLen * D
+	Free(kSliced)
+
+	keys := make([][]float32, numHeads)
+	stride := validLen * headDim
+	for h := 0; h < numHeads; h++ {
+		start := h * stride
+		end := start + stride
+		if end > len(flat) {
+			break
+		}
+		head := make([]float32, stride)
+		copy(head, flat[start:end])
+		keys[h] = head
+	}
+
+	return attentionCacheSnapshot{
+		NumHeads: numHeads,
+		HeadDim:  headDim,
+		Keys:     keys,
+	}, true
+}
+
+func cloneAttentionHeads(src [][]float32) [][]float32 {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make([][]float32, len(src))
+	for i, head := range src {
+		if len(head) == 0 {
+			continue
+		}
+		buf := make([]float32, len(head))
+		copy(buf, head)
+		cloned[i] = buf
+	}
+	return cloned
 }
 
 // AttentionResult holds extracted K vectors from the KV cache.
