@@ -3,7 +3,6 @@
 package metal
 
 import (
-	"math"
 	"os"
 	"testing"
 
@@ -482,9 +481,8 @@ func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
 
 func TestGemma4_AttentionScale_Good(t *testing.T) {
 	got := gemma4AttentionScale(512)
-	want := float32(1.0 / math.Sqrt(512))
-	if math.Abs(float64(got-want)) > 1e-6 {
-		t.Fatalf("gemma4AttentionScale(512) = %f, want %f", got, want)
+	if got != 1.0 {
+		t.Fatalf("gemma4AttentionScale(512) = %f, want 1.0", got)
 	}
 }
 
@@ -574,6 +572,12 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	}
 	if got := up.Shape(); len(got) != 3 || got[1] != 2 {
 		t.Fatalf("up split shape = %v, want [1 2 2]", got)
+	}
+	if !gate.IsRowContiguous() {
+		t.Fatal("gate split should be row-contiguous")
+	}
+	if !up.IsRowContiguous() {
+		t.Fatal("up split should be row-contiguous")
 	}
 	if gateUp.Valid() {
 		t.Fatal("gate_up source tensor should be freed after split sanitization")
@@ -991,6 +995,126 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	topKIndices, topKWeights := layer.Router.forward(h2In)
 	h2 := layer.Experts.forward(h2In, topKIndices, topKWeights)
 	Free(h2In, topKIndices, topKWeights)
+	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
+	Free(h2)
+
+	combined := Add(h1Normed, h2Normed)
+	Free(h1Normed, h2Normed)
+	combinedNormed := RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
+	Free(combined)
+	want := Add(x, combinedNormed)
+	Free(combinedNormed)
+
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	defer Free(x, got, want)
+
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestGemma4_DecoderLayer_MoERouterUsesResidualStream_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	zeros2x2 := func() *Array {
+		return FromValues([]float32{
+			0, 0,
+			0, 0,
+		}, 2, 2)
+	}
+	ones2 := func() *Array {
+		return FromValues([]float32{1, 1}, 2)
+	}
+	expertWeight := func(e0, e1 []float32) *Array {
+		data := append(append([]float32{}, e0...), e1...)
+		return FromValues(data, 2, 2, 2)
+	}
+
+	layer := &Gemma4DecoderLayer{
+		Attention: &Gemma4Attention{
+			QProj:          NewLinear(zeros2x2(), nil),
+			KProj:          NewLinear(zeros2x2(), nil),
+			VProj:          NewLinear(zeros2x2(), nil),
+			OProj:          NewLinear(zeros2x2(), nil),
+			QNormScaled:    ones2(),
+			KNormScaled:    ones2(),
+			HeadDim:        2,
+			NKVHeads:       1,
+			Scale:          1.0,
+			RopeBase:       10000,
+			RopeRotatedDim: 2,
+		},
+		MLP: &MLP{
+			GateProj: NewLinear(zeros2x2(), nil),
+			UpProj:   NewLinear(zeros2x2(), nil),
+			DownProj: NewLinear(zeros2x2(), nil),
+		},
+		EnableMoE:          true,
+		InputNormScaled:    ones2(),
+		PostAttnNormScaled: ones2(),
+		PreFFNormScaled:    ones2(),
+		PostFFNormScaled:   ones2(),
+		PreFFNorm2Scaled:   FromValues([]float32{0.1, 2.0}, 2),
+		PostFFNorm1Scaled:  ones2(),
+		PostFFNorm2Scaled:  ones2(),
+		Router: &Gemma4Router{
+			Proj: NewLinear(FromValues([]float32{
+				1, -1,
+				-1, 1,
+			}, 2, 2), nil),
+			Scale:          ones2(),
+			PerExpertScale: FromValues([]float32{1, 1}, 2),
+			ScaleScaled:    ones2(),
+			TopK:           1,
+			Eps:            1e-6,
+		},
+		Experts: &Gemma4Experts{
+			GateProj: NewSwitchLinear(expertWeight(
+				[]float32{1, 0, 0, 1},
+				[]float32{1, 0, 0, 1},
+			), nil),
+			UpProj: NewSwitchLinear(expertWeight(
+				[]float32{1, 0, 0, 1},
+				[]float32{1, 0, 0, 1},
+			), nil),
+			DownProj: NewSwitchLinear(expertWeight(
+				[]float32{1, 0, 0, 1},
+				[]float32{-1, 0, 0, -1},
+			), nil),
+		},
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := FromValues([]float32{2, 1}, 1, 1, 2)
+
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg)
+	defer Free(kv.Keys, kv.Values)
+
+	h2InForCheck := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
+	residualIndices, residualWeights := layer.Router.forward(x)
+	normedIndices, normedWeights := layer.Router.forward(h2InForCheck)
+	if err := Eval(residualIndices, normedIndices); err != nil {
+		t.Fatalf("Eval indices: %v", err)
+	}
+	if residualIndices.DataInt32()[0] == normedIndices.DataInt32()[0] {
+		t.Fatal("expected residual-stream and pre-normalized router inputs to pick different experts")
+	}
+	Free(normedIndices, normedWeights)
+
+	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
+	h1 := layer.MLP.forward(h1In)
+	Free(h1In)
+	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
+	Free(h1)
+
+	h2 := layer.Experts.forward(h2InForCheck, residualIndices, residualWeights)
+	Free(h2InForCheck, residualIndices, residualWeights)
 	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
 	Free(h2)
 

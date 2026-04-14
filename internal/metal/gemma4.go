@@ -610,9 +610,19 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	ends := append([]int32(nil), shape...)
 	ends[axis] = mid
 	left := Slice(a, starts, ends)
+	if !left.IsRowContiguous() {
+		contiguous := Contiguous(left)
+		Free(left)
+		left = contiguous
+	}
 	starts[axis] = mid
 	ends = append([]int32(nil), shape...)
 	right := Slice(a, starts, ends)
+	if !right.IsRowContiguous() {
+		contiguous := Contiguous(right)
+		Free(right)
+		right = contiguous
+	}
 	return left, right, true
 }
 
@@ -948,10 +958,7 @@ func gemma4ProportionalFreqs(headDim int32, rotatedDims int32, base float32, fac
 }
 
 func gemma4AttentionScale(headDim int32) float32 {
-	if headDim <= 0 {
-		return 1.0
-	}
-	return float32(1.0 / math.Sqrt(float64(headDim)))
+	return 1.0
 }
 
 func precomputeGemma4ScaledWeights(m *Gemma4Model) {
@@ -1467,7 +1474,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		Free(h1)
 
 		h2In := RMSNorm(h, l.PreFFNorm2Scaled, cfg.RMSNormEps)
-		topKIndices, topKWeights := l.Router.forward(h2In)
+		topKIndices, topKWeights := l.Router.forward(h)
 		h2 := l.Experts.forward(h2In, topKIndices, topKWeights)
 		Free(h2In, topKIndices, topKWeights)
 		h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
