@@ -17,10 +17,18 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 
 	model := &Model{}
 	_, _ = model.Generate("hello", WithMaxTokens(8), WithTemperature(0.7), WithTopK(10), WithTopP(0.9), WithMinP(0.05))
+	_, _ = model.Chat([]Message{{Role: "user", Content: "hi"}}, WithMaxTokens(8))
 	for range model.GenerateStream("hello") {
 	}
+	for range model.ChatStream([]Message{{Role: "user", Content: "hi"}}) {
+	}
+	_, _ = model.Classify([]string{"hello"}, WithLogits())
+	_, _ = model.BatchGenerate([]string{"hello"})
 	_ = model.Err()
+	_ = model.Metrics()
+	_ = model.ModelType()
 	_ = model.Info()
+	_, _ = model.InspectAttention("hello")
 	_ = model.Tokenizer()
 	_ = model.Close()
 

@@ -3,6 +3,7 @@ package mlx
 import (
 	"errors"
 	"strings"
+	"time"
 
 	coreio "dappco.re/go/core/io"
 )
@@ -12,6 +13,41 @@ type Token struct {
 	ID    int32
 	Value string
 	Text  string
+}
+
+// Metrics reports performance counters from the last inference call.
+type Metrics struct {
+	PromptTokens        int
+	GeneratedTokens     int
+	PrefillDuration     time.Duration
+	DecodeDuration      time.Duration
+	TotalDuration       time.Duration
+	PrefillTokensPerSec float64
+	DecodeTokensPerSec  float64
+	PeakMemoryBytes     uint64
+	ActiveMemoryBytes   uint64
+}
+
+// ClassifyResult holds the sampled token for a single prompt and optional logits.
+type ClassifyResult struct {
+	Token  Token
+	Logits []float32
+}
+
+// BatchResult holds the streamed tokens for a single prompt in a batch call.
+type BatchResult struct {
+	Tokens []Token
+	Err    error
+}
+
+// AttentionSnapshot contains post-RoPE key tensors extracted from KV caches.
+type AttentionSnapshot struct {
+	NumLayers    int
+	NumHeads     int
+	SeqLen       int
+	HeadDim      int
+	Keys         [][][]float32
+	Architecture string
 }
 
 // ModelInfo describes a loaded model.
@@ -32,6 +68,7 @@ type GenerateConfig struct {
 	TopK          int
 	TopP          float32
 	MinP          float32
+	ReturnLogits  bool
 	StopTokens    []int32
 	RepeatPenalty float32
 }
@@ -70,6 +107,11 @@ func WithTopP(p float32) GenerateOption {
 // WithMinP sets minimum-probability sampling relative to the best token.
 func WithMinP(p float32) GenerateOption {
 	return func(c *GenerateConfig) { c.MinP = p }
+}
+
+// WithLogits requests classification logits when the called API supports them.
+func WithLogits() GenerateOption {
+	return func(c *GenerateConfig) { c.ReturnLogits = true }
 }
 
 // WithStopTokens sets token IDs that stop generation.

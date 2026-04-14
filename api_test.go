@@ -18,23 +18,70 @@ import (
 )
 
 type fakeNativeModel struct {
-	err        error
-	info       metal.ModelInfo
-	tokenizer  *metal.Tokenizer
-	tokens     []metal.Token
-	closeErr   error
-	closeCalls int
+	err                  error
+	info                 metal.ModelInfo
+	tokenizer            *metal.Tokenizer
+	tokens               []metal.Token
+	chatTokens           []metal.Token
+	classifyResults      []metal.ClassifyResult
+	batchResults         []metal.BatchResult
+	metrics              metal.Metrics
+	modelType            string
+	attention            *metal.AttentionResult
+	classifyReturnLogits bool
+	lastGenerateConfig   metal.GenerateConfig
+	lastChatConfig       metal.GenerateConfig
+	lastBatchConfig      metal.GenerateConfig
+	lastClassifyConfig   metal.GenerateConfig
+	lastChatMessages     []metal.ChatMessage
+	closeErr             error
+	closeCalls           int
 }
 
 func (m *fakeNativeModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+func (m *fakeNativeModel) BatchGenerate(_ context.Context, _ []string, cfg metal.GenerateConfig) ([]metal.BatchResult, error) {
+	m.lastBatchConfig = cfg
+	return m.batchResults, m.err
+}
+func (m *fakeNativeModel) Chat(_ context.Context, messages []metal.ChatMessage, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastChatConfig = cfg
+	m.lastChatMessages = append([]metal.ChatMessage(nil), messages...)
+	tokens := m.chatTokens
+	if len(tokens) == 0 {
+		tokens = m.tokens
+	}
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+func (m *fakeNativeModel) Classify(_ context.Context, _ []string, cfg metal.GenerateConfig, returnLogits bool) ([]metal.ClassifyResult, error) {
+	m.lastClassifyConfig = cfg
+	m.classifyReturnLogits = returnLogits
+	return m.classifyResults, m.err
+}
 func (m *fakeNativeModel) Close() error {
 	m.closeCalls++
 	return m.closeErr
 }
-func (m *fakeNativeModel) Err() error                  { return m.err }
-func (m *fakeNativeModel) Info() metal.ModelInfo       { return m.info }
+func (m *fakeNativeModel) Err() error            { return m.err }
+func (m *fakeNativeModel) Info() metal.ModelInfo { return m.info }
+func (m *fakeNativeModel) InspectAttention(_ context.Context, _ string) (*metal.AttentionResult, error) {
+	return m.attention, m.err
+}
+func (m *fakeNativeModel) LastMetrics() metal.Metrics { return m.metrics }
+func (m *fakeNativeModel) ModelType() string {
+	if m.modelType != "" {
+		return m.modelType
+	}
+	return m.info.Architecture
+}
 func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
-func (m *fakeNativeModel) Generate(_ context.Context, _ string, _ metal.GenerateConfig) iter.Seq[metal.Token] {
+func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastGenerateConfig = cfg
 	return func(yield func(metal.Token) bool) {
 		for _, tok := range m.tokens {
 			if !yield(tok) {
@@ -51,11 +98,15 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithTopK(20),
 		WithTopP(0.9),
 		WithMinP(0.05),
+		WithLogits(),
 		WithStopTokens(1, 2),
 		WithRepeatPenalty(1.1),
 	})
 	if cfg.MaxTokens != 64 || cfg.Temperature != 0.7 || cfg.TopK != 20 || cfg.TopP != 0.9 || cfg.MinP != 0.05 {
 		t.Fatalf("unexpected generate config: %+v", cfg)
+	}
+	if !cfg.ReturnLogits {
+		t.Fatal("ReturnLogits = false, want true")
 	}
 	if !reflect.DeepEqual(cfg.StopTokens, []int32{1, 2}) {
 		t.Fatalf("stop tokens = %v", cfg.StopTokens)
@@ -201,6 +252,130 @@ func TestModelGenerateStream_Good(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timed out waiting for stream")
 		}
+	}
+}
+
+func TestModelChatBuffered_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			chatTokens: []metal.Token{{ID: 3, Text: "Hi"}, {ID: 4, Text: " there"}},
+		},
+	}
+
+	got, err := model.Chat([]Message{{Role: "user", Content: "hello"}}, WithTopP(0.8))
+	if err != nil {
+		t.Fatalf("Chat() error = %v", err)
+	}
+	if got != "Hi there" {
+		t.Fatalf("Chat() = %q, want %q", got, "Hi there")
+	}
+}
+
+func TestModelClassify_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			classifyResults: []metal.ClassifyResult{{
+				Token:  metal.Token{ID: 9, Text: "yes"},
+				Logits: []float32{0.1, 0.9},
+			}},
+		},
+	}
+
+	results, err := model.Classify([]string{"prompt"}, WithTemperature(0.1), WithLogits())
+	if err != nil {
+		t.Fatalf("Classify() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Classify() len = %d, want 1", len(results))
+	}
+	if results[0].Token.Text != "yes" || results[0].Token.Value != "yes" {
+		t.Fatalf("Classify() token = %+v, want text/value yes", results[0].Token)
+	}
+	if !reflect.DeepEqual(results[0].Logits, []float32{0.1, 0.9}) {
+		t.Fatalf("Classify() logits = %v, want [0.1 0.9]", results[0].Logits)
+	}
+	native := model.model.(*fakeNativeModel)
+	if !native.classifyReturnLogits {
+		t.Fatal("classifyReturnLogits = false, want true")
+	}
+	if native.lastClassifyConfig.Temperature != 0.1 {
+		t.Fatalf("Classify() temperature = %f, want 0.1", native.lastClassifyConfig.Temperature)
+	}
+}
+
+func TestModelBatchGenerate_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			batchResults: []metal.BatchResult{{
+				Tokens: []metal.Token{{ID: 1, Text: "A"}, {ID: 2, Text: "B"}},
+			}},
+		},
+	}
+
+	results, err := model.BatchGenerate([]string{"prompt"}, WithMaxTokens(12))
+	if err != nil {
+		t.Fatalf("BatchGenerate() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("BatchGenerate() len = %d, want 1", len(results))
+	}
+	if len(results[0].Tokens) != 2 || results[0].Tokens[1].Text != "B" {
+		t.Fatalf("BatchGenerate() tokens = %+v", results[0].Tokens)
+	}
+	native := model.model.(*fakeNativeModel)
+	if native.lastBatchConfig.MaxTokens != 12 {
+		t.Fatalf("BatchGenerate() MaxTokens = %d, want 12", native.lastBatchConfig.MaxTokens)
+	}
+}
+
+func TestModelMetricsAndModelType_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			modelType: "gemma4_text",
+			metrics: metal.Metrics{
+				PromptTokens:      32,
+				GeneratedTokens:   5,
+				PeakMemoryBytes:   1024,
+				ActiveMemoryBytes: 512,
+			},
+		},
+	}
+
+	if got := model.ModelType(); got != "gemma4_text" {
+		t.Fatalf("ModelType() = %q, want %q", got, "gemma4_text")
+	}
+	metrics := model.Metrics()
+	if metrics.PromptTokens != 32 || metrics.GeneratedTokens != 5 {
+		t.Fatalf("Metrics() = %+v, want prompt=32 generated=5", metrics)
+	}
+	if metrics.PeakMemoryBytes != 1024 || metrics.ActiveMemoryBytes != 512 {
+		t.Fatalf("Metrics() memory = %+v, want peak=1024 active=512", metrics)
+	}
+}
+
+func TestModelInspectAttention_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			attention: &metal.AttentionResult{
+				NumLayers:    2,
+				NumHeads:     4,
+				SeqLen:       8,
+				HeadDim:      16,
+				Keys:         [][][]float32{{{1, 2, 3}}},
+				Architecture: "gemma4_text",
+			},
+		},
+	}
+
+	snapshot, err := model.InspectAttention("prompt")
+	if err != nil {
+		t.Fatalf("InspectAttention() error = %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("InspectAttention() = nil, want non-nil")
+	}
+	if snapshot.NumLayers != 2 || snapshot.HeadDim != 16 || snapshot.Architecture != "gemma4_text" {
+		t.Fatalf("InspectAttention() = %+v", snapshot)
 	}
 }
 

@@ -13,10 +13,16 @@ import (
 
 type nativeModel interface {
 	ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter
+	BatchGenerate(context.Context, []string, metal.GenerateConfig) ([]metal.BatchResult, error)
+	Chat(context.Context, []metal.ChatMessage, metal.GenerateConfig) iter.Seq[metal.Token]
+	Classify(context.Context, []string, metal.GenerateConfig, bool) ([]metal.ClassifyResult, error)
 	Close() error
 	Err() error
 	Generate(context.Context, string, metal.GenerateConfig) iter.Seq[metal.Token]
 	Info() metal.ModelInfo
+	InspectAttention(context.Context, string) (*metal.AttentionResult, error)
+	LastMetrics() metal.Metrics
+	ModelType() string
 	Tokenizer() *metal.Tokenizer
 }
 
@@ -84,6 +90,70 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	}
 }
 
+func toRootMetrics(metrics metal.Metrics) Metrics {
+	return Metrics{
+		PromptTokens:        metrics.PromptTokens,
+		GeneratedTokens:     metrics.GeneratedTokens,
+		PrefillDuration:     metrics.PrefillDuration,
+		DecodeDuration:      metrics.DecodeDuration,
+		TotalDuration:       metrics.TotalDuration,
+		PrefillTokensPerSec: metrics.PrefillTokensPerSec,
+		DecodeTokensPerSec:  metrics.DecodeTokensPerSec,
+		PeakMemoryBytes:     metrics.PeakMemoryBytes,
+		ActiveMemoryBytes:   metrics.ActiveMemoryBytes,
+	}
+}
+
+func toRootToken(token metal.Token) Token {
+	return Token{ID: token.ID, Value: token.Text, Text: token.Text}
+}
+
+func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]ClassifyResult, len(results))
+	for i, result := range results {
+		out[i] = ClassifyResult{
+			Token:  toRootToken(result.Token),
+			Logits: append([]float32(nil), result.Logits...),
+		}
+	}
+	return out
+}
+
+func toRootBatchResults(results []metal.BatchResult) []BatchResult {
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]BatchResult, len(results))
+	for i, result := range results {
+		tokens := make([]Token, len(result.Tokens))
+		for j, token := range result.Tokens {
+			tokens[j] = toRootToken(token)
+		}
+		out[i] = BatchResult{
+			Tokens: tokens,
+			Err:    result.Err,
+		}
+	}
+	return out
+}
+
+func toRootAttentionSnapshot(result *metal.AttentionResult) *AttentionSnapshot {
+	if result == nil {
+		return nil
+	}
+	return &AttentionSnapshot{
+		NumLayers:    result.NumLayers,
+		NumHeads:     result.NumHeads,
+		SeqLen:       result.SeqLen,
+		HeadDim:      result.HeadDim,
+		Keys:         result.Keys,
+		Architecture: result.Architecture,
+	}
+}
+
 // Generate produces a buffered string result.
 func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
@@ -92,6 +162,26 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
 	var builder strings.Builder
 	for tok := range m.model.Generate(context.Background(), prompt, cfg) {
+		builder.WriteString(tok.Text)
+	}
+	if err := m.model.Err(); err != nil {
+		return "", err
+	}
+	return builder.String(), nil
+}
+
+// Chat produces a buffered string result using the model's native chat template.
+func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error) {
+	if m == nil || m.model == nil {
+		return "", errors.New("mlx: model is nil")
+	}
+	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+	metalMessages := make([]metal.ChatMessage, len(messages))
+	for i, msg := range messages {
+		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+	}
+	var builder strings.Builder
+	for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
 		builder.WriteString(tok.Text)
 	}
 	if err := m.model.Err(); err != nil {
@@ -116,12 +206,73 @@ func (m *Model) GenerateStream(prompt string, opts ...GenerateOption) <-chan Tok
 	return out
 }
 
+// ChatStream streams chat tokens through a channel.
+func (m *Model) ChatStream(messages []Message, opts ...GenerateOption) <-chan Token {
+	out := make(chan Token)
+	go func() {
+		defer close(out)
+		if m == nil || m.model == nil {
+			return
+		}
+		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+		metalMessages := make([]metal.ChatMessage, len(messages))
+		for i, msg := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		}
+		for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
+			out <- toRootToken(tok)
+		}
+	}()
+	return out
+}
+
+// Classify runs batched prefill-only inference over multiple prompts.
+func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyResult, error) {
+	if m == nil || m.model == nil {
+		return nil, errors.New("mlx: model is nil")
+	}
+	cfg := applyGenerateOptions(opts)
+	results, err := m.model.Classify(context.Background(), prompts, toMetalGenerateConfig(cfg), cfg.ReturnLogits)
+	if err != nil {
+		return nil, err
+	}
+	return toRootClassifyResults(results), nil
+}
+
+// BatchGenerate runs autoregressive generation for multiple prompts at once.
+func (m *Model) BatchGenerate(prompts []string, opts ...GenerateOption) ([]BatchResult, error) {
+	if m == nil || m.model == nil {
+		return nil, errors.New("mlx: model is nil")
+	}
+	results, err := m.model.BatchGenerate(context.Background(), prompts, toMetalGenerateConfig(applyGenerateOptions(opts)))
+	if err != nil {
+		return nil, err
+	}
+	return toRootBatchResults(results), nil
+}
+
 // Err returns the last generation error, if any.
 func (m *Model) Err() error {
 	if m == nil || m.model == nil {
 		return nil
 	}
 	return m.model.Err()
+}
+
+// Metrics returns performance counters from the last inference call.
+func (m *Model) Metrics() Metrics {
+	if m == nil || m.model == nil {
+		return Metrics{}
+	}
+	return toRootMetrics(m.model.LastMetrics())
+}
+
+// ModelType returns the internal architecture identifier.
+func (m *Model) ModelType() string {
+	if m == nil || m.model == nil {
+		return ""
+	}
+	return m.model.ModelType()
 }
 
 // Info returns metadata about the loaded model.
@@ -143,6 +294,18 @@ func (m *Model) Info() ModelInfo {
 		QuantGroup:    info.QuantGroup,
 		ContextLength: contextLength,
 	}
+}
+
+// InspectAttention runs a single prefill pass and returns extracted K tensors.
+func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, errors.New("mlx: model is nil")
+	}
+	result, err := m.model.InspectAttention(context.Background(), prompt)
+	if err != nil {
+		return nil, err
+	}
+	return toRootAttentionSnapshot(result), nil
 }
 
 // Tokenizer returns the model tokenizer.
