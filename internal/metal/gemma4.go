@@ -1096,10 +1096,13 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
 		Free(h2)
 
-		// Gemma 4 MoE layers normalise each branch independently and add both
-		// branch outputs back to the residual directly.
-		ffResidual = Add(h1Normed, h2Normed)
+		// Gemma 4 MoE layers normalise each branch independently, then apply
+		// the standard post-feedforward norm to the combined branch output
+		// before adding it back to the residual path.
+		combined := Add(h1Normed, h2Normed)
 		Free(h1Normed, h2Normed)
+		ffResidual = RMSNorm(combined, l.PostFFNormScaled, cfg.RMSNormEps)
+		Free(combined)
 	} else {
 		ffIn := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		ff := l.MLP.forward(ffIn)

@@ -554,6 +554,194 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	zeros2x2 := func() *Array {
+		return FromValues([]float32{
+			0, 0,
+			0, 0,
+		}, 2, 2)
+	}
+	ones2 := func() *Array {
+		return FromValues([]float32{1, 1}, 2)
+	}
+	switchWeight := func(scale float32) *Array {
+		return FromValues([]float32{
+			scale, 0,
+			0, scale,
+		}, 1, 2, 2)
+	}
+
+	layer := &Gemma4DecoderLayer{
+		Attention: &Gemma4Attention{
+			QProj:          NewLinear(zeros2x2(), nil),
+			KProj:          NewLinear(zeros2x2(), nil),
+			VProj:          NewLinear(zeros2x2(), nil),
+			OProj:          NewLinear(zeros2x2(), nil),
+			QNormScaled:    ones2(),
+			KNormScaled:    ones2(),
+			HeadDim:        2,
+			NKVHeads:       1,
+			Scale:          1.0,
+			RopeBase:       10000,
+			RopeRotatedDim: 2,
+		},
+		MLP: &MLP{
+			GateProj: NewLinear(FromValues([]float32{
+				0.8, 0.1,
+				0.2, 0.7,
+			}, 2, 2), nil),
+			UpProj: NewLinear(FromValues([]float32{
+				0.5, -0.1,
+				0.3, 0.6,
+			}, 2, 2), nil),
+			DownProj: NewLinear(FromValues([]float32{
+				0.4, 0.2,
+				-0.3, 0.9,
+			}, 2, 2), nil),
+		},
+		EnableMoE:          true,
+		InputNormScaled:    ones2(),
+		PostAttnNormScaled: ones2(),
+		PreFFNormScaled:    ones2(),
+		PostFFNormScaled:   FromValues([]float32{2.0, 0.5}, 2),
+		PreFFNorm2Scaled:   ones2(),
+		PostFFNorm1Scaled:  ones2(),
+		PostFFNorm2Scaled:  ones2(),
+		Router: &Gemma4Router{
+			Proj:           NewLinear(FromValues([]float32{1.0, -0.25}, 1, 2), nil),
+			Scale:          ones2(),
+			PerExpertScale: FromValues([]float32{1}, 1),
+			ScaleScaled:    ones2(),
+			TopK:           1,
+			Eps:            1e-6,
+		},
+		Experts: &Gemma4Experts{
+			GateProj: NewSwitchLinear(switchWeight(0.9), nil),
+			UpProj:   NewSwitchLinear(switchWeight(0.6), nil),
+			DownProj: NewSwitchLinear(switchWeight(0.7), nil),
+		},
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{layer}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := FromValues([]float32{0.3, -0.2}, 1, 1, 2)
+
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg)
+	defer Free(kv.Keys, kv.Values)
+
+	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
+	h1 := layer.MLP.forward(h1In)
+	Free(h1In)
+	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
+	Free(h1)
+
+	h2In := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
+	topKIndices, topKWeights := layer.Router.forward(h2In)
+	h2 := layer.Experts.forward(h2In, topKIndices, topKWeights)
+	Free(h2In, topKIndices, topKWeights)
+	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
+	Free(h2)
+
+	combined := Add(h1Normed, h2Normed)
+	Free(h1Normed, h2Normed)
+	combinedNormed := RMSNorm(combined, layer.PostFFNormScaled, cfg.RMSNormEps)
+	Free(combined)
+	want := Add(x, combinedNormed)
+	Free(combinedNormed)
+
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	defer Free(x, got, want)
+
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 2,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"vocab_size": 10,
+		"vocab_size_per_layer_input": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 4,
+		"sliding_window_pattern": 2,
+		"num_kv_shared_layers": 0,
+		"hidden_size_per_layer_input": 2,
+		"tie_word_embeddings": true,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeightsWithPerLayerInputs()); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadGemma4(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4: %v", err)
+	}
+	defer closeGemma4(model)
+
+	if model.EmbedTokensPerLayer == nil {
+		t.Fatal("expected per-layer embedding table to load")
+	}
+	if model.PerLayerModelProj == nil {
+		t.Fatal("expected per-layer model projection to load")
+	}
+	if model.PerLayerProjNorm == nil || model.PerLayerProjNorm.Weight == nil {
+		t.Fatal("expected per-layer projection norm to load")
+	}
+	for i, layer := range model.Layers {
+		if layer.PerLayerInputGate == nil {
+			t.Fatalf("layer %d missing per_layer_input_gate", i)
+		}
+		if layer.PerLayerProjection == nil {
+			t.Fatalf("layer %d missing per_layer_projection", i)
+		}
+		if layer.PostPerLayerInputNorm == nil || layer.PostPerLayerInputNorm.Weight == nil {
+			t.Fatalf("layer %d missing post_per_layer_input_norm", i)
+		}
+	}
+
+	tokens := FromValues([]int32{2, 3, 4}, 1, 3)
+	caches := model.NewCache()
+	logits := model.Forward(tokens, caches)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval logits: %v", err)
+	}
+	defer func() {
+		Free(tokens, logits)
+		freeCaches(caches)
+	}()
+
+	shape := logits.Shape()
+	if len(shape) != 3 {
+		t.Fatalf("logits dims = %v, want rank 3", shape)
+	}
+	if shape[0] != 1 || shape[1] != 3 || shape[2] != 10 {
+		t.Fatalf("logits shape = %v, want [1 3 10]", shape)
+	}
+}
+
 func gemma4TinyWeights() map[string]*Array {
 	weights := map[string]*Array{
 		"model.embed_tokens.weight": seqArray(0.01, 10, 8),
@@ -588,6 +776,22 @@ func gemma4TinyWeights() map[string]*Array {
 
 	addLayer(0, true)
 	addLayer(1, false)
+	return weights
+}
+
+func gemma4TinyWeightsWithPerLayerInputs() map[string]*Array {
+	weights := gemma4TinyWeights()
+	weights["model.embed_tokens_per_layer.weight"] = seqArray(1.10, 10, 4)
+	weights["model.per_layer_model_projection.weight"] = seqArray(1.20, 4, 8)
+	weights["model.per_layer_projection_norm.weight"] = seqArray(1.30, 2)
+
+	for idx := 0; idx < 2; idx++ {
+		prefix := core.Sprintf("model.layers.%d", idx)
+		weights[prefix+".per_layer_input_gate.weight"] = seqArray(1.40+float32(idx), 2, 8)
+		weights[prefix+".per_layer_projection.weight"] = seqArray(1.50+float32(idx), 8, 2)
+		weights[prefix+".post_per_layer_input_norm.weight"] = seqArray(1.60+float32(idx), 8)
+	}
+
 	return weights
 }
 
