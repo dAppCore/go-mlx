@@ -404,10 +404,19 @@ func Mul(a, b *Array) *Array { return metal.Mul(a, b) }
 func Softmax(a *Array) *Array { return metal.Softmax(a) }
 
 // Slice extracts a sub-array along a single axis.
-func Slice(a *Array, start, end int32, axis int) *Array { return metal.SliceAxis(a, axis, start, end) }
+func Slice(a *Array, start, end, axis any) *Array {
+	return metal.SliceAxis(
+		a,
+		normalizeRootIntArg("axis", axis),
+		normalizeRootInt32Arg("start", start),
+		normalizeRootInt32Arg("end", end),
+	)
+}
 
 // Reshape returns a view with the given shape.
-func Reshape(a *Array, shape ...int32) *Array { return metal.Reshape(a, shape...) }
+func Reshape(a *Array, shape ...any) *Array {
+	return metal.Reshape(a, normalizeRootShapeArgs(shape)...)
+}
 
 // VJP computes the vector-Jacobian product.
 func VJP(fn func([]*Array) []*Array, primals []*Array, cotangents []*Array) (outputs []*Array, vjps []*Array, err error) {

@@ -354,24 +354,27 @@ func Softmax(a *Array) *Array {
 }
 
 // Slice records an updated size along the requested axis when possible.
-func Slice(a *Array, start, end int32, axis int) *Array {
+func Slice(a *Array, start, end, axis any) *Array {
 	if a == nil {
 		return nil
 	}
 	out := a.Clone()
-	if axis >= 0 && axis < len(out.shape) && end >= start {
-		out.shape[axis] = end - start
+	axisInt := normalizeRootIntArg("axis", axis)
+	startInt := normalizeRootInt32Arg("start", start)
+	endInt := normalizeRootInt32Arg("end", end)
+	if axisInt >= 0 && axisInt < len(out.shape) && endInt >= startInt {
+		out.shape[axisInt] = endInt - startInt
 	}
 	return out
 }
 
 // Reshape records the requested shape.
-func Reshape(a *Array, shape ...int32) *Array {
+func Reshape(a *Array, shape ...any) *Array {
 	dtype := DTypeFloat32
 	if a != nil {
 		dtype = a.dtype
 	}
-	return newStubArray(shape, dtype)
+	return newStubArray(normalizeRootShapeArgs(shape), dtype)
 }
 
 // VJP returns an availability error on unsupported builds.

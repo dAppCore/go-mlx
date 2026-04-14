@@ -114,6 +114,11 @@ func WithLogits() GenerateOption {
 	return func(c *GenerateConfig) { c.ReturnLogits = true }
 }
 
+// WithReturnLogits is an alias for WithLogits.
+func WithReturnLogits() GenerateOption {
+	return WithLogits()
+}
+
 // WithStopTokens sets token IDs that stop generation.
 func WithStopTokens(ids ...int32) GenerateOption {
 	return func(c *GenerateConfig) { c.StopTokens = ids }
