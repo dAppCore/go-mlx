@@ -21,11 +21,10 @@ type Sampler interface {
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
 //	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
-	if temp == 0 {
-		return greedy{}
+	samplers := make([]Sampler, 0, 4)
+	if temp > 0 {
+		samplers = append(samplers, Temperature(temp))
 	}
-
-	samplers := []Sampler{Temperature(temp)}
 	if topP > 0 && topP < 1 {
 		samplers = append(samplers, TopP(topP))
 	}
@@ -34,6 +33,9 @@ func newSampler(temp, topP, minP float32, topK int) Sampler {
 	}
 	if minP > 0 {
 		samplers = append(samplers, MinPSampler(minP))
+	}
+	if len(samplers) == 0 {
+		return greedy{}
 	}
 	return chain(samplers)
 }

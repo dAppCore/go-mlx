@@ -54,6 +54,29 @@ import (
 
 var initOnce sync.Once
 
+func metalAvailableNoInit() bool {
+	var available C.bool
+	C.mlx_metal_is_available(&available)
+	return bool(available)
+}
+
+func setDefaultCPUDeviceNoInit() {
+	if metalAvailableNoInit() {
+		return
+	}
+
+	dev := C.mlx_device_new_type(C.MLX_CPU, 0)
+	defer C.mlx_device_free(dev)
+
+	if rc := C.mlx_set_default_device(dev); rc != 0 {
+		if err := lastError(); err != nil {
+			core.Error("mlx: set cpu default device", "error", err)
+			return
+		}
+		core.Error("mlx: set cpu default device", "error", core.E("metal.Init", "set default CPU device", nil))
+	}
+}
+
 // Init sets up the MLX error handler and metallib path.
 // Called automatically on first use. Safe to call multiple times.
 //
@@ -72,6 +95,10 @@ func Init() {
 		}
 
 		C.set_error_handler()
+		// Some headless macOS environments expose the MLX runtime without a
+		// usable Metal device. Defaulting to CPU keeps direct array operations
+		// and explicit cpu loads functional instead of aborting on first alloc.
+		setDefaultCPUDeviceNoInit()
 	})
 }
 
@@ -161,9 +188,7 @@ func MaterializeAsync(outputs ...*Array) {
 //	if metal.MetalAvailable() { /* GPU path */ }
 func MetalAvailable() bool {
 	Init()
-	var available C.bool
-	C.mlx_metal_is_available(&available)
-	return bool(available)
+	return metalAvailableNoInit()
 }
 
 // Version returns the MLX framework version string (e.g. "0.24.0").

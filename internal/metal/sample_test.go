@@ -112,6 +112,48 @@ func TestSample_ChainOrder_Good(t *testing.T) {
 	}
 }
 
+func TestSample_TopPSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0.9, 0, 0)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(TopP); !ok {
+		t.Fatalf("chain[0] = %T, want TopP", c[0])
+	}
+}
+
+func TestSample_TopKSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0, 0, 20)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(TopKSampler); !ok {
+		t.Fatalf("chain[0] = %T, want TopKSampler", c[0])
+	}
+}
+
+func TestSample_MinPSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0, 0.05, 0)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(MinPSampler); !ok {
+		t.Fatalf("chain[0] = %T, want MinPSampler", c[0])
+	}
+}
+
 func TestSample_TopP_DominantLogit_Good(t *testing.T) {
 	// With one dominant logit, TopP should always pick it
 	logits := FromValues([]float32{-10, -10, 100, -10}, 1, 4)

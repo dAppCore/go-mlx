@@ -431,6 +431,29 @@ func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
 	}
 }
 
+func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.Device != metal.DeviceCPU {
+			t.Fatalf("Device = %q, want %q", cfg.Device, metal.DeviceCPU)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithDevice("cpu"))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 	medium := coreio.NewMemoryMedium()
 	if err := medium.Write("models/demo/config.json", `{"model_type":"gemma3"}`); err != nil {

@@ -4,6 +4,18 @@ package metal
 
 import "dappco.re/go/core"
 
+var runtimeMetalAvailable = MetalAvailable
+
+func resolveLoadDevice(device DeviceType) (DeviceType, bool) {
+	if device == "" {
+		device = DeviceGPU
+	}
+	if device == DeviceGPU && !runtimeMetalAvailable() {
+		return DeviceCPU, true
+	}
+	return device, false
+}
+
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
 	ContextLen  int    // Context window size (0 = model default, unbounded KV cache)
@@ -16,15 +28,14 @@ type LoadConfig struct {
 //	m, err := metal.LoadAndInit("/Volumes/Data/lem/gemma-3-1b-it-base")
 //	m, err := metal.LoadAndInit(path, metal.LoadConfig{ContextLen: 4096})
 func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
-	if !MetalAvailable() {
-		return nil, core.E("metal.LoadAndInit", "Metal unavailable", nil)
-	}
 	loadCfg := LoadConfig{Device: DeviceGPU}
 	if len(cfg) > 0 {
 		loadCfg = cfg[0]
-		if loadCfg.Device == "" {
-			loadCfg.Device = DeviceGPU
-		}
+	}
+	resolvedDevice, fellBack := resolveLoadDevice(loadCfg.Device)
+	loadCfg.Device = resolvedDevice
+	if fellBack {
+		core.Warn("mlx: Metal unavailable, falling back to CPU")
 	}
 
 	var (
