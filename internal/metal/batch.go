@@ -82,7 +82,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 	}
 
 	// logits shape: [N, L, vocab] — gather at each prompt's last real position
-	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 	sortedResults := make([]ClassifyResult, N)
 	for si := range N {
 		lastPos := sortedLengths[si] - 1
@@ -196,7 +196,7 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	Free(tokens, mask) // No longer needed after prefill
 	prefillDur := time.Since(prefillStart)
 
-	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 	eosID := m.tokenizer.EOSToken()
 
 	// Per-sequence state.

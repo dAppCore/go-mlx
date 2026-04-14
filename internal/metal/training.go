@@ -23,6 +23,11 @@ func (m *Model) Decode(ids []int32) string {
 	return m.tokenizer.Decode(ids)
 }
 
+// Tokenizer returns the loaded tokenizer for direct encode/decode access.
+func (m *Model) Tokenizer() *Tokenizer {
+	return m.tokenizer
+}
+
 // NumLayers returns the number of transformer layers in the model.
 //
 //	fmt.Printf("model has %d layers\n", m.NumLayers()) // e.g. 28 for Gemma3-7B

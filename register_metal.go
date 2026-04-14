@@ -1,4 +1,4 @@
-//go:build darwin && arm64
+//go:build darwin && arm64 && !nomlx
 
 package mlx
 
@@ -19,6 +19,9 @@ func init() {
 //
 //	if mlx.MetalAvailable() { /* run on GPU */ }
 func MetalAvailable() bool { return true }
+
+// Available reports whether native MLX support is available in this build.
+func Available() bool { return MetalAvailable() }
 
 // SetCacheLimit sets the Metal memory cache limit. Returns the previous value.
 //

@@ -29,6 +29,7 @@ type GenerateConfig struct {
 	Temperature   float32
 	TopK          int
 	TopP          float32
+	MinP          float32
 	StopTokens    []int32
 	RepeatPenalty float32
 }
@@ -164,7 +165,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		caches := m.newCaches()
 		defer freeCaches(caches)
 
-		sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+		sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 		var genCount int
 		var prefillDur time.Duration
 
