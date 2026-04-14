@@ -421,6 +421,12 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 		return attentionCacheSnapshot{}, false
 	}
 	state := cache.State()
+	var ownedState []*Array
+	if rotating, ok := cache.(*RotatingKVCache); ok {
+		state = rotating.orderedState()
+		ownedState = state
+	}
+	defer Free(ownedState...)
 	if len(state) < 1 {
 		return attentionCacheSnapshot{}, false
 	}

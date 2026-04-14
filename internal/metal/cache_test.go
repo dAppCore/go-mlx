@@ -18,6 +18,16 @@ func makeKV(seqLen int) (*Array, *Array) {
 	return k, v
 }
 
+func makeSingleTokenKV(value float32) (*Array, *Array) {
+	data := make([]float32, 1*2*1*4)
+	for i := range data {
+		data[i] = value + float32(i)*0.01
+	}
+	k := FromValues(data, 1, 2, 1, 4)
+	v := FromValues(data, 1, 2, 1, 4)
+	return k, v
+}
+
 // --- KVCache ---
 
 func TestKVCache_New_Good(t *testing.T) {
@@ -176,6 +186,35 @@ func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 	// Len should be bounded by maxSize
 	if c.Len() != 4 {
 		t.Errorf("len = %d, want 4 (bounded)", c.Len())
+	}
+}
+
+func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+
+	for i := range 6 {
+		k, v := makeSingleTokenKV(float32(i + 1))
+		outK, outV := c.Update(k, v, 1)
+		Materialize(outK, outV)
+
+		if i < 3 {
+			Free(k, v, outK, outV)
+			continue
+		}
+
+		got := outK.Floats()
+		wantValues := []float32{float32(i - 2), float32(i - 1), float32(i), float32(i + 1)}
+		for tokenIdx, want := range wantValues {
+			base := tokenIdx * 4
+			if base >= len(got) {
+				t.Fatalf("token %d base index %d beyond output len %d", tokenIdx, base, len(got))
+			}
+			if got[base] != want {
+				t.Fatalf("token %d first value = %f, want %f (full output %v)", tokenIdx, got[base], want, got)
+			}
+		}
+
+		Free(k, v, outK, outV)
 	}
 }
 
