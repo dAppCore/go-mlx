@@ -106,9 +106,10 @@ type Gemma4DecoderLayer struct {
 	PostFFNorm2Scaled           *Array
 	PostPerLayerInputNormScaled *Array
 
-	LayerType string
-	IsSliding bool
-	LayerIdx  int32
+	LayerType     string
+	IsSliding     bool
+	DoubleWideMLP bool
+	LayerIdx      int32
 }
 
 // Gemma4Attention implements Gemma 4 attention with per-layer RoPE and K-eq-V.
@@ -215,15 +216,23 @@ func mergeGemma4RopeParameters(cfg *Gemma4TextConfig) {
 
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
-		ModelType         string              `json:"model_type"`
-		Quantization      *QuantizationConfig `json:"quantization"`
-		LayerTypes        []string            `json:"layer_types"`
-		NumKVSharedLayers *int32              `json:"num_kv_shared_layers"`
-		TextConfig        struct {
+		ModelType               string              `json:"model_type"`
+		Quantization            *QuantizationConfig `json:"quantization"`
+		LayerTypes              []string            `json:"layer_types"`
+		NumKVSharedLayers       *int32              `json:"num_kv_shared_layers"`
+		GlobalHeadDim           *int32              `json:"global_head_dim"`
+		HiddenSizePerLayerInput *int32              `json:"hidden_size_per_layer_input"`
+		UseDoubleWideMLP        *bool               `json:"use_double_wide_mlp"`
+		TieWordEmbeddings       *bool               `json:"tie_word_embeddings"`
+		TextConfig              struct {
 			Gemma4TextConfig
-			Quantization      *QuantizationConfig `json:"quantization"`
-			LayerTypes        []string            `json:"layer_types"`
-			NumKVSharedLayers *int32              `json:"num_kv_shared_layers"`
+			Quantization            *QuantizationConfig `json:"quantization"`
+			LayerTypes              []string            `json:"layer_types"`
+			NumKVSharedLayers       *int32              `json:"num_kv_shared_layers"`
+			GlobalHeadDim           *int32              `json:"global_head_dim"`
+			HiddenSizePerLayerInput *int32              `json:"hidden_size_per_layer_input"`
+			UseDoubleWideMLP        *bool               `json:"use_double_wide_mlp"`
+			TieWordEmbeddings       *bool               `json:"tie_word_embeddings"`
 		} `json:"text_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
@@ -250,12 +259,27 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if len(cfg.LayerTypesInput) == 0 && len(wrapper.TextConfig.LayerTypes) > 0 {
 		cfg.LayerTypesInput = wrapper.TextConfig.LayerTypes
 	}
+	if cfg.NumKVSharedLayers == 0 {
+		switch {
+		case wrapper.TextConfig.NumKVSharedLayers != nil:
+			cfg.NumKVSharedLayers = *wrapper.TextConfig.NumKVSharedLayers
+		case wrapper.NumKVSharedLayers != nil:
+			cfg.NumKVSharedLayers = *wrapper.NumKVSharedLayers
+		}
+	}
 
 	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
 	if cfg.GlobalHeadDim == 0 {
-		cfg.GlobalHeadDim = cfg.HeadDim
+		switch {
+		case wrapper.TextConfig.GlobalHeadDim != nil:
+			cfg.GlobalHeadDim = *wrapper.TextConfig.GlobalHeadDim
+		case wrapper.GlobalHeadDim != nil:
+			cfg.GlobalHeadDim = *wrapper.GlobalHeadDim
+		default:
+			cfg.GlobalHeadDim = 512
+		}
 	}
 	if cfg.GlobalPartialRotaryFactor == 0 {
 		cfg.GlobalPartialRotaryFactor = 0.25
@@ -278,11 +302,21 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.MaxPositionEmbeddings == 0 {
 		cfg.MaxPositionEmbeddings = 131072
 	}
-	if wrapper.NumKVSharedLayers == nil && wrapper.TextConfig.NumKVSharedLayers == nil {
+	if cfg.NumKVSharedLayers == 0 && wrapper.NumKVSharedLayers == nil && wrapper.TextConfig.NumKVSharedLayers == nil {
 		cfg.NumKVSharedLayers = 20
 	}
 	if cfg.FinalLogitSoftcapping == 0 {
 		cfg.FinalLogitSoftcapping = 30
+	}
+	if cfg.HiddenSizePerLayerInput == 0 {
+		switch {
+		case wrapper.TextConfig.HiddenSizePerLayerInput != nil:
+			cfg.HiddenSizePerLayerInput = *wrapper.TextConfig.HiddenSizePerLayerInput
+		case wrapper.HiddenSizePerLayerInput != nil:
+			cfg.HiddenSizePerLayerInput = *wrapper.HiddenSizePerLayerInput
+		default:
+			cfg.HiddenSizePerLayerInput = 256
+		}
 	}
 	if cfg.EnableMoEBlock {
 		if cfg.NumExperts == nil {
@@ -292,6 +326,26 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		if cfg.TopKExperts == nil {
 			topK := int32(8)
 			cfg.TopKExperts = &topK
+		}
+	}
+	if !cfg.UseDoubleWideMLP {
+		switch {
+		case wrapper.TextConfig.UseDoubleWideMLP != nil:
+			cfg.UseDoubleWideMLP = *wrapper.TextConfig.UseDoubleWideMLP
+		case wrapper.UseDoubleWideMLP != nil:
+			cfg.UseDoubleWideMLP = *wrapper.UseDoubleWideMLP
+		default:
+			cfg.UseDoubleWideMLP = true
+		}
+	}
+	if !cfg.TieWordEmbeddings {
+		switch {
+		case wrapper.TextConfig.TieWordEmbeddings != nil:
+			cfg.TieWordEmbeddings = *wrapper.TextConfig.TieWordEmbeddings
+		case wrapper.TieWordEmbeddings != nil:
+			cfg.TieWordEmbeddings = *wrapper.TieWordEmbeddings
+		default:
+			cfg.TieWordEmbeddings = true
 		}
 	}
 	mergeGemma4RopeParameters(&cfg)
@@ -458,6 +512,40 @@ func gemma4WeightAny(weights map[string]*Array, names ...string) *Array {
 		}
 	}
 	return nil
+}
+
+func inferGemma4HeadDim(weights map[string]*Array, layerTypes []string, numAttentionHeads int32, target string) int32 {
+	for i, layerType := range layerTypes {
+		if layerType != target {
+			continue
+		}
+		if qProj := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.self_attn.q_proj.weight", i)); qProj != nil {
+			shape := qProj.Shape()
+			if len(shape) > 0 && numAttentionHeads > 0 && shape[0]%numAttentionHeads == 0 {
+				return shape[0] / numAttentionHeads
+			}
+		}
+	}
+	return 0
+}
+
+func inferGemma4PerLayerInputSize(weights map[string]*Array, numHiddenLayers int32) int32 {
+	if numHiddenLayers <= 0 {
+		return 0
+	}
+	if w := gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight"); w != nil {
+		shape := w.Shape()
+		if len(shape) >= 2 && shape[1]%numHiddenLayers == 0 {
+			return shape[1] / numHiddenLayers
+		}
+	}
+	if w := gemma4WeightAny(weights, "model.per_layer_model_projection.weight"); w != nil {
+		shape := w.Shape()
+		if len(shape) >= 2 && shape[0]%numHiddenLayers == 0 {
+			return shape[0] / numHiddenLayers
+		}
+	}
+	return 0
 }
 
 func gemma4Linear(weights map[string]*Array, prefix string, defaultQ *QuantizationConfig) *Linear {
@@ -707,32 +795,22 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 	weights := sanitizeGemma4Weights(rawWeights)
 
-	if cfg.HeadDim == 0 {
-		for i, layerType := range cfg.LayerTypes {
-			if layerType != "sliding_attention" {
-				continue
-			}
-			if qProj := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.self_attn.q_proj.weight", i)); qProj != nil {
-				cfg.HeadDim = qProj.Shape()[0] / cfg.NumAttentionHeads
-				break
-			}
-		}
+	if inferred := inferGemma4HeadDim(weights, cfg.LayerTypes, cfg.NumAttentionHeads, "sliding_attention"); inferred > 0 {
+		cfg.HeadDim = inferred
+	}
+	if inferred := inferGemma4HeadDim(weights, cfg.LayerTypes, cfg.NumAttentionHeads, "full_attention"); inferred > 0 {
+		cfg.GlobalHeadDim = inferred
+	}
+	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
+		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
 	if cfg.GlobalHeadDim == 0 {
-		for i, layerType := range cfg.LayerTypes {
-			if layerType != "full_attention" {
-				continue
-			}
-			if qProj := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.self_attn.q_proj.weight", i)); qProj != nil {
-				cfg.GlobalHeadDim = qProj.Shape()[0] / cfg.NumAttentionHeads
-				break
-			}
-		}
-		if cfg.GlobalHeadDim == 0 {
-			cfg.GlobalHeadDim = cfg.HeadDim
-		}
+		cfg.GlobalHeadDim = 512
 	}
 
+	if inferred := inferGemma4PerLayerInputSize(weights, cfg.NumHiddenLayers); inferred > 0 {
+		cfg.HiddenSizePerLayerInput = inferred
+	}
 	if cfg.HiddenSizePerLayerInput > 0 {
 		if gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight") == nil ||
 			gemma4WeightAny(weights, "model.per_layer_model_projection.weight") == nil {
@@ -779,6 +857,10 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		m.PerLayerProjNorm = &RMSNormModule{Weight: gemma4WeightAny(weights, "model.per_layer_projection_norm.weight")}
 	}
 
+	firstShared := cfg.NumHiddenLayers - cfg.NumKVSharedLayers
+	if firstShared < 0 {
+		firstShared = 0
+	}
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("model.layers.%d", i)
 		layerType := cfg.LayerTypes[i]
@@ -830,11 +912,12 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 				UpProj:   gemma4Linear(weights, prefix+".mlp.up_proj", cfg.Quantization),
 				DownProj: gemma4Linear(weights, prefix+".mlp.down_proj", cfg.Quantization),
 			},
-			LayerScalar: gemma4WeightAny(weights, prefix+".layer_scalar", prefix+".layer_scalar.weight"),
-			LayerType:   layerType,
-			IsSliding:   isSliding,
-			LayerIdx:    i,
-			EnableMoE:   cfg.EnableMoEBlock,
+			LayerScalar:   gemma4WeightAny(weights, prefix+".layer_scalar", prefix+".layer_scalar.weight"),
+			LayerType:     layerType,
+			IsSliding:     isSliding,
+			DoubleWideMLP: cfg.UseDoubleWideMLP && cfg.NumKVSharedLayers > 0 && i >= firstShared,
+			LayerIdx:      i,
+			EnableMoE:     cfg.EnableMoEBlock,
 		}
 		if layer.LayerScalar == nil {
 			layer.LayerScalar = gemma4Ones([]int32{1})

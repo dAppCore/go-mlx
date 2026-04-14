@@ -35,8 +35,17 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseGemma4Config: %v", err)
 	}
-	if cfg.GlobalHeadDim != 256 {
-		t.Errorf("GlobalHeadDim = %d, want 256", cfg.GlobalHeadDim)
+	if cfg.GlobalHeadDim != 512 {
+		t.Errorf("GlobalHeadDim = %d, want 512", cfg.GlobalHeadDim)
+	}
+	if cfg.HiddenSizePerLayerInput != 256 {
+		t.Errorf("HiddenSizePerLayerInput = %d, want 256", cfg.HiddenSizePerLayerInput)
+	}
+	if !cfg.UseDoubleWideMLP {
+		t.Error("UseDoubleWideMLP = false, want true")
+	}
+	if !cfg.TieWordEmbeddings {
+		t.Error("TieWordEmbeddings = false, want true")
 	}
 	if cfg.SlidingWindow != 512 {
 		t.Errorf("SlidingWindow = %d, want 512", cfg.SlidingWindow)
@@ -181,6 +190,51 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 	}
 	if got := cfg.LayerTypes; len(got) != 2 || got[0] != "sliding_attention" || got[1] != "full_attention" {
 		t.Fatalf("LayerTypes = %v, want explicit nested layer types", got)
+	}
+}
+
+func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"num_kv_shared_layers": 7,
+		"global_head_dim": 384,
+		"hidden_size_per_layer_input": 128,
+		"use_double_wide_mlp": true,
+		"tie_word_embeddings": true,
+		"text_config": {
+			"hidden_size": 1024,
+			"num_hidden_layers": 6,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"layer_types": [
+				"sliding_attention",
+				"sliding_attention",
+				"sliding_attention",
+				"sliding_attention",
+				"full_attention",
+				"sliding_attention"
+			]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.NumKVSharedLayers != 7 {
+		t.Fatalf("NumKVSharedLayers = %d, want 7", cfg.NumKVSharedLayers)
+	}
+	if cfg.GlobalHeadDim != 384 {
+		t.Fatalf("GlobalHeadDim = %d, want 384", cfg.GlobalHeadDim)
+	}
+	if cfg.HiddenSizePerLayerInput != 128 {
+		t.Fatalf("HiddenSizePerLayerInput = %d, want 128", cfg.HiddenSizePerLayerInput)
+	}
+	if !cfg.UseDoubleWideMLP {
+		t.Fatal("UseDoubleWideMLP = false, want true")
+	}
+	if !cfg.TieWordEmbeddings {
+		t.Fatal("TieWordEmbeddings = false, want true")
 	}
 }
 
@@ -461,7 +515,6 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
-		"tie_word_embeddings": true,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -517,7 +570,6 @@ func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
 		"hidden_size_per_layer_input": 0,
-		"tie_word_embeddings": true,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
@@ -683,8 +735,6 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 		"sliding_window": 4,
 		"sliding_window_pattern": 2,
 		"num_kv_shared_layers": 0,
-		"hidden_size_per_layer_input": 2,
-		"tie_word_embeddings": true,
 		"layer_types": ["sliding_attention", "full_attention"]
 	}`
 	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
