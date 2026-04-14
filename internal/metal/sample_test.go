@@ -75,6 +75,34 @@ func TestSample_TopKSampler_MultipleTokens_Good(t *testing.T) {
 	}
 }
 
+func TestSample_TopKSampler_OverLargeK_NoOp_Good(t *testing.T) {
+	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	filtered := TopKSampler(99).Sample(logits)
+	Materialize(filtered)
+
+	got := filtered.Floats()
+	want := []float32{1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("filtered[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSample_TopKSampler_NonPositiveK_NoOp_Good(t *testing.T) {
+	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	filtered := TopKSampler(0).Sample(logits)
+	Materialize(filtered)
+
+	got := filtered.Floats()
+	want := []float32{1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("filtered[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSample_Chain_Good(t *testing.T) {
 	// Full chain: topK + temperature
 	logits := FromValues([]float32{1, 2, 3, 4, 5}, 1, 5)

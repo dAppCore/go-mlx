@@ -89,11 +89,15 @@ func (t Temperature) Sample(logits *Array) *Array {
 type TopKSampler int
 
 func (k TopKSampler) Sample(logits *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || int(k) <= 0 || int(k) >= lastDim {
+		return logits.Clone()
+	}
 	neg := Negative(logits)
 	maskIdx := Argpartition(neg, int(k)-1, -1)
 	Free(neg)
 	// Slice the indices beyond top-k
-	mask := SliceAxis(maskIdx, -1, int32(k), int32(logits.Dim(-1)))
+	mask := SliceAxis(maskIdx, -1, int32(k), int32(lastDim))
 	Free(maskIdx)
 	inf := FromValue(float32(math.Inf(-1)))
 	res := PutAlongAxis(logits, mask, inf, -1)
