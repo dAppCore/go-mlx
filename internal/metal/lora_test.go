@@ -146,6 +146,50 @@ func TestLora_LoRALinear_TrainableParams_Good(t *testing.T) {
 	}
 }
 
+func TestLora_NormalizeConfig_RFCAliases_Good(t *testing.T) {
+	cfg := normalizeLoRAConfig(LoRAConfig{
+		Rank:         8,
+		Scale:        1.5,
+		TargetLayers: []string{"q_proj", "v_proj"},
+	})
+
+	if cfg.Alpha != 12 {
+		t.Fatalf("Alpha = %f, want 12", cfg.Alpha)
+	}
+	if cfg.Scale != 1.5 {
+		t.Fatalf("Scale = %f, want 1.5", cfg.Scale)
+	}
+	if len(cfg.TargetKeys) != 2 || cfg.TargetKeys[0] != "q_proj" || cfg.TargetKeys[1] != "v_proj" {
+		t.Fatalf("TargetKeys = %v, want RFC aliases copied", cfg.TargetKeys)
+	}
+	if cfg.DType != DTypeFloat32 {
+		t.Fatalf("DType = %v, want float32 default", cfg.DType)
+	}
+}
+
+func TestLora_BatchLengths_Good(t *testing.T) {
+	lengths, maxLen := batchLengths(
+		Batch{
+			Tokens: [][]int{
+				{1, 2, 3, 4},
+				{5, 6, 7},
+			},
+			Length: []int{3, 2},
+		},
+		[][]int{
+			{9, 8, 7, 6},
+			{4, 3, 2},
+		},
+	)
+
+	if maxLen != 3 {
+		t.Fatalf("maxLen = %d, want 3", maxLen)
+	}
+	if len(lengths) != 2 || lengths[0] != 3 || lengths[1] != 2 {
+		t.Fatalf("lengths = %v, want [3 2]", lengths)
+	}
+}
+
 func TestLora_LoRALinear_GradientFlows_Good(t *testing.T) {
 	// Verify that gradients flow through the LoRA path
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)

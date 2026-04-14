@@ -131,19 +131,24 @@ func (layer *LoRALinear) ParamCount() int {
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank       int      // Decomposition rank (default 8)
-	Alpha      float32  // Scaling factor (default 16)
-	TargetKeys []string // Weight name suffixes to target (default: q_proj, v_proj)
-	DType      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
+	Rank         int      // Decomposition rank (default 8)
+	Alpha        float32  // Scaling factor (default 16)
+	Scale        float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
+	TargetKeys   []string // Weight name suffixes to target (default: q_proj, v_proj)
+	TargetLayers []string // RFC alias for TargetKeys
+	Lambda       float32  // RFC compatibility field for regularisation (currently informational only)
+	DType        DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
 func DefaultLoRAConfig() LoRAConfig {
 	return LoRAConfig{
-		Rank:       8,
-		Alpha:      16,
-		TargetKeys: []string{"q_proj", "v_proj"},
-		DType:      DTypeFloat32,
+		Rank:         8,
+		Alpha:        16,
+		Scale:        2,
+		TargetKeys:   []string{"q_proj", "v_proj"},
+		TargetLayers: []string{"q_proj", "v_proj"},
+		DType:        DTypeFloat32,
 	}
 }
 
@@ -151,6 +156,52 @@ func DefaultLoRAConfig() LoRAConfig {
 type LoRAAdapter struct {
 	Layers map[string]*LoRALinear // keyed by weight path prefix
 	Config LoRAConfig
+	Model  InternalModel
+}
+
+// Batch describes a token batch for one training step.
+type Batch struct {
+	Tokens [][]int
+	Length []int
+}
+
+// TrainConfig holds RFC-style top-level training loop settings.
+type TrainConfig struct {
+	Epochs         int
+	BatchSize      int
+	LearningRate   float64
+	EvalInterval   int
+	SaveInterval   int
+	EvalLossThresh float64
+}
+
+func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
+	if cfg.Rank == 0 {
+		cfg.Rank = 8
+	}
+	if cfg.Alpha == 0 {
+		if cfg.Scale != 0 {
+			cfg.Alpha = cfg.Scale * float32(cfg.Rank)
+		} else {
+			cfg.Alpha = 16
+		}
+	}
+	if cfg.Scale == 0 && cfg.Rank > 0 {
+		cfg.Scale = cfg.Alpha / float32(cfg.Rank)
+	}
+	if len(cfg.TargetKeys) == 0 && len(cfg.TargetLayers) > 0 {
+		cfg.TargetKeys = append([]string(nil), cfg.TargetLayers...)
+	}
+	if len(cfg.TargetKeys) == 0 {
+		cfg.TargetKeys = []string{"q_proj", "v_proj"}
+	}
+	if len(cfg.TargetLayers) == 0 {
+		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
+	}
+	if cfg.DType == 0 {
+		cfg.DType = DTypeFloat32
+	}
+	return cfg
 }
 
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
@@ -196,6 +247,119 @@ func (adapter *LoRAAdapter) SetAllParams(params []*Array) {
 		layer.A = params[i*2]
 		layer.B = params[i*2+1]
 	}
+}
+
+func batchLengths(batch Batch, targets [][]int) ([]int32, int) {
+	if len(batch.Tokens) == 0 || len(batch.Tokens) != len(targets) {
+		return nil, 0
+	}
+	lengths := make([]int32, len(batch.Tokens))
+	maxLen := 0
+	for i := range batch.Tokens {
+		n := len(batch.Tokens[i])
+		if len(targets[i]) < n {
+			n = len(targets[i])
+		}
+		if i < len(batch.Length) && batch.Length[i] > 0 && batch.Length[i] < n {
+			n = batch.Length[i]
+		}
+		if n < 0 {
+			n = 0
+		}
+		lengths[i] = int32(n)
+		if n > maxLen {
+			maxLen = n
+		}
+	}
+	return lengths, maxLen
+}
+
+func batchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
+	data := make([]int32, len(seqs)*maxLen)
+	for i, seq := range seqs {
+		limit := int(lengths[i])
+		if limit > len(seq) {
+			limit = len(seq)
+		}
+		base := i * maxLen
+		for j := 0; j < limit; j++ {
+			data[base+j] = int32(seq[j])
+		}
+	}
+	return data
+}
+
+func batchLossMask(lengths []int32, maxLen int) *Array {
+	data := make([]float32, len(lengths)*maxLen)
+	for i, n := range lengths {
+		base := i * maxLen
+		for j := 0; j < int(n); j++ {
+			data[base+j] = 1
+		}
+	}
+	return FromValues(data, len(lengths), maxLen)
+}
+
+// Step runs one RFC-style LoRA training step over a padded batch and returns the loss.
+func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW) *Array {
+	if adapter == nil || adapter.Model == nil || optimizer == nil {
+		return nil
+	}
+	params := adapter.AllTrainableParams()
+	if len(params) == 0 {
+		return nil
+	}
+
+	lengths, maxLen := batchLengths(batch, targets)
+	if len(lengths) == 0 || maxLen == 0 {
+		return nil
+	}
+
+	inputs := FromValues(batchTokenData(batch.Tokens, lengths, maxLen), len(lengths), maxLen)
+	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
+	lossMask := batchLossMask(lengths, maxLen)
+	attnMask := buildBatchMask(int32(len(lengths)), int32(maxLen), lengths)
+	caches := adapter.Model.NewCache()
+	defer Free(inputs, targetIDs, lossMask, attnMask)
+	defer freeCaches(caches)
+
+	argnums := make([]int, len(params))
+	for i := range params {
+		argnums[i] = i
+	}
+
+	lossFn := func(current []*Array) []*Array {
+		adapter.SetAllParams(current)
+		logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
+		return []*Array{MaskedCrossEntropyLoss(logits, targetIDs, lossMask)}
+	}
+
+	grad := ValueAndGrad(lossFn, argnums...)
+	values, grads, err := grad.Apply(params...)
+	grad.Free()
+	if err != nil || len(values) == 0 {
+		if len(values) > 0 {
+			Free(values...)
+		}
+		if len(grads) > 0 {
+			Free(grads...)
+		}
+		return nil
+	}
+
+	all := make([]*Array, 0, len(values)+len(grads))
+	all = append(all, values...)
+	all = append(all, grads...)
+	Materialize(all...)
+
+	updated := optimizer.Step(params, grads)
+	Materialize(updated...)
+	adapter.SetAllParams(updated)
+	Free(grads...)
+	if len(values) > 1 {
+		Free(values[1:]...)
+	}
+	return values[0]
 }
 
 // Save writes the LoRA adapter weights to a safetensors file.

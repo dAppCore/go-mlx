@@ -16,6 +16,12 @@ type LoRAAdapter = metal.LoRAAdapter
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig = metal.LoRAConfig
 
+// Batch describes one RFC-style training batch.
+type Batch = metal.Batch
+
+// TrainConfig holds RFC-style training loop settings.
+type TrainConfig = metal.TrainConfig
+
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
 //
 //	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]

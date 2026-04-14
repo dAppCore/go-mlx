@@ -476,9 +476,11 @@ func (m *GemmaModel) ModelType() string { return "gemma3" }
 // Supports attention targets (q_proj, k_proj, v_proj, o_proj) and
 // MLP targets (gate_proj, up_proj, down_proj).
 func (m *GemmaModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
+	cfg = normalizeLoRAConfig(cfg)
 	adapter := &LoRAAdapter{
 		Layers: make(map[string]*LoRALinear),
 		Config: cfg,
+		Model:  m,
 	}
 
 	for i, layer := range m.Layers {
