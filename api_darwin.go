@@ -33,6 +33,16 @@ type Tokenizer struct {
 	tok *metal.Tokenizer
 }
 
+func stripImplicitBOS(tok *metal.Tokenizer, tokens []int32) []int32 {
+	if tok == nil || len(tokens) == 0 {
+		return append([]int32(nil), tokens...)
+	}
+	if tokens[0] == tok.BOS() {
+		return append([]int32(nil), tokens[1:]...)
+	}
+	return append([]int32(nil), tokens...)
+}
+
 var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 	return metal.LoadAndInit(modelPath, cfg)
 }
@@ -209,12 +219,12 @@ func (m *Model) MergeLoRA(adapter *LoRAAdapter) *Model {
 	return m
 }
 
-// Encode converts text to token IDs.
+// Encode converts text to token IDs without the model-internal implicit BOS token.
 func (t *Tokenizer) Encode(text string) ([]int32, error) {
 	if t == nil || t.tok == nil {
 		return nil, errors.New("mlx: tokenizer is nil")
 	}
-	return append([]int32(nil), t.tok.Encode(text)...), nil
+	return stripImplicitBOS(t.tok, t.tok.Encode(text)), nil
 }
 
 // Decode converts token IDs back to text.
@@ -230,15 +240,34 @@ func (t *Tokenizer) TokenID(text string) (int32, bool) {
 	if t == nil || t.tok == nil {
 		return 0, false
 	}
-	return t.tok.TokenID(text)
+	if id, ok := t.tok.TokenID(text); ok {
+		return id, true
+	}
+	// The public tokenizer API accepts plain-text tokens such as "hello",
+	// while the internal tokenizer stores model-native forms like "▁hello".
+	encoded := stripImplicitBOS(t.tok, t.tok.Encode(text))
+	if len(encoded) == 1 {
+		return encoded[0], true
+	}
+	return 0, false
 }
 
-// IDToken resolves a token ID to its text form.
+// IDToken resolves a token ID to a decoded token string when possible.
 func (t *Tokenizer) IDToken(id int32) string {
 	if t == nil || t.tok == nil {
 		return ""
 	}
-	return t.tok.IDToken(id)
+	raw := t.tok.IDToken(id)
+	if raw == "" {
+		return ""
+	}
+	if decoded := t.tok.Decode([]int32{id}); decoded != "" {
+		return decoded
+	}
+	if raw == "▁" {
+		return " "
+	}
+	return raw
 }
 
 // BOS returns the beginning-of-sequence token ID.
