@@ -77,7 +77,9 @@ type metalBackend struct{}
 func (backend *metalBackend) Name() string    { return "metal" }
 func (backend *metalBackend) Available() bool { return MetalAvailable() }
 
-var loadBackendModel = metal.LoadAndInit
+var loadBackendModel = func(modelPath string, cfg metal.LoadConfig) (*metal.Model, error) {
+	return metal.LoadAndInit(modelPath, cfg)
+}
 
 func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
