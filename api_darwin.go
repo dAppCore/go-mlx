@@ -151,7 +151,10 @@ func (m *Model) Close() error {
 	if m == nil || m.model == nil {
 		return nil
 	}
-	return m.model.Close()
+	native := m.model
+	m.model = nil
+	m.tok = nil
+	return native.Close()
 }
 
 // NewLoRA applies a LoRA adapter to a loaded model.

@@ -14,17 +14,22 @@ import (
 )
 
 type fakeNativeModel struct {
-	err       error
-	info      metal.ModelInfo
-	tokenizer *metal.Tokenizer
-	tokens    []metal.Token
+	err        error
+	info       metal.ModelInfo
+	tokenizer  *metal.Tokenizer
+	tokens     []metal.Token
+	closeErr   error
+	closeCalls int
 }
 
 func (m *fakeNativeModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
-func (m *fakeNativeModel) Close() error                                    { return nil }
-func (m *fakeNativeModel) Err() error                                      { return m.err }
-func (m *fakeNativeModel) Info() metal.ModelInfo                           { return m.info }
-func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer                     { return m.tokenizer }
+func (m *fakeNativeModel) Close() error {
+	m.closeCalls++
+	return m.closeErr
+}
+func (m *fakeNativeModel) Err() error                  { return m.err }
+func (m *fakeNativeModel) Info() metal.ModelInfo       { return m.info }
+func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 func (m *fakeNativeModel) Generate(_ context.Context, _ string, _ metal.GenerateConfig) iter.Seq[metal.Token] {
 	return func(yield func(metal.Token) bool) {
 		for _, tok := range m.tokens {
@@ -151,6 +156,51 @@ func TestModelGenerateStream_Good(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timed out waiting for stream")
 		}
+	}
+}
+
+func TestModelClose_Idempotent_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{
+		model: native,
+		tok:   &Tokenizer{tok: &metal.Tokenizer{}},
+	}
+
+	if err := model.Close(); err != nil {
+		t.Fatalf("first Close(): %v", err)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls after first Close = %d, want 1", native.closeCalls)
+	}
+	if model.model != nil {
+		t.Fatal("model handle should be cleared after Close")
+	}
+	if model.tok != nil {
+		t.Fatal("tokenizer handle should be cleared after Close")
+	}
+
+	if err := model.Close(); err != nil {
+		t.Fatalf("second Close(): %v", err)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls after second Close = %d, want 1", native.closeCalls)
+	}
+}
+
+func TestModelClose_Error_Bad(t *testing.T) {
+	wantErr := errors.New("close boom")
+	native := &fakeNativeModel{closeErr: wantErr}
+	model := &Model{model: native}
+
+	err := model.Close()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Close() error = %v, want %v", err, wantErr)
+	}
+	if native.closeCalls != 1 {
+		t.Fatalf("close calls = %d, want 1", native.closeCalls)
+	}
+	if model.model != nil {
+		t.Fatal("model handle should still be cleared on close error")
 	}
 }
 
