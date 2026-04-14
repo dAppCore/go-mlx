@@ -11,6 +11,9 @@ import (
 func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_, _ = LoadModel("/tmp/model", WithContextLength(128), WithQuantization(4), WithDevice("cpu"))
 	_, _ = LoadTokenizer("/tmp/tokenizer.json")
+	_, _ = LoadModelFromMedium(nil, "models/example", WithMedium(nil))
+	_, _ = ReadGGUFInfo("/tmp/model.gguf")
+	_ = DiscoverModels("/tmp/models")
 
 	model := &Model{}
 	_, _ = model.Generate("hello", WithMaxTokens(8), WithTemperature(0.7), WithTopK(10), WithTopP(0.9), WithMinP(0.05))
@@ -98,4 +101,14 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	var infTrainable inference.TrainableModel
 	_ = ConcreteAdapter(infAdapter)
 	_ = TrainingModel(infTrainable)
+
+	streamAdapter := NewInferenceAdapter(nil, "mlx")
+	_ = streamAdapter.Name()
+	_ = streamAdapter.Available()
+	_ = streamAdapter.Model()
+	_, _ = streamAdapter.Generate(nil, "hello", GenOpts{MaxTokens: 8, Temp: 0.1})
+	_ = streamAdapter.GenerateStream(nil, "hello", GenOpts{}, func(string) error { return nil })
+	_, _ = streamAdapter.Chat(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{})
+	_ = streamAdapter.ChatStream(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(string) error { return nil })
+	_, _ = NewMLXBackend("/tmp/model")
 }

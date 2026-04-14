@@ -3,6 +3,8 @@ package mlx
 import (
 	"errors"
 	"strings"
+
+	coreio "dappco.re/go/core/io"
 )
 
 // Token is a generated token from the RFC-style root API.
@@ -93,6 +95,7 @@ type LoadConfig struct {
 	ContextLength int
 	Quantization  int
 	Device        string
+	Medium        coreio.Medium
 }
 
 // DefaultLoadConfig returns sensible defaults for root-package loading.
@@ -116,6 +119,12 @@ func WithQuantization(bits int) LoadOption {
 // WithDevice selects the execution device: "gpu" or "cpu".
 func WithDevice(device string) LoadOption {
 	return func(c *LoadConfig) { c.Device = device }
+}
+
+// WithMedium stages model files from the supplied io.Medium before loading.
+// The model path passed to LoadModel is interpreted within that medium.
+func WithMedium(medium coreio.Medium) LoadOption {
+	return func(c *LoadConfig) { c.Medium = medium }
 }
 
 func applyLoadOptions(opts []LoadOption) LoadConfig {

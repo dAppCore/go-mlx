@@ -22,14 +22,19 @@ type nativeModel interface {
 
 // Model is the RFC-style root-package model handle.
 type Model struct {
-	model nativeModel
-	cfg   LoadConfig
-	tok   *Tokenizer
+	model   nativeModel
+	cfg     LoadConfig
+	tok     *Tokenizer
+	cleanup func() error
 }
 
 // Tokenizer wraps the internal tokenizer with a root-package API.
 type Tokenizer struct {
 	tok *metal.Tokenizer
+}
+
+var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+	return metal.LoadAndInit(modelPath, cfg)
 }
 
 // LoadModel loads a model directly through go-mlx without going through go-inference.
@@ -39,24 +44,36 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		return nil, err
 	}
 
-	native, err := metal.LoadAndInit(modelPath, metal.LoadConfig{
+	resolvedPath := modelPath
+	cleanup := func() error { return nil }
+	if cfg.Medium != nil {
+		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	native, err := loadNativeModel(resolvedPath, metal.LoadConfig{
 		ContextLen: cfg.ContextLength,
 		Device:     metal.DeviceType(cfg.Device),
 	})
 	if err != nil {
+		_ = cleanup()
 		return nil, err
 	}
 
 	info := native.Info()
 	if cfg.Quantization > 0 && info.QuantBits != cfg.Quantization {
 		_ = native.Close()
+		_ = cleanup()
 		return nil, errors.New("mlx: loaded model quantization does not match requested bits")
 	}
 
 	return &Model{
-		model: native,
-		cfg:   cfg,
-		tok:   &Tokenizer{tok: native.Tokenizer()},
+		model:   native,
+		cfg:     cfg,
+		tok:     &Tokenizer{tok: native.Tokenizer()},
+		cleanup: cleanup,
 	}, nil
 }
 
@@ -153,12 +170,22 @@ func (m *Model) Tokenizer() *Tokenizer {
 // Close releases model resources.
 func (m *Model) Close() error {
 	if m == nil || m.model == nil {
+		if m != nil && m.cleanup != nil {
+			err := m.cleanup()
+			m.cleanup = nil
+			return err
+		}
 		return nil
 	}
 	native := m.model
 	m.model = nil
 	m.tok = nil
-	return native.Close()
+	err := native.Close()
+	if m.cleanup != nil {
+		err = errors.Join(err, m.cleanup())
+		m.cleanup = nil
+	}
+	return err
 }
 
 // NewLoRA applies a LoRA adapter to a loaded model.

@@ -6,11 +6,14 @@ import (
 	"context"
 	"errors"
 	"iter"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"dappco.re/go/core/inference"
+	coreio "dappco.re/go/core/io"
 	"dappco.re/go/core/mlx/internal/metal"
 )
 
@@ -250,5 +253,54 @@ func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
 	_, err := LoadModel("/does/not/matter", WithDevice("tpu"))
 	if err == nil {
 		t.Fatal("expected unsupported device error")
+	}
+}
+
+func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
+	medium := coreio.NewMemoryMedium()
+	if err := medium.Write("models/demo/config.json", `{"model_type":"gemma3"}`); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := medium.Write("models/demo/tokenizer.json", `{"model":{"type":"BPE","vocab":{},"merges":[]}}`); err != nil {
+		t.Fatalf("write tokenizer: %v", err)
+	}
+	if err := medium.Write("models/demo/model.gguf", "stub"); err != nil {
+		t.Fatalf("write weights: %v", err)
+	}
+
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	var stagedPath string
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		stagedPath = modelPath
+		if cfg.ContextLen != 2048 {
+			t.Fatalf("ContextLen = %d, want 2048", cfg.ContextLen)
+		}
+		if _, err := os.Stat(filepath.Join(modelPath, "config.json")); err != nil {
+			t.Fatalf("staged config missing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(modelPath, "tokenizer.json")); err != nil {
+			t.Fatalf("staged tokenizer missing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(modelPath, "model.gguf")); err != nil {
+			t.Fatalf("staged weights missing: %v", err)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("models/demo", WithMedium(medium), WithContextLength(2048))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+
+	if stagedPath == "" {
+		t.Fatal("expected staged path to be passed to native loader")
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(stagedPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged path should be removed on Close, stat err = %v", err)
 	}
 }
