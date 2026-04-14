@@ -52,6 +52,7 @@ type Model struct {
 	model       InternalModel
 	tokenizer   *Tokenizer
 	modelType   string
+	device      DeviceType
 	contextLen  int // 0 = unbounded (model default)
 	lastErr     error
 	lastMetrics Metrics
@@ -156,6 +157,15 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 	m.lastErr = nil
 	m.lastMetrics = Metrics{}
 
+	inner := m.generate(ctx, prompt, cfg)
+	return func(yield func(Token) bool) {
+		if err := m.withDevice(func() { inner(yield) }); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
 		totalStart := time.Now()
 		ResetPeakMemory()
@@ -291,6 +301,19 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 //	result, err := m.InspectAttention(ctx, "What is kindness?")
 //	fmt.Printf("layers=%d heads=%d seq=%d\n", result.NumLayers, result.NumHeads, result.SeqLen)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
+	var (
+		result *AttentionResult
+		err    error
+	)
+	if deviceErr := m.withDevice(func() {
+		result, err = m.inspectAttention(ctx, prompt)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return result, err
+}
+
+func (m *Model) inspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
 		return nil, core.E("Model.InspectAttention", "empty prompt after tokenisation", nil)

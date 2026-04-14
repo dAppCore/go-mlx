@@ -4,7 +4,7 @@
 
 # go-mlx
 
-Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) with `gpu` and `cpu` device selection. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
 
 **Module**: `dappco.re/go/core/mlx`
 **Licence**: EUPL-1.2

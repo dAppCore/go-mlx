@@ -60,10 +60,30 @@ func TestAPILoadOptions_Good(t *testing.T) {
 	cfg := applyLoadOptions([]LoadOption{
 		WithContextLength(8192),
 		WithQuantization(4),
-		WithDevice("gpu"),
+		WithDevice("cpu"),
 	})
-	if cfg.ContextLength != 8192 || cfg.Quantization != 4 || cfg.Device != "gpu" {
+	if cfg.ContextLength != 8192 || cfg.Quantization != 4 || cfg.Device != "cpu" {
 		t.Fatalf("unexpected load config: %+v", cfg)
+	}
+}
+
+func TestNormalizeLoadConfig_Defaults_Good(t *testing.T) {
+	cfg, err := normalizeLoadConfig(LoadConfig{})
+	if err != nil {
+		t.Fatalf("normalizeLoadConfig: %v", err)
+	}
+	if cfg.Device != "gpu" {
+		t.Fatalf("Device = %q, want gpu", cfg.Device)
+	}
+}
+
+func TestNormalizeLoadConfig_CPU_Good(t *testing.T) {
+	cfg, err := normalizeLoadConfig(LoadConfig{Device: "CPU", ContextLength: 4096, Quantization: 4})
+	if err != nil {
+		t.Fatalf("normalizeLoadConfig: %v", err)
+	}
+	if cfg.Device != "cpu" {
+		t.Fatalf("Device = %q, want cpu", cfg.Device)
 	}
 }
 
@@ -135,7 +155,7 @@ func TestModelGenerateStream_Good(t *testing.T) {
 }
 
 func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
-	_, err := LoadModel("/does/not/matter", WithDevice("cpu"))
+	_, err := LoadModel("/does/not/matter", WithDevice("tpu"))
 	if err == nil {
 		t.Fatal("expected unsupported device error")
 	}

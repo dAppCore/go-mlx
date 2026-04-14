@@ -217,6 +217,8 @@ inference.WithRepeatPenalty(1.1)  // repetition penalty
 inference.WithStopTokens(1, 2)   // additional stop token IDs
 ```
 
+The direct root API adds `mlx.WithMinP(0.05)` for minimum-probability sampling.
+
 ### Context Cancellation
 
 Pass a cancellable context to stop generation early:

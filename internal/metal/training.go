@@ -2,11 +2,19 @@
 
 package metal
 
+import "dappco.re/go/core"
+
 // ApplyLoRA injects LoRA adapters into the model's projection layers.
 //
 //	adapter := m.ApplyLoRA(metal.LoRAConfig{Rank: 8, Alpha: 16, TargetKeys: []string{"q_proj", "v_proj"}})
 func (m *Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
-	return m.model.ApplyLoRA(cfg)
+	var adapter *LoRAAdapter
+	if err := m.withDevice(func() {
+		adapter = m.model.ApplyLoRA(cfg)
+	}); err != nil {
+		core.Error("mlx: apply lora", "error", err)
+	}
+	return adapter
 }
 
 // Encode tokenises text into token IDs.
@@ -40,7 +48,58 @@ func (m *Model) NumLayers() int {
 //	im := m.Internal()
 //	logits := im.Forward(tokens, caches)
 func (m *Model) Internal() InternalModel {
-	return m.model
+	return &deviceInternalModel{device: m.modelDevice(), inner: m.model}
+}
+
+type deviceInternalModel struct {
+	device DeviceType
+	inner  InternalModel
+}
+
+func (m *deviceInternalModel) Forward(tokens *Array, caches []Cache) *Array {
+	var out *Array
+	if err := withDefaultDevice(m.device, func() {
+		out = m.inner.Forward(tokens, caches)
+	}); err != nil {
+		core.Error("mlx: internal forward", "error", err)
+	}
+	return out
+}
+
+func (m *deviceInternalModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
+	var out *Array
+	if err := withDefaultDevice(m.device, func() {
+		out = m.inner.ForwardMasked(tokens, mask, caches)
+	}); err != nil {
+		core.Error("mlx: internal masked forward", "error", err)
+	}
+	return out
+}
+
+func (m *deviceInternalModel) NewCache() []Cache {
+	return m.inner.NewCache()
+}
+
+func (m *deviceInternalModel) NumLayers() int {
+	return m.inner.NumLayers()
+}
+
+func (m *deviceInternalModel) Tokenizer() *Tokenizer {
+	return m.inner.Tokenizer()
+}
+
+func (m *deviceInternalModel) ModelType() string {
+	return m.inner.ModelType()
+}
+
+func (m *deviceInternalModel) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
+	var adapter *LoRAAdapter
+	if err := withDefaultDevice(m.device, func() {
+		adapter = m.inner.ApplyLoRA(cfg)
+	}); err != nil {
+		core.Error("mlx: internal apply lora", "error", err)
+	}
+	return adapter
 }
 
 // ArrayElement is the exported type constraint for FromValues.

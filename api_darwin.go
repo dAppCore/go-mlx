@@ -34,25 +34,14 @@ type Tokenizer struct {
 
 // LoadModel loads a model directly through go-mlx without going through go-inference.
 func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
-	cfg := applyLoadOptions(opts)
-	if cfg.ContextLength < 0 {
-		return nil, errors.New("mlx: context length must be >= 0")
+	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
+	if err != nil {
+		return nil, err
 	}
-	if cfg.Quantization < 0 {
-		return nil, errors.New("mlx: quantization bits must be >= 0")
-	}
-
-	device := strings.ToLower(strings.TrimSpace(cfg.Device))
-	if device == "" {
-		device = "gpu"
-	}
-	if device != "gpu" {
-		return nil, errors.New("mlx: only device=\"gpu\" is currently supported")
-	}
-	cfg.Device = device
 
 	native, err := metal.LoadAndInit(modelPath, metal.LoadConfig{
 		ContextLen: cfg.ContextLength,
+		Device:     metal.DeviceType(cfg.Device),
 	})
 	if err != nil {
 		return nil, err

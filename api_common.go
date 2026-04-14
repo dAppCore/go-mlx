@@ -1,5 +1,10 @@
 package mlx
 
+import (
+	"errors"
+	"strings"
+)
+
 // Token is a generated token from the RFC-style root API.
 type Token struct {
 	ID    int32
@@ -108,7 +113,7 @@ func WithQuantization(bits int) LoadOption {
 	return func(c *LoadConfig) { c.Quantization = bits }
 }
 
-// WithDevice selects the execution device. Only "gpu" is currently supported.
+// WithDevice selects the execution device: "gpu" or "cpu".
 func WithDevice(device string) LoadOption {
 	return func(c *LoadConfig) { c.Device = device }
 }
@@ -119,4 +124,25 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 		opt(&cfg)
 	}
 	return cfg
+}
+
+func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
+	if cfg.ContextLength < 0 {
+		return LoadConfig{}, errors.New("mlx: context length must be >= 0")
+	}
+	if cfg.Quantization < 0 {
+		return LoadConfig{}, errors.New("mlx: quantization bits must be >= 0")
+	}
+
+	device := strings.ToLower(strings.TrimSpace(cfg.Device))
+	if device == "" {
+		device = "gpu"
+	}
+	switch device {
+	case "gpu", "cpu":
+		cfg.Device = device
+		return cfg, nil
+	default:
+		return LoadConfig{}, errors.New("mlx: unsupported device: " + device)
+	}
 }

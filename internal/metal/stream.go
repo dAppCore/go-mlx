@@ -25,15 +25,17 @@ var (
 	defaultCPUStreamOnce sync.Once
 )
 
-// DefaultStream returns the default GPU stream (created on first use).
+// DefaultStream returns the default stream for the current default device.
 //
 //	C.mlx_zeros(&out.ctx, ..., metal.DefaultStream().ctx)
 func DefaultStream() *Stream {
 	defaultStreamOnce.Do(func() {
-		Init()
-		defaultStream = &Stream{ctx: C.mlx_default_gpu_stream_new()}
+		defaultStream = &Stream{}
 	})
-	return defaultStream
+	if device, err := currentDefaultDevice(); err == nil && device == DeviceCPU {
+		return DefaultCPUStream()
+	}
+	return DefaultGPUStream()
 }
 
 // DefaultGPUStream returns the cached default GPU stream.
@@ -135,19 +137,19 @@ func SetWiredLimit(limit uint64) uint64 {
 
 // DeviceInfo holds Metal GPU hardware information.
 type DeviceInfo struct {
-	Architecture                string
-	MaxBufferLength             uint64
+	Architecture                 string
+	MaxBufferLength              uint64
 	MaxRecommendedWorkingSetSize uint64
-	MemorySize                  uint64
+	MemorySize                   uint64
 }
 
 // GetDeviceInfo returns Metal GPU hardware information.
 func GetDeviceInfo() DeviceInfo {
 	info := C.mlx_metal_device_info()
 	return DeviceInfo{
-		Architecture:                C.GoString(&info.architecture[0]),
-		MaxBufferLength:             uint64(info.max_buffer_length),
+		Architecture:                 C.GoString(&info.architecture[0]),
+		MaxBufferLength:              uint64(info.max_buffer_length),
 		MaxRecommendedWorkingSetSize: uint64(info.max_recommended_working_set_size),
-		MemorySize:                  uint64(info.memory_size),
+		MemorySize:                   uint64(info.memory_size),
 	}
 }
