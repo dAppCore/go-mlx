@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"dappco.re/go/core/inference"
 	"dappco.re/go/core/mlx/internal/metal"
 )
 
@@ -89,6 +90,28 @@ func TestNormalizeLoadConfig_CPU_Good(t *testing.T) {
 	}
 	if cfg.Device != "cpu" {
 		t.Fatalf("Device = %q, want cpu", cfg.Device)
+	}
+}
+
+func TestInferenceGenerateConfigToMetal_PreservesSamplingOptions_Good(t *testing.T) {
+	cfg := inference.ApplyGenerateOpts([]inference.GenerateOption{
+		inference.WithMaxTokens(64),
+		inference.WithTemperature(0.7),
+		inference.WithTopK(20),
+		inference.WithTopP(0.9),
+		inference.WithStopTokens(1, 2),
+		inference.WithRepeatPenalty(1.1),
+	})
+
+	got := inferenceGenerateConfigToMetal(cfg)
+	if got.MaxTokens != 64 || got.Temperature != 0.7 || got.TopK != 20 || got.TopP != 0.9 {
+		t.Fatalf("unexpected metal generate config: %+v", got)
+	}
+	if !reflect.DeepEqual(got.StopTokens, []int32{1, 2}) {
+		t.Fatalf("StopTokens = %v, want [1 2]", got.StopTokens)
+	}
+	if got.RepeatPenalty != 1.1 {
+		t.Fatalf("RepeatPenalty = %f, want 1.1", got.RepeatPenalty)
 	}
 }
 

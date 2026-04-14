@@ -127,6 +127,10 @@ func (m *Model) Info() ModelInfo {
 		return ModelInfo{}
 	}
 	info := m.model.Info()
+	contextLength := info.ContextLength
+	if m.cfg.ContextLength > 0 {
+		contextLength = m.cfg.ContextLength
+	}
 	return ModelInfo{
 		Architecture:  info.Architecture,
 		VocabSize:     info.VocabSize,
@@ -134,7 +138,7 @@ func (m *Model) Info() ModelInfo {
 		HiddenSize:    info.HiddenSize,
 		QuantBits:     info.QuantBits,
 		QuantGroup:    info.QuantGroup,
-		ContextLength: info.ContextLength,
+		ContextLength: contextLength,
 	}
 }
 

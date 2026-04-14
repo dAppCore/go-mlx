@@ -98,14 +98,7 @@ type metalAdapter struct {
 
 func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Generate(ctx, prompt, metalOptions) {
 			if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
@@ -117,14 +110,7 @@ func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts .
 
 func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -140,10 +126,7 @@ func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Mess
 
 func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		Temperature: generateOptions.Temperature,
-		TopK:        generateOptions.TopK,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
 	if err != nil {
 		return nil, err
@@ -160,14 +143,7 @@ func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opt
 
 func (adapter *metalAdapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
 	if err != nil {
 		return nil, err
