@@ -70,6 +70,49 @@ func TestModel_LoadModel_Gemma3TextType_Good(t *testing.T) {
 	}
 }
 
+func TestModel_LoadModel_Gemma4NestedTextConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1152,
+			"num_hidden_layers": 2,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"vocab_size": 1000
+		}
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected error (missing tokenizer), but dispatch should have reached gemma4")
+	}
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "gemma4") {
+		t.Errorf("expected gemma4 loader error, got: %v", err)
+	}
+}
+
+func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["Qwen2ForCausalLM"],
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 4,
+		"vocab_size": 1000
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected error (missing tokenizer), but dispatch should have reached qwen2/qwen3")
+	}
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "qwen") {
+		t.Errorf("expected qwen loader error, got: %v", err)
+	}
+}
+
 // --- LoadGemma3 error paths ---
 
 func TestModel_LoadGemma3_MissingTokenizer_Bad(t *testing.T) {

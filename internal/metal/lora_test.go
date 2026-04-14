@@ -694,6 +694,61 @@ func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
 	}
 }
 
+func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	weight := FromValues([]float32{
+		1, 2, 3, 4,
+		5, 6, 7, 8,
+		9, 10, 11, 12,
+	}, 3, 4)
+	defer Free(weight)
+
+	routerProj := NewLinear(weight, nil)
+	perLayerInputGate := NewLinear(weight, nil)
+	perLayerProjection := NewLinear(weight, nil)
+
+	model := &Gemma4Model{
+		Layers: []*Gemma4DecoderLayer{
+			{
+				Attention: &Gemma4Attention{},
+				MLP:       &MLP{},
+				Router: &Gemma4Router{
+					Proj: routerProj,
+				},
+				PerLayerInputGate:  perLayerInputGate,
+				PerLayerProjection: perLayerProjection,
+			},
+		},
+	}
+	defer closeGemma4(model)
+
+	adapter := model.ApplyLoRA(LoRAConfig{
+		Rank:       2,
+		Alpha:      4,
+		TargetKeys: []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
+	})
+
+	if adapter.Layers["model.layers.0.router.proj"] == nil {
+		t.Fatal("expected LoRA layer for router.proj")
+	}
+	if adapter.Layers["model.layers.0.per_layer_input_gate"] == nil {
+		t.Fatal("expected LoRA layer for per_layer_input_gate")
+	}
+	if adapter.Layers["model.layers.0.per_layer_projection"] == nil {
+		t.Fatal("expected LoRA layer for per_layer_projection")
+	}
+	if model.Layers[0].Router.Proj.LoRA == nil {
+		t.Fatal("router.proj should have an attached LoRA adapter")
+	}
+	if model.Layers[0].PerLayerInputGate.LoRA == nil {
+		t.Fatal("per_layer_input_gate should have an attached LoRA adapter")
+	}
+	if model.Layers[0].PerLayerProjection.LoRA == nil {
+		t.Fatal("per_layer_projection should have an attached LoRA adapter")
+	}
+}
+
 func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	// Write safetensors but no config.

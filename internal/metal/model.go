@@ -71,6 +71,42 @@ func resolveWeight(weights map[string]*Array, name string) *Array {
 	return nil
 }
 
+func probeModelType(data []byte) (string, error) {
+	var probe struct {
+		ModelType     string   `json:"model_type"`
+		Architectures []string `json:"architectures"`
+		TextConfig    struct {
+			ModelType string `json:"model_type"`
+		} `json:"text_config"`
+	}
+	if r := core.JSONUnmarshal(data, &probe); !r.OK {
+		return "", core.E("model.probeModelType", "parse model_type", nil)
+	}
+	if probe.ModelType != "" {
+		return probe.ModelType, nil
+	}
+	if probe.TextConfig.ModelType != "" {
+		return probe.TextConfig.ModelType, nil
+	}
+	for _, arch := range probe.Architectures {
+		switch {
+		case strings.Contains(arch, "Gemma4"):
+			return "gemma4_text", nil
+		case strings.Contains(arch, "Gemma3"):
+			return "gemma3", nil
+		case strings.Contains(arch, "Gemma2"):
+			return "gemma2", nil
+		case strings.Contains(arch, "Qwen3"):
+			return "qwen3", nil
+		case strings.Contains(arch, "Qwen2"):
+			return "qwen2", nil
+		case strings.Contains(arch, "Llama"):
+			return "llama", nil
+		}
+	}
+	return "", nil
+}
+
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
 // "qwen3", "qwen2", and "llama".
@@ -82,14 +118,12 @@ func loadModel(modelPath string) (InternalModel, error) {
 	}
 	data := []byte(str)
 
-	var probe struct {
-		ModelType string `json:"model_type"`
-	}
-	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return nil, core.E("model.loadModel", "parse model_type", nil)
+	modelType, err := probeModelType(data)
+	if err != nil {
+		return nil, core.E("model.loadModel", "parse model_type", err)
 	}
 
-	switch probe.ModelType {
+	switch modelType {
 	case "qwen3", "qwen2", "llama":
 		return LoadQwen3(modelPath)
 	case "gemma3", "gemma3_text", "gemma2":
@@ -97,6 +131,6 @@ func loadModel(modelPath string) (InternalModel, error) {
 	case "gemma4", "gemma4_text":
 		return LoadGemma4(modelPath)
 	default:
-		return nil, core.E("model.loadModel", "unsupported architecture: "+probe.ModelType, nil)
+		return nil, core.E("model.loadModel", "unsupported architecture: "+modelType, nil)
 	}
 }

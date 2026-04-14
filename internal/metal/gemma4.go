@@ -1221,6 +1221,17 @@ func (m *Gemma4Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 			case "down_proj":
 				prefix = core.Sprintf("model.layers.%d.mlp", i)
 				proj = layer.MLP.DownProj
+			case "router.proj":
+				prefix = core.Sprintf("model.layers.%d", i)
+				if layer.Router != nil {
+					proj = layer.Router.Proj
+				}
+			case "per_layer_input_gate":
+				prefix = core.Sprintf("model.layers.%d", i)
+				proj = layer.PerLayerInputGate
+			case "per_layer_projection":
+				prefix = core.Sprintf("model.layers.%d", i)
+				proj = layer.PerLayerProjection
 			}
 			if proj != nil {
 				lora := NewLoRALinear(proj, cfg.Rank, cfg.Alpha, cfg.DType)
