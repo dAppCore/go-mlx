@@ -16,7 +16,9 @@ type LoadConfig struct {
 //	m, err := metal.LoadAndInit("/Volumes/Data/lem/gemma-3-1b-it-base")
 //	m, err := metal.LoadAndInit(path, metal.LoadConfig{ContextLen: 4096})
 func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
-	Init()
+	if !MetalAvailable() {
+		return nil, core.E("metal.LoadAndInit", "Metal unavailable", nil)
+	}
 	loadCfg := LoadConfig{Device: DeviceGPU}
 	if len(cfg) > 0 {
 		loadCfg = cfg[0]

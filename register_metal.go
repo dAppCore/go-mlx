@@ -18,7 +18,7 @@ func init() {
 // MetalAvailable reports whether native Metal inference is available.
 //
 //	if mlx.MetalAvailable() { /* run on GPU */ }
-func MetalAvailable() bool { return true }
+func MetalAvailable() bool { return metal.MetalAvailable() }
 
 // Available reports whether native MLX support is available in this build.
 func Available() bool { return MetalAvailable() }
@@ -75,7 +75,7 @@ func GetDeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
 type metalBackend struct{}
 
 func (backend *metalBackend) Name() string    { return "metal" }
-func (backend *metalBackend) Available() bool { return true }
+func (backend *metalBackend) Available() bool { return MetalAvailable() }
 
 func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
