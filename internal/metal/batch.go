@@ -88,11 +88,17 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
-	logits := m.model.ForwardMasked(tokens, mask, m.newCachesN(int(N)))
+	caches := m.newCachesN(int(N))
+	defer freeCaches(caches)
+	logits := m.model.ForwardMasked(tokens, mask, caches)
+	defer func() {
+		Free(logits)
+	}()
 	if err := Eval(logits); err != nil {
 		Free(tokens, mask)
 		return nil, core.E("Model.Classify", "classify prefill", err)
 	}
+	detachEvalState(logits, caches)
 
 	// logits shape: [N, L, vocab] — gather at each prompt's last real position
 	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
@@ -126,7 +132,7 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 		}
 		Free(batchLogits, posLogits, posLogitsReshaped, next)
 	}
-	Free(logits, tokens, mask)
+	Free(tokens, mask)
 
 	results := make([]ClassifyResult, N)
 	for si, origIdx := range indices {
@@ -214,11 +220,16 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
+	defer freeCaches(caches)
 	logits := m.model.ForwardMasked(tokens, mask, caches)
+	defer func() {
+		Free(logits)
+	}()
 	if err := Eval(logits); err != nil {
 		Free(tokens, mask)
 		return nil, core.E("Model.BatchGenerate", "batch prefill", err)
 	}
+	detachEvalState(logits, caches)
 	Free(tokens, mask) // No longer needed after prefill
 	prefillDur := time.Since(prefillStart)
 
@@ -310,9 +321,9 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 			Free(nextInput, oldLogits)
 			return nil, core.E("Model.BatchGenerate", core.Sprintf("batch decode step %d", step), err)
 		}
+		detachEvalState(logits, caches)
 		Free(nextInput, oldLogits)
 	}
-	Free(logits)
 
 	sortedResults := make([]BatchResult, N)
 	totalGenerated := 0

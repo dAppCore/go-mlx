@@ -222,10 +222,7 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		// Detach logits and cache arrays to release the entire prefill computation
 		// graph. After Eval, data is materialised — graph connections only pin Metal
 		// memory from intermediate tensors (34 layers × ~20 ops each).
-		Detach(logits)
-		for _, c := range caches {
-			c.Detach()
-		}
+		detachEvalState(logits, caches)
 		prefillDur = time.Since(prefillStart)
 
 		var history []int32 // for repeat penalty
@@ -297,10 +294,7 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			// Without this, each step's logits holds shared_ptrs through the
 			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
 			// Metal buffers per step that accumulate to tens of GB.
-			Detach(logits)
-			for _, c := range caches {
-				c.Detach()
-			}
+			detachEvalState(logits, caches)
 		}
 	}
 }
@@ -336,10 +330,12 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 	input := Reshape(vInput, 1, int32(len(tokens)))
 	Free(vInput)
 	logits := m.model.Forward(input, caches)
+	defer Free(logits)
 	Free(input)
 	if err := Eval(logits); err != nil {
 		return nil, core.E("Model.InspectAttention", "prefill", err)
 	}
+	detachEvalState(logits, caches)
 
 	info := m.Info()
 	seqLen := len(tokens)
@@ -484,6 +480,15 @@ func cloneAttentionHeads(src [][]float32) [][]float32 {
 		cloned[i] = buf
 	}
 	return cloned
+}
+
+func detachEvalState(logits *Array, caches []Cache) {
+	Detach(logits)
+	for _, cache := range caches {
+		if cache != nil {
+			cache.Detach()
+		}
+	}
 }
 
 // AttentionResult holds extracted K vectors from the KV cache.
