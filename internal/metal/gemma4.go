@@ -212,6 +212,16 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.FinalLogitSoftcapping == 0 {
 		cfg.FinalLogitSoftcapping = 30
 	}
+	if cfg.EnableMoEBlock {
+		if cfg.NumExperts == nil {
+			numExperts := int32(128)
+			cfg.NumExperts = &numExperts
+		}
+		if cfg.TopKExperts == nil {
+			topK := int32(8)
+			cfg.TopKExperts = &topK
+		}
+	}
 	if cfg.RopeParameters == nil {
 		cfg.RopeParameters = map[string]RopeParams{
 			"full_attention": {
@@ -437,6 +447,13 @@ func gemma4ProportionalFreqs(headDim int32, rotatedDims int32, base float32, fac
 	return freqs
 }
 
+func gemma4AttentionScale(headDim int32) float32 {
+	if headDim <= 0 {
+		return 1.0
+	}
+	return float32(1.0 / math.Sqrt(float64(headDim)))
+}
+
 func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 	if m.Norm != nil {
 		m.NormScaled = AddScalar(m.Norm.Weight, 1.0)
@@ -644,7 +661,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 				HeadDim:        headDim,
 				NKVHeads:       nkvHeads,
 				UseKEqV:        useKEqV,
-				Scale:          1.0,
+				Scale:          gemma4AttentionScale(headDim),
 				RopeBase:       float32(ropeParams.RopeTheta),
 				RopeRotatedDim: rotatedDims,
 				RopeFreqs:      ropeFreqs,
@@ -1062,9 +1079,14 @@ func (r *Gemma4Router) forward(x *Array) (*Array, *Array) {
 	expertScores := r.Proj.Forward(normed)
 	Free(normed)
 
-	kth := expertScores.Dim(expertScores.NumDims()-1) - int(r.TopK)
+	numExperts := expertScores.Dim(expertScores.NumDims() - 1)
+	topK := int(r.TopK)
+	if topK <= 0 || topK > numExperts {
+		topK = numExperts
+	}
+	kth := numExperts - topK
 	topKIndices := Argpartition(expertScores, kth, -1)
-	sliced := SliceAxis(topKIndices, -1, int32(kth), int32(expertScores.Dim(expertScores.NumDims()-1)))
+	sliced := SliceAxis(topKIndices, -1, int32(kth), int32(numExperts))
 	Free(topKIndices)
 	topKIndices = sliced
 
@@ -1072,6 +1094,9 @@ func (r *Gemma4Router) forward(x *Array) (*Array, *Array) {
 	Free(expertScores)
 	topKWeightsSoftmax := Softmax(topKWeights)
 	Free(topKWeights)
+	if r.PerExpertScale == nil || !r.PerExpertScale.Valid() {
+		return topKIndices, topKWeightsSoftmax
+	}
 	perExpertScale := Take(r.PerExpertScale, topKIndices, 0)
 	weighted := Mul(topKWeightsSoftmax, perExpertScale)
 	Free(topKWeightsSoftmax, perExpertScale)

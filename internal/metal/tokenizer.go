@@ -428,6 +428,23 @@ func (t *Tokenizer) BOSToken() int32 { return t.bosToken }
 // EOSToken returns the end-of-sequence (generation stop) token ID.
 func (t *Tokenizer) EOSToken() int32 { return t.eosToken }
 
+// BOS returns the beginning-of-sequence token ID.
+func (t *Tokenizer) BOS() int32 { return t.BOSToken() }
+
+// EOS returns the end-of-sequence (generation stop) token ID.
+func (t *Tokenizer) EOS() int32 { return t.EOSToken() }
+
+// TokenID looks up a token string in the vocabulary.
+func (t *Tokenizer) TokenID(text string) (int32, bool) {
+	id, ok := t.vocab[text]
+	return id, ok
+}
+
+// IDToken looks up the text for a token ID.
+func (t *Tokenizer) IDToken(id int32) string {
+	return t.invVocab[id]
+}
+
 // FormatGemmaPrompt applies the Gemma 3 chat template.
 func FormatGemmaPrompt(prompt string) string {
 	return core.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)

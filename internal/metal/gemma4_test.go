@@ -3,6 +3,7 @@
 package metal
 
 import (
+	"math"
 	"os"
 	"testing"
 
@@ -64,6 +65,36 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	}
 	if cfg.RopeParameters["sliding_attention"].RopeTheta != 10000 {
 		t.Errorf("sliding attention rope theta = %f, want 10000", cfg.RopeParameters["sliding_attention"].RopeTheta)
+	}
+}
+
+func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"enable_moe_block": true
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.NumExperts == nil || *cfg.NumExperts != 128 {
+		t.Fatalf("NumExperts = %v, want 128", cfg.NumExperts)
+	}
+	if cfg.TopKExperts == nil || *cfg.TopKExperts != 8 {
+		t.Fatalf("TopKExperts = %v, want 8", cfg.TopKExperts)
+	}
+}
+
+func TestGemma4_AttentionScale_Good(t *testing.T) {
+	got := gemma4AttentionScale(512)
+	want := float32(1.0 / math.Sqrt(512))
+	if math.Abs(float64(got-want)) > 1e-6 {
+		t.Fatalf("gemma4AttentionScale(512) = %f, want %f", got, want)
 	}
 }
 

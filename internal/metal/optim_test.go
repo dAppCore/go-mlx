@@ -173,3 +173,28 @@ func TestOptim_AdamW_WithLoRA_Good(t *testing.T) {
 		t.Errorf("loss did not decrease: %f -> %f", initialLoss, finalLoss)
 	}
 }
+
+func TestOptim_AdamW_ConfigCtor_Good(t *testing.T) {
+	opt := NewAdamW(&AdamWConfig{
+		LearningRate: 1e-3,
+		Beta1:        0.8,
+		Beta2:        0.95,
+		Eps:          1e-6,
+		WeightDecay:  0.05,
+	})
+	if opt.LR != 1e-3 {
+		t.Fatalf("LR = %f, want 0.001", opt.LR)
+	}
+	if opt.Beta1 != 0.8 {
+		t.Fatalf("Beta1 = %f, want 0.8", opt.Beta1)
+	}
+	if opt.Beta2 != 0.95 {
+		t.Fatalf("Beta2 = %f, want 0.95", opt.Beta2)
+	}
+	if opt.Eps != 1e-6 {
+		t.Fatalf("Eps = %f, want 1e-6", opt.Eps)
+	}
+	if opt.WeightDecay != 0.05 {
+		t.Fatalf("WeightDecay = %f, want 0.05", opt.WeightDecay)
+	}
+}

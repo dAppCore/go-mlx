@@ -616,6 +616,40 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	}
 }
 
+func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
+	qProj := &Linear{}
+	routerProj := &Linear{}
+	perLayerProj := &Linear{}
+	model := &Gemma4Model{
+		Layers: []*Gemma4DecoderLayer{
+			{
+				Attention: &Gemma4Attention{
+					QProj: qProj,
+				},
+				Router: &Gemma4Router{
+					Proj: routerProj,
+				},
+				PerLayerProjection: perLayerProj,
+				MLP: &MLP{
+					GateProj: &Linear{},
+					UpProj:   &Linear{},
+					DownProj: &Linear{},
+				},
+			},
+		},
+	}
+
+	if got := resolveLinear(model, 0, "self_attn.q_proj"); got != qProj {
+		t.Fatal("resolveLinear should return Gemma4 q_proj")
+	}
+	if got := resolveLinear(model, 0, "router.proj"); got != routerProj {
+		t.Fatal("resolveLinear should return Gemma4 router.proj")
+	}
+	if got := resolveLinear(model, 0, "per_layer_projection"); got != perLayerProj {
+		t.Fatal("resolveLinear should return Gemma4 per_layer_projection")
+	}
+}
+
 func TestLora_ApplyLoadedLoRA_Bad_MissingConfig(t *testing.T) {
 	dir := t.TempDir()
 	// Write safetensors but no config.

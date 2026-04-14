@@ -315,6 +315,35 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 		case "self_attn.o_proj":
 			return layer.Attention.OProj
 		}
+	case *Gemma4Model:
+		if layerIdx >= len(concreteModel.Layers) {
+			return nil
+		}
+		layer := concreteModel.Layers[layerIdx]
+		switch projPath {
+		case "self_attn.q_proj":
+			return layer.Attention.QProj
+		case "self_attn.k_proj":
+			return layer.Attention.KProj
+		case "self_attn.v_proj":
+			return layer.Attention.VProj
+		case "self_attn.o_proj":
+			return layer.Attention.OProj
+		case "mlp.gate_proj":
+			return layer.MLP.GateProj
+		case "mlp.up_proj":
+			return layer.MLP.UpProj
+		case "mlp.down_proj":
+			return layer.MLP.DownProj
+		case "per_layer_input_gate":
+			return layer.PerLayerInputGate
+		case "per_layer_projection":
+			return layer.PerLayerProjection
+		case "router.proj":
+			if layer.Router != nil {
+				return layer.Router.Proj
+			}
+		}
 	}
 	return nil
 }

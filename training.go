@@ -21,11 +21,17 @@ type LoRAConfig = metal.LoRAConfig
 //	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
 var DefaultLoRAConfig = metal.DefaultLoRAConfig
 
+// DefaultAdamWConfig returns the standard AdamW hyperparameters.
+var DefaultAdamWConfig = metal.DefaultAdamWConfig
+
 // GradFn computes both loss values and gradients via reverse-mode autodiff.
 type GradFn = metal.GradFn
 
 // AdamW is the decoupled weight decay optimiser.
 type AdamW = metal.AdamW
+
+// AdamWConfig configures AdamW construction.
+type AdamWConfig = metal.AdamWConfig
 
 // Cache is a per-layer KV cache.
 type Cache = metal.Cache
@@ -57,7 +63,8 @@ func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) 
 // NewAdamW creates an AdamW optimiser with default hyperparameters.
 //
 //	optimizer := mlx.NewAdamW(1e-4)
-func NewAdamW(learningRate float64) *AdamW { return metal.NewAdamW(learningRate) }
+//	optimizer := mlx.NewAdamW(&mlx.AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
+func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
 //

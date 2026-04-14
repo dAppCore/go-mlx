@@ -84,6 +84,25 @@ func TestTokenizer_BOSEOS_Good(t *testing.T) {
 	}
 }
 
+func TestTokenizer_Lookups_Good(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	if tok.BOS() != 100 {
+		t.Fatalf("BOS() = %d, want 100", tok.BOS())
+	}
+	if tok.EOS() != 101 {
+		t.Fatalf("EOS() = %d, want 101", tok.EOS())
+	}
+	id, ok := tok.TokenID("he")
+	if !ok || id != 5 {
+		t.Fatalf("TokenID(\"he\") = (%d, %t), want (5, true)", id, ok)
+	}
+	if tok.IDToken(6) != "ll" {
+		t.Fatalf("IDToken(6) = %q, want %q", tok.IDToken(6), "ll")
+	}
+}
+
 func TestTokenizer_Encode_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
@@ -308,7 +327,7 @@ func TestTokenizer_DecodeToken_UnknownID_Ugly(t *testing.T) {
 	tok, _ := LoadTokenizer(path)
 
 	// Use a large ID well outside any realistic vocab range
-	text := tok.DecodeToken(1<<30)
+	text := tok.DecodeToken(1 << 30)
 	if text != "" {
 		t.Errorf("DecodeToken(huge id) = %q, want empty", text)
 	}

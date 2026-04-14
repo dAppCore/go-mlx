@@ -1,12 +1,12 @@
-[![Go Reference](https://pkg.go.dev/badge/forge.lthn.ai/core/go-mlx.svg)](https://pkg.go.dev/forge.lthn.ai/core/go-mlx)
+[![Go Reference](https://pkg.go.dev/badge/dappco.re/go/core/mlx.svg)](https://pkg.go.dev/dappco.re/go/core/mlx)
 [![License: EUPL-1.2](https://img.shields.io/badge/License-EUPL--1.2-blue.svg)](LICENSE.md)
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go)](go.mod)
 
 # go-mlx
 
-Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors format, with fused Metal kernels for RMSNorm, RoPE, and scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors format, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
 
-**Module**: `forge.lthn.ai/core/go-mlx`
+**Module**: `dappco.re/go/core/mlx`
 **Licence**: EUPL-1.2
 **Language**: Go 1.25
 
@@ -14,8 +14,8 @@ Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `infer
 
 ```go
 import (
-    "forge.lthn.ai/core/go-inference"
-    _ "forge.lthn.ai/core/go-mlx"  // registers "metal" backend via init()
+    "dappco.re/go/core/inference"
+    _ "dappco.re/go/core/mlx"  // registers "metal" backend via init()
 )
 
 model, err := inference.LoadModel("/Volumes/Data/lem/safetensors/gemma-3-1b/")
