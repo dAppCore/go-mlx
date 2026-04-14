@@ -106,6 +106,24 @@ func TestKVCache_Reset_Good(t *testing.T) {
 	}
 }
 
+func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(2)
+	defer Free(k, v)
+	c.Update(k, v, 2)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
+	}
+}
+
 func TestKVCache_State_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)
@@ -233,5 +251,23 @@ func TestRotatingKVCache_Reset_Good(t *testing.T) {
 	}
 	if c.State() != nil {
 		t.Error("state should be nil after reset")
+	}
+}
+
+func TestRotatingKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewRotatingKVCache(8)
+	k, v := makeKV(3)
+	defer Free(k, v)
+	c.Update(k, v, 3)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
 	}
 }

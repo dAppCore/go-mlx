@@ -122,6 +122,55 @@ func TestOptim_AdamW_Reset_Good(t *testing.T) {
 	}
 }
 
+func TestOptim_AdamW_ReleasesSupersededMoments_Good(t *testing.T) {
+	x := FromValue(float32(2.0))
+	grad := FromValue(float32(1.0))
+	Materialize(x, grad)
+
+	opt := NewAdamW(0.01)
+
+	first := opt.Step([]*Array{x}, []*Array{grad})
+	x1 := first[0]
+	firstM := opt.m[0]
+	firstV := opt.v[0]
+	Materialize(x1, firstM, firstV)
+
+	second := opt.Step([]*Array{x1}, []*Array{grad})
+	Materialize(second[0])
+	defer Free(x, grad, x1, second[0])
+
+	if firstM.Valid() {
+		t.Fatal("first moment buffer should be freed after the next step replaces it")
+	}
+	if firstV.Valid() {
+		t.Fatal("second moment buffer should be freed after the next step replaces it")
+	}
+}
+
+func TestOptim_AdamW_Reset_ReleasesMoments_Good(t *testing.T) {
+	x := FromValue(float32(3.0))
+	grad := FromValue(float32(1.0))
+	Materialize(x, grad)
+	defer Free(x, grad)
+
+	opt := NewAdamW(0.01)
+	updated := opt.Step([]*Array{x}, []*Array{grad})
+	defer Free(updated...)
+
+	firstM := opt.m[0]
+	firstV := opt.v[0]
+	Materialize(firstM, firstV)
+
+	opt.Reset()
+
+	if firstM.Valid() {
+		t.Fatal("Reset should free the first-moment buffer")
+	}
+	if firstV.Valid() {
+		t.Fatal("Reset should free the second-moment buffer")
+	}
+}
+
 func TestOptim_AdamW_WithLoRA_Good(t *testing.T) {
 	// End-to-end: create LoRA layer, compute gradients, update with AdamW
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)

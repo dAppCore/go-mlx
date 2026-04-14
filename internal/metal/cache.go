@@ -94,6 +94,7 @@ func (c *KVCache) Offset() int { return c.offset }
 func (c *KVCache) Len() int    { return c.offset }
 
 func (c *KVCache) Reset() {
+	Free(c.keys, c.values)
 	c.keys = nil
 	c.values = nil
 	c.offset = 0
@@ -271,6 +272,7 @@ func (c *RotatingKVCache) Offset() int { return c.offset }
 func (c *RotatingKVCache) Len() int    { return min(c.offset, c.maxSize) }
 
 func (c *RotatingKVCache) Reset() {
+	Free(c.keys, c.values)
 	c.keys = nil
 	c.values = nil
 	c.offset = 0
