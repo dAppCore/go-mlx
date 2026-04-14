@@ -21,6 +21,8 @@ type Tokenizer struct {
 
 	bosToken int32
 	eosToken int32
+	hasBOS   bool
+	hasEOS   bool
 
 	// GPT-2 byte-level BPE support (used by Qwen, GPT, Llama, etc.)
 	isGPT2BPE   bool
@@ -174,29 +176,36 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 
 	if id, ok := tokenizer.special["<bos>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 	if id, ok := tokenizer.special["<eos>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Gemma: <end_of_turn> is the generation stop token
 	if id, ok := tokenizer.special["<end_of_turn>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Qwen3: <|im_end|> is the generation stop token
 	if id, ok := tokenizer.special["<|im_end|>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Qwen3 BOS: <|im_start|>
 	if id, ok := tokenizer.special["<|im_start|>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 	// Llama 3: <|eot_id|> is the turn-end token
 	if id, ok := tokenizer.special["<|eot_id|>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Llama 3 BOS: <|begin_of_text|>
 	if id, ok := tokenizer.special["<|begin_of_text|>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 
 	return tokenizer, nil
@@ -299,7 +308,10 @@ func (t *Tokenizer) Encode(text string) []int32 {
 		return t.encodeGPT2(text)
 	}
 
-	tokens := []int32{t.bosToken}
+	tokens := make([]int32, 0, len(text)+1)
+	if t.hasBOS {
+		tokens = append(tokens, t.bosToken)
+	}
 
 	// SentencePiece style: split into segments around special tokens, then BPE each segment.
 	remaining := text
@@ -340,7 +352,10 @@ func (t *Tokenizer) Encode(text string) []int32 {
 
 // encodeGPT2 encodes text using GPT-2 byte-level BPE.
 func (t *Tokenizer) encodeGPT2(text string) []int32 {
-	tokens := []int32{t.bosToken}
+	tokens := make([]int32, 0, len(text)+1)
+	if t.hasBOS {
+		tokens = append(tokens, t.bosToken)
+	}
 
 	// Split text around special tokens (matched in original form, not byte-encoded).
 	remaining := text
@@ -454,6 +469,12 @@ func (t *Tokenizer) BOSToken() int32 { return t.bosToken }
 
 // EOSToken returns the end-of-sequence (generation stop) token ID.
 func (t *Tokenizer) EOSToken() int32 { return t.eosToken }
+
+// HasBOSToken reports whether the tokenizer explicitly defines a BOS token.
+func (t *Tokenizer) HasBOSToken() bool { return t != nil && t.hasBOS }
+
+// HasEOSToken reports whether the tokenizer explicitly defines an EOS/stop token.
+func (t *Tokenizer) HasEOSToken() bool { return t != nil && t.hasEOS }
 
 // BOS returns the beginning-of-sequence token ID.
 func (t *Tokenizer) BOS() int32 { return t.BOSToken() }

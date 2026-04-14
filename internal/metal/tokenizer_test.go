@@ -33,12 +33,40 @@ const minimalTokenizerJSON = `{
   ]
 }`
 
+const tokenizerWithoutSpecialsJSON = `{
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "h": 0,
+      "e": 1,
+      "l": 2,
+      "o": 3,
+      "▁": 4,
+      "he": 5,
+      "ll": 6
+    },
+    "merges": ["h e", "l l"],
+    "byte_fallback": false
+  },
+  "added_tokens": []
+}`
+
 func writeTestTokenizer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := core.JoinPath(dir, "tokenizer.json")
 	if err := coreio.Local.Write(path, minimalTokenizerJSON); err != nil {
 		t.Fatalf("write test tokenizer: %v", err)
+	}
+	return path
+}
+
+func writeTokenizerWithoutSpecials(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	if err := coreio.Local.Write(path, tokenizerWithoutSpecialsJSON); err != nil {
+		t.Fatalf("write tokenizer without specials: %v", err)
 	}
 	return path
 }
@@ -100,6 +128,38 @@ func TestTokenizer_Lookups_Good(t *testing.T) {
 	}
 	if tok.IDToken(6) != "ll" {
 		t.Fatalf("IDToken(6) = %q, want %q", tok.IDToken(6), "ll")
+	}
+}
+
+func TestTokenizer_NoSpecialTokens_DoesNotInventBOSOrEOS_Good(t *testing.T) {
+	path := writeTokenizerWithoutSpecials(t)
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	if tok.HasBOSToken() {
+		t.Fatal("HasBOSToken() = true, want false")
+	}
+	if tok.HasEOSToken() {
+		t.Fatal("HasEOSToken() = true, want false")
+	}
+	if tok.BOSToken() != 0 {
+		t.Fatalf("BOSToken() = %d, want 0 zero value", tok.BOSToken())
+	}
+	if tok.EOSToken() != 0 {
+		t.Fatalf("EOSToken() = %d, want 0 zero value", tok.EOSToken())
+	}
+
+	tokens := tok.Encode("hello")
+	want := []int32{4, 5, 6, 3}
+	if len(tokens) != len(want) {
+		t.Fatalf("Encode(\"hello\") = %v, want %v", tokens, want)
+	}
+	for i := range want {
+		if tokens[i] != want[i] {
+			t.Fatalf("tokens[%d] = %d, want %d", i, tokens[i], want[i])
+		}
 	}
 }
 

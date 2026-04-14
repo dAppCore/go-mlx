@@ -224,6 +224,7 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 
 	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 	eosID := m.tokenizer.EOSToken()
+	hasEOS := m.tokenizer.HasEOSToken()
 
 	// Per-sequence state.
 	type seqState struct {
@@ -285,7 +286,7 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 			id := int32(next.Int())
 			nextIDs[si] = id
 
-			if id == eosID {
+			if hasEOS && id == eosID {
 				states[si].finished = true
 			} else if slices.Contains(cfg.StopTokens, id) {
 				states[si].finished = true

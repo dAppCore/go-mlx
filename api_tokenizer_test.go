@@ -31,12 +31,41 @@ const rootTokenizerJSON = `{
   ]
 }`
 
+const rootTokenizerWithoutBOSJSON = `{
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "h": 0,
+      "e": 1,
+      "l": 2,
+      "o": 3,
+      "▁": 4,
+      "he": 5,
+      "ll": 6
+    },
+    "merges": ["h e", "l l"]
+  },
+  "added_tokens": [
+    {"id": 11, "content": "<eos>", "special": true}
+  ]
+}`
+
 func writeRootTokenizer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tokenizer.json")
 	if err := os.WriteFile(path, []byte(rootTokenizerJSON), 0o644); err != nil {
 		t.Fatalf("write tokenizer: %v", err)
+	}
+	return path
+}
+
+func writeRootTokenizerWithoutBOS(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tokenizer.json")
+	if err := os.WriteFile(path, []byte(rootTokenizerWithoutBOSJSON), 0o644); err != nil {
+		t.Fatalf("write tokenizer without bos: %v", err)
 	}
 	return path
 }
@@ -110,5 +139,30 @@ func TestRootTokenizerLookups_NormalizeSentencePieceForms_Good(t *testing.T) {
 	}
 	if tok.EOS() != 11 {
 		t.Fatalf("EOS() = %d, want 11", tok.EOS())
+	}
+}
+
+func TestRootTokenizerEncode_NoBOS_DoesNotStripRealTokenZero_Good(t *testing.T) {
+	tok, err := LoadTokenizer(writeRootTokenizerWithoutBOS(t))
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	got, err := tok.Encode("hello")
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+
+	want := []int32{4, 5, 6, 3}
+	if len(got) != len(want) {
+		t.Fatalf("Encode(\"hello\") len = %d, want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("Encode(\"hello\")[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+	if tok.BOS() != 0 {
+		t.Fatalf("BOS() = %d, want 0 zero value when absent", tok.BOS())
 	}
 }

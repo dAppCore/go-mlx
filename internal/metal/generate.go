@@ -263,7 +263,7 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			history = append(history, id)
 			Free(lastPos)
 
-			if id == m.tokenizer.EOSToken() {
+			if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
 				Free(next)
 				return
 			}

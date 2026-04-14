@@ -37,7 +37,7 @@ func stripImplicitBOS(tok *metal.Tokenizer, tokens []int32) []int32 {
 	if tok == nil || len(tokens) == 0 {
 		return append([]int32(nil), tokens...)
 	}
-	if tokens[0] == tok.BOS() {
+	if tok.HasBOSToken() && tokens[0] == tok.BOS() {
 		return append([]int32(nil), tokens[1:]...)
 	}
 	return append([]int32(nil), tokens...)
