@@ -46,6 +46,12 @@ func (m *Model) Tokenizer() *Tokenizer { return nil }
 // Close is a no-op on unsupported builds.
 func (m *Model) Close() error { return nil }
 
+// NewLoRA returns nil on unsupported builds.
+func NewLoRA(_ *Model, _ *LoRAConfig) *LoRAAdapter { return nil }
+
+// MergeLoRA is a no-op on unsupported builds.
+func (m *Model) MergeLoRA(_ *LoRAAdapter) *Model { return m }
+
 // Encode returns an availability error on unsupported builds.
 func (t *Tokenizer) Encode(_ string) ([]int32, error) {
 	return nil, errors.New("mlx: native MLX support is unavailable in this build")

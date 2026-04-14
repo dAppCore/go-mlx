@@ -21,7 +21,7 @@ import (
 )
 
 func main() {
-    m, err := inference.LoadModel("/path/to/safetensors/model/")
+    m, err := inference.LoadModel("/path/to/model/")
     if err != nil {
         panic(err)
     }
@@ -51,7 +51,7 @@ The blank import (`_ "dappco.re/go/core/mlx"`) auto-registers the Metal backend.
 
 ## Supported Models
 
-Models must be in **HuggingFace safetensors format** (not GGUF). Architecture is auto-detected from `config.json`:
+Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoints**. Architecture is auto-detected from `config.json`:
 
 | Architecture | `model_type` values | Tested sizes |
 |-------------|---------------------|-------------|

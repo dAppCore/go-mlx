@@ -10,6 +10,7 @@ package metal
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx-c
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/fmt/include
+#cgo CPPFLAGS: -I${SRCDIR}/../../lib/gguflib
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/json/single_include/nlohmann
 #cgo CPPFLAGS: -I${SRCDIR}/../../dist/include/metal_cpp
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore

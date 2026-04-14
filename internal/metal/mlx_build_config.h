@@ -2,6 +2,7 @@
 #pragma once
 #define ACCELERATE_NEW_LAPACK 1
 #define FMT_HEADER_ONLY 1
+#define MLX_BUILD_GGUF 1
 #define MLX_USE_ACCELERATE 1
 #define MLX_VERSION "0.30.1"
 

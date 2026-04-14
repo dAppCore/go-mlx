@@ -58,7 +58,7 @@ cmake --install build
 
 CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
-- `MLX_BUILD_GGUF=OFF`
+- `MLX_BUILD_GGUF=ON` (GGUF load/save support)
 - `BUILD_SHARED_LIBS=ON`
 - macOS deployment target: 13.3 (minimum required by MLX)
 

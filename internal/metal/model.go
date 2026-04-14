@@ -75,7 +75,8 @@ func resolveWeight(weights map[string]*Array, name string) *Array {
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
 // "qwen3", "qwen2", and "llama".
 func loadModel(modelPath string) (InternalModel, error) {
-	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
+	root := resolveModelRoot(modelPath)
+	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("model.loadModel", "load config", err)
 	}

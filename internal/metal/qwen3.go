@@ -3,7 +3,6 @@
 package metal
 
 import (
-	"maps"
 	"math"
 
 	"dappco.re/go/core"
@@ -106,7 +105,8 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 // Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
 // SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
-	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
+	root := resolveModelRoot(modelPath)
+	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "load config", err)
 	}
@@ -124,21 +124,14 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
 	}
 
-	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
-	weights := make(map[string]*Array)
-	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
-	if len(matches) == 0 {
-		return nil, core.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
-	}
-	for _, path := range matches {
-		maps.Insert(weights, LoadSafetensors(path))
-		if err := lastError(); err != nil {
-			return nil, core.E("qwen3.LoadQwen3", "load weights "+core.PathBase(path), err)
-		}
+	weights, err := loadModelWeights(modelPath)
+	if err != nil {
+		return nil, core.E("qwen3.LoadQwen3", "load weights", err)
 	}
 
 	w := func(name string) *Array { return resolveWeight(weights, name) }

@@ -5,7 +5,7 @@ description: Model loading, supported architectures, tokenisation, and chat temp
 
 # Models
 
-go-mlx loads transformer models from HuggingFace safetensors format. Architecture is auto-detected from the `model_type` field in `config.json`. GGUF is not supported.
+go-mlx loads transformer models from either HuggingFace safetensors shards or GGUF checkpoints. Architecture is auto-detected from the `model_type` field in `config.json`.
 
 ## Loading a Model
 
@@ -22,11 +22,14 @@ if err != nil {
 defer m.Close()
 ```
 
-The model directory must contain:
+The model path may be either a model directory or an explicit `.gguf` file path.
+
+When loading a directory, it must contain:
 
 - `config.json` -- model configuration (architecture, dimensions, quantisation)
 - `tokenizer.json` -- HuggingFace BPE tokeniser
-- One or more `*.safetensors` files -- model weights (multi-shard supported)
+- One or more `*.safetensors` files -- model weights (multi-shard supported), or
+- Exactly one `*.gguf` file -- model weights in GGUF format
 
 ### Load Options
 
@@ -109,11 +112,10 @@ The loader performs these steps:
 
 1. Reads `config.json` for model configuration
 2. Loads `tokenizer.json` for the tokeniser
-3. Glob-matches all `*.safetensors` files in the directory (multi-shard support)
-4. Iterates tensors from each shard via `LoadSafetensors`
-5. Resolves weights by name, with automatic `language_model.` prefix fallback
-6. Constructs `Linear` layers as quantised or dense based on presence of `scales` tensors
-7. Calls `Materialize()` on all weight arrays to commit them to GPU memory
+3. Loads weights from either all `*.safetensors` shards or a single `.gguf` file
+4. Resolves weights by name, with automatic `language_model.` prefix fallback
+5. Constructs `Linear` layers as quantised or dense based on presence of `scales` tensors
+6. Calls `Materialize()` on all weight arrays to commit them to GPU memory
 
 ### Quantisation
 

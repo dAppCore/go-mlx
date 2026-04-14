@@ -15,7 +15,7 @@ type Sampler interface {
 }
 
 // newSampler creates a composable sampler chain from the given parameters.
-// Order: TopP -> MinP -> TopK -> Temperature -> categorical sample.
+// Order: Temperature -> TopP -> TopK -> MinP -> categorical sample.
 //
 //	s := newSampler(0, 0, 0, 0)        // greedy (temp=0)
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
@@ -25,17 +25,16 @@ func newSampler(temp, topP, minP float32, topK int) Sampler {
 		return greedy{}
 	}
 
-	var samplers []Sampler
+	samplers := []Sampler{Temperature(temp)}
 	if topP > 0 && topP < 1 {
 		samplers = append(samplers, TopP(topP))
-	}
-	if minP > 0 {
-		samplers = append(samplers, MinPSampler(minP))
 	}
 	if topK > 0 {
 		samplers = append(samplers, TopKSampler(topK))
 	}
-	samplers = append(samplers, Temperature(temp))
+	if minP > 0 {
+		samplers = append(samplers, MinPSampler(minP))
+	}
 	return chain(samplers)
 }
 

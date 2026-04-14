@@ -45,7 +45,7 @@ cmake --install build
 CMake fetches mlx-c v0.4.1 from GitHub and builds it with:
 
 - `MLX_BUILD_SAFETENSORS=ON` -- required for model loading
-- `MLX_BUILD_GGUF=OFF` -- GGUF not supported
+- `MLX_BUILD_GGUF=ON` -- enables GGUF load/save support
 - `BUILD_SHARED_LIBS=ON` -- shared `.dylib` for rpath loading
 - `CMAKE_OSX_DEPLOYMENT_TARGET=26.0`
 
@@ -121,7 +121,7 @@ cmake_minimum_required(VERSION 3.24)
 project(mlx)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
-set(MLX_BUILD_GGUF OFF CACHE BOOL "" FORCE)
+set(MLX_BUILD_GGUF ON CACHE BOOL "" FORCE)
 set(MLX_BUILD_SAFETENSORS ON CACHE BOOL "" FORCE)
 set(MLX_C_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)

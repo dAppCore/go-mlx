@@ -178,7 +178,13 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 }
 
 // MergeLoRA returns the current model with the adapter applied in-place.
-func (m *Model) MergeLoRA(_ *LoRAAdapter) *Model { return m }
+func (m *Model) MergeLoRA(adapter *LoRAAdapter) *Model {
+	if adapter == nil {
+		return m
+	}
+	adapter.Merge()
+	return m
+}
 
 // Encode converts text to token IDs.
 func (t *Tokenizer) Encode(text string) ([]int32, error) {

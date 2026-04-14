@@ -3,7 +3,6 @@
 package metal
 
 import (
-	"maps"
 	"math"
 	"strings"
 
@@ -520,7 +519,8 @@ func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 
 // LoadGemma4 loads a Gemma 4 text model from a directory.
 func LoadGemma4(modelPath string) (*Gemma4Model, error) {
-	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
+	root := resolveModelRoot(modelPath)
+	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
 		return nil, core.E("gemma4.LoadGemma4", "load config", err)
 	}
@@ -531,21 +531,14 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		return nil, core.E("gemma4.LoadGemma4", "parse config", err)
 	}
 
-	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
 		return nil, core.E("gemma4.LoadGemma4", "load tokenizer", err)
 	}
 
-	rawWeights := make(map[string]*Array)
-	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
-	if len(matches) == 0 {
-		return nil, core.E("gemma4.LoadGemma4", "no .safetensors files found in "+modelPath, nil)
-	}
-	for _, path := range matches {
-		maps.Insert(rawWeights, LoadSafetensors(path))
-		if err := lastError(); err != nil {
-			return nil, core.E("gemma4.LoadGemma4", "load weights "+core.PathBase(path), err)
-		}
+	rawWeights, err := loadModelWeights(modelPath)
+	if err != nil {
+		return nil, core.E("gemma4.LoadGemma4", "load weights", err)
 	}
 	weights := sanitizeGemma4Weights(rawWeights)
 
