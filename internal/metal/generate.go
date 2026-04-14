@@ -368,12 +368,13 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 	}
 
 	return &AttentionResult{
-		NumLayers:    info.NumLayers,
-		NumHeads:     numHeads,
-		SeqLen:       seqLen,
-		HeadDim:      headDim,
-		Keys:         keys,
-		Architecture: info.Architecture,
+		NumLayers:     info.NumLayers,
+		NumHeads:      numHeads,
+		SeqLen:        seqLen,
+		HeadDim:       headDim,
+		NumQueryHeads: attentionQueryHeads(m.model),
+		Keys:          keys,
+		Architecture:  info.Architecture,
 	}, nil
 }
 
@@ -499,12 +500,32 @@ func detachEvalState(logits *Array, caches []Cache) {
 
 // AttentionResult holds extracted K vectors from the KV cache.
 type AttentionResult struct {
-	NumLayers    int
-	NumHeads     int
-	SeqLen       int
-	HeadDim      int
-	Keys         [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
-	Architecture string
+	NumLayers     int
+	NumHeads      int
+	SeqLen        int
+	HeadDim       int
+	NumQueryHeads int
+	Keys          [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
+	Queries       [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
+	Architecture  string
+}
+
+func attentionQueryHeads(model InternalModel) int {
+	switch concrete := model.(type) {
+	case *GemmaModel:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	case *Gemma4Model:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	case *Qwen3Model:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	}
+	return 0
 }
 
 // applyRepeatPenalty modifies logits to discourage repeated tokens.

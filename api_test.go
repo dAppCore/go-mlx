@@ -357,12 +357,14 @@ func TestModelInspectAttention_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeNativeModel{
 			attention: &metal.AttentionResult{
-				NumLayers:    2,
-				NumHeads:     4,
-				SeqLen:       8,
-				HeadDim:      16,
-				Keys:         [][][]float32{{{1, 2, 3}}},
-				Architecture: "gemma4_text",
+				NumLayers:     2,
+				NumHeads:      4,
+				SeqLen:        8,
+				HeadDim:       16,
+				NumQueryHeads: 8,
+				Keys:          [][][]float32{{{1, 2, 3}}},
+				Queries:       [][][]float32{{{4, 5, 6}}},
+				Architecture:  "gemma4_text",
 			},
 		},
 	}
@@ -376,6 +378,12 @@ func TestModelInspectAttention_Good(t *testing.T) {
 	}
 	if snapshot.NumLayers != 2 || snapshot.HeadDim != 16 || snapshot.Architecture != "gemma4_text" {
 		t.Fatalf("InspectAttention() = %+v", snapshot)
+	}
+	if snapshot.NumQueryHeads != 8 {
+		t.Fatalf("InspectAttention().NumQueryHeads = %d, want 8", snapshot.NumQueryHeads)
+	}
+	if !snapshot.HasQueries() {
+		t.Fatal("InspectAttention().HasQueries() = false, want true")
 	}
 }
 

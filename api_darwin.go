@@ -160,12 +160,14 @@ func toRootAttentionSnapshot(result *metal.AttentionResult) *AttentionSnapshot {
 		return nil
 	}
 	return &AttentionSnapshot{
-		NumLayers:    result.NumLayers,
-		NumHeads:     result.NumHeads,
-		SeqLen:       result.SeqLen,
-		HeadDim:      result.HeadDim,
-		Keys:         result.Keys,
-		Architecture: result.Architecture,
+		NumLayers:     result.NumLayers,
+		NumHeads:      result.NumHeads,
+		SeqLen:        result.SeqLen,
+		HeadDim:       result.HeadDim,
+		NumQueryHeads: result.NumQueryHeads,
+		Keys:          result.Keys,
+		Queries:       result.Queries,
+		Architecture:  result.Architecture,
 	}
 }
 

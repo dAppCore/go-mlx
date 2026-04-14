@@ -198,12 +198,14 @@ func (adapter *metalAdapter) InspectAttention(ctx context.Context, prompt string
 		return nil, err
 	}
 	return &inference.AttentionSnapshot{
-		NumLayers:    attention.NumLayers,
-		NumHeads:     attention.NumHeads,
-		SeqLen:       attention.SeqLen,
-		HeadDim:      attention.HeadDim,
-		Keys:         attention.Keys,
-		Architecture: attention.Architecture,
+		NumLayers:     attention.NumLayers,
+		NumHeads:      attention.NumHeads,
+		SeqLen:        attention.SeqLen,
+		HeadDim:       attention.HeadDim,
+		NumQueryHeads: attention.NumQueryHeads,
+		Keys:          attention.Keys,
+		Queries:       attention.Queries,
+		Architecture:  attention.Architecture,
 	}, nil
 }
 

@@ -42,12 +42,19 @@ type BatchResult struct {
 
 // AttentionSnapshot contains post-RoPE key tensors extracted from KV caches.
 type AttentionSnapshot struct {
-	NumLayers    int
-	NumHeads     int
-	SeqLen       int
-	HeadDim      int
-	Keys         [][][]float32
-	Architecture string
+	NumLayers     int
+	NumHeads      int
+	SeqLen        int
+	HeadDim       int
+	NumQueryHeads int
+	Keys          [][][]float32
+	Queries       [][][]float32
+	Architecture  string
+}
+
+// HasQueries reports whether query tensors are present in the snapshot.
+func (s *AttentionSnapshot) HasQueries() bool {
+	return s != nil && s.Queries != nil && len(s.Queries) > 0
 }
 
 // ModelInfo describes a loaded model.
