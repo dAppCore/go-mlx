@@ -214,6 +214,106 @@ func mergeGemma4RopeParameters(cfg *Gemma4TextConfig) {
 	cfg.RopeParameters = merged
 }
 
+func cloneGemma4Int32Ptr(v *int32) *int32 {
+	if v == nil {
+		return nil
+	}
+	cloned := *v
+	return &cloned
+}
+
+func cloneGemma4RopeParameters(src map[string]RopeParams) map[string]RopeParams {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make(map[string]RopeParams, len(src))
+	for attentionType, params := range src {
+		cloned[attentionType] = params
+	}
+	return cloned
+}
+
+func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
+	if dst.ModelType == "" && src.ModelType != "" {
+		dst.ModelType = src.ModelType
+	}
+	if dst.HiddenSize == 0 {
+		dst.HiddenSize = src.HiddenSize
+	}
+	if dst.NumHiddenLayers == 0 {
+		dst.NumHiddenLayers = src.NumHiddenLayers
+	}
+	if dst.IntermediateSize == 0 {
+		dst.IntermediateSize = src.IntermediateSize
+	}
+	if dst.NumAttentionHeads == 0 {
+		dst.NumAttentionHeads = src.NumAttentionHeads
+	}
+	if dst.NumKeyValueHeads == 0 {
+		dst.NumKeyValueHeads = src.NumKeyValueHeads
+	}
+	if dst.NumGlobalKeyValueHeads == nil {
+		dst.NumGlobalKeyValueHeads = cloneGemma4Int32Ptr(src.NumGlobalKeyValueHeads)
+	}
+	if dst.HeadDim == 0 {
+		dst.HeadDim = src.HeadDim
+	}
+	if dst.GlobalHeadDim == 0 {
+		dst.GlobalHeadDim = src.GlobalHeadDim
+	}
+	if dst.GlobalPartialRotaryFactor == 0 {
+		dst.GlobalPartialRotaryFactor = src.GlobalPartialRotaryFactor
+	}
+	if dst.VocabSize == 0 {
+		dst.VocabSize = src.VocabSize
+	}
+	if dst.VocabSizePerLayerInput == 0 {
+		dst.VocabSizePerLayerInput = src.VocabSizePerLayerInput
+	}
+	if dst.RMSNormEps == 0 {
+		dst.RMSNormEps = src.RMSNormEps
+	}
+	if dst.SlidingWindow == 0 {
+		dst.SlidingWindow = src.SlidingWindow
+	}
+	if dst.SlidingWindowPattern == 0 {
+		dst.SlidingWindowPattern = src.SlidingWindowPattern
+	}
+	if dst.MaxPositionEmbeddings == 0 {
+		dst.MaxPositionEmbeddings = src.MaxPositionEmbeddings
+	}
+	if dst.NumKVSharedLayers == 0 {
+		dst.NumKVSharedLayers = src.NumKVSharedLayers
+	}
+	if dst.HiddenSizePerLayerInput == 0 {
+		dst.HiddenSizePerLayerInput = src.HiddenSizePerLayerInput
+	}
+	if !dst.AttentionKEqV && src.AttentionKEqV {
+		dst.AttentionKEqV = true
+	}
+	if dst.FinalLogitSoftcapping == 0 {
+		dst.FinalLogitSoftcapping = src.FinalLogitSoftcapping
+	}
+	if !dst.EnableMoEBlock && src.EnableMoEBlock {
+		dst.EnableMoEBlock = true
+	}
+	if dst.NumExperts == nil {
+		dst.NumExperts = cloneGemma4Int32Ptr(src.NumExperts)
+	}
+	if dst.TopKExperts == nil {
+		dst.TopKExperts = cloneGemma4Int32Ptr(src.TopKExperts)
+	}
+	if dst.MoEIntermediateSize == nil {
+		dst.MoEIntermediateSize = cloneGemma4Int32Ptr(src.MoEIntermediateSize)
+	}
+	if len(dst.LayerTypesInput) == 0 && len(src.LayerTypesInput) > 0 {
+		dst.LayerTypesInput = append([]string(nil), src.LayerTypesInput...)
+	}
+	if len(dst.RopeParameters) == 0 && len(src.RopeParameters) > 0 {
+		dst.RopeParameters = cloneGemma4RopeParameters(src.RopeParameters)
+	}
+}
+
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
 		ModelType               string              `json:"model_type"`
@@ -240,10 +340,16 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	}
 
 	cfg := wrapper.TextConfig.Gemma4TextConfig
+	var top Gemma4TextConfig
+	if r := core.JSONUnmarshal(data, &top); !r.OK {
+		return nil, core.E("gemma4.parseConfig", "parse top-level fields", nil)
+	}
 	if cfg.NumHiddenLayers == 0 {
 		if r := core.JSONUnmarshal(data, &cfg); !r.OK {
 			return nil, core.E("gemma4.parseConfig", "parse top-level config", nil)
 		}
+	} else {
+		mergeGemma4ConfigMissing(&cfg, top)
 	}
 
 	if wrapper.ModelType != "" {

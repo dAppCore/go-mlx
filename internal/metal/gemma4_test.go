@@ -238,6 +238,76 @@ func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_ParseConfig_NestedTopLevelGemma4Fields_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"attention_k_eq_v": true,
+		"num_global_key_value_heads": 2,
+		"enable_moe_block": true,
+		"num_experts": 64,
+		"top_k_experts": 4,
+		"moe_intermediate_size": 4096,
+		"sliding_window": 256,
+		"final_logit_softcapping": 12.5,
+		"rope_parameters": {
+			"full_attention": {
+				"partial_rotary_factor": 0.125,
+				"rope_theta": 424242,
+				"rope_type": "proportional"
+			}
+		},
+		"text_config": {
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"layer_types": ["sliding_attention", "full_attention"]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.ModelType != "gemma4" {
+		t.Fatalf("ModelType = %q, want gemma4", cfg.ModelType)
+	}
+	if !cfg.AttentionKEqV {
+		t.Fatal("AttentionKEqV = false, want true")
+	}
+	if cfg.NumGlobalKeyValueHeads == nil || *cfg.NumGlobalKeyValueHeads != 2 {
+		t.Fatalf("NumGlobalKeyValueHeads = %v, want 2", cfg.NumGlobalKeyValueHeads)
+	}
+	if !cfg.EnableMoEBlock {
+		t.Fatal("EnableMoEBlock = false, want true")
+	}
+	if cfg.NumExperts == nil || *cfg.NumExperts != 64 {
+		t.Fatalf("NumExperts = %v, want 64", cfg.NumExperts)
+	}
+	if cfg.TopKExperts == nil || *cfg.TopKExperts != 4 {
+		t.Fatalf("TopKExperts = %v, want 4", cfg.TopKExperts)
+	}
+	if cfg.MoEIntermediateSize == nil || *cfg.MoEIntermediateSize != 4096 {
+		t.Fatalf("MoEIntermediateSize = %v, want 4096", cfg.MoEIntermediateSize)
+	}
+	if cfg.SlidingWindow != 256 {
+		t.Fatalf("SlidingWindow = %d, want 256", cfg.SlidingWindow)
+	}
+	if cfg.FinalLogitSoftcapping != 12.5 {
+		t.Fatalf("FinalLogitSoftcapping = %f, want 12.5", cfg.FinalLogitSoftcapping)
+	}
+	full := cfg.RopeParameters["full_attention"]
+	if full.RopeTheta != 424242 {
+		t.Fatalf("full rope theta = %f, want 424242", full.RopeTheta)
+	}
+	if full.PartialRotaryFactor != 0.125 {
+		t.Fatalf("full partial rotary factor = %f, want 0.125", full.PartialRotaryFactor)
+	}
+	if full.RopeType != "proportional" {
+		t.Fatalf("full rope type = %q, want proportional", full.RopeType)
+	}
+}
+
 func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
