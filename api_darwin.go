@@ -134,7 +134,7 @@ func (m *Model) Info() ModelInfo {
 		HiddenSize:    info.HiddenSize,
 		QuantBits:     info.QuantBits,
 		QuantGroup:    info.QuantGroup,
-		ContextLength: m.cfg.ContextLength,
+		ContextLength: info.ContextLength,
 	}
 }
 

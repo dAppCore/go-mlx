@@ -95,7 +95,7 @@ func TestNormalizeLoadConfig_CPU_Good(t *testing.T) {
 func TestModelGenerateBuffered_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeNativeModel{
-			info:   metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 48, QuantBits: 4},
+			info:   metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 48, QuantBits: 4, ContextLength: 131072},
 			tokens: []metal.Token{{ID: 1, Text: "Hello"}, {ID: 2, Text: " world"}},
 		},
 		cfg: LoadConfig{ContextLength: 8192},
@@ -112,6 +112,25 @@ func TestModelGenerateBuffered_Good(t *testing.T) {
 	info := model.Info()
 	if info.ContextLength != 8192 {
 		t.Fatalf("Info().ContextLength = %d, want 8192", info.ContextLength)
+	}
+}
+
+func TestModelInfo_ContextLengthFallsBackToNative_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture:  "qwen3",
+				NumLayers:     32,
+				HiddenSize:    2560,
+				QuantBits:     4,
+				ContextLength: 32768,
+			},
+		},
+	}
+
+	info := model.Info()
+	if info.ContextLength != 32768 {
+		t.Fatalf("Info().ContextLength = %d, want 32768", info.ContextLength)
 	}
 }
 

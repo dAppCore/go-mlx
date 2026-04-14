@@ -76,12 +76,13 @@ func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
-	Architecture string
-	VocabSize    int
-	NumLayers    int
-	HiddenSize   int
-	QuantBits    int
-	QuantGroup   int
+	Architecture  string
+	VocabSize     int
+	NumLayers     int
+	HiddenSize    int
+	QuantBits     int
+	QuantGroup    int
+	ContextLength int
 }
 
 // Info returns metadata about the loaded model.
@@ -97,6 +98,7 @@ func (m *Model) Info() ModelInfo {
 	case *GemmaModel:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
@@ -104,6 +106,7 @@ func (m *Model) Info() ModelInfo {
 	case *Gemma4Model:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
@@ -111,10 +114,14 @@ func (m *Model) Info() ModelInfo {
 	case *Qwen3Model:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
 		}
+	}
+	if m.contextLen > 0 {
+		info.ContextLength = m.contextLen
 	}
 	return info
 }
@@ -134,6 +141,9 @@ func (m *Model) Close() error {
 	}
 	m.model = nil
 	m.tokenizer = nil
+	// Closing a model should release its freed weights from the global MLX
+	// allocator cache as well, so callers can immediately load another model.
+	ClearCache()
 	return nil
 }
 
