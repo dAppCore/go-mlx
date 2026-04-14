@@ -238,6 +238,36 @@ func TestGemma4_ParseConfig_NestedTopLevelOverrides_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	embed := seqArray(0.10, 10, 3, 4)
+	defer Free(embed)
+
+	got := inferGemma4PerLayerInputSize(map[string]*Array{
+		"model.embed_tokens_per_layer.weight": embed,
+	}, 3)
+	if got != 4 {
+		t.Fatalf("inferGemma4PerLayerInputSize() = %d, want 4", got)
+	}
+}
+
+func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	gate := seqArray(0.20, 6, 8)
+	proj := seqArray(0.30, 8, 6)
+	defer Free(gate, proj)
+
+	got := inferGemma4PerLayerInputSize(map[string]*Array{
+		"model.layers.0.per_layer_input_gate.weight": gate,
+		"model.layers.0.per_layer_projection.weight": proj,
+	}, 2)
+	if got != 6 {
+		t.Fatalf("inferGemma4PerLayerInputSize() = %d, want 6", got)
+	}
+}
+
 func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
 	embed := &Embedding{}
 	output, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{

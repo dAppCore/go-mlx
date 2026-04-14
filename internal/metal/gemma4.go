@@ -535,14 +535,54 @@ func inferGemma4PerLayerInputSize(weights map[string]*Array, numHiddenLayers int
 	}
 	if w := gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight"); w != nil {
 		shape := w.Shape()
-		if len(shape) >= 2 && shape[1]%numHiddenLayers == 0 {
-			return shape[1] / numHiddenLayers
+		switch len(shape) {
+		case 2:
+			if shape[1]%numHiddenLayers == 0 {
+				return shape[1] / numHiddenLayers
+			}
+		case 3:
+			if shape[1] == numHiddenLayers {
+				return shape[2]
+			}
+			if shape[2] == numHiddenLayers {
+				return shape[1]
+			}
+		default:
+			if len(shape) > 1 {
+				featureSize := int32(1)
+				for _, dim := range shape[1:] {
+					featureSize *= dim
+				}
+				if featureSize%numHiddenLayers == 0 {
+					return featureSize / numHiddenLayers
+				}
+			}
 		}
 	}
 	if w := gemma4WeightAny(weights, "model.per_layer_model_projection.weight"); w != nil {
 		shape := w.Shape()
-		if len(shape) >= 2 && shape[0]%numHiddenLayers == 0 {
-			return shape[0] / numHiddenLayers
+		if len(shape) >= 2 {
+			outFeatures := int32(1)
+			for _, dim := range shape[:len(shape)-1] {
+				outFeatures *= dim
+			}
+			if outFeatures%numHiddenLayers == 0 {
+				return outFeatures / numHiddenLayers
+			}
+		}
+	}
+	for i := int32(0); i < numHiddenLayers; i++ {
+		if w := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.per_layer_input_gate.weight", i)); w != nil {
+			shape := w.Shape()
+			if len(shape) >= 2 && shape[0] > 0 {
+				return shape[0]
+			}
+		}
+		if w := gemma4WeightAny(weights, core.Sprintf("model.layers.%d.per_layer_projection.weight", i)); w != nil {
+			shape := w.Shape()
+			if len(shape) >= 2 && shape[len(shape)-1] > 0 {
+				return shape[len(shape)-1]
+			}
 		}
 	}
 	return 0
