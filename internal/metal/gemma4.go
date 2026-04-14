@@ -466,6 +466,19 @@ func gemma4SwitchLinear(weights map[string]*Array, prefix string, defaultQ *Quan
 	return NewSwitchLinear(weight, bias)
 }
 
+func gemma4OutputLinear(weights map[string]*Array, cfg *Gemma4TextConfig, embed *Embedding) (*Linear, error) {
+	if output := gemma4Linear(weights, "lm_head", cfg.Quantization); output != nil {
+		return output, nil
+	}
+	if cfg.TieWordEmbeddings {
+		if embed == nil {
+			return nil, core.E("gemma4.outputLinear", "tied output requested without embed_tokens", nil)
+		}
+		return embed.AsLinear(), nil
+	}
+	return nil, core.E("gemma4.outputLinear", "missing lm_head.weight with tie_word_embeddings=false", nil)
+}
+
 func buildGemma4CacheLayout(layers []*Gemma4DecoderLayer, numShared int32) ([]int32, []int32) {
 	previous := make([]int32, len(layers))
 	cacheIndexByLayer := make([]int32, len(layers))
@@ -844,16 +857,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		m.Layers[i] = layer
 	}
 
-	lmHeadWeight := gemma4WeightAny(weights, "lm_head.weight")
-	if lmHeadWeight != nil {
-		lmHeadScales := gemma4WeightAny(weights, "lm_head.scales")
-		if lmHeadScales != nil && cfg.Quantization != nil {
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, gemma4WeightAny(weights, "lm_head.biases"), nil, cfg.Quantization.GroupSize, cfg.Quantization.Bits)
-		} else {
-			m.Output = NewLinear(lmHeadWeight, nil)
-		}
-	} else {
-		m.Output = m.EmbedTokens.AsLinear()
+	m.Output, err = gemma4OutputLinear(weights, cfg, m.EmbedTokens)
+	if err != nil {
+		return nil, core.E("gemma4.LoadGemma4", "build output projection", err)
 	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)

@@ -184,6 +184,32 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
+	embed := &Embedding{}
+	output, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{
+		TieWordEmbeddings: true,
+	}, embed)
+	if err != nil {
+		t.Fatalf("gemma4OutputLinear: %v", err)
+	}
+	if output == nil {
+		t.Fatal("expected tied output linear")
+	}
+	if output.Weight != embed.Weight || output.Scales != embed.Scales || output.Biases != embed.Biases {
+		t.Fatal("tied output should reuse embedding weights")
+	}
+}
+
+func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
+	_, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{}, &Embedding{})
+	if err == nil {
+		t.Fatal("expected error when untied Gemma4 model lacks lm_head.weight")
+	}
+	if !core.Contains(err.Error(), "lm_head.weight") {
+		t.Fatalf("expected lm_head.weight error, got: %v", err)
+	}
+}
+
 func TestGemma4_AttentionScale_Good(t *testing.T) {
 	got := gemma4AttentionScale(512)
 	want := float32(1.0 / math.Sqrt(512))
