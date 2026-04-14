@@ -389,6 +389,48 @@ func TestGemma4_AttentionScale_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	switchWeight := func(scale float32) *Array {
+		return FromValues([]float32{
+			scale, 0,
+			0, scale,
+		}, 1, 2, 2)
+	}
+
+	cases := []struct {
+		name    string
+		weights map[string]*Array
+	}{
+		{
+			name: "rfc_switch_glu",
+			weights: map[string]*Array{
+				"model.layers.0.experts.switch_glu.gate_proj.weight": switchWeight(1.0),
+			},
+		},
+		{
+			name: "legacy_direct",
+			weights: map[string]*Array{
+				"model.layers.0.experts.gate_proj.weight": switchWeight(1.0),
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			layer := gemma4SwitchLinear(tc.weights, nil,
+				"model.layers.0.experts.switch_glu.gate_proj",
+				"model.layers.0.experts.gate_proj",
+			)
+			if layer == nil {
+				t.Fatal("expected gemma4SwitchLinear to resolve the expert weight")
+			}
+			freeSwitchLinear(layer)
+		})
+	}
+}
+
 func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
@@ -408,13 +450,19 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 		"model.layers.0.self_attn.rotary_emb.inv":    rotary,
 	})
 
-	gate := sanitized["model.layers.0.experts.gate_proj.weight"]
-	up := sanitized["model.layers.0.experts.up_proj.weight"]
+	gate := sanitized["model.layers.0.experts.switch_glu.gate_proj.weight"]
+	up := sanitized["model.layers.0.experts.switch_glu.up_proj.weight"]
 	if gate == nil || up == nil {
-		t.Fatal("expected split gate_proj and up_proj weights")
+		t.Fatal("expected split switch_glu gate_proj and up_proj weights")
 	}
 	if _, ok := sanitized["model.layers.0.experts.gate_up_proj.weight"]; ok {
 		t.Fatal("gate_up_proj should be replaced by split weights")
+	}
+	if _, ok := sanitized["model.layers.0.experts.gate_proj.weight"]; ok {
+		t.Fatal("legacy direct gate_proj key should not be emitted during sanitization")
+	}
+	if _, ok := sanitized["model.layers.0.experts.up_proj.weight"]; ok {
+		t.Fatal("legacy direct up_proj key should not be emitted during sanitization")
 	}
 	if _, ok := sanitized["model.vision_tower.block.weight"]; ok {
 		t.Fatal("vision tower weights should be stripped")
@@ -452,10 +500,10 @@ func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
 		"model.layers.0.experts.gate_up_proj.biases": biases,
 	})
 
-	gate := sanitized["model.layers.0.experts.gate_proj.biases"]
-	up := sanitized["model.layers.0.experts.up_proj.biases"]
+	gate := sanitized["model.layers.0.experts.switch_glu.gate_proj.biases"]
+	up := sanitized["model.layers.0.experts.switch_glu.up_proj.biases"]
 	if gate == nil || up == nil {
-		t.Fatal("expected split gate_proj and up_proj biases")
+		t.Fatal("expected split switch_glu gate_proj and up_proj biases")
 	}
 	if got := gate.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
 		t.Fatalf("gate bias split shape = %v, want [2 2]", got)
@@ -463,6 +511,35 @@ func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
 	if got := up.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
 		t.Fatalf("up bias split shape = %v, want [2 2]", got)
 	}
+}
+
+func TestGemma4_SanitizeWeights_DownProjRemap_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	down := FromValues([]float32{
+		1, 2,
+		3, 4,
+	}, 1, 2, 2)
+	Materialize(down)
+
+	sanitized := sanitizeGemma4Weights(map[string]*Array{
+		"model.layers.0.experts.down_proj.weight": down,
+	})
+
+	remapped := sanitized["model.layers.0.experts.switch_glu.down_proj.weight"]
+	if remapped == nil {
+		t.Fatal("expected down_proj to be remapped to switch_glu.down_proj")
+	}
+	if remapped != down {
+		t.Fatal("down_proj remap should retain the original tensor")
+	}
+	if _, ok := sanitized["model.layers.0.experts.down_proj.weight"]; ok {
+		t.Fatal("legacy direct down_proj key should not be emitted during sanitization")
+	}
+	if !down.Valid() {
+		t.Fatal("down_proj tensor should be retained after key remap")
+	}
+	Free(down)
 }
 
 func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {

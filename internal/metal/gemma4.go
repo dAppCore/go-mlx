@@ -530,10 +530,14 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 				if !ok {
 					break
 				}
-				sanitized[base+".gate_proj"+suffix] = gate
-				sanitized[base+".up_proj"+suffix] = up
+				sanitized[base+".switch_glu.gate_proj"+suffix] = gate
+				sanitized[base+".switch_glu.up_proj"+suffix] = up
 				discarded = append(discarded, arr)
 				goto nextWeight
+			}
+			if strings.HasSuffix(canonical, ".experts.down_proj"+suffix) {
+				canonical = strings.TrimSuffix(canonical, ".down_proj"+suffix) + ".switch_glu.down_proj" + suffix
+				break
 			}
 		}
 		if prev, ok := sanitized[canonical]; ok && prev != arr {
@@ -710,20 +714,23 @@ func gemma4Linear(weights map[string]*Array, prefix string, defaultQ *Quantizati
 	return NewLinear(weight, bias)
 }
 
-func gemma4SwitchLinear(weights map[string]*Array, prefix string, defaultQ *QuantizationConfig) *SwitchLinear {
-	weight := gemma4WeightAny(weights, prefix+".weight")
-	if weight == nil {
-		return nil
-	}
-	scales := gemma4WeightAny(weights, prefix+".scales")
-	biases := gemma4WeightAny(weights, prefix+".biases")
-	bias := gemma4WeightAny(weights, prefix+".bias")
-	if scales != nil {
-		if q := gemma4QuantPredicate(prefix, defaultQ); q != nil {
-			return NewQuantizedSwitchLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+func gemma4SwitchLinear(weights map[string]*Array, defaultQ *QuantizationConfig, prefixes ...string) *SwitchLinear {
+	for _, prefix := range prefixes {
+		weight := gemma4WeightAny(weights, prefix+".weight")
+		if weight == nil {
+			continue
 		}
+		scales := gemma4WeightAny(weights, prefix+".scales")
+		biases := gemma4WeightAny(weights, prefix+".biases")
+		bias := gemma4WeightAny(weights, prefix+".bias")
+		if scales != nil {
+			if q := gemma4QuantPredicate(prefix, defaultQ); q != nil {
+				return NewQuantizedSwitchLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+			}
+		}
+		return NewSwitchLinear(weight, bias)
 	}
-	return NewSwitchLinear(weight, bias)
+	return nil
 }
 
 func gemma4OutputLinear(weights map[string]*Array, cfg *Gemma4TextConfig, embed *Embedding) (*Linear, error) {
@@ -1090,9 +1097,18 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 				Eps:            cfg.RMSNormEps,
 			}
 			layer.Experts = &Gemma4Experts{
-				GateProj: gemma4SwitchLinear(weights, prefix+".experts.gate_proj", cfg.Quantization),
-				UpProj:   gemma4SwitchLinear(weights, prefix+".experts.up_proj", cfg.Quantization),
-				DownProj: gemma4SwitchLinear(weights, prefix+".experts.down_proj", cfg.Quantization),
+				GateProj: gemma4SwitchLinear(weights, cfg.Quantization,
+					prefix+".experts.switch_glu.gate_proj",
+					prefix+".experts.gate_proj",
+				),
+				UpProj: gemma4SwitchLinear(weights, cfg.Quantization,
+					prefix+".experts.switch_glu.up_proj",
+					prefix+".experts.up_proj",
+				),
+				DownProj: gemma4SwitchLinear(weights, cfg.Quantization,
+					prefix+".experts.switch_glu.down_proj",
+					prefix+".experts.down_proj",
+				),
 			}
 			layer.PreFFNorm2 = &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".pre_feedforward_layernorm_2.weight")}
 			layer.PostFFNorm1 = &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".post_feedforward_layernorm_1.weight")}
