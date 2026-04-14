@@ -439,6 +439,63 @@ func TestLora_LoRAAdapter_Save_Good(t *testing.T) {
 	if _, ok := loaded[bKey]; !ok {
 		t.Errorf("missing key %s in saved adapter", bKey)
 	}
+
+	config, err := parseAdapterConfig(core.JoinPath(core.PathDir(path), "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if config.Rank != 8 {
+		t.Fatalf("config rank = %d, want 8", config.Rank)
+	}
+	if config.Alpha != 16 {
+		t.Fatalf("config alpha = %f, want 16", config.Alpha)
+	}
+	if config.NumLayers != 1 {
+		t.Fatalf("config num_layers = %d, want 1", config.NumLayers)
+	}
+	found := false
+	for _, target := range config.TargetKeys {
+		if target == "self_attn.q_proj" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("config target keys = %v, want self_attn.q_proj", config.TargetKeys)
+	}
+}
+
+func TestLora_LoRAAdapter_Save_Directory_Good(t *testing.T) {
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	base := NewLinear(w, nil)
+
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.3.self_attn.q_proj": NewLoRALinear(base, 4, 8.0),
+		},
+		Config: LoRAConfig{
+			Rank:       4,
+			Alpha:      8,
+			TargetKeys: []string{"q_proj"},
+		},
+	}
+
+	dir := t.TempDir()
+	if err := adapter.Save(dir); err != nil {
+		t.Fatalf("Adapter.Save failed: %v", err)
+	}
+
+	if _, err := coreio.Local.Stat(core.JoinPath(dir, "adapter.safetensors")); err != nil {
+		t.Fatalf("saved adapter weights not found: %v", err)
+	}
+	config, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if config.NumLayers != 4 {
+		t.Fatalf("config num_layers = %d, want 4", config.NumLayers)
+	}
 }
 
 func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
@@ -664,19 +721,21 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	lora.A = newA
 	lora.B = newB
 
-	// Save the adapter weights.
+	// Save the adapter package using the public LoRA save path.
 	adapterDir := t.TempDir()
-	err := SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
-		"layers.0.self_attn.q_proj.lora_a": lora.A,
-		"layers.0.self_attn.q_proj.lora_b": lora.B,
-	})
-	if err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.0.self_attn.q_proj": lora,
+		},
+		Config: LoRAConfig{
+			Rank:       4,
+			Alpha:      8,
+			TargetKeys: []string{"q_proj"},
+		},
 	}
-
-	// Write adapter_config.json.
-	configJSON := `{"rank": 4, "alpha": 8.0, "num_layers": 1, "lora_layers": ["self_attn.q_proj"]}`
-	_ = coreio.Local.Write(core.JoinPath(adapterDir, "adapter_config.json"), configJSON)
+	if err := adapter.Save(adapterDir); err != nil {
+		t.Fatalf("adapter.Save: %v", err)
+	}
 
 	// Now create a fresh linear with the same base weights (no LoRA).
 	linear2 := NewLinear(w, nil)
@@ -699,7 +758,7 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	}
 
 	// Apply the loaded adapter.
-	err = applyLoadedLoRA(qwen, adapterDir)
+	err := applyLoadedLoRA(qwen, adapterDir)
 	if err != nil {
 		t.Fatalf("applyLoadedLoRA: %v", err)
 	}

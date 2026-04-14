@@ -11,6 +11,7 @@ import "C"
 import (
 	"maps"
 	"math"
+	"os"
 	"slices"
 	"strconv"
 	"unsafe"
@@ -424,17 +425,101 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 	return values[0]
 }
 
-// Save writes the LoRA adapter weights to a safetensors file.
+func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
+	if path == "" {
+		return "", "", core.E("lora.Save", "path is required", nil)
+	}
+
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
+	}
+
+	if !core.HasSuffix(path, ".safetensors") {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
+	}
+
+	dir := core.PathDir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+	}
+	return path, core.JoinPath(dir, "adapter_config.json"), nil
+}
+
+func adapterSaveConfig(adapter *LoRAAdapter, cfg LoRAConfig) adapterConfig {
+	config := adapterConfig{
+		Rank:  cfg.Rank,
+		Alpha: cfg.Alpha,
+	}
+
+	targets := make(map[string]struct{})
+	maxLayerIdx := -1
+	for name := range adapter.Layers {
+		layerIdx, projPath, _ := parseLoRAWeightName(name + ".lora_a")
+		if layerIdx < 0 {
+			continue
+		}
+		if layerIdx > maxLayerIdx {
+			maxLayerIdx = layerIdx
+		}
+		if projPath != "" {
+			targets[projPath] = struct{}{}
+		}
+	}
+
+	if maxLayerIdx >= 0 {
+		config.NumLayers = maxLayerIdx + 1
+	}
+	if len(targets) > 0 {
+		config.TargetKeys = slices.Sorted(maps.Keys(targets))
+	} else if len(cfg.TargetKeys) > 0 {
+		config.TargetKeys = append([]string(nil), cfg.TargetKeys...)
+	}
+
+	return config
+}
+
+// Save writes the LoRA adapter weights to a safetensors file and emits an
+// adjacent adapter_config.json so the saved adapter can be reloaded later.
 // Only saves the A and B matrices — not the frozen base weights.
 //
 //	if err := adapter.Save("/Volumes/Data/lem/my-lora/adapter.safetensors"); err != nil { ... }
+//	if err := adapter.Save("/Volumes/Data/lem/my-lora"); err != nil { ... } // writes adapter package directory
 func (adapter *LoRAAdapter) Save(path string) error {
+	if adapter == nil {
+		return core.E("lora.Save", "adapter is nil", nil)
+	}
+
+	weightsPath, configPath, err := adapterSavePaths(path)
+	if err != nil {
+		return err
+	}
+
+	cfg := normalizeLoRAConfig(adapter.Config)
 	weights := make(map[string]*Array)
 	for name, layer := range adapter.Layers {
 		weights[name+".lora_a"] = layer.A
 		weights[name+".lora_b"] = layer.B
 	}
-	return SaveSafetensors(path, weights)
+	if err := SaveSafetensors(weightsPath, weights); err != nil {
+		return err
+	}
+
+	configJSON := core.JSONMarshal(adapterSaveConfig(adapter, cfg))
+	if !configJSON.OK {
+		return core.E("lora.Save", "marshal adapter_config.json", nil)
+	}
+	if err := coreio.Local.Write(configPath, string(configJSON.Value.([]byte))); err != nil {
+		return core.E("lora.Save", "write adapter_config.json", err)
+	}
+	return nil
 }
 
 // RandomNormal generates normal (Gaussian) random values with given mean and stddev.
