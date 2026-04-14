@@ -33,6 +33,7 @@ import (
 	"iter"
 	"math"
 	"os/exec"
+	"reflect"
 	"sync"
 	"time"
 
@@ -183,6 +184,19 @@ type mlxlmModel struct {
 	mu      sync.Mutex // serialise Generate/Chat calls
 }
 
+func optionalFloat32Field(v any, fieldName string) (float32, bool) {
+	field := reflect.ValueOf(v).FieldByName(fieldName)
+	if !field.IsValid() {
+		return 0, false
+	}
+	switch field.Kind() {
+	case reflect.Float32, reflect.Float64:
+		return float32(field.Float()), true
+	default:
+		return 0, false
+	}
+}
+
 // send writes a JSON object as a newline-terminated line to subprocess stdin.
 func (model *mlxlmModel) send(obj map[string]any) error {
 	encoded := core.JSONMarshal(obj)
@@ -236,6 +250,9 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 		}
 		if generateOptions.TopP > 0 {
 			request["top_p"] = generateOptions.TopP
+		}
+		if minP, ok := optionalFloat32Field(generateOptions, "MinP"); ok && minP > 0 {
+			request["min_p"] = minP
 		}
 		if generateOptions.RepeatPenalty > 1.0 {
 			request["repeat_penalty"] = generateOptions.RepeatPenalty
@@ -320,6 +337,9 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 		}
 		if generateOptions.TopP > 0 {
 			request["top_p"] = generateOptions.TopP
+		}
+		if minP, ok := optionalFloat32Field(generateOptions, "MinP"); ok && minP > 0 {
+			request["min_p"] = minP
 		}
 		if generateOptions.RepeatPenalty > 1.0 {
 			request["repeat_penalty"] = generateOptions.RepeatPenalty

@@ -52,6 +52,30 @@ func TestBackend_LoadModel_Good(t *testing.T) {
 	}
 }
 
+func TestOptionalFloat32Field_Good(t *testing.T) {
+	type withMinP struct {
+		MinP float32
+	}
+
+	got, ok := optionalFloat32Field(withMinP{MinP: 0.05}, "MinP")
+	if !ok {
+		t.Fatal("expected MinP field to be found")
+	}
+	if got != 0.05 {
+		t.Fatalf("optionalFloat32Field() = %f, want %f", got, 0.05)
+	}
+}
+
+func TestOptionalFloat32Field_MissingField_Good(t *testing.T) {
+	type withoutMinP struct {
+		TopP float32
+	}
+
+	if got, ok := optionalFloat32Field(withoutMinP{TopP: 0.9}, "MinP"); ok || got != 0 {
+		t.Fatalf("optionalFloat32Field() = (%f, %v), want (0, false)", got, ok)
+	}
+}
+
 // (c) Generate streams tokens from subprocess, all tokens received.
 func TestBackend_Generate_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
