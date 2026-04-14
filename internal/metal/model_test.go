@@ -113,6 +113,29 @@ func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
 	}
 }
 
+func TestModel_DetectQwenModelType_ArchitecturesLlama_Good(t *testing.T) {
+	got := detectQwenModelType([]byte(`{
+		"architectures": ["LlamaForCausalLM"]
+	}`), nil)
+	if got != "llama" {
+		t.Fatalf("detectQwenModelType() = %q, want llama", got)
+	}
+}
+
+func TestModel_DetectQwenModelType_QNormFallback_Good(t *testing.T) {
+	got := detectQwenModelType([]byte(`{}`), map[string]*Array{
+		"model.layers.0.self_attn.q_norm.weight": nil,
+	})
+	if got != "qwen3" {
+		t.Fatalf("detectQwenModelType() = %q, want qwen3", got)
+	}
+
+	got = detectQwenModelType([]byte(`{}`), map[string]*Array{})
+	if got != "qwen2" {
+		t.Fatalf("detectQwenModelType() = %q, want qwen2", got)
+	}
+}
+
 // --- LoadGemma3 error paths ---
 
 func TestModel_LoadGemma3_MissingTokenizer_Bad(t *testing.T) {

@@ -101,6 +101,20 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	return &cfg, nil
 }
 
+func detectQwenModelType(configData []byte, weights map[string]*Array) string {
+	if detected, err := probeModelType(configData); err == nil {
+		switch detected {
+		case "llama", "qwen2", "qwen3":
+			return detected
+		}
+	}
+
+	if resolveWeight(weights, "model.layers.0.self_attn.q_norm.weight") != nil {
+		return "qwen3"
+	}
+	return "qwen2"
+}
+
 // LoadQwen3 loads a Qwen 2/3 or Llama model from a safetensors directory.
 // Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
 // SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
@@ -111,13 +125,6 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		return nil, core.E("qwen3.LoadQwen3", "load config", err)
 	}
 	data := []byte(str)
-
-	var probe struct {
-		ModelType string `json:"model_type"`
-	}
-	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return nil, core.E("qwen3.LoadQwen3", "parse model_type", nil)
-	}
 
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
@@ -159,16 +166,10 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		embed.Bits = q.Bits
 	}
 
-	// Detect qwen2 vs qwen3 by presence of q_norm weight when model_type is absent.
-	detectedType := probe.ModelType
-	if detectedType == "" {
-		hasQKNorm := w("model.layers.0.self_attn.q_norm.weight") != nil
-		if hasQKNorm {
-			detectedType = "qwen3"
-		} else {
-			detectedType = "qwen2"
-		}
-	}
+	// Preserve the architecture selected during top-level probing so configs
+	// that rely on the `architectures` field (common for Llama checkpoints)
+	// still get the correct runtime model type and chat template.
+	detectedType := detectQwenModelType(data, weights)
 
 	m := &Qwen3Model{
 		EmbedTokens: embed,
