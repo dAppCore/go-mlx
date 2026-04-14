@@ -1,4 +1,4 @@
-//go:build darwin && arm64
+//go:build darwin && arm64 && !nomlx
 
 package metal
 
@@ -119,6 +119,7 @@ type Gemma4Attention struct {
 	OProj *Linear
 	QNorm *RMSNormModule
 	KNorm *RMSNormModule
+	VNorm *RMSNormModule
 
 	QNormScaled *Array
 	KNormScaled *Array
@@ -815,6 +816,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 				OProj:          gemma4Linear(weights, prefix+".self_attn.o_proj", cfg.Quantization),
 				QNorm:          &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".self_attn.q_norm.weight")},
 				KNorm:          &RMSNormModule{Weight: gemma4WeightAny(weights, prefix+".self_attn.k_norm.weight")},
+				VNorm:          &RMSNormModule{},
 				HeadDim:        headDim,
 				NKVHeads:       nkvHeads,
 				UseKEqV:        useKEqV,

@@ -1,4 +1,4 @@
-//go:build darwin && arm64
+//go:build darwin && arm64 && !nomlx
 
 // Package metal provides Go bindings for Apple's MLX framework via mlx-c.
 package metal
