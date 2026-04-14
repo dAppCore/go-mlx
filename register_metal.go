@@ -77,14 +77,18 @@ type metalBackend struct{}
 func (backend *metalBackend) Name() string    { return "metal" }
 func (backend *metalBackend) Available() bool { return MetalAvailable() }
 
+var loadBackendModel = metal.LoadAndInit
+
 func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
-	if loadOptions.GPULayers == 0 {
-		core.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
+	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
+	if partialOffloadUnsupported {
+		core.Warn("mlx: partial GPULayers unsupported — using full GPU offload", "gpu_layers", loadOptions.GPULayers)
 	}
-	model, err := metal.LoadAndInit(modelPath, metal.LoadConfig{
+	model, err := loadBackendModel(modelPath, metal.LoadConfig{
 		ContextLen:  loadOptions.ContextLen,
 		AdapterPath: loadOptions.AdapterPath,
+		Device:      metal.DeviceType(deviceName),
 	})
 	if err != nil {
 		return nil, err

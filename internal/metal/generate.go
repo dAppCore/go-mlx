@@ -548,9 +548,19 @@ func (m *Model) newCaches() []Cache {
 		return caches
 	}
 	for i, c := range caches {
-		// Only replace unbounded caches — rotating caches already have a limit.
-		if _, ok := c.(*KVCache); ok {
+		switch cache := c.(type) {
+		// Replace unbounded caches with rotating caches to honour the requested
+		// context cap.
+		case *KVCache:
 			caches[i] = NewRotatingKVCache(m.contextLen)
+		// Sliding-window caches are already bounded, but still need shrinking
+		// when the caller requests a smaller context than the model default.
+		case *RotatingKVCache:
+			if cache.maxSize > m.contextLen {
+				caches[i] = NewRotatingKVCache(m.contextLen)
+			}
+		default:
+			continue
 		}
 	}
 	return caches

@@ -84,3 +84,48 @@ func TestAttentionCacheIndexByLayer_Gemma4PromotedOwner_Good(t *testing.T) {
 		}
 	}
 }
+
+type fakeRotatingModel struct {
+	caches []Cache
+}
+
+func (f *fakeRotatingModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (f *fakeRotatingModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (f *fakeRotatingModel) NewCache() []Cache                                  { return append([]Cache(nil), f.caches...) }
+func (f *fakeRotatingModel) NumLayers() int                                     { return len(f.caches) }
+func (f *fakeRotatingModel) Tokenizer() *Tokenizer                              { return nil }
+func (f *fakeRotatingModel) ModelType() string                                  { return "fake" }
+func (f *fakeRotatingModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter                { return nil }
+
+func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewRotatingKVCache(4096),
+				NewRotatingKVCache(256),
+			},
+		},
+		contextLen: 1024,
+	}
+
+	caches := model.newCaches()
+	if len(caches) != 2 {
+		t.Fatalf("len(caches) = %d, want 2", len(caches))
+	}
+
+	first, ok := caches[0].(*RotatingKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
+	}
+	if first.maxSize != 1024 {
+		t.Fatalf("cache[0].maxSize = %d, want 1024", first.maxSize)
+	}
+
+	second, ok := caches[1].(*RotatingKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *RotatingKVCache", caches[1])
+	}
+	if second.maxSize != 256 {
+		t.Fatalf("cache[1].maxSize = %d, want 256", second.maxSize)
+	}
+}
