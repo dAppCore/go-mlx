@@ -274,15 +274,22 @@ func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *Quant
 	return defaultConfig
 }
 
-func splitArrayAlongSecondLast(a *Array) (*Array, *Array, bool) {
+func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	if a == nil || !a.Valid() {
 		return nil, nil, false
 	}
 	shape := a.Shape()
-	if len(shape) < 2 {
+	if len(shape) == 0 {
 		return nil, nil, false
 	}
 	axis := len(shape) - 2
+	if len(shape) == 1 {
+		axis = 0
+	} else if len(shape) == 2 {
+		// Expert tensors are typically [num_experts, 2*hidden]. Split the
+		// feature axis instead of the expert axis.
+		axis = 1
+	}
 	mid := shape[axis] / 2
 	if mid <= 0 || shape[axis]%2 != 0 {
 		return nil, nil, false
@@ -308,7 +315,7 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 			if strings.HasSuffix(canonical, ".experts.gate_up_proj"+suffix) {
 				base := strings.TrimSuffix(canonical, suffix)
 				base = strings.TrimSuffix(base, ".gate_up_proj")
-				gate, up, ok := splitArrayAlongSecondLast(arr)
+				gate, up, ok := splitGemma4GateUpArray(arr)
 				if !ok {
 					break
 				}
@@ -958,7 +965,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 	Free(attnNormed)
 
 	residual = h
-	var ff *Array
+	var ffResidual *Array
 	if l.EnableMoE && l.Router != nil && l.Experts != nil {
 		h1In := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		h1 := l.MLP.forward(h1In)
@@ -973,18 +980,20 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
 		Free(h2)
 
-		ff = Add(h1Normed, h2Normed)
+		// Gemma 4 MoE layers normalise each branch independently and add both
+		// branch outputs back to the residual directly.
+		ffResidual = Add(h1Normed, h2Normed)
 		Free(h1Normed, h2Normed)
 	} else {
 		ffIn := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
-		ff = l.MLP.forward(ffIn)
+		ff := l.MLP.forward(ffIn)
 		Free(ffIn)
+		ffResidual = RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
+		Free(ff)
 	}
 
-	ffNormed := RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
-	Free(ff)
-	hNext := Add(residual, ffNormed)
-	Free(h, ffNormed)
+	hNext := Add(residual, ffResidual)
+	Free(h, ffResidual)
 
 	if l.PerLayerInputGate != nil && l.PerLayerProjection != nil && l.PostPerLayerInputNormScaled != nil && perLayerInput != nil {
 		gate := l.PerLayerInputGate.Forward(hNext)

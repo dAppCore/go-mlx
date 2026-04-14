@@ -165,6 +165,32 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	biases := FromValues([]float32{
+		1, 2, 3, 4,
+		5, 6, 7, 8,
+	}, 2, 4)
+	Materialize(biases)
+
+	sanitized := sanitizeGemma4Weights(map[string]*Array{
+		"model.layers.0.experts.gate_up_proj.biases": biases,
+	})
+
+	gate := sanitized["model.layers.0.experts.gate_proj.biases"]
+	up := sanitized["model.layers.0.experts.up_proj.biases"]
+	if gate == nil || up == nil {
+		t.Fatal("expected split gate_proj and up_proj biases")
+	}
+	if got := gate.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
+		t.Fatalf("gate bias split shape = %v, want [2 2]", got)
+	}
+	if got := up.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
+		t.Fatalf("up bias split shape = %v, want [2 2]", got)
+	}
+}
+
 func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
 	sanitized := sanitizeGemma4Weights(map[string]*Array{
 		"language_model.model.embed_tokens.weight":       nil,
