@@ -276,6 +276,26 @@ func TestLora_BatchLengths_Good(t *testing.T) {
 	}
 }
 
+func TestLora_FreeReplacedArrays_PreservesLiveReferences_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	keep := FromValues([]float32{1, 2}, 1, 2)
+	replaced := FromValues([]float32{3, 4}, 1, 2)
+	current := FromValues([]float32{5, 6}, 1, 2)
+
+	freeReplacedArrays([]*Array{keep, replaced}, []*Array{keep, current})
+	defer Free(keep, current)
+
+	Materialize(keep, current)
+
+	if got := keep.Floats(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("keep = %v, want [1 2]", got)
+	}
+	if got := current.Floats(); len(got) != 2 || got[0] != 5 || got[1] != 6 {
+		t.Fatalf("current = %v, want [5 6]", got)
+	}
+}
+
 func TestLora_LoRALinear_GradientFlows_Good(t *testing.T) {
 	// Verify that gradients flow through the LoRA path
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)

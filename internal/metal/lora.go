@@ -301,6 +301,31 @@ func batchLossMask(lengths []int32, maxLen int) *Array {
 	return FromValues(data, len(lengths), maxLen)
 }
 
+func freeReplacedArrays(previous []*Array, current []*Array) {
+	if len(previous) == 0 {
+		return
+	}
+
+	live := make(map[*Array]struct{}, len(current))
+	for _, arr := range current {
+		if arr != nil {
+			live[arr] = struct{}{}
+		}
+	}
+
+	toFree := make([]*Array, 0, len(previous))
+	for _, arr := range previous {
+		if arr == nil {
+			continue
+		}
+		if _, ok := live[arr]; ok {
+			continue
+		}
+		toFree = append(toFree, arr)
+	}
+	Free(toFree...)
+}
+
 func loraRegularization(params []*Array, lambda float32) *Array {
 	if lambda == 0 || len(params) == 0 {
 		return nil
@@ -418,6 +443,7 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 	updated := optimizer.Step(params, grads)
 	Materialize(updated...)
 	adapter.SetAllParams(updated)
+	freeReplacedArrays(params, updated)
 	Free(grads...)
 	if len(values) > 1 {
 		Free(values[1:]...)
