@@ -3,6 +3,8 @@
 package metal
 
 import (
+	"strings"
+
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
@@ -43,17 +45,35 @@ type QuantizationConfig struct {
 
 // resolveWeight looks up a weight with optional "language_model." prefix.
 func resolveWeight(weights map[string]*Array, name string) *Array {
-	if w, ok := weights[name]; ok {
-		return w
+	candidates := []string{name}
+	if strings.HasPrefix(name, "model.") {
+		suffix := strings.TrimPrefix(name, "model.")
+		candidates = append(candidates,
+			"language_model."+name,
+			"language_model.model."+suffix,
+			"model.language_model."+suffix,
+			"model.language_model.model."+suffix,
+		)
+	} else {
+		candidates = append(candidates,
+			"model."+name,
+			"language_model."+name,
+			"language_model.model."+name,
+			"model.language_model."+name,
+			"model.language_model.model."+name,
+		)
 	}
-	if w, ok := weights["language_model."+name]; ok {
-		return w
+	for _, candidate := range candidates {
+		if w, ok := weights[candidate]; ok {
+			return w
+		}
 	}
 	return nil
 }
 
 // loadModel auto-detects the model architecture from config.json and loads it.
-// Supports "gemma3", "gemma3_text", "gemma2", "qwen3", "qwen2", "llama".
+// Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
+// "qwen3", "qwen2", and "llama".
 func loadModel(modelPath string) (InternalModel, error) {
 	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
 	if err != nil {
@@ -73,6 +93,8 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return LoadQwen3(modelPath)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
+	case "gemma4", "gemma4_text":
+		return LoadGemma4(modelPath)
 	default:
 		return nil, core.E("model.loadModel", "unsupported architecture: "+probe.ModelType, nil)
 	}

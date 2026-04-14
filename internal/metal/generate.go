@@ -99,6 +99,13 @@ func (m *Model) Info() ModelInfo {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
 		}
+	case *Gemma4Model:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
 	case *Qwen3Model:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
@@ -118,6 +125,8 @@ func (m *Model) Close() error {
 	switch v := m.model.(type) {
 	case *GemmaModel:
 		closeGemma(v)
+	case *Gemma4Model:
+		closeGemma4(v)
 	case *Qwen3Model:
 		closeQwen3(v)
 	}
@@ -413,7 +422,7 @@ func (m *Model) newCaches() []Cache {
 // formatChat applies the model's native chat template.
 func (m *Model) formatChat(messages []ChatMessage) string {
 	switch m.modelType {
-	case "gemma3":
+	case "gemma3", "gemma4", "gemma4_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
 		return formatQwenChat(messages)

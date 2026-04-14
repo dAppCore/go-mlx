@@ -37,6 +37,41 @@ func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int
 	}
 }
 
+// SwitchLinear is an expert-indexed linear layer backed by gather_mm / gather_qmm.
+type SwitchLinear struct {
+	Weight    *Array `weight:"weight"`
+	WeightT   *Array
+	Scales    *Array `weight:"scales"`
+	Biases    *Array `weight:"biases"`
+	Bias      *Array `weight:"bias"`
+	GroupSize int
+	Bits      int
+}
+
+// NewSwitchLinear creates a dense expert-indexed linear layer.
+func NewSwitchLinear(weight, bias *Array) *SwitchLinear {
+	layer := &SwitchLinear{
+		Weight: weight,
+		Bias:   bias,
+	}
+	if weight != nil && weight.Valid() {
+		layer.WeightT = Transpose(weight, 0, 2, 1)
+	}
+	return layer
+}
+
+// NewQuantizedSwitchLinear creates a quantized expert-indexed linear layer.
+func NewQuantizedSwitchLinear(weight, scales, biases, bias *Array, groupSize, bits int) *SwitchLinear {
+	return &SwitchLinear{
+		Weight:    weight,
+		Scales:    scales,
+		Biases:    biases,
+		Bias:      bias,
+		GroupSize: groupSize,
+		Bits:      bits,
+	}
+}
+
 // Forward computes the linear transformation.
 // If a LoRA adapter is attached, routes through it instead (base + low-rank delta).
 // Uses QuantizedMatmul when quantization parameters are present.
@@ -64,6 +99,27 @@ func (linear *Linear) baseForward(input *Array) *Array {
 		oldOut := out
 		out = Add(out, linear.Bias)
 		Free(oldOut)
+	}
+	return out
+}
+
+// Forward computes the expert-indexed linear transformation selected by expertIndices.
+func (linear *SwitchLinear) Forward(input, expertIndices *Array) *Array {
+	var out *Array
+	if linear.Scales != nil {
+		out = GatherQMM(input, linear.Weight, linear.Scales, linear.Biases, nil, expertIndices, true, linear.GroupSize, linear.Bits, "affine", false)
+	} else {
+		if linear.WeightT == nil && linear.Weight != nil && linear.Weight.Valid() {
+			linear.WeightT = Transpose(linear.Weight, 0, 2, 1)
+		}
+		out = GatherMM(input, linear.WeightT, nil, expertIndices, false)
+	}
+	if linear.Bias != nil && linear.Bias.Valid() {
+		bias := Take(linear.Bias, expertIndices, 0)
+		biasExpanded := ExpandDims(bias, bias.NumDims()-1)
+		oldOut := out
+		out = Add(out, biasExpanded)
+		Free(oldOut, bias, biasExpanded)
 	}
 	return out
 }

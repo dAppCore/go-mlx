@@ -174,6 +174,56 @@ func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bit
 	return out
 }
 
+// GatherMM performs expert-indexed matrix multiplication.
+func GatherMM(a, b, lhsIndices, rhsIndices *Array, sorted bool) *Array {
+	out := newArray("GATHER_MM", a, b, lhsIndices, rhsIndices)
+	var cLHS, cRHS C.mlx_array
+	if lhsIndices != nil {
+		cLHS = lhsIndices.ctx
+	}
+	if rhsIndices != nil {
+		cRHS = rhsIndices.ctx
+	}
+	C.mlx_gather_mm(&out.ctx, a.ctx, b.ctx, cLHS, cRHS, C._Bool(sorted), DefaultStream().ctx)
+	return out
+}
+
+// GatherQMM performs expert-indexed quantized matrix multiplication.
+func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, sorted bool) *Array {
+	out := newArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
+	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
+	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	cMode := C.CString(mode)
+	defer C.free(unsafe.Pointer(cMode))
+
+	var cBiases, cLHS, cRHS C.mlx_array
+	if biases != nil {
+		cBiases = biases.ctx
+	}
+	if lhsIndices != nil {
+		cLHS = lhsIndices.ctx
+	}
+	if rhsIndices != nil {
+		cRHS = rhsIndices.ctx
+	}
+	C.mlx_gather_qmm(
+		&out.ctx,
+		x.ctx,
+		w.ctx,
+		scales.ctx,
+		cBiases,
+		cLHS,
+		cRHS,
+		C._Bool(transpose),
+		gs,
+		b,
+		cMode,
+		C._Bool(sorted),
+		DefaultStream().ctx,
+	)
+	return out
+}
+
 // Softmax returns softmax along the last axis.
 //
 //	probs := metal.Softmax(logits) // convert raw logits to probability distribution
