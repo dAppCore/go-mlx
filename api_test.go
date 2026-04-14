@@ -454,6 +454,85 @@ func TestLoadModel_ForwardsRequestedCPUDevice_Good(t *testing.T) {
 	}
 }
 
+func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	originalReadGGUFInfo := readGGUFInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		readGGUFInfo = originalReadGGUFInfo
+	})
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		return &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "gemma4_text",
+				NumLayers:    48,
+				QuantBits:    0, // unknown
+			},
+		}, nil
+	}
+	readGGUFInfo = func(modelPath string) (GGUFInfo, error) {
+		return GGUFInfo{}, errors.New("no gguf metadata")
+	}
+
+	model, err := LoadModel("/does/not/matter", WithQuantization(4))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T) {
+	originalLoadNativeModel := loadNativeModel
+	originalReadGGUFInfo := readGGUFInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		readGGUFInfo = originalReadGGUFInfo
+	})
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		return &fakeNativeModel{
+			info: metal.ModelInfo{
+				VocabSize:  262144,
+				HiddenSize: 2560,
+			},
+		}, nil
+	}
+	readGGUFInfo = func(modelPath string) (GGUFInfo, error) {
+		return GGUFInfo{
+			Architecture: "gemma4_text",
+			NumLayers:    48,
+			QuantBits:    4,
+			QuantGroup:   64,
+		}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithQuantization(4))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.Architecture != "gemma4_text" {
+		t.Fatalf("Info().Architecture = %q, want gemma4_text", info.Architecture)
+	}
+	if info.NumLayers != 48 {
+		t.Fatalf("Info().NumLayers = %d, want 48", info.NumLayers)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("Info() quant = %d-bit group=%d, want 4-bit group=64", info.QuantBits, info.QuantGroup)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	_, err = LoadModel("/does/not/matter", WithQuantization(8))
+	if err == nil {
+		t.Fatal("expected quantization mismatch error from GGUF metadata")
+	}
+}
+
 func TestLoadModelFromMedium_StagesAndCleansUp_Good(t *testing.T) {
 	medium := coreio.NewMemoryMedium()
 	if err := medium.Write("models/demo/config.json", `{"model_type":"gemma3"}`); err != nil {

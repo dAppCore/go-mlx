@@ -31,12 +31,15 @@ type Model struct {
 	model   nativeModel
 	cfg     LoadConfig
 	tok     *Tokenizer
+	gguf    *GGUFInfo
 	cleanup func() error
 }
 
 var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 	return metal.LoadAndInit(modelPath, cfg)
 }
+
+var readGGUFInfo = ReadGGUFInfo
 
 // LoadModel loads a model directly through go-mlx without going through go-inference.
 func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
@@ -64,7 +67,18 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 
 	info := native.Info()
-	if cfg.Quantization > 0 && info.QuantBits != cfg.Quantization {
+	var ggufInfo *GGUFInfo
+	if info.QuantBits == 0 || info.QuantGroup == 0 || info.Architecture == "" || info.NumLayers == 0 {
+		if parsed, parsedErr := readGGUFInfo(resolvedPath); parsedErr == nil {
+			ggufInfo = &parsed
+		}
+	}
+
+	effectiveQuantBits := info.QuantBits
+	if effectiveQuantBits == 0 && ggufInfo != nil {
+		effectiveQuantBits = ggufInfo.QuantBits
+	}
+	if cfg.Quantization > 0 && effectiveQuantBits > 0 && effectiveQuantBits != cfg.Quantization {
 		_ = native.Close()
 		_ = cleanup()
 		return nil, errors.New("mlx: loaded model quantization does not match requested bits")
@@ -74,6 +88,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		model:   native,
 		cfg:     cfg,
 		tok:     &Tokenizer{tok: native.Tokenizer()},
+		gguf:    ggufInfo,
 		cleanup: cleanup,
 	}, nil
 }
@@ -285,13 +300,31 @@ func (m *Model) Info() ModelInfo {
 	if m.cfg.ContextLength > 0 {
 		contextLength = m.cfg.ContextLength
 	}
+	architecture := info.Architecture
+	numLayers := info.NumLayers
+	quantBits := info.QuantBits
+	quantGroup := info.QuantGroup
+	if m.gguf != nil {
+		if architecture == "" {
+			architecture = m.gguf.Architecture
+		}
+		if numLayers == 0 {
+			numLayers = m.gguf.NumLayers
+		}
+		if quantBits == 0 {
+			quantBits = m.gguf.QuantBits
+		}
+		if quantGroup == 0 {
+			quantGroup = m.gguf.QuantGroup
+		}
+	}
 	return ModelInfo{
-		Architecture:  info.Architecture,
+		Architecture:  architecture,
 		VocabSize:     info.VocabSize,
-		NumLayers:     info.NumLayers,
+		NumLayers:     numLayers,
 		HiddenSize:    info.HiddenSize,
-		QuantBits:     info.QuantBits,
-		QuantGroup:    info.QuantGroup,
+		QuantBits:     quantBits,
+		QuantGroup:    quantGroup,
 		ContextLength: contextLength,
 	}
 }
