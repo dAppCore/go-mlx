@@ -41,6 +41,9 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	if cfg.SlidingWindow != 512 {
 		t.Errorf("SlidingWindow = %d, want 512", cfg.SlidingWindow)
 	}
+	if cfg.NumKVSharedLayers != 20 {
+		t.Errorf("NumKVSharedLayers = %d, want 20", cfg.NumKVSharedLayers)
+	}
 	if cfg.FinalLogitSoftcapping != 30 {
 		t.Errorf("FinalLogitSoftcapping = %f, want 30", cfg.FinalLogitSoftcapping)
 	}
@@ -65,6 +68,69 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	}
 	if cfg.RopeParameters["sliding_attention"].RopeTheta != 10000 {
 		t.Errorf("sliding attention rope theta = %f, want 10000", cfg.RopeParameters["sliding_attention"].RopeTheta)
+	}
+}
+
+func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 6,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"num_kv_shared_layers": 0
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.NumKVSharedLayers != 0 {
+		t.Fatalf("NumKVSharedLayers = %d, want 0", cfg.NumKVSharedLayers)
+	}
+}
+
+func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 6,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256,
+		"rope_parameters": {
+			"full_attention": {
+				"rope_theta": 123456
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	full := cfg.RopeParameters["full_attention"]
+	if full.RopeTheta != 123456 {
+		t.Fatalf("full rope theta = %f, want 123456", full.RopeTheta)
+	}
+	if full.PartialRotaryFactor != 0.25 {
+		t.Fatalf("full partial rotary factor = %f, want 0.25", full.PartialRotaryFactor)
+	}
+	if full.RopeType != "proportional" {
+		t.Fatalf("full rope type = %q, want proportional", full.RopeType)
+	}
+	if full.Factor != 1.0 {
+		t.Fatalf("full factor = %f, want 1.0", full.Factor)
+	}
+
+	sliding := cfg.RopeParameters["sliding_attention"]
+	if sliding.RopeTheta != 10000 {
+		t.Fatalf("sliding rope theta = %f, want 10000", sliding.RopeTheta)
+	}
+	if sliding.PartialRotaryFactor != 1.0 {
+		t.Fatalf("sliding partial rotary factor = %f, want 1.0", sliding.PartialRotaryFactor)
+	}
+	if sliding.RopeType != "default" {
+		t.Fatalf("sliding rope type = %q, want default", sliding.RopeType)
 	}
 }
 

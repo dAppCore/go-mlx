@@ -155,15 +155,73 @@ type sharedKV struct {
 	Offset int
 }
 
+func defaultGemma4RopeParameters(cfg *Gemma4TextConfig) map[string]RopeParams {
+	return map[string]RopeParams{
+		"full_attention": {
+			PartialRotaryFactor: cfg.GlobalPartialRotaryFactor,
+			RopeTheta:           1000000.0,
+			RopeType:            "proportional",
+			Factor:              1.0,
+		},
+		"sliding_attention": {
+			PartialRotaryFactor: 1.0,
+			RopeTheta:           10000.0,
+			RopeType:            "default",
+			Factor:              1.0,
+		},
+	}
+}
+
+func mergeGemma4RopeParameters(cfg *Gemma4TextConfig) {
+	defaults := defaultGemma4RopeParameters(cfg)
+	if cfg.RopeParameters == nil {
+		cfg.RopeParameters = defaults
+		return
+	}
+
+	merged := make(map[string]RopeParams, len(defaults)+len(cfg.RopeParameters))
+	for attentionType, params := range defaults {
+		if override, ok := cfg.RopeParameters[attentionType]; ok {
+			if override.PartialRotaryFactor == 0 {
+				override.PartialRotaryFactor = params.PartialRotaryFactor
+			}
+			if override.RopeTheta == 0 {
+				override.RopeTheta = params.RopeTheta
+			}
+			if override.RopeType == "" {
+				override.RopeType = params.RopeType
+			}
+			if override.Factor == 0 {
+				override.Factor = params.Factor
+			}
+			merged[attentionType] = override
+			continue
+		}
+		merged[attentionType] = params
+	}
+	for attentionType, params := range cfg.RopeParameters {
+		if _, ok := merged[attentionType]; ok {
+			continue
+		}
+		if params.Factor == 0 {
+			params.Factor = 1.0
+		}
+		merged[attentionType] = params
+	}
+	cfg.RopeParameters = merged
+}
+
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
-		ModelType    string              `json:"model_type"`
-		Quantization *QuantizationConfig `json:"quantization"`
-		LayerTypes   []string            `json:"layer_types"`
-		TextConfig   struct {
+		ModelType         string              `json:"model_type"`
+		Quantization      *QuantizationConfig `json:"quantization"`
+		LayerTypes        []string            `json:"layer_types"`
+		NumKVSharedLayers *int32              `json:"num_kv_shared_layers"`
+		TextConfig        struct {
 			Gemma4TextConfig
-			Quantization *QuantizationConfig `json:"quantization"`
-			LayerTypes   []string            `json:"layer_types"`
+			Quantization      *QuantizationConfig `json:"quantization"`
+			LayerTypes        []string            `json:"layer_types"`
+			NumKVSharedLayers *int32              `json:"num_kv_shared_layers"`
 		} `json:"text_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
@@ -218,6 +276,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.MaxPositionEmbeddings == 0 {
 		cfg.MaxPositionEmbeddings = 131072
 	}
+	if wrapper.NumKVSharedLayers == nil && wrapper.TextConfig.NumKVSharedLayers == nil {
+		cfg.NumKVSharedLayers = 20
+	}
 	if cfg.FinalLogitSoftcapping == 0 {
 		cfg.FinalLogitSoftcapping = 30
 	}
@@ -231,22 +292,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 			cfg.TopKExperts = &topK
 		}
 	}
-	if cfg.RopeParameters == nil {
-		cfg.RopeParameters = map[string]RopeParams{
-			"full_attention": {
-				PartialRotaryFactor: cfg.GlobalPartialRotaryFactor,
-				RopeTheta:           1000000.0,
-				RopeType:            "proportional",
-				Factor:              1.0,
-			},
-			"sliding_attention": {
-				PartialRotaryFactor: 1.0,
-				RopeTheta:           10000.0,
-				RopeType:            "default",
-				Factor:              1.0,
-			},
-		}
-	}
+	mergeGemma4RopeParameters(&cfg)
 	if len(cfg.LayerTypesInput) > 0 {
 		cfg.LayerTypes = append([]string(nil), cfg.LayerTypesInput...)
 	} else {
