@@ -3,6 +3,8 @@
 package metal
 
 import (
+	"slices"
+
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
@@ -10,11 +12,12 @@ import (
 
 // Tokenizer handles text-to-token and token-to-text conversion.
 type Tokenizer struct {
-	vocab      map[string]int32
-	invVocab   map[int32]string
-	merges     []mergePair
-	mergeRanks map[string]int // "a b" → rank for O(1) merge lookup
-	special    map[string]int32
+	vocab        map[string]int32
+	invVocab     map[int32]string
+	merges       []mergePair
+	mergeRanks   map[string]int // "a b" → rank for O(1) merge lookup
+	special      map[string]int32
+	specialOrder []string
 
 	bosToken int32
 	eosToken int32
@@ -142,6 +145,23 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		tokenizer.vocab[added.Content] = added.ID
 		tokenizer.invVocab[added.ID] = added.Content
 	}
+	tokenizer.specialOrder = make([]string, 0, len(tokenizer.special))
+	for tokenText := range tokenizer.special {
+		tokenizer.specialOrder = append(tokenizer.specialOrder, tokenText)
+	}
+	slices.SortFunc(tokenizer.specialOrder, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		switch {
+		case a < b:
+			return -1
+		case a > b:
+			return 1
+		default:
+			return 0
+		}
+	})
 
 	// Detect GPT-2 byte-level BPE (Qwen, GPT, DeepSeek use Ġ for space).
 	// Check for "Ġthe" rather than bare "Ġ" — large SentencePiece vocabs
@@ -180,6 +200,36 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	}
 
 	return tokenizer, nil
+}
+
+func (t *Tokenizer) matchSpecialToken(input string) (string, int32, bool) {
+	for _, tok := range t.specialOrder {
+		if core.HasPrefix(input, tok) {
+			return tok, t.special[tok], true
+		}
+	}
+	return "", 0, false
+}
+
+func (t *Tokenizer) nextSpecialBoundary(input string) int {
+	end := len(input)
+	for _, tok := range t.specialOrder {
+		if idx := indexIn(input, tok); idx > 0 && idx < end {
+			end = idx
+		}
+	}
+	return end
+}
+
+func normalizeSentencePieceSegment(segment string) string {
+	if segment == "" {
+		return ""
+	}
+	normalized := core.Replace(segment, " ", "▁")
+	if !core.HasPrefix(normalized, "▁") {
+		normalized = "▁" + normalized
+	}
+	return normalized
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
@@ -255,31 +305,20 @@ func (t *Tokenizer) Encode(text string) []int32 {
 	remaining := text
 	for remaining != "" {
 		// Check for special tokens at the current position.
-		found := false
-		for tok, id := range t.special {
-			if core.HasPrefix(remaining, tok) {
-				tokens = append(tokens, id)
-				remaining = remaining[len(tok):]
-				found = true
-				break
-			}
-		}
-		if found {
+		if tok, id, ok := t.matchSpecialToken(remaining); ok {
+			tokens = append(tokens, id)
+			remaining = remaining[len(tok):]
 			continue
 		}
 
 		// Find the next special token boundary (or end of string).
-		end := len(remaining)
-		for tok := range t.special {
-			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
-				end = idx
-			}
-		}
+		end := t.nextSpecialBoundary(remaining)
 		segment := remaining[:end]
 		remaining = remaining[end:]
 
-		// SentencePiece: prefix the segment with ▁ (space marker) and split into characters.
-		spText := "▁" + segment
+		// SentencePiece uses ▁ as the word-boundary marker for every word,
+		// not only at the start of the full segment.
+		spText := normalizeSentencePieceSegment(segment)
 		symbols := make([]string, 0, len([]rune(spText)))
 		for _, r := range spText {
 			symbols = append(symbols, string(r))
@@ -307,26 +346,14 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 	remaining := text
 	for remaining != "" {
 		// Check for special tokens at the current position.
-		found := false
-		for tok, id := range t.special {
-			if core.HasPrefix(remaining, tok) {
-				tokens = append(tokens, id)
-				remaining = remaining[len(tok):]
-				found = true
-				break
-			}
-		}
-		if found {
+		if tok, id, ok := t.matchSpecialToken(remaining); ok {
+			tokens = append(tokens, id)
+			remaining = remaining[len(tok):]
 			continue
 		}
 
 		// Find the next special token boundary (or end of string).
-		end := len(remaining)
-		for tok := range t.special {
-			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
-				end = idx
-			}
-		}
+		end := t.nextSpecialBoundary(remaining)
 		segment := remaining[:end]
 		remaining = remaining[end:]
 

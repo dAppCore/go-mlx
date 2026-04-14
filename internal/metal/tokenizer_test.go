@@ -131,6 +131,26 @@ func TestTokenizer_Encode_Good(t *testing.T) {
 	}
 }
 
+func TestTokenizer_Encode_MultiWordSentencePiece_Good(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	tokens := tok.Encode("hello hello")
+	want := []int32{100, 4, 5, 6, 3, 4, 5, 6, 3}
+	if len(tokens) != len(want) {
+		t.Fatalf("Encode(\"hello hello\") = %v, want %v", tokens, want)
+	}
+	for i := range want {
+		if tokens[i] != want[i] {
+			t.Fatalf("tokens[%d] = %d, want %d", i, tokens[i], want[i])
+		}
+	}
+
+	if decoded := tok.Decode(tokens); decoded != "hello hello" {
+		t.Fatalf("Decode(Encode(\"hello hello\")) = %q, want %q", decoded, "hello hello")
+	}
+}
+
 func TestTokenizer_BPEMerge_Good(t *testing.T) {
 	tok := &Tokenizer{
 		mergeRanks: map[string]int{
