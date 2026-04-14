@@ -300,6 +300,61 @@ func batchLossMask(lengths []int32, maxLen int) *Array {
 	return FromValues(data, len(lengths), maxLen)
 }
 
+func loraRegularization(params []*Array, lambda float32) *Array {
+	if lambda == 0 || len(params) == 0 {
+		return nil
+	}
+
+	var reg *Array
+	for _, param := range params {
+		if param == nil || !param.Valid() {
+			continue
+		}
+
+		current := param
+		if param.Dtype() != DTypeFloat32 {
+			current = AsType(param, DTypeFloat32)
+		}
+
+		shape := current.Shape()
+		size := 1
+		for _, dim := range shape {
+			size *= int(dim)
+		}
+		if size == 0 {
+			if current != param {
+				Free(current)
+			}
+			continue
+		}
+
+		squared := Square(current)
+		if current != param {
+			Free(current)
+		}
+		flattened := Reshape(squared, int32(size))
+		mean := Mean(flattened, 0, false)
+		Free(squared, flattened)
+
+		if reg == nil {
+			reg = mean
+			continue
+		}
+
+		sum := Add(reg, mean)
+		Free(reg, mean)
+		reg = sum
+	}
+
+	if reg == nil {
+		return nil
+	}
+
+	scaled := MulScalar(reg, lambda)
+	Free(reg)
+	return scaled
+}
+
 // Step runs one RFC-style LoRA training step over a padded batch and returns the loss.
 func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW) *Array {
 	if adapter == nil || adapter.Model == nil || optimizer == nil {
@@ -331,7 +386,14 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 	lossFn := func(current []*Array) []*Array {
 		adapter.SetAllParams(current)
 		logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
-		return []*Array{MaskedCrossEntropyLoss(logits, targetIDs, lossMask)}
+		loss := MaskedCrossEntropyLoss(logits, targetIDs, lossMask)
+		Free(logits)
+		if reg := loraRegularization(current, adapter.Config.Lambda); reg != nil {
+			total := Add(loss, reg)
+			Free(loss, reg)
+			loss = total
+		}
+		return []*Array{loss}
 	}
 
 	grad := ValueAndGrad(lossFn, argnums...)

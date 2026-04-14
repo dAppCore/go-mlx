@@ -167,6 +167,92 @@ func TestLora_NormalizeConfig_RFCAliases_Good(t *testing.T) {
 	}
 }
 
+type loraStepTestModel struct {
+	layer *LoRALinear
+}
+
+func (m *loraStepTestModel) Forward(tokens *Array, caches []Cache) *Array {
+	return m.ForwardMasked(tokens, nil, caches)
+}
+
+func (m *loraStepTestModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array {
+	zero := Zeros([]int32{1, 1}, DTypeFloat32)
+	logit := Add(m.layer.A, m.layer.B)
+	pair := Concatenate([]*Array{zero, logit}, 1)
+	logits := Reshape(pair, 1, 1, 2)
+	Free(zero, logit, pair)
+	return logits
+}
+
+func (m *loraStepTestModel) NewCache() []Cache                   { return nil }
+func (m *loraStepTestModel) NumLayers() int                      { return 1 }
+func (m *loraStepTestModel) Tokenizer() *Tokenizer               { return nil }
+func (m *loraStepTestModel) ModelType() string                   { return "lora-step-test" }
+func (m *loraStepTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func TestLora_Regularization_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	a := FromValues([]float32{3, 4}, 1, 2)
+	b := FromValues([]float32{0, 2}, 1, 2)
+	reg := loraRegularization([]*Array{a, b}, 0.1)
+	defer Free(a, b, reg)
+	Materialize(reg)
+
+	// 0.1 * (mean([9,16]) + mean([0,4])) = 0.1 * (12.5 + 2.0) = 1.45
+	if got := reg.Float(); math.Abs(got-1.45) > 1e-5 {
+		t.Fatalf("regularization = %f, want 1.45", got)
+	}
+}
+
+func TestLora_Step_AppliesLambdaRegularization_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	newAdapter := func(lambda float32) (*LoRAAdapter, *LoRALinear) {
+		layer := &LoRALinear{
+			A:     FromValues([]float32{0.25}, 1, 1),
+			B:     FromValues([]float32{0.5}, 1, 1),
+			Scale: 1,
+			Rank:  1,
+			Alpha: 1,
+		}
+		return &LoRAAdapter{
+			Layers: map[string]*LoRALinear{"model.layers.0.self_attn.q_proj": layer},
+			Config: LoRAConfig{Lambda: lambda},
+			Model:  &loraStepTestModel{layer: layer},
+		}, layer
+	}
+
+	batch := Batch{
+		Tokens: [][]int{{0}},
+		Length: []int{1},
+	}
+	targets := [][]int{{1}}
+	opt := NewAdamW(&AdamWConfig{LearningRate: 0})
+
+	plain, plainLayer := newAdapter(0)
+	defer Free(plainLayer.A, plainLayer.B)
+	plainLoss := plain.Step(batch, targets, opt)
+	if plainLoss == nil {
+		t.Fatal("plain Step returned nil loss")
+	}
+	defer Free(plainLoss)
+	Materialize(plainLoss)
+
+	regularized, regularizedLayer := newAdapter(0.5)
+	defer Free(regularizedLayer.A, regularizedLayer.B)
+	regularizedLoss := regularized.Step(batch, targets, opt)
+	if regularizedLoss == nil {
+		t.Fatal("regularized Step returned nil loss")
+	}
+	defer Free(regularizedLoss)
+	Materialize(regularizedLoss)
+
+	if got, want := regularizedLoss.Float(), plainLoss.Float(); got <= want {
+		t.Fatalf("regularized loss = %f, want > plain loss %f", got, want)
+	}
+}
+
 func TestLora_BatchLengths_Good(t *testing.T) {
 	lengths, maxLen := batchLengths(
 		Batch{
