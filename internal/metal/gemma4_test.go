@@ -308,6 +308,105 @@ func TestGemma4_ParseConfig_NestedTopLevelGemma4Fields_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_ParseConfig_NestedTopLevelFalseOverrides_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"attention_k_eq_v": false,
+		"enable_moe_block": false,
+		"use_double_wide_mlp": false,
+		"tie_word_embeddings": false,
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"attention_k_eq_v": true,
+			"enable_moe_block": true,
+			"use_double_wide_mlp": true,
+			"tie_word_embeddings": true
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.AttentionKEqV {
+		t.Fatal("AttentionKEqV = true, want false")
+	}
+	if cfg.EnableMoEBlock {
+		t.Fatal("EnableMoEBlock = true, want false")
+	}
+	if cfg.UseDoubleWideMLP {
+		t.Fatal("UseDoubleWideMLP = true, want false")
+	}
+	if cfg.TieWordEmbeddings {
+		t.Fatal("TieWordEmbeddings = true, want false")
+	}
+}
+
+func TestGemma4_ParseConfig_NestedTopLevelNumericOverrides_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"num_global_key_value_heads": 2,
+		"global_head_dim": 384,
+		"global_partial_rotary_factor": 0.125,
+		"sliding_window": 256,
+		"final_logit_softcapping": 12.5,
+		"rope_parameters": {
+			"full_attention": {
+				"rope_theta": 424242
+			}
+		},
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"num_global_key_value_heads": 4,
+			"head_dim": 256,
+			"global_head_dim": 768,
+			"global_partial_rotary_factor": 0.5,
+			"sliding_window": 128,
+			"final_logit_softcapping": 30,
+			"rope_parameters": {
+				"full_attention": {
+					"rope_theta": 111111,
+					"rope_type": "proportional"
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.NumGlobalKeyValueHeads == nil || *cfg.NumGlobalKeyValueHeads != 2 {
+		t.Fatalf("NumGlobalKeyValueHeads = %v, want 2", cfg.NumGlobalKeyValueHeads)
+	}
+	if cfg.GlobalHeadDim != 384 {
+		t.Fatalf("GlobalHeadDim = %d, want 384", cfg.GlobalHeadDim)
+	}
+	if cfg.GlobalPartialRotaryFactor != 0.125 {
+		t.Fatalf("GlobalPartialRotaryFactor = %f, want 0.125", cfg.GlobalPartialRotaryFactor)
+	}
+	if cfg.SlidingWindow != 256 {
+		t.Fatalf("SlidingWindow = %d, want 256", cfg.SlidingWindow)
+	}
+	if cfg.FinalLogitSoftcapping != 12.5 {
+		t.Fatalf("FinalLogitSoftcapping = %f, want 12.5", cfg.FinalLogitSoftcapping)
+	}
+	full := cfg.RopeParameters["full_attention"]
+	if full.RopeTheta != 424242 {
+		t.Fatalf("full rope theta = %f, want 424242", full.RopeTheta)
+	}
+	if full.RopeType != "proportional" {
+		t.Fatalf("full rope type = %q, want proportional", full.RopeType)
+	}
+}
+
 func TestGemma4_InferPerLayerInputSize_StructuredEmbedding_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
@@ -983,6 +1082,66 @@ func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 	}
 	if shape[0] != 1 || shape[1] != 3 || shape[2] != 10 {
 		t.Fatalf("logits shape = %v, want [1 3 10]", shape)
+	}
+}
+
+func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 2,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"vocab_size": 10,
+		"vocab_size_per_layer_input": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 4,
+		"sliding_window_pattern": 2,
+		"num_kv_shared_layers": 0,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+
+	weights := gemma4TinyWeightsWithPerLayerInputs()
+	delete(weights, "model.per_layer_projection_norm.weight")
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadGemma4(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4: %v", err)
+	}
+	defer closeGemma4(model)
+
+	if model.EmbedTokensPerLayer != nil {
+		t.Fatal("per-layer embedding table should be disabled without projection norm")
+	}
+	if model.PerLayerModelProj != nil {
+		t.Fatal("per-layer model projection should be disabled without projection norm")
+	}
+	if model.PerLayerProjNorm != nil {
+		t.Fatal("per-layer projection norm should be nil when per-layer inputs are disabled")
+	}
+	for i, layer := range model.Layers {
+		if layer.PerLayerInputGate != nil {
+			t.Fatalf("layer %d per_layer_input_gate should be disabled", i)
+		}
+		if layer.PerLayerProjection != nil {
+			t.Fatalf("layer %d per_layer_projection should be disabled", i)
+		}
+		if layer.PostPerLayerInputNorm != nil {
+			t.Fatalf("layer %d post_per_layer_input_norm should be disabled", i)
+		}
 	}
 }
 

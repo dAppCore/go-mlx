@@ -233,6 +233,33 @@ func cloneGemma4RopeParameters(src map[string]RopeParams) map[string]RopeParams 
 	return cloned
 }
 
+func overlayGemma4RopeParameters(base, overlay map[string]RopeParams) map[string]RopeParams {
+	if len(base) == 0 && len(overlay) == 0 {
+		return nil
+	}
+	merged := cloneGemma4RopeParameters(base)
+	if merged == nil {
+		merged = make(map[string]RopeParams, len(overlay))
+	}
+	for attentionType, params := range overlay {
+		current := merged[attentionType]
+		if params.PartialRotaryFactor != 0 {
+			current.PartialRotaryFactor = params.PartialRotaryFactor
+		}
+		if params.RopeTheta != 0 {
+			current.RopeTheta = params.RopeTheta
+		}
+		if params.RopeType != "" {
+			current.RopeType = params.RopeType
+		}
+		if params.Factor != 0 {
+			current.Factor = params.Factor
+		}
+		merged[attentionType] = current
+	}
+	return merged
+}
+
 func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 	if dst.ModelType == "" && src.ModelType != "" {
 		dst.ModelType = src.ModelType
@@ -316,23 +343,36 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
-		ModelType               string              `json:"model_type"`
-		Quantization            *QuantizationConfig `json:"quantization"`
-		LayerTypes              []string            `json:"layer_types"`
-		NumKVSharedLayers       *int32              `json:"num_kv_shared_layers"`
-		GlobalHeadDim           *int32              `json:"global_head_dim"`
-		HiddenSizePerLayerInput *int32              `json:"hidden_size_per_layer_input"`
-		UseDoubleWideMLP        *bool               `json:"use_double_wide_mlp"`
-		TieWordEmbeddings       *bool               `json:"tie_word_embeddings"`
-		TextConfig              struct {
+		ModelType                 string                `json:"model_type"`
+		Quantization              *QuantizationConfig   `json:"quantization"`
+		LayerTypes                []string              `json:"layer_types"`
+		NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
+		NumKVSharedLayers         *int32                `json:"num_kv_shared_layers"`
+		GlobalHeadDim             *int32                `json:"global_head_dim"`
+		GlobalPartialRotaryFactor *float32              `json:"global_partial_rotary_factor"`
+		HiddenSizePerLayerInput   *int32                `json:"hidden_size_per_layer_input"`
+		AttentionKEqV             *bool                 `json:"attention_k_eq_v"`
+		FinalLogitSoftcapping     *float32              `json:"final_logit_softcapping"`
+		UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
+		EnableMoEBlock            *bool                 `json:"enable_moe_block"`
+		NumExperts                *int32                `json:"num_experts"`
+		TopKExperts               *int32                `json:"top_k_experts"`
+		MoEIntermediateSize       *int32                `json:"moe_intermediate_size"`
+		SlidingWindow             *int32                `json:"sliding_window"`
+		TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
+		RopeParameters            map[string]RopeParams `json:"rope_parameters"`
+		TextConfig                struct {
 			Gemma4TextConfig
-			Quantization            *QuantizationConfig `json:"quantization"`
-			LayerTypes              []string            `json:"layer_types"`
-			NumKVSharedLayers       *int32              `json:"num_kv_shared_layers"`
-			GlobalHeadDim           *int32              `json:"global_head_dim"`
-			HiddenSizePerLayerInput *int32              `json:"hidden_size_per_layer_input"`
-			UseDoubleWideMLP        *bool               `json:"use_double_wide_mlp"`
-			TieWordEmbeddings       *bool               `json:"tie_word_embeddings"`
+			Quantization              *QuantizationConfig   `json:"quantization"`
+			LayerTypes                []string              `json:"layer_types"`
+			NumGlobalKeyValueHeads    *int32                `json:"num_global_key_value_heads"`
+			NumKVSharedLayers         *int32                `json:"num_kv_shared_layers"`
+			GlobalHeadDim             *int32                `json:"global_head_dim"`
+			GlobalPartialRotaryFactor *float32              `json:"global_partial_rotary_factor"`
+			HiddenSizePerLayerInput   *int32                `json:"hidden_size_per_layer_input"`
+			UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
+			TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
+			RopeParameters            map[string]RopeParams `json:"rope_parameters"`
 		} `json:"text_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
@@ -359,19 +399,83 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if cfg.Quantization == nil {
 		cfg.Quantization = wrapper.TextConfig.Quantization
 	}
-	if len(cfg.LayerTypesInput) == 0 && len(wrapper.LayerTypes) > 0 {
-		cfg.LayerTypesInput = wrapper.LayerTypes
+	switch {
+	case len(wrapper.LayerTypes) > 0:
+		cfg.LayerTypesInput = append([]string(nil), wrapper.LayerTypes...)
+	case len(wrapper.TextConfig.LayerTypes) > 0:
+		cfg.LayerTypesInput = append([]string(nil), wrapper.TextConfig.LayerTypes...)
 	}
-	if len(cfg.LayerTypesInput) == 0 && len(wrapper.TextConfig.LayerTypes) > 0 {
-		cfg.LayerTypesInput = wrapper.TextConfig.LayerTypes
+	switch {
+	case wrapper.NumGlobalKeyValueHeads != nil:
+		cfg.NumGlobalKeyValueHeads = cloneGemma4Int32Ptr(wrapper.NumGlobalKeyValueHeads)
+	case wrapper.TextConfig.NumGlobalKeyValueHeads != nil:
+		cfg.NumGlobalKeyValueHeads = cloneGemma4Int32Ptr(wrapper.TextConfig.NumGlobalKeyValueHeads)
 	}
-	if cfg.NumKVSharedLayers == 0 {
-		switch {
-		case wrapper.TextConfig.NumKVSharedLayers != nil:
-			cfg.NumKVSharedLayers = *wrapper.TextConfig.NumKVSharedLayers
-		case wrapper.NumKVSharedLayers != nil:
-			cfg.NumKVSharedLayers = *wrapper.NumKVSharedLayers
-		}
+	switch {
+	case wrapper.NumKVSharedLayers != nil:
+		cfg.NumKVSharedLayers = *wrapper.NumKVSharedLayers
+	case wrapper.TextConfig.NumKVSharedLayers != nil:
+		cfg.NumKVSharedLayers = *wrapper.TextConfig.NumKVSharedLayers
+	}
+	switch {
+	case wrapper.GlobalHeadDim != nil:
+		cfg.GlobalHeadDim = *wrapper.GlobalHeadDim
+	case wrapper.TextConfig.GlobalHeadDim != nil:
+		cfg.GlobalHeadDim = *wrapper.TextConfig.GlobalHeadDim
+	}
+	switch {
+	case wrapper.GlobalPartialRotaryFactor != nil:
+		cfg.GlobalPartialRotaryFactor = *wrapper.GlobalPartialRotaryFactor
+	case wrapper.TextConfig.GlobalPartialRotaryFactor != nil:
+		cfg.GlobalPartialRotaryFactor = *wrapper.TextConfig.GlobalPartialRotaryFactor
+	}
+	cfg.RopeParameters = overlayGemma4RopeParameters(cfg.RopeParameters, wrapper.TextConfig.RopeParameters)
+	cfg.RopeParameters = overlayGemma4RopeParameters(cfg.RopeParameters, wrapper.RopeParameters)
+	switch {
+	case wrapper.HiddenSizePerLayerInput != nil:
+		cfg.HiddenSizePerLayerInput = *wrapper.HiddenSizePerLayerInput
+	case wrapper.TextConfig.HiddenSizePerLayerInput != nil:
+		cfg.HiddenSizePerLayerInput = *wrapper.TextConfig.HiddenSizePerLayerInput
+	}
+	switch {
+	case wrapper.AttentionKEqV != nil:
+		cfg.AttentionKEqV = *wrapper.AttentionKEqV
+	}
+	switch {
+	case wrapper.FinalLogitSoftcapping != nil:
+		cfg.FinalLogitSoftcapping = *wrapper.FinalLogitSoftcapping
+	}
+	switch {
+	case wrapper.EnableMoEBlock != nil:
+		cfg.EnableMoEBlock = *wrapper.EnableMoEBlock
+	}
+	switch {
+	case wrapper.NumExperts != nil:
+		cfg.NumExperts = cloneGemma4Int32Ptr(wrapper.NumExperts)
+	}
+	switch {
+	case wrapper.TopKExperts != nil:
+		cfg.TopKExperts = cloneGemma4Int32Ptr(wrapper.TopKExperts)
+	}
+	switch {
+	case wrapper.MoEIntermediateSize != nil:
+		cfg.MoEIntermediateSize = cloneGemma4Int32Ptr(wrapper.MoEIntermediateSize)
+	}
+	switch {
+	case wrapper.SlidingWindow != nil:
+		cfg.SlidingWindow = *wrapper.SlidingWindow
+	}
+	switch {
+	case wrapper.UseDoubleWideMLP != nil:
+		cfg.UseDoubleWideMLP = *wrapper.UseDoubleWideMLP
+	case wrapper.TextConfig.UseDoubleWideMLP != nil:
+		cfg.UseDoubleWideMLP = *wrapper.TextConfig.UseDoubleWideMLP
+	}
+	switch {
+	case wrapper.TieWordEmbeddings != nil:
+		cfg.TieWordEmbeddings = *wrapper.TieWordEmbeddings
+	case wrapper.TextConfig.TieWordEmbeddings != nil:
+		cfg.TieWordEmbeddings = *wrapper.TextConfig.TieWordEmbeddings
 	}
 
 	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
@@ -966,7 +1070,8 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 	if cfg.HiddenSizePerLayerInput > 0 {
 		if gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight") == nil ||
-			gemma4WeightAny(weights, "model.per_layer_model_projection.weight") == nil {
+			gemma4WeightAny(weights, "model.per_layer_model_projection.weight") == nil ||
+			gemma4WeightAny(weights, "model.per_layer_projection_norm.weight") == nil {
 			cfg.HiddenSizePerLayerInput = 0
 		}
 	}
