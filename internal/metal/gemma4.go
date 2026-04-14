@@ -158,15 +158,19 @@ type sharedKV struct {
 func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	var wrapper struct {
 		ModelType    string              `json:"model_type"`
-		TextConfig   Gemma4TextConfig    `json:"text_config"`
 		Quantization *QuantizationConfig `json:"quantization"`
 		LayerTypes   []string            `json:"layer_types"`
+		TextConfig   struct {
+			Gemma4TextConfig
+			Quantization *QuantizationConfig `json:"quantization"`
+			LayerTypes   []string            `json:"layer_types"`
+		} `json:"text_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
 		return nil, core.E("gemma4.parseConfig", "parse config", nil)
 	}
 
-	cfg := wrapper.TextConfig
+	cfg := wrapper.TextConfig.Gemma4TextConfig
 	if cfg.NumHiddenLayers == 0 {
 		if r := core.JSONUnmarshal(data, &cfg); !r.OK {
 			return nil, core.E("gemma4.parseConfig", "parse top-level config", nil)
@@ -177,8 +181,14 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.ModelType = wrapper.ModelType
 	}
 	cfg.Quantization = wrapper.Quantization
+	if cfg.Quantization == nil {
+		cfg.Quantization = wrapper.TextConfig.Quantization
+	}
 	if len(cfg.LayerTypesInput) == 0 && len(wrapper.LayerTypes) > 0 {
 		cfg.LayerTypesInput = wrapper.LayerTypes
+	}
+	if len(cfg.LayerTypesInput) == 0 && len(wrapper.TextConfig.LayerTypes) > 0 {
+		cfg.LayerTypesInput = wrapper.TextConfig.LayerTypes
 	}
 
 	if cfg.HeadDim == 0 && cfg.HiddenSize > 0 && cfg.NumAttentionHeads > 0 {
@@ -290,24 +300,13 @@ func splitArrayAlongSecondLast(a *Array) (*Array, *Array, bool) {
 func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 	sanitized := make(map[string]*Array, len(raw))
 	for name, arr := range raw {
-		trimmed := strings.TrimPrefix(name, "model.")
-		if strings.HasPrefix(trimmed, "vision_tower") ||
-			strings.HasPrefix(trimmed, "multi_modal_projector") ||
-			strings.HasPrefix(trimmed, "audio_tower") ||
-			strings.HasPrefix(trimmed, "embed_audio") ||
-			strings.HasPrefix(trimmed, "embed_vision") {
-			continue
-		}
-		if strings.Contains(name, "self_attn.rotary_emb") ||
-			strings.Contains(name, "input_max") ||
-			strings.Contains(name, "input_min") ||
-			strings.Contains(name, "output_max") ||
-			strings.Contains(name, "output_min") {
+		canonical, skip := canonicalGemma4WeightName(name)
+		if skip {
 			continue
 		}
 		for _, suffix := range []string{".weight", ".scales", ".biases", ".bias"} {
-			if strings.Contains(name, ".experts.gate_up_proj"+suffix) {
-				base := strings.TrimSuffix(name, suffix)
+			if strings.HasSuffix(canonical, ".experts.gate_up_proj"+suffix) {
+				base := strings.TrimSuffix(canonical, suffix)
 				base = strings.TrimSuffix(base, ".gate_up_proj")
 				gate, up, ok := splitArrayAlongSecondLast(arr)
 				if !ok {
@@ -318,10 +317,51 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 				goto nextWeight
 			}
 		}
-		sanitized[name] = arr
+		sanitized[canonical] = arr
 	nextWeight:
 	}
 	return sanitized
+}
+
+func canonicalGemma4WeightName(name string) (string, bool) {
+	trimmed := name
+	for _, prefix := range []string{
+		"model.language_model.model.",
+		"model.language_model.",
+		"language_model.model.",
+		"language_model.",
+		"model.",
+	} {
+		if strings.HasPrefix(trimmed, prefix) {
+			trimmed = strings.TrimPrefix(trimmed, prefix)
+			break
+		}
+	}
+
+	if strings.HasPrefix(trimmed, "vision_tower") ||
+		strings.HasPrefix(trimmed, "multi_modal_projector") ||
+		strings.HasPrefix(trimmed, "audio_tower") ||
+		strings.HasPrefix(trimmed, "embed_audio") ||
+		strings.HasPrefix(trimmed, "embed_vision") ||
+		strings.Contains(trimmed, "self_attn.rotary_emb") ||
+		strings.Contains(trimmed, "input_max") ||
+		strings.Contains(trimmed, "input_min") ||
+		strings.Contains(trimmed, "output_max") ||
+		strings.Contains(trimmed, "output_min") {
+		return "", true
+	}
+
+	switch {
+	case strings.HasPrefix(trimmed, "layers."),
+		strings.HasPrefix(trimmed, "embed_tokens."),
+		strings.HasPrefix(trimmed, "embed_tokens_per_layer."),
+		strings.HasPrefix(trimmed, "norm."),
+		strings.HasPrefix(trimmed, "per_layer_model_projection."),
+		strings.HasPrefix(trimmed, "per_layer_projection_norm."):
+		return "model." + trimmed, false
+	default:
+		return trimmed, false
+	}
 }
 
 func gemma4Ones(shape []int32) *Array {

@@ -90,6 +90,34 @@ func TestGemma4_ParseConfig_MoEDefaults_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"text_config": {
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"layer_types": ["sliding_attention", "full_attention"],
+			"quantization": {"group_size": 64, "bits": 4}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.ModelType != "gemma4" {
+		t.Fatalf("ModelType = %q, want gemma4", cfg.ModelType)
+	}
+	if cfg.Quantization == nil || cfg.Quantization.GroupSize != 64 || cfg.Quantization.Bits != 4 {
+		t.Fatalf("Quantization = %+v, want group_size=64 bits=4", cfg.Quantization)
+	}
+	if got := cfg.LayerTypes; len(got) != 2 || got[0] != "sliding_attention" || got[1] != "full_attention" {
+		t.Fatalf("LayerTypes = %v, want explicit nested layer types", got)
+	}
+}
+
 func TestGemma4_AttentionScale_Good(t *testing.T) {
 	got := gemma4AttentionScale(512)
 	want := float32(1.0 / math.Sqrt(512))
@@ -134,6 +162,31 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	}
 	if got := up.Shape(); len(got) != 3 || got[1] != 2 {
 		t.Fatalf("up split shape = %v, want [1 2 2]", got)
+	}
+}
+
+func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
+	sanitized := sanitizeGemma4Weights(map[string]*Array{
+		"language_model.model.embed_tokens.weight":       nil,
+		"language_model.model.norm.weight":               nil,
+		"language_model.model.vision_tower.block.weight": nil,
+		"language_model.multi_modal_projector.weight":    nil,
+	})
+
+	if _, ok := sanitized["model.embed_tokens.weight"]; !ok {
+		t.Fatal("expected embed_tokens weight to be normalised to model.*")
+	}
+	if _, ok := sanitized["model.norm.weight"]; !ok {
+		t.Fatal("expected norm weight to be normalised to model.*")
+	}
+	if _, ok := sanitized["language_model.model.embed_tokens.weight"]; ok {
+		t.Fatal("expected language_model.model prefix to be stripped")
+	}
+	if _, ok := sanitized["language_model.model.vision_tower.block.weight"]; ok {
+		t.Fatal("vision tower weights should be stripped even under language_model.model")
+	}
+	if _, ok := sanitized["language_model.multi_modal_projector.weight"]; ok {
+		t.Fatal("multimodal projector weights should be stripped even under language_model")
 	}
 }
 
