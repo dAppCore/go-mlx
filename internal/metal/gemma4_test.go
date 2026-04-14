@@ -228,11 +228,13 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 		7, 8,
 	}, 1, 4, 2)
 	Materialize(gateUp)
+	vision := FromValues([]float32{1}, 1)
+	rotary := FromValues([]float32{1}, 1)
 
 	sanitized := sanitizeGemma4Weights(map[string]*Array{
 		"model.layers.0.experts.gate_up_proj.weight": gateUp,
-		"model.vision_tower.block.weight":            FromValues([]float32{1}, 1),
-		"model.layers.0.self_attn.rotary_emb.inv":    FromValues([]float32{1}, 1),
+		"model.vision_tower.block.weight":            vision,
+		"model.layers.0.self_attn.rotary_emb.inv":    rotary,
 	})
 
 	gate := sanitized["model.layers.0.experts.gate_proj.weight"]
@@ -254,6 +256,15 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	}
 	if got := up.Shape(); len(got) != 3 || got[1] != 2 {
 		t.Fatalf("up split shape = %v, want [1 2 2]", got)
+	}
+	if gateUp.Valid() {
+		t.Fatal("gate_up source tensor should be freed after split sanitization")
+	}
+	if vision.Valid() {
+		t.Fatal("vision tower tensor should be freed after sanitization")
+	}
+	if rotary.Valid() {
+		t.Fatal("rotary embedding tensor should be freed after sanitization")
 	}
 }
 

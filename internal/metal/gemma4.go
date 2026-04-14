@@ -353,9 +353,12 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 
 func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 	sanitized := make(map[string]*Array, len(raw))
+	retained := make(map[*Array]struct{}, len(raw))
+	discarded := make([]*Array, 0)
 	for name, arr := range raw {
 		canonical, skip := canonicalGemma4WeightName(name)
 		if skip {
+			discarded = append(discarded, arr)
 			continue
 		}
 		for _, suffix := range []string{".weight", ".scales", ".biases", ".bias"} {
@@ -368,11 +371,33 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 				}
 				sanitized[base+".gate_proj"+suffix] = gate
 				sanitized[base+".up_proj"+suffix] = up
+				discarded = append(discarded, arr)
 				goto nextWeight
 			}
 		}
+		if prev, ok := sanitized[canonical]; ok && prev != arr {
+			delete(retained, prev)
+			discarded = append(discarded, prev)
+		}
 		sanitized[canonical] = arr
+		if arr != nil {
+			retained[arr] = struct{}{}
+		}
 	nextWeight:
+	}
+	freed := make(map[*Array]struct{}, len(discarded))
+	for _, arr := range discarded {
+		if arr == nil {
+			continue
+		}
+		if _, ok := retained[arr]; ok {
+			continue
+		}
+		if _, ok := freed[arr]; ok {
+			continue
+		}
+		Free(arr)
+		freed[arr] = struct{}{}
 	}
 	return sanitized
 }
