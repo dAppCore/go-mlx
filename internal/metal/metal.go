@@ -7,6 +7,7 @@ package metal
 #cgo CXXFLAGS: -std=gnu++17 -O2 -DNDEBUG -include ${SRCDIR}/mlx_build_config.h
 #cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_USE_ACCELERATE
 #cgo CFLAGS: -mmacosx-version-min=14.0
+#cgo darwin CFLAGS: -x objective-c
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx-c
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/fmt/include
@@ -17,9 +18,12 @@ package metal
 #cgo darwin LDFLAGS: -lc++
 
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #include "mlx/c/mlx.h"
 
 static _Atomic(char *) last_mlx_error = NULL;
@@ -39,6 +43,17 @@ static void set_error_handler() {
 
 static const char* get_and_clear_last_error() {
     return atomic_exchange_explicit(&last_mlx_error, NULL, memory_order_acquire);
+}
+
+static bool mlx_go_metal_has_usable_device(void) {
+    @autoreleasepool {
+        NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+        bool ok = devices != nil && devices.count > 0;
+#if !__has_feature(objc_arc)
+        [devices release];
+#endif
+        return ok;
+    }
 }
 */
 import "C"
@@ -60,8 +75,15 @@ func metalAvailableNoInit() bool {
 	return bool(available)
 }
 
+func usableMetalDeviceNoInit() bool {
+	if !metalAvailableNoInit() {
+		return false
+	}
+	return bool(C.mlx_go_metal_has_usable_device())
+}
+
 func setDefaultCPUDeviceNoInit() {
-	if metalAvailableNoInit() {
+	if usableMetalDeviceNoInit() {
 		return
 	}
 
@@ -188,7 +210,7 @@ func MaterializeAsync(outputs ...*Array) {
 //	if metal.MetalAvailable() { /* GPU path */ }
 func MetalAvailable() bool {
 	Init()
-	return metalAvailableNoInit()
+	return usableMetalDeviceNoInit()
 }
 
 // Version returns the MLX framework version string (e.g. "0.24.0").

@@ -145,6 +145,9 @@ type DeviceInfo struct {
 
 // GetDeviceInfo returns Metal GPU hardware information.
 func GetDeviceInfo() DeviceInfo {
+	if !MetalAvailable() {
+		return DeviceInfo{}
+	}
 	info := C.mlx_metal_device_info()
 	return DeviceInfo{
 		Architecture:                 C.GoString(&info.architecture[0]),
