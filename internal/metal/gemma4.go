@@ -70,8 +70,9 @@ type Gemma4Model struct {
 	Tok *Tokenizer
 	Cfg *Gemma4TextConfig
 
-	PreviousKVs []int32
-	modelType   string
+	PreviousKVs       []int32
+	CacheIndexByLayer []int32
+	modelType         string
 }
 
 // Gemma4DecoderLayer is a single transformer block.
@@ -465,27 +466,50 @@ func gemma4SwitchLinear(weights map[string]*Array, prefix string, defaultQ *Quan
 	return NewSwitchLinear(weight, bias)
 }
 
-func buildGemma4PreviousKVs(layers []*Gemma4DecoderLayer, numShared int32) []int32 {
+func buildGemma4CacheLayout(layers []*Gemma4DecoderLayer, numShared int32) ([]int32, []int32) {
 	previous := make([]int32, len(layers))
+	cacheIndexByLayer := make([]int32, len(layers))
 	for i := range previous {
 		previous[i] = int32(i)
+		cacheIndexByLayer[i] = -1
 	}
-	if numShared <= 0 {
-		return previous
+	if len(layers) == 0 {
+		return previous, cacheIndexByLayer
 	}
 	firstShared := int32(len(layers)) - numShared
 	if firstShared < 0 {
 		firstShared = 0
 	}
-	latestByType := make(map[string]int32)
-	for i := int32(0); i < firstShared; i++ {
-		latestByType[layers[i].LayerType] = i
+	if firstShared > int32(len(layers)) {
+		firstShared = int32(len(layers))
 	}
-	for i := firstShared; i < int32(len(layers)); i++ {
-		if prev, ok := latestByType[layers[i].LayerType]; ok {
-			previous[i] = prev
+	latestByType := make(map[string]int32)
+	nextCacheIndex := int32(0)
+	for i := int32(0); i < int32(len(layers)); i++ {
+		layerType := layers[i].LayerType
+		ownsCache := i < firstShared
+		if !ownsCache {
+			if prev, ok := latestByType[layerType]; ok {
+				previous[i] = prev
+			} else {
+				// Small toy configs can place the first layer of an attention type
+				// in the shared-KV region. Promote it to an owner so decoding keeps
+				// a persistent cache instead of silently recomputing from scratch.
+				ownsCache = true
+			}
+		}
+		if ownsCache {
+			previous[i] = i
+			latestByType[layerType] = i
+			cacheIndexByLayer[i] = nextCacheIndex
+			nextCacheIndex++
 		}
 	}
+	return previous, cacheIndexByLayer
+}
+
+func buildGemma4PreviousKVs(layers []*Gemma4DecoderLayer, numShared int32) []int32 {
+	previous, _ := buildGemma4CacheLayout(layers, numShared)
 	return previous
 }
 
@@ -608,6 +632,15 @@ func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 		)
 	}
 	Materialize(scaled...)
+}
+
+func (m *Gemma4Model) ensureCacheLayout() {
+	if len(m.PreviousKVs) == len(m.Layers) && len(m.CacheIndexByLayer) == len(m.Layers) {
+		return
+	}
+	previous, cacheIndexByLayer := buildGemma4CacheLayout(m.Layers, m.Cfg.NumKVSharedLayers)
+	m.PreviousKVs = previous
+	m.CacheIndexByLayer = cacheIndexByLayer
 }
 
 // LoadGemma4 loads a Gemma 4 text model from a directory.
@@ -823,7 +856,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		m.Output = m.EmbedTokens.AsLinear()
 	}
 
-	m.PreviousKVs = buildGemma4PreviousKVs(m.Layers, cfg.NumKVSharedLayers)
+	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)
 
 	var allArrays []*Array
 	for _, arr := range weights {
@@ -914,6 +947,8 @@ func (m *Gemma4Model) Forward(tokens *Array, caches []Cache) *Array {
 
 // ForwardMasked runs the forward pass with an explicit attention mask.
 func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
+	m.ensureCacheLayout()
+
 	shape := tokens.Shape()
 	B, L := shape[0], shape[1]
 
@@ -951,8 +986,10 @@ func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) 
 		}
 
 		var cache Cache
-		if m.PreviousKVs[i] == int32(i) && i < len(caches) {
-			cache = caches[i]
+		if m.PreviousKVs[i] == int32(i) && i < len(m.CacheIndexByLayer) {
+			if cacheIdx := m.CacheIndexByLayer[i]; cacheIdx >= 0 && int(cacheIdx) < len(caches) {
+				cache = caches[cacheIdx]
+			}
 		}
 
 		layerMask := fullMask
@@ -1217,16 +1254,23 @@ func (e *Gemma4Experts) forward(x, topKIndices, topKWeights *Array) *Array {
 
 // NewCache creates per-layer KV caches for Gemma 4.
 func (m *Gemma4Model) NewCache() []Cache {
-	firstShared := m.Cfg.NumHiddenLayers - m.Cfg.NumKVSharedLayers
-	if firstShared < 0 {
-		firstShared = 0
+	m.ensureCacheLayout()
+
+	numCaches := 0
+	for _, cacheIdx := range m.CacheIndexByLayer {
+		if cacheIdx >= 0 {
+			numCaches++
+		}
 	}
-	caches := make([]Cache, firstShared)
-	for i := int32(0); i < firstShared; i++ {
-		if m.Layers[i].LayerType == "full_attention" {
-			caches[i] = NewKVCache()
+	caches := make([]Cache, numCaches)
+	for layerIdx, cacheIdx := range m.CacheIndexByLayer {
+		if cacheIdx < 0 {
+			continue
+		}
+		if m.Layers[layerIdx].LayerType == "full_attention" {
+			caches[cacheIdx] = NewKVCache()
 		} else {
-			caches[i] = NewRotatingKVCache(int(m.Cfg.SlidingWindow))
+			caches[cacheIdx] = NewRotatingKVCache(int(m.Cfg.SlidingWindow))
 		}
 	}
 	return caches

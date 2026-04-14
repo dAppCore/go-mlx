@@ -298,6 +298,33 @@ func TestGemma4_BuildPreviousKVs_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_BuildCacheLayout_PromotesMissingOwner_Good(t *testing.T) {
+	layers := []*Gemma4DecoderLayer{
+		{LayerType: "sliding_attention"},
+		{LayerType: "sliding_attention"},
+		{LayerType: "sliding_attention"},
+		{LayerType: "sliding_attention"},
+		{LayerType: "full_attention"},
+		{LayerType: "sliding_attention"},
+	}
+
+	previous, cacheIndexByLayer := buildGemma4CacheLayout(layers, 2)
+
+	wantPrevious := []int32{0, 1, 2, 3, 4, 3}
+	for i, want := range wantPrevious {
+		if previous[i] != want {
+			t.Fatalf("PreviousKVs[%d] = %d, want %d", i, previous[i], want)
+		}
+	}
+
+	wantCacheIndex := []int32{0, 1, 2, 3, 4, -1}
+	for i, want := range wantCacheIndex {
+		if cacheIndexByLayer[i] != want {
+			t.Fatalf("CacheIndexByLayer[%d] = %d, want %d", i, cacheIndexByLayer[i], want)
+		}
+	}
+}
+
 func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{
@@ -321,6 +348,38 @@ func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 	}
 	if _, ok := caches[1].(*KVCache); !ok {
 		t.Fatalf("cache[1] = %T, want *KVCache", caches[1])
+	}
+}
+
+func TestGemma4_NewCache_PromotedOwner_Good(t *testing.T) {
+	model := &Gemma4Model{
+		Cfg: &Gemma4TextConfig{
+			NumHiddenLayers:   6,
+			NumKVSharedLayers: 2,
+			SlidingWindow:     32,
+		},
+		Layers: []*Gemma4DecoderLayer{
+			{LayerType: "sliding_attention"},
+			{LayerType: "sliding_attention"},
+			{LayerType: "sliding_attention"},
+			{LayerType: "sliding_attention"},
+			{LayerType: "full_attention"},
+			{LayerType: "sliding_attention"},
+		},
+	}
+
+	caches := model.NewCache()
+	if len(caches) != 5 {
+		t.Fatalf("len(caches) = %d, want 5", len(caches))
+	}
+	if _, ok := caches[4].(*KVCache); !ok {
+		t.Fatalf("cache[4] = %T, want *KVCache for promoted full-attention owner", caches[4])
+	}
+	if got := model.PreviousKVs[4]; got != 4 {
+		t.Fatalf("PreviousKVs[4] = %d, want 4", got)
+	}
+	if got := model.CacheIndexByLayer[4]; got != 4 {
+		t.Fatalf("CacheIndexByLayer[4] = %d, want 4", got)
 	}
 }
 
