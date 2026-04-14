@@ -338,6 +338,23 @@ func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	input := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 2, 3)
+	output := gemma4NormalizePerLayerTensor(input, 1, 1, 3, 2)
+	if err := Eval(output); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	defer Free(input, output)
+
+	if got := output.Shape(); len(got) != 4 || got[0] != 1 || got[1] != 1 || got[2] != 3 || got[3] != 2 {
+		t.Fatalf("normalized shape = %v, want [1 1 3 2]", got)
+	}
+
+	floatSliceApprox(t, output.Floats(), []float32{1, 4, 2, 5, 3, 6})
+}
+
 func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
 	embed := &Embedding{}
 	output, err := gemma4OutputLinear(map[string]*Array{}, &Gemma4TextConfig{

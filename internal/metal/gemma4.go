@@ -1137,6 +1137,29 @@ func valueOrDefault(v *int32, def int32) int32 {
 	return *v
 }
 
+func gemma4NormalizePerLayerTensor(x *Array, batchSize, seqLen, numLayers, hiddenSize int32) *Array {
+	if x == nil || !x.Valid() {
+		return x
+	}
+
+	shape := x.Shape()
+	switch len(shape) {
+	case 4:
+		if shape[2] == numLayers && shape[3] == hiddenSize {
+			return x
+		}
+		if shape[2] == hiddenSize && shape[3] == numLayers {
+			return Transpose(x, 0, 1, 3, 2)
+		}
+	case 3:
+		if shape[2] == numLayers*hiddenSize {
+			return Reshape(x, batchSize, seqLen, numLayers, hiddenSize)
+		}
+	}
+
+	return Reshape(x, batchSize, seqLen, numLayers, hiddenSize)
+}
+
 func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 	if m.EmbedTokensPerLayer == nil || m.PerLayerModelProj == nil || m.PerLayerProjNorm == nil || m.PerLayerProjNormScaled == nil {
 		return nil
@@ -1146,14 +1169,18 @@ func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 	scale := float32(math.Sqrt(float64(m.Cfg.HiddenSizePerLayerInput)))
 	scaled := MulScalar(perLayer, scale)
 	Free(perLayer)
-	perLayer = Reshape(scaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
-	Free(scaled)
+	perLayer = gemma4NormalizePerLayerTensor(scaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
+	if perLayer != scaled {
+		Free(scaled)
+	}
 
 	projected := m.PerLayerModelProj.Forward(hidden)
 	projectedScaled := MulScalar(projected, float32(math.Pow(float64(m.Cfg.HiddenSize), -0.5)))
 	Free(projected)
-	projected = Reshape(projectedScaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
-	Free(projectedScaled)
+	projected = gemma4NormalizePerLayerTensor(projectedScaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
+	if projected != projectedScaled {
+		Free(projectedScaled)
+	}
 	projectedNormed := RMSNorm(projected, m.PerLayerProjNormScaled, m.Cfg.RMSNormEps)
 	Free(projected)
 
