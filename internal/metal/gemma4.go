@@ -681,19 +681,30 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 	return sanitized
 }
 
-func canonicalGemma4WeightName(name string) (string, bool) {
-	trimmed := name
+func trimGemma4WrapperPrefix(name string) (string, bool) {
 	for _, prefix := range []string{
 		"model.language_model.model.",
 		"model.language_model.",
 		"language_model.model.",
 		"language_model.",
+		"model.model.",
 		"model.",
 	} {
-		if strings.HasPrefix(trimmed, prefix) {
-			trimmed = strings.TrimPrefix(trimmed, prefix)
+		if strings.HasPrefix(name, prefix) {
+			return strings.TrimPrefix(name, prefix), true
+		}
+	}
+	return name, false
+}
+
+func canonicalGemma4WeightName(name string) (string, bool) {
+	trimmed := name
+	for {
+		next, changed := trimGemma4WrapperPrefix(trimmed)
+		if !changed {
 			break
 		}
+		trimmed = next
 	}
 
 	if strings.HasPrefix(trimmed, "vision_tower") ||

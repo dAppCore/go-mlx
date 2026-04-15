@@ -670,6 +670,42 @@ func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_SanitizeWeights_RepeatedWrapperPrefixes_Good(t *testing.T) {
+	sanitized := sanitizeGemma4Weights(map[string]*Array{
+		"model.model.embed_tokens.weight":                        nil,
+		"language_model.model.model.norm.weight":                 nil,
+		"model.language_model.model.model.vision_tower.block.w":  nil,
+		"language_model.model.model.audio_tower.encoder.weight":  nil,
+		"model.model.layers.0.self_attn.rotary_emb.inv_freq":     nil,
+		"model.language_model.model.model.layers.0.layer_scalar": nil,
+	})
+
+	if _, ok := sanitized["model.embed_tokens.weight"]; !ok {
+		t.Fatal("expected nested model.model prefix to collapse to model.*")
+	}
+	if _, ok := sanitized["model.norm.weight"]; !ok {
+		t.Fatal("expected repeated language_model.model prefixes to collapse to model.*")
+	}
+	if _, ok := sanitized["model.layers.0.layer_scalar"]; !ok {
+		t.Fatal("expected repeated wrapper prefixes on layer weights to collapse to model.*")
+	}
+	if _, ok := sanitized["model.model.embed_tokens.weight"]; ok {
+		t.Fatal("expected model.model prefix to be stripped")
+	}
+	if _, ok := sanitized["language_model.model.model.norm.weight"]; ok {
+		t.Fatal("expected repeated language_model.model prefixes to be stripped")
+	}
+	if _, ok := sanitized["model.language_model.model.model.vision_tower.block.w"]; ok {
+		t.Fatal("vision tower weights should be stripped even under repeated wrapper prefixes")
+	}
+	if _, ok := sanitized["language_model.model.model.audio_tower.encoder.weight"]; ok {
+		t.Fatal("audio tower weights should be stripped even under repeated wrapper prefixes")
+	}
+	if _, ok := sanitized["model.model.layers.0.self_attn.rotary_emb.inv_freq"]; ok {
+		t.Fatal("rotary embedding weights should be stripped even under repeated wrapper prefixes")
+	}
+}
+
 func TestGemma4_BuildPreviousKVs_Good(t *testing.T) {
 	layers := []*Gemma4DecoderLayer{
 		{LayerType: "sliding_attention"},
