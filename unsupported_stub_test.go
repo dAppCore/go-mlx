@@ -154,4 +154,6 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_ = KernelBGRA8ToRGBA8
 	_ = KernelXRGB8888ToRGBA8
 	_ = KernelPaletteExpandRGBA
+	_ = KernelScanlineFilter
+	_ = KernelCRTFilter
 }

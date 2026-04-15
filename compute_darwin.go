@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"errors"
+	"math"
 	"sync"
 	"time"
 
@@ -294,6 +295,10 @@ func (session *computeSession) runLocked(kernel string, args KernelArgs) error {
 		return session.runXRGB8888ToRGBA8Locked(args)
 	case KernelPaletteExpandRGBA:
 		return session.runPaletteExpandLocked(args)
+	case KernelScanlineFilter:
+		return session.runScanlineFilterLocked(args)
+	case KernelCRTFilter:
+		return session.runCRTFilterLocked(args)
 	default:
 		return errors.New("mlx: unknown compute kernel")
 	}
@@ -420,6 +425,58 @@ dst[dst_index + 1] = palette[palette_index + 1];
 dst[dst_index + 2] = palette[palette_index + 2];
 dst[dst_index + 3] = palette[palette_index + 3];`,
 	},
+	"frame_scanline_filter": {
+		inputNames:  []string{"src"},
+		outputNames: []string{"dst"},
+		source: `uint x = thread_position_in_grid.x;
+uint y = thread_position_in_grid.y;
+if (x >= WIDTH || y >= HEIGHT) {
+    return;
+}
+uint index = y * STRIDE + x * 4;
+float scan = ((y & 1u) == 0u) ? 1.0f : (1.0f - float(STRENGTH) / 256.0f);
+for (uint channel = 0; channel < 3; channel++) {
+    float value = float(src[index + channel]) * scan;
+    dst[index + channel] = uchar(metal::clamp(metal::rint(value), 0.0f, 255.0f));
+}
+dst[index + 3] = src[index + 3];`,
+	},
+	"frame_crt_filter": {
+		inputNames:  []string{"src"},
+		outputNames: []string{"dst"},
+		source: `uint x = thread_position_in_grid.x;
+uint y = thread_position_in_grid.y;
+if (x >= WIDTH || y >= HEIGHT) {
+    return;
+}
+uint index = y * STRIDE + x * 4;
+uint r_index = BGRA_ORDER ? 2u : 0u;
+uint g_index = 1u;
+uint b_index = BGRA_ORDER ? 0u : 2u;
+float scan = ((y & 1u) == 0u) ? 1.0f : (1.0f - float(SCANLINE_STRENGTH) / 256.0f);
+float shadow = 1.0f - float(MASK_STRENGTH) / 256.0f;
+float r_mask = shadow;
+float g_mask = shadow;
+float b_mask = shadow;
+switch (x % 3u) {
+case 0u:
+    r_mask = 1.0f;
+    break;
+case 1u:
+    g_mask = 1.0f;
+    break;
+default:
+    b_mask = 1.0f;
+    break;
+}
+float r = float(src[index + r_index]) * scan * r_mask;
+float g = float(src[index + g_index]) * scan * g_mask;
+float b = float(src[index + b_index]) * scan * b_mask;
+dst[index + r_index] = uchar(metal::clamp(metal::rint(r), 0.0f, 255.0f));
+dst[index + g_index] = uchar(metal::clamp(metal::rint(g), 0.0f, 255.0f));
+dst[index + b_index] = uchar(metal::clamp(metal::rint(b), 0.0f, 255.0f));
+dst[index + 3] = src[index + 3];`,
+	},
 }
 
 const computeKernelHeader = "#include <metal_stdlib>\nusing namespace metal;\n"
@@ -492,6 +549,40 @@ func requireBuffer(buffers map[string]Buffer, name string) (Buffer, error) {
 
 func sameDimensions(a, b PixelBufferDesc) bool {
 	return a.Width == b.Width && a.Height == b.Height
+}
+
+func unitScalar(args KernelArgs, name string, defaultValue float64) (int, error) {
+	if args.Scalars == nil {
+		return quantizeUnitScalar(defaultValue), nil
+	}
+	value, ok := args.Scalars[name]
+	if !ok {
+		return quantizeUnitScalar(defaultValue), nil
+	}
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, errors.New("mlx: kernel scalar " + name + " must be finite")
+	}
+	if value < 0 || value > 1 {
+		return 0, errors.New("mlx: kernel scalar " + name + " must be between 0 and 1")
+	}
+	return quantizeUnitScalar(value), nil
+}
+
+func quantizeUnitScalar(value float64) int {
+	return maxInt(0, minInt(256, int(math.Round(value*256.0))))
+}
+
+func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
+	if !sameDimensions(src.desc, dst.desc) {
+		return errors.New("mlx: " + kernel + " requires matching source and destination dimensions")
+	}
+	if src.desc.Format != dst.desc.Format {
+		return errors.New("mlx: " + kernel + " requires matching pixel formats")
+	}
+	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
+		return errors.New("mlx: " + kernel + " requires rgba8 or bgra8 buffers")
+	}
+	return nil
 }
 
 func (session *computeSession) applyUnaryPixelKernelLocked(kernelName string, src *pixelBuffer, dst *pixelBuffer, addTemplates func(*metal.MetalKernelConfig)) error {
@@ -760,4 +851,74 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 	}
 	dst.replaceLocked(results[0])
 	return nil
+}
+
+func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
+	srcValue, err := requireBuffer(args.Inputs, "src")
+	if err != nil {
+		return err
+	}
+	dstValue, err := requireBuffer(args.Outputs, "dst")
+	if err != nil {
+		return err
+	}
+	src, err := session.pixelBufferLocked(srcValue, "src")
+	if err != nil {
+		return err
+	}
+	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	if err != nil {
+		return err
+	}
+	if err := validateFilterBuffers(src, dst, "scanline_filter"); err != nil {
+		return err
+	}
+	strength, err := unitScalar(args, "strength", 0.35)
+	if err != nil {
+		return err
+	}
+	return session.applyUnaryPixelKernelLocked("frame_scanline_filter", src, dst, func(config *metal.MetalKernelConfig) {
+		config.AddTemplateInt("WIDTH", src.desc.Width)
+		config.AddTemplateInt("HEIGHT", src.desc.Height)
+		config.AddTemplateInt("STRIDE", src.desc.Stride)
+		config.AddTemplateInt("STRENGTH", strength)
+	})
+}
+
+func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
+	srcValue, err := requireBuffer(args.Inputs, "src")
+	if err != nil {
+		return err
+	}
+	dstValue, err := requireBuffer(args.Outputs, "dst")
+	if err != nil {
+		return err
+	}
+	src, err := session.pixelBufferLocked(srcValue, "src")
+	if err != nil {
+		return err
+	}
+	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	if err != nil {
+		return err
+	}
+	if err := validateFilterBuffers(src, dst, "crt_filter"); err != nil {
+		return err
+	}
+	scanlineStrength, err := unitScalar(args, "scanline_strength", 0.25)
+	if err != nil {
+		return err
+	}
+	maskStrength, err := unitScalar(args, "mask_strength", 0.35)
+	if err != nil {
+		return err
+	}
+	return session.applyUnaryPixelKernelLocked("frame_crt_filter", src, dst, func(config *metal.MetalKernelConfig) {
+		config.AddTemplateInt("WIDTH", src.desc.Width)
+		config.AddTemplateInt("HEIGHT", src.desc.Height)
+		config.AddTemplateInt("STRIDE", src.desc.Stride)
+		config.AddTemplateInt("SCANLINE_STRENGTH", scanlineStrength)
+		config.AddTemplateInt("MASK_STRENGTH", maskStrength)
+		config.AddTemplateBool("BGRA_ORDER", src.desc.Format == PixelBGRA8)
+	})
 }

@@ -170,4 +170,6 @@ const (
 	KernelBGRA8ToRGBA8      = "bgra8_to_rgba8"
 	KernelXRGB8888ToRGBA8   = "xrgb8888_to_rgba8"
 	KernelPaletteExpandRGBA = "palette_expand_rgba8"
+	KernelScanlineFilter    = "scanline_filter"
+	KernelCRTFilter         = "crt_filter"
 )

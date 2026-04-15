@@ -477,6 +477,143 @@ func TestComputeSession_XRGB8888ToRGBA8_Good(t *testing.T) {
 	}
 }
 
+func TestComputeSession_ScanlineFilter_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 2,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 2,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := src.Upload([]byte{
+		200, 200, 200, 255,
+		200, 200, 200, 255,
+	}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+
+	if err := session.Run(KernelScanlineFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+		Scalars: map[string]float64{"strength": 0.5},
+	}); err != nil {
+		t.Fatalf("Run(scanline_filter): %v", err)
+	}
+
+	got, err := dst.Read()
+	if err != nil {
+		t.Fatalf("Read(dst): %v", err)
+	}
+	want := []byte{
+		200, 200, 200, 255,
+		100, 100, 100, 255,
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("scanline[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestComputeSession_CRTFilter_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := src.Upload([]byte{
+		240, 240, 240, 255,
+		240, 240, 240, 255,
+		240, 240, 240, 255,
+	}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+
+	if err := session.Run(KernelCRTFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+		Scalars: map[string]float64{"scanline_strength": 0, "mask_strength": 0.5},
+	}); err != nil {
+		t.Fatalf("Run(crt_filter): %v", err)
+	}
+
+	got, err := dst.Read()
+	if err != nil {
+		t.Fatalf("Read(dst): %v", err)
+	}
+	want := []byte{
+		240, 120, 120, 255,
+		120, 240, 120, 255,
+		120, 120, 240, 255,
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("crt[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := session.Run(KernelScanlineFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+		Scalars: map[string]float64{"strength": 1.5},
+	}); err == nil {
+		t.Fatal("expected scanline_filter to reject strength outside [0,1]")
+	}
+}
+
 func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 	session := requireComputeSession(t)
 

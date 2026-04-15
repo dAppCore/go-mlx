@@ -75,6 +75,13 @@ The built-in kernels are string constants in the root package:
 | `KernelBGRA8ToRGBA8` | BGRA/RGBA channel swap |
 | `KernelXRGB8888ToRGBA8` | XRGB8888 to RGBA8 conversion |
 | `KernelPaletteExpandRGBA` | Indexed 8-bit source plus RGBA palette to RGBA8 |
+| `KernelScanlineFilter` | Alternating-line darkening for `rgba8` / `bgra8` frame buffers |
+| `KernelCRTFilter` | Scanline plus RGB triad mask approximation for `rgba8` / `bgra8` |
+
+Built-in filter kernels accept optional scalar controls via `KernelArgs.Scalars`:
+
+- `KernelScanlineFilter`: `strength` in `[0,1]` (default `0.35`)
+- `KernelCRTFilter`: `scanline_strength` in `[0,1]` (default `0.25`), `mask_strength` in `[0,1]` (default `0.35`)
 
 ## Example Pipeline
 
@@ -119,6 +126,16 @@ if err := session.Run(mlx.KernelRGB565ToRGBA8, mlx.KernelArgs{
 if err := session.Run(mlx.KernelIntegerScale, mlx.KernelArgs{
     Inputs:  map[string]mlx.Buffer{"src": rgba},
     Outputs: map[string]mlx.Buffer{"dst": scaled},
+}); err != nil {
+    panic(err)
+}
+if err := session.Run(mlx.KernelCRTFilter, mlx.KernelArgs{
+    Inputs:  map[string]mlx.Buffer{"src": scaled},
+    Outputs: map[string]mlx.Buffer{"dst": scaled},
+    Scalars: map[string]float64{
+        "scanline_strength": 0.2,
+        "mask_strength":     0.35,
+    },
 }); err != nil {
     panic(err)
 }
