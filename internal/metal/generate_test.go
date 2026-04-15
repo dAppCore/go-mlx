@@ -129,3 +129,19 @@ func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
 		t.Fatalf("cache[1].maxSize = %d, want 256", second.maxSize)
 	}
 }
+
+func TestModel_FormatChat_Gemma2UsesGemmaTemplate_Good(t *testing.T) {
+	model := &Model{modelType: "gemma2"}
+
+	got := model.formatChat([]ChatMessage{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi"},
+	})
+
+	want := "<start_of_turn>user\nHello<end_of_turn>\n" +
+		"<start_of_turn>model\nHi<end_of_turn>\n" +
+		"<start_of_turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}

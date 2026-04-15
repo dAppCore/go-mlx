@@ -12,6 +12,7 @@ import (
 
 // TextConfig holds Gemma 3 text model configuration.
 type TextConfig struct {
+	ModelType             string  `json:"model_type"`
 	HiddenSize            int32   `json:"hidden_size"`
 	NumHiddenLayers       int32   `json:"num_hidden_layers"`
 	IntermediateSize      int32   `json:"intermediate_size"`
@@ -42,6 +43,8 @@ type GemmaModel struct {
 
 	Tok *Tokenizer
 	Cfg *TextConfig
+
+	modelType string
 }
 
 // DecoderLayer is a single transformer block.
@@ -143,6 +146,9 @@ func parseConfig(data []byte) (*TextConfig, error) {
 
 	// Quantization is always top-level
 	cfg.Quantization = wrapper.Quantization
+	if cfg.ModelType == "" && wrapper.ModelType != "" {
+		cfg.ModelType = wrapper.ModelType
+	}
 
 	// Compute scale (head_dim may be inferred later from weights if not in config)
 	if cfg.HeadDim > 0 {
@@ -162,6 +168,9 @@ func parseConfig(data []byte) (*TextConfig, error) {
 	}
 	if cfg.VocabSize == 0 {
 		cfg.VocabSize = 262208 // Gemma 3 default
+	}
+	if cfg.ModelType == "" {
+		cfg.ModelType = "gemma3"
 	}
 
 	return &cfg, nil
@@ -236,6 +245,7 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		Norm:        &RMSNormModule{Weight: weight("model.norm.weight")},
 		Tok:         tok,
 		Cfg:         cfg,
+		modelType:   cfg.ModelType,
 	}
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
@@ -462,7 +472,12 @@ func (m *GemmaModel) NumLayers() int { return len(m.Layers) }
 func (m *GemmaModel) Tokenizer() *Tokenizer { return m.Tok }
 
 // ModelType returns the architecture identifier.
-func (m *GemmaModel) ModelType() string { return "gemma3" }
+func (m *GemmaModel) ModelType() string {
+	if m.modelType != "" {
+		return m.modelType
+	}
+	return "gemma3"
+}
 
 // ApplyLoRA wraps target projection layers with LoRA adapters.
 // Supports attention targets (q_proj, k_proj, v_proj, o_proj) and

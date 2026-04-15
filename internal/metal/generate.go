@@ -590,7 +590,7 @@ func (m *Model) newCaches() []Cache {
 // formatChat applies the model's native chat template.
 func (m *Model) formatChat(messages []ChatMessage) string {
 	switch m.modelType {
-	case "gemma3", "gemma4", "gemma4_text":
+	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
 		return formatQwenChat(messages)

@@ -345,6 +345,40 @@ func TestModel_ParseConfig_NestedTextConfig_Good(t *testing.T) {
 	}
 }
 
+func TestModel_ParseConfig_PreservesModelType_Good(t *testing.T) {
+	cfg, err := parseConfig([]byte(`{
+		"model_type": "gemma2",
+		"hidden_size": 1024,
+		"num_hidden_layers": 8,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 2,
+		"head_dim": 128
+	}`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.ModelType != "gemma2" {
+		t.Fatalf("ModelType = %q, want gemma2", cfg.ModelType)
+	}
+
+	cfg, err = parseConfig([]byte(`{
+		"model_type": "gemma2",
+		"text_config": {
+			"hidden_size": 2048,
+			"num_hidden_layers": 16,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 2,
+			"head_dim": 256
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseConfig nested: %v", err)
+	}
+	if cfg.ModelType != "gemma2" {
+		t.Fatalf("nested ModelType = %q, want gemma2", cfg.ModelType)
+	}
+}
+
 func TestModel_ParseConfig_InvalidJSON_Bad(t *testing.T) {
 	_, err := parseConfig([]byte("not json"))
 	if err == nil {
