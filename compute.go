@@ -1,7 +1,9 @@
 package mlx
 
 import (
+	"strings"
 	"time"
+	"unicode"
 )
 
 // ComputeErrorKind classifies non-LLM compute failures for frame-oriented callers.
@@ -214,6 +216,8 @@ func newSessionConfig(opts []SessionOption) sessionConfig {
 }
 
 // WithSessionLabel attaches a human-readable label to a compute session.
+// The label is folded into compiled kernel names so verbose kernel logs can be
+// tied back to a specific frame pipeline.
 func WithSessionLabel(label string) SessionOption {
 	return func(cfg *sessionConfig) {
 		cfg.label = label
@@ -256,6 +260,44 @@ type FrameMetrics struct {
 	TotalDuration     time.Duration
 	ActiveMemoryBytes uint64
 	PeakMemoryBytes   uint64
+}
+
+func sanitizeComputeLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	lastUnderscore := false
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastUnderscore = false
+		case r >= 'A' && r <= 'Z':
+			builder.WriteRune(unicode.ToLower(r))
+			lastUnderscore = false
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			builder.WriteRune(unicode.ToLower(r))
+			lastUnderscore = false
+		default:
+			if builder.Len() > 0 && !lastUnderscore {
+				builder.WriteByte('_')
+				lastUnderscore = true
+			}
+		}
+	}
+
+	return strings.Trim(builder.String(), "_")
+}
+
+func computeKernelRuntimeName(sessionLabel, kernelName string) string {
+	label := sanitizeComputeLabel(sessionLabel)
+	if label == "" {
+		return kernelName
+	}
+	return "compute_" + label + "__" + kernelName
 }
 
 // Buffer is a device-resident compute buffer.

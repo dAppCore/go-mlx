@@ -11,6 +11,7 @@ import (
 )
 
 var defaultComputeBackend Compute = computeBackend{}
+var newComputeMetalKernel = metal.NewMetalKernel
 
 // DefaultCompute returns the package's default Metal compute backend.
 func DefaultCompute() Compute { return defaultComputeBackend }
@@ -659,7 +660,7 @@ func (session *computeSession) kernelLocked(name string) (*metal.MetalKernel, er
 		return nil, computeErr(ComputeErrorInternal, "load_kernel_spec", name, "", "missing kernel spec")
 	}
 
-	kernel := metal.NewMetalKernel(name, spec.inputNames, spec.outputNames, spec.source, computeKernelHeader, true, false)
+	kernel := newComputeMetalKernel(computeKernelRuntimeName(session.cfg.label, name), spec.inputNames, spec.outputNames, spec.source, computeKernelHeader, true, false)
 	session.kernels[name] = kernel
 	return kernel, nil
 }

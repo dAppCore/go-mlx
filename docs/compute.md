@@ -41,6 +41,7 @@ type Session interface {
 Use `mlx.DefaultCompute()` when you want an explicit backend handle, or `mlx.NewSession()` when the package default is sufficient.
 
 `BeginFrame` and `FinishFrame` provide an explicit frame lifecycle for emulators and other fixed-rate pipelines. `Run` will implicitly start a frame if you skip `BeginFrame`, so existing one-off compute flows keep working.
+`WithSessionLabel(...)` folds a human-readable label into compiled kernel names, which makes verbose kernel logs easier to map back to a specific frame pipeline.
 
 ## Pixel Buffers
 

@@ -5,6 +5,8 @@ package mlx
 import (
 	"errors"
 	"testing"
+
+	"dappco.re/go/mlx/internal/metal"
 )
 
 func requireComputeSession(t *testing.T) Session {
@@ -930,6 +932,47 @@ func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 	}
 	if metrics.ActiveMemoryBytes == 0 {
 		t.Fatal("ActiveMemoryBytes should report live session allocations")
+	}
+}
+
+func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.T) {
+	if !MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+
+	originalFactory := newComputeMetalKernel
+	t.Cleanup(func() { newComputeMetalKernel = originalFactory })
+
+	var captured []string
+	newComputeMetalKernel = func(name string, inputNames, outputNames []string, source, header string, ensureRowContiguous, atomicOutputs bool) *metal.MetalKernel {
+		captured = append(captured, name)
+		return originalFactory(name, inputNames, outputNames, source, header, ensureRowContiguous, atomicOutputs)
+	}
+
+	rawSession, err := NewSession(WithSessionLabel("Retro Frame / P1"))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	session := rawSession.(*computeSession)
+	t.Cleanup(func() {
+		if err := session.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	})
+
+	session.mu.Lock()
+	_, err = session.kernelLocked("frame_copy_scale")
+	session.mu.Unlock()
+	if err != nil {
+		t.Fatalf("kernelLocked(frame_copy_scale): %v", err)
+	}
+
+	if len(captured) != 1 {
+		t.Fatalf("captured kernel names = %d, want 1", len(captured))
+	}
+	want := "compute_retro_frame_p1__frame_copy_scale"
+	if captured[0] != want {
+		t.Fatalf("compiled kernel name = %q, want %q", captured[0], want)
 	}
 }
 

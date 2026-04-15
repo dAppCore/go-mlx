@@ -78,3 +78,15 @@ func TestComputeError_IsByKind_Good(t *testing.T) {
 		t.Fatalf("errors.Is(%v, ErrComputeUnknownKernel) = true, want false", err)
 	}
 }
+
+func TestComputeKernelRuntimeName_SessionLabelSanitized_Good(t *testing.T) {
+	got := computeKernelRuntimeName(" Retro Frame / P1 ", "frame_copy_scale")
+	want := "compute_retro_frame_p1__frame_copy_scale"
+	if got != want {
+		t.Fatalf("computeKernelRuntimeName(...) = %q, want %q", got, want)
+	}
+
+	if got := computeKernelRuntimeName(" \t ", "frame_copy_scale"); got != "frame_copy_scale" {
+		t.Fatalf("computeKernelRuntimeName(blank, kernel) = %q, want %q", got, "frame_copy_scale")
+	}
+}
