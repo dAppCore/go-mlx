@@ -219,6 +219,8 @@ inference.WithStopTokens(1, 2)   // additional stop token IDs
 
 The direct root API adds `mlx.WithMinP(0.05)` for minimum-probability sampling.
 
+When combined, sampling options are applied in this order: temperature, then top-p, then top-k, then min-p.
+
 ### Context Cancellation
 
 Pass a cancellable context to stop generation early:

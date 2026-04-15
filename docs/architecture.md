@@ -204,7 +204,7 @@ Used for Gemma 3 sliding-window attention layers. When `ContextLen` is set via `
 `newSampler(temp, topP, minP, topK)` builds a composable pipeline:
 
 ```
-TopP -> MinP -> TopK -> Temperature -> RandomCategorical
+Temperature -> TopP -> TopK -> MinP -> RandomCategorical
 ```
 
 If `temp == 0`, the chain collapses to greedy (argmax).
@@ -215,7 +215,7 @@ If `temp == 0`, the chain collapses to greedy (argmax).
 - **TopP (nucleus)** -- keep the smallest set with cumulative probability exceeding `p`
 - **MinP** -- mask tokens below `min_p * max_probability`
 
-Full sampling chain (TopP + MinP + TopK) adds approximately 560 us over greedy per token.
+Full sampling chain (Temperature + TopP + TopK + MinP) adds approximately 560 us over greedy per token.
 
 ## Public APIs
 

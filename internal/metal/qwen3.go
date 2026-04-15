@@ -109,7 +109,7 @@ func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 		}
 	}
 
-	if resolveWeight(weights, "model.layers.0.self_attn.q_norm.weight") != nil {
+	if hasResolvedWeight(weights, "model.layers.0.self_attn.q_norm.weight") {
 		return "qwen3"
 	}
 	return "qwen2"

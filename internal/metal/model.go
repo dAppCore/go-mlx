@@ -43,32 +43,43 @@ type QuantizationConfig struct {
 	Bits      int `json:"bits"`
 }
 
-// resolveWeight looks up a weight with optional "language_model." prefix.
-func resolveWeight(weights map[string]*Array, name string) *Array {
+func weightCandidates(name string) []string {
 	candidates := []string{name}
 	if strings.HasPrefix(name, "model.") {
 		suffix := strings.TrimPrefix(name, "model.")
-		candidates = append(candidates,
+		return append(candidates,
 			"language_model."+name,
 			"language_model.model."+suffix,
 			"model.language_model."+suffix,
 			"model.language_model.model."+suffix,
 		)
-	} else {
-		candidates = append(candidates,
-			"model."+name,
-			"language_model."+name,
-			"language_model.model."+name,
-			"model.language_model."+name,
-			"model.language_model.model."+name,
-		)
 	}
-	for _, candidate := range candidates {
+	return append(candidates,
+		"model."+name,
+		"language_model."+name,
+		"language_model.model."+name,
+		"model.language_model."+name,
+		"model.language_model.model."+name,
+	)
+}
+
+// resolveWeight looks up a weight with optional "language_model." prefix.
+func resolveWeight(weights map[string]*Array, name string) *Array {
+	for _, candidate := range weightCandidates(name) {
 		if w, ok := weights[candidate]; ok {
 			return w
 		}
 	}
 	return nil
+}
+
+func hasResolvedWeight(weights map[string]*Array, name string) bool {
+	for _, candidate := range weightCandidates(name) {
+		if _, ok := weights[candidate]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func probeModelType(data []byte) (string, error) {

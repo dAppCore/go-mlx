@@ -538,25 +538,11 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 			cfg.TopKExperts = &topK
 		}
 	}
-	if !cfg.UseDoubleWideMLP {
-		switch {
-		case wrapper.TextConfig.UseDoubleWideMLP != nil:
-			cfg.UseDoubleWideMLP = *wrapper.TextConfig.UseDoubleWideMLP
-		case wrapper.UseDoubleWideMLP != nil:
-			cfg.UseDoubleWideMLP = *wrapper.UseDoubleWideMLP
-		default:
-			cfg.UseDoubleWideMLP = true
-		}
+	if !cfg.UseDoubleWideMLP && wrapper.UseDoubleWideMLP == nil && wrapper.TextConfig.UseDoubleWideMLP == nil {
+		cfg.UseDoubleWideMLP = true
 	}
-	if !cfg.TieWordEmbeddings {
-		switch {
-		case wrapper.TextConfig.TieWordEmbeddings != nil:
-			cfg.TieWordEmbeddings = *wrapper.TextConfig.TieWordEmbeddings
-		case wrapper.TieWordEmbeddings != nil:
-			cfg.TieWordEmbeddings = *wrapper.TieWordEmbeddings
-		default:
-			cfg.TieWordEmbeddings = true
-		}
+	if !cfg.TieWordEmbeddings && wrapper.TieWordEmbeddings == nil && wrapper.TextConfig.TieWordEmbeddings == nil {
+		cfg.TieWordEmbeddings = true
 	}
 	mergeGemma4RopeParameters(&cfg)
 	if len(cfg.LayerTypesInput) > 0 {

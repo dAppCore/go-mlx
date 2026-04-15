@@ -755,6 +755,107 @@ func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T
 	}
 }
 
+func TestComputeSession_RunMissingBuffer_ReturnsStructuredError_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	err := session.Run(KernelRGB565ToRGBA8, KernelArgs{})
+	if err == nil {
+		t.Fatal("expected missing kernel buffer error")
+	}
+	if !errors.Is(err, ErrComputeMissingKernelBuffer) {
+		t.Fatalf("Run(rgb565_to_rgba8) error = %v, want ErrComputeMissingKernelBuffer", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(rgb565_to_rgba8) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kernel != KernelRGB565ToRGBA8 || computeErr.Resource != "src" {
+		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelRGB565ToRGBA8, "src")
+	}
+}
+
+func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  2,
+		Height: 2,
+		Stride: 8,
+		Format: PixelBGRA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	err = session.Run(KernelIntegerScale, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	})
+	if err == nil {
+		t.Fatal("expected integer_scale to reject mixed pixel formats")
+	}
+	if !errors.Is(err, ErrComputeInvalidKernelArgs) {
+		t.Fatalf("Run(integer_scale) error = %v, want ErrComputeInvalidKernelArgs", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(integer_scale) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kernel != KernelIntegerScale || computeErr.Resource != "format" {
+		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelIntegerScale, "format")
+	}
+}
+
+func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	err = session.Run(KernelBGRA8ToRGBA8, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	})
+	if err == nil {
+		t.Fatal("expected bgra8_to_rgba8 to reject an rgba8 source")
+	}
+	if !errors.Is(err, ErrComputeInvalidKernelArgs) {
+		t.Fatalf("Run(bgra8_to_rgba8) error = %v, want ErrComputeInvalidKernelArgs", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(bgra8_to_rgba8) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kernel != KernelBGRA8ToRGBA8 || computeErr.Resource != "src" {
+		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelBGRA8ToRGBA8, "src")
+	}
+}
+
 func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 	if err := session.Close(); err != nil {
@@ -829,6 +930,36 @@ func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 	}
 	if metrics.ActiveMemoryBytes == 0 {
 		t.Fatal("ActiveMemoryBytes should report live session allocations")
+	}
+}
+
+func TestComputeSession_MetricsClampToZeroWhenBelowBase_Good(t *testing.T) {
+	session := &computeSession{
+		metrics: SessionMetrics{
+			ActiveMemoryBytes: 123,
+			PeakMemoryBytes:   456,
+		},
+		frame: frameState{
+			active: true,
+			metrics: FrameMetrics{
+				ActiveMemoryBytes: 789,
+				PeakMemoryBytes:   321,
+			},
+			baseActiveMemory: ^uint64(0),
+			basePeakMemory:   ^uint64(0),
+		},
+		baseActiveMemory: ^uint64(0),
+		basePeakMemory:   ^uint64(0),
+	}
+
+	session.updateMemoryMetricsLocked()
+	session.updateFrameMetricsLocked()
+
+	if session.metrics.ActiveMemoryBytes != 0 || session.metrics.PeakMemoryBytes != 0 {
+		t.Fatalf("SessionMetrics = %+v, want zeroed active/peak memory", session.metrics)
+	}
+	if session.frame.metrics.ActiveMemoryBytes != 0 || session.frame.metrics.PeakMemoryBytes != 0 {
+		t.Fatalf("FrameMetrics = %+v, want zeroed active/peak memory", session.frame.metrics)
 	}
 }
 

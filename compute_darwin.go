@@ -361,9 +361,13 @@ func (session *computeSession) updateMemoryMetricsLocked() {
 	peak := metal.GetPeakMemory()
 	if active >= session.baseActiveMemory {
 		session.metrics.ActiveMemoryBytes = active - session.baseActiveMemory
+	} else {
+		session.metrics.ActiveMemoryBytes = 0
 	}
 	if peak >= session.basePeakMemory {
 		session.metrics.PeakMemoryBytes = peak - session.basePeakMemory
+	} else {
+		session.metrics.PeakMemoryBytes = 0
 	}
 }
 
@@ -375,24 +379,28 @@ func (session *computeSession) updateFrameMetricsLocked() {
 	peak := metal.GetPeakMemory()
 	if active >= session.frame.baseActiveMemory {
 		session.frame.metrics.ActiveMemoryBytes = active - session.frame.baseActiveMemory
+	} else {
+		session.frame.metrics.ActiveMemoryBytes = 0
 	}
 	if peak >= session.frame.basePeakMemory {
 		session.frame.metrics.PeakMemoryBytes = peak - session.frame.basePeakMemory
+	} else {
+		session.frame.metrics.PeakMemoryBytes = 0
 	}
 }
 
 func (session *computeSession) runLocked(kernel string, args KernelArgs) error {
 	switch kernel {
 	case KernelNearestScale:
-		return session.runNearestScaleLocked(args, false)
+		return session.runNearestScaleLocked(args, kernel, false)
 	case KernelIntegerScale:
-		return session.runNearestScaleLocked(args, true)
+		return session.runNearestScaleLocked(args, kernel, true)
 	case KernelBilinearScale:
 		return session.runBilinearScaleLocked(args)
 	case KernelRGB565ToRGBA8:
 		return session.runRGB565ToRGBA8Locked(args)
 	case KernelRGBA8ToBGRA8, KernelBGRA8ToRGBA8:
-		return session.runChannelSwizzleLocked(args)
+		return session.runChannelSwizzleLocked(args, kernel)
 	case KernelXRGB8888ToRGBA8:
 		return session.runXRGB8888ToRGBA8Locked(args)
 	case KernelPaletteExpandRGBA:
@@ -674,10 +682,10 @@ func threadGroup(width, height int) (int, int) {
 	return maxInt(1, minInt(width, 16)), maxInt(1, minInt(height, 16))
 }
 
-func (session *computeSession) pixelBufferLocked(value Buffer, role string) (*pixelBuffer, error) {
+func (session *computeSession) pixelBufferLocked(value Buffer, kernel, role string) (*pixelBuffer, error) {
 	buffer, ok := value.(*pixelBuffer)
 	if !ok || buffer == nil {
-		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", "", role, role+" must be a pixel buffer")
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", kernel, role, role+" must be a pixel buffer")
 	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
@@ -685,10 +693,10 @@ func (session *computeSession) pixelBufferLocked(value Buffer, role string) (*pi
 	return buffer, nil
 }
 
-func (session *computeSession) byteBufferLocked(value Buffer, role string) (*byteBuffer, error) {
+func (session *computeSession) byteBufferLocked(value Buffer, kernel, role string) (*byteBuffer, error) {
 	buffer, ok := value.(*byteBuffer)
 	if !ok || buffer == nil {
-		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", "", role, role+" must be a byte buffer")
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", kernel, role, role+" must be a byte buffer")
 	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
@@ -696,13 +704,13 @@ func (session *computeSession) byteBufferLocked(value Buffer, role string) (*byt
 	return buffer, nil
 }
 
-func requireBuffer(buffers map[string]Buffer, name string) (Buffer, error) {
+func requireBuffer(buffers map[string]Buffer, kernel, name string) (Buffer, error) {
 	if buffers == nil {
-		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", "", name, "kernel buffers are missing")
+		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", kernel, name, "kernel buffers are missing")
 	}
 	value, ok := buffers[name]
 	if !ok || value == nil {
-		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", "", name, "missing kernel buffer "+name)
+		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", kernel, name, "missing kernel buffer "+name)
 	}
 	return value, nil
 }
@@ -745,7 +753,7 @@ func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
 	return nil
 }
 
-func (session *computeSession) applyUnaryPixelKernelLocked(kernelName string, src *pixelBuffer, dst *pixelBuffer, addTemplates func(*metal.MetalKernelConfig)) error {
+func (session *computeSession) applyUnaryPixelKernelLocked(publicKernel, kernelName string, src *pixelBuffer, dst *pixelBuffer, addTemplates func(*metal.MetalKernelConfig)) error {
 	kernel, err := session.kernelLocked(kernelName)
 	if err != nil {
 		return err
@@ -765,31 +773,35 @@ func (session *computeSession) applyUnaryPixelKernelLocked(kernelName string, sr
 
 	results, err := kernel.Apply(config, src.array)
 	if err != nil {
-		return computeWrap(ComputeErrorInternal, "dispatch_kernel", kernelName, "", "compute kernel dispatch failed", err)
+		return computeWrap(ComputeErrorInternal, "dispatch_kernel", publicKernel, "", "compute kernel dispatch failed", err)
 	}
 	dst.replaceLocked(results[0])
 	return nil
 }
 
-func (session *computeSession) runNearestScaleLocked(args KernelArgs, requireIntegerScale bool) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+func (session *computeSession) runNearestScaleLocked(args KernelArgs, publicKernel string, requireIntegerScale bool) error {
+	srcValue, err := requireBuffer(args.Inputs, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
 	if src.desc.Format != dst.desc.Format {
-		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelNearestScale, "format", "nearest scaling requires matching pixel formats")
+		message := "nearest scaling requires matching pixel formats"
+		if requireIntegerScale {
+			message = "integer scaling requires matching pixel formats"
+		}
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "format", message)
 	}
 	if requireIntegerScale {
 		if dst.desc.Width%src.desc.Width != 0 || dst.desc.Height%src.desc.Height != 0 {
@@ -800,7 +812,7 @@ func (session *computeSession) runNearestScaleLocked(args KernelArgs, requireInt
 		}
 	}
 	bpp := src.desc.Format.BytesPerPixel()
-	return session.applyUnaryPixelKernelLocked("frame_copy_scale", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(publicKernel, "frame_copy_scale", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("BPP", bpp)
 		config.AddTemplateInt("SRC_WIDTH", src.desc.Width)
 		config.AddTemplateInt("SRC_HEIGHT", src.desc.Height)
@@ -812,19 +824,19 @@ func (session *computeSession) runNearestScaleLocked(args KernelArgs, requireInt
 }
 
 func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelBilinearScale, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelBilinearScale, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelBilinearScale, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelBilinearScale, "dst")
 	if err != nil {
 		return err
 	}
@@ -834,7 +846,7 @@ func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
 	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelBilinearScale, "format", "bilinear scaling currently supports rgba8 and bgra8 only")
 	}
-	return session.applyUnaryPixelKernelLocked("frame_bilinear_rgba", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelBilinearScale, "frame_bilinear_rgba", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("SRC_WIDTH", src.desc.Width)
 		config.AddTemplateInt("SRC_HEIGHT", src.desc.Height)
 		config.AddTemplateInt("SRC_STRIDE", src.desc.Stride)
@@ -845,19 +857,19 @@ func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelRGB565ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelRGB565ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelRGB565ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelRGB565ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
@@ -870,7 +882,7 @@ func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 	if !sameDimensions(src.desc, dst.desc) {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGB565ToRGBA8, "dst", "rgb565_to_rgba8 requires matching source and destination dimensions")
 	}
-	return session.applyUnaryPixelKernelLocked("frame_rgb565_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelRGB565ToRGBA8, "frame_rgb565_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("SRC_STRIDE", src.desc.Stride)
@@ -878,36 +890,45 @@ func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runChannelSwizzleLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+func (session *computeSession) runChannelSwizzleLocked(args KernelArgs, publicKernel string) error {
+	srcValue, err := requireBuffer(args.Inputs, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
 	if !sameDimensions(src.desc, dst.desc) {
-		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", "channel_swizzle", "dst", "channel swizzle requires matching dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "dst", "channel swizzle requires matching dimensions")
 	}
-	if src.desc.Format == PixelRGBA8 && dst.desc.Format != PixelBGRA8 {
-		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGBA8ToBGRA8, "dst", "rgba8_to_bgra8 requires a bgra8 destination")
+	switch publicKernel {
+	case KernelRGBA8ToBGRA8:
+		if src.desc.Format != PixelRGBA8 {
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "src", "rgba8_to_bgra8 requires an rgba8 source")
+		}
+		if dst.desc.Format != PixelBGRA8 {
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "dst", "rgba8_to_bgra8 requires a bgra8 destination")
+		}
+	case KernelBGRA8ToRGBA8:
+		if src.desc.Format != PixelBGRA8 {
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "src", "bgra8_to_rgba8 requires a bgra8 source")
+		}
+		if dst.desc.Format != PixelRGBA8 {
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", publicKernel, "dst", "bgra8_to_rgba8 requires an rgba8 destination")
+		}
+	default:
+		return computeErr(ComputeErrorUnknownKernel, "validate_kernel_buffers", publicKernel, "", "unknown compute kernel")
 	}
-	if src.desc.Format == PixelBGRA8 && dst.desc.Format != PixelRGBA8 {
-		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelBGRA8ToRGBA8, "dst", "bgra8_to_rgba8 requires an rgba8 destination")
-	}
-	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
-		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", "channel_swizzle", "src", "channel swizzle requires an rgba8 or bgra8 source")
-	}
-	return session.applyUnaryPixelKernelLocked("frame_channel_swizzle", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(publicKernel, "frame_channel_swizzle", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("SRC_STRIDE", src.desc.Stride)
@@ -916,19 +937,19 @@ func (session *computeSession) runChannelSwizzleLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelXRGB8888ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelXRGB8888ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelXRGB8888ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelXRGB8888ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
@@ -941,7 +962,7 @@ func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 	if !sameDimensions(src.desc, dst.desc) {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelXRGB8888ToRGBA8, "dst", "xrgb8888_to_rgba8 requires matching source and destination dimensions")
 	}
-	return session.applyUnaryPixelKernelLocked("frame_xrgb8888_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelXRGB8888ToRGBA8, "frame_xrgb8888_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("SRC_STRIDE", src.desc.Stride)
@@ -950,27 +971,27 @@ func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 }
 
 func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelPaletteExpandRGBA, "src")
 	if err != nil {
 		return err
 	}
-	paletteValue, err := requireBuffer(args.Inputs, "palette")
+	paletteValue, err := requireBuffer(args.Inputs, KernelPaletteExpandRGBA, "palette")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelPaletteExpandRGBA, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelPaletteExpandRGBA, "src")
 	if err != nil {
 		return err
 	}
-	palette, err := session.byteBufferLocked(paletteValue, "palette")
+	palette, err := session.byteBufferLocked(paletteValue, KernelPaletteExpandRGBA, "palette")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelPaletteExpandRGBA, "dst")
 	if err != nil {
 		return err
 	}
@@ -1014,19 +1035,19 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelScanlineFilter, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelScanlineFilter, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelScanlineFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelScanlineFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1037,7 +1058,7 @@ func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	return session.applyUnaryPixelKernelLocked("frame_scanline_filter", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelScanlineFilter, "frame_scanline_filter", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("STRIDE", src.desc.Stride)
@@ -1046,19 +1067,19 @@ func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelCRTFilter, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelCRTFilter, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelCRTFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelCRTFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1073,7 +1094,7 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	return session.applyUnaryPixelKernelLocked("frame_crt_filter", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelCRTFilter, "frame_crt_filter", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("STRIDE", src.desc.Stride)
@@ -1084,19 +1105,19 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelSoftenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelSoftenFilter, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelSoftenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelSoftenFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1107,7 +1128,7 @@ func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	return session.applyUnaryPixelKernelLocked("frame_soften_filter", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelSoftenFilter, "frame_soften_filter", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("STRIDE", src.desc.Stride)
@@ -1116,19 +1137,19 @@ func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
 }
 
 func (session *computeSession) runSharpenFilterLocked(args KernelArgs) error {
-	srcValue, err := requireBuffer(args.Inputs, "src")
+	srcValue, err := requireBuffer(args.Inputs, KernelSharpenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dstValue, err := requireBuffer(args.Outputs, "dst")
+	dstValue, err := requireBuffer(args.Outputs, KernelSharpenFilter, "dst")
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, "src")
+	src, err := session.pixelBufferLocked(srcValue, KernelSharpenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	dst, err := session.pixelBufferLocked(dstValue, KernelSharpenFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1139,7 +1160,7 @@ func (session *computeSession) runSharpenFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	return session.applyUnaryPixelKernelLocked("frame_sharpen_filter", src, dst, func(config *metal.MetalKernelConfig) {
+	return session.applyUnaryPixelKernelLocked(KernelSharpenFilter, "frame_sharpen_filter", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
 		config.AddTemplateInt("HEIGHT", src.desc.Height)
 		config.AddTemplateInt("STRIDE", src.desc.Stride)
