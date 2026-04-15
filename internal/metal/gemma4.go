@@ -1137,6 +1137,14 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		Cfg:                 cfg,
 		modelType:           modelType,
 	}
+	loadSucceeded := false
+	defer func() {
+		if loadSucceeded {
+			return
+		}
+		closeGemma4(m)
+		ClearCache()
+	}()
 
 	if cfg.HiddenSizePerLayerInput > 0 {
 		m.PerLayerModelProj = gemma4Linear(weights, "model.per_layer_model_projection", cfg.Quantization)
@@ -1276,6 +1284,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	Materialize(allArrays...)
 	precomputeGemma4ScaledWeights(m)
 
+	loadSucceeded = true
 	return m, nil
 }
 

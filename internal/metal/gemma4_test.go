@@ -21,6 +21,12 @@ func requireMetalRuntime(t *testing.T) {
 	}
 }
 
+func freeWeightMap(weights map[string]*Array) {
+	for _, arr := range weights {
+		Free(arr)
+	}
+}
+
 func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
@@ -1109,6 +1115,54 @@ func TestGemma4_LoadAndForwardWrapperModel_Good(t *testing.T) {
 	}
 	if shape[0] != 1 || shape[1] != 3 || shape[2] != 10 {
 		t.Fatalf("logits shape = %v, want [1 3 10]", shape)
+	}
+}
+
+func TestGemma4_LoadModel_UntiedOutputFailureReleasesAllocatedWeights_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 2,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"vocab_size": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 4,
+		"sliding_window_pattern": 2,
+		"num_kv_shared_layers": 0,
+		"tie_word_embeddings": false,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+
+	weights := gemma4TinyWeights()
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	freeWeightMap(weights)
+	ClearCache()
+
+	baseline := GetActiveMemory()
+	_, err := LoadGemma4(dir)
+	if err == nil {
+		t.Fatal("expected untied Gemma4 load to fail without lm_head.weight")
+	}
+	if !core.Contains(err.Error(), "lm_head.weight") {
+		t.Fatalf("expected lm_head.weight error, got: %v", err)
+	}
+
+	activeAfterFailure := GetActiveMemory()
+	if activeAfterFailure > baseline {
+		t.Fatalf("active memory after failed load = %d, want <= %d", activeAfterFailure, baseline)
 	}
 }
 
