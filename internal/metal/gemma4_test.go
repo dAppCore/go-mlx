@@ -528,6 +528,58 @@ func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_Linear_QuantizedWithoutConfig_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	weight := seqArray(0.10, 2, 8)
+	scales := seqArray(0.20, 2, 1)
+	biases := seqArray(0.30, 2, 1)
+	defer Free(weight, scales, biases)
+
+	layer := gemma4Linear(map[string]*Array{
+		"model.layers.0.self_attn.q_proj.weight": weight,
+		"model.layers.0.self_attn.q_proj.scales": scales,
+		"model.layers.0.self_attn.q_proj.biases": biases,
+	}, "model.layers.0.self_attn.q_proj", nil)
+	if layer == nil {
+		t.Fatal("expected quantized layer")
+	}
+	defer freeLinear(layer)
+
+	if layer.Scales != scales || layer.Biases != biases {
+		t.Fatal("quantized Gemma4 layer should preserve scales/biases when config is absent")
+	}
+	if layer.GroupSize != 0 || layer.Bits != 0 {
+		t.Fatalf("quantized Gemma4 layer should defer to MLX affine defaults, got group_size=%d bits=%d", layer.GroupSize, layer.Bits)
+	}
+}
+
+func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	weight := seqArray(0.10, 1, 2, 8)
+	scales := seqArray(0.20, 1, 2, 1)
+	biases := seqArray(0.30, 1, 2, 1)
+	defer Free(weight, scales, biases)
+
+	layer := gemma4SwitchLinear(map[string]*Array{
+		"model.layers.0.experts.switch_glu.gate_proj.weight": weight,
+		"model.layers.0.experts.switch_glu.gate_proj.scales": scales,
+		"model.layers.0.experts.switch_glu.gate_proj.biases": biases,
+	}, nil, "model.layers.0.experts.switch_glu.gate_proj")
+	if layer == nil {
+		t.Fatal("expected quantized switch layer")
+	}
+	defer freeSwitchLinear(layer)
+
+	if layer.Scales != scales || layer.Biases != biases {
+		t.Fatal("quantized Gemma4 switch layer should preserve scales/biases when config is absent")
+	}
+	if layer.GroupSize != 0 || layer.Bits != 0 {
+		t.Fatalf("quantized Gemma4 switch layer should defer to MLX affine defaults, got group_size=%d bits=%d", layer.GroupSize, layer.Bits)
+	}
+}
+
 func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

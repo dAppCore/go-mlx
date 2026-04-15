@@ -10,6 +10,13 @@ import "C"
 
 import "unsafe"
 
+func optionalInt(v int) C.mlx_optional_int {
+	return C.mlx_optional_int{
+		value:     C.int(v),
+		has_value: C._Bool(v > 0),
+	}
+}
+
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
 	out := newArray("ADD", a, b)
@@ -162,8 +169,8 @@ func Matmul(a, b *Array) *Array {
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
 	out := newArray("QMATMUL", x, w, scales, biases)
-	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
-	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
 	mode := C.CString("affine")
 	defer C.free(unsafe.Pointer(mode))
 	C.mlx_quantized_matmul(
@@ -191,8 +198,8 @@ func GatherMM(a, b, lhsIndices, rhsIndices *Array, sorted bool) *Array {
 // GatherQMM performs expert-indexed quantized matrix multiplication.
 func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, sorted bool) *Array {
 	out := newArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
-	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
-	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
 	cMode := C.CString(mode)
 	defer C.free(unsafe.Pointer(cMode))
 
@@ -387,8 +394,8 @@ func Argpartition(a *Array, kth, axis int) *Array {
 //	fullW := metal.Dequantize(w, scales, biases, 64, 4) // 4-bit weights, group=64
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
 	out := newArray("DEQUANTIZE", w, scales, biases)
-	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
-	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
 	mode := C.CString("affine")
 	defer C.free(unsafe.Pointer(mode))
 	noDtype := C.mlx_optional_dtype{has_value: C._Bool(false)}

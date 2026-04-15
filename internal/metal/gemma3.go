@@ -225,18 +225,25 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 		layerWeight := weight(prefix + ".weight")
 		scales := weight(prefix + ".scales")
 		biases := weight(prefix + ".biases")
-		if scales != nil && quantConfig != nil {
-			return NewQuantizedLinear(layerWeight, scales, biases, nil, quantConfig.GroupSize, quantConfig.Bits)
+		if scales != nil {
+			groupSize, bits := 0, 0
+			if quantConfig != nil {
+				groupSize = quantConfig.GroupSize
+				bits = quantConfig.Bits
+			}
+			return NewQuantizedLinear(layerWeight, scales, biases, nil, groupSize, bits)
 		}
 		return NewLinear(layerWeight, nil)
 	}
 
 	embed := &Embedding{Weight: weight("model.embed_tokens.weight")}
-	if embedScales := weight("model.embed_tokens.scales"); embedScales != nil && quantConfig != nil {
+	if embedScales := weight("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = weight("model.embed_tokens.biases")
-		embed.GroupSize = quantConfig.GroupSize
-		embed.Bits = quantConfig.Bits
+		if quantConfig != nil {
+			embed.GroupSize = quantConfig.GroupSize
+			embed.Bits = quantConfig.Bits
+		}
 	}
 
 	gemmaModel := &GemmaModel{
@@ -277,8 +284,13 @@ func LoadGemma3(modelPath string) (*GemmaModel, error) {
 	lmHeadWeight := weight("lm_head.weight")
 	if lmHeadWeight != nil {
 		lmHeadScales := weight("lm_head.scales")
-		if lmHeadScales != nil && quantConfig != nil {
-			gemmaModel.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, weight("lm_head.biases"), nil, quantConfig.GroupSize, quantConfig.Bits)
+		if lmHeadScales != nil {
+			groupSize, bits := 0, 0
+			if quantConfig != nil {
+				groupSize = quantConfig.GroupSize
+				bits = quantConfig.Bits
+			}
+			gemmaModel.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, weight("lm_head.biases"), nil, groupSize, bits)
 		} else {
 			gemmaModel.Output = NewLinear(lmHeadWeight, nil)
 		}

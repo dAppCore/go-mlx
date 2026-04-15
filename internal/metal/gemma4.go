@@ -583,7 +583,13 @@ func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *Quant
 	if strings.HasSuffix(path, "router.proj") {
 		return &QuantizationConfig{GroupSize: 64, Bits: 8}
 	}
-	return defaultConfig
+	if defaultConfig != nil {
+		return defaultConfig
+	}
+	// When weights already carry quantization side tensors but config.json omits
+	// the quantization block, let MLX use its affine defaults instead of
+	// silently downgrading the layer to an incorrect dense projection.
+	return &QuantizationConfig{}
 }
 
 func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
@@ -1100,21 +1106,25 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 
 	embed := &Embedding{Weight: gemma4WeightAny(weights, "model.embed_tokens.weight")}
-	if embedScales := gemma4WeightAny(weights, "model.embed_tokens.scales"); embedScales != nil && cfg.Quantization != nil {
+	if embedScales := gemma4WeightAny(weights, "model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = gemma4WeightAny(weights, "model.embed_tokens.biases")
-		embed.GroupSize = cfg.Quantization.GroupSize
-		embed.Bits = cfg.Quantization.Bits
+		if cfg.Quantization != nil {
+			embed.GroupSize = cfg.Quantization.GroupSize
+			embed.Bits = cfg.Quantization.Bits
+		}
 	}
 
 	var embedPerLayer *Embedding
 	if cfg.HiddenSizePerLayerInput > 0 {
 		embedPerLayer = &Embedding{Weight: gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight")}
-		if scales := gemma4WeightAny(weights, "model.embed_tokens_per_layer.scales"); scales != nil && cfg.Quantization != nil {
+		if scales := gemma4WeightAny(weights, "model.embed_tokens_per_layer.scales"); scales != nil {
 			embedPerLayer.Scales = scales
 			embedPerLayer.Biases = gemma4WeightAny(weights, "model.embed_tokens_per_layer.biases")
-			embedPerLayer.GroupSize = cfg.Quantization.GroupSize
-			embedPerLayer.Bits = cfg.Quantization.Bits
+			if cfg.Quantization != nil {
+				embedPerLayer.GroupSize = cfg.Quantization.GroupSize
+				embedPerLayer.Bits = cfg.Quantization.Bits
+			}
 		}
 	}
 

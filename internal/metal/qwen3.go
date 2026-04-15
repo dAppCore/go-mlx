@@ -152,18 +152,25 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		scales := w(prefix + ".scales")
 		biases := w(prefix + ".biases")
 		bias := w(prefix + ".bias")
-		if scales != nil && q != nil {
-			return NewQuantizedLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+		if scales != nil {
+			groupSize, bits := 0, 0
+			if q != nil {
+				groupSize = q.GroupSize
+				bits = q.Bits
+			}
+			return NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
 		}
 		return NewLinear(weight, bias)
 	}
 
 	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
-	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
+	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = w("model.embed_tokens.biases")
-		embed.GroupSize = q.GroupSize
-		embed.Bits = q.Bits
+		if q != nil {
+			embed.GroupSize = q.GroupSize
+			embed.Bits = q.Bits
+		}
 	}
 
 	// Preserve the architecture selected during top-level probing so configs
@@ -205,8 +212,13 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	lmHeadWeight := w("lm_head.weight")
 	if lmHeadWeight != nil {
 		lmHeadScales := w("lm_head.scales")
-		if lmHeadScales != nil && q != nil {
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, q.GroupSize, q.Bits)
+		if lmHeadScales != nil {
+			groupSize, bits := 0, 0
+			if q != nil {
+				groupSize = q.GroupSize
+				bits = q.Bits
+			}
+			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
 		} else {
 			m.Output = NewLinear(lmHeadWeight, nil)
 		}
