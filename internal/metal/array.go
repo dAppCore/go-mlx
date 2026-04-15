@@ -307,6 +307,22 @@ func ensureContiguous(a *Array) *Array {
 	return c
 }
 
+// Bytes extracts all elements as a byte slice from a uint8 array.
+// Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
+//
+//	raw := frame.Bytes() // read a packed byte buffer back to Go memory
+func (t *Array) Bytes() []byte {
+	src := ensureContiguous(t)
+	n := src.Size()
+	ptr := C.mlx_array_data_uint8(src.ctx)
+	data := make([]byte, n)
+	for i, b := range unsafe.Slice(ptr, n) {
+		data[i] = byte(b)
+	}
+	runtime.KeepAlive(src)
+	return data
+}
+
 // Ints extracts all elements as int slice (from int32 data).
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
 //
