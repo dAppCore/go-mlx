@@ -1474,7 +1474,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		Free(h1)
 
 		h2In := RMSNorm(h, l.PreFFNorm2Scaled, cfg.RMSNormEps)
-		topKIndices, topKWeights := l.Router.forward(h)
+		topKIndices, topKWeights := l.Router.forward(h2In)
 		h2 := l.Experts.forward(h2In, topKIndices, topKWeights)
 		Free(h2In, topKIndices, topKWeights)
 		h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)

@@ -1079,7 +1079,7 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestGemma4_DecoderLayer_MoERouterUsesResidualStream_Good(t *testing.T) {
+func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
 	zeros2x2 := func() *Array {
@@ -1171,7 +1171,7 @@ func TestGemma4_DecoderLayer_MoERouterUsesResidualStream_Good(t *testing.T) {
 	if residualIndices.DataInt32()[0] == normedIndices.DataInt32()[0] {
 		t.Fatal("expected residual-stream and pre-normalized router inputs to pick different experts")
 	}
-	Free(normedIndices, normedWeights)
+	Free(residualIndices, residualWeights)
 
 	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
 	h1 := layer.MLP.forward(h1In)
@@ -1179,8 +1179,8 @@ func TestGemma4_DecoderLayer_MoERouterUsesResidualStream_Good(t *testing.T) {
 	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
 	Free(h1)
 
-	h2 := layer.Experts.forward(h2InForCheck, residualIndices, residualWeights)
-	Free(h2InForCheck, residualIndices, residualWeights)
+	h2 := layer.Experts.forward(h2InForCheck, normedIndices, normedWeights)
+	Free(h2InForCheck, normedIndices, normedWeights)
 	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
 	Free(h2)
 
