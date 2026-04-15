@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"dappco.re/go/core/inference"
-	mlx "dappco.re/go/core/mlx"
+	mlx "dappco.re/go/mlx"
 )
 
 func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {

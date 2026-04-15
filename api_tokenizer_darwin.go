@@ -2,7 +2,7 @@
 
 package mlx
 
-import "dappco.re/go/core/mlx/internal/metal"
+import "dappco.re/go/mlx/internal/metal"
 
 // LoadTokenizer loads a tokenizer.json file directly.
 func LoadTokenizer(path string) (*Tokenizer, error) {

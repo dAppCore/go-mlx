@@ -8,7 +8,7 @@ import (
 
 	"dappco.re/go/core"
 	"dappco.re/go/core/inference"
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 func init() {

@@ -11,7 +11,7 @@ import (
 
 	"dappco.re/go/core/inference"
 	coreio "dappco.re/go/core/io"
-	mlx "dappco.re/go/core/mlx"
+	mlx "dappco.re/go/mlx"
 )
 
 func TestMetalAvailable_Good(t *testing.T) {

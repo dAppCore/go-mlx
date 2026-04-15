@@ -13,7 +13,7 @@
 //
 // # Usage
 //
-//	import _ "dappco.re/go/core/mlx/mlxlm"
+//	import _ "dappco.re/go/mlx/mlxlm"
 //
 //	ctx := context.Background()
 //	model, err := inference.LoadModel("/path/to/model", inference.WithBackend("mlx_lm"))

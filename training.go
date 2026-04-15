@@ -4,7 +4,7 @@ package mlx
 
 import (
 	"dappco.re/go/core/inference"
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 // Array is a Metal GPU tensor.

@@ -8,7 +8,7 @@ import (
 	"iter"
 	"strings"
 
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 type nativeModel interface {

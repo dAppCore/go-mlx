@@ -2,7 +2,7 @@
 
 package mlx
 
-import puretokenizer "dappco.re/go/core/mlx/internal/tokenizer"
+import puretokenizer "dappco.re/go/mlx/internal/tokenizer"
 
 // LoadTokenizer loads a tokenizer.json file directly using the pure-Go tokenizer implementation.
 func LoadTokenizer(path string) (*Tokenizer, error) {

@@ -14,7 +14,7 @@ import (
 
 	"dappco.re/go/core/inference"
 	coreio "dappco.re/go/core/io"
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 type fakeNativeModel struct {

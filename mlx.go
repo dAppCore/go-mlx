@@ -4,7 +4,7 @@
 // dappco.re/go/core/inference for Apple Silicon (M1-M4) GPUs.
 // Import it blank to register the "metal" backend automatically:
 //
-//	import _ "dappco.re/go/core/mlx"
+//	import _ "dappco.re/go/mlx"
 //
 // Build mlx-c before use:
 //

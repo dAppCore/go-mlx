@@ -5,7 +5,7 @@ description: Native Metal GPU inference and training for Go on Apple Silicon.
 
 # go-mlx
 
-`dappco.re/go/core/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/core/inference` and an RFC-style direct root-package API.
+`dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/core/inference` and an RFC-style direct root-package API.
 
 **Platform:** darwin/arm64 only (Apple Silicon M1-M4). A stub provides `MetalAvailable() bool` returning false on all other platforms.
 
@@ -17,7 +17,7 @@ import (
     "fmt"
 
     "dappco.re/go/core/inference"
-    _ "dappco.re/go/core/mlx" // registers "metal" backend via init()
+    _ "dappco.re/go/mlx" // registers "metal" backend via init()
 )
 
 func main() {
@@ -37,13 +37,13 @@ func main() {
 }
 ```
 
-The blank import (`_ "dappco.re/go/core/mlx"`) auto-registers the Metal backend. You can use either the `go-inference` interfaces or the direct root API:
+The blank import (`_ "dappco.re/go/mlx"`) auto-registers the Metal backend. You can use either the `go-inference` interfaces or the direct root API:
 
 ```go
 import (
     "fmt"
 
-    mlx "dappco.re/go/core/mlx"
+    mlx "dappco.re/go/mlx"
 )
 
 model, err := mlx.LoadModel("/path/to/model/",
@@ -96,7 +96,7 @@ Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoin
 These control the Metal allocator directly, not individual models:
 
 ```go
-import mlx "dappco.re/go/core/mlx"
+import mlx "dappco.re/go/mlx"
 
 mlx.SetCacheLimit(4 << 30)   // 4 GB cache limit
 mlx.SetMemoryLimit(32 << 30) // 32 GB hard limit

@@ -6,7 +6,7 @@ import (
 	"reflect"
 
 	"dappco.re/go/core/inference"
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 func inferenceGenerateConfigToMetal(cfg inference.GenerateConfig) metal.GenerateConfig {

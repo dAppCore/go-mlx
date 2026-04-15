@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/core/inference"
-	"dappco.re/go/core/mlx/internal/metal"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 func TestMetalBackendLoadModel_ForwardsCPUDeviceWhenGPULayersZero_Good(t *testing.T) {

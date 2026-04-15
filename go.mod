@@ -1,4 +1,4 @@
-module dappco.re/go/core/mlx
+module dappco.re/go/mlx
 
 go 1.26.0
 
