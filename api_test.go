@@ -261,6 +261,48 @@ func TestModelGenerateStream_Good(t *testing.T) {
 	}
 }
 
+func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		tokens: []metal.Token{{ID: 1, Text: "A"}},
+	}
+	model := &Model{model: native}
+
+	for range model.GenerateStream(
+		"ignored",
+		WithMaxTokens(9),
+		WithTemperature(0.3),
+		WithTopK(11),
+		WithTopP(0.8),
+		WithMinP(0.05),
+		WithStopTokens(4, 5),
+		WithRepeatPenalty(1.2),
+	) {
+	}
+
+	cfg := native.lastGenerateConfig
+	if cfg.MaxTokens != 9 {
+		t.Fatalf("MaxTokens = %d, want 9", cfg.MaxTokens)
+	}
+	if cfg.Temperature != 0.3 {
+		t.Fatalf("Temperature = %f, want 0.3", cfg.Temperature)
+	}
+	if cfg.TopK != 11 {
+		t.Fatalf("TopK = %d, want 11", cfg.TopK)
+	}
+	if cfg.TopP != 0.8 {
+		t.Fatalf("TopP = %f, want 0.8", cfg.TopP)
+	}
+	if cfg.MinP != 0.05 {
+		t.Fatalf("MinP = %f, want 0.05", cfg.MinP)
+	}
+	if cfg.RepeatPenalty != 1.2 {
+		t.Fatalf("RepeatPenalty = %f, want 1.2", cfg.RepeatPenalty)
+	}
+	if !reflect.DeepEqual(cfg.StopTokens, []int32{4, 5}) {
+		t.Fatalf("StopTokens = %v, want [4 5]", cfg.StopTokens)
+	}
+}
+
 func TestModelChatBuffered_Good(t *testing.T) {
 	model := &Model{
 		model: &fakeNativeModel{
@@ -274,6 +316,36 @@ func TestModelChatBuffered_Good(t *testing.T) {
 	}
 	if got != "Hi there" {
 		t.Fatalf("Chat() = %q, want %q", got, "Hi there")
+	}
+}
+
+func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	for range model.ChatStream(messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)) {
+	}
+
+	if !reflect.DeepEqual(native.lastChatMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat messages = %+v", native.lastChatMessages)
+	}
+	if native.lastChatConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastChatConfig.MaxTokens)
+	}
+	if native.lastChatConfig.TopP != 0.85 {
+		t.Fatalf("TopP = %f, want 0.85", native.lastChatConfig.TopP)
+	}
+	if native.lastChatConfig.RepeatPenalty != 1.05 {
+		t.Fatalf("RepeatPenalty = %f, want 1.05", native.lastChatConfig.RepeatPenalty)
 	}
 }
 
