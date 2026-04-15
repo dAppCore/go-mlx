@@ -723,3 +723,121 @@ func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 		t.Fatal("ActiveMemoryBytes should report live session allocations")
 	}
 }
+
+func TestComputeSession_FrameLifecycle_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 2,
+		Format: PixelRGB565,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := session.BeginFrame(); err != nil {
+		t.Fatalf("BeginFrame: %v", err)
+	}
+	if err := src.Upload([]byte{0x00, 0xF8}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+	if err := session.Run(KernelRGB565ToRGBA8, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	}); err != nil {
+		t.Fatalf("Run(rgb565_to_rgba8): %v", err)
+	}
+
+	frameMetrics, err := session.FinishFrame()
+	if err != nil {
+		t.Fatalf("FinishFrame: %v", err)
+	}
+	if frameMetrics.Frame != 1 {
+		t.Fatalf("Frame = %d, want 1", frameMetrics.Frame)
+	}
+	if frameMetrics.Passes != 1 {
+		t.Fatalf("Passes = %d, want 1", frameMetrics.Passes)
+	}
+	if frameMetrics.LastKernel != KernelRGB565ToRGBA8 {
+		t.Fatalf("LastKernel = %q, want %q", frameMetrics.LastKernel, KernelRGB565ToRGBA8)
+	}
+	if frameMetrics.DispatchDuration <= 0 {
+		t.Fatalf("DispatchDuration = %v, want > 0", frameMetrics.DispatchDuration)
+	}
+	if frameMetrics.SyncDuration <= 0 {
+		t.Fatalf("SyncDuration = %v, want > 0", frameMetrics.SyncDuration)
+	}
+	if frameMetrics.TotalDuration < frameMetrics.DispatchDuration {
+		t.Fatalf("TotalDuration = %v, want >= %v", frameMetrics.TotalDuration, frameMetrics.DispatchDuration)
+	}
+	if got := session.FrameMetrics(); got != frameMetrics {
+		t.Fatalf("FrameMetrics() = %+v, want %+v", got, frameMetrics)
+	}
+}
+
+func TestComputeSession_RunImplicitFrameAndFinish_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 2,
+		Format: PixelRGB565,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := src.Upload([]byte{0x00, 0xF8}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+	if err := session.Run(KernelRGB565ToRGBA8, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	}); err != nil {
+		t.Fatalf("Run(rgb565_to_rgba8): %v", err)
+	}
+
+	frameMetrics, err := session.FinishFrame()
+	if err != nil {
+		t.Fatalf("FinishFrame: %v", err)
+	}
+	if frameMetrics.Frame != 1 || frameMetrics.Passes != 1 {
+		t.Fatalf("FinishFrame() = %+v, want frame=1 passes=1", frameMetrics)
+	}
+}
+
+func TestComputeSession_BeginFrameWhileActive_ReturnsStructuredError_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	if err := session.BeginFrame(); err != nil {
+		t.Fatalf("BeginFrame: %v", err)
+	}
+	err := session.BeginFrame()
+	if err == nil {
+		t.Fatal("expected BeginFrame to reject an already-active frame")
+	}
+	if !errors.Is(err, ErrComputeInvalidState) {
+		t.Fatalf("BeginFrame() error = %v, want ErrComputeInvalidState", err)
+	}
+}

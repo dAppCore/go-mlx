@@ -67,7 +67,7 @@ fmt.Println(text)
 - **Streaming inference** -- token-by-token generation via `iter.Seq[Token]` (range-over-func)
 - **Multi-turn chat** -- native chat templates for Gemma 3/4, Qwen 2/3, and Llama 3
 - **Batch inference** -- `Classify` (prefill-only) and `BatchGenerate` (autoregressive) for multiple prompts
-- **Frame compute sessions** -- non-LLM pixel-buffer pipelines for scaling, swizzling, palette expansion, and format conversion
+- **Frame compute sessions** -- non-LLM pixel-buffer pipelines with explicit per-frame lifecycle, scaling, swizzling, palette expansion, and format conversion
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
 - **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis

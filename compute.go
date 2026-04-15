@@ -10,6 +10,7 @@ type ComputeErrorKind string
 const (
 	ComputeErrorUnavailable            ComputeErrorKind = "unavailable"
 	ComputeErrorClosed                 ComputeErrorKind = "closed"
+	ComputeErrorInvalidState           ComputeErrorKind = "invalid_state"
 	ComputeErrorInvalidDescriptor      ComputeErrorKind = "invalid_descriptor"
 	ComputeErrorUnsupportedPixelFormat ComputeErrorKind = "unsupported_pixel_format"
 	ComputeErrorInvalidBuffer          ComputeErrorKind = "invalid_buffer"
@@ -25,6 +26,7 @@ const (
 var (
 	ErrComputeUnavailable            = &ComputeError{Kind: ComputeErrorUnavailable}
 	ErrComputeClosed                 = &ComputeError{Kind: ComputeErrorClosed}
+	ErrComputeInvalidState           = &ComputeError{Kind: ComputeErrorInvalidState}
 	ErrComputeInvalidDescriptor      = &ComputeError{Kind: ComputeErrorInvalidDescriptor}
 	ErrComputeUnsupportedPixelFormat = &ComputeError{Kind: ComputeErrorUnsupportedPixelFormat}
 	ErrComputeInvalidBuffer          = &ComputeError{Kind: ComputeErrorInvalidBuffer}
@@ -58,6 +60,8 @@ func (err *ComputeError) Error() string {
 			msg = "Metal compute is unavailable"
 		case ComputeErrorClosed:
 			msg = "compute session is closed"
+		case ComputeErrorInvalidState:
+			msg = "invalid compute state"
 		case ComputeErrorInvalidDescriptor:
 			msg = "invalid compute descriptor"
 		case ComputeErrorUnsupportedPixelFormat:
@@ -242,6 +246,18 @@ type SessionMetrics struct {
 	PeakMemoryBytes       uint64
 }
 
+// FrameMetrics reports timing and memory figures for a single frame lifecycle.
+type FrameMetrics struct {
+	Frame             int
+	Passes            int
+	LastKernel        string
+	DispatchDuration  time.Duration
+	SyncDuration      time.Duration
+	TotalDuration     time.Duration
+	ActiveMemoryBytes uint64
+	PeakMemoryBytes   uint64
+}
+
 // Buffer is a device-resident compute buffer.
 type Buffer interface {
 	Size() int
@@ -280,11 +296,14 @@ type Compute interface {
 // Session owns a set of device buffers and reusable kernel state.
 type Session interface {
 	Close() error
+	BeginFrame() error
+	FinishFrame() (FrameMetrics, error)
 	NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer, error)
 	NewByteBuffer(size int) (ByteBuffer, error)
 	Run(kernel string, args KernelArgs) error
 	Sync() error
 	Metrics() SessionMetrics
+	FrameMetrics() FrameMetrics
 }
 
 const (

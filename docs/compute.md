@@ -27,15 +27,20 @@ type Compute interface {
 
 type Session interface {
     Close() error
+    BeginFrame() error
+    FinishFrame() (FrameMetrics, error)
     NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer, error)
     NewByteBuffer(size int) (ByteBuffer, error)
     Run(kernel string, args KernelArgs) error
     Sync() error
     Metrics() SessionMetrics
+    FrameMetrics() FrameMetrics
 }
 ```
 
 Use `mlx.DefaultCompute()` when you want an explicit backend handle, or `mlx.NewSession()` when the package default is sufficient.
+
+`BeginFrame` and `FinishFrame` provide an explicit frame lifecycle for emulators and other fixed-rate pipelines. `Run` will implicitly start a frame if you skip `BeginFrame`, so existing one-off compute flows keep working.
 
 ## Pixel Buffers
 
@@ -117,6 +122,9 @@ frameBytes := make([]byte, src.Descriptor().SizeBytes())
 if err := src.Upload(frameBytes); err != nil {
     panic(err)
 }
+if err := session.BeginFrame(); err != nil {
+    panic(err)
+}
 if err := session.Run(mlx.KernelRGB565ToRGBA8, mlx.KernelArgs{
     Inputs:  map[string]mlx.Buffer{"src": src},
     Outputs: map[string]mlx.Buffer{"dst": rgba},
@@ -139,7 +147,8 @@ if err := session.Run(mlx.KernelCRTFilter, mlx.KernelArgs{
 }); err != nil {
     panic(err)
 }
-if err := session.Sync(); err != nil {
+frameMetrics, err := session.FinishFrame()
+if err != nil {
     panic(err)
 }
 
@@ -148,6 +157,7 @@ if err != nil {
     panic(err)
 }
 _ = presentable
+_ = frameMetrics
 ```
 
 ## Metrics
@@ -159,6 +169,14 @@ metrics := session.Metrics()
 fmt.Println(metrics.Passes, metrics.LastKernel)
 fmt.Println(metrics.LastDispatchDuration, metrics.LastSyncDuration)
 fmt.Println(metrics.ActiveMemoryBytes, metrics.PeakMemoryBytes)
+```
+
+For frame-by-frame policy decisions, use the dedicated frame metrics:
+
+```go
+frameMetrics := session.FrameMetrics()
+fmt.Println(frameMetrics.Frame, frameMetrics.Passes, frameMetrics.LastKernel)
+fmt.Println(frameMetrics.DispatchDuration, frameMetrics.SyncDuration, frameMetrics.TotalDuration)
 ```
 
 These metrics are designed for runtime policy decisions such as:

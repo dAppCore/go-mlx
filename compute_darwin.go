@@ -50,9 +50,20 @@ type computeSession struct {
 	kernels          map[string]*metal.MetalKernel
 	buffers          map[*bufferBase]struct{}
 	metrics          SessionMetrics
+	frame            frameState
+	lastFrameMetrics FrameMetrics
 	baseActiveMemory uint64
 	basePeakMemory   uint64
 	closed           bool
+}
+
+type frameState struct {
+	active           bool
+	index            int
+	startedAt        time.Time
+	baseActiveMemory uint64
+	basePeakMemory   uint64
+	metrics          FrameMetrics
 }
 
 type bufferBase struct {
@@ -219,6 +230,39 @@ func (session *computeSession) NewByteBuffer(size int) (ByteBuffer, error) {
 	return buffer, nil
 }
 
+func (session *computeSession) BeginFrame() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.closed {
+		return computeErr(ComputeErrorClosed, "begin_frame", "", "", "compute session is closed")
+	}
+	if session.frame.active {
+		return computeErr(ComputeErrorInvalidState, "begin_frame", "", "frame", "a frame is already active")
+	}
+	session.beginFrameLocked()
+	return nil
+}
+
+func (session *computeSession) FinishFrame() (FrameMetrics, error) {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.closed {
+		return FrameMetrics{}, computeErr(ComputeErrorClosed, "finish_frame", "", "", "compute session is closed")
+	}
+	if !session.frame.active {
+		return FrameMetrics{}, computeErr(ComputeErrorInvalidState, "finish_frame", "", "frame", "no frame is active")
+	}
+	if err := session.syncLocked(); err != nil {
+		return FrameMetrics{}, err
+	}
+	session.frame.metrics.TotalDuration = time.Since(session.frame.startedAt)
+	session.lastFrameMetrics = session.frame.metrics
+	session.frame = frameState{}
+	return session.lastFrameMetrics, nil
+}
+
 func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
@@ -226,6 +270,7 @@ func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	if session.closed {
 		return computeErr(ComputeErrorClosed, "run_kernel", kernel, "", "compute session is closed")
 	}
+	session.ensureFrameLocked()
 
 	start := time.Now()
 	err := session.runLocked(kernel, args)
@@ -239,6 +284,11 @@ func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	session.metrics.LastDispatchDuration = dispatchDuration
 	session.metrics.TotalDispatchDuration += dispatchDuration
 	session.updateMemoryMetricsLocked()
+	session.frame.metrics.Passes++
+	session.frame.metrics.LastKernel = kernel
+	session.frame.metrics.DispatchDuration += dispatchDuration
+	session.frame.metrics.TotalDuration = time.Since(session.frame.startedAt)
+	session.updateFrameMetricsLocked()
 	return nil
 }
 
@@ -251,7 +301,21 @@ func (session *computeSession) Sync() error {
 func (session *computeSession) Metrics() SessionMetrics {
 	session.mu.Lock()
 	defer session.mu.Unlock()
+	session.updateMemoryMetricsLocked()
 	return session.metrics
+}
+
+func (session *computeSession) FrameMetrics() FrameMetrics {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+
+	if session.frame.active {
+		session.updateFrameMetricsLocked()
+		metrics := session.frame.metrics
+		metrics.TotalDuration = time.Since(session.frame.startedAt)
+		return metrics
+	}
+	return session.lastFrameMetrics
 }
 
 func (session *computeSession) syncLocked() error {
@@ -264,7 +328,32 @@ func (session *computeSession) syncLocked() error {
 	session.metrics.LastSyncDuration = syncDuration
 	session.metrics.TotalSyncDuration += syncDuration
 	session.updateMemoryMetricsLocked()
+	if session.frame.active {
+		session.frame.metrics.SyncDuration += syncDuration
+		session.frame.metrics.TotalDuration = time.Since(session.frame.startedAt)
+		session.updateFrameMetricsLocked()
+	}
 	return nil
+}
+
+func (session *computeSession) beginFrameLocked() {
+	session.frame = frameState{
+		active:           true,
+		index:            session.lastFrameMetrics.Frame + 1,
+		startedAt:        time.Now(),
+		baseActiveMemory: metal.GetActiveMemory(),
+		basePeakMemory:   metal.GetPeakMemory(),
+		metrics: FrameMetrics{
+			Frame: session.lastFrameMetrics.Frame + 1,
+		},
+	}
+}
+
+func (session *computeSession) ensureFrameLocked() {
+	if session.frame.active {
+		return
+	}
+	session.beginFrameLocked()
 }
 
 func (session *computeSession) updateMemoryMetricsLocked() {
@@ -275,6 +364,20 @@ func (session *computeSession) updateMemoryMetricsLocked() {
 	}
 	if peak >= session.basePeakMemory {
 		session.metrics.PeakMemoryBytes = peak - session.basePeakMemory
+	}
+}
+
+func (session *computeSession) updateFrameMetricsLocked() {
+	if !session.frame.active {
+		return
+	}
+	active := metal.GetActiveMemory()
+	peak := metal.GetPeakMemory()
+	if active >= session.frame.baseActiveMemory {
+		session.frame.metrics.ActiveMemoryBytes = active - session.frame.baseActiveMemory
+	}
+	if peak >= session.frame.basePeakMemory {
+		session.frame.metrics.PeakMemoryBytes = peak - session.frame.basePeakMemory
 	}
 }
 

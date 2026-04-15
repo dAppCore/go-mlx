@@ -125,6 +125,7 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_ = compute.DeviceInfo()
 	_ = ErrComputeUnavailable
 	_ = ErrComputeClosed
+	_ = ErrComputeInvalidState
 	_ = ErrComputeInvalidDescriptor
 	_ = ErrComputeUnsupportedPixelFormat
 	_ = ErrComputeInvalidBuffer
@@ -136,6 +137,7 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_ = ErrComputeUnknownKernel
 	_ = ErrComputeInternal
 	_ = (&ComputeError{Kind: ComputeErrorUnknownKernel}).Error()
+	_ = FrameMetrics{}
 	_, _ = NewSession(
 		WithSessionLabel("stub"),
 		WithVerboseKernels(true),

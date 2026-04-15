@@ -4,7 +4,7 @@
 
 # go-mlx
 
-Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`, `KernelScanlineFilter`, `KernelCRTFilter`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `Session.BeginFrame`, `Session.FinishFrame`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`, `KernelScanlineFilter`, `KernelCRTFilter`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
 
 **Module**: `dappco.re/go/mlx`
 **Licence**: EUPL-1.2
@@ -89,6 +89,9 @@ frameBytes := make([]byte, src.Descriptor().SizeBytes())
 if err := src.Upload(frameBytes); err != nil {
     panic(err)
 }
+if err := session.BeginFrame(); err != nil {
+    panic(err)
+}
 if err := session.Run(mlx.KernelRGB565ToRGBA8, mlx.KernelArgs{
     Inputs:  map[string]mlx.Buffer{"src": src},
     Outputs: map[string]mlx.Buffer{"dst": rgba},
@@ -108,7 +111,8 @@ if err := session.Run(mlx.KernelScanlineFilter, mlx.KernelArgs{
 }); err != nil {
     panic(err)
 }
-if err := session.Sync(); err != nil {
+frameMetrics, err := session.FinishFrame()
+if err != nil {
     panic(err)
 }
 
@@ -117,6 +121,7 @@ if err != nil {
     panic(err)
 }
 _ = finalFrame
+_ = frameMetrics
 ```
 
 ## Documentation
