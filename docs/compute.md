@@ -167,6 +167,23 @@ These metrics are designed for runtime policy decisions such as:
 - disable heavier passes when memory is tight
 - fall back to CPU processing when a frame budget is exceeded
 
+## Errors
+
+Compute session and descriptor validation now return a structured `*mlx.ComputeError` in addition to a readable error string:
+
+```go
+if err := session.Run(mlx.KernelScanlineFilter, args); err != nil {
+    if errors.Is(err, mlx.ErrComputeInvalidScalar) {
+        var computeErr *mlx.ComputeError
+        if errors.As(err, &computeErr) {
+            fmt.Println(computeErr.Kernel, computeErr.Resource)
+        }
+    }
+}
+```
+
+This is intended for policy and fallback decisions in callers such as `core/play`.
+
 ## Availability and Fallback
 
 On unsupported builds, `mlx.DefaultCompute().Available()` returns `false` and `mlx.NewSession()` returns an availability error. Consumers should treat CPU fallback as an ordinary path rather than an exceptional one.

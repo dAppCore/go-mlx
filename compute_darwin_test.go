@@ -2,7 +2,10 @@
 
 package mlx
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func requireComputeSession(t *testing.T) Session {
 	t.Helper()
@@ -605,12 +608,57 @@ func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 		t.Fatalf("NewPixelBuffer(dst): %v", err)
 	}
 
-	if err := session.Run(KernelScanlineFilter, KernelArgs{
+	err = session.Run(KernelScanlineFilter, KernelArgs{
 		Inputs:  map[string]Buffer{"src": src},
 		Outputs: map[string]Buffer{"dst": dst},
 		Scalars: map[string]float64{"strength": 1.5},
-	}); err == nil {
+	})
+	if err == nil {
 		t.Fatal("expected scanline_filter to reject strength outside [0,1]")
+	}
+	if !errors.Is(err, ErrComputeInvalidScalar) {
+		t.Fatalf("Run(scanline_filter) error = %v, want ErrComputeInvalidScalar", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(scanline_filter) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kernel != KernelScanlineFilter || computeErr.Resource != "strength" {
+		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelScanlineFilter, "strength")
+	}
+}
+
+func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	err := session.Run("not_a_kernel", KernelArgs{})
+	if err == nil {
+		t.Fatal("expected unknown kernel error")
+	}
+	if !errors.Is(err, ErrComputeUnknownKernel) {
+		t.Fatalf("Run(not_a_kernel) error = %v, want ErrComputeUnknownKernel", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(not_a_kernel) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kernel != "not_a_kernel" {
+		t.Fatalf("Kernel = %q, want %q", computeErr.Kernel, "not_a_kernel")
+	}
+}
+
+func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	_, err := session.NewByteBuffer(8)
+	if err == nil {
+		t.Fatal("expected NewByteBuffer on a closed session to fail")
+	}
+	if !errors.Is(err, ErrComputeClosed) {
+		t.Fatalf("NewByteBuffer() error = %v, want ErrComputeClosed", err)
 	}
 }
 

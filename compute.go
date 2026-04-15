@@ -1,9 +1,135 @@
 package mlx
 
 import (
-	"errors"
 	"time"
 )
+
+// ComputeErrorKind classifies non-LLM compute failures for frame-oriented callers.
+type ComputeErrorKind string
+
+const (
+	ComputeErrorUnavailable            ComputeErrorKind = "unavailable"
+	ComputeErrorClosed                 ComputeErrorKind = "closed"
+	ComputeErrorInvalidDescriptor      ComputeErrorKind = "invalid_descriptor"
+	ComputeErrorUnsupportedPixelFormat ComputeErrorKind = "unsupported_pixel_format"
+	ComputeErrorInvalidBuffer          ComputeErrorKind = "invalid_buffer"
+	ComputeErrorBufferSizeMismatch     ComputeErrorKind = "buffer_size_mismatch"
+	ComputeErrorInvalidAllocation      ComputeErrorKind = "invalid_allocation"
+	ComputeErrorMissingKernelBuffer    ComputeErrorKind = "missing_kernel_buffer"
+	ComputeErrorInvalidKernelArgs      ComputeErrorKind = "invalid_kernel_args"
+	ComputeErrorInvalidScalar          ComputeErrorKind = "invalid_scalar"
+	ComputeErrorUnknownKernel          ComputeErrorKind = "unknown_kernel"
+	ComputeErrorInternal               ComputeErrorKind = "internal"
+)
+
+var (
+	ErrComputeUnavailable            = &ComputeError{Kind: ComputeErrorUnavailable}
+	ErrComputeClosed                 = &ComputeError{Kind: ComputeErrorClosed}
+	ErrComputeInvalidDescriptor      = &ComputeError{Kind: ComputeErrorInvalidDescriptor}
+	ErrComputeUnsupportedPixelFormat = &ComputeError{Kind: ComputeErrorUnsupportedPixelFormat}
+	ErrComputeInvalidBuffer          = &ComputeError{Kind: ComputeErrorInvalidBuffer}
+	ErrComputeBufferSizeMismatch     = &ComputeError{Kind: ComputeErrorBufferSizeMismatch}
+	ErrComputeInvalidAllocation      = &ComputeError{Kind: ComputeErrorInvalidAllocation}
+	ErrComputeMissingKernelBuffer    = &ComputeError{Kind: ComputeErrorMissingKernelBuffer}
+	ErrComputeInvalidKernelArgs      = &ComputeError{Kind: ComputeErrorInvalidKernelArgs}
+	ErrComputeInvalidScalar          = &ComputeError{Kind: ComputeErrorInvalidScalar}
+	ErrComputeUnknownKernel          = &ComputeError{Kind: ComputeErrorUnknownKernel}
+	ErrComputeInternal               = &ComputeError{Kind: ComputeErrorInternal}
+)
+
+// ComputeError is the structured error returned by the non-LLM compute API.
+type ComputeError struct {
+	Kind     ComputeErrorKind
+	Op       string
+	Kernel   string
+	Resource string
+	Message  string
+	Err      error
+}
+
+func (err *ComputeError) Error() string {
+	if err == nil {
+		return "<nil>"
+	}
+	msg := err.Message
+	if msg == "" {
+		switch err.Kind {
+		case ComputeErrorUnavailable:
+			msg = "Metal compute is unavailable"
+		case ComputeErrorClosed:
+			msg = "compute session is closed"
+		case ComputeErrorInvalidDescriptor:
+			msg = "invalid compute descriptor"
+		case ComputeErrorUnsupportedPixelFormat:
+			msg = "unsupported pixel format"
+		case ComputeErrorInvalidBuffer:
+			msg = "invalid compute buffer"
+		case ComputeErrorBufferSizeMismatch:
+			msg = "buffer size mismatch"
+		case ComputeErrorInvalidAllocation:
+			msg = "invalid compute allocation"
+		case ComputeErrorMissingKernelBuffer:
+			msg = "missing kernel buffer"
+		case ComputeErrorInvalidKernelArgs:
+			msg = "invalid kernel arguments"
+		case ComputeErrorInvalidScalar:
+			msg = "invalid kernel scalar"
+		case ComputeErrorUnknownKernel:
+			msg = "unknown compute kernel"
+		case ComputeErrorInternal:
+			msg = "internal compute error"
+		default:
+			msg = "compute error"
+		}
+	}
+	if err.Err != nil {
+		return "mlx: " + msg + ": " + err.Err.Error()
+	}
+	return "mlx: " + msg
+}
+
+func (err *ComputeError) Unwrap() error { return err.Err }
+
+func (err *ComputeError) Is(target error) bool {
+	want, ok := target.(*ComputeError)
+	if !ok {
+		return false
+	}
+	if want.Kind != "" && err.Kind != want.Kind {
+		return false
+	}
+	if want.Op != "" && err.Op != want.Op {
+		return false
+	}
+	if want.Kernel != "" && err.Kernel != want.Kernel {
+		return false
+	}
+	if want.Resource != "" && err.Resource != want.Resource {
+		return false
+	}
+	return true
+}
+
+func computeErr(kind ComputeErrorKind, op, kernel, resource, message string) error {
+	return &ComputeError{
+		Kind:     kind,
+		Op:       op,
+		Kernel:   kernel,
+		Resource: resource,
+		Message:  message,
+	}
+}
+
+func computeWrap(kind ComputeErrorKind, op, kernel, resource, message string, err error) error {
+	return &ComputeError{
+		Kind:     kind,
+		Op:       op,
+		Kernel:   kernel,
+		Resource: resource,
+		Message:  message,
+		Err:      err,
+	}
+}
 
 // PixelFormat identifies the layout of a packed pixel buffer.
 type PixelFormat string
@@ -41,20 +167,20 @@ type PixelBufferDesc struct {
 // Validate checks whether the descriptor can back a packed pixel buffer.
 func (desc PixelBufferDesc) Validate() error {
 	if desc.Width <= 0 {
-		return errors.New("mlx: pixel buffer width must be positive")
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "width", "pixel buffer width must be positive")
 	}
 	if desc.Height <= 0 {
-		return errors.New("mlx: pixel buffer height must be positive")
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "height", "pixel buffer height must be positive")
 	}
 	if desc.Stride <= 0 {
-		return errors.New("mlx: pixel buffer stride must be positive")
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "stride", "pixel buffer stride must be positive")
 	}
 	bytesPerPixel := desc.Format.BytesPerPixel()
 	if bytesPerPixel == 0 {
-		return errors.New("mlx: unsupported pixel format")
+		return computeErr(ComputeErrorUnsupportedPixelFormat, "validate_pixel_buffer", "", "format", "unsupported pixel format")
 	}
 	if desc.Stride < desc.Width*bytesPerPixel {
-		return errors.New("mlx: pixel buffer stride is smaller than width * bytes_per_pixel")
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "stride", "pixel buffer stride is smaller than width * bytes_per_pixel")
 	}
 	return nil
 }

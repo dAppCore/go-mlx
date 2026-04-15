@@ -2,8 +2,6 @@
 
 package mlx
 
-import "errors"
-
 var defaultComputeBackend Compute = unavailableCompute{}
 
 // DefaultCompute returns the package's default stub compute backend.
@@ -19,5 +17,5 @@ type unavailableCompute struct{}
 func (unavailableCompute) Available() bool        { return false }
 func (unavailableCompute) DeviceInfo() DeviceInfo { return DeviceInfo{} }
 func (unavailableCompute) NewSession(...SessionOption) (Session, error) {
-	return nil, errors.New("mlx: Metal compute is unavailable in this build")
+	return nil, computeErr(ComputeErrorUnavailable, "new_session", "", "", "Metal compute is unavailable in this build")
 }

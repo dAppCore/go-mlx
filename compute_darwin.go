@@ -3,7 +3,6 @@
 package mlx
 
 import (
-	"errors"
 	"math"
 	"sync"
 	"time"
@@ -28,7 +27,7 @@ func (computeBackend) DeviceInfo() DeviceInfo { return GetDeviceInfo() }
 
 func (computeBackend) NewSession(opts ...SessionOption) (Session, error) {
 	if !MetalAvailable() {
-		return nil, errors.New("mlx: Metal compute is unavailable")
+		return nil, computeErr(ComputeErrorUnavailable, "new_session", "", "", "Metal compute is unavailable")
 	}
 
 	cfg := newSessionConfig(opts)
@@ -68,13 +67,13 @@ func (base *bufferBase) Size() int { return base.size }
 
 func (base *bufferBase) requireOpenLocked() error {
 	if base == nil || base.session == nil {
-		return errors.New("mlx: buffer is nil")
+		return computeErr(ComputeErrorInvalidBuffer, "require_buffer", "", "buffer", "buffer is nil")
 	}
 	if base.session.closed {
-		return errors.New("mlx: compute session is closed")
+		return computeErr(ComputeErrorClosed, "require_buffer", "", "", "compute session is closed")
 	}
 	if base.array == nil {
-		return errors.New("mlx: buffer has no backing storage")
+		return computeErr(ComputeErrorInvalidBuffer, "require_buffer", "", "buffer", "buffer has no backing storage")
 	}
 	return nil
 }
@@ -111,7 +110,7 @@ func (buffer *pixelBuffer) Upload(data []byte) error {
 		return err
 	}
 	if len(data) != buffer.size {
-		return errors.New("mlx: pixel buffer upload size does not match descriptor")
+		return computeErr(ComputeErrorBufferSizeMismatch, "upload_pixel_buffer", "", "pixel_buffer", "pixel buffer upload size does not match descriptor")
 	}
 	next := metal.FromValues(data, buffer.desc.Height, buffer.desc.Stride)
 	buffer.replaceLocked(next)
@@ -136,7 +135,7 @@ func (buffer *byteBuffer) Upload(data []byte) error {
 		return err
 	}
 	if len(data) != buffer.size {
-		return errors.New("mlx: byte buffer upload size does not match allocation")
+		return computeErr(ComputeErrorBufferSizeMismatch, "upload_byte_buffer", "", "byte_buffer", "byte buffer upload size does not match allocation")
 	}
 	next := metal.FromValues(data, len(data))
 	buffer.replaceLocked(next)
@@ -182,7 +181,7 @@ func (session *computeSession) NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer
 	defer session.mu.Unlock()
 
 	if session.closed {
-		return nil, errors.New("mlx: compute session is closed")
+		return nil, computeErr(ComputeErrorClosed, "new_pixel_buffer", "", "", "compute session is closed")
 	}
 
 	buffer := &pixelBuffer{
@@ -199,14 +198,14 @@ func (session *computeSession) NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer
 
 func (session *computeSession) NewByteBuffer(size int) (ByteBuffer, error) {
 	if size <= 0 {
-		return nil, errors.New("mlx: byte buffer size must be positive")
+		return nil, computeErr(ComputeErrorInvalidAllocation, "new_byte_buffer", "", "size", "byte buffer size must be positive")
 	}
 
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
 	if session.closed {
-		return nil, errors.New("mlx: compute session is closed")
+		return nil, computeErr(ComputeErrorClosed, "new_byte_buffer", "", "", "compute session is closed")
 	}
 
 	buffer := &byteBuffer{
@@ -225,7 +224,7 @@ func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	defer session.mu.Unlock()
 
 	if session.closed {
-		return errors.New("mlx: compute session is closed")
+		return computeErr(ComputeErrorClosed, "run_kernel", kernel, "", "compute session is closed")
 	}
 
 	start := time.Now()
@@ -257,7 +256,7 @@ func (session *computeSession) Metrics() SessionMetrics {
 
 func (session *computeSession) syncLocked() error {
 	if session.closed {
-		return errors.New("mlx: compute session is closed")
+		return computeErr(ComputeErrorClosed, "sync_session", "", "", "compute session is closed")
 	}
 	start := time.Now()
 	metal.Synchronize(metal.DefaultStream())
@@ -300,7 +299,7 @@ func (session *computeSession) runLocked(kernel string, args KernelArgs) error {
 	case KernelCRTFilter:
 		return session.runCRTFilterLocked(args)
 	default:
-		return errors.New("mlx: unknown compute kernel")
+		return computeErr(ComputeErrorUnknownKernel, "run_kernel", kernel, "", "unknown compute kernel")
 	}
 }
 
@@ -488,7 +487,7 @@ func (session *computeSession) kernelLocked(name string) (*metal.MetalKernel, er
 
 	spec, ok := computeKernelSpecs[name]
 	if !ok {
-		return nil, errors.New("mlx: missing kernel spec")
+		return nil, computeErr(ComputeErrorInternal, "load_kernel_spec", name, "", "missing kernel spec")
 	}
 
 	kernel := metal.NewMetalKernel(name, spec.inputNames, spec.outputNames, spec.source, computeKernelHeader, true, false)
@@ -517,7 +516,7 @@ func threadGroup(width, height int) (int, int) {
 func (session *computeSession) pixelBufferLocked(value Buffer, role string) (*pixelBuffer, error) {
 	buffer, ok := value.(*pixelBuffer)
 	if !ok || buffer == nil {
-		return nil, errors.New("mlx: " + role + " must be a pixel buffer")
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", "", role, role+" must be a pixel buffer")
 	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
@@ -528,7 +527,7 @@ func (session *computeSession) pixelBufferLocked(value Buffer, role string) (*pi
 func (session *computeSession) byteBufferLocked(value Buffer, role string) (*byteBuffer, error) {
 	buffer, ok := value.(*byteBuffer)
 	if !ok || buffer == nil {
-		return nil, errors.New("mlx: " + role + " must be a byte buffer")
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", "", role, role+" must be a byte buffer")
 	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
@@ -538,11 +537,11 @@ func (session *computeSession) byteBufferLocked(value Buffer, role string) (*byt
 
 func requireBuffer(buffers map[string]Buffer, name string) (Buffer, error) {
 	if buffers == nil {
-		return nil, errors.New("mlx: kernel buffers are missing")
+		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", "", name, "kernel buffers are missing")
 	}
 	value, ok := buffers[name]
 	if !ok || value == nil {
-		return nil, errors.New("mlx: missing kernel buffer " + name)
+		return nil, computeErr(ComputeErrorMissingKernelBuffer, "require_kernel_buffer", "", name, "missing kernel buffer "+name)
 	}
 	return value, nil
 }
@@ -551,7 +550,7 @@ func sameDimensions(a, b PixelBufferDesc) bool {
 	return a.Width == b.Width && a.Height == b.Height
 }
 
-func unitScalar(args KernelArgs, name string, defaultValue float64) (int, error) {
+func unitScalar(args KernelArgs, kernel, name string, defaultValue float64) (int, error) {
 	if args.Scalars == nil {
 		return quantizeUnitScalar(defaultValue), nil
 	}
@@ -560,10 +559,10 @@ func unitScalar(args KernelArgs, name string, defaultValue float64) (int, error)
 		return quantizeUnitScalar(defaultValue), nil
 	}
 	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return 0, errors.New("mlx: kernel scalar " + name + " must be finite")
+		return 0, computeErr(ComputeErrorInvalidScalar, "validate_kernel_scalar", kernel, name, "kernel scalar "+name+" must be finite")
 	}
 	if value < 0 || value > 1 {
-		return 0, errors.New("mlx: kernel scalar " + name + " must be between 0 and 1")
+		return 0, computeErr(ComputeErrorInvalidScalar, "validate_kernel_scalar", kernel, name, "kernel scalar "+name+" must be between 0 and 1")
 	}
 	return quantizeUnitScalar(value), nil
 }
@@ -574,13 +573,13 @@ func quantizeUnitScalar(value float64) int {
 
 func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
 	if !sameDimensions(src.desc, dst.desc) {
-		return errors.New("mlx: " + kernel + " requires matching source and destination dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "dst", kernel+" requires matching source and destination dimensions")
 	}
 	if src.desc.Format != dst.desc.Format {
-		return errors.New("mlx: " + kernel + " requires matching pixel formats")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "format", kernel+" requires matching pixel formats")
 	}
 	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
-		return errors.New("mlx: " + kernel + " requires rgba8 or bgra8 buffers")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "format", kernel+" requires rgba8 or bgra8 buffers")
 	}
 	return nil
 }
@@ -605,7 +604,7 @@ func (session *computeSession) applyUnaryPixelKernelLocked(kernelName string, sr
 
 	results, err := kernel.Apply(config, src.array)
 	if err != nil {
-		return err
+		return computeWrap(ComputeErrorInternal, "dispatch_kernel", kernelName, "", "compute kernel dispatch failed", err)
 	}
 	dst.replaceLocked(results[0])
 	return nil
@@ -629,14 +628,14 @@ func (session *computeSession) runNearestScaleLocked(args KernelArgs, requireInt
 		return err
 	}
 	if src.desc.Format != dst.desc.Format {
-		return errors.New("mlx: nearest scaling requires matching pixel formats")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelNearestScale, "format", "nearest scaling requires matching pixel formats")
 	}
 	if requireIntegerScale {
 		if dst.desc.Width%src.desc.Width != 0 || dst.desc.Height%src.desc.Height != 0 {
-			return errors.New("mlx: integer scaling requires exact output multiples")
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelIntegerScale, "dst", "integer scaling requires exact output multiples")
 		}
 		if dst.desc.Width/src.desc.Width != dst.desc.Height/src.desc.Height {
-			return errors.New("mlx: integer scaling requires the same factor on both axes")
+			return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelIntegerScale, "dst", "integer scaling requires the same factor on both axes")
 		}
 	}
 	bpp := src.desc.Format.BytesPerPixel()
@@ -669,10 +668,10 @@ func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
 		return err
 	}
 	if src.desc.Format != dst.desc.Format {
-		return errors.New("mlx: bilinear scaling requires matching pixel formats")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelBilinearScale, "format", "bilinear scaling requires matching pixel formats")
 	}
 	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
-		return errors.New("mlx: bilinear scaling currently supports rgba8 and bgra8 only")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelBilinearScale, "format", "bilinear scaling currently supports rgba8 and bgra8 only")
 	}
 	return session.applyUnaryPixelKernelLocked("frame_bilinear_rgba", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("SRC_WIDTH", src.desc.Width)
@@ -702,13 +701,13 @@ func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 		return err
 	}
 	if src.desc.Format != PixelRGB565 {
-		return errors.New("mlx: rgb565_to_rgba8 requires an rgb565 source buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGB565ToRGBA8, "src", "rgb565_to_rgba8 requires an rgb565 source buffer")
 	}
 	if dst.desc.Format != PixelRGBA8 {
-		return errors.New("mlx: rgb565_to_rgba8 requires an rgba8 destination buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGB565ToRGBA8, "dst", "rgb565_to_rgba8 requires an rgba8 destination buffer")
 	}
 	if !sameDimensions(src.desc, dst.desc) {
-		return errors.New("mlx: rgb565_to_rgba8 requires matching source and destination dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGB565ToRGBA8, "dst", "rgb565_to_rgba8 requires matching source and destination dimensions")
 	}
 	return session.applyUnaryPixelKernelLocked("frame_rgb565_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
@@ -736,16 +735,16 @@ func (session *computeSession) runChannelSwizzleLocked(args KernelArgs) error {
 		return err
 	}
 	if !sameDimensions(src.desc, dst.desc) {
-		return errors.New("mlx: channel swizzle requires matching dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", "channel_swizzle", "dst", "channel swizzle requires matching dimensions")
 	}
 	if src.desc.Format == PixelRGBA8 && dst.desc.Format != PixelBGRA8 {
-		return errors.New("mlx: rgba8_to_bgra8 requires a bgra8 destination")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelRGBA8ToBGRA8, "dst", "rgba8_to_bgra8 requires a bgra8 destination")
 	}
 	if src.desc.Format == PixelBGRA8 && dst.desc.Format != PixelRGBA8 {
-		return errors.New("mlx: bgra8_to_rgba8 requires an rgba8 destination")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelBGRA8ToRGBA8, "dst", "bgra8_to_rgba8 requires an rgba8 destination")
 	}
 	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
-		return errors.New("mlx: channel swizzle requires an rgba8 or bgra8 source")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", "channel_swizzle", "src", "channel swizzle requires an rgba8 or bgra8 source")
 	}
 	return session.applyUnaryPixelKernelLocked("frame_channel_swizzle", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
@@ -773,13 +772,13 @@ func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 		return err
 	}
 	if src.desc.Format != PixelXRGB8888 {
-		return errors.New("mlx: xrgb8888_to_rgba8 requires an xrgb8888 source buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelXRGB8888ToRGBA8, "src", "xrgb8888_to_rgba8 requires an xrgb8888 source buffer")
 	}
 	if dst.desc.Format != PixelRGBA8 {
-		return errors.New("mlx: xrgb8888_to_rgba8 requires an rgba8 destination buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelXRGB8888ToRGBA8, "dst", "xrgb8888_to_rgba8 requires an rgba8 destination buffer")
 	}
 	if !sameDimensions(src.desc, dst.desc) {
-		return errors.New("mlx: xrgb8888_to_rgba8 requires matching source and destination dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelXRGB8888ToRGBA8, "dst", "xrgb8888_to_rgba8 requires matching source and destination dimensions")
 	}
 	return session.applyUnaryPixelKernelLocked("frame_xrgb8888_to_rgba8", src, dst, func(config *metal.MetalKernelConfig) {
 		config.AddTemplateInt("WIDTH", src.desc.Width)
@@ -815,16 +814,16 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 		return err
 	}
 	if src.desc.Format != PixelIndexed8 {
-		return errors.New("mlx: palette_expand_rgba8 requires an indexed8 source buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelPaletteExpandRGBA, "src", "palette_expand_rgba8 requires an indexed8 source buffer")
 	}
 	if dst.desc.Format != PixelRGBA8 {
-		return errors.New("mlx: palette_expand_rgba8 requires an rgba8 destination buffer")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelPaletteExpandRGBA, "dst", "palette_expand_rgba8 requires an rgba8 destination buffer")
 	}
 	if !sameDimensions(src.desc, dst.desc) {
-		return errors.New("mlx: palette expansion requires matching source and destination dimensions")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelPaletteExpandRGBA, "dst", "palette expansion requires matching source and destination dimensions")
 	}
 	if palette.size < 256*4 {
-		return errors.New("mlx: palette buffer must contain at least 256 RGBA entries")
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", KernelPaletteExpandRGBA, "palette", "palette buffer must contain at least 256 RGBA entries")
 	}
 
 	kernel, err := session.kernelLocked("frame_palette_expand_rgba8")
@@ -847,7 +846,7 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 
 	results, err := kernel.Apply(config, src.array, palette.array)
 	if err != nil {
-		return err
+		return computeWrap(ComputeErrorInternal, "dispatch_kernel", KernelPaletteExpandRGBA, "", "compute kernel dispatch failed", err)
 	}
 	dst.replaceLocked(results[0])
 	return nil
@@ -873,7 +872,7 @@ func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
 	if err := validateFilterBuffers(src, dst, "scanline_filter"); err != nil {
 		return err
 	}
-	strength, err := unitScalar(args, "strength", 0.35)
+	strength, err := unitScalar(args, KernelScanlineFilter, "strength", 0.35)
 	if err != nil {
 		return err
 	}
@@ -905,11 +904,11 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 	if err := validateFilterBuffers(src, dst, "crt_filter"); err != nil {
 		return err
 	}
-	scanlineStrength, err := unitScalar(args, "scanline_strength", 0.25)
+	scanlineStrength, err := unitScalar(args, KernelCRTFilter, "scanline_strength", 0.25)
 	if err != nil {
 		return err
 	}
-	maskStrength, err := unitScalar(args, "mask_strength", 0.35)
+	maskStrength, err := unitScalar(args, KernelCRTFilter, "mask_strength", 0.35)
 	if err != nil {
 		return err
 	}

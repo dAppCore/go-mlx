@@ -123,6 +123,19 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	compute := DefaultCompute()
 	_ = compute.Available()
 	_ = compute.DeviceInfo()
+	_ = ErrComputeUnavailable
+	_ = ErrComputeClosed
+	_ = ErrComputeInvalidDescriptor
+	_ = ErrComputeUnsupportedPixelFormat
+	_ = ErrComputeInvalidBuffer
+	_ = ErrComputeBufferSizeMismatch
+	_ = ErrComputeInvalidAllocation
+	_ = ErrComputeMissingKernelBuffer
+	_ = ErrComputeInvalidKernelArgs
+	_ = ErrComputeInvalidScalar
+	_ = ErrComputeUnknownKernel
+	_ = ErrComputeInternal
+	_ = (&ComputeError{Kind: ComputeErrorUnknownKernel}).Error()
 	_, _ = NewSession(
 		WithSessionLabel("stub"),
 		WithVerboseKernels(true),
