@@ -586,6 +586,114 @@ func TestComputeSession_CRTFilter_Good(t *testing.T) {
 	}
 }
 
+func TestComputeSession_SoftenFilter_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := src.Upload([]byte{
+		0, 0, 0, 255,
+		255, 255, 255, 255,
+		0, 0, 0, 255,
+	}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+
+	if err := session.Run(KernelSoftenFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+		Scalars: map[string]float64{"strength": 1.0},
+	}); err != nil {
+		t.Fatalf("Run(soften_filter): %v", err)
+	}
+
+	got, err := dst.Read()
+	if err != nil {
+		t.Fatalf("Read(dst): %v", err)
+	}
+	want := []byte{
+		85, 85, 85, 255,
+		85, 85, 85, 255,
+		85, 85, 85, 255,
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("soften[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestComputeSession_SharpenFilter_Good(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  3,
+		Height: 1,
+		Stride: 12,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	if err := src.Upload([]byte{
+		64, 64, 64, 255,
+		128, 128, 128, 255,
+		64, 64, 64, 255,
+	}); err != nil {
+		t.Fatalf("Upload(src): %v", err)
+	}
+
+	if err := session.Run(KernelSharpenFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+		Scalars: map[string]float64{"strength": 1.0},
+	}); err != nil {
+		t.Fatalf("Run(sharpen_filter): %v", err)
+	}
+
+	got, err := dst.Read()
+	if err != nil {
+		t.Fatalf("Read(dst): %v", err)
+	}
+	want := []byte{
+		43, 43, 43, 255,
+		171, 171, 171, 255,
+		43, 43, 43, 255,
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sharpen[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
 func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 

@@ -317,4 +317,6 @@ const (
 	KernelPaletteExpandRGBA = "palette_expand_rgba8"
 	KernelScanlineFilter    = "scanline_filter"
 	KernelCRTFilter         = "crt_filter"
+	KernelSoftenFilter      = "soften_filter"
+	KernelSharpenFilter     = "sharpen_filter"
 )

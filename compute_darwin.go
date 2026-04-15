@@ -401,6 +401,10 @@ func (session *computeSession) runLocked(kernel string, args KernelArgs) error {
 		return session.runScanlineFilterLocked(args)
 	case KernelCRTFilter:
 		return session.runCRTFilterLocked(args)
+	case KernelSoftenFilter:
+		return session.runSoftenFilterLocked(args)
+	case KernelSharpenFilter:
+		return session.runSharpenFilterLocked(args)
 	default:
 		return computeErr(ComputeErrorUnknownKernel, "run_kernel", kernel, "", "unknown compute kernel")
 	}
@@ -577,6 +581,60 @@ float b = float(src[index + b_index]) * scan * b_mask;
 dst[index + r_index] = uchar(metal::clamp(metal::rint(r), 0.0f, 255.0f));
 dst[index + g_index] = uchar(metal::clamp(metal::rint(g), 0.0f, 255.0f));
 dst[index + b_index] = uchar(metal::clamp(metal::rint(b), 0.0f, 255.0f));
+dst[index + 3] = src[index + 3];`,
+	},
+	"frame_soften_filter": {
+		inputNames:  []string{"src"},
+		outputNames: []string{"dst"},
+		source: `uint x = thread_position_in_grid.x;
+uint y = thread_position_in_grid.y;
+if (x >= WIDTH || y >= HEIGHT) {
+    return;
+}
+uint index = y * STRIDE + x * 4;
+float mix = float(STRENGTH) / 256.0f;
+for (uint channel = 0; channel < 3; channel++) {
+    float sum = 0.0f;
+    for (int dy = -1; dy <= 1; dy++) {
+        int sy = metal::clamp(int(y) + dy, 0, HEIGHT - 1);
+        for (int dx = -1; dx <= 1; dx++) {
+            int sx = metal::clamp(int(x) + dx, 0, WIDTH - 1);
+            uint sample_index = uint(sy) * STRIDE + uint(sx) * 4 + channel;
+            sum += float(src[sample_index]);
+        }
+    }
+    float blurred = sum / 9.0f;
+    float original = float(src[index + channel]);
+    float value = original + (blurred - original) * mix;
+    dst[index + channel] = uchar(metal::clamp(metal::rint(value), 0.0f, 255.0f));
+}
+dst[index + 3] = src[index + 3];`,
+	},
+	"frame_sharpen_filter": {
+		inputNames:  []string{"src"},
+		outputNames: []string{"dst"},
+		source: `uint x = thread_position_in_grid.x;
+uint y = thread_position_in_grid.y;
+if (x >= WIDTH || y >= HEIGHT) {
+    return;
+}
+uint index = y * STRIDE + x * 4;
+float mix = float(STRENGTH) / 256.0f;
+for (uint channel = 0; channel < 3; channel++) {
+    float sum = 0.0f;
+    for (int dy = -1; dy <= 1; dy++) {
+        int sy = metal::clamp(int(y) + dy, 0, HEIGHT - 1);
+        for (int dx = -1; dx <= 1; dx++) {
+            int sx = metal::clamp(int(x) + dx, 0, WIDTH - 1);
+            uint sample_index = uint(sy) * STRIDE + uint(sx) * 4 + channel;
+            sum += float(src[sample_index]);
+        }
+    }
+    float blurred = sum / 9.0f;
+    float original = float(src[index + channel]);
+    float value = original + (original - blurred) * mix;
+    dst[index + channel] = uchar(metal::clamp(metal::rint(value), 0.0f, 255.0f));
+}
 dst[index + 3] = src[index + 3];`,
 	},
 }
@@ -1022,5 +1080,69 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 		config.AddTemplateInt("SCANLINE_STRENGTH", scanlineStrength)
 		config.AddTemplateInt("MASK_STRENGTH", maskStrength)
 		config.AddTemplateBool("BGRA_ORDER", src.desc.Format == PixelBGRA8)
+	})
+}
+
+func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
+	srcValue, err := requireBuffer(args.Inputs, "src")
+	if err != nil {
+		return err
+	}
+	dstValue, err := requireBuffer(args.Outputs, "dst")
+	if err != nil {
+		return err
+	}
+	src, err := session.pixelBufferLocked(srcValue, "src")
+	if err != nil {
+		return err
+	}
+	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	if err != nil {
+		return err
+	}
+	if err := validateFilterBuffers(src, dst, KernelSoftenFilter); err != nil {
+		return err
+	}
+	strength, err := unitScalar(args, KernelSoftenFilter, "strength", 0.4)
+	if err != nil {
+		return err
+	}
+	return session.applyUnaryPixelKernelLocked("frame_soften_filter", src, dst, func(config *metal.MetalKernelConfig) {
+		config.AddTemplateInt("WIDTH", src.desc.Width)
+		config.AddTemplateInt("HEIGHT", src.desc.Height)
+		config.AddTemplateInt("STRIDE", src.desc.Stride)
+		config.AddTemplateInt("STRENGTH", strength)
+	})
+}
+
+func (session *computeSession) runSharpenFilterLocked(args KernelArgs) error {
+	srcValue, err := requireBuffer(args.Inputs, "src")
+	if err != nil {
+		return err
+	}
+	dstValue, err := requireBuffer(args.Outputs, "dst")
+	if err != nil {
+		return err
+	}
+	src, err := session.pixelBufferLocked(srcValue, "src")
+	if err != nil {
+		return err
+	}
+	dst, err := session.pixelBufferLocked(dstValue, "dst")
+	if err != nil {
+		return err
+	}
+	if err := validateFilterBuffers(src, dst, KernelSharpenFilter); err != nil {
+		return err
+	}
+	strength, err := unitScalar(args, KernelSharpenFilter, "strength", 0.5)
+	if err != nil {
+		return err
+	}
+	return session.applyUnaryPixelKernelLocked("frame_sharpen_filter", src, dst, func(config *metal.MetalKernelConfig) {
+		config.AddTemplateInt("WIDTH", src.desc.Width)
+		config.AddTemplateInt("HEIGHT", src.desc.Height)
+		config.AddTemplateInt("STRIDE", src.desc.Stride)
+		config.AddTemplateInt("STRENGTH", strength)
 	})
 }

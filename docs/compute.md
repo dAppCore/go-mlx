@@ -82,11 +82,15 @@ The built-in kernels are string constants in the root package:
 | `KernelPaletteExpandRGBA` | Indexed 8-bit source plus RGBA palette to RGBA8 |
 | `KernelScanlineFilter` | Alternating-line darkening for `rgba8` / `bgra8` frame buffers |
 | `KernelCRTFilter` | Scanline plus RGB triad mask approximation for `rgba8` / `bgra8` |
+| `KernelSoftenFilter` | 3x3 softening pass for `rgba8` / `bgra8` frame buffers |
+| `KernelSharpenFilter` | 3x3 unsharp-mask style pass for `rgba8` / `bgra8` frame buffers |
 
 Built-in filter kernels accept optional scalar controls via `KernelArgs.Scalars`:
 
 - `KernelScanlineFilter`: `strength` in `[0,1]` (default `0.35`)
 - `KernelCRTFilter`: `scanline_strength` in `[0,1]` (default `0.25`), `mask_strength` in `[0,1]` (default `0.35`)
+- `KernelSoftenFilter`: `strength` in `[0,1]` (default `0.4`)
+- `KernelSharpenFilter`: `strength` in `[0,1]` (default `0.5`)
 
 ## Example Pipeline
 
