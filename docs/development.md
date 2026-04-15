@@ -1,6 +1,6 @@
 # Development Guide
 
-Module: `forge.lthn.ai/core/go-mlx`
+Module: `dappco.re/go/mlx`
 
 ---
 
@@ -28,10 +28,10 @@ brew install cmake
 
 ### Go Workspace
 
-go-mlx participates in a Go workspace alongside go-inference. The `go.mod` uses a `replace` directive for local development:
+go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
 ```
-replace forge.lthn.ai/core/go-inference => ../go-inference
+replace dappco.re/go/core/inference => ../go-inference
 ```
 
 After adding modules or changing dependencies: `go work sync`
@@ -73,6 +73,12 @@ go test ./...
 ```
 
 Tests require a working mlx-c build. Integration tests that load model files are skipped automatically when model paths are absent (`/Volumes/Data/lem/safetensors/...`).
+
+If you are running inside a larger parent workspace whose `go.work` does not include `go-mlx`, use:
+
+```bash
+GOWORK=off go test ./...
+```
 
 ---
 

@@ -67,6 +67,7 @@ fmt.Println(text)
 - **Streaming inference** -- token-by-token generation via `iter.Seq[Token]` (range-over-func)
 - **Multi-turn chat** -- native chat templates for Gemma 3/4, Qwen 2/3, and Llama 3
 - **Batch inference** -- `Classify` (prefill-only) and `BatchGenerate` (autoregressive) for multiple prompts
+- **Frame compute sessions** -- non-LLM pixel-buffer pipelines for scaling, swizzling, palette expansion, and format conversion
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
 - **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
@@ -133,6 +134,7 @@ Measured on M3 Ultra (60-core GPU, 96 GB unified memory):
 
 ## Documentation
 
+- [Compute Guide](compute.md) -- frame-oriented Metal compute sessions, pixel buffers, kernels, metrics
 - [Architecture](architecture.md) -- CGO binding layer, lazy evaluation, memory model, attention, KV cache
 - [Models](models.md) -- model loading, supported architectures, tokenisation, chat templates
 - [Training](training.md) -- LoRA fine-tuning, gradient computation, AdamW optimiser, loss functions
