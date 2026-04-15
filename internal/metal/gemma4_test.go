@@ -1532,6 +1532,126 @@ func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_Good(t *testing.
 	}
 }
 
+func TestGemma4_LoadDisablesPerLayerInputsWithoutProjectionNorm_ReleasesUnusedWeights_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 2,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"vocab_size": 10,
+		"vocab_size_per_layer_input": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 4,
+		"sliding_window_pattern": 2,
+		"num_kv_shared_layers": 0,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+
+	weights := gemma4TinyWeightsWithPerLayerInputs()
+	delete(weights, "model.per_layer_projection_norm.weight")
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	freeWeightMap(weights)
+
+	ClearCache()
+	baseline := GetActiveMemory()
+
+	model, err := LoadGemma4(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4: %v", err)
+	}
+
+	closeGemma4(model)
+	ClearCache()
+
+	if active := GetActiveMemory(); active > baseline {
+		t.Fatalf("active memory after close = %d, want <= %d", active, baseline)
+	}
+}
+
+func TestGemma4_LoadKEqVModel_ReleasesUnusedVProjWeights_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 1,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"num_global_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"attention_k_eq_v": true,
+		"vocab_size": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 4,
+		"sliding_window_pattern": 1,
+		"num_kv_shared_layers": 0,
+		"hidden_size_per_layer_input": 0,
+		"layer_types": ["full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+
+	weights := map[string]*Array{
+		"model.embed_tokens.weight":                        seqArray(0.01, 10, 8),
+		"model.norm.weight":                                seqArray(0.02, 8),
+		"model.layers.0.input_layernorm.weight":            seqArray(0.03, 8),
+		"model.layers.0.post_attention_layernorm.weight":   seqArray(0.04, 8),
+		"model.layers.0.pre_feedforward_layernorm.weight":  seqArray(0.05, 8),
+		"model.layers.0.post_feedforward_layernorm.weight": seqArray(0.06, 8),
+		"model.layers.0.layer_scalar":                      FromValues([]float32{1}, 1),
+		"model.layers.0.self_attn.q_proj.weight":           seqArray(0.10, 8, 8),
+		"model.layers.0.self_attn.k_proj.weight":           seqArray(0.20, 8, 8),
+		"model.layers.0.self_attn.v_proj.weight":           seqArray(0.30, 8, 8),
+		"model.layers.0.self_attn.o_proj.weight":           seqArray(0.40, 8, 8),
+		"model.layers.0.self_attn.q_norm.weight":           seqArray(0.50, 8),
+		"model.layers.0.self_attn.k_norm.weight":           seqArray(0.60, 8),
+		"model.layers.0.mlp.gate_proj.weight":              seqArray(0.70, 16, 8),
+		"model.layers.0.mlp.up_proj.weight":                seqArray(0.80, 16, 8),
+		"model.layers.0.mlp.down_proj.weight":              seqArray(0.90, 8, 16),
+	}
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), weights); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+	freeWeightMap(weights)
+
+	ClearCache()
+	baseline := GetActiveMemory()
+
+	model, err := LoadGemma4(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4: %v", err)
+	}
+
+	if got := model.Layers[0].Attention.VProj; got != nil {
+		t.Fatal("expected K-equals-V full-attention layer to drop v_proj")
+	}
+
+	closeGemma4(model)
+	ClearCache()
+
+	if active := GetActiveMemory(); active > baseline {
+		t.Fatalf("active memory after close = %d, want <= %d", active, baseline)
+	}
+}
+
 func gemma4TinyWeights() map[string]*Array {
 	weights := map[string]*Array{
 		"model.embed_tokens.weight": seqArray(0.01, 10, 8),

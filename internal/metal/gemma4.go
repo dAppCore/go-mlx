@@ -978,6 +978,147 @@ func gemma4AttentionScale(headDim int32) float32 {
 	return 1.0
 }
 
+func gemma4TrackArrays(retained map[*Array]struct{}, arrays ...*Array) {
+	for _, arr := range arrays {
+		if arr == nil || !arr.Valid() {
+			continue
+		}
+		retained[arr] = struct{}{}
+	}
+}
+
+func gemma4TrackEmbedding(retained map[*Array]struct{}, embedding *Embedding) {
+	if embedding == nil {
+		return
+	}
+	gemma4TrackArrays(retained, embedding.Weight, embedding.Scales, embedding.Biases)
+}
+
+func gemma4TrackLinear(retained map[*Array]struct{}, linear *Linear) {
+	if linear == nil {
+		return
+	}
+	gemma4TrackArrays(retained, linear.Weight, linear.Scales, linear.Biases, linear.Bias)
+}
+
+func gemma4TrackSwitchLinear(retained map[*Array]struct{}, linear *SwitchLinear) {
+	if linear == nil {
+		return
+	}
+	gemma4TrackArrays(retained, linear.Weight, linear.Scales, linear.Biases, linear.Bias)
+}
+
+func gemma4RetainedWeights(m *Gemma4Model) map[*Array]struct{} {
+	retained := make(map[*Array]struct{})
+	if m == nil {
+		return retained
+	}
+
+	gemma4TrackEmbedding(retained, m.EmbedTokens)
+	gemma4TrackEmbedding(retained, m.EmbedTokensPerLayer)
+	gemma4TrackLinear(retained, m.PerLayerModelProj)
+	gemma4TrackLinear(retained, m.Output)
+	if m.Norm != nil {
+		gemma4TrackArrays(retained, m.Norm.Weight)
+	}
+	if m.PerLayerProjNorm != nil {
+		gemma4TrackArrays(retained, m.PerLayerProjNorm.Weight)
+	}
+
+	for _, layer := range m.Layers {
+		if layer == nil {
+			continue
+		}
+		if layer.InputNorm != nil {
+			gemma4TrackArrays(retained, layer.InputNorm.Weight)
+		}
+		if layer.PostAttnNorm != nil {
+			gemma4TrackArrays(retained, layer.PostAttnNorm.Weight)
+		}
+		if layer.PreFFNorm != nil {
+			gemma4TrackArrays(retained, layer.PreFFNorm.Weight)
+		}
+		if layer.PostFFNorm != nil {
+			gemma4TrackArrays(retained, layer.PostFFNorm.Weight)
+		}
+		if layer.PreFFNorm2 != nil {
+			gemma4TrackArrays(retained, layer.PreFFNorm2.Weight)
+		}
+		if layer.PostFFNorm1 != nil {
+			gemma4TrackArrays(retained, layer.PostFFNorm1.Weight)
+		}
+		if layer.PostFFNorm2 != nil {
+			gemma4TrackArrays(retained, layer.PostFFNorm2.Weight)
+		}
+		if layer.PostPerLayerInputNorm != nil {
+			gemma4TrackArrays(retained, layer.PostPerLayerInputNorm.Weight)
+		}
+		gemma4TrackArrays(retained, layer.LayerScalar)
+		gemma4TrackLinear(retained, layer.PerLayerInputGate)
+		gemma4TrackLinear(retained, layer.PerLayerProjection)
+
+		if attn := layer.Attention; attn != nil {
+			gemma4TrackLinear(retained, attn.QProj)
+			gemma4TrackLinear(retained, attn.KProj)
+			gemma4TrackLinear(retained, attn.VProj)
+			gemma4TrackLinear(retained, attn.OProj)
+			if attn.QNorm != nil {
+				gemma4TrackArrays(retained, attn.QNorm.Weight)
+			}
+			if attn.KNorm != nil {
+				gemma4TrackArrays(retained, attn.KNorm.Weight)
+			}
+		}
+
+		if mlp := layer.MLP; mlp != nil {
+			gemma4TrackLinear(retained, mlp.GateProj)
+			gemma4TrackLinear(retained, mlp.UpProj)
+			gemma4TrackLinear(retained, mlp.DownProj)
+		}
+
+		if router := layer.Router; router != nil {
+			gemma4TrackLinear(retained, router.Proj)
+			gemma4TrackArrays(retained, router.Scale, router.PerExpertScale)
+		}
+
+		if experts := layer.Experts; experts != nil {
+			gemma4TrackSwitchLinear(retained, experts.GateProj)
+			gemma4TrackSwitchLinear(retained, experts.UpProj)
+			gemma4TrackSwitchLinear(retained, experts.DownProj)
+		}
+	}
+
+	return retained
+}
+
+func gemma4FreeUnusedWeights(weights map[string]*Array, retained map[*Array]struct{}) {
+	freed := make(map[*Array]struct{})
+	for _, arr := range weights {
+		if arr == nil || !arr.Valid() {
+			continue
+		}
+		if _, ok := retained[arr]; ok {
+			continue
+		}
+		if _, ok := freed[arr]; ok {
+			continue
+		}
+		Free(arr)
+		freed[arr] = struct{}{}
+	}
+}
+
+func gemma4MaterializeRetainedWeights(retained map[*Array]struct{}) {
+	all := make([]*Array, 0, len(retained))
+	for arr := range retained {
+		if arr == nil || !arr.Valid() {
+			continue
+		}
+		all = append(all, arr)
+	}
+	Materialize(all...)
+}
+
 func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 	if m.Norm != nil {
 		m.NormScaled = AddScalar(m.Norm.Weight, 1.0)
@@ -1276,12 +1417,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)
-
-	var allArrays []*Array
-	for _, arr := range weights {
-		allArrays = append(allArrays, arr)
-	}
-	Materialize(allArrays...)
+	retainedWeights := gemma4RetainedWeights(m)
+	gemma4FreeUnusedWeights(weights, retainedWeights)
+	gemma4MaterializeRetainedWeights(retainedWeights)
 	precomputeGemma4ScaledWeights(m)
 
 	loadSucceeded = true
