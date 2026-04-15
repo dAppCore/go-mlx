@@ -586,6 +586,23 @@ func TestGemma4_SwitchLinear_QuantizedWithoutConfig_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_QuantPredicate_RouterForces8Bit_Good(t *testing.T) {
+	defaultQ := &QuantizationConfig{GroupSize: 128, Bits: 4}
+
+	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
+	if routerQ == nil {
+		t.Fatal("router quantization predicate returned nil")
+	}
+	if routerQ.GroupSize != 64 || routerQ.Bits != 8 {
+		t.Fatalf("router quantization = %+v, want group_size=64 bits=8", routerQ)
+	}
+
+	mlpQ := gemma4QuantPredicate("model.layers.0.mlp.gate_proj", defaultQ)
+	if mlpQ != defaultQ {
+		t.Fatalf("non-router quantization should preserve default config pointer, got %+v want %+v", mlpQ, defaultQ)
+	}
+}
+
 func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

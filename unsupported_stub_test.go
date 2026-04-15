@@ -119,4 +119,39 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_, _ = streamAdapter.Chat(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{})
 	_ = streamAdapter.ChatStream(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(string) error { return nil })
 	_, _ = NewMLXBackend("/tmp/model")
+
+	compute := DefaultCompute()
+	_ = compute.Available()
+	_ = compute.DeviceInfo()
+	_, _ = NewSession(
+		WithSessionLabel("stub"),
+		WithVerboseKernels(true),
+		WithResetPeakMemory(true),
+	)
+	computeDesc := PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 1,
+		Format: PixelIndexed8,
+	}
+	_ = computeDesc.Validate()
+	_ = computeDesc.SizeBytes()
+	_ = PixelRGBA8.BytesPerPixel()
+	_ = PixelBGRA8.BytesPerPixel()
+	_ = PixelRGB565.BytesPerPixel()
+	_ = PixelXRGB8888.BytesPerPixel()
+	_ = PixelIndexed8.BytesPerPixel()
+	_ = KernelArgs{
+		Inputs:  map[string]Buffer{},
+		Outputs: map[string]Buffer{},
+		Scalars: map[string]float64{},
+	}
+	_ = KernelNearestScale
+	_ = KernelBilinearScale
+	_ = KernelIntegerScale
+	_ = KernelRGB565ToRGBA8
+	_ = KernelRGBA8ToBGRA8
+	_ = KernelBGRA8ToRGBA8
+	_ = KernelXRGB8888ToRGBA8
+	_ = KernelPaletteExpandRGBA
 }
