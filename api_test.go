@@ -34,11 +34,16 @@ type fakeNativeModel struct {
 	lastBatchConfig      metal.GenerateConfig
 	lastClassifyConfig   metal.GenerateConfig
 	lastChatMessages     []metal.ChatMessage
+	lastLoRAConfig       metal.LoRAConfig
+	loraAdapter          *metal.LoRAAdapter
 	closeErr             error
 	closeCalls           int
 }
 
-func (m *fakeNativeModel) ApplyLoRA(_ metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+func (m *fakeNativeModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
+	m.lastLoRAConfig = cfg
+	return m.loraAdapter
+}
 func (m *fakeNativeModel) BatchGenerate(_ context.Context, _ []string, cfg metal.GenerateConfig) ([]metal.BatchResult, error) {
 	m.lastBatchConfig = cfg
 	return m.batchResults, m.err
@@ -430,6 +435,42 @@ func TestModelClose_Error_Bad(t *testing.T) {
 	}
 	if model.model != nil {
 		t.Fatal("model handle should still be cleared on close error")
+	}
+}
+
+func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got := NewLoRA(model, &LoRAConfig{
+		Rank:         4,
+		Scale:        1.5,
+		TargetLayers: []string{"q_proj", "v_proj"},
+		Lambda:       0.01,
+		DType:        metal.DTypeBFloat16,
+	})
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.Rank != 4 {
+		t.Fatalf("Rank = %d, want 4", native.lastLoRAConfig.Rank)
+	}
+	if native.lastLoRAConfig.Scale != 1.5 {
+		t.Fatalf("Scale = %f, want 1.5", native.lastLoRAConfig.Scale)
+	}
+	if native.lastLoRAConfig.Lambda != 0.01 {
+		t.Fatalf("Lambda = %f, want 0.01", native.lastLoRAConfig.Lambda)
+	}
+	if native.lastLoRAConfig.DType != metal.DTypeBFloat16 {
+		t.Fatalf("DType = %v, want %v", native.lastLoRAConfig.DType, metal.DTypeBFloat16)
+	}
+	if !reflect.DeepEqual(native.lastLoRAConfig.TargetLayers, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("TargetLayers = %v, want [q_proj v_proj]", native.lastLoRAConfig.TargetLayers)
+	}
+	if len(native.lastLoRAConfig.TargetKeys) != 0 {
+		t.Fatalf("TargetKeys = %v, want nil for RFC alias path", native.lastLoRAConfig.TargetKeys)
 	}
 }
 
