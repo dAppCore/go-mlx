@@ -68,7 +68,10 @@ const (
 type GGUFInfo struct {
 	Path          string
 	Architecture  string
+	VocabSize     int
+	HiddenSize    int
 	NumLayers     int
+	ContextLength int
 	QuantBits     int
 	QuantGroup    int
 	TensorCount   int
@@ -91,12 +94,18 @@ type ggufTensorInfo struct {
 }
 
 type modelConfigProbe struct {
-	ModelType       string   `json:"model_type"`
-	NumHiddenLayers int      `json:"num_hidden_layers"`
-	Architectures   []string `json:"architectures"`
-	TextConfig      struct {
-		ModelType       string `json:"model_type"`
-		NumHiddenLayers int    `json:"num_hidden_layers"`
+	ModelType             string   `json:"model_type"`
+	VocabSize             int      `json:"vocab_size"`
+	HiddenSize            int      `json:"hidden_size"`
+	NumHiddenLayers       int      `json:"num_hidden_layers"`
+	MaxPositionEmbeddings int      `json:"max_position_embeddings"`
+	Architectures         []string `json:"architectures"`
+	TextConfig            struct {
+		ModelType             string `json:"model_type"`
+		VocabSize             int    `json:"vocab_size"`
+		HiddenSize            int    `json:"hidden_size"`
+		NumHiddenLayers       int    `json:"num_hidden_layers"`
+		MaxPositionEmbeddings int    `json:"max_position_embeddings"`
 	} `json:"text_config"`
 	Quantization *struct {
 		Bits      int `json:"bits"`
@@ -138,7 +147,10 @@ func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
 	info := GGUFInfo{
 		Path:          absolutePath,
 		Architecture:  architecture,
+		VocabSize:     config.vocabSize(),
+		HiddenSize:    config.hiddenSize(),
 		NumLayers:     config.numLayers(),
+		ContextLength: config.contextLength(),
 		QuantBits:     quantBits,
 		QuantGroup:    config.quantGroup(),
 		TensorCount:   len(tensors),
@@ -451,6 +463,36 @@ func (probe *modelConfigProbe) numLayers() int {
 		return probe.NumHiddenLayers
 	}
 	return probe.TextConfig.NumHiddenLayers
+}
+
+func (probe *modelConfigProbe) vocabSize() int {
+	if probe == nil {
+		return 0
+	}
+	if probe.VocabSize > 0 {
+		return probe.VocabSize
+	}
+	return probe.TextConfig.VocabSize
+}
+
+func (probe *modelConfigProbe) hiddenSize() int {
+	if probe == nil {
+		return 0
+	}
+	if probe.HiddenSize > 0 {
+		return probe.HiddenSize
+	}
+	return probe.TextConfig.HiddenSize
+}
+
+func (probe *modelConfigProbe) contextLength() int {
+	if probe == nil {
+		return 0
+	}
+	if probe.MaxPositionEmbeddings > 0 {
+		return probe.MaxPositionEmbeddings
+	}
+	return probe.TextConfig.MaxPositionEmbeddings
 }
 
 func (probe *modelConfigProbe) quantBits() int {

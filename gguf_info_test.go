@@ -25,7 +25,10 @@ func TestReadGGUFInfo_Good(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{
 		"model_type": "gemma3",
+		"vocab_size": 262208,
+		"hidden_size": 3072,
 		"num_hidden_layers": 26,
+		"max_position_embeddings": 8192,
 		"quantization": {"bits": 4, "group_size": 32}
 	}`), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -53,6 +56,15 @@ func TestReadGGUFInfo_Good(t *testing.T) {
 	}
 	if info.NumLayers != 26 {
 		t.Fatalf("NumLayers = %d, want 26", info.NumLayers)
+	}
+	if info.VocabSize != 262208 {
+		t.Fatalf("VocabSize = %d, want 262208", info.VocabSize)
+	}
+	if info.HiddenSize != 3072 {
+		t.Fatalf("HiddenSize = %d, want 3072", info.HiddenSize)
+	}
+	if info.ContextLength != 8192 {
+		t.Fatalf("ContextLength = %d, want 8192", info.ContextLength)
 	}
 	if info.QuantBits != 4 {
 		t.Fatalf("QuantBits = %d, want 4", info.QuantBits)
@@ -87,6 +99,50 @@ func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
 	}
 	if info.QuantBits != 8 {
 		t.Fatalf("QuantBits = %d, want 8", info.QuantBits)
+	}
+}
+
+func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262144,
+			"hidden_size": 2560,
+			"num_hidden_layers": 48,
+			"max_position_embeddings": 131072
+		},
+		"quantization_config": {"bits": 4, "group_size": 64}
+	}`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	ggufPath := filepath.Join(dir, "model.gguf")
+	writeTestGGUF(t, ggufPath, nil, []ggufTensorSpec{
+		{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
+	})
+
+	info, err := ReadGGUFInfo(ggufPath)
+	if err != nil {
+		t.Fatalf("ReadGGUFInfo() error = %v", err)
+	}
+	if info.Architecture != "gemma4_text" {
+		t.Fatalf("Architecture = %q, want gemma4_text", info.Architecture)
+	}
+	if info.VocabSize != 262144 {
+		t.Fatalf("VocabSize = %d, want 262144", info.VocabSize)
+	}
+	if info.HiddenSize != 2560 {
+		t.Fatalf("HiddenSize = %d, want 2560", info.HiddenSize)
+	}
+	if info.NumLayers != 48 {
+		t.Fatalf("NumLayers = %d, want 48", info.NumLayers)
+	}
+	if info.ContextLength != 131072 {
+		t.Fatalf("ContextLength = %d, want 131072", info.ContextLength)
+	}
+	if info.QuantBits != 4 || info.QuantGroup != 64 {
+		t.Fatalf("quant = %d-bit group=%d, want 4-bit group=64", info.QuantBits, info.QuantGroup)
 	}
 }
 

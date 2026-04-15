@@ -328,15 +328,26 @@ func (m *Model) Info() ModelInfo {
 		contextLength = m.cfg.ContextLength
 	}
 	architecture := info.Architecture
+	vocabSize := info.VocabSize
 	numLayers := info.NumLayers
+	hiddenSize := info.HiddenSize
 	quantBits := info.QuantBits
 	quantGroup := info.QuantGroup
 	if m.gguf != nil {
 		if architecture == "" {
 			architecture = m.gguf.Architecture
 		}
+		if vocabSize == 0 {
+			vocabSize = m.gguf.VocabSize
+		}
 		if numLayers == 0 {
 			numLayers = m.gguf.NumLayers
+		}
+		if hiddenSize == 0 {
+			hiddenSize = m.gguf.HiddenSize
+		}
+		if contextLength == 0 {
+			contextLength = m.gguf.ContextLength
 		}
 		if quantBits == 0 {
 			quantBits = m.gguf.QuantBits
@@ -347,9 +358,9 @@ func (m *Model) Info() ModelInfo {
 	}
 	return ModelInfo{
 		Architecture:  architecture,
-		VocabSize:     info.VocabSize,
+		VocabSize:     vocabSize,
 		NumLayers:     numLayers,
-		HiddenSize:    info.HiddenSize,
+		HiddenSize:    hiddenSize,
 		QuantBits:     quantBits,
 		QuantGroup:    quantGroup,
 		ContextLength: contextLength,

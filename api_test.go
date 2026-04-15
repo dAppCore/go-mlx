@@ -566,19 +566,17 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 	})
 
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
-		return &fakeNativeModel{
-			info: metal.ModelInfo{
-				VocabSize:  262144,
-				HiddenSize: 2560,
-			},
-		}, nil
+		return &fakeNativeModel{}, nil
 	}
 	readGGUFInfo = func(modelPath string) (GGUFInfo, error) {
 		return GGUFInfo{
-			Architecture: "gemma4_text",
-			NumLayers:    48,
-			QuantBits:    4,
-			QuantGroup:   64,
+			Architecture:  "gemma4_text",
+			VocabSize:     262144,
+			HiddenSize:    2560,
+			NumLayers:     48,
+			ContextLength: 131072,
+			QuantBits:     4,
+			QuantGroup:    64,
 		}, nil
 	}
 
@@ -592,6 +590,15 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 	}
 	if info.NumLayers != 48 {
 		t.Fatalf("Info().NumLayers = %d, want 48", info.NumLayers)
+	}
+	if info.VocabSize != 262144 {
+		t.Fatalf("Info().VocabSize = %d, want 262144", info.VocabSize)
+	}
+	if info.HiddenSize != 2560 {
+		t.Fatalf("Info().HiddenSize = %d, want 2560", info.HiddenSize)
+	}
+	if info.ContextLength != 131072 {
+		t.Fatalf("Info().ContextLength = %d, want 131072", info.ContextLength)
 	}
 	if info.QuantBits != 4 || info.QuantGroup != 64 {
 		t.Fatalf("Info() quant = %d-bit group=%d, want 4-bit group=64", info.QuantBits, info.QuantGroup)
