@@ -207,6 +207,42 @@ func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 	}
 }
 
+func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+	k, v := makeKV(6)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 6)
+	defer Free(outK, outV)
+	Materialize(outK, outV)
+
+	if c.Offset() != 6 {
+		t.Errorf("offset = %d, want 6", c.Offset())
+	}
+	if c.Len() != 4 {
+		t.Errorf("len = %d, want 4 (bounded cache)", c.Len())
+	}
+
+	if got := outK.Shape()[2]; got != 6 {
+		t.Fatalf("outK L dim = %d, want 6 full prompt tokens", got)
+	}
+	if got := outV.Shape()[2]; got != 6 {
+		t.Fatalf("outV L dim = %d, want 6 full prompt tokens", got)
+	}
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+	defer Free(state...)
+	if got := state[0].Shape()[2]; got != 4 {
+		t.Fatalf("cached key L dim = %d, want 4 bounded tokens", got)
+	}
+	if got := state[1].Shape()[2]; got != 4 {
+		t.Fatalf("cached value L dim = %d, want 4 bounded tokens", got)
+	}
+}
+
 func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
 	c := NewRotatingKVCache(4)
 

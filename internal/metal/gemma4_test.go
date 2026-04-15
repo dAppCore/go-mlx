@@ -848,6 +848,61 @@ func TestGemma4_LoadAndForwardDenseModel_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	dir := t.TempDir()
+	config := `{
+		"model_type": "gemma4_text",
+		"hidden_size": 8,
+		"num_hidden_layers": 2,
+		"intermediate_size": 16,
+		"num_attention_heads": 1,
+		"num_key_value_heads": 1,
+		"head_dim": 4,
+		"global_head_dim": 8,
+		"vocab_size": 10,
+		"rms_norm_eps": 1e-6,
+		"sliding_window": 2,
+		"sliding_window_pattern": 2,
+		"num_kv_shared_layers": 0,
+		"hidden_size_per_layer_input": 0,
+		"layer_types": ["sliding_attention", "full_attention"]
+	}`
+	if err := coreio.Local.Write(core.JoinPath(dir, "config.json"), config); err != nil {
+		t.Fatalf("write config.json: %v", err)
+	}
+	writeMinimalTokenizer(t, dir)
+	if err := SaveSafetensors(core.JoinPath(dir, "model.safetensors"), gemma4TinyWeights()); err != nil {
+		t.Fatalf("SaveSafetensors: %v", err)
+	}
+
+	model, err := LoadGemma4(dir)
+	if err != nil {
+		t.Fatalf("LoadGemma4: %v", err)
+	}
+	defer closeGemma4(model)
+
+	tokens := FromValues([]int32{2, 3, 4, 5}, 1, 4)
+	caches := model.NewCache()
+	logits := model.Forward(tokens, caches)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval logits: %v", err)
+	}
+	defer func() {
+		Free(tokens, logits)
+		freeCaches(caches)
+	}()
+
+	shape := logits.Shape()
+	if len(shape) != 3 {
+		t.Fatalf("logits dims = %v, want rank 3", shape)
+	}
+	if shape[0] != 1 || shape[1] != 4 || shape[2] != 10 {
+		t.Fatalf("logits shape = %v, want [1 4 10]", shape)
+	}
+}
+
 func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

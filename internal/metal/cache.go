@@ -194,24 +194,28 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	var fullK, fullV *Array
 	if c.keys == nil {
-		c.keys, c.values = k.Clone(), v.Clone()
+		fullK, fullV = k.Clone(), v.Clone()
 	} else {
 		oldK, oldV := c.keys, c.values
-		c.keys = Concatenate([]*Array{oldK, k}, 2)
-		c.values = Concatenate([]*Array{oldV, v}, 2)
+		fullK = Concatenate([]*Array{oldK, k}, 2)
+		fullV = Concatenate([]*Array{oldV, v}, 2)
 		Free(oldK, oldV)
 	}
 	c.offset += seqLen
 
-	cap := int(c.keys.Shape()[2])
+	cap := int(fullK.Shape()[2])
 	if trim := cap - c.maxSize; trim > 0 {
-		oldK, oldV := c.keys, c.values
-		c.keys = Slice(c.keys, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
-		c.values = Slice(c.values, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
-		Free(oldK, oldV)
+		// Preserve the full multi-token prompt for the current attention pass,
+		// while storing only the bounded sliding window for future decode steps.
+		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
+		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
+		c.idx = int(c.keys.Shape()[2])
+		return fullK, fullV
 	}
 
+	c.keys, c.values = fullK, fullV
 	c.idx = int(c.keys.Shape()[2])
 	// Return Slice views so callers can Free them without destroying the cache.
 	// (updateInPlace and KVCache.Update already return Slice views.)
