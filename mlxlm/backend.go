@@ -25,16 +25,16 @@
 package mlxlm
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
 	"io"
 	"iter"
 	"math"
-	"os/exec"
+	"os"
+	"path/filepath"
 	"reflect"
-	"sync"
 	"time"
 
 	"dappco.re/go/core"
@@ -47,7 +47,9 @@ import (
 var bridgeFS embed.FS
 
 var (
-	bridgeScriptOnce  sync.Once
+	mlxlmCore         = newMLXLMCore()
+	bridgeScriptLock  = mlxlmCore.Lock("mlxlm.bridgeScript").Mutex
+	bridgeScriptReady bool
 	bridgeScriptPath  string // extracted bridge.py temp path (created once per process)
 	bridgeScriptError error
 )
@@ -56,24 +58,30 @@ var (
 //
 //	bridgePath, err := extractScript() // called automatically by LoadModel
 func extractScript() (string, error) {
-	bridgeScriptOnce.Do(func() {
-		data, err := bridgeFS.ReadFile("bridge.py")
-		if err != nil {
-			bridgeScriptError = core.E("mlxlm.extractScript", "read embedded bridge.py", err)
-			return
-		}
-		dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
-		if dir == "" {
-			bridgeScriptError = core.E("mlxlm.extractScript", "create temp dir", nil)
-			return
-		}
-		p := core.JoinPath(dir, "bridge.py")
-		if err := coreio.Local.Write(p, string(data)); err != nil {
-			bridgeScriptError = core.E("mlxlm.extractScript", "write bridge.py", err)
-			return
-		}
-		bridgeScriptPath = p
-	})
+	bridgeScriptLock.Lock()
+	defer bridgeScriptLock.Unlock()
+
+	if bridgeScriptReady {
+		return bridgeScriptPath, bridgeScriptError
+	}
+	bridgeScriptReady = true
+
+	data, err := bridgeFS.ReadFile("bridge.py")
+	if err != nil {
+		bridgeScriptError = core.E("mlxlm.extractScript", "read embedded bridge.py", err)
+		return bridgeScriptPath, bridgeScriptError
+	}
+	dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
+	if dir == "" {
+		bridgeScriptError = core.E("mlxlm.extractScript", "create temp dir", nil)
+		return bridgeScriptPath, bridgeScriptError
+	}
+	p := core.JoinPath(dir, "bridge.py")
+	if err := coreio.Local.Write(p, string(data)); err != nil {
+		bridgeScriptError = core.E("mlxlm.extractScript", "write bridge.py", err)
+		return bridgeScriptPath, bridgeScriptError
+	}
+	bridgeScriptPath = p
 	return bridgeScriptPath, bridgeScriptError
 }
 
@@ -87,8 +95,9 @@ func (backend *mlxlmBackend) Name() string { return "mlx_lm" }
 
 // Available reports whether python3 is on PATH.
 func (backend *mlxlmBackend) Available() bool {
-	_, err := exec.LookPath("python3")
-	return err == nil
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return mlxlmCore.Process().Run(ctx, "python3", "--version").OK
 }
 
 // LoadModel spawns bridge.py as a subprocess and returns a TextModel backed by it.
@@ -115,30 +124,23 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "python3", "-u", bridgePath)
-	cmd.Stderr = nil // let stderr go to parent for debugging
-
-	stdinPipe, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, core.E("mlxlm.loadModel", "stdin pipe", err)
+	result := mlxlmCore.Process().Start(ctx, core.NewOptions(
+		core.Option{Key: "command", Value: "python3"},
+		core.Option{Key: "args", Value: []string{"-u", bridgePath}},
+	))
+	if !result.OK {
+		return nil, core.E("mlxlm.loadModel", "start python3", resultError(result))
 	}
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, core.E("mlxlm.loadModel", "stdout pipe", err)
+	proc, ok := result.Value.(*mlxlmProcess)
+	if !ok {
+		return nil, core.E("mlxlm.loadModel", "process.start returned unexpected handle", nil)
 	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, core.E("mlxlm.loadModel", "start python3", err)
-	}
-
-	scanner := bufio.NewScanner(stdoutPipe)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024) // 1MB line buffer
 
 	model := &mlxlmModel{
-		cmd:    cmd,
-		stdin:  stdinPipe,
-		stdout: scanner,
-		raw:    stdoutPipe,
+		process: proc,
+		stdin:   proc.stdin,
+		stdout:  newJSONLineReader(proc.stdout),
+		mu:      mlxlmCore.Lock("mlxlm.model." + core.ID()).Mutex,
 	}
 
 	loadRequest := map[string]any{
@@ -172,16 +174,20 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 }
 
 type mlxlmModel struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Scanner
-	raw    io.ReadCloser
+	process *mlxlmProcess
+	stdin   io.WriteCloser
+	stdout  *jsonLineReader
 
 	modelType string
 	vocabSize int
 
 	lastErr error
-	mu      sync.Mutex // serialise Generate/Chat calls
+	mu      mutex // serialise Generate/Chat calls
+}
+
+type mutex interface {
+	Lock()
+	Unlock()
 }
 
 func optionalFloat32Field(v any, fieldName string) (float32, bool) {
@@ -210,14 +216,15 @@ func (model *mlxlmModel) send(obj map[string]any) error {
 
 // recv reads and parses one JSON line from subprocess stdout.
 func (model *mlxlmModel) recv() (map[string]any, error) {
-	if !model.stdout.Scan() {
-		if err := model.stdout.Err(); err != nil {
-			return nil, core.E("mlxlm.recv", "scanner", err)
+	line, err := model.stdout.ReadLine()
+	if err != nil {
+		if err == io.EOF {
+			return nil, core.E("mlxlm.recv", "subprocess closed stdout", nil)
 		}
-		return nil, core.E("mlxlm.recv", "subprocess closed stdout", nil)
+		return nil, core.E("mlxlm.recv", "read subprocess stdout", err)
 	}
 	var obj map[string]any
-	if r := core.JSONUnmarshal(model.stdout.Bytes(), &obj); !r.OK {
+	if r := core.JSONUnmarshal(line, &obj); !r.OK {
 		return nil, core.E("mlxlm.recv", "parse response", nil)
 	}
 	return obj, nil
@@ -446,13 +453,13 @@ func (model *mlxlmModel) Close() error {
 	_ = model.send(map[string]any{"cmd": "quit"}) // ignore errors — subprocess may be dead
 	_ = model.stdin.Close()
 	done := make(chan error, 1)
-	go func() { done <- model.cmd.Wait() }()
+	go func() { done <- model.process.Wait() }()
 
 	select {
 	case err := <-done:
 		return err
 	case <-time.After(2 * time.Second):
-		_ = model.cmd.Process.Kill()
+		_ = model.process.Kill()
 		return <-done
 	}
 }
@@ -565,8 +572,248 @@ func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 // kill terminates the subprocess immediately (used during load failures).
 func (model *mlxlmModel) kill() {
 	_ = model.stdin.Close()
-	if model.cmd.Process != nil {
-		_ = model.cmd.Process.Kill()
+	_ = model.process.Kill()
+	_ = model.process.Wait()
+}
+
+const maxJSONLineBytes = 1024 * 1024
+
+type jsonLineReader struct {
+	reader  io.Reader
+	pending []byte
+	scratch []byte
+}
+
+func newJSONLineReader(reader io.Reader) *jsonLineReader {
+	return &jsonLineReader{
+		reader:  reader,
+		pending: make([]byte, 0, 32*1024),
+		scratch: make([]byte, 32*1024),
 	}
-	_ = model.cmd.Wait()
+}
+
+func (reader *jsonLineReader) ReadLine() ([]byte, error) {
+	for {
+		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
+			line := make([]byte, index)
+			copy(line, reader.pending[:index])
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			reader.pending = reader.pending[index+1:]
+			return line, nil
+		}
+
+		if len(reader.pending) >= maxJSONLineBytes {
+			return nil, core.E("mlxlm.recv", "JSONL line exceeds 1 MiB", nil)
+		}
+
+		chunk := reader.scratch
+		if remaining := maxJSONLineBytes - len(reader.pending); remaining < len(chunk) {
+			chunk = chunk[:remaining]
+		}
+		n, err := reader.reader.Read(chunk)
+		if n > 0 {
+			reader.pending = append(reader.pending, chunk[:n]...)
+			continue
+		}
+		if err != nil {
+			if err == io.EOF && len(reader.pending) > 0 {
+				line := make([]byte, len(reader.pending))
+				copy(line, reader.pending)
+				reader.pending = reader.pending[:0]
+				return line, nil
+			}
+			return nil, err
+		}
+	}
+}
+
+type mlxlmProcess struct {
+	process *os.Process
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
+	done    chan struct{}
+	state   *os.ProcessState
+	err     error
+}
+
+func newMLXLMCore() *core.Core {
+	c := core.New()
+	c.Action("process.run", mlxlmProcessRun)
+	c.Action("process.start", mlxlmProcessStart)
+	return c
+}
+
+func mlxlmProcessRun(ctx context.Context, opts core.Options) core.Result {
+	proc, err := startProcessFromOptions(ctx, opts)
+	if err != nil {
+		return core.Result{Value: err, OK: false}
+	}
+	_ = proc.stdin.Close()
+
+	drained := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, proc.stdout)
+		close(drained)
+	}()
+
+	err = proc.Wait()
+	<-drained
+	if err != nil {
+		return core.Result{Value: err, OK: false}
+	}
+	return core.Result{Value: "", OK: true}
+}
+
+func mlxlmProcessStart(ctx context.Context, opts core.Options) core.Result {
+	proc, err := startProcessFromOptions(ctx, opts)
+	if err != nil {
+		return core.Result{Value: err, OK: false}
+	}
+	return core.Result{Value: proc, OK: true}
+}
+
+func startProcessFromOptions(ctx context.Context, opts core.Options) (*mlxlmProcess, error) {
+	command := opts.String("command")
+	args, err := stringSliceOption(opts, "args")
+	if err != nil {
+		return nil, err
+	}
+	return startMLXLMProcess(ctx, command, args...)
+}
+
+func stringSliceOption(opts core.Options, key string) ([]string, error) {
+	result := opts.Get(key)
+	if !result.OK {
+		return nil, nil
+	}
+	args, ok := result.Value.([]string)
+	if !ok {
+		return nil, core.E("mlxlm.process", key+" must be []string", nil)
+	}
+	return append([]string(nil), args...), nil
+}
+
+func startMLXLMProcess(ctx context.Context, command string, args ...string) (*mlxlmProcess, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if command == "" {
+		return nil, core.E("mlxlm.process", "command is required", nil)
+	}
+
+	path, err := lookPath(command)
+	if err != nil {
+		return nil, err
+	}
+
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		return nil, core.E("mlxlm.process", "stdin pipe", err)
+	}
+	stdoutRead, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		_ = stdinRead.Close()
+		_ = stdinWrite.Close()
+		return nil, core.E("mlxlm.process", "stdout pipe", err)
+	}
+	stderr, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		_ = stdinRead.Close()
+		_ = stdinWrite.Close()
+		_ = stdoutRead.Close()
+		_ = stdoutWrite.Close()
+		return nil, core.E("mlxlm.process", "stderr pipe", err)
+	}
+
+	files := []*os.File{stdinRead, stdoutWrite, stderr}
+	process, err := os.StartProcess(path, append([]string{command}, args...), &os.ProcAttr{
+		Env:   os.Environ(),
+		Files: files,
+	})
+	_ = stdinRead.Close()
+	_ = stdoutWrite.Close()
+	_ = stderr.Close()
+	if err != nil {
+		_ = stdinWrite.Close()
+		_ = stdoutRead.Close()
+		return nil, core.E("mlxlm.process", "start "+command, err)
+	}
+
+	proc := &mlxlmProcess{
+		process: process,
+		stdin:   stdinWrite,
+		stdout:  stdoutRead,
+		done:    make(chan struct{}),
+	}
+	go proc.wait()
+	go proc.killOnContextDone(ctx)
+	return proc, nil
+}
+
+func (proc *mlxlmProcess) wait() {
+	proc.state, proc.err = proc.process.Wait()
+	close(proc.done)
+}
+
+func (proc *mlxlmProcess) killOnContextDone(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		_ = proc.Kill()
+	case <-proc.done:
+	}
+}
+
+func (proc *mlxlmProcess) Wait() error {
+	<-proc.done
+	if proc.err != nil {
+		return proc.err
+	}
+	if proc.state != nil && !proc.state.Success() {
+		return core.E("mlxlm.process.Wait", proc.state.String(), nil)
+	}
+	return nil
+}
+
+func (proc *mlxlmProcess) Kill() error {
+	if proc == nil || proc.process == nil {
+		return nil
+	}
+	return proc.process.Kill()
+}
+
+func lookPath(command string) (string, error) {
+	if dir, _ := filepath.Split(command); dir != "" {
+		if executable(command) {
+			return command, nil
+		}
+		return "", core.E("mlxlm.process", "executable not found: "+command, nil)
+	}
+
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			dir = "."
+		}
+		path := filepath.Join(dir, command)
+		if executable(path) {
+			return path, nil
+		}
+	}
+	return "", core.E("mlxlm.process", "executable not found: "+command, nil)
+}
+
+func executable(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
+}
+
+func resultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return nil
 }
