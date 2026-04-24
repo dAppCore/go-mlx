@@ -4,7 +4,6 @@ package metal
 
 import (
 	"math"
-	"strings"
 
 	"dappco.re/go/core"
 
@@ -566,7 +565,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 }
 
 func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *QuantizationConfig {
-	if strings.HasSuffix(path, "router.proj") {
+	if core.HasSuffix(path, "router.proj") {
 		return &QuantizationConfig{GroupSize: 64, Bits: 8}
 	}
 	if defaultConfig != nil {
@@ -629,9 +628,9 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 			continue
 		}
 		for _, suffix := range []string{".weight", ".scales", ".biases", ".bias"} {
-			if strings.HasSuffix(canonical, ".experts.gate_up_proj"+suffix) {
-				base := strings.TrimSuffix(canonical, suffix)
-				base = strings.TrimSuffix(base, ".gate_up_proj")
+			if core.HasSuffix(canonical, ".experts.gate_up_proj"+suffix) {
+				base := core.TrimSuffix(canonical, suffix)
+				base = core.TrimSuffix(base, ".gate_up_proj")
 				gate, up, ok := splitGemma4GateUpArray(arr)
 				if !ok {
 					break
@@ -641,8 +640,8 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 				discarded = append(discarded, arr)
 				goto nextWeight
 			}
-			if strings.HasSuffix(canonical, ".experts.down_proj"+suffix) {
-				canonical = strings.TrimSuffix(canonical, ".down_proj"+suffix) + ".switch_glu.down_proj" + suffix
+			if core.HasSuffix(canonical, ".experts.down_proj"+suffix) {
+				canonical = core.TrimSuffix(canonical, ".down_proj"+suffix) + ".switch_glu.down_proj" + suffix
 				break
 			}
 		}
@@ -682,8 +681,8 @@ func trimGemma4WrapperPrefix(name string) (string, bool) {
 		"model.model.",
 		"model.",
 	} {
-		if strings.HasPrefix(name, prefix) {
-			return strings.TrimPrefix(name, prefix), true
+		if core.HasPrefix(name, prefix) {
+			return core.TrimPrefix(name, prefix), true
 		}
 	}
 	return name, false
@@ -699,26 +698,26 @@ func canonicalGemma4WeightName(name string) (string, bool) {
 		trimmed = next
 	}
 
-	if strings.HasPrefix(trimmed, "vision_tower") ||
-		strings.HasPrefix(trimmed, "multi_modal_projector") ||
-		strings.HasPrefix(trimmed, "audio_tower") ||
-		strings.HasPrefix(trimmed, "embed_audio") ||
-		strings.HasPrefix(trimmed, "embed_vision") ||
-		strings.Contains(trimmed, "self_attn.rotary_emb") ||
-		strings.Contains(trimmed, "input_max") ||
-		strings.Contains(trimmed, "input_min") ||
-		strings.Contains(trimmed, "output_max") ||
-		strings.Contains(trimmed, "output_min") {
+	if core.HasPrefix(trimmed, "vision_tower") ||
+		core.HasPrefix(trimmed, "multi_modal_projector") ||
+		core.HasPrefix(trimmed, "audio_tower") ||
+		core.HasPrefix(trimmed, "embed_audio") ||
+		core.HasPrefix(trimmed, "embed_vision") ||
+		core.Contains(trimmed, "self_attn.rotary_emb") ||
+		core.Contains(trimmed, "input_max") ||
+		core.Contains(trimmed, "input_min") ||
+		core.Contains(trimmed, "output_max") ||
+		core.Contains(trimmed, "output_min") {
 		return "", true
 	}
 
 	switch {
-	case strings.HasPrefix(trimmed, "layers."),
-		strings.HasPrefix(trimmed, "embed_tokens."),
-		strings.HasPrefix(trimmed, "embed_tokens_per_layer."),
-		strings.HasPrefix(trimmed, "norm."),
-		strings.HasPrefix(trimmed, "per_layer_model_projection."),
-		strings.HasPrefix(trimmed, "per_layer_projection_norm."):
+	case core.HasPrefix(trimmed, "layers."),
+		core.HasPrefix(trimmed, "embed_tokens."),
+		core.HasPrefix(trimmed, "embed_tokens_per_layer."),
+		core.HasPrefix(trimmed, "norm."),
+		core.HasPrefix(trimmed, "per_layer_model_projection."),
+		core.HasPrefix(trimmed, "per_layer_projection_norm."):
 		return "model." + trimmed, false
 	default:
 		return trimmed, false
