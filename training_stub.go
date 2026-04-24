@@ -6,7 +6,7 @@ import (
 	"errors"
 	"iter"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 )
 
 func unsupportedBuildError() error {

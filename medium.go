@@ -12,7 +12,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "dappco.re/go/core/io"
+	coreio "dappco.re/go/io"
 )
 
 // LoadModelFromMedium stages model files from an io.Medium before loading them.

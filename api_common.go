@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	coreio "dappco.re/go/core/io"
+	coreio "dappco.re/go/io"
 )
 
 // Token is a generated token from the RFC-style root API.

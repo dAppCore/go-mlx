@@ -8,7 +8,7 @@ import (
 	"iter"
 	"testing"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 )
 
 type stubTextModel struct {

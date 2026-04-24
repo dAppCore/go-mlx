@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
 )
 

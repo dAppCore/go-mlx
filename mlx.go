@@ -1,7 +1,7 @@
 // Package mlx provides Apple Metal GPU inference via mlx-c bindings.
 //
 // This package implements the [inference.Backend] interface from
-// dappco.re/go/core/inference for Apple Silicon (M1-M4) GPUs.
+// dappco.re/go/inference for Apple Silicon (M1-M4) GPUs.
 // Import it blank to register the "metal" backend automatically:
 //
 //	import _ "dappco.re/go/mlx"

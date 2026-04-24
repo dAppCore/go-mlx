@@ -7,7 +7,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "dappco.re/go/core/io"
+	coreio "dappco.re/go/io"
 )
 
 // Gemma4TextConfig holds Gemma 4 text model configuration.

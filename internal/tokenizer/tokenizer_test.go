@@ -5,7 +5,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "dappco.re/go/core/io"
+	coreio "dappco.re/go/io"
 )
 
 // minimalTokenizerJSON is a valid HuggingFace tokenizer.json with a tiny vocab.

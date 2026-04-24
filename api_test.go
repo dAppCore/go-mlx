@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"dappco.re/go/core/inference"
-	coreio "dappco.re/go/core/io"
+	"dappco.re/go/inference"
+	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/internal/metal"
 )
 

@@ -9,8 +9,8 @@ import (
 
 	"dappco.re/go/core"
 
-	"dappco.re/go/core/inference"
-	coreio "dappco.re/go/core/io"
+	"dappco.re/go/inference"
+	coreio "dappco.re/go/io"
 	mlx "dappco.re/go/mlx"
 )
 

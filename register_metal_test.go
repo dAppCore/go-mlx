@@ -5,7 +5,7 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 )
 

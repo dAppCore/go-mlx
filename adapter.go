@@ -7,7 +7,7 @@ import (
 	"errors"
 	"strings"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 )
 
 // Message aliases inference.Message for the adapter-style API.

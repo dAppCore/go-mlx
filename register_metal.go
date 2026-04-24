@@ -7,7 +7,7 @@ import (
 	"iter"
 
 	"dappco.re/go/core"
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 )
 

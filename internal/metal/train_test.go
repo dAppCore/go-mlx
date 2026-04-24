@@ -8,7 +8,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "dappco.re/go/core/io"
+	coreio "dappco.re/go/io"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.

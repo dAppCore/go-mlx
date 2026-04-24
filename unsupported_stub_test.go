@@ -5,7 +5,7 @@ package mlx
 import (
 	"testing"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 )
 
 func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 
 	"dappco.re/go/core"
 
-	"dappco.re/go/core/inference"
+	"dappco.re/go/inference"
 )
 
 // mockScript returns the absolute path to testdata/mock_bridge.py.
