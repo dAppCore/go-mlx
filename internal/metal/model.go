@@ -3,8 +3,6 @@
 package metal
 
 import (
-	"strings"
-
 	"dappco.re/go/core"
 
 	coreio "dappco.re/go/core/io"
@@ -45,8 +43,8 @@ type QuantizationConfig struct {
 
 func weightCandidates(name string) []string {
 	candidates := []string{name}
-	if strings.HasPrefix(name, "model.") {
-		suffix := strings.TrimPrefix(name, "model.")
+	if core.HasPrefix(name, "model.") {
+		suffix := core.TrimPrefix(name, "model.")
 		return append(candidates,
 			"language_model."+name,
 			"language_model.model."+suffix,
@@ -101,17 +99,17 @@ func probeModelType(data []byte) (string, error) {
 	}
 	for _, arch := range probe.Architectures {
 		switch {
-		case strings.Contains(arch, "Gemma4"):
+		case core.Contains(arch, "Gemma4"):
 			return "gemma4_text", nil
-		case strings.Contains(arch, "Gemma3"):
+		case core.Contains(arch, "Gemma3"):
 			return "gemma3", nil
-		case strings.Contains(arch, "Gemma2"):
+		case core.Contains(arch, "Gemma2"):
 			return "gemma2", nil
-		case strings.Contains(arch, "Qwen3"):
+		case core.Contains(arch, "Qwen3"):
 			return "qwen3", nil
-		case strings.Contains(arch, "Qwen2"):
+		case core.Contains(arch, "Qwen2"):
 			return "qwen2", nil
-		case strings.Contains(arch, "Llama"):
+		case core.Contains(arch, "Llama"):
 			return "llama", nil
 		}
 	}
