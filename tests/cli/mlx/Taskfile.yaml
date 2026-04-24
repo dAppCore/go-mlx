@@ -1,0 +1,48 @@
+version: "3"
+
+tasks:
+  build:
+    dir: ../../..
+    cmds:
+      - go build ./...
+
+  test:
+    dir: ../../..
+    cmds:
+      - go test -count=1 -race ./...
+
+  vet:
+    dir: ../../..
+    cmds:
+      - go vet ./...
+
+  build-mlx:
+    dir: ../../..
+    cmds:
+      - CGO_ENABLED=1 go build -tags mlx ./...
+
+  build-stub:
+    dir: ../../..
+    cmds:
+      - go build -tags nomlx ./...
+
+  test-mlx:
+    dir: ../../..
+    cmds:
+      - |
+        if [ "$(go env GOOS)/$(go env GOARCH)" = "darwin/arm64" ]; then
+          go test -tags mlx ./...
+        else
+          echo "skipping test-mlx: requires darwin/arm64"
+        fi
+
+  mlxlm-build:
+    dir: ../../..
+    cmds:
+      - go build -tags "\"!nomlxlm\"" ./mlxlm/...
+
+  default:
+    deps:
+      - build
+      - test
+      - vet
