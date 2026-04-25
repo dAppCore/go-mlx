@@ -13,6 +13,8 @@ import (
 // Gemma4TextConfig holds Gemma 4 text model configuration.
 type Gemma4TextConfig struct {
 	ModelType                 string                `json:"model_type"`
+	PadTokenID                int32                 `json:"pad_token_id"`
+	ImageTokenID              int32                 `json:"image_token_id"`
 	HiddenSize                int32                 `json:"hidden_size"`
 	NumHiddenLayers           int32                 `json:"num_hidden_layers"`
 	IntermediateSize          int32                 `json:"intermediate_size"`
@@ -42,6 +44,7 @@ type Gemma4TextConfig struct {
 	LayerTypesInput           []string              `json:"layer_types"`
 
 	Quantization *QuantizationConfig `json:"-"`
+	VisionConfig *Gemma4VisionConfig `json:"-"`
 	LayerTypes   []string            `json:"-"`
 }
 
@@ -57,6 +60,8 @@ type RopeParams struct {
 type Gemma4Model struct {
 	EmbedTokens         *Embedding
 	EmbedTokensPerLayer *Embedding
+	VisionTower         *Gemma4VisionModel
+	MultiModalProjector *Gemma4MultiModalProjector
 	Layers              []*Gemma4DecoderLayer
 	Norm                *RMSNormModule
 	Output              *Linear
@@ -263,6 +268,12 @@ func mergeGemma4ConfigMissing(dst *Gemma4TextConfig, src Gemma4TextConfig) {
 	if dst.ModelType == "" && src.ModelType != "" {
 		dst.ModelType = src.ModelType
 	}
+	if dst.PadTokenID == 0 && src.PadTokenID != 0 {
+		dst.PadTokenID = src.PadTokenID
+	}
+	if dst.ImageTokenID == 0 && src.ImageTokenID != 0 {
+		dst.ImageTokenID = src.ImageTokenID
+	}
 	if dst.HiddenSize == 0 {
 		dst.HiddenSize = src.HiddenSize
 	}
@@ -354,12 +365,15 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		FinalLogitSoftcapping     *float32              `json:"final_logit_softcapping"`
 		UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
 		EnableMoEBlock            *bool                 `json:"enable_moe_block"`
+		PadTokenID                *int32                `json:"pad_token_id"`
+		ImageTokenID              *int32                `json:"image_token_id"`
 		NumExperts                *int32                `json:"num_experts"`
 		TopKExperts               *int32                `json:"top_k_experts"`
 		MoEIntermediateSize       *int32                `json:"moe_intermediate_size"`
 		SlidingWindow             *int32                `json:"sliding_window"`
 		TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
 		RopeParameters            map[string]RopeParams `json:"rope_parameters"`
+		VisionConfig              *Gemma4VisionConfig   `json:"vision_config"`
 		TextConfig                struct {
 			Gemma4TextConfig
 			Quantization              *QuantizationConfig   `json:"quantization"`
@@ -369,6 +383,7 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 			GlobalHeadDim             *int32                `json:"global_head_dim"`
 			GlobalPartialRotaryFactor *float32              `json:"global_partial_rotary_factor"`
 			HiddenSizePerLayerInput   *int32                `json:"hidden_size_per_layer_input"`
+			PadTokenID                *int32                `json:"pad_token_id"`
 			UseDoubleWideMLP          *bool                 `json:"use_double_wide_mlp"`
 			TieWordEmbeddings         *bool                 `json:"tie_word_embeddings"`
 			RopeParameters            map[string]RopeParams `json:"rope_parameters"`
@@ -394,9 +409,20 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if wrapper.ModelType != "" {
 		cfg.ModelType = wrapper.ModelType
 	}
+	cfg.VisionConfig = normalizeGemma4VisionConfig(wrapper.VisionConfig)
 	cfg.Quantization = wrapper.Quantization
 	if cfg.Quantization == nil {
 		cfg.Quantization = wrapper.TextConfig.Quantization
+	}
+	switch {
+	case wrapper.PadTokenID != nil:
+		cfg.PadTokenID = *wrapper.PadTokenID
+	case wrapper.TextConfig.PadTokenID != nil:
+		cfg.PadTokenID = *wrapper.TextConfig.PadTokenID
+	}
+	switch {
+	case wrapper.ImageTokenID != nil:
+		cfg.ImageTokenID = *wrapper.ImageTokenID
 	}
 	switch {
 	case len(wrapper.LayerTypes) > 0:
@@ -498,6 +524,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	}
 	if cfg.VocabSize == 0 {
 		cfg.VocabSize = 262144
+	}
+	if cfg.ImageTokenID == 0 {
+		cfg.ImageTokenID = 258880
 	}
 	if cfg.VocabSizePerLayerInput == 0 {
 		cfg.VocabSizePerLayerInput = cfg.VocabSize
@@ -1200,6 +1229,7 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	if err != nil {
 		return nil, core.E("gemma4.LoadGemma4", "load weights", err)
 	}
+	visionWeights := sanitizeGemma4VisionWeights(rawWeights)
 	weights := sanitizeGemma4Weights(rawWeights)
 
 	if inferred := inferGemma4HeadDim(weights, cfg.LayerTypes, cfg.NumAttentionHeads, "sliding_attention"); inferred > 0 {
@@ -1399,6 +1429,13 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	m.Output, err = gemma4OutputLinear(weights, cfg, m.EmbedTokens)
 	if err != nil {
 		return nil, core.E("gemma4.LoadGemma4", "build output projection", err)
+	}
+
+	if len(visionWeights) > 0 {
+		m.VisionTower, m.MultiModalProjector, err = buildGemma4VisionComponents(cfg, visionWeights)
+		if err != nil {
+			return nil, core.E("gemma4.LoadGemma4", "build vision tower", err)
+		}
 	}
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)

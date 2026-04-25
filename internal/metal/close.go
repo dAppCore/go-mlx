@@ -90,6 +90,7 @@ func closeGemma(m *GemmaModel) {
 func closeGemma4(m *Gemma4Model) {
 	freeEmbedding(m.EmbedTokens)
 	freeEmbedding(m.EmbedTokensPerLayer)
+	closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
 	freeRMSNorm(m.Norm)
 	freeLinear(m.PerLayerModelProj)
 	freeRMSNorm(m.PerLayerProjNorm)

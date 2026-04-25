@@ -166,6 +166,26 @@ func Matmul(a, b *Array) *Array {
 	return out
 }
 
+// Conv2d performs a 2D convolution using MLX's NHWC input layout and
+// [out_channels, kernel_h, kernel_w, in_channels] weight layout.
+func Conv2d(input, weight *Array, strideH, strideW, padH, padW, dilationH, dilationW, groups int) *Array {
+	out := newArray("CONV2D", input, weight)
+	C.mlx_conv2d(
+		&out.ctx,
+		input.ctx,
+		weight.ctx,
+		C.int(strideH),
+		C.int(strideW),
+		C.int(padH),
+		C.int(padW),
+		C.int(dilationH),
+		C.int(dilationW),
+		C.int(groups),
+		DefaultStream().ctx,
+	)
+	return out
+}
+
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
 	out := newArray("QMATMUL", x, w, scales, biases)

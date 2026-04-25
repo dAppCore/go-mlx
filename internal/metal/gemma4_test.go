@@ -104,6 +104,56 @@ func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_ParseConfig_VisionConfig_Good(t *testing.T) {
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"image_token_id": 258880,
+		"text_config": {
+			"model_type": "gemma4_text",
+			"pad_token_id": 0,
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256
+		},
+		"vision_config": {
+			"model_type": "gemma4_vision",
+			"hidden_size": 48,
+			"intermediate_size": 96,
+			"num_hidden_layers": 3,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 4,
+			"patch_size": 8,
+			"pooling_kernel_size": 2,
+			"position_embedding_size": 32,
+			"rope_parameters": {
+				"rope_type": "default",
+				"rope_theta": 100
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.ImageTokenID != 258880 {
+		t.Fatalf("ImageTokenID = %d, want 258880", cfg.ImageTokenID)
+	}
+	if cfg.VisionConfig == nil {
+		t.Fatal("VisionConfig = nil, want parsed vision config")
+	}
+	if cfg.VisionConfig.HiddenSize != 48 {
+		t.Fatalf("VisionConfig.HiddenSize = %d, want 48", cfg.VisionConfig.HiddenSize)
+	}
+	if cfg.VisionConfig.HeadDim != 12 {
+		t.Fatalf("VisionConfig.HeadDim = %d, want inferred 12", cfg.VisionConfig.HeadDim)
+	}
+	if cfg.VisionConfig.RMSNormEps == 0 {
+		t.Fatal("VisionConfig.RMSNormEps = 0, want default")
+	}
+}
+
 func TestGemma4_ParseConfig_PartialRopeParameters_Good(t *testing.T) {
 	cfg, err := parseGemma4Config([]byte(`{
 		"model_type": "gemma4_text",
@@ -742,6 +792,31 @@ func TestGemma4_SanitizeWeights_LanguageModelPrefix_Good(t *testing.T) {
 	}
 	if _, ok := sanitized["language_model.multi_modal_projector.weight"]; ok {
 		t.Fatal("multimodal projector weights should be stripped even under language_model")
+	}
+}
+
+func TestGemma4_SanitizeVisionWeights_Good(t *testing.T) {
+	raw := map[string]*Array{
+		"language_model.model.vision_tower.patch_embedder.input_proj.weight": nil,
+		"language_model.embed_vision.embedding_projection.weight":            nil,
+		"language_model.model.embed_tokens.weight":                           nil,
+	}
+
+	vision := sanitizeGemma4VisionWeights(raw)
+	if _, ok := vision["patch_embedder.input_proj.weight"]; !ok {
+		t.Fatal("expected vision tower prefix to be stripped")
+	}
+	if _, ok := vision["embed_vision.embedding_projection.weight"]; !ok {
+		t.Fatal("expected embed_vision projector weight to be retained")
+	}
+	if _, ok := raw["language_model.model.vision_tower.patch_embedder.input_proj.weight"]; ok {
+		t.Fatal("expected vision weight to be removed from raw map")
+	}
+	if _, ok := raw["language_model.embed_vision.embedding_projection.weight"]; ok {
+		t.Fatal("expected projector weight to be removed from raw map")
+	}
+	if _, ok := raw["language_model.model.embed_tokens.weight"]; !ok {
+		t.Fatal("expected text weight to remain in raw map")
 	}
 }
 
