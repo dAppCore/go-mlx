@@ -91,11 +91,21 @@
 //
 //	// Between chat turns, reclaim prompt cache memory:
 //	mlx.ClearCache()
+//	model1.Close()
+//	mlx.GC() // run Go finalizers for CGO-owned memory without importing runtime
 //
 //	fmt.Printf("active: %d MB, peak: %d MB\n",
 //	    mlx.GetActiveMemory()/1024/1024, mlx.GetPeakMemory()/1024/1024)
 package mlx
 
+import "dappco.re/go/mlx/internal/metal"
+
 //go:generate cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
 //go:generate cmake --build build --parallel
 //go:generate cmake --install build
+
+// GC runs Go garbage collection for MLX CGO lifecycle cleanup.
+//
+// Use this after closing large models when prompt/model memory must be
+// reclaimed promptly, without importing runtime at call sites.
+func GC() { metal.RuntimeGC() }
