@@ -18,6 +18,9 @@ type Gemma4VisionRopeParameters struct {
 // Gemma4VisionConfig holds the Gemma 4 SigLIP-derived vision tower configuration.
 type Gemma4VisionConfig struct {
 	ModelType             string                     `json:"model_type"`
+	ImageSize             int32                      `json:"image_size"`
+	PatchSize             int32                      `json:"patch_size"`
+	NumChannels           int32                      `json:"num_channels"`
 	HiddenSize            int32                      `json:"hidden_size"`
 	IntermediateSize      int32                      `json:"intermediate_size"`
 	NumHiddenLayers       int32                      `json:"num_hidden_layers"`
@@ -25,13 +28,13 @@ type Gemma4VisionConfig struct {
 	NumKeyValueHeads      int32                      `json:"num_key_value_heads"`
 	HeadDim               int32                      `json:"head_dim"`
 	HiddenActivation      string                     `json:"hidden_activation"`
+	LayerNormEps          float32                    `json:"layer_norm_eps"`
 	RMSNormEps            float32                    `json:"rms_norm_eps"`
 	MaxPositionEmbeddings int32                      `json:"max_position_embeddings"`
 	AttentionBias         bool                       `json:"attention_bias"`
 	AttentionDropout      float32                    `json:"attention_dropout"`
 	RopeParameters        Gemma4VisionRopeParameters `json:"rope_parameters"`
 	PoolingKernelSize     int32                      `json:"pooling_kernel_size"`
-	PatchSize             int32                      `json:"patch_size"`
 	PositionEmbeddingSize int32                      `json:"position_embedding_size"`
 	UseClippedLinears     bool                       `json:"use_clipped_linears"`
 	Standardize           bool                       `json:"standardize"`
@@ -43,9 +46,15 @@ type Gemma4VisionModel struct {
 	PatchEmbedder *Gemma4VisionPatchEmbedder
 	Encoder       *Gemma4VisionEncoder
 	Pooler        *Gemma4VisionPooler
-	StdBias       *Array
-	StdScale      *Array
-	Cfg           *Gemma4VisionConfig
+	PostLayernorm *RMSNormModule
+
+	PatchEmbedding     *Linear
+	PositionEmbeddings *Array
+	EncoderLayers      []*Gemma4VisionLayer
+
+	StdBias  *Array
+	StdScale *Array
+	Cfg      *Gemma4VisionConfig
 }
 
 // Gemma4VisionPatchEmbedder projects patch pixels and adds learned 2-D positions.
@@ -54,6 +63,7 @@ type Gemma4VisionPatchEmbedder struct {
 	PatchConvWeight        *Array
 	PositionEmbeddingTable *Array
 	PatchSize              int32
+	NumChannels            int32
 	PoolingKernelSize      int32
 	PositionEmbeddingSize  int32
 	HiddenSize             int32
@@ -104,6 +114,9 @@ type Gemma4VisionPooler struct {
 	PoolingKernelSize int32
 }
 
+// Gemma4VisionLayer is the public Phase 4 layer name for the vision encoder.
+type Gemma4VisionLayer = Gemma4VisionEncoderLayer
+
 // Gemma4MultiModalProjector maps vision soft tokens into the text hidden size.
 type Gemma4MultiModalProjector struct {
 	Projection *Linear
@@ -112,9 +125,15 @@ type Gemma4MultiModalProjector struct {
 	Eps        float32
 }
 
+// MultiModalProjector is the RFC name for the Gemma 4 vision-to-text projector.
+type MultiModalProjector = Gemma4MultiModalProjector
+
 func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 	return &Gemma4VisionConfig{
 		ModelType:             "gemma4_vision",
+		ImageSize:             896,
+		PatchSize:             16,
+		NumChannels:           3,
 		HiddenSize:            768,
 		IntermediateSize:      3072,
 		NumHiddenLayers:       16,
@@ -122,6 +141,7 @@ func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 		NumKeyValueHeads:      12,
 		HeadDim:               64,
 		HiddenActivation:      "gelu_pytorch_tanh",
+		LayerNormEps:          1e-6,
 		RMSNormEps:            1e-6,
 		MaxPositionEmbeddings: 131072,
 		RopeParameters: Gemma4VisionRopeParameters{
@@ -129,7 +149,6 @@ func defaultGemma4VisionConfig() *Gemma4VisionConfig {
 			RopeTheta: 100,
 		},
 		PoolingKernelSize:     3,
-		PatchSize:             16,
 		PositionEmbeddingSize: 10 * 1024,
 		InitializerRange:      0.02,
 	}
@@ -142,6 +161,15 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	defaults := defaultGemma4VisionConfig()
 	if cfg.ModelType == "" {
 		cfg.ModelType = defaults.ModelType
+	}
+	if cfg.ImageSize == 0 {
+		cfg.ImageSize = defaults.ImageSize
+	}
+	if cfg.PatchSize == 0 {
+		cfg.PatchSize = defaults.PatchSize
+	}
+	if cfg.NumChannels == 0 {
+		cfg.NumChannels = defaults.NumChannels
 	}
 	if cfg.HiddenSize == 0 {
 		cfg.HiddenSize = defaults.HiddenSize
@@ -167,6 +195,15 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	if cfg.HiddenActivation == "" {
 		cfg.HiddenActivation = defaults.HiddenActivation
 	}
+	if cfg.LayerNormEps == 0 && cfg.RMSNormEps != 0 {
+		cfg.LayerNormEps = cfg.RMSNormEps
+	}
+	if cfg.RMSNormEps == 0 && cfg.LayerNormEps != 0 {
+		cfg.RMSNormEps = cfg.LayerNormEps
+	}
+	if cfg.LayerNormEps == 0 {
+		cfg.LayerNormEps = defaults.LayerNormEps
+	}
 	if cfg.RMSNormEps == 0 {
 		cfg.RMSNormEps = defaults.RMSNormEps
 	}
@@ -181,9 +218,6 @@ func normalizeGemma4VisionConfig(cfg *Gemma4VisionConfig) *Gemma4VisionConfig {
 	}
 	if cfg.PoolingKernelSize == 0 {
 		cfg.PoolingKernelSize = defaults.PoolingKernelSize
-	}
-	if cfg.PatchSize == 0 {
-		cfg.PatchSize = defaults.PatchSize
 	}
 	if cfg.PositionEmbeddingSize == 0 {
 		cfg.PositionEmbeddingSize = defaults.PositionEmbeddingSize
@@ -294,9 +328,13 @@ func inferGemma4VisionConfig(weights map[string]*Array, cfg *Gemma4VisionConfig)
 		case 4:
 			patchDim = shape[1] * shape[2] * shape[3]
 		}
-		if patchDim > 0 && patchDim%3 == 0 {
-			patch := int32(math.Round(math.Sqrt(float64(patchDim / 3))))
-			if patch > 0 && 3*patch*patch == patchDim {
+		channels := cfg.NumChannels
+		if channels <= 0 {
+			channels = 3
+		}
+		if patchDim > 0 && patchDim%channels == 0 {
+			patch := int32(math.Round(math.Sqrt(float64(patchDim / channels))))
+			if patch > 0 && channels*patch*patch == patchDim {
 				cfg.PatchSize = patch
 			}
 		}
@@ -356,18 +394,22 @@ func normalizeGemma4PatchProjection(weight *Array, cfg *Gemma4VisionConfig) (*Ar
 	if weight == nil {
 		return nil, nil, false
 	}
+	channels := cfg.NumChannels
+	if channels <= 0 {
+		channels = 3
+	}
 	shape := weight.Shape()
 	if len(shape) == 2 {
-		conv := Reshape(weight, shape[0], cfg.PatchSize, cfg.PatchSize, 3)
+		conv := Reshape(weight, shape[0], cfg.PatchSize, cfg.PatchSize, channels)
 		return weight, conv, true
 	}
 	if len(shape) != 4 {
 		return weight, nil, true
 	}
 	var conv *Array
-	if shape[3] == 3 {
+	if shape[3] == channels {
 		conv = weight
-	} else if shape[1] == 3 {
+	} else if shape[1] == channels {
 		conv = Transpose(weight, 0, 2, 3, 1)
 	} else {
 		conv = weight
@@ -388,12 +430,23 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 		return nil, core.E("gemma4.vision", "missing patch embedding weight", nil)
 	}
 
+	var postLayernorm *RMSNormModule
+	if weight := gemma4VisionWeightAny(weights,
+		"post_layernorm.weight",
+		"post_layer_norm.weight",
+		"encoder.post_layernorm.weight",
+		"vision_model.post_layernorm.weight",
+	); weight != nil {
+		postLayernorm = &RMSNormModule{Weight: weight}
+	}
+
 	vision := &Gemma4VisionModel{
 		PatchEmbedder: &Gemma4VisionPatchEmbedder{
 			InputProj:              NewLinear(inputWeight, nil),
 			PatchConvWeight:        convWeight,
 			PositionEmbeddingTable: gemma4VisionWeightAny(weights, "patch_embedder.position_embedding_table", "embeddings.position_embedding.weight"),
 			PatchSize:              cfg.PatchSize,
+			NumChannels:            cfg.NumChannels,
 			PoolingKernelSize:      cfg.PoolingKernelSize,
 			PositionEmbeddingSize:  cfg.PositionEmbeddingSize,
 			HiddenSize:             cfg.HiddenSize,
@@ -406,10 +459,14 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 			HiddenSize:        cfg.HiddenSize,
 			PoolingKernelSize: cfg.PoolingKernelSize,
 		},
-		StdBias:  gemma4VisionWeightAny(weights, "std_bias"),
-		StdScale: gemma4VisionWeightAny(weights, "std_scale"),
-		Cfg:      cfg,
+		PostLayernorm: postLayernorm,
+		StdBias:       gemma4VisionWeightAny(weights, "std_bias"),
+		StdScale:      gemma4VisionWeightAny(weights, "std_scale"),
+		Cfg:           cfg,
 	}
+	vision.PatchEmbedding = vision.PatchEmbedder.InputProj
+	vision.PositionEmbeddings = vision.PatchEmbedder.PositionEmbeddingTable
+	vision.EncoderLayers = vision.Encoder.Layers
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("encoder.layers.%d", i)
@@ -699,6 +756,11 @@ func (v *Gemma4VisionModel) Forward(pixelValues *Array) *Array {
 
 	encoded := v.Encoder.Forward(h, gridH, gridW)
 	Free(h)
+	if v.PostLayernorm != nil && v.PostLayernorm.Weight != nil && v.PostLayernorm.Weight.Valid() {
+		normed := RMSNorm(encoded, v.PostLayernorm.Weight, v.Cfg.RMSNormEps)
+		Free(encoded)
+		encoded = normed
+	}
 	pooled := v.Pooler.Forward(encoded, gridH, gridW)
 	Free(encoded)
 
@@ -742,7 +804,11 @@ func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *Array) (*Array, int32, 
 
 func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, int32, int32) {
 	shape := pixelValues.Shape()
-	patchDim := int32(3 * p.PatchSize * p.PatchSize)
+	channels := p.NumChannels
+	if channels <= 0 {
+		channels = 3
+	}
+	patchDim := channels * p.PatchSize * p.PatchSize
 	switch len(shape) {
 	case 2:
 		gridH, gridW := gemma4VisionGridForPatchCount(shape[0], p.poolKernel())
@@ -752,21 +818,21 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 			gridH, gridW := gemma4VisionGridForPatchCount(shape[1], p.poolKernel())
 			return pixelValues.Clone(), false, gridH, gridW
 		}
-		if shape[2] == 3 {
+		if shape[2] == channels {
 			expanded := ExpandDims(pixelValues, 0)
 			return p.prepareRawNHWC(expanded, true)
 		}
-		if shape[0] == 3 {
+		if shape[0] == channels {
 			expanded := ExpandDims(pixelValues, 0)
 			transposed := Transpose(expanded, 0, 2, 3, 1)
 			Free(expanded)
 			return p.prepareRawNHWC(transposed, true)
 		}
 	case 4:
-		if shape[3] == 3 {
+		if shape[3] == channels {
 			return p.prepareRawNHWC(pixelValues.Clone(), true)
 		}
-		if shape[1] == 3 {
+		if shape[1] == channels {
 			transposed := Transpose(pixelValues, 0, 2, 3, 1)
 			return p.prepareRawNHWC(transposed, true)
 		}
@@ -856,10 +922,21 @@ func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32
 	return pos
 }
 
-func (e *Gemma4VisionEncoder) Forward(x *Array, gridH, gridW int32) *Array {
+func (e *Gemma4VisionEncoder) Forward(x *Array, grid ...int32) *Array {
+	gridH, gridW := int32(0), int32(0)
+	if len(grid) >= 2 {
+		gridH, gridW = grid[0], grid[1]
+	}
+	if (gridH <= 0 || gridW <= 0) && x != nil && x.NumDims() >= 2 {
+		gridH, gridW = gemma4VisionGridForPatchCount(int32(x.Dim(1)), 1)
+	}
 	h := x
+	cfg := e.Cfg
+	if cfg == nil {
+		cfg = normalizeGemma4VisionConfig(defaultGemma4VisionConfig())
+	}
 	for _, layer := range e.Layers {
-		next := layer.Forward(h, gridH, gridW, e.Cfg)
+		next := layer.Forward(h, gridH, gridW, cfg)
 		if h != x {
 			Free(h)
 		}
@@ -1172,6 +1249,7 @@ func gemma4VisionRetainedWeights(vision *Gemma4VisionModel, projector *Gemma4Mul
 			gemma4TrackLinear(retained, vision.PatchEmbedder.InputProj)
 			gemma4TrackArrays(retained, vision.PatchEmbedder.PatchConvWeight, vision.PatchEmbedder.PositionEmbeddingTable)
 		}
+		gemma4VisionTrackRMSNorm(retained, vision.PostLayernorm)
 		gemma4TrackArrays(retained, vision.StdBias, vision.StdScale)
 		if vision.Encoder != nil {
 			for _, layer := range vision.Encoder.Layers {
@@ -1212,6 +1290,7 @@ func closeGemma4Vision(vision *Gemma4VisionModel, projector *Gemma4MultiModalPro
 			freeLinear(vision.PatchEmbedder.InputProj)
 			Free(vision.PatchEmbedder.PatchConvWeight, vision.PatchEmbedder.PositionEmbeddingTable)
 		}
+		freeRMSNorm(vision.PostLayernorm)
 		Free(vision.StdBias, vision.StdScale)
 		if vision.Encoder != nil {
 			for _, layer := range vision.Encoder.Layers {

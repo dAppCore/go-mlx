@@ -99,6 +99,10 @@ func probeModelType(data []byte) (string, error) {
 	}
 	for _, arch := range probe.Architectures {
 		switch {
+		case core.Contains(arch, "Gemma4ForConditionalGeneration"),
+			core.Contains(arch, "Gemma4Multimodal"),
+			core.Contains(arch, "Gemma4Vision"):
+			return "gemma4", nil
 		case core.Contains(arch, "Gemma4"):
 			return "gemma4_text", nil
 		case core.Contains(arch, "Gemma3"):
@@ -114,6 +118,37 @@ func probeModelType(data []byte) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func loadGemma4TextModel(modelPath string) (*Gemma4Model, error) {
+	m, err := LoadGemma4(modelPath)
+	if err != nil {
+		return nil, err
+	}
+	if m.VisionTower != nil || m.MultiModalProjector != nil {
+		closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
+		m.VisionTower = nil
+		m.MultiModalProjector = nil
+		ClearCache()
+	}
+	m.modelType = "gemma4_text"
+	if m.Cfg != nil {
+		m.Cfg.ModelType = "gemma4_text"
+		m.Cfg.VisionConfig = nil
+	}
+	return m, nil
+}
+
+func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
+	m, err := LoadGemma4(modelPath)
+	if err != nil {
+		return nil, err
+	}
+	m.modelType = "gemma4"
+	if m.Cfg != nil {
+		m.Cfg.ModelType = "gemma4"
+	}
+	return m, nil
 }
 
 // loadModel auto-detects the model architecture from config.json and loads it.
@@ -137,8 +172,10 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return LoadQwen3(modelPath)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
-	case "gemma4", "gemma4_text":
-		return LoadGemma4(modelPath)
+	case "gemma4_text":
+		return loadGemma4TextModel(modelPath)
+	case "gemma4":
+		return loadGemma4MultiModalModel(modelPath)
 	default:
 		return nil, core.E("model.loadModel", "unsupported architecture: "+modelType, nil)
 	}
