@@ -270,6 +270,9 @@ func (c *ClosureKwargs) Free() {
 //	err := metal.ExportFunction("inc.mlxfn", cls, args, false)
 func ExportFunction(path string, cls *Closure, args []*Array, shapeless bool) error {
 	Init()
+	if cls == nil || cls.ctx.ctx == nil {
+		return core.E("mlx.ExportFunction", "nil closure handle", nil)
+	}
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
@@ -300,6 +303,9 @@ func ExportFunction(path string, cls *Closure, args []*Array, shapeless bool) er
 //	err := metal.ExportFunctionKwargs("mul.mlxfn", cls, nil, kwargs, false)
 func ExportFunctionKwargs(path string, cls *ClosureKwargs, args []*Array, kwargs map[string]*Array, shapeless bool) error {
 	Init()
+	if cls == nil || cls.ctx.ctx == nil {
+		return core.E("mlx.ExportFunctionKwargs", "nil closure handle", nil)
+	}
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
@@ -314,6 +320,9 @@ func ExportFunctionKwargs(path string, cls *ClosureKwargs, args []*Array, kwargs
 	kwargsMap := C.mlx_map_string_to_array_new()
 	defer C.mlx_map_string_to_array_free(kwargsMap)
 	for name, arr := range kwargs {
+		if arr == nil || !arr.Valid() {
+			return core.E("mlx.ExportFunctionKwargs", "nil kwarg array: "+name, nil)
+		}
 		cName := C.CString(name)
 		C.mlx_map_string_to_array_insert(kwargsMap, cName, arr.ctx)
 		C.free(unsafe.Pointer(cName))
@@ -375,6 +384,9 @@ func ImportFunction(path string) (*ImportedFunction, error) {
 //	results, err := fn.Apply(x)
 //	y := results[0]
 func (f *ImportedFunction) Apply(args ...*Array) ([]*Array, error) {
+	if f == nil || f.ctx.ctx == nil {
+		return nil, core.E("mlx.ImportedFunction.Apply", "nil imported function handle", nil)
+	}
 	argsVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(argsVec)
 	for _, a := range args {
@@ -402,6 +414,9 @@ func (f *ImportedFunction) Apply(args ...*Array) ([]*Array, error) {
 //	kwargs := map[string]*metal.Array{"x": x, "y": y}
 //	results, err := fn.ApplyKwargs(nil, kwargs)
 func (f *ImportedFunction) ApplyKwargs(args []*Array, kwargs map[string]*Array) ([]*Array, error) {
+	if f == nil || f.ctx.ctx == nil {
+		return nil, core.E("mlx.ImportedFunction.ApplyKwargs", "nil imported function handle", nil)
+	}
 	argsVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(argsVec)
 	for _, a := range args {
@@ -413,6 +428,9 @@ func (f *ImportedFunction) ApplyKwargs(args []*Array, kwargs map[string]*Array) 
 	kwargsMap := C.mlx_map_string_to_array_new()
 	defer C.mlx_map_string_to_array_free(kwargsMap)
 	for name, arr := range kwargs {
+		if arr == nil || !arr.Valid() {
+			return nil, core.E("mlx.ImportedFunction.ApplyKwargs", "nil kwarg array: "+name, nil)
+		}
 		cName := C.CString(name)
 		C.mlx_map_string_to_array_insert(kwargsMap, cName, arr.ctx)
 		C.free(unsafe.Pointer(cName))

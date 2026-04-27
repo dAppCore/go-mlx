@@ -102,6 +102,39 @@ func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
 	}
 }
 
+func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
+	ggufPath := filepath.Join(t.TempDir(), "model.gguf")
+	writeTestGGUF(t, ggufPath,
+		[]ggufMetaSpec{
+			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "llama"},
+			{Key: "llama.vocab_size", ValueType: ggufValueTypeUint32, Value: uint32(32000)},
+			{Key: "llama.embedding_length", ValueType: ggufValueTypeUint32, Value: uint32(4096)},
+			{Key: "llama.context_length", ValueType: ggufValueTypeUint32, Value: uint32(8192)},
+			{Key: "llama.block_count", ValueType: ggufValueTypeUint32, Value: uint32(32)},
+		},
+		[]ggufTensorSpec{
+			{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
+		},
+	)
+
+	info, err := ReadGGUFInfo(ggufPath)
+	if err != nil {
+		t.Fatalf("ReadGGUFInfo() error = %v", err)
+	}
+	if info.VocabSize != 32000 {
+		t.Fatalf("VocabSize = %d, want 32000", info.VocabSize)
+	}
+	if info.HiddenSize != 4096 {
+		t.Fatalf("HiddenSize = %d, want 4096", info.HiddenSize)
+	}
+	if info.ContextLength != 8192 {
+		t.Fatalf("ContextLength = %d, want 8192", info.ContextLength)
+	}
+	if info.NumLayers != 32 {
+		t.Fatalf("NumLayers = %d, want 32", info.NumLayers)
+	}
+}
+
 func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{

@@ -250,6 +250,35 @@ func TestExport_ExportFunctionKwargs_InvalidPath_Bad(t *testing.T) {
 	}
 }
 
+func TestExport_NilHandles_ReturnErrors_Bad(t *testing.T) {
+	if err := ExportFunction(filepath.Join(t.TempDir(), "nil.mlxfn"), nil, nil, false); err == nil {
+		t.Fatal("expected ExportFunction to reject nil closure")
+	}
+	if err := ExportFunctionKwargs(filepath.Join(t.TempDir(), "nil.mlxfn"), nil, nil, nil, false); err == nil {
+		t.Fatal("expected ExportFunctionKwargs to reject nil closure")
+	}
+
+	var fn *ImportedFunction
+	if _, err := fn.Apply(); err == nil {
+		t.Fatal("expected Apply to reject nil imported function")
+	}
+	if _, err := fn.ApplyKwargs(nil, nil); err == nil {
+		t.Fatal("expected ApplyKwargs to reject nil imported function")
+	}
+}
+
+func TestExport_KwargsRejectNilArrays_Bad(t *testing.T) {
+	cls := NewClosureKwargs(func(args []*Array, kwargs map[string]*Array) []*Array {
+		return args
+	})
+	defer cls.Free()
+
+	err := ExportFunctionKwargs(filepath.Join(t.TempDir(), "bad.mlxfn"), cls, nil, map[string]*Array{"x": nil}, false)
+	if err == nil {
+		t.Fatal("expected ExportFunctionKwargs to reject nil kwarg array")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ugly tests — edge cases and stress conditions.
 // ---------------------------------------------------------------------------

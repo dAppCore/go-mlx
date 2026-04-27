@@ -27,7 +27,7 @@ var defaultDeviceMu sync.Mutex
 
 func currentDefaultDevice() (DeviceType, error) {
 	Init()
-	dev := C.mlx_device_new()
+	var dev C.mlx_device
 	defer C.mlx_device_free(dev)
 
 	if rc := C.mlx_get_default_device(&dev); rc != 0 {

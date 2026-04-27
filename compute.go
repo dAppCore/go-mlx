@@ -187,14 +187,26 @@ func (desc PixelBufferDesc) Validate() error {
 	if bytesPerPixel == 0 {
 		return computeErr(ComputeErrorUnsupportedPixelFormat, "validate_pixel_buffer", "", "format", "unsupported pixel format")
 	}
-	if desc.Stride < desc.Width*bytesPerPixel {
+	maxIntValue := int(^uint(0) >> 1)
+	if desc.Width > maxIntValue/bytesPerPixel {
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "width", "pixel buffer row byte length overflows int")
+	}
+	minStride := desc.Width * bytesPerPixel
+	if desc.Stride < minStride {
 		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "stride", "pixel buffer stride is smaller than width * bytes_per_pixel")
+	}
+	if desc.Height > maxIntValue/desc.Stride {
+		return computeErr(ComputeErrorInvalidDescriptor, "validate_pixel_buffer", "", "height", "pixel buffer byte length overflows int")
 	}
 	return nil
 }
 
-// SizeBytes reports the total packed byte length of the buffer.
+// SizeBytes reports the total packed byte length of the buffer, or 0 when the
+// descriptor is invalid or cannot be represented as an int byte count.
 func (desc PixelBufferDesc) SizeBytes() int {
+	if err := desc.Validate(); err != nil {
+		return 0
+	}
 	return desc.Height * desc.Stride
 }
 

@@ -187,12 +187,30 @@ func goIOReadAtOffset(desc unsafe.Pointer, data *C.char, n C.size_t, off C.size_
 	if s == nil {
 		return
 	}
-	_, err := s.rws.Seek(int64(off), io.SeekStart)
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(n))
+	if readerAt, ok := s.rws.(io.ReaderAt); ok {
+		if _, err := readerAt.ReadAt(buf, int64(off)); err != nil {
+			s.good = false
+		}
+		return
+	}
+
+	pos, err := s.rws.Seek(0, io.SeekCurrent)
 	if err != nil {
 		s.good = false
 		return
 	}
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(data)), int(n))
+	defer func() {
+		if _, err := s.rws.Seek(pos, io.SeekStart); err != nil {
+			s.good = false
+		}
+	}()
+
+	_, err = s.rws.Seek(int64(off), io.SeekStart)
+	if err != nil {
+		s.good = false
+		return
+	}
 	_, err = io.ReadFull(s.rws, buf)
 	if err != nil {
 		s.good = false

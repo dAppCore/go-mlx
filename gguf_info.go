@@ -149,10 +149,10 @@ func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
 	info := GGUFInfo{
 		Path:          absolutePath,
 		Architecture:  architecture,
-		VocabSize:     config.vocabSize(),
-		HiddenSize:    config.hiddenSize(),
+		VocabSize:     firstPositive(config.vocabSize(), inferGGUFVocabSize(metadata, architecture)),
+		HiddenSize:    firstPositive(config.hiddenSize(), inferGGUFHiddenSize(metadata, architecture)),
 		NumLayers:     config.numLayers(),
-		ContextLength: config.contextLength(),
+		ContextLength: firstPositive(config.contextLength(), inferGGUFContextLength(metadata, architecture)),
 		QuantBits:     quantBits,
 		QuantGroup:    config.quantGroup(),
 		TensorCount:   len(tensors),
@@ -575,6 +575,64 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func inferGGUFVocabSize(metadata map[string]any, architecture string) int {
+	return firstPositive(
+		metadataIntForSuffix(metadata, architecture, "vocab_size", "n_vocab"),
+		metadataArrayLen(metadata["tokenizer.ggml.tokens"]),
+	)
+}
+
+func inferGGUFHiddenSize(metadata map[string]any, architecture string) int {
+	return metadataIntForSuffix(metadata, architecture, "embedding_length", "hidden_size", "n_embd")
+}
+
+func inferGGUFContextLength(metadata map[string]any, architecture string) int {
+	return metadataIntForSuffix(metadata, architecture, "context_length", "max_position_embeddings", "n_ctx")
+}
+
+func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes ...string) int {
+	prefixes := []string{"general"}
+	if architecture != "" {
+		prefixes = append([]string{architecture}, prefixes...)
+		if base, _, ok := strings.Cut(architecture, "_"); ok && base != "" && base != architecture {
+			prefixes = append([]string{base}, prefixes...)
+		}
+	}
+	for _, prefix := range prefixes {
+		for _, suffix := range suffixes {
+			if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
+				return value
+			}
+		}
+	}
+	for _, suffix := range suffixes {
+		if value := metadataInt(metadata[suffix]); value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func metadataArrayLen(value any) int {
+	switch concrete := value.(type) {
+	case []any:
+		return len(concrete)
+	case []string:
+		return len(concrete)
+	default:
+		return 0
+	}
 }
 
 func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architecture string) int {

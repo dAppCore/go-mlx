@@ -57,6 +57,9 @@ git submodule update --init --recursive
 The forwarding translation units in `internal/metal/` include source files from
 `lib/mlx`, `lib/mlx-c`, and `lib/generated`; leaving those submodules empty will
 make the C++ includes fail before the Go package can build.
+Those forwarding files are the only local compilation entrypoints for the
+upstream `.cpp` files; do not also add the same upstream sources to a separate
+target or CMake source list, or the linker may see duplicate definitions.
 
 This executes the `//go:generate` directives in `mlx.go`:
 
@@ -305,7 +308,7 @@ go build -tags nomlxlm ./...
 
 ```
 go-mlx
-├── forge.lthn.ai/core/go-inference  (shared interfaces, zero dependencies)
+├── dappco.re/go/inference           (shared interfaces, zero dependencies)
 └── mlx-c v0.4.1                     (CMake, fetched from GitHub at generate time)
     └── Apple MLX (Metal GPU compute)
         └── Foundation, Metal, Accelerate frameworks

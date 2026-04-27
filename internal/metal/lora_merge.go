@@ -41,7 +41,12 @@ func mergeLinearLoRA(linear *Linear) {
 	linear.GroupSize = 0
 	linear.Bits = 0
 
-	Free(oldWeight, oldScales, oldBiases, linear.LoRA.A, linear.LoRA.B)
+	// The old base arrays may be tied to another module; leave their ownership
+	// with any remaining references and let finalizers release unshared handles.
+	_ = oldWeight
+	_ = oldScales
+	_ = oldBiases
+	Free(linear.LoRA.A, linear.LoRA.B)
 	linear.LoRA.A = nil
 	linear.LoRA.B = nil
 	linear.LoRA = nil

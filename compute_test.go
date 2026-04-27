@@ -61,6 +61,26 @@ func TestPixelBufferDesc_SizeBytes_Good(t *testing.T) {
 	}
 }
 
+func TestPixelBufferDesc_Validate_BadByteLengthOverflow(t *testing.T) {
+	maxIntValue := int(^uint(0) >> 1)
+	desc := PixelBufferDesc{
+		Width:  1,
+		Height: maxIntValue,
+		Stride: 2,
+		Format: PixelIndexed8,
+	}
+	err := desc.Validate()
+	if err == nil {
+		t.Fatal("expected byte length overflow validation error")
+	}
+	if !errors.Is(err, ErrComputeInvalidDescriptor) {
+		t.Fatalf("Validate() error = %v, want ErrComputeInvalidDescriptor", err)
+	}
+	if got := desc.SizeBytes(); got != 0 {
+		t.Fatalf("SizeBytes() = %d, want 0 for invalid descriptor", got)
+	}
+}
+
 func TestComputeError_IsByKind_Good(t *testing.T) {
 	err := &ComputeError{
 		Kind:     ComputeErrorInvalidScalar,

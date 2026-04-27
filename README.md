@@ -8,7 +8,7 @@ Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `infer
 
 **Module**: `dappco.re/go/mlx`
 **Licence**: EUPL-1.2
-**Language**: Go 1.25
+**Language**: Go 1.26
 
 ## Quick Start
 
@@ -22,6 +22,9 @@ import (
 )
 
 model, err := inference.LoadModel("/Volumes/Data/lem/safetensors/gemma-3-1b/")
+if err != nil {
+    panic(err)
+}
 defer model.Close()
 
 for tok := range model.Generate(context.Background(), "Hello", inference.WithMaxTokens(256)) {

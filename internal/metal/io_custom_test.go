@@ -15,23 +15,24 @@ import (
 type bytesRWS struct {
 	data []byte
 	pos  int
+	end  int
 }
 
 func newBytesRWS(initial []byte) *bytesRWS {
 	cp := make([]byte, len(initial))
 	copy(cp, initial)
-	return &bytesRWS{data: cp, pos: 0}
+	return &bytesRWS{data: cp, pos: 0, end: len(cp)}
 }
 
 func newBytesRWSSize(size int) *bytesRWS {
-	return &bytesRWS{data: make([]byte, size), pos: 0}
+	return &bytesRWS{data: make([]byte, size), pos: 0, end: 0}
 }
 
 func (b *bytesRWS) Read(p []byte) (int, error) {
-	if b.pos >= len(b.data) {
+	if b.pos >= b.end {
 		return 0, io.EOF
 	}
-	n := copy(p, b.data[b.pos:])
+	n := copy(p, b.data[b.pos:b.end])
 	b.pos += n
 	return n, nil
 }
@@ -46,6 +47,9 @@ func (b *bytesRWS) Write(p []byte) (int, error) {
 	}
 	n := copy(b.data[b.pos:], p)
 	b.pos += n
+	if b.pos > b.end {
+		b.end = b.pos
+	}
 	return n, nil
 }
 
@@ -57,7 +61,7 @@ func (b *bytesRWS) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekCurrent:
 		newPos = int64(b.pos) + offset
 	case io.SeekEnd:
-		newPos = int64(len(b.data)) + offset
+		newPos = int64(b.end) + offset
 	default:
 		return 0, io.ErrUnexpectedEOF
 	}
@@ -69,7 +73,20 @@ func (b *bytesRWS) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (b *bytesRWS) Bytes() []byte {
-	return b.data[:b.pos]
+	return b.data[:b.end]
+}
+
+func TestBytesRWS_BytesUsesHighWaterMark_Good(t *testing.T) {
+	buf := newBytesRWSSize(4)
+	if _, err := buf.Write([]byte{1, 2, 3, 4}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := buf.Seek(1, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+	if got := buf.Bytes(); !bytes.Equal(got, []byte{1, 2, 3, 4}) {
+		t.Fatalf("Bytes() = %v, want full high-water contents", got)
+	}
 }
 
 // --- Good: Round-trip through custom I/O ---

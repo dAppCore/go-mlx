@@ -613,7 +613,8 @@ func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4
 		),
 		Eps: visionCfg.RMSNormEps,
 	}
-	if projector.Projection == nil && projector.Linear1 == nil && visionCfg.HiddenSize != textCfg.HiddenSize {
+	ready := projector.Projection != nil || (projector.Linear1 != nil && projector.Linear2 != nil)
+	if visionCfg.HiddenSize != textCfg.HiddenSize && !ready {
 		return nil
 	}
 	return projector

@@ -5,7 +5,7 @@ description: Model loading, supported architectures, tokenisation, and chat temp
 
 # Models
 
-go-mlx loads transformer models from either HuggingFace safetensors shards or GGUF checkpoints. Architecture is auto-detected from the `model_type` field in `config.json`.
+go-mlx loads transformer models from either HuggingFace safetensors shards or GGUF checkpoints. For safetensors directories, architecture is detected from the `model_type` field in `config.json`; for direct `.gguf` loads via `inference.LoadModel`, it is detected from checkpoint metadata.
 
 ## Loading a Model
 

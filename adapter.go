@@ -85,6 +85,9 @@ func (adapter *InferenceAdapter) Generate(ctx context.Context, prompt string, op
 	if adapter == nil || adapter.model == nil {
 		return Result{}, errors.New("mlx: inference adapter is nil")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	var builder strings.Builder
 	for token := range adapter.model.Generate(ctx, prompt, genOptsToInference(opts)...) {
@@ -136,6 +139,9 @@ func (adapter *InferenceAdapter) GenerateStream(ctx context.Context, prompt stri
 func (adapter *InferenceAdapter) Chat(ctx context.Context, messages []Message, opts GenOpts) (Result, error) {
 	if adapter == nil || adapter.model == nil {
 		return Result{}, errors.New("mlx: inference adapter is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	var builder strings.Builder

@@ -214,7 +214,8 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
 		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
 		c.idx = int(c.keys.Shape()[2])
-		return fullK, fullV
+		return Slice(fullK, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dk}),
+			Slice(fullV, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dv})
 	}
 
 	c.keys, c.values = fullK, fullV

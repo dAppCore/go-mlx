@@ -179,7 +179,7 @@ type TrainConfig struct {
 }
 
 func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
-	if cfg.Rank == 0 {
+	if cfg.Rank <= 0 {
 		cfg.Rank = 8
 	}
 	if cfg.Alpha == 0 {
@@ -592,7 +592,7 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
-	if config.Rank == 0 {
+	if config.Rank <= 0 {
 		config.Rank = 8
 	}
 	if config.Alpha == 0 {

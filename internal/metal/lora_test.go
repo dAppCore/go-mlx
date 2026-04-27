@@ -533,6 +533,16 @@ func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 	}
 }
 
+func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
+	cfg := normalizeLoRAConfig(LoRAConfig{Rank: -4})
+	if cfg.Rank != 8 {
+		t.Fatalf("Rank = %d, want 8", cfg.Rank)
+	}
+	if cfg.Scale != 2 {
+		t.Fatalf("Scale = %f, want 2", cfg.Scale)
+	}
+}
+
 // --- parseLoRAWeightName ---
 
 func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
@@ -864,16 +874,18 @@ func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
 func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	requireMetalRuntime(t)
 
-	weight := FromValues([]float32{
+	weights := []float32{
 		1, 2, 3, 4,
 		5, 6, 7, 8,
 		9, 10, 11, 12,
-	}, 3, 4)
-	defer Free(weight)
+	}
+	weightRouter := FromValues(weights, 3, 4)
+	weightInputGate := FromValues(weights, 3, 4)
+	weightProjection := FromValues(weights, 3, 4)
 
-	routerProj := NewLinear(weight, nil)
-	perLayerInputGate := NewLinear(weight, nil)
-	perLayerProjection := NewLinear(weight, nil)
+	routerProj := NewLinear(weightRouter, nil)
+	perLayerInputGate := NewLinear(weightInputGate, nil)
+	perLayerProjection := NewLinear(weightProjection, nil)
 
 	model := &Gemma4Model{
 		Layers: []*Gemma4DecoderLayer{

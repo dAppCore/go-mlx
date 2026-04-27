@@ -740,6 +740,86 @@ func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 	}
 }
 
+func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
+	session := requireComputeSession(t)
+
+	src, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 8,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := session.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	err = session.Run(KernelScanlineFilter, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	})
+	if err == nil {
+		t.Fatal("expected filter to reject mismatched strides")
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(scanline_filter) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Kind != ComputeErrorInvalidKernelArgs || computeErr.Resource != "stride" {
+		t.Fatalf("ComputeError = %+v, want invalid_kernel_args stride", computeErr)
+	}
+}
+
+func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
+	sessionA := requireComputeSession(t)
+	sessionB := requireComputeSession(t)
+
+	src, err := sessionA.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 2,
+		Format: PixelRGB565,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(src): %v", err)
+	}
+	dst, err := sessionB.NewPixelBuffer(PixelBufferDesc{
+		Width:  1,
+		Height: 1,
+		Stride: 4,
+		Format: PixelRGBA8,
+	})
+	if err != nil {
+		t.Fatalf("NewPixelBuffer(dst): %v", err)
+	}
+
+	err = sessionA.Run(KernelRGB565ToRGBA8, KernelArgs{
+		Inputs:  map[string]Buffer{"src": src},
+		Outputs: map[string]Buffer{"dst": dst},
+	})
+	if err == nil {
+		t.Fatal("expected foreign destination buffer to be rejected")
+	}
+	if !errors.Is(err, ErrComputeInvalidBuffer) {
+		t.Fatalf("Run(rgb565_to_rgba8) error = %v, want ErrComputeInvalidBuffer", err)
+	}
+	var computeErr *ComputeError
+	if !errors.As(err, &computeErr) {
+		t.Fatalf("Run(rgb565_to_rgba8) error = %T, want *ComputeError", err)
+	}
+	if computeErr.Resource != "dst" {
+		t.Fatalf("Resource = %q, want dst", computeErr.Resource)
+	}
+}
+
 func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T) {
 	session := requireComputeSession(t)
 

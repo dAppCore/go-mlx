@@ -169,6 +169,9 @@ func (session *computeSession) Close() error {
 	if session.closed {
 		return nil
 	}
+	if err := session.syncLocked(); err != nil {
+		return err
+	}
 
 	for base := range session.buffers {
 		if base.array != nil {
@@ -690,6 +693,9 @@ func (session *computeSession) pixelBufferLocked(value Buffer, kernel, role stri
 	if !ok || buffer == nil {
 		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", kernel, role, role+" must be a pixel buffer")
 	}
+	if buffer.session != session {
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", kernel, role, role+" must belong to this session")
+	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
 	}
@@ -700,6 +706,9 @@ func (session *computeSession) byteBufferLocked(value Buffer, kernel, role strin
 	buffer, ok := value.(*byteBuffer)
 	if !ok || buffer == nil {
 		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", kernel, role, role+" must be a byte buffer")
+	}
+	if buffer.session != session {
+		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", kernel, role, role+" must belong to this session")
 	}
 	if err := buffer.requireOpenLocked(); err != nil {
 		return nil, err
@@ -749,6 +758,9 @@ func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
 	}
 	if src.desc.Format != dst.desc.Format {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "format", kernel+" requires matching pixel formats")
+	}
+	if src.desc.Stride != dst.desc.Stride {
+		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "stride", kernel+" requires matching source and destination strides")
 	}
 	if src.desc.Format != PixelRGBA8 && src.desc.Format != PixelBGRA8 {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "format", kernel+" requires rgba8 or bgra8 buffers")
