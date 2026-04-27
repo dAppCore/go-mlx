@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -8,7 +10,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/io"
 )
 
 func TestLora_NewLoRALinear_Good(t *testing.T) {
@@ -143,6 +145,156 @@ func TestLora_LoRALinear_TrainableParams_Good(t *testing.T) {
 	}
 	if params[1].Shape()[0] != 4 || params[1].Shape()[1] != 4 {
 		t.Errorf("param[1] (B) shape = %v, want [4, 4]", params[1].Shape())
+	}
+}
+
+func TestLora_NormalizeConfig_RFCAliases_Good(t *testing.T) {
+	cfg := normalizeLoRAConfig(LoRAConfig{
+		Rank:         8,
+		Scale:        1.5,
+		TargetLayers: []string{"q_proj", "v_proj"},
+	})
+
+	if cfg.Alpha != 12 {
+		t.Fatalf("Alpha = %f, want 12", cfg.Alpha)
+	}
+	if cfg.Scale != 1.5 {
+		t.Fatalf("Scale = %f, want 1.5", cfg.Scale)
+	}
+	if len(cfg.TargetKeys) != 2 || cfg.TargetKeys[0] != "q_proj" || cfg.TargetKeys[1] != "v_proj" {
+		t.Fatalf("TargetKeys = %v, want RFC aliases copied", cfg.TargetKeys)
+	}
+	if cfg.DType != DTypeFloat32 {
+		t.Fatalf("DType = %v, want float32 default", cfg.DType)
+	}
+}
+
+type loraStepTestModel struct {
+	layer *LoRALinear
+}
+
+func (m *loraStepTestModel) Forward(tokens *Array, caches []Cache) *Array {
+	return m.ForwardMasked(tokens, nil, caches)
+}
+
+func (m *loraStepTestModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array {
+	zero := Zeros([]int32{1, 1}, DTypeFloat32)
+	logit := Add(m.layer.A, m.layer.B)
+	pair := Concatenate([]*Array{zero, logit}, 1)
+	logits := Reshape(pair, 1, 1, 2)
+	Free(zero, logit, pair)
+	return logits
+}
+
+func (m *loraStepTestModel) NewCache() []Cache                   { return nil }
+func (m *loraStepTestModel) NumLayers() int                      { return 1 }
+func (m *loraStepTestModel) Tokenizer() *Tokenizer               { return nil }
+func (m *loraStepTestModel) ModelType() string                   { return "lora-step-test" }
+func (m *loraStepTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func TestLora_Regularization_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	a := FromValues([]float32{3, 4}, 1, 2)
+	b := FromValues([]float32{0, 2}, 1, 2)
+	reg := loraRegularization([]*Array{a, b}, 0.1)
+	defer Free(a, b, reg)
+	Materialize(reg)
+
+	// 0.1 * (mean([9,16]) + mean([0,4])) = 0.1 * (12.5 + 2.0) = 1.45
+	if got := reg.Float(); math.Abs(got-1.45) > 1e-5 {
+		t.Fatalf("regularization = %f, want 1.45", got)
+	}
+}
+
+func TestLora_Step_AppliesLambdaRegularization_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	newAdapter := func(lambda float32) (*LoRAAdapter, *LoRALinear) {
+		layer := &LoRALinear{
+			A:     FromValues([]float32{0.25}, 1, 1),
+			B:     FromValues([]float32{0.5}, 1, 1),
+			Scale: 1,
+			Rank:  1,
+			Alpha: 1,
+		}
+		return &LoRAAdapter{
+			Layers: map[string]*LoRALinear{"model.layers.0.self_attn.q_proj": layer},
+			Config: LoRAConfig{Lambda: lambda},
+			Model:  &loraStepTestModel{layer: layer},
+		}, layer
+	}
+
+	batch := Batch{
+		Tokens: [][]int{{0}},
+		Length: []int{1},
+	}
+	targets := [][]int{{1}}
+	opt := NewAdamW(&AdamWConfig{LearningRate: 0})
+
+	plain, plainLayer := newAdapter(0)
+	defer Free(plainLayer.A, plainLayer.B)
+	plainLoss := plain.Step(batch, targets, opt)
+	if plainLoss == nil {
+		t.Fatal("plain Step returned nil loss")
+	}
+	defer Free(plainLoss)
+	Materialize(plainLoss)
+
+	regularized, regularizedLayer := newAdapter(0.5)
+	defer Free(regularizedLayer.A, regularizedLayer.B)
+	regularizedLoss := regularized.Step(batch, targets, opt)
+	if regularizedLoss == nil {
+		t.Fatal("regularized Step returned nil loss")
+	}
+	defer Free(regularizedLoss)
+	Materialize(regularizedLoss)
+
+	if got, want := regularizedLoss.Float(), plainLoss.Float(); got <= want {
+		t.Fatalf("regularized loss = %f, want > plain loss %f", got, want)
+	}
+}
+
+func TestLora_BatchLengths_Good(t *testing.T) {
+	lengths, maxLen := batchLengths(
+		Batch{
+			Tokens: [][]int{
+				{1, 2, 3, 4},
+				{5, 6, 7},
+			},
+			Length: []int{3, 2},
+		},
+		[][]int{
+			{9, 8, 7, 6},
+			{4, 3, 2},
+		},
+	)
+
+	if maxLen != 3 {
+		t.Fatalf("maxLen = %d, want 3", maxLen)
+	}
+	if len(lengths) != 2 || lengths[0] != 3 || lengths[1] != 2 {
+		t.Fatalf("lengths = %v, want [3 2]", lengths)
+	}
+}
+
+func TestLora_FreeReplacedArrays_PreservesLiveReferences_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	keep := FromValues([]float32{1, 2}, 1, 2)
+	replaced := FromValues([]float32{3, 4}, 1, 2)
+	current := FromValues([]float32{5, 6}, 1, 2)
+
+	freeReplacedArrays([]*Array{keep, replaced}, []*Array{keep, current})
+	defer Free(keep, current)
+
+	Materialize(keep, current)
+
+	if got := keep.Floats(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("keep = %v, want [1 2]", got)
+	}
+	if got := current.Floats(); len(got) != 2 || got[0] != 5 || got[1] != 6 {
+		t.Fatalf("current = %v, want [5 6]", got)
 	}
 }
 
@@ -309,6 +461,63 @@ func TestLora_LoRAAdapter_Save_Good(t *testing.T) {
 	if _, ok := loaded[bKey]; !ok {
 		t.Errorf("missing key %s in saved adapter", bKey)
 	}
+
+	config, err := parseAdapterConfig(core.JoinPath(core.PathDir(path), "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if config.Rank != 8 {
+		t.Fatalf("config rank = %d, want 8", config.Rank)
+	}
+	if config.Alpha != 16 {
+		t.Fatalf("config alpha = %f, want 16", config.Alpha)
+	}
+	if config.NumLayers != 1 {
+		t.Fatalf("config num_layers = %d, want 1", config.NumLayers)
+	}
+	found := false
+	for _, target := range config.TargetKeys {
+		if target == "self_attn.q_proj" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("config target keys = %v, want self_attn.q_proj", config.TargetKeys)
+	}
+}
+
+func TestLora_LoRAAdapter_Save_Directory_Good(t *testing.T) {
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	base := NewLinear(w, nil)
+
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.3.self_attn.q_proj": NewLoRALinear(base, 4, 8.0),
+		},
+		Config: LoRAConfig{
+			Rank:       4,
+			Alpha:      8,
+			TargetKeys: []string{"q_proj"},
+		},
+	}
+
+	dir := t.TempDir()
+	if err := adapter.Save(dir); err != nil {
+		t.Fatalf("Adapter.Save failed: %v", err)
+	}
+
+	if _, err := coreio.Local.Stat(core.JoinPath(dir, "adapter.safetensors")); err != nil {
+		t.Fatalf("saved adapter weights not found: %v", err)
+	}
+	config, err := parseAdapterConfig(core.JoinPath(dir, "adapter_config.json"))
+	if err != nil {
+		t.Fatalf("parseAdapterConfig: %v", err)
+	}
+	if config.NumLayers != 4 {
+		t.Fatalf("config num_layers = %d, want 4", config.NumLayers)
+	}
 }
 
 func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
@@ -321,6 +530,16 @@ func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 	}
 	if len(cfg.TargetKeys) != 2 {
 		t.Errorf("TargetKeys = %v, want [q_proj, v_proj]", cfg.TargetKeys)
+	}
+}
+
+func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
+	cfg := normalizeLoRAConfig(LoRAConfig{Rank: -4})
+	if cfg.Rank != 8 {
+		t.Fatalf("Rank = %d, want 8", cfg.Rank)
+	}
+	if cfg.Scale != 2 {
+		t.Fatalf("Scale = %f, want 2", cfg.Scale)
 	}
 }
 
@@ -534,19 +753,21 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	lora.A = newA
 	lora.B = newB
 
-	// Save the adapter weights.
+	// Save the adapter package using the public LoRA save path.
 	adapterDir := t.TempDir()
-	err := SaveSafetensors(core.JoinPath(adapterDir, "adapters.safetensors"), map[string]*Array{
-		"layers.0.self_attn.q_proj.lora_a": lora.A,
-		"layers.0.self_attn.q_proj.lora_b": lora.B,
-	})
-	if err != nil {
-		t.Fatalf("SaveSafetensors: %v", err)
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.0.self_attn.q_proj": lora,
+		},
+		Config: LoRAConfig{
+			Rank:       4,
+			Alpha:      8,
+			TargetKeys: []string{"q_proj"},
+		},
 	}
-
-	// Write adapter_config.json.
-	configJSON := `{"rank": 4, "alpha": 8.0, "num_layers": 1, "lora_layers": ["self_attn.q_proj"]}`
-	_ = coreio.Local.Write(core.JoinPath(adapterDir, "adapter_config.json"), configJSON)
+	if err := adapter.Save(adapterDir); err != nil {
+		t.Fatalf("adapter.Save: %v", err)
+	}
 
 	// Now create a fresh linear with the same base weights (no LoRA).
 	linear2 := NewLinear(w, nil)
@@ -569,7 +790,7 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 	}
 
 	// Apply the loaded adapter.
-	err = applyLoadedLoRA(qwen, adapterDir)
+	err := applyLoadedLoRA(qwen, adapterDir)
 	if err != nil {
 		t.Fatalf("applyLoadedLoRA: %v", err)
 	}
@@ -613,6 +834,97 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 			t.Errorf("B[%d] = %f, want %f", i, loadedB[i], origB[i])
 			break
 		}
+	}
+}
+
+func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
+	qProj := &Linear{}
+	routerProj := &Linear{}
+	perLayerProj := &Linear{}
+	model := &Gemma4Model{
+		Layers: []*Gemma4DecoderLayer{
+			{
+				Attention: &Gemma4Attention{
+					QProj: qProj,
+				},
+				Router: &Gemma4Router{
+					Proj: routerProj,
+				},
+				PerLayerProjection: perLayerProj,
+				MLP: &MLP{
+					GateProj: &Linear{},
+					UpProj:   &Linear{},
+					DownProj: &Linear{},
+				},
+			},
+		},
+	}
+
+	if got := resolveLinear(model, 0, "self_attn.q_proj"); got != qProj {
+		t.Fatal("resolveLinear should return Gemma4 q_proj")
+	}
+	if got := resolveLinear(model, 0, "router.proj"); got != routerProj {
+		t.Fatal("resolveLinear should return Gemma4 router.proj")
+	}
+	if got := resolveLinear(model, 0, "per_layer_projection"); got != perLayerProj {
+		t.Fatal("resolveLinear should return Gemma4 per_layer_projection")
+	}
+}
+
+func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	weights := []float32{
+		1, 2, 3, 4,
+		5, 6, 7, 8,
+		9, 10, 11, 12,
+	}
+	weightRouter := FromValues(weights, 3, 4)
+	weightInputGate := FromValues(weights, 3, 4)
+	weightProjection := FromValues(weights, 3, 4)
+
+	routerProj := NewLinear(weightRouter, nil)
+	perLayerInputGate := NewLinear(weightInputGate, nil)
+	perLayerProjection := NewLinear(weightProjection, nil)
+
+	model := &Gemma4Model{
+		Layers: []*Gemma4DecoderLayer{
+			{
+				Attention: &Gemma4Attention{},
+				MLP:       &MLP{},
+				Router: &Gemma4Router{
+					Proj: routerProj,
+				},
+				PerLayerInputGate:  perLayerInputGate,
+				PerLayerProjection: perLayerProjection,
+			},
+		},
+	}
+	defer closeGemma4(model)
+
+	adapter := model.ApplyLoRA(LoRAConfig{
+		Rank:       2,
+		Alpha:      4,
+		TargetKeys: []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
+	})
+
+	if adapter.Layers["model.layers.0.router.proj"] == nil {
+		t.Fatal("expected LoRA layer for router.proj")
+	}
+	if adapter.Layers["model.layers.0.per_layer_input_gate"] == nil {
+		t.Fatal("expected LoRA layer for per_layer_input_gate")
+	}
+	if adapter.Layers["model.layers.0.per_layer_projection"] == nil {
+		t.Fatal("expected LoRA layer for per_layer_projection")
+	}
+	if model.Layers[0].Router.Proj.LoRA == nil {
+		t.Fatal("router.proj should have an attached LoRA adapter")
+	}
+	if model.Layers[0].PerLayerInputGate.LoRA == nil {
+		t.Fatal("per_layer_input_gate should have an attached LoRA adapter")
+	}
+	if model.Layers[0].PerLayerProjection.LoRA == nil {
+		t.Fatal("per_layer_projection should have an attached LoRA adapter")
 	}
 }
 

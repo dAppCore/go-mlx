@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -619,5 +621,170 @@ func TestOps_RandomUniform_Good(t *testing.T) {
 		if v < 0 || v >= 1 {
 			t.Errorf("[%d] = %f, out of [0, 1) range", i, v)
 		}
+	}
+}
+
+// --- Any / AnyAxis ---
+
+func TestOps_Any_AllFalse_Good(t *testing.T) {
+	a := FromValues([]bool{false, false, false}, 3)
+	c := Any(a, false)
+	Materialize(c)
+	if c.Bool() {
+		t.Error("Any of all-false should be false")
+	}
+}
+
+func TestOps_Any_SomeTrue_Good(t *testing.T) {
+	a := FromValues([]bool{false, true, false}, 3)
+	c := Any(a, false)
+	Materialize(c)
+	if !c.Bool() {
+		t.Error("Any of [false, true, false] should be true")
+	}
+}
+
+func TestOps_AnyAxis_PerRow_Good(t *testing.T) {
+	// 2x3 bool matrix
+	// row 0: [false, false, false] -> false
+	// row 1: [false, true, false] -> true
+	a := FromValues([]bool{false, false, false, false, true, false}, 2, 3)
+	c := AnyAxis(a, 1, false)
+	c = AsType(c, DTypeInt32)
+	Materialize(c)
+	got := c.DataInt32()
+	want := []int32{0, 1}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("AnyAxis[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestOps_Any_KeepDims_Good(t *testing.T) {
+	a := FromValues([]bool{true, false}, 1, 2)
+	c := Any(a, true)
+	Materialize(c)
+	if c.NumDims() != 2 {
+		t.Errorf("ndim = %d, want 2 (keepDims)", c.NumDims())
+	}
+}
+
+func TestOps_Any_EmptyLike_Bad(t *testing.T) {
+	// Single false element
+	a := FromValues([]bool{false}, 1)
+	c := Any(a, false)
+	Materialize(c)
+	if c.Bool() {
+		t.Error("Any of single false should be false")
+	}
+}
+
+// --- Arange ---
+
+func TestOps_Arange_Int_Good(t *testing.T) {
+	a := Arange(0, 5, 1, DTypeInt32)
+	Materialize(a)
+
+	if a.Size() != 5 {
+		t.Fatalf("size = %d, want 5", a.Size())
+	}
+	got := a.DataInt32()
+	want := []int32{0, 1, 2, 3, 4}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("Arange[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestOps_Arange_Float_Good(t *testing.T) {
+	a := Arange(0, 3, 0.5, DTypeFloat32)
+	Materialize(a)
+
+	if a.Size() != 6 {
+		t.Fatalf("size = %d, want 6", a.Size())
+	}
+	floatSliceApprox(t, a.Floats(), []float32{0, 0.5, 1.0, 1.5, 2.0, 2.5})
+}
+
+func TestOps_Arange_Negative_Good(t *testing.T) {
+	a := Arange(5, 0, -1, DTypeFloat32)
+	Materialize(a)
+
+	if a.Size() != 5 {
+		t.Fatalf("size = %d, want 5", a.Size())
+	}
+	floatSliceApprox(t, a.Floats(), []float32{5, 4, 3, 2, 1})
+}
+
+func TestOps_Arange_EmptyRange_Bad(t *testing.T) {
+	// start >= stop with positive step produces empty array
+	a := Arange(5, 5, 1, DTypeFloat32)
+	Materialize(a)
+
+	if a.Size() != 0 {
+		t.Errorf("size = %d, want 0 for empty range", a.Size())
+	}
+}
+
+func TestOps_Arange_Float64_Ugly(t *testing.T) {
+	// float64 is not supported on Metal GPU — Arange with DTypeFloat64
+	// is expected to fail on Apple Silicon. Verify it fails gracefully.
+	a := Arange(0, 3, 0.5, DTypeFloat64)
+	if a.Valid() {
+		// If it somehow succeeded (e.g. CPU fallback), verify correctness.
+		Materialize(a)
+		if a.Dtype() != DTypeFloat64 {
+			t.Errorf("dtype = %v, want float64", a.Dtype())
+		}
+		if a.Size() != 6 {
+			t.Fatalf("size = %d, want 6", a.Size())
+		}
+	} else {
+		t.Log("float64 arange correctly unsupported on Metal GPU")
+	}
+	// Clear the global error state so subsequent tests are not affected.
+	_ = lastError()
+}
+
+// --- IsNaN ---
+
+func TestOps_IsNaN_NoNaN_Good(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3}, 3)
+	c := IsNaN(a)
+	c = AsType(c, DTypeInt32)
+	Materialize(c)
+	got := c.DataInt32()
+	for i, v := range got {
+		if v != 0 {
+			t.Errorf("IsNaN[%d] = %d, want 0 (no NaN)", i, v)
+		}
+	}
+}
+
+func TestOps_IsNaN_WithNaN_Good(t *testing.T) {
+	nan := float32(math.NaN())
+	a := FromValues([]float32{1, nan, 3}, 3)
+	c := IsNaN(a)
+	c = AsType(c, DTypeInt32)
+	Materialize(c)
+	got := c.DataInt32()
+	want := []int32{0, 1, 0}
+	for i := range got {
+		if got[i] != want[i] {
+			t.Errorf("IsNaN[%d] = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
+func TestOps_IsNaN_AllNaN_Ugly(t *testing.T) {
+	nan := float32(math.NaN())
+	a := FromValues([]float32{nan, nan, nan}, 3)
+	c := IsNaN(a)
+	anyNaN := Any(c, false)
+	Materialize(anyNaN)
+	if !anyNaN.Bool() {
+		t.Error("expected Any(IsNaN(all-NaN)) to be true")
 	}
 }

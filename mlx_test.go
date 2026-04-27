@@ -1,4 +1,6 @@
-//go:build darwin && arm64
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && !nomlx
 
 package mlx_test
 
@@ -9,9 +11,9 @@ import (
 
 	"dappco.re/go/core"
 
-	"forge.lthn.ai/core/go-inference"
-	coreio "forge.lthn.ai/core/go-io"
-	mlx "forge.lthn.ai/core/go-mlx"
+	"dappco.re/go/inference"
+	coreio "dappco.re/go/io"
+	mlx "dappco.re/go/mlx"
 )
 
 func TestMetalAvailable_Good(t *testing.T) {
@@ -20,13 +22,19 @@ func TestMetalAvailable_Good(t *testing.T) {
 	if !ok {
 		t.Fatal("metal backend not registered")
 	}
-	if !b.Available() {
-		t.Fatal("metal backend reports not available on darwin/arm64")
+	if got, want := b.Available(), mlx.MetalAvailable(); got != want {
+		t.Fatalf("metal backend availability = %v, want %v", got, want)
 	}
 }
 
 func TestDefaultBackend_Good(t *testing.T) {
 	b, err := inference.Default()
+	if !mlx.MetalAvailable() {
+		if err == nil {
+			t.Fatal("Default() should fail when Metal is unavailable")
+		}
+		return
+	}
 	if err != nil {
 		t.Fatalf("Default() error: %v", err)
 	}

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -13,7 +15,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	coreerr "forge.lthn.ai/core/go-log"
+	"dappco.re/go/core"
 )
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator
@@ -51,6 +53,7 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 			var key *C.char
 			value := C.mlx_array_new()
 			if C.mlx_map_string_to_array_iterator_next(&key, &value, it) != 0 {
+				C.mlx_array_free(value)
 				break
 			}
 
@@ -58,6 +61,7 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 			arr := &Array{ctx: value, name: name}
 			runtime.SetFinalizer(arr, finalizeArray)
 			if !yield(name, arr) {
+				Free(arr)
 				break
 			}
 		}
@@ -77,7 +81,7 @@ func LoadAllSafetensors(path string) (map[string]*Array, error) {
 		if err := lastError(); err != nil {
 			return nil, err
 		}
-		return nil, coreerr.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)
+		return nil, core.E("mlx.LoadAllSafetensors", "no tensors loaded from "+path, nil)
 	}
 	return tensors, nil
 }

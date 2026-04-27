@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -75,6 +77,34 @@ func TestSample_TopKSampler_MultipleTokens_Good(t *testing.T) {
 	}
 }
 
+func TestSample_TopKSampler_OverLargeK_NoOp_Good(t *testing.T) {
+	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	filtered := TopKSampler(99).Sample(logits)
+	Materialize(filtered)
+
+	got := filtered.Floats()
+	want := []float32{1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("filtered[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSample_TopKSampler_NonPositiveK_NoOp_Good(t *testing.T) {
+	logits := FromValues([]float32{1, 2, 3, 4}, 1, 4)
+	filtered := TopKSampler(0).Sample(logits)
+	Materialize(filtered)
+
+	got := filtered.Floats()
+	want := []float32{1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("filtered[%d] = %f, want %f", i, got[i], want[i])
+		}
+	}
+}
+
 func TestSample_Chain_Good(t *testing.T) {
 	// Full chain: topK + temperature
 	logits := FromValues([]float32{1, 2, 3, 4, 5}, 1, 5)
@@ -86,6 +116,71 @@ func TestSample_Chain_Good(t *testing.T) {
 	idx := token.Int()
 	if idx < 0 || idx >= 5 {
 		t.Errorf("chain sample index = %d, out of range", idx)
+	}
+}
+
+func TestSample_ChainOrder_Good(t *testing.T) {
+	s := newSampler(0.7, 0.9, 0.05, 20)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 4 {
+		t.Fatalf("len(chain) = %d, want 4", len(c))
+	}
+	if _, ok := c[0].(Temperature); !ok {
+		t.Fatalf("chain[0] = %T, want Temperature", c[0])
+	}
+	if _, ok := c[1].(TopP); !ok {
+		t.Fatalf("chain[1] = %T, want TopP", c[1])
+	}
+	if _, ok := c[2].(TopKSampler); !ok {
+		t.Fatalf("chain[2] = %T, want TopKSampler", c[2])
+	}
+	if _, ok := c[3].(MinPSampler); !ok {
+		t.Fatalf("chain[3] = %T, want MinPSampler", c[3])
+	}
+}
+
+func TestSample_TopPSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0.9, 0, 0)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(TopP); !ok {
+		t.Fatalf("chain[0] = %T, want TopP", c[0])
+	}
+}
+
+func TestSample_TopKSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0, 0, 20)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(TopKSampler); !ok {
+		t.Fatalf("chain[0] = %T, want TopKSampler", c[0])
+	}
+}
+
+func TestSample_MinPSamplesWithoutTemperature_Good(t *testing.T) {
+	s := newSampler(0, 0, 0.05, 0)
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want chain", s)
+	}
+	if len(c) != 1 {
+		t.Fatalf("len(chain) = %d, want 1", len(c))
+	}
+	if _, ok := c[0].(MinPSampler); !ok {
+		t.Fatalf("chain[0] = %T, want MinPSampler", c[0])
 	}
 }
 

@@ -1,24 +1,30 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
 
 import (
+	"slices"
+
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
-	coreerr "forge.lthn.ai/core/go-log"
+	coreio "dappco.re/go/io"
 )
 
 // Tokenizer handles text-to-token and token-to-text conversion.
 type Tokenizer struct {
-	vocab      map[string]int32
-	invVocab   map[int32]string
-	merges     []mergePair
-	mergeRanks map[string]int // "a b" → rank for O(1) merge lookup
-	special    map[string]int32
+	vocab        map[string]int32
+	invVocab     map[int32]string
+	merges       []mergePair
+	mergeRanks   map[string]int // "a b" → rank for O(1) merge lookup
+	special      map[string]int32
+	specialOrder []string
 
 	bosToken int32
 	eosToken int32
+	hasBOS   bool
+	hasEOS   bool
 
 	// GPT-2 byte-level BPE support (used by Qwen, GPT, Llama, etc.)
 	isGPT2BPE   bool
@@ -35,8 +41,8 @@ type mergePair struct {
 type tokenizerJSON struct {
 	Model struct {
 		Type         string `json:"type"`
-		Vocab        []byte `json:"vocab"`
-		Merges       []byte `json:"merges"`
+		Vocab        any    `json:"vocab"`
+		Merges       any    `json:"merges"`
 		ByteFallback bool   `json:"byte_fallback"`
 	} `json:"model"`
 	AddedTokens []struct {
@@ -73,13 +79,13 @@ func indexIn(s, substr string) int {
 func LoadTokenizer(path string) (*Tokenizer, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "read "+path, err)
+		return nil, core.E("tokenizer.LoadTokenizer", "read "+path, err)
 	}
 	data := []byte(str)
 
 	var tj tokenizerJSON
 	if r := core.JSONUnmarshal(data, &tj); !r.OK {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse", nil)
+		return nil, core.E("tokenizer.LoadTokenizer", "parse", nil)
 	}
 
 	tokenizer := &Tokenizer{
@@ -88,31 +94,43 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		special:  make(map[string]int32),
 	}
 
-	var vocab map[string]int32
-	if r := core.JSONUnmarshal(tj.Model.Vocab, &vocab); !r.OK {
-		return nil, coreerr.E("tokenizer.LoadTokenizer", "parse vocab", nil)
-	}
-	tokenizer.vocab = vocab
-	for tokenText, tokenID := range vocab {
-		tokenizer.invVocab[tokenID] = tokenText
+	// Vocab arrives as any (map[string]interface{} from JSON) — convert
+	// to map[string]int32 by re-marshalling through core.JSONMarshal.
+	if tj.Model.Vocab != nil {
+		vocabBytes := core.JSONMarshal(tj.Model.Vocab)
+		if !vocabBytes.OK {
+			return nil, core.E("tokenizer.LoadTokenizer", "re-encode vocab", nil)
+		}
+		var vocab map[string]int32
+		if r := core.JSONUnmarshal(vocabBytes.Value.([]byte), &vocab); !r.OK {
+			return nil, core.E("tokenizer.LoadTokenizer", "parse vocab", nil)
+		}
+		tokenizer.vocab = vocab
+		for tokenText, tokenID := range vocab {
+			tokenizer.invVocab[tokenID] = tokenText
+		}
 	}
 
-	// supports both ["a b", ...] and [["a","b"], ...] merge formats
-	if len(tj.Model.Merges) > 0 {
-		var stringMerges []string
-		if r := core.JSONUnmarshal(tj.Model.Merges, &stringMerges); r.OK {
-			for rank, merge := range stringMerges {
-				parts := core.SplitN(merge, " ", 2)
-				if len(parts) == 2 {
-					tokenizer.merges = append(tokenizer.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
+	// Merges arrives as any — supports both ["a b", ...] and [["a","b"], ...]
+	if tj.Model.Merges != nil {
+		mergeBytes := core.JSONMarshal(tj.Model.Merges)
+		if mergeBytes.OK {
+			raw := mergeBytes.Value.([]byte)
+			var stringMerges []string
+			if r := core.JSONUnmarshal(raw, &stringMerges); r.OK {
+				for rank, merge := range stringMerges {
+					parts := core.SplitN(merge, " ", 2)
+					if len(parts) == 2 {
+						tokenizer.merges = append(tokenizer.merges, mergePair{a: parts[0], b: parts[1], rank: rank})
+					}
 				}
-			}
-		} else {
-			var arrayMerges [][]string
-			if r := core.JSONUnmarshal(tj.Model.Merges, &arrayMerges); r.OK {
-				for rank, pair := range arrayMerges {
-					if len(pair) == 2 {
-						tokenizer.merges = append(tokenizer.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
+			} else {
+				var arrayMerges [][]string
+				if r := core.JSONUnmarshal(raw, &arrayMerges); r.OK {
+					for rank, pair := range arrayMerges {
+						if len(pair) == 2 {
+							tokenizer.merges = append(tokenizer.merges, mergePair{a: pair[0], b: pair[1], rank: rank})
+						}
 					}
 				}
 			}
@@ -131,6 +149,23 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		tokenizer.vocab[added.Content] = added.ID
 		tokenizer.invVocab[added.ID] = added.Content
 	}
+	tokenizer.specialOrder = make([]string, 0, len(tokenizer.special))
+	for tokenText := range tokenizer.special {
+		tokenizer.specialOrder = append(tokenizer.specialOrder, tokenText)
+	}
+	slices.SortFunc(tokenizer.specialOrder, func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		switch {
+		case a < b:
+			return -1
+		case a > b:
+			return 1
+		default:
+			return 0
+		}
+	})
 
 	// Detect GPT-2 byte-level BPE (Qwen, GPT, DeepSeek use Ġ for space).
 	// Check for "Ġthe" rather than bare "Ġ" — large SentencePiece vocabs
@@ -143,32 +178,69 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 
 	if id, ok := tokenizer.special["<bos>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 	if id, ok := tokenizer.special["<eos>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Gemma: <end_of_turn> is the generation stop token
 	if id, ok := tokenizer.special["<end_of_turn>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Qwen3: <|im_end|> is the generation stop token
 	if id, ok := tokenizer.special["<|im_end|>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Qwen3 BOS: <|im_start|>
 	if id, ok := tokenizer.special["<|im_start|>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 	// Llama 3: <|eot_id|> is the turn-end token
 	if id, ok := tokenizer.special["<|eot_id|>"]; ok {
 		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
 	}
 	// Llama 3 BOS: <|begin_of_text|>
 	if id, ok := tokenizer.special["<|begin_of_text|>"]; ok {
 		tokenizer.bosToken = id
+		tokenizer.hasBOS = true
 	}
 
 	return tokenizer, nil
+}
+
+func (t *Tokenizer) matchSpecialToken(input string) (string, int32, bool) {
+	for _, tok := range t.specialOrder {
+		if core.HasPrefix(input, tok) {
+			return tok, t.special[tok], true
+		}
+	}
+	return "", 0, false
+}
+
+func (t *Tokenizer) nextSpecialBoundary(input string) int {
+	end := len(input)
+	for _, tok := range t.specialOrder {
+		if idx := indexIn(input, tok); idx > 0 && idx < end {
+			end = idx
+		}
+	}
+	return end
+}
+
+func normalizeSentencePieceSegment(segment string) string {
+	if segment == "" {
+		return ""
+	}
+	normalized := core.Replace(segment, " ", "▁")
+	if !core.HasPrefix(normalized, "▁") {
+		normalized = "▁" + normalized
+	}
+	return normalized
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
@@ -238,37 +310,29 @@ func (t *Tokenizer) Encode(text string) []int32 {
 		return t.encodeGPT2(text)
 	}
 
-	tokens := []int32{t.bosToken}
+	tokens := make([]int32, 0, len(text)+1)
+	if t.hasBOS {
+		tokens = append(tokens, t.bosToken)
+	}
 
 	// SentencePiece style: split into segments around special tokens, then BPE each segment.
 	remaining := text
 	for remaining != "" {
 		// Check for special tokens at the current position.
-		found := false
-		for tok, id := range t.special {
-			if core.HasPrefix(remaining, tok) {
-				tokens = append(tokens, id)
-				remaining = remaining[len(tok):]
-				found = true
-				break
-			}
-		}
-		if found {
+		if tok, id, ok := t.matchSpecialToken(remaining); ok {
+			tokens = append(tokens, id)
+			remaining = remaining[len(tok):]
 			continue
 		}
 
 		// Find the next special token boundary (or end of string).
-		end := len(remaining)
-		for tok := range t.special {
-			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
-				end = idx
-			}
-		}
+		end := t.nextSpecialBoundary(remaining)
 		segment := remaining[:end]
 		remaining = remaining[end:]
 
-		// SentencePiece: prefix the segment with ▁ (space marker) and split into characters.
-		spText := "▁" + segment
+		// SentencePiece uses ▁ as the word-boundary marker for every word,
+		// not only at the start of the full segment.
+		spText := normalizeSentencePieceSegment(segment)
 		symbols := make([]string, 0, len([]rune(spText)))
 		for _, r := range spText {
 			symbols = append(symbols, string(r))
@@ -290,32 +354,23 @@ func (t *Tokenizer) Encode(text string) []int32 {
 
 // encodeGPT2 encodes text using GPT-2 byte-level BPE.
 func (t *Tokenizer) encodeGPT2(text string) []int32 {
-	tokens := []int32{t.bosToken}
+	tokens := make([]int32, 0, len(text)+1)
+	if t.hasBOS {
+		tokens = append(tokens, t.bosToken)
+	}
 
 	// Split text around special tokens (matched in original form, not byte-encoded).
 	remaining := text
 	for remaining != "" {
 		// Check for special tokens at the current position.
-		found := false
-		for tok, id := range t.special {
-			if core.HasPrefix(remaining, tok) {
-				tokens = append(tokens, id)
-				remaining = remaining[len(tok):]
-				found = true
-				break
-			}
-		}
-		if found {
+		if tok, id, ok := t.matchSpecialToken(remaining); ok {
+			tokens = append(tokens, id)
+			remaining = remaining[len(tok):]
 			continue
 		}
 
 		// Find the next special token boundary (or end of string).
-		end := len(remaining)
-		for tok := range t.special {
-			if idx := indexIn(remaining, tok); idx > 0 && idx < end {
-				end = idx
-			}
-		}
+		end := t.nextSpecialBoundary(remaining)
 		segment := remaining[:end]
 		remaining = remaining[end:]
 
@@ -416,6 +471,29 @@ func (t *Tokenizer) BOSToken() int32 { return t.bosToken }
 
 // EOSToken returns the end-of-sequence (generation stop) token ID.
 func (t *Tokenizer) EOSToken() int32 { return t.eosToken }
+
+// HasBOSToken reports whether the tokenizer explicitly defines a BOS token.
+func (t *Tokenizer) HasBOSToken() bool { return t != nil && t.hasBOS }
+
+// HasEOSToken reports whether the tokenizer explicitly defines an EOS/stop token.
+func (t *Tokenizer) HasEOSToken() bool { return t != nil && t.hasEOS }
+
+// BOS returns the beginning-of-sequence token ID.
+func (t *Tokenizer) BOS() int32 { return t.BOSToken() }
+
+// EOS returns the end-of-sequence (generation stop) token ID.
+func (t *Tokenizer) EOS() int32 { return t.EOSToken() }
+
+// TokenID looks up a token string in the vocabulary.
+func (t *Tokenizer) TokenID(text string) (int32, bool) {
+	id, ok := t.vocab[text]
+	return id, ok
+}
+
+// IDToken looks up the text for a token ID.
+func (t *Tokenizer) IDToken(id int32) string {
+	return t.invVocab[id]
+}
 
 // FormatGemmaPrompt applies the Gemma 3 chat template.
 func FormatGemmaPrompt(prompt string) string {

@@ -1,10 +1,12 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 // Package mlx provides Apple Metal GPU inference via mlx-c bindings.
 //
 // This package implements the [inference.Backend] interface from
-// forge.lthn.ai/core/go-inference for Apple Silicon (M1-M4) GPUs.
+// dappco.re/go/inference for Apple Silicon (M1-M4) GPUs.
 // Import it blank to register the "metal" backend automatically:
 //
-//	import _ "forge.lthn.ai/core/go-mlx"
+//	import _ "dappco.re/go/mlx"
 //
 // Build mlx-c before use:
 //
@@ -91,11 +93,21 @@
 //
 //	// Between chat turns, reclaim prompt cache memory:
 //	mlx.ClearCache()
+//	model1.Close()
+//	mlx.GC() // run Go finalizers for CGO-owned memory without importing runtime
 //
 //	fmt.Printf("active: %d MB, peak: %d MB\n",
 //	    mlx.GetActiveMemory()/1024/1024, mlx.GetPeakMemory()/1024/1024)
 package mlx
 
+import "dappco.re/go/mlx/internal/metal"
+
 //go:generate cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
 //go:generate cmake --build build --parallel
 //go:generate cmake --install build
+
+// GC runs Go garbage collection for MLX CGO lifecycle cleanup.
+//
+// Use this after closing large models when prompt/model memory must be
+// reclaimed promptly, without importing runtime at call sites.
+func GC() { metal.RuntimeGC() }

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -94,6 +96,7 @@ func (c *KVCache) Offset() int { return c.offset }
 func (c *KVCache) Len() int    { return c.offset }
 
 func (c *KVCache) Reset() {
+	Free(c.keys, c.values)
 	c.keys = nil
 	c.values = nil
 	c.offset = 0
@@ -170,8 +173,14 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	c.idx++
 
 	validLen := int32(min(c.offset, c.maxSize))
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, validLen, Dk}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, validLen, Dv})
+	start := 0
+	if c.offset > c.maxSize {
+		start = c.idx
+		if start >= c.maxSize {
+			start = 0
+		}
+	}
+	return rotatingCacheWindow(c.keys, start, validLen), rotatingCacheWindow(c.values, start, validLen)
 }
 
 func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array) {
@@ -187,29 +196,76 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	var fullK, fullV *Array
 	if c.keys == nil {
-		c.keys, c.values = k.Clone(), v.Clone()
+		fullK, fullV = k.Clone(), v.Clone()
 	} else {
 		oldK, oldV := c.keys, c.values
-		c.keys = Concatenate([]*Array{oldK, k}, 2)
-		c.values = Concatenate([]*Array{oldV, v}, 2)
+		fullK = Concatenate([]*Array{oldK, k}, 2)
+		fullV = Concatenate([]*Array{oldV, v}, 2)
 		Free(oldK, oldV)
 	}
 	c.offset += seqLen
 
-	cap := int(c.keys.Shape()[2])
+	cap := int(fullK.Shape()[2])
 	if trim := cap - c.maxSize; trim > 0 {
-		oldK, oldV := c.keys, c.values
-		c.keys = Slice(c.keys, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
-		c.values = Slice(c.values, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
-		Free(oldK, oldV)
+		// Preserve the full multi-token prompt for the current attention pass,
+		// while storing only the bounded sliding window for future decode steps.
+		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
+		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
+		c.idx = int(c.keys.Shape()[2])
+		return Slice(fullK, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dk}),
+			Slice(fullV, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dv})
 	}
 
+	c.keys, c.values = fullK, fullV
 	c.idx = int(c.keys.Shape()[2])
 	// Return Slice views so callers can Free them without destroying the cache.
 	// (updateInPlace and KVCache.Update already return Slice views.)
 	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk}),
 		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
+}
+
+func rotatingCacheWindow(buffer *Array, start int, validLen int32) *Array {
+	if buffer == nil || !buffer.Valid() {
+		return nil
+	}
+	shape := buffer.Shape()
+	if validLen <= 0 {
+		starts := make([]int32, len(shape))
+		ends := make([]int32, len(shape))
+		return Slice(buffer, starts, ends)
+	}
+	if len(shape) < 4 {
+		return buffer.Clone()
+	}
+	if start <= 0 || int32(start) >= validLen {
+		return Slice(buffer, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], validLen, shape[3]})
+	}
+
+	tail := Slice(buffer, []int32{0, 0, int32(start), 0}, []int32{shape[0], shape[1], validLen, shape[3]})
+	head := Slice(buffer, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(start), shape[3]})
+	ordered := Concatenate([]*Array{tail, head}, 2)
+	Free(tail, head)
+	return ordered
+}
+
+func (c *RotatingKVCache) orderedState() []*Array {
+	if c.keys == nil || c.values == nil {
+		return nil
+	}
+	start := 0
+	if c.offset > c.maxSize {
+		start = c.idx
+		if start >= c.maxSize {
+			start = 0
+		}
+	}
+	validLen := int32(c.Len())
+	return []*Array{
+		rotatingCacheWindow(c.keys, start, validLen),
+		rotatingCacheWindow(c.values, start, validLen),
+	}
 }
 
 func (c *RotatingKVCache) State() []*Array {
@@ -223,6 +279,7 @@ func (c *RotatingKVCache) Offset() int { return c.offset }
 func (c *RotatingKVCache) Len() int    { return min(c.offset, c.maxSize) }
 
 func (c *RotatingKVCache) Reset() {
+	Free(c.keys, c.values)
 	c.keys = nil
 	c.values = nil
 	c.offset = 0

@@ -1,4 +1,6 @@
-//go:build darwin && arm64
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && !nomlx
 
 package mlx_test
 
@@ -6,8 +8,8 @@ import (
 	"context"
 	"testing"
 
-	"forge.lthn.ai/core/go-inference"
-	mlx "forge.lthn.ai/core/go-mlx"
+	"dappco.re/go/inference"
+	mlx "dappco.re/go/mlx"
 )
 
 func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {

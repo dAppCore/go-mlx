@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -67,8 +69,8 @@ type fakeModel struct {
 	numLayers int
 }
 
-func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array                  { return nil }
-func (f *fakeModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array  { return nil }
+func (f *fakeModel) Forward(_ *Array, _ []Cache) *Array                 { return nil }
+func (f *fakeModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
 func (f *fakeModel) NewCache() []Cache {
 	caches := make([]Cache, f.numLayers)
 	for i := range caches {
@@ -76,9 +78,9 @@ func (f *fakeModel) NewCache() []Cache {
 	}
 	return caches
 }
-func (f *fakeModel) NumLayers() int                   { return f.numLayers }
-func (f *fakeModel) Tokenizer() *Tokenizer            { return nil }
-func (f *fakeModel) ModelType() string                 { return "fake" }
+func (f *fakeModel) NumLayers() int                      { return f.numLayers }
+func (f *fakeModel) Tokenizer() *Tokenizer               { return nil }
+func (f *fakeModel) ModelType() string                   { return "fake" }
 func (f *fakeModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func TestMetal_LoadAllSafetensors_MissingFile_Bad(t *testing.T) {

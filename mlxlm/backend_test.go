@@ -12,7 +12,7 @@ import (
 
 	"dappco.re/go/core"
 
-	"forge.lthn.ai/core/go-inference"
+	"dappco.re/go/inference"
 )
 
 // mockScript returns the absolute path to testdata/mock_bridge.py.
@@ -49,6 +49,30 @@ func TestBackend_LoadModel_Good(t *testing.T) {
 	m := loadMock(t, "/fake/model/path")
 	if m.ModelType() != "mock_model" {
 		t.Errorf("ModelType() = %q, want %q", m.ModelType(), "mock_model")
+	}
+}
+
+func TestOptionalFloat32Field_Good(t *testing.T) {
+	type withMinP struct {
+		MinP float32
+	}
+
+	got, ok := optionalFloat32Field(withMinP{MinP: 0.05}, "MinP")
+	if !ok {
+		t.Fatal("expected MinP field to be found")
+	}
+	if got != 0.05 {
+		t.Fatalf("optionalFloat32Field() = %f, want %f", got, 0.05)
+	}
+}
+
+func TestOptionalFloat32Field_MissingField_Good(t *testing.T) {
+	type withoutMinP struct {
+		TopP float32
+	}
+
+	if got, ok := optionalFloat32Field(withoutMinP{TopP: 0.9}, "MinP"); ok || got != 0 {
+		t.Fatalf("optionalFloat32Field() = (%f, %v), want (0, false)", got, ok)
 	}
 }
 

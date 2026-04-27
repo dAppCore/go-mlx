@@ -1,16 +1,15 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
 
 import (
-	"log/slog"
-	"maps"
 	"math"
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
-	coreerr "forge.lthn.ai/core/go-log"
+	coreio "dappco.re/go/io"
 )
 
 // Qwen3Config holds Qwen 3 model configuration.
@@ -72,7 +71,7 @@ type Qwen3MLP struct {
 func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	var cfg Qwen3Config
 	if r := core.JSONUnmarshal(data, &cfg); !r.OK {
-		return nil, coreerr.E("qwen3.parseConfig", "parse config", nil)
+		return nil, core.E("qwen3.parseConfig", "parse config", nil)
 	}
 
 	// Top-level quantization
@@ -80,7 +79,7 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 		Quantization *QuantizationConfig `json:"quantization"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
-		return nil, coreerr.E("qwen3.parseConfig", "parse quantization", nil)
+		return nil, core.E("qwen3.parseConfig", "parse quantization", nil)
 	}
 	cfg.Quantization = wrapper.Quantization
 
@@ -104,80 +103,82 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	return &cfg, nil
 }
 
+func detectQwenModelType(configData []byte, weights map[string]*Array) string {
+	if detected, err := probeModelType(configData); err == nil {
+		switch detected {
+		case "llama", "qwen2", "qwen3":
+			return detected
+		}
+	}
+
+	if hasResolvedWeight(weights, "model.layers.0.self_attn.q_norm.weight") {
+		return "qwen3"
+	}
+	return "qwen2"
+}
+
 // LoadQwen3 loads a Qwen 2/3 or Llama model from a safetensors directory.
 // Llama, Qwen 2 and Qwen 3 share the same decoder architecture (pre-norm,
 // SwiGLU MLP, GQA). Qwen 3 adds Q/K RMS normalization.
 func LoadQwen3(modelPath string) (*Qwen3Model, error) {
-	str, err := coreio.Local.Read(core.JoinPath(modelPath, "config.json"))
+	root := resolveModelRoot(modelPath)
+	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "load config", err)
+		return nil, core.E("qwen3.LoadQwen3", "load config", err)
 	}
 	data := []byte(str)
 
-	var probe struct {
-		ModelType string `json:"model_type"`
-	}
-	if r := core.JSONUnmarshal(data, &probe); !r.OK {
-		return nil, coreerr.E("qwen3.LoadQwen3", "parse model_type", nil)
-	}
-
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "parse config", err)
+		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
 	}
 
-	tok, err := LoadTokenizer(core.JoinPath(modelPath, "tokenizer.json"))
+	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
-		return nil, coreerr.E("qwen3.LoadQwen3", "load tokenizer", err)
+		return nil, core.E("qwen3.LoadQwen3", "load tokenizer", err)
 	}
 
-	weights := make(map[string]*Array)
-	matches := core.PathGlob(core.JoinPath(modelPath, "*.safetensors"))
-	if len(matches) == 0 {
-		return nil, coreerr.E("qwen3.LoadQwen3", "no .safetensors files found in "+modelPath, nil)
-	}
-	for _, path := range matches {
-		maps.Insert(weights, LoadSafetensors(path))
-		if err := lastError(); err != nil {
-			return nil, coreerr.E("qwen3.LoadQwen3", "load weights "+core.PathBase(path), err)
-		}
+	weights, err := loadModelWeights(modelPath)
+	if err != nil {
+		return nil, core.E("qwen3.LoadQwen3", "load weights", err)
 	}
 
 	w := func(name string) *Array { return resolveWeight(weights, name) }
 
 	q := cfg.Quantization
 	if q != nil {
-		slog.Info("qwen3: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
+		core.Info("qwen3: using quantized inference", "bits", q.Bits, "group_size", q.GroupSize)
 	}
 	linear := func(prefix string) *Linear {
 		weight := w(prefix + ".weight")
 		scales := w(prefix + ".scales")
 		biases := w(prefix + ".biases")
 		bias := w(prefix + ".bias")
-		if scales != nil && q != nil {
-			return NewQuantizedLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+		if scales != nil {
+			groupSize, bits := 0, 0
+			if q != nil {
+				groupSize = q.GroupSize
+				bits = q.Bits
+			}
+			return NewQuantizedLinear(weight, scales, biases, bias, groupSize, bits)
 		}
 		return NewLinear(weight, bias)
 	}
 
 	embed := &Embedding{Weight: w("model.embed_tokens.weight")}
-	if embedScales := w("model.embed_tokens.scales"); embedScales != nil && q != nil {
+	if embedScales := w("model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = w("model.embed_tokens.biases")
-		embed.GroupSize = q.GroupSize
-		embed.Bits = q.Bits
-	}
-
-	// Detect qwen2 vs qwen3 by presence of q_norm weight when model_type is absent.
-	detectedType := probe.ModelType
-	if detectedType == "" {
-		hasQKNorm := w("model.layers.0.self_attn.q_norm.weight") != nil
-		if hasQKNorm {
-			detectedType = "qwen3"
-		} else {
-			detectedType = "qwen2"
+		if q != nil {
+			embed.GroupSize = q.GroupSize
+			embed.Bits = q.Bits
 		}
 	}
+
+	// Preserve the architecture selected during top-level probing so configs
+	// that rely on the `architectures` field (common for Llama checkpoints)
+	// still get the correct runtime model type and chat template.
+	detectedType := detectQwenModelType(data, weights)
 
 	m := &Qwen3Model{
 		EmbedTokens: embed,
@@ -213,8 +214,13 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	lmHeadWeight := w("lm_head.weight")
 	if lmHeadWeight != nil {
 		lmHeadScales := w("lm_head.scales")
-		if lmHeadScales != nil && q != nil {
-			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, q.GroupSize, q.Bits)
+		if lmHeadScales != nil {
+			groupSize, bits := 0, 0
+			if q != nil {
+				groupSize = q.GroupSize
+				bits = q.Bits
+			}
+			m.Output = NewQuantizedLinear(lmHeadWeight, lmHeadScales, w("lm_head.biases"), nil, groupSize, bits)
 		} else {
 			m.Output = NewLinear(lmHeadWeight, nil)
 		}
@@ -227,14 +233,10 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 		allArrays = append(allArrays, a)
 	}
 	Materialize(allArrays...)
-	slog.Info("model loaded",
-		"arch", detectedType,
-		"layers", cfg.NumHiddenLayers,
-		"hidden", cfg.HiddenSize,
-		"heads", cfg.NumAttentionHeads,
-		"kv_heads", cfg.NumKeyValueHeads,
-		"head_dim", cfg.HeadDim,
-		"vocab", cfg.VocabSize,
+	core.Info("model loaded",
+		"arch", detectedType, "layers", cfg.NumHiddenLayers, "hidden", cfg.HiddenSize,
+		"heads", cfg.NumAttentionHeads, "kv_heads", cfg.NumKeyValueHeads,
+		"head_dim", cfg.HeadDim, "vocab", cfg.VocabSize,
 	)
 
 	return m, nil
@@ -388,9 +390,11 @@ func (m *Qwen3Model) ModelType() string { return m.modelType }
 // Supports attention targets (q_proj, k_proj, v_proj, o_proj) and
 // MLP targets (gate_proj, up_proj, down_proj).
 func (m *Qwen3Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
+	cfg = normalizeLoRAConfig(cfg)
 	adapter := &LoRAAdapter{
 		Layers: make(map[string]*LoRALinear),
 		Config: cfg,
+		Model:  m,
 	}
 
 	for i, layer := range m.Layers {

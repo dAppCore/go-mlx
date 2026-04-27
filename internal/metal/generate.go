@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -9,8 +11,6 @@ import (
 	"time"
 
 	"dappco.re/go/core"
-
-	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // Token represents a single generated token.
@@ -31,6 +31,7 @@ type GenerateConfig struct {
 	Temperature   float32
 	TopK          int
 	TopP          float32
+	MinP          float32
 	StopTokens    []int32
 	RepeatPenalty float32
 }
@@ -53,6 +54,7 @@ type Model struct {
 	model       InternalModel
 	tokenizer   *Tokenizer
 	modelType   string
+	device      DeviceType
 	contextLen  int // 0 = unbounded (model default)
 	lastErr     error
 	lastMetrics Metrics
@@ -76,12 +78,13 @@ func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
-	Architecture string
-	VocabSize    int
-	NumLayers    int
-	HiddenSize   int
-	QuantBits    int
-	QuantGroup   int
+	Architecture  string
+	VocabSize     int
+	NumLayers     int
+	HiddenSize    int
+	QuantBits     int
+	QuantGroup    int
+	ContextLength int
 }
 
 // Info returns metadata about the loaded model.
@@ -97,6 +100,15 @@ func (m *Model) Info() ModelInfo {
 	case *GemmaModel:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		if v.Cfg.Quantization != nil {
+			info.QuantBits = v.Cfg.Quantization.Bits
+			info.QuantGroup = v.Cfg.Quantization.GroupSize
+		}
+	case *Gemma4Model:
+		info.VocabSize = int(v.Cfg.VocabSize)
+		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
@@ -104,10 +116,14 @@ func (m *Model) Info() ModelInfo {
 	case *Qwen3Model:
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
+		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
 		}
+	}
+	if m.contextLen > 0 {
+		info.ContextLength = m.contextLen
 	}
 	return info
 }
@@ -120,11 +136,16 @@ func (m *Model) Close() error {
 	switch v := m.model.(type) {
 	case *GemmaModel:
 		closeGemma(v)
+	case *Gemma4Model:
+		closeGemma4(v)
 	case *Qwen3Model:
 		closeQwen3(v)
 	}
 	m.model = nil
 	m.tokenizer = nil
+	// Closing a model should release its freed weights from the global MLX
+	// allocator cache as well, so callers can immediately load another model.
+	ClearCache()
 	return nil
 }
 
@@ -148,6 +169,15 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 	m.lastErr = nil
 	m.lastMetrics = Metrics{}
 
+	inner := m.generate(ctx, prompt, cfg)
+	return func(yield func(Token) bool) {
+		if err := m.withDevice(func() { inner(yield) }); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
+func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
 		totalStart := time.Now()
 		ResetPeakMemory()
@@ -157,7 +187,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		caches := m.newCaches()
 		defer freeCaches(caches)
 
-		sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+		sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 		var genCount int
 		var prefillDur time.Duration
 
@@ -188,16 +218,13 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		Free(vInput, input)
 
 		if err := Eval(logits); err != nil {
-			m.lastErr = coreerr.E("Model.Generate", "prefill", err)
+			m.lastErr = core.E("Model.Generate", "prefill", err)
 			return
 		}
 		// Detach logits and cache arrays to release the entire prefill computation
 		// graph. After Eval, data is materialised — graph connections only pin Metal
 		// memory from intermediate tensors (34 layers × ~20 ops each).
-		Detach(logits)
-		for _, c := range caches {
-			c.Detach()
-		}
+		detachEvalState(logits, caches)
 		prefillDur = time.Since(prefillStart)
 
 		var history []int32 // for repeat penalty
@@ -226,7 +253,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("sample step %d", i), err)
+				m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
 				Free(lastPos, next)
 				return
 			}
@@ -235,7 +262,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			history = append(history, id)
 			Free(lastPos)
 
-			if id == m.tokenizer.EOSToken() {
+			if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
 				Free(next)
 				return
 			}
@@ -261,7 +288,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			Free(nextInput, oldLogits)
 
 			if err := Eval(logits); err != nil {
-				m.lastErr = coreerr.E("Model.Generate", core.Sprintf("decode step %d", i), err)
+				m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
 				return
 			}
 
@@ -269,10 +296,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			// Without this, each step's logits holds shared_ptrs through the
 			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
 			// Metal buffers per step that accumulate to tens of GB.
-			Detach(logits)
-			for _, c := range caches {
-				c.Detach()
-			}
+			detachEvalState(logits, caches)
 		}
 	}
 }
@@ -283,9 +307,22 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 //	result, err := m.InspectAttention(ctx, "What is kindness?")
 //	fmt.Printf("layers=%d heads=%d seq=%d\n", result.NumLayers, result.NumHeads, result.SeqLen)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
+	var (
+		result *AttentionResult
+		err    error
+	)
+	if deviceErr := m.withDevice(func() {
+		result, err = m.inspectAttention(ctx, prompt)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return result, err
+}
+
+func (m *Model) inspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
 	tokens := m.tokenizer.Encode(prompt)
 	if len(tokens) == 0 {
-		return nil, coreerr.E("Model.InspectAttention", "empty prompt after tokenisation", nil)
+		return nil, core.E("Model.InspectAttention", "empty prompt after tokenisation", nil)
 	}
 
 	caches := m.newCaches()
@@ -295,72 +332,202 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 	input := Reshape(vInput, 1, int32(len(tokens)))
 	Free(vInput)
 	logits := m.model.Forward(input, caches)
+	defer Free(logits)
 	Free(input)
 	if err := Eval(logits); err != nil {
-		return nil, coreerr.E("Model.InspectAttention", "prefill", err)
+		return nil, core.E("Model.InspectAttention", "prefill", err)
 	}
+	detachEvalState(logits, caches)
 
 	info := m.Info()
 	seqLen := len(tokens)
 
 	keys := make([][][]float32, info.NumLayers)
+	cacheIndexByLayer := attentionCacheIndexByLayer(m.model, info.NumLayers, len(caches))
+	cacheSnapshots := make(map[int]attentionCacheSnapshot, len(caches))
 	var numHeads, headDim int
 
-	for i := 0; i < info.NumLayers && i < len(caches); i++ {
-		state := caches[i].State()
-		if len(state) < 1 {
+	for layerIdx, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx < 0 {
 			continue
 		}
-		kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
-		shape := kArray.Shape()
-		if len(shape) != 4 {
-			continue
-		}
-		numHeads = int(shape[1])
-		headDim = int(shape[3])
-
-		validLen := min(caches[i].Len(), seqLen)
-		kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
-		if err := Eval(kSliced); err != nil {
-			Free(kSliced)
-			continue
-		}
-
-		flat := kSliced.Floats() // len = 1 * H * validLen * D
-		Free(kSliced)
-
-		keys[i] = make([][]float32, numHeads)
-		stride := validLen * headDim
-		for h := range numHeads {
-			start := h * stride
-			end := start + stride
-			if end > len(flat) {
-				break
+		snapshot, ok := cacheSnapshots[cacheIdx]
+		if !ok {
+			var extracted bool
+			snapshot, extracted = inspectAttentionCache(caches[cacheIdx], seqLen)
+			if !extracted {
+				continue
 			}
-			head := make([]float32, stride)
-			copy(head, flat[start:end])
-			keys[i][h] = head
+			cacheSnapshots[cacheIdx] = snapshot
+		}
+		keys[layerIdx] = cloneAttentionHeads(snapshot.Keys)
+		if numHeads == 0 {
+			numHeads = snapshot.NumHeads
+		}
+		if headDim == 0 {
+			headDim = snapshot.HeadDim
 		}
 	}
 
 	return &AttentionResult{
-		NumLayers:    info.NumLayers,
-		NumHeads:     numHeads,
-		SeqLen:       seqLen,
-		HeadDim:      headDim,
-		Keys:         keys,
-		Architecture: info.Architecture,
+		NumLayers:     info.NumLayers,
+		NumHeads:      numHeads,
+		SeqLen:        seqLen,
+		HeadDim:       headDim,
+		NumQueryHeads: attentionQueryHeads(m.model),
+		Keys:          keys,
+		Architecture:  info.Architecture,
 	}, nil
+}
+
+type attentionCacheSnapshot struct {
+	NumHeads int
+	HeadDim  int
+	Keys     [][]float32
+}
+
+func attentionCacheIndexByLayer(model InternalModel, numLayers, numCaches int) []int {
+	cacheIndexByLayer := make([]int, numLayers)
+	for i := range cacheIndexByLayer {
+		cacheIndexByLayer[i] = -1
+	}
+
+	switch concrete := model.(type) {
+	case *Gemma4Model:
+		concrete.ensureCacheLayout()
+		for layerIdx := 0; layerIdx < numLayers && layerIdx < len(concrete.PreviousKVs); layerIdx++ {
+			ownerIdx := int(concrete.PreviousKVs[layerIdx])
+			if ownerIdx < 0 || ownerIdx >= len(concrete.CacheIndexByLayer) {
+				continue
+			}
+			cacheIdx := int(concrete.CacheIndexByLayer[ownerIdx])
+			if cacheIdx < 0 || cacheIdx >= numCaches {
+				continue
+			}
+			cacheIndexByLayer[layerIdx] = cacheIdx
+		}
+	default:
+		limit := numLayers
+		if numCaches < limit {
+			limit = numCaches
+		}
+		for i := 0; i < limit; i++ {
+			cacheIndexByLayer[i] = i
+		}
+	}
+
+	return cacheIndexByLayer
+}
+
+func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, bool) {
+	if cache == nil {
+		return attentionCacheSnapshot{}, false
+	}
+	state := cache.State()
+	var ownedState []*Array
+	if rotating, ok := cache.(*RotatingKVCache); ok {
+		state = rotating.orderedState()
+		ownedState = state
+	}
+	defer Free(ownedState...)
+	if len(state) < 1 {
+		return attentionCacheSnapshot{}, false
+	}
+	kArray := state[0] // K tensor from cache: [B, H, L_alloc, D]
+	shape := kArray.Shape()
+	if len(shape) != 4 {
+		return attentionCacheSnapshot{}, false
+	}
+
+	numHeads := int(shape[1])
+	headDim := int(shape[3])
+	validLen := min(cache.Len(), seqLen)
+	if validLen <= 0 {
+		return attentionCacheSnapshot{}, false
+	}
+
+	kSliced := Slice(kArray, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(validLen), shape[3]})
+	if err := Eval(kSliced); err != nil {
+		Free(kSliced)
+		return attentionCacheSnapshot{}, false
+	}
+
+	flat := kSliced.Floats() // len = 1 * H * validLen * D
+	Free(kSliced)
+
+	keys := make([][]float32, numHeads)
+	stride := validLen * headDim
+	for h := 0; h < numHeads; h++ {
+		start := h * stride
+		end := start + stride
+		if end > len(flat) {
+			break
+		}
+		head := make([]float32, stride)
+		copy(head, flat[start:end])
+		keys[h] = head
+	}
+
+	return attentionCacheSnapshot{
+		NumHeads: numHeads,
+		HeadDim:  headDim,
+		Keys:     keys,
+	}, true
+}
+
+func cloneAttentionHeads(src [][]float32) [][]float32 {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make([][]float32, len(src))
+	for i, head := range src {
+		if len(head) == 0 {
+			continue
+		}
+		buf := make([]float32, len(head))
+		copy(buf, head)
+		cloned[i] = buf
+	}
+	return cloned
+}
+
+func detachEvalState(logits *Array, caches []Cache) {
+	Detach(logits)
+	for _, cache := range caches {
+		if cache != nil {
+			cache.Detach()
+		}
+	}
 }
 
 // AttentionResult holds extracted K vectors from the KV cache.
 type AttentionResult struct {
-	NumLayers    int
-	NumHeads     int
-	SeqLen       int
-	HeadDim      int
-	Keys         [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
-	Architecture string
+	NumLayers     int
+	NumHeads      int
+	SeqLen        int
+	HeadDim       int
+	NumQueryHeads int
+	Keys          [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
+	Queries       [][][]float32 // [layer][head] → flat float32 of len seq_len*head_dim
+	Architecture  string
+}
+
+func attentionQueryHeads(model InternalModel) int {
+	switch concrete := model.(type) {
+	case *GemmaModel:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	case *Gemma4Model:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	case *Qwen3Model:
+		if concrete.Cfg != nil {
+			return int(concrete.Cfg.NumAttentionHeads)
+		}
+	}
+	return 0
 }
 
 // applyRepeatPenalty modifies logits to discourage repeated tokens.
@@ -404,9 +571,19 @@ func (m *Model) newCaches() []Cache {
 		return caches
 	}
 	for i, c := range caches {
-		// Only replace unbounded caches — rotating caches already have a limit.
-		if _, ok := c.(*KVCache); ok {
+		switch cache := c.(type) {
+		// Replace unbounded caches with rotating caches to honour the requested
+		// context cap.
+		case *KVCache:
 			caches[i] = NewRotatingKVCache(m.contextLen)
+		// Sliding-window caches are already bounded, but still need shrinking
+		// when the caller requests a smaller context than the model default.
+		case *RotatingKVCache:
+			if cache.maxSize > m.contextLen {
+				caches[i] = NewRotatingKVCache(m.contextLen)
+			}
+		default:
+			continue
 		}
 	}
 	return caches
@@ -415,7 +592,7 @@ func (m *Model) newCaches() []Cache {
 // formatChat applies the model's native chat template.
 func (m *Model) formatChat(messages []ChatMessage) string {
 	switch m.modelType {
-	case "gemma3":
+	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
 		return formatQwenChat(messages)

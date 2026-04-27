@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -15,27 +17,28 @@ type Sampler interface {
 }
 
 // newSampler creates a composable sampler chain from the given parameters.
-// Order: TopP -> MinP -> TopK -> Temperature -> categorical sample.
+// Order: Temperature -> TopP -> TopK -> MinP -> categorical sample.
 //
 //	s := newSampler(0, 0, 0, 0)        // greedy (temp=0)
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
 //	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
-	if temp == 0 {
-		return greedy{}
+	samplers := make([]Sampler, 0, 4)
+	if temp > 0 {
+		samplers = append(samplers, Temperature(temp))
 	}
-
-	var samplers []Sampler
 	if topP > 0 && topP < 1 {
 		samplers = append(samplers, TopP(topP))
-	}
-	if minP > 0 {
-		samplers = append(samplers, MinPSampler(minP))
 	}
 	if topK > 0 {
 		samplers = append(samplers, TopKSampler(topK))
 	}
-	samplers = append(samplers, Temperature(temp))
+	if minP > 0 {
+		samplers = append(samplers, MinPSampler(minP))
+	}
+	if len(samplers) == 0 {
+		return greedy{}
+	}
 	return chain(samplers)
 }
 
@@ -88,11 +91,15 @@ func (t Temperature) Sample(logits *Array) *Array {
 type TopKSampler int
 
 func (k TopKSampler) Sample(logits *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || int(k) <= 0 || int(k) >= lastDim {
+		return logits.Clone()
+	}
 	neg := Negative(logits)
 	maskIdx := Argpartition(neg, int(k)-1, -1)
 	Free(neg)
 	// Slice the indices beyond top-k
-	mask := SliceAxis(maskIdx, -1, int32(k), int32(logits.Dim(-1)))
+	mask := SliceAxis(maskIdx, -1, int32(k), int32(lastDim))
 	Free(maskIdx)
 	inf := FromValue(float32(math.Inf(-1)))
 	res := PutAlongAxis(logits, mask, inf, -1)

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -452,3 +454,99 @@ func TestArray_Float_DTypeFloat64_Good(t *testing.T) {
 	}
 }
 
+// --- Bool extraction ---
+
+func TestArray_Bool_True_Good(t *testing.T) {
+	a := FromValue(true)
+	Materialize(a)
+
+	if !a.Bool() {
+		t.Error("Bool() = false, want true")
+	}
+}
+
+func TestArray_Bool_False_Good(t *testing.T) {
+	a := FromValue(false)
+	Materialize(a)
+
+	if a.Bool() {
+		t.Error("Bool() = true, want false")
+	}
+}
+
+func TestArray_Bool_FromComparison_Good(t *testing.T) {
+	a := FromValues([]float32{5, 3}, 2)
+	b := FromValues([]float32{3, 5}, 2)
+	gt := Greater(a, b) // [true, false]
+	allTrue := Any(gt, false)
+	Materialize(allTrue)
+	if !allTrue.Bool() {
+		t.Error("Any of [true, false] should be true")
+	}
+}
+
+// --- SetFloat64 ---
+
+func TestArray_SetFloat64_Good(t *testing.T) {
+	a := FromValue(float64(1.0))
+	Materialize(a)
+
+	a.SetFloat64(2.718281828)
+	Materialize(a)
+
+	got := a.Float()
+	if math.Abs(got-2.718281828) > 1e-8 {
+		t.Errorf("after SetFloat64, value = %f, want 2.718281828", got)
+	}
+}
+
+func TestArray_SetFloat64_OverwritesPrevious_Good(t *testing.T) {
+	a := FromValue(float64(100.0))
+	Materialize(a)
+	a.SetFloat64(0.0)
+	Materialize(a)
+
+	if a.Float() != 0.0 {
+		t.Errorf("after SetFloat64(0), value = %f, want 0.0", a.Float())
+	}
+}
+
+func TestArray_SetFloat64_Negative_Bad(t *testing.T) {
+	a := FromValue(float64(0.0))
+	a.SetFloat64(-42.5)
+	Materialize(a)
+
+	got := a.Float()
+	if math.Abs(got-(-42.5)) > 1e-6 {
+		t.Errorf("SetFloat64(-42.5) = %f, want -42.5", got)
+	}
+}
+
+// --- ShapeRaw ---
+
+func TestArray_ShapeRaw_Good(t *testing.T) {
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	Materialize(a)
+
+	ptr := a.ShapeRaw()
+	if ptr == nil {
+		t.Fatal("ShapeRaw returned nil")
+	}
+
+	// Verify against the normal Shape() method.
+	shape := a.Shape()
+	if shape[0] != 2 || shape[1] != 3 {
+		t.Errorf("shape = %v, want [2 3]", shape)
+	}
+}
+
+func TestArray_ShapeRaw_Scalar_Ugly(t *testing.T) {
+	a := FromValue(float32(42.0))
+	Materialize(a)
+
+	// Scalars have 0 dimensions, ShapeRaw returns a non-nil pointer
+	// but there are zero elements to read.
+	if a.NumDims() != 0 {
+		t.Errorf("ndim = %d, want 0 for scalar", a.NumDims())
+	}
+}

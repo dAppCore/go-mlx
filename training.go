@@ -1,10 +1,12 @@
-//go:build darwin && arm64
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && !nomlx
 
 package mlx
 
 import (
-	"forge.lthn.ai/core/go-inference"
-	"forge.lthn.ai/core/go-mlx/internal/metal"
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 // Array is a Metal GPU tensor.
@@ -16,16 +18,28 @@ type LoRAAdapter = metal.LoRAAdapter
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig = metal.LoRAConfig
 
+// Batch describes one RFC-style training batch.
+type Batch = metal.Batch
+
+// TrainConfig holds RFC-style training loop settings.
+type TrainConfig = metal.TrainConfig
+
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
 //
 //	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
 var DefaultLoRAConfig = metal.DefaultLoRAConfig
+
+// DefaultAdamWConfig returns the standard AdamW hyperparameters.
+var DefaultAdamWConfig = metal.DefaultAdamWConfig
 
 // GradFn computes both loss values and gradients via reverse-mode autodiff.
 type GradFn = metal.GradFn
 
 // AdamW is the decoupled weight decay optimiser.
 type AdamW = metal.AdamW
+
+// AdamWConfig configures AdamW construction.
+type AdamWConfig = metal.AdamWConfig
 
 // Cache is a per-layer KV cache.
 type Cache = metal.Cache
@@ -57,7 +71,8 @@ func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) 
 // NewAdamW creates an AdamW optimiser with default hyperparameters.
 //
 //	optimizer := mlx.NewAdamW(1e-4)
-func NewAdamW(learningRate float64) *AdamW { return metal.NewAdamW(learningRate) }
+//	optimizer := mlx.NewAdamW(&mlx.AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
+func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
 //

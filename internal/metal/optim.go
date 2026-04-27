@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -25,17 +27,86 @@ type AdamW struct {
 	v    []*Array // Second moment estimates (positional, parallel to params)
 }
 
+// AdamWConfig configures AdamW optimiser construction.
+type AdamWConfig struct {
+	LearningRate float64
+	Beta1        float64
+	Beta2        float64
+	Eps          float64
+	WeightDecay  float64
+
+	LearningRateSet bool
+	Beta1Set        bool
+	Beta2Set        bool
+	EpsSet          bool
+	WeightDecaySet  bool
+}
+
+// DefaultAdamWConfig returns the standard AdamW hyperparameters.
+func DefaultAdamWConfig() AdamWConfig {
+	return AdamWConfig{
+		LearningRate: 1e-5,
+		Beta1:        0.9,
+		Beta2:        0.999,
+		Eps:          1e-8,
+		WeightDecay:  0.01,
+	}
+}
+
 // NewAdamW creates an AdamW optimiser with default hyperparameters.
 //
-//	optimizer := metal.NewAdamW(1e-4) // lr=1e-4, beta1=0.9, beta2=0.999, eps=1e-8, wd=0.01
-func NewAdamW(learningRate float64) *AdamW {
-	return &AdamW{
-		LR:          learningRate,
-		Beta1:       0.9,
-		Beta2:       0.999,
-		Eps:         1e-8,
-		WeightDecay: 0.01,
+//	optimizer := metal.NewAdamW(1e-4)
+//	optimizer := metal.NewAdamW(&AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
+func NewAdamW(config any) *AdamW {
+	cfg := DefaultAdamWConfig()
+	switch v := config.(type) {
+	case nil:
+	case float64:
+		cfg.LearningRate = v
+	case float32:
+		cfg.LearningRate = float64(v)
+	case int:
+		cfg.LearningRate = float64(v)
+	case int32:
+		cfg.LearningRate = float64(v)
+	case int64:
+		cfg.LearningRate = float64(v)
+	case AdamWConfig:
+		cfg = mergeAdamWConfig(cfg, v)
+	case *AdamWConfig:
+		if v != nil {
+			cfg = mergeAdamWConfig(cfg, *v)
+		}
+	default:
+		panic("metal.NewAdamW: unsupported config type")
 	}
+	return &AdamW{
+		LR:          cfg.LearningRate,
+		Beta1:       cfg.Beta1,
+		Beta2:       cfg.Beta2,
+		Eps:         cfg.Eps,
+		WeightDecay: cfg.WeightDecay,
+	}
+}
+
+func mergeAdamWConfig(defaults AdamWConfig, override AdamWConfig) AdamWConfig {
+	cfg := defaults
+	if override.LearningRate != 0 || override.LearningRateSet {
+		cfg.LearningRate = override.LearningRate
+	}
+	if override.Beta1 != 0 || override.Beta1Set {
+		cfg.Beta1 = override.Beta1
+	}
+	if override.Beta2 != 0 || override.Beta2Set {
+		cfg.Beta2 = override.Beta2
+	}
+	if override.Eps != 0 || override.EpsSet {
+		cfg.Eps = override.Eps
+	}
+	if override.WeightDecay != 0 || override.WeightDecaySet {
+		cfg.WeightDecay = override.WeightDecay
+	}
+	return cfg
 }
 
 // Step performs one optimisation step: updates parameters using gradients.
@@ -67,18 +138,21 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 			optimizer.m[i] = Zeros(shape, parameter.Dtype())
 			optimizer.v[i] = Zeros(shape, parameter.Dtype())
 		}
+		oldM := optimizer.m[i]
+		oldV := optimizer.v[i]
 
 		// m = beta1 * m + (1 - beta1) * grad
-		m := Add(
-			MulScalar(optimizer.m[i], float32(optimizer.Beta1)),
-			MulScalar(gradient, float32(1.0-optimizer.Beta1)),
-		)
+		scaledM := MulScalar(oldM, float32(optimizer.Beta1))
+		scaledGrad := MulScalar(gradient, float32(1.0-optimizer.Beta1))
+		m := Add(scaledM, scaledGrad)
+		Free(scaledM, scaledGrad)
 
 		// v = beta2 * v + (1 - beta2) * grad^2
-		v := Add(
-			MulScalar(optimizer.v[i], float32(optimizer.Beta2)),
-			MulScalar(Square(gradient), float32(1.0-optimizer.Beta2)),
-		)
+		gradSquared := Square(gradient)
+		scaledV := MulScalar(oldV, float32(optimizer.Beta2))
+		scaledGradSquared := MulScalar(gradSquared, float32(1.0-optimizer.Beta2))
+		v := Add(scaledV, scaledGradSquared)
+		Free(gradSquared, scaledV, scaledGradSquared)
 
 		// Bias-corrected estimates
 		mHat := MulScalar(m, float32(1.0/biasCorrection1))
@@ -88,13 +162,17 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 		decayed := MulScalar(parameter, float32(1.0-optimizer.LR*optimizer.WeightDecay))
 
 		// Update: param = decayed - lr * m_hat / (sqrt(v_hat) + eps)
-		denom := AddScalar(Sqrt(vHat), float32(optimizer.Eps))
-		step := MulScalar(Divide(mHat, denom), float32(optimizer.LR))
+		sqrtVHat := Sqrt(vHat)
+		denom := AddScalar(sqrtVHat, float32(optimizer.Eps))
+		stepBase := Divide(mHat, denom)
+		step := MulScalar(stepBase, float32(optimizer.LR))
 		newParam := Subtract(decayed, step)
+		Free(mHat, vHat, decayed, sqrtVHat, denom, stepBase, step)
 
 		// Store updated moments
 		optimizer.m[i] = m
 		optimizer.v[i] = v
+		Free(oldM, oldV)
 
 		updated[i] = newParam
 	}
@@ -106,6 +184,8 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 //
 //	optimizer.Reset() // start a new training run from scratch
 func (optimizer *AdamW) Reset() {
+	Free(optimizer.m...)
+	Free(optimizer.v...)
 	optimizer.step = 0
 	optimizer.m = nil
 	optimizer.v = nil

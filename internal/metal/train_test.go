@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -8,7 +10,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/io"
 )
 
 // gemma3Path returns the path to a Gemma3-1B model, or skips the test.

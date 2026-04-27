@@ -1,14 +1,16 @@
-//go:build darwin && arm64
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && !nomlx
 
 package mlx
 
 import (
 	"context"
 	"iter"
-	"log/slog"
 
-	"forge.lthn.ai/core/go-inference"
-	"forge.lthn.ai/core/go-mlx/internal/metal"
+	"dappco.re/go/core"
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/internal/metal"
 )
 
 func init() {
@@ -18,7 +20,10 @@ func init() {
 // MetalAvailable reports whether native Metal inference is available.
 //
 //	if mlx.MetalAvailable() { /* run on GPU */ }
-func MetalAvailable() bool { return true }
+func MetalAvailable() bool { return metal.MetalAvailable() }
+
+// Available reports whether native MLX support is available in this build.
+func Available() bool { return MetalAvailable() }
 
 // SetCacheLimit sets the Metal memory cache limit. Returns the previous value.
 //
@@ -72,16 +77,22 @@ func GetDeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
 type metalBackend struct{}
 
 func (backend *metalBackend) Name() string    { return "metal" }
-func (backend *metalBackend) Available() bool { return true }
+func (backend *metalBackend) Available() bool { return MetalAvailable() }
+
+var loadBackendModel = func(modelPath string, cfg metal.LoadConfig) (*metal.Model, error) {
+	return metal.LoadAndInit(modelPath, cfg)
+}
 
 func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
-	if loadOptions.GPULayers == 0 {
-		slog.Warn("mlx: GPULayers=0 ignored — Metal always uses full GPU offload")
+	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
+	if partialOffloadUnsupported {
+		core.Warn("mlx: partial GPULayers unsupported — using full GPU offload", "gpu_layers", loadOptions.GPULayers)
 	}
-	model, err := metal.LoadAndInit(modelPath, metal.LoadConfig{
+	model, err := loadBackendModel(modelPath, metal.LoadConfig{
 		ContextLen:  loadOptions.ContextLen,
 		AdapterPath: loadOptions.AdapterPath,
+		Device:      metal.DeviceType(deviceName),
 	})
 	if err != nil {
 		return nil, err
@@ -95,14 +106,7 @@ type metalAdapter struct {
 
 func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Generate(ctx, prompt, metalOptions) {
 			if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
@@ -114,14 +118,7 @@ func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts .
 
 func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -137,10 +134,7 @@ func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Mess
 
 func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		Temperature: generateOptions.Temperature,
-		TopK:        generateOptions.TopK,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
 	if err != nil {
 		return nil, err
@@ -157,14 +151,7 @@ func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opt
 
 func (adapter *metalAdapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := metal.GenerateConfig{
-		MaxTokens:     generateOptions.MaxTokens,
-		Temperature:   generateOptions.Temperature,
-		TopK:          generateOptions.TopK,
-		TopP:          generateOptions.TopP,
-		StopTokens:    generateOptions.StopTokens,
-		RepeatPenalty: generateOptions.RepeatPenalty,
-	}
+	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
 	if err != nil {
 		return nil, err
@@ -213,12 +200,14 @@ func (adapter *metalAdapter) InspectAttention(ctx context.Context, prompt string
 		return nil, err
 	}
 	return &inference.AttentionSnapshot{
-		NumLayers:    attention.NumLayers,
-		NumHeads:     attention.NumHeads,
-		SeqLen:       attention.SeqLen,
-		HeadDim:      attention.HeadDim,
-		Keys:         attention.Keys,
-		Architecture: attention.Architecture,
+		NumLayers:     attention.NumLayers,
+		NumHeads:      attention.NumHeads,
+		SeqLen:        attention.SeqLen,
+		HeadDim:       attention.HeadDim,
+		NumQueryHeads: attention.NumQueryHeads,
+		Keys:          attention.Keys,
+		Queries:       attention.Queries,
+		Architecture:  attention.Architecture,
 	}, nil
 }
 

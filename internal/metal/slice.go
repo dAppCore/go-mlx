@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -12,6 +14,9 @@ import "C"
 //
 //	kValid := metal.Slice(kCache, []int32{0,0,0,0}, []int32{B,H,int32(offset),D})
 func Slice(a *Array, starts, ends []int32) *Array {
+	if len(starts) == 0 || len(starts) != len(ends) {
+		panic("Slice: starts and ends must be non-empty and equal length")
+	}
 	out := newArray("SLICE", a)
 	cStarts := make([]C.int, len(starts))
 	cEnds := make([]C.int, len(ends))
@@ -43,6 +48,9 @@ func SliceAxis(a *Array, axis int, start, end int32) *Array {
 	if ax < 0 {
 		ax = ndim + ax
 	}
+	if ax < 0 || ax >= ndim {
+		panic("SliceAxis: axis out of range")
+	}
 	starts[ax] = start
 	ends[ax] = end
 	return Slice(a, starts, ends)
@@ -53,6 +61,9 @@ func SliceAxis(a *Array, axis int, start, end int32) *Array {
 //
 //	newK := metal.SliceUpdateInplace(kBuf, k, []int32{0,0,int32(prev),0}, []int32{B,H,int32(offset),D})
 func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
+	if len(starts) == 0 || len(starts) != len(ends) {
+		panic("SliceUpdateInplace: starts and ends must be non-empty and equal length")
+	}
 	out := newArray("SLICE_UPDATE", a, update)
 	cStarts := make([]C.int, len(starts))
 	cEnds := make([]C.int, len(ends))

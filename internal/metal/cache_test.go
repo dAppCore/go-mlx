@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -15,6 +17,16 @@ func makeKV(seqLen int) (*Array, *Array) {
 	}
 	k := FromValues(data, 1, 2, seqLen, 4)
 	v := FromValues(data, 1, 2, seqLen, 4)
+	return k, v
+}
+
+func makeSingleTokenKV(value float32) (*Array, *Array) {
+	data := make([]float32, 1*2*1*4)
+	for i := range data {
+		data[i] = value + float32(i)*0.01
+	}
+	k := FromValues(data, 1, 2, 1, 4)
+	v := FromValues(data, 1, 2, 1, 4)
 	return k, v
 }
 
@@ -93,6 +105,24 @@ func TestKVCache_Reset_Good(t *testing.T) {
 	}
 	if c.State() != nil {
 		t.Error("state should be nil after reset")
+	}
+}
+
+func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewKVCache()
+	k, v := makeKV(2)
+	defer Free(k, v)
+	c.Update(k, v, 2)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
 	}
 }
 
@@ -179,6 +209,71 @@ func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 	}
 }
 
+func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+	k, v := makeKV(6)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 6)
+	defer Free(outK, outV)
+	Materialize(outK, outV)
+
+	if c.Offset() != 6 {
+		t.Errorf("offset = %d, want 6", c.Offset())
+	}
+	if c.Len() != 4 {
+		t.Errorf("len = %d, want 4 (bounded cache)", c.Len())
+	}
+
+	if got := outK.Shape()[2]; got != 6 {
+		t.Fatalf("outK L dim = %d, want 6 full prompt tokens", got)
+	}
+	if got := outV.Shape()[2]; got != 6 {
+		t.Fatalf("outV L dim = %d, want 6 full prompt tokens", got)
+	}
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+	defer Free(state...)
+	if got := state[0].Shape()[2]; got != 4 {
+		t.Fatalf("cached key L dim = %d, want 4 bounded tokens", got)
+	}
+	if got := state[1].Shape()[2]; got != 4 {
+		t.Fatalf("cached value L dim = %d, want 4 bounded tokens", got)
+	}
+}
+
+func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
+	c := NewRotatingKVCache(4)
+
+	for i := range 6 {
+		k, v := makeSingleTokenKV(float32(i + 1))
+		outK, outV := c.Update(k, v, 1)
+		Materialize(outK, outV)
+
+		if i < 3 {
+			Free(k, v, outK, outV)
+			continue
+		}
+
+		got := outK.Floats()
+		wantValues := []float32{float32(i - 2), float32(i - 1), float32(i), float32(i + 1)}
+		for tokenIdx, want := range wantValues {
+			base := tokenIdx * 4
+			if base >= len(got) {
+				t.Fatalf("token %d base index %d beyond output len %d", tokenIdx, base, len(got))
+			}
+			if got[base] != want {
+				t.Fatalf("token %d first value = %f, want %f (full output %v)", tokenIdx, got[base], want, got)
+			}
+		}
+
+		Free(k, v, outK, outV)
+	}
+}
+
 func TestRotatingKVCache_Reset_Good(t *testing.T) {
 	c := NewRotatingKVCache(8)
 	k, v := makeKV(3)
@@ -194,5 +289,23 @@ func TestRotatingKVCache_Reset_Good(t *testing.T) {
 	}
 	if c.State() != nil {
 		t.Error("state should be nil after reset")
+	}
+}
+
+func TestRotatingKVCache_Reset_ReleasesState_Good(t *testing.T) {
+	c := NewRotatingKVCache(8)
+	k, v := makeKV(3)
+	defer Free(k, v)
+	c.Update(k, v, 3)
+
+	state := c.State()
+	if len(state) != 2 {
+		t.Fatalf("state length = %d, want 2", len(state))
+	}
+
+	c.Reset()
+
+	if state[0].Valid() || state[1].Valid() {
+		t.Fatal("Reset should free the cached key/value arrays")
 	}
 }

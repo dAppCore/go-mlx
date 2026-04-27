@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -10,8 +12,6 @@ import (
 	"time"
 
 	"dappco.re/go/core"
-
-	coreerr "forge.lthn.ai/core/go-log"
 )
 
 // ClassifyResult holds the output for a single prompt in batch classification.
@@ -31,6 +31,19 @@ type BatchResult struct {
 //
 //	results, err := m.Classify(ctx, []string{"The capital of France is", "2+2="}, cfg, false)
 func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConfig, returnLogits bool) ([]ClassifyResult, error) {
+	var (
+		results []ClassifyResult
+		err     error
+	)
+	if deviceErr := m.withDevice(func() {
+		results, err = m.classify(ctx, prompts, cfg, returnLogits)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return results, err
+}
+
+func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConfig, returnLogits bool) ([]ClassifyResult, error) {
 	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
 		return nil, nil
@@ -77,14 +90,20 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
-	logits := m.model.ForwardMasked(tokens, mask, m.newCachesN(int(N)))
+	caches := m.newCachesN(int(N))
+	defer freeCaches(caches)
+	logits := m.model.ForwardMasked(tokens, mask, caches)
+	defer func() {
+		Free(logits)
+	}()
 	if err := Eval(logits); err != nil {
 		Free(tokens, mask)
-		return nil, coreerr.E("Model.Classify", "classify prefill", err)
+		return nil, core.E("Model.Classify", "classify prefill", err)
 	}
+	detachEvalState(logits, caches)
 
 	// logits shape: [N, L, vocab] — gather at each prompt's last real position
-	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 	sortedResults := make([]ClassifyResult, N)
 	for si := range N {
 		lastPos := sortedLengths[si] - 1
@@ -97,7 +116,7 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		next := sampler.Sample(posLogitsReshaped)
 		if err := Eval(next); err != nil {
 			Free(batchLogits, posLogits, posLogitsReshaped)
-			return nil, coreerr.E("Model.Classify", core.Sprintf("classify sample %d", si), err)
+			return nil, core.E("Model.Classify", core.Sprintf("classify sample %d", si), err)
 		}
 
 		id := int32(next.Int())
@@ -108,14 +127,14 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 			logitsFlat := Reshape(posLogitsReshaped, int32(posLogitsReshaped.Dim(1)))
 			if err := Eval(logitsFlat); err != nil {
 				Free(batchLogits, posLogits, posLogitsReshaped, next, logitsFlat)
-				return nil, coreerr.E("Model.Classify", core.Sprintf("classify logits %d", si), err)
+				return nil, core.E("Model.Classify", core.Sprintf("classify logits %d", si), err)
 			}
 			sortedResults[si].Logits = logitsFlat.Floats()
 			Free(logitsFlat)
 		}
 		Free(batchLogits, posLogits, posLogitsReshaped, next)
 	}
-	Free(logits, tokens, mask)
+	Free(tokens, mask)
 
 	results := make([]ClassifyResult, N)
 	for si, origIdx := range indices {
@@ -143,6 +162,19 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 //	results, err := m.BatchGenerate(ctx, []string{"The capital of France is", "2+2="}, cfg)
 //	for _, r := range results { fmt.Println(r.Tokens) }
 func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
+	var (
+		results []BatchResult
+		err     error
+	)
+	if deviceErr := m.withDevice(func() {
+		results, err = m.batchGenerate(ctx, prompts, cfg)
+	}); deviceErr != nil {
+		return nil, deviceErr
+	}
+	return results, err
+}
+
+func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
 	m.lastMetrics = Metrics{}
 	if len(prompts) == 0 {
 		return nil, nil
@@ -190,16 +222,22 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	mask := buildBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
+	defer freeCaches(caches)
 	logits := m.model.ForwardMasked(tokens, mask, caches)
+	defer func() {
+		Free(logits)
+	}()
 	if err := Eval(logits); err != nil {
 		Free(tokens, mask)
-		return nil, coreerr.E("Model.BatchGenerate", "batch prefill", err)
+		return nil, core.E("Model.BatchGenerate", "batch prefill", err)
 	}
+	detachEvalState(logits, caches)
 	Free(tokens, mask) // No longer needed after prefill
 	prefillDur := time.Since(prefillStart)
 
-	sampler := newSampler(cfg.Temperature, cfg.TopP, 0, cfg.TopK)
+	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 	eosID := m.tokenizer.EOSToken()
+	hasEOS := m.tokenizer.HasEOSToken()
 
 	// Per-sequence state.
 	type seqState struct {
@@ -255,13 +293,13 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 			next := sampler.Sample(posLogits)
 			if err := Eval(next); err != nil {
 				Free(batchL, posL, posLogits, next)
-				return nil, coreerr.E("Model.BatchGenerate", core.Sprintf("batch sample step %d seq %d", step, si), err)
+				return nil, core.E("Model.BatchGenerate", core.Sprintf("batch sample step %d seq %d", step, si), err)
 			}
 
 			id := int32(next.Int())
 			nextIDs[si] = id
 
-			if id == eosID {
+			if hasEOS && id == eosID {
 				states[si].finished = true
 			} else if slices.Contains(cfg.StopTokens, id) {
 				states[si].finished = true
@@ -283,11 +321,11 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		logits = m.model.Forward(nextInput, caches)
 		if err := Eval(logits); err != nil {
 			Free(nextInput, oldLogits)
-			return nil, coreerr.E("Model.BatchGenerate", core.Sprintf("batch decode step %d", step), err)
+			return nil, core.E("Model.BatchGenerate", core.Sprintf("batch decode step %d", step), err)
 		}
+		detachEvalState(logits, caches)
 		Free(nextInput, oldLogits)
 	}
-	Free(logits)
 
 	sortedResults := make([]BatchResult, N)
 	totalGenerated := 0

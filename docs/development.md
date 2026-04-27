@@ -1,6 +1,6 @@
 # Development Guide
 
-Module: `forge.lthn.ai/core/go-mlx`
+Module: `dappco.re/go/mlx`
 
 ---
 
@@ -28,10 +28,10 @@ brew install cmake
 
 ### Go Workspace
 
-go-mlx participates in a Go workspace alongside go-inference. The `go.mod` uses a `replace` directive for local development:
+go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
-```
-replace forge.lthn.ai/core/go-inference => ../go-inference
+```go
+replace dappco.re/go/inference => ../go-inference
 ```
 
 After adding modules or changing dependencies: `go work sync`
@@ -48,6 +48,19 @@ Run from the module root:
 go generate ./...
 ```
 
+Fresh checkouts must initialise the source submodules before building:
+
+```bash
+git submodule update --init --recursive
+```
+
+The forwarding translation units in `internal/metal/` include source files from
+`lib/mlx`, `lib/mlx-c`, and `lib/generated`; leaving those submodules empty will
+make the C++ includes fail before the Go package can build.
+Those forwarding files are the only local compilation entrypoints for the
+upstream `.cpp` files; do not also add the same upstream sources to a separate
+target or CMake source list, or the linker may see duplicate definitions.
+
 This executes the `//go:generate` directives in `mlx.go`:
 
 ```
@@ -58,7 +71,7 @@ cmake --install build
 
 CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
-- `MLX_BUILD_GGUF=OFF`
+- `MLX_BUILD_GGUF=ON` (GGUF load/save support)
 - `BUILD_SHARED_LIBS=ON`
 - macOS deployment target: 13.3 (minimum required by MLX)
 
@@ -73,6 +86,12 @@ go test ./...
 ```
 
 Tests require a working mlx-c build. Integration tests that load model files are skipped automatically when model paths are absent (`/Volumes/Data/lem/safetensors/...`).
+
+If you are running inside a larger parent workspace whose `go.work` does not include `go-mlx`, use:
+
+```bash
+GOWORK=off go test ./...
+```
 
 ---
 
@@ -251,7 +270,7 @@ Co-Authored-By: Virgil <virgil@lethean.io>
 
 ```cmake
 set(MLX_BUILD_SAFETENSORS ON)   # Required for model loading
-set(MLX_BUILD_GGUF OFF)         # GGUF not supported
+set(MLX_BUILD_GGUF ON)          # GGUF load/save support
 set(BUILD_SHARED_LIBS ON)       # Shared .dylib for rpath loading
 set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3)  # MLX minimum
 ```
@@ -289,7 +308,7 @@ go build -tags nomlxlm ./...
 
 ```
 go-mlx
-├── forge.lthn.ai/core/go-inference  (shared interfaces, zero dependencies)
+├── dappco.re/go/inference           (shared interfaces, zero dependencies)
 └── mlx-c v0.4.1                     (CMake, fetched from GitHub at generate time)
     └── Apple MLX (Metal GPU compute)
         └── Foundation, Metal, Accelerate frameworks

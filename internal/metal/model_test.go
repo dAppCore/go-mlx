@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -7,7 +9,7 @@ import (
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
+	coreio "dappco.re/go/io"
 )
 
 // --- loadModel dispatch ---
@@ -67,6 +69,72 @@ func TestModel_LoadModel_Gemma3TextType_Good(t *testing.T) {
 	// If the error mentions "tokenizer" or "gemma3", dispatch worked correctly.
 	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "gemma3") {
 		t.Errorf("expected gemma3 loader error, got: %v", err)
+	}
+}
+
+func TestModel_LoadModel_Gemma4NestedTextConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1152,
+			"num_hidden_layers": 2,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"vocab_size": 1000
+		}
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected error (missing tokenizer), but dispatch should have reached gemma4")
+	}
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "gemma4") {
+		t.Errorf("expected gemma4 loader error, got: %v", err)
+	}
+}
+
+func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"architectures": ["Qwen2ForCausalLM"],
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 4,
+		"vocab_size": 1000
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected error (missing tokenizer), but dispatch should have reached qwen2/qwen3")
+	}
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "qwen") {
+		t.Errorf("expected qwen loader error, got: %v", err)
+	}
+}
+
+func TestModel_DetectQwenModelType_ArchitecturesLlama_Good(t *testing.T) {
+	got := detectQwenModelType([]byte(`{
+		"architectures": ["LlamaForCausalLM"]
+	}`), nil)
+	if got != "llama" {
+		t.Fatalf("detectQwenModelType() = %q, want llama", got)
+	}
+}
+
+func TestModel_DetectQwenModelType_QNormFallback_Good(t *testing.T) {
+	got := detectQwenModelType([]byte(`{}`), map[string]*Array{
+		"model.layers.0.self_attn.q_norm.weight": nil,
+	})
+	if got != "qwen3" {
+		t.Fatalf("detectQwenModelType() = %q, want qwen3", got)
+	}
+
+	got = detectQwenModelType([]byte(`{}`), map[string]*Array{})
+	if got != "qwen2" {
+		t.Fatalf("detectQwenModelType() = %q, want qwen2", got)
 	}
 }
 
@@ -276,6 +344,40 @@ func TestModel_ParseConfig_NestedTextConfig_Good(t *testing.T) {
 	}
 	if cfg.NumHiddenLayers != 16 {
 		t.Errorf("NumHiddenLayers = %d, want 16", cfg.NumHiddenLayers)
+	}
+}
+
+func TestModel_ParseConfig_PreservesModelType_Good(t *testing.T) {
+	cfg, err := parseConfig([]byte(`{
+		"model_type": "gemma2",
+		"hidden_size": 1024,
+		"num_hidden_layers": 8,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 2,
+		"head_dim": 128
+	}`))
+	if err != nil {
+		t.Fatalf("parseConfig: %v", err)
+	}
+	if cfg.ModelType != "gemma2" {
+		t.Fatalf("ModelType = %q, want gemma2", cfg.ModelType)
+	}
+
+	cfg, err = parseConfig([]byte(`{
+		"model_type": "gemma2",
+		"text_config": {
+			"hidden_size": 2048,
+			"num_hidden_layers": 16,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 2,
+			"head_dim": 256
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseConfig nested: %v", err)
+	}
+	if cfg.ModelType != "gemma2" {
+		t.Fatalf("nested ModelType = %q, want gemma2", cfg.ModelType)
 	}
 }
 

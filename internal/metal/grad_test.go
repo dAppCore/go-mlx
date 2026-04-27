@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -237,7 +239,7 @@ func TestGrad_CrossEntropyLoss_Good(t *testing.T) {
 	//       = 3 + log(0.1353 + 0.3679 + 1.0) = 3 + log(1.5032) = 3.4076
 	// loss = 3.4076 - 3.0 = 0.4076
 	logits := FromValues([]float32{1.0, 2.0, 3.0}, 1, 3) // [1, 3]
-	targets := FromValues([]int32{2}, 1)                   // [1]
+	targets := FromValues([]int32{2}, 1)                 // [1]
 
 	loss := CrossEntropyLoss(logits, targets)
 	Materialize(loss)

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -9,17 +11,16 @@ package metal
 import "C"
 
 import (
-	"log/slog"
 	"maps"
 	"math"
+	"os"
 	"slices"
 	"strconv"
 	"unsafe"
 
 	"dappco.re/go/core"
 
-	coreio "forge.lthn.ai/core/go-io"
-	coreerr "forge.lthn.ai/core/go-log"
+	coreio "dappco.re/go/io"
 )
 
 // LoRALinear wraps a frozen Linear layer with low-rank trainable adapters.
@@ -133,19 +134,24 @@ func (layer *LoRALinear) ParamCount() int {
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank       int      // Decomposition rank (default 8)
-	Alpha      float32  // Scaling factor (default 16)
-	TargetKeys []string // Weight name suffixes to target (default: q_proj, v_proj)
-	DType      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
+	Rank         int      // Decomposition rank (default 8)
+	Alpha        float32  // Scaling factor (default 16)
+	Scale        float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
+	TargetKeys   []string // Weight name suffixes to target (default: q_proj, v_proj)
+	TargetLayers []string // RFC alias for TargetKeys
+	Lambda       float32  // RFC compatibility field for regularisation (currently informational only)
+	DType        DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
 func DefaultLoRAConfig() LoRAConfig {
 	return LoRAConfig{
-		Rank:       8,
-		Alpha:      16,
-		TargetKeys: []string{"q_proj", "v_proj"},
-		DType:      DTypeFloat32,
+		Rank:         8,
+		Alpha:        16,
+		Scale:        2,
+		TargetKeys:   []string{"q_proj", "v_proj"},
+		TargetLayers: []string{"q_proj", "v_proj"},
+		DType:        DTypeFloat32,
 	}
 }
 
@@ -153,6 +159,52 @@ func DefaultLoRAConfig() LoRAConfig {
 type LoRAAdapter struct {
 	Layers map[string]*LoRALinear // keyed by weight path prefix
 	Config LoRAConfig
+	Model  InternalModel
+}
+
+// Batch describes a token batch for one training step.
+type Batch struct {
+	Tokens [][]int
+	Length []int
+}
+
+// TrainConfig holds RFC-style top-level training loop settings.
+type TrainConfig struct {
+	Epochs         int
+	BatchSize      int
+	LearningRate   float64
+	EvalInterval   int
+	SaveInterval   int
+	EvalLossThresh float64
+}
+
+func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
+	if cfg.Rank <= 0 {
+		cfg.Rank = 8
+	}
+	if cfg.Alpha == 0 {
+		if cfg.Scale != 0 {
+			cfg.Alpha = cfg.Scale * float32(cfg.Rank)
+		} else {
+			cfg.Alpha = 16
+		}
+	}
+	if cfg.Scale == 0 && cfg.Rank > 0 {
+		cfg.Scale = cfg.Alpha / float32(cfg.Rank)
+	}
+	if len(cfg.TargetKeys) == 0 && len(cfg.TargetLayers) > 0 {
+		cfg.TargetKeys = append([]string(nil), cfg.TargetLayers...)
+	}
+	if len(cfg.TargetKeys) == 0 {
+		cfg.TargetKeys = []string{"q_proj", "v_proj"}
+	}
+	if len(cfg.TargetLayers) == 0 {
+		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
+	}
+	if cfg.DType == 0 {
+		cfg.DType = DTypeFloat32
+	}
+	return cfg
 }
 
 // TotalParams returns the total number of trainable parameters across all LoRA layers.
@@ -200,17 +252,302 @@ func (adapter *LoRAAdapter) SetAllParams(params []*Array) {
 	}
 }
 
-// Save writes the LoRA adapter weights to a safetensors file.
+func batchLengths(batch Batch, targets [][]int) ([]int32, int) {
+	if len(batch.Tokens) == 0 || len(batch.Tokens) != len(targets) {
+		return nil, 0
+	}
+	lengths := make([]int32, len(batch.Tokens))
+	maxLen := 0
+	for i := range batch.Tokens {
+		n := len(batch.Tokens[i])
+		if len(targets[i]) < n {
+			n = len(targets[i])
+		}
+		if i < len(batch.Length) && batch.Length[i] > 0 && batch.Length[i] < n {
+			n = batch.Length[i]
+		}
+		if n < 0 {
+			n = 0
+		}
+		lengths[i] = int32(n)
+		if n > maxLen {
+			maxLen = n
+		}
+	}
+	return lengths, maxLen
+}
+
+func batchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
+	data := make([]int32, len(seqs)*maxLen)
+	for i, seq := range seqs {
+		limit := int(lengths[i])
+		if limit > len(seq) {
+			limit = len(seq)
+		}
+		base := i * maxLen
+		for j := 0; j < limit; j++ {
+			data[base+j] = int32(seq[j])
+		}
+	}
+	return data
+}
+
+func batchLossMask(lengths []int32, maxLen int) *Array {
+	data := make([]float32, len(lengths)*maxLen)
+	for i, n := range lengths {
+		base := i * maxLen
+		for j := 0; j < int(n); j++ {
+			data[base+j] = 1
+		}
+	}
+	return FromValues(data, len(lengths), maxLen)
+}
+
+func freeReplacedArrays(previous []*Array, current []*Array) {
+	if len(previous) == 0 {
+		return
+	}
+
+	live := make(map[*Array]struct{}, len(current))
+	for _, arr := range current {
+		if arr != nil {
+			live[arr] = struct{}{}
+		}
+	}
+
+	toFree := make([]*Array, 0, len(previous))
+	for _, arr := range previous {
+		if arr == nil {
+			continue
+		}
+		if _, ok := live[arr]; ok {
+			continue
+		}
+		toFree = append(toFree, arr)
+	}
+	Free(toFree...)
+}
+
+func loraRegularization(params []*Array, lambda float32) *Array {
+	if lambda == 0 || len(params) == 0 {
+		return nil
+	}
+
+	var reg *Array
+	for _, param := range params {
+		if param == nil || !param.Valid() {
+			continue
+		}
+
+		current := param
+		if param.Dtype() != DTypeFloat32 {
+			current = AsType(param, DTypeFloat32)
+		}
+
+		shape := current.Shape()
+		size := 1
+		for _, dim := range shape {
+			size *= int(dim)
+		}
+		if size == 0 {
+			if current != param {
+				Free(current)
+			}
+			continue
+		}
+
+		squared := Square(current)
+		if current != param {
+			Free(current)
+		}
+		flattened := Reshape(squared, int32(size))
+		mean := Mean(flattened, 0, false)
+		Free(squared, flattened)
+
+		if reg == nil {
+			reg = mean
+			continue
+		}
+
+		sum := Add(reg, mean)
+		Free(reg, mean)
+		reg = sum
+	}
+
+	if reg == nil {
+		return nil
+	}
+
+	scaled := MulScalar(reg, lambda)
+	Free(reg)
+	return scaled
+}
+
+// Step runs one RFC-style LoRA training step over a padded batch and returns the loss.
+func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW) *Array {
+	if adapter == nil || adapter.Model == nil || optimizer == nil {
+		return nil
+	}
+	params := adapter.AllTrainableParams()
+	if len(params) == 0 {
+		return nil
+	}
+
+	lengths, maxLen := batchLengths(batch, targets)
+	if len(lengths) == 0 || maxLen == 0 {
+		return nil
+	}
+
+	inputs := FromValues(batchTokenData(batch.Tokens, lengths, maxLen), len(lengths), maxLen)
+	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
+	lossMask := batchLossMask(lengths, maxLen)
+	attnMask := buildBatchMask(int32(len(lengths)), int32(maxLen), lengths)
+	defer Free(inputs, targetIDs, lossMask, attnMask)
+
+	argnums := make([]int, len(params))
+	for i := range params {
+		argnums[i] = i
+	}
+
+	lossFn := func(current []*Array) []*Array {
+		adapter.SetAllParams(current)
+		caches := adapter.Model.NewCache()
+		defer freeCaches(caches)
+		logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
+		loss := MaskedCrossEntropyLoss(logits, targetIDs, lossMask)
+		Free(logits)
+		if reg := loraRegularization(current, adapter.Config.Lambda); reg != nil {
+			total := Add(loss, reg)
+			Free(loss, reg)
+			loss = total
+		}
+		return []*Array{loss}
+	}
+
+	grad := ValueAndGrad(lossFn, argnums...)
+	values, grads, err := grad.Apply(params...)
+	grad.Free()
+	if err != nil || len(values) == 0 {
+		if len(values) > 0 {
+			Free(values...)
+		}
+		if len(grads) > 0 {
+			Free(grads...)
+		}
+		return nil
+	}
+
+	all := make([]*Array, 0, len(values)+len(grads))
+	all = append(all, values...)
+	all = append(all, grads...)
+	Materialize(all...)
+
+	updated := optimizer.Step(params, grads)
+	Materialize(updated...)
+	adapter.SetAllParams(updated)
+	freeReplacedArrays(params, updated)
+	Free(grads...)
+	if len(values) > 1 {
+		Free(values[1:]...)
+	}
+	return values[0]
+}
+
+func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
+	if path == "" {
+		return "", "", core.E("lora.Save", "path is required", nil)
+	}
+
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
+	}
+
+	if !core.HasSuffix(path, ".safetensors") {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
+	}
+
+	dir := core.PathDir(path)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		}
+	}
+	return path, core.JoinPath(dir, "adapter_config.json"), nil
+}
+
+func adapterSaveConfig(adapter *LoRAAdapter, cfg LoRAConfig) adapterConfig {
+	config := adapterConfig{
+		Rank:  cfg.Rank,
+		Alpha: cfg.Alpha,
+	}
+
+	targets := make(map[string]struct{})
+	maxLayerIdx := -1
+	for name := range adapter.Layers {
+		layerIdx, projPath, _ := parseLoRAWeightName(name + ".lora_a")
+		if layerIdx < 0 {
+			continue
+		}
+		if layerIdx > maxLayerIdx {
+			maxLayerIdx = layerIdx
+		}
+		if projPath != "" {
+			targets[projPath] = struct{}{}
+		}
+	}
+
+	if maxLayerIdx >= 0 {
+		config.NumLayers = maxLayerIdx + 1
+	}
+	if len(targets) > 0 {
+		config.TargetKeys = slices.Sorted(maps.Keys(targets))
+	} else if len(cfg.TargetKeys) > 0 {
+		config.TargetKeys = append([]string(nil), cfg.TargetKeys...)
+	}
+
+	return config
+}
+
+// Save writes the LoRA adapter weights to a safetensors file and emits an
+// adjacent adapter_config.json so the saved adapter can be reloaded later.
 // Only saves the A and B matrices — not the frozen base weights.
 //
 //	if err := adapter.Save("/Volumes/Data/lem/my-lora/adapter.safetensors"); err != nil { ... }
+//	if err := adapter.Save("/Volumes/Data/lem/my-lora"); err != nil { ... } // writes adapter package directory
 func (adapter *LoRAAdapter) Save(path string) error {
+	if adapter == nil {
+		return core.E("lora.Save", "adapter is nil", nil)
+	}
+
+	weightsPath, configPath, err := adapterSavePaths(path)
+	if err != nil {
+		return err
+	}
+
+	cfg := normalizeLoRAConfig(adapter.Config)
 	weights := make(map[string]*Array)
 	for name, layer := range adapter.Layers {
 		weights[name+".lora_a"] = layer.A
 		weights[name+".lora_b"] = layer.B
 	}
-	return SaveSafetensors(path, weights)
+	if err := SaveSafetensors(weightsPath, weights); err != nil {
+		return err
+	}
+
+	configJSON := core.JSONMarshal(adapterSaveConfig(adapter, cfg))
+	if !configJSON.OK {
+		return core.E("lora.Save", "marshal adapter_config.json", nil)
+	}
+	if err := coreio.Local.Write(configPath, string(configJSON.Value.([]byte))); err != nil {
+		return core.E("lora.Save", "write adapter_config.json", err)
+	}
+	return nil
 }
 
 // RandomNormal generates normal (Gaussian) random values with given mean and stddev.
@@ -248,14 +585,14 @@ type adapterConfig struct {
 func parseAdapterConfig(path string) (*adapterConfig, error) {
 	str, err := coreio.Local.Read(path)
 	if err != nil {
-		return nil, coreerr.E("lora.parseAdapterConfig", "read adapter_config.json", err)
+		return nil, core.E("lora.parseAdapterConfig", "read adapter_config.json", err)
 	}
 	var config adapterConfig
 	if r := core.JSONUnmarshal([]byte(str), &config); !r.OK {
-		return nil, coreerr.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
+		return nil, core.E("lora.parseAdapterConfig", "parse adapter_config.json", nil)
 	}
 	// Apply defaults matching mlx-lm conventions.
-	if config.Rank == 0 {
+	if config.Rank <= 0 {
 		config.Rank = 8
 	}
 	if config.Alpha == 0 {
@@ -268,7 +605,7 @@ func parseAdapterConfig(path string) (*adapterConfig, error) {
 func loadAdapterWeights(dir string) (map[string]*Array, error) {
 	matches := core.PathGlob(core.JoinPath(dir, "*.safetensors"))
 	if len(matches) == 0 {
-		return nil, coreerr.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
+		return nil, core.E("lora.loadAdapterWeights", "no .safetensors files found in "+dir, nil)
 	}
 
 	weights := make(map[string]*Array)
@@ -277,7 +614,7 @@ func loadAdapterWeights(dir string) (map[string]*Array, error) {
 			weights[name] = arr
 		}
 		if err := lastError(); err != nil {
-			return nil, coreerr.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
+			return nil, core.E("lora.loadAdapterWeights", "load adapter weights "+core.PathBase(path), err)
 		}
 	}
 	return weights, nil
@@ -316,6 +653,35 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 			return layer.Attention.VProj
 		case "self_attn.o_proj":
 			return layer.Attention.OProj
+		}
+	case *Gemma4Model:
+		if layerIdx >= len(concreteModel.Layers) {
+			return nil
+		}
+		layer := concreteModel.Layers[layerIdx]
+		switch projPath {
+		case "self_attn.q_proj":
+			return layer.Attention.QProj
+		case "self_attn.k_proj":
+			return layer.Attention.KProj
+		case "self_attn.v_proj":
+			return layer.Attention.VProj
+		case "self_attn.o_proj":
+			return layer.Attention.OProj
+		case "mlp.gate_proj":
+			return layer.MLP.GateProj
+		case "mlp.up_proj":
+			return layer.MLP.UpProj
+		case "mlp.down_proj":
+			return layer.MLP.DownProj
+		case "per_layer_input_gate":
+			return layer.PerLayerInputGate
+		case "per_layer_projection":
+			return layer.PerLayerProjection
+		case "router.proj":
+			if layer.Router != nil {
+				return layer.Router.Proj
+			}
 		}
 	}
 	return nil
@@ -399,7 +765,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	for name, arr := range weights {
 		layerIdx, projPath, suffix := parseLoRAWeightName(name)
 		if layerIdx < 0 {
-			slog.Warn("adapter: skipping unrecognised weight", "name", name)
+			core.Warn("adapter: skipping unrecognised weight", "name", name)
 			continue
 		}
 		key := loraKey{layerIdx, projPath}
@@ -418,17 +784,18 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 
 	scale := config.Alpha / float32(config.Rank)
 	injected := 0
+	kept := make(map[*Array]struct{})
 
 	for key, pair := range pairs {
 		if pair.matrixA == nil || pair.matrixB == nil {
-			slog.Warn("adapter: incomplete LoRA pair, skipping",
+			core.Warn("adapter: incomplete LoRA pair, skipping",
 				"layer", key.layerIdx, "proj", key.projPath)
 			continue
 		}
 
 		linear := resolveLinear(model, key.layerIdx, key.projPath)
 		if linear == nil {
-			slog.Warn("adapter: target layer not found, skipping",
+			core.Warn("adapter: target layer not found, skipping",
 				"layer", key.layerIdx, "proj", key.projPath)
 			continue
 		}
@@ -442,19 +809,33 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 			Alpha: config.Alpha,
 		}
 		linear.LoRA = lora
+		kept[pair.matrixA] = struct{}{}
+		kept[pair.matrixB] = struct{}{}
 		injected++
 	}
 
-	if injected == 0 {
-		return coreerr.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
+	freed := make(map[*Array]struct{})
+	for _, arr := range weights {
+		if arr == nil || !arr.Valid() {
+			continue
+		}
+		if _, ok := kept[arr]; ok {
+			continue
+		}
+		if _, ok := freed[arr]; ok {
+			continue
+		}
+		Free(arr)
+		freed[arr] = struct{}{}
 	}
 
-	slog.Info("adapter loaded",
-		"path", adapterDir,
-		"rank", config.Rank,
-		"alpha", config.Alpha,
-		"scale", scale,
-		"layers_injected", injected,
+	if injected == 0 {
+		return core.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
+	}
+
+	core.Info("adapter loaded",
+		"path", adapterDir, "rank", config.Rank, "alpha", config.Alpha,
+		"scale", scale, "layers_injected", injected,
 	)
 	return nil
 }
@@ -487,7 +868,7 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 		if err := lastError(); err != nil {
 			return err
 		}
-		return coreerr.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
+		return core.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
 	}
 	return nil
 }

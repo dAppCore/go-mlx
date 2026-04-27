@@ -5,14 +5,14 @@ description: Model loading, supported architectures, tokenisation, and chat temp
 
 # Models
 
-go-mlx loads transformer models from HuggingFace safetensors format. Architecture is auto-detected from the `model_type` field in `config.json`. GGUF is not supported.
+go-mlx loads transformer models from either HuggingFace safetensors shards or GGUF checkpoints. For safetensors directories, architecture is detected from the `model_type` field in `config.json`; for direct `.gguf` loads via `inference.LoadModel`, it is detected from checkpoint metadata.
 
 ## Loading a Model
 
 ```go
 import (
-    "forge.lthn.ai/core/go-inference"
-    _ "forge.lthn.ai/core/go-mlx"
+    "dappco.re/go/inference"
+    _ "dappco.re/go/mlx"
 )
 
 m, err := inference.LoadModel("/path/to/model/")
@@ -22,11 +22,15 @@ if err != nil {
 defer m.Close()
 ```
 
-The model directory must contain:
+The model path may be either a model directory or an explicit `.gguf` file path.
+
+When loading a directory, it must contain:
 
 - `config.json` -- model configuration (architecture, dimensions, quantisation)
 - `tokenizer.json` -- HuggingFace BPE tokeniser
-- One or more `*.safetensors` files -- model weights (multi-shard supported)
+- Weights in exactly one of these formats:
+  - One or more `*.safetensors` files (multi-shard supported)
+  - Exactly one `*.gguf` file
 
 ### Load Options
 
@@ -66,6 +70,22 @@ Key features:
 - **MLP** -- GELU-based gate with tanh approximation, compiled via `CompileShapeless` as a singleton
 - **Output head** -- typically tied to `embed_tokens`; uses a separate `lm_head.weight` if present in the safetensors
 
+### Gemma 4
+
+**Config values:** `gemma4`, `gemma4_text`
+
+Gemma 4 uses a dedicated loader (`LoadGemma4`) with several architecture-specific behaviours:
+
+- **Mixed attention head sizes** -- sliding layers use `head_dim`, full-attention layers use `global_head_dim`
+- **Per-layer RoPE** -- sliding attention defaults to theta 10000 and full attention to theta 1000000 with partial rotary
+- **Shared KV cache** -- the tail of the network can reuse KV state from earlier same-type layers to reduce memory use
+- **K-equals-V support** -- full-attention layers can reuse the K projection for V
+- **Value normalisation** -- values pass through `RMSNormNoScale` before caching
+- **MoE routing** -- router projections stay quantised at 8-bit and sparse experts dispatch through `gather_mm` / `gather_qmm`
+- **Weight sanitisation** -- multimodal tower weights are stripped and `experts.gate_up_proj` tensors are split into separate gate/up weights
+
+Gemma 4 chat formatting follows the same turn template as Gemma 3.
+
 ### Qwen 3 / Qwen 2 / Llama 3
 
 **Config values:** `qwen3`, `qwen2`, `llama`
@@ -93,11 +113,10 @@ The loader performs these steps:
 
 1. Reads `config.json` for model configuration
 2. Loads `tokenizer.json` for the tokeniser
-3. Glob-matches all `*.safetensors` files in the directory (multi-shard support)
-4. Iterates tensors from each shard via `LoadSafetensors`
-5. Resolves weights by name, with automatic `language_model.` prefix fallback
-6. Constructs `Linear` layers as quantised or dense based on presence of `scales` tensors
-7. Calls `Materialize()` on all weight arrays to commit them to GPU memory
+3. Loads weights from either all `*.safetensors` shards or a single `.gguf` file
+4. Resolves weights by name, with automatic `language_model.` prefix fallback
+5. Constructs `Linear` layers as quantised or dense based on presence of `scales` tensors
+6. Calls `Materialize()` on all weight arrays to commit them to GPU memory
 
 ### Quantisation
 
@@ -111,7 +130,7 @@ If `head_dim` is absent from `config.json` (common in some Gemma 3 variants), it
 
 `Tokenizer` reads a `tokenizer.json` file and supports two BPE variants, auto-detected at load time.
 
-### SentencePiece BPE (Gemma 3)
+### SentencePiece BPE (Gemma 3 / Gemma 4)
 
 - Prefixes each segment with `\u2581` (Unicode U+2581, the SentencePiece space marker)
 - Splits into characters
@@ -147,7 +166,7 @@ Special tokens are matched before BPE encoding. Each architecture uses different
 
 | Family | BOS | EOS / Stop |
 |--------|-----|-----------|
-| Gemma 3 | `<bos>` | `<end_of_turn>` |
+| Gemma 3 / 4 | `<bos>` | `<end_of_turn>` |
 | Qwen 2/3 | `<\|im_start\|>` | `<\|im_end\|>` |
 | Llama 3 | `<\|begin_of_text\|>` | `<\|eot_id\|>` |
 
@@ -184,7 +203,7 @@ Chat templates by architecture:
 
 | Architecture | Format |
 |-------------|--------|
-| Gemma 3 | `<start_of_turn>role\ncontent<end_of_turn>\n` |
+| Gemma 3 / 4 | `<start_of_turn>role\ncontent<end_of_turn>\n` |
 | Qwen 2/3 | `<\|im_start\|>role\ncontent<\|im_end\|>\n` |
 | Llama 3 | `<\|start_header_id\|>role<\|end_header_id\|>\n\ncontent<\|eot_id\|>` |
 
@@ -198,6 +217,10 @@ inference.WithTopP(0.9)           // nucleus sampling
 inference.WithRepeatPenalty(1.1)  // repetition penalty
 inference.WithStopTokens(1, 2)   // additional stop token IDs
 ```
+
+The direct root API adds `mlx.WithMinP(0.05)` for minimum-probability sampling.
+
+When combined, sampling options are applied in this order: temperature, then top-p, then top-k, then min-p.
 
 ### Context Cancellation
 

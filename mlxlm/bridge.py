@@ -46,12 +46,18 @@ def _build_gen_kwargs(req):
 
     temperature = req.get("temperature", 0.0)
     top_p = req.get("top_p", 0.0)
+    min_p = req.get("min_p", 0.0)
     top_k = req.get("top_k", 0)
     repeat_penalty = req.get("repeat_penalty", 0.0)
 
     kwargs = {
         "max_tokens": req.get("max_tokens", 256),
-        "sampler": make_sampler(temp=temperature, top_p=top_p, top_k=top_k),
+        "sampler": make_sampler(
+            temp=temperature,
+            top_p=top_p,
+            min_p=min_p,
+            top_k=top_k,
+        ),
     }
 
     if repeat_penalty > 1.0:

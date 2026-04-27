@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -101,6 +103,23 @@ func TestOptim_AdamW_WeightDecay_Good(t *testing.T) {
 	t.Logf("after 10 steps with weight_decay=0.5: x = %f (started at 10.0)", final)
 }
 
+func TestOptim_AdamW_ConfigExplicitZero_Good(t *testing.T) {
+	opt := NewAdamW(&AdamWConfig{
+		LearningRate:   1e-4,
+		WeightDecay:    0,
+		WeightDecaySet: true,
+	})
+	if opt.LR != 1e-4 {
+		t.Fatalf("LR = %f, want 1e-4", opt.LR)
+	}
+	if opt.WeightDecay != 0 {
+		t.Fatalf("WeightDecay = %f, want explicit zero", opt.WeightDecay)
+	}
+	if opt.Beta1 != 0.9 || opt.Beta2 != 0.999 || opt.Eps != 1e-8 {
+		t.Fatalf("defaults not preserved: beta1=%f beta2=%f eps=%f", opt.Beta1, opt.Beta2, opt.Eps)
+	}
+}
+
 func TestOptim_AdamW_Reset_Good(t *testing.T) {
 	opt := NewAdamW(0.01)
 
@@ -119,6 +138,55 @@ func TestOptim_AdamW_Reset_Good(t *testing.T) {
 	}
 	if opt.m != nil {
 		t.Error("after reset, moments should be nil")
+	}
+}
+
+func TestOptim_AdamW_ReleasesSupersededMoments_Good(t *testing.T) {
+	x := FromValue(float32(2.0))
+	grad := FromValue(float32(1.0))
+	Materialize(x, grad)
+
+	opt := NewAdamW(0.01)
+
+	first := opt.Step([]*Array{x}, []*Array{grad})
+	x1 := first[0]
+	firstM := opt.m[0]
+	firstV := opt.v[0]
+	Materialize(x1, firstM, firstV)
+
+	second := opt.Step([]*Array{x1}, []*Array{grad})
+	Materialize(second[0])
+	defer Free(x, grad, x1, second[0])
+
+	if firstM.Valid() {
+		t.Fatal("first moment buffer should be freed after the next step replaces it")
+	}
+	if firstV.Valid() {
+		t.Fatal("second moment buffer should be freed after the next step replaces it")
+	}
+}
+
+func TestOptim_AdamW_Reset_ReleasesMoments_Good(t *testing.T) {
+	x := FromValue(float32(3.0))
+	grad := FromValue(float32(1.0))
+	Materialize(x, grad)
+	defer Free(x, grad)
+
+	opt := NewAdamW(0.01)
+	updated := opt.Step([]*Array{x}, []*Array{grad})
+	defer Free(updated...)
+
+	firstM := opt.m[0]
+	firstV := opt.v[0]
+	Materialize(firstM, firstV)
+
+	opt.Reset()
+
+	if firstM.Valid() {
+		t.Fatal("Reset should free the first-moment buffer")
+	}
+	if firstV.Valid() {
+		t.Fatal("Reset should free the second-moment buffer")
 	}
 }
 
@@ -171,5 +239,30 @@ func TestOptim_AdamW_WithLoRA_Good(t *testing.T) {
 	t.Logf("loss: %.6f -> %.6f", initialLoss, finalLoss)
 	if finalLoss >= initialLoss {
 		t.Errorf("loss did not decrease: %f -> %f", initialLoss, finalLoss)
+	}
+}
+
+func TestOptim_AdamW_ConfigCtor_Good(t *testing.T) {
+	opt := NewAdamW(&AdamWConfig{
+		LearningRate: 1e-3,
+		Beta1:        0.8,
+		Beta2:        0.95,
+		Eps:          1e-6,
+		WeightDecay:  0.05,
+	})
+	if opt.LR != 1e-3 {
+		t.Fatalf("LR = %f, want 0.001", opt.LR)
+	}
+	if opt.Beta1 != 0.8 {
+		t.Fatalf("Beta1 = %f, want 0.8", opt.Beta1)
+	}
+	if opt.Beta2 != 0.95 {
+		t.Fatalf("Beta2 = %f, want 0.95", opt.Beta2)
+	}
+	if opt.Eps != 1e-6 {
+		t.Fatalf("Eps = %f, want 1e-6", opt.Eps)
+	}
+	if opt.WeightDecay != 0.05 {
+		t.Fatalf("WeightDecay = %f, want 0.05", opt.WeightDecay)
 	}
 }

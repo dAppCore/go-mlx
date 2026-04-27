@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -9,6 +11,13 @@ package metal
 import "C"
 
 import "unsafe"
+
+func optionalInt(v int) C.mlx_optional_int {
+	return C.mlx_optional_int{
+		value:     C.int(v),
+		has_value: C._Bool(v > 0),
+	}
+}
 
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
@@ -159,16 +168,86 @@ func Matmul(a, b *Array) *Array {
 	return out
 }
 
+// Conv2d performs a 2D convolution using MLX's NHWC input layout and
+// [out_channels, kernel_h, kernel_w, in_channels] weight layout.
+func Conv2d(input, weight *Array, strideH, strideW, padH, padW, dilationH, dilationW, groups int) *Array {
+	out := newArray("CONV2D", input, weight)
+	C.mlx_conv2d(
+		&out.ctx,
+		input.ctx,
+		weight.ctx,
+		C.int(strideH),
+		C.int(strideW),
+		C.int(padH),
+		C.int(padW),
+		C.int(dilationH),
+		C.int(dilationW),
+		C.int(groups),
+		DefaultStream().ctx,
+	)
+	return out
+}
+
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
 	out := newArray("QMATMUL", x, w, scales, biases)
-	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
-	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
 	mode := C.CString("affine")
 	defer C.free(unsafe.Pointer(mode))
 	C.mlx_quantized_matmul(
 		&out.ctx, x.ctx, w.ctx, scales.ctx, biases.ctx,
 		C._Bool(transpose), gs, b, mode,
+		DefaultStream().ctx,
+	)
+	return out
+}
+
+// GatherMM performs expert-indexed matrix multiplication.
+func GatherMM(a, b, lhsIndices, rhsIndices *Array, sorted bool) *Array {
+	out := newArray("GATHER_MM", a, b, lhsIndices, rhsIndices)
+	var cLHS, cRHS C.mlx_array
+	if lhsIndices != nil {
+		cLHS = lhsIndices.ctx
+	}
+	if rhsIndices != nil {
+		cRHS = rhsIndices.ctx
+	}
+	C.mlx_gather_mm(&out.ctx, a.ctx, b.ctx, cLHS, cRHS, C._Bool(sorted), DefaultStream().ctx)
+	return out
+}
+
+// GatherQMM performs expert-indexed quantized matrix multiplication.
+func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bool, groupSize, bits int, mode string, sorted bool) *Array {
+	out := newArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
+	cMode := C.CString(mode)
+	defer C.free(unsafe.Pointer(cMode))
+
+	var cBiases, cLHS, cRHS C.mlx_array
+	if biases != nil {
+		cBiases = biases.ctx
+	}
+	if lhsIndices != nil {
+		cLHS = lhsIndices.ctx
+	}
+	if rhsIndices != nil {
+		cRHS = rhsIndices.ctx
+	}
+	C.mlx_gather_qmm(
+		&out.ctx,
+		x.ctx,
+		w.ctx,
+		scales.ctx,
+		cBiases,
+		cLHS,
+		cRHS,
+		C._Bool(transpose),
+		gs,
+		b,
+		cMode,
+		C._Bool(sorted),
 		DefaultStream().ctx,
 	)
 	return out
@@ -337,8 +416,8 @@ func Argpartition(a *Array, kth, axis int) *Array {
 //	fullW := metal.Dequantize(w, scales, biases, 64, 4) // 4-bit weights, group=64
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
 	out := newArray("DEQUANTIZE", w, scales, biases)
-	gs := C.mlx_optional_int{value: C.int(groupSize), has_value: C._Bool(true)}
-	b := C.mlx_optional_int{value: C.int(bits), has_value: C._Bool(true)}
+	gs := optionalInt(groupSize)
+	b := optionalInt(bits)
 	mode := C.CString("affine")
 	defer C.free(unsafe.Pointer(mode))
 	noDtype := C.mlx_optional_dtype{has_value: C._Bool(false)}
@@ -407,5 +486,45 @@ func Greater(a, b *Array) *Array {
 func MaxAxis(a *Array, axis int, keepDims bool) *Array {
 	out := newArray("MAX_AXIS", a)
 	C.mlx_max_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}
+
+// Any reduces with logical OR over all elements. Returns a scalar bool array.
+// Set keepDims to preserve the reduced dimension as size 1.
+//
+//	hasTrues := metal.Any(mask, false) // check if any element is true
+func Any(a *Array, keepDims bool) *Array {
+	out := newArray("ANY", a)
+	C.mlx_any(&out.ctx, a.ctx, C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}
+
+// AnyAxis reduces with logical OR along the given axis.
+//
+//	rowHasTrue := metal.AnyAxis(mask, 1, false) // per-row OR reduction
+func AnyAxis(a *Array, axis int, keepDims bool) *Array {
+	out := newArray("ANY_AXIS", a)
+	C.mlx_any_axis(&out.ctx, a.ctx, C.int(axis), C._Bool(keepDims), DefaultStream().ctx)
+	return out
+}
+
+// Arange creates a 1-D array with evenly spaced values in [start, stop) with the given step.
+// Similar to numpy.arange.
+//
+//	indices := metal.Arange(0, 10, 1, DTypeInt32)   // [0, 1, 2, ..., 9]
+//	halves  := metal.Arange(0, 3, 0.5, DTypeFloat32) // [0.0, 0.5, 1.0, 1.5, 2.0, 2.5]
+func Arange(start, stop, step float64, dtype DType) *Array {
+	Init()
+	out := newArray("ARANGE")
+	C.mlx_arange(&out.ctx, C.double(start), C.double(stop), C.double(step), C.mlx_dtype(dtype), DefaultStream().ctx)
+	return out
+}
+
+// IsNaN returns a boolean array indicating which elements are NaN.
+//
+//	nanMask := metal.IsNaN(logits) // detect NaN values before sampling
+func IsNaN(a *Array) *Array {
+	out := newArray("ISNAN", a)
+	C.mlx_isnan(&out.ctx, a.ctx, DefaultStream().ctx)
 	return out
 }

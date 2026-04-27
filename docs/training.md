@@ -139,6 +139,10 @@ Standard AdamW with decoupled weight decay:
 
 ```go
 opt := mlx.NewAdamW(1e-4) // learning rate
+cfg := mlx.DefaultAdamWConfig()
+cfg.LearningRate = 1e-4
+cfg.Beta1 = 0.85
+opt2 := mlx.NewAdamW(cfg)
 ```
 
 Update rule per parameter per step:
@@ -164,7 +168,13 @@ param = param * (1 - lr * wd) - lr * m_hat / (sqrt(v_hat) + eps)
 ### Usage
 
 ```go
-opt := mlx.NewAdamW(1e-4)
+opt := mlx.NewAdamW(&mlx.AdamWConfig{
+    LearningRate: 1e-4,
+    Beta1:        0.9,
+    Beta2:        0.999,
+    Eps:          1e-8,
+    WeightDecay:  0.01,
+})
 opt.WeightDecay = 0.01
 
 // Training loop
@@ -267,7 +277,7 @@ Exported functions:
 | Function | Purpose |
 |----------|---------|
 | `ValueAndGrad(fn, argnums...)` | Create a GradFn for combined value + gradient computation |
-| `NewAdamW(lr)` | Create an AdamW optimiser |
+| `NewAdamW(lrOrConfig)` | Create an AdamW optimiser from a learning rate or `AdamWConfig` |
 | `CrossEntropyLoss(logits, targets)` | Standard cross-entropy loss |
 | `MaskedCrossEntropyLoss(logits, targets, mask)` | Masked cross-entropy loss |
 | `Checkpoint(fn)` | Memory-efficient gradient recomputation |

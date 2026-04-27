@@ -5,7 +5,7 @@ description: Native Metal GPU inference and training for Go on Apple Silicon.
 
 # go-mlx
 
-`forge.lthn.ai/core/go-mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `forge.lthn.ai/core/go-inference`.
+`dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/inference` and an RFC-style direct root-package API.
 
 **Platform:** darwin/arm64 only (Apple Silicon M1-M4). A stub provides `MetalAvailable() bool` returning false on all other platforms.
 
@@ -16,12 +16,12 @@ import (
     "context"
     "fmt"
 
-    "forge.lthn.ai/core/go-inference"
-    _ "forge.lthn.ai/core/go-mlx" // registers "metal" backend via init()
+    "dappco.re/go/inference"
+    _ "dappco.re/go/mlx" // registers "metal" backend via init()
 )
 
 func main() {
-    m, err := inference.LoadModel("/path/to/safetensors/model/")
+    m, err := inference.LoadModel("/path/to/model/")
     if err != nil {
         panic(err)
     }
@@ -37,13 +37,37 @@ func main() {
 }
 ```
 
-The blank import (`_ "forge.lthn.ai/core/go-mlx"`) auto-registers the Metal backend. All interaction goes through the `go-inference` interfaces -- go-mlx itself exports only Metal-specific memory controls.
+The blank import (`_ "dappco.re/go/mlx"`) auto-registers the Metal backend. You can use either the `go-inference` interfaces or the direct root API:
+
+```go
+import (
+    "fmt"
+
+    mlx "dappco.re/go/mlx"
+)
+
+model, err := mlx.LoadModel("/path/to/model/",
+    mlx.WithContextLength(8192),
+    mlx.WithDevice("cpu"), // "gpu" or "cpu"
+)
+if err != nil {
+    panic(err)
+}
+defer model.Close()
+
+text, err := model.Generate("What is 2+2?", mlx.WithMaxTokens(64))
+if err != nil {
+    panic(err)
+}
+fmt.Println(text)
+```
 
 ## Features
 
 - **Streaming inference** -- token-by-token generation via `iter.Seq[Token]` (range-over-func)
-- **Multi-turn chat** -- native chat templates for Gemma 3, Qwen 2/3, and Llama 3
+- **Multi-turn chat** -- native chat templates for Gemma 3/4, Qwen 2/3, and Llama 3
 - **Batch inference** -- `Classify` (prefill-only) and `BatchGenerate` (autoregressive) for multiple prompts
+- **Frame compute sessions** -- non-LLM pixel-buffer pipelines with explicit per-frame lifecycle, scaling, swizzling, palette expansion, and format conversion
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
 - **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
@@ -51,11 +75,12 @@ The blank import (`_ "forge.lthn.ai/core/go-mlx"`) auto-registers the Metal back
 
 ## Supported Models
 
-Models must be in **HuggingFace safetensors format** (not GGUF). Architecture is auto-detected from `config.json`:
+Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoints**. Architecture is auto-detected from `config.json`:
 
 | Architecture | `model_type` values | Tested sizes |
 |-------------|---------------------|-------------|
 | Gemma 3 | `gemma3`, `gemma3_text`, `gemma2` | 1B, 4B, 27B |
+| Gemma 4 | `gemma4`, `gemma4_text` | E2B, E4B, 26B MoE, 31B |
 | Qwen 3 | `qwen3`, `qwen2` | 8B+ |
 | Llama 3 | `llama` | 8B+ |
 
@@ -63,7 +88,7 @@ Models must be in **HuggingFace safetensors format** (not GGUF). Architecture is
 
 | Package | Purpose |
 |---------|---------|
-| Root (`mlx`) | Public API: Metal backend registration, memory controls, training type exports |
+| Root (`mlx`) | Public API: backend registration, direct model API, memory controls, training type exports |
 | `internal/metal/` | All CGO code: array ops, model loaders, generation, training primitives |
 | `mlxlm/` | Alternative subprocess backend via Python's mlx-lm (no CGO required) |
 
@@ -72,7 +97,7 @@ Models must be in **HuggingFace safetensors format** (not GGUF). Architecture is
 These control the Metal allocator directly, not individual models:
 
 ```go
-import mlx "forge.lthn.ai/core/go-mlx"
+import mlx "dappco.re/go/mlx"
 
 mlx.SetCacheLimit(4 << 30)   // 4 GB cache limit
 mlx.SetMemoryLimit(32 << 30) // 32 GB hard limit
@@ -109,6 +134,7 @@ Measured on M3 Ultra (60-core GPU, 96 GB unified memory):
 
 ## Documentation
 
+- [Compute Guide](compute.md) -- frame-oriented Metal compute sessions, pixel buffers, kernels, metrics
 - [Architecture](architecture.md) -- CGO binding layer, lazy evaluation, memory model, attention, KV cache
 - [Models](models.md) -- model loading, supported architectures, tokenisation, chat templates
 - [Training](training.md) -- LoRA fine-tuning, gradient computation, AdamW optimiser, loss functions
@@ -118,9 +144,9 @@ Measured on M3 Ultra (60-core GPU, 96 GB unified memory):
 
 | Package | Role |
 |---------|------|
-| `forge.lthn.ai/core/go-ml` | Imports go-inference + go-mlx for the Metal backend training loop |
-| `forge.lthn.ai/core/go-i18n` | Gemma3-1B domain classification (Phase 2a) |
-| `forge.lthn.ai/core/go-rocm` | Sibling AMD GPU backend, same go-inference interfaces |
+| `dappco.re/go/core/ml` | Imports go-inference + go-mlx for the Metal backend training loop |
+| `dappco.re/go/core/i18n` | Gemma3-1B domain classification (Phase 2a) |
+| `dappco.re/go/core/rocm` | Sibling AMD GPU backend, same go-inference interfaces |
 
 ## Licence
 

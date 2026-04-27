@@ -14,6 +14,7 @@ Go Application
     |
     v
 inference.TextModel / inference.TrainableModel   <-- go-inference interfaces
+mlx.LoadModel / mlx.NewSession                   <-- direct root APIs
     |
     v
 register_metal.go (metalAdapter)                  <-- Backend registration + type conversion
@@ -22,6 +23,7 @@ register_metal.go (metalAdapter)                  <-- Backend registration + typ
 internal/metal/                                   <-- All CGO code
     |
     +-- generate.go    Model, Generate, Chat, batch inference
+    +-- metal_kernel.go Custom Metal kernel dispatch for frame compute
     +-- gemma3.go      Gemma 3 decoder
     +-- qwen3.go       Qwen 2/3 and Llama 3 decoder
     +-- tokenizer.go   BPE tokeniser (SentencePiece + GPT-2)
@@ -67,7 +69,7 @@ darwin:   -framework Foundation -framework Metal -framework Accelerate
           -Wl,-rpath,${SRCDIR}/../../dist/lib
 ```
 
-Every Go source file in `internal/metal/` carries `//go:build darwin && arm64`. The root package compiles on all platforms; the blank import `_ "forge.lthn.ai/core/go-mlx"` only triggers Metal backend registration on supported hardware.
+Every Go source file in `internal/metal/` carries `//go:build darwin && arm64`. The root package compiles on all platforms; the blank import `_ "dappco.re/go/mlx"` only triggers Metal backend registration on supported hardware.
 
 ### Error Handling
 
@@ -202,7 +204,7 @@ Used for Gemma 3 sliding-window attention layers. When `ContextLen` is set via `
 `newSampler(temp, topP, minP, topK)` builds a composable pipeline:
 
 ```
-TopP -> MinP -> TopK -> Temperature -> RandomCategorical
+Temperature -> TopP -> TopK -> MinP -> RandomCategorical
 ```
 
 If `temp == 0`, the chain collapses to greedy (argmax).
@@ -213,11 +215,14 @@ If `temp == 0`, the chain collapses to greedy (argmax).
 - **TopP (nucleus)** -- keep the smallest set with cumulative probability exceeding `p`
 - **MinP** -- mask tokens below `min_p * max_probability`
 
-Full sampling chain (TopP + MinP + TopK) adds approximately 560 us over greedy per token.
+Full sampling chain (Temperature + TopP + TopK + MinP) adds approximately 560 us over greedy per token.
 
-## go-inference Integration
+## Public APIs
 
-The public API is provided entirely by `forge.lthn.ai/core/go-inference`. go-mlx exports only Metal-specific controls (`MetalAvailable`, memory functions, training type aliases).
+go-mlx exposes two public surfaces:
+
+- the `go-inference` backend registered by `register_metal.go`
+- the direct root-package APIs in `api_*.go`, `training*.go`, and `compute*.go`
 
 `register_metal.go` auto-registers `metalBackend` via `init()` on darwin/arm64. The `metalAdapter` converts between `inference.*` types and `metal.*` types, implementing: `Generate`, `Chat`, `Classify`, `BatchGenerate`, `Metrics`, `Info`, `InspectAttention`, `Close`, and the `TrainableModel` interface (`ApplyLoRA`, `Encode`, `Decode`, `NumLayers`).
 
@@ -225,14 +230,23 @@ Consumer pattern:
 
 ```go
 import (
-    "forge.lthn.ai/core/go-inference"
-    _ "forge.lthn.ai/core/go-mlx"
+    "dappco.re/go/inference"
+    _ "dappco.re/go/mlx"
 )
 
 m, err := inference.LoadModel("/path/to/model/")
 for tok := range m.Generate(ctx, "prompt", inference.WithMaxTokens(128)) {
     fmt.Print(tok.Text)
 }
+```
+
+The root package also exposes direct inference and training APIs:
+
+```go
+import mlx "dappco.re/go/mlx"
+
+model, err := mlx.LoadModel("/path/to/model", mlx.WithContextLength(8192))
+session, err := mlx.NewSession()
 ```
 
 ### Load Options
@@ -250,7 +264,7 @@ Options from `inference.LoadConfig` understood by the Metal backend:
 Use it when CGO is not available or when you need model architectures not yet implemented natively:
 
 ```go
-import _ "forge.lthn.ai/core/go-mlx/mlxlm"
+import _ "dappco.re/go/mlx/mlxlm"
 
 m, err := inference.LoadModel("/path/to/model", inference.WithBackend("mlx_lm"))
 ```

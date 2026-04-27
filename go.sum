@@ -1,11 +1,9 @@
 dappco.re/go/core v0.8.0-alpha.1 h1:gj7+Scv+L63Z7wMxbJYHhaRFkHJo2u4MMPuUSv/Dhtk=
 dappco.re/go/core v0.8.0-alpha.1/go.mod h1:f2/tBZ3+3IqDrg2F5F598llv0nmb/4gJVCFzM5geE4A=
-forge.lthn.ai/core/go-inference v0.1.7 h1:9Dy6v03jX5ZRH3n5iTzlYyGtucuBIgSe+S7GWvBzx9Q=
-forge.lthn.ai/core/go-inference v0.1.7/go.mod h1:jfWz+IJX55wAH98+ic6FEqqGB6/P31CHlg7VY7pxREw=
-forge.lthn.ai/core/go-io v0.1.7 h1:Tdb6sqh+zz1lsGJaNX9RFWM6MJ/RhSAyxfulLXrJsbk=
-forge.lthn.ai/core/go-io v0.1.7/go.mod h1:8lRLFk4Dnp5cR/Cyzh9WclD5566TbpdRgwcH7UZLWn4=
-forge.lthn.ai/core/go-log v0.0.4 h1:KTuCEPgFmuM8KJfnyQ8vPOU1Jg654W74h8IJvfQMfv0=
-forge.lthn.ai/core/go-log v0.0.4/go.mod h1:r14MXKOD3LF/sI8XUJQhRk/SZHBE7jAFVuCfgkXoZPw=
+github.com/dAppCore/go-inference v0.8.0-alpha.1 h1:feRcT6vRelon8j1tQfg2ZrD7Y3vLjydVeHMbeVlyxJ0=
+github.com/dAppCore/go-inference v0.8.0-alpha.1/go.mod h1:rfNXLcfMilEI3nKpcdrC0PQKyUyaf6bDYseowgRwDP8=
+github.com/dAppCore/go-io v0.8.0-alpha.1 h1:DWmaksBY7FpwoQnRHYDN/yPCGLMR794D8OcNdk0RyB8=
+github.com/dAppCore/go-io v0.8.0-alpha.1/go.mod h1:491Lt0LOTK4/88EGWVWhrACuXAoxPXvXYu/iIwYc9C0=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64
 
 package metal
@@ -49,7 +51,7 @@ func TestArray_Iter_2D_Good(t *testing.T) {
 func TestArray_Iter_Transposed_Good(t *testing.T) {
 	// Iter on a non-contiguous (transposed) array should still work.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2) // [[1,2],[3,4]]
-	tr := Transpose(a)                             // [[1,3],[2,4]]
+	tr := Transpose(a)                           // [[1,3],[2,4]]
 	Materialize(tr)
 
 	var got []float32
