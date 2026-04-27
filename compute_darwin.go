@@ -52,6 +52,7 @@ type computeSession struct {
 	cfg              sessionConfig
 	kernels          map[string]*metal.MetalKernel
 	buffers          map[*bufferBase]struct{}
+	retired          []*metal.Array
 	metrics          SessionMetrics
 	frame            frameState
 	lastFrameMetrics FrameMetrics
@@ -93,8 +94,8 @@ func (base *bufferBase) requireOpenLocked() error {
 }
 
 func (base *bufferBase) replaceLocked(next *metal.Array) {
-	if base.array != nil {
-		metal.Free(base.array)
+	if base.array != nil && base.array != next {
+		base.session.retireArrayLocked(base.array)
 	}
 	base.array = next
 }
@@ -279,12 +280,15 @@ func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	if session.closed {
 		return computeErr(ComputeErrorClosed, "run_kernel", kernel, "", "compute session is closed")
 	}
-	session.ensureFrameLocked()
+	implicitFrame := session.ensureFrameLocked()
 
 	start := time.Now()
 	err := session.runLocked(kernel, args)
 	dispatchDuration := time.Since(start)
 	if err != nil {
+		if implicitFrame {
+			session.frame = frameState{}
+		}
 		return err
 	}
 
@@ -334,6 +338,7 @@ func (session *computeSession) syncLocked() error {
 	start := time.Now()
 	metal.Synchronize(metal.DefaultStream())
 	syncDuration := time.Since(start)
+	session.drainRetiredLocked()
 	session.metrics.LastSyncDuration = syncDuration
 	session.metrics.TotalSyncDuration += syncDuration
 	session.updateMemoryMetricsLocked()
@@ -358,11 +363,28 @@ func (session *computeSession) beginFrameLocked() {
 	}
 }
 
-func (session *computeSession) ensureFrameLocked() {
+func (session *computeSession) ensureFrameLocked() bool {
 	if session.frame.active {
-		return
+		return false
 	}
 	session.beginFrameLocked()
+	return true
+}
+
+func (session *computeSession) retireArrayLocked(array *metal.Array) {
+	if array == nil {
+		return
+	}
+	session.retired = append(session.retired, array)
+}
+
+func (session *computeSession) drainRetiredLocked() {
+	if len(session.retired) == 0 {
+		return
+	}
+	metal.Free(session.retired...)
+	clear(session.retired)
+	session.retired = session.retired[:0]
 }
 
 func (session *computeSession) updateMemoryMetricsLocked() {

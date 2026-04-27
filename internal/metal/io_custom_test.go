@@ -11,8 +11,8 @@ import (
 	"testing"
 )
 
-// bytesRWS wraps a bytes.Buffer to satisfy io.ReadWriteSeeker.
-// bytes.Buffer only provides Read and Write; this adds Seek support.
+// bytesRWS implements io.ReadWriteSeeker over an internal byte slice.
+// It tracks the current position and high-water length for Read, Write, and Seek.
 type bytesRWS struct {
 	data []byte
 	pos  int
@@ -144,6 +144,9 @@ func TestIOCustom_RoundTrip_Good(t *testing.T) {
 		t.Errorf("weight size = %d, want 4", w.Size())
 	}
 	wShape := w.Shape()
+	if len(wShape) < 2 {
+		t.Fatalf("weight shape = %v, want at least rank 2", wShape)
+	}
 	if wShape[0] != 2 || wShape[1] != 2 {
 		t.Errorf("weight shape = %v, want [2 2]", wShape)
 	}

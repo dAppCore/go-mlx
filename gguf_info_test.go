@@ -289,9 +289,17 @@ func writeGGUFValue(t *testing.T, file *os.File, valueType uint32, value any) {
 	t.Helper()
 	switch valueType {
 	case ggufValueTypeString:
-		writeGGUFString(t, file, value.(string))
+		stringValue, ok := value.(string)
+		if !ok {
+			t.Fatalf("write string: got %T, want string", value)
+		}
+		writeGGUFString(t, file, stringValue)
 	case ggufValueTypeUint32:
-		if err := binary.Write(file, binary.LittleEndian, value.(uint32)); err != nil {
+		uint32Value, ok := value.(uint32)
+		if !ok {
+			t.Fatalf("write uint32: got %T, want uint32", value)
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint32Value); err != nil {
 			t.Fatalf("write uint32: %v", err)
 		}
 	default:

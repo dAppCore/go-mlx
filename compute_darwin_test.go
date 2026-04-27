@@ -856,6 +856,9 @@ func TestComputeSession_RunMissingBuffer_ReturnsStructuredError_Bad(t *testing.T
 	if computeErr.Kernel != KernelRGB565ToRGBA8 || computeErr.Resource != "src" {
 		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelRGB565ToRGBA8, "src")
 	}
+	if err := session.BeginFrame(); err != nil {
+		t.Fatalf("BeginFrame after failed implicit Run: %v", err)
+	}
 }
 
 func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T) {

@@ -1,5 +1,5 @@
 [![Go Reference](https://pkg.go.dev/badge/dappco.re/go/mlx.svg)](https://pkg.go.dev/dappco.re/go/mlx)
-[![Licence: EUPL-1.2](https://img.shields.io/badge/Licence-EUPL--1.2-blue.svg)](LICENSE.md)
+[![Licence: EUPL-1.2](https://img.shields.io/badge/Licence-EUPL--1.2-blue.svg)](LICENCE)
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go)](go.mod)
 
 # go-mlx
@@ -29,6 +29,9 @@ defer model.Close()
 
 for tok := range model.Generate(context.Background(), "Hello", inference.WithMaxTokens(256)) {
     fmt.Print(tok.Text)
+}
+if err := model.Err(); err != nil {
+    panic(err)
 }
 ```
 
@@ -69,24 +72,33 @@ if err != nil {
 }
 defer session.Close()
 
-src, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
+src, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  320,
     Height: 224,
     Stride: 640,
     Format: mlx.PixelRGB565,
 })
-rgba, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
+if err != nil {
+    panic(err)
+}
+rgba, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  320,
     Height: 224,
     Stride: 1280,
     Format: mlx.PixelRGBA8,
 })
-scaled, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
+if err != nil {
+    panic(err)
+}
+scaled, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  960,
     Height: 672,
     Stride: 3840,
     Format: mlx.PixelRGBA8,
 })
+if err != nil {
+    panic(err)
+}
 
 frameBytes := make([]byte, src.Descriptor().SizeBytes())
 if err := src.Upload(frameBytes); err != nil {
