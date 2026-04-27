@@ -1,10 +1,10 @@
 package mlx
 
 import (
-	"errors"
-	"strings"
+	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
+	"dappco.re/go/core"
 	coreio "dappco.re/go/io"
 )
 
@@ -197,13 +197,13 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ContextLength < 0 {
-		return LoadConfig{}, errors.New("mlx: context length must be >= 0")
+		return LoadConfig{}, core.NewError("mlx: context length must be >= 0")
 	}
 	if cfg.Quantization < 0 {
-		return LoadConfig{}, errors.New("mlx: quantization bits must be >= 0")
+		return LoadConfig{}, core.NewError("mlx: quantization bits must be >= 0")
 	}
 
-	device := strings.ToLower(strings.TrimSpace(cfg.Device))
+	device := core.Lower(core.Trim(cfg.Device))
 	if device == "" {
 		device = "gpu"
 	}
@@ -212,6 +212,6 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 		cfg.Device = device
 		return cfg, nil
 	default:
-		return LoadConfig{}, errors.New("mlx: unsupported device: " + device)
+		return LoadConfig{}, core.NewError("mlx: unsupported device: " + device)
 	}
 }

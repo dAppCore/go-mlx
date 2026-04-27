@@ -1,5 +1,6 @@
 package mlx
 
+// Note: AX-6 — errors is structural for sentinel error declaration in tokenizer; core.E is downstream of go-mlx.
 import "errors"
 
 type tokenizerImpl interface {

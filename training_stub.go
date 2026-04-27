@@ -3,14 +3,15 @@
 package mlx
 
 import (
-	"errors"
+	// Note: AX-6 - iter.Seq is the public Array.Iter contract; core has no iterator alias.
 	"iter"
 
+	"dappco.re/go/core"
 	"dappco.re/go/inference"
 )
 
 func unsupportedBuildError() error {
-	return errors.New("mlx: native MLX support is unavailable in this build")
+	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
 // Array is a stub tensor on unsupported builds.
