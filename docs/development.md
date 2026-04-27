@@ -30,7 +30,7 @@ brew install cmake
 
 go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
-```
+```go
 replace dappco.re/go/inference => ../go-inference
 ```
 
@@ -270,7 +270,7 @@ Co-Authored-By: Virgil <virgil@lethean.io>
 
 ```cmake
 set(MLX_BUILD_SAFETENSORS ON)   # Required for model loading
-set(MLX_BUILD_GGUF OFF)         # GGUF not supported
+set(MLX_BUILD_GGUF ON)          # GGUF load/save support
 set(BUILD_SHARED_LIBS ON)       # Shared .dylib for rpath loading
 set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3)  # MLX minimum
 ```

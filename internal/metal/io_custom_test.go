@@ -6,6 +6,7 @@ package metal
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 )
@@ -63,10 +64,10 @@ func (b *bytesRWS) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekEnd:
 		newPos = int64(b.end) + offset
 	default:
-		return 0, io.ErrUnexpectedEOF
+		return 0, errors.New("bytesRWS.Seek: invalid whence")
 	}
 	if newPos < 0 {
-		return 0, io.ErrUnexpectedEOF
+		return 0, errors.New("bytesRWS.Seek: negative position")
 	}
 	b.pos = int(newPos)
 	return newPos, nil
@@ -95,6 +96,9 @@ func TestIOCustom_RoundTrip_Good(t *testing.T) {
 	// Create some tensors to save.
 	a := FromValues([]float32{1, 2, 3, 4}, 2, 2)
 	b := FromValues([]float32{10, 20, 30}, 3)
+	t.Cleanup(func() {
+		Free(a, b)
+	})
 	Materialize(a, b)
 
 	tensors := map[string]*Array{
@@ -120,6 +124,11 @@ func TestIOCustom_RoundTrip_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAllSafetensorsFromReader: %v", err)
 	}
+	t.Cleanup(func() {
+		for _, arr := range loaded {
+			Free(arr)
+		}
+	})
 
 	if len(loaded) != 2 {
 		t.Fatalf("loaded %d tensors, want 2", len(loaded))
@@ -153,6 +162,9 @@ func TestIOCustom_RoundTrip_Good(t *testing.T) {
 
 func TestIOCustom_WithMetadata_Good(t *testing.T) {
 	a := FromValues([]float32{42}, 1)
+	t.Cleanup(func() {
+		Free(a)
+	})
 	Materialize(a)
 
 	tensors := map[string]*Array{"val": a}
@@ -170,6 +182,11 @@ func TestIOCustom_WithMetadata_Good(t *testing.T) {
 	for name, arr := range LoadSafetensorsFromReader(reader, int64(len(written)), "meta-test") {
 		loaded[name] = arr
 	}
+	t.Cleanup(func() {
+		for _, arr := range loaded {
+			Free(arr)
+		}
+	})
 
 	if len(loaded) != 1 {
 		t.Fatalf("loaded %d tensors, want 1", len(loaded))
@@ -216,6 +233,9 @@ func TestIOCustom_IteratorBreak_Ugly(t *testing.T) {
 	a := FromValues([]float32{1, 2}, 2)
 	b := FromValues([]float32{3, 4}, 2)
 	c := FromValues([]float32{5, 6}, 2)
+	t.Cleanup(func() {
+		Free(a, b, c)
+	})
 	Materialize(a, b, c)
 
 	tensors := map[string]*Array{"a": a, "b": b, "c": c}

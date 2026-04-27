@@ -217,6 +217,9 @@ func (session *computeSession) NewByteBuffer(size int) (ByteBuffer, error) {
 	if size <= 0 {
 		return nil, computeErr(ComputeErrorInvalidAllocation, "new_byte_buffer", "", "size", "byte buffer size must be positive")
 	}
+	if size > math.MaxInt32 {
+		return nil, computeErr(ComputeErrorInvalidAllocation, "new_byte_buffer", "", "size", "byte buffer size exceeds int32 limit")
+	}
 
 	session.mu.Lock()
 	defer session.mu.Unlock()

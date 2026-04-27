@@ -26,7 +26,7 @@ func TestPixelFormat_BytesPerPixel_Good(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_Validate_BadStride(t *testing.T) {
+func TestPixelBufferDesc_Validate_Stride_Bad(t *testing.T) {
 	desc := PixelBufferDesc{
 		Width:  320,
 		Height: 224,
@@ -61,7 +61,7 @@ func TestPixelBufferDesc_SizeBytes_Good(t *testing.T) {
 	}
 }
 
-func TestPixelBufferDesc_Validate_BadByteLengthOverflow(t *testing.T) {
+func TestPixelBufferDesc_Validate_ByteLengthOverflow_Bad(t *testing.T) {
 	maxIntValue := int(^uint(0) >> 1)
 	desc := PixelBufferDesc{
 		Width:  1,

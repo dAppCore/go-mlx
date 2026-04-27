@@ -224,7 +224,7 @@ func TestDiscoverModels_Good(t *testing.T) {
 	}
 }
 
-func TestReadGGUFInfo_Bad_InvalidMagic(t *testing.T) {
+func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "broken.gguf")
 	if err := os.WriteFile(path, []byte("not-gguf"), 0o644); err != nil {
 		t.Fatalf("write broken file: %v", err)

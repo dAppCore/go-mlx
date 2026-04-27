@@ -28,8 +28,9 @@ When loading a directory, it must contain:
 
 - `config.json` -- model configuration (architecture, dimensions, quantisation)
 - `tokenizer.json` -- HuggingFace BPE tokeniser
-- One or more `*.safetensors` files -- model weights (multi-shard supported), or
-- Exactly one `*.gguf` file -- model weights in GGUF format
+- Weights in exactly one of these formats:
+  - One or more `*.safetensors` files (multi-shard supported)
+  - Exactly one `*.gguf` file
 
 ### Load Options
 

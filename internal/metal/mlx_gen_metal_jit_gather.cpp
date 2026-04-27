@@ -1,4 +1,4 @@
-#if __has_include("../../lib/generated/metal/jit/gather.cpp")
+#if defined(__has_include) && __has_include("../../lib/generated/metal/jit/gather.cpp")
 #include "../../lib/generated/metal/jit/gather.cpp"
 #else
 #error "Missing forwarded source: ../../lib/generated/metal/jit/gather.cpp. Initialise submodules with git submodule update --init --recursive or fix the forwarding include path."
