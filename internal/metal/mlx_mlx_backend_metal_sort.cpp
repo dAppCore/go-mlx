@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/sort.cpp
+#include "../../lib/mlx/mlx/backend/metal/sort.cpp"

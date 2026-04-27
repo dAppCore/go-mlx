@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/distributed.cpp
+#include "../../lib/mlx-c/mlx/c/distributed.cpp"

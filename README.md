@@ -17,7 +17,7 @@ import (
     "context"
     "fmt"
 
-    "dappco.re/go/core/inference"
+    "dappco.re/go/inference"
     _ "dappco.re/go/mlx"  // registers "metal" backend via init()
 )
 
@@ -136,6 +136,7 @@ _ = frameMetrics
 ## Build & Test
 
 ```bash
+git submodule update --init --recursive
 go generate ./...        # builds mlx-c C library (required first time)
 go test ./...
 go build ./...

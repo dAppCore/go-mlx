@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/transforms.cpp
+#include "../../lib/mlx-c/mlx/c/transforms.cpp"

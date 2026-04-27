@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/ternary_ops.cpp
+#include "../../lib/generated/metal/jit/ternary_ops.cpp"

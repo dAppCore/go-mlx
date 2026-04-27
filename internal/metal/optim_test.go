@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -99,6 +101,23 @@ func TestOptim_AdamW_WeightDecay_Good(t *testing.T) {
 		t.Errorf("x = %f, decayed too much", final)
 	}
 	t.Logf("after 10 steps with weight_decay=0.5: x = %f (started at 10.0)", final)
+}
+
+func TestOptim_AdamW_ConfigExplicitZero_Good(t *testing.T) {
+	opt := NewAdamW(&AdamWConfig{
+		LearningRate:   1e-4,
+		WeightDecay:    0,
+		WeightDecaySet: true,
+	})
+	if opt.LR != 1e-4 {
+		t.Fatalf("LR = %f, want 1e-4", opt.LR)
+	}
+	if opt.WeightDecay != 0 {
+		t.Fatalf("WeightDecay = %f, want explicit zero", opt.WeightDecay)
+	}
+	if opt.Beta1 != 0.9 || opt.Beta2 != 0.999 || opt.Eps != 1e-8 {
+		t.Fatalf("defaults not preserved: beta1=%f beta2=%f eps=%f", opt.Beta1, opt.Beta2, opt.Eps)
+	}
 }
 
 func TestOptim_AdamW_Reset_Good(t *testing.T) {

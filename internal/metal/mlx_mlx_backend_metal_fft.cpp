@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/fft.cpp
+#include "../../lib/mlx/mlx/backend/metal/fft.cpp"

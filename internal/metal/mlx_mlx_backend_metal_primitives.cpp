@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/primitives.cpp
+#include "../../lib/mlx/mlx/backend/metal/primitives.cpp"

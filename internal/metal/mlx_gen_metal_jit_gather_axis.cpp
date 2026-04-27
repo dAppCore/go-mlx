@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/gather_axis.cpp
+#include "../../lib/generated/metal/jit/gather_axis.cpp"

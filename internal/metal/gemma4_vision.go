@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -470,7 +472,7 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 
 	for i := int32(0); i < cfg.NumHiddenLayers; i++ {
 		prefix := core.Sprintf("encoder.layers.%d", i)
-		vision.Encoder.Layers[i] = &Gemma4VisionEncoderLayer{
+		layer := &Gemma4VisionEncoderLayer{
 			InputNorm: gemma4VisionNorm(weights, cfg.HiddenSize,
 				prefix+".input_layernorm.weight",
 				prefix+".layer_norm1.weight",
@@ -520,9 +522,77 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 				DownProj: gemma4VisionLinear(weights, prefix+".mlp.down_proj", prefix+".mlp.fc2"),
 			},
 		}
+		if err := validateGemma4VisionEncoderLayer(layer, i); err != nil {
+			return nil, err
+		}
+		vision.Encoder.Layers[i] = layer
 	}
 
 	return vision, nil
+}
+
+func validateGemma4VisionLinear(linear *Linear, name string) error {
+	if linear == nil || linear.Weight == nil {
+		return core.E("gemma4.vision", "missing "+name, nil)
+	}
+	return nil
+}
+
+func validateGemma4VisionNorm(norm *RMSNormModule, name string) error {
+	if norm == nil || norm.Weight == nil {
+		return core.E("gemma4.vision", "missing "+name, nil)
+	}
+	return nil
+}
+
+func validateGemma4VisionEncoderLayer(layer *Gemma4VisionEncoderLayer, idx int32) error {
+	prefix := core.Sprintf("encoder layer %d ", idx)
+	if err := validateGemma4VisionNorm(layer.InputNorm, prefix+"input norm"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionNorm(layer.PostAttnNorm, prefix+"post-attention norm"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionNorm(layer.PreFFNorm, prefix+"pre-feedforward norm"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionNorm(layer.PostFFNorm, prefix+"post-feedforward norm"); err != nil {
+		return err
+	}
+	if layer.Attention == nil {
+		return core.E("gemma4.vision", "missing "+prefix+"attention", nil)
+	}
+	if err := validateGemma4VisionLinear(layer.Attention.QProj, prefix+"q projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionLinear(layer.Attention.KProj, prefix+"k projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionLinear(layer.Attention.VProj, prefix+"v projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionLinear(layer.Attention.OProj, prefix+"output projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionNorm(layer.Attention.QNorm, prefix+"q norm"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionNorm(layer.Attention.KNorm, prefix+"k norm"); err != nil {
+		return err
+	}
+	if layer.MLP == nil {
+		return core.E("gemma4.vision", "missing "+prefix+"mlp", nil)
+	}
+	if err := validateGemma4VisionLinear(layer.MLP.GateProj, prefix+"gate projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionLinear(layer.MLP.UpProj, prefix+"up projection"); err != nil {
+		return err
+	}
+	if err := validateGemma4VisionLinear(layer.MLP.DownProj, prefix+"down projection"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func buildGemma4MultiModalProjector(textCfg *Gemma4TextConfig, visionCfg *Gemma4VisionConfig, weights map[string]*Array) *Gemma4MultiModalProjector {
@@ -560,11 +630,9 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 	}
 
 	tokenIDs := tokens.DataInt32()
-	llmTokenIDs := append([]int32(nil), tokenIDs...)
 	imageTokenCount := 0
-	for i, id := range llmTokenIDs {
+	for _, id := range tokenIDs {
 		if id == m.Cfg.ImageTokenID {
-			llmTokenIDs[i] = m.Cfg.PadTokenID
 			imageTokenCount++
 		}
 	}
@@ -572,10 +640,7 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 		return m.Forward(tokens, caches)
 	}
 
-	llmTokens := FromValues(llmTokenIDs, int(shape[0]), int(shape[1]))
-	defer Free(llmTokens)
-
-	h := m.EmbedTokens.Forward(llmTokens)
+	h := m.EmbedTokens.Forward(tokens)
 	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
 	scaledH := MulScalar(h, embeddingScale)
 	Free(h)
@@ -584,12 +649,12 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 	imageFeatures := m.encodeGemma4Images(imagePixels)
 	if imageFeatures == nil || !imageFeatures.Valid() {
 		Free(h)
-		return m.Forward(llmTokens, caches)
+		return m.Forward(tokens, caches)
 	}
 	defer Free(imageFeatures)
 
 	h = m.injectGemma4ImageFeatures(h, tokenIDs, shape, imageFeatures)
-	return m.forwardGemma4EmbeddingsMasked(llmTokens, h, nil, caches)
+	return m.forwardGemma4EmbeddingsMasked(tokens, h, nil, caches)
 }
 
 func (m *Gemma4Model) encodeGemma4Images(imagePixels []*Array) *Array {

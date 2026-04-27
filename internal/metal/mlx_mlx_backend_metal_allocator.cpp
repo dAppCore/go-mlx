@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/allocator.cpp
+#include "../../lib/mlx/mlx/backend/metal/allocator.cpp"

@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64 && !nomlx
 
 package mlx
@@ -232,37 +234,51 @@ func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error)
 	return builder.String(), nil
 }
 
-// GenerateStream streams tokens through a channel.
-func (m *Model) GenerateStream(prompt string, opts ...GenerateOption) <-chan Token {
+// GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
+func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...GenerateOption) <-chan Token {
 	out := make(chan Token)
 	go func() {
 		defer close(out)
 		if m == nil || m.model == nil {
 			return
 		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
-		for tok := range m.model.Generate(context.Background(), prompt, cfg) {
-			out <- Token{ID: tok.ID, Value: tok.Text, Text: tok.Text}
+		for tok := range m.model.Generate(ctx, prompt, cfg) {
+			select {
+			case out <- Token{ID: tok.ID, Value: tok.Text, Text: tok.Text}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out
 }
 
-// ChatStream streams chat tokens through a channel.
-func (m *Model) ChatStream(messages []Message, opts ...GenerateOption) <-chan Token {
+// ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
+func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...GenerateOption) <-chan Token {
 	out := make(chan Token)
 	go func() {
 		defer close(out)
 		if m == nil || m.model == nil {
 			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
 		}
 		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 		}
-		for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
-			out <- toRootToken(tok)
+		for tok := range m.model.Chat(ctx, metalMessages, cfg) {
+			select {
+			case out <- toRootToken(tok):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 	return out

@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/softmax.cpp
+#include "../../lib/mlx/mlx/backend/cpu/softmax.cpp"

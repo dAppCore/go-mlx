@@ -11,7 +11,7 @@ go-mlx loads transformer models from either HuggingFace safetensors shards or GG
 
 ```go
 import (
-    "dappco.re/go/core/inference"
+    "dappco.re/go/inference"
     _ "dappco.re/go/mlx"
 )
 

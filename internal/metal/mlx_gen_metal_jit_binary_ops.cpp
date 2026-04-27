@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/binary_ops.cpp
+#include "../../lib/generated/metal/jit/binary_ops.cpp"

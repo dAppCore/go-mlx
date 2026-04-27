@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/gather.cpp
+#include "../../lib/generated/metal/jit/gather.cpp"

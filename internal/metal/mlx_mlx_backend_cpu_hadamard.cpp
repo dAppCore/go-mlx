@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/hadamard.cpp
+#include "../../lib/mlx/mlx/backend/cpu/hadamard.cpp"

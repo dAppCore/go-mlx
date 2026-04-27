@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/einsum.cpp
+#include "../../lib/mlx/mlx/einsum.cpp"

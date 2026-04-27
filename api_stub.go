@@ -1,8 +1,13 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build !(darwin && arm64) || nomlx
 
 package mlx
 
-import "errors"
+import (
+	"context"
+	"errors"
+)
 
 // Model is a stub on unsupported builds.
 type Model struct{}
@@ -23,14 +28,14 @@ func (m *Model) Chat(_ []Message, _ ...GenerateOption) (string, error) {
 }
 
 // GenerateStream closes immediately on unsupported builds.
-func (m *Model) GenerateStream(_ string, _ ...GenerateOption) <-chan Token {
+func (m *Model) GenerateStream(_ context.Context, _ string, _ ...GenerateOption) <-chan Token {
 	ch := make(chan Token)
 	close(ch)
 	return ch
 }
 
 // ChatStream closes immediately on unsupported builds.
-func (m *Model) ChatStream(_ []Message, _ ...GenerateOption) <-chan Token {
+func (m *Model) ChatStream(_ context.Context, _ []Message, _ ...GenerateOption) <-chan Token {
 	ch := make(chan Token)
 	close(ch)
 	return ch

@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/distributed.cpp
+#include "../../lib/mlx/mlx/backend/metal/distributed.cpp"

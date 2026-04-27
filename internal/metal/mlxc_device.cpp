@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/device.cpp
+#include "../../lib/mlx-c/mlx/c/device.cpp"

@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/device.cpp
+#include "../../lib/mlx/mlx/backend/metal/device.cpp"

@@ -16,6 +16,8 @@ import (
 	"strings"
 )
 
+const maxGGUFCollectionEntries uint64 = 1 << 20
+
 const (
 	ggufValueTypeUint8   = 0
 	ggufValueTypeInt8    = 1
@@ -295,9 +297,15 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	if err := binary.Read(file, binary.LittleEndian, &metadataCount); err != nil {
 		return nil, nil, fmt.Errorf("mlx: read gguf metadata count: %w", err)
 	}
+	if tensorCount > maxGGUFCollectionEntries {
+		return nil, nil, fmt.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
+	}
+	if metadataCount > maxGGUFCollectionEntries {
+		return nil, nil, fmt.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
+	}
 
-	metadata := make(map[string]any, metadataCount)
-	for range metadataCount {
+	metadata := make(map[string]any, int(metadataCount))
+	for i := uint64(0); i < metadataCount; i++ {
 		key, err := readGGUFString(file)
 		if err != nil {
 			return nil, nil, fmt.Errorf("mlx: read gguf metadata key: %w", err)
@@ -313,8 +321,8 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		metadata[key] = value
 	}
 
-	tensors := make([]ggufTensorInfo, 0, tensorCount)
-	for range tensorCount {
+	tensors := make([]ggufTensorInfo, 0, int(tensorCount))
+	for i := uint64(0); i < tensorCount; i++ {
 		name, err := readGGUFString(file)
 		if err != nil {
 			return nil, nil, fmt.Errorf("mlx: read gguf tensor name: %w", err)
@@ -388,8 +396,11 @@ func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
 		if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
 			return nil, err
 		}
-		values := make([]any, 0, length)
-		for range length {
+		if length > maxGGUFCollectionEntries {
+			return nil, fmt.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
+		}
+		values := make([]any, 0, int(length))
+		for i := uint64(0); i < length; i++ {
 			value, err := readGGUFValue(reader, elementType)
 			if err != nil {
 				return nil, err

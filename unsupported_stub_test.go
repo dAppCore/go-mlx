@@ -1,8 +1,11 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build !(darwin && arm64) || nomlx
 
 package mlx
 
 import (
+	"context"
 	"testing"
 
 	"dappco.re/go/inference"
@@ -18,9 +21,9 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	model := &Model{}
 	_, _ = model.Generate("hello", WithMaxTokens(8), WithTemperature(0.7), WithTopK(10), WithTopP(0.9), WithMinP(0.05))
 	_, _ = model.Chat([]Message{{Role: "user", Content: "hi"}}, WithMaxTokens(8))
-	for range model.GenerateStream("hello") {
+	for range model.GenerateStream(context.Background(), "hello") {
 	}
-	for range model.ChatStream([]Message{{Role: "user", Content: "hi"}}) {
+	for range model.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}) {
 	}
 	_, _ = model.Classify([]string{"hello"}, WithLogits())
 	_, _ = model.BatchGenerate([]string{"hello"})

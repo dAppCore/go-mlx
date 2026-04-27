@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -39,16 +41,23 @@ type MetalKernel struct {
 // NewMetalKernel creates a custom Metal kernel from MSL source code.
 //
 // Parameters:
+//
 //   - name: unique identifier for the kernel (used for caching)
+//
 //   - inputNames: names for input arrays referenced in the source
+//
 //   - outputNames: names for output arrays referenced in the source
+//
 //   - source: Metal Shading Language kernel body
+//
 //   - header: additional MSL header code (pass "" for none)
+//
 //   - ensureRowContiguous: if true, inputs are made row-contiguous before dispatch
+//
 //   - atomicOutputs: if true, output buffers support atomic operations
 //
-//	kernel := metal.NewMetalKernel("myadd", []string{"a", "b"}, []string{"out"},
-//	    "uint i = thread_position_in_grid.x; out[i] = a[i] + b[i];", "", true, false)
+//     kernel := metal.NewMetalKernel("myadd", []string{"a", "b"}, []string{"out"},
+//     "uint i = thread_position_in_grid.x; out[i] = a[i] + b[i];", "", true, false)
 func NewMetalKernel(name string, inputNames, outputNames []string, source, header string, ensureRowContiguous, atomicOutputs bool) *MetalKernel {
 	Init()
 
@@ -113,6 +122,18 @@ func (k *MetalKernel) Free() {
 //	if err != nil { return err }
 //	output := results[0]
 func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Array, error) {
+	if k == nil || k.ctx.ctx == nil {
+		return nil, core.E("mlx.MetalKernel.Apply", "kernel handle is nil", nil)
+	}
+	if config == nil || config.ctx.ctx == nil {
+		return nil, core.E("mlx.MetalKernel.Apply", "kernel config handle is nil", nil)
+	}
+	for i, a := range inputs {
+		if a == nil || !a.Valid() {
+			return nil, core.E("mlx.MetalKernel.Apply", core.Sprintf("input %d handle is nil", i), nil)
+		}
+	}
+
 	inputVec := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(inputVec)
 	for _, a := range inputs {
@@ -237,7 +258,11 @@ func (c *MetalKernelConfig) AddOutputArg(shape []int32, dtype DType) {
 	for i, s := range shape {
 		cShape[i] = C.int(s)
 	}
-	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, &cShape[0], C.size_t(len(cShape)), C.mlx_dtype(dtype))
+	var shapePtr *C.int
+	if len(cShape) > 0 {
+		shapePtr = &cShape[0]
+	}
+	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, shapePtr, C.size_t(len(cShape)), C.mlx_dtype(dtype))
 }
 
 // SetInitValue sets the initial value for output buffers before kernel dispatch.

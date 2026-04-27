@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/scan.cpp
+#include "../../lib/mlx/mlx/backend/cpu/scan.cpp"

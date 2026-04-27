@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -15,8 +17,14 @@ extern void goKwargsDestructor(void *payload);
 
 // Shim converts between vector_array and single array for the unary callback.
 static int goUnaryShim(mlx_vector_array *res, const mlx_vector_array inputs, void *payload) {
+    if (mlx_vector_array_size(inputs) == 0) {
+        return 1;
+    }
     mlx_array input = mlx_array_new();
-    mlx_vector_array_get(&input, inputs, 0);
+    if (mlx_vector_array_get(&input, inputs, 0) != 0) {
+        mlx_array_free(input);
+        return 1;
+    }
     mlx_array output = mlx_array_new();
     int rc = goUnaryFunc(&output, input, payload);
     mlx_array_free(input);
@@ -43,6 +51,7 @@ import "C"
 
 import (
 	"runtime"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -85,7 +94,14 @@ type KwargsFunc func(args []*Array, kwargs map[string]*Array) []*Array
 // ---------------------------------------------------------------------------
 
 //export goUnaryFunc
-func goUnaryFunc(res *C.mlx_array, input C.mlx_array, payload unsafe.Pointer) C.int {
+func goUnaryFunc(res *C.mlx_array, input C.mlx_array, payload unsafe.Pointer) (ret C.int) {
+	defer func() {
+		if r := recover(); r != nil {
+			core.Error("mlx: recovered panic in unary callback", "panic", r, "stack", string(debug.Stack()))
+			ret = 1
+		}
+	}()
+
 	id := uintptr(payload)
 	fnI, ok := unaryFuncs.Load(id)
 	if !ok {
@@ -111,7 +127,14 @@ func goUnaryDestructor(payload unsafe.Pointer) {
 }
 
 //export goKwargsFunc
-func goKwargsFunc(res *C.mlx_vector_array, args C.mlx_vector_array, kwargs C.mlx_map_string_to_array, payload unsafe.Pointer) C.int {
+func goKwargsFunc(res *C.mlx_vector_array, args C.mlx_vector_array, kwargs C.mlx_map_string_to_array, payload unsafe.Pointer) (ret C.int) {
+	defer func() {
+		if r := recover(); r != nil {
+			core.Error("mlx: recovered panic in kwargs callback", "panic", r, "stack", string(debug.Stack()))
+			ret = 1
+		}
+	}()
+
 	id := uintptr(payload)
 	fnI, ok := kwargsFuncs.Load(id)
 	if !ok {

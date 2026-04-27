@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -400,9 +402,7 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
 	lossMask := batchLossMask(lengths, maxLen)
 	attnMask := buildBatchMask(int32(len(lengths)), int32(maxLen), lengths)
-	caches := adapter.Model.NewCache()
 	defer Free(inputs, targetIDs, lossMask, attnMask)
-	defer freeCaches(caches)
 
 	argnums := make([]int, len(params))
 	for i := range params {
@@ -411,6 +411,8 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 
 	lossFn := func(current []*Array) []*Array {
 		adapter.SetAllParams(current)
+		caches := adapter.Model.NewCache()
+		defer freeCaches(caches)
 		logits := adapter.Model.ForwardMasked(inputs, attnMask, caches)
 		loss := MaskedCrossEntropyLoss(logits, targetIDs, lossMask)
 		Free(logits)
@@ -782,6 +784,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 
 	scale := config.Alpha / float32(config.Rank)
 	injected := 0
+	kept := make(map[*Array]struct{})
 
 	for key, pair := range pairs {
 		if pair.matrixA == nil || pair.matrixB == nil {
@@ -806,7 +809,24 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 			Alpha: config.Alpha,
 		}
 		linear.LoRA = lora
+		kept[pair.matrixA] = struct{}{}
+		kept[pair.matrixB] = struct{}{}
 		injected++
+	}
+
+	freed := make(map[*Array]struct{})
+	for _, arr := range weights {
+		if arr == nil || !arr.Valid() {
+			continue
+		}
+		if _, ok := kept[arr]; ok {
+			continue
+		}
+		if _, ok := freed[arr]; ok {
+			continue
+		}
+		Free(arr)
+		freed[arr] = struct{}{}
 	}
 
 	if injected == 0 {

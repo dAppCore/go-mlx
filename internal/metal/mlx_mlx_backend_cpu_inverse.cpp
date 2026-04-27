@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/inverse.cpp
+#include "../../lib/mlx/mlx/backend/cpu/inverse.cpp"

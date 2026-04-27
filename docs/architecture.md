@@ -230,7 +230,7 @@ Consumer pattern:
 
 ```go
 import (
-    "dappco.re/go/core/inference"
+    "dappco.re/go/inference"
     _ "dappco.re/go/mlx"
 )
 

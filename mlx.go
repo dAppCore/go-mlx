@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 // Package mlx provides Apple Metal GPU inference via mlx-c bindings.
 //
 // This package implements the [inference.Backend] interface from

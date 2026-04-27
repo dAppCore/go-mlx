@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/distributed/ring/no_ring.cpp
+#include "../../lib/mlx/mlx/distributed/ring/no_ring.cpp"

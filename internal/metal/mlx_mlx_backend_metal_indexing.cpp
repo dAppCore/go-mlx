@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/indexing.cpp
+#include "../../lib/mlx/mlx/backend/metal/indexing.cpp"

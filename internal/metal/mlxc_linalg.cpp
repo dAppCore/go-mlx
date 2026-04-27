@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/linalg.cpp
+#include "../../lib/mlx-c/mlx/c/linalg.cpp"

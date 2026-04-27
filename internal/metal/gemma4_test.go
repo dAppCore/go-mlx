@@ -1,9 +1,12 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"dappco.re/go/core"
@@ -101,6 +104,24 @@ func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
 	}
 	if cfg.NumKVSharedLayers != 0 {
 		t.Fatalf("NumKVSharedLayers = %d, want 0", cfg.NumKVSharedLayers)
+	}
+}
+
+func TestGemma4_ParseConfig_NegativeDimensions_Bad(t *testing.T) {
+	_, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": -1,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256
+	}`))
+	if err == nil {
+		t.Fatal("parseGemma4Config succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "negative num_hidden_layers") {
+		t.Fatalf("parseGemma4Config error = %v, want negative num_hidden_layers", err)
 	}
 }
 

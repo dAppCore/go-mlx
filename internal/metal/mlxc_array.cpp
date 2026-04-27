@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/array.cpp
+#include "../../lib/mlx-c/mlx/c/array.cpp"

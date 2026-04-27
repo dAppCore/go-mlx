@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/error.cpp
+#include "../../lib/mlx-c/mlx/c/error.cpp"

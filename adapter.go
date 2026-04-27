@@ -109,12 +109,21 @@ func (adapter *InferenceAdapter) GenerateStream(ctx context.Context, prompt stri
 	if cb == nil {
 		return errors.New("mlx: token callback is nil")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	var callbackErr error
-	for token := range adapter.model.Generate(ctx, prompt, genOptsToInference(opts)...) {
+	tokens := adapter.model.Generate(ctx, prompt, genOptsToInference(opts)...)
+	for token := range tokens {
+		if callbackErr != nil {
+			continue
+		}
 		if err := cb(token.Text); err != nil {
 			callbackErr = err
-			break
+			cancel()
 		}
 	}
 	if callbackErr != nil {
@@ -152,12 +161,21 @@ func (adapter *InferenceAdapter) ChatStream(ctx context.Context, messages []Mess
 	if cb == nil {
 		return errors.New("mlx: token callback is nil")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	var callbackErr error
-	for token := range adapter.model.Chat(ctx, messages, genOptsToInference(opts)...) {
+	tokens := adapter.model.Chat(ctx, messages, genOptsToInference(opts)...)
+	for token := range tokens {
+		if callbackErr != nil {
+			continue
+		}
 		if err := cb(token.Text); err != nil {
 			callbackErr = err
-			break
+			cancel()
 		}
 	}
 	if callbackErr != nil {

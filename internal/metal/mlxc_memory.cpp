@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/memory.cpp
+#include "../../lib/mlx-c/mlx/c/memory.cpp"

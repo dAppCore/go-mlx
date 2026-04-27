@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -31,6 +33,7 @@ static void wrap_read_at_offset(void* d, char* data, size_t n, size_t off) { goI
 static void wrap_write(void* d, const char* data, size_t n) { goIOWrite(d, (char*)data, n); }
 static const char* wrap_label(void* d) { return (const char*)goIOLabel(d); }
 static void wrap_free(void* d) { goIOFree(d); }
+static char* unknown_go_stream_label(void) { return "<unknown go stream>"; }
 
 // Build the vtable once in C using the wrapper functions.
 static mlx_io_vtable go_io_vtable = {
@@ -70,11 +73,12 @@ import (
 // ioStream is the Go-side descriptor passed through C void* callbacks.
 // It wraps a Go io.ReadWriteSeeker to satisfy the mlx_io_vtable contract.
 type ioStream struct {
-	rws   io.ReadWriteSeeker
-	label string
-	size  int64 // total size, required for SEEK_END
-	good  bool
-	open  bool
+	rws    io.ReadWriteSeeker
+	label  string
+	cLabel *C.char
+	size   int64 // total size, required for SEEK_END
+	good   bool
+	open   bool
 }
 
 // ioRegistry maps C void* descriptor pointers back to Go ioStream values.
@@ -212,15 +216,21 @@ func goIOWrite(desc unsafe.Pointer, data *C.char, n C.size_t) {
 func goIOLabel(desc unsafe.Pointer) *C.char {
 	s := lookupIOStream(desc)
 	if s == nil {
-		return C.CString("<unknown go stream>")
+		return C.unknown_go_stream_label()
 	}
-	// MLX-C does not free this; it only reads it transiently.
-	// We return a C string that lives until the stream is freed.
-	return C.CString(s.label)
+	if s.cLabel == nil {
+		s.cLabel = C.CString(s.label)
+	}
+	return s.cLabel
 }
 
 //export goIOFree
 func goIOFree(desc unsafe.Pointer) {
+	s := lookupIOStream(desc)
+	if s != nil && s.cLabel != nil {
+		C.free(unsafe.Pointer(s.cLabel))
+		s.cLabel = nil
+	}
 	unregisterIOStream(desc)
 }
 
@@ -269,6 +279,7 @@ func LoadSafetensorsFromReader(rws io.ReadWriteSeeker, size int64, label string)
 			var key *C.char
 			value := C.mlx_array_new()
 			if C.mlx_map_string_to_array_iterator_next(&key, &value, it) != 0 {
+				C.mlx_array_free(value)
 				break
 			}
 
@@ -276,6 +287,7 @@ func LoadSafetensorsFromReader(rws io.ReadWriteSeeker, size int64, label string)
 			arr := &Array{ctx: value, name: name}
 			runtime.SetFinalizer(arr, finalizeArray)
 			if !yield(name, arr) {
+				Free(arr)
 				break
 			}
 		}

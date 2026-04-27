@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/scatter_axis.cpp
+#include "../../lib/generated/metal/jit/scatter_axis.cpp"

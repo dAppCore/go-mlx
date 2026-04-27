@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/random.cpp
+#include "../../lib/mlx-c/mlx/c/random.cpp"

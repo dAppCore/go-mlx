@@ -1,3 +1,5 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
 //go:build darwin && arm64 && !nomlx
 
 package mlx
@@ -239,7 +241,7 @@ func TestModelGenerateStream_Good(t *testing.T) {
 		},
 	}
 
-	ch := model.GenerateStream("ignored", WithMinP(0.05))
+	ch := model.GenerateStream(context.Background(), "ignored", WithMinP(0.05))
 	var got []Token
 	timeout := time.After(2 * time.Second)
 	for {
@@ -268,6 +270,7 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 	model := &Model{model: native}
 
 	for range model.GenerateStream(
+		context.Background(),
 		"ignored",
 		WithMaxTokens(9),
 		WithTemperature(0.3),
@@ -329,7 +332,7 @@ func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	for range model.ChatStream(messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)) {
+	for range model.ChatStream(context.Background(), messages, WithMaxTokens(7), WithTopP(0.85), WithRepeatPenalty(1.05)) {
 	}
 
 	if !reflect.DeepEqual(native.lastChatMessages, []metal.ChatMessage{

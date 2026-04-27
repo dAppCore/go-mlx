@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/compile.cpp
+#include "../../lib/mlx/mlx/compile.cpp"

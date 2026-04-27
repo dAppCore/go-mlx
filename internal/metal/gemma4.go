@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -572,6 +574,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	if !cfg.TieWordEmbeddings && wrapper.TieWordEmbeddings == nil && wrapper.TextConfig.TieWordEmbeddings == nil {
 		cfg.TieWordEmbeddings = true
 	}
+	if field := gemma4NegativeConfigField(&cfg); field != "" {
+		return nil, core.E("gemma4.parseConfig", "negative "+field+" is invalid", nil)
+	}
 	mergeGemma4RopeParameters(&cfg)
 	if len(cfg.LayerTypesInput) > 0 {
 		cfg.LayerTypes = append([]string(nil), cfg.LayerTypesInput...)
@@ -591,6 +596,50 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	}
 	cfg.LayerTypes = cfg.LayerTypes[:cfg.NumHiddenLayers]
 	return &cfg, nil
+}
+
+func gemma4NegativeConfigField(cfg *Gemma4TextConfig) string {
+	checks := []struct {
+		name  string
+		value int32
+	}{
+		{"pad_token_id", cfg.PadTokenID},
+		{"image_token_id", cfg.ImageTokenID},
+		{"hidden_size", cfg.HiddenSize},
+		{"num_hidden_layers", cfg.NumHiddenLayers},
+		{"intermediate_size", cfg.IntermediateSize},
+		{"num_attention_heads", cfg.NumAttentionHeads},
+		{"num_key_value_heads", cfg.NumKeyValueHeads},
+		{"head_dim", cfg.HeadDim},
+		{"global_head_dim", cfg.GlobalHeadDim},
+		{"vocab_size", cfg.VocabSize},
+		{"vocab_size_per_layer_input", cfg.VocabSizePerLayerInput},
+		{"sliding_window", cfg.SlidingWindow},
+		{"sliding_window_pattern", cfg.SlidingWindowPattern},
+		{"max_position_embeddings", cfg.MaxPositionEmbeddings},
+		{"num_kv_shared_layers", cfg.NumKVSharedLayers},
+		{"hidden_size_per_layer_input", cfg.HiddenSizePerLayerInput},
+	}
+	for _, check := range checks {
+		if check.value < 0 {
+			return check.name
+		}
+	}
+	ptrChecks := []struct {
+		name  string
+		value *int32
+	}{
+		{"num_global_key_value_heads", cfg.NumGlobalKeyValueHeads},
+		{"num_experts", cfg.NumExperts},
+		{"top_k_experts", cfg.TopKExperts},
+		{"moe_intermediate_size", cfg.MoEIntermediateSize},
+	}
+	for _, check := range ptrChecks {
+		if check.value != nil && *check.value < 0 {
+			return check.name
+		}
+	}
+	return ""
 }
 
 func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *QuantizationConfig {
@@ -1298,6 +1347,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		if loadSucceeded {
 			return
 		}
+		retained := gemma4RetainedWeights(m)
+		gemma4FreeUnusedWeights(weights, retained)
+		gemma4FreeUnusedWeights(visionWeights, retained)
 		closeGemma4(m)
 		ClearCache()
 	}()

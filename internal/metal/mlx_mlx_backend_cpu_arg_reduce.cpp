@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/arg_reduce.cpp
+#include "../../lib/mlx/mlx/backend/cpu/arg_reduce.cpp"

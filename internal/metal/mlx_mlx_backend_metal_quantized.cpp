@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/quantized.cpp
+#include "../../lib/mlx/mlx/backend/metal/quantized.cpp"

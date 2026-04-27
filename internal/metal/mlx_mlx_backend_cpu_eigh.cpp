@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/eigh.cpp
+#include "../../lib/mlx/mlx/backend/cpu/eigh.cpp"

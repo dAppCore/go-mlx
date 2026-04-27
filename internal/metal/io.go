@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -51,6 +53,7 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 			var key *C.char
 			value := C.mlx_array_new()
 			if C.mlx_map_string_to_array_iterator_next(&key, &value, it) != 0 {
+				C.mlx_array_free(value)
 				break
 			}
 
@@ -58,6 +61,7 @@ func LoadSafetensors(path string) iter.Seq2[string, *Array] {
 			arr := &Array{ctx: value, name: name}
 			runtime.SetFinalizer(arr, finalizeArray)
 			if !yield(name, arr) {
+				Free(arr)
 				break
 			}
 		}

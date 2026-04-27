@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/reduce_utils.cpp
+#include "../../lib/generated/metal/jit/reduce_utils.cpp"

@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/closure.cpp
+#include "../../lib/mlx-c/mlx/c/closure.cpp"

@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/fast.cpp
+#include "../../lib/mlx/mlx/fast.cpp"

@@ -1,10 +1,12 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 // Package metal provides Go bindings for Apple's MLX framework via mlx-c.
 package metal
 
 /*
-#cgo CXXFLAGS: -std=gnu++17 -O2 -DNDEBUG -include ${SRCDIR}/mlx_build_config.h
+#cgo CXXFLAGS: -std=gnu++17 -O2 -DNDEBUG -Wno-deprecated-declarations -include ${SRCDIR}/mlx_build_config.h
 #cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_USE_ACCELERATE
 #cgo CFLAGS: -mmacosx-version-min=14.0
 #cgo darwin CFLAGS: -x objective-c
@@ -15,7 +17,6 @@ package metal
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/json/single_include/nlohmann
 #cgo CPPFLAGS: -I${SRCDIR}/../../dist/include/metal_cpp
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
-#cgo darwin LDFLAGS: -lc++
 
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -60,7 +61,7 @@ import "C"
 
 import (
 	"os"
-	"runtime"
+	"path/filepath"
 	"sync"
 	"unsafe"
 
@@ -68,6 +69,31 @@ import (
 )
 
 var initOnce sync.Once
+
+func defaultMetallibPath() string {
+	const metallib = "mlx.metallib"
+	var candidates []string
+	if wd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(wd, "dist", "lib", metallib),
+			filepath.Join(wd, "..", "..", "dist", "lib", metallib),
+		)
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, metallib),
+			filepath.Join(exeDir, "dist", "lib", metallib),
+			filepath.Join(exeDir, "..", "lib", metallib),
+		)
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return metallib
+}
 
 func metalAvailableNoInit() bool {
 	var available C.bool
@@ -106,14 +132,12 @@ func setDefaultCPUDeviceNoInit() {
 func Init() {
 	initOnce.Do(func() {
 		// Set the metallib path before any Metal operation triggers device
-		// initialisation. runtime.Caller gives the absolute source file path,
-		// from which we derive the dist/lib/mlx.metallib location.
+		// initialisation. Prefer runtime locations so binaries are not tied to
+		// source file paths.
 		// os.Setenv is required here — core has no SetEnv, and Metal device init
 		// reads this env var before any CGo call. Legitimate hardware boundary.
 		if core.Env("MLX_METALLIB_PATH") == "" {
-			_, thisFile, _, _ := runtime.Caller(0)
-			metallib := core.JoinPath(core.PathDir(thisFile), "..", "..", "dist", "lib", "mlx.metallib")
-			os.Setenv("MLX_METALLIB_PATH", metallib)
+			os.Setenv("MLX_METALLIB_PATH", defaultMetallibPath())
 		}
 
 		C.set_error_handler()

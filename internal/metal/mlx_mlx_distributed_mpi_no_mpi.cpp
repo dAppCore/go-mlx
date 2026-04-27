@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/distributed/mpi/no_mpi.cpp
+#include "../../lib/mlx/mlx/distributed/mpi/no_mpi.cpp"

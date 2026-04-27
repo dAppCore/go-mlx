@@ -1,9 +1,9 @@
 dappco.re/go/core v0.8.0-alpha.1 h1:gj7+Scv+L63Z7wMxbJYHhaRFkHJo2u4MMPuUSv/Dhtk=
 dappco.re/go/core v0.8.0-alpha.1/go.mod h1:f2/tBZ3+3IqDrg2F5F598llv0nmb/4gJVCFzM5geE4A=
-dappco.re/go/core/inference v0.3.0 h1:ANFnlVO1LEYDipeDeBgqmb8CHvOTUFhMPyfyHGqO0IY=
-dappco.re/go/core/inference v0.3.0/go.mod h1:wbRY0v6iwOoJCpTvcBFarAM08bMgpPcrF6yv3vccYoA=
-dappco.re/go/core/io v0.4.1 h1:15dm7ldhFIAuZOrBiQG6XVZDpSvCxtZsUXApwTAB3wQ=
-dappco.re/go/core/io v0.4.1/go.mod h1:w71dukyunczLb8frT9JOd5B78PjwWQD3YAXiCt3AcPA=
+github.com/dAppCore/go-inference v0.8.0-alpha.1 h1:feRcT6vRelon8j1tQfg2ZrD7Y3vLjydVeHMbeVlyxJ0=
+github.com/dAppCore/go-inference v0.8.0-alpha.1/go.mod h1:rfNXLcfMilEI3nKpcdrC0PQKyUyaf6bDYseowgRwDP8=
+github.com/dAppCore/go-io v0.8.0-alpha.1 h1:DWmaksBY7FpwoQnRHYDN/yPCGLMR794D8OcNdk0RyB8=
+github.com/dAppCore/go-io v0.8.0-alpha.1/go.mod h1:491Lt0LOTK4/88EGWVWhrACuXAoxPXvXYu/iIwYc9C0=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRIccs7FGNTlIRMkT8wgtp5eCXdBlqhYGL6U=

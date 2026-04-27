@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/metal/matmul.cpp
+#include "../../lib/mlx/mlx/backend/metal/matmul.cpp"

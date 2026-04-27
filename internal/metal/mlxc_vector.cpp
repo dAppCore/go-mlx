@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/vector.cpp
+#include "../../lib/mlx-c/mlx/c/vector.cpp"

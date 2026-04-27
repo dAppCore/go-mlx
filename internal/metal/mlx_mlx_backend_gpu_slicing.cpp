@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/gpu/slicing.cpp
+#include "../../lib/mlx/mlx/backend/gpu/slicing.cpp"

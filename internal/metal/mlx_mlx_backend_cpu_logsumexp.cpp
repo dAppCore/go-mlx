@@ -1,1 +1,1 @@
-../../lib/mlx/mlx/backend/cpu/logsumexp.cpp
+#include "../../lib/mlx/mlx/backend/cpu/logsumexp.cpp"

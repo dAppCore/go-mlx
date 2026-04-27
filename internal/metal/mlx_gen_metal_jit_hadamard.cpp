@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/hadamard.cpp
+#include "../../lib/generated/metal/jit/hadamard.cpp"

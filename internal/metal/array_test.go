@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -548,4 +550,3 @@ func TestArray_ShapeRaw_Scalar_Ugly(t *testing.T) {
 		t.Errorf("ndim = %d, want 0 for scalar", a.NumDims())
 	}
 }
-

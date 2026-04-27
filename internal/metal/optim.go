@@ -1,4 +1,6 @@
-//go:build darwin && arm64 && !nomlx
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
 
 package metal
 
@@ -32,6 +34,12 @@ type AdamWConfig struct {
 	Beta2        float64
 	Eps          float64
 	WeightDecay  float64
+
+	LearningRateSet bool
+	Beta1Set        bool
+	Beta2Set        bool
+	EpsSet          bool
+	WeightDecaySet  bool
 }
 
 // DefaultAdamWConfig returns the standard AdamW hyperparameters.
@@ -83,19 +91,19 @@ func NewAdamW(config any) *AdamW {
 
 func mergeAdamWConfig(defaults AdamWConfig, override AdamWConfig) AdamWConfig {
 	cfg := defaults
-	if override.LearningRate != 0 {
+	if override.LearningRate != 0 || override.LearningRateSet {
 		cfg.LearningRate = override.LearningRate
 	}
-	if override.Beta1 != 0 {
+	if override.Beta1 != 0 || override.Beta1Set {
 		cfg.Beta1 = override.Beta1
 	}
-	if override.Beta2 != 0 {
+	if override.Beta2 != 0 || override.Beta2Set {
 		cfg.Beta2 = override.Beta2
 	}
-	if override.Eps != 0 {
+	if override.Eps != 0 || override.EpsSet {
 		cfg.Eps = override.Eps
 	}
-	if override.WeightDecay != 0 {
+	if override.WeightDecay != 0 || override.WeightDecaySet {
 		cfg.WeightDecay = override.WeightDecay
 	}
 	return cfg

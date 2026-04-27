@@ -1,1 +1,1 @@
-../../lib/mlx-c/mlx/c/ops.cpp
+#include "../../lib/mlx-c/mlx/c/ops.cpp"

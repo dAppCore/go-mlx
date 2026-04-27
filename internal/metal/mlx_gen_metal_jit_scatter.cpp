@@ -1,1 +1,1 @@
-../../lib/generated/metal/jit/scatter.cpp
+#include "../../lib/generated/metal/jit/scatter.cpp"

@@ -31,7 +31,7 @@ brew install cmake
 go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
 ```
-replace dappco.re/go/core/inference => ../go-inference
+replace dappco.re/go/inference => ../go-inference
 ```
 
 After adding modules or changing dependencies: `go work sync`
@@ -47,6 +47,16 @@ Run from the module root:
 ```bash
 go generate ./...
 ```
+
+Fresh checkouts must initialise the source submodules before building:
+
+```bash
+git submodule update --init --recursive
+```
+
+The forwarding translation units in `internal/metal/` include source files from
+`lib/mlx`, `lib/mlx-c`, and `lib/generated`; leaving those submodules empty will
+make the C++ includes fail before the Go package can build.
 
 This executes the `//go:generate` directives in `mlx.go`:
 

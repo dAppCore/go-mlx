@@ -31,6 +31,7 @@ brew install cmake
 From the module root:
 
 ```bash
+git submodule update --init --recursive
 go generate ./...
 ```
 
@@ -41,6 +42,10 @@ cmake -S . -B build -DCMAKE_INSTALL_PREFIX=dist -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 cmake --install build
 ```
+
+The submodule initialisation is required because `internal/metal/` contains
+forwarding translation units that include sources from `lib/mlx`, `lib/mlx-c`,
+and `lib/generated`.
 
 CMake fetches mlx-c v0.4.1 from GitHub and builds it with:
 
