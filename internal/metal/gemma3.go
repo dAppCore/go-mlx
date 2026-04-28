@@ -7,7 +7,7 @@ package metal
 import (
 	"math"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
 )

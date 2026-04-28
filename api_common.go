@@ -6,7 +6,7 @@ import (
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 	coreio "dappco.re/go/io"
 )
 

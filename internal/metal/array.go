@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // Array wraps an mlx_array handle.

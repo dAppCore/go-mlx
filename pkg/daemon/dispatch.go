@@ -52,10 +52,10 @@ func NewRegistry(name, version string) *Registry {
 		handlers: make(map[string]Handler),
 	}
 
-	_ = r.Register("embed", stubHandler("embed"))
-	_ = r.Register("score", stubHandler("score"))
-	_ = r.Register("generate", stubHandler("generate"))
-	_ = r.Register("info", func(context.Context, Request) (Response, error) {
+	r.mustRegister("embed", stubHandler("embed"))
+	r.mustRegister("score", stubHandler("score"))
+	r.mustRegister("generate", stubHandler("generate"))
+	r.mustRegister("info", func(context.Context, Request) (Response, error) {
 		return Response{
 			"name":    r.name,
 			"version": r.version,
@@ -64,6 +64,12 @@ func NewRegistry(name, version string) *Registry {
 	})
 
 	return r
+}
+
+func (r *Registry) mustRegister(action string, handler Handler) {
+	if err := r.Register(action, handler); err != nil {
+		panic(err)
+	}
 }
 
 func DefaultRegistryForDaemon() *Registry {

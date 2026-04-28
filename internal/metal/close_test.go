@@ -25,7 +25,13 @@ func TestClose_FreeLinear_Good(t *testing.T) {
 }
 
 func TestClose_FreeLinear_Nil_Good(t *testing.T) {
-	freeLinear(nil) // should not panic
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("freeLinear(nil) panicked: %v", r)
+		}
+	}()
+	freeLinear(nil)
+	freeLinear(&Linear{})
 }
 
 func TestClose_FreeEmbedding_Good(t *testing.T) {

@@ -58,7 +58,9 @@ func run() error {
 	}
 	defer func() {
 		cancel()
-		_ = cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			// The command is cancelled during cleanup, so Wait commonly returns an error.
+		}
 	}()
 
 	if err := waitForSocket(socketPath); err != nil {

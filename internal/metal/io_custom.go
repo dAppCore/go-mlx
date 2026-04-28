@@ -67,7 +67,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // ioStream is the Go-side descriptor passed through C void* callbacks.

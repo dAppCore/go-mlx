@@ -5,7 +5,7 @@ package tokenizer
 import (
 	"testing"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
 )

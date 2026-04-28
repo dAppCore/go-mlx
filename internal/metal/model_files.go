@@ -8,7 +8,7 @@ import (
 	"maps"
 	"os"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 func resolveModelRoot(modelPath string) string {

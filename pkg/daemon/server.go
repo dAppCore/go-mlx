@@ -82,15 +82,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("listen unix %s: %w", socketPath, err)
 	}
 	if err := os.Chmod(socketPath, socketFileMode); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
+		err = errors.Join(err, ln.Close(), os.Remove(socketPath))
 		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
 	}
 
 	s.SocketPath = socketPath
 	defer func() {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
+		if err := ln.Close(); err != nil {
+			// Listener may already be closed by context cancellation.
+		}
+		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			// Socket cleanup is best-effort after serve has returned.
+		}
 	}()
 
 	return s.serve(ctx, ln)
@@ -104,9 +107,13 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = ln.Close()
+			if err := ln.Close(); err != nil {
+				// Closing an already-closed listener is expected during shutdown races.
+			}
 			conns.Range(func(key, _ any) bool {
-				_ = key.(net.Conn).Close()
+				if err := key.(net.Conn).Close(); err != nil {
+					// Connection cleanup is best-effort once the parent context is done.
+				}
 				return true
 			})
 		case <-done:
@@ -132,7 +139,9 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		go func(conn net.Conn) {
 			defer wg.Done()
 			defer conns.Delete(conn)
-			_ = s.handleConn(ctx, conn)
+			if err := s.handleConn(ctx, conn); err != nil {
+				// Per-connection errors are reported to that client when possible.
+			}
 		}(conn)
 	}
 }
