@@ -14,7 +14,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 // MetalKernel wraps a custom Metal shader kernel for GPU execution.

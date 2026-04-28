@@ -15,7 +15,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 // LoadSafetensors loads tensors from a .safetensors file, returning an iterator

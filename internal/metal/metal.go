@@ -15,7 +15,6 @@ package metal
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/fmt/include
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/gguflib
 #cgo CPPFLAGS: -I${SRCDIR}/../../lib/json/single_include/nlohmann
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
 #cgo CPPFLAGS: -I${SRCDIR}/../../dist/include/metal_cpp
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 
@@ -66,7 +65,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 var initOnce sync.Once

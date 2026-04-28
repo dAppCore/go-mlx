@@ -5,7 +5,7 @@
 package metal
 
 import (
-	"dappco.re/go"
+	"dappco.re/go/core"
 
 	coreio "dappco.re/go/io"
 )

@@ -8,7 +8,7 @@ import (
 	"math"
 	"strings"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 // Gemma4VisionRopeParameters holds the 2-D RoPE settings for the vision tower.

@@ -10,7 +10,7 @@ import (
 	"slices"
 	"time"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 // Token represents a single generated token.

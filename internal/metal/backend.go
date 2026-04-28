@@ -4,7 +4,7 @@
 
 package metal
 
-import "dappco.re/go"
+import "dappco.re/go/core"
 
 var runtimeMetalAvailable = MetalAvailable
 

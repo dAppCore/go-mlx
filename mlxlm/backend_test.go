@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 
 	"dappco.re/go/inference"
 )

@@ -7,7 +7,7 @@ package metal
 import (
 	"testing"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 
 	coreio "dappco.re/go/io"
 )

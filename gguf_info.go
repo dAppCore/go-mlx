@@ -190,7 +190,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 	}
 
 	var models []DiscoveredModel
-	if err := filepath.WalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
+	_ = filepath.WalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || !d.IsDir() {
 			return nil
 		}
@@ -198,9 +198,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 			models = append(models, model)
 		}
 		return nil
-	}); err != nil {
-		return nil
-	}
+	})
 
 	sort.Slice(models, func(i, j int) bool {
 		return models[i].Path < models[j].Path

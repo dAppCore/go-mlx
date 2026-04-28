@@ -8,7 +8,7 @@ import (
 	// Note: AX-6 - iter.Seq is the public Array.Iter contract; core has no iterator alias.
 	"iter"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 	"dappco.re/go/inference"
 )
 

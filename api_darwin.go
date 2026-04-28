@@ -76,9 +76,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			var adapterCleanup func() error
 			resolvedAdapterPath, adapterCleanup, err = stagePathFromMedium(cfg.Medium, cfg.AdapterPath)
 			if err != nil {
-				if cleanupErr := cleanup(); cleanupErr != nil {
-					err = errors.Join(err, cleanupErr)
-				}
+				_ = cleanup()
 				return nil, err
 			}
 			appendCleanup(&cleanup, adapterCleanup)
@@ -91,9 +89,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		Device:      metal.DeviceType(cfg.Device),
 	})
 	if err != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
-			err = errors.Join(err, cleanupErr)
-		}
+		_ = cleanup()
 		return nil, err
 	}
 
@@ -110,14 +106,9 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		effectiveQuantBits = ggufInfo.QuantBits
 	}
 	if cfg.Quantization > 0 && effectiveQuantBits > 0 && effectiveQuantBits != cfg.Quantization {
-		err := errors.New("mlx: loaded model quantization does not match requested bits")
-		if closeErr := native.Close(); closeErr != nil {
-			err = errors.Join(err, closeErr)
-		}
-		if cleanupErr := cleanup(); cleanupErr != nil {
-			err = errors.Join(err, cleanupErr)
-		}
-		return nil, err
+		_ = native.Close()
+		_ = cleanup()
+		return nil, errors.New("mlx: loaded model quantization does not match requested bits")
 	}
 
 	return &Model{

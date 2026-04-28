@@ -37,7 +37,7 @@ import (
 	"reflect"
 	"time"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 
 	"dappco.re/go/inference"
 	coreio "dappco.re/go/io"
@@ -110,6 +110,9 @@ func (backend *mlxlmBackend) LoadModel(modelPath string, opts ...inference.LoadO
 // loadModel is the internal implementation. scriptPathOverride substitutes the embedded
 // bridge.py for testing.
 func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts ...inference.LoadOption) (inference.TextModel, error) {
+	loadOptions := inference.ApplyLoadOpts(opts)
+	_ = loadOptions // reserved for future use (context length, etc.)
+
 	var bridgePath string
 	if scriptPathOverride != "" {
 		bridgePath = scriptPathOverride
@@ -271,9 +274,7 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 			select {
 			case <-ctx.Done():
 				model.lastErr = ctx.Err()
-				if err := model.send(map[string]any{"cmd": "cancel"}); err != nil {
-					model.lastErr = core.ErrorJoin(model.lastErr, err)
-				}
+				_ = model.send(map[string]any{"cmd": "cancel"})
 				model.drain()
 				return
 			default:
@@ -301,9 +302,7 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 			}
 
 			if !yield(inference.Token{ID: id, Text: text}) {
-				if err := model.send(map[string]any{"cmd": "cancel"}); err != nil {
-					model.lastErr = err
-				}
+				_ = model.send(map[string]any{"cmd": "cancel"})
 				model.drain()
 				return
 			}
@@ -362,9 +361,7 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 			select {
 			case <-ctx.Done():
 				model.lastErr = ctx.Err()
-				if err := model.send(map[string]any{"cmd": "cancel"}); err != nil {
-					model.lastErr = core.ErrorJoin(model.lastErr, err)
-				}
+				_ = model.send(map[string]any{"cmd": "cancel"})
 				model.drain()
 				return
 			default:
@@ -392,9 +389,7 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 			}
 
 			if !yield(inference.Token{ID: id, Text: text}) {
-				if err := model.send(map[string]any{"cmd": "cancel"}); err != nil {
-					model.lastErr = err
-				}
+				_ = model.send(map[string]any{"cmd": "cancel"})
 				model.drain()
 				return
 			}
@@ -455,24 +450,17 @@ func (model *mlxlmModel) Err() error { return model.lastErr }
 
 // Close sends quit and waits up to 2 seconds for the subprocess to exit, then kills it.
 func (model *mlxlmModel) Close() error {
-	var closeErr error
-	if err := model.send(map[string]any{"cmd": "quit"}); err != nil {
-		closeErr = err
-	}
-	if err := model.stdin.Close(); err != nil {
-		closeErr = core.ErrorJoin(closeErr, err)
-	}
+	_ = model.send(map[string]any{"cmd": "quit"}) // ignore errors — subprocess may be dead
+	_ = model.stdin.Close()
 	done := make(chan error, 1)
 	go func() { done <- model.process.Wait() }()
 
 	select {
 	case err := <-done:
-		return core.ErrorJoin(closeErr, err)
+		return err
 	case <-time.After(2 * time.Second):
-		if err := model.process.Kill(); err != nil {
-			closeErr = core.ErrorJoin(closeErr, err)
-		}
-		return core.ErrorJoin(closeErr, <-done)
+		_ = model.process.Kill()
+		return <-done
 	}
 }
 
@@ -583,15 +571,9 @@ func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 
 // kill terminates the subprocess immediately (used during load failures).
 func (model *mlxlmModel) kill() {
-	if err := model.stdin.Close(); err != nil {
-		model.lastErr = core.ErrorJoin(model.lastErr, err)
-	}
-	if err := model.process.Kill(); err != nil {
-		model.lastErr = core.ErrorJoin(model.lastErr, err)
-	}
-	if err := model.process.Wait(); err != nil {
-		model.lastErr = core.ErrorJoin(model.lastErr, err)
-	}
+	_ = model.stdin.Close()
+	_ = model.process.Kill()
+	_ = model.process.Wait()
 }
 
 const maxJSONLineBytes = 1024 * 1024
@@ -666,34 +648,30 @@ func newMLXLMCore() *core.Core {
 func mlxlmProcessRun(ctx context.Context, opts core.Options) core.Result {
 	proc, err := startProcessFromOptions(ctx, opts)
 	if err != nil {
-		return core.Fail(err)
+		return core.Result{Value: err, OK: false}
 	}
-	if err := proc.stdin.Close(); err != nil {
-		return core.Fail(err)
-	}
+	_ = proc.stdin.Close()
 
 	drained := make(chan struct{})
 	go func() {
-		if _, err := io.Copy(io.Discard, proc.stdout); err != nil {
-			proc.err = core.ErrorJoin(proc.err, err)
-		}
+		_, _ = io.Copy(io.Discard, proc.stdout)
 		close(drained)
 	}()
 
 	err = proc.Wait()
 	<-drained
 	if err != nil {
-		return core.Fail(err)
+		return core.Result{Value: err, OK: false}
 	}
-	return core.Ok("")
+	return core.Result{Value: "", OK: true}
 }
 
 func mlxlmProcessStart(ctx context.Context, opts core.Options) core.Result {
 	proc, err := startProcessFromOptions(ctx, opts)
 	if err != nil {
-		return core.Fail(err)
+		return core.Result{Value: err, OK: false}
 	}
-	return core.Ok(proc)
+	return core.Result{Value: proc, OK: true}
 }
 
 func startProcessFromOptions(ctx context.Context, opts core.Options) (*mlxlmProcess, error) {
@@ -739,16 +717,16 @@ func startMLXLMProcess(ctx context.Context, command string, args ...string) (*ml
 	}
 	stdoutRead, stdoutWrite, err := os.Pipe()
 	if err != nil {
-		err = closeWith(err, stdinRead)
-		err = closeWith(err, stdinWrite)
+		_ = stdinRead.Close()
+		_ = stdinWrite.Close()
 		return nil, core.E("mlxlm.process", "stdout pipe", err)
 	}
 	stderr, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
 	if err != nil {
-		err = closeWith(err, stdinRead)
-		err = closeWith(err, stdinWrite)
-		err = closeWith(err, stdoutRead)
-		err = closeWith(err, stdoutWrite)
+		_ = stdinRead.Close()
+		_ = stdinWrite.Close()
+		_ = stdoutRead.Close()
+		_ = stdoutWrite.Close()
 		return nil, core.E("mlxlm.process", "stderr pipe", err)
 	}
 
@@ -757,17 +735,13 @@ func startMLXLMProcess(ctx context.Context, command string, args ...string) (*ml
 		Env:   os.Environ(),
 		Files: files,
 	})
-	closeErr := closeWith(nil, stdinRead)
-	closeErr = closeWith(closeErr, stdoutWrite)
-	closeErr = closeWith(closeErr, stderr)
+	_ = stdinRead.Close()
+	_ = stdoutWrite.Close()
+	_ = stderr.Close()
 	if err != nil {
-		err = core.ErrorJoin(err, closeErr)
-		err = closeWith(err, stdinWrite)
-		err = closeWith(err, stdoutRead)
+		_ = stdinWrite.Close()
+		_ = stdoutRead.Close()
 		return nil, core.E("mlxlm.process", "start "+command, err)
-	}
-	if closeErr != nil {
-		return nil, core.E("mlxlm.process", "close parent descriptors", closeErr)
 	}
 
 	proc := &mlxlmProcess{
@@ -789,21 +763,9 @@ func (proc *mlxlmProcess) wait() {
 func (proc *mlxlmProcess) killOnContextDone(ctx context.Context) {
 	select {
 	case <-ctx.Done():
-		if err := proc.Kill(); err != nil {
-			proc.err = core.ErrorJoin(proc.err, err)
-		}
+		_ = proc.Kill()
 	case <-proc.done:
 	}
-}
-
-func closeWith(err error, closer io.Closer) error {
-	if closer == nil {
-		return err
-	}
-	if closeErr := closer.Close(); closeErr != nil {
-		return core.ErrorJoin(err, closeErr)
-	}
-	return err
 }
 
 func (proc *mlxlmProcess) Wait() error {

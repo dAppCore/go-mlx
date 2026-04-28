@@ -18,7 +18,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"dappco.re/go"
+	"dappco.re/go/core"
 )
 
 // LoadGGUF loads tensors from a .gguf file, returning an iterator over
