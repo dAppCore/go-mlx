@@ -73,6 +73,9 @@ func Synchronize(s *Stream) {
 //
 //	prev := metal.SetMemoryLimit(32 << 30) // 32 GB hard limit
 func SetMemoryLimit(limit uint64) uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var prev C.size_t
 	C.mlx_set_memory_limit(&prev, C.size_t(limit))
 	return uint64(prev)
@@ -82,6 +85,9 @@ func SetMemoryLimit(limit uint64) uint64 {
 //
 //	prev := metal.SetCacheLimit(4 << 30) // 4 GB cache limit
 func SetCacheLimit(limit uint64) uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var prev C.size_t
 	C.mlx_set_cache_limit(&prev, C.size_t(limit))
 	return uint64(prev)
@@ -91,6 +97,9 @@ func SetCacheLimit(limit uint64) uint64 {
 //
 //	fmt.Printf("active: %d MB\n", metal.GetActiveMemory()/1024/1024)
 func GetActiveMemory() uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var mem C.size_t
 	C.mlx_get_active_memory(&mem)
 	return uint64(mem)
@@ -100,6 +109,9 @@ func GetActiveMemory() uint64 {
 //
 //	fmt.Printf("peak: %d MB\n", metal.GetPeakMemory()/1024/1024)
 func GetPeakMemory() uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var mem C.size_t
 	C.mlx_get_peak_memory(&mem)
 	return uint64(mem)
@@ -109,6 +121,9 @@ func GetPeakMemory() uint64 {
 //
 //	metal.ClearCache() // between chat turns to reclaim prompt cache memory
 func ClearCache() {
+	if !MetalAvailable() {
+		return
+	}
 	C.mlx_clear_cache()
 }
 
@@ -116,6 +131,9 @@ func ClearCache() {
 //
 //	fmt.Printf("cache: %d MB\n", metal.GetCacheMemory()/1024/1024)
 func GetCacheMemory() uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var mem C.size_t
 	C.mlx_get_cache_memory(&mem)
 	return uint64(mem)
@@ -125,6 +143,9 @@ func GetCacheMemory() uint64 {
 //
 //	metal.ResetPeakMemory() // before each generate call to measure per-call peak
 func ResetPeakMemory() {
+	if !MetalAvailable() {
+		return
+	}
 	C.mlx_reset_peak_memory()
 }
 
@@ -132,6 +153,9 @@ func ResetPeakMemory() {
 //
 //	prev := metal.SetWiredLimit(8 << 30) // 8 GB wired memory limit
 func SetWiredLimit(limit uint64) uint64 {
+	if !MetalAvailable() {
+		return 0
+	}
 	var prev C.size_t
 	C.mlx_set_wired_limit(&prev, C.size_t(limit))
 	return uint64(prev)

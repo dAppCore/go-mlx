@@ -121,7 +121,13 @@ func waitForSocket(t *testing.T, socketPath string) {
 	for time.Now().Before(deadline) {
 		info, err := os.Lstat(socketPath)
 		if err == nil && info.Mode()&os.ModeSocket != 0 {
-			return
+			conn, err := net.DialTimeout("unix", socketPath, 50*time.Millisecond)
+			if err == nil {
+				if closeErr := conn.Close(); closeErr != nil {
+					t.Fatalf("close readiness probe: %v", closeErr)
+				}
+				return
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

@@ -4,7 +4,7 @@
 
 package metal
 
-import "dappco.re/go/core"
+import "dappco.re/go"
 
 // ApplyLoRA injects LoRA adapters into the model's projection layers.
 //

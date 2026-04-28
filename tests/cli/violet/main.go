@@ -58,7 +58,9 @@ func run() error {
 	}
 	defer func() {
 		cancel()
-		_ = cmd.Wait()
+		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "wait violet: %v\n", err)
+		}
 	}()
 
 	if err := waitForSocket(socketPath); err != nil {

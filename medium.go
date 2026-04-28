@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
 )
@@ -46,7 +46,9 @@ func stagePathFromMedium(medium coreio.Medium, path string) (string, func() erro
 	}
 
 	if err := copyMediumTree(medium, root, stageDir); err != nil {
-		_ = cleanup()
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			core.Warn("mlx: cleanup staging dir after copy failure", "error", cleanupErr)
+		}
 		return "", nil, core.E("mlx.stagePathFromMedium", "stage path tree", err)
 	}
 

@@ -82,15 +82,18 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		return fmt.Errorf("listen unix %s: %w", socketPath, err)
 	}
 	if err := os.Chmod(socketPath, socketFileMode); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
+		err = errors.Join(err, ln.Close(), os.Remove(socketPath))
 		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
 	}
 
 	s.SocketPath = socketPath
 	defer func() {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
+		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			fmt.Fprintf(os.Stderr, "violet daemon: close listener: %v\n", err)
+		}
+		if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "violet daemon: remove socket: %v\n", err)
+		}
 	}()
 
 	return s.serve(ctx, ln)
@@ -104,9 +107,13 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = ln.Close()
+			if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				fmt.Fprintf(os.Stderr, "violet daemon: close listener: %v\n", err)
+			}
 			conns.Range(func(key, _ any) bool {
-				_ = key.(net.Conn).Close()
+				if err := key.(net.Conn).Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+					fmt.Fprintf(os.Stderr, "violet daemon: close connection: %v\n", err)
+				}
 				return true
 			})
 		case <-done:
@@ -132,7 +139,9 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		go func(conn net.Conn) {
 			defer wg.Done()
 			defer conns.Delete(conn)
-			_ = s.handleConn(ctx, conn)
+			if err := s.handleConn(ctx, conn); err != nil {
+				fmt.Fprintf(os.Stderr, "violet daemon: handle connection: %v\n", err)
+			}
 		}(conn)
 	}
 }

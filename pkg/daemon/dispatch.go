@@ -52,16 +52,24 @@ func NewRegistry(name, version string) *Registry {
 		handlers: make(map[string]Handler),
 	}
 
-	_ = r.Register("embed", stubHandler("embed"))
-	_ = r.Register("score", stubHandler("score"))
-	_ = r.Register("generate", stubHandler("generate"))
-	_ = r.Register("info", func(context.Context, Request) (Response, error) {
+	if err := r.Register("embed", stubHandler("embed")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("score", stubHandler("score")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("generate", stubHandler("generate")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("info", func(context.Context, Request) (Response, error) {
 		return Response{
 			"name":    r.name,
 			"version": r.version,
 			"actions": r.Actions(),
 		}, nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 
 	return r
 }
