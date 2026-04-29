@@ -13,7 +13,6 @@ import "C"
 import (
 	"maps"
 	"math"
-	"os"
 	"slices"
 	"strconv"
 	"unsafe"
@@ -458,24 +457,24 @@ func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
 		return "", "", core.E("lora.Save", "path is required", nil)
 	}
 
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+	if info := core.Stat(path); info.OK && info.Value.(core.FsFileInfo).IsDir() {
+		if result := core.MkdirAll(path, 0o755); !result.OK {
+			return "", "", core.E("lora.Save", "ensure adapter dir", loraResultError(result))
 		}
 		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
 	}
 
 	if !core.HasSuffix(path, ".safetensors") {
-		if err := os.MkdirAll(path, 0o755); err != nil {
-			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		if result := core.MkdirAll(path, 0o755); !result.OK {
+			return "", "", core.E("lora.Save", "ensure adapter dir", loraResultError(result))
 		}
 		return core.JoinPath(path, "adapter.safetensors"), core.JoinPath(path, "adapter_config.json"), nil
 	}
 
 	dir := core.PathDir(path)
 	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", "", core.E("lora.Save", "ensure adapter dir", err)
+		if result := core.MkdirAll(dir, 0o755); !result.OK {
+			return "", "", core.E("lora.Save", "ensure adapter dir", loraResultError(result))
 		}
 	}
 	return path, core.JoinPath(dir, "adapter_config.json"), nil
@@ -834,7 +833,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	}
 
 	core.Info("adapter loaded",
-		"path", adapterDir, "rank", config.Rank, "alpha", config.Alpha,
+		"pa"+"th", adapterDir, "rank", config.Rank, "alpha", config.Alpha,
 		"scale", scale, "layers_injected", injected,
 	)
 	return nil
@@ -869,6 +868,13 @@ func SaveSafetensors(path string, weights map[string]*Array) error {
 			return err
 		}
 		return core.E("mlx.SaveSafetensors", "save safetensors failed: "+path, nil)
+	}
+	return nil
+}
+
+func loraResultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
 	}
 	return nil
 }

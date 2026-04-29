@@ -4,21 +4,29 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"net"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"syscall"
 	"time"
+
+	core "dappco.re/go"
 )
+
+type textBuffer interface {
+	core.Writer
+	String() string
+}
+
+type cliprocess struct {
+	pid      int
+	done     chan error
+	finished chan struct{}
+}
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		core.Print(core.Stderr(), "%v", err)
+		core.Exit(1)
 	}
 }
 
@@ -28,58 +36,55 @@ func run() error {
 		return err
 	}
 
-	tmpDir, err := os.MkdirTemp("/tmp", "violet-cli-*")
-	if err != nil {
-		return err
+	tmpDirResult := core.MkdirTemp("/tmp", "violet-cli-*")
+	if !tmpDirResult.OK {
+		return resultError(tmpDirResult)
 	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := tmpDirResult.Value.(string)
+	defer core.RemoveAll(tmpDir)
 
 	binary := ""
-	if len(os.Args) > 1 {
-		binary = os.Args[1]
+	if len(core.Args()) > 1 {
+		binary = core.Args()[1]
 	} else {
-		binary = filepath.Join(tmpDir, "violet")
+		binary = core.PathJoin(tmpDir, "violet")
 		if err := buildBinary(root, binary); err != nil {
 			return err
 		}
 	}
 
-	socketPath := filepath.Join(tmpDir, "runtime", "ofm", "violet.sock")
+	socketPath := core.PathJoin(tmpDir, "runtime", "ofm", "violet.sock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, binary, "--socket", socketPath)
-	cmd.Dir = root
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start violet: %w", err)
+	proc, stdout, stderr, err := startCommand(ctx, root, binary, "--socket", socketPath)
+	if err != nil {
+		return core.Errorf("start violet: %w", err)
 	}
 	defer func() {
 		cancel()
-		if err := cmd.Wait(); err != nil && ctx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "wait violet: %v\n", err)
+		if err := proc.Wait(); err != nil && ctx.Err() == nil {
+			core.Print(core.Stderr(), "wait violet: %v", err)
 		}
 	}()
 
 	if err := waitForSocket(socketPath); err != nil {
-		return fmt.Errorf("%w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+		return core.Errorf("%w\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}
 
 	conn, err := net.DialTimeout("unix", socketPath, time.Second)
 	if err != nil {
-		return fmt.Errorf("dial violet socket: %w", err)
+		return core.Errorf("dial violet socket: %w", err)
 	}
 	defer conn.Close()
 
-	if _, err := fmt.Fprintln(conn, `{"action":"info"}`); err != nil {
-		return fmt.Errorf("write info frame: %w", err)
+	if result := core.WriteString(conn, `{"action":"info"}`+"\n"); !result.OK {
+		return core.Errorf("write info frame: %w", resultError(result))
 	}
 
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
-		return fmt.Errorf("read info response: %w", err)
+		return core.Errorf("read info response: %w", err)
 	}
 
 	var resp struct {
@@ -87,46 +92,43 @@ func run() error {
 		Version string   `json:"version"`
 		Actions []string `json:"actions"`
 	}
-	if err := json.Unmarshal(line, &resp); err != nil {
-		return fmt.Errorf("decode info response %q: %w", string(line), err)
+	if result := core.JSONUnmarshal(line, &resp); !result.OK {
+		return core.Errorf("decode info response %q: %w", string(line), resultError(result))
 	}
 	if resp.Name != "violet" {
-		return fmt.Errorf("name = %q, want violet", resp.Name)
+		return core.Errorf("name = %q, want violet", resp.Name)
 	}
 	if resp.Version == "" {
-		return fmt.Errorf("version is empty")
+		return core.NewError("version is empty")
 	}
 	if !contains(resp.Actions, "info") {
-		return fmt.Errorf("actions = %v, want info", resp.Actions)
+		return core.Errorf("actions = %v, want info", resp.Actions)
 	}
 
 	return nil
 }
 
 func buildBinary(root, binary string) error {
-	cmd := exec.Command("go", "build", "-o", binary, "./cmd/violet")
-	cmd.Dir = root
-	var output bytes.Buffer
-	cmd.Stdout = &output
-	cmd.Stderr = &output
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build violet: %w\n%s", err, output.String())
+	output, err := runCommand(root, "go", "build", "-o", binary, "./cmd/violet")
+	if err != nil {
+		return core.Errorf("build violet: %w\n%s", err, output)
 	}
 	return nil
 }
 
 func repoRoot() (string, error) {
-	dir, err := os.Getwd()
-	if err != nil {
-		return "", err
+	dirResult := core.Getwd()
+	if !dirResult.OK {
+		return "", resultError(dirResult)
 	}
+	dir := dirResult.Value.(string)
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+		if core.Stat(core.PathJoin(dir, "go.mod")).OK {
 			return dir, nil
 		}
-		parent := filepath.Dir(dir)
+		parent := core.PathDir(dir)
 		if parent == dir {
-			return "", fmt.Errorf("could not find repo root from %s", dir)
+			return "", core.Errorf("could not find repo root from %s", dir)
 		}
 		dir = parent
 	}
@@ -135,13 +137,13 @@ func repoRoot() (string, error) {
 func waitForSocket(socketPath string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		info, err := os.Lstat(socketPath)
-		if err == nil && info.Mode()&os.ModeSocket != 0 {
+		info := core.Lstat(socketPath)
+		if info.OK && info.Value.(core.FsFileInfo).Mode()&core.ModeSocket != 0 {
 			return nil
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return fmt.Errorf("socket %s was not created", socketPath)
+	return core.Errorf("socket %s was not created", socketPath)
 }
 
 func contains(values []string, want string) bool {
@@ -151,4 +153,144 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func runCommand(dir, command string, args ...string) (string, error) {
+	ctx := context.Background()
+	proc, stdout, stderr, err := startCommand(ctx, dir, command, args...)
+	if err != nil {
+		return "", err
+	}
+	err = proc.Wait()
+	return stdout.String() + stderr.String(), err
+}
+
+func startCommand(ctx context.Context, dir, command string, args ...string) (*cliprocess, textBuffer, textBuffer, error) {
+	path, err := lookPath(command)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	stdoutPipe := []int{0, 0}
+	if err := syscall.Pipe(stdoutPipe); err != nil {
+		return nil, nil, nil, err
+	}
+	stderrPipe := []int{0, 0}
+	if err := syscall.Pipe(stderrPipe); err != nil {
+		closeFDs(stdoutPipe...)
+		return nil, nil, nil, err
+	}
+	syscall.CloseOnExec(stdoutPipe[0])
+	syscall.CloseOnExec(stdoutPipe[1])
+	syscall.CloseOnExec(stderrPipe[0])
+	syscall.CloseOnExec(stderrPipe[1])
+
+	argv := append([]string{command}, args...)
+	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
+		Dir:   dir,
+		Env:   core.Environ(),
+		Files: []uintptr{0, uintptr(stdoutPipe[1]), uintptr(stderrPipe[1])},
+	})
+	err = core.ErrorJoin(err, closeFDs(stdoutPipe[1], stderrPipe[1]))
+	if err != nil {
+		closeFDs(stdoutPipe[0], stderrPipe[0])
+		return nil, nil, nil, err
+	}
+
+	stdout := core.NewBuffer()
+	stderr := core.NewBuffer()
+	go readFD(stdoutPipe[0], stdout)
+	go readFD(stderrPipe[0], stderr)
+
+	proc := &cliprocess{pid: pid, done: make(chan error, 1), finished: make(chan struct{})}
+	go func() {
+		var status syscall.WaitStatus
+		_, waitErr := syscall.Wait4(pid, &status, 0, nil)
+		if waitErr == nil && (!status.Exited() || status.ExitStatus() != 0) {
+			waitErr = core.Errorf("exit status %d", status.ExitStatus())
+		}
+		proc.done <- waitErr
+		close(proc.finished)
+	}()
+	go func() {
+		select {
+		case <-ctx.Done():
+			proc.Kill()
+		case <-proc.finished:
+		}
+	}()
+	return proc, stdout, stderr, nil
+}
+
+func readFD(fd int, dst core.Writer) {
+	defer syscall.Close(fd)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := syscall.Read(fd, buf)
+		if n > 0 {
+			core.WriteString(dst, string(buf[:n]))
+		}
+		if err != nil || n == 0 {
+			return
+		}
+	}
+}
+
+func (proc *cliprocess) Wait() error {
+	if proc == nil {
+		return nil
+	}
+	err, ok := <-proc.done
+	if !ok {
+		return nil
+	}
+	return err
+}
+
+func (proc *cliprocess) Kill() error {
+	if proc == nil || proc.pid <= 0 {
+		return nil
+	}
+	return syscall.Kill(proc.pid, syscall.SIGKILL)
+}
+
+func lookPath(command string) (string, error) {
+	if core.Contains(command, string(core.PathSeparator)) {
+		if executable(command) {
+			return command, nil
+		}
+		return "", core.Errorf("executable not found: %s", command)
+	}
+	for _, dir := range core.Split(core.Getenv("PATH"), string(core.PathListSeparator)) {
+		if dir == "" {
+			dir = "."
+		}
+		path := core.PathJoin(dir, command)
+		if executable(path) {
+			return path, nil
+		}
+	}
+	return "", core.Errorf("executable not found: %s", command)
+}
+
+func executable(path string) bool {
+	info := core.Stat(path)
+	return info.OK && !info.Value.(core.FsFileInfo).IsDir() && info.Value.(core.FsFileInfo).Mode()&0111 != 0
+}
+
+func closeFDs(fds ...int) error {
+	var err error
+	for _, fd := range fds {
+		if fd > 0 {
+			err = core.ErrorJoin(err, syscall.Close(fd))
+		}
+	}
+	return err
+}
+
+func resultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("operation failed")
 }

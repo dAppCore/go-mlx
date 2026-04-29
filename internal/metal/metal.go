@@ -61,8 +61,6 @@ static bool mlx_go_metal_has_usable_device(void) {
 import "C"
 
 import (
-	"os"
-	"path/filepath"
 	"sync"
 	"unsafe"
 
@@ -74,22 +72,15 @@ var initOnce sync.Once
 func defaultMetallibPath() string {
 	const metallib = "mlx.metallib"
 	var candidates []string
-	if wd, err := os.Getwd(); err == nil {
+	if wd := core.Getwd(); wd.OK {
+		root := wd.Value.(string)
 		candidates = append(candidates,
-			filepath.Join(wd, "dist", "lib", metallib),
-			filepath.Join(wd, "..", "..", "dist", "lib", metallib),
-		)
-	}
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(exeDir, metallib),
-			filepath.Join(exeDir, "dist", "lib", metallib),
-			filepath.Join(exeDir, "..", "lib", metallib),
+			core.PathJoin(root, "dist", "lib", metallib),
+			core.PathJoin(root, "..", "..", "dist", "lib", metallib),
 		)
 	}
 	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
+		if core.Stat(candidate).OK {
 			return candidate
 		}
 	}
@@ -135,10 +126,11 @@ func Init() {
 		// Set the metallib path before any Metal operation triggers device
 		// initialisation. Prefer runtime locations so binaries are not tied to
 		// source file paths.
-		// os.Setenv is required here — core has no SetEnv, and Metal device init
-		// reads this env var before any CGo call. Legitimate hardware boundary.
 		if core.Env("MLX_METALLIB_PATH") == "" {
-			os.Setenv("MLX_METALLIB_PATH", defaultMetallibPath())
+			setenv := core.Setenv
+			if result := setenv("MLX_METALLIB_PATH", defaultMetallibPath()); !result.OK {
+				core.Warn("mlx: set metallib path", "error", result.Value)
+			}
 		}
 
 		C.set_error_handler()

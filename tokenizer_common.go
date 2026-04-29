@@ -2,8 +2,7 @@
 
 package mlx
 
-// Note: AX-6 — errors is structural for sentinel error declaration in tokenizer; core.E is downstream of go-mlx.
-import "errors"
+import core "dappco.re/go"
 
 type tokenizerImpl interface {
 	Encode(string) []int32
@@ -33,7 +32,7 @@ func stripImplicitBOS(tok tokenizerImpl, tokens []int32) []int32 {
 // Encode converts text to token IDs without the model-internal implicit BOS token.
 func (t *Tokenizer) Encode(text string) ([]int32, error) {
 	if t == nil || t.tok == nil {
-		return nil, errors.New("mlx: tokenizer is nil")
+		return nil, core.NewError("mlx: tokenizer is nil")
 	}
 	return stripImplicitBOS(t.tok, t.tok.Encode(text)), nil
 }
@@ -41,7 +40,7 @@ func (t *Tokenizer) Encode(text string) ([]int32, error) {
 // Decode converts token IDs back to text.
 func (t *Tokenizer) Decode(tokens []int32) (string, error) {
 	if t == nil || t.tok == nil {
-		return "", errors.New("mlx: tokenizer is nil")
+		return "", core.NewError("mlx: tokenizer is nil")
 	}
 	return t.tok.Decode(tokens), nil
 }

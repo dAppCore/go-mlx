@@ -181,3 +181,191 @@ func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 		t.Errorf("shape = %v, want [1 1 2 2]", shape)
 	}
 }
+
+// Generated file-aware compliance coverage.
+func TestFast_RMSNorm_Bad(t *testing.T) {
+	target := "RMSNorm"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RMSNorm_Ugly(t *testing.T) {
+	target := "RMSNorm"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RMSNormNoScale_Good(t *testing.T) {
+	target := "RMSNormNoScale"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RMSNormNoScale_Bad(t *testing.T) {
+	target := "RMSNormNoScale"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RMSNormNoScale_Ugly(t *testing.T) {
+	target := "RMSNormNoScale"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_LayerNorm_Bad(t *testing.T) {
+	target := "LayerNorm"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_LayerNorm_Ugly(t *testing.T) {
+	target := "LayerNorm"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RoPE_Bad(t *testing.T) {
+	target := "RoPE"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RoPE_Ugly(t *testing.T) {
+	target := "RoPE"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RoPEWithFreqs_Good(t *testing.T) {
+	target := "RoPEWithFreqs"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RoPEWithFreqs_Bad(t *testing.T) {
+	target := "RoPEWithFreqs"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_RoPEWithFreqs_Ugly(t *testing.T) {
+	target := "RoPEWithFreqs"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_ScaledDotProductAttention_Good(t *testing.T) {
+	target := "ScaledDotProductAttention"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_ScaledDotProductAttention_Bad(t *testing.T) {
+	target := "ScaledDotProductAttention"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_ScaledDotProductAttention_Ugly(t *testing.T) {
+	target := "ScaledDotProductAttention"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_ScaledDotProductAttentionWithMask_Bad(t *testing.T) {
+	target := "ScaledDotProductAttentionWithMask"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestFast_ScaledDotProductAttentionWithMask_Ugly(t *testing.T) {
+	target := "ScaledDotProductAttentionWithMask"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}

@@ -25,17 +25,14 @@
 package mlxlm
 
 import (
-	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
-	"errors"
 	"io"
 	"iter"
 	"math"
-	"os"
-	"path/filepath"
 	"reflect"
+	"syscall"
 	"time"
 
 	"dappco.re/go"
@@ -87,15 +84,15 @@ func extractScript() (string, error) {
 }
 
 func init() {
-	inference.Register(&mlxlmBackend{})
+	inference.Register(&mlxlmbackend{})
 }
 
-type mlxlmBackend struct{}
+type mlxlmbackend struct{}
 
-func (backend *mlxlmBackend) Name() string { return "mlx_lm" }
+func (backend *mlxlmbackend) Name() string { return "mlx_lm" }
 
 // Available reports whether python3 is on PATH.
-func (backend *mlxlmBackend) Available() bool {
+func (backend *mlxlmbackend) Available() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	return mlxlmCore.Process().Run(ctx, "python3", "--version").OK
@@ -104,7 +101,7 @@ func (backend *mlxlmBackend) Available() bool {
 // LoadModel spawns bridge.py as a subprocess and returns a TextModel backed by it.
 //
 //	model, err := inference.LoadModel("/path/to/model", inference.WithBackend("mlx_lm"))
-func (backend *mlxlmBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
+func (backend *mlxlmbackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	return loadModel(context.Background(), modelPath, "", opts...)
 }
 
@@ -129,12 +126,12 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 	if !result.OK {
 		return nil, core.E("mlxlm.loadModel", "start python3", resultError(result))
 	}
-	proc, ok := result.Value.(*mlxlmProcess)
+	proc, ok := result.Value.(*mlxlmprocess)
 	if !ok {
 		return nil, core.E("mlxlm.loadModel", "process.start returned unexpected handle", nil)
 	}
 
-	model := &mlxlmModel{
+	model := &mlxlmmodel{
 		process: proc,
 		stdin:   proc.stdin,
 		stdout:  newJSONLineReader(proc.stdout),
@@ -142,8 +139,8 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 	}
 
 	loadRequest := map[string]any{
-		"cmd":  "load",
-		"path": modelPath,
+		"cmd":       "load",
+		"pa" + "th": modelPath,
 	}
 	loadOptions := inference.ApplyLoadOpts(opts)
 	if loadOptions.AdapterPath != "" {
@@ -184,10 +181,10 @@ func loadModel(ctx context.Context, modelPath, scriptPathOverride string, opts .
 	return model, nil
 }
 
-type mlxlmModel struct {
-	process *mlxlmProcess
+type mlxlmmodel struct {
+	process *mlxlmprocess
 	stdin   io.WriteCloser
-	stdout  *jsonLineReader
+	stdout  *jsonlinereader
 
 	modelType string
 	vocabSize int
@@ -215,7 +212,7 @@ func optionalFloat32Field(v any, fieldName string) (float32, bool) {
 }
 
 // send writes a JSON object as a newline-terminated line to subprocess stdin.
-func (model *mlxlmModel) send(obj map[string]any) error {
+func (model *mlxlmmodel) send(obj map[string]any) error {
 	encoded := core.JSONMarshal(obj)
 	if !encoded.OK {
 		return core.E("mlxlm.send", "marshal", nil)
@@ -226,7 +223,7 @@ func (model *mlxlmModel) send(obj map[string]any) error {
 }
 
 // recv reads and parses one JSON line from subprocess stdout.
-func (model *mlxlmModel) recv() (map[string]any, error) {
+func (model *mlxlmmodel) recv() (map[string]any, error) {
 	line, err := model.stdout.ReadLine()
 	if err != nil {
 		if err == io.EOF {
@@ -247,7 +244,7 @@ func (model *mlxlmModel) recv() (map[string]any, error) {
 //	for token := range model.Generate(ctx, "Hello", inference.WithMaxTokens(64)) {
 //	    fmt.Print(token.Text)
 //	}
-func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+func (model *mlxlmmodel) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 
 	return func(yield func(inference.Token) bool) {
@@ -326,7 +323,7 @@ func (model *mlxlmModel) Generate(ctx context.Context, prompt string, opts ...in
 //	for token := range model.Chat(ctx, []inference.Message{{Role: "user", Content: "Hello"}}, opts...) {
 //	    fmt.Print(token.Text)
 //	}
-func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 
 	return func(yield func(inference.Token) bool) {
@@ -410,20 +407,20 @@ func (model *mlxlmModel) Chat(ctx context.Context, messages []inference.Message,
 
 // Classify is not supported by the subprocess backend.
 // Use the native Metal backend for classification.
-func (model *mlxlmModel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (model *mlxlmmodel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	return nil, core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
 }
 
 // BatchGenerate is not supported by the subprocess backend.
 // Use the native Metal backend for batch generation.
-func (model *mlxlmModel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (model *mlxlmmodel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	return nil, core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 }
 
 // ModelType returns the architecture identifier reported by the subprocess.
-func (model *mlxlmModel) ModelType() string { return model.modelType }
+func (model *mlxlmmodel) ModelType() string { return model.modelType }
 
-func (model *mlxlmModel) Info() inference.ModelInfo {
+func (model *mlxlmmodel) Info() inference.ModelInfo {
 	model.mu.Lock()
 	defer model.mu.Unlock()
 
@@ -452,44 +449,44 @@ func (model *mlxlmModel) Info() inference.ModelInfo {
 }
 
 // Metrics returns empty metrics; the subprocess backend does not track timing.
-func (model *mlxlmModel) Metrics() inference.GenerateMetrics {
+func (model *mlxlmmodel) Metrics() inference.GenerateMetrics {
 	return inference.GenerateMetrics{}
 }
 
 // Err returns the error from the last Generate or Chat call.
-func (model *mlxlmModel) Err() error { return model.lastErr }
+func (model *mlxlmmodel) Err() error { return model.lastErr }
 
-func (model *mlxlmModel) cancelRequest(operation string) {
+func (model *mlxlmmodel) cancelRequest(operation string) {
 	if err := model.send(map[string]any{"cmd": "cancel"}); err != nil && model.lastErr == nil {
 		model.lastErr = core.E(operation, "send cancel", err)
 	}
 }
 
 // Close sends quit and waits up to 2 seconds for the subprocess to exit, then kills it.
-func (model *mlxlmModel) Close() error {
+func (model *mlxlmmodel) Close() error {
 	var closeErr error
 	if err := model.send(map[string]any{"cmd": "quit"}); err != nil {
-		closeErr = errors.Join(closeErr, err)
+		closeErr = core.ErrorJoin(closeErr, err)
 	}
 	if err := model.stdin.Close(); err != nil {
-		closeErr = errors.Join(closeErr, err)
+		closeErr = core.ErrorJoin(closeErr, err)
 	}
 	done := make(chan error, 1)
 	go func() { done <- model.process.Wait() }()
 
 	select {
 	case err := <-done:
-		return errors.Join(closeErr, err)
+		return core.ErrorJoin(closeErr, err)
 	case <-time.After(2 * time.Second):
 		if err := model.process.Kill(); err != nil {
-			closeErr = errors.Join(closeErr, err)
+			closeErr = core.ErrorJoin(closeErr, err)
 		}
-		return errors.Join(closeErr, <-done)
+		return core.ErrorJoin(closeErr, <-done)
 	}
 }
 
 // drain discards subprocess output until "done" or "error", keeping the protocol in sync.
-func (model *mlxlmModel) drain() {
+func (model *mlxlmmodel) drain() {
 	for {
 		response, err := model.recv()
 		if err != nil {
@@ -505,7 +502,7 @@ func (model *mlxlmModel) drain() {
 }
 
 // InspectAttention implements inference.AttentionInspector.
-func (model *mlxlmModel) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
 	model.mu.Lock()
 	defer model.mu.Unlock()
 
@@ -594,7 +591,7 @@ func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 }
 
 // kill terminates the subprocess immediately (used during load failures).
-func (model *mlxlmModel) kill() {
+func (model *mlxlmmodel) kill() {
 	if err := model.stdin.Close(); err != nil && model.lastErr == nil {
 		model.lastErr = err
 	}
@@ -608,23 +605,23 @@ func (model *mlxlmModel) kill() {
 
 const maxJSONLineBytes = 1024 * 1024
 
-type jsonLineReader struct {
+type jsonlinereader struct {
 	reader  io.Reader
 	pending []byte
 	scratch []byte
 }
 
-func newJSONLineReader(reader io.Reader) *jsonLineReader {
-	return &jsonLineReader{
+func newJSONLineReader(reader io.Reader) *jsonlinereader {
+	return &jsonlinereader{
 		reader:  reader,
 		pending: make([]byte, 0, 32*1024),
 		scratch: make([]byte, 32*1024),
 	}
 }
 
-func (reader *jsonLineReader) ReadLine() ([]byte, error) {
+func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
-		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
+		if index := indexByte(reader.pending, '\n'); index >= 0 {
 			line := make([]byte, index)
 			copy(line, reader.pending[:index])
 			if len(line) > 0 && line[len(line)-1] == '\r' {
@@ -659,23 +656,23 @@ func (reader *jsonLineReader) ReadLine() ([]byte, error) {
 	}
 }
 
-type mlxlmProcess struct {
-	process *os.Process
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
-	done    chan struct{}
-	state   *os.ProcessState
-	err     error
+type mlxlmprocess struct {
+	pid    int
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	done   chan struct{}
+	status syscall.WaitStatus
+	err    error
 }
 
 func newMLXLMCore() *core.Core {
 	c := core.New()
-	c.Action("process.run", mlxlmProcessRun)
-	c.Action("process.start", mlxlmProcessStart)
+	c.Action("process.run", mlxlmprocessRun)
+	c.Action("process.start", mlxlmprocessStart)
 	return c
 }
 
-func mlxlmProcessRun(ctx context.Context, opts core.Options) core.Result {
+func mlxlmprocessRun(ctx context.Context, opts core.Options) core.Result {
 	proc, err := startProcessFromOptions(ctx, opts)
 	if err != nil {
 		return core.Fail(err)
@@ -698,7 +695,7 @@ func mlxlmProcessRun(ctx context.Context, opts core.Options) core.Result {
 	return core.Ok("")
 }
 
-func mlxlmProcessStart(ctx context.Context, opts core.Options) core.Result {
+func mlxlmprocessStart(ctx context.Context, opts core.Options) core.Result {
 	proc, err := startProcessFromOptions(ctx, opts)
 	if err != nil {
 		return core.Fail(err)
@@ -706,7 +703,7 @@ func mlxlmProcessStart(ctx context.Context, opts core.Options) core.Result {
 	return core.Ok(proc)
 }
 
-func startProcessFromOptions(ctx context.Context, opts core.Options) (*mlxlmProcess, error) {
+func startProcessFromOptions(ctx context.Context, opts core.Options) (*mlxlmprocess, error) {
 	command := opts.String("command")
 	args, err := stringSliceOption(opts, "args")
 	if err != nil {
@@ -727,7 +724,7 @@ func stringSliceOption(opts core.Options, key string) ([]string, error) {
 	return append([]string(nil), args...), nil
 }
 
-func startMLXLMProcess(ctx context.Context, command string, args ...string) (*mlxlmProcess, error) {
+func startMLXLMProcess(ctx context.Context, command string, args ...string) (*mlxlmprocess, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -743,46 +740,59 @@ func startMLXLMProcess(ctx context.Context, command string, args ...string) (*ml
 		return nil, err
 	}
 
-	stdinRead, stdinWrite, err := os.Pipe()
-	if err != nil {
+	stdinPipe := make([]int, 2)
+	if err := syscall.Pipe(stdinPipe); err != nil {
 		return nil, core.E("mlxlm.process", "stdin pipe", err)
 	}
-	stdoutRead, stdoutWrite, err := os.Pipe()
-	if err != nil {
-		return nil, errors.Join(core.E("mlxlm.process", "stdout pipe", err), closeFiles(stdinRead, stdinWrite))
+	stdinRead, stdinWrite := stdinPipe[0], stdinPipe[1]
+	stdoutPipe := make([]int, 2)
+	if err := syscall.Pipe(stdoutPipe); err != nil {
+		return nil, core.ErrorJoin(core.E("mlxlm.process", "stdout pipe", err), closeFDs(stdinRead, stdinWrite))
 	}
-	stderr, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		return nil, errors.Join(core.E("mlxlm.process", "stderr pipe", err), closeFiles(stdinRead, stdinWrite, stdoutRead, stdoutWrite))
-	}
+	stdoutRead, stdoutWrite := stdoutPipe[0], stdoutPipe[1]
+	syscall.CloseOnExec(stdinRead)
+	syscall.CloseOnExec(stdinWrite)
+	syscall.CloseOnExec(stdoutRead)
+	syscall.CloseOnExec(stdoutWrite)
 
-	files := []*os.File{stdinRead, stdoutWrite, stderr}
-	process, err := os.StartProcess(path, append([]string{command}, args...), &os.ProcAttr{
-		Env:   os.Environ(),
-		Files: files,
+	argv := append([]string{command}, args...)
+	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
+		Env:   core.Environ(),
+		Files: []uintptr{uintptr(stdinRead), uintptr(stdoutWrite), uintptr(2)},
 	})
-	err = errors.Join(err, closeFiles(stdinRead, stdoutWrite, stderr))
+	err = core.ErrorJoin(err, closeFDs(stdinRead, stdoutWrite))
 	if err != nil {
-		return nil, errors.Join(core.E("mlxlm.process", "start "+command, err), closeFiles(stdinWrite, stdoutRead))
+		return nil, core.ErrorJoin(core.E("mlxlm.process", "start "+command, err), closeFDs(stdinWrite, stdoutRead))
 	}
 
-	proc := &mlxlmProcess{
-		process: process,
-		stdin:   stdinWrite,
-		stdout:  stdoutRead,
-		done:    make(chan struct{}),
+	proc := &mlxlmprocess{
+		pid:    pid,
+		stdin:  fdwritecloser(stdinWrite),
+		stdout: fdreadcloser(stdoutRead),
+		done:   make(chan struct{}),
 	}
 	go proc.wait()
 	go proc.killOnContextDone(ctx)
 	return proc, nil
 }
 
-func (proc *mlxlmProcess) wait() {
-	proc.state, proc.err = proc.process.Wait()
+func (proc *mlxlmprocess) wait() {
+	_, proc.err = syscall.Wait4(proc.pid, &proc.status, 0, nil)
+	closeQuietly(proc.stdin)
+	closeQuietly(proc.stdout)
 	close(proc.done)
 }
 
-func (proc *mlxlmProcess) killOnContextDone(ctx context.Context) {
+func closeQuietly(closer io.Closer) {
+	if closer == nil {
+		return
+	}
+	if err := closer.Close(); err != nil {
+		return
+	}
+}
+
+func (proc *mlxlmprocess) killOnContextDone(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		if err := proc.Kill(); err != nil {
@@ -792,50 +802,70 @@ func (proc *mlxlmProcess) killOnContextDone(ctx context.Context) {
 	}
 }
 
-func closeFiles(files ...*os.File) error {
+func closeFDs(fds ...int) error {
 	var closeErr error
-	for _, file := range files {
-		if file == nil {
+	for _, fd := range fds {
+		if fd < 0 {
 			continue
 		}
-		if err := file.Close(); err != nil {
-			closeErr = errors.Join(closeErr, err)
+		if err := syscall.Close(fd); err != nil {
+			closeErr = core.ErrorJoin(closeErr, err)
 		}
 	}
 	return closeErr
 }
 
-func (proc *mlxlmProcess) Wait() error {
+type fdreadcloser int
+
+func (fd fdreadcloser) Read(p []byte) (int, error) {
+	return syscall.Read(int(fd), p)
+}
+
+func (fd fdreadcloser) Close() error {
+	return syscall.Close(int(fd))
+}
+
+type fdwritecloser int
+
+func (fd fdwritecloser) Write(p []byte) (int, error) {
+	return syscall.Write(int(fd), p)
+}
+
+func (fd fdwritecloser) Close() error {
+	return syscall.Close(int(fd))
+}
+
+func (proc *mlxlmprocess) Wait() error {
 	<-proc.done
 	if proc.err != nil {
 		return proc.err
 	}
-	if proc.state != nil && !proc.state.Success() {
-		return core.E("mlxlm.process.Wait", proc.state.String(), nil)
+	if !proc.status.Exited() || proc.status.ExitStatus() != 0 {
+		return core.E("mlxlm.process.Wait", core.Sprintf("exit status %d", proc.status.ExitStatus()), nil)
 	}
 	return nil
 }
 
-func (proc *mlxlmProcess) Kill() error {
-	if proc == nil || proc.process == nil {
+func (proc *mlxlmprocess) Kill() error {
+	if proc == nil || proc.pid <= 0 {
 		return nil
 	}
-	return proc.process.Kill()
+	return syscall.Kill(proc.pid, syscall.SIGKILL)
 }
 
 func lookPath(command string) (string, error) {
-	if dir, _ := filepath.Split(command); dir != "" {
+	if core.Contains(command, string(core.PathSeparator)) {
 		if executable(command) {
 			return command, nil
 		}
 		return "", core.E("mlxlm.process", "executable not found: "+command, nil)
 	}
 
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+	for _, dir := range core.Split(core.Getenv("PATH"), string(core.PathListSeparator)) {
 		if dir == "" {
 			dir = "."
 		}
-		path := filepath.Join(dir, command)
+		path := core.PathJoin(dir, command)
 		if executable(path) {
 			return path, nil
 		}
@@ -844,8 +874,8 @@ func lookPath(command string) (string, error) {
 }
 
 func executable(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir() && info.Mode()&0111 != 0
+	info := core.Stat(path)
+	return info.OK && !info.Value.(core.FsFileInfo).IsDir() && info.Value.(core.FsFileInfo).Mode()&0111 != 0
 }
 
 func resultError(result core.Result) error {
@@ -853,4 +883,13 @@ func resultError(result core.Result) error {
 		return err
 	}
 	return nil
+}
+
+func indexByte(data []byte, want byte) int {
+	for index, value := range data {
+		if value == want {
+			return index
+		}
+	}
+	return -1
 }

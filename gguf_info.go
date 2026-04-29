@@ -4,16 +4,12 @@ package mlx
 
 import (
 	"encoding/binary"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"io"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
+
+	core "dappco.re/go"
 )
 
 const maxGGUFCollectionEntries uint64 = 1 << 20
@@ -132,11 +128,11 @@ func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
 	}
 
 	absolutePath := ggufPath
-	if abs, err := filepath.Abs(ggufPath); err == nil {
-		absolutePath = abs
+	if abs := core.PathAbs(ggufPath); abs.OK {
+		absolutePath = abs.Value.(string)
 	}
 
-	config, _ := readModelConfig(filepath.Dir(ggufPath))
+	config, _ := readModelConfig(core.PathDir(ggufPath))
 	architecture := firstNonEmpty(
 		metadataString(metadata["general.architecture"]),
 		config.architecture(),
@@ -168,12 +164,12 @@ func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
 // DiscoverModels returns loadable safetensors and GGUF models beneath basePath.
 func DiscoverModels(basePath string) []DiscoveredModel {
 	resolvedPath := basePath
-	if abs, err := filepath.Abs(basePath); err == nil {
-		resolvedPath = abs
+	if abs := core.PathAbs(basePath); abs.OK {
+		resolvedPath = abs.Value.(string)
 	}
 
-	if info, err := os.Stat(resolvedPath); err == nil && !info.IsDir() {
-		if strings.HasSuffix(strings.ToLower(resolvedPath), ".gguf") {
+	if stat := core.Stat(resolvedPath); stat.OK && !stat.Value.(core.FsFileInfo).IsDir() {
+		if core.HasSuffix(core.Lower(resolvedPath), ".gguf") {
 			ggufInfo, err := ReadGGUFInfo(resolvedPath)
 			if err == nil {
 				return []DiscoveredModel{{
@@ -190,7 +186,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 	}
 
 	var models []DiscoveredModel
-	if err := filepath.WalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
+	if err := core.PathWalkDir(resolvedPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || !d.IsDir() {
 			return nil
 		}
@@ -211,7 +207,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 	config, configErr := readModelConfig(dir)
 
-	safetensors, _ := filepath.Glob(filepath.Join(dir, "*.safetensors"))
+	safetensors := core.PathGlob(core.PathJoin(dir, "*.safetensors"))
 	if len(safetensors) > 0 {
 		if configErr != nil {
 			return DiscoveredModel{}, false
@@ -226,7 +222,7 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 		}, true
 	}
 
-	ggufs, _ := filepath.Glob(filepath.Join(dir, "*.gguf"))
+	ggufs := core.PathGlob(core.PathJoin(dir, "*.gguf"))
 	if len(ggufs) != 1 {
 		return DiscoveredModel{}, false
 	}
@@ -250,75 +246,73 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 }
 
 func resolveGGUFFile(modelPath string) (string, error) {
-	if strings.HasSuffix(strings.ToLower(modelPath), ".gguf") {
+	if core.HasSuffix(core.Lower(modelPath), ".gguf") {
 		return modelPath, nil
 	}
 
-	ggufs, err := filepath.Glob(filepath.Join(modelPath, "*.gguf"))
-	if err != nil {
-		return "", fmt.Errorf("mlx: scan gguf files: %w", err)
-	}
+	ggufs := core.PathGlob(core.PathJoin(modelPath, "*.gguf"))
 	switch len(ggufs) {
 	case 0:
-		return "", errors.New("mlx: no .gguf file found")
+		return "", core.NewError("mlx: no .gguf file found")
 	case 1:
 		return ggufs[0], nil
 	default:
-		return "", errors.New("mlx: multiple .gguf files found")
+		return "", core.NewError("mlx: multiple .gguf files found")
 	}
 }
 
 func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mlx: open gguf: %w", err)
+	open := core.Open(path)
+	if !open.OK {
+		return nil, nil, core.Errorf("mlx: open gguf: %w", ggufResultError(open))
 	}
+	file := open.Value.(*core.OSFile)
 	defer file.Close()
 
 	var magic [4]byte
 	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return nil, nil, fmt.Errorf("mlx: read gguf magic: %w", err)
+		return nil, nil, core.Errorf("mlx: read gguf magic: %w", err)
 	}
 	if string(magic[:]) != "GGUF" {
-		return nil, nil, errors.New("mlx: invalid gguf magic")
+		return nil, nil, core.NewError("mlx: invalid gguf magic")
 	}
 
 	var version uint32
 	if err := binary.Read(file, binary.LittleEndian, &version); err != nil {
-		return nil, nil, fmt.Errorf("mlx: read gguf version: %w", err)
+		return nil, nil, core.Errorf("mlx: read gguf version: %w", err)
 	}
 	if version < 2 {
-		return nil, nil, fmt.Errorf("mlx: unsupported gguf version %d", version)
+		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
 
 	var tensorCount uint64
 	if err := binary.Read(file, binary.LittleEndian, &tensorCount); err != nil {
-		return nil, nil, fmt.Errorf("mlx: read gguf tensor count: %w", err)
+		return nil, nil, core.Errorf("mlx: read gguf tensor count: %w", err)
 	}
 	var metadataCount uint64
 	if err := binary.Read(file, binary.LittleEndian, &metadataCount); err != nil {
-		return nil, nil, fmt.Errorf("mlx: read gguf metadata count: %w", err)
+		return nil, nil, core.Errorf("mlx: read gguf metadata count: %w", err)
 	}
 	if tensorCount > maxGGUFCollectionEntries {
-		return nil, nil, fmt.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
+		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
 	if metadataCount > maxGGUFCollectionEntries {
-		return nil, nil, fmt.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
+		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
 		key, err := readGGUFString(file)
 		if err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf metadata key: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
 		var valueType uint32
 		if err := binary.Read(file, binary.LittleEndian, &valueType); err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf metadata type: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
 		value, err := readGGUFValue(file, valueType)
 		if err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
+			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
 		metadata[key] = value
 	}
@@ -327,25 +321,25 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	for i := uint64(0); i < tensorCount; i++ {
 		name, err := readGGUFString(file)
 		if err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf tensor name: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
 		var ndim uint32
 		if err := binary.Read(file, binary.LittleEndian, &ndim); err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf tensor ndim: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
 		for range ndim {
 			var dim uint64
 			if err := binary.Read(file, binary.LittleEndian, &dim); err != nil {
-				return nil, nil, fmt.Errorf("mlx: read gguf tensor dimension: %w", err)
+				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
 		}
 		var tensorType uint32
 		if err := binary.Read(file, binary.LittleEndian, &tensorType); err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf tensor type: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf tensor type: %w", err)
 		}
 		var offset uint64
 		if err := binary.Read(file, binary.LittleEndian, &offset); err != nil {
-			return nil, nil, fmt.Errorf("mlx: read gguf tensor offset: %w", err)
+			return nil, nil, core.Errorf("mlx: read gguf tensor offset: %w", err)
 		}
 		tensors = append(tensors, ggufTensorInfo{Name: name, Type: tensorType})
 	}
@@ -359,7 +353,7 @@ func readGGUFString(reader io.Reader) (string, error) {
 		return "", err
 	}
 	if length > 16<<20 {
-		return "", errors.New("gguf string is unreasonably large")
+		return "", core.NewError("gguf string is unreasonably large")
 	}
 	buffer := make([]byte, length)
 	if _, err := io.ReadFull(reader, buffer); err != nil {
@@ -399,7 +393,7 @@ func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
 			return nil, err
 		}
 		if length > maxGGUFCollectionEntries {
-			return nil, fmt.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
+			return nil, core.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
 		}
 		values := make([]any, 0, int(length))
 		for i := uint64(0); i < length; i++ {
@@ -417,7 +411,7 @@ func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
 	case ggufValueTypeFloat64:
 		return readGGUFBinary[float64](reader)
 	default:
-		return nil, fmt.Errorf("unsupported gguf metadata type %d", valueType)
+		return nil, core.Errorf("unsupported gguf metadata type %d", valueType)
 	}
 }
 
@@ -428,13 +422,13 @@ func readGGUFBinary[T any](reader io.Reader) (T, error) {
 }
 
 func readModelConfig(dir string) (*modelConfigProbe, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
-	if err != nil {
-		return nil, err
+	read := core.ReadFile(core.PathJoin(dir, "config.json"))
+	if !read.OK {
+		return nil, ggufResultError(read)
 	}
 	var config modelConfigProbe
-	if err := json.Unmarshal(data, &config); err != nil {
-		return nil, err
+	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
+		return nil, ggufResultError(result)
 	}
 	return &config, nil
 }
@@ -451,17 +445,17 @@ func (probe *modelConfigProbe) architecture() string {
 	}
 	for _, architecture := range probe.Architectures {
 		switch {
-		case strings.Contains(architecture, "Gemma4"):
+		case core.Contains(architecture, "Gemma4"):
 			return "gemma4_text"
-		case strings.Contains(architecture, "Gemma3"):
+		case core.Contains(architecture, "Gemma3"):
 			return "gemma3"
-		case strings.Contains(architecture, "Gemma2"):
+		case core.Contains(architecture, "Gemma2"):
 			return "gemma2"
-		case strings.Contains(architecture, "Qwen3"):
+		case core.Contains(architecture, "Qwen3"):
 			return "qwen3"
-		case strings.Contains(architecture, "Qwen2"):
+		case core.Contains(architecture, "Qwen2"):
 			return "qwen2"
-		case strings.Contains(architecture, "Llama"):
+		case core.Contains(architecture, "Llama"):
 			return "llama"
 		}
 	}
@@ -572,7 +566,7 @@ func metadataInt(value any) int {
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
+		if core.Trim(value) != "" {
 			return value
 		}
 	}
@@ -607,7 +601,8 @@ func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes
 	prefixes := []string{"general"}
 	if architecture != "" {
 		prefixes = append([]string{architecture}, prefixes...)
-		if base, _, ok := strings.Cut(architecture, "_"); ok && base != "" && base != architecture {
+		if parts := core.SplitN(architecture, "_", 2); len(parts) == 2 && parts[0] != "" && parts[0] != architecture {
+			base := parts[0]
 			prefixes = append([]string{base}, prefixes...)
 		}
 	}
@@ -664,7 +659,7 @@ func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architec
 
 func extractLayerIndex(name string) int {
 	for _, marker := range []string{"model.layers.", "layers.", "blk.", "block."} {
-		index := strings.Index(name, marker)
+		index := indexString(name, marker)
 		if index < 0 {
 			continue
 		}
@@ -723,4 +718,26 @@ func ggufTensorBits(tensorType uint32) int {
 	default:
 		return 0
 	}
+}
+
+func ggufResultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return nil
+}
+
+func indexString(s, substr string) int {
+	if substr == "" {
+		return 0
+	}
+	if len(substr) > len(s) {
+		return -1
+	}
+	for i := range len(s) - len(substr) + 1 {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }

@@ -5,10 +5,6 @@ package mlx
 import (
 	stdio "io"
 	"io/fs"
-	"os"
-	slashpath "path"
-	"path/filepath"
-	"strings"
 
 	"dappco.re/go"
 
@@ -36,13 +32,17 @@ func stagePathFromMedium(medium coreio.Medium, path string) (string, func() erro
 		return "", nil, core.E("mlx.stagePathFromMedium", "path not found in medium: "+root, nil)
 	}
 
-	stageDir, err := os.MkdirTemp("", "mlx-medium-*")
-	if err != nil {
-		return "", nil, core.E("mlx.stagePathFromMedium", "create staging dir", err)
+	stageDirResult := core.MkdirTemp("", "mlx-medium-*")
+	if !stageDirResult.OK {
+		return "", nil, core.E("mlx.stagePathFromMedium", "create staging dir", resultError(stageDirResult))
 	}
+	stageDir := stageDirResult.Value.(string)
 
 	cleanup := func() error {
-		return os.RemoveAll(stageDir)
+		if r := core.RemoveAll(stageDir); !r.OK {
+			return resultError(r)
+		}
+		return nil
 	}
 
 	if err := copyMediumTree(medium, root, stageDir); err != nil {
@@ -56,21 +56,21 @@ func stagePathFromMedium(medium coreio.Medium, path string) (string, func() erro
 	if relative == "" {
 		return stageDir, cleanup, nil
 	}
-	return filepath.Join(stageDir, filepath.FromSlash(relative)), cleanup, nil
+	return core.PathJoin(stageDir, fromSlashPath(relative)), cleanup, nil
 }
 
 func mediumModelRoot(modelPath string) string {
 	cleaned := cleanMediumPath(modelPath)
 	switch {
-	case strings.HasSuffix(cleaned, ".gguf"), strings.HasSuffix(cleaned, ".safetensors"):
-		return cleanMediumPath(slashpath.Dir(cleaned))
+	case core.HasSuffix(cleaned, ".gguf"), core.HasSuffix(cleaned, ".safetensors"):
+		return cleanMediumPath(core.PathDir(cleaned))
 	default:
 		return cleaned
 	}
 }
 
 func cleanMediumPath(p string) string {
-	cleaned := slashpath.Clean(strings.TrimSpace(p))
+	cleaned := core.CleanPath(core.Trim(p), "/")
 	if cleaned == "." {
 		return ""
 	}
@@ -82,33 +82,33 @@ func mediumRelativePath(root, target string) string {
 		return ""
 	}
 	if root == "" {
-		return strings.TrimPrefix(target, "/")
+		return core.TrimPrefix(target, "/")
 	}
 	// Forward-slash paths are POSIX; compute relative via filepath.Rel and
 	// convert back to slash form so callers receive consistent separators.
-	relative, err := filepath.Rel(filepath.FromSlash(root), filepath.FromSlash(target))
-	if err != nil || relative == "." {
+	relativeResult := core.PathRel(fromSlashPath(root), fromSlashPath(target))
+	if !relativeResult.OK || relativeResult.Value.(string) == "." {
 		return ""
 	}
-	return filepath.ToSlash(relative)
+	return core.PathToSlash(relativeResult.Value.(string))
 }
 
 func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) error {
 	if sourceRoot != "" && !medium.IsDir(sourceRoot) {
 		return core.E("mlx.copyMediumTree", "source root is not a directory: "+sourceRoot, nil)
 	}
-	if err := os.MkdirAll(destinationRoot, 0o755); err != nil {
-		return core.E("mlx.copyMediumTree", "create destination root", err)
+	if r := core.MkdirAll(destinationRoot, 0o755); !r.OK {
+		return core.E("mlx.copyMediumTree", "create destination root", resultError(r))
 	}
 	return walkMedium(medium, sourceRoot, func(sourcePath string, entry fs.DirEntry) error {
 		relative := mediumRelativePath(sourceRoot, sourcePath)
 		destinationPath := destinationRoot
 		if relative != "" {
-			destinationPath = filepath.Join(destinationRoot, filepath.FromSlash(relative))
+			destinationPath = core.PathJoin(destinationRoot, fromSlashPath(relative))
 		}
 		if entry.IsDir() {
-			if err := os.MkdirAll(destinationPath, 0o755); err != nil {
-				return core.E("mlx.copyMediumTree", "create directory", err)
+			if r := core.MkdirAll(destinationPath, 0o755); !r.OK {
+				return core.E("mlx.copyMediumTree", "create directory", resultError(r))
 			}
 			return nil
 		}
@@ -124,7 +124,7 @@ func walkMedium(medium coreio.Medium, root string, visit func(string, fs.DirEntr
 	for _, entry := range entries {
 		entryPath := entry.Name()
 		if root != "" {
-			entryPath = slashpath.Join(root, entry.Name())
+			entryPath = core.PathJoin(root, entry.Name())
 		}
 		if err := visit(entryPath, entry); err != nil {
 			return err
@@ -150,18 +150,30 @@ func copyMediumFile(medium coreio.Medium, sourcePath, destinationPath string) er
 		mode = info.Mode()
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-		return core.E("mlx.copyMediumFile", "create parent directories", err)
+	if r := core.MkdirAll(core.PathDir(destinationPath), 0o755); !r.OK {
+		return core.E("mlx.copyMediumFile", "create parent directories", resultError(r))
 	}
 
-	writer, err := os.OpenFile(destinationPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return core.E("mlx.copyMediumFile", "create "+destinationPath, err)
+	writerResult := core.OpenFile(destinationPath, core.O_CREATE|core.O_TRUNC|core.O_WRONLY, mode)
+	if !writerResult.OK {
+		return core.E("mlx.copyMediumFile", "create "+destinationPath, resultError(writerResult))
 	}
+	writer := writerResult.Value.(*core.OSFile)
 	defer writer.Close()
 
 	if _, err := stdio.Copy(writer, reader); err != nil {
 		return core.E("mlx.copyMediumFile", "copy "+sourcePath, err)
 	}
 	return nil
+}
+
+func resultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return nil
+}
+
+func fromSlashPath(path string) string {
+	return core.Replace(path, "/", string(core.PathSeparator))
 }

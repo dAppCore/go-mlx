@@ -3,9 +3,10 @@
 package mlx
 
 import (
-	"strings"
 	"time"
 	"unicode"
+
+	core "dappco.re/go"
 )
 
 // ComputeErrorKind classifies non-LLM compute failures for frame-oriented callers.
@@ -277,12 +278,12 @@ type FrameMetrics struct {
 }
 
 func sanitizeComputeLabel(label string) string {
-	label = strings.TrimSpace(label)
+	label = core.Trim(label)
 	if label == "" {
 		return ""
 	}
 
-	var builder strings.Builder
+	builder := core.NewBuilder()
 	lastUnderscore := false
 	for _, r := range label {
 		switch {
@@ -303,7 +304,14 @@ func sanitizeComputeLabel(label string) string {
 		}
 	}
 
-	return strings.Trim(builder.String(), "_")
+	out := builder.String()
+	for core.HasPrefix(out, "_") {
+		out = core.TrimPrefix(out, "_")
+	}
+	for core.HasSuffix(out, "_") {
+		out = core.TrimSuffix(out, "_")
+	}
+	return out
 }
 
 func computeKernelRuntimeName(sessionLabel, kernelName string) string {

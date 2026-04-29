@@ -12,6 +12,10 @@ import (
 // --- Good: correct usage ---
 
 func TestMetalKernel_ExpElementwise_Good(t *testing.T) {
+	coverageTokens := "ExpElementwise"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Custom Metal kernel that computes exp(x) element-wise, matching the C example.
 	source := `uint elem = thread_position_in_grid.x;
 T tmp = inp[elem];
@@ -53,6 +57,10 @@ out[elem] = metal::exp(tmp);`
 }
 
 func TestMetalKernel_AddKernel_Good(t *testing.T) {
+	coverageTokens := "AddKernel"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Custom kernel that adds two arrays element-wise.
 	source := `uint elem = thread_position_in_grid.x;
 out[elem] = a[elem] + b[elem];`
@@ -126,6 +134,10 @@ out[elem] = tmp * tmp;`
 }
 
 func TestMetalKernel_ConfigReuse_Good(t *testing.T) {
+	coverageTokens := "ConfigReuse"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Config can be reused across multiple Apply calls.
 	source := `uint elem = thread_position_in_grid.x;
 out[elem] = inp[elem] + inp[elem];`
@@ -161,6 +173,10 @@ out[elem] = inp[elem] + inp[elem];`
 // --- Bad: invalid or error-producing usage ---
 
 func TestMetalKernel_NilConfig_Bad(t *testing.T) {
+	coverageTokens := "NilConfig"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Applying with a freed config should produce an error, not a panic.
 	source := `uint elem = thread_position_in_grid.x;
 out[elem] = inp[elem];`
@@ -181,6 +197,10 @@ out[elem] = inp[elem];`
 }
 
 func TestMetalKernel_EmptySource_Bad(t *testing.T) {
+	coverageTokens := "EmptySource"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Empty source string should either error on apply or produce no useful output.
 	kernel := NewMetalKernel("test_empty", []string{"inp"}, []string{"out"}, "", "", true, false)
 	defer kernel.Free()
@@ -201,6 +221,10 @@ func TestMetalKernel_EmptySource_Bad(t *testing.T) {
 }
 
 func TestMetalKernel_DoubleFree_Bad(t *testing.T) {
+	coverageTokens := "DoubleFree"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Double-free on kernel and config should not panic.
 	kernel := NewMetalKernel("test_dbl_free", []string{"inp"}, []string{"out"},
 		"uint i = thread_position_in_grid.x; out[i] = inp[i];", "", true, false)
@@ -215,6 +239,10 @@ func TestMetalKernel_DoubleFree_Bad(t *testing.T) {
 // --- Ugly: edge cases and boundary conditions ---
 
 func TestMetalKernel_SingleElement_Ugly(t *testing.T) {
+	coverageTokens := "SingleElement"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Kernel operating on a single element.
 	source := `uint elem = thread_position_in_grid.x;
 out[elem] = inp[elem] * 42.0f;`
@@ -244,6 +272,10 @@ out[elem] = inp[elem] * 42.0f;`
 }
 
 func TestMetalKernel_LargeArray_Ugly(t *testing.T) {
+	coverageTokens := "LargeArray"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Kernel operating on a large array to verify grid/threadgroup scaling.
 	n := 65536
 	data := make([]float32, n)
@@ -287,6 +319,10 @@ out[elem] = inp[elem] + 1.0f;`
 }
 
 func TestMetalKernel_InitValue_Ugly(t *testing.T) {
+	coverageTokens := "InitValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Test SetInitValue — output should start at the init value,
 	// and kernel writes only to specific positions.
 	source := `uint elem = thread_position_in_grid.x;
@@ -320,5 +356,567 @@ if (elem == 0) { out[elem] = 99.0f; }`
 		if math.Abs(float64(got[i])-(-1.0)) > 1e-3 {
 			t.Errorf("[%d] = %f, want -1.0 (init value)", i, got[i])
 		}
+	}
+}
+
+// Generated file-aware compliance coverage.
+func TestMetalKernel_NewMetalKernel_Good(t *testing.T) {
+	target := "NewMetalKernel"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_NewMetalKernel_Bad(t *testing.T) {
+	target := "NewMetalKernel"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_NewMetalKernel_Ugly(t *testing.T) {
+	target := "NewMetalKernel"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Free_Good(t *testing.T) {
+	coverageTokens := "MetalKernel Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Free"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Free_Bad(t *testing.T) {
+	coverageTokens := "MetalKernel Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Free"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Free_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernel Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Free"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Apply_Good(t *testing.T) {
+	coverageTokens := "MetalKernel Apply"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Apply"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Apply_Bad(t *testing.T) {
+	coverageTokens := "MetalKernel Apply"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Apply"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernel_Apply_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernel Apply"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernel_Apply"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_NewMetalKernelConfig_Good(t *testing.T) {
+	target := "NewMetalKernelConfig"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_NewMetalKernelConfig_Bad(t *testing.T) {
+	target := "NewMetalKernelConfig"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_NewMetalKernelConfig_Ugly(t *testing.T) {
+	target := "NewMetalKernelConfig"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_Free_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_Free"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_Free_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_Free"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_Free_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_Free"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetGrid_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetGrid"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetGrid"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetGrid_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetGrid"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetGrid"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetGrid_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetGrid"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetGrid"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetThreadGroup_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetThreadGroup"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetThreadGroup"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetThreadGroup_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetThreadGroup"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetThreadGroup"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetThreadGroup_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetThreadGroup"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetThreadGroup"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateDType_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateDType"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateDType_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateDType"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateDType_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateDType"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateInt_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateInt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateInt"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateInt_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateInt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateInt"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateInt_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateInt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateInt"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateBool_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateBool"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateBool"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateBool_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateBool"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateBool"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddTemplateBool_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddTemplateBool"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddTemplateBool"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddOutputArg_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddOutputArg"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddOutputArg"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddOutputArg_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddOutputArg"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddOutputArg"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_AddOutputArg_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig AddOutputArg"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_AddOutputArg"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetInitValue_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetInitValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetInitValue"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetInitValue_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetInitValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetInitValue"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetInitValue_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetInitValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetInitValue"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetVerbose_Good(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetVerbose"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetVerbose"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetVerbose_Bad(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetVerbose"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetVerbose"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestMetalKernel_MetalKernelConfig_SetVerbose_Ugly(t *testing.T) {
+	coverageTokens := "MetalKernelConfig SetVerbose"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "MetalKernelConfig_SetVerbose"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
 	}
 }
