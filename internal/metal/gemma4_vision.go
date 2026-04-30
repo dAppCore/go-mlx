@@ -6,9 +6,8 @@ package metal
 
 import (
 	"math"
-	"strings"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // Gemma4VisionRopeParameters holds the 2-D RoPE settings for the vision tower.
@@ -260,15 +259,15 @@ func canonicalGemma4VisionWeightName(name string) (string, bool) {
 		"vision_tower.",
 		"vision_model.",
 	} {
-		if strings.HasPrefix(trimmed, prefix) {
-			return strings.TrimPrefix(trimmed, prefix), true
+		if core.HasPrefix(trimmed, prefix) {
+			return core.TrimPrefix(trimmed, prefix), true
 		}
 	}
 	for _, prefix := range []string{
 		"multi_modal_projector.",
 		"embed_vision.",
 	} {
-		if strings.HasPrefix(trimmed, prefix) {
+		if core.HasPrefix(trimmed, prefix) {
 			return trimmed, true
 		}
 	}

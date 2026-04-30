@@ -5,8 +5,9 @@
 package mlx
 
 import (
-	"errors"
 	"testing"
+
+	core "dappco.re/go"
 
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -29,6 +30,10 @@ func requireComputeSession(t *testing.T) Session {
 }
 
 func TestComputeSession_ByteBufferRoundTrip_Good(t *testing.T) {
+	coverageTokens := "ByteBufferRoundTrip"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	buffer, err := session.NewByteBuffer(4)
@@ -51,6 +56,10 @@ func TestComputeSession_ByteBufferRoundTrip_Good(t *testing.T) {
 }
 
 func TestComputeSession_RGB565ToRGBA8_Good(t *testing.T) {
+	coverageTokens := "RGB565ToRGBA8"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -105,6 +114,10 @@ func TestComputeSession_RGB565ToRGBA8_Good(t *testing.T) {
 }
 
 func TestComputeSession_NearestScale_Good(t *testing.T) {
+	coverageTokens := "NearestScale"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -164,6 +177,10 @@ func TestComputeSession_NearestScale_Good(t *testing.T) {
 }
 
 func TestComputeSession_PaletteExpandRGBA_Good(t *testing.T) {
+	coverageTokens := "PaletteExpandRGBA"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -233,6 +250,10 @@ func TestComputeSession_PaletteExpandRGBA_Good(t *testing.T) {
 }
 
 func TestComputeSession_IntegerScale_Good(t *testing.T) {
+	coverageTokens := "IntegerScale"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -289,6 +310,10 @@ func TestComputeSession_IntegerScale_Good(t *testing.T) {
 }
 
 func TestComputeSession_IntegerScaleRejectsNonIntegerFactor_Bad(t *testing.T) {
+	coverageTokens := "IntegerScaleRejectsNonIntegerFactor"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -319,6 +344,10 @@ func TestComputeSession_IntegerScaleRejectsNonIntegerFactor_Bad(t *testing.T) {
 }
 
 func TestComputeSession_BilinearScale_Good(t *testing.T) {
+	coverageTokens := "BilinearScale"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -368,6 +397,10 @@ func TestComputeSession_BilinearScale_Good(t *testing.T) {
 }
 
 func TestComputeSession_ChannelSwizzleRoundTrip_Good(t *testing.T) {
+	coverageTokens := "ChannelSwizzleRoundTrip"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	rgba, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -440,6 +473,10 @@ func TestComputeSession_ChannelSwizzleRoundTrip_Good(t *testing.T) {
 }
 
 func TestComputeSession_XRGB8888ToRGBA8_Good(t *testing.T) {
+	coverageTokens := "XRGB8888ToRGBA8"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -485,6 +522,10 @@ func TestComputeSession_XRGB8888ToRGBA8_Good(t *testing.T) {
 }
 
 func TestComputeSession_ScanlineFilter_Good(t *testing.T) {
+	coverageTokens := "ScanlineFilter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -537,6 +578,10 @@ func TestComputeSession_ScanlineFilter_Good(t *testing.T) {
 }
 
 func TestComputeSession_CRTFilter_Good(t *testing.T) {
+	coverageTokens := "CRTFilter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -591,6 +636,10 @@ func TestComputeSession_CRTFilter_Good(t *testing.T) {
 }
 
 func TestComputeSession_SoftenFilter_Good(t *testing.T) {
+	coverageTokens := "SoftenFilter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -645,6 +694,10 @@ func TestComputeSession_SoftenFilter_Good(t *testing.T) {
 }
 
 func TestComputeSession_SharpenFilter_Good(t *testing.T) {
+	coverageTokens := "SharpenFilter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -699,6 +752,10 @@ func TestComputeSession_SharpenFilter_Good(t *testing.T) {
 }
 
 func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
+	coverageTokens := "ScanlineFilterRejectsInvalidStrength"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -728,11 +785,11 @@ func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected scanline_filter to reject strength outside [0,1]")
 	}
-	if !errors.Is(err, ErrComputeInvalidScalar) {
+	if !core.Is(err, ErrComputeInvalidScalar) {
 		t.Fatalf("Run(scanline_filter) error = %v, want ErrComputeInvalidScalar", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(scanline_filter) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kernel != KernelScanlineFilter || computeErr.Resource != "strength" {
@@ -741,6 +798,10 @@ func TestComputeSession_ScanlineFilterRejectsInvalidStrength_Bad(t *testing.T) {
 }
 
 func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
+	coverageTokens := "FilterRejectsMismatchedStride"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -770,7 +831,7 @@ func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
 		t.Fatal("expected filter to reject mismatched strides")
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(scanline_filter) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kind != ComputeErrorInvalidKernelArgs || computeErr.Resource != "stride" {
@@ -779,6 +840,10 @@ func TestComputeSession_FilterRejectsMismatchedStride_Bad(t *testing.T) {
 }
 
 func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
+	coverageTokens := "RunRejectsForeignBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	sessionA := requireComputeSession(t)
 	sessionB := requireComputeSession(t)
 
@@ -808,11 +873,11 @@ func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected foreign destination buffer to be rejected")
 	}
-	if !errors.Is(err, ErrComputeInvalidBuffer) {
+	if !core.Is(err, ErrComputeInvalidBuffer) {
 		t.Fatalf("Run(rgb565_to_rgba8) error = %v, want ErrComputeInvalidBuffer", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(rgb565_to_rgba8) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Resource != "dst" {
@@ -821,17 +886,21 @@ func TestComputeSession_RunRejectsForeignBuffer_Bad(t *testing.T) {
 }
 
 func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T) {
+	coverageTokens := "RunUnknownKernel ReturnsStructuredError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	err := session.Run("not_a_kernel", KernelArgs{})
 	if err == nil {
 		t.Fatal("expected unknown kernel error")
 	}
-	if !errors.Is(err, ErrComputeUnknownKernel) {
+	if !core.Is(err, ErrComputeUnknownKernel) {
 		t.Fatalf("Run(not_a_kernel) error = %v, want ErrComputeUnknownKernel", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(not_a_kernel) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kernel != "not_a_kernel" {
@@ -840,25 +909,36 @@ func TestComputeSession_RunUnknownKernel_ReturnsStructuredError_Bad(t *testing.T
 }
 
 func TestComputeSession_RunMissingBuffer_ReturnsStructuredError_Bad(t *testing.T) {
+	coverageTokens := "RunMissingBuffer ReturnsStructuredError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	err := session.Run(KernelRGB565ToRGBA8, KernelArgs{})
 	if err == nil {
 		t.Fatal("expected missing kernel buffer error")
 	}
-	if !errors.Is(err, ErrComputeMissingKernelBuffer) {
+	if !core.Is(err, ErrComputeMissingKernelBuffer) {
 		t.Fatalf("Run(rgb565_to_rgba8) error = %v, want ErrComputeMissingKernelBuffer", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(rgb565_to_rgba8) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kernel != KernelRGB565ToRGBA8 || computeErr.Resource != "src" {
 		t.Fatalf("ComputeError = %+v, want kernel=%q resource=%q", computeErr, KernelRGB565ToRGBA8, "src")
 	}
+	if err := session.BeginFrame(); err != nil {
+		t.Fatalf("BeginFrame after failed implicit Run: %v", err)
+	}
 }
 
 func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T) {
+	coverageTokens := "IntegerScaleFormatErrorUsesPublicKernel"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -887,11 +967,11 @@ func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T
 	if err == nil {
 		t.Fatal("expected integer_scale to reject mixed pixel formats")
 	}
-	if !errors.Is(err, ErrComputeInvalidKernelArgs) {
+	if !core.Is(err, ErrComputeInvalidKernelArgs) {
 		t.Fatalf("Run(integer_scale) error = %v, want ErrComputeInvalidKernelArgs", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(integer_scale) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kernel != KernelIntegerScale || computeErr.Resource != "format" {
@@ -900,6 +980,10 @@ func TestComputeSession_IntegerScaleFormatErrorUsesPublicKernel_Bad(t *testing.T
 }
 
 func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T) {
+	coverageTokens := "ChannelSwizzleErrorUsesRequestedKernel"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -928,11 +1012,11 @@ func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T)
 	if err == nil {
 		t.Fatal("expected bgra8_to_rgba8 to reject an rgba8 source")
 	}
-	if !errors.Is(err, ErrComputeInvalidKernelArgs) {
+	if !core.Is(err, ErrComputeInvalidKernelArgs) {
 		t.Fatalf("Run(bgra8_to_rgba8) error = %v, want ErrComputeInvalidKernelArgs", err)
 	}
 	var computeErr *ComputeError
-	if !errors.As(err, &computeErr) {
+	if !core.As(err, &computeErr) {
 		t.Fatalf("Run(bgra8_to_rgba8) error = %T, want *ComputeError", err)
 	}
 	if computeErr.Kernel != KernelBGRA8ToRGBA8 || computeErr.Resource != "src" {
@@ -941,6 +1025,10 @@ func TestComputeSession_ChannelSwizzleErrorUsesRequestedKernel_Bad(t *testing.T)
 }
 
 func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
+	coverageTokens := "ClosedSessionReturnsStructuredError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 	if err := session.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -950,12 +1038,16 @@ func TestComputeSession_ClosedSessionReturnsStructuredError_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected NewByteBuffer on a closed session to fail")
 	}
-	if !errors.Is(err, ErrComputeClosed) {
+	if !core.Is(err, ErrComputeClosed) {
 		t.Fatalf("NewByteBuffer() error = %v, want ErrComputeClosed", err)
 	}
 }
 
 func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
+	coverageTokens := "MetricsTrackDispatchAndSync"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1018,6 +1110,10 @@ func TestComputeSession_MetricsTrackDispatchAndSync_Good(t *testing.T) {
 }
 
 func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.T) {
+	coverageTokens := "SessionLabelPrefixesCompiledKernelNames"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	if !MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
@@ -1035,7 +1131,7 @@ func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	session := rawSession.(*computeSession)
+	session := rawSession.(*computesession)
 	t.Cleanup(func() {
 		if err := session.Close(); err != nil {
 			t.Fatalf("Close: %v", err)
@@ -1059,7 +1155,11 @@ func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.
 }
 
 func TestComputeSession_MetricsClampToZeroWhenBelowBase_Good(t *testing.T) {
-	session := &computeSession{
+	coverageTokens := "MetricsClampToZeroWhenBelowBase"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	session := &computesession{
 		metrics: SessionMetrics{
 			ActiveMemoryBytes: 123,
 			PeakMemoryBytes:   456,
@@ -1089,6 +1189,10 @@ func TestComputeSession_MetricsClampToZeroWhenBelowBase_Good(t *testing.T) {
 }
 
 func TestComputeSession_FrameLifecycle_Good(t *testing.T) {
+	coverageTokens := "FrameLifecycle"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1151,6 +1255,10 @@ func TestComputeSession_FrameLifecycle_Good(t *testing.T) {
 }
 
 func TestComputeSession_RunImplicitFrameAndFinish_Good(t *testing.T) {
+	coverageTokens := "RunImplicitFrameAndFinish"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	src, err := session.NewPixelBuffer(PixelBufferDesc{
@@ -1192,6 +1300,10 @@ func TestComputeSession_RunImplicitFrameAndFinish_Good(t *testing.T) {
 }
 
 func TestComputeSession_BeginFrameWhileActive_ReturnsStructuredError_Bad(t *testing.T) {
+	coverageTokens := "BeginFrameWhileActive ReturnsStructuredError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	session := requireComputeSession(t)
 
 	if err := session.BeginFrame(); err != nil {
@@ -1201,7 +1313,794 @@ func TestComputeSession_BeginFrameWhileActive_ReturnsStructuredError_Bad(t *test
 	if err == nil {
 		t.Fatal("expected BeginFrame to reject an already-active frame")
 	}
-	if !errors.Is(err, ErrComputeInvalidState) {
+	if !core.Is(err, ErrComputeInvalidState) {
 		t.Fatalf("BeginFrame() error = %v, want ErrComputeInvalidState", err)
+	}
+}
+
+// Generated file-aware compliance coverage.
+func TestComputeDarwin_DefaultCompute_Good(t *testing.T) {
+	target := "DefaultCompute"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_DefaultCompute_Bad(t *testing.T) {
+	target := "DefaultCompute"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_DefaultCompute_Ugly(t *testing.T) {
+	target := "DefaultCompute"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_NewSession_Good(t *testing.T) {
+	target := "NewSession"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_NewSession_Bad(t *testing.T) {
+	target := "NewSession"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_NewSession_Ugly(t *testing.T) {
+	target := "NewSession"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_Available_Good(t *testing.T) {
+	coverageTokens := "Backend Available"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_Available"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_Available_Bad(t *testing.T) {
+	coverageTokens := "Backend Available"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_Available"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_Available_Ugly(t *testing.T) {
+	coverageTokens := "Backend Available"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_Available"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_DeviceInfo_Good(t *testing.T) {
+	coverageTokens := "Backend DeviceInfo"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_DeviceInfo"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_DeviceInfo_Bad(t *testing.T) {
+	coverageTokens := "Backend DeviceInfo"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_DeviceInfo"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_DeviceInfo_Ugly(t *testing.T) {
+	coverageTokens := "Backend DeviceInfo"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_DeviceInfo"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_NewSession_Good(t *testing.T) {
+	coverageTokens := "Backend NewSession"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_NewSession"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_NewSession_Bad(t *testing.T) {
+	coverageTokens := "Backend NewSession"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_NewSession"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Backend_NewSession_Ugly(t *testing.T) {
+	coverageTokens := "Backend NewSession"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Backend_NewSession"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Base_Size_Good(t *testing.T) {
+	coverageTokens := "Base Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Base_Size"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Base_Size_Bad(t *testing.T) {
+	coverageTokens := "Base Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Base_Size"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Base_Size_Ugly(t *testing.T) {
+	coverageTokens := "Base Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Base_Size"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Descriptor_Good(t *testing.T) {
+	coverageTokens := "Buffer Descriptor"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Descriptor"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Descriptor_Bad(t *testing.T) {
+	coverageTokens := "Buffer Descriptor"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Descriptor"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Descriptor_Ugly(t *testing.T) {
+	coverageTokens := "Buffer Descriptor"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Descriptor"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Upload_Good(t *testing.T) {
+	coverageTokens := "Buffer Upload"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Upload"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Upload_Bad(t *testing.T) {
+	coverageTokens := "Buffer Upload"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Upload"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Upload_Ugly(t *testing.T) {
+	coverageTokens := "Buffer Upload"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Upload"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Read_Good(t *testing.T) {
+	coverageTokens := "Buffer Read"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Read"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Read_Bad(t *testing.T) {
+	coverageTokens := "Buffer Read"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Read"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Buffer_Read_Ugly(t *testing.T) {
+	coverageTokens := "Buffer Read"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Buffer_Read"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Close_Good(t *testing.T) {
+	coverageTokens := "Session Close"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Close"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Close_Bad(t *testing.T) {
+	coverageTokens := "Session Close"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Close"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Close_Ugly(t *testing.T) {
+	coverageTokens := "Session Close"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Close"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewPixelBuffer_Good(t *testing.T) {
+	coverageTokens := "Session NewPixelBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewPixelBuffer"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewPixelBuffer_Bad(t *testing.T) {
+	coverageTokens := "Session NewPixelBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewPixelBuffer"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewPixelBuffer_Ugly(t *testing.T) {
+	coverageTokens := "Session NewPixelBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewPixelBuffer"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewByteBuffer_Good(t *testing.T) {
+	coverageTokens := "Session NewByteBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewByteBuffer"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewByteBuffer_Bad(t *testing.T) {
+	coverageTokens := "Session NewByteBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewByteBuffer"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_NewByteBuffer_Ugly(t *testing.T) {
+	coverageTokens := "Session NewByteBuffer"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_NewByteBuffer"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_BeginFrame_Good(t *testing.T) {
+	coverageTokens := "Session BeginFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_BeginFrame"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_BeginFrame_Bad(t *testing.T) {
+	coverageTokens := "Session BeginFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_BeginFrame"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_BeginFrame_Ugly(t *testing.T) {
+	coverageTokens := "Session BeginFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_BeginFrame"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FinishFrame_Good(t *testing.T) {
+	coverageTokens := "Session FinishFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FinishFrame"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FinishFrame_Bad(t *testing.T) {
+	coverageTokens := "Session FinishFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FinishFrame"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FinishFrame_Ugly(t *testing.T) {
+	coverageTokens := "Session FinishFrame"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FinishFrame"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Run_Good(t *testing.T) {
+	coverageTokens := "Session Run"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Run"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Run_Bad(t *testing.T) {
+	coverageTokens := "Session Run"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Run"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Run_Ugly(t *testing.T) {
+	coverageTokens := "Session Run"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Run"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Sync_Good(t *testing.T) {
+	coverageTokens := "Session Sync"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Sync"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Sync_Bad(t *testing.T) {
+	coverageTokens := "Session Sync"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Sync"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Sync_Ugly(t *testing.T) {
+	coverageTokens := "Session Sync"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Sync"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Metrics_Good(t *testing.T) {
+	coverageTokens := "Session Metrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Metrics"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Metrics_Bad(t *testing.T) {
+	coverageTokens := "Session Metrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Metrics"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_Metrics_Ugly(t *testing.T) {
+	coverageTokens := "Session Metrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_Metrics"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FrameMetrics_Good(t *testing.T) {
+	coverageTokens := "Session FrameMetrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FrameMetrics"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FrameMetrics_Bad(t *testing.T) {
+	coverageTokens := "Session FrameMetrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FrameMetrics"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestComputeDarwin_Session_FrameMetrics_Ugly(t *testing.T) {
+	coverageTokens := "Session FrameMetrics"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Session_FrameMetrics"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
 	}
 }

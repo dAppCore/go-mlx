@@ -27,7 +27,7 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 var (

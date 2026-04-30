@@ -4,22 +4,19 @@ package daemon
 
 import (
 	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
+
+	core "dappco.re/go"
 )
 
 const (
-	socketFileMode os.FileMode = 0o600
-	socketDirMode  os.FileMode = 0o700
-	maxFrameBytes              = 16 * 1024 * 1024
+	socketFileMode core.FileMode = 0o600
+	socketDirMode  core.FileMode = 0o700
+	maxFrameBytes                = 16 * 1024 * 1024
 )
 
 type ServerConfig struct {
@@ -79,18 +76,21 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
-		return fmt.Errorf("listen unix %s: %w", socketPath, err)
+		return core.Errorf("listen unix %s: %w", socketPath, err)
 	}
-	if err := os.Chmod(socketPath, socketFileMode); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
-		return fmt.Errorf("chmod socket %s: %w", socketPath, err)
+	if err := chmod(socketPath, socketFileMode); err != nil {
+		err = core.ErrorJoin(err, ln.Close(), removePath(socketPath))
+		return core.Errorf("chmod socket %s: %w", socketPath, err)
 	}
 
 	s.SocketPath = socketPath
 	defer func() {
-		_ = ln.Close()
-		_ = os.Remove(socketPath)
+		if err := ln.Close(); err != nil && !core.Is(err, net.ErrClosed) {
+			core.Print(core.Stderr(), "violet daemon: close listener: %v", err)
+		}
+		if err := removePath(socketPath); err != nil && !core.IsNotExist(err) {
+			core.Print(core.Stderr(), "violet daemon: remove socket: %v", err)
+		}
 	}()
 
 	return s.serve(ctx, ln)
@@ -104,9 +104,13 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = ln.Close()
+			if err := ln.Close(); err != nil && !core.Is(err, net.ErrClosed) {
+				core.Print(core.Stderr(), "violet daemon: close listener: %v", err)
+			}
 			conns.Range(func(key, _ any) bool {
-				_ = key.(net.Conn).Close()
+				if err := key.(net.Conn).Close(); err != nil && !core.Is(err, net.ErrClosed) {
+					core.Print(core.Stderr(), "violet daemon: close connection: %v", err)
+				}
 				return true
 			})
 		case <-done:
@@ -121,10 +125,10 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+			if ctx.Err() != nil || core.Is(err, net.ErrClosed) {
 				return nil
 			}
-			return fmt.Errorf("accept unix connection: %w", err)
+			return core.Errorf("accept unix connection: %w", err)
 		}
 
 		conns.Store(conn, struct{}{})
@@ -132,7 +136,9 @@ func (s *Server) serve(ctx context.Context, ln net.Listener) error {
 		go func(conn net.Conn) {
 			defer wg.Done()
 			defer conns.Delete(conn)
-			_ = s.handleConn(ctx, conn)
+			if err := s.handleConn(ctx, conn); err != nil {
+				core.Print(core.Stderr(), "violet daemon: handle connection: %v", err)
+			}
 		}(conn)
 	}
 }
@@ -142,24 +148,23 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxFrameBytes)
-	encoder := json.NewEncoder(conn)
 
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
+		line := core.Trim(string(scanner.Bytes()))
+		if line == "" {
 			continue
 		}
 
 		var req Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			if encodeErr := encoder.Encode(errorResponse{
+		if result := core.JSONUnmarshalString(line, &req); !result.OK {
+			if encodeErr := writeJSONLine(conn, errorResponse{
 				Status:  "error",
 				Error:   "invalid_json",
-				Message: err.Error(),
+				Message: daemonResultError(result).Error(),
 			}); encodeErr != nil {
 				return encodeErr
 			}
@@ -168,7 +173,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 
 		resp, err := s.Registry.Dispatch(ctx, req)
 		if err != nil {
-			if encodeErr := encoder.Encode(errorResponse{
+			if encodeErr := writeJSONLine(conn, errorResponse{
 				Status:  "error",
 				Error:   "dispatch_error",
 				Message: err.Error(),
@@ -178,7 +183,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 			continue
 		}
 
-		if err := encoder.Encode(resp); err != nil {
+		if err := writeJSONLine(conn, resp); err != nil {
 			return err
 		}
 	}
@@ -198,40 +203,70 @@ func (s *Server) resolvedSocketPath() (string, error) {
 
 func DefaultSocketPath() (string, error) {
 	if runtime.GOOS == "darwin" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
+		home := core.UserHomeDir()
+		if !home.OK {
+			return "", core.Errorf("resolve home directory: %w", daemonResultError(home))
 		}
-		return filepath.Join(home, "Library", "Caches", "ofm", "violet.sock"), nil
+		return core.PathJoin(home.Value.(string), "Library", "Caches", "ofm", "violet.sock"), nil
 	}
 
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	runtimeDir := core.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
-		return "", errors.New("XDG_RUNTIME_DIR is not set")
+		return "", core.NewError("XDG_RUNTIME_DIR is not set")
 	}
-	return filepath.Join(runtimeDir, "ofm", "violet.sock"), nil
+	return core.PathJoin(runtimeDir, "ofm", "violet.sock"), nil
 }
 
 func prepareSocketPath(socketPath string) error {
 	if socketPath == "" {
-		return errors.New("socket path is required")
+		return core.NewError("socket path is required")
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), socketDirMode); err != nil {
-		return fmt.Errorf("create socket directory: %w", err)
+	if r := core.MkdirAll(core.PathDir(socketPath), socketDirMode); !r.OK {
+		return core.Errorf("create socket directory: %w", daemonResultError(r))
 	}
 
-	info, err := os.Lstat(socketPath)
-	if errors.Is(err, os.ErrNotExist) {
+	infoResult := core.Lstat(socketPath)
+	if !infoResult.OK && core.IsNotExist(daemonResultError(infoResult)) {
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("stat socket path: %w", err)
+	if !infoResult.OK {
+		return core.Errorf("stat socket path: %w", daemonResultError(infoResult))
 	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("refusing to replace non-socket path %s", socketPath)
+	info := infoResult.Value.(core.FsFileInfo)
+	if info.Mode()&core.ModeSocket == 0 {
+		return core.Errorf("refusing to replace non-socket path %s", socketPath)
 	}
-	if err := os.Remove(socketPath); err != nil {
-		return fmt.Errorf("remove stale socket %s: %w", socketPath, err)
+	if err := removePath(socketPath); err != nil {
+		return core.Errorf("remove stale socket %s: %w", socketPath, err)
 	}
 	return nil
+}
+
+func writeJSONLine(w core.Writer, value any) error {
+	encoded := core.JSONMarshal(value)
+	if !encoded.OK {
+		return daemonResultError(encoded)
+	}
+	if written := core.WriteString(w, string(encoded.Value.([]byte))+"\n"); !written.OK {
+		return daemonResultError(written)
+	}
+	return nil
+}
+
+func removePath(path string) error {
+	if result := core.Remove(path); !result.OK {
+		return daemonResultError(result)
+	}
+	return nil
+}
+
+func chmod(path string, mode core.FileMode) error {
+	return syscall.Chmod(path, uint32(mode.Perm()))
+}
+
+func daemonResultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("daemon operation failed")
 }

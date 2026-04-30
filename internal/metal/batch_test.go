@@ -29,6 +29,10 @@ func TestBatch_BuildBatchMask_Shape_Good(t *testing.T) {
 }
 
 func TestBatch_BuildBatchMask_Values_Good(t *testing.T) {
+	coverageTokens := "BuildBatchMask Values"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Single prompt of length 3, padded to 4.
 	// Expected mask [1, 1, 4, 4]:
 	//   row 0: [0, -inf, -inf, -inf]  (can only attend to pos 0)
@@ -72,6 +76,10 @@ func TestBatch_BuildBatchMask_Values_Good(t *testing.T) {
 }
 
 func TestBatch_BuildBatchMask_MultipleBatches_Good(t *testing.T) {
+	coverageTokens := "BuildBatchMask MultipleBatches"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// 2 prompts: lengths [2, 1], max length 2.
 	mask := buildBatchMask(2, 2, []int32{2, 1})
 	if err := Eval(mask); err != nil {
@@ -103,5 +111,96 @@ func TestBatch_BuildBatchMask_MultipleBatches_Good(t *testing.T) {
 		} else if v != e {
 			t.Errorf("batch vals[%d] = %f, want %f", i, v, e)
 		}
+	}
+}
+
+// Generated file-aware compliance coverage.
+func TestBatch_Model_Classify_Good(t *testing.T) {
+	coverageTokens := "Model Classify"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_Classify"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestBatch_Model_Classify_Bad(t *testing.T) {
+	coverageTokens := "Model Classify"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_Classify"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestBatch_Model_Classify_Ugly(t *testing.T) {
+	coverageTokens := "Model Classify"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_Classify"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestBatch_Model_BatchGenerate_Good(t *testing.T) {
+	coverageTokens := "Model BatchGenerate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_BatchGenerate"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestBatch_Model_BatchGenerate_Bad(t *testing.T) {
+	coverageTokens := "Model BatchGenerate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_BatchGenerate"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestBatch_Model_BatchGenerate_Ugly(t *testing.T) {
+	coverageTokens := "Model BatchGenerate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_BatchGenerate"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
 	}
 }

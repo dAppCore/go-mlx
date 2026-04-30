@@ -8,13 +8,13 @@ import (
 	"context"
 	"iter"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 )
 
 func init() {
-	inference.Register(&metalBackend{})
+	inference.Register(&metalbackend{})
 }
 
 // MetalAvailable reports whether native Metal inference is available.
@@ -74,16 +74,16 @@ type DeviceInfo = metal.DeviceInfo
 //	fmt.Printf("%s %d MB\n", info.Architecture, info.MemorySize/1024/1024)
 func GetDeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
 
-type metalBackend struct{}
+type metalbackend struct{}
 
-func (backend *metalBackend) Name() string    { return "metal" }
-func (backend *metalBackend) Available() bool { return MetalAvailable() }
+func (backend *metalbackend) Name() string    { return "metal" }
+func (backend *metalbackend) Available() bool { return MetalAvailable() }
 
 var loadBackendModel = func(modelPath string, cfg metal.LoadConfig) (*metal.Model, error) {
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
-func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
+func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
 	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
 	if partialOffloadUnsupported {
@@ -97,14 +97,14 @@ func (backend *metalBackend) LoadModel(modelPath string, opts ...inference.LoadO
 	if err != nil {
 		return nil, err
 	}
-	return &metalAdapter{model: model}, nil
+	return &metaladapter{model: model}, nil
 }
 
-type metalAdapter struct {
+type metaladapter struct {
 	model *metal.Model
 }
 
-func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	return func(yield func(inference.Token) bool) {
@@ -116,7 +116,7 @@ func (adapter *metalAdapter) Generate(ctx context.Context, prompt string, opts .
 	}
 }
 
-func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
+func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	metalMessages := make([]metal.ChatMessage, len(messages))
@@ -132,7 +132,7 @@ func (adapter *metalAdapter) Chat(ctx context.Context, messages []inference.Mess
 	}
 }
 
-func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
+func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
@@ -149,7 +149,7 @@ func (adapter *metalAdapter) Classify(ctx context.Context, prompts []string, opt
 	return classifications, nil
 }
 
-func (adapter *metalAdapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
+func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
 	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
@@ -167,7 +167,7 @@ func (adapter *metalAdapter) BatchGenerate(ctx context.Context, prompts []string
 	return batchResults, nil
 }
 
-func (adapter *metalAdapter) Metrics() inference.GenerateMetrics {
+func (adapter *metaladapter) Metrics() inference.GenerateMetrics {
 	metrics := adapter.model.LastMetrics()
 	return inference.GenerateMetrics{
 		PromptTokens:        metrics.PromptTokens,
@@ -182,8 +182,8 @@ func (adapter *metalAdapter) Metrics() inference.GenerateMetrics {
 	}
 }
 
-func (adapter *metalAdapter) ModelType() string { return adapter.model.ModelType() }
-func (adapter *metalAdapter) Info() inference.ModelInfo {
+func (adapter *metaladapter) ModelType() string { return adapter.model.ModelType() }
+func (adapter *metaladapter) Info() inference.ModelInfo {
 	modelInfo := adapter.model.Info()
 	return inference.ModelInfo{
 		Architecture: modelInfo.Architecture,
@@ -194,7 +194,7 @@ func (adapter *metalAdapter) Info() inference.ModelInfo {
 		QuantGroup:   modelInfo.QuantGroup,
 	}
 }
-func (adapter *metalAdapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
+func (adapter *metaladapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
 	attention, err := adapter.model.InspectAttention(ctx, prompt)
 	if err != nil {
 		return nil, err
@@ -211,5 +211,5 @@ func (adapter *metalAdapter) InspectAttention(ctx context.Context, prompt string
 	}, nil
 }
 
-func (adapter *metalAdapter) Err() error   { return adapter.model.Err() }
-func (adapter *metalAdapter) Close() error { return adapter.model.Close() }
+func (adapter *metaladapter) Err() error   { return adapter.model.Err() }
+func (adapter *metaladapter) Close() error { return adapter.model.Close() }

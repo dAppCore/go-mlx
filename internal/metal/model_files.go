@@ -6,17 +6,16 @@ package metal
 
 import (
 	"maps"
-	"os"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 func resolveModelRoot(modelPath string) string {
 	if core.HasSuffix(modelPath, ".gguf") || core.HasSuffix(modelPath, ".safetensors") {
 		return core.PathDir(modelPath)
 	}
-	info, err := os.Stat(modelPath)
-	if err == nil && !info.IsDir() {
+	info := core.Stat(modelPath)
+	if info.OK && !info.Value.(core.FsFileInfo).IsDir() {
 		return core.PathDir(modelPath)
 	}
 	return modelPath

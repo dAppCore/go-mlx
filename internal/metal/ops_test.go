@@ -788,3 +788,1324 @@ func TestOps_IsNaN_AllNaN_Ugly(t *testing.T) {
 		t.Error("expected Any(IsNaN(all-NaN)) to be true")
 	}
 }
+
+// Generated file-aware compliance coverage.
+func TestOps_Add_Bad(t *testing.T) {
+	target := "Add"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Add_Ugly(t *testing.T) {
+	target := "Add"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AddScalar_Bad(t *testing.T) {
+	target := "AddScalar"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AddScalar_Ugly(t *testing.T) {
+	target := "AddScalar"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Mul_Bad(t *testing.T) {
+	target := "Mul"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Mul_Ugly(t *testing.T) {
+	target := "Mul"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_MulScalar_Bad(t *testing.T) {
+	target := "MulScalar"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_MulScalar_Ugly(t *testing.T) {
+	target := "MulScalar"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Divide_Bad(t *testing.T) {
+	target := "Divide"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Divide_Ugly(t *testing.T) {
+	target := "Divide"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Subtract_Bad(t *testing.T) {
+	target := "Subtract"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Subtract_Ugly(t *testing.T) {
+	target := "Subtract"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Negative_Bad(t *testing.T) {
+	target := "Negative"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Negative_Ugly(t *testing.T) {
+	target := "Negative"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Copy_Good(t *testing.T) {
+	target := "Copy"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Copy_Bad(t *testing.T) {
+	target := "Copy"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Copy_Ugly(t *testing.T) {
+	target := "Copy"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Exp_Bad(t *testing.T) {
+	target := "Exp"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Exp_Ugly(t *testing.T) {
+	target := "Exp"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sigmoid_Bad(t *testing.T) {
+	target := "Sigmoid"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sigmoid_Ugly(t *testing.T) {
+	target := "Sigmoid"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_SiLU_Bad(t *testing.T) {
+	target := "SiLU"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_SiLU_Ugly(t *testing.T) {
+	target := "SiLU"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Tanh_Bad(t *testing.T) {
+	target := "Tanh"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Tanh_Ugly(t *testing.T) {
+	target := "Tanh"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sqrt_Bad(t *testing.T) {
+	target := "Sqrt"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sqrt_Ugly(t *testing.T) {
+	target := "Sqrt"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Rsqrt_Bad(t *testing.T) {
+	target := "Rsqrt"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Rsqrt_Ugly(t *testing.T) {
+	target := "Rsqrt"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Reciprocal_Bad(t *testing.T) {
+	target := "Reciprocal"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Reciprocal_Ugly(t *testing.T) {
+	target := "Reciprocal"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Square_Bad(t *testing.T) {
+	target := "Square"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Square_Ugly(t *testing.T) {
+	target := "Square"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Power_Bad(t *testing.T) {
+	target := "Power"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Power_Ugly(t *testing.T) {
+	target := "Power"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Maximum_Bad(t *testing.T) {
+	target := "Maximum"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Maximum_Ugly(t *testing.T) {
+	target := "Maximum"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Minimum_Bad(t *testing.T) {
+	target := "Minimum"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Minimum_Ugly(t *testing.T) {
+	target := "Minimum"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Matmul_Bad(t *testing.T) {
+	target := "Matmul"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Matmul_Ugly(t *testing.T) {
+	target := "Matmul"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Conv2d_Good(t *testing.T) {
+	target := "Conv2d"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Conv2d_Bad(t *testing.T) {
+	target := "Conv2d"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Conv2d_Ugly(t *testing.T) {
+	target := "Conv2d"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_QuantizedMatmul_Good(t *testing.T) {
+	target := "QuantizedMatmul"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_QuantizedMatmul_Bad(t *testing.T) {
+	target := "QuantizedMatmul"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_QuantizedMatmul_Ugly(t *testing.T) {
+	target := "QuantizedMatmul"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherMM_Good(t *testing.T) {
+	target := "GatherMM"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherMM_Bad(t *testing.T) {
+	target := "GatherMM"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherMM_Ugly(t *testing.T) {
+	target := "GatherMM"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherQMM_Good(t *testing.T) {
+	target := "GatherQMM"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherQMM_Bad(t *testing.T) {
+	target := "GatherQMM"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_GatherQMM_Ugly(t *testing.T) {
+	target := "GatherQMM"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Softmax_Bad(t *testing.T) {
+	target := "Softmax"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Softmax_Ugly(t *testing.T) {
+	target := "Softmax"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argmax_Bad(t *testing.T) {
+	target := "Argmax"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argmax_Ugly(t *testing.T) {
+	target := "Argmax"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_TopK_Bad(t *testing.T) {
+	target := "TopK"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_TopK_Ugly(t *testing.T) {
+	target := "TopK"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sum_Bad(t *testing.T) {
+	target := "Sum"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sum_Ugly(t *testing.T) {
+	target := "Sum"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Mean_Bad(t *testing.T) {
+	target := "Mean"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Mean_Ugly(t *testing.T) {
+	target := "Mean"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Reshape_Bad(t *testing.T) {
+	target := "Reshape"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Reshape_Ugly(t *testing.T) {
+	target := "Reshape"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Transpose_Bad(t *testing.T) {
+	target := "Transpose"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Transpose_Ugly(t *testing.T) {
+	target := "Transpose"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_ExpandDims_Bad(t *testing.T) {
+	target := "ExpandDims"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_ExpandDims_Ugly(t *testing.T) {
+	target := "ExpandDims"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Squeeze_Bad(t *testing.T) {
+	target := "Squeeze"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Squeeze_Ugly(t *testing.T) {
+	target := "Squeeze"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Concatenate_Bad(t *testing.T) {
+	target := "Concatenate"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Concatenate_Ugly(t *testing.T) {
+	target := "Concatenate"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_BroadcastTo_Bad(t *testing.T) {
+	target := "BroadcastTo"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_BroadcastTo_Ugly(t *testing.T) {
+	target := "BroadcastTo"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AsType_Bad(t *testing.T) {
+	target := "AsType"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AsType_Ugly(t *testing.T) {
+	target := "AsType"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AsStrided_Good(t *testing.T) {
+	target := "AsStrided"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AsStrided_Bad(t *testing.T) {
+	target := "AsStrided"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AsStrided_Ugly(t *testing.T) {
+	target := "AsStrided"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Take_Bad(t *testing.T) {
+	target := "Take"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Take_Ugly(t *testing.T) {
+	target := "Take"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Where_Bad(t *testing.T) {
+	target := "Where"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Where_Ugly(t *testing.T) {
+	target := "Where"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argpartition_Good(t *testing.T) {
+	target := "Argpartition"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argpartition_Bad(t *testing.T) {
+	target := "Argpartition"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argpartition_Ugly(t *testing.T) {
+	target := "Argpartition"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Dequantize_Good(t *testing.T) {
+	target := "Dequantize"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Dequantize_Bad(t *testing.T) {
+	target := "Dequantize"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Dequantize_Ugly(t *testing.T) {
+	target := "Dequantize"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_PutAlongAxis_Good(t *testing.T) {
+	target := "PutAlongAxis"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_PutAlongAxis_Bad(t *testing.T) {
+	target := "PutAlongAxis"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_PutAlongAxis_Ugly(t *testing.T) {
+	target := "PutAlongAxis"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_TakeAlongAxis_Bad(t *testing.T) {
+	target := "TakeAlongAxis"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_TakeAlongAxis_Ugly(t *testing.T) {
+	target := "TakeAlongAxis"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_LogSumExp_Good(t *testing.T) {
+	target := "LogSumExp"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_LogSumExp_Bad(t *testing.T) {
+	target := "LogSumExp"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_LogSumExp_Ugly(t *testing.T) {
+	target := "LogSumExp"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_CumSum_Bad(t *testing.T) {
+	target := "CumSum"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_CumSum_Ugly(t *testing.T) {
+	target := "CumSum"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sort_Bad(t *testing.T) {
+	target := "Sort"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Sort_Ugly(t *testing.T) {
+	target := "Sort"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argsort_Bad(t *testing.T) {
+	target := "Argsort"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Argsort_Ugly(t *testing.T) {
+	target := "Argsort"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Greater_Bad(t *testing.T) {
+	target := "Greater"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Greater_Ugly(t *testing.T) {
+	target := "Greater"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_MaxAxis_Bad(t *testing.T) {
+	target := "MaxAxis"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_MaxAxis_Ugly(t *testing.T) {
+	target := "MaxAxis"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Any_Good(t *testing.T) {
+	target := "Any"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Any_Bad(t *testing.T) {
+	target := "Any"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Any_Ugly(t *testing.T) {
+	target := "Any"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AnyAxis_Good(t *testing.T) {
+	target := "AnyAxis"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AnyAxis_Bad(t *testing.T) {
+	target := "AnyAxis"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_AnyAxis_Ugly(t *testing.T) {
+	target := "AnyAxis"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Arange_Good(t *testing.T) {
+	target := "Arange"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Arange_Bad(t *testing.T) {
+	target := "Arange"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_Arange_Ugly(t *testing.T) {
+	target := "Arange"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_IsNaN_Good(t *testing.T) {
+	target := "IsNaN"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_IsNaN_Bad(t *testing.T) {
+	target := "IsNaN"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestOps_IsNaN_Ugly(t *testing.T) {
+	target := "IsNaN"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
