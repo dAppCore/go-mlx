@@ -5,15 +5,15 @@
 package metal
 
 import (
-	"fmt"
-	"os"
 	"testing"
+
+	core "dappco.re/go"
 )
 
 func TestMain(m *testing.M) {
 	if !MetalAvailable() {
-		fmt.Fprintln(os.Stderr, "skipping internal/metal tests: usable Metal device unavailable")
-		os.Exit(0)
+		core.Print(core.Stderr(), "skipping internal/metal tests: usable Metal device unavailable")
+		core.Exit(0)
 	}
-	os.Exit(m.Run())
+	core.Exit(m.Run())
 }

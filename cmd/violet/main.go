@@ -5,17 +5,13 @@ package main
 import (
 	"bufio"
 	"context"
-	"errors"
 	"flag"
-	"fmt"
 	"io"
-	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/pkg/daemon"
 )
 
@@ -27,10 +23,10 @@ type runtimeConfig struct {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	os.Exit(runCommand(ctx, os.Args[1:], os.Stdout, os.Stderr))
+	core.Exit(runCommand(ctx, core.Args()[1:], core.Stdout(), core.Stderr()))
 }
 
 func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -45,28 +41,28 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	}
 
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
+		if core.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintf(stderr, "violet: unexpected argument %q\n", fs.Arg(0))
+		core.Print(stderr, "violet: unexpected argument %q", fs.Arg(0))
 		printUsage(stderr, fs)
 		return 2
 	}
 	if *showVersion {
-		fmt.Fprintf(stdout, "violet %s\n", version)
+		core.Print(stdout, "violet %s", version)
 		return 0
 	}
 
 	cfg, err := loadRuntimeConfig(*configPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "violet: %v\n", err)
+		core.Print(stderr, "violet: %v", err)
 		return 1
 	}
 
-	if envSocket := os.Getenv("VIOLET_SOCKET_PATH"); envSocket != "" && cfg.SocketPath == "" {
+	if envSocket := core.Getenv("VIOLET_SOCKET_PATH"); envSocket != "" && cfg.SocketPath == "" {
 		cfg.SocketPath = envSocket
 	}
 	if *socketPath != "" {
@@ -75,7 +71,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	if cfg.SocketPath == "" {
 		cfg.SocketPath, err = daemon.DefaultSocketPath()
 		if err != nil {
-			fmt.Fprintf(stderr, "violet: %v\n", err)
+			core.Print(stderr, "violet: %v", err)
 			return 1
 		}
 	}
@@ -90,24 +86,24 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	})
 
 	if err := srv.ListenAndServe(ctx); err != nil {
-		fmt.Fprintf(stderr, "violet: %v\n", err)
+		core.Print(stderr, "violet: %v", err)
 		return 1
 	}
 	return 0
 }
 
 func printUsage(w io.Writer, fs *flag.FlagSet) {
-	fmt.Fprintln(w, "Usage: violet [flags]")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Runs the Violet local-native inference sidecar over a Unix domain socket.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Flags:")
+	core.WriteString(w, "Usage: violet [flags]\n")
+	core.WriteString(w, "\n")
+	core.WriteString(w, "Runs the Violet local-native inference sidecar over a Unix domain socket.\n")
+	core.WriteString(w, "\n")
+	core.WriteString(w, "Flags:\n")
 	fs.VisitAll(func(f *flag.Flag) {
 		if f.DefValue == "" {
-			fmt.Fprintf(w, "  -%s\n\t%s\n", f.Name, f.Usage)
+			core.WriteString(w, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
 			return
 		}
-		fmt.Fprintf(w, "  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue)
+		core.WriteString(w, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 	})
 }
 
@@ -120,7 +116,7 @@ func loadRuntimeConfig(explicitPath string) (runtimeConfig, error) {
 	}
 	if configPath != "" {
 		if err := readConfigFile(configPath, &cfg); err != nil {
-			if explicitPath != "" || !errors.Is(err, os.ErrNotExist) {
+			if explicitPath != "" || !core.IsNotExist(err) {
 				return cfg, err
 			}
 		}
@@ -131,21 +127,22 @@ func loadRuntimeConfig(explicitPath string) (runtimeConfig, error) {
 }
 
 func defaultConfigPath() string {
-	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
-		return filepath.Join(configHome, "ofm", "violet.toml")
+	if configHome := core.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		return core.PathJoin(configHome, "ofm", "violet.toml")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
+	home := core.UserHomeDir()
+	if !home.OK {
 		return ""
 	}
-	return filepath.Join(home, ".config", "ofm", "violet.toml")
+	return core.PathJoin(home.Value.(string), ".config", "ofm", "violet.toml")
 }
 
 func readConfigFile(path string, cfg *runtimeConfig) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
+	opened := core.Open(path)
+	if !opened.OK {
+		return commandResultError(opened)
 	}
+	file := opened.Value.(*core.OSFile)
 	defer file.Close()
 
 	section := ""
@@ -153,26 +150,27 @@ func readConfigFile(path string, cfg *runtimeConfig) error {
 	lineNumber := 0
 	for scanner.Scan() {
 		lineNumber++
-		line := strings.TrimSpace(stripConfigComment(scanner.Text()))
+		line := core.Trim(stripConfigComment(scanner.Text()))
 		if line == "" {
 			continue
 		}
 
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
+		if core.HasPrefix(line, "[") && core.HasSuffix(line, "]") {
+			section = core.Trim(core.TrimSuffix(core.TrimPrefix(line, "["), "]"))
 			continue
 		}
 
-		key, rawValue, ok := strings.Cut(line, "=")
-		if !ok {
-			return fmt.Errorf("%s:%d: expected key = value", path, lineNumber)
+		parts := core.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			return core.Errorf("%s:%d: expected key = value", path, lineNumber)
 		}
 
-		value, err := parseConfigValue(strings.TrimSpace(rawValue))
+		key, rawValue := parts[0], parts[1]
+		value, err := parseConfigValue(core.Trim(rawValue))
 		if err != nil {
-			return fmt.Errorf("%s:%d: %w", path, lineNumber, err)
+			return core.Errorf("%s:%d: %w", path, lineNumber, err)
 		}
-		key = strings.TrimSpace(key)
+		key = core.Trim(key)
 
 		switch section {
 		case "models":
@@ -200,17 +198,17 @@ func parseConfigValue(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
 	}
-	if strings.HasPrefix(raw, "\"") {
+	if core.HasPrefix(raw, "\"") {
 		value, err := strconv.Unquote(raw)
 		if err != nil {
 			return "", err
 		}
 		return value, nil
 	}
-	if strings.HasPrefix(raw, "'") && strings.HasSuffix(raw, "'") {
-		return strings.TrimSuffix(strings.TrimPrefix(raw, "'"), "'"), nil
+	if core.HasPrefix(raw, "'") && core.HasSuffix(raw, "'") {
+		return core.TrimSuffix(core.TrimPrefix(raw, "'"), "'"), nil
 	}
-	return strings.TrimSpace(raw), nil
+	return core.Trim(raw), nil
 }
 
 func stripConfigComment(line string) string {
@@ -256,7 +254,14 @@ func applyModelEnv(cfg *runtimeConfig, name, envName string) {
 	if cfg.Models[name] != "" {
 		return
 	}
-	if value := os.Getenv(envName); value != "" {
+	if value := core.Getenv(envName); value != "" {
 		cfg.Models[name] = value
 	}
+}
+
+func commandResultError(result core.Result) error {
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("violet command operation failed")
 }

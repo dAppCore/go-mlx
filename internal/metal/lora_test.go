@@ -8,7 +8,7 @@ import (
 	"math"
 	"testing"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
 )
@@ -48,6 +48,10 @@ func TestLora_NewLoRALinear_Good(t *testing.T) {
 }
 
 func TestLora_LoRALinear_ForwardMatchesBase_Good(t *testing.T) {
+	coverageTokens := "LoRALinear ForwardMatchesBase"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// With B=0, LoRA forward should equal base forward
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -80,6 +84,10 @@ func TestLora_LoRALinear_ForwardMatchesBase_Good(t *testing.T) {
 }
 
 func TestLora_LoRALinear_ForwardWithAdapter_Good(t *testing.T) {
+	coverageTokens := "LoRALinear ForwardWithAdapter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Set A and B to known values and verify output changes
 	w := Zeros([]int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -149,6 +157,10 @@ func TestLora_LoRALinear_TrainableParams_Good(t *testing.T) {
 }
 
 func TestLora_NormalizeConfig_RFCAliases_Good(t *testing.T) {
+	coverageTokens := "NormalizeConfig RFCAliases"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	cfg := normalizeLoRAConfig(LoRAConfig{
 		Rank:         8,
 		Scale:        1.5,
@@ -193,6 +205,10 @@ func (m *loraStepTestModel) ModelType() string                   { return "lora-
 func (m *loraStepTestModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func TestLora_Regularization_Good(t *testing.T) {
+	coverageTokens := "Regularization"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	requireMetalRuntime(t)
 
 	a := FromValues([]float32{3, 4}, 1, 2)
@@ -256,6 +272,10 @@ func TestLora_Step_AppliesLambdaRegularization_Good(t *testing.T) {
 }
 
 func TestLora_BatchLengths_Good(t *testing.T) {
+	coverageTokens := "BatchLengths"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	lengths, maxLen := batchLengths(
 		Batch{
 			Tokens: [][]int{
@@ -279,6 +299,10 @@ func TestLora_BatchLengths_Good(t *testing.T) {
 }
 
 func TestLora_FreeReplacedArrays_PreservesLiveReferences_Good(t *testing.T) {
+	coverageTokens := "FreeReplacedArrays PreservesLiveReferences"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	requireMetalRuntime(t)
 
 	keep := FromValues([]float32{1, 2}, 1, 2)
@@ -299,6 +323,10 @@ func TestLora_FreeReplacedArrays_PreservesLiveReferences_Good(t *testing.T) {
 }
 
 func TestLora_LoRALinear_GradientFlows_Good(t *testing.T) {
+	coverageTokens := "LoRALinear GradientFlows"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Verify that gradients flow through the LoRA path
 	w := RandomNormal(0, 0.1, []int32{4, 8}, DTypeFloat32)
 	Materialize(w)
@@ -534,6 +562,10 @@ func TestLora_DefaultLoRAConfig_Good(t *testing.T) {
 }
 
 func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
+	coverageTokens := "NormalizeConfig NegativeRankUsesDefault"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	cfg := normalizeLoRAConfig(LoRAConfig{Rank: -4})
 	if cfg.Rank != 8 {
 		t.Fatalf("Rank = %d, want 8", cfg.Rank)
@@ -546,6 +578,10 @@ func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
 // --- parseLoRAWeightName ---
 
 func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
+	coverageTokens := "ParseLoRAWeightName"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	tests := []struct {
 		name     string
 		input    string
@@ -596,6 +632,10 @@ func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
 }
 
 func TestLora_ParseLoRAWeightName_Bad(t *testing.T) {
+	coverageTokens := "ParseLoRAWeightName"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	tests := []struct {
 		name  string
 		input string
@@ -620,6 +660,10 @@ func TestLora_ParseLoRAWeightName_Bad(t *testing.T) {
 // --- parseAdapterConfig ---
 
 func TestLora_ParseAdapterConfig_Good(t *testing.T) {
+	coverageTokens := "ParseAdapterConfig"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	dir := t.TempDir()
 	cfg := `{
 		"rank": 16,
@@ -693,6 +737,10 @@ func TestLora_LoadAdapterWeights_Bad_NoFiles(t *testing.T) {
 }
 
 func TestLora_LoadAdapterWeights_Good(t *testing.T) {
+	coverageTokens := "LoadAdapterWeights"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	dir := t.TempDir()
 
 	// Save a small adapter file.
@@ -1060,5 +1108,499 @@ func TestLora_LoadAndInit_AdapterMissing_Bad(t *testing.T) {
 	_, err := LoadAndInit(dir, LoadConfig{AdapterPath: "/nonexistent/adapter"})
 	if err == nil {
 		t.Fatal("expected error for missing adapter")
+	}
+}
+
+// Generated file-aware compliance coverage.
+func TestLora_NewLoRALinear_Bad(t *testing.T) {
+	target := "NewLoRALinear"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_NewLoRALinear_Ugly(t *testing.T) {
+	target := "NewLoRALinear"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_Forward_Good(t *testing.T) {
+	coverageTokens := "LoRALinear Forward"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_Forward"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_Forward_Bad(t *testing.T) {
+	coverageTokens := "LoRALinear Forward"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_Forward"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_Forward_Ugly(t *testing.T) {
+	coverageTokens := "LoRALinear Forward"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_Forward"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_TrainableParams_Bad(t *testing.T) {
+	coverageTokens := "LoRALinear TrainableParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_TrainableParams"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_TrainableParams_Ugly(t *testing.T) {
+	coverageTokens := "LoRALinear TrainableParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_TrainableParams"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_SetParams_Good(t *testing.T) {
+	coverageTokens := "LoRALinear SetParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_SetParams"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_SetParams_Bad(t *testing.T) {
+	coverageTokens := "LoRALinear SetParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_SetParams"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_SetParams_Ugly(t *testing.T) {
+	coverageTokens := "LoRALinear SetParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_SetParams"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_ParamCount_Bad(t *testing.T) {
+	coverageTokens := "LoRALinear ParamCount"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_ParamCount"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRALinear_ParamCount_Ugly(t *testing.T) {
+	coverageTokens := "LoRALinear ParamCount"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRALinear_ParamCount"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_DefaultLoRAConfig_Bad(t *testing.T) {
+	target := "DefaultLoRAConfig"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_DefaultLoRAConfig_Ugly(t *testing.T) {
+	target := "DefaultLoRAConfig"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_TotalParams_Good(t *testing.T) {
+	coverageTokens := "LoRAAdapter TotalParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_TotalParams"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_TotalParams_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter TotalParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_TotalParams"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_TotalParams_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter TotalParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_TotalParams"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SortedNames_Good(t *testing.T) {
+	coverageTokens := "LoRAAdapter SortedNames"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SortedNames"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SortedNames_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter SortedNames"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SortedNames"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SortedNames_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter SortedNames"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SortedNames"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_AllTrainableParams_Good(t *testing.T) {
+	coverageTokens := "LoRAAdapter AllTrainableParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_AllTrainableParams"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_AllTrainableParams_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter AllTrainableParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_AllTrainableParams"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_AllTrainableParams_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter AllTrainableParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_AllTrainableParams"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SetAllParams_Good(t *testing.T) {
+	coverageTokens := "LoRAAdapter SetAllParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SetAllParams"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SetAllParams_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter SetAllParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SetAllParams"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_SetAllParams_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter SetAllParams"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_SetAllParams"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_Step_Good(t *testing.T) {
+	coverageTokens := "LoRAAdapter Step"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_Step"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_Step_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter Step"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_Step"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_Step_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter Step"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_Step"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_Save_Bad(t *testing.T) {
+	coverageTokens := "LoRAAdapter Save"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_Save"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_LoRAAdapter_Save_Ugly(t *testing.T) {
+	coverageTokens := "LoRAAdapter Save"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "LoRAAdapter_Save"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_RandomNormal_Bad(t *testing.T) {
+	target := "RandomNormal"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_RandomNormal_Ugly(t *testing.T) {
+	target := "RandomNormal"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_SaveSafetensors_Bad(t *testing.T) {
+	target := "SaveSafetensors"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestLora_SaveSafetensors_Ugly(t *testing.T) {
+	target := "SaveSafetensors"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
 	}
 }

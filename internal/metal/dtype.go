@@ -7,7 +7,7 @@ package metal
 // #include "mlx/c/mlx.h"
 import "C"
 
-import "dappco.re/go/core"
+import "dappco.re/go"
 
 // DType represents an MLX array data type.
 type DType C.mlx_dtype

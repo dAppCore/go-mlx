@@ -12,7 +12,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 )
 
-var defaultComputeBackend Compute = computeBackend{}
+var defaultComputeBackend Compute = computebackend{}
 var newComputeMetalKernel = metal.NewMetalKernel
 
 // DefaultCompute returns the package's default Metal compute backend.
@@ -23,12 +23,12 @@ func NewSession(opts ...SessionOption) (Session, error) {
 	return defaultComputeBackend.NewSession(opts...)
 }
 
-type computeBackend struct{}
+type computebackend struct{}
 
-func (computeBackend) Available() bool        { return MetalAvailable() }
-func (computeBackend) DeviceInfo() DeviceInfo { return GetDeviceInfo() }
+func (computebackend) Available() bool        { return MetalAvailable() }
+func (computebackend) DeviceInfo() DeviceInfo { return GetDeviceInfo() }
 
-func (computeBackend) NewSession(opts ...SessionOption) (Session, error) {
+func (computebackend) NewSession(opts ...SessionOption) (Session, error) {
 	if !MetalAvailable() {
 		return nil, computeErr(ComputeErrorUnavailable, "new_session", "", "", "Metal compute is unavailable")
 	}
@@ -38,20 +38,21 @@ func (computeBackend) NewSession(opts ...SessionOption) (Session, error) {
 		metal.ResetPeakMemory()
 	}
 
-	return &computeSession{
+	return &computesession{
 		cfg:              cfg,
 		kernels:          make(map[string]*metal.MetalKernel),
-		buffers:          make(map[*bufferBase]struct{}),
+		buffers:          make(map[*bufferbase]struct{}),
 		baseActiveMemory: metal.GetActiveMemory(),
 		basePeakMemory:   metal.GetPeakMemory(),
 	}, nil
 }
 
-type computeSession struct {
+type computesession struct {
 	mu               sync.Mutex
 	cfg              sessionConfig
 	kernels          map[string]*metal.MetalKernel
-	buffers          map[*bufferBase]struct{}
+	buffers          map[*bufferbase]struct{}
+	retired          []*metal.Array
 	metrics          SessionMetrics
 	frame            frameState
 	lastFrameMetrics FrameMetrics
@@ -69,17 +70,17 @@ type frameState struct {
 	metrics          FrameMetrics
 }
 
-type bufferBase struct {
-	session *computeSession
+type bufferbase struct {
+	session *computesession
 	array   *metal.Array
 	size    int
 }
 
-func (*bufferBase) bufferHandle() {}
+func (*bufferbase) bufferHandle() {}
 
-func (base *bufferBase) Size() int { return base.size }
+func (base *bufferbase) Size() int { return base.size }
 
-func (base *bufferBase) requireOpenLocked() error {
+func (base *bufferbase) requireOpenLocked() error {
 	if base == nil || base.session == nil {
 		return computeErr(ComputeErrorInvalidBuffer, "require_buffer", "", "buffer", "buffer is nil")
 	}
@@ -92,14 +93,14 @@ func (base *bufferBase) requireOpenLocked() error {
 	return nil
 }
 
-func (base *bufferBase) replaceLocked(next *metal.Array) {
-	if base.array != nil {
-		metal.Free(base.array)
+func (base *bufferbase) replaceLocked(next *metal.Array) {
+	if base.array != nil && base.array != next {
+		base.session.retireArrayLocked(base.array)
 	}
 	base.array = next
 }
 
-func (base *bufferBase) readLocked() ([]byte, error) {
+func (base *bufferbase) readLocked() ([]byte, error) {
 	if err := base.requireOpenLocked(); err != nil {
 		return nil, err
 	}
@@ -109,14 +110,14 @@ func (base *bufferBase) readLocked() ([]byte, error) {
 	return base.array.Bytes(), nil
 }
 
-type pixelBuffer struct {
-	bufferBase
+type pixelbuffer struct {
+	bufferbase
 	desc PixelBufferDesc
 }
 
-func (buffer *pixelBuffer) Descriptor() PixelBufferDesc { return buffer.desc }
+func (buffer *pixelbuffer) Descriptor() PixelBufferDesc { return buffer.desc }
 
-func (buffer *pixelBuffer) Upload(data []byte) error {
+func (buffer *pixelbuffer) Upload(data []byte) error {
 	buffer.session.mu.Lock()
 	defer buffer.session.mu.Unlock()
 
@@ -131,17 +132,17 @@ func (buffer *pixelBuffer) Upload(data []byte) error {
 	return nil
 }
 
-func (buffer *pixelBuffer) Read() ([]byte, error) {
+func (buffer *pixelbuffer) Read() ([]byte, error) {
 	buffer.session.mu.Lock()
 	defer buffer.session.mu.Unlock()
 	return buffer.readLocked()
 }
 
-type byteBuffer struct {
-	bufferBase
+type bytebuffer struct {
+	bufferbase
 }
 
-func (buffer *byteBuffer) Upload(data []byte) error {
+func (buffer *bytebuffer) Upload(data []byte) error {
 	buffer.session.mu.Lock()
 	defer buffer.session.mu.Unlock()
 
@@ -156,13 +157,13 @@ func (buffer *byteBuffer) Upload(data []byte) error {
 	return nil
 }
 
-func (buffer *byteBuffer) Read() ([]byte, error) {
+func (buffer *bytebuffer) Read() ([]byte, error) {
 	buffer.session.mu.Lock()
 	defer buffer.session.mu.Unlock()
 	return buffer.readLocked()
 }
 
-func (session *computeSession) Close() error {
+func (session *computesession) Close() error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -189,7 +190,7 @@ func (session *computeSession) Close() error {
 	return nil
 }
 
-func (session *computeSession) NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer, error) {
+func (session *computesession) NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer, error) {
 	if err := desc.Validate(); err != nil {
 		return nil, err
 	}
@@ -201,19 +202,19 @@ func (session *computeSession) NewPixelBuffer(desc PixelBufferDesc) (PixelBuffer
 		return nil, computeErr(ComputeErrorClosed, "new_pixel_buffer", "", "", "compute session is closed")
 	}
 
-	buffer := &pixelBuffer{
-		bufferBase: bufferBase{
+	buffer := &pixelbuffer{
+		bufferbase: bufferbase{
 			session: session,
 			array:   metal.Zeros([]int32{int32(desc.Height), int32(desc.Stride)}, metal.DTypeUint8),
 			size:    desc.SizeBytes(),
 		},
 		desc: desc,
 	}
-	session.buffers[&buffer.bufferBase] = struct{}{}
+	session.buffers[&buffer.bufferbase] = struct{}{}
 	return buffer, nil
 }
 
-func (session *computeSession) NewByteBuffer(size int) (ByteBuffer, error) {
+func (session *computesession) NewByteBuffer(size int) (ByteBuffer, error) {
 	if size <= 0 {
 		return nil, computeErr(ComputeErrorInvalidAllocation, "new_byte_buffer", "", "size", "byte buffer size must be positive")
 	}
@@ -228,18 +229,18 @@ func (session *computeSession) NewByteBuffer(size int) (ByteBuffer, error) {
 		return nil, computeErr(ComputeErrorClosed, "new_byte_buffer", "", "", "compute session is closed")
 	}
 
-	buffer := &byteBuffer{
-		bufferBase: bufferBase{
+	buffer := &bytebuffer{
+		bufferbase: bufferbase{
 			session: session,
 			array:   metal.Zeros([]int32{int32(size)}, metal.DTypeUint8),
 			size:    size,
 		},
 	}
-	session.buffers[&buffer.bufferBase] = struct{}{}
+	session.buffers[&buffer.bufferbase] = struct{}{}
 	return buffer, nil
 }
 
-func (session *computeSession) BeginFrame() error {
+func (session *computesession) BeginFrame() error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -253,7 +254,7 @@ func (session *computeSession) BeginFrame() error {
 	return nil
 }
 
-func (session *computeSession) FinishFrame() (FrameMetrics, error) {
+func (session *computesession) FinishFrame() (FrameMetrics, error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -272,19 +273,22 @@ func (session *computeSession) FinishFrame() (FrameMetrics, error) {
 	return session.lastFrameMetrics, nil
 }
 
-func (session *computeSession) Run(kernel string, args KernelArgs) error {
+func (session *computesession) Run(kernel string, args KernelArgs) error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
 	if session.closed {
 		return computeErr(ComputeErrorClosed, "run_kernel", kernel, "", "compute session is closed")
 	}
-	session.ensureFrameLocked()
+	implicitFrame := session.ensureFrameLocked()
 
 	start := time.Now()
 	err := session.runLocked(kernel, args)
 	dispatchDuration := time.Since(start)
 	if err != nil {
+		if implicitFrame {
+			session.frame = frameState{}
+		}
 		return err
 	}
 
@@ -301,20 +305,20 @@ func (session *computeSession) Run(kernel string, args KernelArgs) error {
 	return nil
 }
 
-func (session *computeSession) Sync() error {
+func (session *computesession) Sync() error {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return session.syncLocked()
 }
 
-func (session *computeSession) Metrics() SessionMetrics {
+func (session *computesession) Metrics() SessionMetrics {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	session.updateMemoryMetricsLocked()
 	return session.metrics
 }
 
-func (session *computeSession) FrameMetrics() FrameMetrics {
+func (session *computesession) FrameMetrics() FrameMetrics {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 
@@ -327,13 +331,14 @@ func (session *computeSession) FrameMetrics() FrameMetrics {
 	return session.lastFrameMetrics
 }
 
-func (session *computeSession) syncLocked() error {
+func (session *computesession) syncLocked() error {
 	if session.closed {
 		return computeErr(ComputeErrorClosed, "sync_session", "", "", "compute session is closed")
 	}
 	start := time.Now()
 	metal.Synchronize(metal.DefaultStream())
 	syncDuration := time.Since(start)
+	session.drainRetiredLocked()
 	session.metrics.LastSyncDuration = syncDuration
 	session.metrics.TotalSyncDuration += syncDuration
 	session.updateMemoryMetricsLocked()
@@ -345,7 +350,7 @@ func (session *computeSession) syncLocked() error {
 	return nil
 }
 
-func (session *computeSession) beginFrameLocked() {
+func (session *computesession) beginFrameLocked() {
 	session.frame = frameState{
 		active:           true,
 		index:            session.lastFrameMetrics.Frame + 1,
@@ -358,14 +363,31 @@ func (session *computeSession) beginFrameLocked() {
 	}
 }
 
-func (session *computeSession) ensureFrameLocked() {
+func (session *computesession) ensureFrameLocked() bool {
 	if session.frame.active {
-		return
+		return false
 	}
 	session.beginFrameLocked()
+	return true
 }
 
-func (session *computeSession) updateMemoryMetricsLocked() {
+func (session *computesession) retireArrayLocked(array *metal.Array) {
+	if array == nil {
+		return
+	}
+	session.retired = append(session.retired, array)
+}
+
+func (session *computesession) drainRetiredLocked() {
+	if len(session.retired) == 0 {
+		return
+	}
+	metal.Free(session.retired...)
+	clear(session.retired)
+	session.retired = session.retired[:0]
+}
+
+func (session *computesession) updateMemoryMetricsLocked() {
 	active := metal.GetActiveMemory()
 	peak := metal.GetPeakMemory()
 	if active >= session.baseActiveMemory {
@@ -380,7 +402,7 @@ func (session *computeSession) updateMemoryMetricsLocked() {
 	}
 }
 
-func (session *computeSession) updateFrameMetricsLocked() {
+func (session *computesession) updateFrameMetricsLocked() {
 	if !session.frame.active {
 		return
 	}
@@ -398,7 +420,7 @@ func (session *computeSession) updateFrameMetricsLocked() {
 	}
 }
 
-func (session *computeSession) runLocked(kernel string, args KernelArgs) error {
+func (session *computesession) runLocked(kernel string, args KernelArgs) error {
 	switch kernel {
 	case KernelNearestScale:
 		return session.runNearestScaleLocked(args, kernel, false)
@@ -658,7 +680,7 @@ dst[index + 3] = src[index + 3];`,
 
 const computeKernelHeader = "#include <metal_stdlib>\nusing namespace metal;\n"
 
-func (session *computeSession) kernelLocked(name string) (*metal.MetalKernel, error) {
+func (session *computesession) kernelLocked(name string) (*metal.MetalKernel, error) {
 	if kernel := session.kernels[name]; kernel != nil {
 		return kernel, nil
 	}
@@ -691,8 +713,8 @@ func threadGroup(width, height int) (int, int) {
 	return maxInt(1, minInt(width, 16)), maxInt(1, minInt(height, 16))
 }
 
-func (session *computeSession) pixelBufferLocked(value Buffer, kernel, role string) (*pixelBuffer, error) {
-	buffer, ok := value.(*pixelBuffer)
+func (session *computesession) pixelbufferLocked(value Buffer, kernel, role string) (*pixelbuffer, error) {
+	buffer, ok := value.(*pixelbuffer)
 	if !ok || buffer == nil {
 		return nil, computeErr(ComputeErrorInvalidBuffer, "require_pixel_buffer", kernel, role, role+" must be a pixel buffer")
 	}
@@ -705,8 +727,8 @@ func (session *computeSession) pixelBufferLocked(value Buffer, kernel, role stri
 	return buffer, nil
 }
 
-func (session *computeSession) byteBufferLocked(value Buffer, kernel, role string) (*byteBuffer, error) {
-	buffer, ok := value.(*byteBuffer)
+func (session *computesession) bytebufferLocked(value Buffer, kernel, role string) (*bytebuffer, error) {
+	buffer, ok := value.(*bytebuffer)
 	if !ok || buffer == nil {
 		return nil, computeErr(ComputeErrorInvalidBuffer, "require_byte_buffer", kernel, role, role+" must be a byte buffer")
 	}
@@ -755,7 +777,7 @@ func quantizeUnitScalar(value float64) int {
 	return maxInt(0, minInt(256, int(math.Round(value*256.0))))
 }
 
-func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
+func validateFilterBuffers(src, dst *pixelbuffer, kernel string) error {
 	if !sameDimensions(src.desc, dst.desc) {
 		return computeErr(ComputeErrorInvalidKernelArgs, "validate_kernel_buffers", kernel, "dst", kernel+" requires matching source and destination dimensions")
 	}
@@ -771,7 +793,7 @@ func validateFilterBuffers(src, dst *pixelBuffer, kernel string) error {
 	return nil
 }
 
-func (session *computeSession) applyUnaryPixelKernelLocked(publicKernel, kernelName string, src *pixelBuffer, dst *pixelBuffer, addTemplates func(*metal.MetalKernelConfig)) error {
+func (session *computesession) applyUnaryPixelKernelLocked(publicKernel, kernelName string, src *pixelbuffer, dst *pixelbuffer, addTemplates func(*metal.MetalKernelConfig)) error {
 	kernel, err := session.kernelLocked(kernelName)
 	if err != nil {
 		return err
@@ -797,7 +819,7 @@ func (session *computeSession) applyUnaryPixelKernelLocked(publicKernel, kernelN
 	return nil
 }
 
-func (session *computeSession) runNearestScaleLocked(args KernelArgs, publicKernel string, requireIntegerScale bool) error {
+func (session *computesession) runNearestScaleLocked(args KernelArgs, publicKernel string, requireIntegerScale bool) error {
 	srcValue, err := requireBuffer(args.Inputs, publicKernel, "src")
 	if err != nil {
 		return err
@@ -806,11 +828,11 @@ func (session *computeSession) runNearestScaleLocked(args KernelArgs, publicKern
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, publicKernel, "src")
+	src, err := session.pixelbufferLocked(srcValue, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, publicKernel, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
@@ -841,7 +863,7 @@ func (session *computeSession) runNearestScaleLocked(args KernelArgs, publicKern
 	})
 }
 
-func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
+func (session *computesession) runBilinearScaleLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelBilinearScale, "src")
 	if err != nil {
 		return err
@@ -850,11 +872,11 @@ func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelBilinearScale, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelBilinearScale, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelBilinearScale, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelBilinearScale, "dst")
 	if err != nil {
 		return err
 	}
@@ -874,7 +896,7 @@ func (session *computeSession) runBilinearScaleLocked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
+func (session *computesession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelRGB565ToRGBA8, "src")
 	if err != nil {
 		return err
@@ -883,11 +905,11 @@ func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelRGB565ToRGBA8, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelRGB565ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelRGB565ToRGBA8, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelRGB565ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
@@ -908,7 +930,7 @@ func (session *computeSession) runRGB565ToRGBA8Locked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runChannelSwizzleLocked(args KernelArgs, publicKernel string) error {
+func (session *computesession) runChannelSwizzleLocked(args KernelArgs, publicKernel string) error {
 	srcValue, err := requireBuffer(args.Inputs, publicKernel, "src")
 	if err != nil {
 		return err
@@ -917,11 +939,11 @@ func (session *computeSession) runChannelSwizzleLocked(args KernelArgs, publicKe
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, publicKernel, "src")
+	src, err := session.pixelbufferLocked(srcValue, publicKernel, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, publicKernel, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, publicKernel, "dst")
 	if err != nil {
 		return err
 	}
@@ -954,7 +976,7 @@ func (session *computeSession) runChannelSwizzleLocked(args KernelArgs, publicKe
 	})
 }
 
-func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
+func (session *computesession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelXRGB8888ToRGBA8, "src")
 	if err != nil {
 		return err
@@ -963,11 +985,11 @@ func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelXRGB8888ToRGBA8, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelXRGB8888ToRGBA8, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelXRGB8888ToRGBA8, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelXRGB8888ToRGBA8, "dst")
 	if err != nil {
 		return err
 	}
@@ -988,7 +1010,7 @@ func (session *computeSession) runXRGB8888ToRGBA8Locked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
+func (session *computesession) runPaletteExpandLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelPaletteExpandRGBA, "src")
 	if err != nil {
 		return err
@@ -1001,15 +1023,15 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelPaletteExpandRGBA, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelPaletteExpandRGBA, "src")
 	if err != nil {
 		return err
 	}
-	palette, err := session.byteBufferLocked(paletteValue, KernelPaletteExpandRGBA, "palette")
+	palette, err := session.bytebufferLocked(paletteValue, KernelPaletteExpandRGBA, "palette")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelPaletteExpandRGBA, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelPaletteExpandRGBA, "dst")
 	if err != nil {
 		return err
 	}
@@ -1052,7 +1074,7 @@ func (session *computeSession) runPaletteExpandLocked(args KernelArgs) error {
 	return nil
 }
 
-func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
+func (session *computesession) runScanlineFilterLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelScanlineFilter, "src")
 	if err != nil {
 		return err
@@ -1061,11 +1083,11 @@ func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelScanlineFilter, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelScanlineFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelScanlineFilter, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelScanlineFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1084,7 +1106,7 @@ func (session *computeSession) runScanlineFilterLocked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
+func (session *computesession) runCRTFilterLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelCRTFilter, "src")
 	if err != nil {
 		return err
@@ -1093,11 +1115,11 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelCRTFilter, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelCRTFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelCRTFilter, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelCRTFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1122,7 +1144,7 @@ func (session *computeSession) runCRTFilterLocked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
+func (session *computesession) runSoftenFilterLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelSoftenFilter, "src")
 	if err != nil {
 		return err
@@ -1131,11 +1153,11 @@ func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelSoftenFilter, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelSoftenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelSoftenFilter, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelSoftenFilter, "dst")
 	if err != nil {
 		return err
 	}
@@ -1154,7 +1176,7 @@ func (session *computeSession) runSoftenFilterLocked(args KernelArgs) error {
 	})
 }
 
-func (session *computeSession) runSharpenFilterLocked(args KernelArgs) error {
+func (session *computesession) runSharpenFilterLocked(args KernelArgs) error {
 	srcValue, err := requireBuffer(args.Inputs, KernelSharpenFilter, "src")
 	if err != nil {
 		return err
@@ -1163,11 +1185,11 @@ func (session *computeSession) runSharpenFilterLocked(args KernelArgs) error {
 	if err != nil {
 		return err
 	}
-	src, err := session.pixelBufferLocked(srcValue, KernelSharpenFilter, "src")
+	src, err := session.pixelbufferLocked(srcValue, KernelSharpenFilter, "src")
 	if err != nil {
 		return err
 	}
-	dst, err := session.pixelBufferLocked(dstValue, KernelSharpenFilter, "dst")
+	dst, err := session.pixelbufferLocked(dstValue, KernelSharpenFilter, "dst")
 	if err != nil {
 		return err
 	}

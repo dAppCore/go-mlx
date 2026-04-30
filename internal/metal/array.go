@@ -17,7 +17,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // Array wraps an mlx_array handle.
@@ -167,6 +167,9 @@ func (t *Array) Clone() *Array {
 //
 //	if !a.Valid() { return } // guard before any ops on uninitialised arrays
 func (t *Array) Valid() bool {
+	if t == nil {
+		return false
+	}
 	return t.ctx.ctx != nil
 }
 

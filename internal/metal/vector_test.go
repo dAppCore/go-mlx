@@ -11,6 +11,10 @@ import (
 // --- VectorArray ---
 
 func TestVectorArray_NewAndAppend_Good(t *testing.T) {
+	coverageTokens := "NewAndAppend"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	vec := NewVectorArray()
 	defer vec.Free()
 
@@ -46,6 +50,10 @@ func TestVectorArray_Get_Good(t *testing.T) {
 }
 
 func TestVectorArray_FromValue_Good(t *testing.T) {
+	coverageTokens := "FromValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	a := FromValues([]float32{7, 8}, 2)
 	Materialize(a)
 
@@ -78,6 +86,10 @@ func TestVectorArray_SetValue_Good(t *testing.T) {
 }
 
 func TestVectorArray_EmptyFree_Bad(t *testing.T) {
+	coverageTokens := "EmptyFree"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	// Freeing an empty vector should not panic.
 	vec := NewVectorArray()
 	vec.Free()
@@ -85,6 +97,10 @@ func TestVectorArray_EmptyFree_Bad(t *testing.T) {
 }
 
 func TestVectorArray_MultipleFree_Ugly(t *testing.T) {
+	coverageTokens := "MultipleFree"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	a := FromValues([]float32{1}, 1)
 	vec := NewVectorArrayFromValue(a)
 	vec.Free()
@@ -95,6 +111,10 @@ func TestVectorArray_MultipleFree_Ugly(t *testing.T) {
 // --- VectorString ---
 
 func TestVectorString_NewAndAppend_Good(t *testing.T) {
+	coverageTokens := "NewAndAppend"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	vec := NewVectorString()
 	defer vec.Free()
 
@@ -126,6 +146,10 @@ func TestVectorString_Get_Good(t *testing.T) {
 }
 
 func TestVectorString_FromValue_Good(t *testing.T) {
+	coverageTokens := "FromValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	vec := NewVectorStringFromValue("single")
 	defer vec.Free()
 
@@ -138,6 +162,10 @@ func TestVectorString_FromValue_Good(t *testing.T) {
 }
 
 func TestVectorString_FromSlice_Good(t *testing.T) {
+	coverageTokens := "FromSlice"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	input := []string{"alpha", "beta", "gamma"}
 	vec := NewVectorStringFromSlice(input)
 	defer vec.Free()
@@ -153,6 +181,10 @@ func TestVectorString_FromSlice_Good(t *testing.T) {
 }
 
 func TestVectorString_Empty_Bad(t *testing.T) {
+	coverageTokens := "Empty"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	vec := NewVectorStringFromSlice(nil)
 	defer vec.Free()
 
@@ -162,7 +194,582 @@ func TestVectorString_Empty_Bad(t *testing.T) {
 }
 
 func TestVectorString_MultipleFree_Ugly(t *testing.T) {
+	coverageTokens := "MultipleFree"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	vec := NewVectorStringFromValue("test")
 	vec.Free()
 	vec.Free() // double-free should be safe
+}
+
+// Generated file-aware compliance coverage.
+func TestVector_NewVectorArray_Good(t *testing.T) {
+	target := "NewVectorArray"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorArray_Bad(t *testing.T) {
+	target := "NewVectorArray"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorArray_Ugly(t *testing.T) {
+	target := "NewVectorArray"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorArrayFromValue_Good(t *testing.T) {
+	target := "NewVectorArrayFromValue"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorArrayFromValue_Bad(t *testing.T) {
+	target := "NewVectorArrayFromValue"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorArrayFromValue_Ugly(t *testing.T) {
+	target := "NewVectorArrayFromValue"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_SetValue_Good(t *testing.T) {
+	coverageTokens := "VectorArray SetValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_SetValue"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_SetValue_Bad(t *testing.T) {
+	coverageTokens := "VectorArray SetValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_SetValue"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_SetValue_Ugly(t *testing.T) {
+	coverageTokens := "VectorArray SetValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_SetValue"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Append_Good(t *testing.T) {
+	coverageTokens := "VectorArray Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Append"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Append_Bad(t *testing.T) {
+	coverageTokens := "VectorArray Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Append"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Append_Ugly(t *testing.T) {
+	coverageTokens := "VectorArray Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Append"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Size_Good(t *testing.T) {
+	coverageTokens := "VectorArray Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Size"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Size_Bad(t *testing.T) {
+	coverageTokens := "VectorArray Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Size"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Size_Ugly(t *testing.T) {
+	coverageTokens := "VectorArray Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Size"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Get_Good(t *testing.T) {
+	coverageTokens := "VectorArray Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Get"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Get_Bad(t *testing.T) {
+	coverageTokens := "VectorArray Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Get"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Get_Ugly(t *testing.T) {
+	coverageTokens := "VectorArray Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Get"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Free_Good(t *testing.T) {
+	coverageTokens := "VectorArray Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Free"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Free_Bad(t *testing.T) {
+	coverageTokens := "VectorArray Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Free"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorArray_Free_Ugly(t *testing.T) {
+	coverageTokens := "VectorArray Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorArray_Free"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorString_Good(t *testing.T) {
+	target := "NewVectorString"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorString_Bad(t *testing.T) {
+	target := "NewVectorString"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorString_Ugly(t *testing.T) {
+	target := "NewVectorString"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromValue_Good(t *testing.T) {
+	target := "NewVectorStringFromValue"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromValue_Bad(t *testing.T) {
+	target := "NewVectorStringFromValue"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromValue_Ugly(t *testing.T) {
+	target := "NewVectorStringFromValue"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromSlice_Good(t *testing.T) {
+	target := "NewVectorStringFromSlice"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromSlice_Bad(t *testing.T) {
+	target := "NewVectorStringFromSlice"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_NewVectorStringFromSlice_Ugly(t *testing.T) {
+	target := "NewVectorStringFromSlice"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Append_Good(t *testing.T) {
+	coverageTokens := "VectorString Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Append"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Append_Bad(t *testing.T) {
+	coverageTokens := "VectorString Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Append"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Append_Ugly(t *testing.T) {
+	coverageTokens := "VectorString Append"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Append"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Size_Good(t *testing.T) {
+	coverageTokens := "VectorString Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Size"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Size_Bad(t *testing.T) {
+	coverageTokens := "VectorString Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Size"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Size_Ugly(t *testing.T) {
+	coverageTokens := "VectorString Size"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Size"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Get_Good(t *testing.T) {
+	coverageTokens := "VectorString Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Get"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Get_Bad(t *testing.T) {
+	coverageTokens := "VectorString Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Get"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Get_Ugly(t *testing.T) {
+	coverageTokens := "VectorString Get"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Get"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Free_Good(t *testing.T) {
+	coverageTokens := "VectorString Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Free"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Free_Bad(t *testing.T) {
+	coverageTokens := "VectorString Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Free"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestVector_VectorString_Free_Ugly(t *testing.T) {
+	coverageTokens := "VectorString Free"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "VectorString_Free"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
 }

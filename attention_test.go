@@ -28,7 +28,7 @@ func TestMetalAdapterImplementsAttentionInspector_Good(t *testing.T) {
 
 	inspector, ok := m.(inference.AttentionInspector)
 	if !ok {
-		t.Fatal("metalAdapter does not implement AttentionInspector")
+		t.Fatal("metaladapter does not implement AttentionInspector")
 	}
 
 	ctx := context.Background()

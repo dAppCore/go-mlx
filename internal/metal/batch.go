@@ -11,7 +11,7 @@ import (
 	"slices"
 	"time"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // ClassifyResult holds the output for a single prompt in batch classification.

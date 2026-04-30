@@ -12,7 +12,7 @@ import "C"
 import (
 	"sync"
 
-	"dappco.re/go/core"
+	"dappco.re/go"
 )
 
 // DeviceType is the MLX execution device used by the root-package API.

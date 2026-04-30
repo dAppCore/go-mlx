@@ -119,7 +119,7 @@ func Free(arrays ...*Array) { metal.Free(arrays...) }
 //	zeroMatrix := mlx.Zeros([]int32{outFeatures, rank}, mlx.DTypeFloat32) // zero-init LoRA B matrix
 func Zeros(shape []int32, dtype metal.DType) *Array { return metal.Zeros(shape, dtype) }
 
-func (adapter *metalAdapter) ApplyLoRA(config inference.LoRAConfig) inference.Adapter {
+func (adapter *metaladapter) ApplyLoRA(config inference.LoRAConfig) inference.Adapter {
 	mcfg := metal.LoRAConfig{
 		Rank:       config.Rank,
 		Alpha:      config.Alpha,
@@ -140,19 +140,19 @@ func (adapter *metalAdapter) ApplyLoRA(config inference.LoRAConfig) inference.Ad
 	return adapter.model.ApplyLoRA(mcfg)
 }
 
-func (adapter *metalAdapter) Encode(text string) []int32 {
+func (adapter *metaladapter) Encode(text string) []int32 {
 	return adapter.model.Encode(text)
 }
 
-func (adapter *metalAdapter) Decode(tokenIDs []int32) string {
+func (adapter *metaladapter) Decode(tokenIDs []int32) string {
 	return adapter.model.Decode(tokenIDs)
 }
 
-func (adapter *metalAdapter) NumLayers() int {
+func (adapter *metaladapter) NumLayers() int {
 	return adapter.model.NumLayers()
 }
 
-func (adapter *metalAdapter) InternalModel() metal.InternalModel {
+func (adapter *metaladapter) InternalModel() metal.InternalModel {
 	return adapter.model.Internal()
 }
 
@@ -172,5 +172,5 @@ func ConcreteAdapter(adapter inference.Adapter) *LoRAAdapter {
 //	internalModel := mlx.TrainingModel(trainableModel)
 //	logits := internalModel.Forward(tokens, caches)
 func TrainingModel(trainableModel inference.TrainableModel) InternalModel {
-	return trainableModel.(*metalAdapter).InternalModel()
+	return trainableModel.(*metaladapter).InternalModel()
 }

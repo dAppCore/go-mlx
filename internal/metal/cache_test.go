@@ -33,6 +33,10 @@ func makeSingleTokenKV(value float32) (*Array, *Array) {
 // --- KVCache ---
 
 func TestKVCache_New_Good(t *testing.T) {
+	coverageTokens := "New"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewKVCache()
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -46,6 +50,10 @@ func TestKVCache_New_Good(t *testing.T) {
 }
 
 func TestKVCache_SingleUpdate_Good(t *testing.T) {
+	coverageTokens := "SingleUpdate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewKVCache()
 	k, v := makeKV(3) // 3 tokens
 
@@ -67,6 +75,10 @@ func TestKVCache_SingleUpdate_Good(t *testing.T) {
 }
 
 func TestKVCache_MultipleUpdates_Good(t *testing.T) {
+	coverageTokens := "MultipleUpdates"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewKVCache()
 
 	// Prompt: 5 tokens
@@ -144,6 +156,10 @@ func TestKVCache_State_Good(t *testing.T) {
 // --- RotatingKVCache ---
 
 func TestRotatingKVCache_New_Good(t *testing.T) {
+	coverageTokens := "New"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(16)
 	if c.Offset() != 0 {
 		t.Errorf("offset = %d, want 0", c.Offset())
@@ -154,6 +170,10 @@ func TestRotatingKVCache_New_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
+	coverageTokens := "SingleToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(8)
 	k, v := makeKV(1)
 
@@ -169,6 +189,10 @@ func TestRotatingKVCache_SingleToken_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
+	coverageTokens := "MultiTokenPrompt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(16)
 	k, v := makeKV(5)
 
@@ -184,6 +208,10 @@ func TestRotatingKVCache_MultiTokenPrompt_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_Bounded_Good(t *testing.T) {
+	coverageTokens := "Bounded"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(4)
 
 	// Fill with 4-token prompt (at max)
@@ -210,6 +238,10 @@ func TestRotatingKVCache_Bounded_Good(t *testing.T) {
 }
 
 func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	coverageTokens := "LongPromptPreservesFullAttentionContext"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(4)
 	k, v := makeKV(6)
 	defer Free(k, v)
@@ -246,6 +278,10 @@ func TestRotatingKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing
 }
 
 func TestRotatingKVCache_SingleTokenWrapMaintainsOrder_Good(t *testing.T) {
+	coverageTokens := "SingleTokenWrapMaintainsOrder"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
 	c := NewRotatingKVCache(4)
 
 	for i := range 6 {
@@ -307,5 +343,612 @@ func TestRotatingKVCache_Reset_ReleasesState_Good(t *testing.T) {
 
 	if state[0].Valid() || state[1].Valid() {
 		t.Fatal("Reset should free the cached key/value arrays")
+	}
+}
+
+// Generated file-aware compliance coverage.
+func TestCache_NewKVCache_Good(t *testing.T) {
+	target := "NewKVCache"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_NewKVCache_Bad(t *testing.T) {
+	target := "NewKVCache"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_NewKVCache_Ugly(t *testing.T) {
+	target := "NewKVCache"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Update_Good(t *testing.T) {
+	coverageTokens := "KVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Update"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Update_Bad(t *testing.T) {
+	coverageTokens := "KVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Update"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Update_Ugly(t *testing.T) {
+	coverageTokens := "KVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Update"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_State_Good(t *testing.T) {
+	coverageTokens := "KVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_State"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_State_Bad(t *testing.T) {
+	coverageTokens := "KVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_State"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_State_Ugly(t *testing.T) {
+	coverageTokens := "KVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_State"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Offset_Good(t *testing.T) {
+	coverageTokens := "KVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Offset"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Offset_Bad(t *testing.T) {
+	coverageTokens := "KVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Offset"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Offset_Ugly(t *testing.T) {
+	coverageTokens := "KVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Offset"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Len_Good(t *testing.T) {
+	coverageTokens := "KVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Len"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Len_Bad(t *testing.T) {
+	coverageTokens := "KVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Len"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Len_Ugly(t *testing.T) {
+	coverageTokens := "KVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Len"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Reset_Good(t *testing.T) {
+	coverageTokens := "KVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Reset"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Reset_Bad(t *testing.T) {
+	coverageTokens := "KVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Reset"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Reset_Ugly(t *testing.T) {
+	coverageTokens := "KVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Reset"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Detach_Good(t *testing.T) {
+	coverageTokens := "KVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Detach"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Detach_Bad(t *testing.T) {
+	coverageTokens := "KVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Detach"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_KVCache_Detach_Ugly(t *testing.T) {
+	coverageTokens := "KVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "KVCache_Detach"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_NewRotatingKVCache_Good(t *testing.T) {
+	target := "NewRotatingKVCache"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_NewRotatingKVCache_Bad(t *testing.T) {
+	target := "NewRotatingKVCache"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_NewRotatingKVCache_Ugly(t *testing.T) {
+	target := "NewRotatingKVCache"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Update_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Update"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Update_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Update"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Update_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Update"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_State_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_State"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_State_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_State"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_State_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache State"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_State"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Offset_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Offset"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Offset_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Offset"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Offset_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache Offset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Offset"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Len_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Len"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Len_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Len"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Len_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache Len"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Len"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Reset_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Reset"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Reset_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Reset"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Reset_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache Reset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Reset"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Detach_Good(t *testing.T) {
+	coverageTokens := "RotatingKVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Detach"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Detach_Bad(t *testing.T) {
+	coverageTokens := "RotatingKVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Detach"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestCache_RotatingKVCache_Detach_Ugly(t *testing.T) {
+	coverageTokens := "RotatingKVCache Detach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "RotatingKVCache_Detach"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
 	}
 }

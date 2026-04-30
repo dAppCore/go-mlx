@@ -4,9 +4,8 @@ package daemon
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"strings"
+
+	core "dappco.re/go"
 )
 
 const (
@@ -52,16 +51,24 @@ func NewRegistry(name, version string) *Registry {
 		handlers: make(map[string]Handler),
 	}
 
-	_ = r.Register("embed", stubHandler("embed"))
-	_ = r.Register("score", stubHandler("score"))
-	_ = r.Register("generate", stubHandler("generate"))
-	_ = r.Register("info", func(context.Context, Request) (Response, error) {
+	if err := r.Register("embed", stubHandler("embed")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("score", stubHandler("score")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("generate", stubHandler("generate")); err != nil {
+		panic(err)
+	}
+	if err := r.Register("info", func(context.Context, Request) (Response, error) {
 		return Response{
 			"name":    r.name,
 			"version": r.version,
 			"actions": r.Actions(),
 		}, nil
-	})
+	}); err != nil {
+		panic(err)
+	}
 
 	return r
 }
@@ -73,10 +80,10 @@ func DefaultRegistryForDaemon() *Registry {
 func (r *Registry) Register(action string, handler Handler) error {
 	action = normalizeAction(action)
 	if action == "" {
-		return errors.New("action is required")
+		return core.NewError("action is required")
 	}
 	if handler == nil {
-		return fmt.Errorf("handler for action %q is nil", action)
+		return core.Errorf("handler for action %q is nil", action)
 	}
 	if r.handlers == nil {
 		r.handlers = make(map[string]Handler)
@@ -90,17 +97,17 @@ func (r *Registry) Register(action string, handler Handler) error {
 
 func (r *Registry) Dispatch(ctx context.Context, req Request) (Response, error) {
 	if r == nil {
-		return nil, errors.New("registry is nil")
+		return nil, core.NewError("registry is nil")
 	}
 
 	action := normalizeAction(req.Action)
 	if action == "" {
-		return nil, errors.New("action is required")
+		return nil, core.NewError("action is required")
 	}
 
 	handler, ok := r.handlers[action]
 	if !ok {
-		return nil, fmt.Errorf("unsupported action %q", action)
+		return nil, core.Errorf("unsupported action %q", action)
 	}
 
 	req.Action = action
@@ -117,7 +124,7 @@ func (r *Registry) Actions() []string {
 }
 
 func normalizeAction(action string) string {
-	return strings.ToLower(strings.TrimSpace(action))
+	return core.Lower(core.Trim(action))
 }
 
 func stubHandler(action string) Handler {

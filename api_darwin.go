@@ -6,10 +6,9 @@ package mlx
 
 import (
 	"context"
-	"errors"
 	"iter"
-	"strings"
 
+	core "dappco.re/go"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -53,7 +52,7 @@ func appendCleanup(cleanup *func() error, next func() error) {
 	}
 	prev := *cleanup
 	*cleanup = func() error {
-		return errors.Join(prev(), next())
+		return core.ErrorJoin(prev(), next())
 	}
 }
 
@@ -76,7 +75,9 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			var adapterCleanup func() error
 			resolvedAdapterPath, adapterCleanup, err = stagePathFromMedium(cfg.Medium, cfg.AdapterPath)
 			if err != nil {
-				_ = cleanup()
+				if cleanupErr := cleanup(); cleanupErr != nil {
+					return nil, core.ErrorJoin(err, cleanupErr)
+				}
 				return nil, err
 			}
 			appendCleanup(&cleanup, adapterCleanup)
@@ -89,7 +90,9 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		Device:      metal.DeviceType(cfg.Device),
 	})
 	if err != nil {
-		_ = cleanup()
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return nil, core.ErrorJoin(err, cleanupErr)
+		}
 		return nil, err
 	}
 
@@ -106,9 +109,14 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		effectiveQuantBits = ggufInfo.QuantBits
 	}
 	if cfg.Quantization > 0 && effectiveQuantBits > 0 && effectiveQuantBits != cfg.Quantization {
-		_ = native.Close()
-		_ = cleanup()
-		return nil, errors.New("mlx: loaded model quantization does not match requested bits")
+		quantErr := core.NewError("mlx: loaded model quantization does not match requested bits")
+		if closeErr := native.Close(); closeErr != nil {
+			quantErr = core.ErrorJoin(quantErr, closeErr)
+		}
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			quantErr = core.ErrorJoin(quantErr, cleanupErr)
+		}
+		return nil, quantErr
 	}
 
 	return &Model{
@@ -201,10 +209,10 @@ func toRootAttentionSnapshot(result *metal.AttentionResult) *AttentionSnapshot {
 // Generate produces a buffered string result.
 func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", errors.New("mlx: model is nil")
+		return "", core.NewError("mlx: model is nil")
 	}
 	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
-	var builder strings.Builder
+	builder := core.NewBuilder()
 	for tok := range m.model.Generate(context.Background(), prompt, cfg) {
 		builder.WriteString(tok.Text)
 	}
@@ -217,14 +225,14 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 // Chat produces a buffered string result using the model's native chat template.
 func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", errors.New("mlx: model is nil")
+		return "", core.NewError("mlx: model is nil")
 	}
 	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
-	var builder strings.Builder
+	builder := core.NewBuilder()
 	for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
 		builder.WriteString(tok.Text)
 	}
@@ -287,7 +295,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...Gene
 // Classify runs batched prefill-only inference over multiple prompts.
 func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyResult, error) {
 	if m == nil || m.model == nil {
-		return nil, errors.New("mlx: model is nil")
+		return nil, core.NewError("mlx: model is nil")
 	}
 	cfg := applyGenerateOptions(opts)
 	results, err := m.model.Classify(context.Background(), prompts, toMetalGenerateConfig(cfg), cfg.ReturnLogits)
@@ -300,7 +308,7 @@ func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyRe
 // BatchGenerate runs autoregressive generation for multiple prompts at once.
 func (m *Model) BatchGenerate(prompts []string, opts ...GenerateOption) ([]BatchResult, error) {
 	if m == nil || m.model == nil {
-		return nil, errors.New("mlx: model is nil")
+		return nil, core.NewError("mlx: model is nil")
 	}
 	results, err := m.model.BatchGenerate(context.Background(), prompts, toMetalGenerateConfig(applyGenerateOptions(opts)))
 	if err != nil {
@@ -386,7 +394,7 @@ func (m *Model) Info() ModelInfo {
 // InspectAttention runs a single prefill pass and returns extracted K tensors.
 func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 	if m == nil || m.model == nil {
-		return nil, errors.New("mlx: model is nil")
+		return nil, core.NewError("mlx: model is nil")
 	}
 	result, err := m.model.InspectAttention(context.Background(), prompt)
 	if err != nil {
@@ -418,7 +426,7 @@ func (m *Model) Close() error {
 	m.tok = nil
 	err := native.Close()
 	if m.cleanup != nil {
-		err = errors.Join(err, m.cleanup())
+		err = core.ErrorJoin(err, m.cleanup())
 		m.cleanup = nil
 	}
 	return err
