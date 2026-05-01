@@ -10,13 +10,13 @@ package metal
 #cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_USE_ACCELERATE
 #cgo CFLAGS: -mmacosx-version-min=14.0
 #cgo darwin CFLAGS: -x objective-c
-#cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx
-#cgo CPPFLAGS: -I${SRCDIR}/../../lib/mlx-c
-#cgo CPPFLAGS: -I${SRCDIR}/../../lib/fmt/include
-#cgo CPPFLAGS: -I${SRCDIR}/../../lib/gguflib
-#cgo CPPFLAGS: -I${SRCDIR}/../../lib/json/single_include/nlohmann
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include/metal_cpp
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/fmt/include
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/gguflib
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/json/single_include/nlohmann
+#cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include
+#cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include/metal_cpp
 #cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 
 #include <stdatomic.h>
