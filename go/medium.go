@@ -34,13 +34,13 @@ func stagePathFromMedium(medium coreio.Medium, path string) (string, func() erro
 
 	stageDirResult := core.MkdirTemp("", "mlx-medium-*")
 	if !stageDirResult.OK {
-		return "", nil, core.E("mlx.stagePathFromMedium", "create staging dir", resultError(stageDirResult))
+		return "", nil, core.E("mlx.stagePathFromMedium", "create staging dir", stageDirResult.Value.(error))
 	}
 	stageDir := stageDirResult.Value.(string)
 
 	cleanup := func() error {
 		if r := core.RemoveAll(stageDir); !r.OK {
-			return resultError(r)
+			return r.Value.(error)
 		}
 		return nil
 	}
@@ -98,7 +98,7 @@ func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) er
 		return core.E("mlx.copyMediumTree", "source root is not a directory: "+sourceRoot, nil)
 	}
 	if r := core.MkdirAll(destinationRoot, 0o755); !r.OK {
-		return core.E("mlx.copyMediumTree", "create destination root", resultError(r))
+		return core.E("mlx.copyMediumTree", "create destination root", r.Value.(error))
 	}
 	return walkMedium(medium, sourceRoot, func(sourcePath string, entry fs.DirEntry) error {
 		relative := mediumRelativePath(sourceRoot, sourcePath)
@@ -108,7 +108,7 @@ func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) er
 		}
 		if entry.IsDir() {
 			if r := core.MkdirAll(destinationPath, 0o755); !r.OK {
-				return core.E("mlx.copyMediumTree", "create directory", resultError(r))
+				return core.E("mlx.copyMediumTree", "create directory", r.Value.(error))
 			}
 			return nil
 		}
@@ -151,25 +151,18 @@ func copyMediumFile(medium coreio.Medium, sourcePath, destinationPath string) er
 	}
 
 	if r := core.MkdirAll(core.PathDir(destinationPath), 0o755); !r.OK {
-		return core.E("mlx.copyMediumFile", "create parent directories", resultError(r))
+		return core.E("mlx.copyMediumFile", "create parent directories", r.Value.(error))
 	}
 
 	writerResult := core.OpenFile(destinationPath, core.O_CREATE|core.O_TRUNC|core.O_WRONLY, mode)
 	if !writerResult.OK {
-		return core.E("mlx.copyMediumFile", "create "+destinationPath, resultError(writerResult))
+		return core.E("mlx.copyMediumFile", "create "+destinationPath, writerResult.Value.(error))
 	}
 	writer := writerResult.Value.(*core.OSFile)
 	defer writer.Close()
 
 	if _, err := stdio.Copy(writer, reader); err != nil {
 		return core.E("mlx.copyMediumFile", "copy "+sourcePath, err)
-	}
-	return nil
-}
-
-func resultError(result core.Result) error {
-	if err, ok := result.Value.(error); ok {
-		return err
 	}
 	return nil
 }

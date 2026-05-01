@@ -264,7 +264,7 @@ func resolveGGUFFile(modelPath string) (string, error) {
 func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	open := core.Open(path)
 	if !open.OK {
-		return nil, nil, core.Errorf("mlx: open gguf: %w", ggufResultError(open))
+		return nil, nil, core.Errorf("mlx: open gguf: %w", open.Value.(error))
 	}
 	file := open.Value.(*core.OSFile)
 	defer file.Close()
@@ -424,11 +424,11 @@ func readGGUFBinary[T any](reader io.Reader) (T, error) {
 func readModelConfig(dir string) (*modelConfigProbe, error) {
 	read := core.ReadFile(core.PathJoin(dir, "config.json"))
 	if !read.OK {
-		return nil, ggufResultError(read)
+		return nil, read.Value.(error)
 	}
 	var config modelConfigProbe
 	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
-		return nil, ggufResultError(result)
+		return nil, result.Value.(error)
 	}
 	return &config, nil
 }
@@ -718,13 +718,6 @@ func ggufTensorBits(tensorType uint32) int {
 	default:
 		return 0
 	}
-}
-
-func ggufResultError(result core.Result) error {
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return nil
 }
 
 func indexString(s, substr string) int {
