@@ -10,3 +10,15 @@
 [submodule "lib/json"]
 	path = lib/json
 	url = https://github.com/nlohmann/json.git
+[submodule "external/go"]
+	path = external/go
+	url = https://github.com/dappcore/go.git
+	branch = dev
+[submodule "external/go-inference"]
+	path = external/go-inference
+	url = https://github.com/dappcore/go-inference.git
+	branch = dev
+[submodule "external/go-io"]
+	path = external/go-io
+	url = https://github.com/dappcore/go-io.git
+	branch = dev
