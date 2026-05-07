@@ -57,6 +57,27 @@ func TestServer_Listen_Bad_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestServer_Listen_Good_GenerateBackend(t *testing.T) {
+	backend := &fakeGenerateBackend{result: GenerateResult{Text: "native ok", Model: "default"}}
+	socketPath, cancel, done := startTestServerWithConfig(t, ServerConfig{GenerateBackend: backend})
+	defer stopTestServer(t, cancel, done)
+
+	resp := sendFrame(t, socketPath, `{"action":"generate","prompt":"hello","model":"default","max_tokens":8}`)
+
+	if resp["status"] != "ok" {
+		t.Fatalf("status = %v, want ok", resp["status"])
+	}
+	if resp["text"] != "native ok" {
+		t.Fatalf("text = %v, want native ok", resp["text"])
+	}
+	if backend.request.Prompt != "hello" {
+		t.Fatalf("backend prompt = %q, want hello", backend.request.Prompt)
+	}
+	if backend.request.MaxTokens != 8 {
+		t.Fatalf("backend max tokens = %d, want 8", backend.request.MaxTokens)
+	}
+}
+
 func TestServer_Listen_Ugly_ExistingNonSocket(t *testing.T) {
 	socketPath := core.PathJoin(t.TempDir(), "violet.sock")
 	if result := core.WriteFile(socketPath, []byte("not a socket"), 0o600); !result.OK {
@@ -78,6 +99,14 @@ func TestServer_Listen_Ugly_ExistingNonSocket(t *testing.T) {
 func startTestServer(t *testing.T) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
 
+	return startTestServerWithConfig(t, ServerConfig{
+		Registry: NewRegistry(DaemonName, "test"),
+	})
+}
+
+func startTestServerWithConfig(t *testing.T, cfg ServerConfig) (string, context.CancelFunc, <-chan error) {
+	t.Helper()
+
 	tmpDirResult := core.MkdirTemp("/tmp", "violet-daemon-*")
 	if !tmpDirResult.OK {
 		t.Fatalf("create temp dir: %v", tmpDirResult.Value)
@@ -89,10 +118,11 @@ func startTestServer(t *testing.T) (string, context.CancelFunc, <-chan error) {
 
 	socketPath := core.PathJoin(tmpDir, "ofm", "violet.sock")
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := NewServer(ServerConfig{
-		SocketPath: socketPath,
-		Registry:   NewRegistry(DaemonName, "test"),
-	})
+	cfg.SocketPath = socketPath
+	if cfg.Registry == nil {
+		cfg.Registry = NewRegistry(DaemonName, "test")
+	}
+	srv := NewServer(cfg)
 
 	done := make(chan error, 1)
 	go func() {

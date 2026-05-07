@@ -70,6 +70,21 @@ func ExampleWithContextLength() {
 	// Output: WithContextLength
 }
 
+func ExampleWithParallelSlots() {
+	core.Println("WithParallelSlots")
+	// Output: WithParallelSlots
+}
+
+func ExampleWithPromptCache() {
+	core.Println("WithPromptCache")
+	// Output: WithPromptCache
+}
+
+func ExampleWithPromptCacheMinTokens() {
+	core.Println("WithPromptCacheMinTokens")
+	// Output: WithPromptCacheMinTokens
+}
+
 func ExampleWithQuantization() {
 	core.Println("WithQuantization")
 	// Output: WithQuantization
@@ -88,4 +103,34 @@ func ExampleWithAdapterPath() {
 func ExampleWithMedium() {
 	core.Println("WithMedium")
 	// Output: WithMedium
+}
+
+func ExampleWithAutoMemoryPlan() {
+	core.Println("WithAutoMemoryPlan")
+	// Output: WithAutoMemoryPlan
+}
+
+func ExampleWithMemoryPlan() {
+	core.Println("WithMemoryPlan")
+	// Output: WithMemoryPlan
+}
+
+func ExampleWithCachePolicy() {
+	core.Println("WithCachePolicy")
+	// Output: WithCachePolicy
+}
+
+func ExampleWithBatchSize() {
+	core.Println("WithBatchSize")
+	// Output: WithBatchSize
+}
+
+func ExampleWithPrefillChunkSize() {
+	core.Println("WithPrefillChunkSize")
+	// Output: WithPrefillChunkSize
+}
+
+func ExampleWithAllocatorLimits() {
+	core.Println("WithAllocatorLimits")
+	// Output: WithAllocatorLimits
 }

@@ -93,6 +93,16 @@ This phase was a full architectural restructure. All CGO code was moved to `inte
 
 ## Known Limitations
 
+### Prompt Cache Scope
+
+The native prompt cache is a single in-memory exact token-prefix KV snapshot.
+It is useful for long stable prefixes such as system prompts, tool schemas,
+repository summaries, and AGENTS/policy text. It does not yet implement
+multi-tenant, disk-backed, or approximate prefix caching. Wrapped rotating
+sliding-window cache states are skipped unless the cached prompt is still
+contiguous from the start, so Gemma sliding-window reuse needs explicit stable
+prefix warming or a future sliding-cache-aware snapshot policy.
+
 ### Per-Step Intermediate Array Accumulation
 
 The generate loop creates approximately 500 intermediate arrays per forward pass. These rely on GC finalisers for C-side deallocation via `mlx_array_free`. Under sustained high-throughput inference, GC may not keep pace, causing Metal memory to grow until a collection cycle frees the finalisers.
@@ -101,7 +111,10 @@ Go 1.26's Green Tea GC partially mitigates this (10–40% less GC overhead, more
 
 ### KV Cache Per-Turn Allocation
 
-Each call to `Generate()` allocates a fresh set of KV caches. Cross-turn cache reuse (for multi-turn chat without re-encoding the full history) is not implemented. Call `ClearCache()` between turns to reclaim Metal memory promptly.
+Each call to `Generate()` still allocates a fresh working set of KV caches for
+decode. The prompt cache can seed that working set from one exact stable prefix,
+but arbitrary multi-turn cache editing and branching are not implemented. Call
+`ClearCache()` between turns to reclaim Metal allocator memory promptly.
 
 ### SentencePiece BPE Merges
 

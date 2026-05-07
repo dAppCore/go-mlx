@@ -271,6 +271,54 @@ func TestLora_Step_AppliesLambdaRegularization_Good(t *testing.T) {
 	}
 }
 
+func TestLora_Step_EmitsTrainingProbe_Good(t *testing.T) {
+	requireMetalRuntime(t)
+
+	layer := &LoRALinear{
+		A:     FromValues([]float32{0.25}, 1, 1),
+		B:     FromValues([]float32{0.5}, 1, 1),
+		Scale: 1,
+		Rank:  1,
+		Alpha: 1,
+	}
+	defer Free(layer.A, layer.B)
+	var events []ProbeEvent
+	adapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{"model.layers.0.self_attn.q_proj": layer},
+		Config: LoRAConfig{
+			ProbeSink: ProbeSinkFunc(func(event ProbeEvent) {
+				events = append(events, event)
+			}),
+		},
+		Model: &loraStepTestModel{layer: layer},
+	}
+	batch := Batch{
+		Tokens: [][]int{{0}},
+		Length: []int{1},
+	}
+	targets := [][]int{{1}}
+	opt := NewAdamW(&AdamWConfig{LearningRate: 0.01})
+
+	loss := adapter.Step(batch, targets, opt)
+	if loss == nil {
+		t.Fatal("Step returned nil loss")
+	}
+	defer Free(loss)
+
+	if len(events) != 1 {
+		t.Fatalf("probe events len = %d, want 1", len(events))
+	}
+	if events[0].Kind != ProbeEventTraining || events[0].Phase != ProbePhaseTraining {
+		t.Fatalf("probe event = %+v", events[0])
+	}
+	if events[0].Training == nil || events[0].Training.Step != 1 || events[0].Training.Loss <= 0 {
+		t.Fatalf("training payload = %+v", events[0].Training)
+	}
+	if events[0].Training.LearningRate != 0.01 {
+		t.Fatalf("learning rate = %f, want 0.01", events[0].Training.LearningRate)
+	}
+}
+
 func TestLora_BatchLengths_Good(t *testing.T) {
 	coverageTokens := "BatchLengths"
 	if coverageTokens == "" {
@@ -295,6 +343,38 @@ func TestLora_BatchLengths_Good(t *testing.T) {
 	}
 	if len(lengths) != 2 || lengths[0] != 3 || lengths[1] != 2 {
 		t.Fatalf("lengths = %v, want [3 2]", lengths)
+	}
+}
+
+func TestLora_BatchLossMask_UsesExplicitMask_Good(t *testing.T) {
+	coverageTokens := "BatchLossMask UsesExplicitMask"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	mask := batchLossMaskForBatch(
+		Batch{
+			LossMask: [][]float32{
+				{0, 1, 1},
+				{1},
+			},
+		},
+		[]int32{3, 2},
+		3,
+	)
+	defer Free(mask)
+	Materialize(mask)
+
+	got := mask.Floats()
+	want := []float32{0, 1, 1, 1, 0, 0}
+	if len(got) != len(want) {
+		t.Fatalf("loss mask len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("loss mask[%d] = %f, want %f; full mask %v", i, got[i], want[i], got)
+		}
 	}
 }
 
@@ -882,6 +962,62 @@ func TestLora_ApplyLoadedLoRA_Good_SaveAndReload(t *testing.T) {
 			t.Errorf("B[%d] = %f, want %f", i, loadedB[i], origB[i])
 			break
 		}
+	}
+}
+
+func TestLora_LoadLoRAAdapter_ReturnsAdapter_Good(t *testing.T) {
+	coverageTokens := "LoadLoRAAdapter ReturnsAdapter"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	w := RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32)
+	Materialize(w)
+	sourceLinear := NewLinear(w, nil)
+	sourceAdapter := &LoRAAdapter{
+		Layers: map[string]*LoRALinear{
+			"model.layers.0.self_attn.q_proj": NewLoRALinear(sourceLinear, 2, 4),
+		},
+		Config: LoRAConfig{Rank: 2, Alpha: 4, TargetKeys: []string{"q_proj"}},
+	}
+	adapterDir := t.TempDir()
+	if err := sourceAdapter.Save(adapterDir); err != nil {
+		t.Fatalf("sourceAdapter.Save: %v", err)
+	}
+
+	targetLinear := NewLinear(w, nil)
+	qwen := &Qwen3Model{
+		Layers: []*Qwen3DecoderLayer{
+			{
+				Attention: &Qwen3Attention{
+					QProj: targetLinear,
+					KProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					VProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+					OProj: NewLinear(RandomNormal(0, 0.01, []int32{4, 8}, DTypeFloat32), nil),
+				},
+			},
+		},
+	}
+
+	loaded, err := loadLoRAAdapter(qwen, adapterDir)
+	if err != nil {
+		t.Fatalf("loadLoRAAdapter: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("loadLoRAAdapter returned nil adapter")
+	}
+	if loaded.Model != qwen {
+		t.Fatal("loaded adapter should retain target model for resume")
+	}
+	if loaded.Layers["model.layers.0.self_attn.q_proj"] == nil {
+		t.Fatalf("loaded adapter layers = %v, want q_proj entry", loaded.SortedNames())
+	}
+	if targetLinear.LoRA == nil {
+		t.Fatal("target q_proj should have an attached LoRA adapter")
+	}
+	if loaded.Config.Rank != 2 || loaded.Config.Alpha != 4 || loaded.Config.Scale != 2 {
+		t.Fatalf("loaded config = %+v, want rank=2 alpha=4 scale=2", loaded.Config)
 	}
 }
 

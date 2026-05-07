@@ -24,15 +24,17 @@ type ServerConfig struct {
 	Registry   *Registry
 
 	// ModelPaths is populated from config/env by cmd/violet. Violet is one
-	// process for multiple configured models; actual model loading is a follow-up
-	// and should load once at startup, with restart as the swap mechanism.
-	ModelPaths map[string]string
+	// process for multiple configured models; the native route loads each model
+	// on first use and keeps it resident until the daemon exits.
+	ModelPaths      map[string]string
+	GenerateBackend GenerateBackend
 }
 
 type Server struct {
-	SocketPath string
-	Registry   *Registry
-	ModelPaths map[string]string
+	SocketPath      string
+	Registry        *Registry
+	ModelPaths      map[string]string
+	GenerateBackend GenerateBackend
 }
 
 type errorResponse struct {
@@ -50,11 +52,20 @@ func NewServer(cfg ServerConfig) *Server {
 	if cfg.Registry == nil {
 		cfg.Registry = DefaultRegistryForDaemon()
 	}
+	if cfg.GenerateBackend == nil && len(modelPaths) > 0 {
+		cfg.GenerateBackend = NewNativeGenerateRunner(NativeGenerateConfig{ModelPaths: modelPaths})
+	}
+	if cfg.GenerateBackend != nil {
+		if err := cfg.Registry.RegisterGenerateBackend(cfg.GenerateBackend); err != nil {
+			panic(err)
+		}
+	}
 
 	return &Server{
-		SocketPath: cfg.SocketPath,
-		Registry:   cfg.Registry,
-		ModelPaths: modelPaths,
+		SocketPath:      cfg.SocketPath,
+		Registry:        cfg.Registry,
+		ModelPaths:      modelPaths,
+		GenerateBackend: cfg.GenerateBackend,
 	}
 }
 
@@ -85,6 +96,9 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 	s.SocketPath = socketPath
 	defer func() {
+		if err := closeGenerateBackend(s.GenerateBackend); err != nil {
+			core.Print(core.Stderr(), "violet daemon: close generate backend: %v", err)
+		}
 		if err := ln.Close(); err != nil && !core.Is(err, net.ErrClosed) {
 			core.Print(core.Stderr(), "violet daemon: close listener: %v", err)
 		}
@@ -94,6 +108,14 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}()
 
 	return s.serve(ctx, ln)
+}
+
+func closeGenerateBackend(backend GenerateBackend) error {
+	closer, ok := backend.(interface{ Close() error })
+	if !ok || closer == nil {
+		return nil
+	}
+	return closer.Close()
 }
 
 func (s *Server) serve(ctx context.Context, ln net.Listener) error {

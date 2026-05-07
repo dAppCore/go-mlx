@@ -181,6 +181,17 @@ Key benchmarks:
 
 Model-level benchmarks (`model.Forward`, tokenizer) require model files on disk and are not included in the automated suite.
 
+For machine/model-level checks, use the fast eval harness:
+
+```bash
+go-mlx bench -json /path/to/model
+```
+
+This runs a short generation pass plus prompt-cache, KV restore,
+state-bundle, and probe-overhead checks. It is intended for beta tester
+reports and for validating that memory-planner changes are supported by local
+data before they become defaults.
+
 ---
 
 ## Code Structure

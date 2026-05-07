@@ -15,18 +15,66 @@ const (
 
 // Request is one JSON-line frame from a local Violet client.
 type Request struct {
-	Action string `json:"action"`
-	Text   string `json:"text,omitempty"`
-	Prompt string `json:"prompt,omitempty"`
-	Model  string `json:"model,omitempty"`
+	Action      string    `json:"action"`
+	Text        string    `json:"text,omitempty"`
+	Prompt      string    `json:"prompt,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Messages    []Message `json:"messages,omitempty"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature float64   `json:"temperature,omitempty"`
 }
 
 // Response is encoded as one complete JSON-line frame. Streaming responses are
 // intentionally deferred so the initial UDS contract stays simple.
 type Response map[string]any
 
+// Message is a chat message sent to the native generate backend.
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// GenerateRequest is the normalized input passed to a generate backend.
+type GenerateRequest struct {
+	Prompt      string
+	Model       string
+	Messages    []Message
+	MaxTokens   int
+	Temperature float64
+}
+
+// GenerateResult is returned by native generation backends.
+type GenerateResult struct {
+	Text    string
+	Model   string
+	Metrics GenerateMetrics
+}
+
+// GenerateMetrics are JSON-friendly counters from a backend generation call.
+type GenerateMetrics struct {
+	PromptTokens             int     `json:"prompt_tokens"`
+	GeneratedTokens          int     `json:"generated_tokens"`
+	PrefillSeconds           float64 `json:"prefill_seconds,omitempty"`
+	DecodeSeconds            float64 `json:"decode_seconds,omitempty"`
+	TotalSeconds             float64 `json:"total_seconds,omitempty"`
+	PrefillTokensPerSec      float64 `json:"prefill_tokens_per_sec,omitempty"`
+	DecodeTokensPerSec       float64 `json:"decode_tokens_per_sec,omitempty"`
+	PeakMemoryBytes          uint64  `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes        uint64  `json:"active_memory_bytes,omitempty"`
+	PromptCacheHits          int     `json:"prompt_cache_hits,omitempty"`
+	PromptCacheMisses        int     `json:"prompt_cache_misses,omitempty"`
+	PromptCacheHitTokens     int     `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens    int     `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptCacheRestoreMillis float64 `json:"prompt_cache_restore_ms,omitempty"`
+}
+
 // Handler processes one action request.
 type Handler func(context.Context, Request) (Response, error)
+
+// GenerateBackend handles native non-HTTP generation requests.
+type GenerateBackend interface {
+	Generate(context.Context, GenerateRequest) (GenerateResult, error)
+}
 
 // Registry maps daemon actions to handlers. It preserves registration order so
 // the info response is stable and human-readable.
@@ -95,6 +143,20 @@ func (r *Registry) Register(action string, handler Handler) error {
 	return nil
 }
 
+// RegisterGenerateBackend replaces the default generate stub with a native backend.
+func (r *Registry) RegisterGenerateBackend(backend GenerateBackend) error {
+	if backend == nil {
+		return core.NewError("generate backend is nil")
+	}
+	return r.Register("generate", func(ctx context.Context, req Request) (Response, error) {
+		result, err := backend.Generate(ctx, generateRequestFromRequest(req))
+		if err != nil {
+			return nil, err
+		}
+		return generateResponseFromResult(result), nil
+	})
+}
+
 func (r *Registry) Dispatch(ctx context.Context, req Request) (Response, error) {
 	if r == nil {
 		return nil, core.NewError("registry is nil")
@@ -121,6 +183,49 @@ func (r *Registry) Actions() []string {
 	actions := make([]string, len(r.order))
 	copy(actions, r.order)
 	return actions
+}
+
+func generateRequestFromRequest(req Request) GenerateRequest {
+	prompt := req.Prompt
+	if prompt == "" {
+		prompt = req.Text
+	}
+	messages := make([]Message, len(req.Messages))
+	copy(messages, req.Messages)
+	return GenerateRequest{
+		Prompt:      prompt,
+		Model:       req.Model,
+		Messages:    messages,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+	}
+}
+
+func generateResponseFromResult(result GenerateResult) Response {
+	resp := Response{
+		"status": "ok",
+		"action": "generate",
+		"text":   result.Text,
+	}
+	if result.Model != "" {
+		resp["model"] = result.Model
+	}
+	if hasGenerateMetrics(result.Metrics) {
+		resp["metrics"] = result.Metrics
+	}
+	return resp
+}
+
+func hasGenerateMetrics(metrics GenerateMetrics) bool {
+	return metrics.PromptTokens != 0 ||
+		metrics.GeneratedTokens != 0 ||
+		metrics.PrefillSeconds != 0 ||
+		metrics.DecodeSeconds != 0 ||
+		metrics.TotalSeconds != 0 ||
+		metrics.PrefillTokensPerSec != 0 ||
+		metrics.DecodeTokensPerSec != 0 ||
+		metrics.PeakMemoryBytes != 0 ||
+		metrics.ActiveMemoryBytes != 0
 }
 
 func normalizeAction(action string) string {

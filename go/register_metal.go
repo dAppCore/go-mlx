@@ -89,10 +89,29 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 	if partialOffloadUnsupported {
 		core.Warn("mlx: partial GPULayers unsupported — using full GPU offload", "gpu_layers", loadOptions.GPULayers)
 	}
+	plan := PlanMemory(MemoryPlanInput{Device: memoryPlannerDeviceInfo()})
+	contextLen := loadOptions.ContextLen
+	if contextLen == 0 {
+		contextLen = plan.ContextLength
+	}
+	parallelSlots := loadOptions.ParallelSlots
+	if parallelSlots == 0 {
+		parallelSlots = plan.ParallelSlots
+	}
 	model, err := loadBackendModel(modelPath, metal.LoadConfig{
-		ContextLen:  loadOptions.ContextLen,
-		AdapterPath: loadOptions.AdapterPath,
-		Device:      metal.DeviceType(deviceName),
+		ContextLen:           contextLen,
+		ParallelSlots:        parallelSlots,
+		DisablePromptCache:   !plan.PromptCache,
+		PromptCacheMinTokens: plan.PromptCacheMinTokens,
+		AdapterPath:          loadOptions.AdapterPath,
+		Device:               metal.DeviceType(deviceName),
+		CachePolicy:          string(plan.CachePolicy),
+		BatchSize:            plan.BatchSize,
+		PrefillChunkSize:     plan.PrefillChunkSize,
+		ExpectedQuantization: plan.PreferredQuantization,
+		MemoryLimitBytes:     plan.MemoryLimitBytes,
+		CacheLimitBytes:      plan.CacheLimitBytes,
+		WiredLimitBytes:      plan.WiredLimitBytes,
 	})
 	if err != nil {
 		return nil, err

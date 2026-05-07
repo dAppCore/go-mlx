@@ -8,4 +8,3 @@ require (
 )
 
 require dappco.re/go v0.9.0
-

@@ -1,5 +1,9 @@
 dappco.re/go v0.9.0 h1:4ruZRNqKDDva8o6g65tYggjGVe42E6/lMZfVKXtr3p0=
 dappco.re/go v0.9.0/go.mod h1:xapr7fLK4/9Pu2iSCr4qZuIuatmtx1j56zS/oPDbGyQ=
+dappco.re/go/inference v0.9.0 h1:6eD49KTjj4xrowWdltobEWZYLPY+zbiyDiq+Hv2nkmc=
+dappco.re/go/inference v0.9.0/go.mod h1:eu0je5UqOQyoG6eaJ1IqY5eORev+PfmsRXSNCanqBkk=
+dappco.re/go/io v0.9.0 h1:TyHUuUJdZ73CXQlBpqx47SNyFFzgwA5OPSKu4Twb2f0=
+dappco.re/go/io v0.9.0/go.mod h1:K5jWSLMdk0X9HqJ6b1I+8tKqcNpNWgpcUZi/fGm28Q8=
 forge.lthn.ai/Snider/Borg v0.3.1 h1:gfC1ZTpLoZai07oOWJiVeQ8+qJYK8A795tgVGJHbVL8=
 forge.lthn.ai/Snider/Borg v0.3.1/go.mod h1:Z7DJD0yHXsxSyM7Mjl6/g4gH1NBsIz44Bf5AFlV76Wg=
 forge.lthn.ai/Snider/Enchantrix v0.0.4 h1:biwpix/bdedfyc0iVeK15awhhJKH6TEMYOTXzHXx5TI=

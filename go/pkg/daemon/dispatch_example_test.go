@@ -20,6 +20,11 @@ func ExampleRegistry_Register() {
 	// Output: Registry_Register
 }
 
+func ExampleRegistry_RegisterGenerateBackend() {
+	core.Println("Registry_RegisterGenerateBackend")
+	// Output: Registry_RegisterGenerateBackend
+}
+
 func ExampleRegistry_Dispatch() {
 	core.Println("Registry_Dispatch")
 	// Output: Registry_Dispatch

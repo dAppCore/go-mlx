@@ -78,6 +78,52 @@ func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalAvailable_Good(t *testing.T)
 	}
 }
 
+func TestBackend_NormalizeLoadConfig_LocalDefaults_Good(t *testing.T) {
+	cfg := normalizeMetalLoadConfig(LoadConfig{})
+	if cfg.ContextLen != DefaultLocalContextLen {
+		t.Fatalf("ContextLen = %d, want %d", cfg.ContextLen, DefaultLocalContextLen)
+	}
+	if cfg.ParallelSlots != DefaultLocalParallelSlots {
+		t.Fatalf("ParallelSlots = %d, want %d", cfg.ParallelSlots, DefaultLocalParallelSlots)
+	}
+	if cfg.DisablePromptCache {
+		t.Fatal("DisablePromptCache = true, want false")
+	}
+	if cfg.PromptCacheMinTokens != DefaultPromptCacheMinTokens {
+		t.Fatalf("PromptCacheMinTokens = %d, want %d", cfg.PromptCacheMinTokens, DefaultPromptCacheMinTokens)
+	}
+}
+
+func TestBackend_ApplyAllocatorLimits_Good(t *testing.T) {
+	coverageTokens := "ApplyAllocatorLimits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	previousMemory := setMemoryLimit
+	previousCache := setCacheLimit
+	previousWired := setWiredLimit
+	t.Cleanup(func() {
+		setMemoryLimit = previousMemory
+		setCacheLimit = previousCache
+		setWiredLimit = previousWired
+	})
+
+	var memoryLimit, cacheLimit, wiredLimit uint64
+	setMemoryLimit = func(limit uint64) uint64 { memoryLimit = limit; return 0 }
+	setCacheLimit = func(limit uint64) uint64 { cacheLimit = limit; return 0 }
+	setWiredLimit = func(limit uint64) uint64 { wiredLimit = limit; return 0 }
+
+	applyAllocatorLimits(LoadConfig{
+		MemoryLimitBytes: 10,
+		CacheLimitBytes:  3,
+		WiredLimitBytes:  7,
+	})
+
+	if memoryLimit != 10 || cacheLimit != 3 || wiredLimit != 7 {
+		t.Fatalf("limits = memory %d cache %d wired %d, want 10/3/7", memoryLimit, cacheLimit, wiredLimit)
+	}
+}
+
 // Generated file-aware compliance coverage.
 func TestBackend_LoadAndInit_Good(t *testing.T) {
 	target := "LoadAndInit"

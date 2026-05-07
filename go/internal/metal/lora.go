@@ -140,6 +140,7 @@ type LoRAConfig struct {
 	TargetLayers []string // RFC alias for TargetKeys
 	Lambda       float32  // RFC compatibility field for regularisation (currently informational only)
 	DType        DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
+	ProbeSink    ProbeSink
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
@@ -163,8 +164,9 @@ type LoRAAdapter struct {
 
 // Batch describes a token batch for one training step.
 type Batch struct {
-	Tokens [][]int
-	Length []int
+	Tokens   [][]int
+	Length   []int
+	LossMask [][]float32
 }
 
 // TrainConfig holds RFC-style top-level training loop settings.
@@ -175,6 +177,7 @@ type TrainConfig struct {
 	EvalInterval   int
 	SaveInterval   int
 	EvalLossThresh float64
+	ProbeSink      ProbeSink
 }
 
 func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
@@ -251,6 +254,25 @@ func (adapter *LoRAAdapter) SetAllParams(params []*Array) {
 	}
 }
 
+// Unload detaches adapter layers from their base Linear projections.
+func (adapter *LoRAAdapter) Unload() {
+	if adapter == nil {
+		return
+	}
+	for _, layer := range adapter.Layers {
+		if layer == nil {
+			continue
+		}
+		if layer.Base != nil && layer.Base.LoRA == layer {
+			layer.Base.LoRA = nil
+		}
+		Free(layer.A, layer.B)
+		layer.A = nil
+		layer.B = nil
+	}
+	adapter.Layers = map[string]*LoRALinear{}
+}
+
 func batchLengths(batch Batch, targets [][]int) ([]int32, int) {
 	if len(batch.Tokens) == 0 || len(batch.Tokens) != len(targets) {
 		return nil, 0
@@ -297,6 +319,27 @@ func batchLossMask(lengths []int32, maxLen int) *Array {
 		base := i * maxLen
 		for j := 0; j < int(n); j++ {
 			data[base+j] = 1
+		}
+	}
+	return FromValues(data, len(lengths), maxLen)
+}
+
+func batchLossMaskForBatch(batch Batch, lengths []int32, maxLen int) *Array {
+	if len(batch.LossMask) != len(lengths) {
+		return batchLossMask(lengths, maxLen)
+	}
+	data := make([]float32, len(lengths)*maxLen)
+	for i, row := range batch.LossMask {
+		limit := int(lengths[i])
+		if limit > len(row) {
+			limit = len(row)
+		}
+		if limit > maxLen {
+			limit = maxLen
+		}
+		base := i * maxLen
+		for j := 0; j < limit; j++ {
+			data[base+j] = row[j]
 		}
 	}
 	return FromValues(data, len(lengths), maxLen)
@@ -382,24 +425,19 @@ func loraRegularization(params []*Array, lambda float32) *Array {
 	return scaled
 }
 
-// Step runs one RFC-style LoRA training step over a padded batch and returns the loss.
-func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW) *Array {
-	if adapter == nil || adapter.Model == nil || optimizer == nil {
-		return nil
-	}
-	params := adapter.AllTrainableParams()
-	if len(params) == 0 {
-		return nil
+func (adapter *LoRAAdapter) valueAndGrad(params []*Array, batch Batch, targets [][]int) (*Array, []*Array, bool) {
+	if adapter == nil || adapter.Model == nil {
+		return nil, nil, false
 	}
 
 	lengths, maxLen := batchLengths(batch, targets)
 	if len(lengths) == 0 || maxLen == 0 {
-		return nil
+		return nil, nil, false
 	}
 
 	inputs := FromValues(batchTokenData(batch.Tokens, lengths, maxLen), len(lengths), maxLen)
 	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
-	lossMask := batchLossMask(lengths, maxLen)
+	lossMask := batchLossMaskForBatch(batch, lengths, maxLen)
 	attnMask := buildBatchMask(int32(len(lengths)), int32(maxLen), lengths)
 	defer Free(inputs, targetIDs, lossMask, attnMask)
 
@@ -433,23 +471,125 @@ func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW)
 		if len(grads) > 0 {
 			Free(grads...)
 		}
+		return nil, nil, false
+	}
+	if len(values) > 1 {
+		Free(values[1:]...)
+	}
+	return values[0], grads, true
+}
+
+func (adapter *LoRAAdapter) applyGradients(params []*Array, grads []*Array, optimizer *AdamW, loss *Array) *Array {
+	if adapter == nil || optimizer == nil || loss == nil || len(params) == 0 || len(grads) != len(params) {
+		Free(loss)
+		Free(grads...)
 		return nil
 	}
 
-	all := make([]*Array, 0, len(values)+len(grads))
-	all = append(all, values...)
+	all := make([]*Array, 0, 1+len(grads))
+	all = append(all, loss)
 	all = append(all, grads...)
 	Materialize(all...)
+	var lossValue float64
+	if adapter.Config.ProbeSink != nil {
+		lossValue = loss.Float()
+	}
 
 	updated := optimizer.Step(params, grads)
 	Materialize(updated...)
 	adapter.SetAllParams(updated)
 	freeReplacedArrays(params, updated)
-	Free(grads...)
-	if len(values) > 1 {
-		Free(values[1:]...)
+	if adapter.Config.ProbeSink != nil {
+		emitProbe(adapter.Config.ProbeSink, ProbeEvent{
+			Kind:  ProbeEventTraining,
+			Phase: ProbePhaseTraining,
+			Step:  optimizer.step,
+			Training: &ProbeTraining{
+				Step:         optimizer.step,
+				Loss:         lossValue,
+				LearningRate: optimizer.LR,
+			},
+		})
 	}
-	return values[0]
+	Free(grads...)
+	return loss
+}
+
+// Step runs one RFC-style LoRA training step over a padded batch and returns the loss.
+func (adapter *LoRAAdapter) Step(batch Batch, targets [][]int, optimizer *AdamW) *Array {
+	if adapter == nil || adapter.Model == nil || optimizer == nil {
+		return nil
+	}
+	params := adapter.AllTrainableParams()
+	if len(params) == 0 {
+		return nil
+	}
+	loss, grads, ok := adapter.valueAndGrad(params, batch, targets)
+	if !ok {
+		return nil
+	}
+	return adapter.applyGradients(params, grads, optimizer, loss)
+}
+
+// StepAccumulated accumulates gradients over micro-batches before one optimiser update.
+func (adapter *LoRAAdapter) StepAccumulated(batches []Batch, targets [][][]int, optimizer *AdamW) *Array {
+	if adapter == nil || adapter.Model == nil || optimizer == nil || len(batches) == 0 || len(batches) != len(targets) {
+		return nil
+	}
+	params := adapter.AllTrainableParams()
+	if len(params) == 0 {
+		return nil
+	}
+
+	var lossSum *Array
+	var gradSums []*Array
+	count := 0
+	for i, batch := range batches {
+		loss, grads, ok := adapter.valueAndGrad(params, batch, targets[i])
+		if !ok {
+			Free(lossSum)
+			Free(gradSums...)
+			return nil
+		}
+		count++
+		if lossSum == nil {
+			lossSum = loss
+		} else {
+			nextLoss := Add(lossSum, loss)
+			Free(lossSum, loss)
+			lossSum = nextLoss
+		}
+		if gradSums == nil {
+			gradSums = grads
+			continue
+		}
+		if len(gradSums) != len(grads) {
+			Free(lossSum)
+			Free(gradSums...)
+			Free(grads...)
+			return nil
+		}
+		for j := range gradSums {
+			nextGrad := Add(gradSums[j], grads[j])
+			Free(gradSums[j], grads[j])
+			gradSums[j] = nextGrad
+		}
+	}
+	if count == 0 || lossSum == nil || len(gradSums) == 0 {
+		Free(lossSum)
+		Free(gradSums...)
+		return nil
+	}
+
+	scale := float32(1.0 / float64(count))
+	avgLoss := MulScalar(lossSum, scale)
+	Free(lossSum)
+	avgGrads := make([]*Array, len(gradSums))
+	for i, grad := range gradSums {
+		avgGrads[i] = MulScalar(grad, scale)
+		Free(grad)
+	}
+	return adapter.applyGradients(params, avgGrads, optimizer, avgLoss)
 }
 
 func adapterSavePaths(path string) (weightsPath, configPath string, err error) {
@@ -732,17 +872,17 @@ func parseLoRAWeightName(name string) (layerIdx int, projPath, suffix string) {
 	return idx, projPath, suffix
 }
 
-// applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model
-// for inference. The adapter weights are frozen (no gradients needed).
-func applyLoadedLoRA(model InternalModel, adapterDir string) error {
+// loadLoRAAdapter loads a trained LoRA adapter from disk, injects it into the model,
+// and returns the adapter handle so training can resume from the loaded weights.
+func loadLoRAAdapter(model InternalModel, adapterDir string) (*LoRAAdapter, error) {
 	config, err := parseAdapterConfig(core.JoinPath(adapterDir, "adapter_config.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	weights, err := loadAdapterWeights(adapterDir)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	var allArrays []*Array
@@ -782,6 +922,18 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	}
 
 	scale := config.Alpha / float32(config.Rank)
+	adapter := &LoRAAdapter{
+		Layers: make(map[string]*LoRALinear),
+		Config: LoRAConfig{
+			Rank:         config.Rank,
+			Alpha:        config.Alpha,
+			Scale:        scale,
+			TargetKeys:   append([]string(nil), config.TargetKeys...),
+			TargetLayers: append([]string(nil), config.TargetKeys...),
+			DType:        DTypeFloat32,
+		},
+		Model: model,
+	}
 	injected := 0
 	kept := make(map[*Array]struct{})
 
@@ -808,6 +960,7 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 			Alpha: config.Alpha,
 		}
 		linear.LoRA = lora
+		adapter.Layers[core.Sprintf("model.layers.%d.%s", key.layerIdx, key.projPath)] = lora
 		kept[pair.matrixA] = struct{}{}
 		kept[pair.matrixB] = struct{}{}
 		injected++
@@ -829,14 +982,21 @@ func applyLoadedLoRA(model InternalModel, adapterDir string) error {
 	}
 
 	if injected == 0 {
-		return core.E("lora.applyLoadedLoRA", "no LoRA layers injected from "+adapterDir, nil)
+		return nil, core.E("lora.loadLoRAAdapter", "no LoRA layers injected from "+adapterDir, nil)
 	}
 
 	core.Info("adapter loaded",
 		"pa"+"th", adapterDir, "rank", config.Rank, "alpha", config.Alpha,
 		"scale", scale, "layers_injected", injected,
 	)
-	return nil
+	return adapter, nil
+}
+
+// applyLoadedLoRA loads a trained LoRA adapter from disk and injects it into the model
+// for inference. The adapter weights are frozen (no gradients needed).
+func applyLoadedLoRA(model InternalModel, adapterDir string) error {
+	_, err := loadLoRAAdapter(model, adapterDir)
+	return err
 }
 
 // SaveSafetensors saves a map of named arrays to a .safetensors file.

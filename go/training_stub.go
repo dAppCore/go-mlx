@@ -56,12 +56,14 @@ type LoRAConfig struct {
 	TargetLayers []string
 	Lambda       float32
 	DType        DType
+	ProbeSink    ProbeSink
 }
 
 // Batch describes one RFC-style training batch.
 type Batch struct {
-	Tokens [][]int
-	Length []int
+	Tokens   [][]int
+	Length   []int
+	LossMask [][]float32
 }
 
 // TrainConfig holds RFC-style training loop settings.
@@ -72,6 +74,7 @@ type TrainConfig struct {
 	EvalInterval   int
 	SaveInterval   int
 	EvalLossThresh float64
+	ProbeSink      ProbeSink
 }
 
 // AdamW is a stub optimiser on unsupported builds.
@@ -84,6 +87,12 @@ type AdamWConfig struct {
 	Beta2        float64
 	Eps          float64
 	WeightDecay  float64
+
+	LearningRateSet bool
+	Beta1Set        bool
+	Beta2Set        bool
+	EpsSet          bool
+	WeightDecaySet  bool
 }
 
 // GradFn is a stub autodiff handle on unsupported builds.

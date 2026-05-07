@@ -47,13 +47,17 @@ import (
 )
 
 model, err := mlx.LoadModel("/path/to/model/",
-    mlx.WithContextLength(8192),
-    mlx.WithDevice("cpu"), // "gpu" or "cpu"
+    mlx.WithContextLength(262144), // opt into larger Qwen-class contexts
+    mlx.WithParallelSlots(1),      // one foreground local runner by default
 )
 if err != nil {
     panic(err)
 }
 defer model.Close()
+
+if err := model.WarmPromptCache(stableSystemAndToolsPrefix); err != nil {
+    panic(err)
+}
 
 text, err := model.Generate("What is 2+2?", mlx.WithMaxTokens(64))
 if err != nil {
@@ -71,7 +75,11 @@ fmt.Println(text)
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
 - **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
+- **Restorable model state** -- capture KV, logits, token offsets, and generated-token history into reloadable sessions
+- **State bundles** -- strict JSON artifacts that bind model identity, tokenizer/chat-template metadata, prompt hash, sampler settings, LoRA identity, KV hash, SAMI/probe data, and optional memvid refs
 - **Performance metrics** -- prefill/decode tokens per second, GPU memory usage
+- **Local-runner defaults** -- GPU, 131k bounded context, one native slot, and exact token-prefix prompt cache enabled by default
+- **Non-HTTP sidecar** -- Violet serves native generation over a local Unix socket for harnesses that do not need an OpenAI-compatible HTTP layer
 
 ## Supported Models
 
@@ -91,6 +99,41 @@ Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoin
 | Root (`mlx`) | Public API: backend registration, direct model API, memory controls, training type exports |
 | `internal/metal/` | All CGO code: array ops, model loaders, generation, training primitives |
 | `mlxlm/` | Alternative subprocess backend via Python's mlx-lm (no CGO required) |
+| `pkg/daemon/` and `cmd/violet` | Unix-socket sidecar for local native generation without HTTP |
+
+## Violet Native Route
+
+Violet is the direct local route for CoreAgent-style harnesses that already own
+tool execution and do not need an OpenAI-compatible server. Configure one or
+more model paths, run the daemon, then send one JSON frame per line over the
+Unix socket:
+
+```toml
+# violet.toml
+[models]
+default = "/path/to/mlx/model"
+```
+
+```bash
+violet --config violet.toml --socket /tmp/violet.sock
+```
+
+Prompt generation:
+
+```json
+{"action":"generate","prompt":"What is 2+2?","max_tokens":64}
+```
+
+Chat generation:
+
+```json
+{"action":"generate","messages":[{"role":"system","content":"Be direct."},{"role":"user","content":"What is 2+2?"}],"max_tokens":64}
+```
+
+The native route uses the same `mlx.LoadModel` defaults as the direct API:
+GPU execution, 131k bounded context, one active native slot, and exact
+token-prefix prompt caching. Models are loaded on first use and kept resident
+until the daemon exits.
 
 ## Metal Memory Controls
 
@@ -138,6 +181,7 @@ Measured on M3 Ultra (60-core GPU, 96 GB unified memory):
 - [Architecture](architecture.md) -- CGO binding layer, lazy evaluation, memory model, attention, KV cache
 - [Models](models.md) -- model loading, supported architectures, tokenisation, chat templates
 - [Training](training.md) -- LoRA fine-tuning, gradient computation, AdamW optimiser, loss functions
+- [Model State Roadmap](model-state-roadmap.md) -- native session restore, state bundles, probes, training runner, model packs, memory planning, benchmarks
 - [Build Guide](build.md) -- prerequisites, CMake setup, build tags, testing
 
 ## Downstream Consumers
