@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"sort"
 
 	core "dappco.re/go"
 )
@@ -274,9 +275,6 @@ func summarizeProbeLogits(logits *Array, topK int) (ProbeLogits, ProbeEntropy, b
 	if logits == nil || !logits.Valid() {
 		return ProbeLogits{}, ProbeEntropy{}, false, nil
 	}
-	if err := Eval(logits); err != nil {
-		return ProbeLogits{}, ProbeEntropy{}, false, core.E("probe.logits", "eval", err)
-	}
 	shape := logits.Shape()
 	if len(shape) == 0 {
 		return ProbeLogits{}, ProbeEntropy{}, false, nil
@@ -285,137 +283,112 @@ func summarizeProbeLogits(logits *Array, topK int) (ProbeLogits, ProbeEntropy, b
 	if vocabSize <= 0 {
 		return ProbeLogits{}, ProbeEntropy{}, false, nil
 	}
-	flat := logits.Floats()
-	if len(flat) < vocabSize {
+	topK = compactProbeTopK(topK, vocabSize)
+	row, cleanup, ok := lastProbeLogitRow(logits, shape, vocabSize)
+	defer Free(cleanup...)
+	if !ok {
 		return ProbeLogits{}, ProbeEntropy{}, false, nil
 	}
-	row := flat[len(flat)-vocabSize:]
-	if topK <= 0 || topK > len(row) {
-		topK = len(row)
+
+	summary, entropy, err := summarizeProbeLogitsCompact(row, shape, vocabSize, topK)
+	if err != nil {
+		return ProbeLogits{}, ProbeEntropy{}, false, err
 	}
+	return summary, entropy, true, nil
+}
+
+func compactProbeTopK(topK, vocabSize int) int {
+	if topK <= 0 {
+		topK = defaultProbeTopK
+	}
+	if topK > vocabSize {
+		topK = vocabSize
+	}
+	return topK
+}
+
+func lastProbeLogitRow(logits *Array, shape []int32, vocabSize int) (*Array, []*Array, bool) {
+	rows := 1
+	for _, dim := range shape[:len(shape)-1] {
+		if dim <= 0 {
+			return nil, nil, false
+		}
+		rows *= int(dim)
+	}
+	if rows <= 0 {
+		return nil, nil, false
+	}
+	reshaped := Reshape(logits, int32(rows), int32(vocabSize))
+	row := SliceAxis(reshaped, 0, int32(rows-1), int32(rows))
+	return row, []*Array{reshaped, row}, true
+}
+
+func summarizeProbeLogitsCompact(row *Array, shape []int32, vocabSize, topK int) (ProbeLogits, ProbeEntropy, error) {
+	neg := Negative(row)
+	topIndicesAll := Argpartition(neg, topK-1, -1)
+	topIndices := SliceAxis(topIndicesAll, -1, 0, int32(topK))
+	topValues := TakeAlongAxis(row, topIndices, -1)
+	maxTokenID := Argmax(row, -1, false)
+	maxLogit := MaxAxis(row, -1, false)
+	minTokenID := Argmax(neg, -1, false)
+	negMinLogit := MaxAxis(neg, -1, false)
+	meanLogit := Mean(row, -1, false)
+	logSumExp := LogSumExp(row, -1, false)
+	probabilities := Softmax(row)
+	weightedLogits := Mul(probabilities, row)
+	expectedLogit := Sum(weightedLogits, -1, false)
+	entropy := Subtract(logSumExp, expectedLogit)
+	defer Free(
+		neg,
+		topIndicesAll,
+		topIndices,
+		topValues,
+		maxTokenID,
+		maxLogit,
+		minTokenID,
+		negMinLogit,
+		meanLogit,
+		logSumExp,
+		probabilities,
+		weightedLogits,
+		expectedLogit,
+		entropy,
+	)
+	if err := Eval(topIndices, topValues, maxTokenID, maxLogit, minTokenID, negMinLogit, meanLogit, logSumExp, entropy); err != nil {
+		return ProbeLogits{}, ProbeEntropy{}, core.E("probe.logits", "compact", err)
+	}
+
+	topIDs := topIndices.Ints()
+	topLogits := topValues.Floats()
 
 	summary := ProbeLogits{
-		Shape:     append([]int32(nil), shape...),
-		VocabSize: vocabSize,
-		Top:       make([]ProbeLogit, 0, topK),
+		Shape:      append([]int32(nil), shape...),
+		VocabSize:  vocabSize,
+		MaxTokenID: int32(maxTokenID.Int()),
+		MaxLogit:   float32(maxLogit.Float()),
+		MinTokenID: int32(minTokenID.Int()),
+		MinLogit:   float32(-negMinLogit.Float()),
+		MeanLogit:  meanLogit.Float(),
+		Top:        make([]ProbeLogit, 0, len(topIDs)),
+		Meta:       map[string]string{"cpu_transfer": "compact_topk"},
 	}
-	var (
-		maxLogit    = math.Inf(-1)
-		minLogit    = math.Inf(1)
-		finiteSum   float64
-		finiteCount int
-		validCount  int
-		posInfCount int
-	)
-	for idx, value32 := range row {
-		value := float64(value32)
-		if math.IsNaN(value) {
+	logZ := logSumExp.Float()
+	for i, id := range topIDs {
+		if i >= len(topLogits) {
 			continue
 		}
-		validCount++
-		if value > maxLogit {
-			maxLogit = value
-			summary.MaxTokenID = int32(idx)
-			summary.MaxLogit = value32
+		value := topLogits[i]
+		summary.Top = append(summary.Top, ProbeLogit{
+			TokenID:     int32(id),
+			Logit:       value,
+			Probability: math.Exp(float64(value) - logZ),
+		})
+	}
+	sort.Slice(summary.Top, func(i, j int) bool {
+		if summary.Top[i].Logit == summary.Top[j].Logit {
+			return summary.Top[i].TokenID < summary.Top[j].TokenID
 		}
-		if value < minLogit {
-			minLogit = value
-			summary.MinTokenID = int32(idx)
-			summary.MinLogit = value32
-		}
-		if !math.IsInf(value, 0) {
-			finiteSum += value
-			finiteCount++
-		}
-		if math.IsInf(value, 1) {
-			posInfCount++
-		}
-		summary.Top = insertProbeTop(summary.Top, ProbeLogit{
-			TokenID: int32(idx),
-			Logit:   value32,
-		}, topK)
-	}
-	if validCount == 0 {
-		return ProbeLogits{}, ProbeEntropy{}, false, nil
-	}
-	if finiteCount > 0 {
-		summary.MeanLogit = finiteSum / float64(finiteCount)
-	}
-
-	entropyValue, probabilities := probeEntropyAndTopProbabilities(row, summary.Top, maxLogit, posInfCount)
-	for i := range summary.Top {
-		summary.Top[i].Probability = probabilities[i]
-	}
-	return summary, ProbeEntropy{Value: entropyValue, Unit: "nats"}, true, nil
-}
-
-func insertProbeTop(top []ProbeLogit, candidate ProbeLogit, limit int) []ProbeLogit {
-	if limit <= 0 {
-		return top
-	}
-	pos := len(top)
-	for i, existing := range top {
-		if candidate.Logit > existing.Logit {
-			pos = i
-			break
-		}
-	}
-	if pos >= limit {
-		return top
-	}
-	top = append(top, ProbeLogit{})
-	copy(top[pos+1:], top[pos:])
-	top[pos] = candidate
-	if len(top) > limit {
-		top = top[:limit]
-	}
-	return top
-}
-
-func probeEntropyAndTopProbabilities(row []float32, top []ProbeLogit, maxLogit float64, posInfCount int) (float64, []float64) {
-	probabilities := make([]float64, len(top))
-	if len(row) == 0 {
-		return 0, probabilities
-	}
-	if posInfCount > 0 {
-		probability := 1.0 / float64(posInfCount)
-		for i, candidate := range top {
-			if math.IsInf(float64(candidate.Logit), 1) {
-				probabilities[i] = probability
-			}
-		}
-		return math.Log(float64(posInfCount)), probabilities
-	}
-
-	var sumExp float64
-	for _, value32 := range row {
-		value := float64(value32)
-		if math.IsNaN(value) {
-			continue
-		}
-		sumExp += math.Exp(value - maxLogit)
-	}
-	if sumExp <= 0 {
-		return 0, probabilities
-	}
-
-	var entropy float64
-	for _, value32 := range row {
-		value := float64(value32)
-		if math.IsNaN(value) {
-			continue
-		}
-		probability := math.Exp(value-maxLogit) / sumExp
-		if probability > 0 {
-			entropy -= probability * math.Log(probability)
-		}
-	}
-	for i, candidate := range top {
-		value := float64(candidate.Logit)
-		if math.IsNaN(value) {
-			continue
-		}
-		probabilities[i] = math.Exp(value-maxLogit) / sumExp
-	}
-	return entropy, probabilities
+		return summary.Top[i].Logit > summary.Top[j].Logit
+	})
+	return summary, ProbeEntropy{Value: entropy.Float(), Unit: "nats"}, nil
 }

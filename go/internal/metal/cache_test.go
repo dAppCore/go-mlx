@@ -217,6 +217,37 @@ func TestPagedKVCache_TrimsStorageButReturnsFullPrompt_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
+	c := NewPagedKVCache(4, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+
+	state := c.UpdatePages(k, v, 4)
+	defer state.Free()
+
+	if state.Length != 4 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("page state = len %d K pages %d V pages %d, want 4/2/2", state.Length, len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0].Shape()[2] != 2 || state.Keys[1].Shape()[2] != 2 {
+		t.Fatalf("page shapes = %v/%v, want two 2-token pages", state.Keys[0].Shape(), state.Keys[1].Shape())
+	}
+
+	k1, v1 := makeSingleTokenKV(9)
+	defer Free(k1, v1)
+	next := c.UpdatePages(k1, v1, 1)
+	defer next.Free()
+
+	if c.Len() != 4 || c.Offset() != 5 {
+		t.Fatalf("len/offset = %d/%d, want 4/5 after paged trim", c.Len(), c.Offset())
+	}
+	if len(next.Keys) != 3 {
+		t.Fatalf("trimmed page count = %d, want 3 partial/full/new pages without full concat", len(next.Keys))
+	}
+	if next.Keys[0].Shape()[2] != 1 || next.Keys[1].Shape()[2] != 2 || next.Keys[2].Shape()[2] != 1 {
+		t.Fatalf("trimmed page shapes = %v/%v/%v, want [1,2,1]", next.Keys[0].Shape(), next.Keys[1].Shape(), next.Keys[2].Shape())
+	}
+}
+
 func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)

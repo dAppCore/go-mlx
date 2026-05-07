@@ -1651,6 +1651,125 @@ func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention PagedCacheReturnsSharedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		KProj:          NewLinear(identity(), nil),
+		VProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    ones(),
+		KNormScaled:    ones(),
+		HeadDim:        2,
+		NKVHeads:       1,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	cache := NewPagedKVCache(8, 2)
+	defer cache.Reset()
+	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+
+	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg)
+	defer func() {
+		Free(x, out)
+		kv.free()
+	}()
+	if err := Eval(out); err != nil {
+		t.Fatalf("Eval(out): %v", err)
+	}
+
+	if kv.Keys != nil || kv.Values != nil {
+		t.Fatalf("shared KV used concatenated arrays: %v/%v", kv.Keys != nil, kv.Values != nil)
+	}
+	if len(kv.Pages.Keys) != 1 || len(kv.Pages.Values) != 1 {
+		t.Fatalf("shared pages = %d/%d, want one K/V page", len(kv.Pages.Keys), len(kv.Pages.Values))
+	}
+}
+
+func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention SharedPagedKVSkipsKVProjection"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    FromValues([]float32{1, 1}, 2),
+		HeadDim:        2,
+		NKVHeads:       1,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	keyPage := FromValues([]float32{
+		1, 0,
+		0, 1,
+	}, 1, 1, 2, 2)
+	valuePage := FromValues([]float32{
+		2, 0,
+		0, 3,
+	}, 1, 1, 2, 2)
+	prev := sharedKV{
+		Pages: PagedKVState{
+			Keys:   []*Array{keyPage},
+			Values: []*Array{valuePage},
+			Owned:  []*Array{keyPage, valuePage},
+			Length: 2,
+		},
+		Offset: 2,
+	}
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+
+	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg)
+	defer func() {
+		Free(x, out)
+		kv.free()
+	}()
+	if err := Eval(out); err != nil {
+		t.Fatalf("Eval(out): %v", err)
+	}
+	if kv.Keys != nil || kv.Values != nil {
+		t.Fatalf("shared KV materialized contiguous arrays: %v/%v", kv.Keys != nil, kv.Values != nil)
+	}
+}
+
 func TestGemma4_LoadAndForwardPerLayerInputModel_Good(t *testing.T) {
 	coverageTokens := "LoadAndForwardPerLayerInputModel"
 	if coverageTokens == "" {

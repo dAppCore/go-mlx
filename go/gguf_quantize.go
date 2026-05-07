@@ -19,7 +19,8 @@ const (
 	GGUFQuantizeQ4_0   GGUFQuantizeFormat = "q4_0"
 	GGUFQuantizeQ4_K_M GGUFQuantizeFormat = "q4_k_m"
 
-	ggufQuantizeOutputWeights = "model.gguf"
+	ggufQuantizeOutputWeights      = "model.gguf"
+	ggufQuantizeChunkBlockElements = 32 << 15
 )
 
 // QuantizeGGUFOptions configures native Go safetensors-to-GGUF quantization.
@@ -61,6 +62,7 @@ type ggufQuantizedTensor struct {
 	Type   uint32
 	Shape  []uint64
 	Offset uint64
+	Size   uint64
 	Data   []byte
 }
 
@@ -118,18 +120,18 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		return nil, err
 	}
 
-	tensors, err := loadDenseSafetensors(source.WeightFiles)
+	index, err := indexSafetensorFiles(source.WeightFiles)
 	if err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "load dense safetensors", err)
+		return nil, core.E("QuantizeModelPackToGGUF", "index dense safetensors", err)
 	}
-	quantized, err := quantizeGGUFTensors(ctx, tensors, format)
+	quantized, refs, err := buildStreamingGGUFQuantizedTensors(index, format)
 	if err != nil {
 		return nil, err
 	}
 
 	weightPath := core.PathJoin(output, ggufQuantizeOutputWeights)
 	metadata := ggufQuantizeMetadata(source, format, opts.Labels)
-	if err := writeQuantizedGGUF(weightPath, metadata, quantized); err != nil {
+	if err := writeQuantizedGGUFStream(ctx, weightPath, metadata, quantized, refs, format, ggufQuantizeChunkBlockElements); err != nil {
 		return nil, core.E("QuantizeModelPackToGGUF", "write GGUF", err)
 	}
 
@@ -153,7 +155,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		SourcePack:       source,
 		Pack:             pack,
 		Info:             info,
-		TensorCount:      len(tensors),
+		TensorCount:      len(quantized),
 		QuantizedTensors: len(quantized),
 		Notes:            notes,
 	}, nil
@@ -328,17 +330,9 @@ func quantizeGGUFTensors(ctx context.Context, tensors []denseSafetensor, format 
 }
 
 func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (ggufQuantizedTensor, error) {
-	var tensorType uint32
-	var blockSize int
-	switch format {
-	case GGUFQuantizeQ8_0:
-		tensorType = ggufTensorTypeQ8_0
-		blockSize = 32
-	case GGUFQuantizeQ4_0:
-		tensorType = ggufTensorTypeQ4_0
-		blockSize = 32
-	default:
-		return ggufQuantizedTensor{}, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	tensorType, blockSize, _, err := ggufQuantizeLayout(format)
+	if err != nil {
+		return ggufQuantizedTensor{}, err
 	}
 	if len(tensor.Data)%blockSize != 0 {
 		return ggufQuantizedTensor{}, core.NewError(core.Sprintf("mlx: tensor %s has %d values, not divisible by GGUF block size %d", tensor.Name, len(tensor.Data), blockSize))
@@ -359,6 +353,46 @@ func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (gguf
 		Shape: append([]uint64(nil), tensor.Shape...),
 		Data:  data,
 	}, nil
+}
+
+func buildStreamingGGUFQuantizedTensors(index safetensorIndex, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, []safetensorTensorRef, error) {
+	tensorType, blockSize, bytesPerBlock, err := ggufQuantizeLayout(format)
+	if err != nil {
+		return nil, nil, err
+	}
+	tensors := make([]ggufQuantizedTensor, 0, len(index.Names))
+	refs := make([]safetensorTensorRef, 0, len(index.Names))
+	for _, name := range index.Names {
+		ref := index.Tensors[name]
+		if _, err := safetensorDTypeByteSize(ref.DType); err != nil {
+			return nil, nil, err
+		}
+		if ref.Elements%blockSize != 0 {
+			return nil, nil, core.NewError(core.Sprintf("mlx: tensor %s has %d values, not divisible by GGUF block size %d", ref.Name, ref.Elements, blockSize))
+		}
+		if len(ref.Shape) == 0 || ref.Shape[0]%uint64(blockSize) != 0 {
+			return nil, nil, core.NewError(core.Sprintf("mlx: tensor %s first dimension is not divisible by GGUF block size %d", ref.Name, blockSize))
+		}
+		tensors = append(tensors, ggufQuantizedTensor{
+			Name:  ref.Name,
+			Type:  tensorType,
+			Shape: append([]uint64(nil), ref.Shape...),
+			Size:  uint64(ref.Elements/blockSize) * uint64(bytesPerBlock),
+		})
+		refs = append(refs, ref)
+	}
+	return tensors, refs, nil
+}
+
+func ggufQuantizeLayout(format GGUFQuantizeFormat) (tensorType uint32, blockSize int, bytesPerBlock int, err error) {
+	switch format {
+	case GGUFQuantizeQ8_0:
+		return ggufTensorTypeQ8_0, 32, 34, nil
+	case GGUFQuantizeQ4_0:
+		return ggufTensorTypeQ4_0, 32, 18, nil
+	default:
+		return 0, 0, 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	}
 }
 
 func quantizeQ8_0(values []float32) []byte {
@@ -460,6 +494,76 @@ func writeQuantizedGGUF(path string, metadata []ggufMetadataEntry, tensors []ggu
 	defer file.Close()
 
 	assignGGUFTensorOffsets(tensors, 32)
+	if err := writeQuantizedGGUFHeader(file, metadata, tensors); err != nil {
+		return err
+	}
+	var written uint64
+	for _, tensor := range tensors {
+		if tensor.Offset < written {
+			return core.NewError("mlx: GGUF tensor offsets are not monotonic")
+		}
+		if err := writePadding(file, tensor.Offset-written); err != nil {
+			return err
+		}
+		if _, err := file.Write(tensor.Data); err != nil {
+			return err
+		}
+		written = tensor.Offset + ggufQuantizedTensorDataSize(tensor)
+	}
+	return nil
+}
+
+func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor, refs []safetensorTensorRef, format GGUFQuantizeFormat, chunkElements int) error {
+	if len(tensors) != len(refs) {
+		return core.NewError("mlx: GGUF tensor metadata and source refs are not aligned")
+	}
+	_, blockSize, _, err := ggufQuantizeLayout(format)
+	if err != nil {
+		return err
+	}
+	if chunkElements <= 0 {
+		chunkElements = ggufQuantizeChunkBlockElements
+	}
+	chunkElements = (chunkElements / blockSize) * blockSize
+	if chunkElements <= 0 {
+		chunkElements = blockSize
+	}
+
+	created := core.Create(path)
+	if !created.OK {
+		return quantizeGGUFResultError(created)
+	}
+	file := created.Value.(*core.OSFile)
+	defer file.Close()
+
+	assignGGUFTensorOffsets(tensors, 32)
+	if err := writeQuantizedGGUFHeader(file, metadata, tensors); err != nil {
+		return err
+	}
+	var written uint64
+	for i, tensor := range tensors {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if tensor.Offset < written {
+			return core.NewError("mlx: GGUF tensor offsets are not monotonic")
+		}
+		if err := writePadding(file, tensor.Offset-written); err != nil {
+			return err
+		}
+		dataSize, err := writeQuantizedGGUFTensorStream(ctx, file, refs[i], format, chunkElements)
+		if err != nil {
+			return err
+		}
+		if dataSize != ggufQuantizedTensorDataSize(tensor) {
+			return core.NewError(core.Sprintf("mlx: streamed GGUF tensor %s wrote %d bytes, want %d", tensor.Name, dataSize, ggufQuantizedTensorDataSize(tensor)))
+		}
+		written = tensor.Offset + ggufQuantizedTensorDataSize(tensor)
+	}
+	return nil
+}
+
+func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor) error {
 	write := func(value any) error {
 		return binary.Write(file, binary.LittleEndian, value)
 	}
@@ -492,20 +596,46 @@ func writeQuantizedGGUF(path string, metadata []ggufMetadataEntry, tensors []ggu
 	if err := writePadding(file, alignPadding(uint64(position), 32)); err != nil {
 		return err
 	}
-	var written uint64
-	for _, tensor := range tensors {
-		if tensor.Offset < written {
-			return core.NewError("mlx: GGUF tensor offsets are not monotonic")
-		}
-		if err := writePadding(file, tensor.Offset-written); err != nil {
-			return err
-		}
-		if _, err := file.Write(tensor.Data); err != nil {
-			return err
-		}
-		written = tensor.Offset + uint64(len(tensor.Data))
-	}
 	return nil
+}
+
+func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensorTensorRef, format GGUFQuantizeFormat, chunkElements int) (uint64, error) {
+	reader, err := openSafetensorTensorReader(ref)
+	if err != nil {
+		return 0, err
+	}
+	defer reader.close()
+	var written uint64
+	for offset := 0; offset < ref.Elements; offset += chunkElements {
+		if err := ctx.Err(); err != nil {
+			return written, err
+		}
+		count := min(chunkElements, ref.Elements-offset)
+		values, err := reader.readFloat32Chunk(offset, count)
+		if err != nil {
+			return written, err
+		}
+		data, err := quantizeGGUFValues(format, values)
+		if err != nil {
+			return written, err
+		}
+		if _, err := file.Write(data); err != nil {
+			return written, err
+		}
+		written += uint64(len(data))
+	}
+	return written, nil
+}
+
+func quantizeGGUFValues(format GGUFQuantizeFormat, values []float32) ([]byte, error) {
+	switch format {
+	case GGUFQuantizeQ8_0:
+		return quantizeQ8_0(values), nil
+	case GGUFQuantizeQ4_0:
+		return quantizeQ4_0(values), nil
+	default:
+		return nil, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	}
 }
 
 func assignGGUFTensorOffsets(tensors []ggufQuantizedTensor, alignment uint64) {
@@ -513,8 +643,15 @@ func assignGGUFTensorOffsets(tensors []ggufQuantizedTensor, alignment uint64) {
 	for i := range tensors {
 		offset += alignPadding(offset, alignment)
 		tensors[i].Offset = offset
-		offset += uint64(len(tensors[i].Data))
+		offset += ggufQuantizedTensorDataSize(tensors[i])
 	}
+}
+
+func ggufQuantizedTensorDataSize(tensor ggufQuantizedTensor) uint64 {
+	if tensor.Size > 0 {
+		return tensor.Size
+	}
+	return uint64(len(tensor.Data))
 }
 
 func writeGGUFMetadataEntry(file *core.OSFile, entry ggufMetadataEntry) error {

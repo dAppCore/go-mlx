@@ -12,7 +12,7 @@ import (
 
 const (
 	// KVSnapshotVersion is the native KV snapshot schema version.
-	KVSnapshotVersion = 2
+	KVSnapshotVersion = 3
 )
 
 // KVSnapshot is a CPU-readable copy of model key/value cache tensors.

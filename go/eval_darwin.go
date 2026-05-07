@@ -67,7 +67,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (EvalB
 	inputs := FromValues(evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen), len(lengths), maxLen)
 	targets := FromValues(evalBatchTokenData(batch.Targets, lengths, maxLen), len(lengths), maxLen)
 	lossMask := FromValues(evalBatchLossMaskData(batch, lengths, maxLen), len(lengths), maxLen)
-	attnMask := evalBatchAttentionMask(lengths, maxLen)
+	attnMask := evalOptionalBatchAttentionMask(lengths, maxLen)
 	defer Free(inputs, targets, lossMask, attnMask)
 
 	native, ok := m.model.(nativeEvalInternalModel)
@@ -173,6 +173,25 @@ func evalBatchAttentionMask(lengths []int32, maxLen int) *Array {
 		}
 	}
 	return FromValues(data, batchSize, 1, maxLen, maxLen)
+}
+
+func evalOptionalBatchAttentionMask(lengths []int32, maxLen int) *Array {
+	if !evalNeedsExplicitAttentionMask(lengths, maxLen) {
+		return nil
+	}
+	return evalBatchAttentionMask(lengths, maxLen)
+}
+
+func evalNeedsExplicitAttentionMask(lengths []int32, maxLen int) bool {
+	if maxLen <= 0 || len(lengths) == 0 {
+		return true
+	}
+	for _, length := range lengths {
+		if int(length) != maxLen {
+			return true
+		}
+	}
+	return false
 }
 
 func freeEvalCaches(caches []Cache) {

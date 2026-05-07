@@ -83,6 +83,61 @@ func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
 	}
 }
 
+func TestKVSnapshot_SaveLoadQuantizedQ8_Good(t *testing.T) {
+	snapshot := &KVSnapshot{
+		Version:       KVSnapshotVersion,
+		Architecture:  "qwen3",
+		Tokens:        []int32{1, 2, 3},
+		TokenOffset:   3,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		LogitShape:    []int32{1, 1, 2},
+		Logits:        []float32{0.25, 0.75},
+		Layers: []KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []KVHeadSnapshot{{
+				Key:   []float32{-1, -0.5, 0.5, 1},
+				Value: []float32{0, 0.25, -0.25, 0.75},
+			}},
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "quantized-q8.kvbin")
+
+	if err := snapshot.SaveWithOptions(path, KVSnapshotSaveOptions{KVEncoding: KVSnapshotEncodingQ8}); err != nil {
+		t.Fatalf("SaveWithOptions() error = %v", err)
+	}
+	loaded, err := LoadKVSnapshot(path)
+	if err != nil {
+		t.Fatalf("LoadKVSnapshot() error = %v", err)
+	}
+
+	if loaded.Version != KVSnapshotVersion {
+		t.Fatalf("loaded Version = %d, want %d", loaded.Version, KVSnapshotVersion)
+	}
+	for i, want := range snapshot.Layers[0].Heads[0].Key {
+		if diff := loaded.Layers[0].Heads[0].Key[i] - want; diff < -0.01 || diff > 0.01 {
+			t.Fatalf("loaded key[%d] = %f, want near %f", i, loaded.Layers[0].Heads[0].Key[i], want)
+		}
+	}
+	if loaded.Logits[1] != 0.75 {
+		t.Fatalf("loaded logits = %v, want unquantized logits preserved", loaded.Logits)
+	}
+}
+
+func TestKVSnapshot_SaveWithOptions_Bad(t *testing.T) {
+	snapshot := &KVSnapshot{Version: KVSnapshotVersion}
+
+	err := snapshot.SaveWithOptions(core.PathJoin(t.TempDir(), "bad.kvbin"), KVSnapshotSaveOptions{KVEncoding: "q2"})
+
+	if err == nil {
+		t.Fatal("SaveWithOptions() error = nil, want unsupported encoding error")
+	}
+}
+
 func TestKVSnapshot_Head_Ugly(t *testing.T) {
 	snapshot := &KVSnapshot{
 		Layers: []KVLayerSnapshot{{

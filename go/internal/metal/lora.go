@@ -438,7 +438,7 @@ func (adapter *LoRAAdapter) valueAndGrad(params []*Array, batch Batch, targets [
 	inputs := FromValues(batchTokenData(batch.Tokens, lengths, maxLen), len(lengths), maxLen)
 	targetIDs := FromValues(batchTokenData(targets, lengths, maxLen), len(lengths), maxLen)
 	lossMask := batchLossMaskForBatch(batch, lengths, maxLen)
-	attnMask := buildBatchMask(int32(len(lengths)), int32(maxLen), lengths)
+	attnMask := buildOptionalBatchMask(int32(len(lengths)), int32(maxLen), lengths)
 	defer Free(inputs, targetIDs, lossMask, attnMask)
 
 	argnums := make([]int, len(params))

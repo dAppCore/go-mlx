@@ -91,6 +91,65 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 	return out
 }
 
+// ScaledDotProductAttentionPaged computes decode-time attention over K/V pages
+// without concatenating the cached K/V tensors. It is intended for non-causal
+// single-token decode; prefill and masked paths should use the fused kernels.
+func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array, scale float32) *Array {
+	if len(keyPages) == 0 || len(keyPages) != len(valuePages) {
+		return nil
+	}
+	if len(keyPages) == 1 {
+		return ScaledDotProductAttention(query, keyPages[0], valuePages[0], scale, false)
+	}
+
+	scorePages := make([]*Array, 0, len(keyPages))
+	var globalMax *Array
+	for _, key := range keyPages {
+		keyT := Transpose(key, 0, 1, 3, 2)
+		score := Matmul(query, keyT)
+		Free(keyT)
+		if scale != 1 {
+			scaled := MulScalar(score, scale)
+			Free(score)
+			score = scaled
+		}
+		pageMax := MaxAxis(score, -1, true)
+		if globalMax == nil {
+			globalMax = pageMax
+		} else {
+			nextMax := Maximum(globalMax, pageMax)
+			Free(globalMax, pageMax)
+			globalMax = nextMax
+		}
+		scorePages = append(scorePages, score)
+	}
+	defer Free(scorePages...)
+
+	var denom *Array
+	var weighted *Array
+	for i, score := range scorePages {
+		shifted := Subtract(score, globalMax)
+		expScore := Exp(shifted)
+		Free(shifted)
+		pageDenom := Sum(expScore, -1, true)
+		pageWeighted := Matmul(expScore, valuePages[i])
+		Free(expScore)
+		if denom == nil {
+			denom = pageDenom
+			weighted = pageWeighted
+			continue
+		}
+		nextDenom := Add(denom, pageDenom)
+		nextWeighted := Add(weighted, pageWeighted)
+		Free(denom, pageDenom, weighted, pageWeighted)
+		denom = nextDenom
+		weighted = nextWeighted
+	}
+	out := Divide(weighted, denom)
+	Free(globalMax, denom, weighted)
+	return out
+}
+
 // ScaledDotProductAttentionWithMask computes attention with an explicit mask.
 //
 //	out := metal.ScaledDotProductAttentionWithMask(q, k, v, batchMask, cfg.Scale)

@@ -93,7 +93,7 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 	default:
 	}
 
-	mask := buildBatchMask(N, L, sortedLengths)
+	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
 	defer freeCaches(caches)
@@ -271,7 +271,7 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 	}
 
 	prefillStart := time.Now()
-	mask := buildBatchMask(N, L, sortedLengths)
+	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
 	defer freeCaches(caches)
@@ -437,6 +437,25 @@ func buildBatchMask(N, L int32, promptLens []int32) *Array {
 
 	mask := FromValues(data, int(N), 1, int(L), int(L))
 	return mask
+}
+
+func buildOptionalBatchMask(N, L int32, promptLens []int32) *Array {
+	if !batchNeedsExplicitMask(N, L, promptLens) {
+		return nil
+	}
+	return buildBatchMask(N, L, promptLens)
+}
+
+func batchNeedsExplicitMask(N, L int32, promptLens []int32) bool {
+	if N <= 0 || L <= 0 || len(promptLens) < int(N) {
+		return true
+	}
+	for i := range int(N) {
+		if promptLens[i] != L {
+			return true
+		}
+	}
+	return false
 }
 
 // newCachesN creates caches for N-batch inference.

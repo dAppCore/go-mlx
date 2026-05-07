@@ -422,28 +422,39 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 	k = RoPE(k, int(cfg.HeadDim), false, ropeTheta, 1.0, c.Offset())
 	Free(oldK)
 
-	// Update cache — returns Slice views into cache buffer; free our pre-update handles.
-	oldK, oldV := k, v
-	k, v = c.Update(k, v, int(L))
-	Free(oldK, oldV)
-
-	// GQA: repeat K/V heads
-	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
-	kAttn, vAttn := k, v
-	if repeatFactor > 1 {
-		kAttn = RepeatKV(k, repeatFactor)
-		vAttn = RepeatKV(v, repeatFactor)
-		Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
-	}
-
 	// Scaled dot-product attention
 	var out *Array
-	if mask != nil {
-		out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
+	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
+	if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
+		oldK, oldV := k, v
+		pages := paged.UpdatePages(k, v, int(L))
+		Free(oldK, oldV)
+		kPages, vPages, repeatedPages := repeatPagedState(pages, repeatFactor)
+		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
+		Free(repeatedPages...)
+		pages.Free()
 	} else {
-		out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
+		// Update cache — returns Slice views into cache buffer; free our pre-update handles.
+		oldK, oldV := k, v
+		k, v = c.Update(k, v, int(L))
+		Free(oldK, oldV)
+
+		// GQA: repeat K/V heads
+		kAttn, vAttn := k, v
+		if repeatFactor > 1 {
+			kAttn = RepeatKV(k, repeatFactor)
+			vAttn = RepeatKV(v, repeatFactor)
+			Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
+		}
+
+		if mask != nil {
+			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
+		} else {
+			out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
+		}
+		Free(kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
 	}
-	Free(q, kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
+	Free(q)
 
 	transposed := Transpose(out, 0, 2, 1, 3)
 	Free(out)

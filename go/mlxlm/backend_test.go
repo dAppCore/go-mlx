@@ -6,6 +6,9 @@ package mlxlm
 
 import (
 	"context"
+	"encoding/binary"
+	"io"
+	"math"
 	"runtime"
 	"sync"
 	"testing"
@@ -81,6 +84,151 @@ func TestOptionalFloat32Field_MissingField_Good(t *testing.T) {
 
 	if got, ok := optionalFloat32Field(withoutMinP{TopP: 0.9}, "MinP"); ok || got != 0 {
 		t.Fatalf("optionalFloat32Field() = (%f, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestOptionalFloat32Field_NonFloat_Bad(t *testing.T) {
+	type withStringMinP struct {
+		MinP string
+	}
+
+	if got, ok := optionalFloat32Field(withStringMinP{MinP: "0.05"}, "MinP"); ok || got != 0 {
+		t.Fatalf("optionalFloat32Field(non-float) = (%f, %v), want (0, false)", got, ok)
+	}
+}
+
+func TestJSONLineReader_ReadLine_FramesAndEOF_Good(t *testing.T) {
+	reader := newJSONLineReader(core.NewReader("first\r\nsecond\nthird"))
+
+	cases := []string{"first", "second", "third"}
+	for _, want := range cases {
+		line, err := reader.ReadLine()
+		if err != nil {
+			t.Fatalf("ReadLine() error = %v", err)
+		}
+		if string(line) != want {
+			t.Fatalf("ReadLine() = %q, want %q", string(line), want)
+		}
+	}
+	if _, err := reader.ReadLine(); err != io.EOF {
+		t.Fatalf("ReadLine() after EOF = %v, want io.EOF", err)
+	}
+}
+
+func TestJSONLineReader_ReadLine_TooLong_Bad(t *testing.T) {
+	data := make([]byte, maxJSONLineBytes)
+	for index := range data {
+		data[index] = 'x'
+	}
+	reader := newJSONLineReader(core.NewBuffer(data))
+
+	_, err := reader.ReadLine()
+	if err == nil || !core.Contains(err.Error(), "exceeds 1 MiB") {
+		t.Fatalf("ReadLine() error = %v, want line length error", err)
+	}
+}
+
+func TestReshapeFloat32_PartialHead_Ugly(t *testing.T) {
+	values := []float32{1, 2, 3, 4, 5, 6}
+	data := make([]byte, len(values)*4)
+	for index, value := range values {
+		binary.LittleEndian.PutUint32(data[index*4:index*4+4], math.Float32bits(value))
+	}
+
+	heads := reshapeFloat32(data, 3, 3)
+	if len(heads) != 3 {
+		t.Fatalf("len(heads) = %d, want 3", len(heads))
+	}
+	if len(heads[0]) != 3 || heads[0][2] != 3 {
+		t.Fatalf("heads[0] = %+v, want first 3 floats", heads[0])
+	}
+	if len(heads[1]) != 3 || heads[1][0] != 4 || heads[1][2] != 6 {
+		t.Fatalf("heads[1] = %+v, want next 3 floats", heads[1])
+	}
+	if heads[2] != nil {
+		t.Fatalf("heads[2] = %+v, want nil partial head", heads[2])
+	}
+}
+
+func TestMLXLMProcessHelpers_Bad(t *testing.T) {
+	if got := indexByte([]byte("abc\ndef"), '\n'); got != 3 {
+		t.Fatalf("indexByte(newline) = %d, want 3", got)
+	}
+	if got := indexByte([]byte("abcdef"), '\n'); got != -1 {
+		t.Fatalf("indexByte(missing) = %d, want -1", got)
+	}
+
+	args, err := stringSliceOption(core.NewOptions(), "args")
+	if err != nil {
+		t.Fatalf("stringSliceOption(empty): %v", err)
+	}
+	if args != nil {
+		t.Fatalf("stringSliceOption(empty) = %+v, want nil", args)
+	}
+
+	args, err = stringSliceOption(core.NewOptions(core.Option{Key: "args", Value: []string{"-u", "bridge.py"}}), "args")
+	if err != nil {
+		t.Fatalf("stringSliceOption(valid): %v", err)
+	}
+	args[0] = "mutated"
+	again, err := stringSliceOption(core.NewOptions(core.Option{Key: "args", Value: []string{"-u", "bridge.py"}}), "args")
+	if err != nil {
+		t.Fatalf("stringSliceOption(valid again): %v", err)
+	}
+	if again[0] != "-u" {
+		t.Fatalf("stringSliceOption did not return a defensive copy")
+	}
+
+	_, err = stringSliceOption(core.NewOptions(core.Option{Key: "args", Value: "bad"}), "args")
+	if err == nil || !core.Contains(err.Error(), "args must be []string") {
+		t.Fatalf("stringSliceOption(wrong type) error = %v", err)
+	}
+
+	if _, err := startProcessFromOptions(context.Background(), core.NewOptions()); err == nil {
+		t.Fatal("expected startProcessFromOptions without command to fail")
+	}
+	if _, err := startMLXLMProcess(context.Background(), ""); err == nil {
+		t.Fatal("expected startMLXLMProcess without command to fail")
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := startMLXLMProcess(cancelled, "python3"); err != context.Canceled {
+		t.Fatalf("startMLXLMProcess(cancelled) = %v, want context.Canceled", err)
+	}
+
+	if resultError(core.Ok("not error")) != nil {
+		t.Fatal("resultError(ok string) returned non-nil error")
+	}
+	wantErr := core.NewError("boom")
+	if got := resultError(core.Fail(wantErr)); got != wantErr {
+		t.Fatalf("resultError(fail) = %v, want %v", got, wantErr)
+	}
+}
+
+func TestLookPath_DirectAndPathSearch_Good(t *testing.T) {
+	dir := t.TempDir()
+	binaryPath := core.PathJoin(dir, "tool")
+	if result := core.WriteFile(binaryPath, []byte("#!/bin/sh\nexit 0\n"), 0o755); !result.OK {
+		t.Fatalf("write executable: %v", result.Value)
+	}
+	if got, err := lookPath(binaryPath); err != nil || got != binaryPath {
+		t.Fatalf("lookPath(direct) = (%q,%v), want %q", got, err, binaryPath)
+	}
+
+	oldPath := core.Getenv("PATH")
+	if result := core.Setenv("PATH", dir); !result.OK {
+		t.Fatalf("set PATH: %v", result.Value)
+	}
+	t.Cleanup(func() { _ = core.Setenv("PATH", oldPath) })
+
+	if got, err := lookPath("tool"); err != nil || got != binaryPath {
+		t.Fatalf("lookPath(PATH) = (%q,%v), want %q", got, err, binaryPath)
+	}
+	if _, err := lookPath(core.PathJoin(dir, "missing")); err == nil {
+		t.Fatal("expected direct missing executable error")
+	}
+	if _, err := lookPath("missing"); err == nil {
+		t.Fatal("expected PATH missing executable error")
 	}
 }
 

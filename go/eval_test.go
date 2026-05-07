@@ -159,6 +159,80 @@ func TestRunDatasetEval_ReportsRunnerErrors_Ugly(t *testing.T) {
 	}
 }
 
+func TestRunDatasetEval_ErrorBranches_Bad(t *testing.T) {
+	if _, err := RunModelEval(context.Background(), nil, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), EvalConfig{}); err == nil {
+		t.Fatal("expected nil model eval error")
+	}
+	runner := EvalRunner{EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
+		return EvalBatchMetrics{Tokens: 1, Loss: 0.1}, nil
+	}}
+	if _, err := RunDatasetEval(context.Background(), runner, nil, EvalConfig{}); err == nil {
+		t.Fatal("expected nil dataset error")
+	}
+	if _, err := RunDatasetEval(context.Background(), runner, NewSFTSliceDataset(nil), EvalConfig{}); err == nil {
+		t.Fatal("expected empty dataset error")
+	}
+	if _, err := RunDatasetEval(context.Background(), runner, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), EvalConfig{AdapterPath: "adapter"}); err == nil {
+		t.Fatal("expected unsupported adapter loading error")
+	}
+	if _, err := evalBatches(context.Background(), runner, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DatasetBatchConfig{}); err == nil {
+		t.Fatal("expected missing tokenizer/build batches error")
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := collectEvalSamples(cancelled, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), 0); err != context.Canceled {
+		t.Fatalf("collectEvalSamples(cancelled) = %v, want context.Canceled", err)
+	}
+	if _, err := evaluateBatches(cancelled, runner, []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}}}}, 1); err != context.Canceled {
+		t.Fatalf("evaluateBatches(cancelled) = %v, want context.Canceled", err)
+	}
+}
+
+func TestEvaluateBatches_ErrorBranches_Ugly(t *testing.T) {
+	nonFinite := EvalRunner{EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
+		return EvalBatchMetrics{Tokens: 1, Loss: math.Inf(1)}, nil
+	}}
+	if _, err := evaluateBatches(context.Background(), nonFinite, []SFTBatch{{Batch: Batch{Tokens: [][]int{{1}}}}}, 1); err == nil {
+		t.Fatal("expected non-finite loss error")
+	}
+	noTokens := EvalRunner{EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
+		return EvalBatchMetrics{Loss: 0.2}, nil
+	}}
+	if _, err := evaluateBatches(context.Background(), noTokens, []SFTBatch{{}}, 1); err == nil {
+		t.Fatal("expected no loss tokens error")
+	}
+
+	if got := sftBatchLossTokens(SFTBatch{Batch: Batch{Length: []int{2, 0, 3}}}); got != 5 {
+		t.Fatalf("sftBatchLossTokens(length) = %d, want 5", got)
+	}
+	if got := sftBatchLossTokens(SFTBatch{Batch: Batch{Tokens: [][]int{{1, 2}, {3}}}}); got != 3 {
+		t.Fatalf("sftBatchLossTokens(tokens) = %d, want 3", got)
+	}
+	if got := fractionScore(1, 0); got != 0 {
+		t.Fatalf("fractionScore(1,0) = %f, want 0", got)
+	}
+}
+
+func TestEvalQualityProbes_NilAndDefaultNames_Ugly(t *testing.T) {
+	report := runEvalQualityProbes(EvalQualityContext{
+		Config: EvalConfig{QualityProbes: []EvalQualityProbe{
+			{Name: "nil_probe"},
+			{Name: "default_name", Check: func(EvalQualityContext) EvalQualityCheck {
+				return EvalQualityCheck{Pass: true, Score: 1}
+			}},
+		}},
+		Samples: []SFTSample{{}},
+		Metrics: EvalMetrics{Tokens: 0, Loss: math.NaN(), Perplexity: math.Inf(1)},
+	})
+	if !evalQualityPassed(report, "default_name") {
+		t.Fatalf("quality checks = %+v, want default_name pass", report.Checks)
+	}
+	if evalQualityPassed(report, "nil_probe") {
+		t.Fatalf("quality checks = %+v, nil probe should fail", report.Checks)
+	}
+}
+
 func evalQualityPassed(report EvalQualityReport, name string) bool {
 	for _, check := range report.Checks {
 		if check.Name == name {

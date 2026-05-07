@@ -163,6 +163,28 @@ func TestFast_ScaledDotProductAttention_NonCausal_Good(t *testing.T) {
 	}
 }
 
+func TestFast_ScaledDotProductAttentionPagedMatchesConcat_Good(t *testing.T) {
+	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
+	k1 := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
+	k2 := FromValues([]float32{1, 1, -1, 0}, 1, 1, 2, 2)
+	v1 := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)
+	v2 := FromValues([]float32{5, 5, -2, 1}, 1, 1, 2, 2)
+	defer Free(q, k1, k2, v1, v2)
+
+	scale := float32(1.0 / math.Sqrt(2.0))
+	paged := ScaledDotProductAttentionPaged(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	defer Free(paged)
+	fullK := Concatenate([]*Array{k1, k2}, 2)
+	fullV := Concatenate([]*Array{v1, v2}, 2)
+	expected := ScaledDotProductAttention(q, fullK, fullV, scale, false)
+	defer Free(fullK, fullV, expected)
+	if err := Eval(paged, expected); err != nil {
+		t.Fatalf("Eval paged attention: %v", err)
+	}
+
+	floatSliceApprox(t, paged.Floats(), expected.Floats())
+}
+
 func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 	q := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	k := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)

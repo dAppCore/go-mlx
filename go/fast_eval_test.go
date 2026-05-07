@@ -6,6 +6,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	core "dappco.re/go"
 )
 
 func TestRunFastEval_AggregatesGenerationCacheRestoreAndProbes_Good(t *testing.T) {
@@ -162,6 +164,128 @@ func TestFastEval_NewModelFastEvalRunner_Ugly(t *testing.T) {
 	runner := NewModelFastEvalRunner(&Model{})
 	if runner.Generate == nil || runner.WarmPromptCache == nil || runner.CaptureKV == nil || runner.RestoreKV == nil {
 		t.Fatalf("runner = %+v, want complete model adapter", runner)
+	}
+}
+
+func TestFastEvalConfigAndOptions_Good(t *testing.T) {
+	cfg := normalizeFastEvalConfig(FastEvalConfig{
+		Model:         "m",
+		Prompt:        "p",
+		MaxTokens:     -1,
+		Runs:          -1,
+		TopK:          20,
+		TopP:          0.9,
+		MinP:          0.1,
+		StopTokens:    []int32{1, 2},
+		RepeatPenalty: 1.1,
+	})
+	if cfg.MaxTokens != DefaultFastEvalConfig().MaxTokens || cfg.Runs != DefaultFastEvalConfig().Runs || cfg.CachePrompt != "p" {
+		t.Fatalf("normalizeFastEvalConfig() = %+v", cfg)
+	}
+	cfg.StopTokens[0] = 9
+	normalized := normalizeFastEvalConfig(FastEvalConfig{Prompt: "p", MaxTokens: 1, Runs: 1, StopTokens: []int32{1}})
+	if normalized.StopTokens[0] != 1 {
+		t.Fatal("normalizeFastEvalConfig did not defensively copy stop tokens")
+	}
+	opts := fastEvalGenerateOptions(FastEvalConfig{
+		MaxTokens:     4,
+		Temperature:   0.1,
+		TopK:          10,
+		TopP:          0.8,
+		MinP:          0.05,
+		StopTokens:    []int32{2},
+		RepeatPenalty: 1.2,
+	}.generateConfig(NewProbeRecorder()))
+	if len(opts) != 8 {
+		t.Fatalf("fastEvalGenerateOptions len = %d, want 8", len(opts))
+	}
+}
+
+func TestFastEvalOptionalErrorBranches_Bad(t *testing.T) {
+	cfg := normalizeFastEvalConfig(FastEvalConfig{Prompt: "p", MaxTokens: 1, Runs: 1})
+	if report := runFastEvalPromptCache(context.Background(), FastEvalRunner{}, cfg); !report.Attempted || report.Error == "" {
+		t.Fatalf("prompt cache unsupported report = %+v", report)
+	}
+	wantErr := core.NewError("warm failed")
+	runner := FastEvalRunner{
+		WarmPromptCache: func(context.Context, string) error { return wantErr },
+		Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+			return FastEvalGeneration{}, nil
+		},
+	}
+	if report := runFastEvalPromptCache(context.Background(), runner, cfg); report.Error == "" {
+		t.Fatalf("prompt cache warm error report = %+v", report)
+	}
+	runner.WarmPromptCache = func(context.Context, string) error { return nil }
+	runner.Generate = func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+		return FastEvalGeneration{}, core.NewError("generate failed")
+	}
+	if report := runFastEvalPromptCache(context.Background(), runner, cfg); report.Error == "" {
+		t.Fatalf("prompt cache generate error report = %+v", report)
+	}
+
+	if snapshot := runFastEvalCapture(context.Background(), FastEvalRunner{}, cfg); snapshot != nil {
+		t.Fatalf("capture without runner = %+v, want nil", snapshot)
+	}
+	runner.CaptureKV = func(context.Context, string) (*KVSnapshot, error) { return nil, core.NewError("capture failed") }
+	if snapshot := runFastEvalCapture(context.Background(), runner, cfg); snapshot != nil {
+		t.Fatalf("capture error = %+v, want nil", snapshot)
+	}
+	if report := runFastEvalRestore(context.Background(), FastEvalRunner{}, nil); report.Error == "" {
+		t.Fatalf("restore nil report = %+v", report)
+	}
+	if report := runFastEvalRestore(context.Background(), FastEvalRunner{}, fastEvalTestSnapshot()); report.Error == "" {
+		t.Fatalf("restore unsupported report = %+v", report)
+	}
+	if report := runFastEvalStateBundle(context.Background(), nil, cfg, ModelInfo{}); report.Error == "" {
+		t.Fatalf("state bundle nil report = %+v", report)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if report := runFastEvalStateBundle(cancelled, fastEvalTestSnapshot(), cfg, ModelInfo{}); report.Error == "" {
+		t.Fatalf("state bundle cancelled report = %+v", report)
+	}
+}
+
+func TestFastEvalSummariesAndResults_Ugly(t *testing.T) {
+	summary := summarizeFastEvalGenerations([]FastEvalGenerationSample{
+		{
+			Text:    "",
+			Elapsed: 3 * time.Millisecond,
+			Metrics: Metrics{
+				PromptTokens:        2,
+				GeneratedTokens:     0,
+				PrefillTokensPerSec: 4,
+				DecodeTokensPerSec:  6,
+				PeakMemoryBytes:     10,
+				ActiveMemoryBytes:   5,
+			},
+		},
+		{
+			Text: "ok",
+			Metrics: Metrics{
+				PromptTokens:        3,
+				GeneratedTokens:     1,
+				TotalDuration:       2 * time.Millisecond,
+				PrefillTokensPerSec: 8,
+				DecodeTokensPerSec:  10,
+				PeakMemoryBytes:     8,
+				ActiveMemoryBytes:   7,
+			},
+		},
+	})
+	if summary.Runs != 2 || summary.PromptTokens != 5 || summary.GeneratedTokens != 1 || summary.PrefillTokensPerSec != 6 || summary.DecodeTokensPerSec != 8 || summary.TotalDuration != 5*time.Millisecond {
+		t.Fatalf("summary = %+v", summary)
+	}
+	checks := qualityChecks([]FastEvalGenerationSample{{Text: "", Metrics: Metrics{GeneratedTokens: 0}}})
+	if checks[0].Pass || checks[1].Pass {
+		t.Fatalf("empty quality checks = %+v, want failures", checks)
+	}
+	if got := boolScore(false); got != 0 {
+		t.Fatalf("boolScore(false) = %f, want 0", got)
+	}
+	if err := fastEvalResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
+		t.Fatalf("fastEvalResultError(non-error) = %v", err)
 	}
 }
 

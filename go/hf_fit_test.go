@@ -281,3 +281,154 @@ func TestHuggingFaceModelSource_SearchAndMetadata_Good(t *testing.T) {
 		t.Fatalf("ModelMetadata() = %+v", meta)
 	}
 }
+
+func TestPlanHFModelFits_ErrorPaths_Bad(t *testing.T) {
+	if _, err := PlanHFModelFits(context.Background(), HFModelFitConfig{}); err == nil {
+		t.Fatal("expected no metadata error")
+	}
+	if _, err := PlanHFModelFits(context.Background(), HFModelFitConfig{ModelIDs: []string{"qwen/model"}}); err == nil || !core.Contains(err.Error(), "source") {
+		t.Fatalf("missing source error = %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := PlanHFModelFits(cancelled, HFModelFitConfig{LocalPaths: []string{t.TempDir()}})
+	if err != context.Canceled {
+		t.Fatalf("PlanHFModelFits(cancelled local) = %v, want context.Canceled", err)
+	}
+
+	badLocal := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(badLocal, "config.json"), "{")
+	if _, err := PlanHFModelFits(context.Background(), HFModelFitConfig{LocalPaths: []string{badLocal}}); err == nil {
+		t.Fatal("expected bad local config error")
+	}
+}
+
+func TestHuggingFaceModelSource_Errors_Bad(t *testing.T) {
+	var source *HuggingFaceModelSource
+	if _, err := source.SearchModels(context.Background(), "qwen", 1); err == nil {
+		t.Fatal("expected nil SearchModels error")
+	}
+	if _, err := source.ModelMetadata(context.Background(), "qwen/model"); err == nil {
+		t.Fatal("expected nil ModelMetadata error")
+	}
+
+	server := core.NewHTTPTestServer(core.HandlerFunc(func(w core.ResponseWriter, r *core.Request) {
+		switch r.URL.Path {
+		case "/api/models":
+			core.WriteString(w, "{")
+		case "/api/models/missing":
+			w.WriteHeader(404)
+			core.WriteString(w, "not found")
+		default:
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	source = NewHuggingFaceModelSource(HuggingFaceModelSourceConfig{BaseURL: server.URL + "/", UserAgent: "tests"})
+	if source.baseURL != server.URL || source.userAgent != "tests" || source.client == nil {
+		t.Fatalf("source defaults = %+v", source)
+	}
+	if _, err := source.SearchModels(context.Background(), "qwen", 0); err == nil {
+		t.Fatal("expected parse error from malformed search response")
+	}
+	if _, err := source.ModelMetadata(context.Background(), "missing"); err == nil || !core.Contains(err.Error(), "404") {
+		t.Fatalf("expected HTTP status error, got %v", err)
+	}
+}
+
+func TestHFLocalMetadataHelpers_Good(t *testing.T) {
+	cacheRoot := core.PathJoin(t.TempDir(), "models--org--name")
+	snapshot := core.PathJoin(cacheRoot, "snapshots", "b")
+	if result := core.MkdirAll(snapshot, 0o755); !result.OK {
+		t.Fatalf("mkdir snapshot: %v", result.Value)
+	}
+	writeModelPackFile(t, core.PathJoin(snapshot, "config.json"), `{"architectures":["Qwen3ForCausalLM"],"context_length":32768}`)
+	writeModelPackFile(t, core.PathJoin(snapshot, "model-q4.gguf"), "gguf")
+	writeModelPackFile(t, core.PathJoin(snapshot, "model.safetensors"), "safe")
+	writeModelPackFile(t, core.PathJoin(snapshot, "pytorch_model.bin"), "bin")
+	writeModelPackFile(t, core.PathJoin(snapshot, "tokenizer.json"), "{}")
+
+	meta, root, err := inspectLocalHFModelMetadata(cacheRoot)
+	if err != nil {
+		t.Fatalf("inspectLocalHFModelMetadata: %v", err)
+	}
+	if root != snapshot {
+		t.Fatalf("root = %q, want %q", root, snapshot)
+	}
+	if meta.ID != "org/name" {
+		t.Fatalf("ID = %q, want org/name", meta.ID)
+	}
+	if len(meta.Files) != 4 {
+		t.Fatalf("files = %+v", meta.Files)
+	}
+	if got := resolveLocalHFMetadataRoot(core.PathJoin(snapshot, "config.json")); got != snapshot {
+		t.Fatalf("resolve config root = %q, want %q", got, snapshot)
+	}
+}
+
+func TestHFModelFitHelpers_Ugly(t *testing.T) {
+	files := []HFModelFile{
+		{Name: "model-q4.gguf", Size: 10},
+		{RFilename: "model.safetensors", SizeBytes: 20},
+		{Name: "pytorch_model.bin", Size: 30},
+	}
+	format, bytes := hfWeightFormatAndBytes(files)
+	if format != string(ModelPackFormatMixed) || bytes != 60 {
+		t.Fatalf("hfWeightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
+	}
+	if bits := inferHFQuantBits([]HFModelFile{{Name: "model-8bit.safetensors"}}); bits != 8 {
+		t.Fatalf("inferHFQuantBits(8bit) = %d", bits)
+	}
+	for name, want := range map[string]int{
+		"q2.gguf":       2,
+		"q3.gguf":       3,
+		"4-bit.gguf":    4,
+		"q5.gguf":       5,
+		"q6.gguf":       6,
+		"fp16.bin":      16,
+		"unknown.model": 0,
+	} {
+		if got := inferHFQuantBits([]HFModelFile{{Name: name}}); got != want {
+			t.Fatalf("inferHFQuantBits(%q) = %d, want %d", name, got, want)
+		}
+	}
+
+	config := HFModelConfig{HiddenSize: 128, NumHiddenLayers: 2, NumAttentionHeads: 4, NumKeyValueHeads: 2}
+	if got := estimateHFModelKVBytes(config, 16, 2, 2); got != 16384 {
+		t.Fatalf("estimateHFModelKVBytes(GQA) = %d, want 16384", got)
+	}
+	if got := estimateHFModelKVBytes(HFModelConfig{HiddenSize: 128, NumHiddenLayers: 2}, 16, 0, 0); got != 16384 {
+		t.Fatalf("estimateHFModelKVBytes(hidden fallback) = %d, want 16384", got)
+	}
+	if got := estimateHFModelKVBytes(HFModelConfig{}, 16, 1, 2); got != 0 {
+		t.Fatalf("estimateHFModelKVBytes(empty) = %d, want 0", got)
+	}
+	if got := estimateRuntimeOverheadBytes(0); got != 0 {
+		t.Fatalf("estimateRuntimeOverheadBytes(0) = %d, want 0", got)
+	}
+	if got := estimateRuntimeOverheadBytes(2 * MemoryGiB); got != MemoryGiB {
+		t.Fatalf("estimateRuntimeOverheadBytes(small) = %d, want 1GiB", got)
+	}
+
+	plan := HFModelFitPlan{
+		NativeLoadable:       true,
+		InferenceFits:        true,
+		QuantBits:            16,
+		WeightBytes:          100,
+		ExpectedKVBytes:      10,
+		ExpectedRuntimeBytes: 10,
+		ExpectedTotalBytes:   120,
+	}
+	fit := estimateHFTrainingFit(HFModelConfig{HiddenSize: 8, NumHiddenLayers: 2}, plan, 0, -1)
+	if !fit.LoRAFeasible || !fit.FullFineTuneFeasible || fit.RecommendedLoRARank != 16 {
+		t.Fatalf("training fit = %+v", fit)
+	}
+	if got := positiveInt(-3); got != 0 {
+		t.Fatalf("positiveInt(-3) = %d, want 0", got)
+	}
+	if err := hfFitResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
+		t.Fatalf("hfFitResultError(non-error) = %v", err)
+	}
+}

@@ -49,6 +49,13 @@ static const char* get_and_clear_last_error() {
 
 static bool mlx_go_metal_has_usable_device(void) {
     @autoreleasepool {
+        id<MTLDevice> defaultDevice = MTLCreateSystemDefaultDevice();
+        if (defaultDevice != nil) {
+#if !__has_feature(objc_arc)
+            [defaultDevice release];
+#endif
+            return true;
+        }
         NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
         bool ok = devices != nil && devices.count > 0;
 #if !__has_feature(objc_arc)
@@ -76,7 +83,9 @@ func defaultMetallibPath() string {
 		root := wd.Value.(string)
 		candidates = append(candidates,
 			core.PathJoin(root, "dist", "lib", metallib),
+			core.PathJoin(root, "..", "dist", "lib", metallib),
 			core.PathJoin(root, "..", "..", "dist", "lib", metallib),
+			core.PathJoin(root, "..", "..", "..", "dist", "lib", metallib),
 		)
 	}
 	for _, candidate := range candidates {

@@ -4,10 +4,17 @@ package tokenizer
 
 import (
 	"slices"
+	"sync"
 
 	"dappco.re/go"
 
 	coreio "dappco.re/go/io"
+)
+
+const (
+	tokenizerBPECacheLimit           = 4096
+	tokenizerBPECacheMaxSegmentBytes = 64 << 10
+	tokenizerBPECacheMaxTokens       = 16 << 10
 )
 
 // Tokenizer handles text-to-token and token-to-text conversion.
@@ -28,6 +35,10 @@ type Tokenizer struct {
 	isGPT2BPE   bool
 	gpt2Decoder map[rune]byte // Unicode char → original byte
 	gpt2Encoder map[byte]rune // original byte → Unicode char
+
+	bpeCacheMu    sync.RWMutex
+	bpeCache      map[string][]int32
+	bpeCacheOrder []string
 }
 
 type mergePair struct {
@@ -293,11 +304,110 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 		if bestIdx < 0 {
 			break // No more merges available.
 		}
-		// Merge the pair at bestIdx.
-		merged := symbols[bestIdx] + symbols[bestIdx+1]
-		symbols = append(symbols[:bestIdx], append([]string{merged}, symbols[bestIdx+2:]...)...)
+		// Merge the pair at bestIdx without allocating a replacement slice.
+		symbols[bestIdx] += symbols[bestIdx+1]
+		copy(symbols[bestIdx+1:], symbols[bestIdx+2:])
+		symbols = symbols[:len(symbols)-1]
 	}
 	return symbols
+}
+
+func tokenizerBPECacheKey(kind, segment string) string {
+	return kind + "\x00" + segment
+}
+
+func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
+	t.bpeCacheMu.RLock()
+	defer t.bpeCacheMu.RUnlock()
+	if len(t.bpeCache) == 0 {
+		return nil, false
+	}
+	tokens, ok := t.bpeCache[key]
+	return tokens, ok
+}
+
+func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
+	if len(key) > tokenizerBPECacheMaxSegmentBytes || len(tokens) > tokenizerBPECacheMaxTokens {
+		return
+	}
+	t.bpeCacheMu.Lock()
+	defer t.bpeCacheMu.Unlock()
+	if t.bpeCache == nil {
+		t.bpeCache = make(map[string][]int32)
+	}
+	if _, ok := t.bpeCache[key]; ok {
+		t.bpeCache[key] = append([]int32(nil), tokens...)
+		return
+	}
+	for len(t.bpeCacheOrder) >= tokenizerBPECacheLimit {
+		oldest := t.bpeCacheOrder[0]
+		copy(t.bpeCacheOrder, t.bpeCacheOrder[1:])
+		t.bpeCacheOrder = t.bpeCacheOrder[:len(t.bpeCacheOrder)-1]
+		delete(t.bpeCache, oldest)
+	}
+	t.bpeCache[key] = append([]int32(nil), tokens...)
+	t.bpeCacheOrder = append(t.bpeCacheOrder, key)
+}
+
+func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
+	spText := normalizeSentencePieceSegment(segment)
+	if spText == "" {
+		return nil
+	}
+	key := tokenizerBPECacheKey("sp", spText)
+	if cached, ok := t.cachedBPETokens(key); ok {
+		return cached
+	}
+
+	symbols := make([]string, 0, len(spText))
+	for _, r := range spText {
+		symbols = append(symbols, string(r))
+	}
+	symbols = t.bpeMerge(symbols)
+
+	tokens := make([]int32, 0, len(symbols))
+	for _, sym := range symbols {
+		if id, ok := t.vocab[sym]; ok {
+			tokens = append(tokens, id)
+		}
+	}
+	t.storeBPETokens(key, tokens)
+	return tokens
+}
+
+func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
+	if segment == "" {
+		return nil
+	}
+	encoded := core.NewBuilder()
+	for _, b := range []byte(segment) {
+		if r, ok := t.gpt2Encoder[b]; ok {
+			encoded.WriteRune(r)
+		}
+	}
+	encodedText := encoded.String()
+	if encodedText == "" {
+		return nil
+	}
+	key := tokenizerBPECacheKey("gpt2", encodedText)
+	if cached, ok := t.cachedBPETokens(key); ok {
+		return cached
+	}
+
+	symbols := make([]string, 0, len(encodedText))
+	for _, r := range encodedText {
+		symbols = append(symbols, string(r))
+	}
+	symbols = t.bpeMerge(symbols)
+
+	tokens := make([]int32, 0, len(symbols))
+	for _, sym := range symbols {
+		if id, ok := t.vocab[sym]; ok {
+			tokens = append(tokens, id)
+		}
+	}
+	t.storeBPETokens(key, tokens)
+	return tokens
 }
 
 // Encode converts text to token IDs (prepends BOS token).
@@ -328,23 +438,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 		segment := remaining[:end]
 		remaining = remaining[end:]
 
-		// SentencePiece uses ▁ as the word-boundary marker for every word,
-		// not only at the start of the full segment.
-		spText := normalizeSentencePieceSegment(segment)
-		symbols := make([]string, 0, len([]rune(spText)))
-		for _, r := range spText {
-			symbols = append(symbols, string(r))
-		}
-
-		// Apply BPE merges.
-		symbols = t.bpeMerge(symbols)
-
-		// Look up merged symbols in vocab.
-		for _, sym := range symbols {
-			if id, ok := t.vocab[sym]; ok {
-				tokens = append(tokens, id)
-			}
-		}
+		tokens = append(tokens, t.encodeSentencePieceSegment(segment)...)
 	}
 
 	return tokens
@@ -372,30 +466,7 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 		segment := remaining[:end]
 		remaining = remaining[end:]
 
-		// Convert segment bytes to GPT-2 Unicode representation.
-		encoded := core.NewBuilder()
-		for _, b := range []byte(segment) {
-			if r, ok := t.gpt2Encoder[b]; ok {
-				encoded.WriteRune(r)
-			}
-		}
-
-		// Split into individual runes (GPT-2 BPE operates on Unicode chars).
-		runes := []rune(encoded.String())
-		symbols := make([]string, len(runes))
-		for i, r := range runes {
-			symbols[i] = string(r)
-		}
-
-		// Apply BPE merges.
-		symbols = t.bpeMerge(symbols)
-
-		// Look up merged symbols in vocab.
-		for _, sym := range symbols {
-			if id, ok := t.vocab[sym]; ok {
-				tokens = append(tokens, id)
-			}
-		}
+		tokens = append(tokens, t.encodeGPT2Segment(segment)...)
 	}
 
 	return tokens

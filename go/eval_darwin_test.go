@@ -70,3 +70,30 @@ func TestRunModelEval_RealModelLoRASkip_Ugly(t *testing.T) {
 		t.Fatalf("adapter=%+v metrics=%+v, want adapter identity and tokens", report.Adapter, report.Metrics)
 	}
 }
+
+func TestEvalOptionalBatchAttentionMask_SkipsDenseMaskForUnpaddedBatch_Good(t *testing.T) {
+	mask := evalOptionalBatchAttentionMask([]int32{4, 4}, 4)
+	if mask != nil {
+		t.Fatalf("evalOptionalBatchAttentionMask returned dense mask for unpadded batch")
+	}
+}
+
+func TestEvalOptionalBatchAttentionMask_KeepsMaskForPaddedBatch_Good(t *testing.T) {
+	if !MetalAvailable() {
+		t.Skip("Metal runtime unavailable")
+	}
+	mask := evalOptionalBatchAttentionMask([]int32{4, 3}, 4)
+	if mask == nil {
+		t.Fatalf("evalOptionalBatchAttentionMask returned nil for padded batch")
+	}
+	defer Free(mask)
+
+	Materialize(mask)
+	shape := mask.Shape()
+	want := []int32{2, 1, 4, 4}
+	for i, got := range shape {
+		if got != want[i] {
+			t.Fatalf("mask shape[%d] = %d, want %d", i, got, want[i])
+		}
+	}
+}

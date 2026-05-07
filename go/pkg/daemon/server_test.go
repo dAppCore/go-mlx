@@ -96,6 +96,131 @@ func TestServer_Listen_Ugly_ExistingNonSocket(t *testing.T) {
 	}
 }
 
+func TestNewServer_ConfigCloneAndDefaults_Good(t *testing.T) {
+	modelPaths := map[string]string{"default": "/models/qwen"}
+	server := NewServer(ServerConfig{ModelPaths: modelPaths})
+	modelPaths["default"] = "/mutated"
+
+	if server.Registry == nil {
+		t.Fatal("Registry = nil, want default registry")
+	}
+	if server.ModelPaths["default"] != "/models/qwen" {
+		t.Fatalf("ModelPaths was not cloned: %+v", server.ModelPaths)
+	}
+	if server.GenerateBackend == nil {
+		t.Fatal("GenerateBackend = nil, want native backend for configured model paths")
+	}
+
+	explicit := NewServer(ServerConfig{Registry: NewRegistry("violet-test", "1"), GenerateBackend: &fakeGenerateBackend{}})
+	if explicit.GenerateBackend == nil {
+		t.Fatal("explicit GenerateBackend was not retained")
+	}
+}
+
+type closeableGenerateBackend struct {
+	fakeGenerateBackend
+	closeErr error
+	closed   bool
+}
+
+func (backend *closeableGenerateBackend) Close() error {
+	backend.closed = true
+	return backend.closeErr
+}
+
+func TestCloseGenerateBackend_Good(t *testing.T) {
+	if err := closeGenerateBackend(nil); err != nil {
+		t.Fatalf("closeGenerateBackend(nil) = %v", err)
+	}
+	if err := closeGenerateBackend(&fakeGenerateBackend{}); err != nil {
+		t.Fatalf("closeGenerateBackend(non-closer) = %v", err)
+	}
+
+	wantErr := core.NewError("close failed")
+	backend := &closeableGenerateBackend{closeErr: wantErr}
+	if err := closeGenerateBackend(backend); !core.Is(err, wantErr) {
+		t.Fatalf("closeGenerateBackend(closer) = %v, want %v", err, wantErr)
+	}
+	if !backend.closed {
+		t.Fatal("closeable backend was not closed")
+	}
+}
+
+func TestServer_ResolvedSocketPathAndDefaults_Good(t *testing.T) {
+	socketPath := core.PathJoin(t.TempDir(), "violet.sock")
+	server := &Server{SocketPath: socketPath}
+	got, err := server.resolvedSocketPath()
+	if err != nil {
+		t.Fatalf("resolvedSocketPath(explicit): %v", err)
+	}
+	if got != socketPath {
+		t.Fatalf("resolvedSocketPath(explicit) = %q, want %q", got, socketPath)
+	}
+
+	defaultPath, err := DefaultSocketPath()
+	if err != nil {
+		t.Fatalf("DefaultSocketPath(): %v", err)
+	}
+	if defaultPath == "" || !core.Contains(defaultPath, "violet.sock") {
+		t.Fatalf("DefaultSocketPath() = %q, want violet.sock path", defaultPath)
+	}
+}
+
+func TestPrepareSocketPath_Validation_Bad(t *testing.T) {
+	if err := prepareSocketPath(""); err == nil {
+		t.Fatal("expected empty socket path error")
+	}
+
+	dirResult := core.MkdirTemp("/tmp", "violet-daemon-stale-*")
+	if !dirResult.OK {
+		t.Fatalf("create short temp dir: %v", dirResult.Value)
+	}
+	dir := dirResult.Value.(string)
+	t.Cleanup(func() { core.RemoveAll(dir) })
+	socketPath := core.PathJoin(dir, "stale.sock")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen stale socket: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close stale listener: %v", err)
+	}
+	if err := prepareSocketPath(socketPath); err != nil {
+		t.Fatalf("prepareSocketPath(stale socket): %v", err)
+	}
+	if stat := core.Lstat(socketPath); stat.OK {
+		t.Fatal("stale socket path should have been removed")
+	}
+}
+
+func TestWriteJSONLineAndRemovePath_Bad(t *testing.T) {
+	buf := core.NewBuffer()
+	if err := writeJSONLine(buf, map[string]string{"status": "ok"}); err != nil {
+		t.Fatalf("writeJSONLine(valid): %v", err)
+	}
+	if got := buf.String(); got != "{\"status\":\"ok\"}\n" {
+		t.Fatalf("writeJSONLine output = %q", got)
+	}
+	if err := writeJSONLine(core.NewBuffer(), map[string]any{"bad": make(chan int)}); err == nil {
+		t.Fatal("expected JSON marshal error")
+	}
+
+	path := core.PathJoin(t.TempDir(), "delete-me")
+	if result := core.WriteFile(path, []byte("x"), 0o644); !result.OK {
+		t.Fatalf("write file: %v", result.Value)
+	}
+	if err := removePath(path); err != nil {
+		t.Fatalf("removePath(existing): %v", err)
+	}
+	if err := removePath(path); err == nil {
+		t.Fatal("expected removePath missing file error")
+	}
+
+	if err := daemonResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "daemon operation failed") {
+		t.Fatalf("daemonResultError(non-error) = %v", err)
+	}
+}
+
 func startTestServer(t *testing.T) (string, context.CancelFunc, <-chan error) {
 	t.Helper()
 
