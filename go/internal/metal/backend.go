@@ -33,6 +33,7 @@ type LoadConfig struct {
 	AdapterPath          string // Path to LoRA adapter directory (empty = no adapter)
 	Device               DeviceType
 	CachePolicy          string
+	KVCacheMode          string
 	BatchSize            int
 	PrefillChunkSize     int
 	ExpectedQuantization int
@@ -115,6 +116,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	model.promptCacheEnabled = !loadCfg.DisablePromptCache
 	model.promptCacheMinTokens = loadCfg.PromptCacheMinTokens
 	model.cachePolicy = loadCfg.CachePolicy
+	model.cacheMode = loadCfg.KVCacheMode
 	model.batchSizeLimit = loadCfg.BatchSize
 	model.prefillChunkSize = loadCfg.PrefillChunkSize
 	if loadCfg.ExpectedQuantization > 0 {

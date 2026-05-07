@@ -120,6 +120,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		AdapterPath:          resolvedAdapterPath,
 		Device:               metal.DeviceType(cfg.Device),
 		CachePolicy:          string(cfg.CachePolicy),
+		KVCacheMode:          string(cfg.CacheMode),
 		BatchSize:            cfg.BatchSize,
 		PrefillChunkSize:     cfg.PrefillChunkSize,
 		ExpectedQuantization: cfg.ExpectedQuantization,
@@ -484,11 +485,13 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	if m == nil || m.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+	cfg := applyGenerateOptions(opts)
+	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 	builder := core.NewBuilder()
-	for tok := range m.model.Generate(context.Background(), prompt, cfg) {
-		builder.WriteString(tok.Text)
+	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
+		builder.WriteString(filter.Process(tok.Text))
 	}
+	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
@@ -500,15 +503,17 @@ func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error)
 	if m == nil || m.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+	cfg := applyGenerateOptions(opts)
+	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
 	builder := core.NewBuilder()
-	for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
-		builder.WriteString(tok.Text)
+	for tok := range m.model.Chat(context.Background(), metalMessages, toMetalGenerateConfig(cfg)) {
+		builder.WriteString(filter.Process(tok.Text))
 	}
+	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
@@ -538,10 +543,22 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
-		for tok := range m.model.Generate(ctx, prompt, cfg) {
+		cfg := applyGenerateOptions(opts)
+		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
+			text := filter.Process(tok.Text)
+			if text == "" {
+				continue
+			}
 			select {
-			case out <- Token{ID: tok.ID, Value: tok.Text, Text: tok.Text}:
+			case out <- Token{ID: tok.ID, Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
 			case <-ctx.Done():
 				return
 			}
@@ -561,14 +578,26 @@ func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...Gene
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+		cfg := applyGenerateOptions(opts)
+		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 		}
-		for tok := range m.model.Chat(ctx, metalMessages, cfg) {
+		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
+			text := filter.Process(tok.Text)
+			if text == "" {
+				continue
+			}
 			select {
-			case out <- toRootToken(tok):
+			case out <- Token{ID: tok.ID, Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
 			case <-ctx.Done():
 				return
 			}

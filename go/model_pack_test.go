@@ -95,8 +95,8 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 			{Key: "qwen3.context_length", ValueType: ggufValueTypeUint32, Value: uint32(40960)},
 		},
 		[]ggufTensorSpec{
-			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{128, 128}},
-			{Name: "model.layers.1.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{128, 128}},
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
+			{Name: "model.layers.1.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
 		},
 	)
 
@@ -113,8 +113,97 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 	if pack.Architecture != "qwen3" || pack.QuantBits != 4 || pack.ContextLength != 40960 {
 		t.Fatalf("metadata = arch %q quant %d ctx %d", pack.Architecture, pack.QuantBits, pack.ContextLength)
 	}
+	if pack.QuantType != "q4_k" || pack.QuantFamily != "qk" || pack.Quantization == nil || len(pack.Quantization.TensorTypes) != 1 {
+		t.Fatalf("quant details = type:%q family:%q details:%+v", pack.QuantType, pack.QuantFamily, pack.Quantization)
+	}
 	if pack.GGUF == nil || pack.GGUF.TensorCount != 2 {
 		t.Fatalf("GGUF metadata = %+v, want 2 tensors", pack.GGUF)
+	}
+}
+
+func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeGoodSafetensorsPack(t, dir, "qwen3_next")
+
+	pack, err := InspectModelPack(dir, WithPackMaxContextLength(131072))
+	if err != nil {
+		t.Fatalf("InspectModelPack() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "qwen3_next" || !pack.SupportedArchitecture {
+		t.Fatalf("architecture = %q supported=%v, want supported qwen3_next", pack.Architecture, pack.SupportedArchitecture)
+	}
+	if !pack.NativeLoadable || pack.RequiresPythonConversion {
+		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
+	}
+	if pack.ChatTemplateSource != ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
+		t.Fatalf("chat template = source:%q name:%q, want native qwen", pack.ChatTemplateSource, pack.ChatTemplate)
+	}
+}
+
+func TestInspectModelPack_SafetensorsQwen3MoEArchitectureFallback_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["Qwen3MoeForCausalLM"],
+		"vocab_size": 151936,
+		"hidden_size": 2048,
+		"num_hidden_layers": 28,
+		"max_position_embeddings": 32768,
+		"num_experts": 128,
+		"num_experts_per_tok": 8,
+		"moe_intermediate_size": 768
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := InspectModelPack(dir)
+	if err != nil {
+		t.Fatalf("InspectModelPack() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "qwen3_moe" || !pack.SupportedArchitecture {
+		t.Fatalf("architecture = %q supported=%v, want supported qwen3_moe", pack.Architecture, pack.SupportedArchitecture)
+	}
+	if pack.NativeLoadable || !pack.HasIssue(ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("native/runtime = loadable:%v issues:%+v, want recognized but runtime-gated MoE", pack.NativeLoadable, pack.Issues)
+	}
+	if pack.ChatTemplate != "qwen" {
+		t.Fatalf("ChatTemplate = %q, want qwen", pack.ChatTemplate)
+	}
+}
+
+func TestInspectModelPack_GGUFQuantizationFlowsToMemoryPlan_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "qwen3",
+		"hidden_size": 2048,
+		"num_hidden_layers": 28,
+		"max_position_embeddings": 40960
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	ggufPath := core.PathJoin(dir, "model.gguf")
+	writeTestGGUF(t, ggufPath,
+		[]ggufMetaSpec{
+			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
+			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
+		},
+		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
+	)
+
+	pack, err := InspectModelPack(dir)
+	if err != nil {
+		t.Fatalf("InspectModelPack() error = %v", err)
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{MemorySize: 96 * MemoryGiB, MaxRecommendedWorkingSetSize: 86 * MemoryGiB},
+		Pack:   &pack,
+	})
+	if plan.ModelQuantization != 4 || plan.ModelQuantizationType != "q4_k_m" || plan.ModelQuantizationFamily != "qk" {
+		t.Fatalf("memory quantization = %+v", plan)
 	}
 }
 
@@ -142,5 +231,27 @@ func TestValidateModelPack_QuantizationAndContext_Ugly(t *testing.T) {
 	}
 	if !pack.HasIssue(ModelPackIssueQuantizationMismatch) || !pack.HasIssue(ModelPackIssueContextTooLarge) {
 		t.Fatalf("issues = %+v, want quantization mismatch and context too large", pack.Issues)
+	}
+}
+
+func TestValidateModelPack_GGUFInvalidTensorMetadata_Bad(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "qwen3",
+		"hidden_size": 2048,
+		"num_hidden_layers": 28
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeTestGGUF(t, core.PathJoin(dir, "model.gguf"),
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
+		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{127, 128}}},
+	)
+
+	pack, err := ValidateModelPack(dir)
+	if err == nil {
+		t.Fatal("expected validation error for invalid GGUF tensor metadata")
+	}
+	if !pack.HasIssue(ModelPackIssueInvalidGGUF) {
+		t.Fatalf("issues = %+v, want invalid GGUF", pack.Issues)
 	}
 }

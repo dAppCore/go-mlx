@@ -76,6 +76,7 @@ type Model struct {
 	device               DeviceType
 	contextLen           int // 0 = unbounded (model default)
 	cachePolicy          string
+	cacheMode            string
 	batchSizeLimit       int
 	prefillChunkSize     int
 	parallelSlots        chan struct{}
@@ -536,12 +537,7 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 	if cache == nil {
 		return attentionCacheSnapshot{}, false
 	}
-	state := cache.State()
-	var ownedState []*Array
-	if rotating, ok := cache.(*RotatingKVCache); ok {
-		state = rotating.orderedState()
-		ownedState = state
-	}
+	state, ownedState := cacheReadState(cache)
 	defer Free(ownedState...)
 	if len(state) < 1 {
 		return attentionCacheSnapshot{}, false
@@ -680,6 +676,23 @@ func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array 
 // caches are replaced with RotatingKVCache to cap memory usage.
 func (m *Model) newCaches() []Cache {
 	caches := m.model.NewCache()
+	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged {
+		maxSize := 0
+		if m.cachePolicy != "full" && m.contextLen > 0 {
+			maxSize = m.contextLen
+		}
+		for i := range caches {
+			switch mode {
+			case KVCacheModeQ8:
+				caches[i] = NewQuantizedKVCache(maxSize, 8, 8)
+			case KVCacheModeKQ8VQ4:
+				caches[i] = NewQuantizedKVCache(maxSize, 8, 4)
+			case KVCacheModePaged:
+				caches[i] = NewPagedKVCache(maxSize, 256)
+			}
+		}
+		return caches
+	}
 	if m.cachePolicy == "full" {
 		return caches
 	}

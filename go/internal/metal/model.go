@@ -94,13 +94,17 @@ func probeModelType(data []byte) (string, error) {
 		return "", core.E("model.probeModelType", "parse model_type", nil)
 	}
 	if probe.ModelType != "" {
-		return probe.ModelType, nil
+		return normalizeProbeModelType(probe.ModelType), nil
 	}
 	if probe.TextConfig.ModelType != "" {
-		return probe.TextConfig.ModelType, nil
+		return normalizeProbeModelType(probe.TextConfig.ModelType), nil
 	}
 	for _, arch := range probe.Architectures {
 		switch {
+		case isQwen3MoEArchitecture(arch):
+			return "qwen3_moe", nil
+		case isQwen3NextArchitecture(arch):
+			return "qwen3_next", nil
 		case core.Contains(arch, "Gemma4ForConditionalGeneration"),
 			core.Contains(arch, "Gemma4Multimodal"),
 			core.Contains(arch, "Gemma4Vision"):
@@ -120,6 +124,29 @@ func probeModelType(data []byte) (string, error) {
 		}
 	}
 	return "", nil
+}
+
+func normalizeProbeModelType(value string) string {
+	value = core.Lower(core.Trim(value))
+	value = core.Replace(value, "-", "_")
+	switch value {
+	case "qwen3_5":
+		return "qwen3_next"
+	default:
+		return value
+	}
+}
+
+func compactArchitectureName(value string) string {
+	return core.Lower(core.Replace(core.Replace(value, "_", ""), "-", ""))
+}
+
+func isQwen3MoEArchitecture(value string) bool {
+	return core.Contains(compactArchitectureName(value), "qwen3moe")
+}
+
+func isQwen3NextArchitecture(value string) bool {
+	return core.Contains(compactArchitectureName(value), "qwen3next")
 }
 
 func loadGemma4TextModel(modelPath string) (*Gemma4Model, error) {
@@ -155,7 +182,7 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
-// "qwen3", "qwen2", and "llama".
+// "qwen3", "qwen3_next", "qwen3_moe", "qwen2", and "llama".
 func loadModel(modelPath string) (InternalModel, error) {
 	root := resolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
@@ -170,7 +197,7 @@ func loadModel(modelPath string) (InternalModel, error) {
 	}
 
 	switch modelType {
-	case "qwen3", "qwen2", "llama":
+	case "qwen3", "qwen3_next", "qwen3_moe", "qwen2", "llama":
 		return LoadQwen3(modelPath)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)

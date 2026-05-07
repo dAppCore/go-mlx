@@ -777,6 +777,12 @@ func resolveLinear(model InternalModel, layerIdx int, projPath string) *Linear {
 			return layer.Attention.VProj
 		case "self_attn.o_proj":
 			return layer.Attention.OProj
+		case "mlp.gate_proj":
+			return layer.MLP.GateProj
+		case "mlp.up_proj":
+			return layer.MLP.UpProj
+		case "mlp.down_proj":
+			return layer.MLP.DownProj
 		}
 	case *GemmaModel:
 		if layerIdx >= len(concreteModel.Layers) {

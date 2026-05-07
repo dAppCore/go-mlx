@@ -27,6 +27,35 @@ type Cache interface {
 	Detach()
 }
 
+// KVCacheMode names the native storage strategy used for K/V tensors.
+type KVCacheMode string
+
+const (
+	KVCacheModeDefault KVCacheMode = ""
+	KVCacheModeFP16    KVCacheMode = "fp16"
+	KVCacheModeQ8      KVCacheMode = "q8"
+	KVCacheModeKQ8VQ4  KVCacheMode = "k-q8-v-q4"
+	KVCacheModePaged   KVCacheMode = "paged"
+)
+
+type readableCache interface {
+	ReadState() (state []*Array, owned []*Array)
+}
+
+func cacheReadState(cache Cache) (state []*Array, owned []*Array) {
+	if cache == nil {
+		return nil, nil
+	}
+	if readable, ok := cache.(readableCache); ok {
+		return readable.ReadState()
+	}
+	if rotating, ok := cache.(*RotatingKVCache); ok {
+		state = rotating.orderedState()
+		return state, state
+	}
+	return cache.State(), nil
+}
+
 // KVCache implements an unbounded cache that grows as needed.
 // Pre-allocates in chunks of `step` tokens to reduce allocations.
 type KVCache struct {
@@ -291,4 +320,401 @@ func (c *RotatingKVCache) Detach() {
 		return
 	}
 	Detach(c.keys, c.values)
+}
+
+// QuantizedKVCache stores cache tensors in int8 lanes and dequantizes them
+// only for the attention call. keyBits/valueBits control the logical quantizer
+// range; q4 values currently use int8 storage until packed q4 kernels land.
+type QuantizedKVCache struct {
+	keys, values       *Array
+	keyScale           *Array
+	valueScale         *Array
+	keyDtype           DType
+	valueDtype         DType
+	keyShape           []int32
+	valueShape         []int32
+	offset             int
+	maxSize            int
+	step               int
+	keyBits, valueBits int
+}
+
+// NewQuantizedKVCache creates a cache using symmetric q8/q4 K/V storage.
+func NewQuantizedKVCache(maxSize, keyBits, valueBits int) *QuantizedKVCache {
+	if keyBits <= 0 {
+		keyBits = 8
+	}
+	if valueBits <= 0 {
+		valueBits = keyBits
+	}
+	return &QuantizedKVCache{maxSize: maxSize, step: 256, keyBits: keyBits, valueBits: valueBits}
+}
+
+func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
+	shape := k.Shape()
+	if len(shape) < 4 {
+		fullK := k.Clone()
+		fullV := v.Clone()
+		c.storeQuantized(fullK, fullV)
+		c.offset += seqLen
+		return fullK, fullV
+	}
+
+	prevK, prevV := c.dequantizedState()
+	var fullK, fullV *Array
+	if prevK == nil {
+		fullK = k.Clone()
+		fullV = v.Clone()
+	} else {
+		fullK = Concatenate([]*Array{prevK, k}, 2)
+		fullV = Concatenate([]*Array{prevV, v}, 2)
+		Free(prevK, prevV)
+	}
+	c.offset += seqLen
+
+	storeK, storeV := fullK, fullV
+	if c.maxSize > 0 {
+		storeK, storeV = cacheTail(fullK, fullV, c.maxSize)
+	}
+	c.storeQuantized(storeK, storeV)
+	if storeK != fullK {
+		Free(storeK, storeV)
+	}
+	return fullK, fullV
+}
+
+func (c *QuantizedKVCache) State() []*Array {
+	if c.keys == nil {
+		return nil
+	}
+	return []*Array{c.keys, c.values, c.keyScale, c.valueScale}
+}
+
+func (c *QuantizedKVCache) ReadState() ([]*Array, []*Array) {
+	k, v := c.dequantizedState()
+	if k == nil || v == nil {
+		Free(k, v)
+		return nil, nil
+	}
+	state := []*Array{k, v}
+	return state, state
+}
+
+func (c *QuantizedKVCache) Offset() int { return c.offset }
+
+func (c *QuantizedKVCache) Len() int {
+	if c.keys == nil {
+		return 0
+	}
+	if c.maxSize > 0 {
+		return min(c.offset, c.maxSize)
+	}
+	shape := c.keys.Shape()
+	if len(shape) >= 3 {
+		return int(shape[2])
+	}
+	return c.offset
+}
+
+func (c *QuantizedKVCache) Reset() {
+	Free(c.keys, c.values, c.keyScale, c.valueScale)
+	c.keys = nil
+	c.values = nil
+	c.keyScale = nil
+	c.valueScale = nil
+	c.offset = 0
+}
+
+func (c *QuantizedKVCache) Detach() {
+	Detach(c.keys, c.values, c.keyScale, c.valueScale)
+}
+
+func (c *QuantizedKVCache) storeQuantized(k, v *Array) {
+	oldK, oldV, oldKS, oldVS := c.keys, c.values, c.keyScale, c.valueScale
+	c.keyDtype = k.Dtype()
+	c.valueDtype = v.Dtype()
+	c.keys, c.keyScale, c.keyShape = quantizeCacheArray(k, c.keyBits)
+	c.values, c.valueScale, c.valueShape = quantizeCacheArray(v, c.valueBits)
+	Free(oldK, oldV, oldKS, oldVS)
+}
+
+func (c *QuantizedKVCache) dequantizedState() (*Array, *Array) {
+	if c.keys == nil || c.values == nil {
+		return nil, nil
+	}
+	return dequantizeCacheArray(c.keys, c.keyScale, c.keyDtype, c.keyShape, c.keyBits),
+		dequantizeCacheArray(c.values, c.valueScale, c.valueDtype, c.valueShape, c.valueBits)
+}
+
+// PagedKVCache stores K/V tensors in block arrays to avoid repeatedly growing
+// one large allocation. Attention receives a concatenated view for each step.
+type PagedKVCache struct {
+	kPages, vPages []*Array
+	offset         int
+	length         int
+	maxSize        int
+	pageSize       int
+}
+
+// NewPagedKVCache creates a page/block-oriented cache.
+func NewPagedKVCache(maxSize, pageSize int) *PagedKVCache {
+	if pageSize <= 0 {
+		pageSize = 256
+	}
+	return &PagedKVCache{maxSize: maxSize, pageSize: pageSize}
+}
+
+func (c *PagedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
+	c.kPages = append(c.kPages, k.Clone())
+	c.vPages = append(c.vPages, v.Clone())
+	c.offset += seqLen
+	c.length += seqLen
+
+	fullK, fullV := c.concatenatedState()
+	if c.maxSize > 0 && c.length > c.maxSize {
+		tailK, tailV := cacheTail(fullK, fullV, c.maxSize)
+		Free(c.kPages...)
+		Free(c.vPages...)
+		if tailK == fullK {
+			tailK = fullK.Clone()
+		}
+		if tailV == fullV {
+			tailV = fullV.Clone()
+		}
+		c.kPages = []*Array{tailK}
+		c.vPages = []*Array{tailV}
+		c.length = c.maxSize
+	}
+	return fullK, fullV
+}
+
+func (c *PagedKVCache) State() []*Array {
+	if len(c.kPages) == 0 {
+		return nil
+	}
+	out := make([]*Array, 0, len(c.kPages)+len(c.vPages))
+	out = append(out, c.kPages...)
+	out = append(out, c.vPages...)
+	return out
+}
+
+func (c *PagedKVCache) ReadState() ([]*Array, []*Array) {
+	k, v := c.concatenatedState()
+	if k == nil || v == nil {
+		Free(k, v)
+		return nil, nil
+	}
+	state := []*Array{k, v}
+	return state, state
+}
+
+func (c *PagedKVCache) Offset() int { return c.offset }
+func (c *PagedKVCache) Len() int    { return c.length }
+
+func (c *PagedKVCache) Reset() {
+	Free(c.kPages...)
+	Free(c.vPages...)
+	c.kPages = nil
+	c.vPages = nil
+	c.offset = 0
+	c.length = 0
+}
+
+func (c *PagedKVCache) Detach() {
+	Detach(c.kPages...)
+	Detach(c.vPages...)
+}
+
+func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
+	if len(c.kPages) == 0 || len(c.vPages) == 0 {
+		return nil, nil
+	}
+	if len(c.kPages) == 1 {
+		return c.kPages[0].Clone(), c.vPages[0].Clone()
+	}
+	return Concatenate(c.kPages, 2), Concatenate(c.vPages, 2)
+}
+
+func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
+	if maxSize <= 0 || k == nil || v == nil {
+		return k, v
+	}
+	kShape := k.Shape()
+	vShape := v.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 || int(kShape[2]) <= maxSize {
+		return k, v
+	}
+	start := int(kShape[2]) - maxSize
+	return Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], kShape[2], kShape[3]}),
+		Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], vShape[2], vShape[3]})
+}
+
+func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
+	shape := append([]int32(nil), a.Shape()...)
+	levels := 1
+	for range max(0, bits-1) {
+		levels *= 2
+	}
+	maxValue := float32(levels - 1)
+	if maxValue <= 0 {
+		maxValue = 127
+	}
+	abs := Abs(a)
+	maxAbs := maxAll(abs)
+	eps := FromValue(float32(1e-6))
+	clampedAbs := Maximum(maxAbs, eps)
+	denom := FromValue(maxValue)
+	scale := Divide(clampedAbs, denom)
+	normalized := Divide(a, scale)
+	rounded := Round(normalized)
+	minValue := FromValue(-maxValue)
+	maxBound := FromValue(maxValue)
+	clipped := Clip(rounded, minValue, maxBound)
+	q := AsType(clipped, DTypeInt8)
+	Free(abs, maxAbs, eps, clampedAbs, denom, normalized, rounded, minValue, maxBound, clipped)
+	if bits == 4 {
+		packed := packQ4(q)
+		Free(q)
+		return packed, scale, shape
+	}
+	return q, scale, shape
+}
+
+func dequantizeCacheArray(q, scale *Array, dtype DType, shape []int32, bits int) *Array {
+	source := q
+	var unpacked *Array
+	if bits == 4 {
+		unpacked = unpackQ4(q, shape)
+		source = unpacked
+	}
+	f := AsType(source, DTypeFloat32)
+	deq := Mul(f, scale)
+	Free(f, unpacked)
+	if dtype == DTypeFloat32 || dtype == 0 {
+		return deq
+	}
+	out := AsType(deq, dtype)
+	Free(deq)
+	return out
+}
+
+func packQ4(q *Array) *Array {
+	shape := q.Shape()
+	n := cacheElementCount(shape)
+	flat := Reshape(q, int32(n))
+	offset := AsType(FromValue(8), DTypeInt8)
+	shifted := Add(flat, offset)
+	shiftedU := AsType(shifted, DTypeUint8)
+	Free(flat, offset, shifted)
+
+	padded := shiftedU
+	if n%2 != 0 {
+		zero := Zeros([]int32{1}, DTypeUint8)
+		padded = Concatenate([]*Array{shiftedU, zero}, 0)
+		Free(shiftedU, zero)
+	}
+
+	evenIdx, oddIdx := q4PairIndices(n)
+	evenIndexArray := FromValues(evenIdx, len(evenIdx))
+	oddIndexArray := FromValues(oddIdx, len(oddIdx))
+	even := Take(padded, evenIndexArray, 0)
+	odd := Take(padded, oddIndexArray, 0)
+	shift := AsType(FromValue(4), DTypeUint8)
+	high := LeftShift(odd, shift)
+	packed := BitwiseOr(even, high)
+	Free(padded, evenIndexArray, oddIndexArray, even, odd, shift, high)
+	return packed
+}
+
+func unpackQ4(packed *Array, shape []int32) *Array {
+	n := cacheElementCount(shape)
+	if n == 0 {
+		return Reshape(packed, shape...)
+	}
+	mask := AsType(FromValue(15), DTypeUint8)
+	low := BitwiseAnd(packed, mask)
+	shift := AsType(FromValue(4), DTypeUint8)
+	high := RightShift(packed, shift)
+	Free(mask, shift)
+
+	evenIdx, oddIdx := q4OutputIndices(n)
+	evenIndexArray := FromValues(evenIdx, len(evenIdx))
+	out := Zeros([]int32{int32(n)}, DTypeUint8)
+	outEven := PutAlongAxis(out, evenIndexArray, low, 0)
+	Free(out, evenIndexArray, low)
+
+	outPacked := outEven
+	if len(oddIdx) > 0 {
+		oddIndexArray := FromValues(oddIdx, len(oddIdx))
+		highVals := high
+		if len(oddIdx) < int(high.Shape()[0]) {
+			highVals = Slice(high, []int32{0}, []int32{int32(len(oddIdx))})
+		}
+		outPacked = PutAlongAxis(outEven, oddIndexArray, highVals, 0)
+		Free(outEven, oddIndexArray)
+		if highVals != high {
+			Free(highVals)
+		}
+	}
+	Free(high)
+
+	outInt := AsType(outPacked, DTypeInt8)
+	offset := AsType(FromValue(8), DTypeInt8)
+	signed := Subtract(outInt, offset)
+	reshaped := Reshape(signed, shape...)
+	Free(outPacked, outInt, offset, signed)
+	return reshaped
+}
+
+func q4PairIndices(n int) ([]int32, []int32) {
+	pairs := (n + 1) / 2
+	even := make([]int32, pairs)
+	odd := make([]int32, pairs)
+	for i := range pairs {
+		even[i] = int32(i * 2)
+		odd[i] = int32(i*2 + 1)
+	}
+	return even, odd
+}
+
+func q4OutputIndices(n int) ([]int32, []int32) {
+	evenCount := (n + 1) / 2
+	oddCount := n / 2
+	even := make([]int32, evenCount)
+	odd := make([]int32, oddCount)
+	for i := range evenCount {
+		even[i] = int32(i * 2)
+	}
+	for i := range oddCount {
+		odd[i] = int32(i*2 + 1)
+	}
+	return even, odd
+}
+
+func cacheElementCount(shape []int32) int {
+	if len(shape) == 0 {
+		return 1
+	}
+	total := 1
+	for _, dim := range shape {
+		total *= int(dim)
+	}
+	return total
+}
+
+func maxAll(a *Array) *Array {
+	current := a
+	owned := false
+	for len(current.Shape()) > 0 {
+		next := MaxAxis(current, 0, false)
+		if owned {
+			Free(current)
+		}
+		current = next
+		owned = true
+	}
+	if !owned {
+		return current.Clone()
+	}
+	return current
 }

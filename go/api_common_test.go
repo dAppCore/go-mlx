@@ -816,11 +816,12 @@ func TestApiCommon_WithMedium_Ugly(t *testing.T) {
 }
 
 func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
-	plan := MemoryPlan{ContextLength: 8192, CachePolicy: KVCacheRotating}
+	plan := MemoryPlan{ContextLength: 8192, CachePolicy: KVCacheRotating, CacheMode: KVCacheModeQ8}
 	cfg := applyLoadOptions([]LoadOption{
 		WithAutoMemoryPlan(false),
 		WithMemoryPlan(plan),
 		WithCachePolicy(KVCacheFull),
+		WithKVCacheMode(KVCacheModeKQ8VQ4),
 		WithBatchSize(3),
 		WithPrefillChunkSize(256),
 		WithAllocatorLimits(10, 3, 7),
@@ -831,11 +832,22 @@ func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 	if cfg.MemoryPlan == nil || cfg.MemoryPlan.ContextLength != 8192 {
 		t.Fatalf("MemoryPlan = %+v, want explicit plan", cfg.MemoryPlan)
 	}
-	if cfg.CachePolicy != KVCacheFull || cfg.BatchSize != 3 || cfg.PrefillChunkSize != 256 {
-		t.Fatalf("planner shape = policy %q batch %d prefill %d", cfg.CachePolicy, cfg.BatchSize, cfg.PrefillChunkSize)
+	if cfg.CachePolicy != KVCacheFull || cfg.CacheMode != KVCacheModeKQ8VQ4 || cfg.BatchSize != 3 || cfg.PrefillChunkSize != 256 {
+		t.Fatalf("planner shape = policy %q mode %q batch %d prefill %d", cfg.CachePolicy, cfg.CacheMode, cfg.BatchSize, cfg.PrefillChunkSize)
 	}
 	if cfg.MemoryLimitBytes != 10 || cfg.CacheLimitBytes != 3 || cfg.WiredLimitBytes != 7 {
 		t.Fatalf("limits = %d/%d/%d, want 10/3/7", cfg.MemoryLimitBytes, cfg.CacheLimitBytes, cfg.WiredLimitBytes)
+	}
+}
+
+func TestApiCommon_WithKVCacheMode_AppliesValue_Good(t *testing.T) {
+	coverageTokens := "WithKVCacheMode"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg := applyLoadOptions([]LoadOption{WithKVCacheMode(KVCacheModeQ8)})
+	if cfg.CacheMode != KVCacheModeQ8 {
+		t.Fatalf("CacheMode = %q, want %q", cfg.CacheMode, KVCacheModeQ8)
 	}
 }
 

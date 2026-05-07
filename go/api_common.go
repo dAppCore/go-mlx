@@ -97,6 +97,7 @@ type GenerateConfig struct {
 	StopTokens    []int32
 	RepeatPenalty float32
 	ProbeSink     ProbeSink
+	Thinking      ThinkingConfig
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
@@ -104,6 +105,7 @@ func DefaultGenerateConfig() GenerateConfig {
 	return GenerateConfig{
 		MaxTokens:   256,
 		Temperature: 0.0,
+		Thinking:    ThinkingConfig{Mode: ThinkingShow},
 	}
 }
 
@@ -176,6 +178,7 @@ type LoadConfig struct {
 	AutoMemoryPlan       bool
 	MemoryPlan           *MemoryPlan
 	CachePolicy          KVCachePolicy
+	CacheMode            KVCacheMode
 	BatchSize            int
 	PrefillChunkSize     int
 	ExpectedQuantization int
@@ -260,6 +263,11 @@ func WithCachePolicy(policy KVCachePolicy) LoadOption {
 	return func(c *LoadConfig) { c.CachePolicy = policy }
 }
 
+// WithKVCacheMode selects the native KV cache storage mode.
+func WithKVCacheMode(mode KVCacheMode) LoadOption {
+	return func(c *LoadConfig) { c.CacheMode = mode }
+}
+
 // WithBatchSize sets the planner batch shape for native batched generation.
 func WithBatchSize(n int) LoadOption {
 	return func(c *LoadConfig) { c.BatchSize = n }
@@ -311,6 +319,11 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	}
 	if cfg.ExpectedQuantization < 0 {
 		return LoadConfig{}, core.NewError("mlx: expected quantization bits must be >= 0")
+	}
+	switch cfg.CacheMode {
+	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged:
+	default:
+		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
 	}
 
 	device := core.Lower(core.Trim(cfg.Device))

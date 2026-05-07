@@ -14,12 +14,15 @@ const WorkloadBenchReportVersion = 1
 
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
-	FastEval           FastEvalConfig       `json:"fast_eval"`
-	AdapterPath        string               `json:"adapter_path,omitempty"`
-	IncludeAdapterLoad bool                 `json:"include_adapter_load"`
-	IncludeAdapterFuse bool                 `json:"include_adapter_fuse"`
-	IncludePerplexity  bool                 `json:"include_perplexity"`
-	EvalSamples        []WorkloadEvalSample `json:"eval_samples,omitempty"`
+	FastEval            FastEvalConfig       `json:"fast_eval"`
+	Eval                EvalConfig           `json:"eval,omitempty"`
+	EvalDataset         SFTDataset           `json:"-"`
+	AdapterPath         string               `json:"adapter_path,omitempty"`
+	IncludeAdapterLoad  bool                 `json:"include_adapter_load"`
+	IncludeAdapterFuse  bool                 `json:"include_adapter_fuse"`
+	IncludePerplexity   bool                 `json:"include_perplexity"`
+	IncludeKVCacheBench bool                 `json:"include_kv_cache_bench"`
+	EvalSamples         []WorkloadEvalSample `json:"eval_samples,omitempty"`
 }
 
 // WorkloadEvalSample is one record used by benchmark eval hooks.
@@ -53,6 +56,7 @@ type WorkloadEvalMetrics struct {
 // WorkloadBenchRunner supplies model operations measured by RunWorkloadBench.
 type WorkloadBenchRunner struct {
 	FastEval FastEvalRunner
+	Eval     EvalRunner
 
 	LoadAdapter func(context.Context, string) (WorkloadAdapterInfo, error)
 	FuseAdapter func(context.Context, WorkloadAdapterInfo) error
@@ -64,6 +68,7 @@ type WorkloadBenchRunner struct {
 type WorkloadBenchReport struct {
 	Version    int                      `json:"version"`
 	FastEval   *FastEvalReport          `json:"fast_eval,omitempty"`
+	KVCache    KVCacheBenchReport       `json:"kv_cache,omitempty"`
 	Adapter    WorkloadAdapterReport    `json:"adapter"`
 	Evaluation WorkloadEvaluationReport `json:"evaluation"`
 	Summary    WorkloadBenchSummary     `json:"summary"`
@@ -107,6 +112,8 @@ type WorkloadEvaluationReport struct {
 	Attempted bool                `json:"attempted"`
 	Duration  time.Duration       `json:"duration,omitempty"`
 	Metrics   WorkloadEvalMetrics `json:"metrics,omitempty"`
+	Quality   EvalQualityReport   `json:"quality,omitempty"`
+	Report    *EvalReport         `json:"report,omitempty"`
 	Error     string              `json:"error,omitempty"`
 }
 
@@ -119,6 +126,7 @@ func DefaultWorkloadBenchConfig() WorkloadBenchConfig {
 func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 	return WorkloadBenchRunner{
 		FastEval: NewModelFastEvalRunner(model),
+		Eval:     NewModelEvalRunner(model),
 		LoadAdapter: func(ctx context.Context, path string) (WorkloadAdapterInfo, error) {
 			if err := ctx.Err(); err != nil {
 				return WorkloadAdapterInfo{}, err
@@ -180,14 +188,27 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 	if cfg.IncludePerplexity {
 		report.Evaluation = runWorkloadEvaluation(ctx, runner, cfg)
 	}
+	if cfg.IncludeKVCacheBench && report.FastEval != nil {
+		report.KVCache = CompareKVCacheModes(kvCacheBenchConfigFromModelInfo(report.FastEval.ModelInfo))
+	}
 	report.Summary = summarizeWorkloadBench(report)
 	return report, nil
 }
 
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.FastEval = normalizeFastEvalConfig(cfg.FastEval)
+	cfg.Eval = normalizeEvalConfig(cfg.Eval)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
 	return cfg
+}
+
+func kvCacheBenchConfigFromModelInfo(info ModelInfo) KVCacheBenchConfig {
+	return KVCacheBenchConfig{
+		ContextLength: info.ContextLength,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		Modes:         []KVCacheMode{KVCacheModeFP16, KVCacheModePaged, KVCacheModeQ8, KVCacheModeKQ8VQ4},
+	}
 }
 
 func runWorkloadAdapterLoad(ctx context.Context, runner WorkloadBenchRunner, cfg WorkloadBenchConfig, report *WorkloadAdapterReport) WorkloadAdapterInfo {
@@ -248,6 +269,23 @@ func runWorkloadAdapterFuse(ctx context.Context, runner WorkloadBenchRunner, ada
 
 func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg WorkloadBenchConfig) WorkloadEvaluationReport {
 	report := WorkloadEvaluationReport{Attempted: true}
+	if cfg.EvalDataset != nil {
+		evalCfg := cfg.Eval
+		if evalCfg.AdapterPath == "" && !cfg.IncludeAdapterLoad {
+			evalCfg.AdapterPath = cfg.AdapterPath
+		}
+		start := time.Now()
+		evalReport, err := RunDatasetEval(ctx, runner.Eval, cfg.EvalDataset, evalCfg)
+		report.Duration = nonZeroDuration(time.Since(start))
+		if err != nil {
+			report.Error = err.Error()
+			return report
+		}
+		report.Report = evalReport
+		report.Quality = evalReport.Quality
+		report.Metrics = workloadEvalMetricsFromEval(evalReport.Metrics)
+		return report
+	}
 	if runner.EvaluatePerplexity == nil {
 		report.Error = "runner does not support perplexity evaluation"
 		return report
@@ -271,6 +309,15 @@ func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg 
 	}
 	report.Metrics = metrics
 	return report
+}
+
+func workloadEvalMetricsFromEval(metrics EvalMetrics) WorkloadEvalMetrics {
+	return WorkloadEvalMetrics{
+		Samples:    metrics.Samples,
+		Tokens:     metrics.Tokens,
+		Loss:       metrics.Loss,
+		Perplexity: metrics.Perplexity,
+	}
 }
 
 func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {

@@ -22,7 +22,7 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 	runner := WorkloadBenchRunner{
 		FastEval: FastEvalRunner{
 			Info: func(context.Context) ModelInfo {
-				return ModelInfo{Architecture: "qwen3", NumLayers: 28, QuantBits: 4, ContextLength: 32768}
+				return ModelInfo{Architecture: "qwen3", NumLayers: 28, HiddenSize: 3072, QuantBits: 4, ContextLength: 32768}
 			},
 			Generate: func(_ context.Context, _ string, cfg GenerateConfig) (FastEvalGeneration, error) {
 				return FastEvalGeneration{
@@ -88,10 +88,11 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 			IncludeStateBundleRoundTrip: true,
 			IncludeProbeOverhead:        false,
 		},
-		AdapterPath:        adapter.Path,
-		IncludeAdapterLoad: true,
-		IncludeAdapterFuse: true,
-		IncludePerplexity:  true,
+		AdapterPath:         adapter.Path,
+		IncludeAdapterLoad:  true,
+		IncludeAdapterFuse:  true,
+		IncludePerplexity:   true,
+		IncludeKVCacheBench: true,
 		EvalSamples: []WorkloadEvalSample{
 			{Prompt: "a", Response: "b"},
 			{Text: "plain eval text"},
@@ -118,8 +119,57 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 	if !evalCalled || !report.Evaluation.Attempted || report.Evaluation.Metrics.Perplexity != 3.49 {
 		t.Fatalf("evaluation report = %+v evalCalled=%v", report.Evaluation, evalCalled)
 	}
+	if report.KVCache.Version != KVCacheBenchReportVersion || report.KVCache.RecommendedMode == "" {
+		t.Fatalf("KV cache report = %+v, want populated mode comparison", report.KVCache)
+	}
 	if report.Summary.PrefillTokensPerSec != 200 || report.Summary.DecodeTokensPerSec != 75 || report.Summary.PeakMemoryBytes != 8<<20 {
 		t.Fatalf("summary = %+v, want fast-eval throughput and memory mirrored", report.Summary)
+	}
+}
+
+func TestRunWorkloadBench_UsesDatasetEvalReport_Good(t *testing.T) {
+	runner := WorkloadBenchRunner{
+		FastEval: FastEvalRunner{
+			Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+				return FastEvalGeneration{
+					Text: "ok",
+					Metrics: Metrics{
+						PromptTokens:        4,
+						GeneratedTokens:     2,
+						PrefillTokensPerSec: 40,
+						DecodeTokensPerSec:  20,
+					},
+				}, nil
+			},
+		},
+		Eval: EvalRunner{
+			BuildBatches: func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error) {
+				return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1, 2, 3}}, LossMask: [][]float32{{1, 1, 1}}}}}, nil
+			},
+			EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
+				return EvalBatchMetrics{Loss: 0.75}, nil
+			},
+		},
+	}
+
+	report, err := RunWorkloadBench(context.Background(), runner, WorkloadBenchConfig{
+		FastEval: FastEvalConfig{Prompt: "p", MaxTokens: 2, Runs: 1},
+		EvalDataset: NewSFTSliceDataset([]SFTSample{
+			{Prompt: "a", Response: "b"},
+		}),
+		IncludePerplexity: true,
+	})
+	if err != nil {
+		t.Fatalf("RunWorkloadBench() error = %v", err)
+	}
+	if report.Evaluation.Report == nil {
+		t.Fatal("Evaluation.Report = nil, want dataset eval report")
+	}
+	if report.Evaluation.Metrics.Tokens != 3 || report.Summary.EvalTokens != 3 {
+		t.Fatalf("eval metrics = %+v summary=%+v", report.Evaluation.Metrics, report.Summary)
+	}
+	if !evalQualityPassed(report.Evaluation.Quality, "perplexity_finite") {
+		t.Fatalf("quality = %+v", report.Evaluation.Quality.Checks)
 	}
 }
 

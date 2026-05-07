@@ -2,7 +2,11 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
+
+	core "dappco.re/go"
+)
 
 func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
 	plan := PlanMemory(MemoryPlanInput{
@@ -21,6 +25,9 @@ func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
 	}
 	if plan.CachePolicy != KVCacheRotating {
 		t.Fatalf("CachePolicy = %q, want rotating", plan.CachePolicy)
+	}
+	if plan.CacheMode != KVCacheModeKQ8VQ4 {
+		t.Fatalf("CacheMode = %q, want %q", plan.CacheMode, KVCacheModeKQ8VQ4)
 	}
 	if plan.BatchSize != 1 || plan.PrefillChunkSize != 512 {
 		t.Fatalf("batch/prefill = %d/%d, want 1/512", plan.BatchSize, plan.PrefillChunkSize)
@@ -51,6 +58,9 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	if plan.ContextLength != 131072 {
 		t.Fatalf("ContextLength = %d, want 131072", plan.ContextLength)
 	}
+	if plan.CacheMode != KVCacheModePaged {
+		t.Fatalf("CacheMode = %q, want %q", plan.CacheMode, KVCacheModePaged)
+	}
 	if plan.BatchSize != 4 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 2 {
 		t.Fatalf("shape = batch %d prefill %d slots %d, want 4/4096/2", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
 	}
@@ -74,6 +84,30 @@ func TestMemoryPlan_CapsContextToModel_Good(t *testing.T) {
 	}
 	if plan.ModelQuantization != 4 || plan.PreferredQuantization != 8 {
 		t.Fatalf("quantization = model %d preferred %d, want 4/8", plan.ModelQuantization, plan.PreferredQuantization)
+	}
+}
+
+func TestMemoryPlan_QwenFamilyHints_Good(t *testing.T) {
+	pack := ModelPack{
+		Architecture:  "qwen3_moe",
+		ContextLength: 32768,
+		NumLayers:     48,
+		HiddenSize:    4096,
+		QuantBits:     4,
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{
+			MemorySize:                   16 * MemoryGiB,
+			MaxRecommendedWorkingSetSize: 13 * MemoryGiB,
+		},
+		Pack: &pack,
+	})
+
+	if plan.CacheMode != KVCacheModeKQ8VQ4 {
+		t.Fatalf("CacheMode = %q, want %q for Qwen3-MoE on 16GB", plan.CacheMode, KVCacheModeKQ8VQ4)
+	}
+	if !memoryPlanHasNote(plan, "Qwen3-MoE") || !memoryPlanHasNote(plan, "expert") {
+		t.Fatalf("Notes = %+v, want Qwen3-MoE expert memory hint", plan.Notes)
 	}
 }
 
@@ -112,4 +146,33 @@ func TestMemoryPlan_PlanMemory_Ugly(t *testing.T) {
 	if len(plan.Notes) == 0 {
 		t.Fatal("expected planner notes for constrained model metadata")
 	}
+}
+
+func TestMemoryPlan_KVCacheQ8ForMiddleMemoryClasses_Good(t *testing.T) {
+	coverageTokens := "KVCacheQ8ForMiddleMemoryClasses"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{MemorySize: 32 << 30, MaxRecommendedWorkingSetSize: 28 << 30},
+	})
+
+	if plan.CacheMode != KVCacheModeQ8 {
+		t.Fatalf("CacheMode = %q, want %q", plan.CacheMode, KVCacheModeQ8)
+	}
+	if plan.EstimatedKVCacheBytes == 0 || plan.EstimatedKVCacheModeBytes == 0 {
+		t.Fatalf("expected KV byte estimates: %+v", plan)
+	}
+	if plan.EstimatedKVCacheModeBytes >= plan.EstimatedKVCacheBytes {
+		t.Fatalf("mode bytes = %d, want less than fp cache bytes %d", plan.EstimatedKVCacheModeBytes, plan.EstimatedKVCacheBytes)
+	}
+}
+
+func memoryPlanHasNote(plan MemoryPlan, fragment string) bool {
+	for _, note := range plan.Notes {
+		if core.Contains(note, fragment) {
+			return true
+		}
+	}
+	return false
 }

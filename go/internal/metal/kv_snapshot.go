@@ -180,12 +180,7 @@ func inspectKVCache(cache Cache, seqLen int) (kvCacheSnapshot, bool) {
 	if cache == nil {
 		return kvCacheSnapshot{}, false
 	}
-	state := cache.State()
-	var ownedState []*Array
-	if rotating, ok := cache.(*RotatingKVCache); ok {
-		state = rotating.orderedState()
-		ownedState = state
-	}
+	state, ownedState := cacheReadState(cache)
 	defer Free(ownedState...)
 	if len(state) < 2 || !state[0].Valid() || !state[1].Valid() {
 		return kvCacheSnapshot{}, false

@@ -1055,6 +1055,39 @@ func TestLora_ResolveLinear_Gemma4_Good(t *testing.T) {
 	}
 }
 
+func TestLora_ResolveLinear_QwenFamilyMLPTargets_Good(t *testing.T) {
+	qProj := &Linear{}
+	gateProj := &Linear{}
+	upProj := &Linear{}
+	downProj := &Linear{}
+	model := &Qwen3Model{
+		modelType: "qwen3_next",
+		Layers: []*Qwen3DecoderLayer{
+			{
+				Attention: &Qwen3Attention{QProj: qProj},
+				MLP: &Qwen3MLP{
+					GateProj: gateProj,
+					UpProj:   upProj,
+					DownProj: downProj,
+				},
+			},
+		},
+	}
+
+	if got := resolveLinear(model, 0, "self_attn.q_proj"); got != qProj {
+		t.Fatal("resolveLinear should return Qwen q_proj")
+	}
+	if got := resolveLinear(model, 0, "mlp.gate_proj"); got != gateProj {
+		t.Fatal("resolveLinear should return Qwen mlp.gate_proj")
+	}
+	if got := resolveLinear(model, 0, "mlp.up_proj"); got != upProj {
+		t.Fatal("resolveLinear should return Qwen mlp.up_proj")
+	}
+	if got := resolveLinear(model, 0, "mlp.down_proj"); got != downProj {
+		t.Fatal("resolveLinear should return Qwen mlp.down_proj")
+	}
+}
+
 func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	requireMetalRuntime(t)
 

@@ -495,6 +495,20 @@ func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {
 	case *KVCache:
 		state = c.State()
 		snapshot.step = c.step
+	case *QuantizedKVCache:
+		state, ownedState = c.ReadState()
+		snapshot.step = c.step
+		if c.maxSize > 0 {
+			snapshot.rotating = true
+			snapshot.maxSize = c.maxSize
+		}
+	case *PagedKVCache:
+		state, ownedState = c.ReadState()
+		snapshot.step = c.pageSize
+		if c.maxSize > 0 {
+			snapshot.rotating = true
+			snapshot.maxSize = c.maxSize
+		}
 	default:
 		return cacheSnapshot{}, false, nil
 	}

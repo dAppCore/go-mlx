@@ -72,6 +72,71 @@ func TestMetal_NewCaches_ContextLen_Good(t *testing.T) {
 	}
 }
 
+func TestMetal_NewCaches_KVCacheModeQ8_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModeQ8"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	m := &Model{
+		model:      &fakeModel{numLayers: 2},
+		contextLen: 2048,
+		cacheMode:  string(KVCacheModeQ8),
+	}
+
+	caches := m.newCaches()
+	for i, c := range caches {
+		cache, ok := c.(*QuantizedKVCache)
+		if !ok {
+			t.Fatalf("cache[%d] = %T, want *QuantizedKVCache", i, c)
+		}
+		if cache.keyBits != 8 || cache.valueBits != 8 || cache.maxSize != 2048 {
+			t.Fatalf("cache[%d] bits/max = %d/%d/%d, want 8/8/2048", i, cache.keyBits, cache.valueBits, cache.maxSize)
+		}
+	}
+}
+
+func TestMetal_NewCaches_KVCacheModeAsymmetric_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModeAsymmetric"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	m := &Model{
+		model:      &fakeModel{numLayers: 1},
+		contextLen: 1024,
+		cacheMode:  string(KVCacheModeKQ8VQ4),
+	}
+
+	caches := m.newCaches()
+	cache, ok := caches[0].(*QuantizedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *QuantizedKVCache", caches[0])
+	}
+	if cache.keyBits != 8 || cache.valueBits != 4 {
+		t.Fatalf("bits = %d/%d, want K@q8,V@q4", cache.keyBits, cache.valueBits)
+	}
+}
+
+func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModePaged"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	m := &Model{
+		model:      &fakeModel{numLayers: 1},
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := m.newCaches()
+	cache, ok := caches[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
+	}
+	if cache.maxSize != 4096 || cache.pageSize == 0 {
+		t.Fatalf("paged cache max/page = %d/%d, want bounded non-zero page", cache.maxSize, cache.pageSize)
+	}
+}
+
 // fakeModel is a minimal InternalModel for testing cache creation.
 type fakeModel struct {
 	numLayers int

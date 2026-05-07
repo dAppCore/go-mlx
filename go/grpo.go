@@ -1,0 +1,762 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"context"
+	"math"
+	"time"
+
+	core "dappco.re/go"
+)
+
+const GRPOCheckpointMetadataVersion = 1
+
+// GRPOConfig controls experimental grouped reasoning policy optimisation.
+type GRPOConfig struct {
+	GroupSize        int              `json:"group_size,omitempty"`
+	Epochs           int              `json:"epochs,omitempty"`
+	KLCoefficient    float64          `json:"kl_coefficient,omitempty"`
+	AdvantageEpsilon float64          `json:"advantage_epsilon,omitempty"`
+	LearningRate     float64          `json:"learning_rate,omitempty"`
+	CheckpointDir    string           `json:"checkpoint_dir,omitempty"`
+	CheckpointEvery  int              `json:"checkpoint_every,omitempty"`
+	EvalEvery        int              `json:"eval_every,omitempty"`
+	ResumePath       string           `json:"resume_path,omitempty"`
+	MaxSamples       int              `json:"max_samples,omitempty"`
+	RewardFuncs      []GRPORewardFunc `json:"-"`
+	ProbeSink        ProbeSink        `json:"-"`
+}
+
+// GRPORunner supplies the model-specific operations for experimental GRPO.
+type GRPORunner struct {
+	PolicyInfo func(context.Context) ModelInfo
+	Tokenizer  func(context.Context) *Tokenizer
+
+	Rollout          func(context.Context, GRPORolloutRequest) ([]GRPORollout, error)
+	ReferenceLogProb func(context.Context, GRPORolloutRequest, GRPORollout) (float64, error)
+	ApplyUpdate      func(context.Context, GRPOUpdate) error
+	Evaluate         func(context.Context, GRPOEvalContext) (GRPOEvalResult, error)
+	SaveCheckpoint   func(context.Context, GRPOCheckpointContext) error
+}
+
+// GRPOSample is a reasoning prompt extracted from an SFT/JSONL sample.
+type GRPOSample struct {
+	Prompt          string            `json:"prompt"`
+	ReferenceAnswer string            `json:"reference_answer,omitempty"`
+	ExpectedAnswer  string            `json:"expected_answer,omitempty"`
+	Reasoning       string            `json:"reasoning,omitempty"`
+	Meta            map[string]string `json:"meta,omitempty"`
+}
+
+// GRPORolloutRequest asks the policy for a group of completions.
+type GRPORolloutRequest struct {
+	Step      int        `json:"step"`
+	Epoch     int        `json:"epoch"`
+	GroupSize int        `json:"group_size"`
+	Sample    GRPOSample `json:"sample"`
+	Config    GRPOConfig `json:"config"`
+}
+
+// GRPORollout is one sampled reasoning completion plus training annotations.
+type GRPORollout struct {
+	Text             string       `json:"text,omitempty"`
+	Reasoning        string       `json:"reasoning,omitempty"`
+	Answer           string       `json:"answer,omitempty"`
+	TokenIDs         []int32      `json:"token_ids,omitempty"`
+	LogProb          float64      `json:"log_prob,omitempty"`
+	ReferenceLogProb float64      `json:"reference_log_prob,omitempty"`
+	Reward           float64      `json:"reward,omitempty"`
+	RewardParts      []GRPOReward `json:"reward_parts,omitempty"`
+	Advantage        float64      `json:"advantage,omitempty"`
+	KL               float64      `json:"kl,omitempty"`
+	LossContribution float64      `json:"loss_contribution,omitempty"`
+}
+
+// GRPOReward is one named reward contribution.
+type GRPOReward struct {
+	Name   string  `json:"name"`
+	Score  float64 `json:"score"`
+	Weight float64 `json:"weight,omitempty"`
+	Detail string  `json:"detail,omitempty"`
+}
+
+// GRPORewardContext is passed to reward functions.
+type GRPORewardContext struct {
+	Sample  GRPOSample
+	Rollout GRPORollout
+	Index   int
+}
+
+// GRPORewardFunc scores one rollout.
+type GRPORewardFunc func(GRPORewardContext) (GRPOReward, error)
+
+// GRPOUpdate is the grouped policy update consumed by a LoRA/autograd backend.
+type GRPOUpdate struct {
+	Step          int           `json:"step"`
+	Epoch         int           `json:"epoch"`
+	Sample        GRPOSample    `json:"sample"`
+	Rollouts      []GRPORollout `json:"rollouts"`
+	RewardMean    float64       `json:"reward_mean"`
+	RewardStd     float64       `json:"reward_std"`
+	KLMean        float64       `json:"kl_mean,omitempty"`
+	Loss          float64       `json:"loss"`
+	KLCoefficient float64       `json:"kl_coefficient,omitempty"`
+}
+
+// GRPOMetrics aggregates experimental GRPO counters.
+type GRPOMetrics struct {
+	Steps           int     `json:"steps"`
+	Epochs          int     `json:"epochs"`
+	Samples         int     `json:"samples"`
+	Rollouts        int     `json:"rollouts"`
+	RewardMean      float64 `json:"reward_mean"`
+	RewardStd       float64 `json:"reward_std"`
+	KLMean          float64 `json:"kl_mean,omitempty"`
+	Loss            float64 `json:"loss"`
+	LastLoss        float64 `json:"last_loss"`
+	KLCoefficient   float64 `json:"kl_coefficient,omitempty"`
+	CheckpointCount int     `json:"checkpoint_count"`
+	EvaluationCount int     `json:"evaluation_count"`
+}
+
+// GRPOResult records one experimental GRPO run.
+type GRPOResult struct {
+	Experimental       bool                     `json:"experimental"`
+	Policy             ModelInfo                `json:"policy"`
+	Config             GRPOConfig               `json:"config"`
+	Metrics            GRPOMetrics              `json:"metrics"`
+	Updates            []GRPOUpdate             `json:"updates,omitempty"`
+	Checkpoints        []string                 `json:"checkpoints,omitempty"`
+	CheckpointMetadata []GRPOCheckpointMetadata `json:"checkpoint_metadata,omitempty"`
+	Evaluations        []GRPOEvalResult         `json:"evaluations,omitempty"`
+	ResumePath         string                   `json:"resume_path,omitempty"`
+	ResumedFrom        *GRPOCheckpointMetadata  `json:"resumed_from,omitempty"`
+	Duration           time.Duration            `json:"duration,omitempty"`
+}
+
+// GRPOCheckpointMetadata is the portable sidecar for experimental GRPO checkpoints.
+type GRPOCheckpointMetadata struct {
+	Version       int       `json:"version"`
+	Experimental  bool      `json:"experimental"`
+	Path          string    `json:"path"`
+	ResumePath    string    `json:"resume_path,omitempty"`
+	Step          int       `json:"step"`
+	Epoch         int       `json:"epoch"`
+	Samples       int       `json:"samples"`
+	Rollouts      int       `json:"rollouts"`
+	GroupSize     int       `json:"group_size"`
+	RewardMean    float64   `json:"reward_mean"`
+	RewardStd     float64   `json:"reward_std"`
+	KLMean        float64   `json:"kl_mean,omitempty"`
+	Loss          float64   `json:"loss"`
+	KLCoefficient float64   `json:"kl_coefficient,omitempty"`
+	LearningRate  float64   `json:"learning_rate,omitempty"`
+	Policy        ModelInfo `json:"policy"`
+}
+
+// GRPOCheckpointContext is passed to optional native checkpoint writers.
+type GRPOCheckpointContext struct {
+	Path     string
+	Update   GRPOUpdate
+	Metadata GRPOCheckpointMetadata
+}
+
+// GRPOEvalContext is passed to optional eval hooks.
+type GRPOEvalContext struct {
+	Step    int
+	Epoch   int
+	Config  GRPOConfig
+	Metrics GRPOMetrics
+	Policy  ModelInfo
+}
+
+// GRPOEvalResult records one eval hook result.
+type GRPOEvalResult struct {
+	Step       int     `json:"step"`
+	Epoch      int     `json:"epoch,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	RewardMean float64 `json:"reward_mean,omitempty"`
+	Loss       float64 `json:"loss,omitempty"`
+}
+
+// RunGRPOReasoningTraining runs an explicit experimental GRPO-style reasoning loop.
+func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SFTDataset, cfg GRPOConfig) (*GRPOResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if runner.Rollout == nil {
+		return nil, core.NewError("mlx: experimental GRPO runner requires Rollout")
+	}
+	if dataset == nil {
+		return nil, core.NewError("mlx: experimental GRPO dataset is nil")
+	}
+	cfg = normalizeGRPOConfig(cfg)
+
+	result := &GRPOResult{
+		Experimental: true,
+		Config:       cfg,
+	}
+	if runner.PolicyInfo != nil {
+		result.Policy = runner.PolicyInfo(ctx)
+	}
+	if cfg.ResumePath != "" {
+		result.ResumePath = cfg.ResumePath
+		meta, err := loadGRPOResumeMetadata(cfg.ResumePath)
+		if err != nil {
+			return result, err
+		}
+		result.ResumedFrom = meta
+	}
+
+	start := time.Now()
+	accumulator := &grpoMetricAccumulator{}
+	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
+		if epoch > 1 {
+			resetter, ok := dataset.(SFTResetter)
+			if !ok {
+				return result, core.NewError("mlx: experimental GRPO dataset must implement Reset for multiple epochs")
+			}
+			if err := resetter.Reset(); err != nil {
+				return result, err
+			}
+		}
+		if err := runGRPOEpoch(ctx, runner, dataset, cfg, result, accumulator, epoch); err != nil {
+			return result, err
+		}
+		result.Metrics.Epochs = epoch
+	}
+	if result.Metrics.Steps == 0 {
+		return result, core.NewError("mlx: experimental GRPO dataset produced no trainable samples")
+	}
+	result.Duration = nonZeroDuration(time.Since(start))
+	return result, nil
+}
+
+func runGRPOEpoch(ctx context.Context, runner GRPORunner, dataset SFTDataset, cfg GRPOConfig, result *GRPOResult, accumulator *grpoMetricAccumulator, epoch int) error {
+	samples := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if cfg.MaxSamples > 0 && samples >= cfg.MaxSamples {
+			break
+		}
+		raw, ok, err := dataset.Next()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			break
+		}
+		sample := GRPOSampleFromSFT(raw)
+		if core.Trim(sample.Prompt) == "" {
+			continue
+		}
+		samples++
+		step := result.Metrics.Steps + 1
+		request := GRPORolloutRequest{
+			Step:      step,
+			Epoch:     epoch,
+			GroupSize: cfg.GroupSize,
+			Sample:    sample,
+			Config:    cfg,
+		}
+		rollouts, err := runner.Rollout(ctx, request)
+		if err != nil {
+			return err
+		}
+		update, err := buildGRPOUpdate(ctx, runner, request, rollouts, cfg)
+		if err != nil {
+			return err
+		}
+		if runner.ApplyUpdate != nil {
+			if err := runner.ApplyUpdate(ctx, update); err != nil {
+				return err
+			}
+		}
+		updateGRPOResult(result, accumulator, update)
+		result.Updates = append(result.Updates, update)
+		if err := maybeSaveGRPOCheckpoint(ctx, runner, cfg, result, update); err != nil {
+			return err
+		}
+		if err := maybeRunGRPOEval(ctx, runner, cfg, result, epoch); err != nil {
+			return err
+		}
+		emitGRPOProbe(cfg, result, update, epoch)
+	}
+	return nil
+}
+
+func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORolloutRequest, rollouts []GRPORollout, cfg GRPOConfig) (GRPOUpdate, error) {
+	if len(rollouts) == 0 {
+		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO rollout returned no completions")
+	}
+	if len(rollouts) != request.GroupSize {
+		return GRPOUpdate{}, core.NewError(core.Sprintf("mlx: experimental GRPO rollout group size mismatch: got %d want %d", len(rollouts), request.GroupSize))
+	}
+	rewardFuncs := cfg.RewardFuncs
+	if len(rewardFuncs) == 0 {
+		rewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
+	}
+	for i := range rollouts {
+		parts, total, err := scoreGRPORollout(GRPORewardContext{Sample: request.Sample, Rollout: rollouts[i], Index: i}, rewardFuncs)
+		if err != nil {
+			return GRPOUpdate{}, err
+		}
+		rollouts[i].RewardParts = parts
+		rollouts[i].Reward = total
+		if cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil {
+			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
+			if err != nil {
+				return GRPOUpdate{}, err
+			}
+			rollouts[i].ReferenceLogProb = reference
+			rollouts[i].KL = rollouts[i].LogProb - reference
+		}
+	}
+	rewardMean, rewardStd := grpoRewardStats(rollouts)
+	var loss float64
+	var klSum float64
+	for i := range rollouts {
+		if rewardStd <= cfg.AdvantageEpsilon {
+			rollouts[i].Advantage = 0
+		} else {
+			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) / rewardStd
+		}
+		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + cfg.KLCoefficient*rollouts[i].KL
+		loss += rollouts[i].LossContribution
+		klSum += rollouts[i].KL
+	}
+	loss /= float64(len(rollouts))
+	klMean := klSum / float64(len(rollouts))
+	if math.IsNaN(loss) || math.IsInf(loss, 0) {
+		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO loss is not finite")
+	}
+	return GRPOUpdate{
+		Step:          request.Step,
+		Epoch:         request.Epoch,
+		Sample:        request.Sample,
+		Rollouts:      cloneGRPORollouts(rollouts),
+		RewardMean:    rewardMean,
+		RewardStd:     rewardStd,
+		KLMean:        klMean,
+		Loss:          loss,
+		KLCoefficient: cfg.KLCoefficient,
+	}, nil
+}
+
+func scoreGRPORollout(ctx GRPORewardContext, funcs []GRPORewardFunc) ([]GRPOReward, float64, error) {
+	parts := make([]GRPOReward, 0, len(funcs))
+	var total float64
+	for _, fn := range funcs {
+		if fn == nil {
+			continue
+		}
+		reward, err := fn(ctx)
+		if err != nil {
+			return nil, 0, err
+		}
+		if reward.Name == "" {
+			reward.Name = "reward"
+		}
+		if math.IsNaN(reward.Score) || math.IsInf(reward.Score, 0) {
+			return nil, 0, core.NewError("mlx: experimental GRPO reward is not finite")
+		}
+		parts = append(parts, reward)
+		total += reward.Score
+	}
+	return parts, total, nil
+}
+
+func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update GRPOUpdate) {
+	result.Metrics.Steps++
+	result.Metrics.Samples++
+	result.Metrics.Rollouts += len(update.Rollouts)
+	result.Metrics.LastLoss = update.Loss
+	result.Metrics.KLCoefficient = update.KLCoefficient
+	accumulator.add(update)
+	result.Metrics.RewardMean = accumulator.rewardMean()
+	result.Metrics.RewardStd = accumulator.rewardStd()
+	result.Metrics.KLMean = accumulator.klMean()
+	result.Metrics.Loss = accumulator.loss()
+	result.Metrics.CheckpointCount = len(result.Checkpoints)
+	result.Metrics.EvaluationCount = len(result.Evaluations)
+}
+
+func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update GRPOUpdate) error {
+	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
+		return nil
+	}
+	path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Metrics.Steps))
+	meta := NewGRPOCheckpointMetadata(path, cfg, result, update)
+	if runner.SaveCheckpoint != nil {
+		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: update, Metadata: meta}); err != nil {
+			return err
+		}
+	}
+	if err := SaveGRPOCheckpointMetadata(path, meta); err != nil {
+		return err
+	}
+	result.Checkpoints = append(result.Checkpoints, path)
+	result.CheckpointMetadata = append(result.CheckpointMetadata, meta)
+	result.Metrics.CheckpointCount = len(result.Checkpoints)
+	return nil
+}
+
+func maybeRunGRPOEval(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, epoch int) error {
+	if cfg.EvalEvery <= 0 || runner.Evaluate == nil || result.Metrics.Steps%cfg.EvalEvery != 0 {
+		return nil
+	}
+	eval, err := runner.Evaluate(ctx, GRPOEvalContext{
+		Step:    result.Metrics.Steps,
+		Epoch:   epoch,
+		Config:  cfg,
+		Metrics: result.Metrics,
+		Policy:  result.Policy,
+	})
+	if err != nil {
+		return err
+	}
+	if eval.Step == 0 {
+		eval.Step = result.Metrics.Steps
+	}
+	if eval.Epoch == 0 {
+		eval.Epoch = epoch
+	}
+	result.Evaluations = append(result.Evaluations, eval)
+	result.Metrics.EvaluationCount = len(result.Evaluations)
+	return nil
+}
+
+func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch int) {
+	if cfg.ProbeSink == nil {
+		return
+	}
+	cfg.ProbeSink.EmitProbe(ProbeEvent{
+		Kind:  ProbeEventTraining,
+		Phase: ProbePhaseTraining,
+		Step:  result.Metrics.Steps,
+		Meta: map[string]string{
+			"grpo_experimental": "true",
+			"group_size":        core.Sprintf("%d", cfg.GroupSize),
+			"rollouts":          core.Sprintf("%d", len(update.Rollouts)),
+			"reward_mean":       core.Sprintf("%.6f", update.RewardMean),
+			"reward_std":        core.Sprintf("%.6f", update.RewardStd),
+			"kl_mean":           core.Sprintf("%.6f", update.KLMean),
+			"checkpoint_count":  core.Sprintf("%d", len(result.Checkpoints)),
+			"evaluation_count":  core.Sprintf("%d", len(result.Evaluations)),
+		},
+		Training: &ProbeTraining{
+			Step:         result.Metrics.Steps,
+			Epoch:        epoch,
+			Loss:         update.Loss,
+			LearningRate: cfg.LearningRate,
+		},
+	})
+}
+
+// GRPOSampleFromSFT extracts a reasoning prompt and expected answer.
+func GRPOSampleFromSFT(sample SFTSample) GRPOSample {
+	prompt := core.Trim(sample.Prompt)
+	if prompt == "" {
+		prompt = core.Trim(sample.Text)
+	}
+	return GRPOSample{
+		Prompt:          prompt,
+		ReferenceAnswer: core.Trim(sample.Response),
+		ExpectedAnswer:  ExtractGRPOExpectedAnswer(sample),
+		Reasoning:       extractGRPOReasoning(sample),
+		Meta:            cloneStringMap(sample.Meta),
+	}
+}
+
+// ExtractGRPOExpectedAnswer returns the answer target from reasoning-style samples.
+func ExtractGRPOExpectedAnswer(sample SFTSample) string {
+	for _, key := range []string{"answer", "expected_answer", "solution", "output"} {
+		if sample.Meta != nil {
+			if value := core.Trim(sample.Meta[key]); value != "" {
+				return value
+			}
+		}
+	}
+	text := core.Trim(sample.Response)
+	if text == "" {
+		text = core.Trim(sample.Text)
+	}
+	lines := core.Split(core.Replace(text, "\r\n", "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := cleanGRPOAnswerLine(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func extractGRPOReasoning(sample SFTSample) string {
+	if sample.Meta != nil {
+		if value := core.Trim(sample.Meta["reasoning"]); value != "" {
+			return value
+		}
+		if value := core.Trim(sample.Meta["thinking"]); value != "" {
+			return value
+		}
+	}
+	response := core.Trim(sample.Response)
+	answer := ExtractGRPOExpectedAnswer(sample)
+	if response == "" || answer == "" {
+		return ""
+	}
+	return core.Trim(core.TrimSuffix(response, answer))
+}
+
+func cleanGRPOAnswerLine(line string) string {
+	line = core.Trim(line)
+	lower := core.Lower(line)
+	for _, prefix := range []string{"final answer:", "answer:", "solution:"} {
+		if core.HasPrefix(lower, prefix) {
+			return core.Trim(line[len(prefix):])
+		}
+	}
+	return line
+}
+
+// GRPORewardContainsAnswer rewards a rollout when it contains the expected answer.
+func GRPORewardContainsAnswer(weight float64) GRPORewardFunc {
+	if weight == 0 {
+		weight = 1
+	}
+	return func(ctx GRPORewardContext) (GRPOReward, error) {
+		expected := core.Lower(core.Trim(ctx.Sample.ExpectedAnswer))
+		if expected == "" {
+			return GRPOReward{Name: "contains_answer", Weight: weight, Detail: "no expected answer"}, nil
+		}
+		text := core.Lower(core.Join("\n", ctx.Rollout.Answer, ctx.Rollout.Text, ctx.Rollout.Reasoning))
+		score := 0.0
+		detail := "missing"
+		if core.Contains(text, expected) {
+			score = weight
+			detail = "matched"
+		}
+		return GRPOReward{Name: "contains_answer", Score: score, Weight: weight, Detail: detail}, nil
+	}
+}
+
+// GRPORewardExactAnswer rewards exact normalized answer matches.
+func GRPORewardExactAnswer(weight float64) GRPORewardFunc {
+	if weight == 0 {
+		weight = 1
+	}
+	return func(ctx GRPORewardContext) (GRPOReward, error) {
+		expected := core.Lower(core.Trim(ctx.Sample.ExpectedAnswer))
+		answer := core.Lower(core.Trim(ctx.Rollout.Answer))
+		score := 0.0
+		detail := "missing"
+		if expected != "" && answer == expected {
+			score = weight
+			detail = "matched"
+		}
+		return GRPOReward{Name: "exact_answer", Score: score, Weight: weight, Detail: detail}, nil
+	}
+}
+
+func normalizeGRPOConfig(cfg GRPOConfig) GRPOConfig {
+	if cfg.GroupSize <= 0 {
+		cfg.GroupSize = 4
+	}
+	if cfg.Epochs <= 0 {
+		cfg.Epochs = 1
+	}
+	if cfg.AdvantageEpsilon <= 0 {
+		cfg.AdvantageEpsilon = 1e-8
+	}
+	return cfg
+}
+
+func grpoRewardStats(rollouts []GRPORollout) (float64, float64) {
+	if len(rollouts) == 0 {
+		return 0, 0
+	}
+	var mean float64
+	for _, rollout := range rollouts {
+		mean += rollout.Reward
+	}
+	mean /= float64(len(rollouts))
+	var variance float64
+	for _, rollout := range rollouts {
+		delta := rollout.Reward - mean
+		variance += delta * delta
+	}
+	variance /= float64(len(rollouts))
+	return mean, math.Sqrt(variance)
+}
+
+// NewGRPOCheckpointMetadata captures reproducible experimental GRPO state.
+func NewGRPOCheckpointMetadata(path string, cfg GRPOConfig, result *GRPOResult, update GRPOUpdate) GRPOCheckpointMetadata {
+	cfg = normalizeGRPOConfig(cfg)
+	meta := GRPOCheckpointMetadata{
+		Version:       GRPOCheckpointMetadataVersion,
+		Experimental:  true,
+		Path:          path,
+		ResumePath:    cfg.ResumePath,
+		Step:          update.Step,
+		Epoch:         update.Epoch,
+		GroupSize:     cfg.GroupSize,
+		RewardMean:    update.RewardMean,
+		RewardStd:     update.RewardStd,
+		KLMean:        update.KLMean,
+		Loss:          update.Loss,
+		KLCoefficient: cfg.KLCoefficient,
+		LearningRate:  cfg.LearningRate,
+	}
+	if result != nil {
+		meta.Samples = result.Metrics.Samples
+		meta.Rollouts = result.Metrics.Rollouts
+		meta.Policy = result.Policy
+	}
+	return meta
+}
+
+// SaveGRPOCheckpointMetadata writes checkpoint metadata beside policy artifacts.
+func SaveGRPOCheckpointMetadata(path string, meta GRPOCheckpointMetadata) error {
+	if path == "" {
+		return core.NewError("mlx: experimental GRPO checkpoint metadata path is required")
+	}
+	if meta.Version == 0 {
+		meta.Version = GRPOCheckpointMetadataVersion
+	}
+	meta.Experimental = true
+	if meta.Path == "" {
+		meta.Path = path
+	}
+	metadataPath := grpoCheckpointMetadataPath(path)
+	dir := core.PathDir(metadataPath)
+	if dir != "" && dir != "." {
+		if result := core.MkdirAll(dir, 0o755); !result.OK {
+			return core.E("GRPOCheckpointMetadata.Save", "ensure metadata dir", grpoResultError(result))
+		}
+	}
+	data := core.JSONMarshalIndent(meta, "", "  ")
+	if !data.OK {
+		return core.E("GRPOCheckpointMetadata.Save", "marshal metadata", grpoResultError(data))
+	}
+	if result := core.WriteFile(metadataPath, data.Value.([]byte), 0o600); !result.OK {
+		return core.E("GRPOCheckpointMetadata.Save", "write metadata", grpoResultError(result))
+	}
+	return nil
+}
+
+// LoadGRPOCheckpointMetadata reads checkpoint metadata written by SaveGRPOCheckpointMetadata.
+func LoadGRPOCheckpointMetadata(path string) (*GRPOCheckpointMetadata, error) {
+	if path == "" {
+		return nil, core.NewError("mlx: experimental GRPO checkpoint metadata path is required")
+	}
+	read := core.ReadFile(grpoCheckpointMetadataPath(path))
+	if !read.OK {
+		return nil, grpoResultError(read)
+	}
+	var meta GRPOCheckpointMetadata
+	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
+		return nil, core.E("LoadGRPOCheckpointMetadata", "parse metadata", grpoResultError(result))
+	}
+	if meta.Version == 0 {
+		meta.Version = GRPOCheckpointMetadataVersion
+	}
+	return &meta, nil
+}
+
+func loadGRPOResumeMetadata(path string) (*GRPOCheckpointMetadata, error) {
+	read := core.ReadFile(grpoCheckpointMetadataPath(path))
+	if !read.OK {
+		err := grpoResultError(read)
+		if core.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var meta GRPOCheckpointMetadata
+	if result := core.JSONUnmarshal(read.Value.([]byte), &meta); !result.OK {
+		return nil, core.E("LoadGRPOResumeMetadata", "parse metadata", grpoResultError(result))
+	}
+	if meta.Version == 0 {
+		meta.Version = GRPOCheckpointMetadataVersion
+	}
+	return &meta, nil
+}
+
+func grpoCheckpointMetadataPath(path string) string {
+	return core.PathJoin(path, "grpo_checkpoint.json")
+}
+
+type grpoMetricAccumulator struct {
+	groups    int
+	rollouts  int
+	rewardSum float64
+	stdSum    float64
+	klSum     float64
+	lossSum   float64
+}
+
+func (a *grpoMetricAccumulator) add(update GRPOUpdate) {
+	if a == nil {
+		return
+	}
+	a.groups++
+	a.rollouts += len(update.Rollouts)
+	a.rewardSum += update.RewardMean
+	a.stdSum += update.RewardStd
+	a.klSum += update.KLMean
+	a.lossSum += update.Loss
+}
+
+func (a *grpoMetricAccumulator) rewardMean() float64 {
+	if a == nil || a.groups == 0 {
+		return 0
+	}
+	return a.rewardSum / float64(a.groups)
+}
+
+func (a *grpoMetricAccumulator) rewardStd() float64 {
+	if a == nil || a.groups == 0 {
+		return 0
+	}
+	return a.stdSum / float64(a.groups)
+}
+
+func (a *grpoMetricAccumulator) klMean() float64 {
+	if a == nil || a.groups == 0 {
+		return 0
+	}
+	return a.klSum / float64(a.groups)
+}
+
+func (a *grpoMetricAccumulator) loss() float64 {
+	if a == nil || a.groups == 0 {
+		return 0
+	}
+	return a.lossSum / float64(a.groups)
+}
+
+func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
+	out := make([]GRPORollout, len(rollouts))
+	for i, rollout := range rollouts {
+		out[i] = rollout
+		out[i].TokenIDs = append([]int32(nil), rollout.TokenIDs...)
+		out[i].RewardParts = append([]GRPOReward(nil), rollout.RewardParts...)
+	}
+	return out
+}
+
+func grpoResultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("core result failed")
+}

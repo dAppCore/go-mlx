@@ -70,6 +70,13 @@ func Negative(a *Array) *Array {
 	return out
 }
 
+// Abs returns element-wise absolute value.
+func Abs(a *Array) *Array {
+	out := newArray("ABS", a)
+	C.mlx_abs(&out.ctx, a.ctx, DefaultStream().ctx)
+	return out
+}
+
 // Copy creates a deep copy of an array, breaking the computation graph chain.
 // The returned array has the same data but no references to parent graph nodes,
 // allowing Metal memory from prior graph operations to be freed.
@@ -156,6 +163,48 @@ func Maximum(a, b *Array) *Array {
 func Minimum(a, b *Array) *Array {
 	out := newArray("MIN", a, b)
 	C.mlx_minimum(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// Clip clamps values to the supplied min/max arrays. Nil leaves a bound open.
+func Clip(a, minValue, maxValue *Array) *Array {
+	out := newArray("CLIP", a, minValue, maxValue)
+	var cMin, cMax C.mlx_array
+	if minValue != nil {
+		cMin = minValue.ctx
+	}
+	if maxValue != nil {
+		cMax = maxValue.ctx
+	}
+	C.mlx_clip(&out.ctx, a.ctx, cMin, cMax, DefaultStream().ctx)
+	return out
+}
+
+// BitwiseAnd returns element-wise bitwise AND.
+func BitwiseAnd(a, b *Array) *Array {
+	out := newArray("BITWISE_AND", a, b)
+	C.mlx_bitwise_and(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// BitwiseOr returns element-wise bitwise OR.
+func BitwiseOr(a, b *Array) *Array {
+	out := newArray("BITWISE_OR", a, b)
+	C.mlx_bitwise_or(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// LeftShift shifts integer values left by b.
+func LeftShift(a, b *Array) *Array {
+	out := newArray("LEFT_SHIFT", a, b)
+	C.mlx_left_shift(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// RightShift shifts integer values right by b.
+func RightShift(a, b *Array) *Array {
+	out := newArray("RIGHT_SHIFT", a, b)
+	C.mlx_right_shift(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
@@ -472,6 +521,13 @@ func Sort(a *Array, axis int) *Array {
 func Argsort(a *Array, axis int) *Array {
 	out := newArray("ARGSORT", a)
 	C.mlx_argsort_axis(&out.ctx, a.ctx, C.int(axis), DefaultStream().ctx)
+	return out
+}
+
+// Round returns element-wise rounding to the nearest integer value.
+func Round(a *Array) *Array {
+	out := newArray("ROUND", a)
+	C.mlx_round(&out.ctx, a.ctx, C.int(0), DefaultStream().ctx)
 	return out
 }
 

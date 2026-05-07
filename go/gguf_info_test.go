@@ -15,6 +15,11 @@ type ggufMetaSpec struct {
 	Value     any
 }
 
+type ggufArraySpec struct {
+	ElementType uint32
+	Values      []any
+}
+
 type ggufTensorSpec struct {
 	Name string
 	Type uint32
@@ -191,6 +196,213 @@ func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
 	}
 }
 
+func TestModelConfigProbe_QwenFamilyArchitectures_Good(t *testing.T) {
+	cases := []struct {
+		name string
+		arch string
+		want string
+	}{
+		{name: "qwen3_moe", arch: "Qwen3MoeForCausalLM", want: "qwen3_moe"},
+		{name: "qwen3_moe_caps", arch: "Qwen3MoEForCausalLM", want: "qwen3_moe"},
+		{name: "qwen3_next", arch: "Qwen3NextForCausalLM", want: "qwen3_next"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := &modelConfigProbe{Architectures: []string{tc.arch}}
+			if got := probe.architecture(); got != tc.want {
+				t.Fatalf("architecture() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadGGUFInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T) {
+	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
+	writeTestGGUF(t, ggufPath,
+		[]ggufMetaSpec{
+			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
+			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
+			{Key: "general.quantization_version", ValueType: ggufValueTypeUint32, Value: uint32(2)},
+			{Key: "qwen3.context_length", ValueType: ggufValueTypeUint32, Value: uint32(40960)},
+		},
+		[]ggufTensorSpec{
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
+			{Name: "model.layers.0.self_attn.k_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
+			{Name: "model.norm.weight", Type: ggufTensorTypeF32, Dims: []uint64{128}},
+		},
+	)
+
+	info, err := ReadGGUFInfo(ggufPath)
+	if err != nil {
+		t.Fatalf("ReadGGUFInfo() error = %v", err)
+	}
+	if !info.Valid() {
+		t.Fatalf("GGUF validation issues = %+v", info.ValidationIssues)
+	}
+	if info.QuantType != "q4_k_m" || info.QuantFamily != "qk" || info.QuantBits != 4 {
+		t.Fatalf("quant = type:%q family:%q bits:%d", info.QuantType, info.QuantFamily, info.QuantBits)
+	}
+	if info.Quantization.FileType != 15 || info.Quantization.FileTypeName != "q4_k_m" || info.Quantization.Version != 2 {
+		t.Fatalf("quantization details = %+v", info.Quantization)
+	}
+	if len(info.Quantization.TensorTypes) != 2 {
+		t.Fatalf("tensor type summary = %+v, want q4_k and f32", info.Quantization.TensorTypes)
+	}
+	if len(info.Tensors) != 3 {
+		t.Fatalf("Tensors = %d, want 3", len(info.Tensors))
+	}
+	if info.Tensors[0].TypeName != "q4_k" || info.Tensors[0].Bits != 4 || info.Tensors[0].BlockSize != 256 {
+		t.Fatalf("first tensor = %+v", info.Tensors[0])
+	}
+	if len(info.Tensors[0].Shape) != 2 || info.Tensors[0].Shape[0] != 256 || info.Tensors[0].Shape[1] != 128 {
+		t.Fatalf("first tensor shape = %+v", info.Tensors[0].Shape)
+	}
+}
+
+func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
+	cases := []struct {
+		name          string
+		metadata      []ggufMetaSpec
+		tensorType    uint32
+		wantType      string
+		wantFamily    string
+		wantBits      int
+		wantTensor    string
+		wantTensorBit int
+	}{
+		{
+			name:          "q5_k_m_file_type",
+			metadata:      []ggufMetaSpec{{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(17)}},
+			tensorType:    ggufTensorTypeQ5K,
+			wantType:      "q5_k_m",
+			wantFamily:    "qk",
+			wantBits:      5,
+			wantTensor:    "q5_k",
+			wantTensorBit: 5,
+		},
+		{
+			name:          "q8_tensor",
+			tensorType:    ggufTensorTypeQ8_0,
+			wantType:      "q8_0",
+			wantFamily:    "q8",
+			wantBits:      8,
+			wantTensor:    "q8_0",
+			wantTensorBit: 8,
+		},
+		{
+			name:          "iq_tensor",
+			tensorType:    ggufTensorTypeIQ4NL,
+			wantType:      "iq4_nl",
+			wantFamily:    "iq",
+			wantBits:      4,
+			wantTensor:    "iq4_nl",
+			wantTensorBit: 4,
+		},
+		{
+			name: "mxfp4_metadata",
+			metadata: []ggufMetaSpec{
+				{Key: "general.quantization_type", ValueType: ggufValueTypeString, Value: "mxfp4"},
+			},
+			tensorType:    ggufTensorTypeF16,
+			wantType:      "mxfp4",
+			wantFamily:    "mxfp",
+			wantBits:      4,
+			wantTensor:    "f16",
+			wantTensorBit: 16,
+		},
+		{
+			name: "nvfp4_metadata",
+			metadata: []ggufMetaSpec{
+				{Key: "quantization.type", ValueType: ggufValueTypeString, Value: "nvfp4"},
+			},
+			tensorType:    ggufTensorTypeF16,
+			wantType:      "nvfp4",
+			wantFamily:    "nvfp",
+			wantBits:      4,
+			wantTensor:    "f16",
+			wantTensorBit: 16,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
+			metadata := append([]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "llama"}}, tc.metadata...)
+			writeTestGGUF(t, ggufPath, metadata, []ggufTensorSpec{
+				{Name: "blk.0.attn_q.weight", Type: tc.tensorType, Dims: []uint64{256, 128}},
+			})
+
+			info, err := ReadGGUFInfo(ggufPath)
+			if err != nil {
+				t.Fatalf("ReadGGUFInfo() error = %v", err)
+			}
+			if info.QuantType != tc.wantType || info.QuantFamily != tc.wantFamily || info.QuantBits != tc.wantBits {
+				t.Fatalf("quant = type:%q family:%q bits:%d, want %s/%s/%d", info.QuantType, info.QuantFamily, info.QuantBits, tc.wantType, tc.wantFamily, tc.wantBits)
+			}
+			if info.Tensors[0].TypeName != tc.wantTensor || info.Tensors[0].Bits != tc.wantTensorBit {
+				t.Fatalf("tensor = %+v, want type %s bits %d", info.Tensors[0], tc.wantTensor, tc.wantTensorBit)
+			}
+		})
+	}
+}
+
+func TestReadGGUFInfo_InvalidTensorShapeAndDType_Bad(t *testing.T) {
+	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
+	writeTestGGUF(t, ggufPath,
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
+		[]ggufTensorSpec{
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{127, 128}},
+			{Name: "model.layers.0.self_attn.k_proj.weight", Type: 999, Dims: []uint64{128, 0}},
+		},
+	)
+
+	info, err := ReadGGUFInfo(ggufPath)
+	if err != nil {
+		t.Fatalf("ReadGGUFInfo() error = %v", err)
+	}
+	if info.Valid() {
+		t.Fatalf("Valid() = true, want validation issues for invalid tensor metadata")
+	}
+	if !ggufValidationHasCode(info.ValidationIssues, "tensor_shape_not_block_aligned") || !ggufValidationHasCode(info.ValidationIssues, "unknown_tensor_type") || !ggufValidationHasCode(info.ValidationIssues, "invalid_tensor_dimension") {
+		t.Fatalf("validation issues = %+v", info.ValidationIssues)
+	}
+}
+
+func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
+	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
+	writeTestGGUF(t, ggufPath,
+		[]ggufMetaSpec{
+			{Key: "general.name", ValueType: ggufValueTypeString, Value: "roundtrip"},
+			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
+			{Key: "general.alignment", ValueType: ggufValueTypeUint64, Value: uint64(32)},
+			{Key: "general.use_mlock", ValueType: ggufValueTypeBool, Value: true},
+			{Key: "tokenizer.ggml.tokens", ValueType: ggufValueTypeArray, Value: ggufArraySpec{ElementType: ggufValueTypeString, Values: []any{"<bos>", "<eos>"}}},
+		},
+		[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
+	)
+
+	metadata, tensors, err := parseGGUF(ggufPath)
+	if err != nil {
+		t.Fatalf("parseGGUF() error = %v", err)
+	}
+	if metadataString(metadata["general.name"]) != "roundtrip" {
+		t.Fatalf("general.name = %q", metadataString(metadata["general.name"]))
+	}
+	if metadataInt(metadata["general.file_type"]) != 15 || metadataInt(metadata["general.alignment"]) != 32 {
+		t.Fatalf("integer metadata = file_type:%v alignment:%v", metadata["general.file_type"], metadata["general.alignment"])
+	}
+	if value, ok := metadata["general.use_mlock"].(bool); !ok || !value {
+		t.Fatalf("general.use_mlock = %#v", metadata["general.use_mlock"])
+	}
+	tokens, ok := metadata["tokenizer.ggml.tokens"].([]any)
+	if !ok || len(tokens) != 2 || tokens[1] != "<eos>" {
+		t.Fatalf("tokens = %#v", metadata["tokenizer.ggml.tokens"])
+	}
+	if len(tensors) != 1 || len(tensors[0].Shape) != 2 || tensors[0].Shape[0] != 256 || tensors[0].Offset != 0 {
+		t.Fatalf("tensors = %+v", tensors)
+	}
+}
+
 func TestDiscoverModels_Good(t *testing.T) {
 	base := t.TempDir()
 
@@ -251,6 +463,15 @@ func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
 	}
 }
 
+func ggufValidationHasCode(issues []GGUFValidationIssue, code string) bool {
+	for _, issue := range issues {
+		if issue.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
 func writeTestGGUF(t *testing.T, path string, metadata []ggufMetaSpec, tensors []ggufTensorSpec) {
 	t.Helper()
 
@@ -305,6 +526,18 @@ func writeGGUFString(t *testing.T, file *core.OSFile, value string) {
 func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any) {
 	t.Helper()
 	switch valueType {
+	case ggufValueTypeBool:
+		boolValue, ok := value.(bool)
+		if !ok {
+			t.Fatalf("write bool: got %T, want bool", value)
+		}
+		var encoded uint8
+		if boolValue {
+			encoded = 1
+		}
+		if err := binary.Write(file, binary.LittleEndian, encoded); err != nil {
+			t.Fatalf("write bool: %v", err)
+		}
 	case ggufValueTypeString:
 		stringValue, ok := value.(string)
 		if !ok {
@@ -318,6 +551,28 @@ func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any
 		}
 		if err := binary.Write(file, binary.LittleEndian, uint32Value); err != nil {
 			t.Fatalf("write uint32: %v", err)
+		}
+	case ggufValueTypeUint64:
+		uint64Value, ok := value.(uint64)
+		if !ok {
+			t.Fatalf("write uint64: got %T, want uint64", value)
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint64Value); err != nil {
+			t.Fatalf("write uint64: %v", err)
+		}
+	case ggufValueTypeArray:
+		arrayValue, ok := value.(ggufArraySpec)
+		if !ok {
+			t.Fatalf("write array: got %T, want ggufArraySpec", value)
+		}
+		if err := binary.Write(file, binary.LittleEndian, arrayValue.ElementType); err != nil {
+			t.Fatalf("write array element type: %v", err)
+		}
+		if err := binary.Write(file, binary.LittleEndian, uint64(len(arrayValue.Values))); err != nil {
+			t.Fatalf("write array length: %v", err)
+		}
+		for _, item := range arrayValue.Values {
+			writeGGUFValue(t, file, arrayValue.ElementType, item)
 		}
 	default:
 		t.Fatalf("unsupported test gguf value type %d", valueType)

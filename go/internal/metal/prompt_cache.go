@@ -299,7 +299,8 @@ func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 	if cache.Offset() != cache.Len() || cache.Len() < tokenLen {
 		return cacheSnapshot{}, false, nil
 	}
-	state := cache.State()
+	state, ownedState := cacheReadState(cache)
+	defer Free(ownedState...)
 	if len(state) < 2 || !state[0].Valid() || !state[1].Valid() {
 		return cacheSnapshot{}, false, nil
 	}
@@ -327,6 +328,18 @@ func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 		snapshot.step = c.step
 	case *KVCache:
 		snapshot.step = c.step
+	case *QuantizedKVCache:
+		snapshot.step = c.step
+		if c.maxSize > 0 {
+			snapshot.rotating = true
+			snapshot.maxSize = c.maxSize
+		}
+	case *PagedKVCache:
+		snapshot.step = c.pageSize
+		if c.maxSize > 0 {
+			snapshot.rotating = true
+			snapshot.maxSize = c.maxSize
+		}
 	default:
 		Free(keys, values)
 		return cacheSnapshot{}, false, nil

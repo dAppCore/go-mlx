@@ -26,6 +26,17 @@ const (
 	KVCacheFull     KVCachePolicy = "full"
 )
 
+// KVCacheMode names the physical KV storage strategy used by the native cache.
+type KVCacheMode string
+
+const (
+	KVCacheModeDefault KVCacheMode = ""
+	KVCacheModeFP16    KVCacheMode = "fp16"
+	KVCacheModeQ8      KVCacheMode = "q8"
+	KVCacheModeKQ8VQ4  KVCacheMode = "k-q8-v-q4"
+	KVCacheModePaged   KVCacheMode = "paged"
+)
+
 // MemoryPlanInput supplies measured hardware and optional model metadata.
 type MemoryPlanInput struct {
 	Device    DeviceInfo
@@ -41,6 +52,7 @@ type MemoryPlan struct {
 	RecommendedWorkingSetBytes uint64        `json:"recommended_working_set_bytes,omitempty"`
 	ContextLength              int           `json:"context_length"`
 	CachePolicy                KVCachePolicy `json:"cache_policy"`
+	CacheMode                  KVCacheMode   `json:"cache_mode,omitempty"`
 	BatchSize                  int           `json:"batch_size"`
 	PrefillChunkSize           int           `json:"prefill_chunk_size"`
 	ParallelSlots              int           `json:"parallel_slots"`
@@ -48,9 +60,14 @@ type MemoryPlan struct {
 	PromptCacheMinTokens       int           `json:"prompt_cache_min_tokens"`
 	PreferredQuantization      int           `json:"preferred_quantization,omitempty"`
 	ModelQuantization          int           `json:"model_quantization,omitempty"`
+	ModelQuantizationType      string        `json:"model_quantization_type,omitempty"`
+	ModelQuantizationFamily    string        `json:"model_quantization_family,omitempty"`
 	MemoryLimitBytes           uint64        `json:"memory_limit_bytes,omitempty"`
 	CacheLimitBytes            uint64        `json:"cache_limit_bytes,omitempty"`
 	WiredLimitBytes            uint64        `json:"wired_limit_bytes,omitempty"`
+	EstimatedKVCacheBytes      uint64        `json:"estimated_kv_cache_bytes,omitempty"`
+	EstimatedKVCacheModeBytes  uint64        `json:"estimated_kv_cache_mode_bytes,omitempty"`
+	KVCacheSavingsRatio        float64       `json:"kv_cache_savings_ratio,omitempty"`
 	Notes                      []string      `json:"notes,omitempty"`
 }
 
@@ -71,14 +88,22 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 	plan.CacheLimitBytes = percentBytes(workingSet, 8)
 	plan.WiredLimitBytes = percentBytes(workingSet, 75)
 
-	modelContext, modelQuant := modelMemoryHints(input)
+	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture := modelMemoryHints(input)
 	if modelContext > 0 && modelContext < plan.ContextLength {
 		plan.ContextLength = modelContext
 		plan.Notes = append(plan.Notes, "context capped by model metadata")
 	}
 	plan.ModelQuantization = modelQuant
+	plan.ModelQuantizationType = modelQuantType
+	plan.ModelQuantizationFamily = modelQuantFamily
 	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
+	}
+	applyModelArchitectureMemoryHints(&plan, modelArchitecture)
+	plan.EstimatedKVCacheBytes = estimateKVCacheBytes(plan, input, KVCacheModeFP16)
+	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytes(plan, input, plan.CacheMode)
+	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
+		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
 	}
 	return plan
 }
@@ -109,6 +134,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         8192,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModeKQ8VQ4,
 			BatchSize:             1,
 			PrefillChunkSize:      512,
 			ParallelSlots:         1,
@@ -120,6 +146,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         16384,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModeQ8,
 			BatchSize:             1,
 			PrefillChunkSize:      768,
 			ParallelSlots:         1,
@@ -131,6 +158,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         32768,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModeQ8,
 			BatchSize:             1,
 			PrefillChunkSize:      1024,
 			ParallelSlots:         1,
@@ -142,6 +170,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         65536,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModePaged,
 			BatchSize:             2,
 			PrefillChunkSize:      2048,
 			ParallelSlots:         1,
@@ -153,6 +182,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         DefaultLocalContextLength,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModePaged,
 			BatchSize:             4,
 			PrefillChunkSize:      4096,
 			ParallelSlots:         2,
@@ -164,6 +194,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         DefaultLocalContextLength,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModePaged,
 			BatchSize:             6,
 			PrefillChunkSize:      4096,
 			ParallelSlots:         2,
@@ -175,6 +206,7 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 		return MemoryPlan{
 			ContextLength:         DefaultLocalContextLength,
 			CachePolicy:           KVCacheRotating,
+			CacheMode:             KVCacheModeQ8,
 			BatchSize:             1,
 			PrefillChunkSize:      1024,
 			ParallelSlots:         DefaultLocalParallelSlots,
@@ -185,12 +217,67 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 	}
 }
 
-func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int) {
+func estimateKVCacheBytes(plan MemoryPlan, input MemoryPlanInput, mode KVCacheMode) uint64 {
+	if plan.ContextLength <= 0 {
+		return 0
+	}
+	layers, hidden := kvEstimateShape(input, plan.MachineClass)
+	if layers <= 0 || hidden <= 0 {
+		return 0
+	}
+	elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
+	switch mode {
+	case KVCacheModeKQ8VQ4:
+		// K uses one byte, V uses four logical bits. The current native cache
+		// stores q4 values in int8 lanes until packed kernels are available.
+		return elements * 3 / 4
+	case KVCacheModeQ8:
+		return elements
+	default:
+		return elements * 2
+	}
+}
+
+func kvEstimateShape(input MemoryPlanInput, class MemoryClass) (layers, hidden int) {
+	if input.ModelInfo != nil {
+		layers = input.ModelInfo.NumLayers
+		hidden = input.ModelInfo.HiddenSize
+	}
+	if input.Pack != nil {
+		if layers == 0 {
+			layers = input.Pack.NumLayers
+		}
+		if hidden == 0 {
+			hidden = input.Pack.HiddenSize
+		}
+	}
+	if layers > 0 && hidden > 0 {
+		return layers, hidden
+	}
+	switch class {
+	case MemoryClassApple16GB, MemoryClassApple24GB:
+		return 28, 2048
+	case MemoryClassApple32GB:
+		return 32, 3072
+	case MemoryClassApple64GB:
+		return 40, 4096
+	default:
+		return 48, 5120
+	}
+}
+
+func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, quantType, quantFamily, architecture string) {
 	if input.Pack != nil {
 		contextLength = input.Pack.ContextLength
 		quantization = input.Pack.QuantBits
+		quantType = input.Pack.QuantType
+		quantFamily = input.Pack.QuantFamily
+		architecture = input.Pack.Architecture
 	}
 	if input.ModelInfo != nil {
+		if input.ModelInfo.Architecture != "" {
+			architecture = input.ModelInfo.Architecture
+		}
 		if input.ModelInfo.ContextLength > 0 {
 			contextLength = input.ModelInfo.ContextLength
 		}
@@ -198,7 +285,20 @@ func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int) {
 			quantization = input.ModelInfo.QuantBits
 		}
 	}
-	return contextLength, quantization
+	return contextLength, quantization, quantType, quantFamily, architecture
+}
+
+func applyModelArchitectureMemoryHints(plan *MemoryPlan, architecture string) {
+	switch normalizeKnownArchitecture(architecture) {
+	case "qwen3_moe":
+		plan.Notes = append(plan.Notes, "Qwen3-MoE sparse expert routing increases memory pressure; prefer compact KV cache modes on constrained Apple memory")
+		if plan.MachineClass == MemoryClassApple24GB || plan.MachineClass == MemoryClassApple32GB {
+			plan.CacheMode = KVCacheModeKQ8VQ4
+			plan.Notes = append(plan.Notes, "Qwen3-MoE uses asymmetric K@q8,V@q4 cache below 64GB")
+		}
+	case "qwen3_next":
+		plan.Notes = append(plan.Notes, "Qwen3-Next uses nested text_config metadata; keep context and cache policy tied to text model limits")
+	}
 }
 
 func percentBytes(value uint64, percent uint64) uint64 {
@@ -241,6 +341,9 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	}
 	if cfg.CachePolicy == "" {
 		cfg.CachePolicy = plan.CachePolicy
+	}
+	if cfg.CacheMode == "" {
+		cfg.CacheMode = plan.CacheMode
 	}
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = plan.BatchSize

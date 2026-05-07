@@ -48,6 +48,7 @@ const (
 	ModelPackIssueMissingTokenizer        ModelPackIssueCode = "missing_tokenizer"
 	ModelPackIssueInvalidTokenizer        ModelPackIssueCode = "invalid_tokenizer"
 	ModelPackIssueUnsupportedArchitecture ModelPackIssueCode = "unsupported_architecture"
+	ModelPackIssueUnsupportedRuntime      ModelPackIssueCode = "unsupported_runtime"
 	ModelPackIssueMissingArchitecture     ModelPackIssueCode = "missing_architecture"
 	ModelPackIssueMissingChatTemplate     ModelPackIssueCode = "missing_chat_template"
 	ModelPackIssueQuantizationMismatch    ModelPackIssueCode = "quantization_mismatch"
@@ -81,6 +82,9 @@ type ModelPack struct {
 	ChatTemplate             string                      `json:"chat_template,omitempty"`
 	QuantBits                int                         `json:"quant_bits,omitempty"`
 	QuantGroup               int                         `json:"quant_group,omitempty"`
+	QuantType                string                      `json:"quant_type,omitempty"`
+	QuantFamily              string                      `json:"quant_family,omitempty"`
+	Quantization             *GGUFQuantizationInfo       `json:"quantization,omitempty"`
 	ContextLength            int                         `json:"context_length,omitempty"`
 	NumLayers                int                         `json:"num_layers,omitempty"`
 	HiddenSize               int                         `json:"hidden_size,omitempty"`
@@ -250,10 +254,16 @@ func inspectModelPackGGUF(pack *ModelPack, path string) {
 	}
 	pack.QuantBits = firstPositive(pack.QuantBits, info.QuantBits)
 	pack.QuantGroup = firstPositive(pack.QuantGroup, info.QuantGroup)
+	pack.QuantType = firstNonEmpty(pack.QuantType, info.QuantType)
+	pack.QuantFamily = firstNonEmpty(pack.QuantFamily, info.QuantFamily)
+	pack.Quantization = cloneGGUFQuantizationInfo(info.Quantization)
 	pack.ContextLength = firstPositive(pack.ContextLength, info.ContextLength)
 	pack.NumLayers = firstPositive(pack.NumLayers, info.NumLayers)
 	pack.HiddenSize = firstPositive(pack.HiddenSize, info.HiddenSize)
 	pack.VocabSize = firstPositive(pack.VocabSize, info.VocabSize)
+	if !info.Valid() {
+		pack.addIssue(ModelPackIssueError, ModelPackIssueInvalidGGUF, "GGUF tensor metadata failed validation: "+ggufValidationSummary(info.ValidationIssues), path)
+	}
 }
 
 func applyModelPackConfigMetadata(pack *ModelPack, config *modelConfigProbe) {
@@ -264,6 +274,30 @@ func applyModelPackConfigMetadata(pack *ModelPack, config *modelConfigProbe) {
 	pack.NumLayers = firstPositive(pack.NumLayers, config.numLayers())
 	pack.HiddenSize = firstPositive(pack.HiddenSize, config.hiddenSize())
 	pack.VocabSize = firstPositive(pack.VocabSize, config.vocabSize())
+}
+
+func cloneGGUFQuantizationInfo(info GGUFQuantizationInfo) *GGUFQuantizationInfo {
+	if info.Type == "" && info.Family == "" && info.Bits == 0 && len(info.TensorTypes) == 0 {
+		return nil
+	}
+	cloned := info
+	cloned.TensorTypes = append([]GGUFTensorTypeSummary(nil), info.TensorTypes...)
+	return &cloned
+}
+
+func ggufValidationSummary(issues []GGUFValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown validation failure"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Tensor != "" {
+			parts = append(parts, core.Concat(issue.Code, ":", issue.Tensor))
+			continue
+		}
+		parts = append(parts, issue.Code)
+	}
+	return core.Join(", ", parts...)
 }
 
 func inspectModelPackTokenizer(pack *ModelPack, root string) {
@@ -338,6 +372,10 @@ func inspectModelPackArchitecture(pack *ModelPack) {
 	pack.SupportedArchitecture = modelPackSupportedArchitecture(pack.Architecture)
 	if !pack.SupportedArchitecture {
 		pack.addIssue(ModelPackIssueError, ModelPackIssueUnsupportedArchitecture, "architecture is not supported by native go-mlx loaders: "+pack.Architecture, pack.ConfigPath)
+		return
+	}
+	if !modelPackNativeRuntimeSupported(pack.Architecture) {
+		pack.addIssue(ModelPackIssueWarning, ModelPackIssueUnsupportedRuntime, "architecture is recognized, but sparse expert runtime loading is not implemented yet: "+pack.Architecture, pack.ConfigPath)
 	}
 }
 
@@ -352,6 +390,7 @@ func inspectModelPackPolicy(pack *ModelPack, cfg ModelPackConfig) {
 
 func finalizeModelPack(pack *ModelPack) {
 	pack.NativeLoadable = pack.SupportedArchitecture &&
+		modelPackNativeRuntimeSupported(pack.Architecture) &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		pack.HasChatTemplate &&
@@ -362,19 +401,28 @@ func finalizeModelPack(pack *ModelPack) {
 }
 
 func modelPackSupportedArchitecture(architecture string) bool {
-	switch architecture {
-	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text", "qwen2", "qwen3", "llama":
+	switch normalizeKnownArchitecture(architecture) {
+	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text", "qwen2", "qwen3", "qwen3_next", "qwen3_moe", "llama":
 		return true
 	default:
 		return false
 	}
 }
 
+func modelPackNativeRuntimeSupported(architecture string) bool {
+	switch normalizeKnownArchitecture(architecture) {
+	case "qwen3_moe":
+		return false
+	default:
+		return true
+	}
+}
+
 func nativeChatTemplateName(architecture string) string {
-	switch architecture {
+	switch normalizeKnownArchitecture(architecture) {
 	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text":
 		return "gemma"
-	case "qwen2", "qwen3":
+	case "qwen2", "qwen3", "qwen3_next", "qwen3_moe":
 		return "qwen"
 	case "llama":
 		return "llama"
