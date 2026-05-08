@@ -139,14 +139,38 @@ _ = finalFrame
 _ = frameMetrics
 ```
 
+## Research-Grade Pipeline
+
+go-mlx is positioned as a Go-native research-grade model runner — not just inference. The root package exposes the full training and operations pipeline so harnesses can stop reaching for Python `mlx-lm`:
+
+| Feature | Function | What it does |
+|---------|----------|--------------|
+| LoRA fine-tuning | `mlx.ApplyLoRA` + `mlx.NewAdamW` | Low-rank adaptation training with AdamW, mixed precision, gradient checkpointing |
+| LoRA fusion | `mlx.FuseLoRAIntoModelPack(ctx, opts)` | Bake a trained LoRA adapter into the base model as a fresh safetensors pack |
+| Knowledge distillation | `mlx.RunKnowledgeDistillation(ctx, runner, dataset, cfg)` | KL or soft-CE loss against a teacher's logits, with checkpoint resumption |
+| GRPO | `mlx.RunGRPOReasoningTraining(ctx, runner, dataset, cfg)` | Group-relative policy optimisation with reward functions and reference KL |
+| Eval | `mlx.RunModelEval(ctx, model, dataset, cfg)` | Dataset-native perplexity plus pluggable quality probes |
+| Model merge | `mlx.MergeModelPacks(ctx, opts)` | Linear / SLERP / TIES / DARE merging of multiple model packs with provenance |
+| GGUF quantise | `mlx.QuantizeModelPackToGGUF(ctx, opts)` | Native Go safetensors → GGUF Q8_0 / Q4_0 / Q4_K_M |
+| KV snapshot | `snapshot.Save(path)` / `mlx.LoadKVSnapshot(path)` | Portable binary KV cache (Float32 or Q8 symmetric int8) for session restore |
+| HF fit | `mlx.PlanHFModelFits(ctx, cfg)` | HuggingFace Hub metadata search to plan what fits on local hardware |
+| Attention probe | `inference.AttentionInspector` adapter | Extract post-RoPE K vectors per head per layer for analysis |
+
+See [`docs/`](docs/) and [`examples/`](examples/) for the full surface.
+
 ## Documentation
 
 - [Compute Guide](docs/compute.md) — frame-oriented Metal compute sessions, pixel buffers, kernels, metrics
 - [Architecture](docs/architecture.md) — CGO binding, model architectures, weight loading, KV cache, attention, batch inference, LoRA training, mlxlm backend
 - [Models](docs/models.md) — model loading, supported architectures, tokenisation, chat templates
-- [Training](docs/training.md) — LoRA fine-tuning, AdamW, gradient computation, checkpoints
+- [Training](docs/training.md) — LoRA fine-tuning, AdamW, gradient computation, checkpoints, fusion
+- [Distillation](docs/distillation.md) — knowledge distillation (KL, soft cross-entropy)
+- [GRPO](docs/grpo.md) — group-relative policy optimisation for RL
+- [Eval](docs/eval.md) — dataset-native perplexity, quality probes, eval reports
+- [Model Operations](docs/model-operations.md) — merge, GGUF quantise, KV snapshot, HF fit
 - [Development Guide](docs/development.md) — prerequisites (mlx-c CMake build), CGO flags, test patterns, benchmarks
 - [Project History](docs/history.md) — completed phases, commit hashes, known limitations
+- [Examples](examples/) — runnable usage examples organised by type
 
 ## Build & Test
 
