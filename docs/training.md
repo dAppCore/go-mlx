@@ -89,6 +89,27 @@ The adapter directory must contain:
 
 The loader parses weight names like `layers.0.self_attn.q_proj.lora_a` to inject each A/B pair into the correct model layer. This is compatible with adapters trained by `mlx-lm`.
 
+### Fusing an Adapter Into the Base Model
+
+Once a LoRA adapter is trained, you can bake it into the base model as a fresh, standalone safetensors pack. This eliminates the runtime cost of the adapter projections at the price of losing modularity (you can no longer swap adapters on the same base).
+
+```go
+result, err := mlx.FuseLoRAIntoModelPack(ctx, mlx.FuseLoRAOptions{
+    ModelPath:   "/path/to/base/model",   // safetensors model pack
+    AdapterPath: "/path/to/adapter",      // safetensors adapter directory
+    OutputPath:  "/path/to/fused-model",  // must be a directory, not a file
+    Labels:      map[string]string{"run": "domain-classifier-v3"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("fused %d weights into %s\n", result.FusedWeights, result.WeightPath)
+```
+
+Fusion rewrites every targeted weight as `W' = W + scale * Bᵀ @ Aᵀ`, copies the source pack's metadata (`config.json`, `tokenizer.json`, etc.) into the output directory, and writes a `LoRAFuseProvenance` record to `adapter_provenance.json` listing the source model, adapter identity, and exact set of fused weight keys. The output path must not already contain `*.safetensors` or `*.gguf` weights, must differ from the source path, and the source pack must be safetensors (GGUF source fusion is not yet supported).
+
+`FuseLoRAResult` carries the output pack details, the `ModelPack` and `LoRAAdapterInfo` used, the count and keys of fused tensors, and the provenance file location.
+
 ## Gradient Computation
 
 ### ValueAndGrad
@@ -325,3 +346,14 @@ type InternalModel interface {
 ```
 
 `Forward` returns logits of shape `[B, L, V]`. `ForwardMasked` accepts an explicit attention mask for batched training with padded sequences.
+
+## Beyond Supervised LoRA
+
+LoRA fine-tuning is one entry point. The root package owns several higher-level training and evaluation pipelines that build on the same primitives:
+
+- [Knowledge distillation](distillation.md) — KL or soft cross-entropy against a teacher's logits, with checkpoint resumption and an in-memory teacher logit cache
+- [GRPO](grpo.md) — group-relative policy optimisation with pluggable reward functions and reference-model KL
+- [Eval](eval.md) — dataset-native perplexity plus pluggable quality probes, callable on a base model or with a LoRA adapter
+- [Model operations](model-operations.md) — fuse adapters, merge multiple finetunes, quantise to GGUF, snapshot KV state for session restore
+
+See [`examples/training/`](../examples/training/) for runnable walk-throughs of each.
