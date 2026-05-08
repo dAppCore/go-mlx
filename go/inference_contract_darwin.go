@@ -16,6 +16,17 @@ func (backend *metalbackend) Capabilities() inference.CapabilityReport {
 	return metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, backend.Available())
 }
 
+func (backend *metalbackend) SetRuntimeMemoryLimits(limits inference.RuntimeMemoryLimits) inference.RuntimeMemoryLimits {
+	applied := limits
+	if limits.CacheLimitBytes > 0 {
+		applied.PreviousCacheLimitBytes = SetCacheLimit(limits.CacheLimitBytes)
+	}
+	if limits.MemoryLimitBytes > 0 {
+		applied.PreviousMemoryLimitBytes = SetMemoryLimit(limits.MemoryLimitBytes)
+	}
+	return applied
+}
+
 func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.ModelIdentity, memoryBytes uint64) (*inference.ModelFitReport, error) {
 	if ctx == nil {
 		ctx = context.Background()

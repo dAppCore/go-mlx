@@ -33,6 +33,15 @@ func TestInferenceContract_MetalBackendImplementsFitPlanner_Good(t *testing.T) {
 	}
 	var _ inference.ModelFitPlanner = (*metalbackend)(nil)
 	var _ inference.CapabilityReporter = (*metalbackend)(nil)
+	var _ inference.RuntimeMemoryLimiter = (*metalbackend)(nil)
+}
+
+func TestInferenceContract_MetalBackendRuntimeMemoryLimits_UglyZero(t *testing.T) {
+	got := (&metalbackend{}).SetRuntimeMemoryLimits(inference.RuntimeMemoryLimits{})
+
+	if got != (inference.RuntimeMemoryLimits{}) {
+		t.Fatalf("SetRuntimeMemoryLimits zero = %+v, want zero response", got)
+	}
 }
 
 func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
