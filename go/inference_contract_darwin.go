@@ -1,0 +1,536 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64 && !nomlx
+
+package mlx
+
+import (
+	"context"
+
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/internal/metal"
+)
+
+func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.ModelIdentity, memoryBytes uint64) (*inference.ModelFitReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	device := memoryPlannerDeviceInfo()
+	if memoryBytes > 0 {
+		device.MemorySize = memoryBytes
+		device.MaxRecommendedWorkingSetSize = memoryBytes
+	}
+	modelInfo := ModelInfo{
+		Architecture:  model.Architecture,
+		VocabSize:     model.VocabSize,
+		NumLayers:     model.NumLayers,
+		HiddenSize:    model.HiddenSize,
+		QuantBits:     model.QuantBits,
+		QuantGroup:    model.QuantGroup,
+		ContextLength: model.ContextLength,
+	}
+	plan := PlanMemory(MemoryPlanInput{Device: device, ModelInfo: &modelInfo})
+	architectureOK := model.Architecture == "" || modelPackSupportedArchitecture(model.Architecture)
+	quantizationOK := model.QuantBits == 0 || plan.PreferredQuantization == 0 || model.QuantBits <= plan.PreferredQuantization
+	fits := architectureOK && quantizationOK
+	if plan.MemoryLimitBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes > plan.MemoryLimitBytes {
+		fits = false
+	}
+
+	return &inference.ModelFitReport{
+		Model:          model,
+		Fits:           fits,
+		MemoryPlan:     toInferenceMemoryPlan(plan),
+		ArchitectureOK: architectureOK,
+		QuantizationOK: quantizationOK,
+		Notes:          append([]string(nil), plan.Notes...),
+	}, nil
+}
+
+func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (string, error) {
+	if adapter == nil || adapter.model == nil {
+		return "", core.NewError("mlx: model is nil")
+	}
+	return FormatChatMessages(messages, ChatTemplateConfig{Architecture: adapter.model.ModelType()}), nil
+}
+
+func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity, error) {
+	if adapter == nil || adapter.model == nil {
+		return inference.AdapterIdentity{}, core.NewError("mlx: model is nil")
+	}
+	if _, err := adapter.model.LoadLoRA(path); err != nil {
+		return inference.AdapterIdentity{}, err
+	}
+	return toInferenceAdapterIdentity(adapter.model.Adapter()), nil
+}
+
+func (adapter *metaladapter) UnloadAdapter() error {
+	if adapter == nil || adapter.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	return adapter.model.UnloadLoRA()
+}
+
+func (adapter *metaladapter) ActiveAdapter() inference.AdapterIdentity {
+	if adapter == nil || adapter.model == nil {
+		return inference.AdapterIdentity{}
+	}
+	return toInferenceAdapterIdentity(adapter.model.Adapter())
+}
+
+func (adapter *metaladapter) SetProbeSink(sink inference.ProbeSink) {
+	if adapter == nil {
+		return
+	}
+	adapter.probeSink = sink
+}
+
+func (adapter *metaladapter) Benchmark(ctx context.Context, cfg inference.BenchConfig) (*inference.BenchReport, error) {
+	if adapter == nil || adapter.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	report, err := RunFastEval(ctx, adapter.fastEvalRunner(), toFastEvalConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	return toInferenceBenchReport(report), nil
+}
+
+func (adapter *metaladapter) Evaluate(ctx context.Context, dataset inference.DatasetStream, cfg inference.EvalConfig) (*inference.EvalReport, error) {
+	if adapter == nil || adapter.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	report, err := RunDatasetEval(ctx, adapter.evalRunner(), inferenceDataset{stream: dataset}, toEvalConfig(cfg))
+	if err != nil {
+		return nil, err
+	}
+	return toInferenceEvalReport(report), nil
+}
+
+func (adapter *metaladapter) TrainSFT(ctx context.Context, dataset inference.DatasetStream, cfg inference.TrainingConfig) (*inference.TrainingResult, error) {
+	if adapter == nil || adapter.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	model := adapter.rootModel()
+	result, err := model.TrainSFT(ctx, inferenceDataset{stream: dataset}, toSFTConfig(cfg, adapter.probeSink))
+	if err != nil {
+		return nil, err
+	}
+	return toInferenceTrainingResult(model.Info(), result, cfg), nil
+}
+
+func (adapter *metaladapter) generateConfig(opts ...inference.GenerateOption) metal.GenerateConfig {
+	cfg := inference.ApplyGenerateOpts(opts)
+	out := inferenceGenerateConfigToMetal(cfg)
+	if adapter != nil && adapter.probeSink != nil {
+		out.ProbeSink = toMetalInferenceProbeSink(adapter.probeSink)
+	}
+	return out
+}
+
+func (adapter *metaladapter) rootModel() *Model {
+	if adapter == nil || adapter.model == nil {
+		return &Model{}
+	}
+	return &Model{
+		model:       adapter.model,
+		tok:         &Tokenizer{tok: adapter.model.Tokenizer()},
+		adapterInfo: toRootAdapterInfo(adapter.model.Adapter()),
+		cfg:         LoadConfig{ContextLength: adapter.model.Info().ContextLength},
+	}
+}
+
+func (adapter *metaladapter) fastEvalRunner() FastEvalRunner {
+	return NewModelFastEvalRunner(adapter.rootModel())
+}
+
+func (adapter *metaladapter) evalRunner() EvalRunner {
+	return NewModelEvalRunner(adapter.rootModel())
+}
+
+type inferenceDataset struct {
+	stream inference.DatasetStream
+}
+
+func (dataset inferenceDataset) Next() (SFTSample, bool, error) {
+	if dataset.stream == nil {
+		return SFTSample{}, false, core.NewError("mlx: inference dataset stream is nil")
+	}
+	sample, ok, err := dataset.stream.Next()
+	if err != nil || !ok {
+		return SFTSample{}, ok, err
+	}
+	return SFTSample{
+		Prompt:   sample.Prompt,
+		Response: sample.Response,
+		Text:     sample.Text,
+		Meta:     cloneInferenceLabels(sample.Labels),
+	}, true, nil
+}
+
+func (dataset inferenceDataset) Reset() error {
+	if dataset.stream == nil {
+		return core.NewError("mlx: inference dataset stream is nil")
+	}
+	resetter, ok := dataset.stream.(inference.DatasetResetter)
+	if !ok {
+		return core.NewError("mlx: inference dataset stream is not resettable")
+	}
+	return resetter.Reset()
+}
+
+func toMetalInferenceProbeSink(sink inference.ProbeSink) metal.ProbeSink {
+	if sink == nil {
+		return nil
+	}
+	return metal.ProbeSinkFunc(func(event metal.ProbeEvent) {
+		sink.EmitProbe(toInferenceProbeEvent(event))
+	})
+}
+
+func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
+	out := inference.ProbeEvent{
+		Kind:   inference.ProbeEventKind(event.Kind),
+		Phase:  inference.ProbePhase(event.Phase),
+		Step:   event.Step,
+		Labels: cloneInferenceLabels(event.Meta),
+	}
+	if event.Token != nil {
+		out.Token = &inference.ProbeToken{
+			ID:              event.Token.ID,
+			Text:            event.Token.Text,
+			PromptTokens:    event.Token.PromptTokens,
+			GeneratedTokens: event.Token.GeneratedTokens,
+		}
+	}
+	if event.Logits != nil {
+		out.Logits = &inference.ProbeLogits{
+			VocabularySize: event.Logits.VocabSize,
+			Min:            event.Logits.MinLogit,
+			Max:            event.Logits.MaxLogit,
+			Mean:           float32(event.Logits.MeanLogit),
+			Top:            toInferenceProbeLogits(event.Logits.Top),
+		}
+	}
+	if event.Entropy != nil {
+		out.Entropy = &inference.ProbeEntropy{Value: event.Entropy.Value, Unit: event.Entropy.Unit}
+	}
+	if event.SelectedHeads != nil {
+		out.SelectedHeads = &inference.ProbeHeadSelection{Layer: event.SelectedHeads.Layer, Heads: append([]int(nil), event.SelectedHeads.Heads...)}
+	}
+	if event.LayerCoherence != nil {
+		out.LayerCoherence = &inference.ProbeLayerCoherence{
+			Layer:          event.LayerCoherence.Layer,
+			KVCoupling:     event.LayerCoherence.KVCoupling,
+			MeanCoherence:  meanNonZero(event.LayerCoherence.KeyCoherence, event.LayerCoherence.ValueCoherence, event.LayerCoherence.CrossAlignment),
+			PhaseLock:      event.LayerCoherence.PhaseLock,
+			SpectralStable: event.LayerCoherence.HeadEntropy,
+		}
+	}
+	if event.RouterDecision != nil {
+		out.RouterDecision = &inference.ProbeRouterDecision{
+			Layer:       event.RouterDecision.Layer,
+			ExpertIDs:   append([]int(nil), event.RouterDecision.ExpertIDs...),
+			ExpertProbs: append([]float32(nil), event.RouterDecision.Weights...),
+		}
+	}
+	if event.Residual != nil {
+		out.Residual = &inference.ProbeResidualSummary{
+			Layer: event.Residual.Layer,
+			Mean:  event.Residual.Mean,
+			RMS:   event.Residual.RMS,
+			Norm:  event.Residual.L2Norm,
+		}
+	}
+	if event.Cache != nil {
+		out.Cache = &inference.ProbeCachePressure{
+			PromptTokens:    event.Cache.PromptTokens,
+			GeneratedTokens: event.Cache.GeneratedTokens,
+			CachedTokens:    event.Cache.CacheTokens,
+			HitRate:         event.Cache.Utilization,
+		}
+	}
+	if event.Memory != nil {
+		out.Memory = &inference.ProbeMemoryPressure{
+			ActiveBytes: event.Memory.ActiveBytes,
+			PeakBytes:   event.Memory.PeakBytes,
+		}
+	}
+	if event.Training != nil {
+		out.Training = &inference.ProbeTraining{
+			Epoch:        event.Training.Epoch,
+			Step:         event.Training.Step,
+			Loss:         event.Training.Loss,
+			LearningRate: event.Training.LearningRate,
+		}
+	}
+	return out
+}
+
+func toInferenceProbeLogits(logits []metal.ProbeLogit) []inference.ProbeLogit {
+	out := make([]inference.ProbeLogit, len(logits))
+	for i, logit := range logits {
+		out[i] = inference.ProbeLogit{ID: logit.TokenID, Value: logit.Logit}
+	}
+	return out
+}
+
+func toInferenceModelIdentity(info ModelInfo) inference.ModelIdentity {
+	return inference.ModelIdentity{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
+	}
+}
+
+func toInferenceAdapterIdentity(info metal.AdapterInfo) inference.AdapterIdentity {
+	return inference.AdapterIdentity{
+		Path:       info.Path,
+		Hash:       info.Hash,
+		Format:     "lora",
+		Rank:       info.Rank,
+		Alpha:      info.Alpha,
+		TargetKeys: append([]string(nil), info.TargetKeys...),
+		Labels:     adapterIdentityLabels(info.Name, info.Scale),
+	}
+}
+
+func adapterIdentityLabels(name string, scale float32) map[string]string {
+	labels := map[string]string{}
+	if name != "" {
+		labels["name"] = name
+	}
+	if scale != 0 {
+		labels["scale"] = core.Sprintf("%g", scale)
+	}
+	if len(labels) == 0 {
+		return nil
+	}
+	return labels
+}
+
+func toInferenceMemoryPlan(plan MemoryPlan) inference.MemoryPlan {
+	return inference.MemoryPlan{
+		MachineClass:      string(plan.MachineClass),
+		DeviceMemoryBytes: plan.DeviceMemoryBytes,
+		ContextLength:     plan.ContextLength,
+		BatchSize:         plan.BatchSize,
+		CacheMode:         string(plan.CacheMode),
+		Quantization:      core.Sprintf("%d-bit", plan.PreferredQuantization),
+		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
+		TrainingFeasible:  plan.MachineClass != MemoryClassApple16GB,
+		Notes:             append([]string(nil), plan.Notes...),
+	}
+}
+
+func toFastEvalConfig(cfg inference.BenchConfig) FastEvalConfig {
+	out := DefaultFastEvalConfig()
+	if len(cfg.Prompts) > 0 {
+		out.Prompt = cfg.Prompts[0]
+	}
+	if cfg.MaxTokens > 0 {
+		out.MaxTokens = cfg.MaxTokens
+	}
+	if cfg.MeasuredRuns > 0 {
+		out.Runs = cfg.MeasuredRuns
+	}
+	return out
+}
+
+func toInferenceBenchReport(report *FastEvalReport) *inference.BenchReport {
+	if report == nil {
+		return nil
+	}
+	return &inference.BenchReport{
+		Model:                 toInferenceModelIdentity(report.ModelInfo),
+		Adapter:               toInferenceRootAdapterIdentity(report.ModelInfo.Adapter),
+		PromptTokens:          report.Generation.PromptTokens,
+		GeneratedTokens:       report.Generation.GeneratedTokens,
+		PrefillTokensPerSec:   report.Generation.PrefillTokensPerSec,
+		DecodeTokensPerSec:    report.Generation.DecodeTokensPerSec,
+		PeakMemoryBytes:       report.Generation.PeakMemoryBytes,
+		PromptCacheHitRate:    report.PromptCache.HitRate,
+		KVRestoreMilliseconds: float64(report.KVRestore.Duration.Milliseconds()),
+	}
+}
+
+func toEvalConfig(cfg inference.EvalConfig) EvalConfig {
+	return EvalConfig{
+		MaxSamples: cfg.MaxSamples,
+		Batch: DatasetBatchConfig{
+			BatchSize: cfg.BatchSize,
+			MaxSeqLen: cfg.MaxSeqLen,
+		},
+	}
+}
+
+func toInferenceEvalReport(report *EvalReport) *inference.EvalReport {
+	if report == nil {
+		return nil
+	}
+	return &inference.EvalReport{
+		Model:   toInferenceModelIdentity(report.ModelInfo),
+		Adapter: toInferenceRootAdapterIdentity(report.Adapter),
+		Metrics: inference.EvalMetrics{
+			Samples:    report.Metrics.Samples,
+			Tokens:     report.Metrics.Tokens,
+			Loss:       report.Metrics.Loss,
+			Perplexity: report.Metrics.Perplexity,
+		},
+		Probes: toInferenceQualityResults(report.Quality.Checks),
+	}
+}
+
+func toInferenceQualityResults(checks []EvalQualityCheck) []inference.QualityProbeResult {
+	out := make([]inference.QualityProbeResult, len(checks))
+	for i, check := range checks {
+		out[i] = inference.QualityProbeResult{Name: check.Name, Passed: check.Pass, Score: check.Score, Text: check.Detail}
+	}
+	return out
+}
+
+func toSFTConfig(cfg inference.TrainingConfig, sink inference.ProbeSink) SFTConfig {
+	return SFTConfig{
+		BatchSize:                 cfg.BatchSize,
+		GradientAccumulationSteps: cfg.GradientAccumulation,
+		Epochs:                    cfg.Epochs,
+		LearningRate:              cfg.LearningRate,
+		LoRA: LoRAConfig{
+			Rank:       cfg.LoRA.Rank,
+			Alpha:      cfg.LoRA.Alpha,
+			TargetKeys: append([]string(nil), cfg.LoRA.TargetKeys...),
+			DType:      sftDType(cfg.LoRA.BFloat16),
+			ProbeSink:  inferenceProbeSink{sink: sink},
+		},
+		ProbeSink: inferenceProbeSink{sink: sink},
+	}
+}
+
+type inferenceProbeSink struct {
+	sink inference.ProbeSink
+}
+
+func (sink inferenceProbeSink) EmitProbe(event ProbeEvent) {
+	if sink.sink == nil {
+		return
+	}
+	sink.sink.EmitProbe(toInferenceRootProbeEvent(event))
+}
+
+func toInferenceRootProbeEvent(event ProbeEvent) inference.ProbeEvent {
+	out := inference.ProbeEvent{
+		Kind:   inference.ProbeEventKind(event.Kind),
+		Phase:  inference.ProbePhase(event.Phase),
+		Step:   event.Step,
+		Labels: cloneInferenceLabels(event.Meta),
+	}
+	if event.Token != nil {
+		out.Token = &inference.ProbeToken{
+			ID:              event.Token.ID,
+			Text:            event.Token.Text,
+			PromptTokens:    event.Token.PromptTokens,
+			GeneratedTokens: event.Token.GeneratedTokens,
+		}
+	}
+	if event.Entropy != nil {
+		out.Entropy = &inference.ProbeEntropy{Value: event.Entropy.Value, Unit: event.Entropy.Unit}
+	}
+	if event.Training != nil {
+		out.Training = &inference.ProbeTraining{
+			Epoch:        event.Training.Epoch,
+			Step:         event.Training.Step,
+			Loss:         event.Training.Loss,
+			LearningRate: event.Training.LearningRate,
+		}
+	}
+	return out
+}
+
+func sftDType(bfloat16 bool) DType {
+	if bfloat16 {
+		return DTypeBFloat16
+	}
+	return 0
+}
+
+func toInferenceTrainingResult(info ModelInfo, result *SFTResult, cfg inference.TrainingConfig) *inference.TrainingResult {
+	out := &inference.TrainingResult{
+		Model:  toInferenceModelIdentity(info),
+		Labels: cloneInferenceLabels(cfg.Labels),
+	}
+	if result == nil {
+		return out
+	}
+	out.Adapter = toInferenceRootAdapterIdentity(info.Adapter)
+	if result.AdapterPath != "" {
+		out.Adapter.Path = result.AdapterPath
+	}
+	out.Metrics = inference.TrainingMetrics{
+		Epoch:        result.Epochs,
+		Step:         result.Steps,
+		Samples:      result.Samples,
+		Loss:         result.LastLoss,
+		LearningRate: cfg.LearningRate,
+	}
+	out.Checkpoints = stateRefsFromPaths("sft_checkpoint", result.Checkpoints)
+	return out
+}
+
+func toInferenceRootAdapterIdentity(info LoRAAdapterInfo) inference.AdapterIdentity {
+	return inference.AdapterIdentity{
+		Path:       info.Path,
+		Hash:       info.Hash,
+		Format:     "lora",
+		Rank:       info.Rank,
+		Alpha:      info.Alpha,
+		TargetKeys: append([]string(nil), info.TargetKeys...),
+		Labels:     adapterIdentityLabels(info.Name, info.Scale),
+	}
+}
+
+func stateRefsFromPaths(kind string, paths []string) []inference.StateRef {
+	out := make([]inference.StateRef, 0, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		out = append(out, inference.StateRef{Kind: kind, URI: "file://" + path})
+	}
+	return out
+}
+
+func cloneInferenceLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(labels))
+	for key, value := range labels {
+		out[key] = value
+	}
+	return out
+}
+
+func meanNonZero(values ...float64) float64 {
+	var total float64
+	var count int
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		total += value
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return total / float64(count)
+}

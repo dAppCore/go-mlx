@@ -120,12 +120,12 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 }
 
 type metaladapter struct {
-	model *metal.Model
+	model     *metal.Model
+	probeSink inference.ProbeSink
 }
 
 func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	return func(yield func(inference.Token) bool) {
 		for token := range adapter.model.Generate(ctx, prompt, metalOptions) {
 			if !yield(inference.Token{ID: token.ID, Text: token.Text}) {
@@ -136,8 +136,7 @@ func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts .
 }
 
 func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Message, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -153,7 +152,7 @@ func (adapter *metaladapter) Chat(ctx context.Context, messages []inference.Mess
 
 func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
 	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.Classify(ctx, prompts, metalOptions, generateOptions.ReturnLogits)
 	if err != nil {
 		return nil, err
@@ -169,8 +168,7 @@ func (adapter *metaladapter) Classify(ctx context.Context, prompts []string, opt
 }
 
 func (adapter *metaladapter) BatchGenerate(ctx context.Context, prompts []string, opts ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	generateOptions := inference.ApplyGenerateOpts(opts)
-	metalOptions := inferenceGenerateConfigToMetal(generateOptions)
+	metalOptions := adapter.generateConfig(opts...)
 	results, err := adapter.model.BatchGenerate(ctx, prompts, metalOptions)
 	if err != nil {
 		return nil, err
