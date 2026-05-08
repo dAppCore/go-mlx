@@ -13,7 +13,7 @@ import (
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {
-	target := "metaladapter TokenizerModel AdapterModel ProbeableModel BenchableModel Evaluator SFTTrainer"
+	target := "metaladapter TokenizerModel AdapterModel ProbeableModel BenchableModel Evaluator SFTTrainer CapabilityReporter"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
@@ -23,14 +23,50 @@ func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testin
 	var _ inference.BenchableModel = (*metaladapter)(nil)
 	var _ inference.Evaluator = (*metaladapter)(nil)
 	var _ inference.SFTTrainer = (*metaladapter)(nil)
+	var _ inference.CapabilityReporter = (*metaladapter)(nil)
 }
 
 func TestInferenceContract_MetalBackendImplementsFitPlanner_Good(t *testing.T) {
-	target := "metalbackend ModelFitPlanner"
+	target := "metalbackend ModelFitPlanner CapabilityReporter"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 	var _ inference.ModelFitPlanner = (*metalbackend)(nil)
+	var _ inference.CapabilityReporter = (*metalbackend)(nil)
+}
+
+func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
+	report := (&metalbackend{}).Capabilities()
+
+	if report.Runtime.Backend != "metal" || !report.Runtime.NativeRuntime {
+		t.Fatalf("runtime = %+v, want native metal", report.Runtime)
+	}
+	if !report.Supports(inference.CapabilityModelLoad) || !report.Supports(inference.CapabilityMemoryPlanning) {
+		t.Fatalf("capabilities = %+v, want load and memory planning", report.CapabilityIDs())
+	}
+	if !report.Supports(inference.CapabilityLoRATraining) || !report.Supports(inference.CapabilityGRPO) {
+		t.Fatalf("capabilities = %+v, want training features", report.CapabilityIDs())
+	}
+	if !report.Supports(inference.CapabilityProbeEvents) || !report.Supports(inference.CapabilityAttentionProbe) {
+		t.Fatalf("capabilities = %+v, want probe features", report.CapabilityIDs())
+	}
+	if len(report.Architectures) == 0 || len(report.Quantizations) == 0 || len(report.CacheModes) == 0 {
+		t.Fatalf("report = %+v, want architecture/quant/cache metadata", report)
+	}
+}
+
+func TestInferenceContract_MetalAdapterCapabilities_UglyNilModel(t *testing.T) {
+	report := (&metaladapter{}).Capabilities()
+
+	if report.Available {
+		t.Fatalf("Available = true, want false for nil loaded model")
+	}
+	if !report.Supports(inference.CapabilityGenerate) || !report.Supports(inference.CapabilityLoRAInference) {
+		t.Fatalf("capabilities = %+v, want model feature surface even before load", report.CapabilityIDs())
+	}
+	if report.Adapter.Path != "" {
+		t.Fatalf("adapter = %+v, want empty adapter identity", report.Adapter)
+	}
 }
 
 func TestInferenceContract_MetalBackendPlanModelFit_Good(t *testing.T) {

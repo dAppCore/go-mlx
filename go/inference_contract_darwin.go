@@ -12,6 +12,10 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 )
 
+func (backend *metalbackend) Capabilities() inference.CapabilityReport {
+	return metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, backend.Available())
+}
+
 func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.ModelIdentity, memoryBytes uint64) (*inference.ModelFitReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -50,6 +54,13 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.M
 		QuantizationOK: quantizationOK,
 		Notes:          append([]string(nil), plan.Notes...),
 	}, nil
+}
+
+func (adapter *metaladapter) Capabilities() inference.CapabilityReport {
+	if adapter == nil || adapter.model == nil {
+		return metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, false)
+	}
+	return metalCapabilityReport(toInferenceModelIdentity(adapter.rootModel().Info()), adapter.ActiveAdapter(), true)
 }
 
 func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (string, error) {
@@ -192,6 +203,93 @@ func toMetalInferenceProbeSink(sink inference.ProbeSink) metal.ProbeSink {
 		sink.EmitProbe(toInferenceProbeEvent(event))
 	})
 }
+
+func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
+	device := GetDeviceInfo()
+	runtimeLabels := map[string]string{}
+	if device.MemorySize > 0 {
+		runtimeLabels["memory_bytes"] = core.Sprintf("%d", device.MemorySize)
+	}
+	if device.MaxRecommendedWorkingSetSize > 0 {
+		runtimeLabels["working_set_bytes"] = core.Sprintf("%d", device.MaxRecommendedWorkingSetSize)
+	}
+	if len(runtimeLabels) == 0 {
+		runtimeLabels = nil
+	}
+	return inference.CapabilityReport{
+		Runtime: inference.RuntimeIdentity{
+			Backend:       "metal",
+			Device:        device.Architecture,
+			NativeRuntime: true,
+			Labels:        runtimeLabels,
+		},
+		Model:         model,
+		Adapter:       adapter,
+		Available:     available,
+		Architectures: append([]string(nil), metalCapabilityArchitectures...),
+		Quantizations: append([]string(nil), metalCapabilityQuantizations...),
+		CacheModes:    append([]string(nil), metalCapabilityCacheModes...),
+		Capabilities: []inference.Capability{
+			inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityGenerate, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityChat, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityClassify, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityBatchGenerate, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityTokenizer, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityChatTemplate, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityLoRAInference, inference.CapabilityGroupModel),
+			inference.SupportedCapability(inference.CapabilityStateBundle, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityPromptCache, inference.CapabilityGroupRuntime),
+			inference.SupportedCapability(inference.CapabilityLoRATraining, inference.CapabilityGroupTraining),
+			inference.SupportedCapability(inference.CapabilityDistillation, inference.CapabilityGroupTraining),
+			inference.SupportedCapability(inference.CapabilityGRPO, inference.CapabilityGroupTraining),
+			inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
+			inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
+			inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
+		},
+		Labels: map[string]string{"library": "go-mlx"},
+	}
+}
+
+var (
+	metalCapabilityArchitectures = []string{
+		"gemma2",
+		"gemma3",
+		"gemma3_text",
+		"gemma4",
+		"gemma4_text",
+		"llama",
+		"qwen2",
+		"qwen3",
+		"qwen3_moe",
+		"qwen3_next",
+	}
+	metalCapabilityQuantizations = []string{
+		"bf16",
+		"fp16",
+		"q4_0",
+		"q4_k_m",
+		"q5",
+		"q8_0",
+		"iq",
+		"mxfp4",
+		"nvfp4",
+	}
+	metalCapabilityCacheModes = []string{
+		string(KVCacheModeFP16),
+		string(KVCacheModeQ8),
+		string(KVCacheModeKQ8VQ4),
+		string(KVCacheModePaged),
+	}
+)
 
 func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
 	out := inference.ProbeEvent{
