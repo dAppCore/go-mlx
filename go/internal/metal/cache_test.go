@@ -120,6 +120,134 @@ func TestKVCache_Reset_Good(t *testing.T) {
 	}
 }
 
+func TestQuantizedKVCache_StoresInt8AndReadsDequantized_Good(t *testing.T) {
+	coverageTokens := "QuantizedKVCache StoresInt8AndReadsDequantized"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewQuantizedKVCache(4, 8, 8)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 2)
+	defer Free(outK, outV)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Eval quantized output: %v", err)
+	}
+	defer c.Reset()
+
+	state := c.State()
+	if len(state) != 4 {
+		t.Fatalf("State len = %d, want q K/V plus scales", len(state))
+	}
+	if state[0].Dtype() != DTypeInt8 || state[1].Dtype() != DTypeInt8 {
+		t.Fatalf("stored dtypes = %v/%v, want int8/int8", state[0].Dtype(), state[1].Dtype())
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Dtype() != DTypeFloat32 || read[1].Dtype() != DTypeFloat32 {
+		t.Fatalf("read state = %+v, want dequantized float K/V", read)
+	}
+	if read[0].Shape()[2] != 2 {
+		t.Fatalf("read K shape = %v, want seq len 2", read[0].Shape())
+	}
+}
+
+func TestQuantizedKVCache_AsymmetricStoresPackedVQ4_Good(t *testing.T) {
+	coverageTokens := "QuantizedKVCache AsymmetricStoresPackedVQ4"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewQuantizedKVCache(4, 8, 4)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 2)
+	defer Free(outK, outV)
+	if err := Eval(outK, outV); err != nil {
+		t.Fatalf("Eval asymmetric quantized output: %v", err)
+	}
+	defer c.Reset()
+
+	state := c.State()
+	if len(state) != 4 {
+		t.Fatalf("State len = %d, want packed K/V plus scales", len(state))
+	}
+	if state[0].Dtype() != DTypeInt8 {
+		t.Fatalf("stored K dtype = %v, want int8", state[0].Dtype())
+	}
+	if state[1].Dtype() != DTypeUint8 {
+		t.Fatalf("stored V dtype = %v, want packed uint8 q4", state[1].Dtype())
+	}
+	if shape := state[1].Shape(); len(shape) != 1 || shape[0] != 8 {
+		t.Fatalf("stored V shape = %v, want 8 packed q4 bytes", shape)
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[1].Shape()[2] != 2 {
+		t.Fatalf("read state = %+v, want dequantized V length 2", read)
+	}
+}
+
+func TestPagedKVCache_TrimsStorageButReturnsFullPrompt_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache TrimsStorageButReturnsFullPrompt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewPagedKVCache(2, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+
+	outK, outV := c.Update(k, v, 4)
+	defer Free(outK, outV)
+	if outK.Shape()[2] != 4 || outV.Shape()[2] != 4 {
+		t.Fatalf("output shape = %v/%v, want full prompt length 4", outK.Shape(), outV.Shape())
+	}
+	if c.Len() != 2 || c.Offset() != 4 {
+		t.Fatalf("len/offset = %d/%d, want 2/4", c.Len(), c.Offset())
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 2 {
+		t.Fatalf("stored read shape = %+v, want trimmed length 2", read)
+	}
+	c.Reset()
+	if c.State() != nil {
+		t.Fatal("State after Reset = non-nil, want nil")
+	}
+}
+
+func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
+	c := NewPagedKVCache(4, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+
+	state := c.UpdatePages(k, v, 4)
+	defer state.Free()
+
+	if state.Length != 4 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("page state = len %d K pages %d V pages %d, want 4/2/2", state.Length, len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0].Shape()[2] != 2 || state.Keys[1].Shape()[2] != 2 {
+		t.Fatalf("page shapes = %v/%v, want two 2-token pages", state.Keys[0].Shape(), state.Keys[1].Shape())
+	}
+
+	k1, v1 := makeSingleTokenKV(9)
+	defer Free(k1, v1)
+	next := c.UpdatePages(k1, v1, 1)
+	defer next.Free()
+
+	if c.Len() != 4 || c.Offset() != 5 {
+		t.Fatalf("len/offset = %d/%d, want 4/5 after paged trim", c.Len(), c.Offset())
+	}
+	if len(next.Keys) != 3 {
+		t.Fatalf("trimmed page count = %d, want 3 partial/full/new pages without full concat", len(next.Keys))
+	}
+	if next.Keys[0].Shape()[2] != 1 || next.Keys[1].Shape()[2] != 2 || next.Keys[2].Shape()[2] != 1 {
+		t.Fatalf("trimmed page shapes = %v/%v/%v, want [1,2,1]", next.Keys[0].Shape(), next.Keys[1].Shape(), next.Keys[2].Shape())
+	}
+}
+
 func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)

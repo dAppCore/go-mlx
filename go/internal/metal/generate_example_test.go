@@ -46,3 +46,8 @@ func ExampleModel_InspectAttention() {
 	core.Println("Model_InspectAttention")
 	// Output: Model_InspectAttention
 }
+
+func ExampleModel_CaptureKV() {
+	core.Println("Model_CaptureKV")
+	// Output: Model_CaptureKV
+}

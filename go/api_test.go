@@ -28,6 +28,9 @@ type fakeNativeModel struct {
 	metrics              metal.Metrics
 	modelType            string
 	attention            *metal.AttentionResult
+	kvSnapshot           *metal.KVSnapshot
+	session              metal.SessionHandle
+	probeEvents          []metal.ProbeEvent
 	classifyReturnLogits bool
 	lastGenerateConfig   metal.GenerateConfig
 	lastChatConfig       metal.GenerateConfig
@@ -36,6 +39,13 @@ type fakeNativeModel struct {
 	lastChatMessages     []metal.ChatMessage
 	lastLoRAConfig       metal.LoRAConfig
 	loraAdapter          *metal.LoRAAdapter
+	loadedLoRAPath       string
+	loadedLoRAAdapter    *metal.LoRAAdapter
+	loadedLoRAErr        error
+	unloadLoRACalls      int
+	unloadLoRAErr        error
+	warmPrompt           string
+	warmErr              error
 	closeErr             error
 	closeCalls           int
 }
@@ -43,6 +53,14 @@ type fakeNativeModel struct {
 func (m *fakeNativeModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
 	m.lastLoRAConfig = cfg
 	return m.loraAdapter
+}
+func (m *fakeNativeModel) LoadLoRA(path string) (*metal.LoRAAdapter, error) {
+	m.loadedLoRAPath = path
+	return m.loadedLoRAAdapter, m.loadedLoRAErr
+}
+func (m *fakeNativeModel) UnloadLoRA() error {
+	m.unloadLoRACalls++
+	return m.unloadLoRAErr
 }
 func (m *fakeNativeModel) BatchGenerate(_ context.Context, _ []string, cfg metal.GenerateConfig) ([]metal.BatchResult, error) {
 	m.lastBatchConfig = cfg
@@ -77,6 +95,9 @@ func (m *fakeNativeModel) Info() metal.ModelInfo { return m.info }
 func (m *fakeNativeModel) InspectAttention(_ context.Context, _ string) (*metal.AttentionResult, error) {
 	return m.attention, m.err
 }
+func (m *fakeNativeModel) CaptureKV(_ context.Context, _ string) (*metal.KVSnapshot, error) {
+	return m.kvSnapshot, m.err
+}
 func (m *fakeNativeModel) LastMetrics() metal.Metrics { return m.metrics }
 func (m *fakeNativeModel) ModelType() string {
 	if m.modelType != "" {
@@ -88,12 +109,24 @@ func (m *fakeNativeModel) Tokenizer() *metal.Tokenizer { return m.tokenizer }
 func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	m.lastGenerateConfig = cfg
 	return func(yield func(metal.Token) bool) {
+		for _, event := range m.probeEvents {
+			if cfg.ProbeSink != nil {
+				cfg.ProbeSink.EmitProbe(event)
+			}
+		}
 		for _, tok := range m.tokens {
 			if !yield(tok) {
 				return
 			}
 		}
 	}
+}
+func (m *fakeNativeModel) WarmPromptCache(_ context.Context, prompt string) error {
+	m.warmPrompt = prompt
+	return m.warmErr
+}
+func (m *fakeNativeModel) NewSession() metal.SessionHandle {
+	return m.session
 }
 
 func TestAPIGenerateOptions_Good(t *testing.T) {
@@ -124,11 +157,14 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 func TestAPILoadOptions_Good(t *testing.T) {
 	cfg := applyLoadOptions([]LoadOption{
 		WithContextLength(8192),
+		WithParallelSlots(4),
+		WithPromptCache(false),
+		WithPromptCacheMinTokens(4096),
 		WithQuantization(4),
 		WithDevice("cpu"),
 		WithAdapterPath("/models/lora/demo"),
 	})
-	if cfg.ContextLength != 8192 || cfg.Quantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
+	if cfg.ContextLength != 8192 || cfg.ParallelSlots != 4 || cfg.PromptCache || cfg.PromptCacheMinTokens != 4096 || cfg.Quantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
 		t.Fatalf("unexpected load config: %+v", cfg)
 	}
 }
@@ -229,6 +265,59 @@ func TestModelInfo_ContextLengthFallsBackToNative_Good(t *testing.T) {
 	}
 }
 
+type nativeWithoutPromptCache struct{}
+
+func (nativeWithoutPromptCache) ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter { return nil }
+func (nativeWithoutPromptCache) BatchGenerate(context.Context, []string, metal.GenerateConfig) ([]metal.BatchResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) Chat(context.Context, []metal.ChatMessage, metal.GenerateConfig) iter.Seq[metal.Token] {
+	return func(func(metal.Token) bool) {}
+}
+func (nativeWithoutPromptCache) Classify(context.Context, []string, metal.GenerateConfig, bool) ([]metal.ClassifyResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) Close() error { return nil }
+func (nativeWithoutPromptCache) Err() error   { return nil }
+func (nativeWithoutPromptCache) Generate(context.Context, string, metal.GenerateConfig) iter.Seq[metal.Token] {
+	return func(func(metal.Token) bool) {}
+}
+func (nativeWithoutPromptCache) Info() metal.ModelInfo { return metal.ModelInfo{} }
+func (nativeWithoutPromptCache) InspectAttention(context.Context, string) (*metal.AttentionResult, error) {
+	return nil, nil
+}
+func (nativeWithoutPromptCache) LastMetrics() metal.Metrics  { return metal.Metrics{} }
+func (nativeWithoutPromptCache) ModelType() string           { return "" }
+func (nativeWithoutPromptCache) Tokenizer() *metal.Tokenizer { return nil }
+
+func TestModelWarmPromptCache_ForwardsToNative_Good(t *testing.T) {
+	coverageTokens := "WarmPromptCache ForwardsToNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCache("stable prefix"); err != nil {
+		t.Fatalf("WarmPromptCache: %v", err)
+	}
+	if native.warmPrompt != "stable prefix" {
+		t.Fatalf("warmPrompt = %q, want stable prefix", native.warmPrompt)
+	}
+}
+
+func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
+	coverageTokens := "WarmPromptCache UnsupportedNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{model: nativeWithoutPromptCache{}}
+
+	if err := model.WarmPromptCache("stable prefix"); err == nil {
+		t.Fatal("expected unsupported prompt cache error")
+	}
+}
+
 func TestModelGenerateBuffered_Error_Bad(t *testing.T) {
 	coverageTokens := "Error"
 	if coverageTokens == "" {
@@ -321,6 +410,46 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.StopTokens, []int32{4, 5}) {
 		t.Fatalf("StopTokens = %v, want [4 5]", cfg.StopTokens)
+	}
+}
+
+func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
+	coverageTokens := "ProbeSink"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	recorder := NewProbeRecorder()
+	native := &fakeNativeModel{
+		probeEvents: []metal.ProbeEvent{{
+			Kind:  metal.ProbeEventToken,
+			Phase: metal.ProbePhaseDecode,
+			Step:  2,
+			Token: &metal.ProbeToken{
+				ID:              9,
+				Text:            "Z",
+				PromptTokens:    4,
+				GeneratedTokens: 1,
+			},
+		}},
+	}
+	model := &Model{model: native}
+
+	if _, err := model.Generate("ignored", WithProbeSink(recorder)); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+
+	if native.lastGenerateConfig.ProbeSink == nil {
+		t.Fatal("native ProbeSink = nil, want configured")
+	}
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("probe events len = %d, want 1", len(events))
+	}
+	if events[0].Kind != ProbeEventToken || events[0].Phase != ProbePhaseDecode {
+		t.Fatalf("probe event = %+v", events[0])
+	}
+	if events[0].Token == nil || events[0].Token.ID != 9 || events[0].Token.Text != "Z" {
+		t.Fatalf("probe token = %+v", events[0].Token)
 	}
 }
 
@@ -490,6 +619,51 @@ func TestModelInspectAttention_Good(t *testing.T) {
 	}
 }
 
+func TestModelCaptureKV_Good(t *testing.T) {
+	coverageTokens := "ModelCaptureKV"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{
+		kvSnapshot: &metal.KVSnapshot{
+			Version:      metal.KVSnapshotVersion,
+			Architecture: "gemma4_text",
+			Tokens:       []int32{1, 2},
+			NumLayers:    1,
+			NumHeads:     1,
+			SeqLen:       2,
+			HeadDim:      2,
+			Layers: []metal.KVLayerSnapshot{{
+				Layer: 0,
+				Heads: []metal.KVHeadSnapshot{{
+					Key:   []float32{1, 2, 3, 4},
+					Value: []float32{5, 6, 7, 8},
+				}},
+			}},
+		},
+	}
+	model := &Model{model: native}
+
+	snapshot, err := model.CaptureKV("prompt")
+	if err != nil {
+		t.Fatalf("CaptureKV() error = %v", err)
+	}
+	if snapshot.Architecture != "gemma4_text" || snapshot.SeqLen != 2 {
+		t.Fatalf("CaptureKV() = %+v", snapshot)
+	}
+	head, ok := snapshot.Head(0, 0)
+	if !ok {
+		t.Fatal("CaptureKV().Head() ok = false, want true")
+	}
+	if head.Key[3] != 4 || head.Value[0] != 5 {
+		t.Fatalf("CaptureKV().Head() = %+v", head)
+	}
+	head.Key[0] = 99
+	if native.kvSnapshot.Layers[0].Heads[0].Key[0] != 1 {
+		t.Fatal("CaptureKV() returned aliased native key data")
+	}
+}
+
 func TestModelClose_Idempotent_Good(t *testing.T) {
 	coverageTokens := "Idempotent"
 	if coverageTokens == "" {
@@ -583,6 +757,63 @@ func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
 	}
 }
 
+func TestNewLoRA_ForwardsProbeSink_Good(t *testing.T) {
+	coverageTokens := "NewLoRA ProbeSink"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	recorder := NewProbeRecorder()
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got := NewLoRA(model, &LoRAConfig{ProbeSink: recorder})
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.ProbeSink == nil {
+		t.Fatal("native LoRA ProbeSink = nil, want configured")
+	}
+	native.lastLoRAConfig.ProbeSink.EmitProbe(metal.ProbeEvent{
+		Kind:  metal.ProbeEventTraining,
+		Phase: metal.ProbePhaseTraining,
+		Training: &metal.ProbeTraining{
+			Step: 3,
+			Loss: 0.25,
+		},
+	})
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("probe events len = %d, want 1", len(events))
+	}
+	if events[0].Training == nil || events[0].Training.Step != 3 || events[0].Training.Loss != 0.25 {
+		t.Fatalf("probe training event = %+v", events[0])
+	}
+}
+
+func TestModelLoadLoRA_ForwardsToNative_Good(t *testing.T) {
+	coverageTokens := "Model LoadLoRA"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	wantAdapter := &metal.LoRAAdapter{}
+	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
+	native := &fakeNativeModel{loadedLoRAAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got, err := model.LoadLoRA(adapterDir)
+	if err != nil {
+		t.Fatalf("LoadLoRA() error = %v", err)
+	}
+	if got != wantAdapter {
+		t.Fatalf("LoadLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.loadedLoRAPath != adapterDir {
+		t.Fatalf("native loaded path = %q, want %q", native.loadedLoRAPath, adapterDir)
+	}
+}
+
 func TestLoadModelUnsupportedDevice_Bad(t *testing.T) {
 	_, err := LoadModel("/does/not/matter", WithDevice("tpu"))
 	if err == nil {
@@ -624,20 +855,103 @@ func TestLoadModel_ForwardsAdapterPath_Good(t *testing.T) {
 	}
 	originalLoadNativeModel := loadNativeModel
 	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+	adapterDir := writeTestLoRAAdapter(t, `{"rank":8,"alpha":16}`)
 
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 		if modelPath != "/does/not/matter" {
 			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
 		}
-		if cfg.AdapterPath != "/models/lora/demo" {
-			t.Fatalf("AdapterPath = %q, want /models/lora/demo", cfg.AdapterPath)
+		if cfg.AdapterPath != adapterDir {
+			t.Fatalf("AdapterPath = %q, want %q", cfg.AdapterPath, adapterDir)
 		}
 		return &fakeNativeModel{}, nil
 	}
 
-	model, err := LoadModel("/does/not/matter", WithAdapterPath("/models/lora/demo"))
+	model, err := LoadModel("/does/not/matter", WithAdapterPath(adapterDir))
 	if err != nil {
 		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
+	coverageTokens := "ForwardsParallelSlots"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.ParallelSlots != 4 {
+			t.Fatalf("ParallelSlots = %d, want 4", cfg.ParallelSlots)
+		}
+		if cfg.DisablePromptCache {
+			t.Fatal("DisablePromptCache = true, want false")
+		}
+		if cfg.PromptCacheMinTokens != DefaultPromptCacheMinTokens {
+			t.Fatalf("PromptCacheMinTokens = %d, want %d", cfg.PromptCacheMinTokens, DefaultPromptCacheMinTokens)
+		}
+		return &fakeNativeModel{}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithParallelSlots(4))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
+	coverageTokens := "AppliesMemoryPlanFromDevice"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoadNativeModel := loadNativeModel
+	originalDeviceInfo := memoryPlannerDeviceInfo
+	t.Cleanup(func() {
+		loadNativeModel = originalLoadNativeModel
+		memoryPlannerDeviceInfo = originalDeviceInfo
+	})
+
+	memoryPlannerDeviceInfo = func() DeviceInfo {
+		return DeviceInfo{
+			Architecture:                 "apple7",
+			MemorySize:                   16 << 30,
+			MaxRecommendedWorkingSetSize: 14 << 30,
+		}
+	}
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if cfg.ContextLen != 8192 {
+			t.Fatalf("ContextLen = %d, want planner 8192", cfg.ContextLen)
+		}
+		if !cfg.DisablePromptCache {
+			t.Fatal("DisablePromptCache = false, want planner to disable on 16GB")
+		}
+		if cfg.PrefillChunkSize != 512 || cfg.BatchSize != 1 {
+			t.Fatalf("shape = prefill %d batch %d, want 512/1", cfg.PrefillChunkSize, cfg.BatchSize)
+		}
+		if cfg.MemoryLimitBytes == 0 || cfg.CacheLimitBytes == 0 || cfg.WiredLimitBytes == 0 {
+			t.Fatalf("allocator limits not forwarded: %+v", cfg)
+		}
+		return &fakeNativeModel{
+			info: metal.ModelInfo{Architecture: "gemma4_text", QuantBits: 4, ContextLength: 8192},
+		}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter")
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if model.cfg.MemoryPlan == nil || model.cfg.MemoryPlan.MachineClass != MemoryClassApple16GB {
+		t.Fatalf("model memory plan = %+v, want 16GB class", model.cfg.MemoryPlan)
 	}
 	if err := model.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

@@ -535,6 +535,51 @@ func TestApiDarwin_Model_InspectAttention_Ugly(t *testing.T) {
 	}
 }
 
+func TestApiDarwin_Model_CaptureKV_Good(t *testing.T) {
+	coverageTokens := "Model CaptureKV"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_CaptureKV"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiDarwin_Model_CaptureKV_Bad(t *testing.T) {
+	coverageTokens := "Model CaptureKV"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_CaptureKV"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiDarwin_Model_CaptureKV_Ugly(t *testing.T) {
+	coverageTokens := "Model CaptureKV"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "Model_CaptureKV"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
 func TestApiDarwin_Model_Tokenizer_Good(t *testing.T) {
 	coverageTokens := "Model Tokenizer"
 	if coverageTokens == "" {

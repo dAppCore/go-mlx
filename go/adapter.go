@@ -41,9 +41,16 @@ func NewInferenceAdapter(model inference.TextModel, name string) *InferenceAdapt
 // NewMLXBackend loads the Metal backend and wraps it in an InferenceAdapter.
 func NewMLXBackend(modelPath string, loadOpts ...inference.LoadOption) (*InferenceAdapter, error) {
 	opts := append(append([]inference.LoadOption(nil), loadOpts...), inference.WithBackend("metal"))
-	model, err := inference.LoadModel(modelPath, opts...)
-	if err != nil {
-		return nil, err
+	r := inference.LoadModel(modelPath, opts...)
+	if !r.OK {
+		if err, ok := r.Value.(error); ok {
+			return nil, err
+		}
+		return nil, core.E("mlx.NewMLXBackend", r.Error(), nil)
+	}
+	model, ok := r.Value.(inference.TextModel)
+	if !ok {
+		return nil, core.E("mlx.NewMLXBackend", "inference.LoadModel returned non-TextModel value", nil)
 	}
 	return NewInferenceAdapter(model, "mlx"), nil
 }

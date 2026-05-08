@@ -8,6 +8,7 @@ import (
 	"context"
 	"iter"
 	"slices"
+	"sync"
 	"time"
 
 	"dappco.re/go"
@@ -34,30 +35,59 @@ type GenerateConfig struct {
 	MinP          float32
 	StopTokens    []int32
 	RepeatPenalty float32
+	ProbeSink     ProbeSink
 }
 
 // Metrics holds performance metrics from the last inference operation.
 type Metrics struct {
-	PromptTokens        int
-	GeneratedTokens     int
-	PrefillDuration     time.Duration
-	DecodeDuration      time.Duration
-	TotalDuration       time.Duration
-	PrefillTokensPerSec float64
-	DecodeTokensPerSec  float64
-	PeakMemoryBytes     uint64
-	ActiveMemoryBytes   uint64
+	PromptTokens               int
+	GeneratedTokens            int
+	PrefillDuration            time.Duration
+	DecodeDuration             time.Duration
+	TotalDuration              time.Duration
+	PrefillTokensPerSec        float64
+	DecodeTokensPerSec         float64
+	PeakMemoryBytes            uint64
+	ActiveMemoryBytes          uint64
+	PromptCacheHits            int
+	PromptCacheMisses          int
+	PromptCacheHitTokens       int
+	PromptCacheMissTokens      int
+	PromptCacheRestoreDuration time.Duration
+	Adapter                    AdapterInfo
+}
+
+// AdapterInfo identifies an active LoRA inference adapter.
+type AdapterInfo struct {
+	Name       string
+	Path       string
+	Hash       string
+	Rank       int
+	Alpha      float32
+	Scale      float32
+	TargetKeys []string
 }
 
 // Model wraps a loaded transformer model for text generation.
 type Model struct {
-	model       InternalModel
-	tokenizer   *Tokenizer
-	modelType   string
-	device      DeviceType
-	contextLen  int // 0 = unbounded (model default)
-	lastErr     error
-	lastMetrics Metrics
+	model                InternalModel
+	tokenizer            *Tokenizer
+	modelType            string
+	device               DeviceType
+	contextLen           int // 0 = unbounded (model default)
+	cachePolicy          string
+	cacheMode            string
+	batchSizeLimit       int
+	prefillChunkSize     int
+	parallelSlots        chan struct{}
+	promptCacheMu        sync.Mutex
+	promptCacheEnabled   bool
+	promptCacheMinTokens int
+	promptCache          *promptCacheEntry
+	adapter              *LoRAAdapter
+	adapterInfo          AdapterInfo
+	lastErr              error
+	lastMetrics          Metrics
 }
 
 // ModelType returns the architecture identifier (e.g. "gemma3", "qwen3").
@@ -76,6 +106,30 @@ func (m *Model) Err() error { return m.lastErr }
 //	fmt.Printf("decode: %.0f tok/s, peak GPU: %d MB\n", met.DecodeTokensPerSec, met.PeakMemoryBytes/1024/1024)
 func (m *Model) LastMetrics() Metrics { return m.lastMetrics }
 
+func (m *Model) acquireSlot(ctx context.Context) (func(), error) {
+	if m == nil || m.parallelSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	select {
+	case m.parallelSlots <- struct{}{}:
+		released := false
+		return func() {
+			if released {
+				return
+			}
+			released = true
+			<-m.parallelSlots
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
 	Architecture  string
@@ -85,6 +139,7 @@ type ModelInfo struct {
 	QuantBits     int
 	QuantGroup    int
 	ContextLength int
+	Adapter       AdapterInfo
 }
 
 // Info returns metadata about the loaded model.
@@ -125,6 +180,7 @@ func (m *Model) Info() ModelInfo {
 	if m.contextLen > 0 {
 		info.ContextLength = m.contextLen
 	}
+	info.Adapter = m.Adapter()
 	return info
 }
 
@@ -143,6 +199,9 @@ func (m *Model) Close() error {
 	}
 	m.model = nil
 	m.tokenizer = nil
+	m.adapter = nil
+	m.adapterInfo = AdapterInfo{}
+	m.clearPromptCache()
 	// Closing a model should release its freed weights from the global MLX
 	// allocator cache as well, so callers can immediately load another model.
 	ClearCache()
@@ -159,6 +218,39 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 	return m.Generate(ctx, prompt, cfg)
 }
 
+// WarmPromptCache prefills and stores an exact token-prefix KV cache.
+func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var warmErr error
+	if deviceErr := m.withDevice(func() {
+		tokens := m.tokenizer.Encode(prompt)
+		caches := m.newCaches()
+		logits, err := m.prefillTokenBlock(ctx, tokens, caches)
+		if err == nil {
+			err = m.storePromptCache(tokens, caches, logits)
+		}
+		Free(logits)
+		freeCaches(caches)
+		warmErr = err
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return warmErr
+}
+
 // Generate streams tokens for the given prompt.
 // Each call allocates fresh KV caches released when the iterator completes.
 //
@@ -166,11 +258,18 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 //	    fmt.Print(tok.Text)
 //	}
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
-	m.lastErr = nil
-	m.lastMetrics = Metrics{}
-
 	inner := m.generate(ctx, prompt, cfg)
 	return func(yield func(Token) bool) {
+		m.lastErr = nil
+		m.lastMetrics = Metrics{}
+		release, err := m.acquireSlot(ctx)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		defer release()
+		releasePromptCache := m.acquirePromptCache()
+		defer releasePromptCache()
 		if err := m.withDevice(func() { inner(yield) }); err != nil {
 			m.lastErr = err
 		}
@@ -184,12 +283,20 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 		tokens := m.tokenizer.Encode(prompt)
 		promptLen := len(tokens)
-		caches := m.newCaches()
+		prepared, err := m.preparePrompt(ctx, tokens)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		caches := prepared.caches
+		logits := prepared.logits
+		prefillDur := prepared.duration
 		defer freeCaches(caches)
+		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
+		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
 		sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
 		var genCount int
-		var prefillDur time.Duration
 
 		defer func() {
 			decodeDur := time.Since(totalStart) - prefillDur
@@ -202,6 +309,7 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 				TotalDuration:     totalDur,
 				PeakMemoryBytes:   GetPeakMemory(),
 				ActiveMemoryBytes: GetActiveMemory(),
+				Adapter:           m.Adapter(),
 			}
 			if prefillDur > 0 {
 				m.lastMetrics.PrefillTokensPerSec = float64(promptLen) / prefillDur.Seconds()
@@ -209,23 +317,15 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			if decodeDur > 0 {
 				m.lastMetrics.DecodeTokensPerSec = float64(genCount) / decodeDur.Seconds()
 			}
+			if prepared.cacheHit {
+				m.lastMetrics.PromptCacheHits = 1
+			} else {
+				m.lastMetrics.PromptCacheMisses = 1
+			}
+			m.lastMetrics.PromptCacheHitTokens = prepared.cacheHitTokens
+			m.lastMetrics.PromptCacheMissTokens = prepared.cacheMissTokens
+			m.lastMetrics.PromptCacheRestoreDuration = prepared.restoreDuration
 		}()
-
-		prefillStart := time.Now()
-		vInput := FromValues(tokens, len(tokens))
-		input := Reshape(vInput, 1, int32(len(tokens)))
-		logits := m.model.Forward(input, caches)
-		Free(vInput, input)
-
-		if err := Eval(logits); err != nil {
-			m.lastErr = core.E("Model.Generate", "prefill", err)
-			return
-		}
-		// Detach logits and cache arrays to release the entire prefill computation
-		// graph. After Eval, data is materialised — graph connections only pin Metal
-		// memory from intermediate tensors (34 layers × ~20 ops each).
-		detachEvalState(logits, caches)
-		prefillDur = time.Since(prefillStart)
 
 		var history []int32 // for repeat penalty
 
@@ -251,6 +351,12 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 				Free(oldLastPos)
 			}
 
+			if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
+				m.lastErr = core.E("Model.Generate", core.Sprintf("probe logits step %d", i), err)
+				Free(lastPos)
+				return
+			}
+
 			next := sampler.Sample(lastPos)
 			if err := Eval(next); err != nil {
 				m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
@@ -260,6 +366,8 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 
 			id := int32(next.Int())
 			history = append(history, id)
+			text := m.tokenizer.DecodeToken(id)
+			emitProbeToken(cfg.ProbeSink, ProbePhaseDecode, i, id, text, promptLen, genCount+1)
 			Free(lastPos)
 
 			if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
@@ -272,7 +380,6 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			}
 
 			genCount++
-			text := m.tokenizer.DecodeToken(id)
 			if !yield(Token{ID: id, Text: text}) {
 				Free(next)
 				return
@@ -297,6 +404,8 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
 			// Metal buffers per step that accumulate to tens of GB.
 			detachEvalState(logits, caches)
+			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
+			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
 		}
 	}
 }
@@ -311,6 +420,11 @@ func (m *Model) InspectAttention(ctx context.Context, prompt string) (*Attention
 		result *AttentionResult
 		err    error
 	)
+	release, slotErr := m.acquireSlot(ctx)
+	if slotErr != nil {
+		return nil, slotErr
+	}
+	defer release()
 	if deviceErr := m.withDevice(func() {
 		result, err = m.inspectAttention(ctx, prompt)
 	}); deviceErr != nil {
@@ -423,12 +537,7 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 	if cache == nil {
 		return attentionCacheSnapshot{}, false
 	}
-	state := cache.State()
-	var ownedState []*Array
-	if rotating, ok := cache.(*RotatingKVCache); ok {
-		state = rotating.orderedState()
-		ownedState = state
-	}
+	state, ownedState := cacheReadState(cache)
 	defer Free(ownedState...)
 	if len(state) < 1 {
 		return attentionCacheSnapshot{}, false
@@ -567,6 +676,26 @@ func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array 
 // caches are replaced with RotatingKVCache to cap memory usage.
 func (m *Model) newCaches() []Cache {
 	caches := m.model.NewCache()
+	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged {
+		maxSize := 0
+		if m.cachePolicy != "full" && m.contextLen > 0 {
+			maxSize = m.contextLen
+		}
+		for i := range caches {
+			switch mode {
+			case KVCacheModeQ8:
+				caches[i] = NewQuantizedKVCache(maxSize, 8, 8)
+			case KVCacheModeKQ8VQ4:
+				caches[i] = NewQuantizedKVCache(maxSize, 8, 4)
+			case KVCacheModePaged:
+				caches[i] = NewPagedKVCache(maxSize, 256)
+			}
+		}
+		return caches
+	}
+	if m.cachePolicy == "full" {
+		return caches
+	}
 	if m.contextLen <= 0 {
 		return caches
 	}

@@ -42,6 +42,9 @@ func freeRMSNorm(r *RMSNormModule) {
 // freeCaches releases all key/value arrays held by a slice of caches.
 func freeCaches(caches []Cache) {
 	for _, c := range caches {
+		if c == nil {
+			continue
+		}
 		if s := c.State(); s != nil {
 			Free(s...)
 		}

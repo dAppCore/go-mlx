@@ -277,6 +277,35 @@ func TestTokenizer_BPEMerge_SingleSymbol_Good(t *testing.T) {
 	}
 }
 
+func TestTokenizer_EncodeCachesSentencePieceSegments_Good(t *testing.T) {
+	tok := &Tokenizer{
+		vocab: map[string]int32{
+			"▁ab": 7,
+		},
+		mergeRanks: map[string]int{
+			"▁ a":  0,
+			"▁a b": 1,
+		},
+	}
+
+	first := tok.Encode("ab")
+	if len(first) != 1 || first[0] != 7 {
+		t.Fatalf("Encode first = %v, want [7]", first)
+	}
+	if len(tok.bpeCache) != 1 {
+		t.Fatalf("bpe cache entries = %d, want 1", len(tok.bpeCache))
+	}
+
+	first[0] = 99
+	second := tok.Encode("ab")
+	if len(second) != 1 || second[0] != 7 {
+		t.Fatalf("Encode second = %v, want cached [7]", second)
+	}
+	if len(tok.bpeCache) != 1 {
+		t.Fatalf("bpe cache entries after repeat = %d, want 1", len(tok.bpeCache))
+	}
+}
+
 func TestTokenizer_Decode_SpecialTokensSkipped_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)

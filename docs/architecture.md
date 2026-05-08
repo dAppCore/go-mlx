@@ -15,6 +15,7 @@ Go Application
     v
 inference.TextModel / inference.TrainableModel   <-- go-inference interfaces
 mlx.LoadModel / mlx.NewSession                   <-- direct root APIs
+cmd/violet + pkg/daemon                          <-- Unix-socket native sidecar
     |
     v
 register_metal.go (metalAdapter)                  <-- Backend registration + type conversion
@@ -133,6 +134,7 @@ Key points:
 - `Model.Close()` deterministically frees all weight arrays without relying on GC. Tied output weights (shared with the embedding table) are detected and skipped to prevent double-free.
 - Each `Generate()` call allocates fresh KV caches that are released to GC when the iterator completes.
 - Call `ClearCache()` between multi-turn chat turns for prompt memory reclaim rather than waiting for GC.
+- Violet's native daemon route loads configured models on first use and keeps them resident until shutdown. Its `generate` action goes through the same root `mlx.LoadModel` defaults as direct callers, so local agent harnesses can avoid a separate HTTP server when they already own tool execution and routing.
 
 ## Fused Metal Kernels
 
@@ -253,9 +255,17 @@ session, err := mlx.NewSession()
 
 Options from `inference.LoadConfig` understood by the Metal backend:
 
-- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers
+- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers; default 131072
+- `ParallelSlots` -- caps concurrent native inference calls for one loaded model before KV/cache allocation; default 1
 - `AdapterPath` -- loads a trained LoRA adapter from disk at model load time
 - `GPULayers` -- logged as a warning if set to 0 (Metal always uses full GPU offload)
+
+The direct root API adds `PromptCache` load settings and `WarmPromptCache`.
+The cache is a single in-memory exact token-prefix KV snapshot. It is intentionally
+conservative: dense prefixes can be sliced and restored, while wrapped rotating
+sliding-window caches are skipped unless they are still contiguous from the
+start. This keeps reuse correct for Qwen-style long prefixes and avoids silently
+reusing an invalid Gemma sliding-window state.
 
 ## mlxlm Subprocess Backend
 

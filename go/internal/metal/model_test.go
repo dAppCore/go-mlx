@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"context"
 	"testing"
 
 	"dappco.re/go"
@@ -123,12 +124,92 @@ func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
 	}
 }
 
+func TestModel_LoadModel_Qwen3NextNestedTextConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3_5",
+		"text_config": {
+			"model_type": "qwen3_next",
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 4,
+			"vocab_size": 1000
+		}
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected error (missing tokenizer), but dispatch should have reached qwen3_next")
+	}
+	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "qwen") {
+		t.Errorf("expected qwen loader error, got: %v", err)
+	}
+}
+
+func TestModel_LoadModel_Qwen3MoERejectsSparseRouting_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3_moe",
+		"hidden_size": 1024,
+		"num_hidden_layers": 2,
+		"num_attention_heads": 8,
+		"num_key_value_heads": 4,
+		"vocab_size": 1000,
+		"num_experts": 128,
+		"num_experts_per_tok": 8,
+		"moe_intermediate_size": 384
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected explicit MoE loader guard")
+	}
+	if !core.Contains(err.Error(), "qwen3_moe") || !core.Contains(err.Error(), "expert") {
+		t.Fatalf("error = %v, want qwen3_moe expert-routing context", err)
+	}
+}
+
+func TestModel_ProbeModelType_QwenFamilyArchitectures_Good(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "moe", data: `{"architectures":["Qwen3MoeForCausalLM"]}`, want: "qwen3_moe"},
+		{name: "next", data: `{"architectures":["Qwen3NextForCausalLM"]}`, want: "qwen3_next"},
+		{name: "alias", data: `{"model_type":"qwen3_5"}`, want: "qwen3_next"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := probeModelType([]byte(tc.data))
+			if err != nil {
+				t.Fatalf("probeModelType() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("probeModelType() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestModel_DetectQwenModelType_ArchitecturesLlama_Good(t *testing.T) {
 	got := detectQwenModelType([]byte(`{
 		"architectures": ["LlamaForCausalLM"]
 	}`), nil)
 	if got != "llama" {
 		t.Fatalf("detectQwenModelType() = %q, want llama", got)
+	}
+}
+
+func TestModel_DetectQwenModelType_QwenFamilyVariants_Good(t *testing.T) {
+	got := detectQwenModelType([]byte(`{"architectures":["Qwen3NextForCausalLM"]}`), nil)
+	if got != "qwen3_next" {
+		t.Fatalf("detectQwenModelType(next) = %q, want qwen3_next", got)
+	}
+	got = detectQwenModelType([]byte(`{"architectures":["Qwen3MoeForCausalLM"]}`), nil)
+	if got != "qwen3_moe" {
+		t.Fatalf("detectQwenModelType(moe) = %q, want qwen3_moe", got)
 	}
 }
 
@@ -419,10 +500,56 @@ func TestModel_ParseQwen3Config_Defaults_Good(t *testing.T) {
 	}
 }
 
+func TestModel_ParseQwen3Config_MoEFields_Good(t *testing.T) {
+	cfg, err := parseQwen3Config([]byte(`{
+		"model_type": "qwen3_moe",
+		"hidden_size": 1024,
+		"num_hidden_layers": 8,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 2,
+		"num_experts": 128,
+		"num_experts_per_tok": 8,
+		"moe_intermediate_size": 384,
+		"decoder_sparse_step": 2
+	}`))
+	if err != nil {
+		t.Fatalf("parseQwen3Config: %v", err)
+	}
+	if cfg.ModelType != "qwen3_moe" || !cfg.IsMoE() {
+		t.Fatalf("model type/is moe = %q/%v, want qwen3_moe true", cfg.ModelType, cfg.IsMoE())
+	}
+	if cfg.NumExperts != 128 || cfg.NumExpertsPerTok != 8 || cfg.MoEIntermediateSize != 384 || cfg.DecoderSparseStep != 2 {
+		t.Fatalf("MoE fields = experts:%d per_tok:%d intermediate:%d sparse_step:%d", cfg.NumExperts, cfg.NumExpertsPerTok, cfg.MoEIntermediateSize, cfg.DecoderSparseStep)
+	}
+}
+
 func TestModel_ParseQwen3Config_InvalidJSON_Bad(t *testing.T) {
 	_, err := parseQwen3Config([]byte("{broken"))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestModel_Qwen3NextGenerationNative_SkipWithoutModel_Good(t *testing.T) {
+	modelPath := core.Getenv("GO_MLX_QWEN3_NEXT_MODEL")
+	if modelPath == "" {
+		t.Skip("set GO_MLX_QWEN3_NEXT_MODEL to run native Qwen3-Next generation smoke test")
+	}
+	model, err := LoadAndInit(modelPath, LoadConfig{ContextLen: 256})
+	if err != nil {
+		t.Fatalf("LoadAndInit() error = %v", err)
+	}
+	defer model.Close()
+
+	var tokens []Token
+	for token := range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokens = append(tokens, token)
+	}
+	if err := model.Err(); err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	if len(tokens) == 0 {
+		t.Fatal("Generate() produced no tokens")
 	}
 }
 

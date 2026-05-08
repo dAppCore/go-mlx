@@ -34,6 +34,29 @@ func TestMetalBackendLoadModel_ForwardsCPUDeviceWhenGPULayersZero_Good(t *testin
 	}
 }
 
+func TestMetalBackendLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
+	coverageTokens := "ForwardsParallelSlots"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	original := loadBackendModel
+	t.Cleanup(func() { loadBackendModel = original })
+
+	var got metal.LoadConfig
+	loadBackendModel = func(_ string, cfg metal.LoadConfig) (*metal.Model, error) {
+		got = cfg
+		return &metal.Model{}, nil
+	}
+
+	backend := &metalbackend{}
+	if _, err := backend.LoadModel("/tmp/model", inference.WithParallelSlots(4)); err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if got.ParallelSlots != 4 {
+		t.Fatalf("ParallelSlots = %d, want 4", got.ParallelSlots)
+	}
+}
+
 // Generated file-aware compliance coverage.
 func TestRegisterMetal_MetalAvailable_Good(t *testing.T) {
 	target := "MetalAvailable"

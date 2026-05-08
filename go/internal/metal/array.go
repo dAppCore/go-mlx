@@ -130,6 +130,12 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 
 	tt := newArray("")
 	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&bts[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	if tt.ctx.ctx == nil {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic("mlx: array data creation failed")
+	}
 	runtime.KeepAlive(bts)
 	runtime.KeepAlive(cShape)
 	return tt
@@ -230,13 +236,44 @@ func (t Array) Dims() []int {
 //	if a.Dtype() == DTypeBFloat16 { /* mixed precision path */ }
 func (t Array) Dtype() DType { return DType(C.mlx_array_dtype(t.ctx)) }
 
-// Int extracts a scalar int64 value.
+// Int extracts a scalar integer value.
 //
 //	id := int32(next.Int()) // read sampled token ID from argmax output
 func (t Array) Int() int {
-	var item C.int64_t
-	C.mlx_array_item_int64(&item, t.ctx)
-	return int(item)
+	switch t.Dtype() {
+	case DTypeUint8:
+		var item C.uint8_t
+		C.mlx_array_item_uint8(&item, t.ctx)
+		return int(item)
+	case DTypeUint16:
+		var item C.uint16_t
+		C.mlx_array_item_uint16(&item, t.ctx)
+		return int(item)
+	case DTypeUint32:
+		var item C.uint32_t
+		C.mlx_array_item_uint32(&item, t.ctx)
+		return int(item)
+	case DTypeUint64:
+		var item C.uint64_t
+		C.mlx_array_item_uint64(&item, t.ctx)
+		return int(item)
+	case DTypeInt8:
+		var item C.int8_t
+		C.mlx_array_item_int8(&item, t.ctx)
+		return int(item)
+	case DTypeInt16:
+		var item C.int16_t
+		C.mlx_array_item_int16(&item, t.ctx)
+		return int(item)
+	case DTypeInt32:
+		var item C.int32_t
+		C.mlx_array_item_int32(&item, t.ctx)
+		return int(item)
+	default:
+		var item C.int64_t
+		C.mlx_array_item_int64(&item, t.ctx)
+		return int(item)
+	}
 }
 
 // Float extracts a scalar float64 value.

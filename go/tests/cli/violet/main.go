@@ -38,7 +38,7 @@ func run() error {
 
 	tmpDirResult := core.MkdirTemp("/tmp", "violet-cli-*")
 	if !tmpDirResult.OK {
-		return resultError(tmpDirResult)
+		return tmpDirResult.Value.(error)
 	}
 	tmpDir := tmpDirResult.Value.(string)
 	defer core.RemoveAll(tmpDir)
@@ -79,7 +79,7 @@ func run() error {
 	defer conn.Close()
 
 	if result := core.WriteString(conn, `{"action":"info"}`+"\n"); !result.OK {
-		return core.Errorf("write info frame: %w", resultError(result))
+		return core.Errorf("write info frame: %w", result.Value.(error))
 	}
 
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
@@ -93,7 +93,7 @@ func run() error {
 		Actions []string `json:"actions"`
 	}
 	if result := core.JSONUnmarshal(line, &resp); !result.OK {
-		return core.Errorf("decode info response %q: %w", string(line), resultError(result))
+		return core.Errorf("decode info response %q: %w", string(line), result.Value.(error))
 	}
 	if resp.Name != "violet" {
 		return core.Errorf("name = %q, want violet", resp.Name)
@@ -119,7 +119,7 @@ func buildBinary(root, binary string) error {
 func repoRoot() (string, error) {
 	dirResult := core.Getwd()
 	if !dirResult.OK {
-		return "", resultError(dirResult)
+		return "", dirResult.Value.(error)
 	}
 	dir := dirResult.Value.(string)
 	for {
@@ -288,9 +288,3 @@ func closeFDs(fds ...int) error {
 	return err
 }
 
-func resultError(result core.Result) error {
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return core.NewError("operation failed")
-}

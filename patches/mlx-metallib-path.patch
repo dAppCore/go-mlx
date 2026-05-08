@@ -1,0 +1,25 @@
+diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
+index 65cd32d3..4adfffbb 100644
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -160,8 +160,19 @@ MTL::Library* load_default_library(MTL::Device* device) {
+     return lib;
+   }
+ 
++  if (const char* env_path = std::getenv("MLX_METALLIB_PATH");
++      env_path != nullptr && env_path[0] != '\0') {
++    auto [env_lib, env_error] = load_library_from_path(device, env_path);
++    if (env_lib) {
++      return env_lib;
++    }
++    error[4] = env_error;
++  }
++
+   // Finally try default_mtllib_path
+-  std::tie(lib, error[4]) = load_library_from_path(device, default_mtllib_path);
++  if (!lib) {
++    std::tie(lib, error[4]) = load_library_from_path(device, default_mtllib_path);
++  }
+   if (!lib) {
+     std::ostringstream msg;
+     msg << "Failed to load the default metallib. ";

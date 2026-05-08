@@ -28,16 +28,17 @@ func TestMetalAvailable_Good(t *testing.T) {
 }
 
 func TestDefaultBackend_Good(t *testing.T) {
-	b, err := inference.Default()
+	r := inference.Default()
 	if !mlx.MetalAvailable() {
-		if err == nil {
+		if r.OK {
 			t.Fatal("Default() should fail when Metal is unavailable")
 		}
 		return
 	}
-	if err != nil {
-		t.Fatalf("Default() error: %v", err)
+	if !r.OK {
+		t.Fatalf("Default() error: %s", r.Error())
 	}
+	b := r.Value.(inference.Backend)
 	if b.Name() != "metal" {
 		t.Errorf("Default().Name() = %q, want %q", b.Name(), "metal")
 	}
@@ -76,15 +77,13 @@ func TestLoadModel_NoBackend_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	_, err := inference.LoadModel("/nonexistent/path")
-	if err == nil {
+	if r := inference.LoadModel("/nonexistent/path"); r.OK {
 		t.Error("expected error for nonexistent model path")
 	}
 }
 
 func TestLoadModel_WithBackend_Bad(t *testing.T) {
-	_, err := inference.LoadModel("/nonexistent/path", inference.WithBackend("nonexistent"))
-	if err == nil {
+	if r := inference.LoadModel("/nonexistent/path", inference.WithBackend("nonexistent")); r.OK {
 		t.Error("expected error for nonexistent backend")
 	}
 }
@@ -172,10 +171,11 @@ func gemma3ModelPath(t *testing.T) string {
 func TestLoadModel_Generate_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	if m.ModelType() != "gemma3" {
@@ -203,11 +203,12 @@ func TestGemma3_1B_Inference_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
 	loadStart := time.Now()
-	m, err := inference.LoadModel(modelPath)
+	r := inference.LoadModel(modelPath)
 	loadDur := time.Since(loadStart)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 	t.Logf("Model loaded in %s", loadDur)
 
@@ -256,10 +257,11 @@ func TestGemma3_1B_Inference_Good(t *testing.T) {
 func TestGemma3_1B_Chat_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -284,10 +286,11 @@ func TestGemma3_1B_Chat_Good(t *testing.T) {
 func TestGemma3_1B_ContextCancel_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -333,11 +336,12 @@ func TestQwen2_Inference_Good(t *testing.T) {
 	modelPath := qwen2ModelPath(t)
 
 	loadStart := time.Now()
-	m, err := inference.LoadModel(modelPath)
+	r := inference.LoadModel(modelPath)
 	loadDur := time.Since(loadStart)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 	t.Logf("Model loaded in %s", loadDur)
 
@@ -376,10 +380,11 @@ func TestQwen2_Inference_Good(t *testing.T) {
 func TestQwen2_Chat_Good(t *testing.T) {
 	modelPath := qwen2ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -425,11 +430,12 @@ func TestLlama_Inference_Good(t *testing.T) {
 	modelPath := llamaModelPath(t)
 
 	loadStart := time.Now()
-	m, err := inference.LoadModel(modelPath)
+	r := inference.LoadModel(modelPath)
 	loadDur := time.Since(loadStart)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 	t.Logf("Model loaded in %s", loadDur)
 
@@ -491,10 +497,11 @@ func TestDiscover_Good(t *testing.T) {
 func TestModelInfo_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	info := m.Info()
@@ -526,10 +533,11 @@ func TestModelInfo_Good(t *testing.T) {
 func TestGenerate_Metrics_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -581,10 +589,11 @@ func TestClassify_Batch_Good(t *testing.T) {
 	}
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -619,10 +628,11 @@ func TestClassify_Batch_Good(t *testing.T) {
 func TestClassify_WithLogits_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -644,10 +654,11 @@ func TestClassify_WithLogits_Good(t *testing.T) {
 func TestBatchGenerate_Good(t *testing.T) {
 	modelPath := gemma3ModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()
@@ -689,10 +700,11 @@ func TestBatchGenerate_Good(t *testing.T) {
 func TestLlama_Chat_Good(t *testing.T) {
 	modelPath := llamaModelPath(t)
 
-	m, err := inference.LoadModel(modelPath)
-	if err != nil {
-		t.Fatalf("LoadModel: %v", err)
+	r := inference.LoadModel(modelPath)
+	if !r.OK {
+		t.Fatalf("LoadModel: %s", r.Error())
 	}
+	m := r.Value.(inference.TextModel)
 	defer func() { m.Close(); mlx.ClearCache() }()
 
 	ctx := context.Background()

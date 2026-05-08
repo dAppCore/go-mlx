@@ -38,16 +38,23 @@ When loading a directory, it must contain:
 
 ```go
 m, err := inference.LoadModel("/path/to/model/",
-    inference.WithContextLen(4096),           // bounded KV cache (default: unbounded)
+    inference.WithContextLen(262144),         // larger Qwen-class context; default is 131072
+    inference.WithParallelSlots(1),           // default: one foreground native request
     inference.WithAdapterPath("/path/to/lora/"), // load LoRA adapter at init
 )
 ```
 
 | Option | Effect |
 |--------|--------|
-| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)` |
+| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)`; Metal defaults to 131072 |
+| `WithParallelSlots(n)` | Caps concurrent native inference calls per loaded model; Metal defaults to 1 |
 | `WithAdapterPath(dir)` | Loads a trained LoRA adapter from the given directory |
 | `WithGPULayers(n)` | Ignored with a warning -- Metal always uses full GPU offload |
+
+The direct `mlx.LoadModel` API also enables exact token-prefix prompt caching by
+default. Use `WarmPromptCache(prefix)` for stable system prompts, tool schemas,
+repository summaries, and AGENTS/policy prefixes before appending volatile user
+turns.
 
 ## Supported Architectures
 
@@ -300,6 +307,28 @@ met := m.Metrics()
 fmt.Printf("prefill: %.0f tok/s, decode: %.1f tok/s, peak GPU: %d MB\n",
     met.PrefillTokensPerSec, met.DecodeTokensPerSec,
     met.PeakMemoryBytes/1024/1024)
+```
+
+## Fast Local Eval
+
+Use the first-party harness when comparing planner changes, quantization
+choices, prompt-cache settings, or model builds on a local Apple machine:
+
+```bash
+go-mlx bench -json -prompt "Summarize local inference in one sentence." /path/to/model
+```
+
+The report includes prefill/decode tok/s, peak and active Metal memory,
+prompt-cache hit rate, KV restore latency, state-bundle round-trip size/time,
+probe event counts, probe overhead, and small deterministic quality checks.
+
+From Go:
+
+```go
+report, err := mlx.RunFastEvalBench(ctx, model, mlx.DefaultFastEvalConfig())
+fmt.Printf("decode %.1f tok/s, cache %.0f%%\n",
+    report.Generation.DecodeTokensPerSec,
+    report.PromptCache.HitRate*100)
 ```
 
 ## Attention Inspection

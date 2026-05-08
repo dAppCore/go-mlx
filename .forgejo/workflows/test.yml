@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Vet & Build
+    name: Vet, Test & Build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +18,10 @@ jobs:
         with:
           go-version: '1.26'
       - name: Vet
-        run: go vet ./...
+        working-directory: go
+        run: GOWORK=off go vet ./...
+      - name: Test coverage
+        run: sh scripts/coverage.sh
       - name: Build (stub)
-        run: go build ./...
+        working-directory: go
+        run: GOWORK=off go build ./...

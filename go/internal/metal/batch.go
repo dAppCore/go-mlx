@@ -35,6 +35,11 @@ func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConf
 		results []ClassifyResult
 		err     error
 	)
+	release, slotErr := m.acquireSlot(ctx)
+	if slotErr != nil {
+		return nil, slotErr
+	}
+	defer release()
 	if deviceErr := m.withDevice(func() {
 		results, err = m.classify(ctx, prompts, cfg, returnLogits)
 	}); deviceErr != nil {
@@ -88,7 +93,7 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 	default:
 	}
 
-	mask := buildBatchMask(N, L, sortedLengths)
+	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
 	defer freeCaches(caches)
@@ -166,12 +171,59 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 		results []BatchResult
 		err     error
 	)
+	release, slotErr := m.acquireSlot(ctx)
+	if slotErr != nil {
+		return nil, slotErr
+	}
+	defer release()
 	if deviceErr := m.withDevice(func() {
-		results, err = m.batchGenerate(ctx, prompts, cfg)
+		results, err = m.batchGeneratePlanned(ctx, prompts, cfg)
 	}); deviceErr != nil {
 		return nil, deviceErr
 	}
 	return results, err
+}
+
+func (m *Model) batchGeneratePlanned(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
+	limit := m.batchSizeLimit
+	if limit <= 0 || len(prompts) <= limit {
+		return m.batchGenerate(ctx, prompts, cfg)
+	}
+
+	totalStart := time.Now()
+	results := make([]BatchResult, 0, len(prompts))
+	metrics := Metrics{}
+	for start := 0; start < len(prompts); start += limit {
+		end := start + limit
+		if end > len(prompts) {
+			end = len(prompts)
+		}
+		chunkResults, err := m.batchGenerate(ctx, prompts[start:end], cfg)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results, chunkResults...)
+		chunkMetrics := m.lastMetrics
+		metrics.PromptTokens += chunkMetrics.PromptTokens
+		metrics.GeneratedTokens += chunkMetrics.GeneratedTokens
+		metrics.PrefillDuration += chunkMetrics.PrefillDuration
+		metrics.DecodeDuration += chunkMetrics.DecodeDuration
+		if chunkMetrics.PeakMemoryBytes > metrics.PeakMemoryBytes {
+			metrics.PeakMemoryBytes = chunkMetrics.PeakMemoryBytes
+		}
+		if chunkMetrics.ActiveMemoryBytes > metrics.ActiveMemoryBytes {
+			metrics.ActiveMemoryBytes = chunkMetrics.ActiveMemoryBytes
+		}
+	}
+	metrics.TotalDuration = time.Since(totalStart)
+	if metrics.PrefillDuration > 0 {
+		metrics.PrefillTokensPerSec = float64(metrics.PromptTokens) / metrics.PrefillDuration.Seconds()
+	}
+	if metrics.DecodeDuration > 0 {
+		metrics.DecodeTokensPerSec = float64(metrics.GeneratedTokens) / metrics.DecodeDuration.Seconds()
+	}
+	m.lastMetrics = metrics
+	return results, nil
 }
 
 func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
@@ -219,7 +271,7 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 	}
 
 	prefillStart := time.Now()
-	mask := buildBatchMask(N, L, sortedLengths)
+	mask := buildOptionalBatchMask(N, L, sortedLengths)
 	tokens := FromValues(padded, int(N), int(L))
 	caches := m.newCachesN(int(N))
 	defer freeCaches(caches)
@@ -385,6 +437,25 @@ func buildBatchMask(N, L int32, promptLens []int32) *Array {
 
 	mask := FromValues(data, int(N), 1, int(L), int(L))
 	return mask
+}
+
+func buildOptionalBatchMask(N, L int32, promptLens []int32) *Array {
+	if !batchNeedsExplicitMask(N, L, promptLens) {
+		return nil
+	}
+	return buildBatchMask(N, L, promptLens)
+}
+
+func batchNeedsExplicitMask(N, L int32, promptLens []int32) bool {
+	if N <= 0 || L <= 0 || len(promptLens) < int(N) {
+		return true
+	}
+	for i := range int(N) {
+		if promptLens[i] != L {
+			return true
+		}
+	}
+	return false
 }
 
 // newCachesN creates caches for N-batch inference.

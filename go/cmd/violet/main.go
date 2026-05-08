@@ -208,6 +208,9 @@ func parseConfigValue(raw string) (string, error) {
 	if core.HasPrefix(raw, "'") && core.HasSuffix(raw, "'") {
 		return core.TrimSuffix(core.TrimPrefix(raw, "'"), "'"), nil
 	}
+	if core.HasPrefix(raw, "'") {
+		return "", core.NewError("unterminated single-quoted value")
+	}
 	return core.Trim(raw), nil
 }
 

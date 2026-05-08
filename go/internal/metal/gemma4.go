@@ -161,7 +161,21 @@ type Gemma4Experts struct {
 type sharedKV struct {
 	Keys   *Array
 	Values *Array
+	Pages  PagedKVState
 	Offset int
+}
+
+func (kv sharedKV) hasState() bool {
+	return (kv.Keys != nil && kv.Values != nil) || kv.hasPages()
+}
+
+func (kv sharedKV) hasPages() bool {
+	return len(kv.Pages.Keys) > 0 && len(kv.Pages.Keys) == len(kv.Pages.Values)
+}
+
+func (kv sharedKV) free() {
+	Free(kv.Keys, kv.Values)
+	kv.Pages.Free()
 }
 
 func defaultGemma4RopeParameters(cfg *Gemma4TextConfig) map[string]RopeParams {
@@ -682,6 +696,7 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	if !left.IsRowContiguous() {
 		contiguous := Contiguous(left)
 		Free(left)
+		Materialize(contiguous)
 		left = contiguous
 	}
 	starts[axis] = mid
@@ -690,6 +705,7 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	if !right.IsRowContiguous() {
 		contiguous := Contiguous(right)
 		Free(right)
+		Materialize(contiguous)
 		right = contiguous
 	}
 	return left, right, true
@@ -1671,7 +1687,7 @@ func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) 
 			if m.PreviousKVs[i] != int32(i) {
 				continue
 			}
-			Free(kv.Keys, kv.Values)
+			kv.free()
 		}
 	}()
 
@@ -1782,7 +1798,7 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 
 	kv := prev
 	offset := 0
-	if kv.Keys == nil || kv.Values == nil {
+	if !kv.hasState() {
 		kProj := a.KProj.Forward(x)
 		k := AsStrided(kProj, []int32{B, a.NKVHeads, L, a.HeadDim},
 			[]int64{int64(L * a.NKVHeads * a.HeadDim), int64(a.HeadDim), int64(a.NKVHeads * a.HeadDim), 1}, 0)
@@ -1815,10 +1831,18 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 
 		if c != nil {
 			oldK, oldV := k, v
-			k, v = c.Update(k, v, int(L))
-			Free(oldK, oldV)
+			if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
+				pages := paged.UpdatePages(k, v, int(L))
+				Free(oldK, oldV)
+				kv = sharedKV{Pages: pages, Offset: offset}
+			} else {
+				k, v = c.Update(k, v, int(L))
+				Free(oldK, oldV)
+				kv = sharedKV{Keys: k, Values: v, Offset: offset}
+			}
+		} else {
+			kv = sharedKV{Keys: k, Values: v, Offset: offset}
 		}
-		kv = sharedKV{Keys: k, Values: v, Offset: offset}
 	} else {
 		offset = kv.Offset
 	}
@@ -1828,24 +1852,37 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 	q = qRoPE
 
 	repeatFactor := cfg.NumAttentionHeads / a.NKVHeads
-	kAttn, vAttn := kv.Keys, kv.Values
-	repeated := false
-	if repeatFactor > 1 {
-		kAttn = RepeatKV(kv.Keys, repeatFactor)
-		vAttn = RepeatKV(kv.Values, repeatFactor)
-		repeated = true
-	}
-
 	var out *Array
-	if mask != nil {
-		out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, a.Scale)
+	if kv.hasPages() && L == 1 && mask == nil {
+		kPages, vPages, repeatedPages := repeatPagedState(kv.Pages, repeatFactor)
+		out = ScaledDotProductAttentionPaged(q, kPages, vPages, a.Scale)
+		Free(repeatedPages...)
 	} else {
-		out = ScaledDotProductAttention(q, kAttn, vAttn, a.Scale, L > 1)
+		kBase, vBase := kv.Keys, kv.Values
+		var ownedContiguous []*Array
+		if (kBase == nil || vBase == nil) && kv.hasPages() {
+			kBase, vBase = concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
+			ownedContiguous = append(ownedContiguous, kBase, vBase)
+		}
+		kAttn, vAttn := kBase, vBase
+		repeated := false
+		if repeatFactor > 1 {
+			kAttn = RepeatKV(kBase, repeatFactor)
+			vAttn = RepeatKV(vBase, repeatFactor)
+			repeated = true
+		}
+
+		if mask != nil {
+			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, a.Scale)
+		} else {
+			out = ScaledDotProductAttention(q, kAttn, vAttn, a.Scale, L > 1)
+		}
+		if repeated {
+			Free(kAttn, vAttn)
+		}
+		Free(ownedContiguous...)
 	}
 	Free(q)
-	if repeated {
-		Free(kAttn, vAttn)
-	}
 
 	transposed := Transpose(out, 0, 2, 1, 3)
 	Free(out)

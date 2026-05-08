@@ -14,11 +14,16 @@ import (
 
 // Qwen3Config holds Qwen 3 model configuration.
 type Qwen3Config struct {
+	ModelType             string  `json:"model_type"`
 	HiddenSize            int32   `json:"hidden_size"`
 	NumHiddenLayers       int32   `json:"num_hidden_layers"`
 	IntermediateSize      int32   `json:"intermediate_size"`
+	MoEIntermediateSize   int32   `json:"moe_intermediate_size"`
 	NumAttentionHeads     int32   `json:"num_attention_heads"`
 	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
+	NumExperts            int32   `json:"num_experts"`
+	NumExpertsPerTok      int32   `json:"num_experts_per_tok"`
+	DecoderSparseStep     int32   `json:"decoder_sparse_step"`
 	HeadDim               int32   `json:"head_dim"`
 	VocabSize             int32   `json:"vocab_size"`
 	RMSNormEps            float32 `json:"rms_norm_eps"`
@@ -74,14 +79,19 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 		return nil, core.E("qwen3.parseConfig", "parse config", nil)
 	}
 
-	// Top-level quantization
 	var wrapper struct {
-		Quantization *QuantizationConfig `json:"quantization"`
+		TextConfig         *Qwen3Config        `json:"text_config"`
+		Quantization       *QuantizationConfig `json:"quantization"`
+		QuantizationConfig *QuantizationConfig `json:"quantization_config"`
 	}
 	if r := core.JSONUnmarshal(data, &wrapper); !r.OK {
-		return nil, core.E("qwen3.parseConfig", "parse quantization", nil)
+		return nil, core.E("qwen3.parseConfig", "parse nested config", nil)
 	}
-	cfg.Quantization = wrapper.Quantization
+	if wrapper.TextConfig != nil {
+		cfg = mergeQwen3TextConfig(cfg, *wrapper.TextConfig)
+	}
+	cfg.ModelType = normalizeProbeModelType(cfg.ModelType)
+	cfg.Quantization = firstQwen3Quantization(wrapper.Quantization, wrapper.QuantizationConfig, cfg.Quantization)
 
 	// Compute scale
 	if cfg.HeadDim == 0 {
@@ -103,10 +113,73 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	return &cfg, nil
 }
 
+func mergeQwen3TextConfig(top, text Qwen3Config) Qwen3Config {
+	if text.ModelType == "" {
+		text.ModelType = top.ModelType
+	}
+	text.Quantization = firstQwen3Quantization(text.Quantization, top.Quantization)
+	if text.VocabSize == 0 {
+		text.VocabSize = top.VocabSize
+	}
+	if text.HiddenSize == 0 {
+		text.HiddenSize = top.HiddenSize
+	}
+	if text.NumHiddenLayers == 0 {
+		text.NumHiddenLayers = top.NumHiddenLayers
+	}
+	if text.IntermediateSize == 0 {
+		text.IntermediateSize = top.IntermediateSize
+	}
+	if text.MoEIntermediateSize == 0 {
+		text.MoEIntermediateSize = top.MoEIntermediateSize
+	}
+	if text.NumAttentionHeads == 0 {
+		text.NumAttentionHeads = top.NumAttentionHeads
+	}
+	if text.NumKeyValueHeads == 0 {
+		text.NumKeyValueHeads = top.NumKeyValueHeads
+	}
+	if text.NumExperts == 0 {
+		text.NumExperts = top.NumExperts
+	}
+	if text.NumExpertsPerTok == 0 {
+		text.NumExpertsPerTok = top.NumExpertsPerTok
+	}
+	if text.DecoderSparseStep == 0 {
+		text.DecoderSparseStep = top.DecoderSparseStep
+	}
+	if text.HeadDim == 0 {
+		text.HeadDim = top.HeadDim
+	}
+	if text.RMSNormEps == 0 {
+		text.RMSNormEps = top.RMSNormEps
+	}
+	if text.RopeTheta == 0 {
+		text.RopeTheta = top.RopeTheta
+	}
+	if text.MaxPositionEmbeddings == 0 {
+		text.MaxPositionEmbeddings = top.MaxPositionEmbeddings
+	}
+	return text
+}
+
+func firstQwen3Quantization(configs ...*QuantizationConfig) *QuantizationConfig {
+	for _, cfg := range configs {
+		if cfg != nil {
+			return cfg
+		}
+	}
+	return nil
+}
+
+func (cfg *Qwen3Config) IsMoE() bool {
+	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
+}
+
 func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 	if detected, err := probeModelType(configData); err == nil {
 		switch detected {
-		case "llama", "qwen2", "qwen3":
+		case "llama", "qwen2", "qwen3", "qwen3_next", "qwen3_moe":
 			return detected
 		}
 	}
@@ -131,6 +204,9 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
+	}
+	if cfg.IsMoE() {
+		return nil, core.E("qwen3.LoadQwen3", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
 	}
 
 	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
@@ -323,28 +399,39 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 	k = RoPE(k, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, c.Offset())
 	Free(oldK)
 
-	// Update KV cache — returns Slice views into cache buffer; free our pre-update handles.
-	oldK, oldV := k, v
-	k, v = c.Update(k, v, int(L))
-	Free(oldK, oldV)
-
-	// GQA: repeat K/V heads to match Q heads
-	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
-	kAttn, vAttn := k, v
-	if repeatFactor > 1 {
-		kAttn = RepeatKV(k, repeatFactor)
-		vAttn = RepeatKV(v, repeatFactor)
-		Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
-	}
-
 	// Scaled dot-product attention
 	var out *Array
-	if mask != nil {
-		out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
+	repeatFactor := cfg.NumAttentionHeads / cfg.NumKeyValueHeads
+	if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
+		oldK, oldV := k, v
+		pages := paged.UpdatePages(k, v, int(L))
+		Free(oldK, oldV)
+		kPages, vPages, repeatedPages := repeatPagedState(pages, repeatFactor)
+		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
+		Free(repeatedPages...)
+		pages.Free()
 	} else {
-		out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
+		// Update KV cache — returns Slice views into cache buffer; free our pre-update handles.
+		oldK, oldV := k, v
+		k, v = c.Update(k, v, int(L))
+		Free(oldK, oldV)
+
+		// GQA: repeat K/V heads to match Q heads
+		kAttn, vAttn := k, v
+		if repeatFactor > 1 {
+			kAttn = RepeatKV(k, repeatFactor)
+			vAttn = RepeatKV(v, repeatFactor)
+			Free(k, v) // Free Slice views from cache.Update; RepeatKV holds copies
+		}
+
+		if mask != nil {
+			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, cfg.Scale)
+		} else {
+			out = ScaledDotProductAttention(q, kAttn, vAttn, cfg.Scale, L > 1)
+		}
+		Free(kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
 	}
-	Free(q, kAttn, vAttn) // Always free — when repeatFactor==1 this frees the Slice views
+	Free(q)
 
 	transposed := Transpose(out, 0, 2, 1, 3)
 	Free(out)

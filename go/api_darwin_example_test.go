@@ -67,6 +67,11 @@ func ExampleModel_InspectAttention() {
 	// Output: Model_InspectAttention
 }
 
+func ExampleModel_CaptureKV() {
+	core.Println("Model_CaptureKV")
+	// Output: Model_CaptureKV
+}
+
 func ExampleModel_Tokenizer() {
 	core.Println("Model_Tokenizer")
 	// Output: Model_Tokenizer

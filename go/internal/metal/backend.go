@@ -6,6 +6,12 @@ package metal
 
 import "dappco.re/go"
 
+const (
+	DefaultLocalContextLen      = 131072
+	DefaultLocalParallelSlots   = 1
+	DefaultPromptCacheMinTokens = 2048
+)
+
 var runtimeMetalAvailable = MetalAvailable
 
 func resolveLoadDevice(device DeviceType) (DeviceType, bool) {
@@ -20,9 +26,38 @@ func resolveLoadDevice(device DeviceType) (DeviceType, bool) {
 
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
-	ContextLen  int    // Context window size (0 = model default, unbounded KV cache)
-	AdapterPath string // Path to LoRA adapter directory (empty = no adapter)
-	Device      DeviceType
+	ContextLen           int    // Context window size (0 = local default)
+	ParallelSlots        int    // Concurrent inference slots (0 = local default)
+	DisablePromptCache   bool   // Disable exact token-prefix prompt cache
+	PromptCacheMinTokens int    // Minimum stable prefix tokens before cache reuse
+	AdapterPath          string // Path to LoRA adapter directory (empty = no adapter)
+	Device               DeviceType
+	CachePolicy          string
+	KVCacheMode          string
+	BatchSize            int
+	PrefillChunkSize     int
+	ExpectedQuantization int
+	MemoryLimitBytes     uint64
+	CacheLimitBytes      uint64
+	WiredLimitBytes      uint64
+}
+
+var (
+	setMemoryLimit = SetMemoryLimit
+	setCacheLimit  = SetCacheLimit
+	setWiredLimit  = SetWiredLimit
+)
+
+func applyAllocatorLimits(cfg LoadConfig) {
+	if cfg.MemoryLimitBytes > 0 {
+		setMemoryLimit(cfg.MemoryLimitBytes)
+	}
+	if cfg.CacheLimitBytes > 0 {
+		setCacheLimit(cfg.CacheLimitBytes)
+	}
+	if cfg.WiredLimitBytes > 0 {
+		setWiredLimit(cfg.WiredLimitBytes)
+	}
 }
 
 // LoadAndInit initialises Metal and loads a model from the given path.
@@ -30,25 +65,27 @@ type LoadConfig struct {
 //	m, err := metal.LoadAndInit("/Volumes/Data/lem/gemma-3-1b-it-base")
 //	m, err := metal.LoadAndInit(path, metal.LoadConfig{ContextLen: 4096})
 func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
-	loadCfg := LoadConfig{Device: DeviceGPU}
+	loadCfg := normalizeMetalLoadConfig(LoadConfig{})
 	if len(cfg) > 0 {
-		loadCfg = cfg[0]
+		loadCfg = normalizeMetalLoadConfig(cfg[0])
 	}
 	resolvedDevice, fellBack := resolveLoadDevice(loadCfg.Device)
 	loadCfg.Device = resolvedDevice
 	if fellBack {
 		core.Warn("mlx: Metal unavailable, falling back to CPU")
 	}
+	applyAllocatorLimits(loadCfg)
 
 	var (
 		im         InternalModel
+		adapter    *LoRAAdapter
 		loadErr    error
 		adapterErr error
 	)
 	if err := withDefaultDevice(loadCfg.Device, func() {
 		im, loadErr = loadModel(path)
 		if loadErr == nil && loadCfg.AdapterPath != "" {
-			adapterErr = applyLoadedLoRA(im, loadCfg.AdapterPath)
+			adapter, adapterErr = loadLoRAAdapter(im, loadCfg.AdapterPath)
 		}
 	}); err != nil {
 		return nil, core.E("metal.LoadAndInit", "select device", err)
@@ -66,8 +103,43 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		modelType: im.ModelType(),
 		device:    loadCfg.Device,
 	}
+	if adapter != nil {
+		model.adapter = adapter
+		model.adapterInfo = adapterInfoFromLoRA(loadCfg.AdapterPath, adapter)
+	}
 	if loadCfg.ContextLen > 0 {
 		model.contextLen = loadCfg.ContextLen
 	}
+	if loadCfg.ParallelSlots > 0 {
+		model.parallelSlots = make(chan struct{}, loadCfg.ParallelSlots)
+	}
+	model.promptCacheEnabled = !loadCfg.DisablePromptCache
+	model.promptCacheMinTokens = loadCfg.PromptCacheMinTokens
+	model.cachePolicy = loadCfg.CachePolicy
+	model.cacheMode = loadCfg.KVCacheMode
+	model.batchSizeLimit = loadCfg.BatchSize
+	model.prefillChunkSize = loadCfg.PrefillChunkSize
+	if loadCfg.ExpectedQuantization > 0 {
+		info := model.Info()
+		if info.QuantBits > 0 && info.QuantBits != loadCfg.ExpectedQuantization {
+			core.Warn("mlx: model quantization differs from memory-plan preference", "model_bits", info.QuantBits, "preferred_bits", loadCfg.ExpectedQuantization)
+		}
+	}
 	return model, nil
+}
+
+func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {
+	if cfg.Device == "" {
+		cfg.Device = DeviceGPU
+	}
+	if cfg.ContextLen == 0 {
+		cfg.ContextLen = DefaultLocalContextLen
+	}
+	if cfg.ParallelSlots == 0 {
+		cfg.ParallelSlots = DefaultLocalParallelSlots
+	}
+	if !cfg.DisablePromptCache && cfg.PromptCacheMinTokens == 0 {
+		cfg.PromptCacheMinTokens = DefaultPromptCacheMinTokens
+	}
+	return cfg
 }

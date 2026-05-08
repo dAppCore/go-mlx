@@ -16,7 +16,93 @@ func (m *Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
 	}); err != nil {
 		core.Error("mlx: apply lora", "error", err)
 	}
+	if adapter != nil {
+		m.clearPromptCache()
+		m.adapter = adapter
+		m.adapterInfo = adapterInfoFromLoRA("", adapter)
+	}
 	return adapter
+}
+
+// LoadLoRA injects a saved adapter package into the loaded model and returns it.
+func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	var (
+		adapter *LoRAAdapter
+		loadErr error
+	)
+	if err := m.withDevice(func() {
+		if m.adapter != nil {
+			m.adapter.Unload()
+			m.adapter = nil
+			m.adapterInfo = AdapterInfo{}
+			m.clearPromptCache()
+		}
+		adapter, loadErr = loadLoRAAdapter(m.model, path)
+	}); err != nil {
+		return nil, core.E("mlx.LoadLoRA", "select device", err)
+	}
+	if loadErr != nil {
+		return nil, loadErr
+	}
+	m.clearPromptCache()
+	m.adapter = adapter
+	m.adapterInfo = adapterInfoFromLoRA(path, adapter)
+	return adapter, nil
+}
+
+// UnloadLoRA removes the active adapter from projection layers.
+func (m *Model) UnloadLoRA() error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if m.adapter == nil {
+		return nil
+	}
+	if err := m.withDevice(func() {
+		m.adapter.Unload()
+		m.adapter = nil
+		m.adapterInfo = AdapterInfo{}
+		m.clearPromptCache()
+	}); err != nil {
+		return core.E("mlx.UnloadLoRA", "select device", err)
+	}
+	return nil
+}
+
+// Adapter returns the active adapter identity.
+func (m *Model) Adapter() AdapterInfo {
+	if m == nil {
+		return AdapterInfo{}
+	}
+	return cloneMetalAdapterInfo(m.adapterInfo)
+}
+
+func adapterInfoFromLoRA(path string, adapter *LoRAAdapter) AdapterInfo {
+	if adapter == nil {
+		return AdapterInfo{}
+	}
+	cfg := normalizeLoRAConfig(adapter.Config)
+	info := AdapterInfo{
+		Name:       core.PathBase(path),
+		Path:       path,
+		Rank:       cfg.Rank,
+		Alpha:      cfg.Alpha,
+		Scale:      cfg.Scale,
+		TargetKeys: append([]string(nil), cfg.TargetKeys...),
+	}
+	info.Hash = core.SHA256HexString(core.Join("\n", info.Name, info.Path, core.Sprintf("%d", info.Rank), core.Sprintf("%f", info.Alpha), core.Sprintf("%f", info.Scale), core.Join(",", info.TargetKeys...)))
+	if path == "" {
+		info.Hash = core.SHA256HexString(core.Join("\n", core.Sprintf("%d", info.Rank), core.Sprintf("%f", info.Alpha), core.Sprintf("%f", info.Scale), core.Join(",", info.TargetKeys...)))
+	}
+	return info
+}
+
+func cloneMetalAdapterInfo(info AdapterInfo) AdapterInfo {
+	info.TargetKeys = append([]string(nil), info.TargetKeys...)
+	return info
 }
 
 // Encode tokenises text into token IDs.

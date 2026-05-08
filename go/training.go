@@ -16,18 +16,37 @@ type Array = metal.Array
 type LoRAAdapter = metal.LoRAAdapter
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
-type LoRAConfig = metal.LoRAConfig
+type LoRAConfig struct {
+	Rank         int
+	Alpha        float32
+	Scale        float32
+	TargetKeys   []string
+	TargetLayers []string
+	Lambda       float32
+	DType        DType
+	ProbeSink    ProbeSink
+}
 
 // Batch describes one RFC-style training batch.
 type Batch = metal.Batch
 
 // TrainConfig holds RFC-style training loop settings.
-type TrainConfig = metal.TrainConfig
+type TrainConfig struct {
+	Epochs         int
+	BatchSize      int
+	LearningRate   float64
+	EvalInterval   int
+	SaveInterval   int
+	EvalLossThresh float64
+	ProbeSink      ProbeSink
+}
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
 //
 //	config := mlx.DefaultLoRAConfig() // rank=8, alpha=16, targets=[q_proj, v_proj]
-var DefaultLoRAConfig = metal.DefaultLoRAConfig
+func DefaultLoRAConfig() LoRAConfig {
+	return fromMetalLoRAConfig(metal.DefaultLoRAConfig())
+}
 
 // DefaultAdamWConfig returns the standard AdamW hyperparameters.
 var DefaultAdamWConfig = metal.DefaultAdamWConfig
@@ -73,6 +92,31 @@ func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) 
 //	optimizer := mlx.NewAdamW(1e-4)
 //	optimizer := mlx.NewAdamW(&mlx.AdamWConfig{LearningRate: 1e-4, Beta1: 0.85})
 func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
+
+func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
+	return metal.LoRAConfig{
+		Rank:         cfg.Rank,
+		Alpha:        cfg.Alpha,
+		Scale:        cfg.Scale,
+		TargetKeys:   append([]string(nil), cfg.TargetKeys...),
+		TargetLayers: append([]string(nil), cfg.TargetLayers...),
+		Lambda:       cfg.Lambda,
+		DType:        metal.DType(cfg.DType),
+		ProbeSink:    toMetalProbeSink(cfg.ProbeSink),
+	}
+}
+
+func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
+	return LoRAConfig{
+		Rank:         cfg.Rank,
+		Alpha:        cfg.Alpha,
+		Scale:        cfg.Scale,
+		TargetKeys:   append([]string(nil), cfg.TargetKeys...),
+		TargetLayers: append([]string(nil), cfg.TargetLayers...),
+		Lambda:       cfg.Lambda,
+		DType:        DType(cfg.DType),
+	}
+}
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
 //

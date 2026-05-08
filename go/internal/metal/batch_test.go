@@ -114,6 +114,32 @@ func TestBatch_BuildBatchMask_MultipleBatches_Good(t *testing.T) {
 	}
 }
 
+func TestBatch_BuildOptionalBatchMask_SkipsDenseMaskForUnpaddedBatch_Good(t *testing.T) {
+	mask := buildOptionalBatchMask(2, 4, []int32{4, 4})
+	if mask != nil {
+		t.Fatalf("buildOptionalBatchMask returned dense mask for unpadded batch")
+	}
+}
+
+func TestBatch_BuildOptionalBatchMask_KeepsMaskForPaddedBatch_Good(t *testing.T) {
+	mask := buildOptionalBatchMask(2, 4, []int32{4, 3})
+	if mask == nil {
+		t.Fatalf("buildOptionalBatchMask returned nil for padded batch")
+	}
+	defer Free(mask)
+
+	if err := Eval(mask); err != nil {
+		t.Fatalf("Eval mask: %v", err)
+	}
+	shape := mask.Shape()
+	want := []int32{2, 1, 4, 4}
+	for i, got := range shape {
+		if got != want[i] {
+			t.Fatalf("mask shape[%d] = %d, want %d", i, got, want[i])
+		}
+	}
+}
+
 // Generated file-aware compliance coverage.
 func TestBatch_Model_Classify_Good(t *testing.T) {
 	coverageTokens := "Model Classify"

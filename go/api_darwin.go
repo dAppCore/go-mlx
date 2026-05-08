@@ -27,13 +27,30 @@ type nativeModel interface {
 	Tokenizer() *metal.Tokenizer
 }
 
+type nativePromptCacheWarmer interface {
+	WarmPromptCache(context.Context, string) error
+}
+
+type nativeKVSnapshotter interface {
+	CaptureKV(context.Context, string) (*metal.KVSnapshot, error)
+}
+
+type nativeLoRALoader interface {
+	LoadLoRA(string) (*metal.LoRAAdapter, error)
+}
+
+type nativeLoRAUnloader interface {
+	UnloadLoRA() error
+}
+
 // Model is the RFC-style root-package model handle.
 type Model struct {
-	model   nativeModel
-	cfg     LoadConfig
-	tok     *Tokenizer
-	gguf    *GGUFInfo
-	cleanup func() error
+	model       nativeModel
+	cfg         LoadConfig
+	tok         *Tokenizer
+	gguf        *GGUFInfo
+	adapterInfo LoRAAdapterInfo
+	cleanup     func() error
 }
 
 var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
@@ -65,6 +82,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 	resolvedPath := modelPath
 	resolvedAdapterPath := cfg.AdapterPath
+	var adapterInfo LoRAAdapterInfo
 	cleanup := func() error { return nil }
 	if cfg.Medium != nil {
 		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
@@ -83,11 +101,32 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			appendCleanup(&cleanup, adapterCleanup)
 		}
 	}
+	cfg = applyMemoryPlanToLoadConfig(resolvedPath, cfg)
+	if resolvedAdapterPath != "" {
+		adapterInfo, err = inspectLoRAAdapter(resolvedAdapterPath, cfg.AdapterPath)
+		if err != nil {
+			if cleanupErr := cleanup(); cleanupErr != nil {
+				return nil, core.ErrorJoin(err, cleanupErr)
+			}
+			return nil, err
+		}
+	}
 
 	native, err := loadNativeModel(resolvedPath, metal.LoadConfig{
-		ContextLen:  cfg.ContextLength,
-		AdapterPath: resolvedAdapterPath,
-		Device:      metal.DeviceType(cfg.Device),
+		ContextLen:           cfg.ContextLength,
+		ParallelSlots:        cfg.ParallelSlots,
+		DisablePromptCache:   !cfg.PromptCache,
+		PromptCacheMinTokens: cfg.PromptCacheMinTokens,
+		AdapterPath:          resolvedAdapterPath,
+		Device:               metal.DeviceType(cfg.Device),
+		CachePolicy:          string(cfg.CachePolicy),
+		KVCacheMode:          string(cfg.CacheMode),
+		BatchSize:            cfg.BatchSize,
+		PrefillChunkSize:     cfg.PrefillChunkSize,
+		ExpectedQuantization: cfg.ExpectedQuantization,
+		MemoryLimitBytes:     cfg.MemoryLimitBytes,
+		CacheLimitBytes:      cfg.CacheLimitBytes,
+		WiredLimitBytes:      cfg.WiredLimitBytes,
 	})
 	if err != nil {
 		if cleanupErr := cleanup(); cleanupErr != nil {
@@ -120,11 +159,12 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 
 	return &Model{
-		model:   native,
-		cfg:     cfg,
-		tok:     &Tokenizer{tok: native.Tokenizer()},
-		gguf:    ggufInfo,
-		cleanup: cleanup,
+		model:       native,
+		cfg:         cfg,
+		tok:         &Tokenizer{tok: native.Tokenizer()},
+		gguf:        ggufInfo,
+		adapterInfo: adapterInfo,
+		cleanup:     cleanup,
 	}, nil
 }
 
@@ -137,20 +177,184 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 		MinP:          cfg.MinP,
 		StopTokens:    cfg.StopTokens,
 		RepeatPenalty: cfg.RepeatPenalty,
+		ProbeSink:     toMetalProbeSink(cfg.ProbeSink),
 	}
+}
+
+func toMetalProbeSink(sink ProbeSink) metal.ProbeSink {
+	if sink == nil {
+		return nil
+	}
+	return metal.ProbeSinkFunc(func(event metal.ProbeEvent) {
+		sink.EmitProbe(toRootProbeEvent(event))
+	})
+}
+
+func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
+	out := ProbeEvent{
+		Kind:  ProbeEventKind(event.Kind),
+		Phase: ProbePhase(event.Phase),
+		Step:  event.Step,
+		Meta:  cloneMetalProbeMeta(event.Meta),
+	}
+	if event.Token != nil {
+		token := *event.Token
+		out.Token = &ProbeToken{
+			ID:              token.ID,
+			Text:            token.Text,
+			PromptTokens:    token.PromptTokens,
+			GeneratedTokens: token.GeneratedTokens,
+		}
+	}
+	if event.Logits != nil {
+		logits := *event.Logits
+		out.Logits = &ProbeLogits{
+			Shape:      append([]int32(nil), logits.Shape...),
+			VocabSize:  logits.VocabSize,
+			MaxTokenID: logits.MaxTokenID,
+			MaxLogit:   logits.MaxLogit,
+			MinTokenID: logits.MinTokenID,
+			MinLogit:   logits.MinLogit,
+			MeanLogit:  logits.MeanLogit,
+			Top:        toRootProbeLogits(logits.Top),
+			Values:     append([]float32(nil), logits.Values...),
+			Meta:       cloneMetalProbeMeta(logits.Meta),
+		}
+	}
+	if event.Entropy != nil {
+		entropy := *event.Entropy
+		out.Entropy = &ProbeEntropy{Value: entropy.Value, Unit: entropy.Unit}
+	}
+	if event.SelectedHeads != nil {
+		heads := *event.SelectedHeads
+		out.SelectedHeads = &ProbeHeadSelection{
+			Layer:  heads.Layer,
+			Heads:  append([]int(nil), heads.Heads...),
+			Scores: append([]float64(nil), heads.Scores...),
+		}
+	}
+	if event.LayerCoherence != nil {
+		coherence := *event.LayerCoherence
+		out.LayerCoherence = &ProbeLayerCoherence{
+			Layer:          coherence.Layer,
+			KeyCoherence:   coherence.KeyCoherence,
+			ValueCoherence: coherence.ValueCoherence,
+			CrossAlignment: coherence.CrossAlignment,
+			KVCoupling:     coherence.KVCoupling,
+			HeadEntropy:    coherence.HeadEntropy,
+			PhaseLock:      coherence.PhaseLock,
+		}
+	}
+	if event.RouterDecision != nil {
+		router := *event.RouterDecision
+		out.RouterDecision = &ProbeRouterDecision{
+			Layer:       router.Layer,
+			TokenID:     router.TokenID,
+			ExpertIDs:   append([]int(nil), router.ExpertIDs...),
+			Weights:     append([]float32(nil), router.Weights...),
+			Temperature: router.Temperature,
+		}
+	}
+	if event.Residual != nil {
+		residual := *event.Residual
+		out.Residual = &ProbeResidualSummary{
+			Layer:    residual.Layer,
+			Mean:     residual.Mean,
+			Variance: residual.Variance,
+			RMS:      residual.RMS,
+			L2Norm:   residual.L2Norm,
+			MaxAbs:   residual.MaxAbs,
+		}
+	}
+	if event.Cache != nil {
+		cache := *event.Cache
+		out.Cache = &ProbeCachePressure{
+			PromptTokens:    cache.PromptTokens,
+			GeneratedTokens: cache.GeneratedTokens,
+			LayerCount:      cache.LayerCount,
+			CacheTokens:     cache.CacheTokens,
+			ProcessedTokens: cache.ProcessedTokens,
+			MaxCacheTokens:  cache.MaxCacheTokens,
+			Utilization:     cache.Utilization,
+			Rotating:        cache.Rotating,
+		}
+	}
+	if event.Memory != nil {
+		memory := *event.Memory
+		out.Memory = &ProbeMemoryPressure{
+			ActiveBytes: memory.ActiveBytes,
+			PeakBytes:   memory.PeakBytes,
+			CacheBytes:  memory.CacheBytes,
+		}
+	}
+	if event.Training != nil {
+		training := *event.Training
+		out.Training = &ProbeTraining{
+			Step:         training.Step,
+			Epoch:        training.Epoch,
+			Loss:         training.Loss,
+			LearningRate: training.LearningRate,
+			GradNorm:     training.GradNorm,
+		}
+	}
+	return out
+}
+
+func toRootProbeLogits(logits []metal.ProbeLogit) []ProbeLogit {
+	if len(logits) == 0 {
+		return nil
+	}
+	out := make([]ProbeLogit, len(logits))
+	for i, logit := range logits {
+		out[i] = ProbeLogit{
+			TokenID:     logit.TokenID,
+			Logit:       logit.Logit,
+			Probability: logit.Probability,
+		}
+	}
+	return out
+}
+
+func cloneMetalProbeMeta(meta map[string]string) map[string]string {
+	if len(meta) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(meta))
+	for key, value := range meta {
+		out[key] = value
+	}
+	return out
 }
 
 func toRootMetrics(metrics metal.Metrics) Metrics {
 	return Metrics{
-		PromptTokens:        metrics.PromptTokens,
-		GeneratedTokens:     metrics.GeneratedTokens,
-		PrefillDuration:     metrics.PrefillDuration,
-		DecodeDuration:      metrics.DecodeDuration,
-		TotalDuration:       metrics.TotalDuration,
-		PrefillTokensPerSec: metrics.PrefillTokensPerSec,
-		DecodeTokensPerSec:  metrics.DecodeTokensPerSec,
-		PeakMemoryBytes:     metrics.PeakMemoryBytes,
-		ActiveMemoryBytes:   metrics.ActiveMemoryBytes,
+		PromptTokens:               metrics.PromptTokens,
+		GeneratedTokens:            metrics.GeneratedTokens,
+		PrefillDuration:            metrics.PrefillDuration,
+		DecodeDuration:             metrics.DecodeDuration,
+		TotalDuration:              metrics.TotalDuration,
+		PrefillTokensPerSec:        metrics.PrefillTokensPerSec,
+		DecodeTokensPerSec:         metrics.DecodeTokensPerSec,
+		PeakMemoryBytes:            metrics.PeakMemoryBytes,
+		ActiveMemoryBytes:          metrics.ActiveMemoryBytes,
+		PromptCacheHits:            metrics.PromptCacheHits,
+		PromptCacheMisses:          metrics.PromptCacheMisses,
+		PromptCacheHitTokens:       metrics.PromptCacheHitTokens,
+		PromptCacheMissTokens:      metrics.PromptCacheMissTokens,
+		PromptCacheRestoreDuration: metrics.PromptCacheRestoreDuration,
+		Adapter:                    toRootAdapterInfo(metrics.Adapter),
+	}
+}
+
+func toRootAdapterInfo(info metal.AdapterInfo) LoRAAdapterInfo {
+	return LoRAAdapterInfo{
+		Name:       info.Name,
+		Path:       info.Path,
+		Hash:       info.Hash,
+		Rank:       info.Rank,
+		Alpha:      info.Alpha,
+		Scale:      info.Scale,
+		TargetKeys: append([]string(nil), info.TargetKeys...),
 	}
 }
 
@@ -206,16 +410,88 @@ func toRootAttentionSnapshot(result *metal.AttentionResult) *AttentionSnapshot {
 	}
 }
 
+func toRootKVSnapshot(result *metal.KVSnapshot) *KVSnapshot {
+	if result == nil {
+		return nil
+	}
+	layers := make([]KVLayerSnapshot, len(result.Layers))
+	for i, layer := range result.Layers {
+		layers[i] = KVLayerSnapshot{
+			Layer:      layer.Layer,
+			CacheIndex: layer.CacheIndex,
+			Heads:      make([]KVHeadSnapshot, len(layer.Heads)),
+		}
+		for j, head := range layer.Heads {
+			layers[i].Heads[j] = KVHeadSnapshot{
+				Key:   append([]float32(nil), head.Key...),
+				Value: append([]float32(nil), head.Value...),
+			}
+		}
+	}
+	return &KVSnapshot{
+		Version:       result.Version,
+		Architecture:  result.Architecture,
+		Tokens:        append([]int32(nil), result.Tokens...),
+		Generated:     append([]int32(nil), result.Generated...),
+		TokenOffset:   result.TokenOffset,
+		NumLayers:     result.NumLayers,
+		NumHeads:      result.NumHeads,
+		SeqLen:        result.SeqLen,
+		HeadDim:       result.HeadDim,
+		NumQueryHeads: result.NumQueryHeads,
+		LogitShape:    append([]int32(nil), result.LogitShape...),
+		Logits:        append([]float32(nil), result.Logits...),
+		Layers:        layers,
+	}
+}
+
+func toMetalKVSnapshot(result *KVSnapshot) *metal.KVSnapshot {
+	if result == nil {
+		return nil
+	}
+	layers := make([]metal.KVLayerSnapshot, len(result.Layers))
+	for i, layer := range result.Layers {
+		layers[i] = metal.KVLayerSnapshot{
+			Layer:      layer.Layer,
+			CacheIndex: layer.CacheIndex,
+			Heads:      make([]metal.KVHeadSnapshot, len(layer.Heads)),
+		}
+		for j, head := range layer.Heads {
+			layers[i].Heads[j] = metal.KVHeadSnapshot{
+				Key:   append([]float32(nil), head.Key...),
+				Value: append([]float32(nil), head.Value...),
+			}
+		}
+	}
+	return &metal.KVSnapshot{
+		Version:       result.Version,
+		Architecture:  result.Architecture,
+		Tokens:        append([]int32(nil), result.Tokens...),
+		Generated:     append([]int32(nil), result.Generated...),
+		TokenOffset:   result.TokenOffset,
+		NumLayers:     result.NumLayers,
+		NumHeads:      result.NumHeads,
+		SeqLen:        result.SeqLen,
+		HeadDim:       result.HeadDim,
+		NumQueryHeads: result.NumQueryHeads,
+		LogitShape:    append([]int32(nil), result.LogitShape...),
+		Logits:        append([]float32(nil), result.Logits...),
+		Layers:        layers,
+	}
+}
+
 // Generate produces a buffered string result.
 func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+	cfg := applyGenerateOptions(opts)
+	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 	builder := core.NewBuilder()
-	for tok := range m.model.Generate(context.Background(), prompt, cfg) {
-		builder.WriteString(tok.Text)
+	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
+		builder.WriteString(filter.Process(tok.Text))
 	}
+	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
@@ -227,19 +503,33 @@ func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error)
 	if m == nil || m.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+	cfg := applyGenerateOptions(opts)
+	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
 	builder := core.NewBuilder()
-	for tok := range m.model.Chat(context.Background(), metalMessages, cfg) {
-		builder.WriteString(tok.Text)
+	for tok := range m.model.Chat(context.Background(), metalMessages, toMetalGenerateConfig(cfg)) {
+		builder.WriteString(filter.Process(tok.Text))
 	}
+	builder.WriteString(filter.Flush())
 	if err := m.model.Err(); err != nil {
 		return "", err
 	}
 	return builder.String(), nil
+}
+
+// WarmPromptCache prefills the exact token-prefix cache for a stable prompt prefix.
+func (m *Model) WarmPromptCache(prompt string) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	warmer, ok := m.model.(nativePromptCacheWarmer)
+	if !ok {
+		return core.NewError("mlx: native model does not support prompt cache warming")
+	}
+	return warmer.WarmPromptCache(context.Background(), prompt)
 }
 
 // GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
@@ -253,10 +543,22 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
-		for tok := range m.model.Generate(ctx, prompt, cfg) {
+		cfg := applyGenerateOptions(opts)
+		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
+			text := filter.Process(tok.Text)
+			if text == "" {
+				continue
+			}
 			select {
-			case out <- Token{ID: tok.ID, Value: tok.Text, Text: tok.Text}:
+			case out <- Token{ID: tok.ID, Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
 			case <-ctx.Done():
 				return
 			}
@@ -276,14 +578,26 @@ func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...Gene
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
+		cfg := applyGenerateOptions(opts)
+		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 		}
-		for tok := range m.model.Chat(ctx, metalMessages, cfg) {
+		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
+			text := filter.Process(tok.Text)
+			if text == "" {
+				continue
+			}
 			select {
-			case out <- toRootToken(tok):
+			case out <- Token{ID: tok.ID, Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
 			case <-ctx.Done():
 				return
 			}
@@ -330,7 +644,11 @@ func (m *Model) Metrics() Metrics {
 	if m == nil || m.model == nil {
 		return Metrics{}
 	}
-	return toRootMetrics(m.model.LastMetrics())
+	metrics := toRootMetrics(m.model.LastMetrics())
+	if loraAdapterInfoEmpty(metrics.Adapter) {
+		metrics.Adapter = m.adapterInfo
+	}
+	return metrics
 }
 
 // ModelType returns the internal architecture identifier.
@@ -388,7 +706,23 @@ func (m *Model) Info() ModelInfo {
 		QuantBits:     quantBits,
 		QuantGroup:    quantGroup,
 		ContextLength: contextLength,
+		Adapter:       m.Adapter(),
 	}
+}
+
+// Adapter returns the active LoRA inference adapter identity.
+func (m *Model) Adapter() LoRAAdapterInfo {
+	if m == nil {
+		return LoRAAdapterInfo{}
+	}
+	if !loraAdapterInfoEmpty(m.adapterInfo) {
+		return m.adapterInfo
+	}
+	if m.model != nil {
+		info := m.model.Info()
+		return toRootAdapterInfo(info.Adapter)
+	}
+	return LoRAAdapterInfo{}
 }
 
 // InspectAttention runs a single prefill pass and returns extracted K tensors.
@@ -401,6 +735,22 @@ func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 		return nil, err
 	}
 	return toRootAttentionSnapshot(result), nil
+}
+
+// CaptureKV runs a single prefill pass and returns extracted K/V cache tensors.
+func (m *Model) CaptureKV(prompt string) (*KVSnapshot, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	snapshotter, ok := m.model.(nativeKVSnapshotter)
+	if !ok {
+		return nil, core.NewError("mlx: native model does not support KV capture")
+	}
+	result, err := snapshotter.CaptureKV(context.Background(), prompt)
+	if err != nil {
+		return nil, err
+	}
+	return toRootKVSnapshot(result), nil
 }
 
 // Tokenizer returns the model tokenizer.
@@ -441,7 +791,57 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 	if cfg != nil {
 		mcfg = *cfg
 	}
-	return model.model.ApplyLoRA(mcfg)
+	return model.model.ApplyLoRA(toMetalLoRAConfig(mcfg))
+}
+
+// LoadLoRA loads a saved adapter package into a loaded model and returns it.
+func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	info, err := InspectLoRAAdapter(path)
+	if err != nil {
+		return nil, err
+	}
+	loader, ok := m.model.(nativeLoRALoader)
+	if !ok {
+		return nil, core.NewError("mlx: native model does not support LoRA loading")
+	}
+	adapter, err := loader.LoadLoRA(path)
+	if err != nil {
+		return nil, err
+	}
+	m.adapterInfo = info
+	m.cfg.AdapterPath = path
+	return adapter, nil
+}
+
+// UnloadLoRA removes the active inference adapter when the backend supports it.
+func (m *Model) UnloadLoRA() error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if loraAdapterInfoEmpty(m.adapterInfo) {
+		return nil
+	}
+	unloader, ok := m.model.(nativeLoRAUnloader)
+	if !ok {
+		return core.NewError("mlx: native model does not support LoRA unloading")
+	}
+	if err := unloader.UnloadLoRA(); err != nil {
+		return err
+	}
+	m.adapterInfo = LoRAAdapterInfo{}
+	m.cfg.AdapterPath = ""
+	return nil
+}
+
+// SwapLoRA replaces the active inference adapter with another adapter package.
+func (m *Model) SwapLoRA(path string) (*LoRAAdapter, error) {
+	if err := m.UnloadLoRA(); err != nil {
+		return nil, err
+	}
+	return m.LoadLoRA(path)
 }
 
 // MergeLoRA returns the current model with the adapter applied in-place.
