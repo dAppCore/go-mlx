@@ -30,7 +30,6 @@ lib/mlx-c/examples/
 .scannerwork/
 node_modules/
 node_modules.bak/
-dist/
 __pycache__/
 *.pyc
 coverage/
