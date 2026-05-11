@@ -11,6 +11,7 @@ import (
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
+	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
 
@@ -282,8 +283,8 @@ func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest)
 	}
 }
 
-func stateBundleTokenizerFromInference(tokenizer inference.TokenizerIdentity) StateBundleTokenizer {
-	return stateBundleTokenizer(StateBundleTokenizer{
+func stateBundleTokenizerFromInference(tokenizer inference.TokenizerIdentity) mlxbundle.Tokenizer {
+	return mlxbundle.NormaliseTokenizer(mlxbundle.Tokenizer{
 		Kind:         tokenizer.Kind,
 		Path:         tokenizer.Path,
 		Hash:         tokenizer.Hash,

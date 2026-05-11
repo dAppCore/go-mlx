@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -69,14 +70,14 @@ func (m *Model) NewSessionFromKV(snapshot *kv.Snapshot) (*ModelSession, error) {
 }
 
 // NewSessionFromBundle creates a persistent session restored from a state bundle.
-func (m *Model) NewSessionFromBundle(bundle *StateBundle) (*ModelSession, error) {
-	if bundle == nil {
+func (m *Model) NewSessionFromBundle(b *bundle.Bundle) (*ModelSession, error) {
+	if b == nil {
 		return nil, core.NewError("mlx: state bundle is nil")
 	}
-	if err := CheckStateBundleCompatibility(m.Info(), bundle); err != nil {
+	if err := bundle.CheckCompatibility(modelInfoToBundle(m.Info()), b); err != nil {
 		return nil, err
 	}
-	snapshot, err := bundle.Snapshot()
+	snapshot, err := b.Snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -303,14 +304,14 @@ func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.
 }
 
 // RestoreBundle restores the session from a state bundle.
-func (s *ModelSession) RestoreBundle(bundle *StateBundle) error {
-	if bundle == nil {
+func (s *ModelSession) RestoreBundle(b *bundle.Bundle) error {
+	if b == nil {
 		return core.NewError("mlx: state bundle is nil")
 	}
-	if err := CheckStateBundleCompatibility(s.info, bundle); err != nil {
+	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
 		return err
 	}
-	snapshot, err := bundle.Snapshot()
+	snapshot, err := b.Snapshot()
 	if err != nil {
 		return err
 	}
@@ -319,17 +320,17 @@ func (s *ModelSession) RestoreBundle(bundle *StateBundle) error {
 
 // RestoreBundleFromMemvid restores the session from a state bundle whose KV is
 // held in memvid cold storage.
-func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, bundle *StateBundle, store memvid.Store) error {
+func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, b *bundle.Bundle, store memvid.Store) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if bundle == nil {
+	if b == nil {
 		return core.NewError("mlx: state bundle is nil")
 	}
-	if err := CheckStateBundleCompatibility(s.info, bundle); err != nil {
+	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
 		return err
 	}
-	snapshot, err := bundle.SnapshotFromMemvid(ctx, store)
+	snapshot, err := b.SnapshotFromMemvid(ctx, store)
 	if err != nil {
 		return err
 	}
@@ -338,11 +339,11 @@ func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, bundle *Stat
 
 // LoadBundle reads a state bundle from path and restores it into the session.
 func (s *ModelSession) LoadBundle(path string) error {
-	bundle, err := LoadStateBundle(path)
+	b, err := bundle.Load(path)
 	if err != nil {
 		return err
 	}
-	return s.RestoreBundle(bundle)
+	return s.RestoreBundle(b)
 }
 
 // Fork creates an independent session that starts from the same retained state.

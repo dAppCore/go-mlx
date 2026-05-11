@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
+	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -23,7 +24,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	}
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
-	tokenizer := StateBundleTokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}
+	tokenizer := mlxbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}
 	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
 	native := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
 	session := &ModelSession{session: native, info: info}

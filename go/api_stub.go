@@ -9,9 +9,10 @@ import (
 	"iter"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/lora"
 )
 
 // Model is a stub on unsupported builds.
@@ -137,7 +138,7 @@ func (m *Model) NewSessionFromKV(_ *kv.Snapshot) (*ModelSession, error) {
 }
 
 // NewSessionFromBundle returns an availability error on unsupported builds.
-func (m *Model) NewSessionFromBundle(_ *StateBundle) (*ModelSession, error) {
+func (m *Model) NewSessionFromBundle(_ *bundle.Bundle) (*ModelSession, error) {
 	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
@@ -235,12 +236,12 @@ func (s *ModelSession) LoadKVBlocksFromMemvid(_ context.Context, _ memvid.Store,
 }
 
 // RestoreBundle returns an availability error on unsupported builds.
-func (s *ModelSession) RestoreBundle(_ *StateBundle) error {
+func (s *ModelSession) RestoreBundle(_ *bundle.Bundle) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
 // RestoreBundleFromMemvid returns an availability error on unsupported builds.
-func (s *ModelSession) RestoreBundleFromMemvid(_ context.Context, _ *StateBundle, _ memvid.Store) error {
+func (s *ModelSession) RestoreBundleFromMemvid(_ context.Context, _ *bundle.Bundle, _ memvid.Store) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 

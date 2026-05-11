@@ -11,6 +11,7 @@ import (
 	"dappco.re/go/inference/decode"
 	memvid "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/probe"
 )
@@ -253,26 +254,26 @@ func modelBenchStateBundle(model *Model) func(context.Context, bench.Config, ben
 			return report
 		}
 		start := time.Now()
-		bundle, err := NewStateBundle(snapshot, StateBundleOptions{
+		b, err := bundle.New(snapshot, bundle.Options{
 			Model:     cfg.Model,
 			ModelPath: cfg.ModelPath,
-			ModelInfo: model.Info(),
+			Source:    modelInfoToBundle(model.Info()),
 			Prompt:    cfg.CachePrompt,
-			Sampler:   toBenchGenerateOptions(cfg.GenerateOptions(nil)),
+			Sampler:   sampleFromGenerateConfig(toBenchGenerateOptions(cfg.GenerateOptions(nil))),
 		})
 		if err != nil {
 			report.Duration = time.Since(start)
 			report.Error = err.Error()
 			return report
 		}
-		data := core.JSONMarshal(bundle)
+		data := core.JSONMarshal(b)
 		if !data.OK {
 			report.Duration = time.Since(start)
 			report.Error = fastEvalResultError(data).Error()
 			return report
 		}
 		raw := data.Value.([]byte)
-		var decoded StateBundle
+		var decoded bundle.Bundle
 		if result := core.JSONUnmarshal(raw, &decoded); !result.OK {
 			report.Duration = time.Since(start)
 			report.Error = fastEvalResultError(result).Error()

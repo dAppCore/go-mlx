@@ -12,6 +12,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/probe"
@@ -422,19 +423,19 @@ func TestModelSessionMemvidBundle_Good_Restore(t *testing.T) {
 		session: nativeSession,
 		info:    ModelInfo{Architecture: "gemma4_text", NumLayers: 1},
 	}
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   StateBundleModel{Architecture: "gemma4_text", NumLayers: 1},
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "gemma4_text", NumLayers: 1},
 		KVHash:  hash,
-		Refs: []StateBundleRef{{
-			Kind:   StateBundleRefMemvid,
-			URI:    stateMemvidURI(ref),
+		Refs: []mlxbundle.Ref{{
+			Kind:   mlxbundle.RefMemvid,
+			URI:    mlxbundle.MemvidURI(ref),
 			Memvid: ref,
 		}},
 	}
 
-	if err := session.RestoreBundleFromMemvid(context.Background(), bundle, store); err != nil {
+	if err := session.RestoreBundleFromMemvid(context.Background(), b, store); err != nil {
 		t.Fatalf("RestoreBundleFromMemvid() error = %v", err)
 	}
 	if nativeSession.restoredKV == nil || nativeSession.restoredKV.Tokens[0] != 1 {
@@ -746,10 +747,14 @@ func TestSessionExportBundle_Good(t *testing.T) {
 	}
 	session := &ModelSession{session: native}
 
-	bundle, err := session.ExportBundle(StateBundleOptions{
+	snapshot, err := session.CaptureKV()
+	if err != nil {
+		t.Fatalf("CaptureKV() error = %v", err)
+	}
+	b, err := mlxbundle.New(snapshot, mlxbundle.Options{
 		Model:  "gemma4-e4b",
 		Prompt: "stable context",
-		Runtime: StateBundleRuntime{
+		Runtime: mlxbundle.Runtime{
 			Version: "test",
 		},
 	})
@@ -757,11 +762,11 @@ func TestSessionExportBundle_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportBundle() error = %v", err)
 	}
-	if bundle == nil || bundle.Model.Name != "gemma4-e4b" || bundle.Runtime.Name != "go-mlx" {
-		t.Fatalf("ExportBundle() = %+v", bundle)
+	if b == nil || b.Model.Name != "gemma4-e4b" || b.Runtime.Name != "go-mlx" {
+		t.Fatalf("ExportBundle() = %+v", b)
 	}
-	if bundle.KV == nil || bundle.KV.Generated[0] != 2 || bundle.SAMI == nil {
-		t.Fatalf("ExportBundle() KV/SAMI = %+v/%+v", bundle.KV, bundle.SAMI)
+	if b.KV == nil || b.KV.Generated[0] != 2 || b.SAMI == nil {
+		t.Fatalf("ExportBundle() KV/SAMI = %+v/%+v", b.KV, b.SAMI)
 	}
 }
 

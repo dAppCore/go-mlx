@@ -7,6 +7,7 @@ package mlx
 import (
 	"testing"
 
+	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 )
@@ -68,15 +69,15 @@ func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
 		model:       &fakeNativeModel{session: session, info: metal.ModelInfo{Architecture: "qwen3", NumLayers: 1}},
 		adapterInfo: lora.AdapterInfo{Path: "/adapters/live", Hash: "sha256:live", Rank: 8},
 	}
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   StateBundleModel{Architecture: "qwen3", NumLayers: 1},
-		Adapter: StateBundleAdapter{Path: "/adapters/other", Hash: "sha256:other", Rank: 8},
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "qwen3", NumLayers: 1},
+		Adapter: mlxbundle.Adapter{Path: "/adapters/other", Hash: "sha256:other", Rank: 8},
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	restored, err := model.NewSessionFromBundle(bundle)
+	restored, err := model.NewSessionFromBundle(b)
 	if err == nil {
 		t.Fatal("expected adapter mismatch error")
 	}

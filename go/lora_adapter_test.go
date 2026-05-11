@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/lora"
 )
 
@@ -53,53 +54,53 @@ func TestInspectLoRAAdapter_SafetensorsPath_Ugly(t *testing.T) {
 }
 
 func TestStateBundleCompatibility_MatchingAdapter_Good(t *testing.T) {
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   StateBundleModel{Architecture: "qwen3", NumLayers: 1},
-		Adapter: StateBundleAdapter{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "qwen3", NumLayers: 1},
+		Adapter: mlxbundle.Adapter{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := CheckStateBundleCompatibility(ModelInfo{
+	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
 		Adapter:      lora.AdapterInfo{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
-	}, bundle)
+	}), b)
 	if err != nil {
 		t.Fatalf("CheckStateBundleCompatibility() error = %v", err)
 	}
 }
 
 func TestStateBundleCompatibility_RejectsAdapterMismatch_Bad(t *testing.T) {
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   StateBundleModel{Architecture: "qwen3", NumLayers: 1},
-		Adapter: StateBundleAdapter{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "qwen3", NumLayers: 1},
+		Adapter: mlxbundle.Adapter{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := CheckStateBundleCompatibility(ModelInfo{
+	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
 		Adapter:      lora.AdapterInfo{Path: "/adapters/b", Hash: "sha256:b", Rank: 8},
-	}, bundle)
+	}), b)
 	if err == nil {
 		t.Fatal("expected adapter mismatch error")
 	}
 }
 
 func TestStateBundleCompatibility_RejectsMissingAdapter_Ugly(t *testing.T) {
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   StateBundleModel{Architecture: "gemma4_text", NumLayers: 1},
-		Adapter: StateBundleAdapter{Path: "/adapters/domain", Hash: "sha256:domain", Rank: 16},
+	b := &mlxbundle.Bundle{
+		Version: mlxbundle.Version,
+		Kind:    mlxbundle.Kind,
+		Model:   mlxbundle.Model{Architecture: "gemma4_text", NumLayers: 1},
+		Adapter: mlxbundle.Adapter{Path: "/adapters/domain", Hash: "sha256:domain", Rank: 16},
 		KV:      stateBundleTestSnapshot(),
 	}
 
-	err := CheckStateBundleCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}, bundle)
+	err := mlxbundle.CheckCompatibility(modelInfoToBundle(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}), b)
 	if err == nil {
 		t.Fatal("expected missing active adapter error")
 	}
