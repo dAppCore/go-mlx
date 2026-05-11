@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package openai
 
 import (
 	"context"
@@ -17,10 +17,10 @@ import (
 	openaicompat "dappco.re/go/inference/openai"
 )
 
-func TestOpenAI_NewOpenAIResolver_Good_UsesMetalBackend(t *testing.T) {
-	resolver := NewOpenAIResolver("/models/qwen3")
+func TestOpenAI_NewResolver_Good_UsesMetalBackend(t *testing.T) {
+	resolver := NewResolver("/models/qwen3")
 	if resolver == nil {
-		t.Fatal("NewOpenAIResolver() returned nil")
+		t.Fatal("NewResolver() returned nil")
 	}
 	if resolver.BackendName != "metal" {
 		t.Fatalf("BackendName = %q, want metal", resolver.BackendName)
@@ -30,10 +30,10 @@ func TestOpenAI_NewOpenAIResolver_Good_UsesMetalBackend(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewOpenAIHandler_Good_ReturnsHTTPHandler(t *testing.T) {
-	handler := NewOpenAIHandler("/models/qwen3")
+func TestOpenAI_NewHandler_Good_ReturnsHTTPHandler(t *testing.T) {
+	handler := NewHandler("/models/qwen3")
 	if handler == nil {
-		t.Fatal("NewOpenAIHandler() returned nil")
+		t.Fatal("NewHandler() returned nil")
 	}
 }
 
@@ -129,15 +129,15 @@ func (m *openAISchedulerModel) Schedule(_ context.Context, req inference.Schedul
 	return inference.RequestHandle{ID: req.ID}, ch, nil
 }
 
-func TestOpenAI_NewOpenAIMux_Good_MountsChatResponsesAndServices(t *testing.T) {
+func TestOpenAI_NewMux_Good_MountsChatResponsesAndServices(t *testing.T) {
 	model := &openAIMockModel{
 		tokens:  []inference.Token{{Text: "<think>plan</think>Answer"}},
 		metrics: inference.GenerateMetrics{PromptTokens: 2, GeneratedTokens: 3},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 	if handler == nil {
-		t.Fatal("NewOpenAIMux() returned nil")
+		t.Fatal("NewMux() returned nil")
 	}
 
 	cases := []struct {
@@ -226,13 +226,13 @@ func TestOpenAI_NewOpenAIMux_Good_MountsChatResponsesAndServices(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewOpenAIMux_Good_MountsAnthropicAndOllama(t *testing.T) {
+func TestOpenAI_NewMux_Good_MountsAnthropicAndOllama(t *testing.T) {
 	model := &openAIMockModel{
 		tokens:  []inference.Token{{Text: "<think>plan</think>Answer"}},
 		metrics: inference.GenerateMetrics{PromptTokens: 2, GeneratedTokens: 3},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	cases := []struct {
 		name   string
@@ -300,7 +300,7 @@ func TestOpenAI_AnthropicMessages_Good_AppliesStopSequences(t *testing.T) {
 		metrics: inference.GenerateMetrics{PromptTokens: 2, GeneratedTokens: 3},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, anthropiccompat.DefaultMessagesPath, strings.NewReader(`{"model":"qwen","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stop_sequences":[" STOP"]}`))
 	rec := httptest.NewRecorder()
@@ -324,7 +324,7 @@ func TestOpenAI_OllamaGenerate_Good_StreamsJSONLines(t *testing.T) {
 		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 2},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, ollamacompat.DefaultGeneratePath, strings.NewReader(`{"model":"qwen","prompt":"hi","stream":true}`))
 	rec := httptest.NewRecorder()
@@ -345,7 +345,7 @@ func TestOpenAI_Responses_Good_StreamsServerSentEvents(t *testing.T) {
 		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 2},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, openaicompat.DefaultResponsesPath, strings.NewReader(`{"model":"qwen","stream":true,"input":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
@@ -368,7 +368,7 @@ func TestOpenAI_AnthropicMessages_Good_StreamsEvents(t *testing.T) {
 		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 2},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, anthropiccompat.DefaultMessagesPath, strings.NewReader(`{"model":"qwen","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
 	rec := httptest.NewRecorder()
@@ -391,7 +391,7 @@ func TestOpenAI_OllamaChat_Good_StreamsJSONLines(t *testing.T) {
 		metrics: inference.GenerateMetrics{PromptTokens: 1, GeneratedTokens: 2},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, ollamacompat.DefaultChatPath, strings.NewReader(`{"model":"qwen","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
@@ -406,7 +406,7 @@ func TestOpenAI_OllamaChat_Good_StreamsJSONLines(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewOpenAIMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
+func TestOpenAI_NewMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
 	model := &openAIMockModel{
 		cacheEntries: []inference.CacheBlockRef{{
 			ID:         "blk-a",
@@ -417,7 +417,7 @@ func TestOpenAI_NewOpenAIMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
 	var woke, slept bool
-	handler := NewOpenAIMuxWithAdmin(resolver, OpenAIAdminConfig{
+	handler := NewMuxWithAdmin(resolver, AdminConfig{
 		Wake: func(context.Context) error {
 			woke = true
 			return nil
@@ -434,7 +434,7 @@ func TestOpenAI_NewOpenAIMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
 		path   string
 		want   string
 	}{
-		{name: "health", method: http.MethodGet, path: DefaultAdminHealthPath, want: `"status":"ok"`},
+		{name: "health", method: http.MethodGet, path: DefaultHealthPath, want: `"status":"ok"`},
 		{name: "wake", method: http.MethodPost, path: DefaultAdminWakePath, want: `"action":"wake"`},
 		{name: "sleep", method: http.MethodPost, path: DefaultAdminSleepPath, want: `"action":"sleep"`},
 		{name: "cache entries", method: http.MethodGet, path: DefaultAdminCacheEntriesPath + "?model=qwen&tenant=local", want: `"id":"blk-a"`},
@@ -463,7 +463,7 @@ func TestOpenAI_NewOpenAIMuxWithAdmin_Good_MountsAdminHandlers(t *testing.T) {
 func TestOpenAI_AdminCacheEntries_Bad_RequiresEntryLister(t *testing.T) {
 	model := &openAITextOnlyModel{}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMuxWithAdmin(resolver, OpenAIAdminConfig{})
+	handler := NewMuxWithAdmin(resolver, AdminConfig{})
 
 	req := httptest.NewRequest(http.MethodGet, DefaultAdminCacheEntriesPath+"?model=qwen", nil)
 	rec := httptest.NewRecorder()
@@ -505,7 +505,7 @@ func TestOpenAI_Responses_Good_UsesSchedulerModel(t *testing.T) {
 		tokens: []inference.Token{{Text: "direct"}},
 	}}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"qwen": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, openaicompat.DefaultResponsesPath, strings.NewReader(`{"model":"qwen","input":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
@@ -528,7 +528,7 @@ func TestOpenAI_Responses_Good_UsesModelParserRegistry(t *testing.T) {
 		tokens: []inference.Token{{Text: "<|channel>analysis\nplan<|channel>final\nAnswer"}},
 	}
 	resolver := openaicompat.NewStaticResolver(map[string]inference.TextModel{"gpt-oss": model})
-	handler := NewOpenAIMux(resolver)
+	handler := NewMux(resolver)
 
 	req := httptest.NewRequest(http.MethodPost, openaicompat.DefaultResponsesPath, strings.NewReader(`{"model":"gpt-oss","input":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
@@ -546,10 +546,10 @@ func TestOpenAI_Responses_Good_UsesModelParserRegistry(t *testing.T) {
 	}
 }
 
-func TestOpenAI_NewOpenAIModelMux_Good_UsesMetalResolver(t *testing.T) {
-	handler := NewOpenAIModelMux("/models/qwen3")
+func TestOpenAI_NewModelMux_Good_UsesMetalResolver(t *testing.T) {
+	handler := NewModelMux("/models/qwen3")
 	if handler == nil {
-		t.Fatal("NewOpenAIModelMux() returned nil")
+		t.Fatal("NewModelMux() returned nil")
 	}
 }
 
@@ -661,7 +661,7 @@ func TestOpenAICompatHelpers_Good(t *testing.T) {
 	if names := resolverModelNames(openAINameResolver{}); len(names) != 1 || names[0] != "listed" {
 		t.Fatalf("resolver names = %v, want listed", names)
 	}
-	if names := resolverModelNames(NewOpenAIResolver("/models/qwen3")); len(names) != 1 || names[0] != "qwen3" {
+	if names := resolverModelNames(NewResolver("/models/qwen3")); len(names) != 1 || names[0] != "qwen3" {
 		t.Fatalf("backend resolver names = %v, want qwen3", names)
 	}
 	if cut, ok := firstStopSequenceCut("alpha STOP beta END", []string{"END", " STOP"}); !ok || cut != len("alpha") {

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package openai
 
 import (
 	"context"
@@ -13,21 +13,21 @@ import (
 )
 
 const (
-	DefaultAdminHealthPath       = "/v1/health"
+	DefaultHealthPath       = "/v1/health"
 	DefaultAdminWakePath         = "/v1/runtime/wake"
 	DefaultAdminSleepPath        = "/v1/runtime/sleep"
 	DefaultAdminCacheEntriesPath = "/v1/cache/entries"
 )
 
-// OpenAIAdminConfig supplies host-owned runtime callbacks for the compatibility mux.
-type OpenAIAdminConfig struct {
-	Health func(context.Context) (AdminHealth, error)
+// AdminConfig supplies host-owned runtime callbacks for the compatibility mux.
+type AdminConfig struct {
+	Health func(context.Context) (Health, error)
 	Wake   func(context.Context) error
 	Sleep  func(context.Context) error
 }
 
-// AdminHealth is the small health payload served by the local compatibility mux.
-type AdminHealth struct {
+// Health is the small health payload served by the local compatibility mux.
+type Health struct {
 	Status  string            `json:"status"`
 	Runtime string            `json:"runtime,omitempty"`
 	Models  []string          `json:"models,omitempty"`
@@ -35,8 +35,8 @@ type AdminHealth struct {
 	Labels  map[string]string `json:"labels,omitempty"`
 }
 
-// AdminActionResponse records a runtime wake/sleep callback result.
-type AdminActionResponse struct {
+// ActionResponse records a runtime wake/sleep callback result.
+type ActionResponse struct {
 	Action string            `json:"action"`
 	Status string            `json:"status"`
 	Labels map[string]string `json:"labels,omitempty"`
@@ -54,11 +54,11 @@ type adminCacheEntriesResponse struct {
 	Stats   *inference.CacheStats     `json:"stats,omitempty"`
 }
 
-func mountOpenAIAdminHandlers(mux *http.ServeMux, resolver openaicompat.Resolver, cfg OpenAIAdminConfig) {
+func mountAdminHandlers(mux *http.ServeMux, resolver openaicompat.Resolver, cfg AdminConfig) {
 	if mux == nil {
 		return
 	}
-	mux.Handle(DefaultAdminHealthPath, &adminHealthHandler{resolver: resolver, cfg: cfg})
+	mux.Handle(DefaultHealthPath, &adminHealthHandler{resolver: resolver, cfg: cfg})
 	mux.Handle(DefaultAdminWakePath, &adminActionHandler{action: "wake", callback: cfg.Wake})
 	mux.Handle(DefaultAdminSleepPath, &adminActionHandler{action: "sleep", callback: cfg.Sleep})
 	mux.Handle(DefaultAdminCacheEntriesPath, &adminCacheEntriesHandler{resolver: resolver})
@@ -66,14 +66,14 @@ func mountOpenAIAdminHandlers(mux *http.ServeMux, resolver openaicompat.Resolver
 
 type adminHealthHandler struct {
 	resolver openaicompat.Resolver
-	cfg      OpenAIAdminConfig
+	cfg      AdminConfig
 }
 
 func (h *adminHealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !requireCompatMethod(w, r, http.MethodGet) {
 		return
 	}
-	health := AdminHealth{
+	health := Health{
 		Status:  "ok",
 		Runtime: "go-mlx",
 		Models:  resolverModelNames(h.resolver),
@@ -118,7 +118,7 @@ func (h *adminActionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeOpenAIJSON(w, http.StatusOK, AdminActionResponse{Action: action, Status: "ok"})
+	writeOpenAIJSON(w, http.StatusOK, ActionResponse{Action: action, Status: "ok"})
 }
 
 type adminCacheEntriesHandler struct {

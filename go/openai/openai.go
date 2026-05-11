@@ -1,6 +1,11 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+// Package openai mounts OpenAI / Anthropic / Ollama compatibility handlers
+// over a local inference backend (Metal by default).
+//
+//	handler := openai.NewHandler("/path/to/model", inference.WithContextLen(8192))
+//	http.ListenAndServe(":8080", handler)
+package openai
 
 import (
 	"context"
@@ -16,36 +21,46 @@ import (
 	"dappco.re/go/inference/parser"
 )
 
-// NewOpenAIResolver returns a resolver that lazily loads modelPath through the
-// native Metal backend registered by this package.
-func NewOpenAIResolver(modelPath string, opts ...inference.LoadOption) *openaicompat.BackendResolver {
+// NewResolver returns a resolver that lazily loads modelPath through the
+// native Metal backend registered by go-mlx.
+//
+//	resolver := openai.NewResolver(modelPath)
+func NewResolver(modelPath string, opts ...inference.LoadOption) *openaicompat.BackendResolver {
 	return openaicompat.NewBackendResolver("metal", modelPath, opts...)
 }
 
-// NewOpenAIHandler exposes modelPath through the shared OpenAI-compatible chat
+// NewHandler exposes modelPath through the shared OpenAI-compatible chat
 // completions handler.
-func NewOpenAIHandler(modelPath string, opts ...inference.LoadOption) http.Handler {
-	return openaicompat.NewHandler(NewOpenAIResolver(modelPath, opts...))
+//
+//	handler := openai.NewHandler(modelPath)
+func NewHandler(modelPath string, opts ...inference.LoadOption) http.Handler {
+	return openaicompat.NewHandler(NewResolver(modelPath, opts...))
 }
 
-// NewOpenAIModelMux exposes a local MLX model through the package-first
+// NewModelMux exposes a local MLX model through the package-first
 // OpenAI-compatible route set. It lazily loads modelPath through the registered
 // native Metal inference backend.
-func NewOpenAIModelMux(modelPath string, opts ...inference.LoadOption) http.Handler {
-	return NewOpenAIMux(NewOpenAIResolver(modelPath, opts...))
+//
+//	handler := openai.NewModelMux(modelPath)
+func NewModelMux(modelPath string, opts ...inference.LoadOption) http.Handler {
+	return NewMux(NewResolver(modelPath, opts...))
 }
 
-// NewOpenAIMux mounts the shared local-inference endpoints over resolver. The
+// NewMux mounts the shared local-inference endpoints over resolver. The
 // handler is deliberately package-first: callers can host it from core/api,
 // go-ai, a standalone server, or tests without making go-mlx depend on any of
 // those layers.
-func NewOpenAIMux(resolver openaicompat.Resolver) http.Handler {
-	return NewOpenAIMuxWithAdmin(resolver, OpenAIAdminConfig{})
+//
+//	handler := openai.NewMux(resolver)
+func NewMux(resolver openaicompat.Resolver) http.Handler {
+	return NewMuxWithAdmin(resolver, AdminConfig{})
 }
 
-// NewOpenAIMuxWithAdmin mounts the same compatibility routes as NewOpenAIMux
-// plus package-first admin callbacks supplied by the host application.
-func NewOpenAIMuxWithAdmin(resolver openaicompat.Resolver, admin OpenAIAdminConfig) http.Handler {
+// NewMuxWithAdmin mounts the same compatibility routes as NewMux plus
+// package-first admin callbacks supplied by the host application.
+//
+//	handler := openai.NewMuxWithAdmin(resolver, openai.AdminConfig{Health: hostHealth})
+func NewMuxWithAdmin(resolver openaicompat.Resolver, admin AdminConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle(openaicompat.DefaultChatCompletionsPath, openaicompat.NewHandler(resolver))
 	mux.Handle(openaicompat.DefaultResponsesPath, newOpenAIResponsesHandler(resolver))
@@ -61,7 +76,7 @@ func NewOpenAIMuxWithAdmin(resolver openaicompat.Resolver, admin OpenAIAdminConf
 	mux.Handle(ollamacompat.DefaultGeneratePath, newOllamaGenerateHandler(resolver))
 	mux.Handle(ollamacompat.DefaultTagsPath, newOllamaTagsHandler(resolver))
 	mux.Handle(ollamacompat.DefaultShowPath, newOllamaShowHandler(resolver))
-	mountOpenAIAdminHandlers(mux, resolver, admin)
+	mountAdminHandlers(mux, resolver, admin)
 	return mux
 }
 
@@ -679,6 +694,22 @@ func parseOpenAIModelOutput(model inference.TextModel, tokens []inference.Token,
 		return text, ""
 	}
 	return result.VisibleText, reasoningText(result.Reasoning)
+}
+
+// indexString locates substr inside s, returning its index or -1.
+func indexString(s, substr string) int {
+	if substr == "" {
+		return 0
+	}
+	if len(substr) > len(s) {
+		return -1
+	}
+	for i := range len(s) - len(substr) + 1 {
+		if s[i:i+len(substr)] == substr {
+			return i
+		}
+	}
+	return -1
 }
 
 func openAITokensText(tokens []inference.Token) string {
