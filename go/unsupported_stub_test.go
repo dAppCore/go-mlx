@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/adapter"
 	"dappco.re/go/mlx/gguf"
 )
 
@@ -100,28 +101,28 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_ = MaskedCrossEntropyLoss(arr, arr, arr)
 	_ = Checkpoint(func(xs []*Array) []*Array { return xs })([]*Array{arr})
 
-	adapter := &LoRAAdapter{}
-	_ = adapter.TotalParams()
-	_ = adapter.SortedNames()
-	_ = adapter.AllTrainableParams()
-	adapter.SetAllParams([]*Array{arr, arr})
-	_ = adapter.Step(Batch{Tokens: [][]int{{1, 2}}, Length: []int{2}}, [][]int{{1, 2}}, opt)
-	_ = adapter.Save("/tmp/adapter.safetensors")
-	adapter.Merge()
+	loraAdapter := &LoRAAdapter{}
+	_ = loraAdapter.TotalParams()
+	_ = loraAdapter.SortedNames()
+	_ = loraAdapter.AllTrainableParams()
+	loraAdapter.SetAllParams([]*Array{arr, arr})
+	_ = loraAdapter.Step(Batch{Tokens: [][]int{{1, 2}}, Length: []int{2}}, [][]int{{1, 2}}, opt)
+	_ = loraAdapter.Save("/tmp/adapter.safetensors")
+	loraAdapter.Merge()
 
 	var infAdapter inference.Adapter
 	var infTrainable inference.TrainableModel
 	_ = ConcreteAdapter(infAdapter)
 	_ = TrainingModel(infTrainable)
 
-	streamAdapter := NewInferenceAdapter(nil, "mlx")
+	streamAdapter := adapter.New(nil, "mlx")
 	_ = streamAdapter.Name()
 	_ = streamAdapter.Available()
 	_ = streamAdapter.Model()
-	_, _ = streamAdapter.Generate(nil, "hello", GenOpts{MaxTokens: 8, Temp: 0.1})
-	_ = streamAdapter.GenerateStream(nil, "hello", GenOpts{}, func(string) error { return nil })
-	_, _ = streamAdapter.Chat(nil, []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{})
-	_ = streamAdapter.ChatStream(nil, []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(string) error { return nil })
+	_, _ = streamAdapter.Generate(nil, "hello", adapter.GenOpts{MaxTokens: 8, Temp: 0.1})
+	_ = streamAdapter.GenerateStream(nil, "hello", adapter.GenOpts{}, func(string) error { return nil })
+	_, _ = streamAdapter.Chat(nil, []inference.Message{{Role: "user", Content: "hi"}}, adapter.GenOpts{})
+	_ = streamAdapter.ChatStream(nil, []inference.Message{{Role: "user", Content: "hi"}}, adapter.GenOpts{}, func(string) error { return nil })
 	_, _ = NewMLXBackend("/tmp/model")
 
 }

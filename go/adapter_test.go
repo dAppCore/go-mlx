@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/adapter"
 )
 
 type stubTextModel struct {
@@ -103,8 +104,8 @@ func TestNewInferenceAdapterGenerate_Good(t *testing.T) {
 		},
 	}
 
-	adapter := NewInferenceAdapter(model, "mlx")
-	result, err := adapter.Generate(context.Background(), "ignored", GenOpts{MaxTokens: 16, Temp: 0.2})
+	a := adapter.New(model, "mlx")
+	result, err := a.Generate(context.Background(), "ignored", adapter.GenOpts{MaxTokens: 16, Temp: 0.2})
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
@@ -121,8 +122,8 @@ func TestInferenceAdapterChat_Good(t *testing.T) {
 		chatTokens: []inference.Token{{Text: "chat"}, {Text: " reply"}},
 	}
 
-	adapter := NewInferenceAdapter(model, "mlx")
-	result, err := adapter.Chat(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{MaxTokens: 8})
+	a := adapter.New(model, "mlx")
+	result, err := a.Chat(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, adapter.GenOpts{MaxTokens: 8})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -141,8 +142,8 @@ func TestInferenceAdapterGenerateStream_CallbackError_Bad(t *testing.T) {
 		tokens: []inference.Token{{Text: "one"}, {Text: "two"}},
 	}
 
-	adapter := NewInferenceAdapter(model, "mlx")
-	err := adapter.GenerateStream(context.Background(), "ignored", GenOpts{}, func(token string) error {
+	a := adapter.New(model, "mlx")
+	err := a.GenerateStream(context.Background(), "ignored", adapter.GenOpts{}, func(token string) error {
 		if token == "one" {
 			return wantErr
 		}
@@ -155,27 +156,27 @@ func TestInferenceAdapterGenerateStream_CallbackError_Bad(t *testing.T) {
 
 func TestInferenceAdapterBasics_Good(t *testing.T) {
 	model := &stubTextModel{closeErr: core.NewError("close failed")}
-	adapter := NewInferenceAdapter(model, "probe")
-	if adapter.Name() != "probe" {
-		t.Fatalf("Name() = %q, want probe", adapter.Name())
+	a := adapter.New(model, "probe")
+	if a.Name() != "probe" {
+		t.Fatalf("Name() = %q, want probe", a.Name())
 	}
-	if !adapter.Available() {
+	if !a.Available() {
 		t.Fatal("Available() = false, want true")
 	}
-	if adapter.Model() != model {
+	if a.Model() != model {
 		t.Fatal("Model() did not return wrapped model")
 	}
-	if err := adapter.Close(); err == nil || !core.Contains(err.Error(), "close failed") {
+	if err := a.Close(); err == nil || !core.Contains(err.Error(), "close failed") {
 		t.Fatalf("Close() error = %v", err)
 	}
-	if adapter.Available() {
+	if a.Available() {
 		t.Fatal("Available() after Close = true, want false")
 	}
-	if err := adapter.Close(); err != nil {
+	if err := a.Close(); err != nil {
 		t.Fatalf("second Close() = %v, want nil", err)
 	}
 
-	var nilAdapter *InferenceAdapter
+	var nilAdapter *adapter.Adapter
 	if nilAdapter.Name() != "" {
 		t.Fatal("nil Name() should be blank")
 	}
@@ -188,28 +189,28 @@ func TestInferenceAdapterBasics_Good(t *testing.T) {
 }
 
 func TestInferenceAdapterNilAndModelErrors_Bad(t *testing.T) {
-	var nilAdapter *InferenceAdapter
-	if _, err := nilAdapter.Generate(context.Background(), "x", GenOpts{}); err == nil {
+	var nilAdapter *adapter.Adapter
+	if _, err := nilAdapter.Generate(context.Background(), "x", adapter.GenOpts{}); err == nil {
 		t.Fatal("expected nil Generate error")
 	}
-	if err := nilAdapter.GenerateStream(context.Background(), "x", GenOpts{}, func(string) error { return nil }); err == nil {
+	if err := nilAdapter.GenerateStream(context.Background(), "x", adapter.GenOpts{}, func(string) error { return nil }); err == nil {
 		t.Fatal("expected nil GenerateStream error")
 	}
-	if _, err := nilAdapter.Chat(context.Background(), nil, GenOpts{}); err == nil {
+	if _, err := nilAdapter.Chat(context.Background(), nil, adapter.GenOpts{}); err == nil {
 		t.Fatal("expected nil Chat error")
 	}
-	if err := nilAdapter.ChatStream(context.Background(), nil, GenOpts{}, func(string) error { return nil }); err == nil {
+	if err := nilAdapter.ChatStream(context.Background(), nil, adapter.GenOpts{}, func(string) error { return nil }); err == nil {
 		t.Fatal("expected nil ChatStream error")
 	}
 	if _, err := nilAdapter.InspectAttention(context.Background(), "x"); err == nil {
 		t.Fatal("expected nil InspectAttention error")
 	}
 
-	adapter := NewInferenceAdapter(&stubTextModel{}, "probe")
-	if err := adapter.GenerateStream(context.Background(), "x", GenOpts{}, nil); err == nil {
+	a := adapter.New(&stubTextModel{}, "probe")
+	if err := a.GenerateStream(context.Background(), "x", adapter.GenOpts{}, nil); err == nil {
 		t.Fatal("expected nil generate callback error")
 	}
-	if err := adapter.ChatStream(context.Background(), nil, GenOpts{}, nil); err == nil {
+	if err := a.ChatStream(context.Background(), nil, adapter.GenOpts{}, nil); err == nil {
 		t.Fatal("expected nil chat callback error")
 	}
 
@@ -219,12 +220,12 @@ func TestInferenceAdapterNilAndModelErrors_Bad(t *testing.T) {
 		chatTokens: []inference.Token{{Text: "chat"}},
 		err:        want,
 	}
-	adapter = NewInferenceAdapter(errorModel, "probe")
-	result, err := adapter.Generate(nil, "x", GenOpts{})
+	a = adapter.New(errorModel, "probe")
+	result, err := a.Generate(nil, "x", adapter.GenOpts{})
 	if !core.Is(err, want) || result.Text != "partial" {
 		t.Fatalf("Generate() = result:%+v err:%v, want partial model error", result, err)
 	}
-	result, err = adapter.Chat(nil, nil, GenOpts{})
+	result, err = a.Chat(nil, nil, adapter.GenOpts{})
 	if !core.Is(err, want) || result.Text != "chat" {
 		t.Fatalf("Chat() = result:%+v err:%v, want chat model error", result, err)
 	}
@@ -236,8 +237,8 @@ func TestInferenceAdapterChatStream_CallbackError_Bad(t *testing.T) {
 		chatTokens: []inference.Token{{Text: "one"}, {Text: "two"}},
 	}
 
-	adapter := NewInferenceAdapter(model, "mlx")
-	err := adapter.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(token string) error {
+	a := adapter.New(model, "mlx")
+	err := a.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, adapter.GenOpts{}, func(token string) error {
 		if token == "one" {
 			return wantErr
 		}
@@ -252,8 +253,8 @@ func TestInferenceAdapterInspectAttention_Good(t *testing.T) {
 	want := &inference.AttentionSnapshot{NumLayers: 2, Architecture: "gemma3"}
 	model := &stubTextModel{attention: want}
 
-	adapter := NewInferenceAdapter(model, "mlx")
-	got, err := adapter.InspectAttention(context.Background(), "prompt")
+	a := adapter.New(model, "mlx")
+	got, err := a.InspectAttention(context.Background(), "prompt")
 	if err != nil {
 		t.Fatalf("InspectAttention() error = %v", err)
 	}
@@ -264,8 +265,8 @@ func TestInferenceAdapterInspectAttention_Good(t *testing.T) {
 
 func TestInferenceAdapterInspectAttention_Unsupported_Bad(t *testing.T) {
 	model := &plainTextModel{}
-	adapter := NewInferenceAdapter(model, "plain")
-	if _, err := adapter.InspectAttention(context.Background(), "prompt"); err == nil {
+	a := adapter.New(model, "plain")
+	if _, err := a.InspectAttention(context.Background(), "prompt"); err == nil {
 		t.Fatal("expected unsupported attention inspection error")
 	}
 }
@@ -280,14 +281,14 @@ func TestNewMLXBackend_Good(t *testing.T) {
 	backend := &stubBackend{model: model}
 	inference.Register(backend)
 
-	adapter, err := NewMLXBackend("/tmp/model-path", inference.WithContextLen(4096))
+	a, err := NewMLXBackend("/tmp/model-path", inference.WithContextLen(4096))
 	if err != nil {
 		t.Fatalf("NewMLXBackend() error = %v", err)
 	}
-	if adapter.Name() != "mlx" {
-		t.Fatalf("adapter name = %q, want %q", adapter.Name(), "mlx")
+	if a.Name() != "mlx" {
+		t.Fatalf("adapter name = %q, want %q", a.Name(), "mlx")
 	}
-	if adapter.Model() != model {
+	if a.Model() != model {
 		t.Fatal("adapter should expose the loaded model")
 	}
 	if backend.loadPath != "/tmp/model-path" {
