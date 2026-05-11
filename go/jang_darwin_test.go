@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference/quant/jang"
+	mlxjang "dappco.re/go/mlx/quant/jang"
 )
 
 func testJANGTQInfo() *jang.Info {
@@ -68,9 +69,9 @@ func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.
 		t.Fatalf("jang.DequantizePackedTensor() error = %v", err)
 	}
 
-	got, err := DequantizeJANGPackedTensorMetal(desc, packed, scales, biases)
+	got, err := mlxjang.DequantizePackedTensor(desc, packed, scales, biases)
 	if err != nil {
-		t.Fatalf("DequantizeJANGPackedTensorMetal() error = %v", err)
+		t.Fatalf("mlxjang.DequantizePackedTensor() error = %v", err)
 	}
 	if !float32SlicesRoughlyEqual(got, want, 1e-5) {
 		t.Fatalf("got = %+v, want %+v", got, want)
@@ -110,9 +111,9 @@ func TestJANGNative_ProjectPackedTensorMetalMatchesCPUProjection_Good(t *testing
 	}
 	projBias := []float32{0.25, -1, 2}
 
-	got, err := ProjectJANGPackedTensorMetal(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
+	got, err := mlxjang.ProjectPackedTensor(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
 	if err != nil {
-		t.Fatalf("ProjectJANGPackedTensorMetal() error = %v", err)
+		t.Fatalf("mlxjang.ProjectPackedTensor() error = %v", err)
 	}
 	weight, err := jang.DequantizePackedTensor(desc, packed, scales, biases)
 	if err != nil {
@@ -160,13 +161,13 @@ func TestJANGNative_ProjectPackedTensorMetalFusedMatchesComposedProjection_Good(
 	}
 	projBias := []float32{0.25, -1, 2}
 
-	got, err := ProjectJANGPackedTensorMetalFused(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
+	got, err := mlxjang.ProjectPackedTensorFused(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
 	if err != nil {
-		t.Fatalf("ProjectJANGPackedTensorMetalFused() error = %v", err)
+		t.Fatalf("mlxjang.ProjectPackedTensorFused() error = %v", err)
 	}
-	want, err := ProjectJANGPackedTensorMetal(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
+	want, err := mlxjang.ProjectPackedTensor(desc, packed, scales, biases, input, []int32{2, 4}, projBias)
 	if err != nil {
-		t.Fatalf("ProjectJANGPackedTensorMetal() error = %v", err)
+		t.Fatalf("mlxjang.ProjectPackedTensor() error = %v", err)
 	}
 	if !float32SlicesRoughlyEqual(got.Values, want.Values, 1e-5) {
 		t.Fatalf("got = %+v, want %+v", got.Values, want.Values)
@@ -188,43 +189,43 @@ func TestJANGNative_ProjectPackedTensorMetalRejectsInputMismatch_Bad(t *testing.
 		ScaleCount:  3,
 		BiasCount:   3,
 	}
-	_, err := ProjectJANGPackedTensorMetal(desc, []byte{0, 0, 0}, []float32{1, 1, 1}, []float32{0, 0, 0}, []float32{1, 2, 3}, []int32{1, 3}, nil)
+	_, err := mlxjang.ProjectPackedTensor(desc, []byte{0, 0, 0}, []float32{1, 1, 1}, []float32{0, 0, 0}, []float32{1, 2, 3}, []int32{1, 3}, nil)
 	if err == nil {
 		t.Fatal("expected input shape error")
 	}
 }
 
 func TestJANGNative_ShapeValidationHelpers_Bad(t *testing.T) {
-	if _, err := jangMetalShape(nil); err == nil {
+	if _, err := mlxjang.MetalShape(nil); err == nil {
 		t.Fatal("expected empty JANG metal shape error")
 	}
-	if _, err := jangMetalShape([]uint64{0}); err == nil {
+	if _, err := mlxjang.MetalShape([]uint64{0}); err == nil {
 		t.Fatal("expected zero JANG metal shape error")
 	}
-	if _, err := jangMetalShape([]uint64{uint64(^uint32(0)>>1) + 1}); err == nil {
+	if _, err := mlxjang.MetalShape([]uint64{uint64(^uint32(0)>>1) + 1}); err == nil {
 		t.Fatal("expected oversized JANG metal shape error")
 	}
-	shape, err := jangMetalShape([]uint64{2, 3})
+	shape, err := mlxjang.MetalShape([]uint64{2, 3})
 	if err != nil {
-		t.Fatalf("jangMetalShape(valid) error = %v", err)
+		t.Fatalf("mlxjang.MetalShape(valid) error = %v", err)
 	}
 	if !equalInt32Slices(shape, []int32{2, 3}) {
 		t.Fatalf("shape = %v, want [2 3]", shape)
 	}
-	if _, err := jangMetalShapeElements(nil); err == nil {
+	if _, err := mlxjang.ShapeElements(nil); err == nil {
 		t.Fatal("expected empty projection input shape error")
 	}
-	if _, err := jangMetalShapeElements([]int32{2, 0}); err == nil {
+	if _, err := mlxjang.ShapeElements([]int32{2, 0}); err == nil {
 		t.Fatal("expected invalid projection input shape error")
 	}
-	if _, err := jangMetalShapeElements([]int32{1 << 30, 1 << 30, 8}); err == nil {
+	if _, err := mlxjang.ShapeElements([]int32{1 << 30, 1 << 30, 8}); err == nil {
 		t.Fatal("expected oversized projection input shape error")
 	}
-	if elements, err := jangMetalShapeElements([]int32{2, 3, 4}); err != nil || elements != 24 {
-		t.Fatalf("jangMetalShapeElements(valid) = %d/%v, want 24/nil", elements, err)
+	if elements, err := mlxjang.ShapeElements([]int32{2, 3, 4}); err != nil || elements != 24 {
+		t.Fatalf("mlxjang.ShapeElements(valid) = %d/%v, want 24/nil", elements, err)
 	}
-	if got := int32SliceToInts([]int32{4, 5}); !equalIntSlices(got, []int{4, 5}) {
-		t.Fatalf("int32SliceToInts() = %v, want [4 5]", got)
+	if got := mlxjang.Int32SliceToInts([]int32{4, 5}); !equalIntSlices(got, []int{4, 5}) {
+		t.Fatalf("mlxjang.Int32SliceToInts() = %v, want [4 5]", got)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	mlxjang "dappco.re/go/mlx/quant/jang"
 )
 
 // DispatchMiniMaxM2PackedExpertsMetal applies router-selected MiniMax M2
@@ -157,8 +158,8 @@ func runMiniMaxM2PackedExpertMetal(hidden []float32, expert MiniMaxM2PackedExper
 	return down.Values, nil
 }
 
-func projectMiniMaxM2PackedTensorMetal(tensor JANGPackedProjectionTensor, input []float32, inputShape []int32) (JANGPackedProjectionResult, error) {
-	return ProjectJANGPackedTensorMetalFused(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases, input, inputShape, tensor.Bias)
+func projectMiniMaxM2PackedTensorMetal(tensor JANGPackedProjectionTensor, input []float32, inputShape []int32) (mlxjang.PackedProjectionResult, error) {
+	return mlxjang.ProjectPackedTensorFused(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases, input, inputShape, tensor.Bias)
 }
 
 func miniMaxM2SwiGLU(gate, up float32) float32 {
