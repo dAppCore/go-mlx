@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
 )
 
 func TestMergeModelPacks_LinearSafetensors_Good(t *testing.T) {
@@ -134,11 +135,11 @@ func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
 	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{
 		{Name: name, Shape: []int{5}, Data: []float32{10, 12, 14, 16, 18}},
 	})
-	leftIndex, err := indexSafetensorFiles([]string{leftPath})
+	leftIndex, err := safetensors.IndexFiles([]string{leftPath})
 	if err != nil {
 		t.Fatalf("index left: %v", err)
 	}
-	rightIndex, err := indexSafetensorFiles([]string{rightPath})
+	rightIndex, err := safetensors.IndexFiles([]string{rightPath})
 	if err != nil {
 		t.Fatalf("index right: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
 	}
 	file := created.Value.(*core.OSFile)
 
-	err = writeLinearMergedTensorChunks(context.Background(), file, []safetensorTensorRef{
+	err = writeLinearMergedTensorChunks(context.Background(), file, []safetensors.TensorRef{
 		leftIndex.Tensors[name],
 		rightIndex.Tensors[name],
 	}, []float64{0.25, 0.75}, 2)
@@ -164,7 +165,7 @@ func TestModelMerge_WriteLinearMergedTensorChunks_Good(t *testing.T) {
 	if !read.OK {
 		t.Fatalf("read output: %v", read.Value)
 	}
-	values, err := decodeSafetensorFloatData("F32", read.Value.([]byte), 5)
+	values, err := safetensors.DecodeFloatData("F32", read.Value.([]byte), 5)
 	if err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
@@ -181,11 +182,11 @@ func TestModelMerge_WriteSLERPMergedTensorChunks_Good(t *testing.T) {
 	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{
 		{Name: name, Shape: []int{2}, Data: []float32{0, 1}},
 	})
-	leftIndex, err := indexSafetensorFiles([]string{leftPath})
+	leftIndex, err := safetensors.IndexFiles([]string{leftPath})
 	if err != nil {
 		t.Fatalf("index left: %v", err)
 	}
-	rightIndex, err := indexSafetensorFiles([]string{rightPath})
+	rightIndex, err := safetensors.IndexFiles([]string{rightPath})
 	if err != nil {
 		t.Fatalf("index right: %v", err)
 	}
@@ -196,7 +197,7 @@ func TestModelMerge_WriteSLERPMergedTensorChunks_Good(t *testing.T) {
 	}
 	file := created.Value.(*core.OSFile)
 
-	err = writeSLERPMergedTensorChunks(context.Background(), file, []safetensorTensorRef{
+	err = writeSLERPMergedTensorChunks(context.Background(), file, []safetensors.TensorRef{
 		leftIndex.Tensors[name],
 		rightIndex.Tensors[name],
 	}, 0.5, 1)
@@ -211,7 +212,7 @@ func TestModelMerge_WriteSLERPMergedTensorChunks_Good(t *testing.T) {
 	if !read.OK {
 		t.Fatalf("read output: %v", read.Value)
 	}
-	values, err := decodeSafetensorFloatData("F32", read.Value.([]byte), 2)
+	values, err := safetensors.DecodeFloatData("F32", read.Value.([]byte), 2)
 	if err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
@@ -225,12 +226,12 @@ func TestModelMerge_SafetensorChunkHelpers_Good(t *testing.T) {
 	writeTestSafetensorsF32(t, path, []safetensorTestTensor{
 		{Name: name, Shape: []int{5}, Data: []float32{0, 2, 4, 6, 8}},
 	})
-	index, err := indexSafetensorFiles([]string{path})
+	index, err := safetensors.IndexFiles([]string{path})
 	if err != nil {
 		t.Fatalf("index source: %v", err)
 	}
 	ref := index.Tensors[name]
-	chunk, err := readSafetensorRefFloat32Chunk(ref, 1, 2)
+	chunk, err := safetensors.ReadRefFloat32Chunk(ref, 1, 2)
 	if err != nil {
 		t.Fatalf("read chunk: %v", err)
 	}
@@ -242,7 +243,7 @@ func TestModelMerge_SafetensorChunkHelpers_Good(t *testing.T) {
 		t.Fatalf("create output: %v", created.Value)
 	}
 	file := created.Value.(*core.OSFile)
-	err = writeSafetensorRefFloat32Chunks(context.Background(), file, ref, 2)
+	err = safetensors.WriteRefFloat32Chunks(context.Background(), file, ref, 2)
 	if closeErr := file.Close(); closeErr != nil {
 		t.Fatalf("close output: %v", closeErr)
 	}
@@ -253,7 +254,7 @@ func TestModelMerge_SafetensorChunkHelpers_Good(t *testing.T) {
 	if !read.OK {
 		t.Fatalf("read output: %v", read.Value)
 	}
-	values, err := decodeSafetensorFloatData("F32", read.Value.([]byte), 5)
+	values, err := safetensors.DecodeFloatData("F32", read.Value.([]byte), 5)
 	if err != nil {
 		t.Fatalf("decode copy: %v", err)
 	}
@@ -302,16 +303,16 @@ func TestModelMerge_ReadMergeTensorValues_Good(t *testing.T) {
 	name := "model.norm.weight"
 	writeTestSafetensorsF32(t, leftPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{1, 2}}})
 	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{{Name: name, Shape: []int{2}, Data: []float32{3, 4}}})
-	leftIndex, err := indexSafetensorFiles([]string{leftPath})
+	leftIndex, err := safetensors.IndexFiles([]string{leftPath})
 	if err != nil {
 		t.Fatalf("index left: %v", err)
 	}
-	rightIndex, err := indexSafetensorFiles([]string{rightPath})
+	rightIndex, err := safetensors.IndexFiles([]string{rightPath})
 	if err != nil {
 		t.Fatalf("index right: %v", err)
 	}
 
-	values, complete, err := readMergeTensorValues([]safetensorIndex{leftIndex, rightIndex}, name)
+	values, complete, err := readMergeTensorValues([]safetensors.Index{leftIndex, rightIndex}, name)
 	if err != nil {
 		t.Fatalf("readMergeTensorValues() error = %v", err)
 	}
@@ -323,25 +324,25 @@ func TestModelMerge_ReadMergeTensorValues_Good(t *testing.T) {
 }
 
 func TestModelMerge_ChunkHelperErrors_Bad(t *testing.T) {
-	if _, err := safetensorDTypeByteSize("F16"); err != nil {
+	if _, err := safetensors.DTypeByteSize("F16"); err != nil {
 		t.Fatalf("F16 byte size: %v", err)
 	}
-	if _, err := safetensorDTypeByteSize("BF16"); err != nil {
+	if _, err := safetensors.DTypeByteSize("BF16"); err != nil {
 		t.Fatalf("BF16 byte size: %v", err)
 	}
-	if _, err := safetensorDTypeByteSize("F64"); err != nil {
+	if _, err := safetensors.DTypeByteSize("F64"); err != nil {
 		t.Fatalf("F64 byte size: %v", err)
 	}
-	if _, err := safetensorDTypeByteSize("I32"); err == nil {
+	if _, err := safetensors.DTypeByteSize("I32"); err == nil {
 		t.Fatal("expected unsupported dtype error")
 	}
 	if err := writeLinearMergedTensorChunks(context.Background(), nil, nil, nil, 2); err == nil {
 		t.Fatal("expected no tensors error")
 	}
-	if err := writeLinearMergedTensorChunks(context.Background(), nil, []safetensorTensorRef{{Elements: 1}}, nil, 2); err == nil {
+	if err := writeLinearMergedTensorChunks(context.Background(), nil, []safetensors.TensorRef{{Elements: 1}}, nil, 2); err == nil {
 		t.Fatal("expected weight/source mismatch error")
 	}
-	if _, err := readSafetensorRefFloat32Chunk(safetensorTensorRef{DType: "F32", Elements: 1}, 1, 1); err == nil {
+	if _, err := safetensors.ReadRefFloat32Chunk(safetensors.TensorRef{DType: "F32", Elements: 1}, 1, 1); err == nil {
 		t.Fatal("expected chunk bounds error")
 	}
 	if err := modelMergeResultError(core.Ok("ok")); err != nil {
@@ -464,27 +465,27 @@ func TestModelMerge_SafetensorIndexErrors_Bad(t *testing.T) {
 	name := "model.norm.weight"
 	writeTestSafetensorsF32(t, leftPath, []safetensorTestTensor{{Name: name, Shape: []int{1}, Data: []float32{1}}})
 	writeTestSafetensorsF32(t, rightPath, []safetensorTestTensor{{Name: name, Shape: []int{1}, Data: []float32{2}}})
-	if _, err := indexSafetensorFiles([]string{leftPath, rightPath}); err == nil {
-		t.Fatal("indexSafetensorFiles(duplicate tensor) error = nil")
+	if _, err := safetensors.IndexFiles([]string{leftPath, rightPath}); err == nil {
+		t.Fatal("safetensors.IndexFiles(duplicate tensor) error = nil")
 	}
-	if _, err := readSafetensorIndex(core.PathJoin(t.TempDir(), "missing.safetensors")); err == nil {
-		t.Fatal("readSafetensorIndex(missing) error = nil")
+	if _, err := safetensors.ReadIndex(core.PathJoin(t.TempDir(), "missing.safetensors")); err == nil {
+		t.Fatal("safetensors.ReadIndex(missing) error = nil")
 	}
-	if _, err := safetensorRefFromHeader("bad.safetensors", "bad", safetensorHeaderEntry{DType: "F32", Shape: []int64{1}, DataOffsets: []int64{1}}, 8); err == nil {
-		t.Fatal("safetensorRefFromHeader(bad offsets len) error = nil")
+	if _, err := safetensors.RefFromHeader("bad.safetensors", "bad", safetensors.HeaderEntry{DType: "F32", Shape: []int64{1}, DataOffsets: []int64{1}}, 8); err == nil {
+		t.Fatal("safetensors.RefFromHeader(bad offsets len) error = nil")
 	}
-	if _, err := safetensorRefFromHeader("bad.safetensors", "bad", safetensorHeaderEntry{DType: "F32", Shape: []int64{0}, DataOffsets: []int64{0, 4}}, 8); err == nil {
-		t.Fatal("safetensorRefFromHeader(bad shape) error = nil")
+	if _, err := safetensors.RefFromHeader("bad.safetensors", "bad", safetensors.HeaderEntry{DType: "F32", Shape: []int64{0}, DataOffsets: []int64{0, 4}}, 8); err == nil {
+		t.Fatal("safetensors.RefFromHeader(bad shape) error = nil")
 	}
-	if err := validateModelMergeTensorIndexes([]safetensorIndex{
-		{Names: []string{"a"}, Tensors: map[string]safetensorTensorRef{"a": {Name: "a", Shape: []uint64{1}}}},
-		{Names: []string{"b"}, Tensors: map[string]safetensorTensorRef{"b": {Name: "b", Shape: []uint64{1}}}},
+	if err := validateModelMergeTensorIndexes([]safetensors.Index{
+		{Names: []string{"a"}, Tensors: map[string]safetensors.TensorRef{"a": {Name: "a", Shape: []uint64{1}}}},
+		{Names: []string{"b"}, Tensors: map[string]safetensors.TensorRef{"b": {Name: "b", Shape: []uint64{1}}}},
 	}, false); err == nil {
 		t.Fatal("validateModelMergeTensorIndexes(missing tensor) error = nil")
 	}
-	if err := validateModelMergeTensorIndexes([]safetensorIndex{
-		{Names: []string{"a"}, Tensors: map[string]safetensorTensorRef{"a": {Name: "a", Shape: []uint64{1}}}},
-		{Names: []string{"a", "b"}, Tensors: map[string]safetensorTensorRef{"a": {Name: "a", Shape: []uint64{1}}, "b": {Name: "b", Shape: []uint64{1}}}},
+	if err := validateModelMergeTensorIndexes([]safetensors.Index{
+		{Names: []string{"a"}, Tensors: map[string]safetensors.TensorRef{"a": {Name: "a", Shape: []uint64{1}}}},
+		{Names: []string{"a", "b"}, Tensors: map[string]safetensors.TensorRef{"a": {Name: "a", Shape: []uint64{1}}, "b": {Name: "b", Shape: []uint64{1}}}},
 	}, false); err == nil {
 		t.Fatal("validateModelMergeTensorIndexes(extra tensor) error = nil")
 	}

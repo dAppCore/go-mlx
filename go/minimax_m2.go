@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/safetensors"
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/profile"
 )
@@ -451,7 +452,7 @@ func LoadMiniMaxM2PackedExpertsFromSafetensors(plan MiniMaxM2TensorPlan, weightF
 	if len(weightFiles) == 0 {
 		return nil, core.NewError("mlx: MiniMax M2 packed expert loading requires safetensors weight files")
 	}
-	index, err := indexSafetensorFiles(weightFiles)
+	index, err := safetensors.IndexFiles(weightFiles)
 	if err != nil {
 		return nil, core.E("minimax_m2.packed_experts", "index safetensors", err)
 	}
@@ -525,7 +526,7 @@ func LoadMiniMaxM2RouterFromSafetensors(plan MiniMaxM2TensorPlan, weightFiles []
 		return MiniMaxM2RouterWeights{}, err
 	}
 	routerSpec := findMiniMaxM2TensorSpec(specs, MiniMaxM2TensorRoleRouterGate)
-	index, err := indexSafetensorFiles(weightFiles)
+	index, err := safetensors.IndexFiles(weightFiles)
 	if err != nil {
 		return MiniMaxM2RouterWeights{}, core.E("minimax_m2.router", "index safetensors", err)
 	}
@@ -533,7 +534,7 @@ func LoadMiniMaxM2RouterFromSafetensors(plan MiniMaxM2TensorPlan, weightFiles []
 	if !ok {
 		return MiniMaxM2RouterWeights{}, core.NewError("mlx: MiniMax M2 router missing gate tensor: " + routerSpec.Name)
 	}
-	weight, err := readSafetensorRefValues(ref)
+	weight, err := safetensors.ReadRefValues(ref)
 	if err != nil {
 		return MiniMaxM2RouterWeights{}, core.E("minimax_m2.router", "read gate", err)
 	}
@@ -548,7 +549,7 @@ func LoadMiniMaxM2RouterFromSafetensors(plan MiniMaxM2TensorPlan, weightFiles []
 	}
 	biasSpec := findMiniMaxM2TensorSpec(specs, MiniMaxM2TensorRoleRouterBias)
 	if biasRef, _, ok := findMiniMaxM2SafetensorRef(index, miniMaxM2RouterBiasCandidates(biasSpec, layer)); ok {
-		router.Bias, err = readSafetensorRefValues(biasRef)
+		router.Bias, err = safetensors.ReadRefValues(biasRef)
 		if err != nil {
 			return MiniMaxM2RouterWeights{}, core.E("minimax_m2.router", "read correction bias", err)
 		}
@@ -599,7 +600,7 @@ func BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan MiniMaxM2TensorPlan,
 	if err != nil {
 		return MiniMaxM2LayerForwardSkeleton{}, err
 	}
-	index, err := indexSafetensorFiles(weightFiles)
+	index, err := safetensors.IndexFiles(weightFiles)
 	if err != nil {
 		return MiniMaxM2LayerForwardSkeleton{}, core.E("minimax_m2.layer_skeleton", "index safetensors", err)
 	}
@@ -657,7 +658,7 @@ func MiniMaxM2RouterProbeEvents(layer int, tokenIDs []int32, decisions []MiniMax
 	return events
 }
 
-func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSpec) (JANGPackedProjectionTensor, error) {
+func loadMiniMaxM2PackedProjection(index safetensors.Index, spec MiniMaxM2TensorSpec) (JANGPackedProjectionTensor, error) {
 	if spec.Packed == nil {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing descriptor: " + spec.Name)
 	}
@@ -668,7 +669,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 	if !miniMaxM2PackedDType(weightRef.DType) {
 		return JANGPackedProjectionTensor{}, core.NewError(core.Sprintf("mlx: MiniMax M2 packed projection %s dtype %s is not U8", weightName, weightRef.DType))
 	}
-	packed, err := readSafetensorRefRaw(weightRef)
+	packed, err := safetensors.ReadRefRaw(weightRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
@@ -676,7 +677,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
-	scales, err := readSafetensorRefValues(scaleRef)
+	scales, err := safetensors.ReadRefValues(scaleRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
@@ -684,7 +685,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
-	biases, err := readSafetensorRefValues(biasRef)
+	biases, err := safetensors.ReadRefValues(biasRef)
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read biases", err)
 	}
@@ -695,7 +696,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 		Biases:     biases,
 	}
 	if projBiasRef, _, ok := findMiniMaxM2SafetensorRef(index, miniMaxM2ProjectionBiasCandidates(spec, weightName)); ok {
-		tensor.Bias, err = readSafetensorRefValues(projBiasRef)
+		tensor.Bias, err = safetensors.ReadRefValues(projBiasRef)
 		if err != nil {
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
 		}
@@ -706,7 +707,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 	return tensor, nil
 }
 
-func resolveMiniMaxM2SkeletonTensor(index safetensorIndex, spec MiniMaxM2TensorSpec, candidates func(MiniMaxM2TensorSpec) []string) (MiniMaxM2ResolvedTensor, error) {
+func resolveMiniMaxM2SkeletonTensor(index safetensors.Index, spec MiniMaxM2TensorSpec, candidates func(MiniMaxM2TensorSpec) []string) (MiniMaxM2ResolvedTensor, error) {
 	if spec.Name == "" {
 		return MiniMaxM2ResolvedTensor{}, core.NewError("mlx: MiniMax M2 layer skeleton received empty tensor spec")
 	}
@@ -934,14 +935,14 @@ func miniMaxM2ProjectionBiasCandidates(spec MiniMaxM2TensorSpec, weightName stri
 	return out
 }
 
-func findMiniMaxM2SafetensorRef(index safetensorIndex, candidates []string) (safetensorTensorRef, string, bool) {
+func findMiniMaxM2SafetensorRef(index safetensors.Index, candidates []string) (safetensors.TensorRef, string, bool) {
 	for _, name := range candidates {
 		ref, ok := index.Tensors[name]
 		if ok {
 			return ref, name, true
 		}
 	}
-	return safetensorTensorRef{}, "", false
+	return safetensors.TensorRef{}, "", false
 }
 
 func trimMiniMaxM2WeightSuffix(name string) string {

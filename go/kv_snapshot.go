@@ -8,6 +8,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/safetensors"
 )
 
 const (
@@ -875,7 +876,7 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 		}
 	case "float16":
 		for i := range values {
-			values[i] = float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2:]))
+			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2:]))
 		}
 	case "bfloat16":
 		for i := range values {

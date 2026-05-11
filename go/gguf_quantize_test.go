@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
 	"dappco.re/go/mlx/gguf"
 )
 
@@ -101,7 +102,7 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 	writeTestSafetensorsF32(t, source, []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.k_proj.weight", Shape: []int{32, 2}, Data: ascendingFloat32s(64)},
 	})
-	index, err := indexSafetensorFiles([]string{source})
+	index, err := safetensors.IndexFiles([]string{source})
 	if err != nil {
 		t.Fatalf("index safetensors: %v", err)
 	}
@@ -155,17 +156,17 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 }
 
 func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
-	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensorIndex{
+	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensors.Index{
 		Names: []string{"bad.weight"},
-		Tensors: map[string]safetensorTensorRef{
+		Tensors: map[string]safetensors.TensorRef{
 			"bad.weight": {Name: "bad.weight", DType: "I32", Shape: []uint64{32}, Elements: 32},
 		},
 	}, GGUFQuantizeQ8_0); err == nil {
 		t.Fatal("expected unsupported dtype error")
 	}
-	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensorIndex{
+	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensors.Index{
 		Names: []string{"bad.weight"},
-		Tensors: map[string]safetensorTensorRef{
+		Tensors: map[string]safetensors.TensorRef{
 			"bad.weight": {Name: "bad.weight", DType: "F32", Shape: []uint64{32}, Elements: 31},
 		},
 	}, GGUFQuantizeQ8_0); err == nil {
@@ -248,7 +249,7 @@ func TestSafetensorDecodeFloatData_Good(t *testing.T) {
 	f32 := make([]byte, 8)
 	binary.LittleEndian.PutUint32(f32[0:4], math.Float32bits(1.5))
 	binary.LittleEndian.PutUint32(f32[4:8], math.Float32bits(-2.25))
-	got, err := decodeSafetensorFloatData("F32", f32, 2)
+	got, err := safetensors.DecodeFloatData("F32", f32, 2)
 	if err != nil {
 		t.Fatalf("decode F32: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestSafetensorDecodeFloatData_Good(t *testing.T) {
 	f16 := make([]byte, 4)
 	binary.LittleEndian.PutUint16(f16[0:2], float32ToFloat16(1.5))
 	binary.LittleEndian.PutUint16(f16[2:4], float32ToFloat16(-2))
-	got, err = decodeSafetensorFloatData("F16", f16, 2)
+	got, err = safetensors.DecodeFloatData("F16", f16, 2)
 	if err != nil {
 		t.Fatalf("decode F16: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestSafetensorDecodeFloatData_Good(t *testing.T) {
 	bf16 := make([]byte, 4)
 	binary.LittleEndian.PutUint16(bf16[0:2], uint16(math.Float32bits(3.5)>>16))
 	binary.LittleEndian.PutUint16(bf16[2:4], uint16(math.Float32bits(-4)>>16))
-	got, err = decodeSafetensorFloatData("BF16", bf16, 2)
+	got, err = safetensors.DecodeFloatData("BF16", bf16, 2)
 	if err != nil {
 		t.Fatalf("decode BF16: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestSafetensorDecodeFloatData_Good(t *testing.T) {
 	f64 := make([]byte, 16)
 	binary.LittleEndian.PutUint64(f64[0:8], math.Float64bits(6.25))
 	binary.LittleEndian.PutUint64(f64[8:16], math.Float64bits(-7.5))
-	got, err = decodeSafetensorFloatData("F64", f64, 2)
+	got, err = safetensors.DecodeFloatData("F64", f64, 2)
 	if err != nil {
 		t.Fatalf("decode F64: %v", err)
 	}
@@ -302,8 +303,8 @@ func TestSafetensorDecodeFloatData_Bad(t *testing.T) {
 		{dtype: "I32", raw: []byte{1, 2, 3, 4}},
 	}
 	for _, tc := range cases {
-		if _, err := decodeSafetensorFloatData(tc.dtype, tc.raw, 1); err == nil {
-			t.Fatalf("decodeSafetensorFloatData(%s) expected error", tc.dtype)
+		if _, err := safetensors.DecodeFloatData(tc.dtype, tc.raw, 1); err == nil {
+			t.Fatalf("safetensors.DecodeFloatData(%s) expected error", tc.dtype)
 		}
 	}
 }
@@ -342,7 +343,7 @@ func TestReadDenseSafetensors_Malformed_Ugly(t *testing.T) {
 
 func TestDecodeDenseSafetensor_InvalidEntries_Bad(t *testing.T) {
 	payload := make([]byte, 16)
-	cases := []safetensorHeaderEntry{
+	cases := []safetensors.HeaderEntry{
 		{DType: "F32", Shape: []int64{1}, DataOffsets: []int64{0}},
 		{DType: "F32", Shape: []int64{1}, DataOffsets: []int64{2, 1}},
 		{DType: "F32", Shape: []int64{0}, DataOffsets: []int64{0, 4}},
@@ -440,7 +441,7 @@ func TestGGUFQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
 	floatCases := []float32{0, 1, -2, float32(math.Inf(1)), float32(math.NaN())}
 	for _, value := range floatCases {
 		half := float32ToFloat16(value)
-		roundTrip := float16ToFloat32(half)
+		roundTrip := safetensors.Float16ToFloat32(half)
 		if math.IsNaN(float64(value)) {
 			if !math.IsNaN(float64(roundTrip)) {
 				t.Fatalf("NaN roundtrip = %v", roundTrip)

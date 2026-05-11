@@ -5,12 +5,12 @@ package mlx
 import (
 	"context"
 	"encoding/binary"
-	stdio "io"
 	"math"
 	"sort"
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
 )
 
 // ModelMergeMethod names the tensor merge algorithm.
@@ -80,28 +80,6 @@ type modelMergePrepared struct {
 	Sources []ModelMergeSource
 	Packs   []mp.ModelPack
 	Output  string
-}
-
-type safetensorIndex struct {
-	Path    string
-	Tensors map[string]safetensorTensorRef
-	Names   []string
-}
-
-type safetensorTensorRef struct {
-	Name      string
-	Path      string
-	DType     string
-	Shape     []uint64
-	Elements  int
-	DataStart int64
-	ByteLen   int64
-}
-
-type safetensorTensorReader struct {
-	ref             safetensorTensorRef
-	file            *core.OSFile
-	bytesPerElement int
 }
 
 // MergeModelPacks merges compatible local safetensors model packs and writes a loadable pack.
@@ -283,10 +261,10 @@ func validateModelMergePackCompatibility(packs []mp.ModelPack, opts ModelMergeOp
 	return nil
 }
 
-func indexModelMergeSources(packs []mp.ModelPack) ([]safetensorIndex, error) {
-	indexes := make([]safetensorIndex, 0, len(packs))
+func indexModelMergeSources(packs []mp.ModelPack) ([]safetensors.Index, error) {
+	indexes := make([]safetensors.Index, 0, len(packs))
 	for _, pack := range packs {
-		index, err := indexSafetensorFiles(pack.WeightFiles)
+		index, err := safetensors.IndexFiles(pack.WeightFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -295,94 +273,7 @@ func indexModelMergeSources(packs []mp.ModelPack) ([]safetensorIndex, error) {
 	return indexes, nil
 }
 
-func indexSafetensorFiles(paths []string) (safetensorIndex, error) {
-	index := safetensorIndex{Tensors: map[string]safetensorTensorRef{}}
-	for _, path := range paths {
-		shard, err := readSafetensorIndex(path)
-		if err != nil {
-			return safetensorIndex{}, err
-		}
-		for _, name := range shard.Names {
-			if _, ok := index.Tensors[name]; ok {
-				return safetensorIndex{}, core.NewError("mlx: duplicate tensor in safetensors shards: " + name)
-			}
-			index.Tensors[name] = shard.Tensors[name]
-			index.Names = append(index.Names, name)
-		}
-	}
-	sort.Strings(index.Names)
-	return index, nil
-}
-
-func readSafetensorIndex(path string) (safetensorIndex, error) {
-	opened := core.Open(path)
-	if !opened.OK {
-		return safetensorIndex{}, modelMergeResultError(opened)
-	}
-	file := opened.Value.(*core.OSFile)
-	defer file.Close()
-
-	var headerLenBuf [8]byte
-	if _, err := stdio.ReadFull(file, headerLenBuf[:]); err != nil {
-		return safetensorIndex{}, err
-	}
-	headerLen := binary.LittleEndian.Uint64(headerLenBuf[:])
-	headerBytes := make([]byte, int(headerLen))
-	if _, err := stdio.ReadFull(file, headerBytes); err != nil {
-		return safetensorIndex{}, err
-	}
-	var header map[string]safetensorHeaderEntry
-	if result := core.JSONUnmarshal(headerBytes, &header); !result.OK {
-		return safetensorIndex{}, modelMergeResultError(result)
-	}
-
-	index := safetensorIndex{Path: path, Tensors: map[string]safetensorTensorRef{}}
-	dataStart := int64(8 + headerLen)
-	for name, entry := range header {
-		if name == "__metadata__" {
-			continue
-		}
-		ref, err := safetensorRefFromHeader(path, name, entry, dataStart)
-		if err != nil {
-			return safetensorIndex{}, err
-		}
-		index.Tensors[name] = ref
-		index.Names = append(index.Names, name)
-	}
-	sort.Strings(index.Names)
-	return index, nil
-}
-
-func safetensorRefFromHeader(path, name string, entry safetensorHeaderEntry, dataStart int64) (safetensorTensorRef, error) {
-	if len(entry.DataOffsets) != 2 {
-		return safetensorTensorRef{}, core.NewError("mlx: safetensors tensor has invalid data_offsets: " + name)
-	}
-	begin := entry.DataOffsets[0]
-	end := entry.DataOffsets[1]
-	if begin < 0 || end < begin {
-		return safetensorTensorRef{}, core.NewError("mlx: safetensors tensor offsets are invalid: " + name)
-	}
-	shape := make([]uint64, 0, len(entry.Shape))
-	elements := 1
-	for _, dim := range entry.Shape {
-		if dim <= 0 {
-			return safetensorTensorRef{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
-		}
-		shape = append(shape, uint64(dim))
-		elements *= int(dim)
-	}
-	return safetensorTensorRef{
-		Name:      name,
-		Path:      path,
-		DType:     core.Upper(entry.DType),
-		Shape:     shape,
-		Elements:  elements,
-		DataStart: dataStart + begin,
-		ByteLen:   end - begin,
-	}, nil
-}
-
-func validateModelMergeTensorIndexes(indexes []safetensorIndex, allowMismatch bool) error {
+func validateModelMergeTensorIndexes(indexes []safetensors.Index, allowMismatch bool) error {
 	base := indexes[0]
 	for i := 1; i < len(indexes); i++ {
 		index := indexes[i]
@@ -414,7 +305,7 @@ func validateModelMergeTensorIndexes(indexes []safetensorIndex, allowMismatch bo
 	return nil
 }
 
-func writeMergedSafetensors(ctx context.Context, path string, indexes []safetensorIndex, method ModelMergeMethod, t float64, sources []ModelMergeSource, allowMismatch bool) (int, int, []string, error) {
+func writeMergedSafetensors(ctx context.Context, path string, indexes []safetensors.Index, method ModelMergeMethod, t float64, sources []ModelMergeSource, allowMismatch bool) (int, int, []string, error) {
 	header := buildMergedSafetensorsHeader(indexes[0])
 	created := core.Create(path)
 	if !created.OK {
@@ -465,7 +356,7 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 				}
 				merged++
 			case allowMismatch && len(refs) > 0:
-				if err := writeSafetensorRefFloat32Chunks(ctx, file, refs[0], modelMergeTensorChunkElements); err != nil {
+				if err := safetensors.WriteRefFloat32Chunks(ctx, file, refs[0], modelMergeTensorChunkElements); err != nil {
 					return 0, 0, nil, err
 				}
 				copied++
@@ -501,8 +392,8 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	return merged, copied, skipped, nil
 }
 
-func readMergeTensorRefs(indexes []safetensorIndex, name string) ([]safetensorTensorRef, bool, error) {
-	refs := make([]safetensorTensorRef, 0, len(indexes))
+func readMergeTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.TensorRef, bool, error) {
+	refs := make([]safetensors.TensorRef, 0, len(indexes))
 	var shape []uint64
 	complete := true
 	for _, index := range indexes {
@@ -522,8 +413,8 @@ func readMergeTensorRefs(indexes []safetensorIndex, name string) ([]safetensorTe
 	return refs, complete && len(refs) == len(indexes), nil
 }
 
-func buildMergedSafetensorsHeader(index safetensorIndex) map[string]safetensorHeaderEntry {
-	header := make(map[string]safetensorHeaderEntry, len(index.Names))
+func buildMergedSafetensorsHeader(index safetensors.Index) map[string]safetensors.HeaderEntry {
+	header := make(map[string]safetensors.HeaderEntry, len(index.Names))
 	var offset int64
 	for _, name := range index.Names {
 		ref := index.Tensors[name]
@@ -532,7 +423,7 @@ func buildMergedSafetensorsHeader(index safetensorIndex) map[string]safetensorHe
 		for _, dim := range ref.Shape {
 			shape = append(shape, int64(dim))
 		}
-		header[name] = safetensorHeaderEntry{
+		header[name] = safetensors.HeaderEntry{
 			DType:       "F32",
 			Shape:       shape,
 			DataOffsets: []int64{offset, offset + byteLen},
@@ -542,7 +433,7 @@ func buildMergedSafetensorsHeader(index safetensorIndex) map[string]safetensorHe
 	return header
 }
 
-func readMergeTensorValues(indexes []safetensorIndex, name string) ([][]float32, bool, error) {
+func readMergeTensorValues(indexes []safetensors.Index, name string) ([][]float32, bool, error) {
 	values := make([][]float32, 0, len(indexes))
 	var shape []uint64
 	complete := true
@@ -558,7 +449,7 @@ func readMergeTensorValues(indexes []safetensorIndex, name string) ([][]float32,
 			complete = false
 			continue
 		}
-		tensor, err := readSafetensorRefValues(ref)
+		tensor, err := safetensors.ReadRefValues(ref)
 		if err != nil {
 			return nil, false, err
 		}
@@ -567,23 +458,7 @@ func readMergeTensorValues(indexes []safetensorIndex, name string) ([][]float32,
 	return values, complete && len(values) == len(indexes), nil
 }
 
-func readSafetensorRefValues(ref safetensorTensorRef) ([]float32, error) {
-	opened := core.Open(ref.Path)
-	if !opened.OK {
-		return nil, modelMergeResultError(opened)
-	}
-	file := opened.Value.(*core.OSFile)
-	defer file.Close()
-
-	raw := make([]byte, int(ref.ByteLen))
-	n, err := file.ReadAt(raw, ref.DataStart)
-	if err != nil && !(err == stdio.EOF && n == len(raw)) {
-		return nil, err
-	}
-	return decodeSafetensorFloatData(ref.DType, raw, ref.Elements)
-}
-
-func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensorTensorRef, weights []float64, chunkElements int) error {
+func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
 	if len(refs) == 0 {
 		return core.NewError("mlx: no tensors to merge")
 	}
@@ -599,11 +474,11 @@ func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs 
 			return core.NewError("mlx: tensor length mismatch during linear merge")
 		}
 	}
-	readers, err := openSafetensorTensorReaders(refs)
+	readers, err := safetensors.OpenReaders(refs)
 	if err != nil {
 		return err
 	}
-	defer closeSafetensorTensorReaders(readers)
+	defer safetensors.CloseReaders(readers)
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -611,7 +486,7 @@ func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs 
 		count := min(chunkElements, elements-offset)
 		out := make([]float32, count)
 		for sourceIndex, reader := range readers {
-			values, err := reader.readFloat32Chunk(offset, count)
+			values, err := reader.ReadFloat32Chunk(offset, count)
 			if err != nil {
 				return err
 			}
@@ -627,7 +502,7 @@ func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs 
 	return nil
 }
 
-func writeSLERPMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensorTensorRef, t float64, chunkElements int) error {
+func writeSLERPMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, t float64, chunkElements int) error {
 	weights, err := slerpChunkedWeights(ctx, refs, t, chunkElements)
 	if err != nil {
 		return err
@@ -635,7 +510,7 @@ func writeSLERPMergedTensorChunks(ctx context.Context, file *core.OSFile, refs [
 	return writeLinearMergedTensorChunks(ctx, file, refs, weights, chunkElements)
 }
 
-func slerpChunkedWeights(ctx context.Context, refs []safetensorTensorRef, t float64, chunkElements int) ([]float64, error) {
+func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t float64, chunkElements int) ([]float64, error) {
 	if len(refs) != 2 {
 		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
 	}
@@ -645,11 +520,11 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensorTensorRef, t floa
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
 	}
-	readers, err := openSafetensorTensorReaders(refs)
+	readers, err := safetensors.OpenReaders(refs)
 	if err != nil {
 		return nil, err
 	}
-	defer closeSafetensorTensorReaders(readers)
+	defer safetensors.CloseReaders(readers)
 
 	var dot float64
 	var normA float64
@@ -659,11 +534,11 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensorTensorRef, t floa
 			return nil, err
 		}
 		count := min(chunkElements, refs[0].Elements-offset)
-		a, err := readers[0].readFloat32Chunk(offset, count)
+		a, err := readers[0].ReadFloat32Chunk(offset, count)
 		if err != nil {
 			return nil, err
 		}
-		b, err := readers[1].readFloat32Chunk(offset, count)
+		b, err := readers[1].ReadFloat32Chunk(offset, count)
 		if err != nil {
 			return nil, err
 		}
@@ -689,110 +564,6 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensorTensorRef, t floa
 		math.Sin((1-t)*theta) / sinTheta,
 		math.Sin(t*theta) / sinTheta,
 	}, nil
-}
-
-func writeSafetensorRefFloat32Chunks(ctx context.Context, file *core.OSFile, ref safetensorTensorRef, chunkElements int) error {
-	if chunkElements <= 0 {
-		chunkElements = modelMergeTensorChunkElements
-	}
-	reader, err := openSafetensorTensorReader(ref)
-	if err != nil {
-		return err
-	}
-	defer reader.close()
-	for offset := 0; offset < ref.Elements; offset += chunkElements {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		count := min(chunkElements, ref.Elements-offset)
-		values, err := reader.readFloat32Chunk(offset, count)
-		if err != nil {
-			return err
-		}
-		if err := writeFloat32Values(file, values); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func readSafetensorRefFloat32Chunk(ref safetensorTensorRef, offset, count int) ([]float32, error) {
-	reader, err := openSafetensorTensorReader(ref)
-	if err != nil {
-		return nil, err
-	}
-	defer reader.close()
-	return reader.readFloat32Chunk(offset, count)
-}
-
-func openSafetensorTensorReaders(refs []safetensorTensorRef) ([]safetensorTensorReader, error) {
-	readers := make([]safetensorTensorReader, 0, len(refs))
-	for _, ref := range refs {
-		reader, err := openSafetensorTensorReader(ref)
-		if err != nil {
-			closeSafetensorTensorReaders(readers)
-			return nil, err
-		}
-		readers = append(readers, reader)
-	}
-	return readers, nil
-}
-
-func openSafetensorTensorReader(ref safetensorTensorRef) (safetensorTensorReader, error) {
-	bytesPerElement, err := safetensorDTypeByteSize(ref.DType)
-	if err != nil {
-		return safetensorTensorReader{}, err
-	}
-	opened := core.Open(ref.Path)
-	if !opened.OK {
-		return safetensorTensorReader{}, modelMergeResultError(opened)
-	}
-	return safetensorTensorReader{
-		ref:             ref,
-		file:            opened.Value.(*core.OSFile),
-		bytesPerElement: bytesPerElement,
-	}, nil
-}
-
-func closeSafetensorTensorReaders(readers []safetensorTensorReader) {
-	for _, reader := range readers {
-		reader.close()
-	}
-}
-
-func (r safetensorTensorReader) close() {
-	if r.file != nil {
-		_ = r.file.Close()
-	}
-}
-
-func (r safetensorTensorReader) readFloat32Chunk(offset, count int) ([]float32, error) {
-	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
-		return nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
-	}
-	raw := make([]byte, count*r.bytesPerElement)
-	start := r.ref.DataStart + int64(offset*r.bytesPerElement)
-	n, err := r.file.ReadAt(raw, start)
-	if err != nil && !(err == stdio.EOF && n == len(raw)) {
-		return nil, err
-	}
-	if n != len(raw) {
-		return nil, core.NewError("mlx: safetensors tensor chunk is truncated")
-	}
-	return decodeSafetensorFloatData(r.ref.DType, raw, count)
-}
-
-func safetensorDTypeByteSize(dtype string) (int, error) {
-	switch core.Upper(dtype) {
-	case "F16", "BF16":
-		return 2, nil
-	case "F32":
-		return 4, nil
-	case "F64":
-		return 8, nil
-	default:
-		return 0, core.NewError("unsupported dense safetensors dtype: " + dtype)
-	}
 }
 
 func mergeTensorValues(values [][]float32, method ModelMergeMethod, t float64, weights []float64) ([]float32, error) {

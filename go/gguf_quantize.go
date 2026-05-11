@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
 	"dappco.re/go/mlx/gguf"
 )
 
@@ -51,12 +52,6 @@ type denseSafetensor struct {
 	Name  string
 	Shape []uint64
 	Data  []float32
-}
-
-type safetensorHeaderEntry struct {
-	DType       string  `json:"dtype"`
-	Shape       []int64 `json:"shape"`
-	DataOffsets []int64 `json:"data_offsets"`
 }
 
 type ggufQuantizedTensor struct {
@@ -122,7 +117,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		return nil, err
 	}
 
-	index, err := indexSafetensorFiles(source.WeightFiles)
+	index, err := safetensors.IndexFiles(source.WeightFiles)
 	if err != nil {
 		return nil, core.E("QuantizeModelPackToGGUF", "index dense safetensors", err)
 	}
@@ -232,7 +227,7 @@ func readDenseSafetensors(path string) ([]denseSafetensor, error) {
 	if headerLen > uint64(len(data)-8) || headerEnd > len(data) {
 		return nil, core.NewError("mlx: safetensors header exceeds file size: " + path)
 	}
-	var header map[string]safetensorHeaderEntry
+	var header map[string]safetensors.HeaderEntry
 	if result := core.JSONUnmarshal(data[headerStart:headerEnd], &header); !result.OK {
 		return nil, quantizeGGUFResultError(result)
 	}
@@ -250,7 +245,7 @@ func readDenseSafetensors(path string) ([]denseSafetensor, error) {
 	return tensors, nil
 }
 
-func decodeDenseSafetensor(path, name string, entry safetensorHeaderEntry, payload []byte) (denseSafetensor, error) {
+func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, payload []byte) (denseSafetensor, error) {
 	if len(entry.DataOffsets) != 2 {
 		return denseSafetensor{}, core.NewError("mlx: safetensors tensor has invalid data_offsets: " + name)
 	}
@@ -272,48 +267,11 @@ func decodeDenseSafetensor(path, name string, entry safetensorHeaderEntry, paylo
 		return denseSafetensor{}, core.NewError("mlx: safetensors tensor shape is empty: " + name)
 	}
 	raw := payload[begin:end]
-	values, err := decodeSafetensorFloatData(core.Upper(entry.DType), raw, int(elements))
+	values, err := safetensors.DecodeFloatData(core.Upper(entry.DType), raw, int(elements))
 	if err != nil {
 		return denseSafetensor{}, core.E("QuantizeModelPackToGGUF", "decode "+path+" tensor "+name, err)
 	}
 	return denseSafetensor{Name: name, Shape: shape, Data: values}, nil
-}
-
-func decodeSafetensorFloatData(dtype string, raw []byte, elements int) ([]float32, error) {
-	values := make([]float32, elements)
-	switch dtype {
-	case "F32":
-		if len(raw) != elements*4 {
-			return nil, core.NewError("F32 payload length does not match tensor shape")
-		}
-		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
-		}
-	case "F16":
-		if len(raw) != elements*2 {
-			return nil, core.NewError("F16 payload length does not match tensor shape")
-		}
-		for i := range values {
-			values[i] = float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2:]))
-		}
-	case "BF16":
-		if len(raw) != elements*2 {
-			return nil, core.NewError("BF16 payload length does not match tensor shape")
-		}
-		for i := range values {
-			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:])) << 16)
-		}
-	case "F64":
-		if len(raw) != elements*8 {
-			return nil, core.NewError("F64 payload length does not match tensor shape")
-		}
-		for i := range values {
-			values[i] = float32(math.Float64frombits(binary.LittleEndian.Uint64(raw[i*8:])))
-		}
-	default:
-		return nil, core.NewError("unsupported dense safetensors dtype: " + dtype)
-	}
-	return values, nil
 }
 
 func quantizeGGUFTensors(ctx context.Context, tensors []denseSafetensor, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, error) {
@@ -357,16 +315,16 @@ func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (gguf
 	}, nil
 }
 
-func buildStreamingGGUFQuantizedTensors(index safetensorIndex, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, []safetensorTensorRef, error) {
+func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, []safetensors.TensorRef, error) {
 	tensorType, blockSize, bytesPerBlock, err := ggufQuantizeLayout(format)
 	if err != nil {
 		return nil, nil, err
 	}
 	tensors := make([]ggufQuantizedTensor, 0, len(index.Names))
-	refs := make([]safetensorTensorRef, 0, len(index.Names))
+	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	for _, name := range index.Names {
 		ref := index.Tensors[name]
-		if _, err := safetensorDTypeByteSize(ref.DType); err != nil {
+		if _, err := safetensors.DTypeByteSize(ref.DType); err != nil {
 			return nil, nil, err
 		}
 		if ref.Elements%blockSize != 0 {
@@ -515,7 +473,7 @@ func writeQuantizedGGUF(path string, metadata []ggufMetadataEntry, tensors []ggu
 	return nil
 }
 
-func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor, refs []safetensorTensorRef, format GGUFQuantizeFormat, chunkElements int) error {
+func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor, refs []safetensors.TensorRef, format GGUFQuantizeFormat, chunkElements int) error {
 	if len(tensors) != len(refs) {
 		return core.NewError("mlx: GGUF tensor metadata and source refs are not aligned")
 	}
@@ -601,19 +559,19 @@ func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, t
 	return nil
 }
 
-func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensorTensorRef, format GGUFQuantizeFormat, chunkElements int) (uint64, error) {
-	reader, err := openSafetensorTensorReader(ref)
+func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format GGUFQuantizeFormat, chunkElements int) (uint64, error) {
+	reader, err := safetensors.OpenReader(ref)
 	if err != nil {
 		return 0, err
 	}
-	defer reader.close()
+	defer reader.Close()
 	var written uint64
 	for offset := 0; offset < ref.Elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return written, err
 		}
 		count := min(chunkElements, ref.Elements-offset)
-		values, err := reader.readFloat32Chunk(offset, count)
+		values, err := reader.ReadFloat32Chunk(offset, count)
 		if err != nil {
 			return written, err
 		}
@@ -762,27 +720,6 @@ func clampInt(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
-}
-
-func float16ToFloat32(value uint16) float32 {
-	sign := uint32(value>>15) & 0x1
-	exp := int((value >> 10) & 0x1f)
-	frac := uint32(value & 0x03ff)
-	if exp == 0 {
-		if frac == 0 {
-			return math.Float32frombits(sign << 31)
-		}
-		for frac&0x0400 == 0 {
-			frac <<= 1
-			exp--
-		}
-		exp++
-		frac &= 0x03ff
-	} else if exp == 31 {
-		return math.Float32frombits((sign << 31) | 0x7f800000 | (frac << 13))
-	}
-	exp = exp + (127 - 15)
-	return math.Float32frombits((sign << 31) | (uint32(exp) << 23) | (frac << 13))
 }
 
 func float32ToFloat16(value float32) uint16 {
