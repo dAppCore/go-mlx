@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import "math"
 
@@ -9,8 +9,8 @@ const (
 	kvCollapseThreshold  = 0.5
 )
 
-// KVAnalysis contains K/V cache coherence metrics for one prefill snapshot.
-type KVAnalysis struct {
+// Analysis contains K/V cache coherence metrics for one prefill snapshot.
+type Analysis struct {
 	MeanKeyCoherence       float64
 	MeanValueCoherence     float64
 	MeanCrossAlignment     float64
@@ -27,7 +27,7 @@ type KVAnalysis struct {
 }
 
 // Composite returns a 0-10000 integer score from K/V posture metrics.
-func (r *KVAnalysis) Composite() int {
+func (r *Analysis) Composite() int {
 	if r == nil {
 		return 0
 	}
@@ -52,10 +52,10 @@ func (r *KVAnalysis) Composite() int {
 	return min(10000, max(0, int(score)))
 }
 
-// AnalyzeKV computes coherence metrics from a CPU-readable KV cache snapshot.
-func AnalyzeKV(snapshot *KVSnapshot) *KVAnalysis {
+// Analyze computes coherence metrics from a CPU-readable KV cache snapshot.
+func Analyze(snapshot *Snapshot) *Analysis {
 	if snapshot == nil || len(snapshot.Layers) == 0 {
-		return &KVAnalysis{}
+		return &Analysis{}
 	}
 	if kvAnalysisNumHeads(snapshot) <= 4 {
 		return analyzeKVGQA(snapshot)
@@ -63,9 +63,9 @@ func AnalyzeKV(snapshot *KVSnapshot) *KVAnalysis {
 	return analyzeKVMultiHead(snapshot)
 }
 
-func analyzeKVMultiHead(snapshot *KVSnapshot) *KVAnalysis {
+func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 	numLayers := kvAnalysisNumLayers(snapshot)
-	result := &KVAnalysis{
+	result := &Analysis{
 		LayerKeyCoherence:      make([]float64, numLayers),
 		LayerValueCoherence:    make([]float64, numLayers),
 		LayerCrossAlignment:    make([]float64, max(0, numLayers-1)),
@@ -149,9 +149,9 @@ func analyzeKVMultiHead(snapshot *KVSnapshot) *KVAnalysis {
 	return result
 }
 
-func analyzeKVGQA(snapshot *KVSnapshot) *KVAnalysis {
+func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 	numLayers := kvAnalysisNumLayers(snapshot)
-	result := &KVAnalysis{
+	result := &Analysis{
 		GQA:                    true,
 		LayerKeyCoherence:      make([]float64, numLayers),
 		LayerValueCoherence:    make([]float64, numLayers),
@@ -230,8 +230,8 @@ func analyzeKVGQA(snapshot *KVSnapshot) *KVAnalysis {
 	return result
 }
 
-// KVFeatures returns the 7D model-state feature vector from K/V metrics.
-func KVFeatures(result *KVAnalysis) []float64 {
+// Features returns the 7D model-state feature vector from K/V metrics.
+func Features(result *Analysis) []float64 {
 	if result == nil {
 		return make([]float64, 7)
 	}
@@ -246,8 +246,8 @@ func KVFeatures(result *KVAnalysis) []float64 {
 	}
 }
 
-// KVFeatureLabels returns labels matching KVFeatures order.
-func KVFeatureLabels() []string {
+// FeatureLabels returns labels matching Features order.
+func FeatureLabels() []string {
 	return []string{
 		"key_coherence",
 		"value_coherence",
@@ -259,7 +259,7 @@ func KVFeatureLabels() []string {
 	}
 }
 
-func kvAnalysisNumLayers(snapshot *KVSnapshot) int {
+func kvAnalysisNumLayers(snapshot *Snapshot) int {
 	if snapshot == nil {
 		return 0
 	}
@@ -269,7 +269,7 @@ func kvAnalysisNumLayers(snapshot *KVSnapshot) int {
 	return len(snapshot.Layers)
 }
 
-func kvAnalysisNumHeads(snapshot *KVSnapshot) int {
+func kvAnalysisNumHeads(snapshot *Snapshot) int {
 	if snapshot == nil {
 		return 0
 	}
@@ -284,7 +284,7 @@ func kvAnalysisNumHeads(snapshot *KVSnapshot) int {
 	return 0
 }
 
-func kvSharedCacheLayerGroups(snapshot *KVSnapshot) map[int][]int {
+func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
 	groups := make(map[int][]int)
 	if snapshot == nil {
 		return groups
@@ -300,7 +300,7 @@ func kvSharedCacheLayerGroups(snapshot *KVSnapshot) map[int][]int {
 	return groups
 }
 
-func kvAnalysisHeadVectors(heads []KVHeadSnapshot, keys bool) [][]float32 {
+func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 	vectors := make([][]float32, 0, len(heads))
 	for _, head := range heads {
 		if keys {
@@ -331,7 +331,7 @@ func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
 	return total / float64(pairs), locked, pairs
 }
 
-func kvAnalysisLayerCoupling(heads []KVHeadSnapshot) (float64, int) {
+func kvAnalysisLayerCoupling(heads []HeadSnapshot) (float64, int) {
 	var total float64
 	var count int
 	for _, head := range heads {
@@ -347,7 +347,7 @@ func kvAnalysisLayerCoupling(heads []KVHeadSnapshot) (float64, int) {
 	return total / float64(count), count
 }
 
-func kvAnalysisLayerState(heads []KVHeadSnapshot) []float32 {
+func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if len(heads) == 0 {
 		return nil
 	}
@@ -390,7 +390,7 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	return mean
 }
 
-func kvAnalysisPositionDifferentiation(heads []KVHeadSnapshot, seqLen, headDim int, keys bool) (float64, int, int) {
+func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool) (float64, int, int) {
 	if seqLen < 2 || headDim <= 0 {
 		return 0, 0, 0
 	}

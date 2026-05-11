@@ -7,6 +7,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 // AgentMemoryWakeOptions selects a durable KV prefix to restore into a live
@@ -17,7 +18,7 @@ type AgentMemoryWakeOptions struct {
 	IndexURI               string
 	EntryURI               string
 	Tokenizer              StateBundleTokenizer
-	LoadOptions            KVSnapshotLoadOptions
+	LoadOptions            kv.LoadOptions
 	SkipCompatibilityCheck bool
 }
 
@@ -50,7 +51,7 @@ type AgentMemorySleepOptions struct {
 	ModelInfo         ModelInfo
 	Tokenizer         StateBundleTokenizer
 	ReuseParentPrefix bool
-	BlockOptions      KVSnapshotMemvidBlockOptions
+	BlockOptions      kv.MemvidBlockOptions
 	Labels            []string
 	Meta              map[string]string
 }
@@ -68,7 +69,7 @@ type AgentMemorySleepReport struct {
 	BlockSize       int                `json:"block_size,omitempty"`
 	BlocksWritten   int                `json:"blocks_written,omitempty"`
 	BlocksReused    int                `json:"blocks_reused,omitempty"`
-	KVEncoding      KVSnapshotEncoding `json:"kv_encoding,omitempty"`
+	KVEncoding      kv.Encoding `json:"kv_encoding,omitempty"`
 	IndexHash       string             `json:"index_hash,omitempty"`
 	SnapshotHash    string             `json:"snapshot_hash,omitempty"`
 	BundleRef       memvid.ChunkRef    `json:"bundle_ref,omitempty"`
@@ -78,16 +79,16 @@ type AgentMemorySleepReport struct {
 type agentMemoryWakePlan struct {
 	Index  *KVSnapshotMemvidBundleIndex
 	Entry  KVSnapshotMemvidBundleIndexEntry
-	Bundle *KVSnapshotMemvidBlockBundle
+	Bundle *kv.MemvidBlockBundle
 	Report *AgentMemoryWakeReport
 }
 
-func loadAgentMemoryWakeSnapshot(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions, info ModelInfo) (*KVSnapshot, *AgentMemoryWakeReport, error) {
+func loadAgentMemoryWakeSnapshot(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions, info ModelInfo) (*kv.Snapshot, *AgentMemoryWakeReport, error) {
 	plan, err := planAgentMemoryWake(ctx, store, opts, info)
 	if err != nil {
 		return nil, nil, err
 	}
-	snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -119,7 +120,7 @@ func planAgentMemoryWake(ctx context.Context, store memvid.Store, opts AgentMemo
 		return nil, core.NewError("mlx: memvid KV bundle index entry not found")
 	}
 	bundleURI := firstNonEmptyString(entry.BundleURI, index.BundleURI)
-	bundle, err := LoadKVSnapshotMemvidBlockBundle(ctx, store, bundleURI)
+	bundle, err := kv.LoadMemvidBlockBundle(ctx, store, bundleURI)
 	if err != nil {
 		return nil, err
 	}
@@ -179,10 +180,10 @@ func agentMemorySleepURIs(opts AgentMemorySleepOptions) (entryURI, bundleURI, in
 	return entryURI, bundleURI, indexURI, nil
 }
 
-func agentMemoryBlockOptions(opts AgentMemorySleepOptions, bundleURI string) KVSnapshotMemvidBlockOptions {
+func agentMemoryBlockOptions(opts AgentMemorySleepOptions, bundleURI string) kv.MemvidBlockOptions {
 	blockOpts := opts.BlockOptions
 	if blockOpts.KVEncoding == "" {
-		blockOpts.KVEncoding = KVSnapshotEncodingNative
+		blockOpts.KVEncoding = kv.EncodingNative
 	}
 	if blockOpts.URI == "" {
 		blockOpts.URI = bundleURI + "/blocks"
@@ -195,7 +196,7 @@ func agentMemoryBlockOptions(opts AgentMemorySleepOptions, bundleURI string) KVS
 	return blockOpts
 }
 
-func newAgentMemoryBundleIndex(bundle *KVSnapshotMemvidBlockBundle, opts AgentMemorySleepOptions, entryURI, bundleURI string) (*KVSnapshotMemvidBundleIndex, error) {
+func newAgentMemoryBundleIndex(bundle *kv.MemvidBlockBundle, opts AgentMemorySleepOptions, entryURI, bundleURI string) (*KVSnapshotMemvidBundleIndex, error) {
 	entry := KVSnapshotMemvidBundleIndexEntry{
 		URI:        entryURI,
 		BundleURI:  bundleURI,
@@ -242,7 +243,7 @@ func agentMemoryEntryMeta(opts AgentMemorySleepOptions) map[string]string {
 	return meta
 }
 
-func agentMemorySleepReport(index *KVSnapshotMemvidBundleIndex, bundle *KVSnapshotMemvidBlockBundle, opts AgentMemorySleepOptions, entryURI, bundleURI, indexURI string, bundleRef, indexRef memvid.ChunkRef) *AgentMemorySleepReport {
+func agentMemorySleepReport(index *KVSnapshotMemvidBundleIndex, bundle *kv.MemvidBlockBundle, opts AgentMemorySleepOptions, entryURI, bundleURI, indexURI string, bundleRef, indexRef memvid.ChunkRef) *AgentMemorySleepReport {
 	return &AgentMemorySleepReport{
 		IndexURI:        indexURI,
 		EntryURI:        entryURI,
@@ -289,7 +290,7 @@ func cloneAgentMemoryWakeReport(report *AgentMemoryWakeReport) *AgentMemoryWakeR
 	return &cloned
 }
 
-func kvSnapshotMemvidBlocksNeededForPrefix(bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) int {
+func kvSnapshotMemvidBlocksNeededForPrefix(bundle *kv.MemvidBlockBundle, prefixTokens int) int {
 	if bundle == nil || prefixTokens <= 0 {
 		return 0
 	}

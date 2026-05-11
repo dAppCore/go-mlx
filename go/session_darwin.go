@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -52,7 +53,7 @@ func (m *Model) NewSession() (*ModelSession, error) {
 }
 
 // NewSessionFromKV creates a persistent session restored from a KV snapshot.
-func (m *Model) NewSessionFromKV(snapshot *KVSnapshot) (*ModelSession, error) {
+func (m *Model) NewSessionFromKV(snapshot *kv.Snapshot) (*ModelSession, error) {
 	session, err := m.NewSession()
 	if err != nil {
 		return nil, err
@@ -140,13 +141,13 @@ func (s *ModelSession) GenerateStream(ctx context.Context, opts ...GenerateOptio
 }
 
 // CaptureKV copies the current retained KV cache tensors to CPU memory.
-func (s *ModelSession) CaptureKV() (*KVSnapshot, error) {
-	return s.CaptureKVWithOptions(KVSnapshotCaptureOptions{})
+func (s *ModelSession) CaptureKV() (*kv.Snapshot, error) {
+	return s.CaptureKVWithOptions(kv.CaptureOptions{})
 }
 
 // CaptureKVWithOptions copies the current retained KV cache tensors to CPU
 // memory with explicit capture options.
-func (s *ModelSession) CaptureKVWithOptions(opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+func (s *ModelSession) CaptureKVWithOptions(opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if s == nil || s.session == nil {
 		return nil, core.NewError("mlx: model session is nil")
 	}
@@ -164,18 +165,18 @@ func (s *ModelSession) CaptureKVWithOptions(opts KVSnapshotCaptureOptions) (*KVS
 	}
 	root := toRootKVSnapshot(snapshot)
 	if opts.RawKVOnly {
-		dropKVSnapshotFloat32(root)
+		kv.DropFloat32(root)
 	}
 	return root, nil
 }
 
-// AnalyzeKV captures and analyses the current retained KV state.
-func (s *ModelSession) AnalyzeKV() (*KVAnalysis, error) {
+// kv.Analyze captures and analyses the current retained KV state.
+func (s *ModelSession) AnalyzeKV() (*kv.Analysis, error) {
 	snapshot, err := s.CaptureKV()
 	if err != nil {
 		return nil, err
 	}
-	return AnalyzeKV(snapshot), nil
+	return kv.Analyze(snapshot), nil
 }
 
 // SaveKV captures and writes the current retained KV state to path.
@@ -188,7 +189,7 @@ func (s *ModelSession) SaveKV(path string) error {
 }
 
 // RestoreKV replaces the retained session state with a restorable KV snapshot.
-func (s *ModelSession) RestoreKV(snapshot *KVSnapshot) error {
+func (s *ModelSession) RestoreKV(snapshot *kv.Snapshot) error {
 	if s == nil || s.session == nil {
 		return core.NewError("mlx: model session is nil")
 	}
@@ -208,7 +209,7 @@ func (s *ModelSession) RestoreKV(snapshot *KVSnapshot) error {
 
 // LoadKV reads a KV snapshot from path and restores it into the session.
 func (s *ModelSession) LoadKV(path string) error {
-	snapshot, err := LoadKVSnapshot(path)
+	snapshot, err := kv.Load(path)
 	if err != nil {
 		return err
 	}
@@ -216,12 +217,12 @@ func (s *ModelSession) LoadKV(path string) error {
 }
 
 // SaveKVToMemvid captures and writes the current retained KV state to memvid.
-func (s *ModelSession) SaveKVToMemvid(ctx context.Context, store memvid.Writer, opts KVSnapshotMemvidOptions) (memvid.ChunkRef, error) {
+func (s *ModelSession) SaveKVToMemvid(ctx context.Context, store memvid.Writer, opts kv.MemvidOptions) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	captureOpts := KVSnapshotCaptureOptions{}
-	if opts.KVEncoding == KVSnapshotEncodingNative {
+	captureOpts := kv.CaptureOptions{}
+	if opts.KVEncoding == kv.EncodingNative {
 		captureOpts.RawKVOnly = true
 	}
 	snapshot, err := s.CaptureKVWithOptions(captureOpts)
@@ -236,7 +237,7 @@ func (s *ModelSession) LoadKVFromMemvid(ctx context.Context, store memvid.Store,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	snapshot, err := LoadKVSnapshotFromMemvid(ctx, store, ref)
+	snapshot, err := kv.LoadFromMemvid(ctx, store, ref)
 	if err != nil {
 		return err
 	}
@@ -244,24 +245,24 @@ func (s *ModelSession) LoadKVFromMemvid(ctx context.Context, store memvid.Store,
 }
 
 // SaveKVBlocksToMemvid captures retained KV state and writes per-block KV chunks.
-func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Writer, opts KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
 		return nil, core.NewError("mlx: model session is nil")
 	}
-	captureOpts := KVSnapshotCaptureOptions{}
-	if opts.KVEncoding == KVSnapshotEncodingNative {
+	captureOpts := kv.CaptureOptions{}
+	if opts.KVEncoding == kv.EncodingNative {
 		captureOpts.RawKVOnly = true
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
 		blockSize = DefaultCacheBlockSize
 	}
-	return SaveMemvidBlocksFromStream(ctx, store, opts, func(yield func(KVSnapshotBlock) (bool, error)) error {
+	return kv.SaveMemvidBlocksFromStream(ctx, store, opts, func(yield func(kv.Block) (bool, error)) error {
 		return s.session.RangeKVBlocks(ctx, blockSize, toMetalKVSnapshotCaptureOptions(captureOpts), func(block metal.KVSnapshotBlock) (bool, error) {
-			return yield(KVSnapshotBlock{
+			return yield(kv.Block{
 				Index:      block.Index,
 				TokenStart: block.TokenStart,
 				TokenCount: block.TokenCount,
@@ -272,7 +273,7 @@ func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Wr
 }
 
 // LoadKVBlocksFromMemvid restores retained session state from per-block KV chunks.
-func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle) error {
+func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -293,7 +294,7 @@ func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.
 		s.agentMemory = nil
 		return nil
 	}
-	snapshot, err := LoadKVSnapshotFromMemvidBlocks(ctx, store, bundle)
+	snapshot, err := kv.LoadFromMemvidBlocks(ctx, store, bundle)
 	if err != nil {
 		return err
 	}

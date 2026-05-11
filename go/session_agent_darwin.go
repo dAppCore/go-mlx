@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
@@ -79,7 +80,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 		s.agentMemory = cloneAgentMemoryWakeReport(plan.Report)
 		return plan.Report, nil
 	}
-	snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +143,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 		if !ok {
 			return nil, core.NewError("mlx: agent memory parent-prefix reuse requires a readable memvid store")
 		}
-		parentBundle, err := LoadKVSnapshotMemvidBlockBundle(ctx, readStore, opts.ParentBundleURI)
+		parentBundle, err := kv.LoadMemvidBlockBundle(ctx, readStore, opts.ParentBundleURI)
 		if err != nil {
 			return nil, err
 		}
@@ -155,7 +156,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if err != nil {
 		return nil, err
 	}
-	bundleRef, err := SaveKVSnapshotMemvidBlockBundle(ctx, store, bundle, bundleURI)
+	bundleRef, err := kv.SaveMemvidBlockBundle(ctx, store, bundle, bundleURI)
 	if err != nil {
 		return nil, err
 	}
@@ -271,9 +272,9 @@ func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest)
 		ModelInfo:         modelInfoFromInferenceIdentity(req.Model),
 		Tokenizer:         stateBundleTokenizerFromInference(req.Tokenizer),
 		ReuseParentPrefix: req.ReuseParentPrefix,
-		BlockOptions: KVSnapshotMemvidBlockOptions{
+		BlockOptions: kv.MemvidBlockOptions{
 			BlockSize:  req.BlockSize,
-			KVEncoding: KVSnapshotEncoding(req.Encoding),
+			KVEncoding: kv.Encoding(req.Encoding),
 		},
 		Labels: agentMemoryLabelsFromInference(req.Labels),
 		Meta:   cloneStringMap(req.Metadata),
@@ -317,7 +318,7 @@ func toInferenceAgentMemoryWakeResult(report *AgentMemoryWakeReport) *inference.
 			TokenStart: 0,
 			TokenCount: report.PrefixTokens,
 		},
-		Bundle:       agentMemoryStateRef(report.BundleURI, KVSnapshotMemvidBlockBundleKind, report.SnapshotHash, ""),
+		Bundle:       agentMemoryStateRef(report.BundleURI, kv.MemvidBlockBundleKind, report.SnapshotHash, ""),
 		Index:        agentMemoryStateRef(report.IndexURI, KVSnapshotMemvidBundleIndexKind, report.IndexHash, ""),
 		PrefixTokens: report.PrefixTokens,
 		BundleTokens: report.BundleTokens,
@@ -345,7 +346,7 @@ func toInferenceAgentMemorySleepResult(report *AgentMemorySleepReport) *inferenc
 			BundleURI: report.ParentBundleURI,
 			IndexURI:  report.ParentIndexURI,
 		},
-		Bundle:        agentMemoryStateRef(report.BundleURI, KVSnapshotMemvidBlockBundleKind, report.SnapshotHash, string(report.KVEncoding)),
+		Bundle:        agentMemoryStateRef(report.BundleURI, kv.MemvidBlockBundleKind, report.SnapshotHash, string(report.KVEncoding)),
 		Index:         agentMemoryStateRef(report.IndexURI, KVSnapshotMemvidBundleIndexKind, report.IndexHash, ""),
 		TokenCount:    report.TokenCount,
 		BlockSize:     report.BlockSize,

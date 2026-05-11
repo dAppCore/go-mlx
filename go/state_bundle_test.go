@@ -9,6 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 func TestStateBundle_SaveLoad_Good(t *testing.T) {
@@ -141,13 +142,13 @@ func TestStateBundle_Bad(t *testing.T) {
 func TestStateBundleMemvidSnapshot_Good(t *testing.T) {
 	store := memvid.NewInMemoryStore(nil)
 	snapshot := stateBundleTestSnapshot()
-	ref, err := snapshot.SaveMemvid(context.Background(), store, KVSnapshotMemvidOptions{})
+	ref, err := snapshot.SaveMemvid(context.Background(), store, kv.MemvidOptions{})
 	if err != nil {
 		t.Fatalf("SaveMemvid() error = %v", err)
 	}
-	hash, err := hashKVSnapshot(snapshot)
+	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
-		t.Fatalf("hashKVSnapshot() error = %v", err)
+		t.Fatalf("kv.HashSnapshot() error = %v", err)
 	}
 	bundle := &StateBundle{
 		Version: StateBundleVersion,
@@ -172,7 +173,7 @@ func TestStateBundleMemvidSnapshot_Good(t *testing.T) {
 func TestStateBundleMemvidSnapshot_Good_AllowsFrameZero(t *testing.T) {
 	source := memvid.NewInMemoryStore(nil)
 	snapshot := stateBundleTestSnapshot()
-	ref, err := snapshot.SaveMemvid(context.Background(), source, KVSnapshotMemvidOptions{})
+	ref, err := snapshot.SaveMemvid(context.Background(), source, kv.MemvidOptions{})
 	if err != nil {
 		t.Fatalf("SaveMemvid() error = %v", err)
 	}
@@ -187,9 +188,9 @@ func TestStateBundleMemvidSnapshot_Good_AllowsFrameZero(t *testing.T) {
 		Codec:          memvid.CodecQRVideo,
 		Segment:        "/tmp/session.mp4",
 	}})
-	hash, err := hashKVSnapshot(snapshot)
+	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
-		t.Fatalf("hashKVSnapshot() error = %v", err)
+		t.Fatalf("kv.HashSnapshot() error = %v", err)
 	}
 	bundle := &StateBundle{
 		Version: StateBundleVersion,
@@ -239,11 +240,11 @@ func TestStateBundleSnapshot_Good_ClonesEmbeddedAndLoadsKVPath(t *testing.T) {
 
 	kvPath := core.PathJoin(t.TempDir(), "state.kvbin")
 	if err := snapshot.Save(kvPath); err != nil {
-		t.Fatalf("KVSnapshot.Save() error = %v", err)
+		t.Fatalf("kv.Snapshot.Save() error = %v", err)
 	}
-	hash, err := hashKVSnapshot(snapshot)
+	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
-		t.Fatalf("hashKVSnapshot() error = %v", err)
+		t.Fatalf("kv.HashSnapshot() error = %v", err)
 	}
 	pathBundle := &StateBundle{
 		Version: StateBundleVersion,
@@ -385,7 +386,7 @@ func TestStateBundleSnapshot_Bad(t *testing.T) {
 	}
 
 	store := memvid.NewInMemoryStore(nil)
-	ref, err := stateBundleTestSnapshot().SaveMemvid(context.Background(), store, KVSnapshotMemvidOptions{})
+	ref, err := stateBundleTestSnapshot().SaveMemvid(context.Background(), store, kv.MemvidOptions{})
 	if err != nil {
 		t.Fatalf("SaveMemvid() error = %v", err)
 	}
@@ -431,9 +432,9 @@ func TestStateBundle_Ugly(t *testing.T) {
 	}
 }
 
-func stateBundleTestSnapshot() *KVSnapshot {
-	return &KVSnapshot{
-		Version:       KVSnapshotVersion,
+func stateBundleTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		Generated:     []int32{2},
@@ -445,10 +446,10 @@ func stateBundleTestSnapshot() *KVSnapshot {
 		NumQueryHeads: 8,
 		LogitShape:    []int32{1, 1, 3},
 		Logits:        []float32{0.1, 0.2, 0.7},
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1, 0, 0, 1},
 				Value: []float32{0, 1, 1, 0},
 			}},

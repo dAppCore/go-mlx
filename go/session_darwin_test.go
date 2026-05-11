@@ -12,6 +12,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -202,8 +203,8 @@ func TestModelNewSessionFromKV_Good(t *testing.T) {
 	}
 	nativeSession := &fakeNativeSession{}
 	model := &Model{model: &fakeNativeModel{session: nativeSession}}
-	snapshot := &KVSnapshot{
-		Version:      KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:      kv.SnapshotVersion,
 		Architecture: "gemma4_text",
 		Tokens:       []int32{1},
 		TokenOffset:  1,
@@ -211,10 +212,10 @@ func TestModelNewSessionFromKV_Good(t *testing.T) {
 		HeadDim:      1,
 		LogitShape:   []int32{1, 1, 2},
 		Logits:       []float32{0.1, 0.9},
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1},
 				Value: []float32{2},
 			}},
@@ -297,13 +298,13 @@ func TestSessionNilGuards_Bad(t *testing.T) {
 	if err := (&ModelSession{session: &fakeNativeSession{}}).RestoreKV(nil); err == nil {
 		t.Fatal("expected nil KV snapshot error")
 	}
-	if _, err := session.SaveKVToMemvid(nil, memvid.NewInMemoryStore(nil), KVSnapshotMemvidOptions{}); err == nil {
+	if _, err := session.SaveKVToMemvid(nil, memvid.NewInMemoryStore(nil), kv.MemvidOptions{}); err == nil {
 		t.Fatal("expected nil session save-to-memvid error")
 	}
-	if _, err := session.SaveKVBlocksToMemvid(nil, memvid.NewInMemoryStore(nil), KVSnapshotMemvidBlockOptions{}); err == nil {
+	if _, err := session.SaveKVBlocksToMemvid(nil, memvid.NewInMemoryStore(nil), kv.MemvidBlockOptions{}); err == nil {
 		t.Fatal("expected nil session save-blocks error")
 	}
-	if err := session.LoadKVBlocksFromMemvid(nil, memvid.NewInMemoryStore(nil), &KVSnapshotMemvidBlockBundle{}); err == nil {
+	if err := session.LoadKVBlocksFromMemvid(nil, memvid.NewInMemoryStore(nil), &kv.MemvidBlockBundle{}); err == nil {
 		t.Fatal("expected invalid memvid block load error")
 	}
 	if err := session.RestoreBundle(nil); err == nil {
@@ -386,7 +387,7 @@ func TestModelSessionMemvidKV_Good_SaveAndLoad(t *testing.T) {
 	}
 	session := &ModelSession{session: nativeSession}
 
-	ref, err := session.SaveKVToMemvid(context.Background(), store, KVSnapshotMemvidOptions{URI: "mlx://session/demo"})
+	ref, err := session.SaveKVToMemvid(context.Background(), store, kv.MemvidOptions{URI: "mlx://session/demo"})
 	if err != nil {
 		t.Fatalf("SaveKVToMemvid() error = %v", err)
 	}
@@ -407,13 +408,13 @@ func TestModelSessionMemvidKV_Good_SaveAndLoad(t *testing.T) {
 func TestModelSessionMemvidBundle_Good_Restore(t *testing.T) {
 	store := memvid.NewInMemoryStore(nil)
 	snapshot := stateBundleTestSnapshot()
-	ref, err := snapshot.SaveMemvid(context.Background(), store, KVSnapshotMemvidOptions{})
+	ref, err := snapshot.SaveMemvid(context.Background(), store, kv.MemvidOptions{})
 	if err != nil {
 		t.Fatalf("SaveMemvid() error = %v", err)
 	}
-	hash, err := hashKVSnapshot(snapshot)
+	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
-		t.Fatalf("hashKVSnapshot() error = %v", err)
+		t.Fatalf("kv.HashSnapshot() error = %v", err)
 	}
 	nativeSession := &fakeNativeSession{}
 	session := &ModelSession{
@@ -461,7 +462,7 @@ func TestModelSessionMemvidKVBlocks_Good_SaveAndLoad(t *testing.T) {
 	}
 	session := &ModelSession{session: nativeSession}
 
-	bundle, err := session.SaveKVBlocksToMemvid(context.Background(), store, KVSnapshotMemvidBlockOptions{BlockSize: 2})
+	bundle, err := session.SaveKVBlocksToMemvid(context.Background(), store, kv.MemvidBlockOptions{BlockSize: 2})
 	if err != nil {
 		t.Fatalf("SaveKVBlocksToMemvid() error = %v", err)
 	}
@@ -646,18 +647,18 @@ func TestSessionCaptureKVAnalyzeAndSave_Good(t *testing.T) {
 	}
 	analysis, err := session.AnalyzeKV()
 	if err != nil {
-		t.Fatalf("AnalyzeKV() error = %v", err)
+		t.Fatalf("kv.Analyze() error = %v", err)
 	}
-	if analysis == nil || len(KVFeatures(analysis)) != 7 {
-		t.Fatalf("AnalyzeKV() = %+v", analysis)
+	if analysis == nil || len(kv.Features(analysis)) != 7 {
+		t.Fatalf("kv.Analyze() = %+v", analysis)
 	}
 	path := core.PathJoin(t.TempDir(), "session.kvbin")
 	if err := session.SaveKV(path); err != nil {
 		t.Fatalf("SaveKV() error = %v", err)
 	}
-	loaded, err := LoadKVSnapshot(path)
+	loaded, err := kv.Load(path)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+		t.Fatalf("kv.Load() error = %v", err)
 	}
 	if loaded.Architecture != "gemma4_text" || loaded.SeqLen != 2 {
 		t.Fatalf("loaded snapshot = %+v", loaded)
@@ -671,8 +672,8 @@ func TestSessionRestoreAndLoadKV_Good(t *testing.T) {
 	}
 	native := &fakeNativeSession{}
 	session := &ModelSession{session: native}
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		Generated:     []int32{2},
@@ -684,10 +685,10 @@ func TestSessionRestoreAndLoadKV_Good(t *testing.T) {
 		NumQueryHeads: 8,
 		LogitShape:    []int32{1, 1, 3},
 		Logits:        []float32{0.1, 0.2, 0.7},
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1, 2},
 				Value: []float32{3, 4},
 			}},

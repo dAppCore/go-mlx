@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	filestore "dappco.re/go/inference/state/filestore"
 )
 
@@ -62,12 +63,12 @@ type FastEvalRunner struct {
 	Generate                        func(context.Context, string, GenerateConfig) (FastEvalGeneration, error)
 	DraftGenerate                   func(context.Context, string, GenerateConfig) (FastEvalGeneration, error)
 	WarmPromptCache                 func(context.Context, string) error
-	CaptureKV                       func(context.Context, string) (*KVSnapshot, error)
-	CaptureKVWithOptions            func(context.Context, string, KVSnapshotCaptureOptions) (*KVSnapshot, error)
-	CaptureKVBlocksToMemvid         func(context.Context, string, memvid.Writer, KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error)
-	RestoreKV                       func(context.Context, *KVSnapshot) error
-	WarmPromptCacheFromMemvidBlocks func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int) error
-	GenerateWithMemvidPrefix        func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error)
+	CaptureKV                       func(context.Context, string) (*kv.Snapshot, error)
+	CaptureKVWithOptions            func(context.Context, string, kv.CaptureOptions) (*kv.Snapshot, error)
+	CaptureKVBlocksToMemvid         func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error)
+	RestoreKV                       func(context.Context, *kv.Snapshot) error
+	WarmPromptCacheFromMemvidBlocks func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int) error
+	GenerateWithMemvidPrefix        func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error)
 }
 
 // FastEvalGeneration is one generation result plus the model metrics it produced.
@@ -234,19 +235,19 @@ func NewModelFastEvalRunner(model *Model) FastEvalRunner {
 			}
 			return model.WarmPromptCache(prompt)
 		},
-		CaptureKV: func(ctx context.Context, prompt string) (*KVSnapshot, error) {
+		CaptureKV: func(ctx context.Context, prompt string) (*kv.Snapshot, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			return model.CaptureKV(prompt)
 		},
-		CaptureKVWithOptions: func(ctx context.Context, prompt string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+		CaptureKVWithOptions: func(ctx context.Context, prompt string, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
 			return model.CaptureKVWithOptions(prompt, opts)
 		},
-		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -260,7 +261,7 @@ func NewModelFastEvalRunner(model *Model) FastEvalRunner {
 			}
 			return session.SaveKVBlocksToMemvid(ctx, store, opts)
 		},
-		RestoreKV: func(ctx context.Context, snapshot *KVSnapshot) error {
+		RestoreKV: func(ctx context.Context, snapshot *kv.Snapshot) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -273,13 +274,13 @@ func NewModelFastEvalRunner(model *Model) FastEvalRunner {
 			}
 			return nil
 		},
-		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
+		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 			return model.WarmPromptCacheFromMemvidBlocks(ctx, store, bundle, prefixTokens)
 		},
-		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int, suffix string, cfg GenerateConfig) (FastEvalGeneration, error) {
+		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string, cfg GenerateConfig) (FastEvalGeneration, error) {
 			if err := ctx.Err(); err != nil {
 				return FastEvalGeneration{}, err
 			}
@@ -288,12 +289,12 @@ func NewModelFastEvalRunner(model *Model) FastEvalRunner {
 				return FastEvalGeneration{}, err
 			}
 			defer session.Close()
-			loadOpts := KVSnapshotLoadOptions{}
-			if bundle != nil && bundle.KVEncoding == KVSnapshotEncodingNative {
+			loadOpts := kv.LoadOptions{}
+			if bundle != nil && bundle.KVEncoding == kv.EncodingNative {
 				loadOpts.RawKVOnly = true
 			}
 			restoreStart := time.Now()
-			snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, loadOpts)
+			snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, loadOpts)
 			if err != nil {
 				return FastEvalGeneration{}, err
 			}
@@ -350,7 +351,7 @@ func RunFastEval(ctx context.Context, runner FastEvalRunner, cfg FastEvalConfig)
 	report.Generation = summarizeFastEvalGenerations(samples)
 	report.Quality.Checks = append(report.Quality.Checks, qualityChecks(samples)...)
 
-	var snapshot *KVSnapshot
+	var snapshot *kv.Snapshot
 	if cfg.IncludePromptCache {
 		report.PromptCache = runFastEvalPromptCache(ctx, runner, cfg)
 	}
@@ -556,7 +557,7 @@ func runFastEvalPromptCache(ctx context.Context, runner FastEvalRunner, cfg Fast
 	return report
 }
 
-func runFastEvalMemvidKVBlockWarm(ctx context.Context, runner FastEvalRunner, snapshot *KVSnapshot, cfg FastEvalConfig) FastEvalMemvidKVBlockWarmReport {
+func runFastEvalMemvidKVBlockWarm(ctx context.Context, runner FastEvalRunner, snapshot *kv.Snapshot, cfg FastEvalConfig) FastEvalMemvidKVBlockWarmReport {
 	report := FastEvalMemvidKVBlockWarmReport{
 		Attempted: true,
 		Source:    filestore.CodecFile,
@@ -588,11 +589,11 @@ func runFastEvalMemvidKVBlockWarm(ctx context.Context, runner FastEvalRunner, sn
 		report.Error = err.Error()
 		return report
 	}
-	blockOpts := KVSnapshotMemvidBlockOptions{
+	blockOpts := kv.MemvidBlockOptions{
 		BlockSize:  blockSize,
-		KVEncoding: KVSnapshotEncodingNative,
+		KVEncoding: kv.EncodingNative,
 	}
-	var bundle *KVSnapshotMemvidBlockBundle
+	var bundle *kv.MemvidBlockBundle
 	if runner.CaptureKVBlocksToMemvid != nil {
 		bundle, err = runner.CaptureKVBlocksToMemvid(ctx, cfg.CachePrompt, store, blockOpts)
 	} else {
@@ -719,9 +720,9 @@ func fastEvalFileSize(path string) int64 {
 	return stat.Value.(core.FsFileInfo).Size()
 }
 
-func runFastEvalCapture(ctx context.Context, runner FastEvalRunner, cfg FastEvalConfig) *KVSnapshot {
+func runFastEvalCapture(ctx context.Context, runner FastEvalRunner, cfg FastEvalConfig) *kv.Snapshot {
 	if runner.CaptureKVWithOptions != nil {
-		opts := KVSnapshotCaptureOptions{}
+		opts := kv.CaptureOptions{}
 		if cfg.IncludeMemvidKVBlockWarm {
 			opts.RawKVOnly = true
 		}
@@ -791,7 +792,7 @@ func (s *memvidReadCountingStore) record(chunkID int) {
 	s.unique[chunkID] = struct{}{}
 }
 
-func runFastEvalRestore(ctx context.Context, runner FastEvalRunner, snapshot *KVSnapshot) FastEvalLatencyReport {
+func runFastEvalRestore(ctx context.Context, runner FastEvalRunner, snapshot *kv.Snapshot) FastEvalLatencyReport {
 	report := FastEvalLatencyReport{Attempted: true}
 	if snapshot == nil {
 		report.Error = "no KV snapshot captured"
@@ -811,7 +812,7 @@ func runFastEvalRestore(ctx context.Context, runner FastEvalRunner, snapshot *KV
 	return report
 }
 
-func runFastEvalStateBundle(ctx context.Context, snapshot *KVSnapshot, cfg FastEvalConfig, info ModelInfo) FastEvalStateBundleReport {
+func runFastEvalStateBundle(ctx context.Context, snapshot *kv.Snapshot, cfg FastEvalConfig, info ModelInfo) FastEvalStateBundleReport {
 	report := FastEvalStateBundleReport{Attempted: true}
 	if snapshot == nil {
 		report.Error = "no KV snapshot captured"

@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"context"
@@ -12,10 +12,10 @@ import (
 
 func TestKVSnapshotMemvid_Good_SaveLoadRoundTrip(t *testing.T) {
 	store := memvid.NewInMemoryStore(nil)
-	snapshot := stateBundleTestSnapshot()
+	snapshot := testSnapshot()
 
-	ref, err := snapshot.SaveMemvid(context.Background(), store, KVSnapshotMemvidOptions{
-		KVEncoding: KVSnapshotEncodingQ8,
+	ref, err := snapshot.SaveMemvid(context.Background(), store, MemvidOptions{
+		KVEncoding: EncodingQ8,
 		URI:        "mlx://session/test",
 		Title:      "test session",
 		Labels:     []string{"session-kv"},
@@ -34,9 +34,9 @@ func TestKVSnapshotMemvid_Good_SaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("memvid payload = %s, want KV envelope", chunk.Text)
 	}
 
-	loaded, err := LoadKVSnapshotFromMemvid(context.Background(), store, ref)
+	loaded, err := LoadFromMemvid(context.Background(), store, ref)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotFromMemvid() error = %v", err)
+		t.Fatalf("LoadFromMemvid() error = %v", err)
 	}
 	if loaded.Architecture != snapshot.Architecture || loaded.TokenOffset != snapshot.TokenOffset || loaded.NumLayers != snapshot.NumLayers {
 		t.Fatalf("loaded metadata = %+v, want %+v", loaded, snapshot)
@@ -55,36 +55,36 @@ func TestKVSnapshotMemvid_Bad_LoadRejectsHashMismatch(t *testing.T) {
 		1: `{"version":1,"kind":"` + KVSnapshotMemvidKind + `","binary_encoding":"base64","kv_hash":"sha256:not-it","data":"` + core.Base64Encode([]byte(kvSnapshotMagic)) + `"}`,
 	})
 
-	_, err := LoadKVSnapshotFromMemvid(context.Background(), store, memvid.ChunkRef{ChunkID: 1})
+	_, err := LoadFromMemvid(context.Background(), store, memvid.ChunkRef{ChunkID: 1})
 
 	if err == nil {
-		t.Fatal("LoadKVSnapshotFromMemvid() error = nil, want hash mismatch")
+		t.Fatal("LoadFromMemvid() error = nil, want hash mismatch")
 	}
 }
 
 func TestKVSnapshotMemvid_Bad_SaveErrors(t *testing.T) {
-	var snapshot *KVSnapshot
-	if _, err := snapshot.SaveMemvid(context.Background(), memvid.NewInMemoryStore(nil), KVSnapshotMemvidOptions{}); err == nil {
+	var snapshot *Snapshot
+	if _, err := snapshot.SaveMemvid(context.Background(), memvid.NewInMemoryStore(nil), MemvidOptions{}); err == nil {
 		t.Fatal("SaveMemvid(nil snapshot) error = nil")
 	}
-	if _, err := stateBundleTestSnapshot().SaveMemvid(context.Background(), nil, KVSnapshotMemvidOptions{}); err == nil {
+	if _, err := testSnapshot().SaveMemvid(context.Background(), nil, MemvidOptions{}); err == nil {
 		t.Fatal("SaveMemvid(nil store) error = nil")
 	}
-	if _, err := stateBundleTestSnapshot().SaveMemvid(context.Background(), memvid.NewInMemoryStore(nil), KVSnapshotMemvidOptions{KVEncoding: "q2"}); err == nil {
+	if _, err := testSnapshot().SaveMemvid(context.Background(), memvid.NewInMemoryStore(nil), MemvidOptions{KVEncoding: "q2"}); err == nil {
 		t.Fatal("SaveMemvid(bad encoding) error = nil")
 	}
-	if _, err := stateBundleTestSnapshot().SaveMemvid(nil, failingMemvidWriter{}, KVSnapshotMemvidOptions{}); err == nil {
+	if _, err := testSnapshot().SaveMemvid(nil, failingMemvidWriter{}, MemvidOptions{}); err == nil {
 		t.Fatal("SaveMemvid(write failure) error = nil")
 	}
 }
 
 func TestKVSnapshotMemvid_Bad_LoadEnvelopeErrors(t *testing.T) {
-	if _, err := LoadKVSnapshotFromMemvid(context.Background(), nil, memvid.ChunkRef{ChunkID: 1}); err == nil {
-		t.Fatal("LoadKVSnapshotFromMemvid(nil store) error = nil")
+	if _, err := LoadFromMemvid(context.Background(), nil, memvid.ChunkRef{ChunkID: 1}); err == nil {
+		t.Fatal("LoadFromMemvid(nil store) error = nil")
 	}
 	store := memvid.NewInMemoryStore(map[int]string{1: "{"})
-	if _, err := LoadKVSnapshotFromMemvid(nil, store, memvid.ChunkRef{ChunkID: 1}); err == nil {
-		t.Fatal("LoadKVSnapshotFromMemvid(corrupt JSON) error = nil")
+	if _, err := LoadFromMemvid(nil, store, memvid.ChunkRef{ChunkID: 1}); err == nil {
+		t.Fatal("LoadFromMemvid(corrupt JSON) error = nil")
 	}
 
 	for _, envelope := range []kvSnapshotMemvidEnvelope{
@@ -109,9 +109,9 @@ func TestKVSnapshotMemvid_Bad_LoadEnvelopeErrors(t *testing.T) {
 }
 
 func TestKVSnapshotMemvidHelpers_Good(t *testing.T) {
-	snapshot := stateBundleTestSnapshot()
+	snapshot := testSnapshot()
 	snapshot.Version = 0
-	opts := kvSnapshotMemvidPutOptions(snapshot, KVSnapshotMemvidOptions{
+	opts := kvSnapshotMemvidPutOptions(snapshot, MemvidOptions{
 		Kind:   "custom-kind",
 		Track:  "custom-track",
 		URI:    "mlx://custom",
@@ -120,7 +120,7 @@ func TestKVSnapshotMemvidHelpers_Good(t *testing.T) {
 		Labels: []string{"caller-label"},
 	}, kvSnapshotMemvidEnvelope{
 		KVHash:           "hash",
-		KVEncoding:       string(KVSnapshotEncodingNative),
+		KVEncoding:       string(EncodingNative),
 		Architecture:     "gemma4_text",
 		TokenCount:       2,
 		PayloadByteCount: 32,
@@ -131,14 +131,14 @@ func TestKVSnapshotMemvidHelpers_Good(t *testing.T) {
 	if opts.Tags["caller"] != "yes" || opts.Tags["kv_hash"] != "hash" || opts.Tags["payload_bytes"] != "32" {
 		t.Fatalf("put option tags = %+v, want caller and KV tags", opts.Tags)
 	}
-	if got := effectiveKVSnapshotVersion(snapshot, KVSnapshotEncodingQ8); got != 3 {
-		t.Fatalf("effectiveKVSnapshotVersion(q8) = %d, want 3", got)
+	if got := effectiveVersion(snapshot, EncodingQ8); got != 3 {
+		t.Fatalf("effectiveVersion(q8) = %d, want 3", got)
 	}
-	if got := effectiveKVSnapshotTokenOffset(&KVSnapshot{Tokens: []int32{1, 2, 3}}); got != 3 {
-		t.Fatalf("effectiveKVSnapshotTokenOffset(default) = %d, want token length", got)
+	if got := EffectiveTokenOffset(&Snapshot{Tokens: []int32{1, 2, 3}}); got != 3 {
+		t.Fatalf("EffectiveTokenOffset(default) = %d, want token length", got)
 	}
-	if got := effectiveKVSnapshotTokenOffset(nil); got != 0 {
-		t.Fatalf("effectiveKVSnapshotTokenOffset(nil) = %d, want 0", got)
+	if got := EffectiveTokenOffset(nil); got != 0 {
+		t.Fatalf("EffectiveTokenOffset(nil) = %d, want 0", got)
 	}
 	sourceTags := map[string]string{"a": "b"}
 	tags := cloneKVSnapshotMemvidTags(sourceTags)

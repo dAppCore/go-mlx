@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"context"
@@ -15,44 +15,44 @@ import (
 const (
 	// KVSnapshotMemvidBlockKind identifies one memvid chunk containing a KV block.
 	KVSnapshotMemvidBlockKind = "go-mlx/kv-snapshot-block"
-	// KVSnapshotMemvidBlockBundleKind identifies a collection of memvid KV blocks.
-	KVSnapshotMemvidBlockBundleKind = "go-mlx/kv-snapshot-block-bundle"
-	// KVSnapshotMemvidBlockVersion is the block envelope schema version.
-	KVSnapshotMemvidBlockVersion = 1
+	// MemvidBlockBundleKind identifies a collection of memvid KV blocks.
+	MemvidBlockBundleKind = "go-mlx/kv-snapshot-block-bundle"
+	// MemvidBlockVersion is the block envelope schema version.
+	MemvidBlockVersion = 1
 
 	kvSnapshotMemvidPayloadRaw        = "raw"
 	kvSnapshotMemvidPayloadJSONBase64 = "json-base64"
 )
 
-// KVSnapshotBlock is one contiguous token range from a KV snapshot.
-type KVSnapshotBlock struct {
+// Block is one contiguous token range from a KV snapshot.
+type Block struct {
 	Index      int
 	TokenStart int
 	TokenCount int
 	Hash       string
-	Snapshot   *KVSnapshot
+	Snapshot   *Snapshot
 }
 
-// KVSnapshotMemvidBlockOptions controls memvid-backed KV block storage.
-type KVSnapshotMemvidBlockOptions struct {
+// MemvidBlockOptions controls memvid-backed KV block storage.
+type MemvidBlockOptions struct {
 	BlockSize         int
-	KVEncoding        KVSnapshotEncoding
+	KVEncoding        Encoding
 	URI               string
 	Title             string
 	Kind              string
 	Track             string
 	Tags              map[string]string
 	Labels            []string
-	ReusePrefix       *KVSnapshotMemvidBlockBundle
+	ReusePrefix       *MemvidBlockBundle
 	ReusePrefixTokens int
 }
 
-// KVSnapshotMemvidBlockBundle is a portable manifest for memvid KV blocks.
-type KVSnapshotMemvidBlockBundle struct {
+// MemvidBlockBundle is a portable manifest for memvid KV blocks.
+type MemvidBlockBundle struct {
 	Version      int                        `json:"version"`
 	Kind         string                     `json:"kind"`
 	SnapshotHash string                     `json:"snapshot_hash,omitempty"`
-	KVEncoding   KVSnapshotEncoding         `json:"kv_encoding,omitempty"`
+	KVEncoding   Encoding         `json:"kv_encoding,omitempty"`
 	Architecture string                     `json:"architecture,omitempty"`
 	TokenCount   int                        `json:"token_count,omitempty"`
 	TokenOffset  int                        `json:"token_offset,omitempty"`
@@ -62,11 +62,11 @@ type KVSnapshotMemvidBlockBundle struct {
 	SeqLen       int                        `json:"seq_len,omitempty"`
 	HeadDim      int                        `json:"head_dim,omitempty"`
 	ReusedBlocks int                        `json:"reused_blocks,omitempty"`
-	Blocks       []KVSnapshotMemvidBlockRef `json:"blocks,omitempty"`
+	Blocks       []MemvidBlockRef `json:"blocks,omitempty"`
 }
 
-// KVSnapshotMemvidBlockRef links one logical KV block to a memvid chunk.
-type KVSnapshotMemvidBlockRef struct {
+// MemvidBlockRef links one logical KV block to a memvid chunk.
+type MemvidBlockRef struct {
 	Index            int             `json:"index"`
 	TokenStart       int             `json:"token_start"`
 	TokenCount       int             `json:"token_count"`
@@ -90,9 +90,9 @@ type kvSnapshotMemvidBlockEnvelope struct {
 }
 
 // SplitBlocks splits a KV snapshot into contiguous token-range blocks.
-func (s *KVSnapshot) SplitBlocks(blockSize int) ([]KVSnapshotBlock, error) {
-	blocks := []KVSnapshotBlock{}
-	err := s.walkBlocks(blockSize, true, func(block KVSnapshotBlock) (bool, error) {
+func (s *Snapshot) SplitBlocks(blockSize int) ([]Block, error) {
+	blocks := []Block{}
+	err := s.walkBlocks(blockSize, true, func(block Block) (bool, error) {
 		blocks = append(blocks, block)
 		return true, nil
 	})
@@ -104,30 +104,30 @@ func (s *KVSnapshot) SplitBlocks(blockSize int) ([]KVSnapshotBlock, error) {
 
 // RangeBlocks streams contiguous token-range blocks to yield without retaining
 // every sliced block at once. Returning false from yield stops iteration.
-func (s *KVSnapshot) RangeBlocks(blockSize int, yield func(KVSnapshotBlock) bool) error {
+func (s *Snapshot) RangeBlocks(blockSize int, yield func(Block) bool) error {
 	if yield == nil {
 		return core.NewError("mlx: KV snapshot block yield is nil")
 	}
-	return s.walkBlocks(blockSize, true, func(block KVSnapshotBlock) (bool, error) {
+	return s.walkBlocks(blockSize, true, func(block Block) (bool, error) {
 		return yield(block), nil
 	})
 }
 
-func (s *KVSnapshot) walkBlocks(blockSize int, includeHash bool, yield func(KVSnapshotBlock) (bool, error)) error {
+func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block) (bool, error)) error {
 	if s == nil {
 		return core.NewError("mlx: KV snapshot is nil")
 	}
 	if blockSize <= 0 {
 		return core.NewError("mlx: KV snapshot block size must be > 0")
 	}
-	seqLen := effectiveKVSnapshotSeqLen(s)
+	seqLen := EffectiveSeqLen(s)
 	if seqLen <= 0 || len(s.Tokens) != seqLen {
 		return core.NewError("mlx: KV snapshot block split requires tokens matching sequence length")
 	}
 	if s.HeadDim <= 0 {
 		return core.NewError("mlx: KV snapshot block split requires head dimension")
 	}
-	baseOffset := effectiveKVSnapshotTokenOffset(s) - seqLen
+	baseOffset := EffectiveTokenOffset(s) - seqLen
 	if baseOffset < 0 {
 		baseOffset = 0
 	}
@@ -138,18 +138,18 @@ func (s *KVSnapshot) walkBlocks(blockSize int, includeHash bool, yield func(KVSn
 	for i := 0; i < len(boundaries)-1; i++ {
 		start := boundaries[i]
 		end := boundaries[i+1]
-		blockSnapshot, err := s.sliceBlock(start, end, baseOffset, end == seqLen)
+		blockSnapshot, err := s.SliceBlock(start, end, baseOffset, end == seqLen)
 		if err != nil {
 			return err
 		}
 		var hash string
 		if includeHash {
-			hash, err = hashKVSnapshot(blockSnapshot)
+			hash, err = HashSnapshot(blockSnapshot)
 			if err != nil {
 				return err
 			}
 		}
-		ok, err := yield(KVSnapshotBlock{
+		ok, err := yield(Block{
 			Index:      i,
 			TokenStart: start,
 			TokenCount: end - start,
@@ -166,7 +166,7 @@ func (s *KVSnapshot) walkBlocks(blockSize int, includeHash bool, yield func(KVSn
 	return nil
 }
 
-func (s *KVSnapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
+func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
 	seen := map[int]bool{0: true, seqLen: true}
 	for next := blockSize; next < seqLen; next += blockSize {
 		seen[next] = true
@@ -174,7 +174,7 @@ func (s *KVSnapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
 	for _, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
-			return nil, core.E("KVSnapshot.SplitBlocks", "layer window", err)
+			return nil, core.E("Snapshot.SplitBlocks", "layer window", err)
 		}
 		if windowLen <= 0 || windowLen >= seqLen {
 			continue
@@ -189,21 +189,21 @@ func (s *KVSnapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
 	return boundaries, nil
 }
 
-func (s *KVSnapshot) sliceBlock(start, end, baseOffset int, final bool) (*KVSnapshot, error) {
+func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
 	if start < 0 || end <= start || end > len(s.Tokens) {
 		return nil, core.NewError("mlx: invalid KV snapshot block range")
 	}
-	seqLen := effectiveKVSnapshotSeqLen(s)
-	layers := make([]KVLayerSnapshot, len(s.Layers))
+	seqLen := EffectiveSeqLen(s)
+	layers := make([]LayerSnapshot, len(s.Layers))
 	for layerIndex, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
-			return nil, core.E("KVSnapshot.SplitBlocks", "layer window", err)
+			return nil, core.E("Snapshot.SplitBlocks", "layer window", err)
 		}
 		windowStart := seqLen - windowLen
 		overlapStart := max(start, windowStart)
 		overlapEnd := min(end, seqLen)
-		layers[layerIndex] = KVLayerSnapshot{
+		layers[layerIndex] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 		}
@@ -212,25 +212,25 @@ func (s *KVSnapshot) sliceBlock(start, end, baseOffset int, final bool) (*KVSnap
 		}
 		localStart := overlapStart - windowStart
 		localEnd := overlapEnd - windowStart
-		layers[layerIndex].Heads = make([]KVHeadSnapshot, len(layer.Heads))
+		layers[layerIndex].Heads = make([]HeadSnapshot, len(layer.Heads))
 		for headIndex, head := range layer.Heads {
 			key, err := sliceKVSnapshotTensor(head.Key, localStart, localEnd, s.HeadDim, windowLen)
 			if err != nil {
-				return nil, core.E("KVSnapshot.SplitBlocks", "slice key tensor", err)
+				return nil, core.E("Snapshot.SplitBlocks", "slice key tensor", err)
 			}
 			value, err := sliceKVSnapshotTensor(head.Value, localStart, localEnd, s.HeadDim, windowLen)
 			if err != nil {
-				return nil, core.E("KVSnapshot.SplitBlocks", "slice value tensor", err)
+				return nil, core.E("Snapshot.SplitBlocks", "slice value tensor", err)
 			}
 			keyBytes, err := sliceKVSnapshotRawTensor(head.KeyBytes, head.KeyDType, localStart, localEnd, windowLen, len(head.Key))
 			if err != nil {
-				return nil, core.E("KVSnapshot.SplitBlocks", "slice native key tensor", err)
+				return nil, core.E("Snapshot.SplitBlocks", "slice native key tensor", err)
 			}
 			valueBytes, err := sliceKVSnapshotRawTensor(head.ValueBytes, head.ValueDType, localStart, localEnd, windowLen, len(head.Value))
 			if err != nil {
-				return nil, core.E("KVSnapshot.SplitBlocks", "slice native value tensor", err)
+				return nil, core.E("Snapshot.SplitBlocks", "slice native value tensor", err)
 			}
-			layers[layerIndex].Heads[headIndex] = KVHeadSnapshot{
+			layers[layerIndex].Heads[headIndex] = HeadSnapshot{
 				Key:        key,
 				KeyDType:   head.KeyDType,
 				KeyBytes:   keyBytes,
@@ -240,8 +240,8 @@ func (s *KVSnapshot) sliceBlock(start, end, baseOffset int, final bool) (*KVSnap
 			}
 		}
 	}
-	block := &KVSnapshot{
-		Version:       effectiveKVSnapshotVersion(s, KVSnapshotEncodingFloat32),
+	block := &Snapshot{
+		Version:       effectiveVersion(s, KVSnapshotEncodingFloat32),
 		Architecture:  s.Architecture,
 		Tokens:        append([]int32(nil), s.Tokens[start:end]...),
 		TokenOffset:   baseOffset + end,
@@ -260,7 +260,7 @@ func (s *KVSnapshot) sliceBlock(start, end, baseOffset int, final bool) (*KVSnap
 	return block, nil
 }
 
-func kvSnapshotLayerWindowLen(layer KVLayerSnapshot, seqLen, headDim int) (int, error) {
+func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, error) {
 	windowLen := 0
 	for _, head := range layer.Heads {
 		for _, length := range []int{
@@ -358,8 +358,8 @@ func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valu
 	return append([]byte(nil), raw[begin:finish]...), nil
 }
 
-// AssembleKVSnapshotBlocks reassembles contiguous blocks produced by SplitBlocks.
-func AssembleKVSnapshotBlocks(blocks []KVSnapshotBlock) (*KVSnapshot, error) {
+// AssembleBlocks reassembles contiguous blocks produced by SplitBlocks.
+func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 	if len(blocks) == 0 {
 		return nil, core.NewError("mlx: KV snapshot blocks are empty")
 	}
@@ -370,7 +370,7 @@ func AssembleKVSnapshotBlocks(blocks []KVSnapshotBlock) (*KVSnapshot, error) {
 	if first == nil {
 		return nil, core.NewError("mlx: KV snapshot block is nil")
 	}
-	assembled := &KVSnapshot{
+	assembled := &Snapshot{
 		Version:       first.Version,
 		Architecture:  first.Architecture,
 		NumLayers:     first.NumLayers,
@@ -398,7 +398,7 @@ func AssembleKVSnapshotBlocks(blocks []KVSnapshotBlock) (*KVSnapshot, error) {
 	return assembled, nil
 }
 
-func validateKVSnapshotBlockOrder(blocks []KVSnapshotBlock) error {
+func validateKVSnapshotBlockOrder(blocks []Block) error {
 	nextStart := 0
 	for index, block := range blocks {
 		if block.Index != index {
@@ -415,21 +415,21 @@ func validateKVSnapshotBlockOrder(blocks []KVSnapshotBlock) error {
 	return nil
 }
 
-func emptyKVSnapshotLayers(layers []KVLayerSnapshot) []KVLayerSnapshot {
-	out := make([]KVLayerSnapshot, len(layers))
+func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
+	out := make([]LayerSnapshot, len(layers))
 	for i, layer := range layers {
-		out[i] = KVLayerSnapshot{
+		out[i] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 		}
 		if len(layer.Heads) > 0 {
-			out[i].Heads = make([]KVHeadSnapshot, len(layer.Heads))
+			out[i].Heads = make([]HeadSnapshot, len(layer.Heads))
 		}
 	}
 	return out
 }
 
-func appendKVSnapshotBlock(dst *KVSnapshot, block *KVSnapshot) error {
+func appendKVSnapshotBlock(dst *Snapshot, block *Snapshot) error {
 	if block.Architecture != "" && dst.Architecture != "" && block.Architecture != dst.Architecture {
 		return core.NewError("mlx: KV snapshot block architecture mismatch")
 	}
@@ -446,7 +446,7 @@ func appendKVSnapshotBlock(dst *KVSnapshot, block *KVSnapshot) error {
 			continue
 		}
 		if len(dst.Layers[layerIndex].Heads) == 0 {
-			dst.Layers[layerIndex].Heads = make([]KVHeadSnapshot, len(layer.Heads))
+			dst.Layers[layerIndex].Heads = make([]HeadSnapshot, len(layer.Heads))
 		}
 		if len(layer.Heads) != len(dst.Layers[layerIndex].Heads) {
 			return core.NewError("mlx: KV snapshot block head count mismatch")
@@ -456,10 +456,10 @@ func appendKVSnapshotBlock(dst *KVSnapshot, block *KVSnapshot) error {
 			dstHead.Key = append(dstHead.Key, head.Key...)
 			dstHead.Value = append(dstHead.Value, head.Value...)
 			if err := appendKVSnapshotRawBlock(&dstHead.KeyDType, &dstHead.KeyBytes, head.KeyDType, head.KeyBytes); err != nil {
-				return core.E("AssembleKVSnapshotBlocks", "append native key tensor", err)
+				return core.E("AssembleBlocks", "append native key tensor", err)
 			}
 			if err := appendKVSnapshotRawBlock(&dstHead.ValueDType, &dstHead.ValueBytes, head.ValueDType, head.ValueBytes); err != nil {
-				return core.E("AssembleKVSnapshotBlocks", "append native value tensor", err)
+				return core.E("AssembleBlocks", "append native value tensor", err)
 			}
 		}
 	}
@@ -484,7 +484,7 @@ func appendKVSnapshotRawBlock(dstDType *string, dstBytes *[]byte, dtype string, 
 }
 
 // SaveMemvidBlocks stores each KV block as a separate memvid chunk and returns a manifest.
-func (s *KVSnapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, opts KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+func (s *Snapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions) (*MemvidBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -496,28 +496,28 @@ func (s *KVSnapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, 
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
-		blockSize = DefaultCacheBlockSize
+		blockSize = defaultCacheBlockSize
 	}
 	encoding, err := normalizeKVSnapshotEncoding(opts.KVEncoding)
 	if err != nil {
 		return nil, err
 	}
-	bundle := &KVSnapshotMemvidBlockBundle{
-		Version:      KVSnapshotMemvidBlockVersion,
-		Kind:         KVSnapshotMemvidBlockBundleKind,
+	bundle := &MemvidBlockBundle{
+		Version:      MemvidBlockVersion,
+		Kind:         MemvidBlockBundleKind,
 		KVEncoding:   encoding,
 		Architecture: s.Architecture,
 		TokenCount:   len(s.Tokens),
-		TokenOffset:  effectiveKVSnapshotTokenOffset(s),
+		TokenOffset:  EffectiveTokenOffset(s),
 		BlockSize:    blockSize,
 		NumLayers:    s.NumLayers,
 		NumHeads:     s.NumHeads,
-		SeqLen:       effectiveKVSnapshotSeqLen(s),
+		SeqLen:       EffectiveSeqLen(s),
 		HeadDim:      s.HeadDim,
-		Blocks:       []KVSnapshotMemvidBlockRef{},
+		Blocks:       []MemvidBlockRef{},
 	}
 	blockHashes := []string{}
-	err = s.walkBlocks(blockSize, false, func(block KVSnapshotBlock) (bool, error) {
+	err = s.walkBlocks(blockSize, false, func(block Block) (bool, error) {
 		ref, hash, payloadEncoding, payloadByteCount, reused, err := saveOrReuseKVSnapshotMemvidBlock(ctx, store, block, opts, encoding)
 		if err != nil {
 			return false, err
@@ -526,7 +526,7 @@ func (s *KVSnapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, 
 			bundle.ReusedBlocks++
 		}
 		blockHashes = append(blockHashes, hash)
-		bundle.Blocks = append(bundle.Blocks, KVSnapshotMemvidBlockRef{
+		bundle.Blocks = append(bundle.Blocks, MemvidBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
 			TokenCount:       block.TokenCount,
@@ -544,7 +544,7 @@ func (s *KVSnapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, 
 	return bundle, nil
 }
 
-func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts KVSnapshotMemvidBlockOptions, stream func(func(KVSnapshotBlock) (bool, error)) error) (*KVSnapshotMemvidBlockBundle, error) {
+func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions, stream func(func(Block) (bool, error)) error) (*MemvidBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -556,21 +556,21 @@ func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts K
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
-		blockSize = DefaultCacheBlockSize
+		blockSize = defaultCacheBlockSize
 	}
 	encoding, err := normalizeKVSnapshotEncoding(opts.KVEncoding)
 	if err != nil {
 		return nil, err
 	}
-	bundle := &KVSnapshotMemvidBlockBundle{
-		Version:    KVSnapshotMemvidBlockVersion,
-		Kind:       KVSnapshotMemvidBlockBundleKind,
+	bundle := &MemvidBlockBundle{
+		Version:    MemvidBlockVersion,
+		Kind:       MemvidBlockBundleKind,
 		KVEncoding: encoding,
 		BlockSize:  blockSize,
-		Blocks:     []KVSnapshotMemvidBlockRef{},
+		Blocks:     []MemvidBlockRef{},
 	}
 	blockHashes := []string{}
-	err = stream(func(block KVSnapshotBlock) (bool, error) {
+	err = stream(func(block Block) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
 		}
@@ -586,7 +586,7 @@ func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts K
 		}
 		applyKVSnapshotMemvidBundleBlock(bundle, block)
 		blockHashes = append(blockHashes, hash)
-		bundle.Blocks = append(bundle.Blocks, KVSnapshotMemvidBlockRef{
+		bundle.Blocks = append(bundle.Blocks, MemvidBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
 			TokenCount:       block.TokenCount,
@@ -600,14 +600,14 @@ func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts K
 	if err != nil {
 		return nil, err
 	}
-	if err := validateKVSnapshotMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateMemvidBlockBundle(bundle); err != nil {
 		return nil, err
 	}
 	bundle.SnapshotHash = kvSnapshotMemvidBlockBundleHash(bundle, blockHashes)
 	return bundle, nil
 }
 
-func applyKVSnapshotMemvidBundleBlock(bundle *KVSnapshotMemvidBlockBundle, block KVSnapshotBlock) {
+func applyKVSnapshotMemvidBundleBlock(bundle *MemvidBlockBundle, block Block) {
 	if bundle == nil || block.Snapshot == nil {
 		return
 	}
@@ -635,7 +635,7 @@ func applyKVSnapshotMemvidBundleBlock(bundle *KVSnapshotMemvidBlockBundle, block
 	}
 }
 
-func kvSnapshotMemvidBlockBundleHash(bundle *KVSnapshotMemvidBlockBundle, blockHashes []string) string {
+func kvSnapshotMemvidBlockBundleHash(bundle *MemvidBlockBundle, blockHashes []string) string {
 	if bundle == nil {
 		return ""
 	}
@@ -656,7 +656,7 @@ func kvSnapshotMemvidBlockBundleHash(bundle *KVSnapshotMemvidBlockBundle, blockH
 	return core.SHA256Hex([]byte(builder.String()))
 }
 
-func saveOrReuseKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block KVSnapshotBlock, opts KVSnapshotMemvidBlockOptions, encoding KVSnapshotEncoding) (memvid.ChunkRef, string, string, int, bool, error) {
+func saveOrReuseKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block Block, opts MemvidBlockOptions, encoding Encoding) (memvid.ChunkRef, string, string, int, bool, error) {
 	if reused, hash, ok, err := reusableKVSnapshotMemvidBlockRef(block, opts, encoding); err != nil {
 		return memvid.ChunkRef{}, "", "", 0, false, err
 	} else if ok {
@@ -666,24 +666,24 @@ func saveOrReuseKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, 
 	return ref, hash, payloadEncoding, payloadByteCount, false, err
 }
 
-func reusableKVSnapshotMemvidBlockRef(block KVSnapshotBlock, opts KVSnapshotMemvidBlockOptions, encoding KVSnapshotEncoding) (KVSnapshotMemvidBlockRef, string, bool, error) {
+func reusableKVSnapshotMemvidBlockRef(block Block, opts MemvidBlockOptions, encoding Encoding) (MemvidBlockRef, string, bool, error) {
 	parent := opts.ReusePrefix
 	if parent == nil || len(parent.Blocks) == 0 {
-		return KVSnapshotMemvidBlockRef{}, "", false, nil
+		return MemvidBlockRef{}, "", false, nil
 	}
 	if parent.KVEncoding != "" && parent.KVEncoding != encoding {
-		return KVSnapshotMemvidBlockRef{}, "", false, nil
+		return MemvidBlockRef{}, "", false, nil
 	}
 	reuseLimit := opts.ReusePrefixTokens
 	if reuseLimit <= 0 {
 		reuseLimit = parent.TokenCount
 	}
 	if block.TokenStart < 0 || block.TokenCount <= 0 || block.TokenStart+block.TokenCount > reuseLimit {
-		return KVSnapshotMemvidBlockRef{}, "", false, nil
+		return MemvidBlockRef{}, "", false, nil
 	}
-	hash, err := hashKVSnapshotMemvidBlockPayload(block, encoding)
+	hash, err := hashMemvidBlockPayload(block, encoding)
 	if err != nil {
-		return KVSnapshotMemvidBlockRef{}, "", false, err
+		return MemvidBlockRef{}, "", false, err
 	}
 	for _, ref := range parent.Blocks {
 		if ref.TokenStart != block.TokenStart || ref.TokenCount != block.TokenCount {
@@ -699,36 +699,36 @@ func reusableKVSnapshotMemvidBlockRef(block KVSnapshotBlock, opts KVSnapshotMemv
 		reused.KVHash = hash
 		return reused, hash, true, nil
 	}
-	return KVSnapshotMemvidBlockRef{}, hash, false, nil
+	return MemvidBlockRef{}, hash, false, nil
 }
 
-func hashKVSnapshotMemvidBlockPayload(block KVSnapshotBlock, encoding KVSnapshotEncoding) (string, error) {
+func hashMemvidBlockPayload(block Block, encoding Encoding) (string, error) {
 	if block.Snapshot == nil {
 		return "", core.NewError("mlx: KV snapshot block is nil")
 	}
 	hash := sha256.New()
-	if err := block.Snapshot.writeWithOptions(hash, KVSnapshotSaveOptions{KVEncoding: encoding}); err != nil {
+	if err := block.Snapshot.writeWithOptions(hash, SaveOptions{KVEncoding: encoding}); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func saveKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block KVSnapshotBlock, opts KVSnapshotMemvidBlockOptions, encoding KVSnapshotEncoding) (memvid.ChunkRef, string, string, int, error) {
+func saveKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block Block, opts MemvidBlockOptions, encoding Encoding) (memvid.ChunkRef, string, string, int, error) {
 	if streamStore, ok := store.(memvid.BinaryStreamWriter); ok {
-		payloadSize, err := block.Snapshot.encodedSizeWithOptions(KVSnapshotSaveOptions{KVEncoding: encoding})
+		payloadSize, err := block.Snapshot.encodedSizeWithOptions(SaveOptions{KVEncoding: encoding})
 		if err != nil {
 			return memvid.ChunkRef{}, "", "", 0, err
 		}
 		hash := sha256.New()
 		ref, err := streamStore.PutBytesStream(ctx, payloadSize, kvSnapshotMemvidBlockPutOptions(block, opts, "", string(encoding), kvSnapshotMemvidPayloadRaw), func(writer stdio.Writer) error {
-			return block.Snapshot.writeWithOptions(stdio.MultiWriter(writer, hash), KVSnapshotSaveOptions{KVEncoding: encoding})
+			return block.Snapshot.writeWithOptions(stdio.MultiWriter(writer, hash), SaveOptions{KVEncoding: encoding})
 		})
 		if err != nil {
-			return memvid.ChunkRef{}, "", "", 0, core.E("KVSnapshot.SaveMemvidBlocks", "stream raw memvid block", err)
+			return memvid.ChunkRef{}, "", "", 0, core.E("Snapshot.SaveMemvidBlocks", "stream raw memvid block", err)
 		}
 		return ref, hex.EncodeToString(hash.Sum(nil)), kvSnapshotMemvidPayloadRaw, payloadSize, nil
 	}
-	data, err := block.Snapshot.bytesWithOptions(KVSnapshotSaveOptions{KVEncoding: encoding})
+	data, err := block.Snapshot.bytesWithOptions(SaveOptions{KVEncoding: encoding})
 	if err != nil {
 		return memvid.ChunkRef{}, "", "", 0, err
 	}
@@ -736,12 +736,12 @@ func saveKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block K
 	if binaryStore, ok := store.(memvid.BinaryWriter); ok {
 		ref, err := binaryStore.PutBytes(ctx, data, kvSnapshotMemvidBlockPutOptions(block, opts, hash, string(encoding), kvSnapshotMemvidPayloadRaw))
 		if err != nil {
-			return memvid.ChunkRef{}, "", "", 0, core.E("KVSnapshot.SaveMemvidBlocks", "write raw memvid block", err)
+			return memvid.ChunkRef{}, "", "", 0, core.E("Snapshot.SaveMemvidBlocks", "write raw memvid block", err)
 		}
 		return ref, hash, kvSnapshotMemvidPayloadRaw, len(data), nil
 	}
 	envelope := kvSnapshotMemvidBlockEnvelope{
-		Version:          KVSnapshotMemvidBlockVersion,
+		Version:          MemvidBlockVersion,
 		Kind:             KVSnapshotMemvidBlockKind,
 		BlockIndex:       block.Index,
 		TokenStart:       block.TokenStart,
@@ -754,14 +754,14 @@ func saveKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block K
 	}
 	ref, err := store.Put(ctx, core.JSONMarshalString(envelope), kvSnapshotMemvidBlockPutOptions(block, opts, hash, string(encoding), kvSnapshotMemvidPayloadJSONBase64))
 	if err != nil {
-		return memvid.ChunkRef{}, "", "", 0, core.E("KVSnapshot.SaveMemvidBlocks", "write memvid block", err)
+		return memvid.ChunkRef{}, "", "", 0, core.E("Snapshot.SaveMemvidBlocks", "write memvid block", err)
 	}
 	return ref, hash, kvSnapshotMemvidPayloadJSONBase64, len(data), nil
 }
 
-// SaveKVSnapshotMemvidBlockBundle stores the KV block manifest in the same
+// SaveMemvidBlockBundle stores the KV block manifest in the same
 // memvid store as its referenced blocks.
-func SaveKVSnapshotMemvidBlockBundle(ctx context.Context, store memvid.Writer, bundle *KVSnapshotMemvidBlockBundle, uri string) (memvid.ChunkRef, error) {
+func SaveMemvidBlockBundle(ctx context.Context, store memvid.Writer, bundle *MemvidBlockBundle, uri string) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -771,23 +771,23 @@ func SaveKVSnapshotMemvidBlockBundle(ctx context.Context, store memvid.Writer, b
 	if core.Trim(uri) == "" {
 		return memvid.ChunkRef{}, core.NewError("mlx: memvid KV block bundle URI is required")
 	}
-	if err := validateKVSnapshotMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateMemvidBlockBundle(bundle); err != nil {
 		return memvid.ChunkRef{}, err
 	}
 	ref, err := store.Put(ctx, core.JSONMarshalString(bundle), memvid.PutOptions{
 		URI:    uri,
 		Title:  "go-mlx KV block bundle",
-		Kind:   KVSnapshotMemvidBlockBundleKind,
+		Kind:   MemvidBlockBundleKind,
 		Track:  "session-kv-blocks",
 		Labels: []string{"go-mlx", "kv-snapshot-block-bundle"},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("KVSnapshot.SaveMemvidBlockBundle", "write memvid bundle", err)
+		return memvid.ChunkRef{}, core.E("Snapshot.SaveMemvidBlockBundle", "write memvid bundle", err)
 	}
 	return ref, nil
 }
 
-func kvSnapshotMemvidBlockPutOptions(block KVSnapshotBlock, opts KVSnapshotMemvidBlockOptions, hash, kvEncoding, payloadEncoding string) memvid.PutOptions {
+func kvSnapshotMemvidBlockPutOptions(block Block, opts MemvidBlockOptions, hash, kvEncoding, payloadEncoding string) memvid.PutOptions {
 	kind := opts.Kind
 	if kind == "" {
 		kind = KVSnapshotMemvidBlockKind
@@ -807,10 +807,10 @@ func kvSnapshotMemvidBlockPutOptions(block KVSnapshotBlock, opts KVSnapshotMemvi
 	tags["token_count"] = core.Itoa(block.TokenCount)
 	labels := append([]string(nil), opts.Labels...)
 	labels = append(labels, "go-mlx", "kv-snapshot-block")
-	baseURI := firstNonEmptyString(opts.URI, "mlx://kv-snapshot-blocks")
+	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	return memvid.PutOptions{
 		URI:    core.Sprintf("%s/block/%d", baseURI, block.Index),
-		Title:  firstNonEmptyString(opts.Title, core.Sprintf("go-mlx KV block %d", block.Index)),
+		Title:  firstNonEmpty(opts.Title, core.Sprintf("go-mlx KV block %d", block.Index)),
 		Kind:   kind,
 		Track:  track,
 		Tags:   tags,
@@ -818,14 +818,14 @@ func kvSnapshotMemvidBlockPutOptions(block KVSnapshotBlock, opts KVSnapshotMemvi
 	}
 }
 
-// LoadKVSnapshotFromMemvidBlocks restores a full KV snapshot from a memvid block manifest.
-func LoadKVSnapshotFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle) (*KVSnapshot, error) {
-	return LoadKVSnapshotFromMemvidBlocksWithOptions(ctx, store, bundle, KVSnapshotLoadOptions{})
+// LoadFromMemvidBlocks restores a full KV snapshot from a memvid block manifest.
+func LoadFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle) (*Snapshot, error) {
+	return LoadFromMemvidBlocksWithOptions(ctx, store, bundle, LoadOptions{})
 }
 
-// LoadKVSnapshotMemvidBlockBundle restores a KV block manifest by URI from the
+// LoadMemvidBlockBundle restores a KV block manifest by URI from the
 // same memvid store as its referenced blocks.
-func LoadKVSnapshotMemvidBlockBundle(ctx context.Context, store memvid.Store, uri string) (*KVSnapshotMemvidBlockBundle, error) {
+func LoadMemvidBlockBundle(ctx context.Context, store memvid.Store, uri string) (*MemvidBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -837,21 +837,21 @@ func LoadKVSnapshotMemvidBlockBundle(ctx context.Context, store memvid.Store, ur
 	}
 	chunk, err := memvid.ResolveURI(ctx, store, uri)
 	if err != nil {
-		return nil, core.E("LoadKVSnapshotMemvidBlockBundle", "resolve memvid bundle", err)
+		return nil, core.E("LoadMemvidBlockBundle", "resolve memvid bundle", err)
 	}
-	var bundle KVSnapshotMemvidBlockBundle
+	var bundle MemvidBlockBundle
 	if result := core.JSONUnmarshalString(chunk.Text, &bundle); !result.OK {
-		return nil, core.E("LoadKVSnapshotMemvidBlockBundle", "parse bundle", kvSnapshotResultError(result))
+		return nil, core.E("LoadMemvidBlockBundle", "parse bundle", ResultError(result))
 	}
-	if err := validateKVSnapshotMemvidBlockBundle(&bundle); err != nil {
+	if err := ValidateMemvidBlockBundle(&bundle); err != nil {
 		return nil, err
 	}
 	return &bundle, nil
 }
 
-// LoadKVSnapshotFromMemvidBlocksWithOptions restores a full KV snapshot from a
+// LoadFromMemvidBlocksWithOptions restores a full KV snapshot from a
 // memvid block manifest with explicit decode options.
-func LoadKVSnapshotFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, opts KVSnapshotLoadOptions) (*KVSnapshot, error) {
+func LoadFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, opts LoadOptions) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -861,21 +861,21 @@ func LoadKVSnapshotFromMemvidBlocksWithOptions(ctx context.Context, store memvid
 	if bundle == nil {
 		return nil, core.NewError("mlx: memvid KV block bundle is nil")
 	}
-	if bundle.Version <= 0 || bundle.Version > KVSnapshotMemvidBlockVersion {
+	if bundle.Version <= 0 || bundle.Version > MemvidBlockVersion {
 		return nil, core.NewError("mlx: unsupported memvid KV block bundle version")
 	}
-	if bundle.Kind != KVSnapshotMemvidBlockBundleKind {
+	if bundle.Kind != MemvidBlockBundleKind {
 		return nil, core.NewError("mlx: invalid memvid KV block bundle kind")
 	}
-	blocks := make([]KVSnapshotBlock, 0, len(bundle.Blocks))
+	blocks := make([]Block, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
-		block, err := loadKVSnapshotMemvidBlockWithOptions(ctx, store, ref, opts)
+		block, err := LoadMemvidBlockWithOptions(ctx, store, ref, opts)
 		if err != nil {
 			return nil, err
 		}
 		blocks = append(blocks, block)
 	}
-	snapshot, err := AssembleKVSnapshotBlocks(blocks)
+	snapshot, err := AssembleBlocks(blocks)
 	if err != nil {
 		return nil, err
 	}
@@ -885,32 +885,32 @@ func LoadKVSnapshotFromMemvidBlocksWithOptions(ctx context.Context, store memvid
 	return snapshot, nil
 }
 
-// LoadKVSnapshotPrefixFromMemvidBlocks restores only the memvid KV blocks needed
+// LoadPrefixFromMemvidBlocks restores only the memvid KV blocks needed
 // to cover prefixTokens. The returned snapshot is suitable for prompt-cache
 // warmup; non-final prefixes intentionally omit logits.
-func LoadKVSnapshotPrefixFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) (*KVSnapshot, error) {
-	return LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, KVSnapshotLoadOptions{})
+func LoadPrefixFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, prefixTokens int) (*Snapshot, error) {
+	return LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, LoadOptions{})
 }
 
-// LoadKVSnapshotPrefixFromMemvidBlocksWithOptions restores only the memvid KV
+// LoadPrefixFromMemvidBlocksWithOptions restores only the memvid KV
 // blocks needed to cover prefixTokens with explicit decode options.
-func LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int, opts KVSnapshotLoadOptions) (*KVSnapshot, error) {
+func LoadPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, prefixTokens int, opts LoadOptions) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
 		return nil, core.NewError("mlx: memvid store is nil")
 	}
-	if err := validateKVSnapshotMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateMemvidBlockBundle(bundle); err != nil {
 		return nil, err
 	}
 	if prefixTokens <= 0 || prefixTokens == bundle.TokenCount {
-		return LoadKVSnapshotFromMemvidBlocksWithOptions(ctx, store, bundle, opts)
+		return LoadFromMemvidBlocksWithOptions(ctx, store, bundle, opts)
 	}
 	if prefixTokens > bundle.TokenCount {
 		return nil, core.NewError("mlx: memvid KV prefix exceeds bundle token count")
 	}
-	refs := make([]KVSnapshotMemvidBlockRef, 0, len(bundle.Blocks))
+	refs := make([]MemvidBlockRef, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
 		if ref.TokenStart >= prefixTokens {
 			break
@@ -923,46 +923,46 @@ func LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx context.Context, store 
 	if len(refs) == 0 {
 		return nil, core.NewError("mlx: memvid KV prefix has no covering blocks")
 	}
-	blocks := make([]KVSnapshotBlock, 0, len(refs))
+	blocks := make([]Block, 0, len(refs))
 	for _, ref := range refs {
-		block, err := loadKVSnapshotMemvidBlockWithOptions(ctx, store, ref, opts)
+		block, err := LoadMemvidBlockWithOptions(ctx, store, ref, opts)
 		if err != nil {
 			return nil, err
 		}
 		blocks = append(blocks, block)
 	}
-	snapshot, err := AssembleKVSnapshotBlocks(blocks)
+	snapshot, err := AssembleBlocks(blocks)
 	if err != nil {
 		return nil, err
 	}
 	if len(snapshot.Tokens) == prefixTokens {
 		if prefixTokens < bundle.TokenCount {
-			clearKVSnapshotTerminalState(snapshot)
+			ClearTerminalState(snapshot)
 		}
 		return snapshot, nil
 	}
 	if len(snapshot.Tokens) < prefixTokens {
 		return nil, core.NewError("mlx: memvid KV prefix blocks do not cover requested tokens")
 	}
-	baseOffset := effectiveKVSnapshotTokenOffset(snapshot) - effectiveKVSnapshotSeqLen(snapshot)
+	baseOffset := EffectiveTokenOffset(snapshot) - EffectiveSeqLen(snapshot)
 	if baseOffset < 0 {
 		baseOffset = 0
 	}
-	trimmed, err := snapshot.sliceBlock(0, prefixTokens, baseOffset, false)
+	trimmed, err := snapshot.SliceBlock(0, prefixTokens, baseOffset, false)
 	if err != nil {
 		return nil, err
 	}
 	return trimmed, nil
 }
 
-func validateKVSnapshotMemvidBlockBundle(bundle *KVSnapshotMemvidBlockBundle) error {
+func ValidateMemvidBlockBundle(bundle *MemvidBlockBundle) error {
 	if bundle == nil {
 		return core.NewError("mlx: memvid KV block bundle is nil")
 	}
-	if bundle.Version <= 0 || bundle.Version > KVSnapshotMemvidBlockVersion {
+	if bundle.Version <= 0 || bundle.Version > MemvidBlockVersion {
 		return core.NewError("mlx: unsupported memvid KV block bundle version")
 	}
-	if bundle.Kind != KVSnapshotMemvidBlockBundleKind {
+	if bundle.Kind != MemvidBlockBundleKind {
 		return core.NewError("mlx: invalid memvid KV block bundle kind")
 	}
 	if bundle.TokenCount <= 0 {
@@ -974,7 +974,7 @@ func validateKVSnapshotMemvidBlockBundle(bundle *KVSnapshotMemvidBlockBundle) er
 	return nil
 }
 
-func clearKVSnapshotTerminalState(snapshot *KVSnapshot) {
+func ClearTerminalState(snapshot *Snapshot) {
 	if snapshot == nil {
 		return
 	}
@@ -983,31 +983,31 @@ func clearKVSnapshotTerminalState(snapshot *KVSnapshot) {
 	snapshot.Logits = nil
 }
 
-func loadKVSnapshotMemvidBlock(ctx context.Context, store memvid.Store, ref KVSnapshotMemvidBlockRef) (KVSnapshotBlock, error) {
-	return loadKVSnapshotMemvidBlockWithOptions(ctx, store, ref, KVSnapshotLoadOptions{})
+func loadKVSnapshotMemvidBlock(ctx context.Context, store memvid.Store, ref MemvidBlockRef) (Block, error) {
+	return LoadMemvidBlockWithOptions(ctx, store, ref, LoadOptions{})
 }
 
-func loadKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref KVSnapshotMemvidBlockRef, opts KVSnapshotLoadOptions) (KVSnapshotBlock, error) {
+func LoadMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
 	if ref.PayloadEncoding == kvSnapshotMemvidPayloadRaw {
 		return loadRawKVSnapshotMemvidBlockWithOptions(ctx, store, ref, opts)
 	}
 	chunk, err := memvid.Resolve(ctx, store, ref.Memvid.ChunkID)
 	if err != nil {
-		return KVSnapshotBlock{}, core.E("LoadKVSnapshotFromMemvidBlocks", "resolve memvid block", err)
+		return Block{}, core.E("LoadFromMemvidBlocks", "resolve memvid block", err)
 	}
 	var envelope kvSnapshotMemvidBlockEnvelope
 	if result := core.JSONUnmarshalString(chunk.Text, &envelope); !result.OK {
-		return KVSnapshotBlock{}, core.E("LoadKVSnapshotFromMemvidBlocks", "parse block envelope", kvSnapshotResultError(result))
+		return Block{}, core.E("LoadFromMemvidBlocks", "parse block envelope", ResultError(result))
 	}
 	data, err := decodeKVSnapshotMemvidBlockEnvelope(envelope, ref.KVHash)
 	if err != nil {
-		return KVSnapshotBlock{}, err
+		return Block{}, err
 	}
 	snapshot, err := parseKVSnapshotWithOptions(data, opts)
 	if err != nil {
-		return KVSnapshotBlock{}, err
+		return Block{}, err
 	}
-	return KVSnapshotBlock{
+	return Block{
 		Index:      envelope.BlockIndex,
 		TokenStart: envelope.TokenStart,
 		TokenCount: envelope.TokenCount,
@@ -1016,27 +1016,27 @@ func loadKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Stor
 	}, nil
 }
 
-func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref KVSnapshotMemvidBlockRef, opts KVSnapshotLoadOptions) (KVSnapshotBlock, error) {
+func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
 	chunk, err := memvid.ResolveRefBytes(ctx, store, ref.Memvid)
 	if err != nil {
-		return KVSnapshotBlock{}, core.E("LoadKVSnapshotFromMemvidBlocks", "resolve raw memvid block", err)
+		return Block{}, core.E("LoadFromMemvidBlocks", "resolve raw memvid block", err)
 	}
 	data := chunk.Data
 	if len(data) == 0 && chunk.Text != "" {
 		data = []byte(chunk.Text)
 	}
 	if ref.PayloadByteCount > 0 && len(data) != ref.PayloadByteCount {
-		return KVSnapshotBlock{}, core.NewError("mlx: memvid raw KV block payload length mismatch")
+		return Block{}, core.NewError("mlx: memvid raw KV block payload length mismatch")
 	}
 	hash := core.SHA256Hex(data)
 	if ref.KVHash != "" && hash != ref.KVHash {
-		return KVSnapshotBlock{}, core.NewError("mlx: memvid raw KV block hash mismatch")
+		return Block{}, core.NewError("mlx: memvid raw KV block hash mismatch")
 	}
 	snapshot, err := parseKVSnapshotWithOptions(data, opts)
 	if err != nil {
-		return KVSnapshotBlock{}, err
+		return Block{}, err
 	}
-	return KVSnapshotBlock{
+	return Block{
 		Index:      ref.Index,
 		TokenStart: ref.TokenStart,
 		TokenCount: ref.TokenCount,
@@ -1046,7 +1046,7 @@ func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.S
 }
 
 func decodeKVSnapshotMemvidBlockEnvelope(envelope kvSnapshotMemvidBlockEnvelope, expectedHash string) ([]byte, error) {
-	if envelope.Version <= 0 || envelope.Version > KVSnapshotMemvidBlockVersion {
+	if envelope.Version <= 0 || envelope.Version > MemvidBlockVersion {
 		return nil, core.NewError("mlx: unsupported memvid KV block version")
 	}
 	if envelope.Kind != KVSnapshotMemvidBlockKind {
@@ -1057,7 +1057,7 @@ func decodeKVSnapshotMemvidBlockEnvelope(envelope kvSnapshotMemvidBlockEnvelope,
 	}
 	decoded := core.Base64Decode(envelope.Data)
 	if !decoded.OK {
-		return nil, core.E("LoadKVSnapshotFromMemvidBlocks", "decode block payload", kvSnapshotResultError(decoded))
+		return nil, core.E("LoadFromMemvidBlocks", "decode block payload", ResultError(decoded))
 	}
 	data, ok := decoded.Value.([]byte)
 	if !ok {
@@ -1076,7 +1076,7 @@ func decodeKVSnapshotMemvidBlockEnvelope(envelope kvSnapshotMemvidBlockEnvelope,
 	return data, nil
 }
 
-func effectiveKVSnapshotSeqLen(snapshot *KVSnapshot) int {
+func EffectiveSeqLen(snapshot *Snapshot) int {
 	if snapshot == nil {
 		return 0
 	}

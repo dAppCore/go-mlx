@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	filestore "dappco.re/go/inference/state/filestore"
 	memvidcli "dappco.re/go/mlx/pkg/memvid/cli"
 )
@@ -159,15 +160,15 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner FastEvalRunner, 
 		return memvidKVChapterSmokeChapterError(report, err.Error())
 	}
 	captureStart := time.Now()
-	bundle, err := runner.CaptureKVBlocksToMemvid(ctx, chapter.Text, store.Writer, KVSnapshotMemvidBlockOptions{
+	bundle, err := runner.CaptureKVBlocksToMemvid(ctx, chapter.Text, store.Writer, kv.MemvidBlockOptions{
 		BlockSize:  cfg.BlockSize,
-		KVEncoding: KVSnapshotEncodingNative,
+		KVEncoding: kv.EncodingNative,
 		URI:        "mlx://memvid-chapter-smoke/" + memvidKVChapterSmokeSlug(index, chapter.Name),
 		Labels:     []string{"chapter-smoke", "memvid-kv"},
 	})
 	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
 	if err == nil {
-		_, err = SaveKVSnapshotMemvidBlockBundle(ctx, store.Writer, bundle, report.BundleURI)
+		_, err = kv.SaveMemvidBlockBundle(ctx, store.Writer, bundle, report.BundleURI)
 	}
 	closeErr := store.Close()
 	report.SaveDuration = report.CaptureDuration
@@ -193,7 +194,7 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner FastEvalRunner, 
 	if err != nil {
 		return memvidKVChapterSmokeChapterError(report, err.Error())
 	}
-	loadedBundle, err := LoadKVSnapshotMemvidBlockBundle(ctx, reader.Store, report.BundleURI)
+	loadedBundle, err := kv.LoadMemvidBlockBundle(ctx, reader.Store, report.BundleURI)
 	if err != nil {
 		closeErr = reader.Close()
 		if closeErr != nil {

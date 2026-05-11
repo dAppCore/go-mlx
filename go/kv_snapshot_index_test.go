@@ -8,21 +8,22 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	bundle, err := snapshot.SaveMemvidBlocks(ctx, store, KVSnapshotMemvidBlockOptions{
+	bundle, err := snapshot.SaveMemvidBlocks(ctx, store, kv.MemvidBlockOptions{
 		BlockSize:  2,
-		KVEncoding: KVSnapshotEncodingNative,
+		KVEncoding: kv.EncodingNative,
 	})
 	if err != nil {
 		t.Fatalf("SaveMemvidBlocks() error = %v", err)
 	}
-	if _, err := SaveKVSnapshotMemvidBlockBundle(ctx, store, bundle, "mlx://book/full/bundle"); err != nil {
-		t.Fatalf("SaveKVSnapshotMemvidBlockBundle() error = %v", err)
+	if _, err := kv.SaveMemvidBlockBundle(ctx, store, bundle, "mlx://book/full/bundle"); err != nil {
+		t.Fatalf("kv.SaveMemvidBlockBundle() error = %v", err)
 	}
 	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
 		BundleURI: "mlx://book/full/bundle",
@@ -84,7 +85,7 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 	}
 
 	recording := &indexRecordingMemvidStore{store: store}
-	prefix, loadedEntry, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, recording, index, "mlx://book/chapter-1", KVSnapshotLoadOptions{RawKVOnly: true})
+	prefix, loadedEntry, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, recording, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
 	if err != nil {
 		t.Fatalf("LoadKVSnapshotPrefixFromMemvidBundleIndex() error = %v", err)
 	}
@@ -120,7 +121,7 @@ func TestKVSnapshotMemvidBundleIndex_Good_DefaultFullEntry(t *testing.T) {
 
 func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
 	bundle := kvSnapshotIndexTestBundle()
-	bundle.Blocks = []KVSnapshotMemvidBlockRef{
+	bundle.Blocks = []kv.MemvidBlockRef{
 		{
 			Index:            0,
 			TokenStart:       0,
@@ -282,13 +283,13 @@ func TestKVSnapshotMemvidBundleIndex_Bad_LoadAndStoreErrors(t *testing.T) {
 	if _, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, ""); err == nil {
 		t.Fatal("LoadKVSnapshotMemvidBundleIndex(empty URI) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, nil, index, "mlx://chapter", KVSnapshotLoadOptions{}); err == nil {
+	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, nil, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
 		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(nil store) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://missing", KVSnapshotLoadOptions{}); err == nil {
+	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://missing", kv.LoadOptions{}); err == nil {
 		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(missing entry) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://chapter", KVSnapshotLoadOptions{}); err == nil {
+	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
 		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(missing bundle) error = nil")
 	}
 	corrupt := core.JSONMarshalString(map[string]any{"version": 1, "kind": KVSnapshotMemvidBundleIndexKind})
@@ -300,12 +301,12 @@ func TestKVSnapshotMemvidBundleIndex_Bad_LoadAndStoreErrors(t *testing.T) {
 	}
 }
 
-func kvSnapshotIndexTestBundle() *KVSnapshotMemvidBlockBundle {
-	return &KVSnapshotMemvidBlockBundle{
-		Version:      KVSnapshotMemvidBlockVersion,
-		Kind:         KVSnapshotMemvidBlockBundleKind,
+func kvSnapshotIndexTestBundle() *kv.MemvidBlockBundle {
+	return &kv.MemvidBlockBundle{
+		Version:      kv.MemvidBlockVersion,
+		Kind:         kv.MemvidBlockBundleKind,
 		SnapshotHash: "snapshot",
-		KVEncoding:   KVSnapshotEncodingNative,
+		KVEncoding:   kv.EncodingNative,
 		Architecture: "gemma4_text",
 		TokenCount:   4,
 		TokenOffset:  4,
@@ -314,7 +315,7 @@ func kvSnapshotIndexTestBundle() *KVSnapshotMemvidBlockBundle {
 		NumHeads:     1,
 		SeqLen:       4,
 		HeadDim:      2,
-		Blocks: []KVSnapshotMemvidBlockRef{{
+		Blocks: []kv.MemvidBlockRef{{
 			Index:      0,
 			TokenStart: 0,
 			TokenCount: 2,

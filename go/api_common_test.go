@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/kv"
 )
 
 // Generated file-aware compliance coverage.
@@ -55,14 +56,14 @@ func TestApiCommon_AttentionSnapshot_HasQueries_Ugly(t *testing.T) {
 }
 
 func TestApiCommon_KVSnapshot_Head_Good(t *testing.T) {
-	coverageTokens := "KVSnapshot Head"
+	coverageTokens := "kv.Snapshot Head"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	snapshot := &KVSnapshot{
-		Layers: []KVLayerSnapshot{{
+	snapshot := &kv.Snapshot{
+		Layers: []kv.LayerSnapshot{{
 			Layer: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1, 2},
 				Value: []float32{3, 4},
 			}},
@@ -83,7 +84,7 @@ func TestApiCommon_KVSnapshot_Head_Good(t *testing.T) {
 }
 
 func TestApiCommon_KVSnapshot_Head_Bad(t *testing.T) {
-	snapshot := &KVSnapshot{}
+	snapshot := &kv.Snapshot{}
 
 	_, ok := snapshot.Head(0, 0)
 
@@ -93,13 +94,13 @@ func TestApiCommon_KVSnapshot_Head_Bad(t *testing.T) {
 }
 
 func TestApiCommon_KVSnapshot_SaveLoad_Ugly(t *testing.T) {
-	coverageTokens := "KVSnapshot SaveLoad"
+	coverageTokens := "kv.Snapshot SaveLoad"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	path := core.PathJoin(t.TempDir(), "sample.kvbin")
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{10, 20, 30},
 		NumLayers:     1,
@@ -107,10 +108,10 @@ func TestApiCommon_KVSnapshot_SaveLoad_Ugly(t *testing.T) {
 		SeqLen:        3,
 		HeadDim:       2,
 		NumQueryHeads: 2,
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{1, 2, 3, 4, 5, 6},
 				Value: []float32{7, 8, 9, 10, 11, 12},
 			}},
@@ -120,9 +121,9 @@ func TestApiCommon_KVSnapshot_SaveLoad_Ugly(t *testing.T) {
 	if err := snapshot.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	loaded, err := LoadKVSnapshot(path)
+	loaded, err := kv.Load(path)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+		t.Fatalf("kv.Load() error = %v", err)
 	}
 
 	if loaded.Architecture != "gemma4_text" || loaded.SeqLen != 3 || loaded.HeadDim != 2 {

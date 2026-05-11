@@ -8,11 +8,12 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 func TestSAMIFromKV_Good(t *testing.T) {
 	snapshot := sessionArtifactTestSnapshot()
-	analysis := &KVAnalysis{
+	analysis := &kv.Analysis{
 		MeanKeyCoherence:    0.8,
 		MeanValueCoherence:  0.6,
 		MeanCrossAlignment:  0.5,
@@ -56,7 +57,7 @@ func TestSAMIFromKV_Bad(t *testing.T) {
 
 func TestSAMIFromKV_Ugly(t *testing.T) {
 	snapshot := sessionArtifactTestSnapshot()
-	analysis := &KVAnalysis{
+	analysis := &kv.Analysis{
 		MeanKeyCoherence:       2,
 		MeanValueCoherence:     -1,
 		MeanCrossAlignment:     3,
@@ -102,11 +103,11 @@ func TestExportSessionArtifacts_Good(t *testing.T) {
 	if artifact.ChunkRef.Codec != memvid.CodecMemory || artifact.ChunkRef.ChunkID == 0 {
 		t.Fatalf("ChunkRef = %#v, want memory chunk", artifact.ChunkRef)
 	}
-	if artifact.SAMI.Model != "lem-gemma" || len(artifact.Features) != len(KVFeatureLabels()) {
+	if artifact.SAMI.Model != "lem-gemma" || len(artifact.Features) != len(kv.FeatureLabels()) {
 		t.Fatalf("artifact = %+v", artifact)
 	}
-	if _, err := LoadKVSnapshot(path); err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+	if _, err := kv.Load(path); err != nil {
+		t.Fatalf("kv.Load() error = %v", err)
 	}
 	chunk, err := store.Resolve(context.Background(), artifact.ChunkRef.ChunkID)
 	if err != nil {
@@ -136,9 +137,9 @@ func TestExportSessionArtifacts_Ugly(t *testing.T) {
 	}
 }
 
-func sessionArtifactTestSnapshot() *KVSnapshot {
-	return &KVSnapshot{
-		Version:       KVSnapshotVersion,
+func sessionArtifactTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		NumLayers:     2,
@@ -146,11 +147,11 @@ func sessionArtifactTestSnapshot() *KVSnapshot {
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 8,
-		Layers: []KVLayerSnapshot{
+		Layers: []kv.LayerSnapshot{
 			{
 				Layer:      0,
 				CacheIndex: 0,
-				Heads: []KVHeadSnapshot{{
+				Heads: []kv.HeadSnapshot{{
 					Key:   []float32{1, 0, 0, 1},
 					Value: []float32{0, 1, 1, 0},
 				}},
@@ -158,7 +159,7 @@ func sessionArtifactTestSnapshot() *KVSnapshot {
 			{
 				Layer:      1,
 				CacheIndex: 1,
-				Heads: []KVHeadSnapshot{{
+				Heads: []kv.HeadSnapshot{{
 					Key:   []float32{1, 1, 0, 0},
 					Value: []float32{0, 0, 1, 1},
 				}},

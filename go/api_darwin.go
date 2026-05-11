@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 )
@@ -442,19 +443,19 @@ func toRootAttentionSnapshot(result *metal.AttentionResult) *AttentionSnapshot {
 	}
 }
 
-func toRootKVSnapshot(result *metal.KVSnapshot) *KVSnapshot {
+func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if result == nil {
 		return nil
 	}
-	layers := make([]KVLayerSnapshot, len(result.Layers))
+	layers := make([]kv.LayerSnapshot, len(result.Layers))
 	for i, layer := range result.Layers {
-		layers[i] = KVLayerSnapshot{
+		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
-			Heads:      make([]KVHeadSnapshot, len(layer.Heads)),
+			Heads:      make([]kv.HeadSnapshot, len(layer.Heads)),
 		}
 		for j, head := range layer.Heads {
-			layers[i].Heads[j] = KVHeadSnapshot{
+			layers[i].Heads[j] = kv.HeadSnapshot{
 				Key:        append([]float32(nil), head.Key...),
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   append([]byte(nil), head.KeyBytes...),
@@ -464,7 +465,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *KVSnapshot {
 			}
 		}
 	}
-	return &KVSnapshot{
+	return &kv.Snapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
 		Tokens:        append([]int32(nil), result.Tokens...),
@@ -481,7 +482,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *KVSnapshot {
 	}
 }
 
-func toMetalKVSnapshot(result *KVSnapshot) *metal.KVSnapshot {
+func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
 	}
@@ -520,7 +521,7 @@ func toMetalKVSnapshot(result *KVSnapshot) *metal.KVSnapshot {
 	}
 }
 
-func toMetalKVSnapshotCaptureOptions(opts KVSnapshotCaptureOptions) metal.KVSnapshotCaptureOptions {
+func toMetalKVSnapshotCaptureOptions(opts kv.CaptureOptions) metal.KVSnapshotCaptureOptions {
 	return metal.KVSnapshotCaptureOptions{RawKVOnly: opts.RawKVOnly}
 }
 
@@ -646,7 +647,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 }
 
 // WarmPromptCacheFromKV installs a captured K/V prefix directly as the model prompt cache.
-func (m *Model) WarmPromptCacheFromKV(snapshot *KVSnapshot) error {
+func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	if m == nil || m.model == nil {
 		return core.NewError("mlx: model is nil")
 	}
@@ -659,7 +660,7 @@ func (m *Model) WarmPromptCacheFromKV(snapshot *KVSnapshot) error {
 
 // WarmPromptCacheFromMemvidBlocks loads the requested memvid KV prefix blocks and
 // installs them directly as the model prompt cache.
-func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
+func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -673,7 +674,7 @@ func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvi
 		}
 		return restorer.RestorePromptCacheFromKVBlocks(ctx, source)
 	}
-	snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
+	snapshot, err := kv.LoadPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
 	if err != nil {
 		return err
 	}
@@ -684,14 +685,14 @@ func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvi
 	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
 }
 
-func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
+func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
 		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid store is nil")
 	}
-	if err := validateKVSnapshotMemvidBlockBundle(bundle); err != nil {
+	if err := kv.ValidateMemvidBlockBundle(bundle); err != nil {
 		return metal.KVSnapshotBlockSource{}, err
 	}
 	if prefixTokens <= 0 {
@@ -700,7 +701,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 	if prefixTokens > bundle.TokenCount {
 		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid KV prefix exceeds bundle token count")
 	}
-	refs := make([]KVSnapshotMemvidBlockRef, 0, len(bundle.Blocks))
+	refs := make([]kv.MemvidBlockRef, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
 		if ref.TokenStart >= prefixTokens {
 			break
@@ -726,11 +727,11 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block index is out of range")
 		}
 		ref := refs[index]
-		loadOpts := KVSnapshotLoadOptions{}
-		if bundle.KVEncoding == KVSnapshotEncodingNative {
+		loadOpts := kv.LoadOptions{}
+		if bundle.KVEncoding == kv.EncodingNative {
 			loadOpts.RawKVOnly = true
 		}
-		block, err := loadKVSnapshotMemvidBlockWithOptions(loadCtx, store, ref, loadOpts)
+		block, err := kv.LoadMemvidBlockWithOptions(loadCtx, store, ref, loadOpts)
 		if err != nil {
 			return metal.KVSnapshotBlock{}, err
 		}
@@ -746,11 +747,11 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 			if trimTokens <= 0 {
 				return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV prefix has invalid trim range")
 			}
-			baseOffset := effectiveKVSnapshotTokenOffset(snapshot) - effectiveKVSnapshotSeqLen(snapshot)
+			baseOffset := kv.EffectiveTokenOffset(snapshot) - kv.EffectiveSeqLen(snapshot)
 			if baseOffset < 0 {
 				baseOffset = 0
 			}
-			trimmed, trimErr := snapshot.sliceBlock(0, trimTokens, baseOffset, false)
+			trimmed, trimErr := snapshot.SliceBlock(0, trimTokens, baseOffset, false)
 			if trimErr != nil {
 				return metal.KVSnapshotBlock{}, trimErr
 			}
@@ -758,7 +759,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 			block.TokenCount = trimTokens
 		}
 		if block.TokenStart+block.TokenCount < bundle.TokenCount {
-			clearKVSnapshotTerminalState(snapshot)
+			kv.ClearTerminalState(snapshot)
 		}
 		return metal.KVSnapshotBlock{
 			Index:      index,
@@ -976,13 +977,13 @@ func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 }
 
 // CaptureKV runs a single prefill pass and returns extracted K/V cache tensors.
-func (m *Model) CaptureKV(prompt string) (*KVSnapshot, error) {
-	return m.CaptureKVWithOptions(prompt, KVSnapshotCaptureOptions{})
+func (m *Model) CaptureKV(prompt string) (*kv.Snapshot, error) {
+	return m.CaptureKVWithOptions(prompt, kv.CaptureOptions{})
 }
 
 // CaptureKVWithOptions runs a single prefill pass and returns extracted K/V
 // cache tensors with explicit capture options.
-func (m *Model) CaptureKVWithOptions(prompt string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if m == nil || m.model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
@@ -993,7 +994,7 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts KVSnapshotCaptureOption
 		}
 		snapshot := toRootKVSnapshot(result)
 		if opts.RawKVOnly {
-			dropKVSnapshotFloat32(snapshot)
+			kv.DropFloat32(snapshot)
 		}
 		return snapshot, nil
 	}
@@ -1007,20 +1008,20 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts KVSnapshotCaptureOption
 	}
 	snapshot := toRootKVSnapshot(result)
 	if opts.RawKVOnly {
-		dropKVSnapshotFloat32(snapshot)
+		kv.DropFloat32(snapshot)
 	}
 	return snapshot, nil
 }
 
 // CaptureKVChunks captures K/V state from streaming prompt chunks without one
 // giant prompt-tokenization pass.
-func (m *Model) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*KVSnapshot, error) {
-	return m.CaptureKVChunksWithOptions(ctx, chunks, KVSnapshotCaptureOptions{})
+func (m *Model) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*kv.Snapshot, error) {
+	return m.CaptureKVChunksWithOptions(ctx, chunks, kv.CaptureOptions{})
 }
 
 // CaptureKVChunksWithOptions captures K/V state from streaming prompt chunks
 // with explicit capture options.
-func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1034,7 +1035,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		}
 		snapshot := toRootKVSnapshot(result)
 		if opts.RawKVOnly {
-			dropKVSnapshotFloat32(snapshot)
+			kv.DropFloat32(snapshot)
 		}
 		return snapshot, nil
 	}
@@ -1045,7 +1046,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		}
 		snapshot := toRootKVSnapshot(result)
 		if opts.RawKVOnly {
-			dropKVSnapshotFloat32(snapshot)
+			kv.DropFloat32(snapshot)
 		}
 		return snapshot, nil
 	}

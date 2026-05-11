@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"math"
@@ -10,7 +10,7 @@ import (
 func TestAnalyzeKV_Coherent_Good(t *testing.T) {
 	snapshot := makeKVAnalysisCoherentSnapshot(4, 8, 4, 4)
 
-	result := AnalyzeKV(snapshot)
+	result := Analyze(snapshot)
 
 	if result.GQA {
 		t.Fatal("GQA = true, want false for 8 heads")
@@ -35,7 +35,7 @@ func TestAnalyzeKV_Coherent_Good(t *testing.T) {
 func TestAnalyzeKV_Orthogonal_Bad(t *testing.T) {
 	snapshot := makeKVAnalysisOrthogonalSnapshot(4, 8, 4, 8)
 
-	result := AnalyzeKV(snapshot)
+	result := Analyze(snapshot)
 
 	if result.GQA {
 		t.Fatal("GQA = true, want false for 8 heads")
@@ -51,7 +51,7 @@ func TestAnalyzeKV_Orthogonal_Bad(t *testing.T) {
 func TestAnalyzeKV_GQA_Ugly(t *testing.T) {
 	snapshot := makeKVAnalysisCoherentSnapshot(4, 1, 4, 4)
 
-	result := AnalyzeKV(snapshot)
+	result := Analyze(snapshot)
 
 	if !result.GQA {
 		t.Fatal("GQA = false, want true for single KV head")
@@ -65,7 +65,7 @@ func TestAnalyzeKV_GQA_Ugly(t *testing.T) {
 }
 
 func TestKVAnalysis_Composite_Good(t *testing.T) {
-	result := &KVAnalysis{
+	result := &Analysis{
 		MeanKeyCoherence:       1,
 		MeanValueCoherence:     1,
 		MeanCrossAlignment:     1,
@@ -88,7 +88,7 @@ func TestKVAnalysis_Composite_Good(t *testing.T) {
 }
 
 func TestKVAnalysis_Composite_Bad(t *testing.T) {
-	result := &KVAnalysis{JointCollapseCount: 10}
+	result := &Analysis{JointCollapseCount: 10}
 
 	score := result.Composite()
 
@@ -98,24 +98,24 @@ func TestKVAnalysis_Composite_Bad(t *testing.T) {
 }
 
 func TestKVFeatures_Ugly(t *testing.T) {
-	features := KVFeatures(nil)
-	labels := KVFeatureLabels()
+	features := Features(nil)
+	labels := FeatureLabels()
 
 	if len(features) != 7 {
-		t.Fatalf("KVFeatures(nil) len = %d, want 7", len(features))
+		t.Fatalf("Features(nil) len = %d, want 7", len(features))
 	}
 	if len(labels) != len(features) {
-		t.Fatalf("KVFeatureLabels len = %d, want %d", len(labels), len(features))
+		t.Fatalf("FeatureLabels len = %d, want %d", len(labels), len(features))
 	}
 	for _, value := range features {
 		if value != 0 {
-			t.Fatalf("KVFeatures(nil) contains %f, want zeros", value)
+			t.Fatalf("Features(nil) contains %f, want zeros", value)
 		}
 	}
 }
 
 func TestKVFeatures_Good(t *testing.T) {
-	result := &KVAnalysis{
+	result := &Analysis{
 		MeanKeyCoherence:   0.1,
 		MeanValueCoherence: 0.2,
 		MeanCrossAlignment: 0.3,
@@ -125,24 +125,24 @@ func TestKVFeatures_Good(t *testing.T) {
 		JointCollapseCount: 1,
 	}
 
-	features := KVFeatures(result)
+	features := Features(result)
 
 	if len(features) != 7 {
-		t.Fatalf("KVFeatures len = %d, want 7", len(features))
+		t.Fatalf("Features len = %d, want 7", len(features))
 	}
 	if features[0] != 0.1 || features[5] != 0.6 || math.Abs(features[6]-0.8) > 1e-6 {
-		t.Fatalf("KVFeatures = %v, want ordered K/V metrics", features)
+		t.Fatalf("Features = %v, want ordered K/V metrics", features)
 	}
 }
 
 func TestKVFeatureLabels_Good(t *testing.T) {
-	labels := KVFeatureLabels()
+	labels := FeatureLabels()
 
 	if len(labels) != 7 {
-		t.Fatalf("KVFeatureLabels len = %d, want 7", len(labels))
+		t.Fatalf("FeatureLabels len = %d, want 7", len(labels))
 	}
 	if labels[0] != "key_coherence" || labels[5] != "kv_coupling" {
-		t.Fatalf("KVFeatureLabels = %v, want stable K/V axis labels", labels)
+		t.Fatalf("FeatureLabels = %v, want stable K/V axis labels", labels)
 	}
 }
 
@@ -170,29 +170,29 @@ func TestKVAnalysisHeadEntropy_Ugly(t *testing.T) {
 	}
 }
 
-func makeKVAnalysisCoherentSnapshot(layers, heads, seqLen, headDim int) *KVSnapshot {
-	snapshot := &KVSnapshot{
-		Version:      KVSnapshotVersion,
+func makeKVAnalysisCoherentSnapshot(layers, heads, seqLen, headDim int) *Snapshot {
+	snapshot := &Snapshot{
+		Version:      SnapshotVersion,
 		Architecture: "test",
 		Tokens:       make([]int32, seqLen),
 		NumLayers:    layers,
 		NumHeads:     heads,
 		SeqLen:       seqLen,
 		HeadDim:      headDim,
-		Layers:       make([]KVLayerSnapshot, layers),
+		Layers:       make([]LayerSnapshot, layers),
 	}
 	head := make([]float32, seqLen*headDim)
 	for pos := range seqLen {
 		head[pos*headDim] = 1
 	}
 	for layer := range layers {
-		snapshot.Layers[layer] = KVLayerSnapshot{
+		snapshot.Layers[layer] = LayerSnapshot{
 			Layer:      layer,
 			CacheIndex: layer,
-			Heads:      make([]KVHeadSnapshot, heads),
+			Heads:      make([]HeadSnapshot, heads),
 		}
 		for h := range heads {
-			snapshot.Layers[layer].Heads[h] = KVHeadSnapshot{
+			snapshot.Layers[layer].Heads[h] = HeadSnapshot{
 				Key:   append([]float32(nil), head...),
 				Value: append([]float32(nil), head...),
 			}
@@ -201,22 +201,22 @@ func makeKVAnalysisCoherentSnapshot(layers, heads, seqLen, headDim int) *KVSnaps
 	return snapshot
 }
 
-func makeKVAnalysisOrthogonalSnapshot(layers, heads, seqLen, headDim int) *KVSnapshot {
-	snapshot := &KVSnapshot{
-		Version:      KVSnapshotVersion,
+func makeKVAnalysisOrthogonalSnapshot(layers, heads, seqLen, headDim int) *Snapshot {
+	snapshot := &Snapshot{
+		Version:      SnapshotVersion,
 		Architecture: "test",
 		Tokens:       make([]int32, seqLen),
 		NumLayers:    layers,
 		NumHeads:     heads,
 		SeqLen:       seqLen,
 		HeadDim:      headDim,
-		Layers:       make([]KVLayerSnapshot, layers),
+		Layers:       make([]LayerSnapshot, layers),
 	}
 	for layer := range layers {
-		snapshot.Layers[layer] = KVLayerSnapshot{
+		snapshot.Layers[layer] = LayerSnapshot{
 			Layer:      layer,
 			CacheIndex: layer,
-			Heads:      make([]KVHeadSnapshot, heads),
+			Heads:      make([]HeadSnapshot, heads),
 		}
 		for h := range heads {
 			key := make([]float32, seqLen*headDim)
@@ -225,7 +225,7 @@ func makeKVAnalysisOrthogonalSnapshot(layers, heads, seqLen, headDim int) *KVSna
 				key[pos*headDim+h%headDim] = 1
 				value[pos*headDim+(heads-h-1)%headDim] = 1
 			}
-			snapshot.Layers[layer].Heads[h] = KVHeadSnapshot{Key: key, Value: value}
+			snapshot.Layers[layer].Heads[h] = HeadSnapshot{Key: key, Value: value}
 		}
 	}
 	return snapshot

@@ -16,6 +16,7 @@ import (
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -403,7 +404,7 @@ func TestModelWarmPromptCacheFromMemvidBlocks_Good(t *testing.T) {
 	}
 	source := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, KVSnapshotMemvidBlockOptions{BlockSize: 2})
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, kv.MemvidBlockOptions{BlockSize: 2})
 	if err != nil {
 		t.Fatalf("SaveMemvidBlocks() error = %v", err)
 	}
@@ -454,9 +455,9 @@ func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
 	head.Value = nil
 	head.KeyDType = "float16"
 	head.ValueDType = "float16"
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, KVSnapshotMemvidBlockOptions{
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, kv.MemvidBlockOptions{
 		BlockSize:  2,
-		KVEncoding: KVSnapshotEncodingNative,
+		KVEncoding: kv.EncodingNative,
 	})
 	if err != nil {
 		t.Fatalf("SaveMemvidBlocks(native) error = %v", err)
@@ -898,17 +899,17 @@ func TestModelWarmPromptCacheChunks_Good(t *testing.T) {
 func TestModelWarmPromptCacheFromKV_Good(t *testing.T) {
 	native := &fakeNativeModel{}
 	model := &Model{model: native}
-	snapshot := &KVSnapshot{
-		Version:      KVSnapshotVersion,
+	snapshot := &kv.Snapshot{
+		Version:      kv.SnapshotVersion,
 		Architecture: "qwen3",
 		Tokens:       []int32{1},
 		NumLayers:    1,
 		NumHeads:     1,
 		SeqLen:       1,
 		HeadDim:      1,
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:        []float32{1},
 				Value:      []float32{2},
 				KeyBytes:   []byte{1, 2},
@@ -1067,7 +1068,7 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("x")); err == nil {
 		t.Fatal("WarmPromptCacheChunks(nil model) error = nil")
 	}
-	if err := model.WarmPromptCacheFromKV(&KVSnapshot{}); err == nil {
+	if err := model.WarmPromptCacheFromKV(&kv.Snapshot{}); err == nil {
 		t.Fatal("WarmPromptCacheFromKV(nil model) error = nil")
 	}
 	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), nil, nil, 0); err == nil {

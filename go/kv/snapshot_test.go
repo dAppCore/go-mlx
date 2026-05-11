@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"encoding/binary"
@@ -11,17 +11,17 @@ import (
 )
 
 func TestKVSnapshot_Clone_Good(t *testing.T) {
-	snapshot := &KVSnapshot{
-		Version:      KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:      SnapshotVersion,
 		Tokens:       []int32{1, 2},
 		Generated:    []int32{2},
 		TokenOffset:  4,
 		Architecture: "gemma4_text",
 		LogitShape:   []int32{1, 1, 3},
 		Logits:       []float32{0.1, 0.2, 0.7},
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:   []float32{1, 2},
 				Value: []float32{3, 4},
 			}},
@@ -41,12 +41,12 @@ func TestKVSnapshot_Clone_Good(t *testing.T) {
 }
 
 func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
-	coverageTokens := "KVSnapshot SaveLoadRestorable"
+	coverageTokens := "Snapshot SaveLoadRestorable"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{11, 12},
 		Generated:     []int32{12},
@@ -58,10 +58,10 @@ func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
 		NumQueryHeads: 8,
 		LogitShape:    []int32{1, 1, 4},
 		Logits:        []float32{0.1, 0.2, 0.3, 0.4},
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:   []float32{1, 2, 3, 4},
 				Value: []float32{5, 6, 7, 8},
 			}},
@@ -72,12 +72,12 @@ func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
 	if err := snapshot.Save(path); err != nil {
 		t.Fatalf("Save() error = %v", err)
 	}
-	loaded, err := LoadKVSnapshot(path)
+	loaded, err := Load(path)
 
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
-	if loaded.Version != KVSnapshotVersion || loaded.TokenOffset != 9 || loaded.Generated[0] != 12 {
+	if loaded.Version != SnapshotVersion || loaded.TokenOffset != 9 || loaded.Generated[0] != 12 {
 		t.Fatalf("loaded version/offset/generated = %d/%d/%v", loaded.Version, loaded.TokenOffset, loaded.Generated)
 	}
 	if len(loaded.LogitShape) != 3 || loaded.LogitShape[2] != 4 || len(loaded.Logits) != 4 || loaded.Logits[3] != 0.4 {
@@ -86,8 +86,8 @@ func TestKVSnapshot_SaveLoadRestorable_Good(t *testing.T) {
 }
 
 func TestKVSnapshot_MarshalUnmarshalBinary_Good(t *testing.T) {
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{11, 12},
 		Generated:     []int32{12},
@@ -97,10 +97,10 @@ func TestKVSnapshot_MarshalUnmarshalBinary_Good(t *testing.T) {
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:   []float32{1, 2, 3, 4},
 				Value: []float32{5, 6, 7, 8},
 			}},
@@ -114,7 +114,7 @@ func TestKVSnapshot_MarshalUnmarshalBinary_Good(t *testing.T) {
 	if legacy, err := snapshot.bytes(); err != nil || !equalBytes(data, legacy) {
 		t.Fatalf("bytes() = %d/%v, want MarshalBinary bytes %d", len(legacy), err, len(data))
 	}
-	var loaded KVSnapshot
+	var loaded Snapshot
 	if err := loaded.UnmarshalBinary(data); err != nil {
 		t.Fatalf("UnmarshalBinary() error = %v", err)
 	}
@@ -131,8 +131,8 @@ func TestKVSnapshot_MarshalUnmarshalBinary_Good(t *testing.T) {
 }
 
 func TestKVSnapshot_SaveLoadQuantizedQ8_Good(t *testing.T) {
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "qwen3",
 		Tokens:        []int32{1, 2, 3},
 		TokenOffset:   3,
@@ -143,10 +143,10 @@ func TestKVSnapshot_SaveLoadQuantizedQ8_Good(t *testing.T) {
 		NumQueryHeads: 1,
 		LogitShape:    []int32{1, 1, 2},
 		Logits:        []float32{0.25, 0.75},
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:   []float32{-1, -0.5, 0.5, 1},
 				Value: []float32{0, 0.25, -0.25, 0.75},
 			}},
@@ -154,16 +154,16 @@ func TestKVSnapshot_SaveLoadQuantizedQ8_Good(t *testing.T) {
 	}
 	path := core.PathJoin(t.TempDir(), "quantized-q8.kvbin")
 
-	if err := snapshot.SaveWithOptions(path, KVSnapshotSaveOptions{KVEncoding: KVSnapshotEncodingQ8}); err != nil {
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingQ8}); err != nil {
 		t.Fatalf("SaveWithOptions() error = %v", err)
 	}
-	loaded, err := LoadKVSnapshot(path)
+	loaded, err := Load(path)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
 
-	if loaded.Version != KVSnapshotVersion {
-		t.Fatalf("loaded Version = %d, want %d", loaded.Version, KVSnapshotVersion)
+	if loaded.Version != SnapshotVersion {
+		t.Fatalf("loaded Version = %d, want %d", loaded.Version, SnapshotVersion)
 	}
 	for i, want := range snapshot.Layers[0].Heads[0].Key {
 		if diff := loaded.Layers[0].Heads[0].Key[i] - want; diff < -0.01 || diff > 0.01 {
@@ -180,8 +180,8 @@ func TestKVSnapshot_SaveLoadNativeDType_Good(t *testing.T) {
 	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(-2))
 	valueBytes := appendUint16LE(nil, uint16(math.Float32bits(0.25)>>16))
 	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(-0.75)>>16))
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1},
 		TokenOffset:   1,
@@ -190,10 +190,10 @@ func TestKVSnapshot_SaveLoadNativeDType_Good(t *testing.T) {
 		SeqLen:        1,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:        []float32{1.5, -2},
 				KeyDType:   "float16",
 				KeyBytes:   keyBytes,
@@ -205,12 +205,12 @@ func TestKVSnapshot_SaveLoadNativeDType_Good(t *testing.T) {
 	}
 	path := core.PathJoin(t.TempDir(), "native-dtype.kvbin")
 
-	if err := snapshot.SaveWithOptions(path, KVSnapshotSaveOptions{KVEncoding: KVSnapshotEncodingNative}); err != nil {
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingNative}); err != nil {
 		t.Fatalf("SaveWithOptions(native) error = %v", err)
 	}
-	loaded, err := LoadKVSnapshot(path)
+	loaded, err := Load(path)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot() error = %v", err)
+		t.Fatalf("Load() error = %v", err)
 	}
 
 	head := loaded.Layers[0].Heads[0]
@@ -237,8 +237,8 @@ func TestKVSnapshot_SaveLoadNativeRawOnly_Good(t *testing.T) {
 	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(6)>>16))
 	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(7)>>16))
 	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(8)>>16))
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		TokenOffset:   2,
@@ -247,10 +247,10 @@ func TestKVSnapshot_SaveLoadNativeRawOnly_Good(t *testing.T) {
 		SeqLen:        2,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				KeyDType:   "float16",
 				KeyBytes:   keyBytes,
 				ValueDType: "bfloat16",
@@ -260,12 +260,12 @@ func TestKVSnapshot_SaveLoadNativeRawOnly_Good(t *testing.T) {
 	}
 	path := core.PathJoin(t.TempDir(), "native-raw-only.kvbin")
 
-	if err := snapshot.SaveWithOptions(path, KVSnapshotSaveOptions{KVEncoding: KVSnapshotEncodingNative}); err != nil {
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingNative}); err != nil {
 		t.Fatalf("SaveWithOptions(native raw-only) error = %v", err)
 	}
-	rawOnly, err := LoadKVSnapshotWithOptions(path, KVSnapshotLoadOptions{RawKVOnly: true})
+	rawOnly, err := LoadWithOptions(path, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotWithOptions(raw-only) error = %v", err)
+		t.Fatalf("LoadWithOptions(raw-only) error = %v", err)
 	}
 	head := rawOnly.Layers[0].Heads[0]
 	if len(head.Key) != 0 || len(head.Value) != 0 {
@@ -275,9 +275,9 @@ func TestKVSnapshot_SaveLoadNativeRawOnly_Good(t *testing.T) {
 		t.Fatalf("raw-only head = %+v, want native bytes preserved", head)
 	}
 
-	decoded, err := LoadKVSnapshot(path)
+	decoded, err := Load(path)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshot(default) error = %v", err)
+		t.Fatalf("Load(default) error = %v", err)
 	}
 	decodedHead := decoded.Layers[0].Heads[0]
 	if len(decodedHead.Key) != 4 || len(decodedHead.Value) != 4 || decodedHead.Key[3] != 4 {
@@ -290,8 +290,8 @@ func TestKVSnapshot_EncodedSizeMatchesSerialisedBytes_Good(t *testing.T) {
 	nativeKey = appendUint16LE(nativeKey, float32ToFloat16(2))
 	nativeValue := appendUint16LE(nil, uint16(math.Float32bits(3)>>16))
 	nativeValue = appendUint16LE(nativeValue, uint16(math.Float32bits(4)>>16))
-	snapshot := &KVSnapshot{
-		Version:       KVSnapshotVersion,
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2},
 		Generated:     []int32{3},
@@ -303,10 +303,10 @@ func TestKVSnapshot_EncodedSizeMatchesSerialisedBytes_Good(t *testing.T) {
 		NumQueryHeads: 1,
 		LogitShape:    []int32{1, 1, 2},
 		Logits:        []float32{0.25, 0.75},
-		Layers: []KVLayerSnapshot{{
+		Layers: []LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:        []float32{1, 2},
 				KeyDType:   "float16",
 				KeyBytes:   nativeKey,
@@ -316,10 +316,10 @@ func TestKVSnapshot_EncodedSizeMatchesSerialisedBytes_Good(t *testing.T) {
 			}},
 		}},
 	}
-	for _, opts := range []KVSnapshotSaveOptions{
+	for _, opts := range []SaveOptions{
 		{},
-		{KVEncoding: KVSnapshotEncodingQ8},
-		{KVEncoding: KVSnapshotEncodingNative},
+		{KVEncoding: EncodingQ8},
+		{KVEncoding: EncodingNative},
 	} {
 		size, err := snapshot.encodedSizeWithOptions(opts)
 		if err != nil {
@@ -336,9 +336,9 @@ func TestKVSnapshot_EncodedSizeMatchesSerialisedBytes_Good(t *testing.T) {
 }
 
 func TestKVSnapshot_SaveWithOptions_Bad(t *testing.T) {
-	snapshot := &KVSnapshot{Version: KVSnapshotVersion}
+	snapshot := &Snapshot{Version: SnapshotVersion}
 
-	err := snapshot.SaveWithOptions(core.PathJoin(t.TempDir(), "bad.kvbin"), KVSnapshotSaveOptions{KVEncoding: "q2"})
+	err := snapshot.SaveWithOptions(core.PathJoin(t.TempDir(), "bad.kvbin"), SaveOptions{KVEncoding: "q2"})
 
 	if err == nil {
 		t.Fatal("SaveWithOptions() error = nil, want unsupported encoding error")
@@ -346,7 +346,7 @@ func TestKVSnapshot_SaveWithOptions_Bad(t *testing.T) {
 }
 
 func TestKVSnapshot_BinaryAPIs_Bad(t *testing.T) {
-	var snapshot *KVSnapshot
+	var snapshot *Snapshot
 	if _, err := snapshot.MarshalBinary(); err == nil {
 		t.Fatal("MarshalBinary(nil) error = nil")
 	}
@@ -374,9 +374,9 @@ func TestKVSnapshot_NativeTensorValidation_Bad(t *testing.T) {
 }
 
 func TestKVSnapshot_DropFloat32_Good(t *testing.T) {
-	dropKVSnapshotFloat32(nil)
-	snapshot := &KVSnapshot{Layers: []KVLayerSnapshot{{
-		Heads: []KVHeadSnapshot{{
+	DropFloat32(nil)
+	snapshot := &Snapshot{Layers: []LayerSnapshot{{
+		Heads: []HeadSnapshot{{
 			Key:        []float32{1},
 			KeyBytes:   []byte{1, 2},
 			Value:      []float32{2},
@@ -384,19 +384,19 @@ func TestKVSnapshot_DropFloat32_Good(t *testing.T) {
 		}},
 	}}}
 
-	dropKVSnapshotFloat32(snapshot)
+	DropFloat32(snapshot)
 
 	head := snapshot.Layers[0].Heads[0]
 	if len(head.Key) != 0 || len(head.Value) != 0 || len(head.KeyBytes) != 2 || len(head.ValueBytes) != 2 {
-		t.Fatalf("dropKVSnapshotFloat32() head = %+v, want raw bytes retained and float32 dropped", head)
+		t.Fatalf("DropFloat32() head = %+v, want raw bytes retained and float32 dropped", head)
 	}
 }
 
 func TestKVSnapshot_Head_Ugly(t *testing.T) {
-	snapshot := &KVSnapshot{
-		Layers: []KVLayerSnapshot{{
+	snapshot := &Snapshot{
+		Layers: []LayerSnapshot{{
 			Layer: 7,
-			Heads: []KVHeadSnapshot{{
+			Heads: []HeadSnapshot{{
 				Key:   []float32{1},
 				Value: []float32{2},
 			}},
@@ -412,7 +412,7 @@ func TestKVSnapshot_Head_Ugly(t *testing.T) {
 }
 
 func TestKVSnapshot_Clone_Bad(t *testing.T) {
-	var snapshot *KVSnapshot
+	var snapshot *Snapshot
 
 	if snapshot.Clone() != nil {
 		t.Fatal("Clone() on nil snapshot returned non-nil")
@@ -420,8 +420,8 @@ func TestKVSnapshot_Clone_Bad(t *testing.T) {
 }
 
 func TestKVSnapshot_Clone_Ugly(t *testing.T) {
-	snapshot := &KVSnapshot{
-		Layers: []KVLayerSnapshot{{Layer: 7}},
+	snapshot := &Snapshot{
+		Layers: []LayerSnapshot{{Layer: 7}},
 	}
 
 	cloned := snapshot.Clone()
@@ -432,7 +432,7 @@ func TestKVSnapshot_Clone_Ugly(t *testing.T) {
 }
 
 func TestKVSnapshot_Save_Bad(t *testing.T) {
-	var snapshot *KVSnapshot
+	var snapshot *Snapshot
 
 	if err := snapshot.Save(core.PathJoin(t.TempDir(), "nil.kvbin")); err == nil {
 		t.Fatal("Save() error = nil, want nil snapshot error")
@@ -440,10 +440,10 @@ func TestKVSnapshot_Save_Bad(t *testing.T) {
 }
 
 func TestLoadKVSnapshot_Bad(t *testing.T) {
-	_, err := LoadKVSnapshot(core.PathJoin(t.TempDir(), "missing.kvbin"))
+	_, err := Load(core.PathJoin(t.TempDir(), "missing.kvbin"))
 
 	if err == nil {
-		t.Fatal("LoadKVSnapshot() error = nil, want missing file error")
+		t.Fatal("Load() error = nil, want missing file error")
 	}
 }
 
@@ -453,10 +453,10 @@ func TestLoadKVSnapshot_Ugly(t *testing.T) {
 		t.Fatalf("WriteFile: %s", result.Error())
 	}
 
-	_, err := LoadKVSnapshot(path)
+	_, err := Load(path)
 
 	if err == nil {
-		t.Fatal("LoadKVSnapshot() error = nil, want corrupt file error")
+		t.Fatal("Load() error = nil, want corrupt file error")
 	}
 }
 

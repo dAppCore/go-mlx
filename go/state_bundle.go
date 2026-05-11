@@ -8,6 +8,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 const (
@@ -32,7 +33,7 @@ type StateBundleOptions struct {
 	AdapterPath string
 	KVPath      string
 	Sampler     GenerateConfig
-	Analysis    *KVAnalysis
+	Analysis    *kv.Analysis
 	SAMI        *SAMIResult
 	Refs        []StateBundleRef
 	MemvidRefs  []memvid.ChunkRef
@@ -49,10 +50,10 @@ type StateBundle struct {
 	Runtime   StateBundleRuntime   `json:"runtime"`
 	Adapter   StateBundleAdapter   `json:"adapter,omitempty"`
 	Sampler   StateBundleSampler   `json:"sampler"`
-	KV        *KVSnapshot          `json:"kv,omitempty"`
+	KV        *kv.Snapshot          `json:"kv,omitempty"`
 	KVPath    string               `json:"kv_path,omitempty"`
 	KVHash    string               `json:"kv_hash"`
-	Analysis  *KVAnalysis          `json:"analysis,omitempty"`
+	Analysis  *kv.Analysis          `json:"analysis,omitempty"`
 	SAMI      *SAMIResult          `json:"sami,omitempty"`
 	Refs      []StateBundleRef     `json:"refs,omitempty"`
 	Meta      map[string]string    `json:"meta,omitempty"`
@@ -134,26 +135,31 @@ type StateBundleRef struct {
 }
 
 // NewStateBundle builds a portable state bundle around a restorable KV snapshot.
-func NewStateBundle(snapshot *KVSnapshot, opts StateBundleOptions) (*StateBundle, error) {
+func NewStateBundle(snapshot *kv.Snapshot, opts StateBundleOptions) (*StateBundle, error) {
 	if snapshot == nil {
 		return nil, core.NewError("mlx: KV snapshot is nil")
 	}
-	kv := snapshot.Clone()
-	normalizeBundleSnapshot(kv)
-	kvHash, err := hashKVSnapshot(kv)
+	snap := snapshot.Clone()
+	if snap.Version == 0 {
+		snap.Version = kv.SnapshotVersion
+	}
+	if snap.TokenOffset == 0 {
+		snap.TokenOffset = len(snap.Tokens)
+	}
+	kvHash, err := kv.HashSnapshot(snap)
 	if err != nil {
 		return nil, err
 	}
 	analysis := opts.Analysis
 	if analysis == nil {
-		analysis = AnalyzeKV(kv)
+		analysis = kv.Analyze(snap)
 	}
 	sami := opts.SAMI
 	if sami == nil {
-		result := SAMIFromKV(kv, analysis, SAMIOptions{Model: opts.Model, Prompt: opts.Prompt})
+		result := SAMIFromKV(snap, analysis, SAMIOptions{Model: opts.Model, Prompt: opts.Prompt})
 		sami = &result
 	}
-	model := stateBundleModel(kv, opts)
+	model := stateBundleModel(snap, opts)
 	tokenizer := stateBundleTokenizer(opts.Tokenizer)
 	runtime := stateBundleRuntime(opts.Runtime)
 	adapter := stateBundleAdapter(opts.Adapter, opts.AdapterPath, opts.ModelInfo.Adapter)
@@ -164,14 +170,14 @@ func NewStateBundle(snapshot *KVSnapshot, opts StateBundleOptions) (*StateBundle
 		Prompt: StateBundlePrompt{
 			Text:        opts.Prompt,
 			Hash:        stateHash(opts.Prompt),
-			TokenCount:  len(kv.Tokens),
-			TokenOffset: kv.TokenOffset,
+			TokenCount:  len(snap.Tokens),
+			TokenOffset: snap.TokenOffset,
 		},
 		Tokenizer: tokenizer,
 		Runtime:   runtime,
 		Adapter:   adapter,
 		Sampler:   stateSamplerFromGenerateConfig(opts.Sampler),
-		KV:        kv,
+		KV:        snap,
 		KVPath:    opts.KVPath,
 		KVHash:    kvHash,
 		Analysis:  analysis,
@@ -230,7 +236,7 @@ func LoadStateBundle(path string) (*StateBundle, error) {
 }
 
 // Snapshot returns a defensive KV snapshot copy, loading KVPath when needed.
-func (b *StateBundle) Snapshot() (*KVSnapshot, error) {
+func (b *StateBundle) Snapshot() (*kv.Snapshot, error) {
 	if b == nil {
 		return nil, core.NewError("mlx: state bundle is nil")
 	}
@@ -240,12 +246,12 @@ func (b *StateBundle) Snapshot() (*KVSnapshot, error) {
 	if b.KVPath == "" {
 		return nil, core.NewError("mlx: state bundle has no KV snapshot")
 	}
-	snapshot, err := LoadKVSnapshot(b.KVPath)
+	snapshot, err := kv.Load(b.KVPath)
 	if err != nil {
 		return nil, err
 	}
 	if b.KVHash != "" {
-		got, hashErr := hashKVSnapshot(snapshot)
+		got, hashErr := kv.HashSnapshot(snapshot)
 		if hashErr != nil {
 			return nil, hashErr
 		}
@@ -258,7 +264,7 @@ func (b *StateBundle) Snapshot() (*KVSnapshot, error) {
 
 // SnapshotFromMemvid returns the bundle KV snapshot, resolving memvid refs when
 // the bundle keeps KV state in cold storage instead of embedding it.
-func (b *StateBundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*KVSnapshot, error) {
+func (b *StateBundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*kv.Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -272,12 +278,12 @@ func (b *StateBundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store
 	if !ok {
 		return nil, core.NewError("mlx: state bundle has no memvid KV snapshot")
 	}
-	snapshot, err := LoadKVSnapshotFromMemvid(ctx, store, ref)
+	snapshot, err := kv.LoadFromMemvid(ctx, store, ref)
 	if err != nil {
 		return nil, err
 	}
 	if b.KVHash != "" {
-		got, hashErr := hashKVSnapshot(snapshot)
+		got, hashErr := kv.HashSnapshot(snapshot)
 		if hashErr != nil {
 			return nil, hashErr
 		}
@@ -318,7 +324,7 @@ func (b *StateBundle) Validate() error {
 		return nil
 	}
 	if b.KV != nil && b.KVHash != "" {
-		got, err := hashKVSnapshot(b.KV)
+		got, err := kv.HashSnapshot(b.KV)
 		if err != nil {
 			return err
 		}
@@ -371,7 +377,7 @@ func StateBundleFileHash(path string) (string, error) {
 	return core.SHA256Hex(data), nil
 }
 
-func stateBundleModel(snapshot *KVSnapshot, opts StateBundleOptions) StateBundleModel {
+func stateBundleModel(snapshot *kv.Snapshot, opts StateBundleOptions) StateBundleModel {
 	info := opts.ModelInfo
 	arch := info.Architecture
 	if arch == "" && snapshot != nil {
@@ -516,52 +522,6 @@ func cloneStateBundleMeta(meta map[string]string) map[string]string {
 		cloned[key] = value
 	}
 	return cloned
-}
-
-func normalizeBundleSnapshot(snapshot *KVSnapshot) {
-	if snapshot == nil {
-		return
-	}
-	if snapshot.Version == 0 {
-		snapshot.Version = KVSnapshotVersion
-	}
-	if snapshot.TokenOffset == 0 {
-		snapshot.TokenOffset = len(snapshot.Tokens)
-	}
-}
-
-func hashKVSnapshot(snapshot *KVSnapshot) (string, error) {
-	if snapshot == nil {
-		return "", core.NewError("mlx: KV snapshot is nil")
-	}
-	cloned := snapshot.Clone()
-	normalizeBundleSnapshot(cloned)
-	opts := KVSnapshotSaveOptions{}
-	if kvSnapshotRequiresNativeEncoding(cloned) {
-		opts.KVEncoding = KVSnapshotEncodingNative
-	}
-	data, err := cloned.bytesWithOptions(opts)
-	if err != nil {
-		return "", err
-	}
-	return core.SHA256Hex(data), nil
-}
-
-func kvSnapshotRequiresNativeEncoding(snapshot *KVSnapshot) bool {
-	if snapshot == nil {
-		return false
-	}
-	for _, layer := range snapshot.Layers {
-		for _, head := range layer.Heads {
-			if len(head.Key) == 0 && len(head.KeyBytes) > 0 {
-				return true
-			}
-			if len(head.Value) == 0 && len(head.ValueBytes) > 0 {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func stateHash(value string) string {

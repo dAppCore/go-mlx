@@ -9,28 +9,29 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	filestore "dappco.re/go/inference/state/filestore"
 )
 
 func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
 	var capturedPrompts []string
-	var streamedEncodings []KVSnapshotEncoding
+	var streamedEncodings []kv.Encoding
 	var restoredPaths []string
 	var answeredSuffixes []string
 	runner := FastEvalRunner{
-		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			capturedPrompts = append(capturedPrompts, prompt)
 			streamedEncodings = append(streamedEncodings, opts.KVEncoding)
 			return fastEvalTestSnapshot().SaveMemvidBlocks(ctx, store, opts)
 		},
-		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int, suffix string, _ GenerateConfig) (FastEvalGeneration, error) {
-			if bundle.KVEncoding != KVSnapshotEncodingNative {
+		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string, _ GenerateConfig) (FastEvalGeneration, error) {
+			if bundle.KVEncoding != kv.EncodingNative {
 				return FastEvalGeneration{}, core.Errorf("bundle KVEncoding = %q, want native", bundle.KVEncoding)
 			}
 			if len(bundle.Blocks) == 0 || bundle.Blocks[0].Memvid.Codec != filestore.CodecFile {
 				return FastEvalGeneration{}, core.Errorf("bundle refs = %+v, want file-backed refs", bundle.Blocks)
 			}
-			if _, err := LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, KVSnapshotLoadOptions{RawKVOnly: true}); err != nil {
+			if _, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, kv.LoadOptions{RawKVOnly: true}); err != nil {
 				return FastEvalGeneration{}, err
 			}
 			restoredPaths = append(restoredPaths, bundle.Blocks[0].Memvid.Segment)
@@ -79,7 +80,7 @@ func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
 	if len(capturedPrompts) != 2 || capturedPrompts[0] == capturedPrompts[1] {
 		t.Fatalf("captured prompts = %q, want chapter-specific prompts", capturedPrompts)
 	}
-	if len(streamedEncodings) != 2 || streamedEncodings[0] != KVSnapshotEncodingNative || streamedEncodings[1] != KVSnapshotEncodingNative {
+	if len(streamedEncodings) != 2 || streamedEncodings[0] != kv.EncodingNative || streamedEncodings[1] != kv.EncodingNative {
 		t.Fatalf("streamed encodings = %v, want native streaming for both chapters", streamedEncodings)
 	}
 	if len(restoredPaths) != 2 || restoredPaths[0] != restoredPaths[1] {
@@ -116,11 +117,11 @@ func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s reopen file store from report: %v", chapter.Name, err)
 		}
-		bundle, err := LoadKVSnapshotMemvidBlockBundle(context.Background(), reopened, chapter.BundleURI)
+		bundle, err := kv.LoadMemvidBlockBundle(context.Background(), reopened, chapter.BundleURI)
 		if err != nil {
 			t.Fatalf("%s load bundle manifest from store URI: %v", chapter.Name, err)
 		}
-		if _, err := LoadKVSnapshotPrefixFromMemvidBlocksWithOptions(context.Background(), reopened, bundle, bundle.TokenCount, KVSnapshotLoadOptions{RawKVOnly: true}); err != nil {
+		if _, err := kv.LoadPrefixFromMemvidBlocksWithOptions(context.Background(), reopened, bundle, bundle.TokenCount, kv.LoadOptions{RawKVOnly: true}); err != nil {
 			t.Fatalf("%s restore from durable manifest: %v", chapter.Name, err)
 		}
 		if err := reopened.Close(); err != nil {
@@ -194,17 +195,17 @@ func TestRunMemvidKVChapterSmoke_Bad_ValidatesInputs(t *testing.T) {
 		t.Fatal("RunMemvidKVChapterSmoke(missing generator) error = nil")
 	}
 	if _, err := RunMemvidKVChapterSmoke(context.Background(), FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
 			return FastEvalGeneration{}, nil
 		},
 	}, MemvidKVChapterSmokeConfig{Chapters: []MemvidKVChapterSmokeInput{{Text: "x", Question: "q"}}}); err == nil {
 		t.Fatal("RunMemvidKVChapterSmoke(missing capture) error = nil")
 	}
 	if _, err := RunMemvidKVChapterSmoke(context.Background(), FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
 			return FastEvalGeneration{}, nil
 		},
-		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			return nil, nil
 		},
 	}, MemvidKVChapterSmokeConfig{}); err == nil {
@@ -214,11 +215,11 @@ func TestRunMemvidKVChapterSmoke_Bad_ValidatesInputs(t *testing.T) {
 
 func TestRunMemvidKVChapterSmoke_Bad_ChapterValidation(t *testing.T) {
 	runner := FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
 			return FastEvalGeneration{}, nil
 		},
-		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
-			return fastEvalTestSnapshot().SaveMemvidBlocks(context.Background(), memvid.NewInMemoryStore(nil), KVSnapshotMemvidBlockOptions{BlockSize: 2})
+		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+			return fastEvalTestSnapshot().SaveMemvidBlocks(context.Background(), memvid.NewInMemoryStore(nil), kv.MemvidBlockOptions{BlockSize: 2})
 		},
 	}
 	for _, chapter := range []MemvidKVChapterSmokeInput{

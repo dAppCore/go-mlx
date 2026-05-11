@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	filestore "dappco.re/go/inference/state/filestore"
 )
 
@@ -48,10 +49,10 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 				}, nil
 			},
 			WarmPromptCache: func(context.Context, string) error { return nil },
-			CaptureKV: func(context.Context, string) (*KVSnapshot, error) {
+			CaptureKV: func(context.Context, string) (*kv.Snapshot, error) {
 				return fastEvalTestSnapshot(), nil
 			},
-			RestoreKV: func(context.Context, *KVSnapshot) error { return nil },
+			RestoreKV: func(context.Context, *kv.Snapshot) error { return nil },
 		},
 		LoadAdapter: func(_ context.Context, path string) (WorkloadAdapterInfo, error) {
 			if path != adapter.Path {
@@ -210,11 +211,11 @@ func TestRunWorkloadBench_SummarizesMemvidKVBlockWarm_Good(t *testing.T) {
 				}
 				return FastEvalGeneration{Text: "ok", Metrics: metrics}, nil
 			},
-			CaptureKV: func(context.Context, string) (*KVSnapshot, error) {
+			CaptureKV: func(context.Context, string) (*kv.Snapshot, error) {
 				return fastEvalTestSnapshot(), nil
 			},
-			WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
-				if _, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens); err != nil {
+			WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
+				if _, err := kv.LoadPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens); err != nil {
 					return err
 				}
 				warmed = true

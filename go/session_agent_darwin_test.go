@@ -11,6 +11,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -30,7 +31,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		EntryURI:  "mlx://agent/chapter-1",
 		Title:     "Chapter 1",
 		Tokenizer: tokenizer,
-		BlockOptions: KVSnapshotMemvidBlockOptions{
+		BlockOptions: kv.MemvidBlockOptions{
 			BlockSize: 1,
 		},
 		Labels: []string{"chapter"},
@@ -43,7 +44,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if sleep.EntryURI != "mlx://agent/chapter-1" || sleep.BundleURI != "mlx://agent/chapter-1/bundle" || sleep.IndexURI != "mlx://agent/chapter-1/index" {
 		t.Fatalf("sleep URIs = %+v", sleep)
 	}
-	if sleep.KVEncoding != KVSnapshotEncodingNative || sleep.TokenCount != 2 || sleep.BlocksWritten != 1 {
+	if sleep.KVEncoding != kv.EncodingNative || sleep.TokenCount != 2 || sleep.BlocksWritten != 1 {
 		t.Fatalf("sleep report = %+v, want native two-token single streamed block", sleep)
 	}
 	if sleep.BundleRef.ChunkID == 0 || sleep.IndexRef.ChunkID == 0 || sleep.IndexHash == "" {
@@ -65,7 +66,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		IndexURI:    sleep.IndexURI,
 		EntryURI:    sleep.EntryURI,
 		Tokenizer:   tokenizer,
-		LoadOptions: KVSnapshotLoadOptions{RawKVOnly: true},
+		LoadOptions: kv.LoadOptions{RawKVOnly: true},
 	})
 
 	if err != nil {
@@ -159,7 +160,7 @@ func TestAgentMemoryInferenceContract_Good(t *testing.T) {
 		Title:     "contract state",
 		Tokenizer: tokenizer,
 		BlockSize: 1,
-		Encoding:  string(KVSnapshotEncodingNative),
+		Encoding:  string(kv.EncodingNative),
 		Metadata:  map[string]string{"suite": "inference"},
 	})
 

@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -68,7 +69,7 @@ func TestNewModelFastEvalRunner_ForwardsModelAndCancellation_Good(t *testing.T) 
 	if snapshot == nil || snapshot.Architecture != "qwen3" || len(snapshot.Layers) != 1 {
 		t.Fatalf("snapshot = %+v, want converted KV snapshot", snapshot)
 	}
-	rawOnly, err := runner.CaptureKVWithOptions(context.Background(), "prompt", KVSnapshotCaptureOptions{RawKVOnly: true})
+	rawOnly, err := runner.CaptureKVWithOptions(context.Background(), "prompt", kv.CaptureOptions{RawKVOnly: true})
 	if err != nil {
 		t.Fatalf("CaptureKVWithOptions(raw) error = %v", err)
 	}
@@ -91,7 +92,7 @@ func TestNewModelFastEvalRunner_ForwardsModelAndCancellation_Good(t *testing.T) 
 	if _, err := runner.CaptureKV(cancelled, "prompt"); err != context.Canceled {
 		t.Fatalf("CaptureKV(cancelled) error = %v, want context.Canceled", err)
 	}
-	if _, err := runner.CaptureKVWithOptions(cancelled, "prompt", KVSnapshotCaptureOptions{}); err != context.Canceled {
+	if _, err := runner.CaptureKVWithOptions(cancelled, "prompt", kv.CaptureOptions{}); err != context.Canceled {
 		t.Fatalf("CaptureKVWithOptions(cancelled) error = %v, want context.Canceled", err)
 	}
 }
@@ -140,13 +141,13 @@ func TestRunFastEval_AggregatesGenerationCacheRestoreAndProbes_Good(t *testing.T
 			warmed = true
 			return nil
 		},
-		CaptureKV: func(_ context.Context, prompt string) (*KVSnapshot, error) {
+		CaptureKV: func(_ context.Context, prompt string) (*kv.Snapshot, error) {
 			if prompt == "" {
 				t.Fatal("CaptureKV received empty prompt")
 			}
 			return fastEvalTestSnapshot(), nil
 		},
-		RestoreKV: func(_ context.Context, snapshot *KVSnapshot) error {
+		RestoreKV: func(_ context.Context, snapshot *kv.Snapshot) error {
 			if snapshot == nil {
 				t.Fatal("RestoreKV received nil snapshot")
 			}
@@ -218,18 +219,18 @@ func TestRunFastEval_MemvidKVBlockWarmCacheReport_Good(t *testing.T) {
 			}
 			return FastEvalGeneration{Text: "ok", Metrics: metrics}, nil
 		},
-		CaptureKV: func(context.Context, string) (*KVSnapshot, error) {
+		CaptureKV: func(context.Context, string) (*kv.Snapshot, error) {
 			return fastEvalTestSnapshot(), nil
 		},
-		CaptureKVWithOptions: func(_ context.Context, _ string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+		CaptureKVWithOptions: func(_ context.Context, _ string, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 			rawOnlyCapture = opts.RawKVOnly
 			return fastEvalTestSnapshot(), nil
 		},
-		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
-			if bundle.KVEncoding != KVSnapshotEncodingNative {
+		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
+			if bundle.KVEncoding != kv.EncodingNative {
 				t.Fatalf("memvid warm bundle encoding = %q, want native", bundle.KVEncoding)
 			}
-			snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
+			snapshot, err := kv.LoadPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
 			if err != nil {
 				return err
 			}
@@ -300,17 +301,17 @@ func TestRunFastEval_MemvidKVBlockWarmStreamingCaptureDefaultsPrefix_Good(t *tes
 			}
 			return FastEvalGeneration{Text: "ok", Metrics: metrics}, nil
 		},
-		CaptureKV: func(context.Context, string) (*KVSnapshot, error) {
+		CaptureKV: func(context.Context, string) (*kv.Snapshot, error) {
 			t.Fatal("CaptureKV should not run for streaming memvid block capture")
 			return nil, nil
 		},
-		CaptureKVBlocksToMemvid: func(ctx context.Context, _ string, store memvid.Writer, opts KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+		CaptureKVBlocksToMemvid: func(ctx context.Context, _ string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			streamed = true
 			return fastEvalTestSnapshot().SaveMemvidBlocks(ctx, store, opts)
 		},
-		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
+		WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 			prefixTokensSeen = prefixTokens
-			snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
+			snapshot, err := kv.LoadPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
 			if err != nil {
 				return err
 			}
@@ -360,10 +361,10 @@ func TestRunFastEval_MemvidKVBlockWarm_Bad(t *testing.T) {
 		t.Fatalf("memvid warm unsupported runner report = %+v", report)
 	}
 	nilBundleRunner := FastEvalRunner{
-		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			return nil, nil
 		},
-		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int) error {
+		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int) error {
 			return nil
 		},
 	}
@@ -371,15 +372,15 @@ func TestRunFastEval_MemvidKVBlockWarm_Bad(t *testing.T) {
 		t.Fatalf("memvid warm nil bundle report = %+v", report)
 	}
 	emptyBundleRunner := nilBundleRunner
-	emptyBundleRunner.CaptureKVBlocksToMemvid = func(context.Context, string, memvid.Writer, KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
-		return &KVSnapshotMemvidBlockBundle{}, nil
+	emptyBundleRunner.CaptureKVBlocksToMemvid = func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+		return &kv.MemvidBlockBundle{}, nil
 	}
 	if report := runFastEvalMemvidKVBlockWarm(context.Background(), emptyBundleRunner, nil, cfg); report.Error == "" {
 		t.Fatalf("memvid warm empty bundle report = %+v", report)
 	}
 
 	warmErrRunner := FastEvalRunner{
-		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int) error {
+		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int) error {
 			return core.NewError("warm failed")
 		},
 		Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
@@ -391,7 +392,7 @@ func TestRunFastEval_MemvidKVBlockWarm_Bad(t *testing.T) {
 	}
 
 	generateErrRunner := FastEvalRunner{
-		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *KVSnapshotMemvidBlockBundle, int) error {
+		WarmPromptCacheFromMemvidBlocks: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int) error {
 			return nil
 		},
 		Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
@@ -550,10 +551,10 @@ func TestFastEval_NewModelFastEvalRunner_Ugly(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	store := memvid.NewInMemoryStore(nil)
-	if _, err := runner.CaptureKVBlocksToMemvid(cancelled, "prompt", store, KVSnapshotMemvidBlockOptions{}); err != context.Canceled {
+	if _, err := runner.CaptureKVBlocksToMemvid(cancelled, "prompt", store, kv.MemvidBlockOptions{}); err != context.Canceled {
 		t.Fatalf("CaptureKVBlocksToMemvid(cancelled) = %v, want context.Canceled", err)
 	}
-	if _, err := runner.CaptureKVBlocksToMemvid(context.Background(), "prompt", store, KVSnapshotMemvidBlockOptions{}); err == nil {
+	if _, err := runner.CaptureKVBlocksToMemvid(context.Background(), "prompt", store, kv.MemvidBlockOptions{}); err == nil {
 		t.Fatal("expected nil model session error for CaptureKVBlocksToMemvid")
 	}
 	if err := runner.RestoreKV(cancelled, fastEvalTestSnapshot()); err != context.Canceled {
@@ -562,16 +563,16 @@ func TestFastEval_NewModelFastEvalRunner_Ugly(t *testing.T) {
 	if err := runner.RestoreKV(context.Background(), fastEvalTestSnapshot()); err == nil {
 		t.Fatal("expected nil model session error for RestoreKV")
 	}
-	if err := runner.WarmPromptCacheFromMemvidBlocks(cancelled, store, &KVSnapshotMemvidBlockBundle{}, 0); err != context.Canceled {
+	if err := runner.WarmPromptCacheFromMemvidBlocks(cancelled, store, &kv.MemvidBlockBundle{}, 0); err != context.Canceled {
 		t.Fatalf("WarmPromptCacheFromMemvidBlocks(cancelled) = %v, want context.Canceled", err)
 	}
-	if err := runner.WarmPromptCacheFromMemvidBlocks(context.Background(), store, &KVSnapshotMemvidBlockBundle{}, 0); err == nil {
+	if err := runner.WarmPromptCacheFromMemvidBlocks(context.Background(), store, &kv.MemvidBlockBundle{}, 0); err == nil {
 		t.Fatal("expected nil model warm memvid error")
 	}
-	if _, err := runner.GenerateWithMemvidPrefix(cancelled, store, &KVSnapshotMemvidBlockBundle{}, 1, "suffix", GenerateConfig{}); err != context.Canceled {
+	if _, err := runner.GenerateWithMemvidPrefix(cancelled, store, &kv.MemvidBlockBundle{}, 1, "suffix", GenerateConfig{}); err != context.Canceled {
 		t.Fatalf("GenerateWithMemvidPrefix(cancelled) = %v, want context.Canceled", err)
 	}
-	if _, err := runner.GenerateWithMemvidPrefix(context.Background(), store, &KVSnapshotMemvidBlockBundle{}, 1, "suffix", GenerateConfig{}); err == nil {
+	if _, err := runner.GenerateWithMemvidPrefix(context.Background(), store, &kv.MemvidBlockBundle{}, 1, "suffix", GenerateConfig{}); err == nil {
 		t.Fatal("expected nil model session error for GenerateWithMemvidPrefix")
 	}
 }
@@ -636,7 +637,7 @@ func TestFastEvalOptionalErrorBranches_Bad(t *testing.T) {
 	if snapshot := runFastEvalCapture(context.Background(), FastEvalRunner{}, cfg); snapshot != nil {
 		t.Fatalf("capture without runner = %+v, want nil", snapshot)
 	}
-	runner.CaptureKV = func(context.Context, string) (*KVSnapshot, error) { return nil, core.NewError("capture failed") }
+	runner.CaptureKV = func(context.Context, string) (*kv.Snapshot, error) { return nil, core.NewError("capture failed") }
 	if snapshot := runFastEvalCapture(context.Background(), runner, cfg); snapshot != nil {
 		t.Fatalf("capture error = %+v, want nil", snapshot)
 	}
@@ -661,7 +662,7 @@ func TestFastEvalMoreOptionalErrorBranches_Bad(t *testing.T) {
 	wantErr := core.NewError("forced failure")
 
 	if report := runFastEvalRestore(context.Background(), FastEvalRunner{
-		RestoreKV: func(context.Context, *KVSnapshot) error { return wantErr },
+		RestoreKV: func(context.Context, *kv.Snapshot) error { return wantErr },
 	}, fastEvalTestSnapshot()); report.Error == "" {
 		t.Fatalf("restore error report = %+v", report)
 	}
@@ -752,9 +753,9 @@ func TestFastEvalSummariesAndResults_Ugly(t *testing.T) {
 	}
 }
 
-func fastEvalTestSnapshot() *KVSnapshot {
-	return &KVSnapshot{
-		Version:       KVSnapshotVersion,
+func fastEvalTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
 		Architecture:  "gemma4_text",
 		Tokens:        []int32{1, 2, 3},
 		TokenOffset:   3,
@@ -763,10 +764,10 @@ func fastEvalTestSnapshot() *KVSnapshot {
 		SeqLen:        3,
 		HeadDim:       2,
 		NumQueryHeads: 1,
-		Layers: []KVLayerSnapshot{{
+		Layers: []kv.LayerSnapshot{{
 			Layer:      0,
 			CacheIndex: 0,
-			Heads: []KVHeadSnapshot{{
+			Heads: []kv.HeadSnapshot{{
 				Key:   []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6},
 				Value: []float32{0.6, 0.5, 0.4, 0.3, 0.2, 0.1},
 			}},

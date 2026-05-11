@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/kv"
 )
 
 const sessionArtifactKind = "go-mlx/session-state"
@@ -41,7 +42,7 @@ type SAMIOptions struct {
 type SessionArtifactOptions struct {
 	Model    string
 	Prompt   string
-	Analysis *KVAnalysis
+	Analysis *kv.Analysis
 	KVPath   string
 	Store    memvid.Writer
 	URI      string
@@ -59,7 +60,7 @@ type SessionArtifact struct {
 	Model         string                  `json:"model"`
 	Prompt        string                  `json:"prompt"`
 	Snapshot      SessionArtifactSnapshot `json:"snapshot"`
-	Analysis      *KVAnalysis             `json:"analysis"`
+	Analysis      *kv.Analysis             `json:"analysis"`
 	Features      []float64               `json:"features"`
 	FeatureLabels []string                `json:"feature_labels"`
 	SAMI          SAMIResult              `json:"sami"`
@@ -79,12 +80,12 @@ type SessionArtifactSnapshot struct {
 }
 
 // SAMIFromKV converts K/V analysis into SAMI's visualization schema.
-func SAMIFromKV(snapshot *KVSnapshot, analysis *KVAnalysis, opts SAMIOptions) SAMIResult {
+func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) SAMIResult {
 	if snapshot == nil {
 		return SAMIResult{}
 	}
 	if analysis == nil {
-		analysis = AnalyzeKV(snapshot)
+		analysis = kv.Analyze(snapshot)
 	}
 	numLayers := snapshot.NumLayers
 	if numLayers <= 0 {
@@ -128,7 +129,7 @@ func SAMIFromKV(snapshot *KVSnapshot, analysis *KVAnalysis, opts SAMIOptions) SA
 }
 
 // ExportSessionArtifacts writes optional KV binary data and optional memvid JSON.
-func ExportSessionArtifacts(ctx context.Context, snapshot *KVSnapshot, opts SessionArtifactOptions) (*SessionArtifact, error) {
+func ExportSessionArtifacts(ctx context.Context, snapshot *kv.Snapshot, opts SessionArtifactOptions) (*SessionArtifact, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -147,7 +148,7 @@ func ExportSessionArtifacts(ctx context.Context, snapshot *KVSnapshot, opts Sess
 	}
 	analysis := opts.Analysis
 	if analysis == nil {
-		analysis = AnalyzeKV(snapshot)
+		analysis = kv.Analyze(snapshot)
 	}
 	artifact := &SessionArtifact{
 		Version: 1,
@@ -164,8 +165,8 @@ func ExportSessionArtifacts(ctx context.Context, snapshot *KVSnapshot, opts Sess
 			NumQueryHeads: snapshot.NumQueryHeads,
 		},
 		Analysis:      analysis,
-		Features:      KVFeatures(analysis),
-		FeatureLabels: KVFeatureLabels(),
+		Features:      kv.Features(analysis),
+		FeatureLabels: kv.FeatureLabels(),
 		SAMI:          SAMIFromKV(snapshot, analysis, SAMIOptions{Model: opts.Model, Prompt: opts.Prompt}),
 		KVPath:        opts.KVPath,
 	}

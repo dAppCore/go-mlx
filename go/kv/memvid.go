@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"context"
@@ -16,9 +16,9 @@ const (
 	KVSnapshotMemvidVersion = 1
 )
 
-// KVSnapshotMemvidOptions controls how KV snapshots are stored in memvid.
-type KVSnapshotMemvidOptions struct {
-	KVEncoding KVSnapshotEncoding
+// MemvidOptions controls how KV snapshots are stored in memvid.
+type MemvidOptions struct {
+	KVEncoding Encoding
 	URI        string
 	Title      string
 	Kind       string
@@ -50,7 +50,7 @@ type kvSnapshotMemvidEnvelope struct {
 // SaveMemvid writes this KV snapshot to a memvid cold store. The payload is the
 // same binary format used by Save, base64 wrapped so text-oriented memvid stores
 // and QR-video backends can carry it without lossy conversion.
-func (s *KVSnapshot) SaveMemvid(ctx context.Context, store memvid.Writer, opts KVSnapshotMemvidOptions) (memvid.ChunkRef, error) {
+func (s *Snapshot) SaveMemvid(ctx context.Context, store memvid.Writer, opts MemvidOptions) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -64,20 +64,20 @@ func (s *KVSnapshot) SaveMemvid(ctx context.Context, store memvid.Writer, opts K
 	if err != nil {
 		return memvid.ChunkRef{}, err
 	}
-	data, err := s.bytesWithOptions(KVSnapshotSaveOptions{KVEncoding: encoding})
+	data, err := s.bytesWithOptions(SaveOptions{KVEncoding: encoding})
 	if err != nil {
 		return memvid.ChunkRef{}, err
 	}
 	envelope := kvSnapshotMemvidEnvelope{
 		Version:          KVSnapshotMemvidVersion,
 		Kind:             KVSnapshotMemvidKind,
-		KVVersion:        effectiveKVSnapshotVersion(s, encoding),
+		KVVersion:        effectiveVersion(s, encoding),
 		KVEncoding:       string(encoding),
 		BinaryEncoding:   "base64",
 		KVHash:           core.SHA256Hex(data),
 		Architecture:     s.Architecture,
 		TokenCount:       len(s.Tokens),
-		TokenOffset:      effectiveKVSnapshotTokenOffset(s),
+		TokenOffset:      EffectiveTokenOffset(s),
 		GeneratedTokens:  len(s.Generated),
 		NumLayers:        s.NumLayers,
 		NumHeads:         s.NumHeads,
@@ -89,20 +89,20 @@ func (s *KVSnapshot) SaveMemvid(ctx context.Context, store memvid.Writer, opts K
 	}
 	ref, err := store.Put(ctx, core.JSONMarshalString(envelope), kvSnapshotMemvidPutOptions(s, opts, envelope))
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("KVSnapshot.SaveMemvid", "write memvid chunk", err)
+		return memvid.ChunkRef{}, core.E("Snapshot.SaveMemvid", "write memvid chunk", err)
 	}
 	return ref, nil
 }
 
-// LoadKVSnapshotFromMemvid resolves and decodes a KV snapshot from a memvid
+// LoadFromMemvid resolves and decodes a KV snapshot from a memvid
 // chunk ref.
-func LoadKVSnapshotFromMemvid(ctx context.Context, store memvid.Store, ref memvid.ChunkRef) (*KVSnapshot, error) {
-	return LoadKVSnapshotFromMemvidWithOptions(ctx, store, ref, KVSnapshotLoadOptions{})
+func LoadFromMemvid(ctx context.Context, store memvid.Store, ref memvid.ChunkRef) (*Snapshot, error) {
+	return LoadFromMemvidWithOptions(ctx, store, ref, LoadOptions{})
 }
 
-// LoadKVSnapshotFromMemvidWithOptions resolves and decodes a KV snapshot from a
+// LoadFromMemvidWithOptions resolves and decodes a KV snapshot from a
 // memvid chunk ref with explicit decode options.
-func LoadKVSnapshotFromMemvidWithOptions(ctx context.Context, store memvid.Store, ref memvid.ChunkRef, opts KVSnapshotLoadOptions) (*KVSnapshot, error) {
+func LoadFromMemvidWithOptions(ctx context.Context, store memvid.Store, ref memvid.ChunkRef, opts LoadOptions) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,11 +111,11 @@ func LoadKVSnapshotFromMemvidWithOptions(ctx context.Context, store memvid.Store
 	}
 	chunk, err := memvid.Resolve(ctx, store, ref.ChunkID)
 	if err != nil {
-		return nil, core.E("LoadKVSnapshotFromMemvid", "resolve memvid chunk", err)
+		return nil, core.E("LoadFromMemvid", "resolve memvid chunk", err)
 	}
 	var envelope kvSnapshotMemvidEnvelope
 	if result := core.JSONUnmarshalString(chunk.Text, &envelope); !result.OK {
-		return nil, core.E("LoadKVSnapshotFromMemvid", "parse memvid envelope", kvSnapshotResultError(result))
+		return nil, core.E("LoadFromMemvid", "parse memvid envelope", ResultError(result))
 	}
 	data, err := decodeKVSnapshotMemvidEnvelope(envelope)
 	if err != nil {
@@ -136,7 +136,7 @@ func decodeKVSnapshotMemvidEnvelope(envelope kvSnapshotMemvidEnvelope) ([]byte, 
 	}
 	decoded := core.Base64Decode(envelope.Data)
 	if !decoded.OK {
-		return nil, core.E("LoadKVSnapshotFromMemvid", "decode memvid KV payload", kvSnapshotResultError(decoded))
+		return nil, core.E("LoadFromMemvid", "decode memvid KV payload", ResultError(decoded))
 	}
 	data, ok := decoded.Value.([]byte)
 	if !ok {
@@ -151,7 +151,7 @@ func decodeKVSnapshotMemvidEnvelope(envelope kvSnapshotMemvidEnvelope) ([]byte, 
 	return data, nil
 }
 
-func kvSnapshotMemvidPutOptions(snapshot *KVSnapshot, opts KVSnapshotMemvidOptions, envelope kvSnapshotMemvidEnvelope) memvid.PutOptions {
+func kvSnapshotMemvidPutOptions(snapshot *Snapshot, opts MemvidOptions, envelope kvSnapshotMemvidEnvelope) memvid.PutOptions {
 	kind := opts.Kind
 	if kind == "" {
 		kind = KVSnapshotMemvidKind
@@ -169,8 +169,8 @@ func kvSnapshotMemvidPutOptions(snapshot *KVSnapshot, opts KVSnapshotMemvidOptio
 	labels := append([]string(nil), opts.Labels...)
 	labels = append(labels, "go-mlx", "kv-snapshot")
 	return memvid.PutOptions{
-		URI:    firstNonEmptyString(opts.URI, "mlx://kv-snapshot/"+envelope.KVHash),
-		Title:  firstNonEmptyString(opts.Title, "go-mlx KV snapshot"),
+		URI:    firstNonEmpty(opts.URI, "mlx://kv-snapshot/"+envelope.KVHash),
+		Title:  firstNonEmpty(opts.Title, "go-mlx KV snapshot"),
 		Kind:   kind,
 		Track:  track,
 		Tags:   tags,
@@ -186,10 +186,10 @@ func cloneKVSnapshotMemvidTags(input map[string]string) map[string]string {
 	return out
 }
 
-func effectiveKVSnapshotVersion(snapshot *KVSnapshot, encoding KVSnapshotEncoding) int {
+func effectiveVersion(snapshot *Snapshot, encoding Encoding) int {
 	version := snapshot.Version
 	if version == 0 {
-		version = KVSnapshotVersion
+		version = SnapshotVersion
 	}
 	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
 		version = 3
@@ -197,7 +197,7 @@ func effectiveKVSnapshotVersion(snapshot *KVSnapshot, encoding KVSnapshotEncodin
 	return version
 }
 
-func effectiveKVSnapshotTokenOffset(snapshot *KVSnapshot) int {
+func EffectiveTokenOffset(snapshot *Snapshot) int {
 	if snapshot == nil {
 		return 0
 	}
