@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package m2
 
 import (
 	"encoding/binary"
@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/probe"
 )
 
 const miniMaxM2FixtureConfig = `{
@@ -35,9 +36,9 @@ const miniMaxM2FixtureConfig = `{
 }`
 
 func TestMiniMaxM2_ParseConfig_Good(t *testing.T) {
-	cfg, err := ParseMiniMaxM2Config([]byte(miniMaxM2FixtureConfig))
+	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
-		t.Fatalf("ParseMiniMaxM2Config() error = %v", err)
+		t.Fatalf("ParseConfig() error = %v", err)
 	}
 
 	if cfg.ModelType != "minimax_m2" || cfg.HiddenSize != 3072 || cfg.IntermediateSize != 1536 || cfg.NumHiddenLayers != 62 {
@@ -52,13 +53,13 @@ func TestMiniMaxM2_ParseConfig_Good(t *testing.T) {
 }
 
 func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing.T) {
-	cfg, err := ParseMiniMaxM2Config([]byte(miniMaxM2FixtureConfig))
+	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
-		t.Fatalf("ParseMiniMaxM2Config() error = %v", err)
+		t.Fatalf("ParseConfig() error = %v", err)
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, testJANGTQInfo())
+	plan, err := BuildTensorPlan(cfg, testJANGTQInfo())
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	if plan.Quantization == nil || plan.Quantization.Format != "mxtq" || plan.Quantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("plan quantization = %+v, want MXTQ routed expert profile", plan.Quantization)
@@ -69,22 +70,22 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 		t.Fatalf("LayerTensorSpecs() error = %v", err)
 	}
 
-	router := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleRouterGate)
+	router := findMiniMaxM2Spec(specs, TensorRoleRouterGate)
 	if router.Name != "model.layers.0.block_sparse_moe.gate.weight" || router.Packed != nil {
 		t.Fatalf("router spec = %+v, want dense router gate", router)
 	}
-	attention := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleAttentionQ)
+	attention := findMiniMaxM2Spec(specs, TensorRoleAttentionQ)
 	if attention.Packed == nil || attention.Packed.Bits != 8 || attention.Packed.Role != jang.TensorRoleAttention {
 		t.Fatalf("attention spec = %+v, want 8-bit packed attention descriptor", attention)
 	}
 	if len(attention.Shape) != 2 || attention.Shape[0] != 6144 || attention.Shape[1] != 3072 {
 		t.Fatalf("attention shape = %+v, want q_size x hidden_size", attention.Shape)
 	}
-	key := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleAttentionK)
+	key := findMiniMaxM2Spec(specs, TensorRoleAttentionK)
 	if len(key.Shape) != 2 || key.Shape[0] != 1024 || key.Shape[1] != 3072 {
 		t.Fatalf("key shape = %+v, want kv_size x hidden_size", key.Shape)
 	}
-	expert := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleExpertGate)
+	expert := findMiniMaxM2Spec(specs, TensorRoleExpertGate)
 	if expert.Name != "model.layers.0.block_sparse_moe.experts.17.gate_proj.weight" {
 		t.Fatalf("expert name = %q", expert.Name)
 	}
@@ -97,7 +98,7 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 }
 
 func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testing.T) {
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
 		IntermediateSize:   4,
@@ -109,7 +110,7 @@ func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testi
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -119,25 +120,25 @@ func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testi
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
 	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2SkeletonRawTensors(t, plan, false))
 
-	skeleton, err := BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan, []string{weights}, 0)
+	skeleton, err := BuildLayerForwardSkeleton(plan, []string{weights}, 0)
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2LayerForwardSkeletonFromSafetensors() error = %v", err)
+		t.Fatalf("BuildLayerForwardSkeleton() error = %v", err)
 	}
 
 	if skeleton.Layer != 0 || len(skeleton.Attention) != 4 {
 		t.Fatalf("skeleton layer/attention = %d/%d, want 0/4", skeleton.Layer, len(skeleton.Attention))
 	}
-	q := findMiniMaxM2ResolvedTensor(skeleton.Attention, MiniMaxM2TensorRoleAttentionQ)
+	q := findMiniMaxM2ResolvedTensor(skeleton.Attention, TensorRoleAttentionQ)
 	if q.Name != "model.layers.0.self_attn.q_proj.weight" || q.PackedBytes != 16 || !sameUint64Slice(q.LogicalShape, []uint64{4, 4}) {
 		t.Fatalf("q tensor = %+v, want resolved packed q projection", q)
 	}
-	k := findMiniMaxM2ResolvedTensor(skeleton.Attention, MiniMaxM2TensorRoleAttentionK)
+	k := findMiniMaxM2ResolvedTensor(skeleton.Attention, TensorRoleAttentionK)
 	if k.PackedBytes != 8 || !sameUint64Slice(k.LogicalShape, []uint64{2, 4}) {
 		t.Fatalf("k tensor = %+v, want packed kv projection", k)
 	}
@@ -150,7 +151,7 @@ func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testi
 }
 
 func TestMiniMaxM2_LayerForwardSkeletonRejectsWrongAttentionShape_Bad(t *testing.T) {
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
 		IntermediateSize:   4,
@@ -161,28 +162,28 @@ func TestMiniMaxM2_LayerForwardSkeletonRejectsWrongAttentionShape_Bad(t *testing
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2})
+	plan, err := BuildTensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
 	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2SkeletonRawTensors(t, plan, true))
 
-	_, err = BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan, []string{weights}, 0)
+	_, err = BuildLayerForwardSkeleton(plan, []string{weights}, 0)
 	if err == nil || !core.Contains(err.Error(), "q_proj") || !core.Contains(err.Error(), "packed") {
 		t.Fatalf("error = %v, want q_proj packed shape diagnostic", err)
 	}
 }
 
 func TestMiniMaxM2_ValidateTensorNames_BadMissingExpert(t *testing.T) {
-	cfg, err := ParseMiniMaxM2Config([]byte(miniMaxM2FixtureConfig))
+	cfg, err := ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
-		t.Fatalf("ParseMiniMaxM2Config() error = %v", err)
+		t.Fatalf("ParseConfig() error = %v", err)
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, testJANGTQInfo())
+	plan, err := BuildTensorPlan(cfg, testJANGTQInfo())
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 
 	err = plan.ValidateTensorNames(map[string]bool{
@@ -201,11 +202,11 @@ func TestMiniMaxM2_ValidateTensorNames_BadMissingExpert(t *testing.T) {
 }
 
 func TestMiniMaxM2_RouteTokens_Good(t *testing.T) {
-	cfg := MiniMaxM2Config{NumLocalExperts: 4, NumExpertsPerToken: 2, ScoringFunc: "sigmoid", UseRoutingBias: true}
+	cfg := Config{NumLocalExperts: 4, NumExpertsPerToken: 2, ScoringFunc: "sigmoid", UseRoutingBias: true}
 
-	decisions, err := RouteMiniMaxM2Tokens(cfg, [][]float32{{0, 2, 1, -1}}, []float32{0, 0, 0, 4})
+	decisions, err := RouteTokens(cfg, [][]float32{{0, 2, 1, -1}}, []float32{0, 0, 0, 4})
 	if err != nil {
-		t.Fatalf("RouteMiniMaxM2Tokens() error = %v", err)
+		t.Fatalf("RouteTokens() error = %v", err)
 	}
 
 	if len(decisions) != 1 || len(decisions[0].ExpertIDs) != 2 {
@@ -221,26 +222,26 @@ func TestMiniMaxM2_RouteTokens_Good(t *testing.T) {
 
 func TestMiniMaxM2_DispatchExpertsAndProbes_Good(t *testing.T) {
 	hidden := [][]float32{{1, 2}}
-	decisions := []MiniMaxM2RouterDecision{{
+	decisions := []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{1, 0},
 		Weights:    []float32{0.25, 0.75},
 	}}
-	experts := map[int]MiniMaxM2ExpertFunc{
+	experts := map[int]ExpertFunc{
 		0: func(values []float32) []float32 { return []float32{values[0] * 10, values[1] * 10} },
 		1: func(values []float32) []float32 { return []float32{values[0] * 2, values[1] * 2} },
 	}
 
-	out, err := DispatchMiniMaxM2Experts(hidden, decisions, experts)
+	out, err := DispatchExperts(hidden, decisions, experts)
 	if err != nil {
-		t.Fatalf("DispatchMiniMaxM2Experts() error = %v", err)
+		t.Fatalf("DispatchExperts() error = %v", err)
 	}
 	if len(out) != 1 || !roughlyEqual32(out[0][0], 8, 0.0001) || !roughlyEqual32(out[0][1], 16, 0.0001) {
 		t.Fatalf("out = %+v, want weighted expert sum [8 16]", out)
 	}
 
-	events := MiniMaxM2RouterProbeEvents(3, []int32{42}, decisions)
-	if len(events) != 1 || events[0].Kind != ProbeEventRouterDecision || events[0].RouterDecision.Layer != 3 {
+	events := RouterProbeEvents(3, []int32{42}, decisions)
+	if len(events) != 1 || events[0].Kind != probe.KindRouterDecision || events[0].RouterDecision.Layer != 3 {
 		t.Fatalf("events = %+v, want router decision probe", events)
 	}
 	if events[0].RouterDecision.TokenID != 42 || events[0].Meta["architecture"] != "minimax_m2" {
@@ -249,7 +250,7 @@ func TestMiniMaxM2_DispatchExpertsAndProbes_Good(t *testing.T) {
 }
 
 func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -260,7 +261,7 @@ func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -269,7 +270,7 @@ func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 
 	dir := t.TempDir()
@@ -283,12 +284,12 @@ func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
 		miniMaxM2PackedRawTensor(t, "model.layers.0.block_sparse_moe.experts.2.down_proj.weight", []uint8{1, 1, 2, 0}),
 	})
 
-	experts, err := LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors(plan, []string{weights}, 0, []MiniMaxM2RouterDecision{
+	experts, err := LoadPackedExpertsForDecisions(plan, []string{weights}, 0, []RouterDecision{
 		{TokenIndex: 0, ExpertIDs: []int{2, 1}, Weights: []float32{0.6, 0.4}},
 		{TokenIndex: 1, ExpertIDs: []int{1}, Weights: []float32{1}},
 	})
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors() error = %v", err)
+		t.Fatalf("LoadPackedExpertsForDecisions() error = %v", err)
 	}
 
 	if len(experts) != 2 || experts[1].GateProj.Descriptor.Name == "" || experts[2].DownProj.Descriptor.Name == "" {
@@ -311,9 +312,9 @@ func TestMiniMaxM2_LoadLazyExpertsForHiddenLoadsOnlyRoutedExperts_Good(t *testin
 	weights := core.PathJoin(dir, "model.safetensors")
 	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
 
-	load, err := LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan, []string{weights}, 0, [][]float32{{1, 0}}, []int32{42}, nil)
+	load, err := LoadLazyExpertsForHidden(plan, []string{weights}, 0, [][]float32{{1, 0}}, []int32{42}, nil)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors() error = %v", err)
+		t.Fatalf("LoadLazyExpertsForHidden() error = %v", err)
 	}
 
 	if len(load.Decisions) != 1 || len(load.SelectedExpertIDs) != 1 || load.SelectedExpertIDs[0] != 2 {
@@ -335,9 +336,9 @@ func TestMiniMaxM2_DequantizedLazyExpertsReturnDenseWeights_Good(t *testing.T) {
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
 	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
-	load, err := LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan, []string{weights}, 0, [][]float32{{1, 0}}, nil, nil)
+	load, err := LoadLazyExpertsForHidden(plan, []string{weights}, 0, [][]float32{{1, 0}}, nil, nil)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors() error = %v", err)
+		t.Fatalf("LoadLazyExpertsForHidden() error = %v", err)
 	}
 
 	dense, err := load.DequantizedExperts()
@@ -355,10 +356,10 @@ func TestMiniMaxM2_DequantizedLazyExpertsReturnDenseWeights_Good(t *testing.T) {
 }
 
 func TestMiniMaxM2_LoadPackedExpertsFromSafetensorsMissingSidecar_Bad(t *testing.T) {
-	cfg := MiniMaxM2Config{ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1, HeadDim: 2, NumLocalExperts: 1, NumExpertsPerToken: 1}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
+	cfg := Config{ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1, HeadDim: 2, NumLocalExperts: 1, NumExpertsPerToken: 1}
+	plan, err := BuildTensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -376,14 +377,14 @@ func TestMiniMaxM2_LoadPackedExpertsFromSafetensorsMissingSidecar_Bad(t *testing
 		miniMaxM2F32RawTensor(down.Name+".biases", []float32{0}),
 	})
 
-	_, err = LoadMiniMaxM2PackedExpertsFromSafetensors(plan, []string{weights}, 0, []int{0})
+	_, err = LoadPackedExperts(plan, []string{weights}, 0, []int{0})
 	if err == nil || !core.Contains(err.Error(), "scales") {
 		t.Fatalf("error = %v, want missing scales diagnostic", err)
 	}
 }
 
 func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) {
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -395,9 +396,9 @@ func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) 
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
+	plan, err := BuildTensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -410,13 +411,13 @@ func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) 
 		miniMaxM2F32RawTensor("model.layers.0.block_sparse_moe.e_score_correction_bias", []float32{0, 0.5, -0.25}, 3),
 	})
 
-	router, err := LoadMiniMaxM2RouterFromSafetensors(plan, []string{weights}, 0)
+	router, err := LoadRouter(plan, []string{weights}, 0)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2RouterFromSafetensors() error = %v", err)
+		t.Fatalf("LoadRouter() error = %v", err)
 	}
-	scores, err := ProjectMiniMaxM2RouterScores([][]float32{{1, 2}, {2, 1}}, router)
+	scores, err := ProjectRouterScores([][]float32{{1, 2}, {2, 1}}, router)
 	if err != nil {
-		t.Fatalf("ProjectMiniMaxM2RouterScores() error = %v", err)
+		t.Fatalf("ProjectRouterScores() error = %v", err)
 	}
 
 	if router.NumExperts != 3 || router.HiddenSize != 2 || len(router.Bias) != 3 {
@@ -430,22 +431,22 @@ func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) 
 	}
 }
 
-func findMiniMaxM2Spec(specs []MiniMaxM2TensorSpec, role MiniMaxM2TensorRole) MiniMaxM2TensorSpec {
+func findMiniMaxM2Spec(specs []TensorSpec, role TensorRole) TensorSpec {
 	for _, spec := range specs {
 		if spec.Role == role {
 			return spec
 		}
 	}
-	return MiniMaxM2TensorSpec{}
+	return TensorSpec{}
 }
 
-func findMiniMaxM2ResolvedTensor(tensors []MiniMaxM2ResolvedTensor, role MiniMaxM2TensorRole) MiniMaxM2ResolvedTensor {
+func findMiniMaxM2ResolvedTensor(tensors []ResolvedTensor, role TensorRole) ResolvedTensor {
 	for _, tensor := range tensors {
 		if tensor.Role == role {
 			return tensor
 		}
 	}
-	return MiniMaxM2ResolvedTensor{}
+	return ResolvedTensor{}
 }
 
 func roughlyEqual32(a, b, epsilon float32) bool {
@@ -468,25 +469,25 @@ func miniMaxM2Float32SlicesRoughlyEqual(a, b []float32, epsilon float32) bool {
 	return true
 }
 
-func miniMaxM2SkeletonRawTensors(t *testing.T, plan MiniMaxM2TensorPlan, badAttentionShape bool) []miniMaxM2RawSafetensor {
+func miniMaxM2SkeletonRawTensors(t *testing.T, plan TensorPlan, badAttentionShape bool) []miniMaxM2RawSafetensor {
 	t.Helper()
 	specs, err := plan.LayerTensorSpecs(0, 0)
 	if err != nil {
 		t.Fatalf("LayerTensorSpecs() error = %v", err)
 	}
 	var tensors []miniMaxM2RawSafetensor
-	for _, role := range []MiniMaxM2TensorRole{
-		MiniMaxM2TensorRoleAttentionQ,
-		MiniMaxM2TensorRoleAttentionK,
-		MiniMaxM2TensorRoleAttentionV,
-		MiniMaxM2TensorRoleAttentionO,
+	for _, role := range []TensorRole{
+		TensorRoleAttentionQ,
+		TensorRoleAttentionK,
+		TensorRoleAttentionV,
+		TensorRoleAttentionO,
 	} {
 		spec := findMiniMaxM2Spec(specs, role)
 		if spec.Packed == nil {
 			t.Fatalf("attention spec %s has no packed descriptor", role)
 		}
 		packedBytes := spec.Packed.PackedBytes
-		if badAttentionShape && role == MiniMaxM2TensorRoleAttentionQ {
+		if badAttentionShape && role == TensorRoleAttentionQ {
 			packedBytes--
 		}
 		tensors = append(tensors, miniMaxM2RawSafetensor{
@@ -509,9 +510,9 @@ func miniMaxM2SkeletonRawTensors(t *testing.T, plan MiniMaxM2TensorPlan, badAtte
 	return tensors
 }
 
-func miniMaxM2SmallJANGTQPlan(t *testing.T) MiniMaxM2TensorPlan {
+func miniMaxM2SmallJANGTQPlan(t *testing.T) TensorPlan {
 	t.Helper()
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -522,7 +523,7 @@ func miniMaxM2SmallJANGTQPlan(t *testing.T) MiniMaxM2TensorPlan {
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 1,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -531,7 +532,7 @@ func miniMaxM2SmallJANGTQPlan(t *testing.T) MiniMaxM2TensorPlan {
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	return plan
 }

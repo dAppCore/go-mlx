@@ -4,29 +4,39 @@
 
 package mlx
 
-import core "dappco.re/go"
+import "dappco.re/go/mlx/model/minimax/m2"
 
 // DispatchMiniMaxM2PackedExpertsMetal requires the native Metal backend.
-func DispatchMiniMaxM2PackedExpertsMetal(_ [][]float32, _ []MiniMaxM2RouterDecision, _ map[int]MiniMaxM2PackedExpertWeights) ([][]float32, error) {
-	return nil, core.NewError("mlx: MiniMax M2 packed expert dispatch requires darwin/arm64 native MLX support")
+//
+//	out, err := mlx.DispatchMiniMaxM2PackedExpertsMetal(hidden, decisions, experts)
+func DispatchMiniMaxM2PackedExpertsMetal(hidden [][]float32, decisions []MiniMaxM2RouterDecision, experts map[int]MiniMaxM2PackedExpertWeights) ([][]float32, error) {
+	return m2.DispatchPackedExpertsMetal(hidden, decisions, experts)
 }
 
 // DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal requires the native Metal backend.
-func DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal(_ MiniMaxM2TensorPlan, _ []string, _ int, _ [][]float32, _ []MiniMaxM2RouterDecision) ([][]float32, error) {
-	return nil, core.NewError("mlx: MiniMax M2 packed expert dispatch requires darwin/arm64 native MLX support")
+//
+//	out, err := mlx.DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal(plan, files, layer, hidden, decisions)
+func DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal(plan MiniMaxM2TensorPlan, weightFiles []string, layer int, hidden [][]float32, decisions []MiniMaxM2RouterDecision) ([][]float32, error) {
+	return m2.DispatchPackedExpertsFromSafetensorsMetal(plan, weightFiles, layer, hidden, decisions)
 }
 
 // ForwardMiniMaxM2LazyExpertLoadMetal requires the native Metal backend.
-func ForwardMiniMaxM2LazyExpertLoadMetal(_ [][]float32, _ MiniMaxM2LazyExpertLoad) (MiniMaxM2PackedLayerForwardResult, error) {
-	return MiniMaxM2PackedLayerForwardResult{}, core.NewError("mlx: MiniMax M2 packed layer forward requires darwin/arm64 native MLX support")
+//
+//	result, err := mlx.ForwardMiniMaxM2LazyExpertLoadMetal(hidden, load)
+func ForwardMiniMaxM2LazyExpertLoadMetal(hidden [][]float32, load MiniMaxM2LazyExpertLoad) (MiniMaxM2PackedLayerForwardResult, error) {
+	return m2.ForwardLazyExpertLoadMetal(hidden, load)
 }
 
 // ForwardMiniMaxM2PackedLayerMetal requires the native Metal backend.
-func ForwardMiniMaxM2PackedLayerMetal(_ MiniMaxM2PackedLayerForwardOptions) (MiniMaxM2PackedLayerForwardResult, error) {
-	return MiniMaxM2PackedLayerForwardResult{}, core.NewError("mlx: MiniMax M2 packed layer forward requires darwin/arm64 native MLX support")
+//
+//	result, err := mlx.ForwardMiniMaxM2PackedLayerMetal(opts)
+func ForwardMiniMaxM2PackedLayerMetal(opts MiniMaxM2PackedLayerForwardOptions) (MiniMaxM2PackedLayerForwardResult, error) {
+	return m2.ForwardPackedLayerMetal(opts)
 }
 
 // ForwardMiniMaxM2PackedLayerFromSafetensorsMetal requires the native Metal backend.
-func ForwardMiniMaxM2PackedLayerFromSafetensorsMetal(_ MiniMaxM2PackedLayerForwardOptions) (MiniMaxM2PackedLayerForwardResult, error) {
-	return MiniMaxM2PackedLayerForwardResult{}, core.NewError("mlx: MiniMax M2 packed layer forward requires darwin/arm64 native MLX support")
+//
+//	result, err := mlx.ForwardMiniMaxM2PackedLayerFromSafetensorsMetal(opts)
+func ForwardMiniMaxM2PackedLayerFromSafetensorsMetal(opts MiniMaxM2PackedLayerForwardOptions) (MiniMaxM2PackedLayerForwardResult, error) {
+	return m2.ForwardPackedLayerFromSafetensorsMetal(opts)
 }

@@ -11,6 +11,8 @@
 package memory
 
 import (
+	"time"
+
 	"dappco.re/go/inference/quant/jang"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
@@ -95,6 +97,22 @@ type Input struct {
 	Device    DeviceInfo
 	Pack      *mp.ModelPack
 	ModelInfo *ModelInfo
+}
+
+// ExpertResidencyStats records measured hot-load, page-in, and eviction
+// behaviour. Backends can feed this directly into workload bench reports.
+type ExpertResidencyStats struct {
+	ResidentExperts     int           `json:"resident_experts,omitempty"`
+	PeakResidentExperts int           `json:"peak_resident_experts,omitempty"`
+	HotLoads            int           `json:"hot_loads,omitempty"`
+	ColdLoads           int           `json:"cold_loads,omitempty"`
+	PageIns             int           `json:"page_ins,omitempty"`
+	PageOuts            int           `json:"page_outs,omitempty"`
+	Hits                int           `json:"hits,omitempty"`
+	LoadedBytes         uint64        `json:"loaded_bytes,omitempty"`
+	EvictedBytes        uint64        `json:"evicted_bytes,omitempty"`
+	FirstUseLatency     time.Duration `json:"first_use_latency,omitempty"`
+	TotalLoadDuration   time.Duration `json:"total_load_duration,omitempty"`
 }
 
 // ExpertResidencyPlan is a backend-neutral MoE residency policy. It is

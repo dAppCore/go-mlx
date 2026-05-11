@@ -107,7 +107,7 @@ func modelInfoPtrToMemory(info *ModelInfo) *memory.ModelInfo {
 
 // minPositive returns the smaller of a and b, treating non-positive as
 // "unset" (the other operand wins). Retained as a private mlx-root
-// helper for callers (expert_residency.go) that referenced the old
+// helper for callers (small_model_smoke.go) that referenced the old
 // in-package name.
 func minPositive(a, b int) int {
 	if a <= 0 {
@@ -117,6 +117,16 @@ func minPositive(a, b int) int {
 		return a
 	}
 	if a < b {
+		return a
+	}
+	return b
+}
+
+// maxPositive returns the larger of a and b. Retained as a private
+// mlx-root helper for callers (small_model_smoke.go) that referenced
+// the old in-package name.
+func maxPositive(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64 && !nomlx
 
-package mlx
+package m2
 
 import (
 	"math"
@@ -10,18 +10,19 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
 	hidden := [][]float32{{1, 2}}
-	decisions := []MiniMaxM2RouterDecision{{
+	decisions := []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{0, 1},
 		Weights:    []float32{0.75, 0.25},
 	}}
-	experts := map[int]MiniMaxM2PackedExpertWeights{
+	experts := map[int]PackedExpertWeights{
 		0: miniMaxM2PackedExpertFixture(t,
 			[]uint8{1, 0, 0, 1},
 			[]uint8{1, 1, 2, 0},
@@ -34,9 +35,9 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing
 		),
 	}
 
-	got, err := DispatchMiniMaxM2PackedExpertsMetal(hidden, decisions, experts)
+	got, err := DispatchPackedExpertsMetal(hidden, decisions, experts)
 	if err != nil {
-		t.Fatalf("DispatchMiniMaxM2PackedExpertsMetal() error = %v", err)
+		t.Fatalf("DispatchPackedExpertsMetal() error = %v", err)
 	}
 
 	want := miniMaxM2PackedDispatchReference(t, hidden, decisions, experts)
@@ -46,7 +47,7 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing
 }
 
 func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMissingExpert_Bad(t *testing.T) {
-	_, err := DispatchMiniMaxM2PackedExpertsMetal([][]float32{{1, 2}}, []MiniMaxM2RouterDecision{{
+	_, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{7},
 		Weights:    []float32{1},
@@ -57,40 +58,40 @@ func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMissingExpert_Bad(t *testing
 }
 
 func TestMiniMaxM2_DispatchPackedExpertsMetalRejectsMalformedDecisions_Bad(t *testing.T) {
-	if _, err := DispatchMiniMaxM2PackedExpertsMetal([][]float32{{1, 2}}, []MiniMaxM2RouterDecision{{
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, []RouterDecision{{
 		TokenIndex: 2,
 		ExpertIDs:  []int{0},
 		Weights:    []float32{1},
 	}}, nil); err == nil || !core.Contains(err.Error(), "out of range") {
 		t.Fatalf("out-of-range error = %v", err)
 	}
-	if _, err := DispatchMiniMaxM2PackedExpertsMetal([][]float32{{1, 2}}, []MiniMaxM2RouterDecision{{
+	if _, err := DispatchPackedExpertsMetal([][]float32{{1, 2}}, []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{0, 1},
 		Weights:    []float32{1},
 	}}, nil); err == nil || !core.Contains(err.Error(), "length mismatch") {
 		t.Fatalf("length mismatch error = %v", err)
 	}
-	if _, err := ForwardMiniMaxM2LazyExpertLoadMetal([][]float32{{1, 2}}, MiniMaxM2LazyExpertLoad{
-		Decisions: []MiniMaxM2RouterDecision{{TokenIndex: 0, ExpertIDs: []int{3}, Weights: []float32{1}}},
+	if _, err := ForwardLazyExpertLoadMetal([][]float32{{1, 2}}, LazyExpertLoad{
+		Decisions: []RouterDecision{{TokenIndex: 0, ExpertIDs: []int{3}, Weights: []float32{1}}},
 	}); err == nil || !core.Contains(err.Error(), "missing expert") {
 		t.Fatalf("lazy load error = %v, want missing expert", err)
 	}
-	if _, err := ForwardMiniMaxM2PackedLayerMetal(MiniMaxM2PackedLayerForwardOptions{
+	if _, err := ForwardPackedLayerMetal(PackedLayerForwardOptions{
 		Hidden:       [][]float32{{1, 2}},
 		RouterScores: [][]float32{{1}, {2}},
 	}); err == nil || !core.Contains(err.Error(), "hidden rows") {
 		t.Fatalf("packed layer shape error = %v", err)
 	}
-	if got := miniMaxM2SwiGLU(0.5, 2); math.IsNaN(float64(got)) || got == 0 {
-		t.Fatalf("miniMaxM2SwiGLU() = %v, want finite non-zero", got)
+	if got := swiGLU(0.5, 2); math.IsNaN(float64(got)) || got == 0 {
+		t.Fatalf("swiGLU() = %v, want finite non-zero", got)
 	}
 }
 
 func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -101,7 +102,7 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) 
 		NumLocalExperts:    2,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -110,7 +111,7 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) 
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -123,19 +124,19 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) 
 		miniMaxM2PackedRawTensor(t, "model.layers.0.block_sparse_moe.experts.1.down_proj.weight", []uint8{1, 1, 2, 0}),
 	})
 	hidden := [][]float32{{1, 2}}
-	decisions := []MiniMaxM2RouterDecision{{
+	decisions := []RouterDecision{{
 		TokenIndex: 0,
 		ExpertIDs:  []int{0, 1},
 		Weights:    []float32{0.75, 0.25},
 	}}
 
-	got, err := DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal(plan, []string{weights}, 0, hidden, decisions)
+	got, err := DispatchPackedExpertsFromSafetensorsMetal(plan, []string{weights}, 0, hidden, decisions)
 	if err != nil {
-		t.Fatalf("DispatchMiniMaxM2PackedExpertsFromSafetensorsMetal() error = %v", err)
+		t.Fatalf("DispatchPackedExpertsFromSafetensorsMetal() error = %v", err)
 	}
-	experts, err := LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors(plan, []string{weights}, 0, decisions)
+	experts, err := LoadPackedExpertsForDecisions(plan, []string{weights}, 0, decisions)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors() error = %v", err)
+		t.Fatalf("LoadPackedExpertsForDecisions() error = %v", err)
 	}
 	want := miniMaxM2PackedDispatchReference(t, hidden, decisions, experts)
 	if len(got) != 1 || !float32SlicesRoughlyEqual(got[0], want[0], 1e-4) {
@@ -151,14 +152,14 @@ func TestMiniMaxM2_ForwardLazyExpertLoadMetal_Good(t *testing.T) {
 	weights := core.PathJoin(dir, "model.safetensors")
 	writeMiniMaxM2RawSafetensors(t, weights, miniMaxM2LazyExpertFixtureTensors(t, 2, []uint8{0, 1, 2, 3}))
 	hidden := [][]float32{{1, 0}}
-	load, err := LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan, []string{weights}, 0, hidden, []int32{42}, nil)
+	load, err := LoadLazyExpertsForHidden(plan, []string{weights}, 0, hidden, []int32{42}, nil)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors() error = %v", err)
+		t.Fatalf("LoadLazyExpertsForHidden() error = %v", err)
 	}
 
-	got, err := ForwardMiniMaxM2LazyExpertLoadMetal(hidden, load)
+	got, err := ForwardLazyExpertLoadMetal(hidden, load)
 	if err != nil {
-		t.Fatalf("ForwardMiniMaxM2LazyExpertLoadMetal() error = %v", err)
+		t.Fatalf("ForwardLazyExpertLoadMetal() error = %v", err)
 	}
 
 	want := miniMaxM2PackedDispatchReference(t, hidden, load.Decisions, load.Experts)
@@ -176,7 +177,7 @@ func TestMiniMaxM2_ForwardLazyExpertLoadMetal_Good(t *testing.T) {
 func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -188,7 +189,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 		NumExpertsPerToken: 2,
 		ScoringFunc:        "sigmoid",
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -197,7 +198,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -214,9 +215,9 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 		{-5, 3, 1},
 		{-4, 2, 0},
 	}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 
-	got, err := ForwardMiniMaxM2PackedLayerMetal(MiniMaxM2PackedLayerForwardOptions{
+	got, err := ForwardPackedLayerMetal(PackedLayerForwardOptions{
 		Plan:         plan,
 		WeightFiles:  []string{weights},
 		Layer:        0,
@@ -226,16 +227,16 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 		ProbeSink:    recorder,
 	})
 	if err != nil {
-		t.Fatalf("ForwardMiniMaxM2PackedLayerMetal() error = %v", err)
+		t.Fatalf("ForwardPackedLayerMetal() error = %v", err)
 	}
 
-	decisions, err := RouteMiniMaxM2Tokens(cfg, routerScores, nil)
+	decisions, err := RouteTokens(cfg, routerScores, nil)
 	if err != nil {
-		t.Fatalf("RouteMiniMaxM2Tokens() error = %v", err)
+		t.Fatalf("RouteTokens() error = %v", err)
 	}
-	experts, err := LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors(plan, []string{weights}, 0, decisions)
+	experts, err := LoadPackedExpertsForDecisions(plan, []string{weights}, 0, decisions)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors() error = %v", err)
+		t.Fatalf("LoadPackedExpertsForDecisions() error = %v", err)
 	}
 	want := miniMaxM2PackedDispatchReference(t, hidden, decisions, experts)
 	if len(got.Output) != len(want) || !float32SlicesRoughlyEqual(got.Output[0], want[0], 1e-4) || !float32SlicesRoughlyEqual(got.Output[1], want[1], 1e-4) {
@@ -251,7 +252,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 	if len(events) != 2 || len(got.ProbeEvents) != 2 {
 		t.Fatalf("events recorder/result = %d/%d, want 2", len(events), len(got.ProbeEvents))
 	}
-	if events[0].Kind != ProbeEventRouterDecision || events[0].RouterDecision.TokenID != 101 || events[0].RouterDecision.Layer != 0 {
+	if events[0].Kind != probe.KindRouterDecision || events[0].RouterDecision.TokenID != 101 || events[0].RouterDecision.Layer != 0 {
 		t.Fatalf("first event = %+v, want router decision for token 101 layer 0", events[0])
 	}
 	if events[0].RouterDecision.ExpertIDs[0] != 1 || events[0].Meta["architecture"] != "minimax_m2" {
@@ -262,7 +263,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	cfg := MiniMaxM2Config{
+	cfg := Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         2,
 		IntermediateSize:   2,
@@ -275,7 +276,7 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 		ScoringFunc:        "sigmoid",
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -284,7 +285,7 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 	dir := t.TempDir()
 	weights := core.PathJoin(dir, "model.safetensors")
@@ -312,9 +313,9 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 	}
 	writeMiniMaxM2RawSafetensors(t, weights, tensors)
 	hidden := [][]float32{{1, 2}, {2, 1}}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 
-	got, err := ForwardMiniMaxM2PackedLayerFromSafetensorsMetal(MiniMaxM2PackedLayerForwardOptions{
+	got, err := ForwardPackedLayerFromSafetensorsMetal(PackedLayerForwardOptions{
 		Plan:        plan,
 		WeightFiles: []string{weights},
 		Layer:       0,
@@ -323,24 +324,24 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 		ProbeSink:   recorder,
 	})
 	if err != nil {
-		t.Fatalf("ForwardMiniMaxM2PackedLayerFromSafetensorsMetal() error = %v", err)
+		t.Fatalf("ForwardPackedLayerFromSafetensorsMetal() error = %v", err)
 	}
 
-	router, err := LoadMiniMaxM2RouterFromSafetensors(plan, []string{weights}, 0)
+	router, err := LoadRouter(plan, []string{weights}, 0)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2RouterFromSafetensors() error = %v", err)
+		t.Fatalf("LoadRouter() error = %v", err)
 	}
-	scores, err := ProjectMiniMaxM2RouterScores(hidden, router)
+	scores, err := ProjectRouterScores(hidden, router)
 	if err != nil {
-		t.Fatalf("ProjectMiniMaxM2RouterScores() error = %v", err)
+		t.Fatalf("ProjectRouterScores() error = %v", err)
 	}
-	decisions, err := RouteMiniMaxM2Tokens(cfg, scores, router.Bias)
+	decisions, err := RouteTokens(cfg, scores, router.Bias)
 	if err != nil {
-		t.Fatalf("RouteMiniMaxM2Tokens() error = %v", err)
+		t.Fatalf("RouteTokens() error = %v", err)
 	}
-	experts, err := LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors(plan, []string{weights}, 0, decisions)
+	experts, err := LoadPackedExpertsForDecisions(plan, []string{weights}, 0, decisions)
 	if err != nil {
-		t.Fatalf("LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors() error = %v", err)
+		t.Fatalf("LoadPackedExpertsForDecisions() error = %v", err)
 	}
 	want := miniMaxM2PackedDispatchReference(t, hidden, decisions, experts)
 	if len(got.Output) != 2 || !float32SlicesRoughlyEqual(got.Output[0], want[0], 1e-4) || !float32SlicesRoughlyEqual(got.Output[1], want[1], 1e-4) {
@@ -358,9 +359,9 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 	}
 }
 
-func miniMaxM2PackedExpertFixture(t *testing.T, gateValues, upValues, downValues []uint8) MiniMaxM2PackedExpertWeights {
+func miniMaxM2PackedExpertFixture(t *testing.T, gateValues, upValues, downValues []uint8) PackedExpertWeights {
 	t.Helper()
-	return MiniMaxM2PackedExpertWeights{
+	return PackedExpertWeights{
 		GateProj: miniMaxM2PackedProjectionFixture(t, "gate_proj", gateValues),
 		UpProj:   miniMaxM2PackedProjectionFixture(t, "up_proj", upValues),
 		DownProj: miniMaxM2PackedProjectionFixture(t, "down_proj", downValues),
@@ -398,7 +399,7 @@ func miniMaxM2PackedProjectionFixture(t *testing.T, projection string, values []
 	}
 }
 
-func miniMaxM2PackedDispatchReference(t *testing.T, hidden [][]float32, decisions []MiniMaxM2RouterDecision, experts map[int]MiniMaxM2PackedExpertWeights) [][]float32 {
+func miniMaxM2PackedDispatchReference(t *testing.T, hidden [][]float32, decisions []RouterDecision, experts map[int]PackedExpertWeights) [][]float32 {
 	t.Helper()
 	out := make([][]float32, len(hidden))
 	for _, decision := range decisions {
@@ -415,7 +416,7 @@ func miniMaxM2PackedDispatchReference(t *testing.T, hidden [][]float32, decision
 	return out
 }
 
-func miniMaxM2PackedExpertReference(t *testing.T, hidden []float32, expert MiniMaxM2PackedExpertWeights) []float32 {
+func miniMaxM2PackedExpertReference(t *testing.T, hidden []float32, expert PackedExpertWeights) []float32 {
 	t.Helper()
 	gate := miniMaxM2PackedProjectionReference(t, hidden, expert.GateProj)
 	up := miniMaxM2PackedProjectionReference(t, hidden, expert.UpProj)

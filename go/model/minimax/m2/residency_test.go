@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package m2
 
 import (
 	"context"
@@ -8,10 +8,12 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestExpertResidency_PlanMiniMaxM2ChoosesLazyHotSetFor96GB_Good(t *testing.T) {
-	tensorPlan, err := BuildMiniMaxM2TensorPlan(MiniMaxM2Config{
+	tensorPlan, err := BuildTensorPlan(Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
 		IntermediateSize:   8,
@@ -30,23 +32,23 @@ func TestExpertResidency_PlanMiniMaxM2ChoosesLazyHotSetFor96GB_Good(t *testing.T
 		RoutedExpertBits: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
+		t.Fatalf("BuildTensorPlan() error = %v", err)
 	}
 
-	plan := PlanMiniMaxM2ExpertResidency(tensorPlan, MemoryPlan{
-		MachineClass:          MemoryClassApple96GB,
-		MemoryLimitBytes:      76 * MemoryGiB,
-		CacheLimitBytes:       7 * MemoryGiB,
-		ModelWeightBytes:      60 * MemoryGiB,
+	plan := PlanResidency(tensorPlan, memory.Plan{
+		MachineClass:          memory.ClassApple96GB,
+		MemoryLimitBytes:      76 * memory.GiB,
+		CacheLimitBytes:       7 * memory.GiB,
+		ModelWeightBytes:      60 * memory.GiB,
 		ContextLength:         32768,
-		CacheMode:             KVCacheModePaged,
+		CacheMode:             memory.KVCacheModePaged,
 		ParallelSlots:         1,
 		PrefillChunkSize:      2048,
 		ModelQuantization:     2,
 		ModelQuantizationType: "jangtq",
 	}, []int{5, 3, 5, 1, 9})
 
-	if !plan.Enabled || plan.Mode != ExpertResidencyModeLazy {
+	if !plan.Enabled || plan.Mode != memory.ExpertResidencyModeLazy {
 		t.Fatalf("residency mode = enabled:%v mode:%q, want lazy enabled", plan.Enabled, plan.Mode)
 	}
 	if plan.TotalExperts != 16 || plan.ExpertsPerToken != 2 {
@@ -65,24 +67,24 @@ func TestExpertResidency_PlanMiniMaxM2ChoosesLazyHotSetFor96GB_Good(t *testing.T
 
 func TestExpertResidency_ManagerStartsHotPagesColdAndEvicts_Good(t *testing.T) {
 	var loaded []int
-	recorder := NewProbeRecorder()
-	manager, err := NewMiniMaxM2ExpertResidencyManager(context.Background(), MiniMaxM2ExpertResidencyConfig{
+	recorder := probe.NewRecorder()
+	manager, err := NewResidencyManager(context.Background(), ResidencyConfig{
 		Layer: 0,
-		Policy: ExpertResidencyPlan{
+		Policy: memory.ExpertResidencyPlan{
 			Enabled:            true,
-			Mode:               ExpertResidencyModeLazy,
+			Mode:               memory.ExpertResidencyModeLazy,
 			StartupExpertIDs:   []int{1},
 			MaxResidentExperts: 2,
-			EvictionPolicy:     ExpertEvictionLRU,
+			EvictionPolicy:     memory.ExpertEvictionLRU,
 		},
-		Loader: func(_ context.Context, _ int, expertID int) (MiniMaxM2PackedExpertWeights, error) {
+		Loader: func(_ context.Context, _ int, expertID int) (PackedExpertWeights, error) {
 			loaded = append(loaded, expertID)
 			return tinyResidencyExpert(expertID), nil
 		},
 		ProbeSink: recorder,
 	})
 	if err != nil {
-		t.Fatalf("NewMiniMaxM2ExpertResidencyManager() error = %v", err)
+		t.Fatalf("NewResidencyManager() error = %v", err)
 	}
 	if !sameIntSlice(loaded, []int{1}) {
 		t.Fatalf("startup loads = %+v, want hot expert 1", loaded)
@@ -111,33 +113,33 @@ func TestExpertResidency_ManagerStartsHotPagesColdAndEvicts_Good(t *testing.T) {
 	if len(events) < 3 {
 		t.Fatalf("events = %+v, want startup/page-in/evict probes", events)
 	}
-	if events[0].Kind != ProbeEventExpertResidency || events[0].ExpertResidency.Action != ExpertResidencyActionStartup {
+	if events[0].Kind != probe.KindExpertResidency || events[0].ExpertResidency.Action != probe.ExpertResidencyActionStartup {
 		t.Fatalf("first event = %+v, want startup expert residency event", events[0])
 	}
-	if !hasExpertResidencyAction(events, ExpertResidencyActionEvict) || !hasExpertResidencyAction(events, ExpertResidencyActionPageIn) {
+	if !hasExpertResidencyAction(events, probe.ExpertResidencyActionEvict) || !hasExpertResidencyAction(events, probe.ExpertResidencyActionPageIn) {
 		t.Fatalf("events = %+v, want page-in and evict actions", events)
 	}
 }
 
 func TestExpertResidency_ManagerRequiresLoaderForEnabledPolicy_Bad(t *testing.T) {
-	_, err := NewMiniMaxM2ExpertResidencyManager(context.Background(), MiniMaxM2ExpertResidencyConfig{
-		Policy: ExpertResidencyPlan{Enabled: true, Mode: ExpertResidencyModeLazy, StartupExpertIDs: []int{1}},
+	_, err := NewResidencyManager(context.Background(), ResidencyConfig{
+		Policy: memory.ExpertResidencyPlan{Enabled: true, Mode: memory.ExpertResidencyModeLazy, StartupExpertIDs: []int{1}},
 	})
 	if err == nil || !core.Contains(err.Error(), "loader") {
 		t.Fatalf("error = %v, want loader diagnostic", err)
 	}
 }
 
-func tinyResidencyExpert(expertID int) MiniMaxM2PackedExpertWeights {
+func tinyResidencyExpert(expertID int) PackedExpertWeights {
 	packed := []byte{byte(expertID)}
-	return MiniMaxM2PackedExpertWeights{
+	return PackedExpertWeights{
 		GateProj: JANGPackedProjectionTensor{Packed: packed},
 		UpProj:   JANGPackedProjectionTensor{Packed: packed},
 		DownProj: JANGPackedProjectionTensor{Packed: packed},
 	}
 }
 
-func hasExpertResidencyAction(events []ProbeEvent, action ExpertResidencyAction) bool {
+func hasExpertResidencyAction(events []probe.Event, action probe.ExpertResidencyAction) bool {
 	for _, event := range events {
 		if event.ExpertResidency != nil && event.ExpertResidency.Action == action {
 			return true

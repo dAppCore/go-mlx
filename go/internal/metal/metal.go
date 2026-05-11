@@ -86,6 +86,8 @@ func defaultMetallibPath() string {
 			core.PathJoin(root, "..", "dist", "lib", metallib),
 			core.PathJoin(root, "..", "..", "dist", "lib", metallib),
 			core.PathJoin(root, "..", "..", "..", "dist", "lib", metallib),
+			core.PathJoin(root, "..", "..", "..", "..", "dist", "lib", metallib),
+			core.PathJoin(root, "..", "..", "..", "..", "..", "dist", "lib", metallib),
 		)
 	}
 	for _, candidate := range candidates {
