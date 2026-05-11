@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"math"
 	"strings"
@@ -13,9 +14,9 @@ import (
 )
 
 func TestRunGRPOReasoningTraining_GroupRolloutsRewardKLCheckpointProbe_Good(t *testing.T) {
-	dataset, err := LoadJSONLDataset(strings.NewReader(`{"question":"What is 2+2?","reasoning":"Add two and two.","answer":"4"}`), DatasetConfig{})
+	dataset, err := dataset.LoadJSONL(strings.NewReader(`{"question":"What is 2+2?","reasoning":"Add two and two.","answer":"4"}`), dataset.Config{})
 	if err != nil {
-		t.Fatalf("LoadJSONLDataset() error = %v", err)
+		t.Fatalf("dataset.LoadJSONL() error = %v", err)
 	}
 	recorder := probe.NewRecorder()
 	checkpointDir := core.PathJoin(t.TempDir(), "checkpoints")
@@ -103,7 +104,7 @@ func TestGRPORewardContainsAnswer_ExtractsReasoningAnswer_Good(t *testing.T) {
 	sample := GRPOSample{
 		Prompt:          "Solve",
 		ReferenceAnswer: "reasoning trace\n\n42",
-		ExpectedAnswer:  ExtractGRPOExpectedAnswer(SFTSample{Response: "reasoning trace\n\n42"}),
+		ExpectedAnswer:  ExtractGRPOExpectedAnswer(dataset.Sample{Response: "reasoning trace\n\n42"}),
 	}
 	reward, err := GRPORewardContainsAnswer(2)(GRPORewardContext{
 		Sample:  sample,
@@ -129,7 +130,7 @@ func TestRunGRPOReasoningTraining_ResumeMaxSamplesExactReward_Good(t *testing.T)
 			rolloutCalls++
 			return []GRPORollout{{Answer: req.Sample.ExpectedAnswer, TokenIDs: []int32{1}, LogProb: -0.2}}, nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{
+	}, dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "first", Response: "alpha"},
 		{Prompt: "second", Response: "beta"},
 	}), GRPOConfig{
@@ -150,7 +151,7 @@ func TestRunGRPOReasoningTraining_ResumeMaxSamplesExactReward_Good(t *testing.T)
 }
 
 func TestRunGRPOReasoningTraining_RequiresRollout_Bad(t *testing.T) {
-	_, err := RunGRPOReasoningTraining(context.Background(), GRPORunner{}, NewSFTSliceDataset([]SFTSample{{Prompt: "p", Response: "r"}}), GRPOConfig{
+	_, err := RunGRPOReasoningTraining(context.Background(), GRPORunner{}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p", Response: "r"}}), GRPOConfig{
 		RewardFuncs: []GRPORewardFunc{GRPORewardContainsAnswer(1)},
 	})
 	if err == nil {
@@ -236,7 +237,7 @@ func TestGRPORewardExactAnswerAndMetadataErrors_Bad(t *testing.T) {
 		Rollout: func(context.Context, GRPORolloutRequest) ([]GRPORollout, error) {
 			return nil, nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Prompt: "p", Response: "a"}}), GRPOConfig{ResumePath: dir}); err == nil {
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p", Response: "a"}}), GRPOConfig{ResumePath: dir}); err == nil {
 		t.Fatal("RunGRPOReasoningTraining(invalid resume metadata) error = nil")
 	}
 }
@@ -254,7 +255,7 @@ func TestRunGRPOReasoningTraining_EqualRewardsHaveFiniteZeroAdvantages_Ugly(t *t
 			update = got
 			return nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Prompt: "p", Response: "a"}}), GRPOConfig{
+	}, dataset.NewSliceDataset([]dataset.Sample{{Prompt: "p", Response: "a"}}), GRPOConfig{
 		GroupSize:   2,
 		RewardFuncs: []GRPORewardFunc{GRPORewardContainsAnswer(1)},
 	})

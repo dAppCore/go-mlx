@@ -4,9 +4,13 @@
 
 package mlx
 
-import "context"
+import (
+	"context"
+
+	"dappco.re/go/mlx/dataset"
+)
 
 // TrainSFT returns unsupported on builds without native MLX.
-func (m *Model) TrainSFT(_ context.Context, _ SFTDataset, _ SFTConfig) (*SFTResult, error) {
+func (m *Model) TrainSFT(_ context.Context, _ dataset.Dataset, _ SFTConfig) (*SFTResult, error) {
 	return nil, unsupportedBuildError()
 }

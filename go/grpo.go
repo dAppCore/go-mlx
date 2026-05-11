@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"math"
 	"time"
@@ -182,7 +183,7 @@ type GRPOEvalResult struct {
 }
 
 // RunGRPOReasoningTraining runs an explicit experimental GRPO-style reasoning loop.
-func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SFTDataset, cfg GRPOConfig) (*GRPOResult, error) {
+func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cfg GRPOConfig) (*GRPOResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -192,7 +193,7 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SF
 	if runner.Rollout == nil {
 		return nil, core.NewError("mlx: experimental GRPO runner requires Rollout")
 	}
-	if dataset == nil {
+	if ds == nil {
 		return nil, core.NewError("mlx: experimental GRPO dataset is nil")
 	}
 	cfg = normalizeGRPOConfig(cfg)
@@ -217,7 +218,7 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SF
 	accumulator := &grpoMetricAccumulator{}
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		if epoch > 1 {
-			resetter, ok := dataset.(SFTResetter)
+			resetter, ok := ds.(dataset.Resetter)
 			if !ok {
 				return result, core.NewError("mlx: experimental GRPO dataset must implement Reset for multiple epochs")
 			}
@@ -225,7 +226,7 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SF
 				return result, err
 			}
 		}
-		if err := runGRPOEpoch(ctx, runner, dataset, cfg, result, accumulator, epoch); err != nil {
+		if err := runGRPOEpoch(ctx, runner, ds, cfg, result, accumulator, epoch); err != nil {
 			return result, err
 		}
 		result.Metrics.Epochs = epoch
@@ -237,7 +238,7 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, dataset SF
 	return result, nil
 }
 
-func runGRPOEpoch(ctx context.Context, runner GRPORunner, dataset SFTDataset, cfg GRPOConfig, result *GRPOResult, accumulator *grpoMetricAccumulator, epoch int) error {
+func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cfg GRPOConfig, result *GRPOResult, accumulator *grpoMetricAccumulator, epoch int) error {
 	samples := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -246,7 +247,7 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, dataset SFTDataset, cf
 		if cfg.MaxSamples > 0 && samples >= cfg.MaxSamples {
 			break
 		}
-		raw, ok, err := dataset.Next()
+		raw, ok, err := ds.Next()
 		if err != nil {
 			return err
 		}
@@ -461,7 +462,7 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch 
 }
 
 // GRPOSampleFromSFT extracts a reasoning prompt and expected answer.
-func GRPOSampleFromSFT(sample SFTSample) GRPOSample {
+func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	prompt := core.Trim(sample.Prompt)
 	if prompt == "" {
 		prompt = core.Trim(sample.Text)
@@ -476,7 +477,7 @@ func GRPOSampleFromSFT(sample SFTSample) GRPOSample {
 }
 
 // ExtractGRPOExpectedAnswer returns the answer target from reasoning-style samples.
-func ExtractGRPOExpectedAnswer(sample SFTSample) string {
+func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	for _, key := range []string{"answer", "expected_answer", "solution", "output"} {
 		if sample.Meta != nil {
 			if value := core.Trim(sample.Meta[key]); value != "" {
@@ -498,7 +499,7 @@ func ExtractGRPOExpectedAnswer(sample SFTSample) string {
 	return ""
 }
 
-func extractGRPOReasoning(sample SFTSample) string {
+func extractGRPOReasoning(sample dataset.Sample) string {
 	if sample.Meta != nil {
 		if value := core.Trim(sample.Meta["reasoning"]); value != "" {
 			return value

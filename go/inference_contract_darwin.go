@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
@@ -85,7 +86,7 @@ func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (st
 	if adapter == nil || adapter.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	return FormatChatMessages(messages, chat.Config{Architecture: adapter.model.ModelType()}), nil
+	return chat.Format(messages, chat.Config{Architecture: adapter.model.ModelType()}), nil
 }
 
 func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity, error) {
@@ -192,15 +193,15 @@ type inferenceDataset struct {
 	stream inference.DatasetStream
 }
 
-func (dataset inferenceDataset) Next() (SFTSample, bool, error) {
-	if dataset.stream == nil {
-		return SFTSample{}, false, core.NewError("mlx: inference dataset stream is nil")
+func (d inferenceDataset) Next() (dataset.Sample, bool, error) {
+	if d.stream == nil {
+		return dataset.Sample{}, false, core.NewError("mlx: inference dataset stream is nil")
 	}
-	sample, ok, err := dataset.stream.Next()
+	sample, ok, err := d.stream.Next()
 	if err != nil || !ok {
-		return SFTSample{}, ok, err
+		return dataset.Sample{}, ok, err
 	}
-	return SFTSample{
+	return dataset.Sample{
 		Prompt:   sample.Prompt,
 		Response: sample.Response,
 		Text:     sample.Text,
@@ -208,11 +209,11 @@ func (dataset inferenceDataset) Next() (SFTSample, bool, error) {
 	}, true, nil
 }
 
-func (dataset inferenceDataset) Reset() error {
-	if dataset.stream == nil {
+func (d inferenceDataset) Reset() error {
+	if d.stream == nil {
 		return core.NewError("mlx: inference dataset stream is nil")
 	}
-	resetter, ok := dataset.stream.(inference.DatasetResetter)
+	resetter, ok := d.stream.(inference.DatasetResetter)
 	if !ok {
 		return core.NewError("mlx: inference dataset stream is not resettable")
 	}
@@ -498,7 +499,7 @@ func toInferenceBenchReport(report *bench.Report) *inference.BenchReport {
 func toEvalConfig(cfg inference.EvalConfig) eval.Config {
 	return eval.Config{
 		MaxSamples: cfg.MaxSamples,
-		Batch: DatasetBatchConfig{
+		Batch: dataset.BatchConfig{
 			BatchSize: cfg.BatchSize,
 			MaxSeqLen: cfg.MaxSeqLen,
 		},

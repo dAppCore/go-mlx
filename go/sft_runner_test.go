@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"testing"
 
 	core "dappco.re/go"
@@ -18,7 +19,7 @@ func TestBuildSFTTrainingBatches_UsesAccumulationAsEffectiveBatch_Good(t *testin
 		},
 		eos: 9,
 	}}
-	dataset := NewJSONLDataset([]SFTSample{
+	dataset := dataset.NewJSONL([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},
 	})
@@ -60,7 +61,7 @@ func TestBuildSFTTrainingBatches_PackedDataset_Ugly(t *testing.T) {
 		},
 		eos: 9,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{
+	dataset := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},
 	})

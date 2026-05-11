@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"math"
 	"testing"
@@ -20,7 +21,7 @@ func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t 
 		},
 		eos: 3,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{
+	ds := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "prompt", Response: "response"},
 		{Prompt: "prompt", Response: "response"},
 	})
@@ -64,8 +65,8 @@ func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t 
 				},
 			}, nil
 		},
-	}, dataset, DistillConfig{
-		Batch:           DatasetBatchConfig{BatchSize: 1},
+	}, ds, DistillConfig{
+		Batch:           dataset.BatchConfig{BatchSize: 1},
 		Temperature:     2,
 		CheckpointDir:   checkpointDir,
 		CheckpointEvery: 1,
@@ -135,9 +136,9 @@ func TestRunDistillation_ResumeMaxSamplesBuildBatches_Good(t *testing.T) {
 
 	seenSamples := 0
 	result, err := RunDistillation(context.Background(), DistillRunner{
-		BuildBatches: func(_ context.Context, dataset SFTDataset, _ DatasetBatchConfig) ([]SFTBatch, error) {
+		BuildBatches: func(_ context.Context, ds dataset.Dataset, _ dataset.BatchConfig) ([]SFTBatch, error) {
 			for {
-				_, ok, err := dataset.Next()
+				_, ok, err := ds.Next()
 				if err != nil {
 					return nil, err
 				}
@@ -157,7 +158,7 @@ func TestRunDistillation_ResumeMaxSamplesBuildBatches_Good(t *testing.T) {
 		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
 			return DistillLogits{{{1, 0}}}, nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Text: "a"}, {Text: "b"}}), DistillConfig{
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "a"}, {Text: "b"}}), DistillConfig{
 		MaxSamples: 1,
 		ResumePath: resume,
 	})
@@ -180,7 +181,7 @@ func TestRunKnowledgeDistillation_RequiresTeacherLogits_Bad(t *testing.T) {
 		StudentLogits: func(_ context.Context, batch DistillBatch, _ DistillLogits) (DistillLogits, error) {
 			return distillTestLogits(batch.SFT, 2, 0, 1), nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DistillConfig{})
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
 	if err == nil {
 		t.Fatal("expected missing teacher logits error")
 	}
@@ -258,13 +259,13 @@ func TestDistillCheckpointMetadataErrors_Bad(t *testing.T) {
 		t.Fatal("LoadDistillCheckpointMetadata(invalid JSON) error = nil")
 	}
 	if _, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
-		BuildBatches: func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error) {
+		BuildBatches: func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error) {
 			return nil, nil
 		},
 		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
 			return nil, nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
 		t.Fatal("RunKnowledgeDistillation(invalid resume metadata) error = nil")
 	}
 }
@@ -280,7 +281,7 @@ func TestRunKnowledgeDistillation_RejectsLogitShapeMismatch_Ugly(t *testing.T) {
 		StudentLogits: func(_ context.Context, batch DistillBatch, _ DistillLogits) (DistillLogits, error) {
 			return distillTestLogits(batch.SFT, 3, 0, 1), nil
 		},
-	}, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DistillConfig{})
+	}, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), DistillConfig{})
 	if err == nil {
 		t.Fatal("expected logit shape mismatch error")
 	}

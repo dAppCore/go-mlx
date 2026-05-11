@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"strings"
 	"testing"
 
@@ -20,13 +21,13 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 		`{"conversations":[{"from":"human","value":"hi"},{"from":"gpt","value":"there"}]}`,
 		`{"problem":"2+2","thinking":"add the pair","solution":"4"}`,
 	)
-	dataset, err := LoadJSONLDataset(strings.NewReader(input), DatasetConfig{
+	ds, err := dataset.LoadJSONL(strings.NewReader(input), dataset.Config{
 		ChatTemplate: chat.Config{Architecture: "qwen3"},
 	})
 	if err != nil {
-		t.Fatalf("LoadJSONLDataset() error = %v", err)
+		t.Fatalf("dataset.LoadJSONL() error = %v", err)
 	}
-	samples := collectDatasetSamples(t, dataset)
+	samples := collectDatasetSamples(t, ds)
 	if len(samples) != 6 {
 		t.Fatalf("samples len = %d, want 6", len(samples))
 	}
@@ -51,10 +52,10 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 	if samples[5].Prompt != "2+2" || !core.Contains(samples[5].Response, "add the pair") || !core.Contains(samples[5].Response, "4") {
 		t.Fatalf("reasoning sample = %+v", samples[5])
 	}
-	if err := dataset.Reset(); err != nil {
+	if err := ds.Reset(); err != nil {
 		t.Fatalf("Reset() error = %v", err)
 	}
-	again, ok, err := dataset.Next()
+	again, ok, err := ds.Next()
 	if err != nil {
 		t.Fatalf("Next() after Reset error = %v", err)
 	}
@@ -65,23 +66,23 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 
 func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
 	messages := []inference.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
-	qwen := FormatChatMessages(messages, chat.Config{Architecture: "qwen3"})
+	qwen := chat.Format(messages, chat.Config{Architecture: "qwen3"})
 	if qwen != "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n" {
 		t.Fatalf("qwen template = %q", qwen)
 	}
-	gemma := FormatChatMessages(messages, chat.Config{Architecture: "gemma4_text"})
+	gemma := chat.Format(messages, chat.Config{Architecture: "gemma4_text"})
 	if gemma != "<bos><|turn>system\nsys<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n" {
 		t.Fatalf("gemma template = %q", gemma)
 	}
-	gemma3 := FormatChatMessages(messages, chat.Config{Architecture: "gemma3_text"})
+	gemma3 := chat.Format(messages, chat.Config{Architecture: "gemma3_text"})
 	if gemma3 != "<start_of_turn>user\nsys<end_of_turn>\n<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" {
 		t.Fatalf("gemma3 template = %q", gemma3)
 	}
-	llama := FormatChatMessages([]inference.Message{{Role: "user", Content: "hi"}}, chat.Config{Architecture: "llama"})
+	llama := chat.Format([]inference.Message{{Role: "user", Content: "hi"}}, chat.Config{Architecture: "llama"})
 	if llama != "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n" {
 		t.Fatalf("llama template = %q", llama)
 	}
-	plain := FormatChatMessages([]inference.Message{{Role: "system"}, {Role: "user", Content: "plain"}}, chat.Config{Template: "plain", NoGenerationPrompt: true})
+	plain := chat.Format([]inference.Message{{Role: "system"}, {Role: "user", Content: "plain"}}, chat.Config{Template: "plain", NoGenerationPrompt: true})
 	if plain != "plain\n" {
 		t.Fatalf("plain template = %q, want plain line", plain)
 	}
@@ -97,12 +98,12 @@ func TestBuildDatasetBatches_PacksResponseMaskedExamples_Good(t *testing.T) {
 		},
 		eos: 9,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{
+	ds := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "p1", Response: "r1"},
 		{Prompt: "p2", Response: "r2"},
 	})
 
-	batches, err := BuildDatasetBatches(tokenizer, dataset, DatasetBatchConfig{
+	batches, err := BuildDatasetBatches(tokenizer, ds, dataset.BatchConfig{
 		BatchSize:       1,
 		MaxSeqLen:       8,
 		SequencePacking: true,
@@ -132,9 +133,9 @@ func TestBuildDatasetBatches_TruncatesToMaxSeqLen_Ugly(t *testing.T) {
 		},
 		eos: 9,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{{Prompt: "long prompt", Response: "long response"}})
+	ds := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "long prompt", Response: "long response"}})
 
-	batches, err := BuildDatasetBatches(tokenizer, dataset, DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 3})
+	batches, err := BuildDatasetBatches(tokenizer, ds, dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 3})
 	if err != nil {
 		t.Fatalf("BuildDatasetBatches() error = %v", err)
 	}
@@ -150,19 +151,19 @@ func TestBuildDatasetBatches_TruncatesToMaxSeqLen_Ugly(t *testing.T) {
 }
 
 func TestLoadJSONLDataset_InvalidJSON_Bad(t *testing.T) {
-	_, err := LoadJSONLDataset(strings.NewReader("{not-json}\n"), DatasetConfig{})
+	_, err := dataset.LoadJSONL(strings.NewReader("{not-json}\n"), dataset.Config{})
 	if err == nil {
 		t.Fatal("expected invalid JSONL error")
 	}
 }
 
 func TestNewJSONLDataset_ClonesSamples_Good(t *testing.T) {
-	samples := []SFTSample{{Text: "a", Meta: map[string]string{"k": "v"}}}
-	dataset := NewJSONLDataset(samples)
+	samples := []dataset.Sample{{Text: "a", Meta: map[string]string{"k": "v"}}}
+	ds := dataset.NewJSONL(samples)
 	samples[0].Text = "mutated"
 	samples[0].Meta["k"] = "changed"
 
-	got, ok, err := dataset.Next()
+	got, ok, err := ds.Next()
 	if err != nil {
 		t.Fatalf("Next() error = %v", err)
 	}
@@ -172,38 +173,38 @@ func TestNewJSONLDataset_ClonesSamples_Good(t *testing.T) {
 }
 
 func TestJSONLDataset_NilReceiver_Bad(t *testing.T) {
-	var dataset *JSONLDataset
-	if _, _, err := dataset.Next(); err == nil {
+	var ds *dataset.JSONLDataset
+	if _, _, err := ds.Next(); err == nil {
 		t.Fatal("expected nil Next error")
 	}
-	if err := dataset.Reset(); err == nil {
+	if err := ds.Reset(); err == nil {
 		t.Fatal("expected nil Reset error")
 	}
 }
 
 func TestJSONLDataset_SamplesReturnsCopy_Ugly(t *testing.T) {
-	dataset := NewJSONLDataset([]SFTSample{{Text: "a", Meta: map[string]string{"format": "text"}}})
-	samples := dataset.Samples()
+	ds := dataset.NewJSONL([]dataset.Sample{{Text: "a", Meta: map[string]string{"format": "text"}}})
+	samples := ds.Samples()
 	samples[0].Text = "changed"
 	samples[0].Meta["format"] = "changed"
-	again := dataset.Samples()
+	again := ds.Samples()
 	if again[0].Text != "a" || again[0].Meta["format"] != "text" {
 		t.Fatalf("Samples() aliased storage: %+v", again)
 	}
 }
 
 func TestBuildDatasetBatches_NilTokenizer_Bad(t *testing.T) {
-	_, err := BuildDatasetBatches(nil, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DatasetBatchConfig{SequencePacking: true})
+	_, err := BuildDatasetBatches(nil, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), dataset.BatchConfig{SequencePacking: true})
 	if err == nil {
 		t.Fatal("expected nil tokenizer error")
 	}
 }
 
-func collectDatasetSamples(t *testing.T, dataset SFTDataset) []SFTSample {
+func collectDatasetSamples(t *testing.T, ds dataset.Dataset) []dataset.Sample {
 	t.Helper()
-	var samples []SFTSample
+	var samples []dataset.Sample
 	for {
-		sample, ok, err := dataset.Next()
+		sample, ok, err := ds.Next()
 		if err != nil {
 			t.Fatalf("Next() error = %v", err)
 		}

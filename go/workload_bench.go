@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/inference/bench"
 	"context"
 	"math"
@@ -21,7 +22,7 @@ const WorkloadBenchReportVersion = 1
 type WorkloadBenchConfig struct {
 	FastEval               bench.Config                 `json:"fast_eval"`
 	Eval                   eval.Config                     `json:"eval,omitempty"`
-	EvalDataset            SFTDataset                     `json:"-"`
+	EvalDataset            dataset.Dataset                     `json:"-"`
 	AdapterPath            string                         `json:"adapter_path,omitempty"`
 	IncludeAdapterLoad     bool                           `json:"include_adapter_load"`
 	IncludeAdapterFuse     bool                           `json:"include_adapter_fuse"`
@@ -489,7 +490,7 @@ func nonZeroDuration(duration time.Duration) time.Duration {
 }
 
 func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
-	if batch, ok := cfg.Batch.(DatasetBatchConfig); ok {
+	if batch, ok := cfg.Batch.(dataset.BatchConfig); ok {
 		cfg.Batch = normalizeDatasetBatchConfig(batch)
 	}
 	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)

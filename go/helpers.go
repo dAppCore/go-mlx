@@ -97,6 +97,20 @@ func renderTokensText(tokens []Token) string {
 	return builder.String()
 }
 
+// cloneStringMap returns a defensive copy of values, or nil if empty.
+//
+//	out := cloneStringMap(meta)
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
+}
+
 // indexString locates substr inside s, returning its index or -1.
 // Shared between hf_fit and openai.go.
 //

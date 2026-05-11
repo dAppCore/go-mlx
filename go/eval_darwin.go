@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"math"
 
@@ -41,19 +42,19 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 			}
 			return loraToEvalAdapter(model.Adapter()), nil
 		},
-		BuildBatches: func(ctx context.Context, dataset eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
+		BuildBatches: func(ctx context.Context, ds eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
 			if model == nil {
 				return nil, core.NewError("mlx: model is nil")
 			}
-			batchCfg, ok := cfg.(DatasetBatchConfig)
+			batchCfg, ok := cfg.(dataset.BatchConfig)
 			if !ok {
-				batchCfg = DatasetBatchConfig{}
+				batchCfg = dataset.BatchConfig{}
 			}
 			tok := model.Tokenizer()
 			if tok == nil {
 				return nil, core.NewError("mlx: model tokenizer is nil")
 			}
-			sftDataset := evalDatasetToSFT(dataset)
+			sftDataset := evalDatasetToSFT(ds)
 			sftBatches, err := BuildDatasetBatches(tok, sftDataset, batchCfg)
 			if err != nil {
 				return nil, err
@@ -87,18 +88,18 @@ type evalDatasetSFTAdapter struct {
 	src eval.Dataset
 }
 
-func (a *evalDatasetSFTAdapter) Next() (SFTSample, bool, error) {
+func (a *evalDatasetSFTAdapter) Next() (dataset.Sample, bool, error) {
 	sample, ok, err := a.src.Next()
 	if err != nil || !ok {
-		return SFTSample{}, ok, err
+		return dataset.Sample{}, ok, err
 	}
-	if s, ok := sample.(SFTSample); ok {
+	if s, ok := sample.(dataset.Sample); ok {
 		return s, true, nil
 	}
-	return SFTSample{}, false, core.NewError("mlx: eval dataset returned a non-SFTSample value")
+	return dataset.Sample{}, false, core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
 }
 
-func evalDatasetToSFT(d eval.Dataset) SFTDataset {
+func evalDatasetToSFT(d eval.Dataset) dataset.Dataset {
 	return &evalDatasetSFTAdapter{src: d}
 }
 

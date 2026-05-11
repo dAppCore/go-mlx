@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"testing"
 
 	core "dappco.re/go"
@@ -46,7 +47,7 @@ func (t fakeSFTTokenizer) EOS() int32              { return t.eos }
 func (t fakeSFTTokenizer) HasBOSToken() bool       { return false }
 
 func TestSFTSliceDataset_Reset_Good(t *testing.T) {
-	dataset := NewSFTSliceDataset([]SFTSample{
+	dataset := dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "a", Response: "b"},
 	})
 
@@ -80,7 +81,7 @@ func TestBuildSFTBatches_MasksPromptAndAppendsEOS_Good(t *testing.T) {
 		},
 		eos: 2,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{{Prompt: "prompt", Response: "response"}})
+	dataset := dataset.NewSliceDataset([]dataset.Sample{{Prompt: "prompt", Response: "response"}})
 
 	batches, err := BuildSFTBatches(tokenizer, dataset, SFTConfig{BatchSize: 1})
 	if err != nil {
@@ -109,7 +110,7 @@ func TestBuildSFTBatches_TextSampleTrainsWholeSequence_Good(t *testing.T) {
 		encoded: map[string][]int32{"full": {5, 6, 7}},
 		eos:     9,
 	}}
-	dataset := NewSFTSliceDataset([]SFTSample{{Text: "full"}})
+	dataset := dataset.NewSliceDataset([]dataset.Sample{{Text: "full"}})
 
 	batches, err := BuildSFTBatches(tokenizer, dataset, SFTConfig{BatchSize: 1, NoEOS: true})
 	if err != nil {
@@ -130,7 +131,7 @@ func TestBuildSFTBatches_TextSampleTrainsWholeSequence_Good(t *testing.T) {
 }
 
 func TestBuildSFTBatches_NilTokenizer_Bad(t *testing.T) {
-	_, err := BuildSFTBatches(nil, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), SFTConfig{})
+	_, err := BuildSFTBatches(nil, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{})
 	if err == nil {
 		t.Fatal("expected nil tokenizer error")
 	}

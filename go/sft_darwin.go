@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 
 	core "dappco.re/go"
@@ -12,14 +13,14 @@ import (
 )
 
 // TrainSFT runs native supervised LoRA fine-tuning against a loaded MLX model.
-func (m *Model) TrainSFT(ctx context.Context, dataset SFTDataset, cfg SFTConfig) (*SFTResult, error) {
+func (m *Model) TrainSFT(ctx context.Context, ds dataset.Dataset, cfg SFTConfig) (*SFTResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
-	if dataset == nil {
+	if ds == nil {
 		return nil, core.NewError("mlx: SFT dataset is nil")
 	}
 	tok := m.Tokenizer()
@@ -45,7 +46,7 @@ func (m *Model) TrainSFT(ctx context.Context, dataset SFTDataset, cfg SFTConfig)
 
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		if epoch > 1 {
-			if resetter, ok := dataset.(SFTResetter); ok {
+			if resetter, ok := ds.(dataset.Resetter); ok {
 				if err := resetter.Reset(); err != nil {
 					return result, err
 				}
@@ -54,7 +55,7 @@ func (m *Model) TrainSFT(ctx context.Context, dataset SFTDataset, cfg SFTConfig)
 			}
 		}
 
-		if err := m.runSFTDatasetEpoch(ctx, tok, dataset, adapter, optimizer, cfg, result, epoch); err != nil {
+		if err := m.runSFTDatasetEpoch(ctx, tok, ds, adapter, optimizer, cfg, result, epoch); err != nil {
 			return result, err
 		}
 		result.Epochs = epoch
@@ -97,7 +98,7 @@ func (m *Model) sftAdapter(cfg SFTConfig) (*LoRAAdapter, error) {
 	return NewLoRA(m, &loraCfg), nil
 }
 
-func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, dataset SFTDataset, adapter *LoRAAdapter, optimizer *AdamW, cfg SFTConfig, result *SFTResult, epoch int) error {
+func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, ds dataset.Dataset, adapter *LoRAAdapter, optimizer *AdamW, cfg SFTConfig, result *SFTResult, epoch int) error {
 	current := make([]sftExample, 0, cfg.BatchSize)
 	accumulated := make([]SFTBatch, 0, cfg.GradientAccumulationSteps)
 	flushAccumulated := func() error {
@@ -137,7 +138,7 @@ func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, dataset 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		sample, ok, err := dataset.Next()
+		sample, ok, err := ds.Next()
 		if err != nil {
 			return err
 		}

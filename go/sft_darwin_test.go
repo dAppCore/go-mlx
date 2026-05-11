@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"errors"
 	"testing"
@@ -19,7 +20,7 @@ func TestModelTrainSFT_NilModel_Bad(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	var model *Model
-	_, err := model.TrainSFT(context.Background(), NewSFTSliceDataset([]SFTSample{{Text: "x"}}), SFTConfig{})
+	_, err := model.TrainSFT(context.Background(), dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{})
 	if err == nil {
 		t.Fatal("expected nil model error")
 	}
@@ -30,12 +31,12 @@ func TestModelTrainSFT_ValidationBranches_Bad(t *testing.T) {
 	if _, err := model.TrainSFT(context.Background(), nil, SFTConfig{}); err == nil {
 		t.Fatal("expected nil dataset error")
 	}
-	if _, err := model.TrainSFT(context.Background(), NewSFTSliceDataset([]SFTSample{{Text: "x"}}), SFTConfig{}); err == nil {
+	if _, err := model.TrainSFT(context.Background(), dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{}); err == nil {
 		t.Fatal("expected nil tokenizer error")
 	}
 
 	model.tok = &Tokenizer{tok: &metal.Tokenizer{}}
-	if _, err := model.TrainSFT(context.Background(), NewSFTSliceDataset([]SFTSample{{Text: "x"}}), SFTConfig{}); err == nil {
+	if _, err := model.TrainSFT(context.Background(), dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), SFTConfig{}); err == nil {
 		t.Fatal("expected nil LoRA adapter error")
 	}
 }
@@ -128,7 +129,7 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 	var model *Model
 	result := &SFTResult{}
 	cfg := normalizeSFTConfig(SFTConfig{BatchSize: 2, GradientAccumulationSteps: 2})
-	if err := model.runSFTDatasetEpoch(context.Background(), nil, NewSFTSliceDataset(nil), nil, nil, cfg, result, 1); err != nil {
+	if err := model.runSFTDatasetEpoch(context.Background(), nil, dataset.NewSliceDataset(nil), nil, nil, cfg, result, 1); err != nil {
 		t.Fatalf("empty epoch error = %v", err)
 	}
 	if result.Samples != 0 {
@@ -137,7 +138,7 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := model.runSFTDatasetEpoch(cancelled, nil, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), nil, nil, cfg, result, 1); !errors.Is(err, context.Canceled) {
+	if err := model.runSFTDatasetEpoch(cancelled, nil, dataset.NewSliceDataset([]dataset.Sample{{Text: "x"}}), nil, nil, cfg, result, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled epoch error = %v, want context.Canceled", err)
 	}
 	if err := model.runSFTBatchGroup(cancelled, nil, nil, nil, cfg, result, 1); !errors.Is(err, context.Canceled) {

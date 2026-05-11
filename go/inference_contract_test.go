@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
@@ -306,8 +307,8 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 			Labels:   map[string]string{"source": "unit"},
 		}},
 	}
-	dataset := inferenceDataset{stream: stream}
-	sample, ok, err := dataset.Next()
+	ds := inferenceDataset{stream: stream}
+	sample, ok, err := ds.Next()
 	if err != nil || !ok {
 		t.Fatalf("Next() = %+v/%v/%v, want one sample", sample, ok, err)
 	}
@@ -318,7 +319,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	if stream.samples[0].Labels["source"] != "unit" {
 		t.Fatalf("dataset adapter leaked labels mutation: %+v", stream.samples[0].Labels)
 	}
-	if err := dataset.Reset(); err != nil || stream.resetCalls != 1 {
+	if err := ds.Reset(); err != nil || stream.resetCalls != 1 {
 		t.Fatalf("Reset() = %v calls=%d, want one reset", err, stream.resetCalls)
 	}
 	if _, _, err := (inferenceDataset{}).Next(); err == nil {
@@ -377,7 +378,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	}
 
 	evalCfg := toEvalConfig(inference.EvalConfig{MaxSamples: 2, BatchSize: 3, MaxSeqLen: 4})
-	batchCfg, ok := evalCfg.Batch.(DatasetBatchConfig)
+	batchCfg, ok := evalCfg.Batch.(dataset.BatchConfig)
 	if !ok || evalCfg.MaxSamples != 2 || batchCfg.BatchSize != 3 || batchCfg.MaxSeqLen != 4 {
 		t.Fatalf("eval config = %+v", evalCfg)
 	}

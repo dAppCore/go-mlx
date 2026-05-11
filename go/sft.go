@@ -4,70 +4,9 @@ package mlx
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/probe"
 )
-
-// SFTSample is one supervised fine-tuning record.
-type SFTSample struct {
-	Prompt   string
-	Response string
-	Text     string
-	Meta     map[string]string
-}
-
-// SFTDataset streams supervised fine-tuning records.
-type SFTDataset interface {
-	Next() (SFTSample, bool, error)
-}
-
-// SFTResetter marks datasets that can be replayed for multiple epochs.
-type SFTResetter interface {
-	Reset() error
-}
-
-// SFTDatasetFunc adapts a function into an SFTDataset.
-type SFTDatasetFunc func() (SFTSample, bool, error)
-
-// Next returns the next sample from the wrapped function.
-func (fn SFTDatasetFunc) Next() (SFTSample, bool, error) {
-	if fn == nil {
-		return SFTSample{}, false, core.NewError("mlx: SFT dataset func is nil")
-	}
-	return fn()
-}
-
-// SFTSliceDataset is an in-memory replayable SFT dataset.
-type SFTSliceDataset struct {
-	samples []SFTSample
-	index   int
-}
-
-// NewSFTSliceDataset returns a replayable dataset backed by samples.
-func NewSFTSliceDataset(samples []SFTSample) *SFTSliceDataset {
-	return &SFTSliceDataset{samples: append([]SFTSample(nil), samples...)}
-}
-
-// Next returns the next sample.
-func (d *SFTSliceDataset) Next() (SFTSample, bool, error) {
-	if d == nil {
-		return SFTSample{}, false, core.NewError("mlx: SFT slice dataset is nil")
-	}
-	if d.index >= len(d.samples) {
-		return SFTSample{}, false, nil
-	}
-	sample := d.samples[d.index]
-	d.index++
-	return sample, true, nil
-}
-
-// Reset rewinds the dataset.
-func (d *SFTSliceDataset) Reset() error {
-	if d == nil {
-		return core.NewError("mlx: SFT slice dataset is nil")
-	}
-	d.index = 0
-	return nil
-}
 
 // SFTConfig configures native LoRA supervised fine-tuning.
 type SFTConfig struct {
@@ -249,15 +188,15 @@ func SFTEffectiveBatchSize(cfg SFTConfig) int {
 }
 
 // BuildSFTTrainingBatches tokenizes an SFT dataset using runner-level batching settings.
-func BuildSFTTrainingBatches(tok *Tokenizer, dataset SFTDataset, cfg SFTConfig) ([]SFTBatch, error) {
+func BuildSFTTrainingBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBatch, error) {
 	if tok == nil || tok.tok == nil {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
-	if dataset == nil {
+	if ds == nil {
 		return nil, core.NewError("mlx: SFT dataset is nil")
 	}
 	cfg = normalizeSFTConfig(cfg)
-	return BuildDatasetBatches(tok, dataset, DatasetBatchConfig{
+	return BuildDatasetBatches(tok, ds, dataset.BatchConfig{
 		BatchSize:       SFTEffectiveBatchSize(cfg),
 		MaxSeqLen:       cfg.MaxSeqLen,
 		SequencePacking: cfg.SequencePacking,
@@ -266,18 +205,18 @@ func BuildSFTTrainingBatches(tok *Tokenizer, dataset SFTDataset, cfg SFTConfig) 
 }
 
 // BuildSFTBatches tokenizes an SFT dataset into response-masked training batches.
-func BuildSFTBatches(tok *Tokenizer, dataset SFTDataset, cfg SFTConfig) ([]SFTBatch, error) {
+func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBatch, error) {
 	if tok == nil || tok.tok == nil {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
-	if dataset == nil {
+	if ds == nil {
 		return nil, core.NewError("mlx: SFT dataset is nil")
 	}
 
 	cfg = normalizeSFTConfig(cfg)
 	builder := newSFTBatchBuilder(cfg.BatchSize)
 	for {
-		sample, ok, err := dataset.Next()
+		sample, ok, err := ds.Next()
 		if err != nil {
 			return nil, err
 		}
@@ -565,7 +504,7 @@ func sftBatchFromExamples(examples []sftExample) SFTBatch {
 	return batch
 }
 
-func buildSFTExample(tok *Tokenizer, sample SFTSample, cfg SFTConfig) (sftExample, bool, error) {
+func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftExample, bool, error) {
 	var seq []int32
 	var promptLen int
 	trainWholeText := sample.Text != ""

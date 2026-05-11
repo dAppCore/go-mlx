@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 
 	core "dappco.re/go"
@@ -11,21 +12,21 @@ import (
 )
 
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
-// The mlx-root wrapper adapts SFTDataset/SFTSample/SFTBatch to eval's
+// The mlx-root wrapper adapts dataset.Dataset/dataset.Sample/SFTBatch to eval's
 // opaque types and forwards to eval.RunDataset.
-func RunModelEval(ctx context.Context, model *Model, dataset SFTDataset, cfg eval.Config) (*eval.Report, error) {
+func RunModelEval(ctx context.Context, model *Model, ds dataset.Dataset, cfg eval.Config) (*eval.Report, error) {
 	if model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
 	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
 	cfg.QualityProbes = append(cfg.QualityProbes, eval.ResponseCoverageProbe())
-	return eval.RunDataset(ctx, NewModelEvalRunner(model), wrapSFTDataset(dataset), cfg)
+	return eval.RunDataset(ctx, NewModelEvalRunner(model), wrapSFTDataset(ds), cfg)
 }
 
-// sftSampleText pulls text/response from a wrapped SFTSample for eval's
+// sftSampleText pulls text/response from a wrapped dataset.Sample for eval's
 // quality probes that need to inspect sample content.
 func sftSampleText(sample eval.Sample) (string, string) {
-	if s, ok := sample.(SFTSample); ok {
+	if s, ok := sample.(dataset.Sample); ok {
 		return s.Text, s.Response
 	}
 	return "", ""
@@ -66,23 +67,23 @@ func sftBatchLossTokens(batch SFTBatch) int {
 }
 
 // wrapSFTDataset adapts a mlx.SFTDataset to eval.Dataset (opaque samples).
-func wrapSFTDataset(d SFTDataset) eval.Dataset {
+func wrapSFTDataset(d dataset.Dataset) eval.Dataset {
 	if d == nil {
 		return nil
 	}
-	return &sftDatasetAdapter{dataset: d}
+	return &sftDatasetAdapter{ds: d}
 }
 
 type sftDatasetAdapter struct {
-	dataset SFTDataset
+	ds dataset.Dataset
 }
 
 func (a *sftDatasetAdapter) Next() (eval.Sample, bool, error) {
-	sample, ok, err := a.dataset.Next()
+	sample, ok, err := a.ds.Next()
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	return cloneSFTSample(sample), true, nil
+	return dataset.CloneSample(sample), true, nil
 }
 
 // modelInfoToEval converts an mlx.ModelInfo to the driver-neutral eval.Info.

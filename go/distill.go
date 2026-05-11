@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"math"
 	"sync"
@@ -28,7 +29,7 @@ type DistillLogits [][][]float32
 
 // DistillConfig controls native knowledge distillation over dataset streams.
 type DistillConfig struct {
-	Batch           DatasetBatchConfig `json:"batch"`
+	Batch           dataset.BatchConfig `json:"batch"`
 	Epochs          int                `json:"epochs,omitempty"`
 	Temperature     float64            `json:"temperature,omitempty"`
 	Loss            DistillLossKind    `json:"loss,omitempty"`
@@ -47,7 +48,7 @@ type DistillRunner struct {
 	StudentInfo func(context.Context) ModelInfo
 	Tokenizer   func(context.Context) *Tokenizer
 
-	BuildBatches   func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error)
+	BuildBatches   func(context.Context, dataset.Dataset, dataset.BatchConfig) ([]SFTBatch, error)
 	TeacherLogits  func(context.Context, DistillBatch) (DistillLogits, error)
 	StudentLogits  func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error)
 	ApplyLoss      func(context.Context, DistillBatch, DistillLoss) error
@@ -126,7 +127,7 @@ type DistillCheckpointMetadata struct {
 	TeacherEntropy     float64            `json:"teacher_entropy"`
 	Temperature        float64            `json:"temperature"`
 	LossKind           DistillLossKind    `json:"loss_kind"`
-	Batch              DatasetBatchConfig `json:"batch"`
+	Batch              dataset.BatchConfig `json:"batch"`
 	Teacher            ModelInfo          `json:"teacher"`
 	Student            ModelInfo          `json:"student"`
 	TeacherCacheHits   int                `json:"teacher_cache_hits,omitempty"`
@@ -203,19 +204,19 @@ func (c *MemoryDistillLogitCache) PutTeacherLogits(_ context.Context, key string
 }
 
 // RunDistillation is an alias for RunKnowledgeDistillation.
-func RunDistillation(ctx context.Context, runner DistillRunner, dataset SFTDataset, cfg DistillConfig) (*DistillResult, error) {
-	return RunKnowledgeDistillation(ctx, runner, dataset, cfg)
+func RunDistillation(ctx context.Context, runner DistillRunner, ds dataset.Dataset, cfg DistillConfig) (*DistillResult, error) {
+	return RunKnowledgeDistillation(ctx, runner, ds, cfg)
 }
 
 // RunKnowledgeDistillation trains a student from teacher logits over a dataset stream.
-func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, dataset SFTDataset, cfg DistillConfig) (*DistillResult, error) {
+func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, ds dataset.Dataset, cfg DistillConfig) (*DistillResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if dataset == nil {
+	if ds == nil {
 		return nil, core.NewError("mlx: distillation dataset is nil")
 	}
 	if runner.StudentLogits == nil {
@@ -243,7 +244,7 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, dataset
 	accumulator := &distillMetricAccumulator{}
 	for epoch := 1; epoch <= cfg.Epochs; epoch++ {
 		if epoch > 1 {
-			resetter, ok := dataset.(SFTResetter)
+			resetter, ok := ds.(dataset.Resetter)
 			if !ok {
 				return result, core.NewError("mlx: distillation dataset must implement Reset for multiple epochs")
 			}
@@ -251,7 +252,7 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, dataset
 				return result, err
 			}
 		}
-		if err := runDistillEpoch(ctx, runner, dataset, cfg, result, accumulator, epoch); err != nil {
+		if err := runDistillEpoch(ctx, runner, ds, cfg, result, accumulator, epoch); err != nil {
 			return result, err
 		}
 		result.Metrics.Epochs = epoch
@@ -263,8 +264,8 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, dataset
 	return result, nil
 }
 
-func runDistillEpoch(ctx context.Context, runner DistillRunner, dataset SFTDataset, cfg DistillConfig, result *DistillResult, accumulator *distillMetricAccumulator, epoch int) error {
-	batches, err := distillBatches(ctx, runner, dataset, cfg)
+func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Dataset, cfg DistillConfig, result *DistillResult, accumulator *distillMetricAccumulator, epoch int) error {
+	batches, err := distillBatches(ctx, runner, ds, cfg)
 	if err != nil {
 		return err
 	}
@@ -315,17 +316,17 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, dataset SFTDatas
 	return nil
 }
 
-func distillBatches(ctx context.Context, runner DistillRunner, dataset SFTDataset, cfg DistillConfig) ([]SFTBatch, error) {
+func distillBatches(ctx context.Context, runner DistillRunner, ds dataset.Dataset, cfg DistillConfig) ([]SFTBatch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	source := dataset
+	source := ds
 	if cfg.MaxSamples > 0 {
-		samples, err := distillCollectSamples(ctx, dataset, cfg.MaxSamples)
+		samples, err := distillCollectSamples(ctx, ds, cfg.MaxSamples)
 		if err != nil {
 			return nil, err
 		}
-		source = NewSFTSliceDataset(samples)
+		source = dataset.NewSliceDataset(samples)
 	}
 	if runner.BuildBatches != nil {
 		return runner.BuildBatches(ctx, source, cfg.Batch)
@@ -792,8 +793,8 @@ func distillResultError(result core.Result) error {
 	return core.NewError("core result failed")
 }
 
-func distillCollectSamples(ctx context.Context, dataset SFTDataset, maxSamples int) ([]SFTSample, error) {
-	var samples []SFTSample
+func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples int) ([]dataset.Sample, error) {
+	var samples []dataset.Sample
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -801,14 +802,14 @@ func distillCollectSamples(ctx context.Context, dataset SFTDataset, maxSamples i
 		if maxSamples > 0 && len(samples) >= maxSamples {
 			break
 		}
-		sample, ok, err := dataset.Next()
+		sample, ok, err := ds.Next()
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			break
 		}
-		samples = append(samples, cloneSFTSample(sample))
+		samples = append(samples, dataset.CloneSample(sample))
 	}
 	return samples, nil
 }

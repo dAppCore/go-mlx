@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/dataset"
 	"context"
 	"testing"
 
@@ -35,9 +36,9 @@ func TestRunModelEval_RealModelSkip_Good(t *testing.T) {
 		ClearCache()
 	})
 
-	report, err := RunModelEval(context.Background(), model, NewSFTSliceDataset([]SFTSample{
+	report, err := RunModelEval(context.Background(), model, dataset.NewSliceDataset([]dataset.Sample{
 		{Text: "Local evaluation should produce a finite loss."},
-	}), eval.Config{Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 64}})
+	}), eval.Config{Batch: dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 64}})
 	if err != nil {
 		t.Fatalf("RunModelEval() error = %v", err)
 	}
@@ -61,9 +62,9 @@ func TestRunModelEval_RealModelLoRASkip_Ugly(t *testing.T) {
 		ClearCache()
 	})
 
-	report, err := RunModelEval(context.Background(), model, NewSFTSliceDataset([]SFTSample{
+	report, err := RunModelEval(context.Background(), model, dataset.NewSliceDataset([]dataset.Sample{
 		{Prompt: "Explain local MLX eval.", Response: "It computes masked token loss over a dataset."},
-	}), eval.Config{AdapterPath: adapterPath, Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 96}})
+	}), eval.Config{AdapterPath: adapterPath, Batch: dataset.BatchConfig{BatchSize: 1, MaxSeqLen: 96}})
 	if err != nil {
 		t.Fatalf("RunModelEval() error = %v", err)
 	}
