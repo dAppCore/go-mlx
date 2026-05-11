@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 )
 
 const EvalReportVersion = 1
@@ -24,7 +25,7 @@ type EvalConfig struct {
 type EvalRunner struct {
 	Info          func(context.Context) ModelInfo
 	Tokenizer     func(context.Context) *Tokenizer
-	LoadAdapter   func(context.Context, string) (LoRAAdapterInfo, error)
+	LoadAdapter   func(context.Context, string) (lora.AdapterInfo, error)
 	BuildBatches  func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error)
 	EvaluateBatch func(context.Context, SFTBatch) (EvalBatchMetrics, error)
 }
@@ -49,7 +50,7 @@ type EvalMetrics struct {
 type EvalReport struct {
 	Version   int               `json:"version"`
 	ModelInfo ModelInfo         `json:"model_info"`
-	Adapter   LoRAAdapterInfo   `json:"adapter,omitempty"`
+	Adapter   lora.AdapterInfo   `json:"adapter,omitempty"`
 	Config    EvalConfig        `json:"config"`
 	Metrics   EvalMetrics       `json:"metrics"`
 	Quality   EvalQualityReport `json:"quality"`
@@ -68,7 +69,7 @@ type EvalQualityContext struct {
 	Samples   []SFTSample
 	Metrics   EvalMetrics
 	ModelInfo ModelInfo
-	Adapter   LoRAAdapterInfo
+	Adapter   lora.AdapterInfo
 }
 
 // EvalQualityReport contains small deterministic checks over eval data and metrics.
@@ -134,11 +135,11 @@ func RunDatasetEval(ctx context.Context, runner EvalRunner, dataset SFTDataset, 
 		if runner.Info != nil {
 			report.ModelInfo = runner.Info(ctx)
 		}
-		if loraAdapterInfoEmpty(report.ModelInfo.Adapter) {
+		if report.ModelInfo.Adapter.IsEmpty() {
 			report.ModelInfo.Adapter = adapter
 		}
 	}
-	if loraAdapterInfoEmpty(report.Adapter) {
+	if report.Adapter.IsEmpty() {
 		report.Adapter = report.ModelInfo.Adapter
 	}
 

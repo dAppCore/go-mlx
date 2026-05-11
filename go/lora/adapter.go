@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package lora
 
 import (
 	"slices"
@@ -8,8 +8,8 @@ import (
 	core "dappco.re/go"
 )
 
-// LoRAAdapterInfo is the reproducible identity for an active inference adapter.
-type LoRAAdapterInfo struct {
+// AdapterInfo is the reproducible identity for an active inference adapter.
+type AdapterInfo struct {
 	Name       string   `json:"name,omitempty"`
 	Path       string   `json:"path,omitempty"`
 	Hash       string   `json:"hash,omitempty"`
@@ -19,7 +19,12 @@ type LoRAAdapterInfo struct {
 	TargetKeys []string `json:"target_keys,omitempty"`
 }
 
-type loraAdapterConfigJSON struct {
+// IsEmpty reports whether the adapter info has no meaningful fields set.
+func (info AdapterInfo) IsEmpty() bool {
+	return info.Name == "" && info.Path == "" && info.Hash == "" && info.Rank == 0 && info.Alpha == 0 && info.Scale == 0 && len(info.TargetKeys) == 0
+}
+
+type adapterConfigJSON struct {
 	Rank          int      `json:"rank"`
 	R             int      `json:"r"`
 	Alpha         float32  `json:"alpha"`
@@ -30,25 +35,32 @@ type loraAdapterConfigJSON struct {
 	LoRALayers    []string `json:"lora_layers"`
 }
 
-// InspectLoRAAdapter reads adapter_config.json and hashes adapter files.
-func InspectLoRAAdapter(path string) (LoRAAdapterInfo, error) {
-	return inspectLoRAAdapter(path, path)
+// InspectAdapter reads adapter_config.json and hashes adapter files.
+//
+//	info, err := lora.InspectAdapter("/path/to/adapter")
+func InspectAdapter(path string) (AdapterInfo, error) {
+	return Inspect(path, path)
 }
 
-func inspectLoRAAdapter(path string, identityPath string) (LoRAAdapterInfo, error) {
+// Inspect reads adapter_config.json at path and records identityPath as the
+// user-facing path (which may differ from path when the adapter was staged
+// from a Medium).
+//
+//	info, err := lora.Inspect(stagedPath, originalPath)
+func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if path == "" {
-		return LoRAAdapterInfo{}, core.NewError("mlx: LoRA adapter path is required")
+		return AdapterInfo{}, core.NewError("mlx: LoRA adapter path is required")
 	}
-	configPath := loraAdapterConfigPath(path)
+	configPath := adapterConfigPath(path)
 	read := core.ReadFile(configPath)
 	if !read.OK {
-		return LoRAAdapterInfo{}, core.E("InspectLoRAAdapter", "read adapter_config.json", loraAdapterResultError(read))
+		return AdapterInfo{}, core.E("lora.Inspect", "read adapter_config.json", resultError(read))
 	}
-	var cfg loraAdapterConfigJSON
+	var cfg adapterConfigJSON
 	if result := core.JSONUnmarshal(read.Value.([]byte), &cfg); !result.OK {
-		return LoRAAdapterInfo{}, core.E("InspectLoRAAdapter", "parse adapter_config.json", loraAdapterResultError(result))
+		return AdapterInfo{}, core.E("lora.Inspect", "parse adapter_config.json", resultError(result))
 	}
-	info := LoRAAdapterInfo{
+	info := AdapterInfo{
 		Name:       core.PathBase(identityPath),
 		Path:       identityPath,
 		Rank:       firstNonZeroInt(cfg.Rank, cfg.R),
@@ -62,18 +74,18 @@ func inspectLoRAAdapter(path string, identityPath string) (LoRAAdapterInfo, erro
 	if info.Alpha == 0 && info.Scale != 0 && info.Rank > 0 {
 		info.Alpha = info.Scale * float32(info.Rank)
 	}
-	info.Hash = hashLoRAAdapter(path, read.Value.([]byte))
+	info.Hash = hashAdapter(path, read.Value.([]byte))
 	return info, nil
 }
 
-func loraAdapterConfigPath(path string) string {
+func adapterConfigPath(path string) string {
 	if core.HasSuffix(path, ".safetensors") {
 		return core.PathJoin(core.PathDir(path), "adapter_config.json")
 	}
 	return core.PathJoin(path, "adapter_config.json")
 }
 
-func hashLoRAAdapter(path string, config []byte) string {
+func hashAdapter(path string, config []byte) string {
 	parts := []string{core.SHA256Hex(config)}
 	paths := []string{path}
 	if !core.HasSuffix(path, ".safetensors") {
@@ -116,11 +128,7 @@ func firstNonEmptyStrings(values ...[]string) []string {
 	return nil
 }
 
-func loraAdapterInfoEmpty(info LoRAAdapterInfo) bool {
-	return info.Name == "" && info.Path == "" && info.Hash == "" && info.Rank == 0 && info.Alpha == 0 && info.Scale == 0 && len(info.TargetKeys) == 0
-}
-
-func loraAdapterResultError(result core.Result) error {
+func resultError(result core.Result) error {
 	if result.OK {
 		return nil
 	}

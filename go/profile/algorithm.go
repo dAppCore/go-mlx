@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package profile
 
 import "dappco.re/go/inference"
 
@@ -149,7 +149,7 @@ func algorithmNative(id inference.CapabilityID, group inference.CapabilityGroup,
 	}
 }
 
-func algorithmProfileCapabilities() []inference.Capability {
+func AlgorithmCapabilities() []inference.Capability {
 	profiles := builtinAlgorithmProfiles()
 	out := make([]inference.Capability, 0, len(profiles))
 	for _, profile := range profiles {

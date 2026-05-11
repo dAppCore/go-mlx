@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 )
 
 func TestRunDatasetEval_AggregatesPerplexityAdapterAndQuality_Good(t *testing.T) {
@@ -15,12 +16,12 @@ func TestRunDatasetEval_AggregatesPerplexityAdapterAndQuality_Good(t *testing.T)
 	customCalled := false
 	buildCalled := false
 	evalCalls := 0
-	adapter := LoRAAdapterInfo{Name: "ethics-lora", Path: "/adapters/ethics-lora", Rank: 8, Alpha: 16, Scale: 2}
+	adapter := lora.AdapterInfo{Name: "ethics-lora", Path: "/adapters/ethics-lora", Rank: 8, Alpha: 16, Scale: 2}
 	runner := EvalRunner{
 		Info: func(context.Context) ModelInfo {
 			return ModelInfo{Architecture: "qwen3", NumLayers: 28, Adapter: adapter}
 		},
-		LoadAdapter: func(_ context.Context, path string) (LoRAAdapterInfo, error) {
+		LoadAdapter: func(_ context.Context, path string) (lora.AdapterInfo, error) {
 			if path != adapter.Path {
 				t.Fatalf("LoadAdapter path = %q, want %q", path, adapter.Path)
 			}

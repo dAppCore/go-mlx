@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 )
 
 func TestLoadModel_ExposesAdapterIdentityInInfoAndMetrics_Good(t *testing.T) {
@@ -65,7 +66,7 @@ func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
 	session := &fakeNativeSession{}
 	model := &Model{
 		model:       &fakeNativeModel{session: session, info: metal.ModelInfo{Architecture: "qwen3", NumLayers: 1}},
-		adapterInfo: LoRAAdapterInfo{Path: "/adapters/live", Hash: "sha256:live", Rank: 8},
+		adapterInfo: lora.AdapterInfo{Path: "/adapters/live", Hash: "sha256:live", Rank: 8},
 	}
 	bundle := &StateBundle{
 		Version: StateBundleVersion,

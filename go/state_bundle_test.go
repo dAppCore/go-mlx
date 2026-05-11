@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
 )
 
@@ -286,7 +287,7 @@ func TestStateBundleValidationAndCompatibility_Bad(t *testing.T) {
 	if err := CheckStateBundleCompatibility(ModelInfo{
 		Architecture: "gemma4_text",
 		NumLayers:    1,
-		Adapter: LoRAAdapterInfo{
+		Adapter: lora.AdapterInfo{
 			Name:  "domain",
 			Path:  "/adapters/domain",
 			Hash:  "adapter-hash",
@@ -331,7 +332,7 @@ func TestStateBundleValidationAndCompatibility_Bad(t *testing.T) {
 	if err := CheckStateBundleCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}, bundle); err == nil {
 		t.Fatal("CheckStateBundleCompatibility(missing adapter) error = nil")
 	}
-	for name, adapter := range map[string]LoRAAdapterInfo{
+	for name, adapter := range map[string]lora.AdapterInfo{
 		"hash":  {Path: "/adapters/domain", Hash: "wrong", Rank: 8, Alpha: 16},
 		"path":  {Path: "/other/domain", Rank: 8, Alpha: 16},
 		"rank":  {Path: "/adapters/domain", Rank: 4, Alpha: 16},
@@ -345,7 +346,7 @@ func TestStateBundleValidationAndCompatibility_Bad(t *testing.T) {
 
 func TestStateBundleAdapterFromModelInfo_Good(t *testing.T) {
 	info := ModelInfo{
-		Adapter: LoRAAdapterInfo{
+		Adapter: lora.AdapterInfo{
 			Name:       "active",
 			Path:       "/adapters/active",
 			Hash:       "active-hash",

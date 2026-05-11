@@ -6,6 +6,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
 )
 
@@ -412,8 +413,8 @@ func stateBundleRuntime(runtime StateBundleRuntime) StateBundleRuntime {
 	return runtime
 }
 
-func stateBundleAdapter(adapter StateBundleAdapter, adapterPath string, info LoRAAdapterInfo) StateBundleAdapter {
-	if stateBundleAdapterEmpty(adapter) && !loraAdapterInfoEmpty(info) {
+func stateBundleAdapter(adapter StateBundleAdapter, adapterPath string, info lora.AdapterInfo) StateBundleAdapter {
+	if stateBundleAdapterEmpty(adapter) && !info.IsEmpty() {
 		adapter = stateBundleAdapterFromInfo(info)
 	}
 	if adapter.Path == "" {
@@ -433,7 +434,7 @@ func stateBundleAdapterEmpty(adapter StateBundleAdapter) bool {
 	return adapter.Name == "" && adapter.Path == "" && adapter.Hash == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0
 }
 
-func stateBundleAdapterFromInfo(info LoRAAdapterInfo) StateBundleAdapter {
+func stateBundleAdapterFromInfo(info lora.AdapterInfo) StateBundleAdapter {
 	return StateBundleAdapter{
 		Name:       info.Name,
 		Path:       info.Path,
@@ -445,8 +446,8 @@ func stateBundleAdapterFromInfo(info LoRAAdapterInfo) StateBundleAdapter {
 	}
 }
 
-func stateBundleAdapterToInfo(adapter StateBundleAdapter) LoRAAdapterInfo {
-	return LoRAAdapterInfo{
+func stateBundleAdapterToInfo(adapter StateBundleAdapter) lora.AdapterInfo {
+	return lora.AdapterInfo{
 		Name:       adapter.Name,
 		Path:       adapter.Path,
 		Hash:       adapter.Hash,
@@ -457,11 +458,11 @@ func stateBundleAdapterToInfo(adapter StateBundleAdapter) LoRAAdapterInfo {
 	}
 }
 
-func checkStateBundleAdapterCompatibility(active LoRAAdapterInfo, expected StateBundleAdapter) error {
+func checkStateBundleAdapterCompatibility(active lora.AdapterInfo, expected StateBundleAdapter) error {
 	if stateBundleAdapterEmpty(expected) {
 		return nil
 	}
-	if loraAdapterInfoEmpty(active) {
+	if active.IsEmpty() {
 		return core.NewError("mlx: state bundle requires a LoRA adapter but model has none")
 	}
 	want := stateBundleAdapterToInfo(expected)

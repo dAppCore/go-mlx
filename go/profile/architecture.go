@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package profile
 
 import (
 	core "dappco.re/go"
@@ -52,7 +52,7 @@ func BuiltinArchitectureProfiles() []ModelArchitectureProfile {
 // LookupArchitectureProfile resolves config model_type or Transformers
 // architecture names to a built-in profile.
 func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
-	id := architectureProfileID(value)
+	id := ArchitectureID(value)
 	if id == "" {
 		return ModelArchitectureProfile{}, false
 	}
@@ -63,7 +63,7 @@ func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
 	}
 	for _, profile := range builtinArchitectureProfiles() {
 		for _, alias := range profile.Aliases {
-			if architectureProfileID(alias) == id || parser.NormaliseKey(alias) == id {
+			if ArchitectureID(alias) == id || parser.NormaliseKey(alias) == id {
 				return cloneArchitectureProfile(profile), true
 			}
 		}
@@ -71,7 +71,7 @@ func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
 	return ModelArchitectureProfile{}, false
 }
 
-func architectureProfileID(value string) string {
+func ArchitectureID(value string) string {
 	value = core.Trim(value)
 	if value == "" {
 		return ""
@@ -228,9 +228,9 @@ func architectureDefaultQuantizationHints(id string, moe bool) []string {
 }
 
 func architectureDefaultCacheHints(id string, moe bool) []string {
-	hints := []string{string(KVCacheModeQ8), string(KVCacheModePaged)}
+	hints := []string{"q8", "paged"}
 	if moe || id == "minimax_m2" {
-		hints = append(hints, string(KVCacheModeKQ8VQ4))
+		hints = append(hints, "k-q8-v-q4")
 	}
 	return hints
 }
@@ -244,11 +244,78 @@ func cloneArchitectureProfile(profile ModelArchitectureProfile) ModelArchitectur
 	return profile
 }
 
-func architectureProfileIDs() []string {
+func ArchitectureIDs() []string {
 	profiles := builtinArchitectureProfiles()
 	out := make([]string, 0, len(profiles))
 	for _, profile := range profiles {
 		out = append(out, profile.ID)
 	}
 	return out
+}
+
+func normalizeKnownArchitecture(value string) string {
+	value = core.Lower(core.Trim(value))
+	value = core.Replace(value, "-", "_")
+	switch value {
+	case "qwen3_5":
+		return "qwen3_next"
+	case "minimaxm2", "minimax_m2":
+		return "minimax_m2"
+	case "mixtral":
+		return "mixtral"
+	case "mistral":
+		return "mistral"
+	case "phi", "phi3", "phi4":
+		return "phi"
+	case "deepseek", "deepseek_v3", "deepseek_r1":
+		return "deepseek"
+	case "gptoss", "gpt_oss", "gpt_oss_model":
+		return "gpt_oss"
+	case "bert":
+		return "bert"
+	case "bert_rerank", "bert_cross_encoder":
+		return "bert_rerank"
+	default:
+		return value
+	}
+}
+
+func architectureFromTransformersName(architecture string) string {
+	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
+	switch {
+	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+		return "bert_rerank"
+	case core.Contains(compact, "qwen3moe"):
+		return "qwen3_moe"
+	case core.Contains(compact, "qwen3next"):
+		return "qwen3_next"
+	case core.Contains(architecture, "Gemma4"):
+		return "gemma4_text"
+	case core.Contains(architecture, "Gemma3"):
+		return "gemma3"
+	case core.Contains(architecture, "Gemma2"):
+		return "gemma2"
+	case core.Contains(architecture, "Qwen3"):
+		return "qwen3"
+	case core.Contains(architecture, "Qwen2"):
+		return "qwen2"
+	case core.Contains(architecture, "Llama"):
+		return "llama"
+	case core.Contains(architecture, "MiniMaxM2"):
+		return "minimax_m2"
+	case core.Contains(architecture, "Mixtral"):
+		return "mixtral"
+	case core.Contains(architecture, "Mistral"):
+		return "mistral"
+	case core.Contains(architecture, "Phi"):
+		return "phi"
+	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
+		return "deepseek"
+	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
+		return "gpt_oss"
+	case core.Contains(architecture, "Bert"):
+		return "bert"
+	default:
+		return ""
+	}
 }

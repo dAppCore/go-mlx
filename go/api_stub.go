@@ -9,6 +9,7 @@ import (
 	"iter"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
 )
 
@@ -97,7 +98,7 @@ func (m *Model) ModelType() string { return "" }
 func (m *Model) Info() ModelInfo { return ModelInfo{} }
 
 // Adapter returns no active adapter on unsupported builds.
-func (m *Model) Adapter() LoRAAdapterInfo { return LoRAAdapterInfo{} }
+func (m *Model) Adapter() lora.AdapterInfo { return lora.AdapterInfo{} }
 
 // InspectAttention returns an availability error on unsupported builds.
 func (m *Model) InspectAttention(_ string) (*AttentionSnapshot, error) {

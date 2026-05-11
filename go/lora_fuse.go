@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 )
 
 const (
@@ -30,7 +31,7 @@ type FuseLoRAResult struct {
 	WeightFiles     []string        `json:"weight_files,omitempty"`
 	ProvenancePath  string          `json:"provenance_path"`
 	Pack            ModelPack       `json:"pack"`
-	Adapter         LoRAAdapterInfo `json:"adapter"`
+	Adapter         lora.AdapterInfo `json:"adapter"`
 	FusedWeights    int             `json:"fused_weights"`
 	FusedWeightKeys []string        `json:"fused_weight_keys,omitempty"`
 }
@@ -39,7 +40,7 @@ type FuseLoRAResult struct {
 type LoRAFuseProvenance struct {
 	Version         int               `json:"version"`
 	SourceModel     ModelPack         `json:"source_model"`
-	Adapter         LoRAAdapterInfo   `json:"adapter"`
+	Adapter         lora.AdapterInfo   `json:"adapter"`
 	OutputWeight    string            `json:"output_weight"`
 	OutputWeights   []string          `json:"output_weights,omitempty"`
 	FusedWeightKeys []string          `json:"fused_weight_keys"`
@@ -48,7 +49,7 @@ type LoRAFuseProvenance struct {
 
 type loraFusePrepared struct {
 	Model   ModelPack
-	Adapter LoRAAdapterInfo
+	Adapter lora.AdapterInfo
 	Output  string
 }
 
@@ -80,7 +81,7 @@ func prepareLoRAFuse(ctx context.Context, opts FuseLoRAOptions) (loraFusePrepare
 		return loraFusePrepared{}, core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
 	}
 
-	adapter, err := InspectLoRAAdapter(opts.AdapterPath)
+	adapter, err := lora.InspectAdapter(opts.AdapterPath)
 	if err != nil {
 		return loraFusePrepared{}, core.E("FuseLoRAIntoModelPack", "inspect LoRA adapter", err)
 	}
@@ -233,4 +234,14 @@ func writeLoRAFuseProvenance(path string, provenance LoRAFuseProvenance) error {
 		return core.E("FuseLoRAIntoModelPack", "write adapter provenance", loraAdapterResultError(result))
 	}
 	return nil
+}
+
+func loraAdapterResultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("core result failed")
 }

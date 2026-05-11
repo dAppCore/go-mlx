@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -611,7 +612,7 @@ func toInferenceTrainingResult(info ModelInfo, result *SFTResult, cfg inference.
 	return out
 }
 
-func toInferenceRootAdapterIdentity(info LoRAAdapterInfo) inference.AdapterIdentity {
+func toInferenceRootAdapterIdentity(info lora.AdapterInfo) inference.AdapterIdentity {
 	return inference.AdapterIdentity{
 		Path:       info.Path,
 		Hash:       info.Hash,

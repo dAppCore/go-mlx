@@ -6,14 +6,15 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 )
 
 func TestInspectLoRAAdapter_ReadsMetadataAndHashes_Good(t *testing.T) {
 	dir := writeTestLoRAAdapter(t, `{"rank":16,"alpha":32,"lora_layers":["self_attn.q_proj","self_attn.v_proj"]}`)
 
-	info, err := InspectLoRAAdapter(dir)
+	info, err := lora.InspectAdapter(dir)
 	if err != nil {
-		t.Fatalf("InspectLoRAAdapter() error = %v", err)
+		t.Fatalf("lora.InspectAdapter() error = %v", err)
 	}
 	if info.Name != core.PathBase(dir) || info.Path != dir {
 		t.Fatalf("adapter identity = %+v, want name/path", info)
@@ -32,7 +33,7 @@ func TestInspectLoRAAdapter_MissingConfig_Bad(t *testing.T) {
 		t.Fatalf("WriteFile: %s", result.Error())
 	}
 
-	_, err := InspectLoRAAdapter(dir)
+	_, err := lora.InspectAdapter(dir)
 	if err == nil {
 		t.Fatal("expected missing adapter_config.json error")
 	}
@@ -42,9 +43,9 @@ func TestInspectLoRAAdapter_SafetensorsPath_Ugly(t *testing.T) {
 	dir := writeTestLoRAAdapter(t, `{"r":4,"lora_alpha":8,"target_modules":["q_proj"]}`)
 	path := core.PathJoin(dir, "adapter.safetensors")
 
-	info, err := InspectLoRAAdapter(path)
+	info, err := lora.InspectAdapter(path)
 	if err != nil {
-		t.Fatalf("InspectLoRAAdapter(.safetensors) error = %v", err)
+		t.Fatalf("lora.InspectAdapter(.safetensors) error = %v", err)
 	}
 	if info.Path != path || info.Name != "adapter.safetensors" || info.Rank != 4 || info.Alpha != 8 {
 		t.Fatalf("adapter info = %+v, want safetensors path metadata", info)
@@ -63,7 +64,7 @@ func TestStateBundleCompatibility_MatchingAdapter_Good(t *testing.T) {
 	err := CheckStateBundleCompatibility(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
-		Adapter:      LoRAAdapterInfo{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
+		Adapter:      lora.AdapterInfo{Path: "/adapters/a", Hash: "sha256:a", Rank: 8},
 	}, bundle)
 	if err != nil {
 		t.Fatalf("CheckStateBundleCompatibility() error = %v", err)
@@ -82,7 +83,7 @@ func TestStateBundleCompatibility_RejectsAdapterMismatch_Bad(t *testing.T) {
 	err := CheckStateBundleCompatibility(ModelInfo{
 		Architecture: "qwen3",
 		NumLayers:    1,
-		Adapter:      LoRAAdapterInfo{Path: "/adapters/b", Hash: "sha256:b", Rank: 8},
+		Adapter:      lora.AdapterInfo{Path: "/adapters/b", Hash: "sha256:b", Rank: 8},
 	}, bundle)
 	if err == nil {
 		t.Fatal("expected adapter mismatch error")

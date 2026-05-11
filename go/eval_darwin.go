@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 )
 
 type nativeEvalInternalModel interface {
@@ -31,15 +32,15 @@ func NewModelEvalRunner(model *Model) EvalRunner {
 			}
 			return model.Tokenizer()
 		},
-		LoadAdapter: func(ctx context.Context, path string) (LoRAAdapterInfo, error) {
+		LoadAdapter: func(ctx context.Context, path string) (lora.AdapterInfo, error) {
 			if err := ctx.Err(); err != nil {
-				return LoRAAdapterInfo{}, err
+				return lora.AdapterInfo{}, err
 			}
 			if model == nil {
-				return LoRAAdapterInfo{}, core.NewError("mlx: model is nil")
+				return lora.AdapterInfo{}, core.NewError("mlx: model is nil")
 			}
 			if _, err := model.LoadLoRA(path); err != nil {
-				return LoRAAdapterInfo{}, err
+				return lora.AdapterInfo{}, err
 			}
 			return model.Adapter(), nil
 		},

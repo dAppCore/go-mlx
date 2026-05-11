@@ -12,6 +12,7 @@ import (
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 )
 
 type nativeModel interface {
@@ -79,7 +80,7 @@ type Model struct {
 	cfg         LoadConfig
 	tok         *Tokenizer
 	gguf        *GGUFInfo
-	adapterInfo LoRAAdapterInfo
+	adapterInfo lora.AdapterInfo
 	cleanup     func() error
 }
 
@@ -112,7 +113,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 	resolvedPath := modelPath
 	resolvedAdapterPath := cfg.AdapterPath
-	var adapterInfo LoRAAdapterInfo
+	var adapterInfo lora.AdapterInfo
 	cleanup := func() error { return nil }
 	if cfg.Medium != nil {
 		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
@@ -133,7 +134,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 	cfg = applyMemoryPlanToLoadConfig(resolvedPath, cfg)
 	if resolvedAdapterPath != "" {
-		adapterInfo, err = inspectLoRAAdapter(resolvedAdapterPath, cfg.AdapterPath)
+		adapterInfo, err = lora.Inspect(resolvedAdapterPath, cfg.AdapterPath)
 		if err != nil {
 			if cleanupErr := cleanup(); cleanupErr != nil {
 				return nil, core.ErrorJoin(err, cleanupErr)
@@ -376,8 +377,8 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 	}
 }
 
-func toRootAdapterInfo(info metal.AdapterInfo) LoRAAdapterInfo {
-	return LoRAAdapterInfo{
+func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
+	return lora.AdapterInfo{
 		Name:       info.Name,
 		Path:       info.Path,
 		Hash:       info.Hash,
@@ -881,7 +882,7 @@ func (m *Model) Metrics() Metrics {
 		return Metrics{}
 	}
 	metrics := toRootMetrics(m.model.LastMetrics())
-	if loraAdapterInfoEmpty(metrics.Adapter) {
+	if metrics.Adapter.IsEmpty() {
 		metrics.Adapter = m.adapterInfo
 	}
 	return metrics
@@ -947,18 +948,18 @@ func (m *Model) Info() ModelInfo {
 }
 
 // Adapter returns the active LoRA inference adapter identity.
-func (m *Model) Adapter() LoRAAdapterInfo {
+func (m *Model) Adapter() lora.AdapterInfo {
 	if m == nil {
-		return LoRAAdapterInfo{}
+		return lora.AdapterInfo{}
 	}
-	if !loraAdapterInfoEmpty(m.adapterInfo) {
+	if !m.adapterInfo.IsEmpty() {
 		return m.adapterInfo
 	}
 	if m.model != nil {
 		info := m.model.Info()
 		return toRootAdapterInfo(info.Adapter)
 	}
-	return LoRAAdapterInfo{}
+	return lora.AdapterInfo{}
 }
 
 // InspectAttention runs a single prefill pass and returns extracted K tensors.
@@ -1107,7 +1108,7 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	if m == nil || m.model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
-	info, err := InspectLoRAAdapter(path)
+	info, err := lora.InspectAdapter(path)
 	if err != nil {
 		return nil, err
 	}
@@ -1129,7 +1130,7 @@ func (m *Model) UnloadLoRA() error {
 	if m == nil || m.model == nil {
 		return core.NewError("mlx: model is nil")
 	}
-	if loraAdapterInfoEmpty(m.adapterInfo) {
+	if m.adapterInfo.IsEmpty() {
 		return nil
 	}
 	unloader, ok := m.model.(nativeLoRAUnloader)
@@ -1139,7 +1140,7 @@ func (m *Model) UnloadLoRA() error {
 	if err := unloader.UnloadLoRA(); err != nil {
 		return err
 	}
-	m.adapterInfo = LoRAAdapterInfo{}
+	m.adapterInfo = lora.AdapterInfo{}
 	m.cfg.AdapterPath = ""
 	return nil
 }

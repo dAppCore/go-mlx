@@ -12,6 +12,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 )
 
 func collectThinkingStreamTokens(t *testing.T, ch <-chan Token) string {
@@ -47,7 +48,7 @@ func TestModelGenerateStream_QwenThinkingCaptureWithAdapter_Good(t *testing.T) {
 				{ID: 5, Text: "nk>final"},
 			},
 		},
-		adapterInfo: LoRAAdapterInfo{Name: "probe-lora"},
+		adapterInfo: lora.AdapterInfo{Name: "probe-lora"},
 	}
 	var captured []parser.Chunk
 

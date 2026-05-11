@@ -9,6 +9,7 @@ import (
 	"dappco.re/go"
 	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
+	"dappco.re/go/mlx/lora"
 )
 
 const (
@@ -43,7 +44,7 @@ type Metrics struct {
 	PromptCacheHitTokens       int             `json:"prompt_cache_hit_tokens,omitempty"`
 	PromptCacheMissTokens      int             `json:"prompt_cache_miss_tokens,omitempty"`
 	PromptCacheRestoreDuration time.Duration   `json:"prompt_cache_restore_duration,omitempty"`
-	Adapter                    LoRAAdapterInfo `json:"adapter,omitempty"`
+	Adapter                    lora.AdapterInfo `json:"adapter,omitempty"`
 }
 
 // ClassifyResult holds the sampled token for a single prompt and optional logits.
@@ -84,7 +85,7 @@ type ModelInfo struct {
 	QuantBits     int
 	QuantGroup    int
 	ContextLength int
-	Adapter       LoRAAdapterInfo
+	Adapter       lora.AdapterInfo
 }
 
 // GenerateConfig holds generation parameters for the RFC-style root API.

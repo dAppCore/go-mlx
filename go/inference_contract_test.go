@@ -11,6 +11,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -353,7 +354,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 		t.Fatalf("fast eval config = %+v", fastCfg)
 	}
 	bench := toInferenceBenchReport(&FastEvalReport{
-		ModelInfo: ModelInfo{Architecture: "qwen3", Adapter: LoRAAdapterInfo{Name: "root"}},
+		ModelInfo: ModelInfo{Architecture: "qwen3", Adapter: lora.AdapterInfo{Name: "root"}},
 		Generation: FastEvalGenerationSummary{
 			PromptTokens:        4,
 			GeneratedTokens:     5,
@@ -377,7 +378,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	}
 	eval := toInferenceEvalReport(&EvalReport{
 		ModelInfo: ModelInfo{Architecture: "qwen3"},
-		Adapter:   LoRAAdapterInfo{Name: "eval"},
+		Adapter:   lora.AdapterInfo{Name: "eval"},
 		Metrics:   EvalMetrics{Samples: 1, Tokens: 2, Loss: 0.3, Perplexity: 1.4},
 		Quality:   EvalQualityReport{Checks: []EvalQualityCheck{{Name: "q", Pass: true, Score: 0.9, Detail: "ok"}}},
 	})
@@ -402,7 +403,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	}
 	training := toInferenceTrainingResult(ModelInfo{
 		Architecture: "qwen3",
-		Adapter:      LoRAAdapterInfo{Name: "train", Path: "/tmp/original", Rank: 8},
+		Adapter:      lora.AdapterInfo{Name: "train", Path: "/tmp/original", Rank: 8},
 	}, &SFTResult{
 		Epochs:      2,
 		Steps:       5,

@@ -8,6 +8,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/lora"
 )
 
 // NewModelEvalRunner returns an eval runner that reports native unavailability.
@@ -25,8 +26,8 @@ func NewModelEvalRunner(model *Model) EvalRunner {
 			}
 			return model.Tokenizer()
 		},
-		LoadAdapter: func(context.Context, string) (LoRAAdapterInfo, error) {
-			return LoRAAdapterInfo{}, unsupportedBuildError()
+		LoadAdapter: func(context.Context, string) (lora.AdapterInfo, error) {
+			return lora.AdapterInfo{}, unsupportedBuildError()
 		},
 		EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
 			return EvalBatchMetrics{}, core.NewError("mlx: native dataset eval requires darwin/arm64 MLX support")
