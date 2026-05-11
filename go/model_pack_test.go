@@ -7,6 +7,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/quant/codebook"
+	"dappco.re/go/inference/quant/jang"
 )
 
 const modelPackTokenizerJSON = `{
@@ -317,7 +319,7 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.JANG == nil || pack.JANG.Profile != "JANGTQ" || pack.JANG.RoutedExpertBits != 2 || !pack.JANG.Capabilities.SupportsThinking {
 		t.Fatalf("JANG metadata = %+v, want JANGTQ routed expert metadata", pack.JANG)
 	}
-	if pack.PackedQuantization == nil || pack.PackedQuantization.Format != "mxtq" || pack.PackedQuantization.RoleBits[string(JANGTensorRoleRoutedExpert)] != 2 {
+	if pack.PackedQuantization == nil || pack.PackedQuantization.Format != "mxtq" || pack.PackedQuantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("packed quantization = %+v, want MXTQ routed expert profile", pack.PackedQuantization)
 	}
 	if pack.MiniMaxM2 == nil || pack.MiniMaxM2.Config.NumLocalExperts != 256 || pack.MiniMaxM2.Config.NumExpertsPerToken != 8 {
@@ -358,7 +360,7 @@ func TestInspectModelPack_CodebookVQPackFailsClearly_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectModelPack() error = %v", err)
 	}
-	if pack.Codebook == nil || pack.Codebook.Format != CodebookFormatVQ || len(pack.Codebook.Tensors) != 1 {
+	if pack.Codebook == nil || pack.Codebook.Format != codebook.FormatVQ || len(pack.Codebook.Tensors) != 1 {
 		t.Fatalf("codebook profile = %+v, want VQ model-pack feature flag", pack.Codebook)
 	}
 	if pack.NativeLoadable || pack.Valid() || !pack.HasIssue(ModelPackIssueUnsupportedCodebook) {
@@ -405,7 +407,7 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",

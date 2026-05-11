@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 	memvid "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 )
@@ -97,7 +98,7 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 		IncludeAdapterFuse:  true,
 		IncludePerplexity:   true,
 		IncludeKVCacheBench: true,
-		QuantizationProfile: BuildJANGPackedQuantizationProfile(&JANGQuantizationInfo{
+		QuantizationProfile: jang.BuildPackedProfile(&jang.Info{
 			WeightFormat:     "mxtq",
 			Profile:          "JANGTQ",
 			Method:           "affine+mxtq",
@@ -135,7 +136,7 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 	if report.KVCache.Version != KVCacheBenchReportVersion || report.KVCache.RecommendedMode == "" {
 		t.Fatalf("KV cache report = %+v, want populated mode comparison", report.KVCache)
 	}
-	if report.QuantizationProfile == nil || report.QuantizationProfile.Type != "jangtq" || report.QuantizationProfile.RoleBits[string(JANGTensorRoleRoutedExpert)] != 2 {
+	if report.QuantizationProfile == nil || report.QuantizationProfile.Type != "jangtq" || report.QuantizationProfile.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("quantization profile = %+v, want JANGTQ bench metadata", report.QuantizationProfile)
 	}
 	if report.Summary.PrefillTokensPerSec != 200 || report.Summary.DecodeTokensPerSec != 75 || report.Summary.PeakMemoryBytes != 8<<20 {

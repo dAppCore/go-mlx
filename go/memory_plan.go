@@ -2,6 +2,8 @@
 
 package mlx
 
+import "dappco.re/go/inference/quant/jang"
+
 const MemoryGiB uint64 = 1 << 30
 
 // MemoryClass names the local Apple memory tier driving runtime policy.
@@ -62,7 +64,7 @@ type MemoryPlan struct {
 	ModelQuantization             int                            `json:"model_quantization,omitempty"`
 	ModelQuantizationType         string                         `json:"model_quantization_type,omitempty"`
 	ModelQuantizationFamily       string                         `json:"model_quantization_family,omitempty"`
-	ModelPackedQuantization       *JANGPackedQuantizationProfile `json:"model_packed_quantization,omitempty"`
+	ModelPackedQuantization       *jang.PackedProfile `json:"model_packed_quantization,omitempty"`
 	ModelWeightBytes              uint64                         `json:"model_weight_bytes,omitempty"`
 	ModelForwardSkeletonValidated bool                           `json:"model_forward_skeleton_validated,omitempty"`
 	ModelForwardSkeletonBytes     uint64                         `json:"model_forward_skeleton_bytes,omitempty"`
@@ -102,7 +104,7 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 	plan.ModelQuantizationType = modelQuantType
 	plan.ModelQuantizationFamily = modelQuantFamily
 	if input.Pack != nil {
-		plan.ModelPackedQuantization = CloneJANGPackedQuantizationProfile(input.Pack.PackedQuantization)
+		plan.ModelPackedQuantization = jang.ClonePackedProfile(input.Pack.PackedQuantization)
 		if input.Pack.MiniMaxM2LayerSkeleton != nil {
 			plan.ModelForwardSkeletonValidated = true
 			plan.ModelForwardSkeletonBytes = input.Pack.MiniMaxM2LayerSkeleton.EstimatedBytes()

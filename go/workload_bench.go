@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 const WorkloadBenchReportVersion = 1
@@ -24,7 +25,7 @@ type WorkloadBenchConfig struct {
 	IncludeKVCacheBench    bool                           `json:"include_kv_cache_bench"`
 	IncludeExpertResidency bool                           `json:"include_expert_residency"`
 	ExpertResidency        ExpertResidencyPlan            `json:"expert_residency,omitempty"`
-	QuantizationProfile    *JANGPackedQuantizationProfile `json:"quantization_profile,omitempty"`
+	QuantizationProfile    *jang.PackedProfile `json:"quantization_profile,omitempty"`
 	EvalSamples            []WorkloadEvalSample           `json:"eval_samples,omitempty"`
 }
 
@@ -73,7 +74,7 @@ type WorkloadBenchReport struct {
 	Version             int                            `json:"version"`
 	FastEval            *FastEvalReport                `json:"fast_eval,omitempty"`
 	KVCache             KVCacheBenchReport             `json:"kv_cache,omitempty"`
-	QuantizationProfile *JANGPackedQuantizationProfile `json:"quantization_profile,omitempty"`
+	QuantizationProfile *jang.PackedProfile `json:"quantization_profile,omitempty"`
 	Adapter             WorkloadAdapterReport          `json:"adapter"`
 	Evaluation          WorkloadEvaluationReport       `json:"evaluation"`
 	ExpertResidency     WorkloadExpertResidencyReport  `json:"expert_residency"`
@@ -211,7 +212,7 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 	cfg = normalizeWorkloadBenchConfig(cfg)
 	report := &WorkloadBenchReport{
 		Version:             WorkloadBenchReportVersion,
-		QuantizationProfile: CloneJANGPackedQuantizationProfile(cfg.QuantizationProfile),
+		QuantizationProfile: jang.ClonePackedProfile(cfg.QuantizationProfile),
 	}
 
 	fastEval, err := RunFastEval(ctx, runner.FastEval, cfg.FastEval)
@@ -243,7 +244,7 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.FastEval = normalizeFastEvalConfig(cfg.FastEval)
 	cfg.Eval = normalizeEvalConfig(cfg.Eval)
-	cfg.QuantizationProfile = CloneJANGPackedQuantizationProfile(cfg.QuantizationProfile)
+	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
 	cfg.ExpertResidency = normaliseExpertResidencyPlan(cfg.ExpertResidency)
 	return cfg

@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 const (
@@ -148,7 +149,7 @@ type HFModelMetadata struct {
 	PipelineTag string                `json:"pipeline_tag,omitempty"`
 	Config      HFModelConfig         `json:"config,omitempty"`
 	Files       []HFModelFile         `json:"siblings,omitempty"`
-	JANG        *JANGQuantizationInfo `json:"jang,omitempty"`
+	JANG        *jang.Info `json:"jang,omitempty"`
 }
 
 // HFModelFile describes one model repository file.
@@ -343,7 +344,7 @@ func inspectLocalHFModelMetadata(path string) (HFModelMetadata, string, error) {
 		return HFModelMetadata{}, root, core.E("PlanHFModelFits", "parse local config.json", hfFitResultError(result))
 	}
 	files := localHFModelFiles(root)
-	jang, _ := readJANGQuantizationInfo(root)
+	jang, _ := jang.ReadConfig(root)
 	return HFModelMetadata{
 		ID:     localHFModelID(path, root),
 		Config: config,
@@ -414,14 +415,16 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 	quantType := config.quantizationType()
 	quantFamily := ""
 	format, weightBytes := hfWeightFormatAndBytes(meta.Files)
-	jang := meta.JANG
-	if jang == nil {
-		jang = inferJANGQuantizationFromHF(meta)
+	info := meta.JANG
+	if info == nil {
+		info = InferJANGFromHF(meta)
 	}
-	if jang != nil {
-		quantBits = firstPositive(jang.BitsDefault, quantBits)
-		quantGroup = firstPositive(jang.GroupSize, quantGroup)
-		quantType = jangQuantizationType(jang)
+	if info != nil {
+		quantBits = firstPositive(info.BitsDefault, quantBits)
+		quantGroup = firstPositive(info.GroupSize, quantGroup)
+		if info.Packed != nil {
+			quantType = info.Packed.Type
+		}
 		quantFamily = "jang"
 	}
 	if quantBits == 0 {

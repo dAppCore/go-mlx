@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 func TestExpertResidency_PlanMiniMaxM2ChoosesLazyHotSetFor96GB_Good(t *testing.T) {
@@ -20,7 +21,7 @@ func TestExpertResidency_PlanMiniMaxM2ChoosesLazyHotSetFor96GB_Good(t *testing.T
 		HeadDim:            2,
 		NumLocalExperts:    16,
 		NumExpertsPerToken: 2,
-	}, &JANGQuantizationInfo{
+	}, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",

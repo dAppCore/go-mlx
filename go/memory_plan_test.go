@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
@@ -121,7 +122,7 @@ func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
 		QuantGroup:    64,
 		QuantType:     "jangtq",
 		QuantFamily:   "jang",
-		PackedQuantization: BuildJANGPackedQuantizationProfile(&JANGQuantizationInfo{
+		PackedQuantization: jang.BuildPackedProfile(&jang.Info{
 			WeightFormat:     "mxtq",
 			Profile:          "JANGTQ",
 			Method:           "affine+mxtq",

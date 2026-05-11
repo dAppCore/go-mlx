@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 const miniMaxM2FixtureConfig = `{
@@ -59,7 +60,7 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 	if err != nil {
 		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
 	}
-	if plan.Quantization == nil || plan.Quantization.Format != "mxtq" || plan.Quantization.RoleBits[string(JANGTensorRoleRoutedExpert)] != 2 {
+	if plan.Quantization == nil || plan.Quantization.Format != "mxtq" || plan.Quantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("plan quantization = %+v, want MXTQ routed expert profile", plan.Quantization)
 	}
 
@@ -73,7 +74,7 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 		t.Fatalf("router spec = %+v, want dense router gate", router)
 	}
 	attention := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleAttentionQ)
-	if attention.Packed == nil || attention.Packed.Bits != 8 || attention.Packed.Role != JANGTensorRoleAttention {
+	if attention.Packed == nil || attention.Packed.Bits != 8 || attention.Packed.Role != jang.TensorRoleAttention {
 		t.Fatalf("attention spec = %+v, want 8-bit packed attention descriptor", attention)
 	}
 	if len(attention.Shape) != 2 || attention.Shape[0] != 6144 || attention.Shape[1] != 3072 {
@@ -87,7 +88,7 @@ func TestMiniMaxM2_TensorPlanBuildsRouterAttentionAndExpertSpecs_Good(t *testing
 	if expert.Name != "model.layers.0.block_sparse_moe.experts.17.gate_proj.weight" {
 		t.Fatalf("expert name = %q", expert.Name)
 	}
-	if expert.Packed == nil || expert.Packed.Bits != 2 || expert.Packed.Role != JANGTensorRoleRoutedExpert {
+	if expert.Packed == nil || expert.Packed.Bits != 2 || expert.Packed.Role != jang.TensorRoleRoutedExpert {
 		t.Fatalf("expert spec = %+v, want 2-bit routed expert descriptor", expert)
 	}
 	if len(expert.Aliases) == 0 || expert.Aliases[0] != "model.layers.0.mlp.experts.17.gate_proj.weight" {
@@ -108,7 +109,7 @@ func TestMiniMaxM2_LayerForwardSkeletonValidatesAttentionAndRouter_Good(t *testi
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -160,7 +161,7 @@ func TestMiniMaxM2_LayerForwardSkeletonRejectsWrongAttentionShape_Bad(t *testing
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2})
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2})
 	if err != nil {
 		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
 	}
@@ -259,7 +260,7 @@ func TestMiniMaxM2_LoadSelectedPackedExpertsFromSafetensors_Good(t *testing.T) {
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -355,7 +356,7 @@ func TestMiniMaxM2_DequantizedLazyExpertsReturnDenseWeights_Good(t *testing.T) {
 
 func TestMiniMaxM2_LoadPackedExpertsFromSafetensorsMissingSidecar_Bad(t *testing.T) {
 	cfg := MiniMaxM2Config{ModelType: "minimax_m2", HiddenSize: 2, IntermediateSize: 2, NumHiddenLayers: 1, NumAttentionHeads: 1, NumKeyValueHeads: 1, HeadDim: 2, NumLocalExperts: 1, NumExpertsPerToken: 1}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
 	if err != nil {
 		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
 	}
@@ -394,7 +395,7 @@ func TestMiniMaxM2_LoadRouterFromSafetensorsAndProjectScores_Good(t *testing.T) 
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 4, BitsDefault: 2, RoutedExpertBits: 2})
 	if err != nil {
 		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
 	}
@@ -521,7 +522,7 @@ func miniMaxM2SmallJANGTQPlan(t *testing.T) MiniMaxM2TensorPlan {
 		NumLocalExperts:    3,
 		NumExpertsPerToken: 1,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -568,7 +569,7 @@ type miniMaxM2RawSafetensor struct {
 
 func miniMaxM2PackedRawTensor(t *testing.T, name string, values []uint8) miniMaxM2RawSafetensor {
 	t.Helper()
-	desc := JANGPackedTensorDescriptor{
+	desc := jang.PackedTensorDescriptor{
 		Name:        name,
 		Shape:       []uint64{2, 2},
 		Elements:    4,
@@ -578,9 +579,9 @@ func miniMaxM2PackedRawTensor(t *testing.T, name string, values []uint8) miniMax
 		ScaleCount:  1,
 		BiasCount:   1,
 	}
-	packed, err := PackJANGQuantizedValues(desc, values)
+	packed, err := jang.PackQuantizedValues(desc, values)
 	if err != nil {
-		t.Fatalf("PackJANGQuantizedValues() error = %v", err)
+		t.Fatalf("jang.PackQuantizedValues() error = %v", err)
 	}
 	return miniMaxM2RawSafetensor{Name: name, DType: "U8", Shape: []int{len(packed)}, Raw: packed}
 }

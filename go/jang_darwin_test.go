@@ -4,7 +4,29 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
+
+	"dappco.re/go/inference/quant/jang"
+)
+
+func testJANGTQInfo() *jang.Info {
+	info := &jang.Info{
+		Version:          2,
+		WeightFormat:     "mxtq",
+		Profile:          "JANGTQ",
+		Method:           "affine+mxtq",
+		GroupSize:        4,
+		BitsDefault:      2,
+		AttentionBits:    8,
+		SharedExpertBits: 8,
+		RoutedExpertBits: 2,
+		EmbedTokensBits:  8,
+		LMHeadBits:       8,
+	}
+	info.Packed = jang.BuildPackedProfile(info)
+	return info
+}
 
 func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
@@ -35,15 +57,15 @@ func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.
 	desc.BiasCount = 2
 
 	values := []uint8{0, 1, 2, 3, 3, 2, 1, 0}
-	packed, err := PackJANGQuantizedValues(desc, values)
+	packed, err := jang.PackQuantizedValues(desc, values)
 	if err != nil {
-		t.Fatalf("PackJANGQuantizedValues() error = %v", err)
+		t.Fatalf("jang.PackQuantizedValues() error = %v", err)
 	}
 	scales := []float32{0.5, 1.25}
 	biases := []float32{-1, 2}
-	want, err := DequantizeJANGPackedTensor(desc, packed, scales, biases)
+	want, err := jang.DequantizePackedTensor(desc, packed, scales, biases)
 	if err != nil {
-		t.Fatalf("DequantizeJANGPackedTensor() error = %v", err)
+		t.Fatalf("jang.DequantizePackedTensor() error = %v", err)
 	}
 
 	got, err := DequantizeJANGPackedTensorMetal(desc, packed, scales, biases)
@@ -58,11 +80,11 @@ func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.
 func TestJANGNative_ProjectPackedTensorMetalMatchesCPUProjection_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	desc := JANGPackedTensorDescriptor{
+	desc := jang.PackedTensorDescriptor{
 		Name:          "model.layers.0.block_sparse_moe.experts.0.gate_proj.weight",
 		Type:          "jangtq",
 		Format:        "mxtq",
-		Role:          JANGTensorRoleRoutedExpert,
+		Role:          jang.TensorRoleRoutedExpert,
 		Shape:         []uint64{3, 4},
 		Elements:      12,
 		Bits:          2,
@@ -72,13 +94,13 @@ func TestJANGNative_ProjectPackedTensorMetalMatchesCPUProjection_Good(t *testing
 		ValuesPerByte: 4,
 		ScaleCount:    3,
 		BiasCount:     3,
-		BitOrder:      JANGBitOrderLSB0,
-		Encoding:      JANGEncodingAffine,
+		BitOrder:      jang.BitOrderLSB0,
+		Encoding:      jang.EncodingAffine,
 	}
 	values := []uint8{0, 1, 2, 3, 3, 2, 1, 0, 1, 1, 2, 2}
-	packed, err := PackJANGQuantizedValues(desc, values)
+	packed, err := jang.PackQuantizedValues(desc, values)
 	if err != nil {
-		t.Fatalf("PackJANGQuantizedValues() error = %v", err)
+		t.Fatalf("jang.PackQuantizedValues() error = %v", err)
 	}
 	scales := []float32{0.5, 1.25, -0.75}
 	biases := []float32{-1, 2, 5}
@@ -92,9 +114,9 @@ func TestJANGNative_ProjectPackedTensorMetalMatchesCPUProjection_Good(t *testing
 	if err != nil {
 		t.Fatalf("ProjectJANGPackedTensorMetal() error = %v", err)
 	}
-	weight, err := DequantizeJANGPackedTensor(desc, packed, scales, biases)
+	weight, err := jang.DequantizePackedTensor(desc, packed, scales, biases)
 	if err != nil {
-		t.Fatalf("DequantizeJANGPackedTensor() error = %v", err)
+		t.Fatalf("jang.DequantizePackedTensor() error = %v", err)
 	}
 	want := denseProjectionReference(input, 2, weight, 3, 4, projBias)
 	if !float32SlicesRoughlyEqual(got.Values, want, 1e-5) {
@@ -108,11 +130,11 @@ func TestJANGNative_ProjectPackedTensorMetalMatchesCPUProjection_Good(t *testing
 func TestJANGNative_ProjectPackedTensorMetalFusedMatchesComposedProjection_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	desc := JANGPackedTensorDescriptor{
+	desc := jang.PackedTensorDescriptor{
 		Name:          "model.layers.0.block_sparse_moe.experts.0.gate_proj.weight",
 		Type:          "jangtq",
 		Format:        "mxtq",
-		Role:          JANGTensorRoleRoutedExpert,
+		Role:          jang.TensorRoleRoutedExpert,
 		Shape:         []uint64{3, 4},
 		Elements:      12,
 		Bits:          2,
@@ -122,13 +144,13 @@ func TestJANGNative_ProjectPackedTensorMetalFusedMatchesComposedProjection_Good(
 		ValuesPerByte: 4,
 		ScaleCount:    3,
 		BiasCount:     3,
-		BitOrder:      JANGBitOrderLSB0,
-		Encoding:      JANGEncodingAffine,
+		BitOrder:      jang.BitOrderLSB0,
+		Encoding:      jang.EncodingAffine,
 	}
 	values := []uint8{0, 1, 2, 3, 3, 2, 1, 0, 1, 1, 2, 2}
-	packed, err := PackJANGQuantizedValues(desc, values)
+	packed, err := jang.PackQuantizedValues(desc, values)
 	if err != nil {
-		t.Fatalf("PackJANGQuantizedValues() error = %v", err)
+		t.Fatalf("jang.PackQuantizedValues() error = %v", err)
 	}
 	scales := []float32{0.5, 1.25, -0.75}
 	biases := []float32{-1, 2, 5}
@@ -155,7 +177,7 @@ func TestJANGNative_ProjectPackedTensorMetalFusedMatchesComposedProjection_Good(
 }
 
 func TestJANGNative_ProjectPackedTensorMetalRejectsInputMismatch_Bad(t *testing.T) {
-	desc := JANGPackedTensorDescriptor{
+	desc := jang.PackedTensorDescriptor{
 		Name:        "bad",
 		Shape:       []uint64{3, 4},
 		Elements:    12,

@@ -7,6 +7,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/quant/codebook"
+	"dappco.re/go/inference/quant/jang"
 )
 
 // ModelPackFormat names the model weight container found in a pack.
@@ -105,9 +107,9 @@ type ModelPack struct {
 	QuantType                string                         `json:"quant_type,omitempty"`
 	QuantFamily              string                         `json:"quant_family,omitempty"`
 	Quantization             *GGUFQuantizationInfo          `json:"quantization,omitempty"`
-	JANG                     *JANGQuantizationInfo          `json:"jang,omitempty"`
-	PackedQuantization       *JANGPackedQuantizationProfile `json:"packed_quantization,omitempty"`
-	Codebook                 *CodebookQuantizationProfile   `json:"codebook,omitempty"`
+	JANG                     *jang.Info          `json:"jang,omitempty"`
+	PackedQuantization       *jang.PackedProfile `json:"packed_quantization,omitempty"`
+	Codebook                 *codebook.Profile   `json:"codebook,omitempty"`
 	MiniMaxM2                *MiniMaxM2TensorPlan           `json:"minimax_m2,omitempty"`
 	MiniMaxM2LayerSkeleton   *MiniMaxM2LayerForwardSkeleton `json:"minimax_m2_layer_skeleton,omitempty"`
 	ArchitectureProfile      *ModelArchitectureProfile      `json:"architecture_profile,omitempty"`
@@ -316,26 +318,28 @@ func applyModelPackConfigMetadata(pack *ModelPack, config *modelConfigProbe) {
 }
 
 func inspectModelPackJANG(pack *ModelPack, root string) {
-	jang, err := readJANGQuantizationInfo(root)
+	info, err := jang.ReadConfig(root)
 	if err != nil {
 		pack.addIssue(ModelPackIssueWarning, ModelPackIssueQuantizationMismatch, "jang_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "jang_config.json"))
 		return
 	}
-	if jang == nil {
+	if info == nil {
 		return
 	}
-	pack.JANG = jang
-	pack.PackedQuantization = CloneJANGPackedQuantizationProfile(jang.Packed)
-	if jang.SourceArchitecture != "" && pack.Architecture == "" {
-		pack.Architecture = jang.SourceArchitecture
+	pack.JANG = info
+	pack.PackedQuantization = jang.ClonePackedProfile(info.Packed)
+	if info.SourceArchitecture != "" && pack.Architecture == "" {
+		pack.Architecture = info.SourceArchitecture
 	}
-	if jang.BitsDefault > 0 {
-		pack.QuantBits = jang.BitsDefault
+	if info.BitsDefault > 0 {
+		pack.QuantBits = info.BitsDefault
 	}
-	if jang.GroupSize > 0 {
-		pack.QuantGroup = jang.GroupSize
+	if info.GroupSize > 0 {
+		pack.QuantGroup = info.GroupSize
 	}
-	pack.QuantType = jangQuantizationType(jang)
+	if info.Packed != nil {
+		pack.QuantType = info.Packed.Type
+	}
 	pack.QuantFamily = "jang"
 	pack.Quantization = &GGUFQuantizationInfo{
 		Type:      pack.QuantType,
@@ -347,18 +351,18 @@ func inspectModelPackJANG(pack *ModelPack, root string) {
 }
 
 func inspectModelPackCodebook(pack *ModelPack, root string) {
-	codebook, err := readCodebookQuantizationProfile(root)
+	profile, err := codebook.ReadProfile(root)
 	if err != nil {
 		pack.addIssue(ModelPackIssueError, ModelPackIssueUnsupportedCodebook, "codebook_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "codebook_config.json"))
 		return
 	}
-	if codebook == nil {
+	if profile == nil {
 		return
 	}
-	pack.Codebook = cloneCodebookQuantizationProfile(codebook)
-	pack.QuantType = CodebookFormatVQ
-	pack.QuantFamily = CodebookQuantizationType
-	pack.QuantBits = firstPositive(pack.QuantBits, codebook.IndexBits)
+	pack.Codebook = codebook.CloneProfile(profile)
+	pack.QuantType = codebook.FormatVQ
+	pack.QuantFamily = codebook.Type
+	pack.QuantBits = firstPositive(pack.QuantBits, profile.IndexBits)
 	pack.Quantization = &GGUFQuantizationInfo{
 		Type:   pack.QuantType,
 		Family: pack.QuantFamily,

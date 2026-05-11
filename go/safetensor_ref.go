@@ -8,8 +8,10 @@ import (
 	core "dappco.re/go"
 )
 
+func mlxMaxIntValue() int { return int(^uint(0) >> 1) }
+
 func readSafetensorRefRaw(ref safetensorTensorRef) ([]byte, error) {
-	if ref.ByteLen < 0 || ref.ByteLen > int64(maxIntValue()) {
+	if ref.ByteLen < 0 || ref.ByteLen > int64(mlxMaxIntValue()) {
 		return nil, core.NewError("mlx: safetensors tensor byte length is invalid: " + ref.Name)
 	}
 	opened := core.Open(ref.Path)

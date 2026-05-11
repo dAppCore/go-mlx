@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 // MiniMaxM2Config captures the config fields needed before the native sparse
@@ -59,14 +60,14 @@ type MiniMaxM2TensorSpec struct {
 	Expert  int                         `json:"expert,omitempty"`
 	Shape   []uint64                    `json:"shape,omitempty"`
 	DType   string                      `json:"dtype,omitempty"`
-	Packed  *JANGPackedTensorDescriptor `json:"packed,omitempty"`
+	Packed  *jang.PackedTensorDescriptor `json:"packed,omitempty"`
 }
 
 // MiniMaxM2TensorPlan keeps the model-wide mapping knobs and JANG layout.
 type MiniMaxM2TensorPlan struct {
 	Config       MiniMaxM2Config                `json:"config"`
-	Quantization *JANGPackedQuantizationProfile `json:"quantization,omitempty"`
-	JANG         *JANGQuantizationInfo          `json:"jang,omitempty"`
+	Quantization *jang.PackedProfile `json:"quantization,omitempty"`
+	JANG         *jang.Info          `json:"jang,omitempty"`
 }
 
 // MiniMaxM2RouterDecision is a deterministic top-k route for one token.
@@ -84,7 +85,7 @@ type MiniMaxM2ExpertFunc func([]float32) []float32
 // the descriptor separate from raw bytes so native backends can validate shape
 // and quantisation metadata before dispatch.
 type JANGPackedProjectionTensor struct {
-	Descriptor JANGPackedTensorDescriptor `json:"descriptor"`
+	Descriptor jang.PackedTensorDescriptor `json:"descriptor"`
 	Packed     []byte                     `json:"-"`
 	Scales     []float32                  `json:"-"`
 	Biases     []float32                  `json:"-"`
@@ -148,7 +149,7 @@ type MiniMaxM2LazyExpertLoad struct {
 // a reference/runtime bridge until native fused kernels consume packed payloads
 // directly.
 type MiniMaxM2DenseProjectionTensor struct {
-	Descriptor JANGPackedTensorDescriptor `json:"descriptor"`
+	Descriptor jang.PackedTensorDescriptor `json:"descriptor"`
 	Weight     []float32                  `json:"-"`
 	Bias       []float32                  `json:"bias,omitempty"`
 }
@@ -232,7 +233,7 @@ func ParseMiniMaxM2Config(data []byte) (MiniMaxM2Config, error) {
 }
 
 // BuildMiniMaxM2TensorPlan creates a model-wide tensor mapping plan.
-func BuildMiniMaxM2TensorPlan(cfg MiniMaxM2Config, jang *JANGQuantizationInfo) (MiniMaxM2TensorPlan, error) {
+func BuildMiniMaxM2TensorPlan(cfg MiniMaxM2Config, info *jang.Info) (MiniMaxM2TensorPlan, error) {
 	if normalizeKnownArchitecture(cfg.ModelType) != "minimax_m2" && firstMiniMaxM2Architecture(cfg.Architectures) == "" {
 		return MiniMaxM2TensorPlan{}, core.NewError("mlx: MiniMax M2 tensor plan requires minimax_m2 architecture")
 	}
@@ -245,14 +246,15 @@ func BuildMiniMaxM2TensorPlan(cfg MiniMaxM2Config, jang *JANGQuantizationInfo) (
 	if cfg.NumExpertsPerToken > cfg.NumLocalExperts {
 		return MiniMaxM2TensorPlan{}, core.NewError("mlx: MiniMax M2 top-k experts cannot exceed local expert count")
 	}
-	if jang == nil {
-		jang = &JANGQuantizationInfo{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 64, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2}
+	if info == nil {
+		info = &jang.Info{Profile: "JANGTQ", WeightFormat: "mxtq", Method: "affine+mxtq", GroupSize: 64, BitsDefault: 2, AttentionBits: 8, RoutedExpertBits: 2}
 	}
-	jang = finalizeJANGQuantizationInfo(cloneJANGQuantizationInfo(jang))
+	info = cloneJANGQuantizationInfo(info)
+	info.Packed = jang.BuildPackedProfile(info)
 	return MiniMaxM2TensorPlan{
 		Config:       cfg,
-		Quantization: CloneJANGPackedQuantizationProfile(jang.Packed),
-		JANG:         jang,
+		Quantization: jang.ClonePackedProfile(info.Packed),
+		JANG:         info,
 	}, nil
 }
 
@@ -500,7 +502,7 @@ func (load MiniMaxM2LazyExpertLoad) DequantizedExperts() (map[int]MiniMaxM2Dense
 // DequantizeJANGPackedProjection expands one packed projection payload using
 // its descriptor and affine sidecars.
 func DequantizeJANGPackedProjection(tensor JANGPackedProjectionTensor) (MiniMaxM2DenseProjectionTensor, error) {
-	weight, err := DequantizeJANGPackedTensor(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases)
+	weight, err := jang.DequantizePackedTensor(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases)
 	if err != nil {
 		return MiniMaxM2DenseProjectionTensor{}, err
 	}
@@ -697,7 +699,7 @@ func loadMiniMaxM2PackedProjection(index safetensorIndex, spec MiniMaxM2TensorSp
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
 		}
 	}
-	if err := ValidateJANGPackedTensor(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases); err != nil {
+	if err := jang.ValidatePackedTensor(tensor.Descriptor, tensor.Packed, tensor.Scales, tensor.Biases); err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
 	return tensor, nil
@@ -763,7 +765,7 @@ func (plan MiniMaxM2TensorPlan) attentionSpec(layer int, projection string, role
 		Layer:   layer,
 		Shape:   shape,
 	}
-	if packed, err := NewJANGPackedTensorDescriptor(name, shape, plan.JANG); err == nil {
+	if packed, err := jang.NewPackedTensorDescriptor(name, shape, plan.JANG); err == nil {
 		spec.Packed = &packed
 	}
 	return spec
@@ -792,7 +794,7 @@ func (plan MiniMaxM2TensorPlan) expertSpec(layer, expert int, projection string,
 		Expert:  expert,
 		Shape:   shape,
 	}
-	if packed, err := NewJANGPackedTensorDescriptor(name, shape, plan.JANG); err == nil {
+	if packed, err := jang.NewPackedTensorDescriptor(name, shape, plan.JANG); err == nil {
 		spec.Packed = &packed
 	}
 	return spec
@@ -807,12 +809,12 @@ func firstMiniMaxM2Architecture(values []string) string {
 	return ""
 }
 
-func cloneJANGQuantizationInfo(info *JANGQuantizationInfo) *JANGQuantizationInfo {
+func cloneJANGQuantizationInfo(info *jang.Info) *jang.Info {
 	if info == nil {
 		return nil
 	}
 	cloned := *info
-	cloned.Packed = CloneJANGPackedQuantizationProfile(info.Packed)
+	cloned.Packed = jang.ClonePackedProfile(info.Packed)
 	return &cloned
 }
 

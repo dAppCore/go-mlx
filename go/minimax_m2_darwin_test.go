@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 )
 
 func TestMiniMaxM2_DispatchPackedExpertsMetalUsesFusedProjection_Good(t *testing.T) {
@@ -100,7 +101,7 @@ func TestMiniMaxM2_DispatchPackedExpertsFromSafetensorsMetal_Good(t *testing.T) 
 		NumLocalExperts:    2,
 		NumExpertsPerToken: 2,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -187,7 +188,7 @@ func TestMiniMaxM2_ForwardPackedLayerMetalRoutesLoadsAndProbes_Good(t *testing.T
 		NumExpertsPerToken: 2,
 		ScoringFunc:        "sigmoid",
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -274,7 +275,7 @@ func TestMiniMaxM2_ForwardPackedLayerFromSafetensorsMetalProjectsRouter_Good(t *
 		ScoringFunc:        "sigmoid",
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &JANGQuantizationInfo{
+	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -368,11 +369,11 @@ func miniMaxM2PackedExpertFixture(t *testing.T, gateValues, upValues, downValues
 
 func miniMaxM2PackedProjectionFixture(t *testing.T, projection string, values []uint8) JANGPackedProjectionTensor {
 	t.Helper()
-	desc := JANGPackedTensorDescriptor{
+	desc := jang.PackedTensorDescriptor{
 		Name:          "model.layers.0.block_sparse_moe.experts.0." + projection + ".weight",
 		Type:          "jangtq",
 		Format:        "mxtq",
-		Role:          JANGTensorRoleRoutedExpert,
+		Role:          jang.TensorRoleRoutedExpert,
 		Shape:         []uint64{2, 2},
 		Elements:      4,
 		Bits:          2,
@@ -382,12 +383,12 @@ func miniMaxM2PackedProjectionFixture(t *testing.T, projection string, values []
 		ValuesPerByte: 4,
 		ScaleCount:    1,
 		BiasCount:     1,
-		BitOrder:      JANGBitOrderLSB0,
-		Encoding:      JANGEncodingAffine,
+		BitOrder:      jang.BitOrderLSB0,
+		Encoding:      jang.EncodingAffine,
 	}
-	packed, err := PackJANGQuantizedValues(desc, values)
+	packed, err := jang.PackQuantizedValues(desc, values)
 	if err != nil {
-		t.Fatalf("PackJANGQuantizedValues(%s) error = %v", projection, err)
+		t.Fatalf("jang.PackQuantizedValues(%s) error = %v", projection, err)
 	}
 	return JANGPackedProjectionTensor{
 		Descriptor: desc,
@@ -430,9 +431,9 @@ func miniMaxM2PackedExpertReference(t *testing.T, hidden []float32, expert MiniM
 
 func miniMaxM2PackedProjectionReference(t *testing.T, input []float32, projection JANGPackedProjectionTensor) []float32 {
 	t.Helper()
-	weight, err := DequantizeJANGPackedTensor(projection.Descriptor, projection.Packed, projection.Scales, projection.Biases)
+	weight, err := jang.DequantizePackedTensor(projection.Descriptor, projection.Packed, projection.Scales, projection.Biases)
 	if err != nil {
-		t.Fatalf("DequantizeJANGPackedTensor() error = %v", err)
+		t.Fatalf("jang.DequantizePackedTensor() error = %v", err)
 	}
 	outDim := int(projection.Descriptor.Shape[0])
 	inDim := int(projection.Descriptor.Shape[1])

@@ -6,6 +6,7 @@ package mlx
 
 import (
 	core "dappco.re/go"
+	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -20,8 +21,8 @@ type JANGPackedProjectionResult struct {
 // native Metal path and returns host floats. It is intended for parity checks
 // and loader bring-up before the packed expert GEMM path consumes GPU arrays
 // directly.
-func DequantizeJANGPackedTensorMetal(desc JANGPackedTensorDescriptor, packed []byte, scales, biases []float32) ([]float32, error) {
-	if err := ValidateJANGPackedTensor(desc, packed, scales, biases); err != nil {
+func DequantizeJANGPackedTensorMetal(desc jang.PackedTensorDescriptor, packed []byte, scales, biases []float32) ([]float32, error) {
+	if err := jang.ValidatePackedTensor(desc, packed, scales, biases); err != nil {
 		return nil, err
 	}
 	shape, err := jangMetalShape(desc.Shape)
@@ -45,18 +46,18 @@ func DequantizeJANGPackedTensorMetal(desc JANGPackedTensorDescriptor, packed []b
 // ProjectJANGPackedTensorMetal computes input @ dequantized(desc).T with an
 // optional projection bias. It is a composed bring-up path for packed expert
 // projections before fused packed-dequant matmul lands.
-func ProjectJANGPackedTensorMetal(desc JANGPackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (JANGPackedProjectionResult, error) {
+func ProjectJANGPackedTensorMetal(desc jang.PackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (JANGPackedProjectionResult, error) {
 	return projectJANGPackedTensorMetal(desc, packed, scales, biases, input, inputShape, bias, false)
 }
 
 // ProjectJANGPackedTensorMetalFused computes input @ dequantized(desc).T
 // directly from packed bytes, avoiding dense dequantized weight materialisation.
-func ProjectJANGPackedTensorMetalFused(desc JANGPackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (JANGPackedProjectionResult, error) {
+func ProjectJANGPackedTensorMetalFused(desc jang.PackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (JANGPackedProjectionResult, error) {
 	return projectJANGPackedTensorMetal(desc, packed, scales, biases, input, inputShape, bias, true)
 }
 
-func projectJANGPackedTensorMetal(desc JANGPackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32, fused bool) (JANGPackedProjectionResult, error) {
-	if err := ValidateJANGPackedTensor(desc, packed, scales, biases); err != nil {
+func projectJANGPackedTensorMetal(desc jang.PackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32, fused bool) (JANGPackedProjectionResult, error) {
+	if err := jang.ValidatePackedTensor(desc, packed, scales, biases); err != nil {
 		return JANGPackedProjectionResult{}, err
 	}
 	weightShape, err := jangMetalShape(desc.Shape)
