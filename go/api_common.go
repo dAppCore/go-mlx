@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"dappco.re/go"
+	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
 )
 
@@ -97,7 +98,7 @@ type GenerateConfig struct {
 	StopTokens    []int32
 	RepeatPenalty float32
 	ProbeSink     ProbeSink
-	Thinking      ThinkingConfig
+	Thinking      parser.Config
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
@@ -105,7 +106,7 @@ func DefaultGenerateConfig() GenerateConfig {
 	return GenerateConfig{
 		MaxTokens:   256,
 		Temperature: 0.0,
-		Thinking:    ThinkingConfig{Mode: ThinkingShow},
+		Thinking:    parser.Config{Mode: parser.Show},
 	}
 }
 

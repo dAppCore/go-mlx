@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -48,12 +49,12 @@ func TestModelGenerateStream_QwenThinkingCaptureWithAdapter_Good(t *testing.T) {
 		},
 		adapterInfo: LoRAAdapterInfo{Name: "probe-lora"},
 	}
-	var captured []ThinkingChunk
+	var captured []parser.Chunk
 
 	got := collectThinkingStreamTokens(t, model.GenerateStream(
 		context.Background(),
 		"ignored",
-		WithCaptureThinking(func(chunk ThinkingChunk) {
+		WithCaptureThinking(func(chunk parser.Chunk) {
 			captured = append(captured, chunk)
 		}),
 	))

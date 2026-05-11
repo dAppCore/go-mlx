@@ -9,6 +9,7 @@ import (
 	"iter"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -555,7 +556,7 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 		return "", core.NewError("mlx: model is nil")
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+	filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
 	builder := core.NewBuilder()
 	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
@@ -573,7 +574,7 @@ func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error)
 		return "", core.NewError("mlx: model is nil")
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+	filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -601,7 +602,7 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 	}
 	if generator, ok := m.model.(nativeChunkGenerator); ok {
 		cfg := applyGenerateOptions(opts)
-		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
 		builder := core.NewBuilder()
 		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 			builder.WriteString(filter.Process(tok.Text))
@@ -779,7 +780,7 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
 		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)
 			if text == "" {
@@ -814,7 +815,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...Gene
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}

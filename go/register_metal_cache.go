@@ -76,7 +76,7 @@ func adapterTokenizerHash(adapter *metaladapter) string {
 	if root == nil || root.Tokenizer() == nil {
 		return ""
 	}
-	info := modelInfoFromInference(adapter.Info())
+	info := adapter.Info()
 	tok := root.Tokenizer()
 	return coreHashModelParts(info.Architecture, info.VocabSize, tok.BOS(), tok.EOS())
 }

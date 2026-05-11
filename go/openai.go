@@ -13,6 +13,7 @@ import (
 	anthropiccompat "dappco.re/go/inference/anthropic"
 	ollamacompat "dappco.re/go/inference/ollama"
 	openaicompat "dappco.re/go/inference/openai"
+	"dappco.re/go/inference/parser"
 )
 
 // NewOpenAIResolver returns a resolver that lazily loads modelPath through the
@@ -169,7 +170,7 @@ func serveOpenAIResponseStream(w http.ResponseWriter, ctx context.Context, model
 		},
 	})
 
-	processor := newThinkingChannelProcessor(ThinkingConfig{Mode: ThinkingCapture}, modelInfoFromInference(model.Info()))
+	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	tokens := []inference.Token{}
 	raw := core.NewBuilder()
 	visibleBuilder := core.NewBuilder()
@@ -364,7 +365,7 @@ func serveAnthropicMessageStream(w http.ResponseWriter, ctx context.Context, mod
 		}
 	}
 	writeEvent("message_start", core.JSONMarshalString(anthropiccompat.MessageResponse{ID: messageID, Type: "message", Role: "assistant", Model: req.Model}))
-	processor := newThinkingChannelProcessor(ThinkingConfig{Mode: ThinkingCapture}, modelInfoFromInference(model.Info()))
+	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	emitted := ""
 	_ = forEachCompatToken(ctx, model, messageID, req.Model, "", messages, opts, func(token inference.Token) bool {
 		delta := processor.Process(token.Text)
@@ -525,7 +526,7 @@ func serveOllamaStream(w http.ResponseWriter, ctx context.Context, model inferen
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	flusher, _ := w.(http.Flusher)
-	processor := newThinkingChannelProcessor(ThinkingConfig{Mode: ThinkingCapture}, modelInfoFromInference(model.Info()))
+	processor := parser.NewProcessor(parser.Config{Mode: parser.Capture}, parser.HintFromInference(model.Info()))
 	writeLine := func(payload any) {
 		_, _ = w.Write([]byte(core.Concat(core.JSONMarshalString(payload), "\n")))
 		if flusher != nil {
@@ -667,12 +668,12 @@ func parseOpenAIModelOutput(model inference.TextModel, tokens []inference.Token,
 		result inference.ReasoningParseResult
 		err    error
 	)
-	if parser, ok := model.(inference.ReasoningParser); ok {
-		result, err = parser.ParseReasoning(tokens, text)
+	if p, ok := model.(inference.ReasoningParser); ok {
+		result, err = p.ParseReasoning(tokens, text)
 	} else if model != nil {
-		result, err = ParserForInferenceModel(model.Info()).ParseReasoning(tokens, text)
+		result, err = parser.ForHint(parser.HintFromInference(model.Info())).ParseReasoning(tokens, text)
 	} else {
-		result, err = ParserForModel(ModelInfo{}).ParseReasoning(tokens, text)
+		result, err = parser.ForHint(parser.Hint{}).ParseReasoning(tokens, text)
 	}
 	if err != nil {
 		return text, ""

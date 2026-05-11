@@ -2,7 +2,10 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/inference/parser"
+)
 
 // ArchitectureRuntimeStatus describes how far a model family is implemented.
 type ArchitectureRuntimeStatus string
@@ -60,7 +63,7 @@ func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
 	}
 	for _, profile := range builtinArchitectureProfiles() {
 		for _, alias := range profile.Aliases {
-			if architectureProfileID(alias) == id || normaliseParserKey(alias) == id {
+			if architectureProfileID(alias) == id || parser.NormaliseKey(alias) == id {
 				return cloneArchitectureProfile(profile), true
 			}
 		}
