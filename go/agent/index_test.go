@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package agent
 
 import (
 	"context"
@@ -8,35 +8,37 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	pkgbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/memory"
 )
 
 func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	bundle, err := snapshot.SaveMemvidBlocks(ctx, store, kv.MemvidBlockOptions{
+	blk, err := snapshot.SaveMemvidBlocks(ctx, store, kv.MemvidBlockOptions{
 		BlockSize:  2,
 		KVEncoding: kv.EncodingNative,
 	})
 	if err != nil {
 		t.Fatalf("SaveMemvidBlocks() error = %v", err)
 	}
-	if _, err := kv.SaveMemvidBlockBundle(ctx, store, bundle, "mlx://book/full/bundle"); err != nil {
+	if _, err := kv.SaveMemvidBlockBundle(ctx, store, blk, "mlx://book/full/bundle"); err != nil {
 		t.Fatalf("kv.SaveMemvidBlockBundle() error = %v", err)
 	}
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
 		BundleURI: "mlx://book/full/bundle",
 		Title:     "full book",
 		Model:     "demo",
-		ModelInfo: ModelInfo{
+		ModelInfo: memory.ModelInfo{
 			Architecture:  "gemma4_text",
 			NumLayers:     1,
 			QuantBits:     4,
 			ContextLength: 8,
 		},
-		Tokenizer: StateBundleTokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
-		Entries: []KVSnapshotMemvidBundleIndexEntry{
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
+		Entries: []MemvidIndexEntry{
 			{
 				URI:        "mlx://book/chapter-1",
 				Title:      "Chapter 1",
@@ -60,20 +62,20 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 		},
 	})
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("NewMemvidIndex() error = %v", err)
 	}
 	if index.Hash == "" || index.RequiredContextLength() != 4 {
 		t.Fatalf("index hash/required = %q/%d, want hash and full required context", index.Hash, index.RequiredContextLength())
 	}
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}, StateBundleTokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}, index); err != nil {
-		t.Fatalf("CheckKVSnapshotMemvidBundleIndexCompatibility() error = %v", err)
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}, pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}, index); err != nil {
+		t.Fatalf("CheckMemvidIndexCompatibility() error = %v", err)
 	}
-	if _, err := SaveKVSnapshotMemvidBundleIndex(ctx, store, index, "mlx://book/index"); err != nil {
-		t.Fatalf("SaveKVSnapshotMemvidBundleIndex() error = %v", err)
+	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://book/index"); err != nil {
+		t.Fatalf("SaveMemvidIndex() error = %v", err)
 	}
-	loadedIndex, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, "mlx://book/index")
+	loadedIndex, err := LoadMemvidIndex(ctx, store, "mlx://book/index")
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("LoadMemvidIndex() error = %v", err)
 	}
 	loadedIndex.Entries[0].Labels[0] = "mutated"
 	entry, ok := index.Entry("mlx://book/chapter-1")
@@ -85,9 +87,9 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 	}
 
 	recording := &indexRecordingMemvidStore{store: store}
-	prefix, loadedEntry, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, recording, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
+	prefix, loadedEntry, err := LoadPrefixFromMemvidIndex(ctx, recording, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotPrefixFromMemvidBundleIndex() error = %v", err)
+		t.Fatalf("LoadPrefixFromMemvidIndex() error = %v", err)
 	}
 	if loadedEntry.URI != "mlx://book/chapter-1" || loadedEntry.PrefixTokens() != 2 {
 		t.Fatalf("loaded entry = %+v, want chapter-1 two-token prefix", loadedEntry)
@@ -107,21 +109,21 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 }
 
 func TestKVSnapshotMemvidBundleIndex_Good_DefaultFullEntry(t *testing.T) {
-	bundle := kvSnapshotIndexTestBundle()
+	blk := kvSnapshotIndexTestBundle()
 
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{BundleURI: "mlx://bundle"})
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{BundleURI: "mlx://bundle"})
 
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex(default) error = %v", err)
+		t.Fatalf("NewMemvidIndex(default) error = %v", err)
 	}
-	if len(index.Entries) != 1 || index.Entries[0].TokenCount != bundle.TokenCount || index.Entries[0].BundleURI != "mlx://bundle" {
+	if len(index.Entries) != 1 || index.Entries[0].TokenCount != blk.TokenCount || index.Entries[0].BundleURI != "mlx://bundle" {
 		t.Fatalf("default entries = %+v, want full bundle entry", index.Entries)
 	}
 }
 
 func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
-	bundle := kvSnapshotIndexTestBundle()
-	bundle.Blocks = []kv.MemvidBlockRef{
+	blk := kvSnapshotIndexTestBundle()
+	blk.Blocks = []kv.MemvidBlockRef{
 		{
 			Index:            0,
 			TokenStart:       0,
@@ -138,9 +140,9 @@ func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
 		},
 	}
 
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
 		BundleURI: "mlx://book/full/bundle",
-		Entries: []KVSnapshotMemvidBundleIndexEntry{
+		Entries: []MemvidIndexEntry{
 			{URI: "mlx://book/chapter-1", TokenStart: 0, TokenCount: 2},
 			{URI: "mlx://book/chapter-2", TokenStart: 2, TokenCount: 2},
 			{URI: "mlx://book/cross-block", TokenStart: 1, TokenCount: 2},
@@ -148,7 +150,7 @@ func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
 	})
 
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex(byte span) error = %v", err)
+		t.Fatalf("NewMemvidIndex(byte span) error = %v", err)
 	}
 	chapter1, _ := index.Entry("mlx://book/chapter-1")
 	if chapter1.ByteStart != 64 || chapter1.ByteCount != 100 {
@@ -165,51 +167,51 @@ func TestKVSnapshotMemvidBundleIndex_Good_DerivesEntryByteSpan(t *testing.T) {
 }
 
 func TestKVSnapshotMemvidBundleIndex_Bad_ValidationAndCompatibility(t *testing.T) {
-	bundle := kvSnapshotIndexTestBundle()
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
 		BundleURI: "mlx://bundle",
-		ModelInfo: ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
-		Tokenizer: StateBundleTokenizer{Hash: "tok-a"},
-		Entries: []KVSnapshotMemvidBundleIndexEntry{{
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a"},
+		Entries: []MemvidIndexEntry{{
 			URI:        "mlx://chapter",
 			TokenStart: 0,
 			TokenCount: 1,
 		}},
 	})
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("NewMemvidIndex() error = %v", err)
 	}
 	for _, tc := range []struct {
 		name  string
-		index KVSnapshotMemvidBundleIndex
+		index MemvidIndex
 	}{
-		{name: "bad kind", index: func() KVSnapshotMemvidBundleIndex {
+		{name: "bad kind", index: func() MemvidIndex {
 			bad := *index
 			bad.Kind = "bad"
 			return bad
 		}()},
-		{name: "bad hash", index: func() KVSnapshotMemvidBundleIndex {
+		{name: "bad hash", index: func() MemvidIndex {
 			bad := *index
 			bad.Hash = "bad"
 			return bad
 		}()},
-		{name: "duplicate uri", index: func() KVSnapshotMemvidBundleIndex {
+		{name: "duplicate uri", index: func() MemvidIndex {
 			bad := *index
-			bad.Entries = append(cloneKVSnapshotMemvidBundleIndexEntries(index.Entries), index.Entries[0])
-			bad.Hash = kvSnapshotMemvidBundleIndexHash(&bad)
+			bad.Entries = append(cloneIndexEntries(index.Entries), index.Entries[0])
+			bad.Hash = indexHash(&bad)
 			return bad
 		}()},
-		{name: "entry exceeds bundle", index: func() KVSnapshotMemvidBundleIndex {
+		{name: "entry exceeds bundle", index: func() MemvidIndex {
 			bad := *index
-			bad.Entries = cloneKVSnapshotMemvidBundleIndexEntries(index.Entries)
+			bad.Entries = cloneIndexEntries(index.Entries)
 			bad.Entries[0].TokenCount = 99
-			bad.Entries[0].Hash = kvSnapshotMemvidBundleIndexEntryHash(bad.Entries[0])
-			bad.Hash = kvSnapshotMemvidBundleIndexHash(&bad)
+			bad.Entries[0].Hash = indexEntryHash(bad.Entries[0])
+			bad.Hash = indexHash(&bad)
 			return bad
 		}()},
-		{name: "entry hash", index: func() KVSnapshotMemvidBundleIndex {
+		{name: "entry hash", index: func() MemvidIndex {
 			bad := *index
-			bad.Entries = cloneKVSnapshotMemvidBundleIndexEntries(index.Entries)
+			bad.Entries = cloneIndexEntries(index.Entries)
 			bad.Entries[0].Hash = "bad"
 			bad.Hash = ""
 			return bad
@@ -222,36 +224,36 @@ func TestKVSnapshotMemvidBundleIndex_Bad_ValidationAndCompatibility(t *testing.T
 		})
 	}
 
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "qwen3", NumLayers: 2, QuantBits: 4, ContextLength: 4}, StateBundleTokenizer{Hash: "tok-a"}, index); err == nil {
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "qwen3", NumLayers: 2, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{Hash: "tok-a"}, index); err == nil {
 		t.Fatal("expected architecture mismatch")
 	}
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 4}, StateBundleTokenizer{Hash: "tok-a"}, index); err == nil {
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{Hash: "tok-a"}, index); err == nil {
 		t.Fatal("expected layer mismatch")
 	}
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 8, ContextLength: 4}, StateBundleTokenizer{Hash: "tok-a"}, index); err == nil {
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 8, ContextLength: 4}, pkgbundle.Tokenizer{Hash: "tok-a"}, index); err == nil {
 		t.Fatal("expected quantization mismatch")
 	}
-	hashIndex, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	hashIndex, err := NewMemvidIndex(blk, MemvidIndexOptions{
 		BundleURI: "mlx://bundle",
-		ModelInfo: ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
-		Entries: []KVSnapshotMemvidBundleIndexEntry{{
+		ModelInfo: memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4},
+		Entries: []MemvidIndexEntry{{
 			URI:        "mlx://chapter",
 			TokenStart: 0,
 			TokenCount: 1,
 		}},
 	})
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex(hash) error = %v", err)
+		t.Fatalf("NewMemvidIndex(hash) error = %v", err)
 	}
 	hashIndex.Model.Hash = "different-model-hash"
-	hashIndex.Hash = kvSnapshotMemvidBundleIndexHash(hashIndex)
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4}, StateBundleTokenizer{}, hashIndex); err == nil {
+	hashIndex.Hash = indexHash(hashIndex)
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 4}, pkgbundle.Tokenizer{}, hashIndex); err == nil {
 		t.Fatal("expected model hash mismatch")
 	}
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 0}, StateBundleTokenizer{Hash: "tok-b"}, index); err == nil {
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 0}, pkgbundle.Tokenizer{Hash: "tok-b"}, index); err == nil {
 		t.Fatal("expected tokenizer mismatch")
 	}
-	if err := CheckKVSnapshotMemvidBundleIndexCompatibility(ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 0}, StateBundleTokenizer{Hash: "tok-a"}, index); err != nil {
+	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 2, QuantBits: 4, ContextLength: 0}, pkgbundle.Tokenizer{Hash: "tok-a"}, index); err != nil {
 		t.Fatalf("zero context should skip context compatibility, got %v", err)
 	}
 }
@@ -259,45 +261,45 @@ func TestKVSnapshotMemvidBundleIndex_Bad_ValidationAndCompatibility(t *testing.T
 func TestKVSnapshotMemvidBundleIndex_Bad_LoadAndStoreErrors(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
-	bundle := kvSnapshotIndexTestBundle()
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	blk := kvSnapshotIndexTestBundle()
+	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
 		BundleURI: "mlx://bundle",
-		Entries: []KVSnapshotMemvidBundleIndexEntry{{
+		Entries: []MemvidIndexEntry{{
 			URI:        "mlx://chapter",
 			TokenStart: 0,
 			TokenCount: 1,
 		}},
 	})
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("NewMemvidIndex() error = %v", err)
 	}
-	if _, err := SaveKVSnapshotMemvidBundleIndex(ctx, nil, index, "mlx://index"); err == nil {
-		t.Fatal("SaveKVSnapshotMemvidBundleIndex(nil store) error = nil")
+	if _, err := SaveMemvidIndex(ctx, nil, index, "mlx://index"); err == nil {
+		t.Fatal("SaveMemvidIndex(nil store) error = nil")
 	}
-	if _, err := SaveKVSnapshotMemvidBundleIndex(ctx, store, index, ""); err == nil {
-		t.Fatal("SaveKVSnapshotMemvidBundleIndex(empty URI) error = nil")
+	if _, err := SaveMemvidIndex(ctx, store, index, ""); err == nil {
+		t.Fatal("SaveMemvidIndex(empty URI) error = nil")
 	}
-	if _, err := LoadKVSnapshotMemvidBundleIndex(ctx, nil, "mlx://index"); err == nil {
-		t.Fatal("LoadKVSnapshotMemvidBundleIndex(nil store) error = nil")
+	if _, err := LoadMemvidIndex(ctx, nil, "mlx://index"); err == nil {
+		t.Fatal("LoadMemvidIndex(nil store) error = nil")
 	}
-	if _, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, ""); err == nil {
-		t.Fatal("LoadKVSnapshotMemvidBundleIndex(empty URI) error = nil")
+	if _, err := LoadMemvidIndex(ctx, store, ""); err == nil {
+		t.Fatal("LoadMemvidIndex(empty URI) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, nil, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
-		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(nil store) error = nil")
+	if _, _, err := LoadPrefixFromMemvidIndex(ctx, nil, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromMemvidIndex(nil store) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://missing", kv.LoadOptions{}); err == nil {
-		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(missing entry) error = nil")
+	if _, _, err := LoadPrefixFromMemvidIndex(ctx, store, index, "mlx://missing", kv.LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromMemvidIndex(missing entry) error = nil")
 	}
-	if _, _, err := LoadKVSnapshotPrefixFromMemvidBundleIndex(ctx, store, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
-		t.Fatal("LoadKVSnapshotPrefixFromMemvidBundleIndex(missing bundle) error = nil")
+	if _, _, err := LoadPrefixFromMemvidIndex(ctx, store, index, "mlx://chapter", kv.LoadOptions{}); err == nil {
+		t.Fatal("LoadPrefixFromMemvidIndex(missing bundle) error = nil")
 	}
-	corrupt := core.JSONMarshalString(map[string]any{"version": 1, "kind": KVSnapshotMemvidBundleIndexKind})
+	corrupt := core.JSONMarshalString(map[string]any{"version": 1, "kind": MemvidIndexKind})
 	if _, err := store.Put(ctx, corrupt, memvid.PutOptions{URI: "mlx://bad-index"}); err != nil {
 		t.Fatalf("write corrupt index: %v", err)
 	}
-	if _, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, "mlx://bad-index"); err == nil {
-		t.Fatal("LoadKVSnapshotMemvidBundleIndex(corrupt) error = nil")
+	if _, err := LoadMemvidIndex(ctx, store, "mlx://bad-index"); err == nil {
+		t.Fatal("LoadMemvidIndex(corrupt) error = nil")
 	}
 }
 

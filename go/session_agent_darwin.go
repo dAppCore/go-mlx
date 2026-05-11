@@ -126,7 +126,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 		return nil, err
 	}
 	if opts.ModelInfo.Architecture == "" {
-		opts.ModelInfo = s.info
+		opts.ModelInfo = modelInfoToMemory(s.info)
 	}
 	if opts.ParentEntryURI == "" && s.agentMemory != nil {
 		opts.ParentEntryURI = s.agentMemory.EntryURI
@@ -269,7 +269,7 @@ func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest)
 		Title:             req.Title,
 		Model:             req.Model.ID,
 		ModelPath:         req.Model.Path,
-		ModelInfo:         modelInfoFromInferenceIdentity(req.Model),
+		ModelInfo:         modelInfoToMemory(modelInfoFromInferenceIdentity(req.Model)),
 		Tokenizer:         stateBundleTokenizerFromInference(req.Tokenizer),
 		ReuseParentPrefix: req.ReuseParentPrefix,
 		BlockOptions: kv.MemvidBlockOptions{
