@@ -2,7 +2,11 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
+
+	prof "dappco.re/go/mlx/profile"
+)
 
 func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 	coverageTokens := "ArchitectureProfile MetadataFamilies"
@@ -31,27 +35,27 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			profile, ok := LookupArchitectureProfile(tc.input)
+			p, ok := prof.LookupArchitectureProfile(tc.input)
 			if !ok {
-				t.Fatalf("LookupArchitectureProfile(%q) ok = false", tc.input)
+				t.Fatalf("prof.LookupArchitectureProfile(%q) ok = false", tc.input)
 			}
-			if profile.ID != tc.wantID || profile.ParserID != tc.wantParser {
-				t.Fatalf("profile = %+v, want id %q parser %q", profile, tc.wantID, tc.wantParser)
+			if p.ID != tc.wantID || p.ParserID != tc.wantParser {
+				t.Fatalf("profile = %+v, want id %q parser %q", p, tc.wantID, tc.wantParser)
 			}
-			if profile.MoE != tc.wantMoE || profile.Embeddings != tc.wantEmbed || profile.NativeRuntime != tc.wantNative {
-				t.Fatalf("profile flags = moe:%v embeddings:%v native:%v, want %v/%v/%v", profile.MoE, profile.Embeddings, profile.NativeRuntime, tc.wantMoE, tc.wantEmbed, tc.wantNative)
+			if p.MoE != tc.wantMoE || p.Embeddings != tc.wantEmbed || p.NativeRuntime != tc.wantNative {
+				t.Fatalf("profile flags = moe:%v embeddings:%v native:%v, want %v/%v/%v", p.MoE, p.Embeddings, p.NativeRuntime, tc.wantMoE, tc.wantEmbed, tc.wantNative)
 			}
-			if tc.name == "bert-rerank" && !profile.Rerank {
-				t.Fatalf("profile = %+v, want rerank profile", profile)
+			if tc.name == "bert-rerank" && !p.Rerank {
+				t.Fatalf("profile = %+v, want rerank profile", p)
 			}
 		})
 	}
 }
 
 func TestArchitectureProfile_BuiltinIDs_Good(t *testing.T) {
-	profiles := BuiltinArchitectureProfiles()
+	profiles := prof.BuiltinArchitectureProfiles()
 	if len(profiles) < 12 {
-		t.Fatalf("BuiltinArchitectureProfiles len = %d, want broad feature-parity target list", len(profiles))
+		t.Fatalf("prof.BuiltinArchitectureProfiles len = %d, want broad feature-parity target list", len(profiles))
 	}
 	seen := map[string]bool{}
 	for _, profile := range profiles {

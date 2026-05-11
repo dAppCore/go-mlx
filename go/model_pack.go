@@ -9,6 +9,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/profile"
 )
 
 // ModelPackFormat names the model weight container found in a pack.
@@ -112,7 +113,7 @@ type ModelPack struct {
 	Codebook                 *codebook.Profile   `json:"codebook,omitempty"`
 	MiniMaxM2                *MiniMaxM2TensorPlan           `json:"minimax_m2,omitempty"`
 	MiniMaxM2LayerSkeleton   *MiniMaxM2LayerForwardSkeleton `json:"minimax_m2_layer_skeleton,omitempty"`
-	ArchitectureProfile      *ModelArchitectureProfile      `json:"architecture_profile,omitempty"`
+	ArchitectureProfile      *profile.ModelArchitectureProfile      `json:"architecture_profile,omitempty"`
 	Embedding                *ModelEmbeddingProfile         `json:"embedding,omitempty"`
 	Rerank                   *ModelRerankProfile            `json:"rerank,omitempty"`
 	Capabilities             []inference.Capability         `json:"capabilities,omitempty"`
@@ -491,7 +492,7 @@ func inspectModelPackArchitecture(pack *ModelPack) {
 		pack.addIssue(ModelPackIssueError, ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
 		return
 	}
-	if profile, ok := LookupArchitectureProfile(pack.Architecture); ok {
+	if profile, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
 		pack.Architecture = profile.ID
 		pack.ArchitectureProfile = &profile
 	}
@@ -506,7 +507,7 @@ func inspectModelPackArchitecture(pack *ModelPack) {
 }
 
 func modelPackUnsupportedRuntimeMessage(architecture string) string {
-	if profile, ok := LookupArchitectureProfile(architecture); ok {
+	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
 		switch {
 		case profile.Embeddings:
 			return "architecture is recognized, but native embedding encoder loading is not implemented yet: " + architecture
@@ -523,21 +524,21 @@ func inspectModelPackTaskProfiles(pack *ModelPack, root string) {
 	if pack == nil {
 		return
 	}
-	profile := pack.ArchitectureProfile
-	if profile == nil && pack.Architecture != "" {
-		if resolved, ok := LookupArchitectureProfile(pack.Architecture); ok {
+	arch := pack.ArchitectureProfile
+	if arch == nil && pack.Architecture != "" {
+		if resolved, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
 			pack.ArchitectureProfile = &resolved
-			profile = &resolved
+			arch = &resolved
 		}
 	}
-	if profile == nil {
+	if arch == nil {
 		return
 	}
-	if profile.Embeddings {
+	if arch.Embeddings {
 		embedding := inspectModelPackEmbeddingProfile(pack, root)
 		pack.Embedding = &embedding
 	}
-	if profile.Rerank {
+	if arch.Rerank {
 		rerank := inspectModelPackRerankProfile(pack, root)
 		pack.Rerank = &rerank
 	}
@@ -673,7 +674,7 @@ func modelPackCapabilities(pack *ModelPack) []inference.Capability {
 }
 
 func modelPackAlgorithmCapability(id inference.CapabilityID, architecture string) inference.Capability {
-	if profile, ok := LookupAlgorithmProfile(id); ok {
+	if profile, ok := profile.LookupAlgorithmProfile(id); ok {
 		capability := profile.Capability()
 		if capability.Labels == nil {
 			capability.Labels = map[string]string{}
@@ -702,7 +703,7 @@ func modelPackUsesGenerationKVCache(pack *ModelPack, architecture string) bool {
 			return false
 		}
 	}
-	if profile, ok := LookupArchitectureProfile(architecture); ok && (profile.Embeddings || profile.Rerank) {
+	if profile, ok := profile.LookupArchitectureProfile(architecture); ok && (profile.Embeddings || profile.Rerank) {
 		return false
 	}
 	return true
@@ -762,24 +763,24 @@ func finalizeModelPack(pack *ModelPack) {
 }
 
 func modelPackSupportedArchitecture(architecture string) bool {
-	_, ok := LookupArchitectureProfile(architecture)
+	_, ok := profile.LookupArchitectureProfile(architecture)
 	return ok
 }
 
 func modelPackNativeRuntimeSupported(architecture string) bool {
-	profile, ok := LookupArchitectureProfile(architecture)
+	profile, ok := profile.LookupArchitectureProfile(architecture)
 	return ok && profile.NativeRuntime
 }
 
 func nativeChatTemplateName(architecture string) string {
-	if profile, ok := LookupArchitectureProfile(architecture); ok {
+	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
 		return profile.ChatTemplate
 	}
 	return ""
 }
 
 func modelPackRequiresChatTemplate(architecture string) bool {
-	profile, ok := LookupArchitectureProfile(architecture)
+	profile, ok := profile.LookupArchitectureProfile(architecture)
 	return !ok || profile.RequiresChatTemplate
 }
 

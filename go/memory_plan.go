@@ -2,7 +2,10 @@
 
 package mlx
 
-import "dappco.re/go/inference/quant/jang"
+import (
+	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/profile"
+)
 
 const MemoryGiB uint64 = 1 << 30
 
@@ -312,7 +315,7 @@ func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, q
 
 func applyModelArchitectureMemoryHints(plan *MemoryPlan, architecture string) {
 	normalized := normalizeKnownArchitecture(architecture)
-	if profile, ok := LookupArchitectureProfile(architecture); ok {
+	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
 		normalized = profile.ID
 	}
 	switch normalized {
@@ -412,7 +415,7 @@ func applyExpertResidencyMemoryHints(plan *MemoryPlan, pack *ModelPack, architec
 			architecture = pack.Architecture
 		}
 	}
-	profile, ok := LookupArchitectureProfile(architecture)
+	profile, ok := profile.LookupArchitectureProfile(architecture)
 	if !ok || !profile.MoE {
 		return
 	}

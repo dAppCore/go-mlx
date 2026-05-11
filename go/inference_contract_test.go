@@ -11,6 +11,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/profile"
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {
@@ -121,10 +122,10 @@ func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
 			t.Fatalf("capability %q labels = %+v, want runtime_status", id, capability.Labels)
 		}
 	}
-	if cap, _ := report.Capability(inference.CapabilityMoERouting); cap.Labels["runtime_status"] != string(AlgorithmRuntimeMetadataOnly) {
+	if cap, _ := report.Capability(inference.CapabilityMoERouting); cap.Labels["runtime_status"] != string(profile.AlgorithmRuntimeMetadataOnly) {
 		t.Fatalf("moe routing capability = %+v, want metadata-only runtime status", cap)
 	}
-	if cap, _ := report.Capability(inference.CapabilitySpeculativeDecode); cap.Labels["runtime_status"] != string(AlgorithmRuntimeExperimental) {
+	if cap, _ := report.Capability(inference.CapabilitySpeculativeDecode); cap.Labels["runtime_status"] != string(profile.AlgorithmRuntimeExperimental) {
 		t.Fatalf("speculative capability = %+v, want experimental runtime status", cap)
 	}
 }

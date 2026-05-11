@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/profile"
 )
 
 func (backend *metalbackend) Capabilities() inference.CapabilityReport {
@@ -273,7 +274,7 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
 	}
-	capabilities = append(capabilities, algorithmProfileCapabilities()...)
+	capabilities = append(capabilities, profile.AlgorithmCapabilities()...)
 	return inference.CapabilityReport{
 		Runtime: inference.RuntimeIdentity{
 			Backend:       "metal",
@@ -293,7 +294,7 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 }
 
 var (
-	metalCapabilityArchitectures = architectureProfileIDs()
+	metalCapabilityArchitectures = profile.ArchitectureIDs()
 	metalCapabilityQuantizations = []string{
 		"bf16",
 		"fp16",

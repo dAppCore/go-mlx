@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	prof "dappco.re/go/mlx/profile"
 )
 
 func TestAlgorithmProfile_BuiltinStatuses_Good(t *testing.T) {
@@ -15,47 +16,47 @@ func TestAlgorithmProfile_BuiltinStatuses_Good(t *testing.T) {
 	}
 	cases := []struct {
 		id      inference.CapabilityID
-		runtime AlgorithmRuntimeStatus
+		runtime prof.AlgorithmRuntimeStatus
 		status  inference.CapabilityStatus
 	}{
-		{id: inference.CapabilityScheduler, runtime: AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
-		{id: inference.CapabilityCacheBlocks, runtime: AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
-		{id: inference.CapabilityReasoningParse, runtime: AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
-		{id: inference.CapabilityJANGTQ, runtime: AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusExperimental},
-		{id: inference.CapabilityCodebookVQ, runtime: AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
-		{id: inference.CapabilityEmbeddings, runtime: AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
-		{id: inference.CapabilityMoERouting, runtime: AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
-		{id: inference.CapabilityMoELazyExperts, runtime: AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
-		{id: inference.CapabilitySpeculativeDecode, runtime: AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
-		{id: inference.CapabilityPromptLookupDecode, runtime: AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilityScheduler, runtime: prof.AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
+		{id: inference.CapabilityCacheBlocks, runtime: prof.AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
+		{id: inference.CapabilityReasoningParse, runtime: prof.AlgorithmRuntimeNative, status: inference.CapabilityStatusSupported},
+		{id: inference.CapabilityJANGTQ, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilityCodebookVQ, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilityEmbeddings, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
+		{id: inference.CapabilityMoERouting, runtime: prof.AlgorithmRuntimeMetadataOnly, status: inference.CapabilityStatusPlanned},
+		{id: inference.CapabilityMoELazyExperts, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilitySpeculativeDecode, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
+		{id: inference.CapabilityPromptLookupDecode, runtime: prof.AlgorithmRuntimeExperimental, status: inference.CapabilityStatusExperimental},
 	}
 
 	for _, tc := range cases {
 		t.Run(string(tc.id), func(t *testing.T) {
-			profile, ok := LookupAlgorithmProfile(tc.id)
+			p, ok := prof.LookupAlgorithmProfile(tc.id)
 			if !ok {
-				t.Fatalf("LookupAlgorithmProfile(%q) ok = false", tc.id)
+				t.Fatalf("prof.LookupAlgorithmProfile(%q) ok = false", tc.id)
 			}
-			if profile.RuntimeStatus != tc.runtime || profile.CapabilityStatus != tc.status {
-				t.Fatalf("profile = %+v, want runtime/status %q/%q", profile, tc.runtime, tc.status)
+			if p.RuntimeStatus != tc.runtime || p.CapabilityStatus != tc.status {
+				t.Fatalf("profile = %+v, want runtime/status %q/%q", p, tc.runtime, tc.status)
 			}
-			if profile.Group == "" || profile.Detail == "" {
-				t.Fatalf("profile = %+v, want group and detail", profile)
+			if p.Group == "" || p.Detail == "" {
+				t.Fatalf("profile = %+v, want group and detail", p)
 			}
 		})
 	}
 }
 
 func TestAlgorithmProfile_LazyExpertsExperimental_Good(t *testing.T) {
-	profile, ok := LookupAlgorithmProfile(inference.CapabilityMoELazyExperts)
+	p, ok := prof.LookupAlgorithmProfile(inference.CapabilityMoELazyExperts)
 	if !ok {
 		t.Fatal("missing lazy expert profile")
 	}
-	if profile.RuntimeStatus != AlgorithmRuntimeExperimental || profile.CapabilityStatus != inference.CapabilityStatusExperimental {
-		t.Fatalf("lazy expert status = runtime:%q capability:%q, want experimental", profile.RuntimeStatus, profile.CapabilityStatus)
+	if p.RuntimeStatus != prof.AlgorithmRuntimeExperimental || p.CapabilityStatus != inference.CapabilityStatusExperimental {
+		t.Fatalf("lazy expert status = runtime:%q capability:%q, want experimental", p.RuntimeStatus, p.CapabilityStatus)
 	}
-	if !containsCapabilityProvide(profile.Provides, "expert.page_in") || !containsCapabilityProvide(profile.Provides, "expert.residency.probe") {
-		t.Fatalf("lazy expert provides = %+v, want page-in and probe labels", profile.Provides)
+	if !containsCapabilityProvide(p.Provides, "expert.page_in") || !containsCapabilityProvide(p.Provides, "expert.residency.probe") {
+		t.Fatalf("lazy expert provides = %+v, want page-in and probe labels", p.Provides)
 	}
 }
 
@@ -69,23 +70,23 @@ func containsCapabilityProvide(values []string, want string) bool {
 }
 
 func TestAlgorithmProfile_CapabilityLabels_Good(t *testing.T) {
-	profile, ok := LookupAlgorithmProfile(inference.CapabilityPromptLookupDecode)
+	p, ok := prof.LookupAlgorithmProfile(inference.CapabilityPromptLookupDecode)
 	if !ok {
 		t.Fatal("missing prompt lookup decode profile")
 	}
 
-	capability := profile.Capability()
+	capability := p.Capability()
 
 	if capability.ID != inference.CapabilityPromptLookupDecode || capability.Status != inference.CapabilityStatusExperimental {
 		t.Fatalf("capability = %+v, want experimental prompt lookup decode", capability)
 	}
-	if capability.Labels["runtime_status"] != string(AlgorithmRuntimeExperimental) || capability.Labels["algorithm"] != "prompt-lookup" {
+	if capability.Labels["runtime_status"] != string(prof.AlgorithmRuntimeExperimental) || capability.Labels["algorithm"] != "prompt-lookup" {
 		t.Fatalf("labels = %+v, want runtime_status and algorithm", capability.Labels)
 	}
 }
 
 func TestAlgorithmProfile_CapabilityListHasNoDuplicateIDs_Good(t *testing.T) {
-	capabilities := algorithmProfileCapabilities()
+	capabilities := prof.AlgorithmCapabilities()
 	seen := map[inference.CapabilityID]bool{}
 	for _, capability := range capabilities {
 		if seen[capability.ID] {
@@ -112,16 +113,16 @@ func TestAlgorithmProfile_CapabilityListHasNoDuplicateIDs_Good(t *testing.T) {
 }
 
 func TestAlgorithmProfile_BuiltinProfilesAreCloned_Bad(t *testing.T) {
-	profiles := BuiltinAlgorithmProfiles()
+	profiles := prof.BuiltinAlgorithmProfiles()
 	if len(profiles) == 0 {
-		t.Fatal("BuiltinAlgorithmProfiles() returned no profiles")
+		t.Fatal("prof.BuiltinAlgorithmProfiles() returned no profiles")
 	}
 	profiles[0].Algorithm = "mutated"
-	again := BuiltinAlgorithmProfiles()
+	again := prof.BuiltinAlgorithmProfiles()
 	if again[0].Algorithm == "mutated" {
-		t.Fatal("BuiltinAlgorithmProfiles returned aliased profile data")
+		t.Fatal("prof.BuiltinAlgorithmProfiles returned aliased profile data")
 	}
-	if _, ok := LookupAlgorithmProfile("missing-capability"); ok {
-		t.Fatal("LookupAlgorithmProfile(missing) ok = true")
+	if _, ok := prof.LookupAlgorithmProfile("missing-capability"); ok {
+		t.Fatal("prof.LookupAlgorithmProfile(missing) ok = true")
 	}
 }

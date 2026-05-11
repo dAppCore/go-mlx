@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/profile"
 )
 
 // MiniMaxM2Config captures the config fields needed before the native sparse
@@ -802,7 +803,7 @@ func (plan MiniMaxM2TensorPlan) expertSpec(layer, expert int, projection string,
 
 func firstMiniMaxM2Architecture(values []string) string {
 	for _, value := range values {
-		if architectureProfileID(value) == "minimax_m2" {
+		if profile.ArchitectureID(value) == "minimax_m2" {
 			return "minimax_m2"
 		}
 	}
