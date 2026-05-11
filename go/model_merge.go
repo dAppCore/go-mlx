@@ -941,3 +941,66 @@ func modelMergeResultError(result core.Result) error {
 	}
 	return core.NewError("core result failed")
 }
+
+func samePath(a, b string) bool {
+	absA := a
+	if resolved := core.PathAbs(a); resolved.OK {
+		absA = resolved.Value.(string)
+	}
+	absB := b
+	if resolved := core.PathAbs(b); resolved.OK {
+		absB = resolved.Value.(string)
+	}
+	return absA == absB
+}
+
+func copyModelPackMetadata(sourceRoot, outputRoot string) error {
+	patterns := []string{"*.json", "*.model", "*.txt"}
+	seen := map[string]struct{}{}
+	for _, pattern := range patterns {
+		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
+			name := core.PathBase(sourcePath)
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			if isModelWeightMetadataCopySkip(name) {
+				continue
+			}
+			if err := copyModelPackLocalFile(sourcePath, core.PathJoin(outputRoot, name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isModelWeightMetadataCopySkip(name string) bool {
+	lower := core.Lower(name)
+	return lower == "adapter_provenance.json" ||
+		core.Contains(lower, ".safetensors") ||
+		core.Contains(lower, ".gguf") ||
+		core.HasSuffix(lower, ".safetensors") ||
+		core.HasSuffix(lower, ".gguf")
+}
+
+func copyModelPackLocalFile(sourcePath, destinationPath string) error {
+	read := core.ReadFile(sourcePath)
+	if !read.OK {
+		return modelPackCopyResultError(read)
+	}
+	if result := core.WriteFile(destinationPath, read.Value.([]byte), 0o644); !result.OK {
+		return modelPackCopyResultError(result)
+	}
+	return nil
+}
+
+func modelPackCopyResultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("model pack metadata copy failed")
+}

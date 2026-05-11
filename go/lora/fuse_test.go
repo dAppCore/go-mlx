@@ -1,24 +1,32 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package lora
 
 import (
 	"context"
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/pack"
 )
 
-func TestLoRAFusePairName_Good(t *testing.T) {
-	pair, suffix, ok := loraFusePairName("model.layers.0.self_attn.q_proj.lora_a")
+func writeFuseTestFile(t *testing.T, path string, data string) {
+	t.Helper()
+	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
+		t.Fatalf("write %s: %v", path, result.Value)
+	}
+}
+
+func TestFusePairName_Good(t *testing.T) {
+	pair, suffix, ok := fusePairName("model.layers.0.self_attn.q_proj.lora_a")
 	if !ok || pair != "model.layers.0.self_attn.q_proj" || suffix != "a" {
 		t.Fatalf("pair=%q suffix=%q ok=%v, want q_proj/a/true", pair, suffix, ok)
 	}
-	if got := loraFuseBaseWeightKey(pair); got != "model.layers.0.self_attn.q_proj.weight" {
+	if got := fuseBaseWeightKey(pair); got != "model.layers.0.self_attn.q_proj.weight" {
 		t.Fatalf("base weight key = %q", got)
 	}
 
-	pair, suffix, ok = loraFusePairName("model.layers.0.self_attn.q_proj.lora_B.weight")
+	pair, suffix, ok = fusePairName("model.layers.0.self_attn.q_proj.lora_B.weight")
 	if !ok || pair != "model.layers.0.self_attn.q_proj" || suffix != "b" {
 		t.Fatalf("PEFT pair=%q suffix=%q ok=%v, want q_proj/b/true", pair, suffix, ok)
 	}
@@ -30,19 +38,19 @@ func TestLoRAFusePairName_Good(t *testing.T) {
 		"layer.lora_b.weight",
 		"layer.lora_B",
 	} {
-		pair, suffix, ok := loraFusePairName(name)
+		pair, suffix, ok := fusePairName(name)
 		if !ok || pair != "layer" || (suffix != "a" && suffix != "b") {
-			t.Fatalf("loraFusePairName(%q) = pair:%q suffix:%q ok:%v", name, pair, suffix, ok)
+			t.Fatalf("fusePairName(%q) = pair:%q suffix:%q ok:%v", name, pair, suffix, ok)
 		}
 	}
-	if pair, suffix, ok := loraFusePairName("layer.weight"); ok || pair != "" || suffix != "" {
-		t.Fatalf("loraFusePairName(non-lora) = pair:%q suffix:%q ok:%v", pair, suffix, ok)
+	if pair, suffix, ok := fusePairName("layer.weight"); ok || pair != "" || suffix != "" {
+		t.Fatalf("fusePairName(non-lora) = pair:%q suffix:%q ok:%v", pair, suffix, ok)
 	}
 }
 
-func TestPrepareLoRAFuse_OutputMustBePackDirectory_Bad(t *testing.T) {
-	_, err := prepareLoRAFuse(context.Background(), FuseLoRAOptions{
-		ModelPath:   "/tmp/source",
+func TestPrepareFuse_OutputMustBePackDirectory_Bad(t *testing.T) {
+	_, err := prepareFuse(context.Background(), FuseOptions{
+		SourcePack:  pack.ModelPack{Root: "/tmp/source", Format: pack.ModelPackFormatSafetensors},
 		AdapterPath: "/tmp/adapter",
 		OutputPath:  "/tmp/fused.safetensors",
 	})
@@ -54,24 +62,24 @@ func TestPrepareLoRAFuse_OutputMustBePackDirectory_Bad(t *testing.T) {
 	}
 }
 
-func TestPrepareLoRAFuse_ValidationErrors_Bad(t *testing.T) {
+func TestPrepareFuse_ValidationErrors_Bad(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := prepareLoRAFuse(cancelled, FuseLoRAOptions{}); err != context.Canceled {
-		t.Fatalf("prepareLoRAFuse(cancelled) = %v, want context.Canceled", err)
+	if _, err := prepareFuse(cancelled, FuseOptions{}); err != context.Canceled {
+		t.Fatalf("prepareFuse(cancelled) = %v, want context.Canceled", err)
 	}
-	if _, err := prepareLoRAFuse(context.Background(), FuseLoRAOptions{}); err == nil {
-		t.Fatal("expected missing model path error")
+	if _, err := prepareFuse(context.Background(), FuseOptions{}); err == nil {
+		t.Fatal("expected missing source pack error")
 	}
-	if _, err := prepareLoRAFuse(context.Background(), FuseLoRAOptions{ModelPath: "/tmp/model"}); err == nil {
+	if _, err := prepareFuse(context.Background(), FuseOptions{SourcePack: pack.ModelPack{Root: "/tmp/model", Format: pack.ModelPackFormatSafetensors}}); err == nil {
 		t.Fatal("expected missing adapter path error")
 	}
-	if _, err := prepareLoRAFuse(context.Background(), FuseLoRAOptions{ModelPath: "/tmp/model", AdapterPath: "/tmp/adapter"}); err == nil {
+	if _, err := prepareFuse(context.Background(), FuseOptions{SourcePack: pack.ModelPack{Root: "/tmp/model", Format: pack.ModelPackFormatSafetensors}, AdapterPath: "/tmp/adapter"}); err == nil {
 		t.Fatal("expected missing output path error")
 	}
 }
 
-func TestLoRAFuseDestinationAndMetadata_Good(t *testing.T) {
+func TestFuseDestinationAndMetadata_Good(t *testing.T) {
 	base := t.TempDir()
 	output := core.PathJoin(t.TempDir(), "fused")
 	if result := core.MkdirAll(output, 0o755); !result.OK {
@@ -79,7 +87,7 @@ func TestLoRAFuseDestinationAndMetadata_Good(t *testing.T) {
 	}
 	files := map[string]string{
 		"config.json":              `{"model_type":"qwen3"}`,
-		"tokenizer.json":           modelPackTokenizerJSON,
+		"tokenizer.json":           `{"model":{"type":"BPE"}}`,
 		"adapter_provenance.json":  `{"skip":true}`,
 		"model.safetensors.index":  "skip",
 		"notes.txt":                "keep",
@@ -89,7 +97,7 @@ func TestLoRAFuseDestinationAndMetadata_Good(t *testing.T) {
 		"model.safetensors.index2": "skip because contains",
 	}
 	for name, content := range files {
-		writeModelPackFile(t, core.PathJoin(base, name), content)
+		writeFuseTestFile(t, core.PathJoin(base, name), content)
 	}
 
 	if err := copyModelPackMetadata(base, output); err != nil {
@@ -113,7 +121,7 @@ func TestLoRAFuseDestinationAndMetadata_Good(t *testing.T) {
 	}
 }
 
-func TestLoRAFuseDestinationAndMetadata_Bad(t *testing.T) {
+func TestFuseDestinationAndMetadata_Bad(t *testing.T) {
 	dir := t.TempDir()
 	if result := core.WriteFile(core.PathJoin(dir, "model.safetensors"), []byte("weights"), 0o644); !result.OK {
 		t.Fatalf("write weights: %v", result.Value)
@@ -132,7 +140,7 @@ func TestLoRAFuseDestinationAndMetadata_Bad(t *testing.T) {
 	}
 }
 
-func TestLoRAFuseAdapterWeightFiles_Good(t *testing.T) {
+func TestFuseAdapterWeightFiles_Good(t *testing.T) {
 	dir := t.TempDir()
 	a := core.PathJoin(dir, "b.safetensors")
 	b := core.PathJoin(dir, "a.safetensors")
@@ -141,35 +149,35 @@ func TestLoRAFuseAdapterWeightFiles_Good(t *testing.T) {
 			t.Fatalf("write adapter weight: %v", result.Value)
 		}
 	}
-	files, err := loraFuseAdapterWeightFiles(dir)
+	files, err := fuseAdapterWeightFiles(dir)
 	if err != nil {
-		t.Fatalf("loraFuseAdapterWeightFiles(dir): %v", err)
+		t.Fatalf("fuseAdapterWeightFiles(dir): %v", err)
 	}
 	if len(files) != 2 || files[0] != b || files[1] != a {
 		t.Fatalf("adapter files = %+v, want sorted", files)
 	}
-	files, err = loraFuseAdapterWeightFiles(a)
+	files, err = fuseAdapterWeightFiles(a)
 	if err != nil {
-		t.Fatalf("loraFuseAdapterWeightFiles(file): %v", err)
+		t.Fatalf("fuseAdapterWeightFiles(file): %v", err)
 	}
 	if len(files) != 1 || files[0] != a {
 		t.Fatalf("adapter file result = %+v, want %q", files, a)
 	}
-	if _, err := loraFuseAdapterWeightFiles(core.PathJoin(t.TempDir(), "empty")); err == nil {
+	if _, err := fuseAdapterWeightFiles(core.PathJoin(t.TempDir(), "empty")); err == nil {
 		t.Fatal("expected no adapter safetensors error")
 	}
 }
 
-func TestWriteLoRAFuseProvenance_Ugly(t *testing.T) {
-	path := core.PathJoin(t.TempDir(), LoRAFuseProvenanceFile)
-	err := writeLoRAFuseProvenance(path, LoRAFuseProvenance{
+func TestWriteFuseProvenance_Ugly(t *testing.T) {
+	path := core.PathJoin(t.TempDir(), FuseProvenanceFile)
+	err := writeFuseProvenance(path, FuseProvenance{
 		Version:         1,
 		OutputWeight:    "model.safetensors",
 		FusedWeightKeys: []string{"z.weight", "a.weight"},
 		Labels:          map[string]string{"run": "probe"},
 	})
 	if err != nil {
-		t.Fatalf("writeLoRAFuseProvenance() error = %v", err)
+		t.Fatalf("writeFuseProvenance() error = %v", err)
 	}
 	read := core.ReadFile(path)
 	if !read.OK {

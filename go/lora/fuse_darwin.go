@@ -2,7 +2,7 @@
 
 //go:build darwin && arm64 && !nomlx
 
-package mlx
+package lora
 
 import (
 	"context"
@@ -12,18 +12,24 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 )
 
-type loraFusePair struct {
+type fusePair struct {
 	MatrixA *metal.Array
 	MatrixB *metal.Array
 }
 
-// FuseLoRAIntoModelPack merges a LoRA adapter into dense safetensors base
-// weights and writes a complete go-mlx-loadable model pack.
-func FuseLoRAIntoModelPack(ctx context.Context, opts FuseLoRAOptions) (*FuseLoRAResult, error) {
+// FuseIntoPack merges a LoRA adapter into dense safetensors base weights
+// and writes a go-mlx-loadable model pack. Callers validate
+// opts.SourcePack with mlx.ValidateModelPack before invoking, and
+// validate the OutputPath after the call returns.
+//
+//	src, err := mlx.ValidateModelPack(path)
+//	res, err := lora.FuseIntoPack(ctx, lora.FuseOptions{SourcePack: src, AdapterPath: a, OutputPath: o})
+//	out, err := mlx.ValidateModelPack(res.OutputPath)
+func FuseIntoPack(ctx context.Context, opts FuseOptions) (*FuseResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	prepared, err := prepareLoRAFuse(ctx, opts)
+	prepared, err := prepareFuse(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -34,18 +40,18 @@ func FuseLoRAIntoModelPack(ctx context.Context, opts FuseLoRAOptions) (*FuseLoRA
 	}
 	defer freeMetalMap(adapterWeights)
 
-	pairs, err := buildLoRAFusePairs(adapterWeights)
+	pairs, err := buildFusePairs(adapterWeights)
 	if err != nil {
 		return nil, err
 	}
 
-	weightFiles, fusedKeys, err := fuseLoRAModelWeightFiles(ctx, prepared.Model.WeightFiles, prepared.Output, pairs, prepared.Adapter.Scale)
+	weightFiles, fusedKeys, err := fuseModelWeightFiles(ctx, prepared.Model.WeightFiles, prepared.Output, pairs, prepared.Adapter.Scale)
 	if err != nil {
 		return nil, err
 	}
 
-	provenancePath := core.PathJoin(prepared.Output, LoRAFuseProvenanceFile)
-	if err := writeLoRAFuseProvenance(provenancePath, LoRAFuseProvenance{
+	provenancePath := core.PathJoin(prepared.Output, FuseProvenanceFile)
+	if err := writeFuseProvenance(provenancePath, FuseProvenance{
 		Version:         1,
 		SourceModel:     prepared.Model,
 		Adapter:         prepared.Adapter,
@@ -57,16 +63,11 @@ func FuseLoRAIntoModelPack(ctx context.Context, opts FuseLoRAOptions) (*FuseLoRA
 		return nil, err
 	}
 
-	pack, err := ValidateModelPack(prepared.Output)
-	if err != nil {
-		return nil, core.E("FuseLoRAIntoModelPack", "validate fused model pack", err)
-	}
-	return &FuseLoRAResult{
+	return &FuseResult{
 		OutputPath:      prepared.Output,
 		WeightPath:      weightFiles[0],
 		WeightFiles:     weightFiles,
 		ProvenancePath:  provenancePath,
-		Pack:            pack,
 		Adapter:         prepared.Adapter,
 		FusedWeights:    len(fusedKeys),
 		FusedWeightKeys: fusedKeys,
@@ -74,7 +75,7 @@ func FuseLoRAIntoModelPack(ctx context.Context, opts FuseLoRAOptions) (*FuseLoRA
 }
 
 func loadFuseAdapterWeights(path string) (map[string]*metal.Array, error) {
-	paths, err := loraFuseAdapterWeightFiles(path)
+	paths, err := fuseAdapterWeightFiles(path)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +84,7 @@ func loadFuseAdapterWeights(path string) (map[string]*metal.Array, error) {
 		loaded, err := metal.LoadAllSafetensors(path)
 		if err != nil {
 			freeMetalMap(weights)
-			return nil, core.E("FuseLoRAIntoModelPack", "load adapter weights "+core.PathBase(path), err)
+			return nil, core.E("lora.FuseIntoPack", "load adapter weights "+core.PathBase(path), err)
 		}
 		for name, tensor := range loaded {
 			if previous := weights[name]; previous != nil {
@@ -95,10 +96,10 @@ func loadFuseAdapterWeights(path string) (map[string]*metal.Array, error) {
 	return weights, nil
 }
 
-func buildLoRAFusePairs(weights map[string]*metal.Array) (map[string]loraFusePair, error) {
-	pairs := make(map[string]loraFusePair)
+func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error) {
+	pairs := make(map[string]fusePair)
 	for name, tensor := range weights {
-		pairName, suffix, ok := loraFusePairName(name)
+		pairName, suffix, ok := fusePairName(name)
 		if !ok {
 			continue
 		}
@@ -122,7 +123,7 @@ func buildLoRAFusePairs(weights map[string]*metal.Array) (map[string]loraFusePai
 	return pairs, nil
 }
 
-func fuseLoRAModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]loraFusePair, scale float32) ([]string, []string, error) {
+func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]fusePair, scale float32) ([]string, []string, error) {
 	if len(sourceFiles) == 0 {
 		return nil, nil, core.NewError("mlx: no base weight files available for LoRA fusion")
 	}
@@ -136,24 +137,24 @@ func fuseLoRAModelWeightFiles(ctx context.Context, sourceFiles []string, outputR
 		}
 		baseWeights, err := metal.LoadAllSafetensors(sourceFile)
 		if err != nil {
-			return nil, nil, core.E("FuseLoRAIntoModelPack", "load base weights "+core.PathBase(sourceFile), err)
+			return nil, nil, core.E("lora.FuseIntoPack", "load base weights "+core.PathBase(sourceFile), err)
 		}
 
-		shardFusedKeys, err := fuseLoRAWeightPairs(ctx, baseWeights, pairs, fusedPairs, scale)
+		shardFusedKeys, err := fuseWeightPairs(ctx, baseWeights, pairs, fusedPairs, scale)
 		if err != nil {
 			freeMetalMap(baseWeights)
 			return nil, nil, err
 		}
 		fusedKeys = append(fusedKeys, shardFusedKeys...)
 
-		outputName := loRAFuseOutputWeights
+		outputName := fuseOutputWeights
 		if len(sourceFiles) > 1 {
 			outputName = core.PathBase(sourceFile)
 		}
 		weightPath := core.PathJoin(outputRoot, outputName)
 		if err := metal.SaveSafetensors(weightPath, baseWeights); err != nil {
 			freeMetalMap(baseWeights)
-			return nil, nil, core.E("FuseLoRAIntoModelPack", "save fused safetensors", err)
+			return nil, nil, core.E("lora.FuseIntoPack", "save fused safetensors", err)
 		}
 		freeMetalMap(baseWeights)
 		weightFiles = append(weightFiles, weightPath)
@@ -163,12 +164,12 @@ func fuseLoRAModelWeightFiles(ctx context.Context, sourceFiles []string, outputR
 		if _, ok := fusedPairs[name]; ok {
 			continue
 		}
-		return nil, nil, core.NewError("mlx: base weight not found for LoRA target: " + loraFuseBaseWeightKey(name))
+		return nil, nil, core.NewError("mlx: base weight not found for LoRA target: " + fuseBaseWeightKey(name))
 	}
 	return weightFiles, fusedKeys, nil
 }
 
-func fuseLoRAWeightPairs(ctx context.Context, baseWeights map[string]*metal.Array, pairs map[string]loraFusePair, fusedPairs map[string]struct{}, scale float32) ([]string, error) {
+func fuseWeightPairs(ctx context.Context, baseWeights map[string]*metal.Array, pairs map[string]fusePair, fusedPairs map[string]struct{}, scale float32) ([]string, error) {
 	names := make([]string, 0, len(pairs))
 	for name := range pairs {
 		names = append(names, name)
@@ -183,7 +184,7 @@ func fuseLoRAWeightPairs(ctx context.Context, baseWeights map[string]*metal.Arra
 		if _, ok := fusedPairs[name]; ok {
 			continue
 		}
-		baseKey := loraFuseBaseWeightKey(name)
+		baseKey := fuseBaseWeightKey(name)
 		base := baseWeights[baseKey]
 		if base == nil {
 			continue

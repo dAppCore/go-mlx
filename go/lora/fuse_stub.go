@@ -2,7 +2,7 @@
 
 //go:build !(darwin && arm64) || nomlx
 
-package mlx
+package lora
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 )
 
-// FuseLoRAIntoModelPack requires native MLX safetensors support.
-func FuseLoRAIntoModelPack(_ context.Context, _ FuseLoRAOptions) (*FuseLoRAResult, error) {
+// FuseIntoPack requires native MLX safetensors support.
+func FuseIntoPack(_ context.Context, _ FuseOptions) (*FuseResult, error) {
 	return nil, core.NewError("mlx: LoRA pack fusion requires darwin/arm64 native MLX support")
 }
