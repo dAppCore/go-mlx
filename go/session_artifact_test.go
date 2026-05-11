@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
 
@@ -25,7 +26,7 @@ func TestSAMIFromKV_Good(t *testing.T) {
 		LayerCrossAlignment: []float64{0.25},
 	}
 
-	got := SAMIFromKV(snapshot, analysis, SAMIOptions{Model: "lem-gemma", Prompt: "trace me"})
+	got := bundle.SAMIFromKV(snapshot, analysis, bundle.SAMIOptions{Model: "lem-gemma", Prompt: "trace me"})
 
 	if got.Model != "lem-gemma" || got.Prompt != "trace me" || got.Architecture != "gemma4_text" {
 		t.Fatalf("SAMI identity = %+v", got)
@@ -48,7 +49,7 @@ func TestSAMIFromKV_Good(t *testing.T) {
 }
 
 func TestSAMIFromKV_Bad(t *testing.T) {
-	got := SAMIFromKV(nil, nil, SAMIOptions{})
+	got := bundle.SAMIFromKV(nil, nil, bundle.SAMIOptions{})
 
 	if got.NumLayers != 0 || got.Composite != 0 {
 		t.Fatalf("nil SAMI result = %+v, want zero shape", got)
@@ -70,7 +71,7 @@ func TestSAMIFromKV_Ugly(t *testing.T) {
 		SharedCacheLayerGroups: map[int][]int{},
 	}
 
-	got := SAMIFromKV(snapshot, analysis, SAMIOptions{})
+	got := bundle.SAMIFromKV(snapshot, analysis, bundle.SAMIOptions{})
 
 	if got.MeanCoherence != 0.5 || got.MeanCrossAlignment != 1 || got.MeanHeadEntropy != 0 || got.PhaseLockScore != 1 {
 		t.Fatalf("clamped means = %+v", got)

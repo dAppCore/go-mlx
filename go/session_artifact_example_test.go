@@ -4,16 +4,6 @@ package mlx
 
 import core "dappco.re/go"
 
-func ExampleSAMIResult() {
-	core.Println("SAMIResult")
-	// Output: SAMIResult
-}
-
-func ExampleSAMIOptions() {
-	core.Println("SAMIOptions")
-	// Output: SAMIOptions
-}
-
 func ExampleSessionArtifactOptions() {
 	core.Println("SessionArtifactOptions")
 	// Output: SessionArtifactOptions
@@ -27,11 +17,6 @@ func ExampleSessionArtifact() {
 func ExampleSessionArtifactSnapshot() {
 	core.Println("SessionArtifactSnapshot")
 	// Output: SessionArtifactSnapshot
-}
-
-func ExampleSAMIFromKV() {
-	core.Println("SAMIFromKV")
-	// Output: SAMIFromKV
 }
 
 func ExampleExportSessionArtifacts() {

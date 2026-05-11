@@ -13,14 +13,6 @@ import (
 
 const sessionArtifactKind = "go-mlx/session-state"
 
-// SAMIResult is the SAMI BOResult-compatible model-state visualization
-// schema. Aliased from dappco.re/go/mlx/bundle/.
-type SAMIResult = bundle.SAMIResult
-
-// SAMIOptions labels a SAMI export with caller-owned provenance.
-// Aliased from dappco.re/go/mlx/bundle/.
-type SAMIOptions = bundle.SAMIOptions
-
 // SessionArtifactOptions controls local model-state artifact export.
 type SessionArtifactOptions struct {
 	Model    string
@@ -46,7 +38,7 @@ type SessionArtifact struct {
 	Analysis      *kv.Analysis             `json:"analysis"`
 	Features      []float64               `json:"features"`
 	FeatureLabels []string                `json:"feature_labels"`
-	SAMI          SAMIResult              `json:"sami"`
+	SAMI          bundle.SAMIResult       `json:"sami"`
 	KVPath        string                  `json:"kv_path,omitempty"`
 	ChunkRef      memvid.ChunkRef         `json:"chunk_ref,omitempty"`
 }
@@ -60,13 +52,6 @@ type SessionArtifactSnapshot struct {
 	SeqLen        int    `json:"seq_len"`
 	HeadDim       int    `json:"head_dim"`
 	NumQueryHeads int    `json:"num_query_heads"`
-}
-
-// SAMIFromKV converts K/V analysis into SAMI's visualization schema.
-//
-//	sami := mlx.SAMIFromKV(snapshot, analysis, mlx.SAMIOptions{Model: name})
-func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) SAMIResult {
-	return bundle.SAMIFromKV(snapshot, analysis, opts)
 }
 
 // ExportSessionArtifacts writes optional KV binary data and optional memvid JSON.
@@ -108,7 +93,7 @@ func ExportSessionArtifacts(ctx context.Context, snapshot *kv.Snapshot, opts Ses
 		Analysis:      analysis,
 		Features:      kv.Features(analysis),
 		FeatureLabels: kv.FeatureLabels(),
-		SAMI:          SAMIFromKV(snapshot, analysis, SAMIOptions{Model: opts.Model, Prompt: opts.Prompt}),
+		SAMI:          bundle.SAMIFromKV(snapshot, analysis, bundle.SAMIOptions{Model: opts.Model, Prompt: opts.Prompt}),
 		KVPath:        opts.KVPath,
 	}
 	if opts.Store != nil {
