@@ -8,6 +8,7 @@ import (
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/memory"
 )
 
 func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
@@ -149,7 +150,7 @@ func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
 	if plan.CacheMode != KVCacheModePaged || !plan.PromptCache {
 		t.Fatalf("MiniMax cache policy = mode:%q prompt:%v", plan.CacheMode, plan.PromptCache)
 	}
-	if !plan.ExpertResidency.Enabled || plan.ExpertResidency.Mode != ExpertResidencyModeLazy {
+	if !plan.ExpertResidency.Enabled || plan.ExpertResidency.Mode != memory.ExpertResidencyModeLazy {
 		t.Fatalf("expert residency = %+v, want lazy residency for MiniMax on 96GB", plan.ExpertResidency)
 	}
 	if plan.ModelQuantization != 2 || plan.ModelQuantizationType != "jangtq" || plan.ModelQuantizationFamily != "jang" {

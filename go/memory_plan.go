@@ -5,6 +5,7 @@ package mlx
 import (
 	"dappco.re/go/mlx/memory"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/model/minimax/m2"
 )
 
 // MemoryGiB is the number of bytes in a gibibyte.
@@ -74,7 +75,7 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 			plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
 		}
 		if mm, _ := input.Pack.MiniMaxM2.(*MiniMaxM2TensorPlan); mm != nil {
-			plan.ExpertResidency = PlanMiniMaxM2ExpertResidency(*mm, plan, nil)
+			plan.ExpertResidency = m2.PlanResidency(*mm, plan, nil)
 			plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
 		}
 	}

@@ -10,6 +10,8 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/model/minimax/m2"
 )
 
 const WorkloadBenchReportVersion = 1
@@ -25,7 +27,7 @@ type WorkloadBenchConfig struct {
 	IncludePerplexity      bool                           `json:"include_perplexity"`
 	IncludeKVCacheBench    bool                           `json:"include_kv_cache_bench"`
 	IncludeExpertResidency bool                           `json:"include_expert_residency"`
-	ExpertResidency        ExpertResidencyPlan            `json:"expert_residency,omitempty"`
+	ExpertResidency        memory.ExpertResidencyPlan            `json:"expert_residency,omitempty"`
 	QuantizationProfile    *jang.PackedProfile `json:"quantization_profile,omitempty"`
 	EvalSamples            []WorkloadEvalSample           `json:"eval_samples,omitempty"`
 }
@@ -67,7 +69,7 @@ type WorkloadBenchRunner struct {
 	FuseAdapter func(context.Context, WorkloadAdapterInfo) error
 
 	EvaluatePerplexity     func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error)
-	MeasureExpertResidency func(context.Context, ExpertResidencyPlan) (ExpertResidencyStats, error)
+	MeasureExpertResidency func(context.Context, memory.ExpertResidencyPlan) (memory.ExpertResidencyStats, error)
 }
 
 // WorkloadBenchReport is a JSON-friendly report for local model workloads.
@@ -153,8 +155,8 @@ type WorkloadEvaluationReport struct {
 type WorkloadExpertResidencyReport struct {
 	Attempted bool                 `json:"attempted"`
 	Duration  time.Duration        `json:"duration,omitempty"`
-	Plan      ExpertResidencyPlan  `json:"plan,omitempty"`
-	Stats     ExpertResidencyStats `json:"stats,omitempty"`
+	Plan      memory.ExpertResidencyPlan  `json:"plan,omitempty"`
+	Stats     memory.ExpertResidencyStats `json:"stats,omitempty"`
 	Error     string               `json:"error,omitempty"`
 }
 
@@ -246,7 +248,7 @@ func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.Eval = normalizeWorkloadEvalConfig(cfg.Eval)
 	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
-	cfg.ExpertResidency = normaliseExpertResidencyPlan(cfg.ExpertResidency)
+	cfg.ExpertResidency = m2.NormalisePlan(cfg.ExpertResidency)
 	return cfg
 }
 
