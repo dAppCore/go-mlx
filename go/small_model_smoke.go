@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
 
@@ -89,7 +90,7 @@ type SmallModelSmokeReport struct {
 // DefaultSmallModelSmokeConfig returns the Apple-local smoke defaults: q4 only,
 // at most 26GiB of weights, and an 8K smoke context even on larger machines.
 func DefaultSmallModelSmokeConfig() SmallModelSmokeConfig {
-	fast := DefaultFastEvalConfig()
+	fast := bench.DefaultConfig()
 	fast.MaxTokens = DefaultSmallModelSmokeMaxTokens
 	fast.Prompt = "Write one short sentence about native Apple inference."
 	fast.CachePrompt = fast.Prompt

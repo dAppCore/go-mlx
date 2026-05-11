@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/pack"
 )
@@ -47,7 +48,7 @@ var (
 )
 
 func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	cfg := mlx.DefaultFastEvalConfig()
+	cfg := bench.DefaultConfig()
 	fs := flag.NewFlagSet("go-mlx bench", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON report")
@@ -128,7 +129,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	return 0
 }
 
-func printBenchSummary(stdout io.Writer, report *mlx.FastEvalReport) {
+func printBenchSummary(stdout io.Writer, report *bench.Report) {
 	if report == nil {
 		return
 	}

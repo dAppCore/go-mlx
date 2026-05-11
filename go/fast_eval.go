@@ -11,39 +11,8 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
-// Legacy type aliases — the driver-neutral orchestration lives in
-// go-inference/bench/. These aliases keep mlx-root callers compiling.
-type (
-	FastEvalConfig                   = bench.Config
-	FastEvalReport                   = bench.Report
-	FastEvalGeneration               = bench.Generation
-	FastEvalGenerationSummary        = bench.GenerationSummary
-	FastEvalGenerationSample         = bench.GenerationSample
-	FastEvalPromptCacheReport        = bench.PromptCacheReport
-	FastEvalMemvidKVBlockWarmReport  = bench.MemvidKVBlockWarmReport
-	FastEvalLatencyReport            = bench.LatencyReport
-	FastEvalStateBundleReport        = bench.StateBundleReport
-	FastEvalProbeReport              = bench.ProbeReport
-	FastEvalDecodeOptimisationReport = bench.DecodeOptimisationReport
-	FastEvalQualityReport            = bench.QualityReport
-	FastEvalQualityCheck             = bench.QualityCheck
-)
-
-// FastEvalReportVersion mirrors bench.ReportVersion for the legacy alias.
-const FastEvalReportVersion = bench.ReportVersion
-
-// FastEvalRunner is the mlx-root benchmark runner: bench.Runner plus the
-// extra mlx-specific callbacks that memvid_chapter_smoke uses to drive
-// chapter-sized memvid prefix replays.
-type FastEvalRunner = bench.Runner
-
-// DefaultFastEvalConfig returns a short local benchmark suite suitable for a laptop.
-func DefaultFastEvalConfig() FastEvalConfig {
-	return bench.DefaultConfig()
-}
-
 // RunFastEvalBench runs the benchmark harness against a loaded Model.
-func RunFastEvalBench(ctx context.Context, model *Model, cfg FastEvalConfig) (*FastEvalReport, error) {
+func RunFastEvalBench(ctx context.Context, model *Model, cfg bench.Config) (*bench.Report, error) {
 	if model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
@@ -51,7 +20,7 @@ func RunFastEvalBench(ctx context.Context, model *Model, cfg FastEvalConfig) (*F
 }
 
 // RunFastEval runs a local benchmark/eval suite against the supplied runner.
-func RunFastEval(ctx context.Context, runner FastEvalRunner, cfg FastEvalConfig) (*FastEvalReport, error) {
+func RunFastEval(ctx context.Context, runner bench.Runner, cfg bench.Config) (*bench.Report, error) {
 	return bench.Run(ctx, runner, cfg)
 }
 

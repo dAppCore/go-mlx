@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"context"
 	"math"
 	"time"
@@ -18,7 +19,7 @@ const WorkloadBenchReportVersion = 1
 
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
-	FastEval               FastEvalConfig                 `json:"fast_eval"`
+	FastEval               bench.Config                 `json:"fast_eval"`
 	Eval                   eval.Config                     `json:"eval,omitempty"`
 	EvalDataset            SFTDataset                     `json:"-"`
 	AdapterPath            string                         `json:"adapter_path,omitempty"`
@@ -62,7 +63,7 @@ type WorkloadEvalMetrics struct {
 
 // WorkloadBenchRunner supplies model operations measured by RunWorkloadBench.
 type WorkloadBenchRunner struct {
-	FastEval FastEvalRunner
+	FastEval bench.Runner
 	Eval     eval.Runner
 
 	LoadAdapter func(context.Context, string) (WorkloadAdapterInfo, error)
@@ -75,7 +76,7 @@ type WorkloadBenchRunner struct {
 // WorkloadBenchReport is a JSON-friendly report for local model workloads.
 type WorkloadBenchReport struct {
 	Version             int                            `json:"version"`
-	FastEval            *FastEvalReport                `json:"fast_eval,omitempty"`
+	FastEval            *bench.Report                `json:"fast_eval,omitempty"`
 	KVCache             KVCacheBenchReport             `json:"kv_cache,omitempty"`
 	QuantizationProfile *jang.PackedProfile `json:"quantization_profile,omitempty"`
 	Adapter             WorkloadAdapterReport          `json:"adapter"`
@@ -162,7 +163,7 @@ type WorkloadExpertResidencyReport struct {
 
 // DefaultWorkloadBenchConfig returns a small laptop-safe workload benchmark config.
 func DefaultWorkloadBenchConfig() WorkloadBenchConfig {
-	return WorkloadBenchConfig{FastEval: DefaultFastEvalConfig()}
+	return WorkloadBenchConfig{FastEval: bench.DefaultConfig()}
 }
 
 // NewModelWorkloadBenchRunner adapts a loaded Model to the workload benchmark.

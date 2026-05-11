@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 )
 
@@ -74,18 +75,18 @@ func TestRunCommand_BenchJSON_Good(t *testing.T) {
 	})
 
 	var gotPath string
-	var gotCfg mlx.FastEvalConfig
+	var gotCfg bench.Config
 	loadBenchModel = func(path string, opts ...mlx.LoadOption) (*mlx.Model, error) {
 		gotPath = path
 		return &mlx.Model{}, nil
 	}
-	runBenchReport = func(ctx context.Context, model *mlx.Model, cfg mlx.FastEvalConfig) (*mlx.FastEvalReport, error) {
+	runBenchReport = func(ctx context.Context, model *mlx.Model, cfg bench.Config) (*bench.Report, error) {
 		gotCfg = cfg
-		return &mlx.FastEvalReport{
-			Version:   mlx.FastEvalReportVersion,
+		return &bench.Report{
+			Version:   bench.ReportVersion,
 			Model:     cfg.Model,
 			ModelPath: cfg.ModelPath,
-			Generation: mlx.FastEvalGenerationSummary{
+			Generation: bench.GenerationSummary{
 				DecodeTokensPerSec: 42,
 				PeakMemoryBytes:    2048,
 			},

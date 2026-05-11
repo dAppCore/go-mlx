@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
 
@@ -178,7 +179,7 @@ func (adapter *metaladapter) rootModel() *Model {
 	}
 }
 
-func (adapter *metaladapter) fastEvalRunner() FastEvalRunner {
+func (adapter *metaladapter) fastEvalRunner() bench.Runner {
 	return NewModelFastEvalRunner(adapter.rootModel())
 }
 
@@ -462,8 +463,8 @@ func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 	}
 }
 
-func toFastEvalConfig(cfg inference.BenchConfig) FastEvalConfig {
-	out := DefaultFastEvalConfig()
+func toFastEvalConfig(cfg inference.BenchConfig) bench.Config {
+	out := bench.DefaultConfig()
 	if len(cfg.Prompts) > 0 {
 		out.Prompt = cfg.Prompts[0]
 	}
@@ -476,7 +477,7 @@ func toFastEvalConfig(cfg inference.BenchConfig) FastEvalConfig {
 	return out
 }
 
-func toInferenceBenchReport(report *FastEvalReport) *inference.BenchReport {
+func toInferenceBenchReport(report *bench.Report) *inference.BenchReport {
 	if report == nil {
 		return nil
 	}

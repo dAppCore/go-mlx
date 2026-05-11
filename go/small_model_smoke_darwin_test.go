@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
 	"testing"
@@ -53,7 +54,7 @@ func TestRunSmallModelSmoke_ForwardsBudgetedLoadOptions_Good(t *testing.T) {
 			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
 		},
 		Workload: WorkloadBenchConfig{
-			FastEval: FastEvalConfig{
+			FastEval: bench.Config{
 				Prompt:             "hi",
 				CachePrompt:        "hi",
 				MaxTokens:          1,

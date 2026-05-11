@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
 	"testing"
@@ -356,17 +357,17 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	if fastCfg.Prompt != "bench" || fastCfg.MaxTokens != 9 || fastCfg.Runs != 3 {
 		t.Fatalf("fast eval config = %+v", fastCfg)
 	}
-	bench := toInferenceBenchReport(&FastEvalReport{
+	bench := toInferenceBenchReport(&bench.Report{
 		ModelInfo: modelInfoToBench(ModelInfo{Architecture: "qwen3", Adapter: lora.AdapterInfo{Name: "root"}}),
-		Generation: FastEvalGenerationSummary{
+		Generation: bench.GenerationSummary{
 			PromptTokens:        4,
 			GeneratedTokens:     5,
 			PrefillTokensPerSec: 10,
 			DecodeTokensPerSec:  20,
 			PeakMemoryBytes:     30,
 		},
-		PromptCache: FastEvalPromptCacheReport{HitRate: 0.25},
-		KVRestore:   FastEvalLatencyReport{Duration: 12 * time.Millisecond},
+		PromptCache: bench.PromptCacheReport{HitRate: 0.25},
+		KVRestore:   bench.LatencyReport{Duration: 12 * time.Millisecond},
 	})
 	if bench == nil || bench.Model.Architecture != "qwen3" || bench.KVRestoreMilliseconds != 12 {
 		t.Fatalf("bench report = %+v", bench)

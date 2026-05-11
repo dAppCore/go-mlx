@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"testing"
 
@@ -186,7 +187,7 @@ func TestSmallModelSmokeHelpers_Good(t *testing.T) {
 		MaxBatchSize:         2,
 		MaxPrefillChunkSize:  128,
 		Workload: WorkloadBenchConfig{
-			FastEval: FastEvalConfig{Prompt: "custom", MaxTokens: 2},
+			FastEval: bench.Config{Prompt: "custom", MaxTokens: 2},
 		},
 	})
 	if cfg.RequiredQuantization != 8 || cfg.MaxContextLength != 4096 || cfg.MaxBatchSize != 2 || cfg.MaxPrefillChunkSize != 128 {

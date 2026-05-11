@@ -15,7 +15,7 @@ import (
 
 // These tests cover the mlx-side fast_eval boundary surface:
 //   - legacy type aliases route to the bench package
-//   - DefaultFastEvalConfig forwards to bench.DefaultConfig
+//   - bench.DefaultConfig forwards to bench.DefaultConfig
 //   - RunFastEvalBench rejects a nil model and delegates to bench.Run
 //   - the pure converter helpers (Info, Adapter, Metrics, GenerateOptions)
 // Coverage of bench.Run orchestration lives in
@@ -24,10 +24,10 @@ import (
 // smoke tests in this package, not here.
 
 func TestFastEvalConfig_LegacyAliasMatchesBench_Good(t *testing.T) {
-	var cfg FastEvalConfig
+	var cfg bench.Config
 	cfg.Prompt = "hello"
 	cfg.MaxTokens = 8
-	// FastEvalConfig is an alias for bench.Config; assignment-compatible
+	// bench.Config is an alias for bench.Config; assignment-compatible
 	// without conversion proves the alias is wired through.
 	var benchCfg bench.Config = cfg
 	if benchCfg.Prompt != "hello" || benchCfg.MaxTokens != 8 {
@@ -36,21 +36,21 @@ func TestFastEvalConfig_LegacyAliasMatchesBench_Good(t *testing.T) {
 }
 
 func TestDefaultFastEvalConfig_MatchesBenchDefault_Good(t *testing.T) {
-	got := DefaultFastEvalConfig()
+	got := bench.DefaultConfig()
 	want := bench.DefaultConfig()
 	if got.Prompt != want.Prompt || got.MaxTokens != want.MaxTokens || got.Runs != want.Runs {
-		t.Fatalf("DefaultFastEvalConfig() = %+v, want %+v", got, want)
+		t.Fatalf("bench.DefaultConfig() = %+v, want %+v", got, want)
 	}
 }
 
 func TestRunFastEvalBench_NilModel_Bad(t *testing.T) {
-	if _, err := RunFastEvalBench(context.Background(), nil, DefaultFastEvalConfig()); err == nil {
+	if _, err := RunFastEvalBench(context.Background(), nil, bench.DefaultConfig()); err == nil {
 		t.Fatal("RunFastEvalBench(nil model) error = nil, want guard")
 	}
 }
 
 func TestRunFastEval_RequiresGenerate_Bad(t *testing.T) {
-	if _, err := RunFastEval(context.Background(), bench.Runner{}, DefaultFastEvalConfig()); err == nil {
+	if _, err := RunFastEval(context.Background(), bench.Runner{}, bench.DefaultConfig()); err == nil {
 		t.Fatal("RunFastEval() with empty runner error = nil, want bench.Run validation")
 	}
 }
@@ -61,7 +61,7 @@ func TestRunFastEval_SmokesSyntheticRunner_Good(t *testing.T) {
 			return bench.Generation{Text: "ok", Metrics: bench.GenerationMetrics{GeneratedTokens: 1}}, nil
 		},
 	}
-	report, err := RunFastEval(context.Background(), runner, FastEvalConfig{Prompt: "p", MaxTokens: 4, Runs: 1})
+	report, err := RunFastEval(context.Background(), runner, bench.Config{Prompt: "p", MaxTokens: 4, Runs: 1})
 	if err != nil {
 		t.Fatalf("RunFastEval() error = %v", err)
 	}
