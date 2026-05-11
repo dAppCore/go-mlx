@@ -4,27 +4,43 @@ package mlx
 
 import (
 	"context"
-	"time"
 
-	core "dappco.re/go"
+	"dappco.re/go/inference/decode"
 )
 
-// DecodeGenerateFunc is the small generation hook used by optional decode
-// optimisation experiments. It returns tokens so the harness can measure
-// accepted and rejected candidates without depending on a concrete runtime.
+// Legacy type aliases — decode lives at go-inference/decode/. The
+// Result + Metrics types are structurally identical between mlx and
+// decode so we alias them directly. The function + generation types
+// stay mlx-shaped because callers build them with mlx.GenerateConfig +
+// mlx.Token; the boundary converters below bridge to decode.* at call
+// time.
+type (
+	DecodeOptimisationResult  = decode.Result
+	DecodeOptimisationMetrics = decode.Metrics
+)
+
+// Mode constants forwarded from the decode package.
+const (
+	DecodeModeSpeculative  = decode.ModeSpeculative
+	DecodeModePromptLookup = decode.ModePromptLookup
+)
+
+// DecodeGenerateFunc is the mlx-shaped generation hook used by
+// speculative + prompt-lookup decode. Drivers return mlx-native
+// DecodeGeneration; RunSpeculativeDecode/RunPromptLookupDecode convert
+// to decode.Generation at the boundary.
 type DecodeGenerateFunc func(context.Context, string, GenerateConfig) (DecodeGeneration, error)
 
-// DecodeGeneration is a tokenised generation result used by speculative and
-// prompt-lookup decode experiments.
+// DecodeGeneration is a tokenised generation result used by speculative
+// and prompt-lookup decode experiments. Decode itself only reads
+// Tokens; Text + Metrics are passed through for caller reporting.
 type DecodeGeneration struct {
 	Tokens  []Token `json:"tokens,omitempty"`
 	Text    string  `json:"text,omitempty"`
 	Metrics Metrics `json:"metrics,omitempty"`
 }
 
-// SpeculativeDecodeConfig configures the package-first speculative decode
-// reference path. It is opt-in and benchmark-facing; native batch verification
-// can replace the generate hooks later without changing the report shape.
+// SpeculativeDecodeConfig is the mlx-shaped speculative decode brief.
 type SpeculativeDecodeConfig struct {
 	Prompt         string             `json:"prompt,omitempty"`
 	MaxTokens      int                `json:"max_tokens,omitempty"`
@@ -34,10 +50,7 @@ type SpeculativeDecodeConfig struct {
 	DraftGenerate  DecodeGenerateFunc `json:"-"`
 }
 
-// PromptLookupDecodeConfig configures prompt lookup decoding over a known token
-// sequence from repeated context. It is deliberately explicit: callers provide
-// lookup tokens from their tokenizer/cache layer instead of relying on ad-hoc
-// string splitting.
+// PromptLookupDecodeConfig is the mlx-shaped prompt-lookup decode brief.
 type PromptLookupDecodeConfig struct {
 	Prompt         string             `json:"prompt,omitempty"`
 	MaxTokens      int                `json:"max_tokens,omitempty"`
@@ -46,184 +59,85 @@ type PromptLookupDecodeConfig struct {
 	LookupTokens   []Token            `json:"lookup_tokens,omitempty"`
 }
 
-// DecodeOptimisationResult is the common report for speculative and
-// prompt-lookup decode experiments.
-type DecodeOptimisationResult struct {
-	Mode    string                    `json:"mode"`
-	Prompt  string                    `json:"prompt,omitempty"`
-	Text    string                    `json:"text,omitempty"`
-	Tokens  []Token                   `json:"tokens,omitempty"`
-	Metrics DecodeOptimisationMetrics `json:"metrics"`
-}
-
-// DecodeOptimisationMetrics records candidate acceptance and call-level timing.
-type DecodeOptimisationMetrics struct {
-	TargetTokens   int           `json:"target_tokens,omitempty"`
-	DraftTokens    int           `json:"draft_tokens,omitempty"`
-	LookupTokens   int           `json:"lookup_tokens,omitempty"`
-	AcceptedTokens int           `json:"accepted_tokens,omitempty"`
-	RejectedTokens int           `json:"rejected_tokens,omitempty"`
-	EmittedTokens  int           `json:"emitted_tokens,omitempty"`
-	AcceptanceRate float64       `json:"acceptance_rate,omitempty"`
-	TargetCalls    int           `json:"target_calls,omitempty"`
-	DraftCalls     int           `json:"draft_calls,omitempty"`
-	Duration       time.Duration `json:"duration,omitempty"`
-	TargetDuration time.Duration `json:"target_duration,omitempty"`
-	DraftDuration  time.Duration `json:"draft_duration,omitempty"`
-}
-
-const (
-	DecodeModeSpeculative  = "speculative"
-	DecodeModePromptLookup = "prompt_lookup"
-)
-
-// RunSpeculativeDecode compares draft-model candidates against target-model
-// tokens and reports deterministic acceptance metrics. This is the safe
-// reference API; it does not claim a speedup until a backend provides native
-// verification that the benchmark can measure.
+// RunSpeculativeDecode runs the speculative-decode harness against
+// mlx-shaped generators.
+//
+//	result, err := mlx.RunSpeculativeDecode(ctx, cfg)
 func RunSpeculativeDecode(ctx context.Context, cfg SpeculativeDecodeConfig) (DecodeOptimisationResult, error) {
-	if cfg.TargetGenerate == nil {
-		return DecodeOptimisationResult{}, core.NewError("mlx: speculative decode requires target generator")
-	}
-	if cfg.DraftGenerate == nil {
-		return DecodeOptimisationResult{}, core.NewError("mlx: speculative decode requires draft generator")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	maxTokens := normaliseDecodeMaxTokens(cfg.MaxTokens, cfg.GenerateConfig.MaxTokens)
-	targetCfg := cfg.GenerateConfig
-	targetCfg.MaxTokens = maxTokens
-	draftCfg := cfg.GenerateConfig
-	draftCfg.MaxTokens = cfg.DraftTokens
-	if draftCfg.MaxTokens <= 0 || draftCfg.MaxTokens > maxTokens {
-		draftCfg.MaxTokens = maxTokens
-	}
-
-	start := time.Now()
-	draftStart := time.Now()
-	draft, err := cfg.DraftGenerate(ctx, cfg.Prompt, draftCfg)
-	draftDuration := nonZeroDuration(time.Since(draftStart))
-	if err != nil {
-		return DecodeOptimisationResult{}, err
-	}
-	targetStart := time.Now()
-	target, err := cfg.TargetGenerate(ctx, cfg.Prompt, targetCfg)
-	targetDuration := nonZeroDuration(time.Since(targetStart))
-	if err != nil {
-		return DecodeOptimisationResult{}, err
-	}
-	result := buildDecodeAcceptanceResult(DecodeModeSpeculative, cfg.Prompt, target.Tokens, draft.Tokens, maxTokens)
-	result.Metrics.TargetTokens = len(target.Tokens)
-	result.Metrics.DraftTokens = len(draft.Tokens)
-	result.Metrics.TargetCalls = 1
-	result.Metrics.DraftCalls = 1
-	result.Metrics.Duration = nonZeroDuration(time.Since(start))
-	result.Metrics.TargetDuration = targetDuration
-	result.Metrics.DraftDuration = draftDuration
-	return result, nil
+	return decode.Speculative(ctx, decode.SpeculativeConfig{
+		Prompt:         cfg.Prompt,
+		MaxTokens:      cfg.MaxTokens,
+		DraftTokens:    cfg.DraftTokens,
+		GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.GenerateConfig.MaxTokens},
+		TargetGenerate: mlxDecodeGenToDecode(cfg.TargetGenerate),
+		DraftGenerate:  mlxDecodeGenToDecode(cfg.DraftGenerate),
+	})
 }
 
-// RunPromptLookupDecode compares prompt-derived lookup candidates against the
-// target stream and reports how often repeated-context tokens were reusable.
+// RunPromptLookupDecode runs the prompt-lookup decode harness against
+// mlx-shaped generators.
+//
+//	result, err := mlx.RunPromptLookupDecode(ctx, cfg)
 func RunPromptLookupDecode(ctx context.Context, cfg PromptLookupDecodeConfig) (DecodeOptimisationResult, error) {
-	if cfg.TargetGenerate == nil {
-		return DecodeOptimisationResult{}, core.NewError("mlx: prompt lookup decode requires target generator")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	maxTokens := normaliseDecodeMaxTokens(cfg.MaxTokens, cfg.GenerateConfig.MaxTokens)
-	targetCfg := cfg.GenerateConfig
-	targetCfg.MaxTokens = maxTokens
-	start := time.Now()
-	targetStart := time.Now()
-	target, err := cfg.TargetGenerate(ctx, cfg.Prompt, targetCfg)
-	targetDuration := nonZeroDuration(time.Since(targetStart))
-	if err != nil {
-		return DecodeOptimisationResult{}, err
-	}
-	result := buildDecodeAcceptanceResult(DecodeModePromptLookup, cfg.Prompt, target.Tokens, cfg.LookupTokens, maxTokens)
-	result.Metrics.TargetTokens = len(target.Tokens)
-	result.Metrics.LookupTokens = len(cfg.LookupTokens)
-	result.Metrics.TargetCalls = 1
-	result.Metrics.Duration = nonZeroDuration(time.Since(start))
-	result.Metrics.TargetDuration = targetDuration
-	return result, nil
+	return decode.PromptLookup(ctx, decode.PromptLookupConfig{
+		Prompt:         cfg.Prompt,
+		MaxTokens:      cfg.MaxTokens,
+		GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.GenerateConfig.MaxTokens},
+		TargetGenerate: mlxDecodeGenToDecode(cfg.TargetGenerate),
+		LookupTokens:   mlxTokensToDecode(cfg.LookupTokens),
+	})
 }
 
-func buildDecodeAcceptanceResult(mode, prompt string, target, candidates []Token, maxTokens int) DecodeOptimisationResult {
-	limit := len(target)
-	if maxTokens > 0 && maxTokens < limit {
-		limit = maxTokens
+// mlxDecodeGenToDecode wraps an mlx-shaped DecodeGenerateFunc as a
+// decode.GenerateFunc, converting GenerateConfig + DecodeGeneration at
+// the boundary.
+func mlxDecodeGenToDecode(fn DecodeGenerateFunc) decode.GenerateFunc {
+	if fn == nil {
+		return nil
 	}
-	out := make([]Token, 0, limit)
-	var accepted, rejected int
-	for i := 0; i < limit; i++ {
-		targetToken := target[i]
-		if i < len(candidates) {
-			if decodeTokenEqual(candidates[i], targetToken) {
-				out = append(out, cloneDecodeToken(candidates[i]))
-				accepted++
-				continue
-			}
-			rejected++
+	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
+		mlxCfg := GenerateConfig{MaxTokens: cfg.MaxTokens}
+		result, err := fn(ctx, prompt, mlxCfg)
+		if err != nil {
+			return decode.Generation{}, err
 		}
-		out = append(out, cloneDecodeToken(targetToken))
-	}
-	attempted := accepted + rejected
-	metrics := DecodeOptimisationMetrics{
-		AcceptedTokens: accepted,
-		RejectedTokens: rejected,
-		EmittedTokens:  len(out),
-	}
-	if attempted > 0 {
-		metrics.AcceptanceRate = float64(accepted) / float64(attempted)
-	}
-	return DecodeOptimisationResult{
-		Mode:    mode,
-		Prompt:  prompt,
-		Text:    decodeTokensText(out),
-		Tokens:  out,
-		Metrics: metrics,
+		return decode.Generation{Text: result.Text, Tokens: mlxTokensToDecode(result.Tokens)}, nil
 	}
 }
 
-func normaliseDecodeMaxTokens(values ...int) int {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
+// mlxTokensToDecode converts an mlx.Token slice to []decode.Token.
+//
+//	out := mlxTokensToDecode(tokens)
+func mlxTokensToDecode(tokens []Token) []decode.Token {
+	if tokens == nil {
+		return nil
 	}
-	return DefaultGenerateConfig().MaxTokens
-}
-
-func decodeTokensText(tokens []Token) string {
-	builder := core.NewBuilder()
-	for _, token := range tokens {
-		builder.WriteString(firstNonEmpty(token.Text, token.Value))
+	out := make([]decode.Token, len(tokens))
+	for i, t := range tokens {
+		out[i] = decode.Token{ID: t.ID, Value: t.Value, Text: t.Text}
 	}
-	return builder.String()
-}
-
-func cloneDecodeTokens(tokens []Token) []Token {
-	out := make([]Token, len(tokens))
-	copy(out, tokens)
 	return out
 }
 
-func cloneDecodeToken(token Token) Token {
-	return Token{ID: token.ID, Value: token.Value, Text: token.Text}
+// decodeTokensToMlx converts a []decode.Token slice back to []mlx.Token.
+//
+//	out := decodeTokensToMlx(tokens)
+func decodeTokensToMlx(tokens []decode.Token) []Token {
+	if tokens == nil {
+		return nil
+	}
+	out := make([]Token, len(tokens))
+	for i, t := range tokens {
+		out[i] = Token{ID: t.ID, Value: t.Value, Text: t.Text}
+	}
+	return out
 }
 
-func decodeTokenEqual(a, b Token) bool {
-	if a.ID != b.ID {
-		return false
-	}
-	aText := firstNonEmpty(a.Text, a.Value)
-	bText := firstNonEmpty(b.Text, b.Value)
-	if aText == "" || bText == "" {
-		return true
-	}
-	return aText == bText
+// decodeTokensText renders an mlx.Token slice as a concatenated string,
+// preferring Text then Value. Retained for callers that need the same
+// rendering for non-decode paths (e.g. memvid_chapter_smoke).
+//
+//	text := decodeTokensText(tokens)
+func decodeTokensText(tokens []Token) string {
+	return decode.TokensText(mlxTokensToDecode(tokens))
 }
