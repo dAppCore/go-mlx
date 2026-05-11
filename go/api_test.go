@@ -12,6 +12,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
@@ -1394,8 +1395,8 @@ func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
 			},
 		}, nil
 	}
-	readGGUFInfo = func(modelPath string) (GGUFInfo, error) {
-		return GGUFInfo{}, core.NewError("no gguf metadata")
+	readGGUFInfo = func(modelPath string) (gguf.Info, error) {
+		return gguf.Info{}, core.NewError("no gguf metadata")
 	}
 
 	model, err := LoadModel("/does/not/matter", WithQuantization(4))
@@ -1422,8 +1423,8 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
 		return &fakeNativeModel{}, nil
 	}
-	readGGUFInfo = func(modelPath string) (GGUFInfo, error) {
-		return GGUFInfo{
+	readGGUFInfo = func(modelPath string) (gguf.Info, error) {
+		return gguf.Info{
 			Architecture:  "gemma4_text",
 			VocabSize:     262144,
 			HiddenSize:    2560,

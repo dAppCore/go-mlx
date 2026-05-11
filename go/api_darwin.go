@@ -9,6 +9,7 @@ import (
 	"iter"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metal"
@@ -79,7 +80,7 @@ type Model struct {
 	model       nativeModel
 	cfg         LoadConfig
 	tok         *Tokenizer
-	gguf        *GGUFInfo
+	gguf        *gguf.Info
 	adapterInfo lora.AdapterInfo
 	cleanup     func() error
 }
@@ -88,7 +89,7 @@ var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel,
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
-var readGGUFInfo = ReadGGUFInfo
+var readGGUFInfo = gguf.ReadInfo
 
 func appendCleanup(cleanup *func() error, next func() error) {
 	if next == nil {
@@ -167,7 +168,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	}
 
 	info := native.Info()
-	var ggufInfo *GGUFInfo
+	var ggufInfo *gguf.Info
 	if info.QuantBits == 0 || info.QuantGroup == 0 || info.Architecture == "" || info.NumLayers == 0 {
 		if parsed, parsedErr := readGGUFInfo(resolvedPath); parsedErr == nil {
 			ggufInfo = &parsed

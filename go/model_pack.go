@@ -10,6 +10,7 @@ import (
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -125,7 +126,7 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 }
 
 func inspectModelPackGGUF(pack *mp.ModelPack, path string) {
-	info, err := ReadGGUFInfo(path)
+	info, err := gguf.ReadInfo(path)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidGGUF, err.Error(), path)
 		return
@@ -182,7 +183,7 @@ func inspectModelPackJANG(pack *mp.ModelPack, root string) {
 		pack.QuantType = info.Packed.Type
 	}
 	pack.QuantFamily = "jang"
-	pack.Quantization = &GGUFQuantizationInfo{
+	pack.Quantization = &gguf.QuantizationInfo{
 		Type:      pack.QuantType,
 		Family:    pack.QuantFamily,
 		Bits:      pack.QuantBits,
@@ -204,7 +205,7 @@ func inspectModelPackCodebook(pack *mp.ModelPack, root string) {
 	pack.QuantType = codebook.FormatVQ
 	pack.QuantFamily = codebook.Type
 	pack.QuantBits = firstPositive(pack.QuantBits, profile.IndexBits)
-	pack.Quantization = &GGUFQuantizationInfo{
+	pack.Quantization = &gguf.QuantizationInfo{
 		Type:   pack.QuantType,
 		Family: pack.QuantFamily,
 		Bits:   pack.QuantBits,
@@ -213,16 +214,16 @@ func inspectModelPackCodebook(pack *mp.ModelPack, root string) {
 	pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedCodebook, "codebook/VQ tensor matvec is available, but full codebook-quantized model loading is not implemented yet", core.PathJoin(root, "codebook_config.json"))
 }
 
-func cloneGGUFQuantizationInfo(info GGUFQuantizationInfo) *GGUFQuantizationInfo {
+func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInfo {
 	if info.Type == "" && info.Family == "" && info.Bits == 0 && len(info.TensorTypes) == 0 {
 		return nil
 	}
 	cloned := info
-	cloned.TensorTypes = append([]GGUFTensorTypeSummary(nil), info.TensorTypes...)
+	cloned.TensorTypes = append([]gguf.TensorTypeSummary(nil), info.TensorTypes...)
 	return &cloned
 }
 
-func ggufValidationSummary(issues []GGUFValidationIssue) string {
+func ggufValidationSummary(issues []gguf.ValidationIssue) string {
 	if len(issues) == 0 {
 		return "unknown validation failure"
 	}

@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/gguf"
 )
 
 func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
@@ -37,9 +38,9 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 		t.Fatalf("WeightPath = %q", result.WeightPath)
 	}
 
-	info, err := ReadGGUFInfo(output)
+	info, err := gguf.ReadInfo(output)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo(output) error = %v", err)
+		t.Fatalf("gguf.ReadInfo(output) error = %v", err)
 	}
 	if !info.Valid() {
 		t.Fatalf("GGUF validation issues = %+v", info.ValidationIssues)
@@ -86,9 +87,9 @@ func TestQuantizeModelPackToGGUF_Q4KMFallsBackToQ4_0_Good(t *testing.T) {
 	if len(result.Notes) == 0 {
 		t.Fatal("expected note explaining q4_k_m fallback")
 	}
-	info, err := ReadGGUFInfo(output)
+	info, err := gguf.ReadInfo(output)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo(output) error = %v", err)
+		t.Fatalf("gguf.ReadInfo(output) error = %v", err)
 	}
 	if info.QuantType != "q4_0" || info.QuantBits != 4 || info.QuantGroup != 32 {
 		t.Fatalf("quant info = %+v", info)
@@ -118,9 +119,9 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 		t.Fatalf("writeQuantizedGGUFStream() error = %v", err)
 	}
 
-	info, err := ReadGGUFInfo(output)
+	info, err := gguf.ReadInfo(output)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("gguf.ReadInfo() error = %v", err)
 	}
 	if !info.Valid() || info.TensorCount != 1 || info.Tensors[0].TypeName != "q8_0" {
 		t.Fatalf("streamed info = %+v", info)
@@ -133,7 +134,7 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 	data := quantizeQ8_0(values)
 	tensors := []ggufQuantizedTensor{{
 		Name:  "model.norm.weight",
-		Type:  ggufTensorTypeQ8_0,
+		Type:  gguf.TensorTypeQ8_0,
 		Shape: []uint64{32},
 		Data:  data,
 	}}
@@ -141,9 +142,9 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 	if err := writeQuantizedGGUF(output, metadata, tensors); err != nil {
 		t.Fatalf("writeQuantizedGGUF() error = %v", err)
 	}
-	info, err := ReadGGUFInfo(output)
+	info, err := gguf.ReadInfo(output)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("gguf.ReadInfo() error = %v", err)
 	}
 	if !info.Valid() || info.TensorCount != 1 || info.Tensors[0].TypeName != "q8_0" {
 		t.Fatalf("buffered info = %+v", info)
@@ -183,8 +184,8 @@ func TestQuantizeModelPackToGGUF_RejectsNonSafetensors_Bad(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(source, "config.json"), `{"model_type":"qwen3"}`)
 	writeModelPackFile(t, core.PathJoin(source, "tokenizer.json"), modelPackTokenizerJSON)
 	writeTestGGUF(t, core.PathJoin(source, "model.gguf"),
-		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
-		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ8_0, Dims: []uint64{32, 2}}},
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"}},
+		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: gguf.TensorTypeQ8_0, Dims: []uint64{32, 2}}},
 	)
 
 	_, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{
@@ -377,14 +378,14 @@ func TestQuantizeGGUFTensor_Helpers_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("quantize q8: %v", err)
 	}
-	if q8.Type != ggufTensorTypeQ8_0 || len(q8.Data) != 34 {
+	if q8.Type != gguf.TensorTypeQ8_0 || len(q8.Data) != 34 {
 		t.Fatalf("q8 tensor = %+v len=%d", q8, len(q8.Data))
 	}
 	q4, err := quantizeGGUFTensor(denseSafetensor{Name: "q4.weight", Shape: []uint64{32}, Data: values}, GGUFQuantizeQ4_0)
 	if err != nil {
 		t.Fatalf("quantize q4: %v", err)
 	}
-	if q4.Type != ggufTensorTypeQ4_0 || len(q4.Data) != 18 {
+	if q4.Type != gguf.TensorTypeQ4_0 || len(q4.Data) != 18 {
 		t.Fatalf("q4 tensor = %+v len=%d", q4, len(q4.Data))
 	}
 

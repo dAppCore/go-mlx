@@ -7,6 +7,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
@@ -95,8 +96,8 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 	ggufPath := core.PathJoin(dir, "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
-			{Key: "qwen3.context_length", ValueType: ggufValueTypeUint32, Value: uint32(40960)},
+			{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"},
+			{Key: "qwen3.context_length", ValueType: gguf.ValueTypeUint32, Value: uint32(40960)},
 		},
 		[]ggufTensorSpec{
 			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
@@ -117,11 +118,11 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 	if pack.Architecture != "qwen3" || pack.QuantBits != 4 || pack.ContextLength != 40960 {
 		t.Fatalf("metadata = arch %q quant %d ctx %d", pack.Architecture, pack.QuantBits, pack.ContextLength)
 	}
-	quant, _ := pack.Quantization.(*GGUFQuantizationInfo)
+	quant, _ := pack.Quantization.(*gguf.QuantizationInfo)
 	if pack.QuantType != "q4_k" || pack.QuantFamily != "qk" || quant == nil || len(quant.TensorTypes) != 1 {
 		t.Fatalf("quant details = type:%q family:%q details:%+v", pack.QuantType, pack.QuantFamily, quant)
 	}
-	ggufInfo, _ := pack.GGUF.(*GGUFInfo)
+	ggufInfo, _ := pack.GGUF.(*gguf.Info)
 	if ggufInfo == nil || ggufInfo.TensorCount != 2 {
 		t.Fatalf("GGUF metadata = %+v, want 2 tensors", ggufInfo)
 	}
@@ -609,8 +610,8 @@ func TestInspectModelPack_GGUFQuantizationFlowsToMemoryPlan_Good(t *testing.T) {
 	ggufPath := core.PathJoin(dir, "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
-			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
+			{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"},
+			{Key: "general.file_type", ValueType: gguf.ValueTypeUint32, Value: uint32(15)},
 		},
 		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
 	)
@@ -673,7 +674,7 @@ func TestValidateModelPack_GGUFInvalidTensorMetadata_Bad(t *testing.T) {
 	}`)
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeTestGGUF(t, core.PathJoin(dir, "model.gguf"),
-		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"}},
 		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{127, 128}}},
 	)
 

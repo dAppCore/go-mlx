@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/gguf"
 )
 
 // GGUFQuantizeFormat names the GGUF quantization format requested by the caller.
@@ -40,7 +41,7 @@ type QuantizeGGUFResult struct {
 	Format           GGUFQuantizeFormat `json:"format"`
 	SourcePack       mp.ModelPack          `json:"source_pack"`
 	Pack             mp.ModelPack          `json:"pack"`
-	Info             GGUFInfo           `json:"info"`
+	Info             gguf.Info           `json:"info"`
 	TensorCount      int                `json:"tensor_count"`
 	QuantizedTensors int                `json:"quantized_tensors"`
 	Notes            []string           `json:"notes,omitempty"`
@@ -136,7 +137,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		return nil, core.E("QuantizeModelPackToGGUF", "write GGUF", err)
 	}
 
-	info, err := ReadGGUFInfo(weightPath)
+	info, err := gguf.ReadInfo(weightPath)
 	if err != nil {
 		return nil, core.E("QuantizeModelPackToGGUF", "read generated GGUF", err)
 	}
@@ -166,7 +167,7 @@ func resolveGGUFQuantizeFormat(format GGUFQuantizeFormat) (requested, used GGUFQ
 	if format == "" {
 		format = GGUFQuantizeQ8_0
 	}
-	normalized := GGUFQuantizeFormat(normalizeGGUFQuantType(string(format)))
+	normalized := GGUFQuantizeFormat(gguf.NormalizeQuantType(string(format)))
 	switch normalized {
 	case GGUFQuantizeQ8_0:
 		return normalized, GGUFQuantizeQ8_0, nil, nil
@@ -388,9 +389,9 @@ func buildStreamingGGUFQuantizedTensors(index safetensorIndex, format GGUFQuanti
 func ggufQuantizeLayout(format GGUFQuantizeFormat) (tensorType uint32, blockSize int, bytesPerBlock int, err error) {
 	switch format {
 	case GGUFQuantizeQ8_0:
-		return ggufTensorTypeQ8_0, 32, 34, nil
+		return gguf.TensorTypeQ8_0, 32, 34, nil
 	case GGUFQuantizeQ4_0:
-		return ggufTensorTypeQ4_0, 32, 18, nil
+		return gguf.TensorTypeQ4_0, 32, 18, nil
 	default:
 		return 0, 0, 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -455,23 +456,23 @@ func ggufQuantizeMetadata(source mp.ModelPack, format GGUFQuantizeFormat, labels
 	}
 	architecture := source.Architecture
 	metadata := []ggufMetadataEntry{
-		{Key: "general.architecture", ValueType: ggufValueTypeString, Value: architecture},
-		{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: fileType},
-		{Key: "general.quantization_version", ValueType: ggufValueTypeUint32, Value: uint32(2)},
-		{Key: "general.quantization_type", ValueType: ggufValueTypeString, Value: quantizationType},
-		{Key: "general.alignment", ValueType: ggufValueTypeUint32, Value: uint32(32)},
+		{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: architecture},
+		{Key: "general.file_type", ValueType: gguf.ValueTypeUint32, Value: fileType},
+		{Key: "general.quantization_version", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
+		{Key: "general.quantization_type", ValueType: gguf.ValueTypeString, Value: quantizationType},
+		{Key: "general.alignment", ValueType: gguf.ValueTypeUint32, Value: uint32(32)},
 	}
 	if source.VocabSize > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".vocab_size", ValueType: ggufValueTypeUint32, Value: uint32(source.VocabSize)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".vocab_size", ValueType: gguf.ValueTypeUint32, Value: uint32(source.VocabSize)})
 	}
 	if source.HiddenSize > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".embedding_length", ValueType: ggufValueTypeUint32, Value: uint32(source.HiddenSize)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".embedding_length", ValueType: gguf.ValueTypeUint32, Value: uint32(source.HiddenSize)})
 	}
 	if source.NumLayers > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".block_count", ValueType: ggufValueTypeUint32, Value: uint32(source.NumLayers)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".block_count", ValueType: gguf.ValueTypeUint32, Value: uint32(source.NumLayers)})
 	}
 	if source.ContextLength > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".context_length", ValueType: ggufValueTypeUint32, Value: uint32(source.ContextLength)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".context_length", ValueType: gguf.ValueTypeUint32, Value: uint32(source.ContextLength)})
 	}
 	if len(labels) > 0 {
 		keys := make([]string, 0, len(labels))
@@ -480,7 +481,7 @@ func ggufQuantizeMetadata(source mp.ModelPack, format GGUFQuantizeFormat, labels
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			metadata = append(metadata, ggufMetadataEntry{Key: "go_mlx.label." + key, ValueType: ggufValueTypeString, Value: labels[key]})
+			metadata = append(metadata, ggufMetadataEntry{Key: "go_mlx.label." + key, ValueType: gguf.ValueTypeString, Value: labels[key]})
 		}
 	}
 	return metadata
@@ -667,13 +668,13 @@ func writeGGUFMetadataEntry(file *core.OSFile, entry ggufMetadataEntry) error {
 
 func writeGGUFMetadataValue(file *core.OSFile, valueType uint32, value any) error {
 	switch valueType {
-	case ggufValueTypeString:
+	case gguf.ValueTypeString:
 		stringValue, ok := value.(string)
 		if !ok {
 			return core.NewError("mlx: GGUF metadata value is not a string")
 		}
 		return writeGGUFStringValue(file, stringValue)
-	case ggufValueTypeUint32:
+	case gguf.ValueTypeUint32:
 		switch concrete := value.(type) {
 		case uint32:
 			return binary.Write(file, binary.LittleEndian, concrete)

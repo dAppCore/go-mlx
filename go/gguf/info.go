@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package gguf
 
 import (
 	"encoding/binary"
@@ -19,11 +19,11 @@ const (
 	ggufValueTypeInt8    = 1
 	ggufValueTypeUint16  = 2
 	ggufValueTypeInt16   = 3
-	ggufValueTypeUint32  = 4
+	ValueTypeUint32  = 4
 	ggufValueTypeInt32   = 5
 	ggufValueTypeFloat32 = 6
 	ggufValueTypeBool    = 7
-	ggufValueTypeString  = 8
+	ValueTypeString  = 8
 	ggufValueTypeArray   = 9
 	ggufValueTypeUint64  = 10
 	ggufValueTypeInt64   = 11
@@ -33,11 +33,11 @@ const (
 const (
 	ggufTensorTypeF32      = 0
 	ggufTensorTypeF16      = 1
-	ggufTensorTypeQ4_0     = 2
+	TensorTypeQ4_0     = 2
 	ggufTensorTypeQ4_1     = 3
 	ggufTensorTypeQ5_0     = 6
 	ggufTensorTypeQ5_1     = 7
-	ggufTensorTypeQ8_0     = 8
+	TensorTypeQ8_0     = 8
 	ggufTensorTypeQ8_1     = 9
 	ggufTensorTypeQ2K      = 10
 	ggufTensorTypeQ3K      = 11
@@ -69,8 +69,8 @@ const (
 	ggufTensorTypeNVFP4    = 39
 )
 
-// GGUFInfo summarises the metadata of a GGUF checkpoint.
-type GGUFInfo struct {
+// Info summarises the metadata of a GGUF checkpoint.
+type Info struct {
 	Path             string
 	Architecture     string
 	VocabSize        int
@@ -81,15 +81,15 @@ type GGUFInfo struct {
 	QuantGroup       int
 	QuantType        string
 	QuantFamily      string
-	Quantization     GGUFQuantizationInfo
-	Tensors          []GGUFTensorInfo
-	ValidationIssues []GGUFValidationIssue
+	Quantization     QuantizationInfo
+	Tensors          []TensorInfo
+	ValidationIssues []ValidationIssue
 	TensorCount      int
 	MetadataCount    int
 }
 
 // Valid reports whether tensor metadata passed basic shape/dtype validation.
-func (info GGUFInfo) Valid() bool {
+func (info Info) Valid() bool {
 	for _, issue := range info.ValidationIssues {
 		if issue.Severity == GGUFValidationError {
 			return false
@@ -98,24 +98,24 @@ func (info GGUFInfo) Valid() bool {
 	return true
 }
 
-// GGUFValidationSeverity classifies GGUF metadata validation findings.
-type GGUFValidationSeverity string
+// ValidationSeverity classifies GGUF metadata validation findings.
+type ValidationSeverity string
 
 const (
-	GGUFValidationWarning GGUFValidationSeverity = "warning"
-	GGUFValidationError   GGUFValidationSeverity = "error"
+	GGUFValidationWarning ValidationSeverity = "warning"
+	GGUFValidationError   ValidationSeverity = "error"
 )
 
-// GGUFValidationIssue describes one GGUF tensor metadata validation issue.
-type GGUFValidationIssue struct {
-	Severity GGUFValidationSeverity `json:"severity"`
+// ValidationIssue describes one GGUF tensor metadata validation issue.
+type ValidationIssue struct {
+	Severity ValidationSeverity `json:"severity"`
 	Code     string                 `json:"code"`
 	Message  string                 `json:"message"`
 	Tensor   string                 `json:"tensor,omitempty"`
 }
 
-// GGUFTensorInfo describes one tensor entry from the GGUF directory.
-type GGUFTensorInfo struct {
+// TensorInfo describes one tensor entry from the GGUF directory.
+type TensorInfo struct {
 	Name      string   `json:"name"`
 	Type      uint32   `json:"type"`
 	TypeName  string   `json:"type_name,omitempty"`
@@ -128,8 +128,8 @@ type GGUFTensorInfo struct {
 	Quantized bool     `json:"quantized,omitempty"`
 }
 
-// GGUFTensorTypeSummary counts tensor dtypes found in a GGUF file.
-type GGUFTensorTypeSummary struct {
+// TensorTypeSummary counts tensor dtypes found in a GGUF file.
+type TensorTypeSummary struct {
 	Type      uint32 `json:"type"`
 	Name      string `json:"name"`
 	DType     string `json:"dtype,omitempty"`
@@ -139,8 +139,8 @@ type GGUFTensorTypeSummary struct {
 	Quantized bool   `json:"quantized,omitempty"`
 }
 
-// GGUFQuantizationInfo captures GGML quantization metadata beyond bit width.
-type GGUFQuantizationInfo struct {
+// QuantizationInfo captures GGML quantization metadata beyond bit width.
+type QuantizationInfo struct {
 	Type         string                  `json:"type,omitempty"`
 	Family       string                  `json:"family,omitempty"`
 	Bits         int                     `json:"bits,omitempty"`
@@ -149,7 +149,7 @@ type GGUFQuantizationInfo struct {
 	FileTypeName string                  `json:"file_type_name,omitempty"`
 	Version      int                     `json:"version,omitempty"`
 	Mixed        bool                    `json:"mixed,omitempty"`
-	TensorTypes  []GGUFTensorTypeSummary `json:"tensor_types,omitempty"`
+	TensorTypes  []TensorTypeSummary `json:"tensor_types,omitempty"`
 }
 
 // DiscoveredModel is a loadable model discovered on disk.
@@ -196,16 +196,16 @@ type modelConfigProbe struct {
 	} `json:"quantization_config"`
 }
 
-// ReadGGUFInfo reads GGUF metadata without loading model weights into MLX.
-func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
+// ReadInfo reads GGUF metadata without loading model weights into MLX.
+func ReadInfo(modelPath string) (Info, error) {
 	ggufPath, err := resolveGGUFFile(modelPath)
 	if err != nil {
-		return GGUFInfo{}, err
+		return Info{}, err
 	}
 
 	metadata, tensors, err := parseGGUF(ggufPath)
 	if err != nil {
-		return GGUFInfo{}, err
+		return Info{}, err
 	}
 
 	absolutePath := ggufPath
@@ -232,7 +232,7 @@ func ReadGGUFInfo(modelPath string) (GGUFInfo, error) {
 		quantBits = quantization.Bits
 	}
 
-	info := GGUFInfo{
+	info := Info{
 		Path:             absolutePath,
 		Architecture:     architecture,
 		VocabSize:        firstPositive(config.vocabSize(), inferGGUFVocabSize(metadata, architecture)),
@@ -265,7 +265,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 
 	if stat := core.Stat(resolvedPath); stat.OK && !stat.Value.(core.FsFileInfo).IsDir() {
 		if core.HasSuffix(core.Lower(resolvedPath), ".gguf") {
-			ggufInfo, err := ReadGGUFInfo(resolvedPath)
+			ggufInfo, err := ReadInfo(resolvedPath)
 			if err == nil {
 				return []DiscoveredModel{{
 					Path:        ggufInfo.Path,
@@ -324,7 +324,7 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 		return DiscoveredModel{}, false
 	}
 
-	info, err := ReadGGUFInfo(ggufs[0])
+	info, err := ReadInfo(ggufs[0])
 	if err != nil {
 		return DiscoveredModel{}, false
 	}
@@ -473,7 +473,7 @@ func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
 		return readGGUFBinary[uint16](reader)
 	case ggufValueTypeInt16:
 		return readGGUFBinary[int16](reader)
-	case ggufValueTypeUint32:
+	case ValueTypeUint32:
 		return readGGUFBinary[uint32](reader)
 	case ggufValueTypeInt32:
 		return readGGUFBinary[int32](reader)
@@ -482,7 +482,7 @@ func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
 	case ggufValueTypeBool:
 		value, err := readGGUFBinary[uint8](reader)
 		return value != 0, err
-	case ggufValueTypeString:
+	case ValueTypeString:
 		return readGGUFString(reader)
 	case ggufValueTypeArray:
 		var elementType uint32
@@ -884,7 +884,7 @@ func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
 		return ggufTensorTypeDetailsInfo{Name: "f32", DType: "float32", Bits: 32, Known: true}
 	case ggufTensorTypeF16:
 		return ggufTensorTypeDetailsInfo{Name: "f16", DType: "float16", Bits: 16, Known: true}
-	case ggufTensorTypeQ4_0:
+	case TensorTypeQ4_0:
 		return ggufTensorTypeDetailsInfo{Name: "q4_0", DType: "ggml_q4_0", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
 	case ggufTensorTypeQ4_1:
 		return ggufTensorTypeDetailsInfo{Name: "q4_1", DType: "ggml_q4_1", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
@@ -892,7 +892,7 @@ func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
 		return ggufTensorTypeDetailsInfo{Name: "q5_0", DType: "ggml_q5_0", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
 	case ggufTensorTypeQ5_1:
 		return ggufTensorTypeDetailsInfo{Name: "q5_1", DType: "ggml_q5_1", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ8_0:
+	case TensorTypeQ8_0:
 		return ggufTensorTypeDetailsInfo{Name: "q8_0", DType: "ggml_q8_0", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
 	case ggufTensorTypeQ8_1:
 		return ggufTensorTypeDetailsInfo{Name: "q8_1", DType: "ggml_q8_1", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
@@ -957,12 +957,12 @@ func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
 	}
 }
 
-func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]GGUFTensorInfo, []GGUFValidationIssue) {
-	infos := make([]GGUFTensorInfo, 0, len(tensors))
-	var issues []GGUFValidationIssue
+func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationIssue) {
+	infos := make([]TensorInfo, 0, len(tensors))
+	var issues []ValidationIssue
 	for _, tensor := range tensors {
 		details := ggufTensorTypeDetails(tensor.Type)
-		info := GGUFTensorInfo{
+		info := TensorInfo{
 			Name:      tensor.Name,
 			Type:      tensor.Type,
 			TypeName:  details.Name,
@@ -977,7 +977,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]GGUFTensorInfo, []GGUFVal
 		infos = append(infos, info)
 
 		if !details.Known {
-			issues = append(issues, GGUFValidationIssue{
+			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "unknown_tensor_type",
 				Message:  core.Sprintf("tensor has unknown GGML type id %d", tensor.Type),
@@ -985,7 +985,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]GGUFTensorInfo, []GGUFVal
 			})
 		}
 		if len(tensor.Shape) == 0 {
-			issues = append(issues, GGUFValidationIssue{
+			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "invalid_tensor_shape",
 				Message:  "tensor has no shape dimensions",
@@ -994,7 +994,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]GGUFTensorInfo, []GGUFVal
 		}
 		for _, dim := range tensor.Shape {
 			if dim == 0 {
-				issues = append(issues, GGUFValidationIssue{
+				issues = append(issues, ValidationIssue{
 					Severity: GGUFValidationError,
 					Code:     "invalid_tensor_dimension",
 					Message:  "tensor shape contains a zero dimension",
@@ -1004,7 +1004,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]GGUFTensorInfo, []GGUFVal
 			}
 		}
 		if details.Known && details.Quantized && details.BlockSize > 0 && len(tensor.Shape) > 0 && tensor.Shape[0] > 0 && tensor.Shape[0]%uint64(details.BlockSize) != 0 {
-			issues = append(issues, GGUFValidationIssue{
+			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "tensor_shape_not_block_aligned",
 				Message:  core.Sprintf("tensor first dimension %d is not divisible by GGML block size %d", tensor.Shape[0], details.BlockSize),
@@ -1029,7 +1029,7 @@ func ggufTensorElements(shape []uint64) uint64 {
 	return total
 }
 
-func inferGGUFQuantization(metadata map[string]any, tensors []GGUFTensorInfo) GGUFQuantizationInfo {
+func inferGGUFQuantization(metadata map[string]any, tensors []TensorInfo) QuantizationInfo {
 	tensorTypes := summarizeGGUFTensorTypes(tensors)
 	fileType, fileTypePresent := metadataIntIfPresent(metadata, "general.file_type")
 	var fileTypeName string
@@ -1037,7 +1037,7 @@ func inferGGUFQuantization(metadata map[string]any, tensors []GGUFTensorInfo) GG
 	if fileTypePresent {
 		fileTypeName, fileTypeBits = ggufFileTypeQuantization(fileType)
 	}
-	explicitType := normalizeGGUFQuantType(firstNonEmpty(
+	explicitType := NormalizeQuantType(firstNonEmpty(
 		metadataString(metadata["general.quantization_type"]),
 		metadataString(metadata["quantization.type"]),
 		metadataString(metadata["quantization.name"]),
@@ -1051,7 +1051,7 @@ func inferGGUFQuantization(metadata map[string]any, tensors []GGUFTensorInfo) GG
 		family = quantFamilyForType(majorityType)
 	}
 	group := firstPositive(metadataInt(metadata["quantization.group_size"]), metadataInt(metadata["general.quantization_group_size"]), majorityGroup)
-	return GGUFQuantizationInfo{
+	return QuantizationInfo{
 		Type:         quantType,
 		Family:       family,
 		Bits:         bits,
@@ -1072,17 +1072,17 @@ func metadataIntIfPresent(metadata map[string]any, key string) (int, bool) {
 	return metadataInt(value), true
 }
 
-func summarizeGGUFTensorTypes(tensors []GGUFTensorInfo) []GGUFTensorTypeSummary {
+func summarizeGGUFTensorTypes(tensors []TensorInfo) []TensorTypeSummary {
 	type summaryKey struct {
 		typ  uint32
 		name string
 	}
-	byType := map[summaryKey]GGUFTensorTypeSummary{}
+	byType := map[summaryKey]TensorTypeSummary{}
 	for _, tensor := range tensors {
 		key := summaryKey{typ: tensor.Type, name: tensor.TypeName}
 		summary := byType[key]
 		if summary.Count == 0 {
-			summary = GGUFTensorTypeSummary{
+			summary = TensorTypeSummary{
 				Type:      tensor.Type,
 				Name:      tensor.TypeName,
 				DType:     tensor.DType,
@@ -1094,7 +1094,7 @@ func summarizeGGUFTensorTypes(tensors []GGUFTensorInfo) []GGUFTensorTypeSummary 
 		summary.Count++
 		byType[key] = summary
 	}
-	out := make([]GGUFTensorTypeSummary, 0, len(byType))
+	out := make([]TensorTypeSummary, 0, len(byType))
 	for _, summary := range byType {
 		out = append(out, summary)
 	}
@@ -1107,8 +1107,8 @@ func summarizeGGUFTensorTypes(tensors []GGUFTensorInfo) []GGUFTensorTypeSummary 
 	return out
 }
 
-func majorityGGUFQuantizedTensorType(summaries []GGUFTensorTypeSummary) (string, int, int) {
-	var best GGUFTensorTypeSummary
+func majorityGGUFQuantizedTensorType(summaries []TensorTypeSummary) (string, int, int) {
+	var best TensorTypeSummary
 	for _, summary := range summaries {
 		if !summary.Quantized {
 			continue
@@ -1120,7 +1120,7 @@ func majorityGGUFQuantizedTensorType(summaries []GGUFTensorTypeSummary) (string,
 	return best.Name, best.Bits, best.BlockSize
 }
 
-func quantizationGroupFromTensorTypes(summaries []GGUFTensorTypeSummary) int {
+func quantizationGroupFromTensorTypes(summaries []TensorTypeSummary) int {
 	_, _, group := majorityGGUFQuantizedTensorType(summaries)
 	return group
 }
@@ -1208,7 +1208,7 @@ func ggufFileTypeQuantization(fileType int) (string, int) {
 	}
 }
 
-func normalizeGGUFQuantType(value string) string {
+func NormalizeQuantType(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
 	value = core.Replace(value, " ", "_")
@@ -1216,7 +1216,7 @@ func normalizeGGUFQuantType(value string) string {
 }
 
 func quantBitsFromTypeName(name string) int {
-	name = normalizeGGUFQuantType(name)
+	name = NormalizeQuantType(name)
 	switch {
 	case name == "":
 		return 0
@@ -1246,7 +1246,7 @@ func quantBitsFromTypeName(name string) int {
 }
 
 func quantFamilyForType(name string) string {
-	name = normalizeGGUFQuantType(name)
+	name = NormalizeQuantType(name)
 	switch {
 	case name == "":
 		return ""
@@ -1277,8 +1277,8 @@ func quantFamilyForType(name string) string {
 	}
 }
 
-func ggufQuantizationIsMixed(quantType string, summaries []GGUFTensorTypeSummary) bool {
-	quantType = normalizeGGUFQuantType(quantType)
+func ggufQuantizationIsMixed(quantType string, summaries []TensorTypeSummary) bool {
+	quantType = NormalizeQuantType(quantType)
 	if core.HasSuffix(quantType, "_m") || core.Contains(quantType, "some_f16") {
 		return true
 	}

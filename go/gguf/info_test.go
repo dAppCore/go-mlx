@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package gguf
 
 import (
 	"encoding/binary"
@@ -42,19 +42,19 @@ func TestReadGGUFInfo_Good(t *testing.T) {
 	ggufPath := core.PathJoin(dir, "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "gemma3"},
-			{Key: "gemma3.block_count", ValueType: ggufValueTypeUint32, Value: uint32(26)},
+			{Key: "general.architecture", ValueType: ValueTypeString, Value: "gemma3"},
+			{Key: "gemma3.block_count", ValueType: ValueTypeUint32, Value: uint32(26)},
 		},
 		[]ggufTensorSpec{
-			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
-			{Name: "model.layers.1.self_attn.q_proj.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ4_0, Dims: []uint64{128, 128}},
+			{Name: "model.layers.1.self_attn.q_proj.weight", Type: TensorTypeQ4_0, Dims: []uint64{128, 128}},
 			{Name: "model.norm.weight", Type: ggufTensorTypeF32, Dims: []uint64{128}},
 		},
 	)
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if info.Architecture != "gemma3" {
 		t.Fatalf("Architecture = %q, want %q", info.Architecture, "gemma3")
@@ -90,18 +90,18 @@ func TestReadGGUFInfo_FallbackLayerCount_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
+			{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"},
 		},
 		[]ggufTensorSpec{
-			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ8_0, Dims: []uint64{128, 128}},
-			{Name: "model.layers.1.self_attn.q_proj.weight", Type: ggufTensorTypeQ8_0, Dims: []uint64{128, 128}},
-			{Name: "model.layers.2.self_attn.q_proj.weight", Type: ggufTensorTypeQ8_0, Dims: []uint64{128, 128}},
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ8_0, Dims: []uint64{128, 128}},
+			{Name: "model.layers.1.self_attn.q_proj.weight", Type: TensorTypeQ8_0, Dims: []uint64{128, 128}},
+			{Name: "model.layers.2.self_attn.q_proj.weight", Type: TensorTypeQ8_0, Dims: []uint64{128, 128}},
 		},
 	)
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if info.NumLayers != 3 {
 		t.Fatalf("NumLayers = %d, want 3", info.NumLayers)
@@ -119,20 +119,20 @@ func TestReadGGUFInfo_MetadataShapeFallbacks_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "llama"},
-			{Key: "llama.vocab_size", ValueType: ggufValueTypeUint32, Value: uint32(32000)},
-			{Key: "llama.embedding_length", ValueType: ggufValueTypeUint32, Value: uint32(4096)},
-			{Key: "llama.context_length", ValueType: ggufValueTypeUint32, Value: uint32(8192)},
-			{Key: "llama.block_count", ValueType: ggufValueTypeUint32, Value: uint32(32)},
+			{Key: "general.architecture", ValueType: ValueTypeString, Value: "llama"},
+			{Key: "llama.vocab_size", ValueType: ValueTypeUint32, Value: uint32(32000)},
+			{Key: "llama.embedding_length", ValueType: ValueTypeUint32, Value: uint32(4096)},
+			{Key: "llama.context_length", ValueType: ValueTypeUint32, Value: uint32(8192)},
+			{Key: "llama.block_count", ValueType: ValueTypeUint32, Value: uint32(32)},
 		},
 		[]ggufTensorSpec{
-			{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
+			{Name: "blk.0.attn_q.weight", Type: TensorTypeQ4_0, Dims: []uint64{128, 128}},
 		},
 	)
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if info.VocabSize != 32000 {
 		t.Fatalf("VocabSize = %d, want 32000", info.VocabSize)
@@ -169,12 +169,12 @@ func TestReadGGUFInfo_TextConfigDimensions_Good(t *testing.T) {
 
 	ggufPath := core.PathJoin(dir, "model.gguf")
 	writeTestGGUF(t, ggufPath, nil, []ggufTensorSpec{
-		{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4_0, Dims: []uint64{128, 128}},
+		{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ4_0, Dims: []uint64{128, 128}},
 	})
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if info.Architecture != "gemma4_text" {
 		t.Fatalf("Architecture = %q, want gemma4_text", info.Architecture)
@@ -292,11 +292,11 @@ func TestGGUFTensorTypeDetails_AllKnownTypes_Good(t *testing.T) {
 	}{
 		{typ: ggufTensorTypeF32, name: "f32", dtype: "float32", bits: 32},
 		{typ: ggufTensorTypeF16, name: "f16", dtype: "float16", bits: 16},
-		{typ: ggufTensorTypeQ4_0, name: "q4_0", dtype: "ggml_q4_0", bits: 4, blockSize: 32, quantized: true},
+		{typ: TensorTypeQ4_0, name: "q4_0", dtype: "ggml_q4_0", bits: 4, blockSize: 32, quantized: true},
 		{typ: ggufTensorTypeQ4_1, name: "q4_1", dtype: "ggml_q4_1", bits: 4, blockSize: 32, quantized: true},
 		{typ: ggufTensorTypeQ5_0, name: "q5_0", dtype: "ggml_q5_0", bits: 5, blockSize: 32, quantized: true},
 		{typ: ggufTensorTypeQ5_1, name: "q5_1", dtype: "ggml_q5_1", bits: 5, blockSize: 32, quantized: true},
-		{typ: ggufTensorTypeQ8_0, name: "q8_0", dtype: "ggml_q8_0", bits: 8, blockSize: 32, quantized: true},
+		{typ: TensorTypeQ8_0, name: "q8_0", dtype: "ggml_q8_0", bits: 8, blockSize: 32, quantized: true},
 		{typ: ggufTensorTypeQ8_1, name: "q8_1", dtype: "ggml_q8_1", bits: 8, blockSize: 32, quantized: true},
 		{typ: ggufTensorTypeQ2K, name: "q2_k", dtype: "ggml_q2_k", bits: 2, blockSize: 256, quantized: true},
 		{typ: ggufTensorTypeQ3K, name: "q3_k", dtype: "ggml_q3_k", bits: 3, blockSize: 256, quantized: true},
@@ -462,10 +462,10 @@ func TestReadGGUFInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T)
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"},
-			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
-			{Key: "general.quantization_version", ValueType: ggufValueTypeUint32, Value: uint32(2)},
-			{Key: "qwen3.context_length", ValueType: ggufValueTypeUint32, Value: uint32(40960)},
+			{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"},
+			{Key: "general.file_type", ValueType: ValueTypeUint32, Value: uint32(15)},
+			{Key: "general.quantization_version", ValueType: ValueTypeUint32, Value: uint32(2)},
+			{Key: "qwen3.context_length", ValueType: ValueTypeUint32, Value: uint32(40960)},
 		},
 		[]ggufTensorSpec{
 			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}},
@@ -474,9 +474,9 @@ func TestReadGGUFInfo_QuantizationMetadataAndTensorValidation_Good(t *testing.T)
 		},
 	)
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if !info.Valid() {
 		t.Fatalf("GGUF validation issues = %+v", info.ValidationIssues)
@@ -514,7 +514,7 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 	}{
 		{
 			name:          "q5_k_m_file_type",
-			metadata:      []ggufMetaSpec{{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(17)}},
+			metadata:      []ggufMetaSpec{{Key: "general.file_type", ValueType: ValueTypeUint32, Value: uint32(17)}},
 			tensorType:    ggufTensorTypeQ5K,
 			wantType:      "q5_k_m",
 			wantFamily:    "qk",
@@ -524,7 +524,7 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 		},
 		{
 			name:          "q8_tensor",
-			tensorType:    ggufTensorTypeQ8_0,
+			tensorType:    TensorTypeQ8_0,
 			wantType:      "q8_0",
 			wantFamily:    "q8",
 			wantBits:      8,
@@ -543,7 +543,7 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 		{
 			name: "mxfp4_metadata",
 			metadata: []ggufMetaSpec{
-				{Key: "general.quantization_type", ValueType: ggufValueTypeString, Value: "mxfp4"},
+				{Key: "general.quantization_type", ValueType: ValueTypeString, Value: "mxfp4"},
 			},
 			tensorType:    ggufTensorTypeF16,
 			wantType:      "mxfp4",
@@ -555,7 +555,7 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 		{
 			name: "nvfp4_metadata",
 			metadata: []ggufMetaSpec{
-				{Key: "quantization.type", ValueType: ggufValueTypeString, Value: "nvfp4"},
+				{Key: "quantization.type", ValueType: ValueTypeString, Value: "nvfp4"},
 			},
 			tensorType:    ggufTensorTypeF16,
 			wantType:      "nvfp4",
@@ -569,14 +569,14 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
-			metadata := append([]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "llama"}}, tc.metadata...)
+			metadata := append([]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "llama"}}, tc.metadata...)
 			writeTestGGUF(t, ggufPath, metadata, []ggufTensorSpec{
 				{Name: "blk.0.attn_q.weight", Type: tc.tensorType, Dims: []uint64{256, 128}},
 			})
 
-			info, err := ReadGGUFInfo(ggufPath)
+			info, err := ReadInfo(ggufPath)
 			if err != nil {
-				t.Fatalf("ReadGGUFInfo() error = %v", err)
+				t.Fatalf("ReadInfo() error = %v", err)
 			}
 			if info.QuantType != tc.wantType || info.QuantFamily != tc.wantFamily || info.QuantBits != tc.wantBits {
 				t.Fatalf("quant = type:%q family:%q bits:%d, want %s/%s/%d", info.QuantType, info.QuantFamily, info.QuantBits, tc.wantType, tc.wantFamily, tc.wantBits)
@@ -591,16 +591,16 @@ func TestReadGGUFInfo_RecognizesCommonGGMLQuantTypes_Good(t *testing.T) {
 func TestReadGGUFInfo_InvalidTensorShapeAndDType_Bad(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
-		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
 		[]ggufTensorSpec{
 			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{127, 128}},
 			{Name: "model.layers.0.self_attn.k_proj.weight", Type: 999, Dims: []uint64{128, 0}},
 		},
 	)
 
-	info, err := ReadGGUFInfo(ggufPath)
+	info, err := ReadInfo(ggufPath)
 	if err != nil {
-		t.Fatalf("ReadGGUFInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if info.Valid() {
 		t.Fatalf("Valid() = true, want validation issues for invalid tensor metadata")
@@ -614,11 +614,11 @@ func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
 	ggufPath := core.PathJoin(t.TempDir(), "model.gguf")
 	writeTestGGUF(t, ggufPath,
 		[]ggufMetaSpec{
-			{Key: "general.name", ValueType: ggufValueTypeString, Value: "roundtrip"},
-			{Key: "general.file_type", ValueType: ggufValueTypeUint32, Value: uint32(15)},
+			{Key: "general.name", ValueType: ValueTypeString, Value: "roundtrip"},
+			{Key: "general.file_type", ValueType: ValueTypeUint32, Value: uint32(15)},
 			{Key: "general.alignment", ValueType: ggufValueTypeUint64, Value: uint64(32)},
 			{Key: "general.use_mlock", ValueType: ggufValueTypeBool, Value: true},
-			{Key: "tokenizer.ggml.tokens", ValueType: ggufValueTypeArray, Value: ggufArraySpec{ElementType: ggufValueTypeString, Values: []any{"<bos>", "<eos>"}}},
+			{Key: "tokenizer.ggml.tokens", ValueType: ggufValueTypeArray, Value: ggufArraySpec{ElementType: ValueTypeString, Values: []any{"<bos>", "<eos>"}}},
 		},
 		[]ggufTensorSpec{{Name: "blk.0.attn_q.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
 	)
@@ -668,9 +668,9 @@ func TestDiscoverModels_Good(t *testing.T) {
 	}
 	ggufPath := core.PathJoin(ggufDir, "model.gguf")
 	writeTestGGUF(t, ggufPath,
-		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ggufValueTypeString, Value: "qwen3"}},
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
 		[]ggufTensorSpec{
-			{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ8_0, Dims: []uint64{64, 64}},
+			{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ8_0, Dims: []uint64{64, 64}},
 		},
 	)
 
@@ -700,12 +700,12 @@ func TestReadGGUFInfo_InvalidMagic_Bad(t *testing.T) {
 		t.Fatalf("write broken file: %v", result.Value)
 	}
 
-	if _, err := ReadGGUFInfo(path); err == nil {
-		t.Fatal("expected ReadGGUFInfo() to fail for invalid magic")
+	if _, err := ReadInfo(path); err == nil {
+		t.Fatal("expected ReadInfo() to fail for invalid magic")
 	}
 }
 
-func ggufValidationHasCode(issues []GGUFValidationIssue, code string) bool {
+func ggufValidationHasCode(issues []ValidationIssue, code string) bool {
 	for _, issue := range issues {
 		if issue.Code == code {
 			return true
@@ -780,13 +780,13 @@ func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any
 		if err := binary.Write(file, binary.LittleEndian, encoded); err != nil {
 			t.Fatalf("write bool: %v", err)
 		}
-	case ggufValueTypeString:
+	case ValueTypeString:
 		stringValue, ok := value.(string)
 		if !ok {
 			t.Fatalf("write string: got %T, want string", value)
 		}
 		writeGGUFString(t, file, stringValue)
-	case ggufValueTypeUint32:
+	case ValueTypeUint32:
 		uint32Value, ok := value.(uint32)
 		if !ok {
 			t.Fatalf("write uint32: got %T, want uint32", value)
@@ -823,7 +823,7 @@ func writeGGUFValue(t *testing.T, file *core.OSFile, valueType uint32, value any
 
 // Generated file-aware compliance coverage.
 func TestGgufInfo_ReadGGUFInfo_Good(t *testing.T) {
-	target := "ReadGGUFInfo"
+	target := "ReadInfo"
 	variant := "Good"
 	if target == "" {
 		t.Fatalf("missing compliance target for %s", t.Name())
@@ -834,7 +834,7 @@ func TestGgufInfo_ReadGGUFInfo_Good(t *testing.T) {
 }
 
 func TestGgufInfo_ReadGGUFInfo_Bad(t *testing.T) {
-	target := "ReadGGUFInfo"
+	target := "ReadInfo"
 	variant := "Bad"
 	if target == "" {
 		t.Fatalf("missing compliance target for %s", t.Name())
@@ -845,7 +845,7 @@ func TestGgufInfo_ReadGGUFInfo_Bad(t *testing.T) {
 }
 
 func TestGgufInfo_ReadGGUFInfo_Ugly(t *testing.T) {
-	target := "ReadGGUFInfo"
+	target := "ReadInfo"
 	variant := "Ugly"
 	if target == "" {
 		t.Fatalf("missing compliance target for %s", t.Name())
