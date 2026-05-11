@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/scheduler"
 )
 
 func (adapter *metaladapter) Schedule(ctx context.Context, req inference.ScheduledRequest) (inference.RequestHandle, <-chan inference.ScheduledToken, error) {
@@ -18,9 +19,9 @@ func (adapter *metaladapter) CancelRequest(ctx context.Context, id string) (infe
 	return adapter.schedulerModel().CancelRequest(ctx, id)
 }
 
-func (adapter *metaladapter) schedulerModel() *ScheduledModel {
+func (adapter *metaladapter) schedulerModel() *scheduler.Model {
 	if adapter == nil {
-		return NewScheduledModel(nil, SchedulerConfig{})
+		return scheduler.New(nil, scheduler.Config{})
 	}
 	adapter.schedulerMu.Lock()
 	defer adapter.schedulerMu.Unlock()
@@ -29,7 +30,7 @@ func (adapter *metaladapter) schedulerModel() *ScheduledModel {
 		if maxConcurrent <= 0 {
 			maxConcurrent = DefaultLocalParallelSlots
 		}
-		adapter.scheduler = NewScheduledModel(adapter, SchedulerConfig{
+		adapter.scheduler = scheduler.New(adapter, scheduler.Config{
 			MaxConcurrent:   maxConcurrent,
 			MaxQueue:        maxConcurrent * 4,
 			StreamBuffer:    0,

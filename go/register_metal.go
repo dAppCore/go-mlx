@@ -11,6 +11,7 @@ import (
 
 	"dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/scheduler"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -124,7 +125,7 @@ type metaladapter struct {
 	model                  *metal.Model
 	probeSink              inference.ProbeSink
 	schedulerMu            sync.Mutex
-	scheduler              *ScheduledModel
+	scheduler              *scheduler.Model
 	schedulerMaxConcurrent int
 	cacheMu                sync.Mutex
 	cacheService           *BlockCacheService
