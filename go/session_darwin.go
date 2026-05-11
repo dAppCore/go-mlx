@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -33,7 +34,7 @@ type nativeSessionKVSnapshotterWithOptions interface {
 type ModelSession struct {
 	session     metal.SessionHandle
 	info        ModelInfo
-	agentMemory *AgentMemoryWakeReport
+	agentMemory *agent.WakeReport
 }
 
 // NewSession creates a persistent session for prefill, generation, KV capture, and forking.
@@ -356,7 +357,7 @@ func (s *ModelSession) Fork() (*ModelSession, error) {
 	if forked == nil {
 		return nil, core.NewError("mlx: native model returned nil session fork")
 	}
-	return &ModelSession{session: forked, info: s.info, agentMemory: cloneAgentMemoryWakeReport(s.agentMemory)}, nil
+	return &ModelSession{session: forked, info: s.info, agentMemory: agent.CloneWakeReport(s.agentMemory)}, nil
 }
 
 // Reset releases retained state and leaves the session ready for another prefill.

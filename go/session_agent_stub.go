@@ -12,17 +12,17 @@ import (
 )
 
 // WakeAgentMemory returns an availability error on unsupported builds.
-func (m *Model) WakeAgentMemory(_ context.Context, _ memvid.Store, _ AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) WakeAgentMemory(_ context.Context, _ memvid.Store, _ agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	return nil, nil, unsupportedBuildError()
 }
 
 // Wake returns an availability error on unsupported builds.
-func (m *Model) Wake(_ context.Context, _ memvid.Store, _ AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) Wake(_ context.Context, _ memvid.Store, _ agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	return nil, nil, unsupportedBuildError()
 }
 
 // ForkFromBundle returns an availability error on unsupported builds.
-func (m *Model) ForkFromBundle(_ context.Context, _ memvid.Store, _ AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) ForkFromBundle(_ context.Context, _ memvid.Store, _ agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	return nil, nil, unsupportedBuildError()
 }
 
@@ -32,12 +32,12 @@ func (m *Model) ForkState(_ context.Context, _ inference.AgentMemoryWakeRequest)
 }
 
 // WakeAgentMemory returns an availability error on unsupported builds.
-func (s *ModelSession) WakeAgentMemory(_ context.Context, _ memvid.Store, _ AgentMemoryWakeOptions) (*AgentMemoryWakeReport, error) {
+func (s *ModelSession) WakeAgentMemory(_ context.Context, _ memvid.Store, _ agent.WakeOptions) (*agent.WakeReport, error) {
 	return nil, unsupportedBuildError()
 }
 
 // Wake returns an availability error on unsupported builds.
-func (s *ModelSession) Wake(_ context.Context, _ memvid.Store, _ AgentMemoryWakeOptions) (*AgentMemoryWakeReport, error) {
+func (s *ModelSession) Wake(_ context.Context, _ memvid.Store, _ agent.WakeOptions) (*agent.WakeReport, error) {
 	return nil, unsupportedBuildError()
 }
 
@@ -47,12 +47,12 @@ func (s *ModelSession) WakeState(_ context.Context, _ inference.AgentMemoryWakeR
 }
 
 // SleepAgentMemory returns an availability error on unsupported builds.
-func (s *ModelSession) SleepAgentMemory(_ context.Context, _ memvid.Writer, _ AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) SleepAgentMemory(_ context.Context, _ memvid.Writer, _ agent.SleepOptions) (*agent.SleepReport, error) {
 	return nil, unsupportedBuildError()
 }
 
 // Sleep returns an availability error on unsupported builds.
-func (s *ModelSession) Sleep(_ context.Context, _ memvid.Writer, _ AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) Sleep(_ context.Context, _ memvid.Writer, _ agent.SleepOptions) (*agent.SleepReport, error) {
 	return nil, unsupportedBuildError()
 }
 
@@ -62,21 +62,21 @@ func (s *ModelSession) SleepState(_ context.Context, _ inference.AgentMemorySlee
 }
 
 // AppendAndSleepAgentMemory returns an availability error on unsupported builds.
-func (s *ModelSession) AppendAndSleepAgentMemory(_ context.Context, _ string, _ memvid.Writer, _ AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) AppendAndSleepAgentMemory(_ context.Context, _ string, _ memvid.Writer, _ agent.SleepOptions) (*agent.SleepReport, error) {
 	return nil, unsupportedBuildError()
 }
 
 // AppendAndSleep returns an availability error on unsupported builds.
-func (s *ModelSession) AppendAndSleep(_ context.Context, _ string, _ memvid.Writer, _ AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) AppendAndSleep(_ context.Context, _ string, _ memvid.Writer, _ agent.SleepOptions) (*agent.SleepReport, error) {
 	return nil, unsupportedBuildError()
 }
 
 // GenerateAndSleepAgentMemory returns an availability error on unsupported builds.
-func (s *ModelSession) GenerateAndSleepAgentMemory(_ context.Context, _ memvid.Writer, _ AgentMemorySleepOptions, _ ...GenerateOption) (string, *AgentMemorySleepReport, error) {
+func (s *ModelSession) GenerateAndSleepAgentMemory(_ context.Context, _ memvid.Writer, _ agent.SleepOptions, _ ...GenerateOption) (string, *agent.SleepReport, error) {
 	return "", nil, unsupportedBuildError()
 }
 
 // GenerateAndSleep returns an availability error on unsupported builds.
-func (s *ModelSession) GenerateAndSleep(_ context.Context, _ memvid.Writer, _ AgentMemorySleepOptions, _ ...GenerateOption) (string, *AgentMemorySleepReport, error) {
+func (s *ModelSession) GenerateAndSleep(_ context.Context, _ memvid.Writer, _ agent.SleepOptions, _ ...GenerateOption) (string, *agent.SleepReport, error) {
 	return "", nil, unsupportedBuildError()
 }

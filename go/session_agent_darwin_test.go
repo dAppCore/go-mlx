@@ -11,6 +11,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -27,7 +28,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	native := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
 	session := &ModelSession{session: native, info: info}
 
-	sleep, err := session.SleepAgentMemory(ctx, store, AgentMemorySleepOptions{
+	sleep, err := session.SleepAgentMemory(ctx, store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1",
 		Title:     "Chapter 1",
 		Tokenizer: tokenizer,
@@ -50,9 +51,9 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if sleep.BundleRef.ChunkID == 0 || sleep.IndexRef.ChunkID == 0 || sleep.IndexHash == "" {
 		t.Fatalf("sleep refs/hash = %+v", sleep)
 	}
-	index, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, sleep.IndexURI)
+	index, err := agent.LoadMemvidIndex(ctx, store, sleep.IndexURI)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("agent.LoadMemvidIndex() error = %v", err)
 	}
 	if index.Tokenizer.Hash != "tok-a" || index.Entries[0].Meta["ordinal"] != "1" {
 		t.Fatalf("loaded index = %+v", index)
@@ -62,7 +63,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		tokens: []metal.Token{{ID: 10, Text: "Rome"}},
 	}
 	awake := &ModelSession{session: awakeNative, info: info}
-	wake, err := awake.WakeAgentMemory(ctx, store, AgentMemoryWakeOptions{
+	wake, err := awake.WakeAgentMemory(ctx, store, agent.WakeOptions{
 		IndexURI:    sleep.IndexURI,
 		EntryURI:    sleep.EntryURI,
 		Tokenizer:   tokenizer,
@@ -87,7 +88,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	}
 
 	awakeNative.kv = awakeNative.restoredKV
-	afterAppend, err := awake.AppendAndSleep(ctx, "\n\nQuestion: first question?\nAnswer:", store, AgentMemorySleepOptions{
+	afterAppend, err := awake.AppendAndSleep(ctx, "\n\nQuestion: first question?\nAnswer:", store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1/after-question",
 		Title:     "Chapter 1 after question",
 		Tokenizer: tokenizer,
@@ -98,9 +99,9 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if awakeNative.appendPrompt == "" || afterAppend.EntryURI != "mlx://agent/chapter-1/after-question" || afterAppend.ParentEntryURI != "mlx://agent/chapter-1" {
 		t.Fatalf("append/sleep = %q/%+v", awakeNative.appendPrompt, afterAppend)
 	}
-	afterAppendIndex, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, afterAppend.IndexURI)
+	afterAppendIndex, err := agent.LoadMemvidIndex(ctx, store, afterAppend.IndexURI)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotMemvidBundleIndex(after append) error = %v", err)
+		t.Fatalf("agent.LoadMemvidIndex(after append) error = %v", err)
 	}
 	if got := afterAppendIndex.Entries[0].Meta["parent_entry_uri"]; got != "mlx://agent/chapter-1" {
 		t.Fatalf("after append parent = %q, want chapter-1", got)
@@ -110,7 +111,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	awakeNative.afterGenerate = func(s *fakeNativeSession) {
 		s.kv = agentMemoryGeneratedTestMetalSnapshot()
 	}
-	answer, afterAnswer, err := awake.GenerateAndSleep(ctx, store, AgentMemorySleepOptions{
+	answer, afterAnswer, err := awake.GenerateAndSleep(ctx, store, agent.SleepOptions{
 		EntryURI:  "mlx://agent/chapter-1/after-answer",
 		Title:     "Chapter 1 after answer",
 		Tokenizer: tokenizer,
@@ -121,9 +122,9 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if answer != "Rome" || afterAnswer.ParentEntryURI != "mlx://agent/chapter-1/after-question" || afterAnswer.TokenCount != 3 {
 		t.Fatalf("answer/sleep = %q/%+v, want Rome child of after-question with three tokens", answer, afterAnswer)
 	}
-	afterAnswerIndex, err := LoadKVSnapshotMemvidBundleIndex(ctx, store, afterAnswer.IndexURI)
+	afterAnswerIndex, err := agent.LoadMemvidIndex(ctx, store, afterAnswer.IndexURI)
 	if err != nil {
-		t.Fatalf("LoadKVSnapshotMemvidBundleIndex(after answer) error = %v", err)
+		t.Fatalf("agent.LoadMemvidIndex(after answer) error = %v", err)
 	}
 	if got := afterAnswerIndex.Entries[0].Meta["parent_entry_uri"]; got != "mlx://agent/chapter-1/after-question" {
 		t.Fatalf("after answer parent = %q, want after-question", got)
@@ -134,7 +135,7 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 		session: forkNative,
 		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
 	}}
-	forked, forkWake, err := model.ForkFromBundle(ctx, store, AgentMemoryWakeOptions{
+	forked, forkWake, err := model.ForkFromBundle(ctx, store, agent.WakeOptions{
 		IndexURI:  sleep.IndexURI,
 		Tokenizer: tokenizer,
 	})
@@ -198,7 +199,7 @@ func TestModelWakeAgentMemory_ClosesOnRestoreError_Bad(t *testing.T) {
 		session: &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()},
 		info:    ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
 	}
-	sleep, err := source.SleepAgentMemory(ctx, store, AgentMemorySleepOptions{EntryURI: "mlx://agent/error"})
+	sleep, err := source.SleepAgentMemory(ctx, store, agent.SleepOptions{EntryURI: "mlx://agent/error"})
 	if err != nil {
 		t.Fatalf("seed SleepAgentMemory() error = %v", err)
 	}
@@ -209,7 +210,7 @@ func TestModelWakeAgentMemory_ClosesOnRestoreError_Bad(t *testing.T) {
 		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
 	}}
 
-	session, report, err := model.WakeAgentMemory(ctx, store, AgentMemoryWakeOptions{IndexURI: sleep.IndexURI})
+	session, report, err := model.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: sleep.IndexURI})
 
 	if !core.Is(err, wantErr) {
 		t.Fatalf("WakeAgentMemory() error = %v, want %v", err, wantErr)
@@ -226,31 +227,31 @@ func TestAgentMemoryWakeSleep_Bad(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
 	var session *ModelSession
-	if _, err := session.SleepAgentMemory(ctx, store, AgentMemorySleepOptions{}); err == nil {
+	if _, err := session.SleepAgentMemory(ctx, store, agent.SleepOptions{}); err == nil {
 		t.Fatal("SleepAgentMemory(nil session) error = nil")
 	}
 	session = &ModelSession{session: &fakeNativeSession{}}
-	if _, err := session.SleepAgentMemory(ctx, nil, AgentMemorySleepOptions{}); err == nil {
+	if _, err := session.SleepAgentMemory(ctx, nil, agent.SleepOptions{}); err == nil {
 		t.Fatal("SleepAgentMemory(nil store) error = nil")
 	}
-	if _, err := session.WakeAgentMemory(ctx, store, AgentMemoryWakeOptions{}); err == nil {
+	if _, err := session.WakeAgentMemory(ctx, store, agent.WakeOptions{}); err == nil {
 		t.Fatal("WakeAgentMemory(missing index) error = nil")
 	}
 
 	bundle := kvSnapshotIndexTestBundle()
-	index, err := NewKVSnapshotMemvidBundleIndex(bundle, KVSnapshotMemvidBundleIndexOptions{
+	index, err := agent.NewMemvidIndex(bundle, agent.MemvidIndexOptions{
 		BundleURI: "mlx://bundle",
 		ModelInfo: modelInfoToMemory(ModelInfo{Architecture: "gemma4_text", NumLayers: 1}),
-		Entries: []KVSnapshotMemvidBundleIndexEntry{{
+		Entries: []agent.MemvidIndexEntry{{
 			URI:        "mlx://chapter",
 			TokenStart: 0,
 			TokenCount: 1,
 		}},
 	})
 	if err != nil {
-		t.Fatalf("NewKVSnapshotMemvidBundleIndex() error = %v", err)
+		t.Fatalf("agent.NewMemvidIndex() error = %v", err)
 	}
-	_, err = session.WakeAgentMemory(ctx, store, AgentMemoryWakeOptions{
+	_, err = session.WakeAgentMemory(ctx, store, agent.WakeOptions{
 		Index:    index,
 		EntryURI: "mlx://chapter",
 	})

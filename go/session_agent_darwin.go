@@ -10,11 +10,12 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/kv"
 )
 
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
-func (m *Model) WakeAgentMemory(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) WakeAgentMemory(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -33,14 +34,14 @@ func (m *Model) WakeAgentMemory(ctx context.Context, store memvid.Store, opts Ag
 }
 
 // Wake is a lifecycle alias for WakeAgentMemory.
-func (m *Model) Wake(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) Wake(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	return m.WakeAgentMemory(ctx, store, opts)
 }
 
 // ForkFromBundle creates an independent session from a durable indexed KV
 // bundle entry. It is equivalent to waking from that bundle without mutating an
 // existing session.
-func (m *Model) ForkFromBundle(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions) (*ModelSession, *AgentMemoryWakeReport, error) {
+func (m *Model) ForkFromBundle(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	return m.WakeAgentMemory(ctx, store, opts)
 }
 
@@ -58,14 +59,14 @@ func (m *Model) ForkState(ctx context.Context, req inference.AgentMemoryWakeRequ
 }
 
 // WakeAgentMemory restores this session from a durable indexed KV prefix.
-func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions) (*AgentMemoryWakeReport, error) {
+func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*agent.WakeReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
 		return nil, core.NewError("mlx: model session is nil")
 	}
-	plan, err := planAgentMemoryWake(ctx, store, opts, s.info)
+	plan, err := agent.PlanWake(ctx, store, opts, modelInfoToMemory(s.info))
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +78,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 		if err := restorer.RestoreKVBlocks(ctx, source); err != nil {
 			return nil, err
 		}
-		s.agentMemory = cloneAgentMemoryWakeReport(plan.Report)
+		s.agentMemory = agent.CloneWakeReport(plan.Report)
 		return plan.Report, nil
 	}
 	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
@@ -87,12 +88,12 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 	if err := s.RestoreKV(snapshot); err != nil {
 		return nil, err
 	}
-	s.agentMemory = cloneAgentMemoryWakeReport(plan.Report)
+	s.agentMemory = agent.CloneWakeReport(plan.Report)
 	return plan.Report, nil
 }
 
 // Wake is a lifecycle alias for WakeAgentMemory.
-func (s *ModelSession) Wake(ctx context.Context, store memvid.Store, opts AgentMemoryWakeOptions) (*AgentMemoryWakeReport, error) {
+func (s *ModelSession) Wake(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*agent.WakeReport, error) {
 	return s.WakeAgentMemory(ctx, store, opts)
 }
 
@@ -111,7 +112,7 @@ func (s *ModelSession) WakeState(ctx context.Context, req inference.AgentMemoryW
 
 // SleepAgentMemory streams this session's current KV state to memvid blocks,
 // then writes a bundle manifest and one-entry wake index.
-func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer, opts AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer, opts agent.SleepOptions) (*agent.SleepReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -121,7 +122,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if store == nil {
 		return nil, core.NewError("mlx: memvid store is nil")
 	}
-	entryURI, bundleURI, indexURI, err := agentMemorySleepURIs(opts)
+	entryURI, bundleURI, indexURI, err := agent.SleepURIs(opts)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +138,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if opts.ParentIndexURI == "" && s.agentMemory != nil {
 		opts.ParentIndexURI = s.agentMemory.IndexURI
 	}
-	blockOpts := agentMemoryBlockOptions(opts, bundleURI)
+	blockOpts := agent.SleepBlockOptions(opts, bundleURI)
 	if opts.ReuseParentPrefix && blockOpts.ReusePrefix == nil {
 		readStore, ok := store.(memvid.Store)
 		if !ok {
@@ -160,21 +161,21 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if err != nil {
 		return nil, err
 	}
-	index, err := newAgentMemoryBundleIndex(bundle, opts, entryURI, bundleURI)
+	index, err := agent.NewSleepIndex(bundle, opts, entryURI, bundleURI)
 	if err != nil {
 		return nil, err
 	}
-	indexRef, err := SaveKVSnapshotMemvidBundleIndex(ctx, store, index, indexURI)
+	indexRef, err := agent.SaveMemvidIndex(ctx, store, index, indexURI)
 	if err != nil {
 		return nil, err
 	}
-	report := agentMemorySleepReport(index, bundle, opts, entryURI, bundleURI, indexURI, bundleRef, indexRef)
-	s.agentMemory = agentMemoryWakeReportFromSleep(report)
+	report := agent.NewSleepReport(index, bundle, opts, entryURI, bundleURI, indexURI, bundleRef, indexRef)
+	s.agentMemory = agent.WakeReportFromSleep(report)
 	return report, nil
 }
 
 // Sleep is a lifecycle alias for SleepAgentMemory.
-func (s *ModelSession) Sleep(ctx context.Context, store memvid.Writer, opts AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) Sleep(ctx context.Context, store memvid.Writer, opts agent.SleepOptions) (*agent.SleepReport, error) {
 	return s.SleepAgentMemory(ctx, store, opts)
 }
 
@@ -193,7 +194,7 @@ func (s *ModelSession) SleepState(ctx context.Context, req inference.AgentMemory
 
 // AppendAndSleepAgentMemory appends new prompt material and then streams the
 // resulting state to durable storage without forcing a generation/reply step.
-func (s *ModelSession) AppendAndSleepAgentMemory(ctx context.Context, prompt string, store memvid.Writer, opts AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) AppendAndSleepAgentMemory(ctx context.Context, prompt string, store memvid.Writer, opts agent.SleepOptions) (*agent.SleepReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -210,13 +211,13 @@ func (s *ModelSession) AppendAndSleepAgentMemory(ctx context.Context, prompt str
 }
 
 // AppendAndSleep is a lifecycle alias for AppendAndSleepAgentMemory.
-func (s *ModelSession) AppendAndSleep(ctx context.Context, prompt string, store memvid.Writer, opts AgentMemorySleepOptions) (*AgentMemorySleepReport, error) {
+func (s *ModelSession) AppendAndSleep(ctx context.Context, prompt string, store memvid.Writer, opts agent.SleepOptions) (*agent.SleepReport, error) {
 	return s.AppendAndSleepAgentMemory(ctx, prompt, store, opts)
 }
 
 // GenerateAndSleepAgentMemory generates an answer from the current retained
 // state and streams the post-answer KV state to durable storage.
-func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store memvid.Writer, opts AgentMemorySleepOptions, generateOpts ...GenerateOption) (string, *AgentMemorySleepReport, error) {
+func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store memvid.Writer, opts agent.SleepOptions, generateOpts ...GenerateOption) (string, *agent.SleepReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -245,12 +246,12 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store me
 }
 
 // GenerateAndSleep is a lifecycle alias for GenerateAndSleepAgentMemory.
-func (s *ModelSession) GenerateAndSleep(ctx context.Context, store memvid.Writer, opts AgentMemorySleepOptions, generateOpts ...GenerateOption) (string, *AgentMemorySleepReport, error) {
+func (s *ModelSession) GenerateAndSleep(ctx context.Context, store memvid.Writer, opts agent.SleepOptions, generateOpts ...GenerateOption) (string, *agent.SleepReport, error) {
 	return s.GenerateAndSleepAgentMemory(ctx, store, opts, generateOpts...)
 }
 
-func agentMemoryWakeOptionsFromInference(req inference.AgentMemoryWakeRequest) AgentMemoryWakeOptions {
-	return AgentMemoryWakeOptions{
+func agentMemoryWakeOptionsFromInference(req inference.AgentMemoryWakeRequest) agent.WakeOptions {
+	return agent.WakeOptions{
 		IndexURI:               req.IndexURI,
 		EntryURI:               req.EntryURI,
 		Tokenizer:              stateBundleTokenizerFromInference(req.Tokenizer),
@@ -258,8 +259,8 @@ func agentMemoryWakeOptionsFromInference(req inference.AgentMemoryWakeRequest) A
 	}
 }
 
-func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest) AgentMemorySleepOptions {
-	return AgentMemorySleepOptions{
+func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest) agent.SleepOptions {
+	return agent.SleepOptions{
 		EntryURI:          req.EntryURI,
 		BundleURI:         req.BundleURI,
 		IndexURI:          req.IndexURI,
@@ -304,7 +305,7 @@ func modelInfoFromInferenceIdentity(model inference.ModelIdentity) ModelInfo {
 	}
 }
 
-func toInferenceAgentMemoryWakeResult(report *AgentMemoryWakeReport) *inference.AgentMemoryWakeResult {
+func toInferenceAgentMemoryWakeResult(report *agent.WakeReport) *inference.AgentMemoryWakeResult {
 	if report == nil {
 		return nil
 	}
@@ -319,7 +320,7 @@ func toInferenceAgentMemoryWakeResult(report *AgentMemoryWakeReport) *inference.
 			TokenCount: report.PrefixTokens,
 		},
 		Bundle:       agentMemoryStateRef(report.BundleURI, kv.MemvidBlockBundleKind, report.SnapshotHash, ""),
-		Index:        agentMemoryStateRef(report.IndexURI, KVSnapshotMemvidBundleIndexKind, report.IndexHash, ""),
+		Index:        agentMemoryStateRef(report.IndexURI, agent.MemvidIndexKind, report.IndexHash, ""),
 		PrefixTokens: report.PrefixTokens,
 		BundleTokens: report.BundleTokens,
 		BlockSize:    report.BlockSize,
@@ -327,7 +328,7 @@ func toInferenceAgentMemoryWakeResult(report *AgentMemoryWakeReport) *inference.
 	}
 }
 
-func toInferenceAgentMemorySleepResult(report *AgentMemorySleepReport) *inference.AgentMemorySleepResult {
+func toInferenceAgentMemorySleepResult(report *agent.SleepReport) *inference.AgentMemorySleepResult {
 	if report == nil {
 		return nil
 	}
@@ -347,7 +348,7 @@ func toInferenceAgentMemorySleepResult(report *AgentMemorySleepReport) *inferenc
 			IndexURI:  report.ParentIndexURI,
 		},
 		Bundle:        agentMemoryStateRef(report.BundleURI, kv.MemvidBlockBundleKind, report.SnapshotHash, string(report.KVEncoding)),
-		Index:         agentMemoryStateRef(report.IndexURI, KVSnapshotMemvidBundleIndexKind, report.IndexHash, ""),
+		Index:         agentMemoryStateRef(report.IndexURI, agent.MemvidIndexKind, report.IndexHash, ""),
 		TokenCount:    report.TokenCount,
 		BlockSize:     report.BlockSize,
 		BlocksWritten: report.BlocksWritten,

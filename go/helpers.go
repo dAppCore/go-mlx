@@ -2,7 +2,10 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/memory"
+)
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
 // Shared across dataset_stream / kv_snapshot_index / memvid_chapter_smoke /
@@ -28,6 +31,24 @@ func firstPositive(values ...int) int {
 		}
 	}
 	return 0
+}
+
+// modelInfoToMemory converts an mlx-root ModelInfo into the structural
+// mirror used by go-mlx/memory/, go-mlx/agent/, and other subpackages
+// that cannot import mlx-root. Shared by session_agent_darwin.go,
+// fast_eval_runner.go, etc.
+//
+//	out := modelInfoToMemory(info)
+func modelInfoToMemory(info ModelInfo) memory.ModelInfo {
+	return memory.ModelInfo{
+		Architecture:  info.Architecture,
+		VocabSize:     info.VocabSize,
+		NumLayers:     info.NumLayers,
+		HiddenSize:    info.HiddenSize,
+		QuantBits:     info.QuantBits,
+		QuantGroup:    info.QuantGroup,
+		ContextLength: info.ContextLength,
+	}
 }
 
 // renderTokensText concatenates Token.Text || Token.Value across a token
