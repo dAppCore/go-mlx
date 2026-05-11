@@ -9,6 +9,7 @@ import (
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/memory"
+	"dappco.re/go/mlx/model/minimax/m2"
 )
 
 func TestMemoryPlan_M1Class16GB_Good(t *testing.T) {
@@ -170,16 +171,16 @@ func TestMemoryPlan_MiniMaxLayerSkeletonHints_Good(t *testing.T) {
 		ContextLength: 32768,
 		NumLayers:     1,
 		HiddenSize:    4,
-		MiniMaxM2LayerSkeleton: &MiniMaxM2LayerForwardSkeleton{
+		MiniMaxM2LayerSkeleton: &m2.LayerForwardSkeleton{
 			Layer: 0,
-			Attention: []MiniMaxM2ResolvedTensor{
-				{Name: "q", Role: MiniMaxM2TensorRoleAttentionQ, PackedBytes: 16},
-				{Name: "k", Role: MiniMaxM2TensorRoleAttentionK, PackedBytes: 8},
-				{Name: "v", Role: MiniMaxM2TensorRoleAttentionV, PackedBytes: 8},
-				{Name: "o", Role: MiniMaxM2TensorRoleAttentionO, PackedBytes: 16},
+			Attention: []m2.ResolvedTensor{
+				{Name: "q", Role: m2.TensorRoleAttentionQ, PackedBytes: 16},
+				{Name: "k", Role: m2.TensorRoleAttentionK, PackedBytes: 8},
+				{Name: "v", Role: m2.TensorRoleAttentionV, PackedBytes: 8},
+				{Name: "o", Role: m2.TensorRoleAttentionO, PackedBytes: 16},
 			},
-			RouterGate: MiniMaxM2ResolvedTensor{Name: "gate", Role: MiniMaxM2TensorRoleRouterGate, DType: "F32", Shape: []uint64{3, 4}},
-			RouterBias: &MiniMaxM2ResolvedTensor{Name: "bias", Role: MiniMaxM2TensorRoleRouterBias, DType: "F32", Shape: []uint64{3}},
+			RouterGate: m2.ResolvedTensor{Name: "gate", Role: m2.TensorRoleRouterGate, DType: "F32", Shape: []uint64{3, 4}},
+			RouterBias: &m2.ResolvedTensor{Name: "bias", Role: m2.TensorRoleRouterBias, DType: "F32", Shape: []uint64{3}},
 		},
 	}
 	plan := PlanMemory(MemoryPlanInput{

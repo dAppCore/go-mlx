@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/model/minimax/m2"
 	mlxjang "dappco.re/go/mlx/quant/jang"
 )
 
@@ -32,11 +33,11 @@ func testJANGTQInfo() *jang.Info {
 func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.T) {
 	skipIfNoUsableMetal(t)
 
-	cfg, err := ParseMiniMaxM2Config([]byte(miniMaxM2FixtureConfig))
+	cfg, err := m2.ParseConfig([]byte(miniMaxM2FixtureConfig))
 	if err != nil {
 		t.Fatalf("ParseMiniMaxM2Config() error = %v", err)
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, testJANGTQInfo())
+	plan, err := m2.BuildTensorPlan(cfg, testJANGTQInfo())
 	if err != nil {
 		t.Fatalf("BuildMiniMaxM2TensorPlan() error = %v", err)
 	}
@@ -44,7 +45,7 @@ func TestJANGNative_DequantizePackedTensorMetalMatchesReference_Good(t *testing.
 	if err != nil {
 		t.Fatalf("LayerTensorSpecs() error = %v", err)
 	}
-	expert := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleExpertGate)
+	expert := findMiniMaxM2Spec(specs, m2.TensorRoleExpertGate)
 	if expert.Packed == nil {
 		t.Fatal("expert packed descriptor is nil")
 	}

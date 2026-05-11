@@ -11,6 +11,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/model/minimax/m2"
 )
 
 const modelPackTokenizerJSON = `{
@@ -326,7 +327,7 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.PackedQuantization == nil || pack.PackedQuantization.Format != "mxtq" || pack.PackedQuantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("packed quantization = %+v, want MXTQ routed expert profile", pack.PackedQuantization)
 	}
-	mmPlan, _ := pack.MiniMaxM2.(*MiniMaxM2TensorPlan)
+	mmPlan, _ := pack.MiniMaxM2.(*m2.TensorPlan)
 	if mmPlan == nil || mmPlan.Config.NumLocalExperts != 256 || mmPlan.Config.NumExpertsPerToken != 8 {
 		t.Fatalf("MiniMaxM2 plan = %+v, want expert routing config", mmPlan)
 	}
@@ -334,7 +335,7 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MiniMaxM2.LayerTensorSpecs() error = %v", err)
 	}
-	if expert := findMiniMaxM2Spec(specs, MiniMaxM2TensorRoleExpertDown); expert.Packed == nil || expert.Packed.Bits != 2 {
+	if expert := findMiniMaxM2Spec(specs, m2.TensorRoleExpertDown); expert.Packed == nil || expert.Packed.Bits != 2 {
 		t.Fatalf("MiniMaxM2 expert descriptor = %+v, want 2-bit packed expert", expert)
 	}
 }
@@ -400,7 +401,7 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeModelPackFile(t, core.PathJoin(dir, "chat_template.jinja"), "{{ messages }}")
 
-	cfg := MiniMaxM2Config{
+	cfg := m2.Config{
 		ModelType:          "minimax_m2",
 		HiddenSize:         4,
 		IntermediateSize:   4,
@@ -412,7 +413,7 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 		NumExpertsPerToken: 2,
 		UseRoutingBias:     true,
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, &jang.Info{
+	plan, err := m2.BuildTensorPlan(cfg, &jang.Info{
 		Profile:          "JANGTQ",
 		WeightFormat:     "mxtq",
 		Method:           "affine+mxtq",
@@ -433,7 +434,7 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	skel, _ := pack.MiniMaxM2LayerSkeleton.(*MiniMaxM2LayerForwardSkeleton)
+	skel, _ := pack.MiniMaxM2LayerSkeleton.(*m2.LayerForwardSkeleton)
 	if skel == nil {
 		t.Fatalf("MiniMaxM2LayerSkeleton = nil, want safetensors-backed skeleton")
 	}

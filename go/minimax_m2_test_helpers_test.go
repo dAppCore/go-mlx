@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/model/minimax/m2"
 )
 
 // MiniMax M2 fixture config + safetensors helpers shared between
@@ -40,34 +41,34 @@ const miniMaxM2FixtureConfig = `{
 	"rope_theta": 5000000
 }`
 
-func findMiniMaxM2Spec(specs []MiniMaxM2TensorSpec, role MiniMaxM2TensorRole) MiniMaxM2TensorSpec {
+func findMiniMaxM2Spec(specs []m2.TensorSpec, role m2.TensorRole) m2.TensorSpec {
 	for _, spec := range specs {
 		if spec.Role == role {
 			return spec
 		}
 	}
-	return MiniMaxM2TensorSpec{}
+	return m2.TensorSpec{}
 }
 
-func miniMaxM2SkeletonRawTensors(t *testing.T, plan MiniMaxM2TensorPlan, badAttentionShape bool) []miniMaxM2RawSafetensor {
+func miniMaxM2SkeletonRawTensors(t *testing.T, plan m2.TensorPlan, badAttentionShape bool) []miniMaxM2RawSafetensor {
 	t.Helper()
 	specs, err := plan.LayerTensorSpecs(0, 0)
 	if err != nil {
 		t.Fatalf("LayerTensorSpecs() error = %v", err)
 	}
 	var tensors []miniMaxM2RawSafetensor
-	for _, role := range []MiniMaxM2TensorRole{
-		MiniMaxM2TensorRoleAttentionQ,
-		MiniMaxM2TensorRoleAttentionK,
-		MiniMaxM2TensorRoleAttentionV,
-		MiniMaxM2TensorRoleAttentionO,
+	for _, role := range []m2.TensorRole{
+		m2.TensorRoleAttentionQ,
+		m2.TensorRoleAttentionK,
+		m2.TensorRoleAttentionV,
+		m2.TensorRoleAttentionO,
 	} {
 		spec := findMiniMaxM2Spec(specs, role)
 		if spec.Packed == nil {
 			t.Fatalf("attention spec %s has no packed descriptor", role)
 		}
 		packedBytes := spec.Packed.PackedBytes
-		if badAttentionShape && role == MiniMaxM2TensorRoleAttentionQ {
+		if badAttentionShape && role == m2.TensorRoleAttentionQ {
 			packedBytes--
 		}
 		tensors = append(tensors, miniMaxM2RawSafetensor{

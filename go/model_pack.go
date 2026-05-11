@@ -11,6 +11,7 @@ import (
 	"dappco.re/go/inference/quant/jang"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/gguf"
+	"dappco.re/go/mlx/model/minimax/m2"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -545,12 +546,12 @@ func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueInvalidConfig, "MiniMax M2 config could not be read: "+read.Value.(error).Error(), pack.ConfigPath)
 		return
 	}
-	cfg, err := ParseMiniMaxM2Config(read.Value.([]byte))
+	cfg, err := m2.ParseConfig(read.Value.([]byte))
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueInvalidConfig, "MiniMax M2 config could not be parsed: "+err.Error(), pack.ConfigPath)
 		return
 	}
-	plan, err := BuildMiniMaxM2TensorPlan(cfg, pack.JANG)
+	plan, err := m2.BuildTensorPlan(cfg, pack.JANG)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, "MiniMax M2 tensor plan could not be built: "+err.Error(), pack.ConfigPath)
 		return
@@ -559,7 +560,7 @@ func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 	if pack.Format != mp.ModelPackFormatSafetensors || len(pack.WeightFiles) == 0 {
 		return
 	}
-	skeleton, err := BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan, pack.WeightFiles, 0)
+	skeleton, err := m2.BuildLayerForwardSkeleton(plan, pack.WeightFiles, 0)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMiniMaxM2LayerSkeleton, "MiniMax M2 first-layer skeleton could not be validated: "+err.Error(), pack.Root)
 		return

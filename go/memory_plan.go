@@ -69,12 +69,12 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 		ModelInfo: modelInfoPtrToMemory(input.ModelInfo),
 	})
 	if input.Pack != nil {
-		if skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*MiniMaxM2LayerForwardSkeleton); skel != nil {
+		if skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*m2.LayerForwardSkeleton); skel != nil {
 			plan.ModelForwardSkeletonValidated = true
 			plan.ModelForwardSkeletonBytes = skel.EstimatedBytes()
 			plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
 		}
-		if mm, _ := input.Pack.MiniMaxM2.(*MiniMaxM2TensorPlan); mm != nil {
+		if mm, _ := input.Pack.MiniMaxM2.(*m2.TensorPlan); mm != nil {
 			plan.ExpertResidency = m2.PlanResidency(*mm, plan, nil)
 			plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
 		}
