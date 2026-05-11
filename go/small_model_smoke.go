@@ -8,6 +8,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/blockcache"
 	"dappco.re/go/mlx/model"
 	mp "dappco.re/go/mlx/pack"
 )
@@ -96,7 +97,7 @@ func DefaultSmallModelSmokeConfig() SmallModelSmokeConfig {
 	fast.Prompt = "Write one short sentence about native Apple inference."
 	fast.CachePrompt = fast.Prompt
 	fast.IncludeMemvidKVBlockWarm = true
-	fast.MemvidKVBlockSize = DefaultCacheBlockSize
+	fast.MemvidKVBlockSize = blockcache.DefaultBlockSize
 	return SmallModelSmokeConfig{
 		MaxWeightBytes:         DefaultSmallModelSmokeMaxWeightBytes,
 		RequiredQuantization:   DefaultSmallModelSmokeQuantization,

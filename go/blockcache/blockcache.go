@@ -1,6 +1,11 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+// Package blockcache exposes a block-prefix cache metadata layer that fronts
+// the native prompt cache with stable, portable block identities.
+//
+//	service := blockcache.New(blockcache.Config{BlockSize: 128, ...})
+//	stats, _ := service.CacheStats(ctx)
+package blockcache
 
 import (
 	"context"
@@ -12,20 +17,20 @@ import (
 )
 
 const (
-	// DefaultCacheBlockSize is the token chunk size used for portable block
+	// DefaultBlockSize is the token chunk size used for portable block
 	// prefix identities when callers do not choose a size.
-	DefaultCacheBlockSize = 128
+	DefaultBlockSize = 128
 
-	// BlockCacheDiskPathEnv enables disk-backed block metadata for loaded
-	// inference adapters without adding provider/runtime dependencies.
-	BlockCacheDiskPathEnv = "GO_MLX_BLOCK_CACHE_PATH"
+	// DiskPathEnv enables disk-backed block metadata for loaded inference
+	// adapters without adding provider/runtime dependencies.
+	DiskPathEnv = "GO_MLX_BLOCK_CACHE_PATH"
 
-	blockCacheMode        = "block-prefix"
-	blockCacheDiskVersion = 1
+	mode        = "block-prefix"
+	diskVersion = 1
 )
 
-// BlockCacheConfig configures the block-prefix cache metadata layer.
-type BlockCacheConfig struct {
+// Config configures the block-prefix cache metadata layer.
+type Config struct {
 	BlockSize     int
 	ModelHash     string
 	AdapterHash   string
@@ -37,13 +42,13 @@ type BlockCacheConfig struct {
 	MemvidStore   memvid.Writer
 }
 
-// BlockCacheService exposes stable block-prefix refs through
+// Service exposes stable block-prefix refs through
 // inference.CacheService. It records block identities in memory, optionally
 // persists them on disk, and delegates actual KV warming to the native prompt
 // cache when a prompt warmer is configured.
-type BlockCacheService struct {
+type Service struct {
 	mu          sync.Mutex
-	cfg         BlockCacheConfig
+	cfg         Config
 	blocks      map[string]inference.CacheBlockRef
 	hits        uint64
 	misses      uint64
@@ -53,14 +58,14 @@ type BlockCacheService struct {
 	diskLoaded  bool
 }
 
-type blockCacheDiskRecord struct {
+type diskRecord struct {
 	Version   int                     `json:"version"`
 	Ref       inference.CacheBlockRef `json:"ref"`
 	Tokens    []int32                 `json:"tokens,omitempty"`
 	MemvidRef *memvid.ChunkRef        `json:"memvid_ref,omitempty"`
 }
 
-type blockCacheMemvidPayload struct {
+type memvidPayload struct {
 	Version       int                     `json:"version"`
 	BlockID       string                  `json:"block_id"`
 	Ref           inference.CacheBlockRef `json:"ref"`
@@ -70,26 +75,30 @@ type blockCacheMemvidPayload struct {
 	PayloadFormat string                  `json:"payload_format,omitempty"`
 }
 
-// NewBlockCacheService returns a cache metadata service with stable prefix refs.
-func NewBlockCacheService(cfg BlockCacheConfig) *BlockCacheService {
+// New returns a cache metadata service with stable prefix refs.
+//
+//	service := blockcache.New(blockcache.Config{BlockSize: 128})
+func New(cfg Config) *Service {
 	if cfg.BlockSize <= 0 {
-		cfg.BlockSize = DefaultCacheBlockSize
+		cfg.BlockSize = DefaultBlockSize
 	}
-	return &BlockCacheService{
+	return &Service{
 		cfg:    cfg,
 		blocks: map[string]inference.CacheBlockRef{},
 	}
 }
 
-// DefaultBlockCacheDiskPath returns the process-level opt-in path for
-// persistent block-prefix metadata.
-func DefaultBlockCacheDiskPath() string {
-	return core.Trim(core.Env(BlockCacheDiskPathEnv))
+// DefaultDiskPath returns the process-level opt-in path for persistent
+// block-prefix metadata, read from the DiskPathEnv environment variable.
+//
+//	path := blockcache.DefaultDiskPath()
+func DefaultDiskPath() string {
+	return core.Trim(core.Env(DiskPathEnv))
 }
 
 // CacheStats reports in-memory block metadata and cumulative warm hit/miss
 // counters.
-func (service *BlockCacheService) CacheStats(ctx context.Context) (inference.CacheStats, error) {
+func (service *Service) CacheStats(ctx context.Context) (inference.CacheStats, error) {
 	if err := cacheContextErr(ctx); err != nil {
 		return inference.CacheStats{}, err
 	}
@@ -105,7 +114,7 @@ func (service *BlockCacheService) CacheStats(ctx context.Context) (inference.Cac
 }
 
 // CacheEntries returns stable cache block refs, optionally filtered by labels.
-func (service *BlockCacheService) CacheEntries(ctx context.Context, labels map[string]string) ([]inference.CacheBlockRef, error) {
+func (service *Service) CacheEntries(ctx context.Context, labels map[string]string) ([]inference.CacheBlockRef, error) {
 	if err := cacheContextErr(ctx); err != nil {
 		return nil, err
 	}
@@ -130,7 +139,7 @@ func (service *BlockCacheService) CacheEntries(ctx context.Context, labels map[s
 
 // WarmCache creates stable block refs for the request and optionally warms the
 // native prompt cache when a prompt and warmer are present.
-func (service *BlockCacheService) WarmCache(ctx context.Context, req inference.CacheWarmRequest) (inference.CacheWarmResult, error) {
+func (service *Service) WarmCache(ctx context.Context, req inference.CacheWarmRequest) (inference.CacheWarmResult, error) {
 	if err := cacheContextErr(ctx); err != nil {
 		return inference.CacheWarmResult{}, err
 	}
@@ -181,7 +190,7 @@ func (service *BlockCacheService) WarmCache(ctx context.Context, req inference.C
 }
 
 // ClearCache clears all refs, or only refs whose metadata matches labels.
-func (service *BlockCacheService) ClearCache(ctx context.Context, labels map[string]string) (inference.CacheStats, error) {
+func (service *Service) ClearCache(ctx context.Context, labels map[string]string) (inference.CacheStats, error) {
 	if err := cacheContextErr(ctx); err != nil {
 		return inference.CacheStats{}, err
 	}
@@ -218,7 +227,7 @@ func (service *BlockCacheService) ClearCache(ctx context.Context, labels map[str
 	return service.statsLocked(), nil
 }
 
-func (service *BlockCacheService) requestTokens(req inference.CacheWarmRequest) ([]int32, error) {
+func (service *Service) requestTokens(req inference.CacheWarmRequest) ([]int32, error) {
 	if len(req.Tokens) > 0 {
 		return append([]int32(nil), req.Tokens...), nil
 	}
@@ -235,10 +244,10 @@ func (service *BlockCacheService) requestTokens(req inference.CacheWarmRequest) 
 	return append([]int32(nil), tokens...), nil
 }
 
-func (service *BlockCacheService) blockRefs(req inference.CacheWarmRequest, tokens []int32, labels map[string]string) []inference.CacheBlockRef {
+func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32, labels map[string]string) []inference.CacheBlockRef {
 	blockSize := service.cfg.BlockSize
 	if blockSize <= 0 {
-		blockSize = DefaultCacheBlockSize
+		blockSize = DefaultBlockSize
 	}
 	modelHash := firstNonEmptyString(service.cfg.ModelHash, req.Model.Hash, req.Model.ID)
 	adapterHash := firstNonEmptyString(service.cfg.AdapterHash, req.Adapter.Hash)
@@ -270,9 +279,9 @@ func (service *BlockCacheService) blockRefs(req inference.CacheWarmRequest, toke
 	return refs
 }
 
-func (service *BlockCacheService) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
+func (service *Service) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
 	labels := cloneBlockCacheLabels(req.Labels)
-	labels["cache_mode"] = blockCacheMode
+	labels["cache_mode"] = mode
 	labels["block_size"] = core.Sprintf("%d", service.cfg.BlockSize)
 	labels["model_match"] = boolLabel(cacheIdentityMatches(service.cfg.ModelHash, firstNonEmptyString(req.Model.Hash, req.Model.ID)))
 	labels["adapter_match"] = boolLabel(cacheIdentityMatches(service.cfg.AdapterHash, req.Adapter.Hash))
@@ -280,13 +289,13 @@ func (service *BlockCacheService) compatibilityLabels(req inference.CacheWarmReq
 	return labels
 }
 
-func (service *BlockCacheService) statsLocked() inference.CacheStats {
+func (service *Service) statsLocked() inference.CacheStats {
 	stats := inference.CacheStats{
 		Blocks:    len(service.blocks),
 		Hits:      service.hits,
 		Misses:    service.misses,
 		Evictions: service.evictions,
-		CacheMode: blockCacheMode,
+		CacheMode: mode,
 		Labels: map[string]string{
 			"block_size": core.Sprintf("%d", service.cfg.BlockSize),
 			"cleared":    core.Sprintf("%d", service.cleared),
@@ -311,15 +320,15 @@ func (service *BlockCacheService) statsLocked() inference.CacheStats {
 	return stats
 }
 
-func (service *BlockCacheService) diskEnabled() bool {
+func (service *Service) diskEnabled() bool {
 	return service != nil && core.Trim(service.cfg.DiskPath) != ""
 }
 
-func (service *BlockCacheService) memvidEnabled() bool {
+func (service *Service) memvidEnabled() bool {
 	return service != nil && service.cfg.MemvidStore != nil
 }
 
-func (service *BlockCacheService) withDiskLabels(ref inference.CacheBlockRef) inference.CacheBlockRef {
+func (service *Service) withDiskLabels(ref inference.CacheBlockRef) inference.CacheBlockRef {
 	if !service.diskEnabled() || ref.ID == "" {
 		return ref
 	}
@@ -330,12 +339,12 @@ func (service *BlockCacheService) withDiskLabels(ref inference.CacheBlockRef) in
 	return ref
 }
 
-func (service *BlockCacheService) ensureDiskLoadedLocked() error {
+func (service *Service) ensureDiskLoadedLocked() error {
 	if !service.diskEnabled() || service.diskLoaded {
 		return nil
 	}
 	if result := core.MkdirAll(service.cfg.DiskPath, 0o700); !result.OK {
-		return core.E("BlockCacheService.ensureDiskLoaded", "create disk cache directory", blockCacheResultError(result))
+		return core.E("Service.ensureDiskLoaded", "create disk cache directory", resultError(result))
 	}
 	for _, path := range core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json")) {
 		record, ok := service.readDiskRecord(path)
@@ -356,24 +365,24 @@ func (service *BlockCacheService) ensureDiskLoadedLocked() error {
 	return nil
 }
 
-func (service *BlockCacheService) readDiskRecord(path string) (blockCacheDiskRecord, bool) {
+func (service *Service) readDiskRecord(path string) (diskRecord, bool) {
 	read := core.ReadFile(path)
 	if !read.OK {
-		return blockCacheDiskRecord{}, false
+		return diskRecord{}, false
 	}
 	data, ok := read.Value.([]byte)
 	if !ok {
-		return blockCacheDiskRecord{}, false
+		return diskRecord{}, false
 	}
-	var record blockCacheDiskRecord
+	var record diskRecord
 	result := core.JSONUnmarshal(data, &record)
-	if !result.OK || record.Version != blockCacheDiskVersion || record.Ref.ID == "" {
-		return blockCacheDiskRecord{}, false
+	if !result.OK || record.Version != diskVersion || record.Ref.ID == "" {
+		return diskRecord{}, false
 	}
 	return record, true
 }
 
-func (service *BlockCacheService) diskRecordCompatible(record blockCacheDiskRecord) bool {
+func (service *Service) diskRecordCompatible(record diskRecord) bool {
 	if record.Ref.ID == "" {
 		return false
 	}
@@ -386,12 +395,12 @@ func (service *BlockCacheService) diskRecordCompatible(record blockCacheDiskReco
 	return cacheIdentityMatches(service.cfg.TokenizerHash, record.Ref.TokenizerHash)
 }
 
-func (service *BlockCacheService) writeDiskBlockLocked(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (inference.CacheBlockRef, error) {
+func (service *Service) writeDiskBlockLocked(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (inference.CacheBlockRef, error) {
 	if !service.diskEnabled() {
 		return ref, nil
 	}
 	if result := core.MkdirAll(service.cfg.DiskPath, 0o700); !result.OK {
-		return inference.CacheBlockRef{}, core.E("BlockCacheService.writeDiskBlock", "create disk cache directory", blockCacheResultError(result))
+		return inference.CacheBlockRef{}, core.E("Service.writeDiskBlock", "create disk cache directory", resultError(result))
 	}
 	var memvidRef *memvid.ChunkRef
 	if service.memvidEnabled() {
@@ -402,8 +411,8 @@ func (service *BlockCacheService) writeDiskBlockLocked(ctx context.Context, ref 
 		memvidRef = &written
 		ref = withMemvidLabels(ref, written)
 	}
-	record := blockCacheDiskRecord{
-		Version:   blockCacheDiskVersion,
+	record := diskRecord{
+		Version:   diskVersion,
 		Ref:       service.withDiskLabels(ref),
 		MemvidRef: memvidRef,
 	}
@@ -412,36 +421,36 @@ func (service *BlockCacheService) writeDiskBlockLocked(ctx context.Context, ref 
 	}
 	data := core.JSONMarshal(record)
 	if !data.OK {
-		return inference.CacheBlockRef{}, core.E("BlockCacheService.writeDiskBlock", "marshal disk cache record", blockCacheResultError(data))
+		return inference.CacheBlockRef{}, core.E("Service.writeDiskBlock", "marshal disk cache record", resultError(data))
 	}
 	write := core.WriteFile(service.diskBlockPath(ref.ID), data.Value.([]byte), 0o600)
 	if !write.OK {
-		return inference.CacheBlockRef{}, core.E("BlockCacheService.writeDiskBlock", "write disk cache record", blockCacheResultError(write))
+		return inference.CacheBlockRef{}, core.E("Service.writeDiskBlock", "write disk cache record", resultError(write))
 	}
 	return record.Ref, nil
 }
 
-func (service *BlockCacheService) writeMemvidBlock(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (memvid.ChunkRef, error) {
+func (service *Service) writeMemvidBlock(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if service == nil || service.cfg.MemvidStore == nil {
 		return memvid.ChunkRef{}, core.NewError("mlx: memvid store is nil")
 	}
-	payload := blockCacheMemvidPayload{
-		Version:       blockCacheDiskVersion,
+	payload := memvidPayload{
+		Version:       diskVersion,
 		BlockID:       ref.ID,
 		Ref:           ref,
 		Tokens:        append([]int32(nil), tokens...),
 		Encoding:      ref.Encoding,
-		CacheMode:     blockCacheMode,
+		CacheMode:     mode,
 		PayloadFormat: "token-prefix/int32-json",
 	}
 	chunk, err := service.cfg.MemvidStore.Put(ctx, core.JSONMarshalString(payload), memvid.PutOptions{
 		URI:   "mlx://cache/block/" + ref.ID,
 		Title: "go-mlx block cache " + ref.ID,
 		Kind:  "kv-block-prefix",
-		Track: blockCacheMode,
+		Track: mode,
 		Tags: map[string]string{
 			"block_id":       ref.ID,
 			"model_hash":     ref.ModelHash,
@@ -449,10 +458,10 @@ func (service *BlockCacheService) writeMemvidBlock(ctx context.Context, ref infe
 			"tokenizer_hash": ref.TokenizerHash,
 			"encoding":       ref.Encoding,
 		},
-		Labels: []string{"go-mlx", "block-cache", blockCacheMode},
+		Labels: []string{"go-mlx", "block-cache", mode},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("BlockCacheService.writeMemvidBlock", "write memvid payload", err)
+		return memvid.ChunkRef{}, core.E("Service.writeMemvidBlock", "write memvid payload", err)
 	}
 	return chunk, nil
 }
@@ -474,20 +483,20 @@ func withMemvidLabels(ref inference.CacheBlockRef, chunk memvid.ChunkRef) infere
 	return ref
 }
 
-func (service *BlockCacheService) clearDiskLocked() error {
+func (service *Service) clearDiskLocked() error {
 	if !service.diskEnabled() {
 		return nil
 	}
 	if result := core.RemoveAll(service.cfg.DiskPath); !result.OK {
-		return core.E("BlockCacheService.clearDisk", "remove disk cache directory", blockCacheResultError(result))
+		return core.E("Service.clearDisk", "remove disk cache directory", resultError(result))
 	}
 	if result := core.MkdirAll(service.cfg.DiskPath, 0o700); !result.OK {
-		return core.E("BlockCacheService.clearDisk", "recreate disk cache directory", blockCacheResultError(result))
+		return core.E("Service.clearDisk", "recreate disk cache directory", resultError(result))
 	}
 	return nil
 }
 
-func (service *BlockCacheService) removeDiskBlockLocked(id string) error {
+func (service *Service) removeDiskBlockLocked(id string) error {
 	if !service.diskEnabled() || id == "" {
 		return nil
 	}
@@ -495,20 +504,20 @@ func (service *BlockCacheService) removeDiskBlockLocked(id string) error {
 	if result.OK {
 		return nil
 	}
-	err := blockCacheResultError(result)
+	err := resultError(result)
 	if err != nil && core.IsNotExist(err) {
 		return nil
 	}
-	return core.E("BlockCacheService.removeDiskBlock", "remove disk cache record", err)
+	return core.E("Service.removeDiskBlock", "remove disk cache record", err)
 }
 
-func (service *BlockCacheService) quarantineDiskBlock(path string) {
+func (service *Service) quarantineDiskBlock(path string) {
 	service.evictions++
 	service.diskCorrupt++
 	_ = core.Remove(path)
 }
 
-func (service *BlockCacheService) diskBytesLocked() uint64 {
+func (service *Service) diskBytesLocked() uint64 {
 	if !service.diskEnabled() {
 		return 0
 	}
@@ -531,7 +540,7 @@ func (service *BlockCacheService) diskBytesLocked() uint64 {
 	return total
 }
 
-func (service *BlockCacheService) diskBlockPath(id string) string {
+func (service *Service) diskBlockPath(id string) string {
 	return core.PathJoin(service.cfg.DiskPath, id+".json")
 }
 
@@ -546,13 +555,18 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 		ModelHash:     modelHash,
 		AdapterHash:   adapterHash,
 		TokenizerHash: tokenizerHash,
-		Mode:          firstNonEmptyString(mode, blockCacheMode),
+		Mode:          firstNonEmptyString(mode, mode),
 		Tokens:        append([]int32(nil), prefix...),
 	}
 	return core.SHA256HexString(core.JSONMarshalString(payload))
 }
 
-func coreHashModelParts(parts ...any) string {
+// HashModelParts returns a stable SHA-256 hex hash of the supplied identity
+// parts. Used by callers (Metal cache adapter) to derive stable model and
+// tokenizer hashes for block-prefix cache identity.
+//
+//	hash := blockcache.HashModelParts(info.Architecture, info.VocabSize)
+func HashModelParts(parts ...any) string {
 	return core.SHA256HexString(core.JSONMarshalString(parts))
 }
 
@@ -642,7 +656,7 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-func blockCacheResultError(result core.Result) error {
+func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}

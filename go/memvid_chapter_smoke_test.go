@@ -8,9 +8,10 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/kv"
 	filestore "dappco.re/go/inference/state/filestore"
+	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/blockcache"
+	"dappco.re/go/mlx/kv"
 )
 
 func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
@@ -249,7 +250,7 @@ func TestMemvidKVChapterSmokeHelpers_Good(t *testing.T) {
 		Chapters:        []MemvidKVChapterSmokeInput{{Text: "chapter", Question: "q"}},
 	})
 	cfg.Chapters[0].Text = "mutated"
-	if cfg.StoreKind != MemvidKVChapterSmokeStoreFileLog || cfg.BlockSize != DefaultCacheBlockSize || cfg.AnswerMaxTokens != DefaultMemvidKVChapterSmokeAnswerMaxTokens {
+	if cfg.StoreKind != MemvidKVChapterSmokeStoreFileLog || cfg.BlockSize != blockcache.DefaultBlockSize || cfg.AnswerMaxTokens != DefaultMemvidKVChapterSmokeAnswerMaxTokens {
 		t.Fatalf("normalised config = %+v", cfg)
 	}
 	if gen := memvidKVChapterSmokeGenerateConfig(cfg); gen.MaxTokens != DefaultMemvidKVChapterSmokeAnswerMaxTokens || gen.Temperature != 0.25 {

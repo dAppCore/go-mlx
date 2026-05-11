@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/blockcache"
 	"context"
 	"time"
 
@@ -378,7 +379,7 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner MemvidKVChapterR
 func normalizeMemvidKVChapterSmokeConfig(cfg MemvidKVChapterSmokeConfig) MemvidKVChapterSmokeConfig {
 	cfg.StoreKind = memvidKVChapterSmokeNormalizeStoreKind(cfg.StoreKind, cfg.StorePath)
 	if cfg.BlockSize <= 0 {
-		cfg.BlockSize = DefaultCacheBlockSize
+		cfg.BlockSize = blockcache.DefaultBlockSize
 	}
 	if cfg.AnswerMaxTokens <= 0 && cfg.GenerateConfig.MaxTokens <= 0 {
 		cfg.AnswerMaxTokens = DefaultMemvidKVChapterSmokeAnswerMaxTokens

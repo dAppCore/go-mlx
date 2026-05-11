@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/blockcache"
 	"context"
 	"time"
 
@@ -115,7 +116,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 		}
 		blockSize := cfg.MemvidKVBlockSize
 		if blockSize <= 0 {
-			blockSize = DefaultCacheBlockSize
+			blockSize = blockcache.DefaultBlockSize
 		}
 		prefixTokens := cfg.MemvidKVPrefixTokens
 		report.BlockSize = blockSize

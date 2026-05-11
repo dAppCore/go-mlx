@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package blockcache
 
 import (
 	"context"
@@ -11,8 +11,8 @@ import (
 	memvid "dappco.re/go/inference/state"
 )
 
-func TestBlockCacheService_Good_StablePrefixBlocksAndStats(t *testing.T) {
-	service := NewBlockCacheService(BlockCacheConfig{
+func TestService_Good_StablePrefixBlocksAndStats(t *testing.T) {
+	service := New(Config{
 		BlockSize:     3,
 		ModelHash:     "sha256:model",
 		AdapterHash:   "sha256:adapter",
@@ -51,9 +51,9 @@ func TestBlockCacheService_Good_StablePrefixBlocksAndStats(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_WarmPromptUsesTokenizerAndWarmer(t *testing.T) {
+func TestService_Good_WarmPromptUsesTokenizerAndWarmer(t *testing.T) {
 	var warmedPrompt string
-	service := NewBlockCacheService(BlockCacheConfig{
+	service := New(Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model",
 		TokenizerHash: "sha256:tokenizer",
@@ -81,8 +81,8 @@ func TestBlockCacheService_Good_WarmPromptUsesTokenizerAndWarmer(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_CompatibilityLabels(t *testing.T) {
-	service := NewBlockCacheService(BlockCacheConfig{
+func TestService_Good_CompatibilityLabels(t *testing.T) {
+	service := New(Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model-a",
 		AdapterHash:   "sha256:adapter-a",
@@ -106,8 +106,8 @@ func TestBlockCacheService_Good_CompatibilityLabels(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_CacheEntriesFiltersAndClonesRefs(t *testing.T) {
-	service := NewBlockCacheService(BlockCacheConfig{BlockSize: 2, ModelHash: "sha256:model"})
+func TestService_Good_CacheEntriesFiltersAndClonesRefs(t *testing.T) {
+	service := New(Config{BlockSize: 2, ModelHash: "sha256:model"})
 	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{
 		Labels: map[string]string{"tenant": "alpha"},
 		Tokens: []int32{1, 2, 3},
@@ -147,8 +147,8 @@ func TestBlockCacheService_Good_CacheEntriesFiltersAndClonesRefs(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_ClearCache(t *testing.T) {
-	service := NewBlockCacheService(BlockCacheConfig{BlockSize: 2, ModelHash: "sha256:model"})
+func TestService_Good_ClearCache(t *testing.T) {
+	service := New(Config{BlockSize: 2, ModelHash: "sha256:model"})
 	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3, 4}}); err != nil {
 		t.Fatalf("WarmCache() error = %v", err)
 	}
@@ -162,25 +162,25 @@ func TestBlockCacheService_Good_ClearCache(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_DefaultDiskPathUsesEnv(t *testing.T) {
+func TestService_Good_DefaultDiskPathUsesEnv(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	t.Setenv(BlockCacheDiskPathEnv, diskPath)
+	t.Setenv(DiskPathEnv, diskPath)
 
-	if got := DefaultBlockCacheDiskPath(); got != diskPath {
-		t.Fatalf("DefaultBlockCacheDiskPath() = %q, want %q", got, diskPath)
+	if got := DefaultDiskPath(); got != diskPath {
+		t.Fatalf("DefaultDiskPath() = %q, want %q", got, diskPath)
 	}
 }
 
-func TestBlockCacheService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
+func TestService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	cfg := BlockCacheConfig{
+	cfg := Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model",
 		AdapterHash:   "sha256:adapter",
 		TokenizerHash: "sha256:tokenizer",
 		DiskPath:      diskPath,
 	}
-	first := NewBlockCacheService(cfg)
+	first := New(cfg)
 	result, err := first.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3, 4, 5}})
 	if err != nil {
 		t.Fatalf("WarmCache(first) error = %v", err)
@@ -200,7 +200,7 @@ func TestBlockCacheService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
 		t.Fatalf("warm stats = %+v, want disk bytes", result.Stats)
 	}
 
-	second := NewBlockCacheService(cfg)
+	second := New(cfg)
 	stats, err := second.CacheStats(context.Background())
 	if err != nil {
 		t.Fatalf("CacheStats(second) error = %v", err)
@@ -217,10 +217,10 @@ func TestBlockCacheService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
+func TestService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
 	store := memvid.NewInMemoryStore(nil)
-	service := NewBlockCacheService(BlockCacheConfig{
+	service := New(Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model",
 		TokenizerHash: "sha256:tokenizer",
@@ -251,7 +251,7 @@ func TestBlockCacheService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
 		t.Fatalf("memvid chunk = %s, want block payload", chunk.Text)
 	}
 
-	second := NewBlockCacheService(BlockCacheConfig{
+	second := New(Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model",
 		TokenizerHash: "sha256:tokenizer",
@@ -267,7 +267,7 @@ func TestBlockCacheService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Bad_CorruptDiskBlockIsIgnored(t *testing.T) {
+func TestService_Bad_CorruptDiskBlockIsIgnored(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
 	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
 		t.Fatalf("MkdirAll() error = %s", result.Error())
@@ -277,7 +277,7 @@ func TestBlockCacheService_Bad_CorruptDiskBlockIsIgnored(t *testing.T) {
 		t.Fatalf("WriteFile() error = %s", result.Error())
 	}
 
-	service := NewBlockCacheService(BlockCacheConfig{BlockSize: 2, DiskPath: diskPath})
+	service := New(Config{BlockSize: 2, DiskPath: diskPath})
 	stats, err := service.CacheStats(context.Background())
 	if err != nil {
 		t.Fatalf("CacheStats() error = %v", err)
@@ -290,9 +290,9 @@ func TestBlockCacheService_Bad_CorruptDiskBlockIsIgnored(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_ClearCacheRemovesDiskBlocks(t *testing.T) {
+func TestService_Good_ClearCacheRemovesDiskBlocks(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	service := NewBlockCacheService(BlockCacheConfig{BlockSize: 2, ModelHash: "sha256:model", DiskPath: diskPath})
+	service := New(Config{BlockSize: 2, ModelHash: "sha256:model", DiskPath: diskPath})
 	result, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3, 4}})
 	if err != nil {
 		t.Fatalf("WarmCache() error = %v", err)
@@ -316,9 +316,9 @@ func TestBlockCacheService_Good_ClearCacheRemovesDiskBlocks(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Good_ClearCacheWithLabelsRemovesOnlyMatchingBlocks(t *testing.T) {
+func TestService_Good_ClearCacheWithLabelsRemovesOnlyMatchingBlocks(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	service := NewBlockCacheService(BlockCacheConfig{BlockSize: 2, ModelHash: "sha256:model", DiskPath: diskPath})
+	service := New(Config{BlockSize: 2, ModelHash: "sha256:model", DiskPath: diskPath})
 	alpha, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{
 		Labels: map[string]string{"tenant": "alpha"},
 		Tokens: []int32{1, 2, 3},
@@ -358,22 +358,22 @@ func TestBlockCacheService_Good_ClearCacheWithLabelsRemovesOnlyMatchingBlocks(t 
 	}
 }
 
-func TestBlockCacheService_Bad_InputAndContextErrors(t *testing.T) {
+func TestService_Bad_InputAndContextErrors(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := (*BlockCacheService)(nil).CacheStats(context.Background()); err == nil {
+	if _, err := (*Service)(nil).CacheStats(context.Background()); err == nil {
 		t.Fatal("CacheStats(nil service) error = nil")
 	}
-	if _, err := (*BlockCacheService)(nil).CacheEntries(context.Background(), nil); err == nil {
+	if _, err := (*Service)(nil).CacheEntries(context.Background(), nil); err == nil {
 		t.Fatal("CacheEntries(nil service) error = nil")
 	}
-	if _, err := (*BlockCacheService)(nil).WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1}}); err == nil {
+	if _, err := (*Service)(nil).WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1}}); err == nil {
 		t.Fatal("WarmCache(nil service) error = nil")
 	}
-	if _, err := (*BlockCacheService)(nil).ClearCache(context.Background(), nil); err == nil {
+	if _, err := (*Service)(nil).ClearCache(context.Background(), nil); err == nil {
 		t.Fatal("ClearCache(nil service) error = nil")
 	}
-	service := NewBlockCacheService(BlockCacheConfig{})
+	service := New(Config{})
 	if _, err := service.CacheStats(cancelled); err == nil {
 		t.Fatal("CacheStats(cancelled) error = nil")
 	}
@@ -392,7 +392,7 @@ func TestBlockCacheService_Bad_InputAndContextErrors(t *testing.T) {
 	if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Prompt: "hello"}); err == nil {
 		t.Fatal("WarmCache(prompt without tokenizer) error = nil")
 	}
-	tokenizerErr := NewBlockCacheService(BlockCacheConfig{
+	tokenizerErr := New(Config{
 		Tokenize: func(string) ([]int32, error) {
 			return nil, core.NewError("tokenize failed")
 		},
@@ -400,7 +400,7 @@ func TestBlockCacheService_Bad_InputAndContextErrors(t *testing.T) {
 	if _, err := tokenizerErr.WarmCache(context.Background(), inference.CacheWarmRequest{Prompt: "hello"}); err == nil {
 		t.Fatal("WarmCache(tokenizer error) error = nil")
 	}
-	warmerErr := NewBlockCacheService(BlockCacheConfig{
+	warmerErr := New(Config{
 		Tokenize: func(string) ([]int32, error) { return []int32{1}, nil },
 		WarmPrompt: func(context.Context, string) error {
 			return core.NewError("warm failed")
@@ -409,7 +409,7 @@ func TestBlockCacheService_Bad_InputAndContextErrors(t *testing.T) {
 	if _, err := warmerErr.WarmCache(context.Background(), inference.CacheWarmRequest{Prompt: "hello"}); err == nil {
 		t.Fatal("WarmCache(warmer error) error = nil")
 	}
-	memvidErr := NewBlockCacheService(BlockCacheConfig{
+	memvidErr := New(Config{
 		DiskPath:    core.PathJoin(t.TempDir(), "blocks"),
 		MemvidStore: failingMemvidWriter{},
 	})
@@ -418,13 +418,13 @@ func TestBlockCacheService_Bad_InputAndContextErrors(t *testing.T) {
 	}
 }
 
-func TestBlockCacheService_Bad_IncompatibleDiskRecordIsIgnored(t *testing.T) {
+func TestService_Bad_IncompatibleDiskRecordIsIgnored(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
 	if result := core.MkdirAll(diskPath, 0o700); !result.OK {
 		t.Fatalf("MkdirAll() error = %s", result.Error())
 	}
-	record := blockCacheDiskRecord{
-		Version: blockCacheDiskVersion,
+	record := diskRecord{
+		Version: diskVersion,
 		Ref: inference.CacheBlockRef{
 			ID:            "incompatible",
 			ModelHash:     "sha256:other-model",
@@ -438,7 +438,7 @@ func TestBlockCacheService_Bad_IncompatibleDiskRecordIsIgnored(t *testing.T) {
 		t.Fatalf("WriteFile(record) error = %s", result.Error())
 	}
 
-	service := NewBlockCacheService(BlockCacheConfig{
+	service := New(Config{
 		DiskPath:      diskPath,
 		ModelHash:     "sha256:model",
 		AdapterHash:   "sha256:adapter",
@@ -454,8 +454,8 @@ func TestBlockCacheService_Bad_IncompatibleDiskRecordIsIgnored(t *testing.T) {
 }
 
 func TestBlockCacheHelpers_Good(t *testing.T) {
-	if got := coreHashModelParts("model", 4); got == "" {
-		t.Fatal("coreHashModelParts() returned empty hash")
+	if got := HashModelParts("model", 4); got == "" {
+		t.Fatal("HashModelParts() returned empty hash")
 	}
 	if !blockRefMatchesLabels(inference.CacheBlockRef{ModelHash: "m", AdapterHash: "a", TokenizerHash: "t", Labels: map[string]string{"tenant": "alpha"}}, map[string]string{
 		"model_hash":     "m",
@@ -491,13 +491,13 @@ func TestBlockCacheHelpers_Good(t *testing.T) {
 	if refs[0].ID != "a" || !cacheBlockRefLess(refs[0], refs[1]) {
 		t.Fatalf("sorted refs = %+v, want token order", refs)
 	}
-	if err := blockCacheResultError(core.Result{OK: true}); err != nil {
-		t.Fatalf("blockCacheResultError(OK) = %v", err)
+	if err := resultError(core.Result{OK: true}); err != nil {
+		t.Fatalf("resultError(OK) = %v", err)
 	}
-	if err := blockCacheResultError(core.Result{Value: core.NewError("explicit")}); err == nil || err.Error() != "explicit" {
-		t.Fatalf("blockCacheResultError(error) = %v", err)
+	if err := resultError(core.Result{Value: core.NewError("explicit")}); err == nil || err.Error() != "explicit" {
+		t.Fatalf("resultError(error) = %v", err)
 	}
-	if err := blockCacheResultError(core.Result{}); err == nil {
-		t.Fatal("blockCacheResultError(empty) = nil")
+	if err := resultError(core.Result{}); err == nil {
+		t.Fatal("resultError(empty) = nil")
 	}
 }

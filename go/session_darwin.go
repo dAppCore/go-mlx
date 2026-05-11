@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/blockcache"
 	"context"
 
 	core "dappco.re/go"
@@ -260,7 +261,7 @@ func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Wr
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
-		blockSize = DefaultCacheBlockSize
+		blockSize = blockcache.DefaultBlockSize
 	}
 	return kv.SaveMemvidBlocksFromStream(ctx, store, opts, func(yield func(kv.Block) (bool, error)) error {
 		return s.session.RangeKVBlocks(ctx, blockSize, toMetalKVSnapshotCaptureOptions(captureOpts), func(block metal.KVSnapshotBlock) (bool, error) {

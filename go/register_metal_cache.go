@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/blockcache"
 	"context"
 
 	"dappco.re/go/inference"
@@ -26,16 +27,16 @@ func (adapter *metaladapter) ClearCache(ctx context.Context, labels map[string]s
 	return adapter.blockCacheService().ClearCache(ctx, labels)
 }
 
-func (adapter *metaladapter) blockCacheService() *BlockCacheService {
+func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 	if adapter == nil {
-		return NewBlockCacheService(BlockCacheConfig{})
+		return blockcache.New(blockcache.Config{})
 	}
 	adapter.cacheMu.Lock()
 	defer adapter.cacheMu.Unlock()
 	if adapter.cacheService == nil {
 		info := adapter.Info()
-		adapter.cacheService = NewBlockCacheService(BlockCacheConfig{
-			BlockSize:     DefaultCacheBlockSize,
+		adapter.cacheService = blockcache.New(blockcache.Config{
+			BlockSize:     blockcache.DefaultBlockSize,
 			ModelHash:     inferenceModelInfoHash(info),
 			AdapterHash:   adapter.ActiveAdapter().Hash,
 			TokenizerHash: adapterTokenizerHash(adapter),
@@ -58,14 +59,14 @@ func (adapter *metaladapter) blockCacheService() *BlockCacheService {
 				}
 				ClearCache()
 			},
-			DiskPath: DefaultBlockCacheDiskPath(),
+			DiskPath: blockcache.DefaultDiskPath(),
 		})
 	}
 	return adapter.cacheService
 }
 
 func inferenceModelInfoHash(info inference.ModelInfo) string {
-	return coreHashModelParts(info.Architecture, info.VocabSize, info.NumLayers, info.HiddenSize, info.QuantBits, info.QuantGroup)
+	return blockcache.HashModelParts(info.Architecture, info.VocabSize, info.NumLayers, info.HiddenSize, info.QuantBits, info.QuantGroup)
 }
 
 func adapterTokenizerHash(adapter *metaladapter) string {
@@ -78,5 +79,5 @@ func adapterTokenizerHash(adapter *metaladapter) string {
 	}
 	info := adapter.Info()
 	tok := root.Tokenizer()
-	return coreHashModelParts(info.Architecture, info.VocabSize, tok.BOS(), tok.EOS())
+	return blockcache.HashModelParts(info.Architecture, info.VocabSize, tok.BOS(), tok.EOS())
 }

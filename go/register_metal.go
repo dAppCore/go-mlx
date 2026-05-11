@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/blockcache"
 	"context"
 	"iter"
 	"sync"
@@ -128,7 +129,7 @@ type metaladapter struct {
 	scheduler              *scheduler.Model
 	schedulerMaxConcurrent int
 	cacheMu                sync.Mutex
-	cacheService           *BlockCacheService
+	cacheService           *blockcache.Service
 }
 
 func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {
