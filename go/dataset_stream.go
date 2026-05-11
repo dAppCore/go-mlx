@@ -7,6 +7,7 @@ import (
 	"io"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/chat"
 )
 
 const datasetScannerMaxBytes = 16 * 1024 * 1024
@@ -16,12 +17,9 @@ type DatasetConfig struct {
 	ChatTemplate ChatTemplateConfig
 }
 
-// ChatTemplateConfig selects the native chat template used for message datasets.
-type ChatTemplateConfig struct {
-	Architecture       string
-	Template           string
-	NoGenerationPrompt bool
-}
+// ChatTemplateConfig selects the native chat template used for message
+// datasets. Aliased from dappco.re/go/mlx/chat/.
+type ChatTemplateConfig = chat.Config
 
 // DatasetBatchConfig controls tokenizer batching for training/eval streams.
 type DatasetBatchConfig struct {
@@ -217,134 +215,19 @@ func messagesToSFTSample(messages []Message, cfg ChatTemplateConfig, format stri
 }
 
 // FormatChatMessages applies a native model-family chat template.
+// Forwards to dappco.re/go/mlx/chat/.
+//
+//	text := mlx.FormatChatMessages(messages, cfg)
 func FormatChatMessages(messages []Message, cfg ChatTemplateConfig) string {
-	template := chatTemplateName(cfg)
-	switch template {
-	case "gemma4":
-		return formatDatasetGemma4Chat(messages, cfg)
-	case "gemma":
-		return formatDatasetGemmaChat(messages, cfg)
-	case "qwen":
-		return formatDatasetQwenChat(messages, cfg)
-	case "llama":
-		return formatDatasetLlamaChat(messages, cfg)
-	default:
-		return formatDatasetPlainChat(messages, cfg)
-	}
-}
-
-func formatDatasetGemmaChat(messages []Message, cfg ChatTemplateConfig) string {
-	builder := core.NewBuilder()
-	for _, msg := range messages {
-		role := normalizeDatasetRole(msg.Role)
-		switch role {
-		case "assistant":
-			builder.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
-		case "system", "user":
-			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
-		}
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<start_of_turn>model\n")
-	}
-	return builder.String()
-}
-
-func formatDatasetGemma4Chat(messages []Message, cfg ChatTemplateConfig) string {
-	builder := core.NewBuilder()
-	builder.WriteString("<bos>")
-	for _, msg := range messages {
-		role := normalizeDatasetRole(msg.Role)
-		switch role {
-		case "assistant":
-			role = "model"
-		case "system", "user":
-		default:
-			continue
-		}
-		builder.WriteString("<|turn>" + role + "\n" + core.Trim(msg.Content) + "<turn|>\n")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|turn>model\n")
-	}
-	return builder.String()
-}
-
-func formatDatasetQwenChat(messages []Message, cfg ChatTemplateConfig) string {
-	builder := core.NewBuilder()
-	for _, msg := range messages {
-		role := normalizeDatasetRole(msg.Role)
-		if role == "" {
-			continue
-		}
-		builder.WriteString("<|im_start|>" + role + "\n" + msg.Content + "<|im_end|>\n")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|im_start|>assistant\n")
-	}
-	return builder.String()
-}
-
-func formatDatasetLlamaChat(messages []Message, cfg ChatTemplateConfig) string {
-	builder := core.NewBuilder()
-	builder.WriteString("<|begin_of_text|>")
-	for _, msg := range messages {
-		role := normalizeDatasetRole(msg.Role)
-		if role == "" {
-			continue
-		}
-		builder.WriteString("<|start_header_id|>" + role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
-	}
-	return builder.String()
-}
-
-func formatDatasetPlainChat(messages []Message, cfg ChatTemplateConfig) string {
-	builder := core.NewBuilder()
-	for _, msg := range messages {
-		if msg.Content == "" {
-			continue
-		}
-		builder.WriteString(msg.Content + "\n")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("")
-	}
-	return builder.String()
+	return chat.Format(messages, cfg)
 }
 
 func chatTemplateName(cfg ChatTemplateConfig) string {
-	template := core.Lower(core.Trim(cfg.Template))
-	if template != "" {
-		return template
-	}
-	switch core.Lower(core.Trim(cfg.Architecture)) {
-	case "gemma4", "gemma4_text":
-		return "gemma4"
-	case "gemma", "gemma2", "gemma3", "gemma3_text":
-		return "gemma"
-	case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next":
-		return "qwen"
-	case "llama", "llama3", "llama4":
-		return "llama"
-	default:
-		return ""
-	}
+	return chat.TemplateName(cfg)
 }
 
 func normalizeDatasetRole(role string) string {
-	switch core.Lower(core.Trim(role)) {
-	case "human", "user":
-		return "user"
-	case "gpt", "bot", "assistant", "model":
-		return "assistant"
-	case "system":
-		return "system"
-	default:
-		return core.Lower(core.Trim(role))
-	}
+	return chat.NormaliseRole(role)
 }
 
 // BuildDatasetBatches tokenizes an SFT dataset with optional sequence packing.
