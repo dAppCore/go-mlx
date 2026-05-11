@@ -18,21 +18,21 @@ func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
 	var streamedEncodings []kv.Encoding
 	var restoredPaths []string
 	var answeredSuffixes []string
-	runner := FastEvalRunner{
+	runner := MemvidKVChapterRunner{
 		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			capturedPrompts = append(capturedPrompts, prompt)
 			streamedEncodings = append(streamedEncodings, opts.KVEncoding)
 			return fastEvalTestSnapshot().SaveMemvidBlocks(ctx, store, opts)
 		},
-		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string, _ GenerateConfig) (FastEvalGeneration, error) {
+		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string, _ GenerateConfig) (ChapterGeneration, error) {
 			if bundle.KVEncoding != kv.EncodingNative {
-				return FastEvalGeneration{}, core.Errorf("bundle KVEncoding = %q, want native", bundle.KVEncoding)
+				return ChapterGeneration{}, core.Errorf("bundle KVEncoding = %q, want native", bundle.KVEncoding)
 			}
 			if len(bundle.Blocks) == 0 || bundle.Blocks[0].Memvid.Codec != filestore.CodecFile {
-				return FastEvalGeneration{}, core.Errorf("bundle refs = %+v, want file-backed refs", bundle.Blocks)
+				return ChapterGeneration{}, core.Errorf("bundle refs = %+v, want file-backed refs", bundle.Blocks)
 			}
 			if _, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, kv.LoadOptions{RawKVOnly: true}); err != nil {
-				return FastEvalGeneration{}, err
+				return ChapterGeneration{}, err
 			}
 			restoredPaths = append(restoredPaths, bundle.Blocks[0].Memvid.Segment)
 			answeredSuffixes = append(answeredSuffixes, suffix)
@@ -40,7 +40,7 @@ func TestRunMemvidKVChapterSmoke_Good_FileBackedChapterRestart(t *testing.T) {
 			if core.Contains(suffix, "Chapter 2") {
 				answer = "Julia changes the plan in the second chapter."
 			}
-			return FastEvalGeneration{
+			return ChapterGeneration{
 				Text: answer,
 				Metrics: Metrics{
 					GeneratedTokens:            4,
@@ -191,19 +191,19 @@ func TestRunMemvidKVChapterSmoke_Bad_ValidatesInputs(t *testing.T) {
 	if _, err := RunModelMemvidKVChapterSmoke(context.Background(), nil, MemvidKVChapterSmokeConfig{}); err == nil {
 		t.Fatal("RunModelMemvidKVChapterSmoke(nil model) error = nil")
 	}
-	if _, err := RunMemvidKVChapterSmoke(context.Background(), FastEvalRunner{}, MemvidKVChapterSmokeConfig{Chapters: []MemvidKVChapterSmokeInput{{Text: "x", Question: "q"}}}); err == nil {
+	if _, err := RunMemvidKVChapterSmoke(context.Background(), MemvidKVChapterRunner{}, MemvidKVChapterSmokeConfig{Chapters: []MemvidKVChapterSmokeInput{{Text: "x", Question: "q"}}}); err == nil {
 		t.Fatal("RunMemvidKVChapterSmoke(missing generator) error = nil")
 	}
-	if _, err := RunMemvidKVChapterSmoke(context.Background(), FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
-			return FastEvalGeneration{}, nil
+	if _, err := RunMemvidKVChapterSmoke(context.Background(), MemvidKVChapterRunner{
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (ChapterGeneration, error) {
+			return ChapterGeneration{}, nil
 		},
 	}, MemvidKVChapterSmokeConfig{Chapters: []MemvidKVChapterSmokeInput{{Text: "x", Question: "q"}}}); err == nil {
 		t.Fatal("RunMemvidKVChapterSmoke(missing capture) error = nil")
 	}
-	if _, err := RunMemvidKVChapterSmoke(context.Background(), FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
-			return FastEvalGeneration{}, nil
+	if _, err := RunMemvidKVChapterSmoke(context.Background(), MemvidKVChapterRunner{
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (ChapterGeneration, error) {
+			return ChapterGeneration{}, nil
 		},
 		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			return nil, nil
@@ -214,9 +214,9 @@ func TestRunMemvidKVChapterSmoke_Bad_ValidatesInputs(t *testing.T) {
 }
 
 func TestRunMemvidKVChapterSmoke_Bad_ChapterValidation(t *testing.T) {
-	runner := FastEvalRunner{
-		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (FastEvalGeneration, error) {
-			return FastEvalGeneration{}, nil
+	runner := MemvidKVChapterRunner{
+		GenerateWithMemvidPrefix: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (ChapterGeneration, error) {
+			return ChapterGeneration{}, nil
 		},
 		CaptureKVBlocksToMemvid: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 			return fastEvalTestSnapshot().SaveMemvidBlocks(context.Background(), memvid.NewInMemoryStore(nil), kv.MemvidBlockOptions{BlockSize: 2})
@@ -344,5 +344,27 @@ func TestMemvidKVChapterSmokeResultError_Good(t *testing.T) {
 	}
 	if err := memvidKVChapterSmokeResultError(core.Result{}); err == nil {
 		t.Fatal("resultError(empty) = nil")
+	}
+}
+
+func fastEvalTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2, 3},
+		TokenOffset:   3,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        3,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{0.1, 0.2, 0.3, 0.4, 0.5, 0.6},
+				Value: []float32{0.6, 0.5, 0.4, 0.3, 0.2, 0.1},
+			}},
+		}},
 	}
 }

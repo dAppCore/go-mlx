@@ -479,8 +479,8 @@ func toInferenceBenchReport(report *FastEvalReport) *inference.BenchReport {
 		return nil
 	}
 	return &inference.BenchReport{
-		Model:                 toInferenceModelIdentity(report.ModelInfo),
-		Adapter:               toInferenceRootAdapterIdentity(report.ModelInfo.Adapter),
+		Model:                 toInferenceModelIdentity(benchInfoToModel(report.ModelInfo)),
+		Adapter:               toInferenceRootAdapterIdentity(benchAdapterToLora(report.ModelInfo.Adapter)),
 		PromptTokens:          report.Generation.PromptTokens,
 		GeneratedTokens:       report.Generation.GeneratedTokens,
 		PrefillTokensPerSec:   report.Generation.PrefillTokensPerSec,

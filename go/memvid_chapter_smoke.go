@@ -20,6 +20,152 @@ const (
 	MemvidKVChapterSmokeStoreCLI     = "cli"
 )
 
+// MemvidKVChapterRunner is the small driver surface the chapter-smoke
+// orchestration needs. The callbacks deal with mlx-specific kv / memvid
+// types that the driver-neutral bench package keeps opaque.
+type MemvidKVChapterRunner struct {
+	CaptureKVBlocksToMemvid  func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error)
+	GenerateWithMemvidPrefix func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string, GenerateConfig) (ChapterGeneration, error)
+}
+
+// ChapterGeneration is one generation step's result inside the chapter-smoke flow.
+type ChapterGeneration struct {
+	Text    string  `json:"text,omitempty"`
+	Tokens  []Token `json:"tokens,omitempty"`
+	Metrics Metrics `json:"metrics"`
+}
+
+// NewModelMemvidKVChapterRunner builds the chapter-smoke runner from a loaded Model.
+func NewModelMemvidKVChapterRunner(model *Model) MemvidKVChapterRunner {
+	return MemvidKVChapterRunner{
+		CaptureKVBlocksToMemvid: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			session, err := model.NewSession()
+			if err != nil {
+				return nil, err
+			}
+			defer session.Close()
+			if err := session.Prefill(prompt); err != nil {
+				return nil, err
+			}
+			return session.SaveKVBlocksToMemvid(ctx, store, opts)
+		},
+		GenerateWithMemvidPrefix: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string, cfg GenerateConfig) (ChapterGeneration, error) {
+			if err := ctx.Err(); err != nil {
+				return ChapterGeneration{}, err
+			}
+			session, err := model.NewSession()
+			if err != nil {
+				return ChapterGeneration{}, err
+			}
+			defer session.Close()
+			loadOpts := kv.LoadOptions{}
+			if bundle != nil && bundle.KVEncoding == kv.EncodingNative {
+				loadOpts.RawKVOnly = true
+			}
+			restoreStart := time.Now()
+			snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, loadOpts)
+			if err != nil {
+				return ChapterGeneration{}, err
+			}
+			if err := session.RestoreKV(snapshot); err != nil {
+				return ChapterGeneration{}, err
+			}
+			restoreDuration := time.Since(restoreStart)
+			if err := session.AppendPrompt(suffix); err != nil {
+				return ChapterGeneration{}, err
+			}
+			text, err := session.Generate(memvidKVChapterGenerateOptions(cfg)...)
+			metrics := model.Metrics()
+			metrics.PromptCacheRestoreDuration = restoreDuration
+			return ChapterGeneration{Text: text, Metrics: metrics}, err
+		},
+	}
+}
+
+func memvidKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
+	out := []GenerateOption{
+		WithMaxTokens(cfg.MaxTokens),
+		WithTemperature(cfg.Temperature),
+	}
+	if cfg.TopK > 0 {
+		out = append(out, WithTopK(cfg.TopK))
+	}
+	if cfg.TopP > 0 {
+		out = append(out, WithTopP(cfg.TopP))
+	}
+	if cfg.MinP > 0 {
+		out = append(out, WithMinP(cfg.MinP))
+	}
+	if len(cfg.StopTokens) > 0 {
+		out = append(out, WithStopTokens(cfg.StopTokens...))
+	}
+	if cfg.RepeatPenalty > 0 {
+		out = append(out, WithRepeatPenalty(cfg.RepeatPenalty))
+	}
+	if cfg.ProbeSink != nil {
+		out = append(out, WithProbeSink(cfg.ProbeSink))
+	}
+	return out
+}
+
+type memvidChapterReadCountingStore struct {
+	store  memvid.Store
+	reads  int
+	unique map[int]struct{}
+}
+
+func newMemvidChapterReadCountingStore(store memvid.Store) *memvidChapterReadCountingStore {
+	return &memvidChapterReadCountingStore{store: store, unique: map[int]struct{}{}}
+}
+
+func (s *memvidChapterReadCountingStore) Get(ctx context.Context, chunkID int) (string, error) {
+	s.record(chunkID)
+	return s.store.Get(ctx, chunkID)
+}
+
+func (s *memvidChapterReadCountingStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+	s.record(chunkID)
+	return memvid.Resolve(ctx, s.store, chunkID)
+}
+
+func (s *memvidChapterReadCountingStore) ResolveBytes(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+	s.record(chunkID)
+	return memvid.ResolveBytes(ctx, s.store, chunkID)
+}
+
+func (s *memvidChapterReadCountingStore) Reads() int {
+	if s == nil {
+		return 0
+	}
+	return s.reads
+}
+
+func (s *memvidChapterReadCountingStore) UniqueReads() int {
+	if s == nil {
+		return 0
+	}
+	return len(s.unique)
+}
+
+func (s *memvidChapterReadCountingStore) record(chunkID int) {
+	s.reads++
+	if s.unique == nil {
+		s.unique = map[int]struct{}{}
+	}
+	s.unique[chunkID] = struct{}{}
+}
+
+func memvidChapterFileSize(path string) int64 {
+	stat := core.Stat(path)
+	if !stat.OK {
+		return 0
+	}
+	return stat.Value.(core.FsFileInfo).Size()
+}
+
 // MemvidKVChapterSmokeConfig configures a small memvid-backed KV restore smoke
 // over chapter-sized prompts.
 type MemvidKVChapterSmokeConfig struct {
@@ -80,10 +226,10 @@ func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg MemvidK
 	if model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
-	return RunMemvidKVChapterSmoke(ctx, NewModelFastEvalRunner(model), cfg)
+	return RunMemvidKVChapterSmoke(ctx, NewModelMemvidKVChapterRunner(model), cfg)
 }
 
-func RunMemvidKVChapterSmoke(ctx context.Context, runner FastEvalRunner, cfg MemvidKVChapterSmokeConfig) (*MemvidKVChapterSmokeReport, error) {
+func RunMemvidKVChapterSmoke(ctx context.Context, runner MemvidKVChapterRunner, cfg MemvidKVChapterSmokeConfig) (*MemvidKVChapterSmokeReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -139,7 +285,7 @@ func memvidKVChapterSmokeFileCount(dir string) int {
 	return count
 }
 
-func runMemvidKVChapterSmokeChapter(ctx context.Context, runner FastEvalRunner, cfg MemvidKVChapterSmokeConfig, storePath string, index int, chapter MemvidKVChapterSmokeInput) (MemvidKVChapterSmokeChapter, error) {
+func runMemvidKVChapterSmokeChapter(ctx context.Context, runner MemvidKVChapterRunner, cfg MemvidKVChapterSmokeConfig, storePath string, index int, chapter MemvidKVChapterSmokeInput) (MemvidKVChapterSmokeChapter, error) {
 	report := MemvidKVChapterSmokeChapter{
 		Name:      memvidKVChapterSmokeName(index, chapter.Name),
 		Question:  chapter.Question,
@@ -179,7 +325,7 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner FastEvalRunner, 
 		return memvidKVChapterSmokeChapterError(report, closeErr.Error())
 	}
 	report.TotalBlocks = len(bundle.Blocks)
-	report.StoreBytes = fastEvalFileSize(report.StorePath)
+	report.StoreBytes = memvidChapterFileSize(report.StorePath)
 	report.PrefixTokensRestored = bundle.TokenCount
 	if report.TotalBlocks == 0 {
 		return memvidKVChapterSmokeChapterError(report, "mlx: memvid chapter smoke wrote no KV blocks")
@@ -202,7 +348,7 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner FastEvalRunner, 
 		}
 		return memvidKVChapterSmokeChapterError(report, err.Error())
 	}
-	countingStore := newMemvidReadCountingStore(reader.Store)
+	countingStore := newMemvidChapterReadCountingStore(reader.Store)
 	restoreStart := time.Now()
 	generation, err := runner.GenerateWithMemvidPrefix(ctx, countingStore, loadedBundle, loadedBundle.TokenCount, memvidKVChapterSmokeQuestionPrompt(chapter), memvidKVChapterSmokeGenerateConfig(cfg))
 	report.RestoreDuration = nonZeroDuration(time.Since(restoreStart))

@@ -233,7 +233,7 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 		report.Evaluation = runWorkloadEvaluation(ctx, runner, cfg)
 	}
 	if cfg.IncludeKVCacheBench && report.FastEval != nil {
-		report.KVCache = CompareKVCacheModes(kvCacheBenchConfigFromModelInfo(report.FastEval.ModelInfo))
+		report.KVCache = CompareKVCacheModes(kvCacheBenchConfigFromModelInfo(benchInfoToModel(report.FastEval.ModelInfo)))
 	}
 	if cfg.IncludeExpertResidency {
 		report.ExpertResidency = runWorkloadExpertResidency(ctx, runner, cfg)
@@ -243,7 +243,6 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 }
 
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
-	cfg.FastEval = normalizeFastEvalConfig(cfg.FastEval)
 	cfg.Eval = normalizeWorkloadEvalConfig(cfg.Eval)
 	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)

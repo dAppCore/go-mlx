@@ -355,7 +355,7 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 		t.Fatalf("fast eval config = %+v", fastCfg)
 	}
 	bench := toInferenceBenchReport(&FastEvalReport{
-		ModelInfo: ModelInfo{Architecture: "qwen3", Adapter: lora.AdapterInfo{Name: "root"}},
+		ModelInfo: modelInfoToBench(ModelInfo{Architecture: "qwen3", Adapter: lora.AdapterInfo{Name: "root"}}),
 		Generation: FastEvalGenerationSummary{
 			PromptTokens:        4,
 			GeneratedTokens:     5,
