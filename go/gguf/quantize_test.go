@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package gguf
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
-	"dappco.re/go/mlx/gguf"
 )
 
 func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
@@ -21,15 +20,15 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 	})
 	output := core.PathJoin(t.TempDir(), "out-q8")
 
-	result, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{
-		ModelPath:  source,
+	result, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+		SourcePack: sourcePackFromDir(source),
 		OutputPath: output,
-		Format:     GGUFQuantizeQ8_0,
+		Format:     QuantizeQ8_0,
 	})
 	if err != nil {
-		t.Fatalf("QuantizeModelPackToGGUF() error = %v", err)
+		t.Fatalf("QuantizeModelPack() error = %v", err)
 	}
-	if result.RequestedFormat != GGUFQuantizeQ8_0 || result.Format != GGUFQuantizeQ8_0 {
+	if result.RequestedFormat != QuantizeQ8_0 || result.Format != QuantizeQ8_0 {
 		t.Fatalf("formats = requested:%q used:%q", result.RequestedFormat, result.Format)
 	}
 	if result.TensorCount != 2 || result.QuantizedTensors != 2 {
@@ -39,9 +38,9 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 		t.Fatalf("WeightPath = %q", result.WeightPath)
 	}
 
-	info, err := gguf.ReadInfo(output)
+	info, err := ReadInfo(output)
 	if err != nil {
-		t.Fatalf("gguf.ReadInfo(output) error = %v", err)
+		t.Fatalf("ReadInfo(output) error = %v", err)
 	}
 	if !info.Valid() {
 		t.Fatalf("GGUF validation issues = %+v", info.ValidationIssues)
@@ -56,15 +55,11 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 		t.Fatalf("first tensor = %+v", info.Tensors[0])
 	}
 
-	pack, err := InspectModelPack(output)
-	if err != nil {
-		t.Fatalf("InspectModelPack(output) error = %v", err)
-	}
-	if !pack.Valid() || pack.Format != mp.ModelPackFormatGGUF || pack.QuantType != "q8_0" {
-		t.Fatalf("pack = %+v", pack)
-	}
 	if stat := core.Stat(core.PathJoin(output, "tokenizer.json")); !stat.OK {
 		t.Fatalf("tokenizer.json was not preserved: %v", stat.Value)
+	}
+	if stat := core.Stat(core.PathJoin(output, "model.gguf")); !stat.OK {
+		t.Fatalf("model.gguf was not produced: %v", stat.Value)
 	}
 }
 
@@ -74,23 +69,23 @@ func TestQuantizeModelPackToGGUF_Q4KMFallsBackToQ4_0_Good(t *testing.T) {
 	})
 	output := core.PathJoin(t.TempDir(), "out-q4")
 
-	result, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{
-		ModelPath:  source,
+	result, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+		SourcePack: sourcePackFromDir(source),
 		OutputPath: output,
-		Format:     GGUFQuantizeQ4_K_M,
+		Format:     QuantizeQ4_K_M,
 	})
 	if err != nil {
-		t.Fatalf("QuantizeModelPackToGGUF() error = %v", err)
+		t.Fatalf("QuantizeModelPack() error = %v", err)
 	}
-	if result.RequestedFormat != GGUFQuantizeQ4_K_M || result.Format != GGUFQuantizeQ4_0 {
+	if result.RequestedFormat != QuantizeQ4_K_M || result.Format != QuantizeQ4_0 {
 		t.Fatalf("formats = requested:%q used:%q", result.RequestedFormat, result.Format)
 	}
 	if len(result.Notes) == 0 {
 		t.Fatal("expected note explaining q4_k_m fallback")
 	}
-	info, err := gguf.ReadInfo(output)
+	info, err := ReadInfo(output)
 	if err != nil {
-		t.Fatalf("gguf.ReadInfo(output) error = %v", err)
+		t.Fatalf("ReadInfo(output) error = %v", err)
 	}
 	if info.QuantType != "q4_0" || info.QuantBits != 4 || info.QuantGroup != 32 {
 		t.Fatalf("quant info = %+v", info)
@@ -106,7 +101,7 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("index safetensors: %v", err)
 	}
-	tensors, refs, err := buildStreamingGGUFQuantizedTensors(index, GGUFQuantizeQ8_0)
+	tensors, refs, err := buildStreamingGGUFQuantizedTensors(index, QuantizeQ8_0)
 	if err != nil {
 		t.Fatalf("build streaming tensors: %v", err)
 	}
@@ -115,14 +110,14 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 	}
 
 	output := core.PathJoin(t.TempDir(), "streamed.gguf")
-	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
-	if err := writeQuantizedGGUFStream(context.Background(), output, metadata, tensors, refs, GGUFQuantizeQ8_0, 32); err != nil {
+	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
+	if err := writeQuantizedGGUFStream(context.Background(), output, metadata, tensors, refs, QuantizeQ8_0, 32); err != nil {
 		t.Fatalf("writeQuantizedGGUFStream() error = %v", err)
 	}
 
-	info, err := gguf.ReadInfo(output)
+	info, err := ReadInfo(output)
 	if err != nil {
-		t.Fatalf("gguf.ReadInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if !info.Valid() || info.TensorCount != 1 || info.Tensors[0].TypeName != "q8_0" {
 		t.Fatalf("streamed info = %+v", info)
@@ -135,17 +130,17 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 	data := quantizeQ8_0(values)
 	tensors := []ggufQuantizedTensor{{
 		Name:  "model.norm.weight",
-		Type:  gguf.TensorTypeQ8_0,
+		Type:  TensorTypeQ8_0,
 		Shape: []uint64{32},
 		Data:  data,
 	}}
-	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
+	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, QuantizeQ8_0, nil)
 	if err := writeQuantizedGGUF(output, metadata, tensors); err != nil {
 		t.Fatalf("writeQuantizedGGUF() error = %v", err)
 	}
-	info, err := gguf.ReadInfo(output)
+	info, err := ReadInfo(output)
 	if err != nil {
-		t.Fatalf("gguf.ReadInfo() error = %v", err)
+		t.Fatalf("ReadInfo() error = %v", err)
 	}
 	if !info.Valid() || info.TensorCount != 1 || info.Tensors[0].TypeName != "q8_0" {
 		t.Fatalf("buffered info = %+v", info)
@@ -161,7 +156,7 @@ func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
 		Tensors: map[string]safetensors.TensorRef{
 			"bad.weight": {Name: "bad.weight", DType: "I32", Shape: []uint64{32}, Elements: 32},
 		},
-	}, GGUFQuantizeQ8_0); err == nil {
+	}, QuantizeQ8_0); err == nil {
 		t.Fatal("expected unsupported dtype error")
 	}
 	if _, _, err := buildStreamingGGUFQuantizedTensors(safetensors.Index{
@@ -169,10 +164,10 @@ func TestGGUFQuantize_StreamErrorPaths_Bad(t *testing.T) {
 		Tensors: map[string]safetensors.TensorRef{
 			"bad.weight": {Name: "bad.weight", DType: "F32", Shape: []uint64{32}, Elements: 31},
 		},
-	}, GGUFQuantizeQ8_0); err == nil {
+	}, QuantizeQ8_0); err == nil {
 		t.Fatal("expected block alignment error")
 	}
-	if err := writeQuantizedGGUFStream(context.Background(), core.PathJoin(t.TempDir(), "bad.gguf"), nil, []ggufQuantizedTensor{{}}, nil, GGUFQuantizeQ8_0, 32); err == nil {
+	if err := writeQuantizedGGUFStream(context.Background(), core.PathJoin(t.TempDir(), "bad.gguf"), nil, []ggufQuantizedTensor{{}}, nil, QuantizeQ8_0, 32); err == nil {
 		t.Fatal("expected tensor/ref alignment error")
 	}
 	if _, err := quantizeGGUFValues("q5_0", ascendingFloat32s(32)); err == nil {
@@ -185,14 +180,14 @@ func TestQuantizeModelPackToGGUF_RejectsNonSafetensors_Bad(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(source, "config.json"), `{"model_type":"qwen3"}`)
 	writeModelPackFile(t, core.PathJoin(source, "tokenizer.json"), modelPackTokenizerJSON)
 	writeTestGGUF(t, core.PathJoin(source, "model.gguf"),
-		[]ggufMetaSpec{{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"}},
-		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: gguf.TensorTypeQ8_0, Dims: []uint64{32, 2}}},
+		[]ggufMetaSpec{{Key: "general.architecture", ValueType: ValueTypeString, Value: "qwen3"}},
+		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: TensorTypeQ8_0, Dims: []uint64{32, 2}}},
 	)
 
-	_, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{
-		ModelPath:  source,
+	_, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+		SourcePack: sourcePackFromDir(source),
 		OutputPath: core.PathJoin(t.TempDir(), "out"),
-		Format:     GGUFQuantizeQ8_0,
+		Format:     QuantizeQ8_0,
 	})
 	if err == nil {
 		t.Fatal("expected non-safetensors source error")
@@ -207,10 +202,10 @@ func TestQuantizeModelPackToGGUF_InvalidShape_Ugly(t *testing.T) {
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{31, 1}, Data: ascendingFloat32s(31)},
 	})
 
-	_, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{
-		ModelPath:  source,
+	_, err := QuantizeModelPack(context.Background(), QuantizeOptions{
+		SourcePack: sourcePackFromDir(source),
 		OutputPath: core.PathJoin(t.TempDir(), "out"),
-		Format:     GGUFQuantizeQ8_0,
+		Format:     QuantizeQ8_0,
 	})
 	if err == nil {
 		t.Fatal("expected block-alignment error")
@@ -222,14 +217,14 @@ func TestQuantizeModelPackToGGUF_InvalidShape_Ugly(t *testing.T) {
 
 func TestResolveGGUFQuantizeFormat_Bad(t *testing.T) {
 	cases := []struct {
-		input     GGUFQuantizeFormat
-		requested GGUFQuantizeFormat
-		used      GGUFQuantizeFormat
+		input     QuantizeFormat
+		requested QuantizeFormat
+		used      QuantizeFormat
 		notes     int
 	}{
-		{input: "", requested: GGUFQuantizeQ8_0, used: GGUFQuantizeQ8_0},
-		{input: "Q4-K-M", requested: GGUFQuantizeQ4_K_M, used: GGUFQuantizeQ4_0, notes: 1},
-		{input: " q4_0 ", requested: GGUFQuantizeQ4_0, used: GGUFQuantizeQ4_0},
+		{input: "", requested: QuantizeQ8_0, used: QuantizeQ8_0},
+		{input: "Q4-K-M", requested: QuantizeQ4_K_M, used: QuantizeQ4_0, notes: 1},
+		{input: " q4_0 ", requested: QuantizeQ4_0, used: QuantizeQ4_0},
 	}
 	for _, tc := range cases {
 		requested, used, notes, err := resolveGGUFQuantizeFormat(tc.input)
@@ -375,18 +370,18 @@ func TestLoadDenseSafetensors_DuplicateTensor_Bad(t *testing.T) {
 
 func TestQuantizeGGUFTensor_Helpers_Good(t *testing.T) {
 	values := ascendingFloat32s(32)
-	q8, err := quantizeGGUFTensor(denseSafetensor{Name: "q8.weight", Shape: []uint64{32}, Data: values}, GGUFQuantizeQ8_0)
+	q8, err := quantizeGGUFTensor(denseSafetensor{Name: "q8.weight", Shape: []uint64{32}, Data: values}, QuantizeQ8_0)
 	if err != nil {
 		t.Fatalf("quantize q8: %v", err)
 	}
-	if q8.Type != gguf.TensorTypeQ8_0 || len(q8.Data) != 34 {
+	if q8.Type != TensorTypeQ8_0 || len(q8.Data) != 34 {
 		t.Fatalf("q8 tensor = %+v len=%d", q8, len(q8.Data))
 	}
-	q4, err := quantizeGGUFTensor(denseSafetensor{Name: "q4.weight", Shape: []uint64{32}, Data: values}, GGUFQuantizeQ4_0)
+	q4, err := quantizeGGUFTensor(denseSafetensor{Name: "q4.weight", Shape: []uint64{32}, Data: values}, QuantizeQ4_0)
 	if err != nil {
 		t.Fatalf("quantize q4: %v", err)
 	}
-	if q4.Type != gguf.TensorTypeQ4_0 || len(q4.Data) != 18 {
+	if q4.Type != TensorTypeQ4_0 || len(q4.Data) != 18 {
 		t.Fatalf("q4 tensor = %+v len=%d", q4, len(q4.Data))
 	}
 
@@ -414,23 +409,23 @@ func TestQuantizeGGUFTensor_ErrorPaths_Bad(t *testing.T) {
 	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(32)}, "q5_0"); err == nil {
 		t.Fatal("expected unsupported resolved format error")
 	}
-	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(31)}, GGUFQuantizeQ8_0); err == nil {
+	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{32}, Data: ascendingFloat32s(31)}, QuantizeQ8_0); err == nil {
 		t.Fatal("expected data block size error")
 	}
-	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{31}, Data: ascendingFloat32s(32)}, GGUFQuantizeQ8_0); err == nil {
+	if _, err := quantizeGGUFTensor(denseSafetensor{Name: "bad", Shape: []uint64{31}, Data: ascendingFloat32s(32)}, QuantizeQ8_0); err == nil {
 		t.Fatal("expected shape block size error")
 	}
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := quantizeGGUFTensors(cancelled, []denseSafetensor{{Name: "x", Shape: []uint64{32}, Data: ascendingFloat32s(32)}}, GGUFQuantizeQ8_0); err != context.Canceled {
+	if _, err := quantizeGGUFTensors(cancelled, []denseSafetensor{{Name: "x", Shape: []uint64{32}, Data: ascendingFloat32s(32)}}, QuantizeQ8_0); err != context.Canceled {
 		t.Fatalf("quantizeGGUFTensors(cancelled) = %v, want context.Canceled", err)
 	}
 }
 
 func TestGGUFQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
 	source := mp.ModelPack{Architecture: "qwen3", VocabSize: 10, HiddenSize: 20, NumLayers: 2, ContextLength: 128}
-	metadata := ggufQuantizeMetadata(source, GGUFQuantizeQ4_0, map[string]string{"z": "last", "a": "first"})
+	metadata := ggufQuantizeMetadata(source, QuantizeQ4_0, map[string]string{"z": "last", "a": "first"})
 	if len(metadata) != 11 {
 		t.Fatalf("metadata entries = %d, want 11", len(metadata))
 	}
@@ -463,22 +458,22 @@ func TestGGUFQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
 func TestQuantizeModelPackToGGUF_ValidationErrors_Bad(t *testing.T) {
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := QuantizeModelPackToGGUF(cancelled, QuantizeGGUFOptions{}); err != context.Canceled {
-		t.Fatalf("QuantizeModelPackToGGUF(cancelled) = %v, want context.Canceled", err)
+	if _, err := QuantizeModelPack(cancelled, QuantizeOptions{}); err != context.Canceled {
+		t.Fatalf("QuantizeModelPack(cancelled) = %v, want context.Canceled", err)
 	}
-	if _, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{}); err == nil {
+	if _, err := QuantizeModelPack(context.Background(), QuantizeOptions{}); err == nil {
 		t.Fatal("expected source path validation error")
 	}
-	if _, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{ModelPath: t.TempDir()}); err == nil {
+	if _, err := QuantizeModelPack(context.Background(), QuantizeOptions{}); err == nil {
 		t.Fatal("expected output path validation error")
 	}
 	source := writeDenseSafetensorsPack(t, "qwen3", []safetensorTestTensor{
 		{Name: "model.layers.0.self_attn.q_proj.weight", Shape: []int{32}, Data: ascendingFloat32s(32)},
 	})
-	if _, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{ModelPath: source, OutputPath: core.PathJoin(t.TempDir(), "model.gguf")}); err == nil {
+	if _, err := QuantizeModelPack(context.Background(), QuantizeOptions{SourcePack: sourcePackFromDir(source), OutputPath: core.PathJoin(t.TempDir(), "model.gguf")}); err == nil {
 		t.Fatal("expected output directory validation error")
 	}
-	if _, err := QuantizeModelPackToGGUF(context.Background(), QuantizeGGUFOptions{ModelPath: source, OutputPath: source}); err == nil {
+	if _, err := QuantizeModelPack(context.Background(), QuantizeOptions{SourcePack: sourcePackFromDir(source), OutputPath: source}); err == nil {
 		t.Fatal("expected same path validation error")
 	}
 	occupied := core.PathJoin(t.TempDir(), "occupied")
@@ -566,3 +561,21 @@ func ascendingFloat32s(n int) []float32 {
 	}
 	return out
 }
+
+func sourcePackFromDir(dir string) mp.ModelPack {
+	return mp.ModelPack{
+		Root:        dir,
+		Path:        dir,
+		Format:      mp.ModelPackFormatSafetensors,
+		WeightFiles: []string{core.PathJoin(dir, "model.safetensors")},
+	}
+}
+
+func writeModelPackFile(t *testing.T, path string, data string) {
+	t.Helper()
+	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
+		t.Fatalf("write %s: %v", path, result.Value)
+	}
+}
+
+const modelPackTokenizerJSON = `{"model":{"type":"BPE","vocab":{"a":0},"merges":[]}}`

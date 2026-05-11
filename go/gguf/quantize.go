@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package gguf
 
 import (
 	"context"
@@ -11,41 +11,45 @@ import (
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/safetensors"
-	"dappco.re/go/mlx/gguf"
 )
 
-// GGUFQuantizeFormat names the GGUF quantization format requested by the caller.
-type GGUFQuantizeFormat string
+// QuantizeFormat names the GGUF quantization format requested by the caller.
+type QuantizeFormat string
 
 const (
-	GGUFQuantizeQ8_0   GGUFQuantizeFormat = "q8_0"
-	GGUFQuantizeQ4_0   GGUFQuantizeFormat = "q4_0"
-	GGUFQuantizeQ4_K_M GGUFQuantizeFormat = "q4_k_m"
+	QuantizeQ8_0   QuantizeFormat = "q8_0"
+	QuantizeQ4_0   QuantizeFormat = "q4_0"
+	QuantizeQ4_K_M QuantizeFormat = "q4_k_m"
 
 	ggufQuantizeOutputWeights      = "model.gguf"
 	ggufQuantizeChunkBlockElements = 32 << 15
 )
 
-// QuantizeGGUFOptions configures native Go safetensors-to-GGUF quantization.
-type QuantizeGGUFOptions struct {
-	ModelPath  string             `json:"model_path"`
-	OutputPath string             `json:"output_path"`
-	Format     GGUFQuantizeFormat `json:"format,omitempty"`
-	Labels     map[string]string  `json:"labels,omitempty"`
+// QuantizeOptions configures native Go safetensors-to-GGUF quantization.
+//
+// SourcePack must be a validated safetensors-format model pack; callers
+// validate via mlx.ValidateModelPack before invoking gguf.QuantizeModelPack.
+// This shape keeps the gguf package free of the mlx-root cycle.
+type QuantizeOptions struct {
+	SourcePack mp.ModelPack      `json:"source_pack"`
+	OutputPath string            `json:"output_path"`
+	Format     QuantizeFormat    `json:"format,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
-// QuantizeGGUFResult reports the generated GGUF model pack.
-type QuantizeGGUFResult struct {
-	OutputPath       string             `json:"output_path"`
-	WeightPath       string             `json:"weight_path"`
-	RequestedFormat  GGUFQuantizeFormat `json:"requested_format"`
-	Format           GGUFQuantizeFormat `json:"format"`
-	SourcePack       mp.ModelPack          `json:"source_pack"`
-	Pack             mp.ModelPack          `json:"pack"`
-	Info             gguf.Info           `json:"info"`
-	TensorCount      int                `json:"tensor_count"`
-	QuantizedTensors int                `json:"quantized_tensors"`
-	Notes            []string           `json:"notes,omitempty"`
+// QuantizeResult reports the paths of the generated GGUF model pack and
+// its metadata. Callers re-validate via mlx.ValidateModelPack(OutputPath)
+// when they need a populated pack.ModelPack for downstream use.
+type QuantizeResult struct {
+	OutputPath       string         `json:"output_path"`
+	WeightPath       string         `json:"weight_path"`
+	RequestedFormat  QuantizeFormat `json:"requested_format"`
+	Format           QuantizeFormat `json:"format"`
+	SourcePack       mp.ModelPack   `json:"source_pack"`
+	Info             Info           `json:"info"`
+	TensorCount      int            `json:"tensor_count"`
+	QuantizedTensors int            `json:"quantized_tensors"`
+	Notes            []string       `json:"notes,omitempty"`
 }
 
 type denseSafetensor struct {
@@ -69,16 +73,16 @@ type ggufMetadataEntry struct {
 	Value     any
 }
 
-// QuantizeModelPackToGGUF converts a dense safetensors model pack into a GGUF pack.
-func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*QuantizeGGUFResult, error) {
+// QuantizeModelPack converts a dense safetensors model pack into a GGUF pack.
+func QuantizeModelPack(ctx context.Context, opts QuantizeOptions) (*QuantizeResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if opts.ModelPath == "" {
-		return nil, core.NewError("mlx: source model path is required")
+	if opts.SourcePack.Root == "" {
+		return nil, core.NewError("mlx: source pack is required")
 	}
 	if opts.OutputPath == "" {
 		return nil, core.NewError("mlx: GGUF output path is required")
@@ -92,10 +96,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		return nil, err
 	}
 
-	source, err := ValidateModelPack(opts.ModelPath)
-	if err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "validate source model pack", err)
-	}
+	source := opts.SourcePack
 	if source.Format != mp.ModelPackFormatSafetensors {
 		return nil, core.NewError("mlx: GGUF quantization currently requires dense safetensors source weights")
 	}
@@ -111,7 +112,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 		return nil, err
 	}
 	if result := core.MkdirAll(output, 0o755); !result.OK {
-		return nil, core.E("QuantizeModelPackToGGUF", "create output directory", quantizeGGUFResultError(result))
+		return nil, core.E("QuantizeModelPack", "create output directory", quantizeGGUFResultError(result))
 	}
 	if err := copyModelPackMetadata(source.Root, output); err != nil {
 		return nil, err
@@ -119,7 +120,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 
 	index, err := safetensors.IndexFiles(source.WeightFiles)
 	if err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "index dense safetensors", err)
+		return nil, core.E("QuantizeModelPack", "index dense safetensors", err)
 	}
 	quantized, refs, err := buildStreamingGGUFQuantizedTensors(index, format)
 	if err != nil {
@@ -129,28 +130,23 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 	weightPath := core.PathJoin(output, ggufQuantizeOutputWeights)
 	metadata := ggufQuantizeMetadata(source, format, opts.Labels)
 	if err := writeQuantizedGGUFStream(ctx, weightPath, metadata, quantized, refs, format, ggufQuantizeChunkBlockElements); err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "write GGUF", err)
+		return nil, core.E("QuantizeModelPack", "write GGUF", err)
 	}
 
-	info, err := gguf.ReadInfo(weightPath)
+	info, err := ReadInfo(weightPath)
 	if err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "read generated GGUF", err)
+		return nil, core.E("QuantizeModelPack", "read generated GGUF", err)
 	}
 	if !info.Valid() {
-		return nil, core.NewError("mlx: generated GGUF failed metadata validation: " + ggufValidationSummary(info.ValidationIssues))
-	}
-	pack, err := ValidateModelPack(output)
-	if err != nil {
-		return nil, core.E("QuantizeModelPackToGGUF", "validate generated model pack", err)
+		return nil, core.NewError("mlx: generated GGUF failed metadata validation: " + ValidationSummary(info.ValidationIssues))
 	}
 
-	return &QuantizeGGUFResult{
+	return &QuantizeResult{
 		OutputPath:       output,
 		WeightPath:       weightPath,
 		RequestedFormat:  requested,
 		Format:           format,
 		SourcePack:       source,
-		Pack:             pack,
 		Info:             info,
 		TensorCount:      len(quantized),
 		QuantizedTensors: len(quantized),
@@ -158,18 +154,18 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 	}, nil
 }
 
-func resolveGGUFQuantizeFormat(format GGUFQuantizeFormat) (requested, used GGUFQuantizeFormat, notes []string, err error) {
+func resolveGGUFQuantizeFormat(format QuantizeFormat) (requested, used QuantizeFormat, notes []string, err error) {
 	if format == "" {
-		format = GGUFQuantizeQ8_0
+		format = QuantizeQ8_0
 	}
-	normalized := GGUFQuantizeFormat(gguf.NormalizeQuantType(string(format)))
+	normalized := QuantizeFormat(NormalizeQuantType(string(format)))
 	switch normalized {
-	case GGUFQuantizeQ8_0:
-		return normalized, GGUFQuantizeQ8_0, nil, nil
-	case GGUFQuantizeQ4_0:
-		return normalized, GGUFQuantizeQ4_0, nil, nil
-	case GGUFQuantizeQ4_K_M:
-		return normalized, GGUFQuantizeQ4_0, []string{"q4_k_m writing is not implemented yet; emitted q4_0 as the closest native Go 4-bit GGUF format"}, nil
+	case QuantizeQ8_0:
+		return normalized, QuantizeQ8_0, nil, nil
+	case QuantizeQ4_0:
+		return normalized, QuantizeQ4_0, nil, nil
+	case QuantizeQ4_K_M:
+		return normalized, QuantizeQ4_0, []string{"q4_k_m writing is not implemented yet; emitted q4_0 as the closest native Go 4-bit GGUF format"}, nil
 	default:
 		return normalized, "", nil, core.NewError("mlx: unsupported GGUF quantization format: " + string(format))
 	}
@@ -180,7 +176,7 @@ func ensureEmptyGGUFQuantizeDestination(output string) error {
 		if core.IsNotExist(stat.Value.(error)) {
 			return nil
 		}
-		return core.E("QuantizeModelPackToGGUF", "inspect output path", quantizeGGUFResultError(stat))
+		return core.E("QuantizeModelPack", "inspect output path", quantizeGGUFResultError(stat))
 	}
 	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
 	if len(weights) > 0 {
@@ -269,12 +265,12 @@ func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, pay
 	raw := payload[begin:end]
 	values, err := safetensors.DecodeFloatData(core.Upper(entry.DType), raw, int(elements))
 	if err != nil {
-		return denseSafetensor{}, core.E("QuantizeModelPackToGGUF", "decode "+path+" tensor "+name, err)
+		return denseSafetensor{}, core.E("QuantizeModelPack", "decode "+path+" tensor "+name, err)
 	}
 	return denseSafetensor{Name: name, Shape: shape, Data: values}, nil
 }
 
-func quantizeGGUFTensors(ctx context.Context, tensors []denseSafetensor, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, error) {
+func quantizeGGUFTensors(ctx context.Context, tensors []denseSafetensor, format QuantizeFormat) ([]ggufQuantizedTensor, error) {
 	out := make([]ggufQuantizedTensor, 0, len(tensors))
 	for _, tensor := range tensors {
 		if err := ctx.Err(); err != nil {
@@ -289,7 +285,7 @@ func quantizeGGUFTensors(ctx context.Context, tensors []denseSafetensor, format 
 	return out, nil
 }
 
-func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (ggufQuantizedTensor, error) {
+func quantizeGGUFTensor(tensor denseSafetensor, format QuantizeFormat) (ggufQuantizedTensor, error) {
 	tensorType, blockSize, _, err := ggufQuantizeLayout(format)
 	if err != nil {
 		return ggufQuantizedTensor{}, err
@@ -302,9 +298,9 @@ func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (gguf
 	}
 	var data []byte
 	switch format {
-	case GGUFQuantizeQ8_0:
+	case QuantizeQ8_0:
 		data = quantizeQ8_0(tensor.Data)
-	case GGUFQuantizeQ4_0:
+	case QuantizeQ4_0:
 		data = quantizeQ4_0(tensor.Data)
 	}
 	return ggufQuantizedTensor{
@@ -315,7 +311,7 @@ func quantizeGGUFTensor(tensor denseSafetensor, format GGUFQuantizeFormat) (gguf
 	}, nil
 }
 
-func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format GGUFQuantizeFormat) ([]ggufQuantizedTensor, []safetensors.TensorRef, error) {
+func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format QuantizeFormat) ([]ggufQuantizedTensor, []safetensors.TensorRef, error) {
 	tensorType, blockSize, bytesPerBlock, err := ggufQuantizeLayout(format)
 	if err != nil {
 		return nil, nil, err
@@ -344,12 +340,12 @@ func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format GGUFQuan
 	return tensors, refs, nil
 }
 
-func ggufQuantizeLayout(format GGUFQuantizeFormat) (tensorType uint32, blockSize int, bytesPerBlock int, err error) {
+func ggufQuantizeLayout(format QuantizeFormat) (tensorType uint32, blockSize int, bytesPerBlock int, err error) {
 	switch format {
-	case GGUFQuantizeQ8_0:
-		return gguf.TensorTypeQ8_0, 32, 34, nil
-	case GGUFQuantizeQ4_0:
-		return gguf.TensorTypeQ4_0, 32, 18, nil
+	case QuantizeQ8_0:
+		return TensorTypeQ8_0, 32, 34, nil
+	case QuantizeQ4_0:
+		return TensorTypeQ4_0, 32, 18, nil
 	default:
 		return 0, 0, 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
 	}
@@ -405,32 +401,32 @@ func quantizeQ4_0(values []float32) []byte {
 	return out
 }
 
-func ggufQuantizeMetadata(source mp.ModelPack, format GGUFQuantizeFormat, labels map[string]string) []ggufMetadataEntry {
+func ggufQuantizeMetadata(source mp.ModelPack, format QuantizeFormat, labels map[string]string) []ggufMetadataEntry {
 	fileType := uint32(7)
-	quantizationType := string(GGUFQuantizeQ8_0)
-	if format == GGUFQuantizeQ4_0 {
+	quantizationType := string(QuantizeQ8_0)
+	if format == QuantizeQ4_0 {
 		fileType = 2
-		quantizationType = string(GGUFQuantizeQ4_0)
+		quantizationType = string(QuantizeQ4_0)
 	}
 	architecture := source.Architecture
 	metadata := []ggufMetadataEntry{
-		{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: architecture},
-		{Key: "general.file_type", ValueType: gguf.ValueTypeUint32, Value: fileType},
-		{Key: "general.quantization_version", ValueType: gguf.ValueTypeUint32, Value: uint32(2)},
-		{Key: "general.quantization_type", ValueType: gguf.ValueTypeString, Value: quantizationType},
-		{Key: "general.alignment", ValueType: gguf.ValueTypeUint32, Value: uint32(32)},
+		{Key: "general.architecture", ValueType: ValueTypeString, Value: architecture},
+		{Key: "general.file_type", ValueType: ValueTypeUint32, Value: fileType},
+		{Key: "general.quantization_version", ValueType: ValueTypeUint32, Value: uint32(2)},
+		{Key: "general.quantization_type", ValueType: ValueTypeString, Value: quantizationType},
+		{Key: "general.alignment", ValueType: ValueTypeUint32, Value: uint32(32)},
 	}
 	if source.VocabSize > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".vocab_size", ValueType: gguf.ValueTypeUint32, Value: uint32(source.VocabSize)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".vocab_size", ValueType: ValueTypeUint32, Value: uint32(source.VocabSize)})
 	}
 	if source.HiddenSize > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".embedding_length", ValueType: gguf.ValueTypeUint32, Value: uint32(source.HiddenSize)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".embedding_length", ValueType: ValueTypeUint32, Value: uint32(source.HiddenSize)})
 	}
 	if source.NumLayers > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".block_count", ValueType: gguf.ValueTypeUint32, Value: uint32(source.NumLayers)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".block_count", ValueType: ValueTypeUint32, Value: uint32(source.NumLayers)})
 	}
 	if source.ContextLength > 0 {
-		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".context_length", ValueType: gguf.ValueTypeUint32, Value: uint32(source.ContextLength)})
+		metadata = append(metadata, ggufMetadataEntry{Key: architecture + ".context_length", ValueType: ValueTypeUint32, Value: uint32(source.ContextLength)})
 	}
 	if len(labels) > 0 {
 		keys := make([]string, 0, len(labels))
@@ -439,7 +435,7 @@ func ggufQuantizeMetadata(source mp.ModelPack, format GGUFQuantizeFormat, labels
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			metadata = append(metadata, ggufMetadataEntry{Key: "go_mlx.label." + key, ValueType: gguf.ValueTypeString, Value: labels[key]})
+			metadata = append(metadata, ggufMetadataEntry{Key: "go_mlx.label." + key, ValueType: ValueTypeString, Value: labels[key]})
 		}
 	}
 	return metadata
@@ -473,7 +469,7 @@ func writeQuantizedGGUF(path string, metadata []ggufMetadataEntry, tensors []ggu
 	return nil
 }
 
-func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor, refs []safetensors.TensorRef, format GGUFQuantizeFormat, chunkElements int) error {
+func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor, refs []safetensors.TensorRef, format QuantizeFormat, chunkElements int) error {
 	if len(tensors) != len(refs) {
 		return core.NewError("mlx: GGUF tensor metadata and source refs are not aligned")
 	}
@@ -559,7 +555,7 @@ func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, t
 	return nil
 }
 
-func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format GGUFQuantizeFormat, chunkElements int) (uint64, error) {
+func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int) (uint64, error) {
 	reader, err := safetensors.OpenReader(ref)
 	if err != nil {
 		return 0, err
@@ -587,11 +583,11 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 	return written, nil
 }
 
-func quantizeGGUFValues(format GGUFQuantizeFormat, values []float32) ([]byte, error) {
+func quantizeGGUFValues(format QuantizeFormat, values []float32) ([]byte, error) {
 	switch format {
-	case GGUFQuantizeQ8_0:
+	case QuantizeQ8_0:
 		return quantizeQ8_0(values), nil
-	case GGUFQuantizeQ4_0:
+	case QuantizeQ4_0:
 		return quantizeQ4_0(values), nil
 	default:
 		return nil, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
@@ -626,13 +622,13 @@ func writeGGUFMetadataEntry(file *core.OSFile, entry ggufMetadataEntry) error {
 
 func writeGGUFMetadataValue(file *core.OSFile, valueType uint32, value any) error {
 	switch valueType {
-	case gguf.ValueTypeString:
+	case ValueTypeString:
 		stringValue, ok := value.(string)
 		if !ok {
 			return core.NewError("mlx: GGUF metadata value is not a string")
 		}
 		return writeGGUFStringValue(file, stringValue)
-	case gguf.ValueTypeUint32:
+	case ValueTypeUint32:
 		switch concrete := value.(type) {
 		case uint32:
 			return binary.Write(file, binary.LittleEndian, concrete)
@@ -764,4 +760,76 @@ func quantizeGGUFResultError(result core.Result) error {
 		return err
 	}
 	return core.NewError("core result failed")
+}
+
+// ValidationSummary joins GGUF validation issue codes into a human-readable
+// string. Used by callers that report failures from the gguf validation path.
+//
+//	msg := gguf.ValidationSummary(info.ValidationIssues)
+func ValidationSummary(issues []ValidationIssue) string {
+	if len(issues) == 0 {
+		return "unknown validation failure"
+	}
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if issue.Tensor != "" {
+			parts = append(parts, core.Concat(issue.Code, ":", issue.Tensor))
+			continue
+		}
+		parts = append(parts, issue.Code)
+	}
+	return core.Join(", ", parts...)
+}
+
+func samePath(a, b string) bool {
+	absA := a
+	if resolved := core.PathAbs(a); resolved.OK {
+		absA = resolved.Value.(string)
+	}
+	absB := b
+	if resolved := core.PathAbs(b); resolved.OK {
+		absB = resolved.Value.(string)
+	}
+	return absA == absB
+}
+
+func copyModelPackMetadata(sourceRoot, outputRoot string) error {
+	patterns := []string{"*.json", "*.model", "*.txt"}
+	seen := map[string]struct{}{}
+	for _, pattern := range patterns {
+		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
+			name := core.PathBase(sourcePath)
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			if isModelWeightMetadataCopySkip(name) {
+				continue
+			}
+			if err := copyLocalFile(sourcePath, core.PathJoin(outputRoot, name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func isModelWeightMetadataCopySkip(name string) bool {
+	lower := core.Lower(name)
+	return lower == "adapter_provenance.json" ||
+		core.Contains(lower, ".safetensors") ||
+		core.Contains(lower, ".gguf") ||
+		core.HasSuffix(lower, ".safetensors") ||
+		core.HasSuffix(lower, ".gguf")
+}
+
+func copyLocalFile(sourcePath, destinationPath string) error {
+	read := core.ReadFile(sourcePath)
+	if !read.OK {
+		return quantizeGGUFResultError(read)
+	}
+	if result := core.WriteFile(destinationPath, read.Value.([]byte), 0o644); !result.OK {
+		return quantizeGGUFResultError(result)
+	}
+	return nil
 }

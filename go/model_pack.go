@@ -145,7 +145,7 @@ func inspectModelPackGGUF(pack *mp.ModelPack, path string) {
 	pack.HiddenSize = firstPositive(pack.HiddenSize, info.HiddenSize)
 	pack.VocabSize = firstPositive(pack.VocabSize, info.VocabSize)
 	if !info.Valid() {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidGGUF, "GGUF tensor metadata failed validation: "+ggufValidationSummary(info.ValidationIssues), path)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidGGUF, "GGUF tensor metadata failed validation: "+gguf.ValidationSummary(info.ValidationIssues), path)
 	}
 }
 
@@ -223,20 +223,6 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 	return &cloned
 }
 
-func ggufValidationSummary(issues []gguf.ValidationIssue) string {
-	if len(issues) == 0 {
-		return "unknown validation failure"
-	}
-	parts := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		if issue.Tensor != "" {
-			parts = append(parts, core.Concat(issue.Code, ":", issue.Tensor))
-			continue
-		}
-		parts = append(parts, issue.Code)
-	}
-	return core.Join(", ", parts...)
-}
 
 func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
