@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
@@ -135,7 +136,7 @@ func (adapter *metaladapter) Evaluate(ctx context.Context, dataset inference.Dat
 	if adapter == nil || adapter.model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
-	report, err := RunDatasetEval(ctx, adapter.evalRunner(), inferenceDataset{stream: dataset}, toEvalConfig(cfg))
+	report, err := eval.RunDataset(ctx, adapter.evalRunner(), wrapSFTDataset(inferenceDataset{stream: dataset}), toEvalConfig(cfg))
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +180,7 @@ func (adapter *metaladapter) fastEvalRunner() FastEvalRunner {
 	return NewModelFastEvalRunner(adapter.rootModel())
 }
 
-func (adapter *metaladapter) evalRunner() EvalRunner {
+func (adapter *metaladapter) evalRunner() eval.Runner {
 	return NewModelEvalRunner(adapter.rootModel())
 }
 
@@ -490,8 +491,8 @@ func toInferenceBenchReport(report *FastEvalReport) *inference.BenchReport {
 	}
 }
 
-func toEvalConfig(cfg inference.EvalConfig) EvalConfig {
-	return EvalConfig{
+func toEvalConfig(cfg inference.EvalConfig) eval.Config {
+	return eval.Config{
 		MaxSamples: cfg.MaxSamples,
 		Batch: DatasetBatchConfig{
 			BatchSize: cfg.BatchSize,
@@ -500,13 +501,13 @@ func toEvalConfig(cfg inference.EvalConfig) EvalConfig {
 	}
 }
 
-func toInferenceEvalReport(report *EvalReport) *inference.EvalReport {
+func toInferenceEvalReport(report *eval.Report) *inference.EvalReport {
 	if report == nil {
 		return nil
 	}
 	return &inference.EvalReport{
-		Model:   toInferenceModelIdentity(report.ModelInfo),
-		Adapter: toInferenceRootAdapterIdentity(report.Adapter),
+		Model:   toInferenceModelIdentity(evalInfoToModel(report.ModelInfo)),
+		Adapter: toInferenceRootAdapterIdentity(evalAdapterToLora(report.Adapter)),
 		Metrics: inference.EvalMetrics{
 			Samples:    report.Metrics.Samples,
 			Tokens:     report.Metrics.Tokens,
@@ -517,7 +518,7 @@ func toInferenceEvalReport(report *EvalReport) *inference.EvalReport {
 	}
 }
 
-func toInferenceQualityResults(checks []EvalQualityCheck) []inference.QualityProbeResult {
+func toInferenceQualityResults(checks []eval.QualityCheck) []inference.QualityProbeResult {
 	out := make([]inference.QualityProbeResult, len(checks))
 	for i, check := range checks {
 		out[i] = inference.QualityProbeResult{Name: check.Name, Passed: check.Pass, Score: check.Score, Text: check.Detail}

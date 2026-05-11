@@ -9,61 +9,117 @@ import (
 	"math"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/internal/metal"
-	"dappco.re/go/mlx/lora"
 )
 
 type nativeEvalInternalModel interface {
 	Internal() metal.InternalModel
 }
 
-// NewModelEvalRunner adapts a loaded native Model to dataset evaluation.
-func NewModelEvalRunner(model *Model) EvalRunner {
-	return EvalRunner{
-		Info: func(ctx context.Context) ModelInfo {
+// NewModelEvalRunner adapts a loaded native Model to driver-neutral
+// eval.Runner. The driver provides callbacks for the few accessors
+// eval needs (Info, LoadAdapter, BuildBatches, EvaluateBatch, BatchTokens,
+// SampleText).
+func NewModelEvalRunner(model *Model) eval.Runner {
+	return eval.Runner{
+		Info: func(ctx context.Context) eval.Info {
 			if err := ctx.Err(); err != nil || model == nil {
-				return ModelInfo{}
+				return eval.Info{}
 			}
-			return model.Info()
+			return modelInfoToEval(model.Info())
 		},
-		Tokenizer: func(ctx context.Context) *Tokenizer {
-			if err := ctx.Err(); err != nil || model == nil {
-				return nil
-			}
-			return model.Tokenizer()
-		},
-		LoadAdapter: func(ctx context.Context, path string) (lora.AdapterInfo, error) {
+		LoadAdapter: func(ctx context.Context, path string) (eval.AdapterInfo, error) {
 			if err := ctx.Err(); err != nil {
-				return lora.AdapterInfo{}, err
+				return eval.AdapterInfo{}, err
 			}
 			if model == nil {
-				return lora.AdapterInfo{}, core.NewError("mlx: model is nil")
+				return eval.AdapterInfo{}, core.NewError("mlx: model is nil")
 			}
 			if _, err := model.LoadLoRA(path); err != nil {
-				return lora.AdapterInfo{}, err
+				return eval.AdapterInfo{}, err
 			}
-			return model.Adapter(), nil
+			return loraToEvalAdapter(model.Adapter()), nil
 		},
-		EvaluateBatch: func(ctx context.Context, batch SFTBatch) (EvalBatchMetrics, error) {
+		BuildBatches: func(ctx context.Context, dataset eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
 			if model == nil {
-				return EvalBatchMetrics{}, core.NewError("mlx: model is nil")
+				return nil, core.NewError("mlx: model is nil")
 			}
-			return model.evaluateDatasetBatch(ctx, batch)
+			batchCfg, ok := cfg.(DatasetBatchConfig)
+			if !ok {
+				batchCfg = DatasetBatchConfig{}
+			}
+			tok := model.Tokenizer()
+			if tok == nil {
+				return nil, core.NewError("mlx: model tokenizer is nil")
+			}
+			sftDataset := evalDatasetToSFT(dataset)
+			sftBatches, err := BuildDatasetBatches(tok, sftDataset, batchCfg)
+			if err != nil {
+				return nil, err
+			}
+			batches := make([]eval.Batch, len(sftBatches))
+			for i, b := range sftBatches {
+				batches[i] = b
+			}
+			return batches, nil
 		},
+		EvaluateBatch: func(ctx context.Context, batch eval.Batch) (eval.BatchMetrics, error) {
+			if model == nil {
+				return eval.BatchMetrics{}, core.NewError("mlx: model is nil")
+			}
+			sftBatch, ok := batch.(SFTBatch)
+			if !ok {
+				return eval.BatchMetrics{}, core.NewError("mlx: eval batch is not an SFTBatch")
+			}
+			m, err := model.evaluateDatasetBatch(ctx, sftBatch)
+			if err != nil {
+				return eval.BatchMetrics{}, err
+			}
+			return eval.BatchMetrics{Samples: m.Samples, Tokens: m.Tokens, Loss: m.Loss}, nil
+		},
+		BatchTokens: sftBatchTokens,
+		SampleText:  sftSampleText,
 	}
 }
 
-func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (EvalBatchMetrics, error) {
+type evalDatasetSFTAdapter struct {
+	src eval.Dataset
+}
+
+func (a *evalDatasetSFTAdapter) Next() (SFTSample, bool, error) {
+	sample, ok, err := a.src.Next()
+	if err != nil || !ok {
+		return SFTSample{}, ok, err
+	}
+	if s, ok := sample.(SFTSample); ok {
+		return s, true, nil
+	}
+	return SFTSample{}, false, core.NewError("mlx: eval dataset returned a non-SFTSample value")
+}
+
+func evalDatasetToSFT(d eval.Dataset) SFTDataset {
+	return &evalDatasetSFTAdapter{src: d}
+}
+
+// evalBatchMetricsDarwin is the driver-internal version used by Model.evaluateDatasetBatch.
+type evalBatchMetricsDarwin struct {
+	Samples int
+	Tokens  int
+	Loss    float64
+}
+
+func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalBatchMetricsDarwin, error) {
 	if err := ctx.Err(); err != nil {
-		return EvalBatchMetrics{}, err
+		return evalBatchMetricsDarwin{}, err
 	}
 	if m == nil || m.model == nil {
-		return EvalBatchMetrics{}, core.NewError("mlx: model is nil")
+		return evalBatchMetricsDarwin{}, core.NewError("mlx: model is nil")
 	}
 
 	lengths, maxLen, err := evalBatchLengths(batch)
 	if err != nil {
-		return EvalBatchMetrics{}, err
+		return evalBatchMetricsDarwin{}, err
 	}
 	inputs := FromValues(evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen), len(lengths), maxLen)
 	targets := FromValues(evalBatchTokenData(batch.Targets, lengths, maxLen), len(lengths), maxLen)
@@ -73,7 +129,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (EvalB
 
 	native, ok := m.model.(nativeEvalInternalModel)
 	if !ok {
-		return EvalBatchMetrics{}, core.NewError("mlx: native model does not expose eval forward")
+		return evalBatchMetricsDarwin{}, core.NewError("mlx: native model does not expose eval forward")
 	}
 	internal := native.Internal()
 	caches := internal.NewCache()
@@ -81,20 +137,20 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (EvalB
 
 	logits := internal.ForwardMasked(inputs, attnMask, caches)
 	if logits == nil {
-		return EvalBatchMetrics{}, core.NewError("mlx: eval forward returned nil logits")
+		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval forward returned nil logits")
 	}
 	loss := MaskedCrossEntropyLoss(logits, targets, lossMask)
 	if loss == nil {
 		Free(logits)
-		return EvalBatchMetrics{}, core.NewError("mlx: eval loss returned nil")
+		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss returned nil")
 	}
 	Materialize(loss)
 	lossValue := loss.Float()
 	Free(logits, loss)
 	if math.IsNaN(lossValue) || math.IsInf(lossValue, 0) {
-		return EvalBatchMetrics{}, core.NewError("mlx: eval loss is not finite")
+		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss is not finite")
 	}
-	return EvalBatchMetrics{
+	return evalBatchMetricsDarwin{
 		Samples: len(lengths),
 		Tokens:  sftBatchLossTokens(batch),
 		Loss:    lossValue,

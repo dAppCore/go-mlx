@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 	"dappco.re/go/inference/quant/jang"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
@@ -160,13 +161,14 @@ func TestRunWorkloadBench_UsesDatasetEvalReport_Good(t *testing.T) {
 				}, nil
 			},
 		},
-		Eval: EvalRunner{
-			BuildBatches: func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error) {
-				return []SFTBatch{{Batch: Batch{Tokens: [][]int{{1, 2, 3}}, LossMask: [][]float32{{1, 1, 1}}}}}, nil
+		Eval: eval.Runner{
+			BuildBatches: func(context.Context, eval.Dataset, eval.BatchConfig) ([]eval.Batch, error) {
+				return []eval.Batch{SFTBatch{Batch: Batch{Tokens: [][]int{{1, 2, 3}}, LossMask: [][]float32{{1, 1, 1}}}}}, nil
 			},
-			EvaluateBatch: func(context.Context, SFTBatch) (EvalBatchMetrics, error) {
-				return EvalBatchMetrics{Loss: 0.75}, nil
+			EvaluateBatch: func(context.Context, eval.Batch) (eval.BatchMetrics, error) {
+				return eval.BatchMetrics{Loss: 0.75}, nil
 			},
+			BatchTokens: sftBatchTokens,
 		},
 	}
 
@@ -477,7 +479,7 @@ func TestWorkloadBenchHelpers_Good(t *testing.T) {
 	if summary := summarizeWorkloadBench(nil); summary != (WorkloadBenchSummary{}) {
 		t.Fatalf("summarizeWorkloadBench(nil) = %+v, want zero summary", summary)
 	}
-	evalMetrics := workloadEvalMetricsFromEval(EvalMetrics{Samples: 2, Tokens: 7, Loss: 1.5, Perplexity: 4.4})
+	evalMetrics := workloadEvalMetricsFromEval(eval.Metrics{Samples: 2, Tokens: 7, Loss: 1.5, Perplexity: 4.4})
 	if evalMetrics.Samples != 2 || evalMetrics.Tokens != 7 || evalMetrics.Perplexity != 4.4 {
 		t.Fatalf("workload eval metrics = %+v, want copied metrics", evalMetrics)
 	}
@@ -511,4 +513,13 @@ func TestWorkloadBenchHelpers_Good(t *testing.T) {
 	if report.Error != "" || report.Metrics.Samples != 1 || report.Metrics.Perplexity == 0 {
 		t.Fatalf("perplexity success report = %+v, want default sample count and exp(loss)", report)
 	}
+}
+
+func evalQualityPassed(report eval.QualityReport, name string) bool {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check.Pass
+		}
+	}
+	return false
 }

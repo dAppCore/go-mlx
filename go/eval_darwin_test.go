@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 )
 
 func requireRealEvalModel(t *testing.T) string {
@@ -36,7 +37,7 @@ func TestRunModelEval_RealModelSkip_Good(t *testing.T) {
 
 	report, err := RunModelEval(context.Background(), model, NewSFTSliceDataset([]SFTSample{
 		{Text: "Local evaluation should produce a finite loss."},
-	}), EvalConfig{Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 64}})
+	}), eval.Config{Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 64}})
 	if err != nil {
 		t.Fatalf("RunModelEval() error = %v", err)
 	}
@@ -62,7 +63,7 @@ func TestRunModelEval_RealModelLoRASkip_Ugly(t *testing.T) {
 
 	report, err := RunModelEval(context.Background(), model, NewSFTSliceDataset([]SFTSample{
 		{Prompt: "Explain local MLX eval.", Response: "It computes masked token loss over a dataset."},
-	}), EvalConfig{AdapterPath: adapterPath, Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 96}})
+	}), eval.Config{AdapterPath: adapterPath, Batch: DatasetBatchConfig{BatchSize: 1, MaxSeqLen: 96}})
 	if err != nil {
 		t.Fatalf("RunModelEval() error = %v", err)
 	}
@@ -105,9 +106,6 @@ func TestNewModelEvalRunner_NilAndCancelled_Bad(t *testing.T) {
 
 	if info := runner.Info(cancelled); info.Architecture != "" {
 		t.Fatalf("Info(cancelled) = %+v, want zero value", info)
-	}
-	if tok := runner.Tokenizer(cancelled); tok != nil {
-		t.Fatalf("Tokenizer(cancelled) = %+v, want nil", tok)
 	}
 	if _, err := runner.LoadAdapter(cancelled, "adapter"); err != context.Canceled {
 		t.Fatalf("LoadAdapter(cancelled) = %v, want context.Canceled", err)

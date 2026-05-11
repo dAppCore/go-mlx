@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
@@ -373,17 +374,18 @@ func TestInferenceContract_DatasetAdapterAndConversionHelpers_Good(t *testing.T)
 	}
 
 	evalCfg := toEvalConfig(inference.EvalConfig{MaxSamples: 2, BatchSize: 3, MaxSeqLen: 4})
-	if evalCfg.MaxSamples != 2 || evalCfg.Batch.BatchSize != 3 || evalCfg.Batch.MaxSeqLen != 4 {
+	batchCfg, ok := evalCfg.Batch.(DatasetBatchConfig)
+	if !ok || evalCfg.MaxSamples != 2 || batchCfg.BatchSize != 3 || batchCfg.MaxSeqLen != 4 {
 		t.Fatalf("eval config = %+v", evalCfg)
 	}
-	eval := toInferenceEvalReport(&EvalReport{
-		ModelInfo: ModelInfo{Architecture: "qwen3"},
-		Adapter:   lora.AdapterInfo{Name: "eval"},
-		Metrics:   EvalMetrics{Samples: 1, Tokens: 2, Loss: 0.3, Perplexity: 1.4},
-		Quality:   EvalQualityReport{Checks: []EvalQualityCheck{{Name: "q", Pass: true, Score: 0.9, Detail: "ok"}}},
+	evalReport := toInferenceEvalReport(&eval.Report{
+		ModelInfo: eval.Info{Architecture: "qwen3"},
+		Adapter:   eval.AdapterInfo{Name: "eval"},
+		Metrics:   eval.Metrics{Samples: 1, Tokens: 2, Loss: 0.3, Perplexity: 1.4},
+		Quality:   eval.QualityReport{Checks: []eval.QualityCheck{{Name: "q", Pass: true, Score: 0.9, Detail: "ok"}}},
 	})
-	if eval == nil || eval.Metrics.Samples != 1 || len(eval.Probes) != 1 || !eval.Probes[0].Passed {
-		t.Fatalf("eval report = %+v", eval)
+	if evalReport == nil || evalReport.Metrics.Samples != 1 || len(evalReport.Probes) != 1 || !evalReport.Probes[0].Passed {
+		t.Fatalf("eval report = %+v", evalReport)
 	}
 	if toInferenceEvalReport(nil) != nil {
 		t.Fatal("toInferenceEvalReport(nil) != nil")

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 )
 
 func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t *testing.T) {
@@ -51,14 +52,14 @@ func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t 
 			}
 			return distillTestLogits(batch.SFT, 2, 0, 2), nil
 		},
-		Evaluate: func(_ context.Context, eval DistillEvalContext) (DistillEvalResult, error) {
+		Evaluate: func(_ context.Context, ev DistillEvalContext) (DistillEvalResult, error) {
 			evalCalls++
 			return DistillEvalResult{
-				Step: eval.Step,
-				Metrics: EvalMetrics{
-					Samples: eval.Metrics.Samples,
-					Tokens:  eval.Metrics.Tokens,
-					Loss:    eval.Metrics.Loss,
+				Step: ev.Step,
+				Metrics: eval.Metrics{
+					Samples: ev.Metrics.Samples,
+					Tokens:  ev.Metrics.Tokens,
+					Loss:    ev.Metrics.Loss,
 				},
 			}, nil
 		},

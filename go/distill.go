@@ -9,6 +9,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 )
 
 const DistillCheckpointMetadataVersion = 1
@@ -154,8 +155,8 @@ type DistillEvalResult struct {
 	Step    int         `json:"step"`
 	Epoch   int         `json:"epoch,omitempty"`
 	Name    string      `json:"name,omitempty"`
-	Metrics EvalMetrics `json:"metrics,omitempty"`
-	Report  *EvalReport `json:"report,omitempty"`
+	Metrics eval.Metrics `json:"metrics,omitempty"`
+	Report  *eval.Report `json:"report,omitempty"`
 }
 
 // DistillTeacherLogitCache provides cache hooks for offline teacher logits.
@@ -319,7 +320,7 @@ func distillBatches(ctx context.Context, runner DistillRunner, dataset SFTDatase
 	}
 	source := dataset
 	if cfg.MaxSamples > 0 {
-		samples, err := collectEvalSamples(ctx, dataset, cfg.MaxSamples)
+		samples, err := distillCollectSamples(ctx, dataset, cfg.MaxSamples)
 		if err != nil {
 			return nil, err
 		}
@@ -788,4 +789,25 @@ func distillResultError(result core.Result) error {
 		return err
 	}
 	return core.NewError("core result failed")
+}
+
+func distillCollectSamples(ctx context.Context, dataset SFTDataset, maxSamples int) ([]SFTSample, error) {
+	var samples []SFTSample
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if maxSamples > 0 && len(samples) >= maxSamples {
+			break
+		}
+		sample, ok, err := dataset.Next()
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			break
+		}
+		samples = append(samples, cloneSFTSample(sample))
+	}
+	return samples, nil
 }

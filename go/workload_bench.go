@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/eval"
 	"dappco.re/go/inference/quant/jang"
 )
 
@@ -16,7 +17,7 @@ const WorkloadBenchReportVersion = 1
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
 	FastEval               FastEvalConfig                 `json:"fast_eval"`
-	Eval                   EvalConfig                     `json:"eval,omitempty"`
+	Eval                   eval.Config                     `json:"eval,omitempty"`
 	EvalDataset            SFTDataset                     `json:"-"`
 	AdapterPath            string                         `json:"adapter_path,omitempty"`
 	IncludeAdapterLoad     bool                           `json:"include_adapter_load"`
@@ -60,7 +61,7 @@ type WorkloadEvalMetrics struct {
 // WorkloadBenchRunner supplies model operations measured by RunWorkloadBench.
 type WorkloadBenchRunner struct {
 	FastEval FastEvalRunner
-	Eval     EvalRunner
+	Eval     eval.Runner
 
 	LoadAdapter func(context.Context, string) (WorkloadAdapterInfo, error)
 	FuseAdapter func(context.Context, WorkloadAdapterInfo) error
@@ -143,8 +144,8 @@ type WorkloadEvaluationReport struct {
 	Attempted bool                `json:"attempted"`
 	Duration  time.Duration       `json:"duration,omitempty"`
 	Metrics   WorkloadEvalMetrics `json:"metrics,omitempty"`
-	Quality   EvalQualityReport   `json:"quality,omitempty"`
-	Report    *EvalReport         `json:"report,omitempty"`
+	Quality   eval.QualityReport   `json:"quality,omitempty"`
+	Report    *eval.Report         `json:"report,omitempty"`
 	Error     string              `json:"error,omitempty"`
 }
 
@@ -243,7 +244,7 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.FastEval = normalizeFastEvalConfig(cfg.FastEval)
-	cfg.Eval = normalizeEvalConfig(cfg.Eval)
+	cfg.Eval = normalizeWorkloadEvalConfig(cfg.Eval)
 	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
 	cfg.ExpertResidency = normaliseExpertResidencyPlan(cfg.ExpertResidency)
@@ -323,7 +324,7 @@ func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg 
 			evalCfg.AdapterPath = cfg.AdapterPath
 		}
 		start := time.Now()
-		evalReport, err := RunDatasetEval(ctx, runner.Eval, cfg.EvalDataset, evalCfg)
+		evalReport, err := eval.RunDataset(ctx, runner.Eval, wrapSFTDataset(cfg.EvalDataset), evalCfg)
 		report.Duration = nonZeroDuration(time.Since(start))
 		if err != nil {
 			report.Error = err.Error()
@@ -376,7 +377,7 @@ func runWorkloadExpertResidency(ctx context.Context, runner WorkloadBenchRunner,
 	return report
 }
 
-func workloadEvalMetricsFromEval(metrics EvalMetrics) WorkloadEvalMetrics {
+func workloadEvalMetricsFromEval(metrics eval.Metrics) WorkloadEvalMetrics {
 	return WorkloadEvalMetrics{
 		Samples:    metrics.Samples,
 		Tokens:     metrics.Tokens,
@@ -483,4 +484,12 @@ func nonZeroDuration(duration time.Duration) time.Duration {
 		return time.Nanosecond
 	}
 	return duration
+}
+
+func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
+	if batch, ok := cfg.Batch.(DatasetBatchConfig); ok {
+		cfg.Batch = normalizeDatasetBatchConfig(batch)
+	}
+	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
+	return cfg
 }
