@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/inference/quant/jang"
 )
 
@@ -74,7 +75,7 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_CapsContextToModel_Good(t *testing.T) {
-	pack := ModelPack{ContextLength: 40960, QuantBits: 4}
+	pack := mp.ModelPack{ContextLength: 40960, QuantBits: 4}
 	plan := PlanMemory(MemoryPlanInput{
 		Device: DeviceInfo{MemorySize: 96 << 30},
 		Pack:   &pack,
@@ -89,7 +90,7 @@ func TestMemoryPlan_CapsContextToModel_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_QwenFamilyHints_Good(t *testing.T) {
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Architecture:  "qwen3_moe",
 		ContextLength: 32768,
 		NumLayers:     48,
@@ -113,7 +114,7 @@ func TestMemoryPlan_QwenFamilyHints_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Architecture:  "minimax_m2",
 		ContextLength: 196608,
 		NumLayers:     62,
@@ -163,7 +164,7 @@ func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_MiniMaxLayerSkeletonHints_Good(t *testing.T) {
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Architecture:  "minimax_m2",
 		ContextLength: 32768,
 		NumLayers:     1,
@@ -194,12 +195,12 @@ func TestMemoryPlan_MiniMaxLayerSkeletonHints_Good(t *testing.T) {
 }
 
 func TestMemoryPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Architecture:    "bert",
 		ContextLength:   512,
 		NumLayers:       12,
 		HiddenSize:      768,
-		Embedding:       &ModelEmbeddingProfile{Dimension: 768, Pooling: "mean", MaxSequenceLength: 512},
+		Embedding:       &mp.ModelEmbeddingProfile{Dimension: 768, Pooling: "mean", MaxSequenceLength: 512},
 		WeightBytes:     420 * 1024 * 1024,
 		QuantBits:       16,
 		QuantType:       "fp16",

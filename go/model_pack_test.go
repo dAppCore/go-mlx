@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
@@ -57,14 +58,14 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
-	pack, err := InspectModelPack(dir, WithPackQuantization(4), WithPackMaxContextLength(131072))
+	pack, err := InspectModelPack(dir, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(131072))
 	if err != nil {
 		t.Fatalf("InspectModelPack() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Format != ModelPackFormatSafetensors {
+	if pack.Format != mp.ModelPackFormatSafetensors {
 		t.Fatalf("Format = %q, want safetensors", pack.Format)
 	}
 	if pack.Architecture != "gemma4_text" || !pack.SupportedArchitecture {
@@ -73,7 +74,7 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	if !pack.NativeLoadable || pack.RequiresPythonConversion {
 		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
 	}
-	if !pack.HasTokenizer || !pack.HasChatTemplate || pack.ChatTemplateSource != ModelPackChatTemplateNative {
+	if !pack.HasTokenizer || !pack.HasChatTemplate || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative {
 		t.Fatalf("tokenizer/chat = tokenizer:%v template:%v source:%q", pack.HasTokenizer, pack.HasChatTemplate, pack.ChatTemplateSource)
 	}
 	if pack.QuantBits != 4 || pack.QuantGroup != 64 || pack.ContextLength != 131072 {
@@ -103,24 +104,26 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 		},
 	)
 
-	pack, err := InspectModelPack(ggufPath, WithPackQuantization(4), WithPackMaxContextLength(65536))
+	pack, err := InspectModelPack(ggufPath, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(65536))
 	if err != nil {
 		t.Fatalf("InspectModelPack() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.Format != ModelPackFormatGGUF {
+	if pack.Format != mp.ModelPackFormatGGUF {
 		t.Fatalf("Format = %q, want gguf", pack.Format)
 	}
 	if pack.Architecture != "qwen3" || pack.QuantBits != 4 || pack.ContextLength != 40960 {
 		t.Fatalf("metadata = arch %q quant %d ctx %d", pack.Architecture, pack.QuantBits, pack.ContextLength)
 	}
-	if pack.QuantType != "q4_k" || pack.QuantFamily != "qk" || pack.Quantization == nil || len(pack.Quantization.TensorTypes) != 1 {
-		t.Fatalf("quant details = type:%q family:%q details:%+v", pack.QuantType, pack.QuantFamily, pack.Quantization)
+	quant, _ := pack.Quantization.(*GGUFQuantizationInfo)
+	if pack.QuantType != "q4_k" || pack.QuantFamily != "qk" || quant == nil || len(quant.TensorTypes) != 1 {
+		t.Fatalf("quant details = type:%q family:%q details:%+v", pack.QuantType, pack.QuantFamily, quant)
 	}
-	if pack.GGUF == nil || pack.GGUF.TensorCount != 2 {
-		t.Fatalf("GGUF metadata = %+v, want 2 tensors", pack.GGUF)
+	ggufInfo, _ := pack.GGUF.(*GGUFInfo)
+	if ggufInfo == nil || ggufInfo.TensorCount != 2 {
+		t.Fatalf("GGUF metadata = %+v, want 2 tensors", ggufInfo)
 	}
 }
 
@@ -132,11 +135,11 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 		writeModelPackFile(t, core.PathJoin(dir, "model.gguf"), "stub")
 
-		pack, err := InspectModelPack(dir, WithPackRequireChatTemplate(false))
+		pack, err := InspectModelPack(dir, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
 			t.Fatalf("InspectModelPack() error = %v", err)
 		}
-		if pack.Format != ModelPackFormatMixed || !pack.HasIssue(ModelPackIssueMixedWeightFormats) {
+		if pack.Format != mp.ModelPackFormatMixed || !pack.HasIssue(mp.ModelPackIssueMixedWeightFormats) {
 			t.Fatalf("pack = %+v, want mixed weight issue", pack)
 		}
 	})
@@ -148,11 +151,11 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(dir, "a.gguf"), "stub")
 		writeModelPackFile(t, core.PathJoin(dir, "b.gguf"), "stub")
 
-		pack, err := InspectModelPack(dir, WithPackRequireChatTemplate(false))
+		pack, err := InspectModelPack(dir, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
 			t.Fatalf("InspectModelPack() error = %v", err)
 		}
-		if pack.Format != ModelPackFormatGGUF || !pack.HasIssue(ModelPackIssueMultipleGGUF) {
+		if pack.Format != mp.ModelPackFormatGGUF || !pack.HasIssue(mp.ModelPackIssueMultipleGGUF) {
 			t.Fatalf("pack = %+v, want multiple GGUF issue", pack)
 		}
 	})
@@ -161,11 +164,11 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		missing := t.TempDir()
 		writeModelPackFile(t, core.PathJoin(missing, "tokenizer.json"), modelPackTokenizerJSON)
 		writeModelPackFile(t, core.PathJoin(missing, "model.safetensors"), "stub")
-		pack, err := InspectModelPack(missing, WithPackRequireChatTemplate(false))
+		pack, err := InspectModelPack(missing, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
 			t.Fatalf("InspectModelPack(missing config) error = %v", err)
 		}
-		if !pack.HasIssue(ModelPackIssueMissingConfig) || !pack.HasIssue(ModelPackIssueMissingArchitecture) {
+		if !pack.HasIssue(mp.ModelPackIssueMissingConfig) || !pack.HasIssue(mp.ModelPackIssueMissingArchitecture) {
 			t.Fatalf("issues = %+v, want missing config and architecture", pack.Issues)
 		}
 
@@ -173,11 +176,11 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(invalid, "config.json"), "{")
 		writeModelPackFile(t, core.PathJoin(invalid, "tokenizer.json"), modelPackTokenizerJSON)
 		writeModelPackFile(t, core.PathJoin(invalid, "model.safetensors"), "stub")
-		pack, err = InspectModelPack(invalid, WithPackRequireChatTemplate(false))
+		pack, err = InspectModelPack(invalid, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
 			t.Fatalf("InspectModelPack(invalid config) error = %v", err)
 		}
-		if !pack.HasIssue(ModelPackIssueInvalidConfig) {
+		if !pack.HasIssue(mp.ModelPackIssueInvalidConfig) {
 			t.Fatalf("issues = %+v, want invalid config", pack.Issues)
 		}
 	})
@@ -215,7 +218,7 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "qwen3_next")
 
-	pack, err := InspectModelPack(dir, WithPackMaxContextLength(131072))
+	pack, err := InspectModelPack(dir, mp.WithPackMaxContextLength(131072))
 	if err != nil {
 		t.Fatalf("InspectModelPack() error = %v", err)
 	}
@@ -228,7 +231,7 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	if !pack.NativeLoadable || pack.RequiresPythonConversion {
 		t.Fatalf("NativeLoadable=%v RequiresPythonConversion=%v, want native/no conversion", pack.NativeLoadable, pack.RequiresPythonConversion)
 	}
-	if pack.ChatTemplateSource != ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
+	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
 		t.Fatalf("chat template = source:%q name:%q, want native qwen", pack.ChatTemplateSource, pack.ChatTemplate)
 	}
 }
@@ -258,7 +261,7 @@ func TestInspectModelPack_SafetensorsQwen3MoEArchitectureFallback_Good(t *testin
 	if pack.Architecture != "qwen3_moe" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported qwen3_moe", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || !pack.HasIssue(ModelPackIssueUnsupportedRuntime) {
+	if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
 		t.Fatalf("native/runtime = loadable:%v issues:%+v, want recognized but runtime-gated MoE", pack.NativeLoadable, pack.Issues)
 	}
 	if pack.ChatTemplate != "qwen" {
@@ -307,10 +310,10 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.Architecture != "minimax_m2" || !pack.SupportedArchitecture {
 		t.Fatalf("architecture = %q supported=%v, want supported minimax_m2", pack.Architecture, pack.SupportedArchitecture)
 	}
-	if pack.NativeLoadable || !pack.HasIssue(ModelPackIssueUnsupportedRuntime) {
+	if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
 		t.Fatalf("runtime gate = native:%v issues:%+v, want recognised but kernel-gated", pack.NativeLoadable, pack.Issues)
 	}
-	if pack.ChatTemplateSource != ModelPackChatTemplateJinja || !pack.HasChatTemplate {
+	if pack.ChatTemplateSource != mp.ModelPackChatTemplateJinja || !pack.HasChatTemplate {
 		t.Fatalf("chat template = source:%q has:%v, want chat_template.jinja", pack.ChatTemplateSource, pack.HasChatTemplate)
 	}
 	if pack.QuantBits != 2 || pack.QuantGroup != 64 || pack.QuantType != "jangtq" || pack.QuantFamily != "jang" {
@@ -322,10 +325,11 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	if pack.PackedQuantization == nil || pack.PackedQuantization.Format != "mxtq" || pack.PackedQuantization.RoleBits[string(jang.TensorRoleRoutedExpert)] != 2 {
 		t.Fatalf("packed quantization = %+v, want MXTQ routed expert profile", pack.PackedQuantization)
 	}
-	if pack.MiniMaxM2 == nil || pack.MiniMaxM2.Config.NumLocalExperts != 256 || pack.MiniMaxM2.Config.NumExpertsPerToken != 8 {
-		t.Fatalf("MiniMaxM2 plan = %+v, want expert routing config", pack.MiniMaxM2)
+	mmPlan, _ := pack.MiniMaxM2.(*MiniMaxM2TensorPlan)
+	if mmPlan == nil || mmPlan.Config.NumLocalExperts != 256 || mmPlan.Config.NumExpertsPerToken != 8 {
+		t.Fatalf("MiniMaxM2 plan = %+v, want expert routing config", mmPlan)
 	}
-	specs, err := pack.MiniMaxM2.LayerTensorSpecs(0, 0)
+	specs, err := mmPlan.LayerTensorSpecs(0, 0)
 	if err != nil {
 		t.Fatalf("MiniMaxM2.LayerTensorSpecs() error = %v", err)
 	}
@@ -363,7 +367,7 @@ func TestInspectModelPack_CodebookVQPackFailsClearly_Good(t *testing.T) {
 	if pack.Codebook == nil || pack.Codebook.Format != codebook.FormatVQ || len(pack.Codebook.Tensors) != 1 {
 		t.Fatalf("codebook profile = %+v, want VQ model-pack feature flag", pack.Codebook)
 	}
-	if pack.NativeLoadable || pack.Valid() || !pack.HasIssue(ModelPackIssueUnsupportedCodebook) {
+	if pack.NativeLoadable || pack.Valid() || !pack.HasIssue(mp.ModelPackIssueUnsupportedCodebook) {
 		t.Fatalf("pack loadability = native:%v valid:%v issues:%+v, want clear unsupported codebook issue", pack.NativeLoadable, pack.Valid(), pack.Issues)
 	}
 }
@@ -428,11 +432,12 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
 	}
-	if pack.MiniMaxM2LayerSkeleton == nil {
+	skel, _ := pack.MiniMaxM2LayerSkeleton.(*MiniMaxM2LayerForwardSkeleton)
+	if skel == nil {
 		t.Fatalf("MiniMaxM2LayerSkeleton = nil, want safetensors-backed skeleton")
 	}
-	if len(pack.MiniMaxM2LayerSkeleton.Attention) != 4 || pack.MiniMaxM2LayerSkeleton.EstimatedBytes() != 108 {
-		t.Fatalf("skeleton = %+v bytes=%d, want four attention tensors and 108 estimated bytes", pack.MiniMaxM2LayerSkeleton, pack.MiniMaxM2LayerSkeleton.EstimatedBytes())
+	if len(skel.Attention) != 4 || skel.EstimatedBytes() != 108 {
+		t.Fatalf("skeleton = %+v bytes=%d, want four attention tensors and 108 estimated bytes", skel, skel.EstimatedBytes())
 	}
 }
 
@@ -495,7 +500,7 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 			if pack.Architecture != tc.wantArchitecture || !pack.SupportedArchitecture {
 				t.Fatalf("architecture = %q supported=%v, want %q supported", pack.Architecture, pack.SupportedArchitecture, tc.wantArchitecture)
 			}
-			if pack.NativeLoadable || !pack.HasIssue(ModelPackIssueUnsupportedRuntime) {
+			if pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
 				t.Fatalf("runtime = native:%v issues:%+v, want metadata-only runtime gate", pack.NativeLoadable, pack.Issues)
 			}
 			if pack.ArchitectureProfile == nil {
@@ -623,7 +628,7 @@ func TestInspectModelPack_GGUFQuantizationFlowsToMemoryPlan_Good(t *testing.T) {
 	}
 }
 
-func modelPackHasCapability(pack ModelPack, id inference.CapabilityID) bool {
+func modelPackHasCapability(pack mp.ModelPack, id inference.CapabilityID) bool {
 	for _, capability := range pack.Capabilities {
 		if capability.ID == id {
 			return true
@@ -641,7 +646,7 @@ func TestValidateModelPack_MissingTokenizer_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for missing tokenizer")
 	}
-	if !pack.HasIssue(ModelPackIssueMissingTokenizer) {
+	if !pack.HasIssue(mp.ModelPackIssueMissingTokenizer) {
 		t.Fatalf("issues = %+v, want missing tokenizer", pack.Issues)
 	}
 }
@@ -650,11 +655,11 @@ func TestValidateModelPack_QuantizationAndContext_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
-	pack, err := ValidateModelPack(dir, WithPackQuantization(8), WithPackMaxContextLength(8192))
+	pack, err := ValidateModelPack(dir, mp.WithPackQuantization(8), mp.WithPackMaxContextLength(8192))
 	if err == nil {
 		t.Fatal("expected validation error for quantization/context mismatch")
 	}
-	if !pack.HasIssue(ModelPackIssueQuantizationMismatch) || !pack.HasIssue(ModelPackIssueContextTooLarge) {
+	if !pack.HasIssue(mp.ModelPackIssueQuantizationMismatch) || !pack.HasIssue(mp.ModelPackIssueContextTooLarge) {
 		t.Fatalf("issues = %+v, want quantization mismatch and context too large", pack.Issues)
 	}
 }
@@ -676,7 +681,7 @@ func TestValidateModelPack_GGUFInvalidTensorMetadata_Bad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error for invalid GGUF tensor metadata")
 	}
-	if !pack.HasIssue(ModelPackIssueInvalidGGUF) {
+	if !pack.HasIssue(mp.ModelPackIssueInvalidGGUF) {
 		t.Fatalf("issues = %+v, want invalid GGUF", pack.Issues)
 	}
 }

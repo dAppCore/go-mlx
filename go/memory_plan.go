@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"dappco.re/go/inference/quant/jang"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -45,7 +46,7 @@ const (
 // MemoryPlanInput supplies measured hardware and optional model metadata.
 type MemoryPlanInput struct {
 	Device    DeviceInfo
-	Pack      *ModelPack
+	Pack      *mp.ModelPack
 	ModelInfo *ModelInfo
 }
 
@@ -108,9 +109,9 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 	plan.ModelQuantizationFamily = modelQuantFamily
 	if input.Pack != nil {
 		plan.ModelPackedQuantization = jang.ClonePackedProfile(input.Pack.PackedQuantization)
-		if input.Pack.MiniMaxM2LayerSkeleton != nil {
+		if skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*MiniMaxM2LayerForwardSkeleton); skel != nil {
 			plan.ModelForwardSkeletonValidated = true
-			plan.ModelForwardSkeletonBytes = input.Pack.MiniMaxM2LayerSkeleton.EstimatedBytes()
+			plan.ModelForwardSkeletonBytes = skel.EstimatedBytes()
 			plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
 		}
 	}
@@ -401,13 +402,13 @@ func applyModelQuantizationMemoryHints(plan *MemoryPlan) {
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
 }
 
-func applyExpertResidencyMemoryHints(plan *MemoryPlan, pack *ModelPack, architecture string) {
+func applyExpertResidencyMemoryHints(plan *MemoryPlan, pack *mp.ModelPack, architecture string) {
 	if plan == nil {
 		return
 	}
 	if pack != nil {
-		if pack.MiniMaxM2 != nil {
-			plan.ExpertResidency = PlanMiniMaxM2ExpertResidency(*pack.MiniMaxM2, *plan, nil)
+		if mm, _ := pack.MiniMaxM2.(*MiniMaxM2TensorPlan); mm != nil {
+			plan.ExpertResidency = PlanMiniMaxM2ExpertResidency(*mm, *plan, nil)
 			plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
 			return
 		}
@@ -476,8 +477,8 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	if cfg.MemoryPlan != nil {
 		plan = *cfg.MemoryPlan
 	} else if cfg.AutoMemoryPlan {
-		var pack *ModelPack
-		if inspected, err := InspectModelPack(modelPath, WithPackRequireChatTemplate(false)); err == nil {
+		var pack *mp.ModelPack
+		if inspected, err := InspectModelPack(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
 		}
 		plan = PlanMemory(MemoryPlanInput{

@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 // GGUFQuantizeFormat names the GGUF quantization format requested by the caller.
@@ -37,8 +38,8 @@ type QuantizeGGUFResult struct {
 	WeightPath       string             `json:"weight_path"`
 	RequestedFormat  GGUFQuantizeFormat `json:"requested_format"`
 	Format           GGUFQuantizeFormat `json:"format"`
-	SourcePack       ModelPack          `json:"source_pack"`
-	Pack             ModelPack          `json:"pack"`
+	SourcePack       mp.ModelPack          `json:"source_pack"`
+	Pack             mp.ModelPack          `json:"pack"`
 	Info             GGUFInfo           `json:"info"`
 	TensorCount      int                `json:"tensor_count"`
 	QuantizedTensors int                `json:"quantized_tensors"`
@@ -99,7 +100,7 @@ func QuantizeModelPackToGGUF(ctx context.Context, opts QuantizeGGUFOptions) (*Qu
 	if err != nil {
 		return nil, core.E("QuantizeModelPackToGGUF", "validate source model pack", err)
 	}
-	if source.Format != ModelPackFormatSafetensors {
+	if source.Format != mp.ModelPackFormatSafetensors {
 		return nil, core.NewError("mlx: GGUF quantization currently requires dense safetensors source weights")
 	}
 
@@ -445,7 +446,7 @@ func quantizeQ4_0(values []float32) []byte {
 	return out
 }
 
-func ggufQuantizeMetadata(source ModelPack, format GGUFQuantizeFormat, labels map[string]string) []ggufMetadataEntry {
+func ggufQuantizeMetadata(source mp.ModelPack, format GGUFQuantizeFormat, labels map[string]string) []ggufMetadataEntry {
 	fileType := uint32(7)
 	quantizationType := string(GGUFQuantizeQ8_0)
 	if format == GGUFQuantizeQ4_0 {

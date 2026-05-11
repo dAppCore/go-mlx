@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 func TestMergeModelPacks_LinearSafetensors_Good(t *testing.T) {
@@ -36,7 +37,7 @@ func TestMergeModelPacks_LinearSafetensors_Good(t *testing.T) {
 	if result.WeightPath != core.PathJoin(output, "model.safetensors") {
 		t.Fatalf("WeightPath = %q", result.WeightPath)
 	}
-	if !result.Pack.Valid() || result.Pack.Format != ModelPackFormatSafetensors {
+	if !result.Pack.Valid() || result.Pack.Format != mp.ModelPackFormatSafetensors {
 		t.Fatalf("pack = %+v", result.Pack)
 	}
 

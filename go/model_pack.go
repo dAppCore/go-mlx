@@ -9,194 +9,34 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
 )
 
-// ModelPackFormat names the model weight container found in a pack.
-type ModelPackFormat string
-
-const (
-	ModelPackFormatMissing     ModelPackFormat = "missing"
-	ModelPackFormatSafetensors ModelPackFormat = "safetensors"
-	ModelPackFormatGGUF        ModelPackFormat = "gguf"
-	ModelPackFormatMixed       ModelPackFormat = "mixed"
-)
-
-// ModelPackChatTemplateSource records where chat formatting came from.
-type ModelPackChatTemplateSource string
-
-const (
-	ModelPackChatTemplateNone   ModelPackChatTemplateSource = ""
-	ModelPackChatTemplateFile   ModelPackChatTemplateSource = "tokenizer_config.json"
-	ModelPackChatTemplateJinja  ModelPackChatTemplateSource = "chat_template.jinja"
-	ModelPackChatTemplateNative ModelPackChatTemplateSource = "native"
-)
-
-// ModelPackIssueSeverity classifies a validation issue.
-type ModelPackIssueSeverity string
-
-const (
-	ModelPackIssueError   ModelPackIssueSeverity = "error"
-	ModelPackIssueWarning ModelPackIssueSeverity = "warning"
-)
-
-// ModelPackIssueCode is a stable machine-readable pack validation code.
-type ModelPackIssueCode string
-
-const (
-	ModelPackIssueMissingConfig           ModelPackIssueCode = "missing_config"
-	ModelPackIssueInvalidConfig           ModelPackIssueCode = "invalid_config"
-	ModelPackIssueMissingWeights          ModelPackIssueCode = "missing_weights"
-	ModelPackIssueMultipleGGUF            ModelPackIssueCode = "multiple_gguf"
-	ModelPackIssueMixedWeightFormats      ModelPackIssueCode = "mixed_weight_formats"
-	ModelPackIssueInvalidGGUF             ModelPackIssueCode = "invalid_gguf"
-	ModelPackIssueMissingTokenizer        ModelPackIssueCode = "missing_tokenizer"
-	ModelPackIssueInvalidTokenizer        ModelPackIssueCode = "invalid_tokenizer"
-	ModelPackIssueUnsupportedArchitecture ModelPackIssueCode = "unsupported_architecture"
-	ModelPackIssueUnsupportedRuntime      ModelPackIssueCode = "unsupported_runtime"
-	ModelPackIssueMissingArchitecture     ModelPackIssueCode = "missing_architecture"
-	ModelPackIssueMissingChatTemplate     ModelPackIssueCode = "missing_chat_template"
-	ModelPackIssueQuantizationMismatch    ModelPackIssueCode = "quantization_mismatch"
-	ModelPackIssueContextTooLarge         ModelPackIssueCode = "context_too_large"
-	ModelPackIssueMiniMaxM2LayerSkeleton  ModelPackIssueCode = "minimax_m2_layer_skeleton"
-	ModelPackIssueUnsupportedCodebook     ModelPackIssueCode = "unsupported_codebook"
-)
-
-// ModelPackIssue describes one pack validation finding.
-type ModelPackIssue struct {
-	Severity ModelPackIssueSeverity `json:"severity"`
-	Code     ModelPackIssueCode     `json:"code"`
-	Message  string                 `json:"message"`
-	Path     string                 `json:"path,omitempty"`
-}
-
-// ModelEmbeddingProfile records metadata for encoder-style embedding packs.
-type ModelEmbeddingProfile struct {
-	Dimension         int    `json:"dimension,omitempty"`
-	Pooling           string `json:"pooling,omitempty"`
-	Normalize         bool   `json:"normalize,omitempty"`
-	MaxSequenceLength int    `json:"max_sequence_length,omitempty"`
-	Source            string `json:"source,omitempty"`
-}
-
-// ModelRerankProfile records metadata for cross-encoder rerank packs.
-type ModelRerankProfile struct {
-	Method            string `json:"method,omitempty"`
-	MaxSequenceLength int    `json:"max_sequence_length,omitempty"`
-	Source            string `json:"source,omitempty"`
-}
-
-// ModelPack summarises whether a local model directory is natively loadable.
-type ModelPack struct {
-	Path                     string                         `json:"path"`
-	Root                     string                         `json:"root"`
-	Format                   ModelPackFormat                `json:"format"`
-	ConfigPath               string                         `json:"config_path,omitempty"`
-	WeightFiles              []string                       `json:"weight_files,omitempty"`
-	TokenizerPath            string                         `json:"tokenizer_path,omitempty"`
-	TokenizerConfigPath      string                         `json:"tokenizer_config_path,omitempty"`
-	Architecture             string                         `json:"architecture,omitempty"`
-	SupportedArchitecture    bool                           `json:"supported_architecture"`
-	NativeLoadable           bool                           `json:"native_loadable"`
-	RequiresPythonConversion bool                           `json:"requires_python_conversion"`
-	HasTokenizer             bool                           `json:"has_tokenizer"`
-	HasChatTemplate          bool                           `json:"has_chat_template"`
-	ChatTemplateSource       ModelPackChatTemplateSource    `json:"chat_template_source,omitempty"`
-	ChatTemplate             string                         `json:"chat_template,omitempty"`
-	QuantBits                int                            `json:"quant_bits,omitempty"`
-	QuantGroup               int                            `json:"quant_group,omitempty"`
-	QuantType                string                         `json:"quant_type,omitempty"`
-	QuantFamily              string                         `json:"quant_family,omitempty"`
-	Quantization             *GGUFQuantizationInfo          `json:"quantization,omitempty"`
-	JANG                     *jang.Info          `json:"jang,omitempty"`
-	PackedQuantization       *jang.PackedProfile `json:"packed_quantization,omitempty"`
-	Codebook                 *codebook.Profile   `json:"codebook,omitempty"`
-	MiniMaxM2                *MiniMaxM2TensorPlan           `json:"minimax_m2,omitempty"`
-	MiniMaxM2LayerSkeleton   *MiniMaxM2LayerForwardSkeleton `json:"minimax_m2_layer_skeleton,omitempty"`
-	ArchitectureProfile      *profile.ModelArchitectureProfile      `json:"architecture_profile,omitempty"`
-	Embedding                *ModelEmbeddingProfile         `json:"embedding,omitempty"`
-	Rerank                   *ModelRerankProfile            `json:"rerank,omitempty"`
-	Capabilities             []inference.Capability         `json:"capabilities,omitempty"`
-	WeightBytes              uint64                         `json:"weight_bytes,omitempty"`
-	ContextLength            int                            `json:"context_length,omitempty"`
-	NumLayers                int                            `json:"num_layers,omitempty"`
-	HiddenSize               int                            `json:"hidden_size,omitempty"`
-	VocabSize                int                            `json:"vocab_size,omitempty"`
-	GGUF                     *GGUFInfo                      `json:"gguf,omitempty"`
-	Issues                   []ModelPackIssue               `json:"issues,omitempty"`
-	OK                       bool                           `json:"valid"`
-}
-
-// Valid reports whether the pack has no error-severity validation issues.
-func (pack ModelPack) Valid() bool { return pack.OK }
-
-// HasIssue reports whether a validation issue code is present.
-func (pack ModelPack) HasIssue(code ModelPackIssueCode) bool {
-	for _, issue := range pack.Issues {
-		if issue.Code == code {
-			return true
-		}
-	}
-	return false
-}
-
-// ModelPackConfig configures pack validation.
-type ModelPackConfig struct {
-	ExpectedQuantBits   int
-	MaxContextLength    int
-	RequireChatTemplate bool
-}
-
-// ModelPackOption configures model-pack inspection.
-type ModelPackOption func(*ModelPackConfig)
-
-// WithPackQuantization requires a specific quantization width when metadata exposes one.
-func WithPackQuantization(bits int) ModelPackOption {
-	return func(cfg *ModelPackConfig) { cfg.ExpectedQuantBits = bits }
-}
-
-// WithPackMaxContextLength rejects packs whose declared context exceeds n.
-func WithPackMaxContextLength(n int) ModelPackOption {
-	return func(cfg *ModelPackConfig) { cfg.MaxContextLength = n }
-}
-
-// WithPackRequireChatTemplate controls whether a chat template is mandatory.
-func WithPackRequireChatTemplate(required bool) ModelPackOption {
-	return func(cfg *ModelPackConfig) { cfg.RequireChatTemplate = required }
-}
-
-func applyModelPackOptions(opts []ModelPackOption) ModelPackConfig {
-	cfg := ModelPackConfig{RequireChatTemplate: true}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-	return cfg
-}
-
 // InspectModelPack validates a local model directory or GGUF file without loading weights.
-func InspectModelPack(modelPath string, opts ...ModelPackOption) (ModelPack, error) {
-	cfg := applyModelPackOptions(opts)
+func InspectModelPack(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
+	cfg := mp.ApplyOptions(opts)
 	resolvedPath := modelPath
 	if abs := core.PathAbs(modelPath); abs.OK {
 		resolvedPath = abs.Value.(string)
 	}
 	stat := core.Stat(resolvedPath)
 	if !stat.OK {
-		return ModelPack{}, stat.Value.(error)
+		return mp.ModelPack{}, stat.Value.(error)
 	}
 
 	root := resolvedPath
 	if !stat.Value.(core.FsFileInfo).IsDir() {
 		root = core.PathDir(resolvedPath)
 	}
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Path: resolvedPath,
 		Root: root,
 	}
 
 	config, configErr := inspectModelPackConfig(&pack, root)
 	inspectModelPackWeights(&pack, resolvedPath, root)
-	if pack.Format == ModelPackFormatGGUF && len(pack.WeightFiles) == 1 {
+	if pack.Format == mp.ModelPackFormatGGUF && len(pack.WeightFiles) == 1 {
 		inspectModelPackGGUF(&pack, pack.WeightFiles[0])
 	}
 	if configErr == nil && config != nil {
@@ -215,7 +55,7 @@ func InspectModelPack(modelPath string, opts ...ModelPackOption) (ModelPack, err
 }
 
 // ValidateModelPack returns an error when InspectModelPack finds validation issues.
-func ValidateModelPack(modelPath string, opts ...ModelPackOption) (ModelPack, error) {
+func ValidateModelPack(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
 	pack, err := InspectModelPack(modelPath, opts...)
 	if err != nil {
 		return pack, err
@@ -223,27 +63,27 @@ func ValidateModelPack(modelPath string, opts ...ModelPackOption) (ModelPack, er
 	if pack.Valid() {
 		return pack, nil
 	}
-	return pack, core.NewError("mlx: invalid model pack: " + pack.issueSummary())
+	return pack, core.NewError("mlx: invalid model pack: " + pack.IssueSummary())
 }
 
-func inspectModelPackConfig(pack *ModelPack, root string) (*modelConfigProbe, error) {
+func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe, error) {
 	configPath := core.PathJoin(root, "config.json")
 	config, err := readModelConfig(root)
 	if err != nil {
-		code := ModelPackIssueMissingConfig
+		code := mp.ModelPackIssueMissingConfig
 		message := "config.json is required for native go-mlx loading"
 		if !core.IsNotExist(err) {
-			code = ModelPackIssueInvalidConfig
+			code = mp.ModelPackIssueInvalidConfig
 			message = "config.json could not be parsed"
 		}
-		pack.addIssue(ModelPackIssueError, code, message, configPath)
+		pack.AddIssue(mp.ModelPackIssueError, code, message, configPath)
 		return nil, err
 	}
 	pack.ConfigPath = configPath
 	return config, nil
 }
 
-func inspectModelPackWeights(pack *ModelPack, resolvedPath, root string) {
+func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	lowerPath := core.Lower(resolvedPath)
 	var safetensors []string
 	var ggufs []string
@@ -265,29 +105,29 @@ func inspectModelPackWeights(pack *ModelPack, resolvedPath, root string) {
 
 	switch {
 	case len(safetensors) > 0 && len(ggufs) > 0:
-		pack.Format = ModelPackFormatMixed
+		pack.Format = mp.ModelPackFormatMixed
 		pack.WeightFiles = append(append([]string(nil), safetensors...), ggufs...)
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
 	case len(safetensors) > 0:
-		pack.Format = ModelPackFormatSafetensors
+		pack.Format = mp.ModelPackFormatSafetensors
 		pack.WeightFiles = append([]string(nil), safetensors...)
 	case len(ggufs) == 1:
-		pack.Format = ModelPackFormatGGUF
+		pack.Format = mp.ModelPackFormatGGUF
 		pack.WeightFiles = append([]string(nil), ggufs...)
 	case len(ggufs) > 1:
-		pack.Format = ModelPackFormatGGUF
+		pack.Format = mp.ModelPackFormatGGUF
 		pack.WeightFiles = append([]string(nil), ggufs...)
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
 	default:
-		pack.Format = ModelPackFormatMissing
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMissingWeights, "no .safetensors or .gguf weights found", root)
+		pack.Format = mp.ModelPackFormatMissing
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingWeights, "no .safetensors or .gguf weights found", root)
 	}
 }
 
-func inspectModelPackGGUF(pack *ModelPack, path string) {
+func inspectModelPackGGUF(pack *mp.ModelPack, path string) {
 	info, err := ReadGGUFInfo(path)
 	if err != nil {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueInvalidGGUF, err.Error(), path)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidGGUF, err.Error(), path)
 		return
 	}
 	pack.GGUF = &info
@@ -304,11 +144,11 @@ func inspectModelPackGGUF(pack *ModelPack, path string) {
 	pack.HiddenSize = firstPositive(pack.HiddenSize, info.HiddenSize)
 	pack.VocabSize = firstPositive(pack.VocabSize, info.VocabSize)
 	if !info.Valid() {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueInvalidGGUF, "GGUF tensor metadata failed validation: "+ggufValidationSummary(info.ValidationIssues), path)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidGGUF, "GGUF tensor metadata failed validation: "+ggufValidationSummary(info.ValidationIssues), path)
 	}
 }
 
-func applyModelPackConfigMetadata(pack *ModelPack, config *modelConfigProbe) {
+func applyModelPackConfigMetadata(pack *mp.ModelPack, config *modelConfigProbe) {
 	pack.Architecture = firstNonEmpty(pack.Architecture, config.architecture())
 	pack.QuantBits = firstPositive(pack.QuantBits, config.quantBits())
 	pack.QuantGroup = firstPositive(pack.QuantGroup, config.quantGroup())
@@ -318,10 +158,10 @@ func applyModelPackConfigMetadata(pack *ModelPack, config *modelConfigProbe) {
 	pack.VocabSize = firstPositive(pack.VocabSize, config.vocabSize())
 }
 
-func inspectModelPackJANG(pack *ModelPack, root string) {
+func inspectModelPackJANG(pack *mp.ModelPack, root string) {
 	info, err := jang.ReadConfig(root)
 	if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueQuantizationMismatch, "jang_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "jang_config.json"))
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueQuantizationMismatch, "jang_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "jang_config.json"))
 		return
 	}
 	if info == nil {
@@ -351,10 +191,10 @@ func inspectModelPackJANG(pack *ModelPack, root string) {
 	}
 }
 
-func inspectModelPackCodebook(pack *ModelPack, root string) {
+func inspectModelPackCodebook(pack *mp.ModelPack, root string) {
 	profile, err := codebook.ReadProfile(root)
 	if err != nil {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueUnsupportedCodebook, "codebook_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "codebook_config.json"))
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedCodebook, "codebook_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "codebook_config.json"))
 		return
 	}
 	if profile == nil {
@@ -370,7 +210,7 @@ func inspectModelPackCodebook(pack *ModelPack, root string) {
 		Bits:   pack.QuantBits,
 		Mixed:  true,
 	}
-	pack.addIssue(ModelPackIssueError, ModelPackIssueUnsupportedCodebook, "codebook/VQ tensor matvec is available, but full codebook-quantized model loading is not implemented yet", core.PathJoin(root, "codebook_config.json"))
+	pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedCodebook, "codebook/VQ tensor matvec is available, but full codebook-quantized model loading is not implemented yet", core.PathJoin(root, "codebook_config.json"))
 }
 
 func cloneGGUFQuantizationInfo(info GGUFQuantizationInfo) *GGUFQuantizationInfo {
@@ -397,47 +237,47 @@ func ggufValidationSummary(issues []GGUFValidationIssue) string {
 	return core.Join(", ", parts...)
 }
 
-func inspectModelPackTokenizer(pack *ModelPack, root string) {
+func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
 	stat := core.Stat(tokenizerPath)
 	if !stat.OK {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
 		return
 	}
 	if _, err := LoadTokenizer(tokenizerPath); err != nil {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueInvalidTokenizer, err.Error(), tokenizerPath)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, err.Error(), tokenizerPath)
 		return
 	}
 	pack.TokenizerPath = tokenizerPath
 	pack.HasTokenizer = true
 }
 
-func inspectModelPackChatTemplate(pack *ModelPack, root string, cfg ModelPackConfig) {
+func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelPackConfig) {
 	tokenizerConfigPath := core.PathJoin(root, "tokenizer_config.json")
 	if template, ok, err := readTokenizerChatTemplate(tokenizerConfigPath); ok {
 		pack.TokenizerConfigPath = tokenizerConfigPath
 		pack.ChatTemplate = template
-		pack.ChatTemplateSource = ModelPackChatTemplateFile
+		pack.ChatTemplateSource = mp.ModelPackChatTemplateFile
 		pack.HasChatTemplate = true
 		return
 	} else if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
 	}
 
 	jinjaPath := core.PathJoin(root, "chat_template.jinja")
 	if template, ok, err := readJinjaChatTemplate(jinjaPath); ok {
 		pack.TokenizerConfigPath = jinjaPath
 		pack.ChatTemplate = template
-		pack.ChatTemplateSource = ModelPackChatTemplateJinja
+		pack.ChatTemplateSource = mp.ModelPackChatTemplateJinja
 		pack.HasChatTemplate = true
 		return
 	} else if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
 	}
 
 	if template := nativeChatTemplateName(pack.Architecture); template != "" {
 		pack.ChatTemplate = template
-		pack.ChatTemplateSource = ModelPackChatTemplateNative
+		pack.ChatTemplateSource = mp.ModelPackChatTemplateNative
 		pack.HasChatTemplate = true
 		return
 	}
@@ -445,7 +285,7 @@ func inspectModelPackChatTemplate(pack *ModelPack, root string, cfg ModelPackCon
 		return
 	}
 	if cfg.RequireChatTemplate {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMissingChatTemplate, "no tokenizer_config.json chat_template or native chat template is available", root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingChatTemplate, "no tokenizer_config.json chat_template or native chat template is available", root)
 	}
 }
 
@@ -487,9 +327,9 @@ func readJinjaChatTemplate(path string) (string, bool, error) {
 	return template, template != "", nil
 }
 
-func inspectModelPackArchitecture(pack *ModelPack) {
+func inspectModelPackArchitecture(pack *mp.ModelPack) {
 	if pack.Architecture == "" {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
 		return
 	}
 	if profile, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
@@ -498,11 +338,11 @@ func inspectModelPackArchitecture(pack *ModelPack) {
 	}
 	pack.SupportedArchitecture = modelPackSupportedArchitecture(pack.Architecture)
 	if !pack.SupportedArchitecture {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueUnsupportedArchitecture, "architecture is not supported by native go-mlx loaders: "+pack.Architecture, pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedArchitecture, "architecture is not supported by native go-mlx loaders: "+pack.Architecture, pack.ConfigPath)
 		return
 	}
 	if !modelPackNativeRuntimeSupported(pack.Architecture) {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
 	}
 }
 
@@ -520,7 +360,7 @@ func modelPackUnsupportedRuntimeMessage(architecture string) string {
 	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
 }
 
-func inspectModelPackTaskProfiles(pack *ModelPack, root string) {
+func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string) {
 	if pack == nil {
 		return
 	}
@@ -545,8 +385,8 @@ func inspectModelPackTaskProfiles(pack *ModelPack, root string) {
 	pack.Capabilities = modelPackCapabilities(pack)
 }
 
-func inspectModelPackEmbeddingProfile(pack *ModelPack, root string) ModelEmbeddingProfile {
-	profile := ModelEmbeddingProfile{
+func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelEmbeddingProfile {
+	profile := mp.ModelEmbeddingProfile{
 		Dimension:         pack.HiddenSize,
 		Pooling:           "cls",
 		MaxSequenceLength: pack.ContextLength,
@@ -570,8 +410,8 @@ func inspectModelPackEmbeddingProfile(pack *ModelPack, root string) ModelEmbeddi
 	return profile
 }
 
-func inspectModelPackRerankProfile(pack *ModelPack, root string) ModelRerankProfile {
-	profile := ModelRerankProfile{
+func inspectModelPackRerankProfile(pack *mp.ModelPack, root string) mp.ModelRerankProfile {
+	profile := mp.ModelRerankProfile{
 		Method:            "cross-encoder",
 		MaxSequenceLength: pack.ContextLength,
 		Source:            "transformers",
@@ -650,7 +490,7 @@ func readSentenceTransformerNormalize(root string) (bool, bool) {
 	return false, true
 }
 
-func modelPackCapabilities(pack *ModelPack) []inference.Capability {
+func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 	if pack == nil {
 		return nil
 	}
@@ -691,7 +531,7 @@ func modelPackAlgorithmCapability(id inference.CapabilityID, architecture string
 	return capability
 }
 
-func modelPackUsesGenerationKVCache(pack *ModelPack, architecture string) bool {
+func modelPackUsesGenerationKVCache(pack *mp.ModelPack, architecture string) bool {
 	if pack != nil {
 		if pack.Embedding != nil || pack.Rerank != nil {
 			return false
@@ -709,54 +549,54 @@ func modelPackUsesGenerationKVCache(pack *ModelPack, architecture string) bool {
 	return true
 }
 
-func inspectModelPackMiniMaxM2(pack *ModelPack) {
+func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 	if pack.Architecture != "minimax_m2" || pack.ConfigPath == "" {
 		return
 	}
 	read := core.ReadFile(pack.ConfigPath)
 	if !read.OK {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueInvalidConfig, "MiniMax M2 config could not be read: "+read.Value.(error).Error(), pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueInvalidConfig, "MiniMax M2 config could not be read: "+read.Value.(error).Error(), pack.ConfigPath)
 		return
 	}
 	cfg, err := ParseMiniMaxM2Config(read.Value.([]byte))
 	if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueInvalidConfig, "MiniMax M2 config could not be parsed: "+err.Error(), pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueInvalidConfig, "MiniMax M2 config could not be parsed: "+err.Error(), pack.ConfigPath)
 		return
 	}
 	plan, err := BuildMiniMaxM2TensorPlan(cfg, pack.JANG)
 	if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueUnsupportedRuntime, "MiniMax M2 tensor plan could not be built: "+err.Error(), pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, "MiniMax M2 tensor plan could not be built: "+err.Error(), pack.ConfigPath)
 		return
 	}
 	pack.MiniMaxM2 = &plan
-	if pack.Format != ModelPackFormatSafetensors || len(pack.WeightFiles) == 0 {
+	if pack.Format != mp.ModelPackFormatSafetensors || len(pack.WeightFiles) == 0 {
 		return
 	}
 	skeleton, err := BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan, pack.WeightFiles, 0)
 	if err != nil {
-		pack.addIssue(ModelPackIssueWarning, ModelPackIssueMiniMaxM2LayerSkeleton, "MiniMax M2 first-layer skeleton could not be validated: "+err.Error(), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMiniMaxM2LayerSkeleton, "MiniMax M2 first-layer skeleton could not be validated: "+err.Error(), pack.Root)
 		return
 	}
 	pack.MiniMaxM2LayerSkeleton = &skeleton
 }
 
-func inspectModelPackPolicy(pack *ModelPack, cfg ModelPackConfig) {
+func inspectModelPackPolicy(pack *mp.ModelPack, cfg mp.ModelPackConfig) {
 	if cfg.ExpectedQuantBits > 0 && pack.QuantBits != cfg.ExpectedQuantBits {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueQuantizationMismatch, core.Sprintf("quantization is %d-bit, expected %d-bit", pack.QuantBits, cfg.ExpectedQuantBits), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueQuantizationMismatch, core.Sprintf("quantization is %d-bit, expected %d-bit", pack.QuantBits, cfg.ExpectedQuantBits), pack.Root)
 	}
 	if cfg.MaxContextLength > 0 && pack.ContextLength > cfg.MaxContextLength {
-		pack.addIssue(ModelPackIssueError, ModelPackIssueContextTooLarge, core.Sprintf("context length %d exceeds limit %d", pack.ContextLength, cfg.MaxContextLength), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueContextTooLarge, core.Sprintf("context length %d exceeds limit %d", pack.ContextLength, cfg.MaxContextLength), pack.Root)
 	}
 }
 
-func finalizeModelPack(pack *ModelPack) {
+func finalizeModelPack(pack *mp.ModelPack) {
 	chatOK := pack.HasChatTemplate || !modelPackRequiresChatTemplate(pack.Architecture)
 	pack.NativeLoadable = pack.SupportedArchitecture &&
 		modelPackNativeRuntimeSupported(pack.Architecture) &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		chatOK &&
-		(pack.Format == ModelPackFormatSafetensors || pack.Format == ModelPackFormatGGUF) &&
+		(pack.Format == mp.ModelPackFormatSafetensors || pack.Format == mp.ModelPackFormatGGUF) &&
 		!pack.HasErrorIssue()
 	pack.RequiresPythonConversion = !pack.NativeLoadable
 	pack.OK = !pack.HasErrorIssue()
@@ -784,44 +624,3 @@ func modelPackRequiresChatTemplate(architecture string) bool {
 	return !ok || profile.RequiresChatTemplate
 }
 
-func (pack *ModelPack) addIssue(severity ModelPackIssueSeverity, code ModelPackIssueCode, message, path string) {
-	pack.Issues = append(pack.Issues, ModelPackIssue{
-		Severity: severity,
-		Code:     code,
-		Message:  message,
-		Path:     path,
-	})
-}
-
-// HasErrorIssue reports whether any issue has error severity.
-func (pack ModelPack) HasErrorIssue() bool {
-	for _, issue := range pack.Issues {
-		if issue.Severity == ModelPackIssueError {
-			return true
-		}
-	}
-	return false
-}
-
-func (pack ModelPack) issueSummary() string {
-	if len(pack.Issues) == 0 {
-		return "unknown"
-	}
-	builder := core.NewBuilder()
-	for i, issue := range pack.Issues {
-		if issue.Severity != ModelPackIssueError {
-			continue
-		}
-		if builder.Len() > 0 {
-			builder.WriteString(", ")
-		}
-		builder.WriteString(string(issue.Code))
-		if i == len(pack.Issues)-1 {
-			continue
-		}
-	}
-	if builder.Len() == 0 {
-		return "unknown"
-	}
-	return builder.String()
-}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -208,7 +209,7 @@ func TestFuseLoRAIntoModelPack_CopiesTokenizerConfig_Ugly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FuseLoRAIntoModelPack() error = %v", err)
 	}
-	if result.Pack.ChatTemplateSource != ModelPackChatTemplateFile {
+	if result.Pack.ChatTemplateSource != mp.ModelPackChatTemplateFile {
 		t.Fatalf("ChatTemplateSource = %q, want tokenizer_config.json", result.Pack.ChatTemplateSource)
 	}
 	copied := core.ReadFile(core.PathJoin(output, "tokenizer_config.json"))

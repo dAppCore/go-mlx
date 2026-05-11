@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 // ModelMergeMethod names the tensor merge algorithm.
@@ -51,8 +52,8 @@ type ModelMergeResult struct {
 	ProvenancePath string           `json:"provenance_path"`
 	Method         ModelMergeMethod `json:"method"`
 	T              float64          `json:"t,omitempty"`
-	Sources        []ModelPack      `json:"sources"`
-	Pack           ModelPack        `json:"pack"`
+	Sources        []mp.ModelPack      `json:"sources"`
+	Pack           mp.ModelPack        `json:"pack"`
 	TensorCount    int              `json:"tensor_count"`
 	MergedTensors  int              `json:"merged_tensors"`
 	CopiedTensors  int              `json:"copied_tensors,omitempty"`
@@ -65,7 +66,7 @@ type ModelMergeProvenance struct {
 	Method         ModelMergeMethod   `json:"method"`
 	T              float64            `json:"t,omitempty"`
 	Sources        []ModelMergeSource `json:"sources"`
-	SourcePacks    []ModelPack        `json:"source_packs"`
+	SourcePacks    []mp.ModelPack        `json:"source_packs"`
 	OutputWeight   string             `json:"output_weight"`
 	MergedTensors  int                `json:"merged_tensors"`
 	CopiedTensors  int                `json:"copied_tensors,omitempty"`
@@ -77,7 +78,7 @@ type modelMergePrepared struct {
 	Method  ModelMergeMethod
 	T       float64
 	Sources []ModelMergeSource
-	Packs   []ModelPack
+	Packs   []mp.ModelPack
 	Output  string
 }
 
@@ -202,7 +203,7 @@ func prepareModelMerge(ctx context.Context, opts ModelMergeOptions) (modelMergeP
 		return modelMergePrepared{}, err
 	}
 
-	packs := make([]ModelPack, 0, len(opts.Sources))
+	packs := make([]mp.ModelPack, 0, len(opts.Sources))
 	normalizedSources := make([]ModelMergeSource, 0, len(opts.Sources))
 	for _, source := range opts.Sources {
 		if source.Path == "" {
@@ -212,7 +213,7 @@ func prepareModelMerge(ctx context.Context, opts ModelMergeOptions) (modelMergeP
 		if err != nil {
 			return modelMergePrepared{}, core.E("MergeModelPacks", "validate source model pack", err)
 		}
-		if pack.Format != ModelPackFormatSafetensors {
+		if pack.Format != mp.ModelPackFormatSafetensors {
 			return modelMergePrepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
 		}
 		if samePath(pack.Root, output) {
@@ -257,7 +258,7 @@ func ensureEmptyModelMergeDestination(output string) error {
 	return nil
 }
 
-func validateModelMergePackCompatibility(packs []ModelPack, opts ModelMergeOptions) error {
+func validateModelMergePackCompatibility(packs []mp.ModelPack, opts ModelMergeOptions) error {
 	base := packs[0]
 	for i := 1; i < len(packs); i++ {
 		pack := packs[i]
@@ -282,7 +283,7 @@ func validateModelMergePackCompatibility(packs []ModelPack, opts ModelMergeOptio
 	return nil
 }
 
-func indexModelMergeSources(packs []ModelPack) ([]safetensorIndex, error) {
+func indexModelMergeSources(packs []mp.ModelPack) ([]safetensorIndex, error) {
 	indexes := make([]safetensorIndex, 0, len(packs))
 	for _, pack := range packs {
 		index, err := indexSafetensorFiles(pack.WeightFiles)

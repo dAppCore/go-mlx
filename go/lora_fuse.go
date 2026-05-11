@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/lora"
 )
 
@@ -30,7 +31,7 @@ type FuseLoRAResult struct {
 	WeightPath      string          `json:"weight_path"`
 	WeightFiles     []string        `json:"weight_files,omitempty"`
 	ProvenancePath  string          `json:"provenance_path"`
-	Pack            ModelPack       `json:"pack"`
+	Pack            mp.ModelPack       `json:"pack"`
 	Adapter         lora.AdapterInfo `json:"adapter"`
 	FusedWeights    int             `json:"fused_weights"`
 	FusedWeightKeys []string        `json:"fused_weight_keys,omitempty"`
@@ -39,7 +40,7 @@ type FuseLoRAResult struct {
 // LoRAFuseProvenance records how a fused pack was produced.
 type LoRAFuseProvenance struct {
 	Version         int               `json:"version"`
-	SourceModel     ModelPack         `json:"source_model"`
+	SourceModel     mp.ModelPack         `json:"source_model"`
 	Adapter         lora.AdapterInfo   `json:"adapter"`
 	OutputWeight    string            `json:"output_weight"`
 	OutputWeights   []string          `json:"output_weights,omitempty"`
@@ -48,7 +49,7 @@ type LoRAFuseProvenance struct {
 }
 
 type loraFusePrepared struct {
-	Model   ModelPack
+	Model   mp.ModelPack
 	Adapter lora.AdapterInfo
 	Output  string
 }
@@ -77,7 +78,7 @@ func prepareLoRAFuse(ctx context.Context, opts FuseLoRAOptions) (loraFusePrepare
 	if err != nil {
 		return loraFusePrepared{}, core.E("FuseLoRAIntoModelPack", "validate source model pack", err)
 	}
-	if model.Format != ModelPackFormatSafetensors {
+	if model.Format != mp.ModelPackFormatSafetensors {
 		return loraFusePrepared{}, core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
 	}
 

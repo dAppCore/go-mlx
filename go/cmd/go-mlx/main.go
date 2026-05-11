@@ -11,6 +11,7 @@ import (
 
 	core "dappco.re/go"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/pack"
 )
 
 func main() {
@@ -176,12 +177,12 @@ func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) 
 		return 2
 	}
 
-	options := []mlx.ModelPackOption{}
+	options := []pack.ModelPackOption{}
 	if *expectedQuant > 0 {
-		options = append(options, mlx.WithPackQuantization(*expectedQuant))
+		options = append(options, pack.WithPackQuantization(*expectedQuant))
 	}
 	if *maxContext > 0 {
-		options = append(options, mlx.WithPackMaxContextLength(*maxContext))
+		options = append(options, pack.WithPackMaxContextLength(*maxContext))
 	}
 	pack, err := mlx.InspectModelPack(fs.Arg(0), options...)
 	if err != nil {
@@ -216,10 +217,10 @@ func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) 
 	return 0
 }
 
-func printPackIssues(stderr io.Writer, pack mlx.ModelPack) {
+func printPackIssues(stderr io.Writer, p pack.ModelPack) {
 	core.WriteString(stderr, "go-mlx pack: invalid model pack\n")
-	for _, issue := range pack.Issues {
-		if issue.Severity != mlx.ModelPackIssueError {
+	for _, issue := range p.Issues {
+		if issue.Severity != pack.ModelPackIssueError {
 			continue
 		}
 		core.WriteString(stderr, core.Sprintf("  %s: %s\n", issue.Code, issue.Message))

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 type fakeHFModelSource struct {
@@ -472,7 +473,7 @@ func TestHFModelFitHelpers_Ugly(t *testing.T) {
 		{Name: "pytorch_model.bin", Size: 30},
 	}
 	format, bytes := hfWeightFormatAndBytes(files)
-	if format != string(ModelPackFormatMixed) || bytes != 60 {
+	if format != string(mp.ModelPackFormatMixed) || bytes != 60 {
 		t.Fatalf("hfWeightFormatAndBytes = %q/%d, want mixed/60", format, bytes)
 	}
 	if bits := inferHFQuantBits([]HFModelFile{{Name: "model-8bit.safetensors"}}); bits != 8 {

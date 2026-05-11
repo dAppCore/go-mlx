@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
@@ -57,7 +58,7 @@ func TestQuantizeModelPackToGGUF_Q8RoundTrip_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("InspectModelPack(output) error = %v", err)
 	}
-	if !pack.Valid() || pack.Format != ModelPackFormatGGUF || pack.QuantType != "q8_0" {
+	if !pack.Valid() || pack.Format != mp.ModelPackFormatGGUF || pack.QuantType != "q8_0" {
 		t.Fatalf("pack = %+v", pack)
 	}
 	if stat := core.Stat(core.PathJoin(output, "tokenizer.json")); !stat.OK {
@@ -112,7 +113,7 @@ func TestGGUFQuantize_WriteStreamedGGUF_Good(t *testing.T) {
 	}
 
 	output := core.PathJoin(t.TempDir(), "streamed.gguf")
-	metadata := ggufQuantizeMetadata(ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
+	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
 	if err := writeQuantizedGGUFStream(context.Background(), output, metadata, tensors, refs, GGUFQuantizeQ8_0, 32); err != nil {
 		t.Fatalf("writeQuantizedGGUFStream() error = %v", err)
 	}
@@ -136,7 +137,7 @@ func TestGGUFQuantize_WriteBufferedGGUF_Good(t *testing.T) {
 		Shape: []uint64{32},
 		Data:  data,
 	}}
-	metadata := ggufQuantizeMetadata(ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
+	metadata := ggufQuantizeMetadata(mp.ModelPack{Architecture: "qwen3"}, GGUFQuantizeQ8_0, nil)
 	if err := writeQuantizedGGUF(output, metadata, tensors); err != nil {
 		t.Fatalf("writeQuantizedGGUF() error = %v", err)
 	}
@@ -426,7 +427,7 @@ func TestQuantizeGGUFTensor_ErrorPaths_Bad(t *testing.T) {
 }
 
 func TestGGUFQuantizeMetadata_LabelsAndDenseFloats_Ugly(t *testing.T) {
-	source := ModelPack{Architecture: "qwen3", VocabSize: 10, HiddenSize: 20, NumLayers: 2, ContextLength: 128}
+	source := mp.ModelPack{Architecture: "qwen3", VocabSize: 10, HiddenSize: 20, NumLayers: 2, ContextLength: 128}
 	metadata := ggufQuantizeMetadata(source, GGUFQuantizeQ4_0, map[string]string{"z": "last", "a": "first"})
 	if len(metadata) != 11 {
 		t.Fatalf("metadata entries = %d, want 11", len(metadata))

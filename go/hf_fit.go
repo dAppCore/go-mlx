@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/inference/quant/jang"
 )
 
@@ -431,7 +432,7 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 		quantBits = inferHFQuantBits(meta.Files)
 	}
 
-	pack := ModelPack{
+	pack := mp.ModelPack{
 		Architecture:          arch,
 		SupportedArchitecture: modelPackSupportedArchitecture(arch),
 		QuantBits:             quantBits,
@@ -497,16 +498,16 @@ func hfWeightFormatAndBytes(files []HFModelFile) (string, uint64) {
 		switch {
 		case core.HasSuffix(name, ".safetensors"):
 			if format == "" {
-				format = string(ModelPackFormatSafetensors)
-			} else if format != string(ModelPackFormatSafetensors) {
-				format = string(ModelPackFormatMixed)
+				format = string(mp.ModelPackFormatSafetensors)
+			} else if format != string(mp.ModelPackFormatSafetensors) {
+				format = string(mp.ModelPackFormatMixed)
 			}
 			total += file.byteSize()
 		case core.HasSuffix(name, ".gguf"):
 			if format == "" {
-				format = string(ModelPackFormatGGUF)
-			} else if format != string(ModelPackFormatGGUF) {
-				format = string(ModelPackFormatMixed)
+				format = string(mp.ModelPackFormatGGUF)
+			} else if format != string(mp.ModelPackFormatGGUF) {
+				format = string(mp.ModelPackFormatMixed)
 			}
 			total += file.byteSize()
 		case core.HasSuffix(name, ".bin"):

@@ -6,10 +6,11 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 func TestSmallModelSmokeBudget_Q4Under26GiB_Good(t *testing.T) {
-	budget := EvaluateSmallModelSmokeBudget(ModelPack{
+	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/gemma-small-q4",
 		QuantBits:      4,
 		WeightBytes:    5 * MemoryGiB,
@@ -26,7 +27,7 @@ func TestSmallModelSmokeBudget_Q4Under26GiB_Good(t *testing.T) {
 }
 
 func TestSmallModelSmokeBudget_RejectsOversizeQ4_Bad(t *testing.T) {
-	budget := EvaluateSmallModelSmokeBudget(ModelPack{
+	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/qwen-large-q4",
 		QuantBits:      4,
 		WeightBytes:    27 * MemoryGiB,
@@ -43,7 +44,7 @@ func TestSmallModelSmokeBudget_RejectsOversizeQ4_Bad(t *testing.T) {
 }
 
 func TestSmallModelSmokeBudget_RejectsNonQ4_Bad(t *testing.T) {
-	budget := EvaluateSmallModelSmokeBudget(ModelPack{
+	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/gemma-small-bf16",
 		QuantBits:      16,
 		WeightBytes:    8 * MemoryGiB,
@@ -62,27 +63,27 @@ func TestSmallModelSmokeBudget_RejectsNonQ4_Bad(t *testing.T) {
 func TestSmallModelSmokeBudget_RejectsUnsafeMetadata_Bad(t *testing.T) {
 	cases := []struct {
 		name string
-		pack ModelPack
+		pack mp.ModelPack
 		want string
 	}{
 		{
 			name: "invalid pack",
-			pack: ModelPack{OK: false, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 4},
+			pack: mp.ModelPack{OK: false, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 4},
 			want: "validation",
 		},
 		{
 			name: "not native loadable",
-			pack: ModelPack{OK: true, NativeLoadable: false, WeightBytes: MemoryGiB, QuantBits: 4},
+			pack: mp.ModelPack{OK: true, NativeLoadable: false, WeightBytes: MemoryGiB, QuantBits: 4},
 			want: "native-loadable",
 		},
 		{
 			name: "unknown weights",
-			pack: ModelPack{OK: true, NativeLoadable: true, WeightBytes: 0, QuantBits: 4},
+			pack: mp.ModelPack{OK: true, NativeLoadable: true, WeightBytes: 0, QuantBits: 4},
 			want: "unknown",
 		},
 		{
 			name: "unknown quantization",
-			pack: ModelPack{OK: true, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 0},
+			pack: mp.ModelPack{OK: true, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 0},
 			want: "quantization is unknown",
 		},
 	}
@@ -146,7 +147,7 @@ func TestPlanSmallModelSmoke_RedactsChatTemplateByDefault_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanSmallModelSmoke() error = %v", err)
 	}
-	if !plan.Pack.HasChatTemplate || plan.Pack.ChatTemplateSource != ModelPackChatTemplateJinja {
+	if !plan.Pack.HasChatTemplate || plan.Pack.ChatTemplateSource != mp.ModelPackChatTemplateJinja {
 		t.Fatalf("chat template metadata = has:%v source:%q", plan.Pack.HasChatTemplate, plan.Pack.ChatTemplateSource)
 	}
 	if plan.Pack.ChatTemplate != "" {

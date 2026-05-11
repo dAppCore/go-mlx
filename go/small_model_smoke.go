@@ -6,6 +6,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	mp "dappco.re/go/mlx/pack"
 )
 
 const (
@@ -68,7 +69,7 @@ type SmallModelSmokeLoadPlan struct {
 // be touched by a native Apple smoke run.
 type SmallModelSmokePlan struct {
 	ModelPath  string                  `json:"model_path"`
-	Pack       ModelPack               `json:"pack"`
+	Pack       mp.ModelPack               `json:"pack"`
 	Budget     SmallModelSmokeBudget   `json:"budget"`
 	MemoryPlan MemoryPlan              `json:"memory_plan"`
 	Load       SmallModelSmokeLoadPlan `json:"load"`
@@ -111,7 +112,7 @@ func DefaultSmallModelSmokeConfig() SmallModelSmokeConfig {
 }
 
 // EvaluateSmallModelSmokeBudget evaluates the load budget for an inspected pack.
-func EvaluateSmallModelSmokeBudget(pack ModelPack, cfg SmallModelSmokeConfig) SmallModelSmokeBudget {
+func EvaluateSmallModelSmokeBudget(pack mp.ModelPack, cfg SmallModelSmokeConfig) SmallModelSmokeBudget {
 	cfg = normalizeSmallModelSmokeConfig(cfg)
 	budget := SmallModelSmokeBudget{
 		SafeToLoad:           true,
@@ -249,10 +250,10 @@ func normalizeSmallModelSmokeConfig(cfg SmallModelSmokeConfig) SmallModelSmokeCo
 	return cfg
 }
 
-func smallModelSmokePackOptions(cfg SmallModelSmokeConfig) []ModelPackOption {
-	opts := []ModelPackOption{WithPackRequireChatTemplate(false)}
+func smallModelSmokePackOptions(cfg SmallModelSmokeConfig) []mp.ModelPackOption {
+	opts := []mp.ModelPackOption{mp.WithPackRequireChatTemplate(false)}
 	if cfg.RequiredQuantization > 0 {
-		opts = append(opts, WithPackQuantization(cfg.RequiredQuantization))
+		opts = append(opts, mp.WithPackQuantization(cfg.RequiredQuantization))
 	}
 	return opts
 }
