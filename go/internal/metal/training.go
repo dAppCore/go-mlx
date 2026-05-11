@@ -164,6 +164,20 @@ func (m *deviceInternalModel) ForwardMasked(tokens *Array, mask *Array, caches [
 	return out
 }
 
+func (m *deviceInternalModel) ForwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) *Array {
+	lastModel, ok := m.inner.(LastTokenLogitsModel)
+	if !ok {
+		return m.ForwardMasked(tokens, mask, caches)
+	}
+	var out *Array
+	if err := withDefaultDevice(m.device, func() {
+		out = lastModel.ForwardLastTokenLogits(tokens, mask, caches)
+	}); err != nil {
+		core.Error("mlx: internal last-token forward", "error", err)
+	}
+	return out
+}
+
 func (m *deviceInternalModel) NewCache() []Cache {
 	return m.inner.NewCache()
 }

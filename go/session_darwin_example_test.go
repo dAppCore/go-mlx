@@ -31,6 +31,11 @@ func ExampleModelSession_Prefill() {
 	// Output: ModelSession_Prefill
 }
 
+func ExampleModelSession_AppendPrompt() {
+	core.Println("ModelSession_AppendPrompt")
+	// Output: ModelSession_AppendPrompt
+}
+
 func ExampleModelSession_Generate() {
 	core.Println("ModelSession_Generate")
 	// Output: ModelSession_Generate

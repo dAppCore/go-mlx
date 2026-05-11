@@ -111,6 +111,120 @@ func TestMemoryPlan_QwenFamilyHints_Good(t *testing.T) {
 	}
 }
 
+func TestMemoryPlan_MiniMaxJANGTQ96GB_Good(t *testing.T) {
+	pack := ModelPack{
+		Architecture:  "minimax_m2",
+		ContextLength: 196608,
+		NumLayers:     62,
+		HiddenSize:    3072,
+		QuantBits:     2,
+		QuantGroup:    64,
+		QuantType:     "jangtq",
+		QuantFamily:   "jang",
+		PackedQuantization: BuildJANGPackedQuantizationProfile(&JANGQuantizationInfo{
+			WeightFormat:     "mxtq",
+			Profile:          "JANGTQ",
+			Method:           "affine+mxtq",
+			GroupSize:        64,
+			BitsDefault:      2,
+			AttentionBits:    8,
+			RoutedExpertBits: 2,
+		}),
+		WeightBytes: 60 * MemoryGiB,
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 * MemoryGiB,
+			MaxRecommendedWorkingSetSize: 90 * MemoryGiB,
+		},
+		Pack: &pack,
+	})
+
+	if plan.ContextLength != 32768 || plan.BatchSize != 1 {
+		t.Fatalf("MiniMax plan shape = ctx:%d batch:%d, want 32768/1", plan.ContextLength, plan.BatchSize)
+	}
+	if plan.CacheMode != KVCacheModePaged || !plan.PromptCache {
+		t.Fatalf("MiniMax cache policy = mode:%q prompt:%v", plan.CacheMode, plan.PromptCache)
+	}
+	if !plan.ExpertResidency.Enabled || plan.ExpertResidency.Mode != ExpertResidencyModeLazy {
+		t.Fatalf("expert residency = %+v, want lazy residency for MiniMax on 96GB", plan.ExpertResidency)
+	}
+	if plan.ModelQuantization != 2 || plan.ModelQuantizationType != "jangtq" || plan.ModelQuantizationFamily != "jang" {
+		t.Fatalf("quantization hints = %+v", plan)
+	}
+	if plan.ModelPackedQuantization == nil || plan.ModelPackedQuantization.Format != "mxtq" || plan.ModelPackedQuantization.MaxBits != 8 {
+		t.Fatalf("packed quantization = %+v, want MXTQ profile", plan.ModelPackedQuantization)
+	}
+	if !memoryPlanHasNote(plan, "MiniMax") || !memoryPlanHasNote(plan, "JANGTQ") {
+		t.Fatalf("Notes = %+v, want MiniMax/JANGTQ memory hint", plan.Notes)
+	}
+}
+
+func TestMemoryPlan_MiniMaxLayerSkeletonHints_Good(t *testing.T) {
+	pack := ModelPack{
+		Architecture:  "minimax_m2",
+		ContextLength: 32768,
+		NumLayers:     1,
+		HiddenSize:    4,
+		MiniMaxM2LayerSkeleton: &MiniMaxM2LayerForwardSkeleton{
+			Layer: 0,
+			Attention: []MiniMaxM2ResolvedTensor{
+				{Name: "q", Role: MiniMaxM2TensorRoleAttentionQ, PackedBytes: 16},
+				{Name: "k", Role: MiniMaxM2TensorRoleAttentionK, PackedBytes: 8},
+				{Name: "v", Role: MiniMaxM2TensorRoleAttentionV, PackedBytes: 8},
+				{Name: "o", Role: MiniMaxM2TensorRoleAttentionO, PackedBytes: 16},
+			},
+			RouterGate: MiniMaxM2ResolvedTensor{Name: "gate", Role: MiniMaxM2TensorRoleRouterGate, DType: "F32", Shape: []uint64{3, 4}},
+			RouterBias: &MiniMaxM2ResolvedTensor{Name: "bias", Role: MiniMaxM2TensorRoleRouterBias, DType: "F32", Shape: []uint64{3}},
+		},
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{MemorySize: 96 * MemoryGiB, MaxRecommendedWorkingSetSize: 90 * MemoryGiB},
+		Pack:   &pack,
+	})
+
+	if !plan.ModelForwardSkeletonValidated || plan.ModelForwardSkeletonBytes != 108 {
+		t.Fatalf("forward skeleton hints = validated:%v bytes:%d, want true/108", plan.ModelForwardSkeletonValidated, plan.ModelForwardSkeletonBytes)
+	}
+	if !memoryPlanHasNote(plan, "skeleton") || !memoryPlanHasNote(plan, "safetensors") {
+		t.Fatalf("Notes = %+v, want skeleton validation hint", plan.Notes)
+	}
+}
+
+func TestMemoryPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
+	pack := ModelPack{
+		Architecture:    "bert",
+		ContextLength:   512,
+		NumLayers:       12,
+		HiddenSize:      768,
+		Embedding:       &ModelEmbeddingProfile{Dimension: 768, Pooling: "mean", MaxSequenceLength: 512},
+		WeightBytes:     420 * 1024 * 1024,
+		QuantBits:       16,
+		QuantType:       "fp16",
+		QuantFamily:     "dense",
+		HasTokenizer:    true,
+		HasChatTemplate: false,
+	}
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{MemorySize: 16 * MemoryGiB, MaxRecommendedWorkingSetSize: 13 * MemoryGiB},
+		Pack:   &pack,
+	})
+
+	if plan.ContextLength != 512 {
+		t.Fatalf("ContextLength = %d, want BERT max sequence 512", plan.ContextLength)
+	}
+	if plan.CachePolicy != KVCacheDefault || plan.CacheMode != KVCacheModeDefault || plan.PromptCache {
+		t.Fatalf("cache policy = policy:%q mode:%q prompt:%v, want disabled generation cache for embeddings", plan.CachePolicy, plan.CacheMode, plan.PromptCache)
+	}
+	if plan.EstimatedKVCacheBytes != 0 || plan.EstimatedKVCacheModeBytes != 0 {
+		t.Fatalf("KV estimates = fp:%d mode:%d, want zero for encoder embeddings", plan.EstimatedKVCacheBytes, plan.EstimatedKVCacheModeBytes)
+	}
+	if plan.BatchSize < 4 || !memoryPlanHasNote(plan, "embedding encoder") {
+		t.Fatalf("plan = %+v, want embedding throughput hint", plan)
+	}
+}
+
 func TestMemoryPlan_PlanMemory_Good(t *testing.T) {
 	target := "PlanMemory"
 	variant := "Good"

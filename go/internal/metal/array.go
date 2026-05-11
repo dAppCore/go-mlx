@@ -7,6 +7,18 @@ package metal
 /*
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
+
+static const void* go_mlx_array_data_float16(mlx_array arr) {
+	return (const void*)mlx_array_data_float16(arr);
+}
+
+static const void* go_mlx_array_data_bfloat16(mlx_array arr) {
+	return (const void*)mlx_array_data_bfloat16(arr);
+}
+
+static const void* go_mlx_array_data_complex64(mlx_array arr) {
+	return (const void*)mlx_array_data_complex64(arr);
+}
 */
 import "C"
 
@@ -365,6 +377,91 @@ func (t *Array) Bytes() []byte {
 	return data
 }
 
+// RawBytes extracts the evaluated row-major byte representation of an array in
+// its current dtype. This preserves float16/bfloat16 payloads without a
+// float32 staging cast.
+func (t *Array) RawBytes() []byte {
+	src := ensureContiguous(t)
+	n := src.NumBytes()
+	if n <= 0 {
+		runtime.KeepAlive(src)
+		return nil
+	}
+	ptr := rawArrayDataPointer(src)
+	if ptr == nil {
+		runtime.KeepAlive(src)
+		return nil
+	}
+	data := make([]byte, n)
+	copy(data, unsafe.Slice((*byte)(ptr), n))
+	runtime.KeepAlive(src)
+	return data
+}
+
+func rawArrayDataPointer(src *Array) unsafe.Pointer {
+	switch src.Dtype() {
+	case DTypeBool:
+		return unsafe.Pointer(C.mlx_array_data_bool(src.ctx))
+	case DTypeUint8:
+		return unsafe.Pointer(C.mlx_array_data_uint8(src.ctx))
+	case DTypeUint16:
+		return unsafe.Pointer(C.mlx_array_data_uint16(src.ctx))
+	case DTypeFloat16:
+		return C.go_mlx_array_data_float16(src.ctx)
+	case DTypeBFloat16:
+		return C.go_mlx_array_data_bfloat16(src.ctx)
+	case DTypeUint32:
+		return unsafe.Pointer(C.mlx_array_data_uint32(src.ctx))
+	case DTypeUint64:
+		return unsafe.Pointer(C.mlx_array_data_uint64(src.ctx))
+	case DTypeInt8:
+		return unsafe.Pointer(C.mlx_array_data_int8(src.ctx))
+	case DTypeInt16:
+		return unsafe.Pointer(C.mlx_array_data_int16(src.ctx))
+	case DTypeInt32:
+		return unsafe.Pointer(C.mlx_array_data_int32(src.ctx))
+	case DTypeInt64:
+		return unsafe.Pointer(C.mlx_array_data_int64(src.ctx))
+	case DTypeFloat32:
+		return unsafe.Pointer(C.mlx_array_data_float32(src.ctx))
+	case DTypeFloat64:
+		return unsafe.Pointer(C.mlx_array_data_float64(src.ctx))
+	case DTypeComplex64:
+		return C.go_mlx_array_data_complex64(src.ctx)
+	default:
+		return nil
+	}
+}
+
+// FromRawBytes creates an Array from already-packed little-endian tensor bytes.
+func FromRawBytes(raw []byte, shape []int, dtype DType) *Array {
+	Init()
+	if len(shape) == 0 {
+		panic("mlx: shape required for raw tensor")
+	}
+	if len(raw) == 0 {
+		panic("mlx: raw tensor data is empty")
+	}
+	if byteSize := DTypeByteSize(dtype); byteSize <= 0 || len(raw)%byteSize != 0 {
+		panic("mlx: raw tensor byte length does not match dtype")
+	}
+	cShape := make([]C.int, len(shape))
+	for i := range shape {
+		cShape[i] = C.int(shape[i])
+	}
+	tt := newArray("")
+	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&raw[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	if tt.ctx.ctx == nil {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic("mlx: raw array data creation failed")
+	}
+	runtime.KeepAlive(raw)
+	runtime.KeepAlive(cShape)
+	return tt
+}
+
 // Ints extracts all elements as int slice (from int32 data).
 // Automatically handles non-contiguous arrays (transpose, broadcast, slice views).
 //
@@ -402,7 +499,14 @@ func (t *Array) DataInt32() []int32 {
 //
 //	flat := kSliced.Floats() // read KV cache values for attention inspection
 func (t *Array) Floats() []float32 {
-	src := ensureContiguous(t)
+	src := t
+	var converted *Array
+	if t.Dtype() != DTypeFloat32 {
+		converted = AsType(t, DTypeFloat32)
+		Materialize(converted)
+		src = converted
+	}
+	src = ensureContiguous(src)
 	n := src.Size()
 	ptr := C.mlx_array_data_float32(src.ctx)
 	floats := make([]float32, n)
@@ -410,6 +514,7 @@ func (t *Array) Floats() []float32 {
 		floats[i] = float32(f)
 	}
 	runtime.KeepAlive(src)
+	Free(converted)
 	return floats
 }
 

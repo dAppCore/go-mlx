@@ -125,6 +125,51 @@ func TestDistillationBatchLoss_SoftCrossEntropyUsesMask_Good(t *testing.T) {
 	}
 }
 
+func TestRunDistillation_ResumeMaxSamplesBuildBatches_Good(t *testing.T) {
+	resume := core.PathJoin(t.TempDir(), "resume")
+	if err := SaveDistillCheckpointMetadata(resume, DistillCheckpointMetadata{Step: 7, Loss: 0.25}); err != nil {
+		t.Fatalf("SaveDistillCheckpointMetadata() error = %v", err)
+	}
+
+	seenSamples := 0
+	result, err := RunDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(_ context.Context, dataset SFTDataset, _ DatasetBatchConfig) ([]SFTBatch, error) {
+			for {
+				_, ok, err := dataset.Next()
+				if err != nil {
+					return nil, err
+				}
+				if !ok {
+					break
+				}
+				seenSamples++
+			}
+			return []SFTBatch{{
+				Batch:   Batch{Tokens: [][]int{{1}}, LossMask: [][]float32{{1}}},
+				Targets: [][]int{{1}},
+			}}, nil
+		},
+		TeacherLogits: func(context.Context, DistillBatch) (DistillLogits, error) {
+			return DistillLogits{{{0, 1}}}, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return DistillLogits{{{1, 0}}}, nil
+		},
+	}, NewSFTSliceDataset([]SFTSample{{Text: "a"}, {Text: "b"}}), DistillConfig{
+		MaxSamples: 1,
+		ResumePath: resume,
+	})
+	if err != nil {
+		t.Fatalf("RunDistillation() error = %v", err)
+	}
+	if result.ResumedFrom == nil || result.ResumedFrom.Step != 7 || seenSamples != 1 {
+		t.Fatalf("resume=%+v seenSamples=%d, want resume step 7 and one bounded sample", result.ResumedFrom, seenSamples)
+	}
+	if result.Metrics.Steps != 1 || result.Metrics.Tokens != 1 {
+		t.Fatalf("metrics = %+v, want one distilled token", result.Metrics)
+	}
+}
+
 func TestRunKnowledgeDistillation_RequiresTeacherLogits_Bad(t *testing.T) {
 	tokenizer := &Tokenizer{tok: fakeSFTTokenizer{encoded: map[string][]int32{"x": {1, 2}}, eos: 3}}
 
@@ -139,6 +184,86 @@ func TestRunKnowledgeDistillation_RequiresTeacherLogits_Bad(t *testing.T) {
 	}
 	if !core.Contains(core.Lower(err.Error()), "teacher") {
 		t.Fatalf("error = %v, want teacher context", err)
+	}
+}
+
+func TestDistillationBatchLoss_ValidationErrors_Bad(t *testing.T) {
+	cases := []struct {
+		name    string
+		teacher DistillLogits
+		student DistillLogits
+		mask    [][]float32
+		cfg     DistillConfig
+		want    string
+	}{
+		{
+			name:    "unsupported_loss",
+			teacher: DistillLogits{{{0}}},
+			student: DistillLogits{{{0}}},
+			cfg:     DistillConfig{Loss: DistillLossKind("bad")},
+			want:    "unsupported",
+		},
+		{
+			name:    "empty_teacher",
+			teacher: DistillLogits{},
+			student: DistillLogits{},
+			cfg:     DistillConfig{},
+			want:    "empty",
+		},
+		{
+			name:    "no_masked_tokens",
+			teacher: DistillLogits{{{0}}},
+			student: DistillLogits{{{0}}},
+			mask:    [][]float32{{0}},
+			cfg:     DistillConfig{},
+			want:    "no masked",
+		},
+		{
+			name:    "bad_temperature",
+			teacher: DistillLogits{{{0}}},
+			student: DistillLogits{{{0}}},
+			cfg:     DistillConfig{Temperature: -1},
+			want:    "temperature",
+		},
+		{
+			name:    "nonfinite_logit",
+			teacher: DistillLogits{{{float32(math.Inf(1))}}},
+			student: DistillLogits{{{0}}},
+			cfg:     DistillConfig{},
+			want:    "finite",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := DistillationBatchLoss(tc.teacher, tc.student, tc.mask, tc.cfg)
+			if err == nil || !core.Contains(core.Lower(err.Error()), tc.want) {
+				t.Fatalf("DistillationBatchLoss() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDistillCheckpointMetadataErrors_Bad(t *testing.T) {
+	if err := SaveDistillCheckpointMetadata("", DistillCheckpointMetadata{}); err == nil {
+		t.Fatal("SaveDistillCheckpointMetadata(empty) error = nil")
+	}
+	if _, err := LoadDistillCheckpointMetadata(""); err == nil {
+		t.Fatal("LoadDistillCheckpointMetadata(empty) error = nil")
+	}
+	dir := t.TempDir()
+	writeModelPackFile(t, distillCheckpointMetadataPath(dir), "{")
+	if _, err := LoadDistillCheckpointMetadata(dir); err == nil {
+		t.Fatal("LoadDistillCheckpointMetadata(invalid JSON) error = nil")
+	}
+	if _, err := RunKnowledgeDistillation(context.Background(), DistillRunner{
+		BuildBatches: func(context.Context, SFTDataset, DatasetBatchConfig) ([]SFTBatch, error) {
+			return nil, nil
+		},
+		StudentLogits: func(context.Context, DistillBatch, DistillLogits) (DistillLogits, error) {
+			return nil, nil
+		},
+	}, NewSFTSliceDataset([]SFTSample{{Text: "x"}}), DistillConfig{ResumePath: dir}); err == nil {
+		t.Fatal("RunKnowledgeDistillation(invalid resume metadata) error = nil")
 	}
 }
 

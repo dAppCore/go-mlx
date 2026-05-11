@@ -97,3 +97,104 @@ func TestEvalOptionalBatchAttentionMask_KeepsMaskForPaddedBatch_Good(t *testing.
 		}
 	}
 }
+
+func TestNewModelEvalRunner_NilAndCancelled_Bad(t *testing.T) {
+	runner := NewModelEvalRunner(nil)
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if info := runner.Info(cancelled); info.Architecture != "" {
+		t.Fatalf("Info(cancelled) = %+v, want zero value", info)
+	}
+	if tok := runner.Tokenizer(cancelled); tok != nil {
+		t.Fatalf("Tokenizer(cancelled) = %+v, want nil", tok)
+	}
+	if _, err := runner.LoadAdapter(cancelled, "adapter"); err != context.Canceled {
+		t.Fatalf("LoadAdapter(cancelled) = %v, want context.Canceled", err)
+	}
+	if _, err := runner.LoadAdapter(context.Background(), "adapter"); err == nil {
+		t.Fatal("expected nil model adapter load error")
+	}
+	if _, err := runner.EvaluateBatch(context.Background(), SFTBatch{}); err == nil {
+		t.Fatal("expected nil model evaluate error")
+	}
+
+	var model *Model
+	if _, err := model.evaluateDatasetBatch(context.Background(), SFTBatch{}); err == nil {
+		t.Fatal("expected nil receiver eval error")
+	}
+	if _, err := (&Model{}).evaluateDatasetBatch(cancelled, SFTBatch{}); err != context.Canceled {
+		t.Fatalf("evaluateDatasetBatch(cancelled) = %v, want context.Canceled", err)
+	}
+}
+
+func TestEvalBatchDataHelpers_Good(t *testing.T) {
+	batch := SFTBatch{
+		Batch: Batch{
+			Tokens:   [][]int{{1, 2, 3, 4}, {5, 6, 7}},
+			Length:   []int{3, 0},
+			LossMask: [][]float32{{1, 0}, {0.25, 1, 0}},
+		},
+		Targets: [][]int{{2, 3, 4, 5}, {6, 7, 8}},
+	}
+
+	lengths, maxLen, err := evalBatchLengths(batch)
+	if err != nil {
+		t.Fatalf("evalBatchLengths() error = %v", err)
+	}
+	if !equalInt32Slices(lengths, []int32{2, 3}) || maxLen != 3 {
+		t.Fatalf("lengths=%v max=%d, want [2 3]/3", lengths, maxLen)
+	}
+	tokens := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+	if !equalInt32Slices(tokens, []int32{1, 2, 0, 5, 6, 7}) {
+		t.Fatalf("token data = %v, want padded rows", tokens)
+	}
+	targets := evalBatchTokenData(batch.Targets, lengths, maxLen)
+	if !equalInt32Slices(targets, []int32{2, 3, 0, 6, 7, 8}) {
+		t.Fatalf("target data = %v, want padded rows", targets)
+	}
+	mask := evalBatchLossMaskData(batch, lengths, maxLen)
+	if !equalFloat32Slices(mask, []float32{1, 0, 0, 0.25, 1, 0}) {
+		t.Fatalf("loss mask data = %v, want padded mask", mask)
+	}
+	if evalNeedsExplicitAttentionMask([]int32{3, 3}, 3) {
+		t.Fatal("equal lengths should not need explicit attention mask")
+	}
+	if !evalNeedsExplicitAttentionMask(nil, 3) || !evalNeedsExplicitAttentionMask([]int32{2, 3}, 3) || !evalNeedsExplicitAttentionMask([]int32{3}, 0) {
+		t.Fatal("padded, empty, or zero max length batch should need explicit attention mask")
+	}
+	freeEvalCaches([]Cache{nil})
+}
+
+func TestEvalBatchLengths_Bad(t *testing.T) {
+	if _, _, err := evalBatchLengths(SFTBatch{}); err == nil {
+		t.Fatal("expected empty batch error")
+	}
+	if _, _, err := evalBatchLengths(SFTBatch{
+		Batch:   Batch{Tokens: [][]int{{1}}},
+		Targets: [][]int{{1}, {2}},
+	}); err == nil {
+		t.Fatal("expected unaligned batch error")
+	}
+	if _, _, err := evalBatchLengths(SFTBatch{
+		Batch:   Batch{Tokens: [][]int{{}}},
+		Targets: [][]int{{}},
+	}); err == nil {
+		t.Fatal("expected empty sequence error")
+	}
+	if _, err := (&Model{model: &fakeNativeModel{}}).evaluateDatasetBatch(context.Background(), SFTBatch{}); err == nil {
+		t.Fatal("expected invalid batch before native eval")
+	}
+}
+
+func equalInt32Slices(a, b []int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

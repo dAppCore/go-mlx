@@ -216,3 +216,65 @@ func TestFuseLoRAIntoModelPack_CopiesTokenizerConfig_Ugly(t *testing.T) {
 		t.Fatalf("read copied tokenizer_config.json: %v", copied.Value)
 	}
 }
+
+func TestBuildLoRAFusePairs_ValidationBranches_GoodBad(t *testing.T) {
+	a := &metal.Array{}
+	b := &metal.Array{}
+	pairs, err := buildLoRAFusePairs(map[string]*metal.Array{
+		"ignored.weight":                         {},
+		"model.layers.0.mlp.down_proj.lora_A":    a,
+		"model.layers.0.mlp.down_proj.lora_B":    b,
+		"model.layers.0.self_attn.q_proj.weight": {},
+	})
+	if err != nil {
+		t.Fatalf("buildLoRAFusePairs() error = %v", err)
+	}
+	pair := pairs["model.layers.0.mlp.down_proj"]
+	if pair.MatrixA != a || pair.MatrixB != b {
+		t.Fatalf("pair = %+v, want supplied A/B arrays", pair)
+	}
+
+	if _, err := buildLoRAFusePairs(map[string]*metal.Array{"plain.weight": {}}); err == nil {
+		t.Fatal("expected no LoRA tensor pairs error")
+	}
+	if _, err := buildLoRAFusePairs(map[string]*metal.Array{"layer.lora_a": a}); err == nil {
+		t.Fatal("expected incomplete LoRA tensor pair error")
+	}
+}
+
+func TestLoRAFuseDarwinPureErrorBranches_Bad(t *testing.T) {
+	if _, err := FuseLoRAIntoModelPack(context.Background(), FuseLoRAOptions{}); err == nil {
+		t.Fatal("expected top-level fuse option validation error")
+	}
+	if _, err := loadFuseAdapterWeights(core.PathJoin(t.TempDir(), "empty-adapter")); err == nil {
+		t.Fatal("expected missing adapter safetensors error")
+	}
+	if _, _, err := fuseLoRAModelWeightFiles(context.Background(), nil, t.TempDir(), nil, 1); err == nil {
+		t.Fatal("expected no base weight files error")
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := fuseLoRAModelWeightFiles(cancelled, []string{core.PathJoin(t.TempDir(), "missing.safetensors")}, t.TempDir(), nil, 1); err != context.Canceled {
+		t.Fatalf("fuseLoRAModelWeightFiles(cancelled) = %v, want context.Canceled", err)
+	}
+
+	pairs := map[string]loraFusePair{
+		"model.layers.0.self_attn.q_proj": {MatrixA: &metal.Array{}, MatrixB: &metal.Array{}},
+	}
+	fused, err := fuseLoRAWeightPairs(context.Background(), map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1)
+	if err != nil {
+		t.Fatalf("fuseLoRAWeightPairs(missing base) error = %v", err)
+	}
+	if len(fused) != 0 {
+		t.Fatalf("fused keys = %v, want none for missing base", fused)
+	}
+	if _, err := fuseLoRAWeightPairs(cancelled, map[string]*metal.Array{}, pairs, map[string]struct{}{}, 1); err != context.Canceled {
+		t.Fatalf("fuseLoRAWeightPairs(cancelled) = %v, want context.Canceled", err)
+	}
+
+	names := outputWeightFileNames([]string{"/tmp/a.safetensors", "/tmp/shard/b.safetensors"})
+	if len(names) != 2 || names[0] != "a.safetensors" || names[1] != "b.safetensors" {
+		t.Fatalf("outputWeightFileNames() = %v", names)
+	}
+	freeMetalMap(map[string]*metal.Array{"nil": nil})
+}

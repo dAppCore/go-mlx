@@ -128,3 +128,38 @@ func TestProbeBus_FanoutDefensiveCopy_Ugly(t *testing.T) {
 		t.Fatalf("fanout leaked mutation into recorder: %+v", events[0])
 	}
 }
+
+func TestProbeOptionsAndClonePayloads_Ugly(t *testing.T) {
+	var cfg GenerateConfig
+	WithProbeCallback(nil)(&cfg)
+	if cfg.ProbeSink != nil {
+		t.Fatalf("nil callback configured sink: %+v", cfg.ProbeSink)
+	}
+	called := false
+	WithProbeCallback(func(event ProbeEvent) {
+		called = event.Kind == ProbeEventRouterDecision
+	})(&cfg)
+	cfg.ProbeSink.EmitProbe(ProbeEvent{Kind: ProbeEventRouterDecision})
+	if !called {
+		t.Fatal("probe callback was not invoked")
+	}
+
+	event := cloneProbeEvent(ProbeEvent{
+		Kind:           ProbeEventSelectedHeads,
+		SelectedHeads:  &ProbeHeadSelection{Heads: []int{1, 2}, Scores: []float64{0.25, 0.75}},
+		LayerCoherence: &ProbeLayerCoherence{Layer: 2, KeyCoherence: 0.5},
+		RouterDecision: &ProbeRouterDecision{ExpertIDs: []int{3}, Weights: []float32{0.9}},
+		ExpertResidency: &ProbeExpertResidency{
+			Action:    ExpertResidencyActionPageIn,
+			ExpertIDs: []int{5},
+		},
+		Residual: &ProbeResidualSummary{Layer: 1, RMS: 0.2},
+		Memory:   &ProbeMemoryPressure{ActiveBytes: 10},
+	})
+	event.SelectedHeads.Heads[0] = 9
+	event.RouterDecision.ExpertIDs[0] = 8
+	event.ExpertResidency.ExpertIDs[0] = 7
+	if event.LayerCoherence.Layer != 2 || event.Residual.RMS != 0.2 || event.Memory.ActiveBytes != 10 {
+		t.Fatalf("cloned scalar payloads = %+v", event)
+	}
+}

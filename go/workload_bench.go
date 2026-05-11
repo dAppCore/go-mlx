@@ -14,15 +14,18 @@ const WorkloadBenchReportVersion = 1
 
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
-	FastEval            FastEvalConfig       `json:"fast_eval"`
-	Eval                EvalConfig           `json:"eval,omitempty"`
-	EvalDataset         SFTDataset           `json:"-"`
-	AdapterPath         string               `json:"adapter_path,omitempty"`
-	IncludeAdapterLoad  bool                 `json:"include_adapter_load"`
-	IncludeAdapterFuse  bool                 `json:"include_adapter_fuse"`
-	IncludePerplexity   bool                 `json:"include_perplexity"`
-	IncludeKVCacheBench bool                 `json:"include_kv_cache_bench"`
-	EvalSamples         []WorkloadEvalSample `json:"eval_samples,omitempty"`
+	FastEval               FastEvalConfig                 `json:"fast_eval"`
+	Eval                   EvalConfig                     `json:"eval,omitempty"`
+	EvalDataset            SFTDataset                     `json:"-"`
+	AdapterPath            string                         `json:"adapter_path,omitempty"`
+	IncludeAdapterLoad     bool                           `json:"include_adapter_load"`
+	IncludeAdapterFuse     bool                           `json:"include_adapter_fuse"`
+	IncludePerplexity      bool                           `json:"include_perplexity"`
+	IncludeKVCacheBench    bool                           `json:"include_kv_cache_bench"`
+	IncludeExpertResidency bool                           `json:"include_expert_residency"`
+	ExpertResidency        ExpertResidencyPlan            `json:"expert_residency,omitempty"`
+	QuantizationProfile    *JANGPackedQuantizationProfile `json:"quantization_profile,omitempty"`
+	EvalSamples            []WorkloadEvalSample           `json:"eval_samples,omitempty"`
 }
 
 // WorkloadEvalSample is one record used by benchmark eval hooks.
@@ -61,36 +64,63 @@ type WorkloadBenchRunner struct {
 	LoadAdapter func(context.Context, string) (WorkloadAdapterInfo, error)
 	FuseAdapter func(context.Context, WorkloadAdapterInfo) error
 
-	EvaluatePerplexity func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error)
+	EvaluatePerplexity     func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error)
+	MeasureExpertResidency func(context.Context, ExpertResidencyPlan) (ExpertResidencyStats, error)
 }
 
 // WorkloadBenchReport is a JSON-friendly report for local model workloads.
 type WorkloadBenchReport struct {
-	Version    int                      `json:"version"`
-	FastEval   *FastEvalReport          `json:"fast_eval,omitempty"`
-	KVCache    KVCacheBenchReport       `json:"kv_cache,omitempty"`
-	Adapter    WorkloadAdapterReport    `json:"adapter"`
-	Evaluation WorkloadEvaluationReport `json:"evaluation"`
-	Summary    WorkloadBenchSummary     `json:"summary"`
+	Version             int                            `json:"version"`
+	FastEval            *FastEvalReport                `json:"fast_eval,omitempty"`
+	KVCache             KVCacheBenchReport             `json:"kv_cache,omitempty"`
+	QuantizationProfile *JANGPackedQuantizationProfile `json:"quantization_profile,omitempty"`
+	Adapter             WorkloadAdapterReport          `json:"adapter"`
+	Evaluation          WorkloadEvaluationReport       `json:"evaluation"`
+	ExpertResidency     WorkloadExpertResidencyReport  `json:"expert_residency"`
+	Summary             WorkloadBenchSummary           `json:"summary"`
 }
 
 // WorkloadBenchSummary mirrors the high-signal metrics needed for quick comparisons.
 type WorkloadBenchSummary struct {
-	PrefillTokensPerSec        float64       `json:"prefill_tokens_per_sec,omitempty"`
-	DecodeTokensPerSec         float64       `json:"decode_tokens_per_sec,omitempty"`
-	PeakMemoryBytes            uint64        `json:"peak_memory_bytes,omitempty"`
-	ActiveMemoryBytes          uint64        `json:"active_memory_bytes,omitempty"`
-	PromptCacheHitRate         float64       `json:"prompt_cache_hit_rate,omitempty"`
-	PromptCacheHitTokens       int           `json:"prompt_cache_hit_tokens,omitempty"`
-	PromptCacheMissTokens      int           `json:"prompt_cache_miss_tokens,omitempty"`
-	PromptCacheRestoreDuration time.Duration `json:"prompt_cache_restore_duration,omitempty"`
-	KVRestoreDuration          time.Duration `json:"kv_restore_duration,omitempty"`
-	AdapterLoadDuration        time.Duration `json:"adapter_load_duration,omitempty"`
-	AdapterFuseDuration        time.Duration `json:"adapter_fuse_duration,omitempty"`
-	EvalSamples                int           `json:"eval_samples,omitempty"`
-	EvalTokens                 int           `json:"eval_tokens,omitempty"`
-	EvalLoss                   float64       `json:"eval_loss,omitempty"`
-	Perplexity                 float64       `json:"perplexity,omitempty"`
+	PrefillTokensPerSec                  float64       `json:"prefill_tokens_per_sec,omitempty"`
+	DecodeTokensPerSec                   float64       `json:"decode_tokens_per_sec,omitempty"`
+	PeakMemoryBytes                      uint64        `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes                    uint64        `json:"active_memory_bytes,omitempty"`
+	PromptCacheHitRate                   float64       `json:"prompt_cache_hit_rate,omitempty"`
+	PromptCacheHitTokens                 int           `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens                int           `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptCacheRestoreDuration           time.Duration `json:"prompt_cache_restore_duration,omitempty"`
+	PromptCacheSource                    string        `json:"prompt_cache_source,omitempty"`
+	PromptTokensAvoided                  int           `json:"prompt_tokens_avoided,omitempty"`
+	PromptCacheReplayTokens              int           `json:"prompt_cache_replay_tokens,omitempty"`
+	PromptCacheExactFallbackReplayTokens int           `json:"prompt_cache_exact_fallback_replay_tokens,omitempty"`
+	MemvidKVBlockRestoreDuration         time.Duration `json:"memvid_kv_block_restore_duration,omitempty"`
+	MemvidKVBlockStorePath               string        `json:"memvid_kv_block_store_path,omitempty"`
+	MemvidKVBlockStoreBytes              int64         `json:"memvid_kv_block_store_bytes,omitempty"`
+	MemvidKVBlocksRead                   int           `json:"memvid_kv_blocks_read,omitempty"`
+	MemvidKVChunksRead                   int           `json:"memvid_kv_chunks_read,omitempty"`
+	MemvidKVPrefixTokensRestored         int           `json:"memvid_kv_prefix_tokens_restored,omitempty"`
+	KVRestoreDuration                    time.Duration `json:"kv_restore_duration,omitempty"`
+	SpeculativeAcceptanceRate            float64       `json:"speculative_acceptance_rate,omitempty"`
+	SpeculativeAcceptedTokens            int           `json:"speculative_accepted_tokens,omitempty"`
+	SpeculativeRejectedTokens            int           `json:"speculative_rejected_tokens,omitempty"`
+	PromptLookupAcceptanceRate           float64       `json:"prompt_lookup_acceptance_rate,omitempty"`
+	PromptLookupAcceptedTokens           int           `json:"prompt_lookup_accepted_tokens,omitempty"`
+	PromptLookupRejectedTokens           int           `json:"prompt_lookup_rejected_tokens,omitempty"`
+	ExpertResidencyResidentExperts       int           `json:"expert_residency_resident_experts,omitempty"`
+	ExpertResidencyPeakResidentExperts   int           `json:"expert_residency_peak_resident_experts,omitempty"`
+	ExpertResidencyPageIns               int           `json:"expert_residency_page_ins,omitempty"`
+	ExpertResidencyPageOuts              int           `json:"expert_residency_page_outs,omitempty"`
+	ExpertResidencyLoadedBytes           uint64        `json:"expert_residency_loaded_bytes,omitempty"`
+	ExpertResidencyEvictedBytes          uint64        `json:"expert_residency_evicted_bytes,omitempty"`
+	ExpertResidencyFirstUseLatency       time.Duration `json:"expert_residency_first_use_latency,omitempty"`
+	ExpertResidencyTotalLoadDuration     time.Duration `json:"expert_residency_total_load_duration,omitempty"`
+	AdapterLoadDuration                  time.Duration `json:"adapter_load_duration,omitempty"`
+	AdapterFuseDuration                  time.Duration `json:"adapter_fuse_duration,omitempty"`
+	EvalSamples                          int           `json:"eval_samples,omitempty"`
+	EvalTokens                           int           `json:"eval_tokens,omitempty"`
+	EvalLoss                             float64       `json:"eval_loss,omitempty"`
+	Perplexity                           float64       `json:"perplexity,omitempty"`
 }
 
 // WorkloadAdapterReport records adapter load and fuse timings.
@@ -115,6 +145,15 @@ type WorkloadEvaluationReport struct {
 	Quality   EvalQualityReport   `json:"quality,omitempty"`
 	Report    *EvalReport         `json:"report,omitempty"`
 	Error     string              `json:"error,omitempty"`
+}
+
+// WorkloadExpertResidencyReport records optional lazy expert residency timing.
+type WorkloadExpertResidencyReport struct {
+	Attempted bool                 `json:"attempted"`
+	Duration  time.Duration        `json:"duration,omitempty"`
+	Plan      ExpertResidencyPlan  `json:"plan,omitempty"`
+	Stats     ExpertResidencyStats `json:"stats,omitempty"`
+	Error     string               `json:"error,omitempty"`
 }
 
 // DefaultWorkloadBenchConfig returns a small laptop-safe workload benchmark config.
@@ -170,7 +209,10 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 		ctx = context.Background()
 	}
 	cfg = normalizeWorkloadBenchConfig(cfg)
-	report := &WorkloadBenchReport{Version: WorkloadBenchReportVersion}
+	report := &WorkloadBenchReport{
+		Version:             WorkloadBenchReportVersion,
+		QuantizationProfile: CloneJANGPackedQuantizationProfile(cfg.QuantizationProfile),
+	}
 
 	fastEval, err := RunFastEval(ctx, runner.FastEval, cfg.FastEval)
 	if err != nil {
@@ -191,6 +233,9 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 	if cfg.IncludeKVCacheBench && report.FastEval != nil {
 		report.KVCache = CompareKVCacheModes(kvCacheBenchConfigFromModelInfo(report.FastEval.ModelInfo))
 	}
+	if cfg.IncludeExpertResidency {
+		report.ExpertResidency = runWorkloadExpertResidency(ctx, runner, cfg)
+	}
 	report.Summary = summarizeWorkloadBench(report)
 	return report, nil
 }
@@ -198,7 +243,9 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.FastEval = normalizeFastEvalConfig(cfg.FastEval)
 	cfg.Eval = normalizeEvalConfig(cfg.Eval)
+	cfg.QuantizationProfile = CloneJANGPackedQuantizationProfile(cfg.QuantizationProfile)
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
+	cfg.ExpertResidency = normaliseExpertResidencyPlan(cfg.ExpertResidency)
 	return cfg
 }
 
@@ -311,6 +358,23 @@ func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg 
 	return report
 }
 
+func runWorkloadExpertResidency(ctx context.Context, runner WorkloadBenchRunner, cfg WorkloadBenchConfig) WorkloadExpertResidencyReport {
+	report := WorkloadExpertResidencyReport{Attempted: true, Plan: cfg.ExpertResidency}
+	if runner.MeasureExpertResidency == nil {
+		report.Error = "runner does not support expert residency measurement"
+		return report
+	}
+	start := time.Now()
+	stats, err := runner.MeasureExpertResidency(ctx, cfg.ExpertResidency)
+	report.Duration = nonZeroDuration(time.Since(start))
+	if err != nil {
+		report.Error = err.Error()
+		return report
+	}
+	report.Stats = stats
+	return report
+}
+
 func workloadEvalMetricsFromEval(metrics EvalMetrics) WorkloadEvalMetrics {
 	return WorkloadEvalMetrics{
 		Samples:    metrics.Samples,
@@ -334,10 +398,42 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 		summary.PromptCacheHitTokens = report.FastEval.PromptCache.HitTokens
 		summary.PromptCacheMissTokens = report.FastEval.PromptCache.MissTokens
 		summary.PromptCacheRestoreDuration = report.FastEval.PromptCache.RestoreDuration
+		if report.FastEval.MemvidKVBlockWarm.Attempted {
+			summary.PromptCacheSource = report.FastEval.MemvidKVBlockWarm.Source
+			summary.PromptTokensAvoided = report.FastEval.MemvidKVBlockWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = report.FastEval.MemvidKVBlockWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = report.FastEval.MemvidKVBlockWarm.ExactFallbackReplayTokens
+			summary.MemvidKVBlockRestoreDuration = report.FastEval.MemvidKVBlockWarm.RestoreDuration
+			summary.MemvidKVBlockStorePath = report.FastEval.MemvidKVBlockWarm.StorePath
+			summary.MemvidKVBlockStoreBytes = report.FastEval.MemvidKVBlockWarm.StoreBytes
+			summary.MemvidKVBlocksRead = report.FastEval.MemvidKVBlockWarm.BlocksRead
+			summary.MemvidKVChunksRead = report.FastEval.MemvidKVBlockWarm.ChunksRead
+			summary.MemvidKVPrefixTokensRestored = report.FastEval.MemvidKVBlockWarm.PrefixTokensRestored
+		}
 		summary.KVRestoreDuration = report.FastEval.KVRestore.Duration
+		if report.FastEval.SpeculativeDecode.Attempted && report.FastEval.SpeculativeDecode.Error == "" {
+			summary.SpeculativeAcceptanceRate = report.FastEval.SpeculativeDecode.Metrics.AcceptanceRate
+			summary.SpeculativeAcceptedTokens = report.FastEval.SpeculativeDecode.Metrics.AcceptedTokens
+			summary.SpeculativeRejectedTokens = report.FastEval.SpeculativeDecode.Metrics.RejectedTokens
+		}
+		if report.FastEval.PromptLookupDecode.Attempted && report.FastEval.PromptLookupDecode.Error == "" {
+			summary.PromptLookupAcceptanceRate = report.FastEval.PromptLookupDecode.Metrics.AcceptanceRate
+			summary.PromptLookupAcceptedTokens = report.FastEval.PromptLookupDecode.Metrics.AcceptedTokens
+			summary.PromptLookupRejectedTokens = report.FastEval.PromptLookupDecode.Metrics.RejectedTokens
+		}
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
 	summary.AdapterFuseDuration = report.Adapter.Fuse.Duration
+	if report.ExpertResidency.Attempted && report.ExpertResidency.Error == "" {
+		summary.ExpertResidencyResidentExperts = report.ExpertResidency.Stats.ResidentExperts
+		summary.ExpertResidencyPeakResidentExperts = report.ExpertResidency.Stats.PeakResidentExperts
+		summary.ExpertResidencyPageIns = report.ExpertResidency.Stats.PageIns
+		summary.ExpertResidencyPageOuts = report.ExpertResidency.Stats.PageOuts
+		summary.ExpertResidencyLoadedBytes = report.ExpertResidency.Stats.LoadedBytes
+		summary.ExpertResidencyEvictedBytes = report.ExpertResidency.Stats.EvictedBytes
+		summary.ExpertResidencyFirstUseLatency = report.ExpertResidency.Stats.FirstUseLatency
+		summary.ExpertResidencyTotalLoadDuration = report.ExpertResidency.Stats.TotalLoadDuration
+	}
 	summary.EvalSamples = report.Evaluation.Metrics.Samples
 	summary.EvalTokens = report.Evaluation.Metrics.Tokens
 	summary.EvalLoss = report.Evaluation.Metrics.Loss

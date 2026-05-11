@@ -436,7 +436,9 @@ func (c *QuantizedKVCache) Reset() {
 }
 
 func (c *QuantizedKVCache) Detach() {
-	Detach(c.keys, c.values, c.keyScale, c.valueScale)
+	// Quantized cache tensors are state for future decode steps. Some MLX
+	// quantize/dequantize graphs are not captured directly by logits eval, so
+	// detaching here can make the next decode step unevaluable.
 }
 
 func (c *QuantizedKVCache) storeQuantized(k, v *Array) {
@@ -581,8 +583,10 @@ func (c *PagedKVCache) Reset() {
 }
 
 func (c *PagedKVCache) Detach() {
-	Detach(c.kPages...)
-	Detach(c.vPages...)
+	// Paged attention reuses page views directly across decode steps. Some MLX
+	// page views are not captured by the final logits eval; detaching them can
+	// turn the next decode step into an unevaluable graph. Snapshot paths use
+	// contiguous caches until native page-state snapshots land.
 }
 
 func (c *PagedKVCache) concatenatedState() (*Array, *Array) {

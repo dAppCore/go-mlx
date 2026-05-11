@@ -7,6 +7,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"sync"
 
 	"dappco.re/go"
 	"dappco.re/go/inference"
@@ -116,12 +117,17 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 	if err != nil {
 		return nil, err
 	}
-	return &metaladapter{model: model}, nil
+	return &metaladapter{model: model, schedulerMaxConcurrent: parallelSlots}, nil
 }
 
 type metaladapter struct {
-	model     *metal.Model
-	probeSink inference.ProbeSink
+	model                  *metal.Model
+	probeSink              inference.ProbeSink
+	schedulerMu            sync.Mutex
+	scheduler              *ScheduledModel
+	schedulerMaxConcurrent int
+	cacheMu                sync.Mutex
+	cacheService           *BlockCacheService
 }
 
 func (adapter *metaladapter) Generate(ctx context.Context, prompt string, opts ...inference.GenerateOption) iter.Seq[inference.Token] {

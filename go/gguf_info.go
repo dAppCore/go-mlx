@@ -178,6 +178,7 @@ type modelConfigProbe struct {
 	NumHiddenLayers       int      `json:"num_hidden_layers"`
 	MaxPositionEmbeddings int      `json:"max_position_embeddings"`
 	Architectures         []string `json:"architectures"`
+	NumLabels             int      `json:"num_labels"`
 	TextConfig            struct {
 		ModelType             string `json:"model_type"`
 		VocabSize             int    `json:"vocab_size"`
@@ -539,6 +540,22 @@ func normalizeKnownArchitecture(value string) string {
 	switch value {
 	case "qwen3_5":
 		return "qwen3_next"
+	case "minimaxm2", "minimax_m2":
+		return "minimax_m2"
+	case "mixtral":
+		return "mixtral"
+	case "mistral":
+		return "mistral"
+	case "phi", "phi3", "phi4":
+		return "phi"
+	case "deepseek", "deepseek_v3", "deepseek_r1":
+		return "deepseek"
+	case "gptoss", "gpt_oss", "gpt_oss_model":
+		return "gpt_oss"
+	case "bert":
+		return "bert"
+	case "bert_rerank", "bert_cross_encoder":
+		return "bert_rerank"
 	default:
 		return value
 	}
@@ -547,6 +564,8 @@ func normalizeKnownArchitecture(value string) string {
 func architectureFromTransformersName(architecture string) string {
 	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
 	switch {
+	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+		return "bert_rerank"
 	case core.Contains(compact, "qwen3moe"):
 		return "qwen3_moe"
 	case core.Contains(compact, "qwen3next"):
@@ -563,6 +582,20 @@ func architectureFromTransformersName(architecture string) string {
 		return "qwen2"
 	case core.Contains(architecture, "Llama"):
 		return "llama"
+	case core.Contains(architecture, "MiniMaxM2"):
+		return "minimax_m2"
+	case core.Contains(architecture, "Mixtral"):
+		return "mixtral"
+	case core.Contains(architecture, "Mistral"):
+		return "mistral"
+	case core.Contains(architecture, "Phi"):
+		return "phi"
+	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
+		return "deepseek"
+	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
+		return "gpt_oss"
+	case core.Contains(architecture, "Bert"):
+		return "bert"
 	default:
 		return ""
 	}
@@ -571,6 +604,11 @@ func architectureFromTransformersName(architecture string) string {
 func (probe *modelConfigProbe) architecture() string {
 	if probe == nil {
 		return ""
+	}
+	for _, architecture := range probe.Architectures {
+		if modelType := architectureFromTransformersName(architecture); modelType == "bert_rerank" {
+			return modelType
+		}
 	}
 	if probe.ModelType != "" {
 		return normalizeKnownArchitecture(probe.ModelType)

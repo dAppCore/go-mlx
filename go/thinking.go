@@ -143,21 +143,23 @@ func normalizeThinkingMode(mode ThinkingMode) ThinkingMode {
 }
 
 func thinkingMarkersForModel(info ModelInfo) []thinkingMarker {
-	arch := core.Lower(info.Architecture)
-	modelType := core.Lower(info.Adapter.Name)
-	markers := []thinkingMarker{
-		{start: "<think>", end: "</think>", channel: "thinking", model: "qwen"},
-		{start: "<thinking>", end: "</thinking>", channel: "thinking", model: "generic"},
-		{start: "<thought>", end: "</thought>", channel: "thinking", model: "generic"},
-		{start: "<reasoning>", end: "</reasoning>", channel: "reasoning", model: "generic"},
+	parser, ok := ParserForModel(info).(*builtinOutputParser)
+	if !ok || parser == nil {
+		parser = newBuiltinOutputParser("generic", genericReasoningMarkers())
 	}
-	if core.Contains(arch, "gemma") || core.Contains(modelType, "gemma") {
-		markers = append(markers,
-			thinkingMarker{start: "<start_of_turn>thinking\n", end: "<end_of_turn>", channel: "thinking", model: "gemma"},
-			thinkingMarker{start: "<start_of_turn>thought\n", end: "<end_of_turn>", channel: "thinking", model: "gemma"},
-			thinkingMarker{start: "<start_of_turn>analysis\n", end: "<end_of_turn>", channel: "analysis", model: "gemma"},
-			thinkingMarker{start: "<start_of_turn>reasoning\n", end: "<end_of_turn>", channel: "reasoning", model: "gemma"},
-		)
+	markers := make([]thinkingMarker, 0, len(parser.markers))
+	for _, marker := range parser.markers {
+		for _, end := range marker.ends {
+			if marker.start == "" || end == "" {
+				continue
+			}
+			markers = append(markers, thinkingMarker{
+				start:   marker.start,
+				end:     end,
+				channel: marker.kind,
+				model:   parser.ParserID(),
+			})
+		}
 	}
 	return markers
 }

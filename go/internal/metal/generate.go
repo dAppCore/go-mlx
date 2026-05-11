@@ -100,6 +100,27 @@ func (m *Model) ModelType() string { return m.modelType }
 //	if err := m.Err(); err != nil { log.Fatal(err) }
 func (m *Model) Err() error { return m.lastErr }
 
+func (m *Model) requireTextRuntime(operation string) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	architecture := m.modelType
+	if architecture == "" {
+		architecture = m.model.ModelType()
+	}
+	switch m.model.(type) {
+	case *miniMaxM2StagedModel:
+		return core.NewError(operation + ": minimax_m2 staged loader has no native decode kernels yet")
+	}
+	if m.tokenizer == nil {
+		if architecture == "" {
+			architecture = "unknown"
+		}
+		return core.NewError(operation + ": tokenizer unavailable for " + architecture)
+	}
+	return nil
+}
+
 // LastMetrics returns performance metrics from the last inference call.
 //
 //	met := m.LastMetrics()
@@ -176,6 +197,18 @@ func (m *Model) Info() ModelInfo {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize
 		}
+	case *miniMaxM2StagedModel:
+		info.VocabSize = v.plan.Config.VocabSize
+		info.HiddenSize = v.plan.Config.HiddenSize
+		info.ContextLength = v.plan.Config.MaxPositionEmbeddings
+		if info.ContextLength == 0 {
+			info.ContextLength = v.plan.Config.SlidingWindow
+		}
+		info.QuantBits = v.plan.JANG.MXTQBits.RoutedExpert
+		if info.QuantBits == 0 {
+			info.QuantBits = v.plan.JANG.Quantization.BitsDefault
+		}
+		info.QuantGroup = v.plan.JANG.Quantization.GroupSize
 	}
 	if m.contextLen > 0 {
 		info.ContextLength = m.contextLen
@@ -214,14 +247,21 @@ func (m *Model) Close() error {
 //	    fmt.Print(tok.Text)
 //	}
 func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateConfig) iter.Seq[Token] {
+	if err := m.requireTextRuntime("Model.Chat"); err != nil {
+		return func(yield func(Token) bool) {
+			if m != nil {
+				m.lastErr = err
+			}
+		}
+	}
 	prompt := m.formatChat(messages)
 	return m.Generate(ctx, prompt, cfg)
 }
 
 // WarmPromptCache prefills and stores an exact token-prefix KV cache.
 func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
-	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+	if err := m.requireTextRuntime("Model.WarmPromptCache"); err != nil {
+		return err
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -237,18 +277,59 @@ func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
 	var warmErr error
 	if deviceErr := m.withDevice(func() {
 		tokens := m.tokenizer.Encode(prompt)
-		caches := m.newCaches()
-		logits, err := m.prefillTokenBlock(ctx, tokens, caches)
-		if err == nil {
-			err = m.storePromptCache(tokens, caches, logits)
-		}
-		Free(logits)
-		freeCaches(caches)
-		warmErr = err
+		warmErr = m.warmPromptCacheTokens(ctx, tokens)
 	}); deviceErr != nil {
 		return deviceErr
 	}
 	return warmErr
+}
+
+// WarmPromptCacheChunks prefills and stores an exact token-prefix KV cache from
+// bounded prompt chunks.
+func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if err := m.requireTextRuntime("Model.WarmPromptCacheChunks"); err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var warmErr error
+	if deviceErr := m.withDevice(func() {
+		warmErr = m.warmPromptCacheChunks(ctx, chunks)
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return warmErr
+}
+
+func (m *Model) warmPromptCacheTokens(ctx context.Context, tokens []int32) error {
+	caches := m.newPromptSnapshotCaches()
+	defer freeCaches(caches)
+	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
+	if err == nil {
+		err = m.storePromptCache(tokens, caches, logits)
+	}
+	Free(logits)
+	return err
+}
+
+func (m *Model) warmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	caches := m.newPromptSnapshotCaches()
+	defer freeCaches(caches)
+	tokens, logits, err := m.prefillPromptChunks(ctx, chunks, caches)
+	if err == nil {
+		err = m.storePromptCache(tokens, caches, logits)
+	}
+	Free(logits)
+	return err
 }
 
 // Generate streams tokens for the given prompt.
@@ -260,8 +341,15 @@ func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
 	inner := m.generate(ctx, prompt, cfg)
 	return func(yield func(Token) bool) {
+		if m == nil {
+			return
+		}
 		m.lastErr = nil
 		m.lastMetrics = Metrics{}
+		if err := m.requireTextRuntime("Model.Generate"); err != nil {
+			m.lastErr = err
+			return
+		}
 		release, err := m.acquireSlot(ctx)
 		if err != nil {
 			m.lastErr = err
@@ -276,12 +364,123 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 	}
 }
 
+// GenerateChunks streams tokens for a prompt supplied as bounded text chunks.
+// Each chunk is tokenized independently and appended to one logical token
+// stream, avoiding pathological tokenizer work on very large prompt strings.
+func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], cfg GenerateConfig) iter.Seq[Token] {
+	return func(yield func(Token) bool) {
+		if m == nil {
+			return
+		}
+		m.lastErr = nil
+		m.lastMetrics = Metrics{}
+		if err := m.requireTextRuntime("Model.GenerateChunks"); err != nil {
+			m.lastErr = err
+			return
+		}
+		release, err := m.acquireSlot(ctx)
+		if err != nil {
+			m.lastErr = err
+			return
+		}
+		defer release()
+		releasePromptCache := m.acquirePromptCache()
+		defer releasePromptCache()
+		if err := m.withDevice(func() {
+			tokens, encodeErr := m.encodePromptChunks(chunks)
+			if encodeErr != nil {
+				m.lastErr = encodeErr
+				return
+			}
+			m.generateTokens(ctx, tokens, cfg)(yield)
+		}); err != nil {
+			m.lastErr = err
+		}
+	}
+}
+
 func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
+	return m.generateTokens(ctx, m.tokenizer.Encode(prompt), cfg)
+}
+
+func (m *Model) encodePromptChunks(chunks iter.Seq[string]) ([]int32, error) {
+	if m == nil || m.tokenizer == nil {
+		return nil, core.NewError("mlx: tokenizer is nil")
+	}
+	if chunks == nil {
+		return nil, core.NewError("mlx: prompt chunks are nil")
+	}
+	tokens := []int32{}
+	seenContent := false
+	for chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		ids := m.tokenizer.Encode(chunk)
+		if seenContent {
+			ids = stripImplicitChunkBOS(m.tokenizer, ids)
+		}
+		tokens = append(tokens, ids...)
+		seenContent = true
+	}
+	if len(tokens) == 0 {
+		return nil, core.NewError("Model.GenerateChunks: empty prompt after tokenisation")
+	}
+	return tokens, nil
+}
+
+func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string], caches []Cache) ([]int32, *Array, error) {
+	if m == nil || m.tokenizer == nil {
+		return nil, nil, core.NewError("mlx: tokenizer is nil")
+	}
+	if chunks == nil {
+		return nil, nil, core.NewError("mlx: prompt chunks are nil")
+	}
+	tokens := []int32{}
+	seenContent := false
+	var logits *Array
+	for chunk := range chunks {
+		if chunk == "" {
+			continue
+		}
+		ids := m.tokenizer.Encode(chunk)
+		if seenContent {
+			ids = stripImplicitChunkBOS(m.tokenizer, ids)
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		nextLogits, err := m.prefillTokenBlock(ctx, ids, caches)
+		if err != nil {
+			Free(logits)
+			return nil, nil, core.E("Model.GenerateChunks", core.Sprintf("prefill chunk tokens=%d", len(tokens)), err)
+		}
+		Free(logits)
+		logits = nextLogits
+		tokens = append(tokens, ids...)
+		seenContent = true
+	}
+	if len(tokens) == 0 {
+		return nil, nil, core.NewError("Model.GenerateChunks: empty prompt after tokenisation")
+	}
+	return tokens, logits, nil
+}
+
+func stripImplicitChunkBOS(tokenizer *Tokenizer, tokens []int32) []int32 {
+	if tokenizer == nil || !tokenizer.HasBOSToken() || len(tokens) == 0 {
+		return tokens
+	}
+	if tokens[0] != tokenizer.BOSToken() {
+		return tokens
+	}
+	return tokens[1:]
+}
+
+func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg GenerateConfig) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
 		totalStart := time.Now()
 		ResetPeakMemory()
 
-		tokens := m.tokenizer.Encode(prompt)
 		promptLen := len(tokens)
 		prepared, err := m.preparePrompt(ctx, tokens)
 		if err != nil {
@@ -341,9 +540,11 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			default:
 			}
 
-			l1 := SliceAxis(logits, 1, int32(logits.Dim(1)-1), int32(logits.Dim(1)))
-			lastPos := Reshape(l1, 1, int32(l1.Dim(2)))
-			Free(l1)
+			lastPos, err := lastTokenLogits(logits)
+			if err != nil {
+				m.lastErr = core.E("Model.Generate", core.Sprintf("last logits step %d", i), err)
+				return
+			}
 
 			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
 				oldLastPos := lastPos
@@ -391,19 +592,19 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 			Free(vNextInput)
 
 			oldLogits := logits
-			logits = m.model.Forward(nextInput, caches)
+			nextLogits := m.model.Forward(nextInput, caches)
 			Free(nextInput, oldLogits)
-
-			if err := Eval(logits); err != nil {
+			logits, err = materializeLastTokenLogits(nextLogits)
+			if err != nil {
 				m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
 				return
 			}
 
-			// Detach logits and cache arrays to break the computation graph.
+			// Detach cache arrays to break the computation graph.
 			// Without this, each step's logits holds shared_ptrs through the
 			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
 			// Metal buffers per step that accumulate to tens of GB.
-			detachEvalState(logits, caches)
+			detachCaches(caches)
 			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
 			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
 		}
@@ -416,6 +617,9 @@ func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig)
 //	result, err := m.InspectAttention(ctx, "What is kindness?")
 //	fmt.Printf("layers=%d heads=%d seq=%d\n", result.NumLayers, result.NumHeads, result.SeqLen)
 func (m *Model) InspectAttention(ctx context.Context, prompt string) (*AttentionResult, error) {
+	if err := m.requireTextRuntime("Model.InspectAttention"); err != nil {
+		return nil, err
+	}
 	var (
 		result *AttentionResult
 		err    error
@@ -602,6 +806,10 @@ func cloneAttentionHeads(src [][]float32) [][]float32 {
 
 func detachEvalState(logits *Array, caches []Cache) {
 	Detach(logits)
+	detachCaches(caches)
+}
+
+func detachCaches(caches []Cache) {
 	for _, cache := range caches {
 		if cache != nil {
 			cache.Detach()
@@ -693,6 +901,19 @@ func (m *Model) newCaches() []Cache {
 		}
 		return caches
 	}
+	return m.applyContextCachePolicy(caches)
+}
+
+func (m *Model) newPromptSnapshotCaches() []Cache {
+	switch KVCacheMode(m.cacheMode) {
+	case KVCacheModeKQ8VQ4:
+		return m.applyContextCachePolicy(m.model.NewCache())
+	default:
+		return m.newCaches()
+	}
+}
+
+func (m *Model) applyContextCachePolicy(caches []Cache) []Cache {
 	if m.cachePolicy == "full" {
 		return caches
 	}
@@ -721,7 +942,9 @@ func (m *Model) newCaches() []Cache {
 // formatChat applies the model's native chat template.
 func (m *Model) formatChat(messages []ChatMessage) string {
 	switch m.modelType {
-	case "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text":
+	case "gemma4", "gemma4_text":
+		return formatGemma4Chat(messages)
+	case "gemma2", "gemma3", "gemma3_text":
 		return formatGemmaChat(messages)
 	case "qwen2", "qwen3":
 		return formatQwenChat(messages)
@@ -752,6 +975,28 @@ func formatGemmaChat(messages []ChatMessage) string {
 	return builder.String()
 }
 
+func formatGemma4Chat(messages []ChatMessage) string {
+	builder := core.NewBuilder()
+	builder.WriteString("<bos>")
+	for _, msg := range messages {
+		role := core.Lower(core.Trim(msg.Role))
+		content := core.Trim(msg.Content)
+		switch role {
+		case "assistant", "model":
+			role = "model"
+		case "developer", "system":
+			role = "system"
+		case "human", "user":
+			role = "user"
+		default:
+			continue
+		}
+		builder.WriteString("<|turn>" + role + "\n" + content + "<turn|>\n")
+	}
+	builder.WriteString("<|turn>model\n")
+	return builder.String()
+}
+
 func formatQwenChat(messages []ChatMessage) string {
 	builder := core.NewBuilder()
 	for _, msg := range messages {
@@ -769,4 +1014,64 @@ func formatLlamaChat(messages []ChatMessage) string {
 	}
 	builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 	return builder.String()
+}
+
+func lastTokenLogits(logits *Array) (*Array, error) {
+	if logits == nil || !logits.Valid() {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ndim := logits.NumDims()
+	if ndim <= 0 {
+		return nil, core.NewError("mlx: logits rank is invalid")
+	}
+	if ndim == 1 {
+		return Reshape(logits, 1, int32(logits.Dim(0))), nil
+	}
+	if ndim == 2 {
+		rows := logits.Dim(0)
+		if rows <= 0 {
+			return nil, core.NewError("mlx: logits sequence is empty")
+		}
+		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
+		out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+		Free(last)
+		return out, nil
+	}
+	seqAxis := ndim - 2
+	seqLen := logits.Dim(seqAxis)
+	if seqLen <= 0 {
+		return nil, core.NewError("mlx: logits sequence is empty")
+	}
+	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
+	out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+	Free(last)
+	return out, nil
+}
+
+func materializeLastTokenLogits(logits *Array) (*Array, error) {
+	if logits == nil {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	if !logits.Valid() {
+		if err := lastError(); err != nil {
+			return nil, core.E("mlx", "logits are empty", err)
+		}
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	if err := Eval(logits); err != nil {
+		Free(logits)
+		return nil, err
+	}
+	last, err := lastTokenLogits(logits)
+	if err != nil {
+		Free(logits)
+		return nil, err
+	}
+	if err := Eval(last); err != nil {
+		Free(logits, last)
+		return nil, err
+	}
+	Detach(last)
+	Free(logits)
+	return last, nil
 }

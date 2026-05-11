@@ -110,6 +110,12 @@ func (adapter *metaladapter) SetProbeSink(sink inference.ProbeSink) {
 		return
 	}
 	adapter.probeSink = sink
+	adapter.schedulerMu.Lock()
+	scheduler := adapter.scheduler
+	adapter.schedulerMu.Unlock()
+	if scheduler != nil {
+		scheduler.SetProbeSink(sink)
+	}
 }
 
 func (adapter *metaladapter) Benchmark(ctx context.Context, cfg inference.BenchConfig) (*inference.BenchReport, error) {
@@ -215,8 +221,15 @@ func toMetalInferenceProbeSink(sink inference.ProbeSink) metal.ProbeSink {
 	})
 }
 
+var metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
+	if !available {
+		return DeviceInfo{}
+	}
+	return safeRuntimeDeviceInfo()
+}
+
 func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
-	device := GetDeviceInfo()
+	device := metalCapabilityDeviceInfo(available)
 	runtimeLabels := map[string]string{}
 	if device.MemorySize > 0 {
 		runtimeLabels["memory_bytes"] = core.Sprintf("%d", device.MemorySize)
@@ -227,6 +240,40 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 	if len(runtimeLabels) == 0 {
 		runtimeLabels = nil
 	}
+	capabilities := []inference.Capability{
+		inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityGenerate, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityChat, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityClassify, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityBatchGenerate, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityTokenizer, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityChatTemplate, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityLoRAInference, inference.CapabilityGroupModel),
+		inference.SupportedCapability(inference.CapabilityStateBundle, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityPromptCache, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityAgentMemory, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityStateWake, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityStateSleep, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityStateFork, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityLoRATraining, inference.CapabilityGroupTraining),
+		inference.SupportedCapability(inference.CapabilityDistillation, inference.CapabilityGroupTraining),
+		inference.SupportedCapability(inference.CapabilityGRPO, inference.CapabilityGroupTraining),
+		inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
+		inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
+		inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
+		inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
+	}
+	capabilities = append(capabilities, algorithmProfileCapabilities()...)
 	return inference.CapabilityReport{
 		Runtime: inference.RuntimeIdentity{
 			Backend:       "metal",
@@ -240,52 +287,21 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 		Architectures: append([]string(nil), metalCapabilityArchitectures...),
 		Quantizations: append([]string(nil), metalCapabilityQuantizations...),
 		CacheModes:    append([]string(nil), metalCapabilityCacheModes...),
-		Capabilities: []inference.Capability{
-			inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityGenerate, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityChat, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityClassify, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityBatchGenerate, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityTokenizer, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityChatTemplate, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityLoRAInference, inference.CapabilityGroupModel),
-			inference.SupportedCapability(inference.CapabilityStateBundle, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityPromptCache, inference.CapabilityGroupRuntime),
-			inference.SupportedCapability(inference.CapabilityLoRATraining, inference.CapabilityGroupTraining),
-			inference.SupportedCapability(inference.CapabilityDistillation, inference.CapabilityGroupTraining),
-			inference.SupportedCapability(inference.CapabilityGRPO, inference.CapabilityGroupTraining),
-			inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
-			inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
-			inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
-		},
-		Labels: map[string]string{"library": "go-mlx"},
+		Capabilities:  capabilities,
+		Labels:        map[string]string{"library": "go-mlx"},
 	}
 }
 
 var (
-	metalCapabilityArchitectures = []string{
-		"gemma2",
-		"gemma3",
-		"gemma3_text",
-		"gemma4",
-		"gemma4_text",
-		"llama",
-		"qwen2",
-		"qwen3",
-		"qwen3_moe",
-		"qwen3_next",
-	}
+	metalCapabilityArchitectures = architectureProfileIDs()
 	metalCapabilityQuantizations = []string{
 		"bf16",
 		"fp16",
+		"jang",
+		"jangtq",
+		"codebook",
+		"vq",
+		"mxtq",
 		"q4_0",
 		"q4_k_m",
 		"q5",

@@ -1,0 +1,93 @@
+<!-- SPDX-Licence-Identifier: EUPL-1.2 -->
+
+# memory/ — KV snapshots, bundles, agent memory
+
+**Package**: `dappco.re/go/mlx` (these files live in the root)
+
+## What this area owns
+
+Everything that turns **live runtime state** into **durable bytes** and back. This is the production implementation of the `inference/state.Session` and `state.Forker` contracts — the surface that delivers AI-cognition-as-filesystem-object.
+
+```
+                  Live metal.Model
+                        │
+                        ▼
+        ┌─────────────────────────────┐
+        │ CaptureKVSnapshot →         │ kv_snapshot.go
+        │   K/V bytes per layer       │
+        └─────────────────────────────┘
+                        │
+                        ▼
+        ┌─────────────────────────────┐
+        │ Chunk to blocks             │ kv_snapshot_blocks.go
+        │   256-token spans + hashes  │
+        └─────────────────────────────┘
+                        │
+                        ▼
+        ┌─────────────────────────────┐
+        │ Wrap in Bundle envelope     │ state_bundle.go
+        │   ModelID + TokID + refs    │
+        └─────────────────────────────┘
+                        │
+                        ▼
+        ┌─────────────────────────────┐
+        │ Index into BundleIndex      │ kv_snapshot_index.go
+        │   URI → entry → blocks      │
+        └─────────────────────────────┘
+                        │
+                        ▼
+        ┌─────────────────────────────┐
+        │ Encode + write to Store     │ kv_snapshot_memvid.go
+        │   (memvid / file / mem)     │ medium.go
+        └─────────────────────────────┘
+
+        ▲                            ▼
+        └── Wake reverses ─── Sleep returns
+            the same chain          Bundle
+            (agent_memory.go)
+```
+
+## File map
+
+| File | Doc | Role |
+|------|-----|------|
+| `agent_memory.go` | [agent_memory.md](agent_memory.md) | Wake / Sleep / Fork — the lifecycle entry |
+| `kv_snapshot.go` | [kv_snapshot.md](kv_snapshot.md) | Snapshot binary format (magic, version, encoding) |
+| `kv_snapshot_blocks.go` | [kv_snapshot_blocks.md](kv_snapshot_blocks.md) | Chunk strategy + block hashing |
+| `kv_snapshot_index.go` | [kv_snapshot_index.md](kv_snapshot_index.md) | Bundle index across entries + parents |
+| `kv_snapshot_memvid.go` | [kv_snapshot_memvid.md](kv_snapshot_memvid.md) | Memvid QR-video integration |
+| `state_bundle.go` | [state_bundle.md](state_bundle.md) | JSON envelope encode/decode |
+| `medium.go` | [medium.md](medium.md) | Load model files via io.Medium (S3 / local / memvid / …) |
+| `kv_analysis.go` | (planned) | KV inspection utilities — entropy, layer balance |
+| `kv_cache_bench.go` | (planned) | KV cache benchmark harness |
+| `memvid_chapter_smoke.go` | (planned) | Smoke test fixtures for memvid bundles |
+| `small_model_smoke.go` | (planned) | Smoke test fixtures for compact bundles |
+
+## Why this area exists at all
+
+The thesis: a model's **runtime state IS a filesystem object**. Once the KV cache + sampler + tokenizer state is durable, you can:
+
+- Sleep an agent's session, walk away for a week, wake it, continue — no re-prompt.
+- Mass-distribute a knowledge pack as a `.mp4` — phones can scan it; HTTP can stream it; YouTube can host it.
+- Fork an agent into 100 divergent continuations from one parent — no re-prefill of the shared prefix.
+- Train one base model + 50 personality bundles → users wake whichever persona fits the task.
+
+Every file in this directory exists to make that thesis cheap, fast, and portable.
+
+## Measured
+
+- Wake (warm cache, chapter) — 998ms
+- Wake (warm cache, full book ~10.5GB) — 2.15s
+- Wake (cold runner, full book) — 55.2s (first-time decode included)
+- Sleep (incremental, 200-token delta, parent-reuse on) — <1s
+
+See [`agent_memory.md`](agent_memory.md) for context on what's being measured.
+
+## Related contracts
+
+- `../../../go-inference/docs/state/` — portable shape this implements
+- `../../../go-inference/docs/state/agent_memory.md` — the Session + Forker interfaces
+- `../../../go-inference/docs/state/identity.md` — Bundle DTO
+- `../../../go-inference/docs/state/store.md` — Store / Resolver / Writer interfaces
+- `cmd/violet/` — Unix-socket sidecar exposing wake/sleep over IPC
+- `pkg/memvid/` — the QR-video codec

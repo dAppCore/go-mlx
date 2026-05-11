@@ -53,6 +53,35 @@ const tokenizerWithoutSpecialsJSON = `{
   "added_tokens": []
 }`
 
+const gemma4SpecialTokenizerJSON = `{
+  "normalizer": {"type": "Replace", "content": "▁"},
+  "pre_tokenizer": {"type": "Split", "behavior": "MergedWithPrevious"},
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "▁": 30,
+      "h": 20,
+      "i": 21,
+      "u": 31,
+      "s": 32,
+      "e": 33,
+      "r": 34,
+      "us": 35,
+      "use": 36,
+      "\n": 9,
+      "user": 10,
+      "▁user": 11
+    },
+    "merges": ["u s", "us e", "use r"]
+  },
+  "added_tokens": [
+    {"id": 2, "content": "<bos>", "special": true},
+    {"id": 1, "content": "<eos>", "special": true},
+    {"id": 105, "content": "<|turn>", "special": true},
+    {"id": 106, "content": "<turn|>", "special": true}
+  ]
+}`
+
 func writeTestTokenizer(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -69,6 +98,16 @@ func writeTokenizerWithoutSpecials(t *testing.T) string {
 	path := core.JoinPath(dir, "tokenizer.json")
 	if err := coreio.Local.Write(path, tokenizerWithoutSpecialsJSON); err != nil {
 		t.Fatalf("write tokenizer without specials: %v", err)
+	}
+	return path
+}
+
+func writeGemma4SpecialTokenizer(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := core.JoinPath(dir, "tokenizer.json")
+	if err := coreio.Local.Write(path, gemma4SpecialTokenizerJSON); err != nil {
+		t.Fatalf("write gemma4 tokenizer: %v", err)
 	}
 	return path
 }
@@ -115,6 +154,59 @@ func TestTokenizer_BOSEOS_Good(t *testing.T) {
 	}
 	if tok.EOSToken() != 101 {
 		t.Errorf("EOS = %d, want 101", tok.EOSToken())
+	}
+}
+
+func TestTokenizer_Gemma4TurnEndIsEOS_Good(t *testing.T) {
+	coverageTokens := "Gemma4TurnEndIsEOS"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	path := writeGemma4SpecialTokenizer(t)
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	if tok.BOSToken() != 2 {
+		t.Fatalf("BOSToken() = %d, want 2", tok.BOSToken())
+	}
+	if tok.EOSToken() != 106 {
+		t.Fatalf("EOSToken() = %d, want Gemma4 turn end 106", tok.EOSToken())
+	}
+}
+
+func TestTokenizer_Gemma4DoesNotInventPrefixSpace_Good(t *testing.T) {
+	coverageTokens := "Gemma4DoesNotInventPrefixSpace"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	path := writeGemma4SpecialTokenizer(t)
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	raw := tok.Encode("h")
+	wantRaw := []int32{2, 20}
+	if len(raw) != len(wantRaw) {
+		t.Fatalf("Encode(\"h\") = %v, want %v", raw, wantRaw)
+	}
+	for i := range wantRaw {
+		if raw[i] != wantRaw[i] {
+			t.Fatalf("raw[%d] = %d, want %d", i, raw[i], wantRaw[i])
+		}
+	}
+
+	chat := tok.Encode("<bos><|turn>user\nh<turn|>\n")
+	wantChat := []int32{2, 105, 10, 9, 20, 106, 9}
+	if len(chat) != len(wantChat) {
+		t.Fatalf("Encode(chat) = %v, want %v", chat, wantChat)
+	}
+	for i := range wantChat {
+		if chat[i] != wantChat[i] {
+			t.Fatalf("chat[%d] = %d, want %d", i, chat[i], wantChat[i])
+		}
 	}
 }
 
@@ -201,6 +293,29 @@ func TestTokenizer_Encode_Good(t *testing.T) {
 	for i := range tokens {
 		if tokens[i] != want[i] {
 			t.Errorf("tokens[%d] = %d, want %d", i, tokens[i], want[i])
+		}
+	}
+}
+
+func TestTokenizer_Encode_ExplicitBOSDoesNotDuplicate_Good(t *testing.T) {
+	coverageTokens := "Encode ExplicitBOSDoesNotDuplicate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	path := writeTestTokenizer(t)
+	tok, err := LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	tokens := tok.Encode("<bos>hello")
+	want := []int32{100, 4, 5, 6, 3}
+	if len(tokens) != len(want) {
+		t.Fatalf("Encode(\"<bos>hello\") = %v, want %v", tokens, want)
+	}
+	for i := range want {
+		if tokens[i] != want[i] {
+			t.Fatalf("tokens[%d] = %d, want %d", i, tokens[i], want[i])
 		}
 	}
 }

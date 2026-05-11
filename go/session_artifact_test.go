@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/memvid"
+	memvid "dappco.re/go/inference/state"
 )
 
 func TestSAMIFromKV_Good(t *testing.T) {

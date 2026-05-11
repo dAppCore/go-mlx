@@ -68,12 +68,20 @@ func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
 		t.Fatalf("qwen template = %q", qwen)
 	}
 	gemma := FormatChatMessages(messages, ChatTemplateConfig{Architecture: "gemma4_text"})
-	if gemma != "<start_of_turn>user\nsys<end_of_turn>\n<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" {
+	if gemma != "<bos><|turn>system\nsys<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n" {
 		t.Fatalf("gemma template = %q", gemma)
+	}
+	gemma3 := FormatChatMessages(messages, ChatTemplateConfig{Architecture: "gemma3_text"})
+	if gemma3 != "<start_of_turn>user\nsys<end_of_turn>\n<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" {
+		t.Fatalf("gemma3 template = %q", gemma3)
 	}
 	llama := FormatChatMessages([]Message{{Role: "user", Content: "hi"}}, ChatTemplateConfig{Architecture: "llama"})
 	if llama != "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n" {
 		t.Fatalf("llama template = %q", llama)
+	}
+	plain := FormatChatMessages([]Message{{Role: "system"}, {Role: "user", Content: "plain"}}, ChatTemplateConfig{Template: "plain", NoGenerationPrompt: true})
+	if plain != "plain\n" {
+		t.Fatalf("plain template = %q, want plain line", plain)
 	}
 }
 

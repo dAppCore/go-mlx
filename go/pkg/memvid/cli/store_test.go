@@ -56,6 +56,13 @@ func TestStore_PutResolveSearch_Good(t *testing.T) {
 	if chunk.Text != "payload" || chunk.Ref.FrameOffset != 0 {
 		t.Fatalf("Resolve() chunk = %#v", chunk)
 	}
+	byURI, err := store.ResolveURI(context.Background(), "mlx://chunk/0")
+	if err != nil {
+		t.Fatalf("ResolveURI() error = %v", err)
+	}
+	if byURI.Text != "payload" || byURI.Ref.ChunkID != 0 {
+		t.Fatalf("ResolveURI() chunk = %#v", byURI)
+	}
 	hits, err := store.Search(context.Background(), "payload", 3)
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -82,6 +89,25 @@ func TestStore_Open_Bad(t *testing.T) {
 	}
 }
 
+func TestStore_LookPathEnv_Good(t *testing.T) {
+	t.Setenv(envBinary, " /custom/memvid ")
+
+	path, err := LookPath()
+	if err != nil {
+		t.Fatalf("LookPath() error = %v", err)
+	}
+	if path != "/custom/memvid" {
+		t.Fatalf("LookPath() = %q, want env binary", path)
+	}
+	store, err := Open("/tmp/trace.mv2")
+	if err != nil {
+		t.Fatalf("Open(env binary) error = %v", err)
+	}
+	if store.Binary() != "/custom/memvid" {
+		t.Fatalf("Open(env binary) bin = %q", store.Binary())
+	}
+}
+
 func TestStore_MissingChunk_Ugly(t *testing.T) {
 	runner := func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, string, string, error) {
 		return nil, "", "frame was not found", core.NewError("exit 1")
@@ -95,6 +121,21 @@ func TestStore_MissingChunk_Ugly(t *testing.T) {
 
 	if !core.Is(err, memvid.ErrChunkNotFound) {
 		t.Fatalf("Resolve() error = %v, want ErrChunkNotFound", err)
+	}
+}
+
+func TestStore_ResolveInputErrors_Bad(t *testing.T) {
+	store, err := Open("/tmp/trace.mv2", WithBinary("/bin/memvid"), withRunner(func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, string, string, error) {
+		return nil, "", "", nil
+	}))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if _, err := store.Resolve(context.Background(), -1); !core.Is(err, memvid.ErrChunkNotFound) {
+		t.Fatalf("Resolve(negative) error = %v, want ErrChunkNotFound", err)
+	}
+	if _, err := store.ResolveURI(context.Background(), ""); !core.Is(err, memvid.ErrChunkNotFound) {
+		t.Fatalf("ResolveURI(empty) error = %v, want ErrChunkNotFound", err)
 	}
 }
 
@@ -131,6 +172,16 @@ func TestStore_CreateGetAndAccessors_Good(t *testing.T) {
 	}
 }
 
+func TestStore_CreateError_Bad(t *testing.T) {
+	_, err := Create(context.Background(), "/tmp/trace.mv2", WithBinary("/bin/memvid"), withRunner(func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, string, string, error) {
+		return nil, "", "create failed", core.NewError("exit 1")
+	}))
+
+	if err == nil {
+		t.Fatal("Create() error = nil, want command failure")
+	}
+}
+
 func TestStore_PutUsesReportedURIFrame_Good(t *testing.T) {
 	runner := func(_ context.Context, _ []byte, _ string, args ...string) ([]byte, string, string, error) {
 		switch args[0] {
@@ -156,6 +207,27 @@ func TestStore_PutUsesReportedURIFrame_Good(t *testing.T) {
 	}
 }
 
+func TestStore_PutURIReportViewError_Bad(t *testing.T) {
+	runner := func(_ context.Context, _ []byte, _ string, args ...string) ([]byte, string, string, error) {
+		switch args[0] {
+		case "put":
+			return []byte(`{"memory":{"frame_count":10},"reports":[{"uri":"mlx://chunk/new"}]}`), "", "", nil
+		case "view":
+			return nil, "", "permission denied", core.NewError("exit 1")
+		default:
+			return nil, "", "bad command", core.NewError("bad command")
+		}
+	}
+	store, err := Open("/tmp/trace.mv2", WithBinary("/bin/memvid"), withRunner(runner))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+
+	if _, err := store.Put(context.Background(), "payload", memvid.PutOptions{URI: "mlx://chunk/new"}); err == nil {
+		t.Fatal("Put() error = nil, want URI view failure")
+	}
+}
+
 func TestStore_ReadyAndCommandErrors_Bad(t *testing.T) {
 	if (*Store)(nil).Path() != "" || (*Store)(nil).Binary() != "" {
 		t.Fatal("nil accessors should return empty strings")
@@ -167,10 +239,23 @@ func TestStore_ReadyAndCommandErrors_Bad(t *testing.T) {
 	if err := store.ready(); err == nil {
 		t.Fatal("expected missing binary error")
 	}
+	readyStore := &Store{path: "/tmp/trace.mv2", bin: "/bin/memvid"}
+	if err := readyStore.ready(); err != nil || readyStore.runner == nil {
+		t.Fatalf("ready() = %v runner nil=%v, want default runner", err, readyStore.runner == nil)
+	}
 
 	cmdErr := &CommandError{Args: []string{"view"}, Stdout: " out ", Err: errors.New("exit 1")}
 	if !core.Contains(cmdErr.Error(), "out") || !errors.Is(cmdErr, cmdErr.Err) {
 		t.Fatalf("CommandError = %q unwrap=%v", cmdErr.Error(), errors.Unwrap(cmdErr))
+	}
+	for _, cmdErr := range []*CommandError{
+		{Args: []string{"put"}, Stderr: " err "},
+		{Args: []string{"put"}, Err: errors.New("exit 2")},
+		{Args: []string{"put"}},
+	} {
+		if !core.Contains(cmdErr.Error(), "memvid-cli put failed:") {
+			t.Fatalf("CommandError.Error() = %q", cmdErr.Error())
+		}
 	}
 	if !commandLooksNotFound(&CommandError{Stdout: "not found"}) {
 		t.Fatal("expected commandLooksNotFound(stdout)")
@@ -180,6 +265,22 @@ func TestStore_ReadyAndCommandErrors_Bad(t *testing.T) {
 	}
 	if !isChunkNotFound(&memvid.ChunkNotFoundError{ID: 1}) {
 		t.Fatal("expected isChunkNotFound for ChunkNotFoundError")
+	}
+	builder := core.NewBuilder()
+	for range 4100 {
+		builder.WriteString("x")
+	}
+	long := builder.String()
+	if got := limitOutput(long); len(got) <= 4096 || !core.Contains(got, "...(truncated)") {
+		t.Fatalf("limitOutput(long) len=%d value suffix missing", len(got))
+	}
+	if err := resultError(core.Result{OK: true}); err != nil {
+		t.Fatalf("resultError(OK) = %v, want nil", err)
+	}
+	var view viewResponse
+	view.Frame.SearchText = "search fallback"
+	if got := view.text(); got != "search fallback" {
+		t.Fatalf("viewResponse.text() = %q, want search fallback", got)
 	}
 }
 

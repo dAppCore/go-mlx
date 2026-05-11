@@ -228,6 +228,12 @@ func WithQuantization(bits int) LoadOption {
 	return func(c *LoadConfig) { c.Quantization = bits }
 }
 
+// WithExpectedQuantization tells the native loader which quantisation width the
+// planner expects before post-load validation can inspect model metadata.
+func WithExpectedQuantization(bits int) LoadOption {
+	return func(c *LoadConfig) { c.ExpectedQuantization = bits }
+}
+
 // WithDevice selects the execution device: "gpu" or "cpu".
 func WithDevice(device string) LoadOption {
 	return func(c *LoadConfig) { c.Device = device }

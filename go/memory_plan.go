@@ -46,29 +46,34 @@ type MemoryPlanInput struct {
 
 // MemoryPlan is the local runtime policy derived from measured device memory.
 type MemoryPlan struct {
-	MachineClass               MemoryClass   `json:"machine_class"`
-	Architecture               string        `json:"architecture,omitempty"`
-	DeviceMemoryBytes          uint64        `json:"device_memory_bytes,omitempty"`
-	RecommendedWorkingSetBytes uint64        `json:"recommended_working_set_bytes,omitempty"`
-	ContextLength              int           `json:"context_length"`
-	CachePolicy                KVCachePolicy `json:"cache_policy"`
-	CacheMode                  KVCacheMode   `json:"cache_mode,omitempty"`
-	BatchSize                  int           `json:"batch_size"`
-	PrefillChunkSize           int           `json:"prefill_chunk_size"`
-	ParallelSlots              int           `json:"parallel_slots"`
-	PromptCache                bool          `json:"prompt_cache"`
-	PromptCacheMinTokens       int           `json:"prompt_cache_min_tokens"`
-	PreferredQuantization      int           `json:"preferred_quantization,omitempty"`
-	ModelQuantization          int           `json:"model_quantization,omitempty"`
-	ModelQuantizationType      string        `json:"model_quantization_type,omitempty"`
-	ModelQuantizationFamily    string        `json:"model_quantization_family,omitempty"`
-	MemoryLimitBytes           uint64        `json:"memory_limit_bytes,omitempty"`
-	CacheLimitBytes            uint64        `json:"cache_limit_bytes,omitempty"`
-	WiredLimitBytes            uint64        `json:"wired_limit_bytes,omitempty"`
-	EstimatedKVCacheBytes      uint64        `json:"estimated_kv_cache_bytes,omitempty"`
-	EstimatedKVCacheModeBytes  uint64        `json:"estimated_kv_cache_mode_bytes,omitempty"`
-	KVCacheSavingsRatio        float64       `json:"kv_cache_savings_ratio,omitempty"`
-	Notes                      []string      `json:"notes,omitempty"`
+	MachineClass                  MemoryClass                    `json:"machine_class"`
+	Architecture                  string                         `json:"architecture,omitempty"`
+	DeviceMemoryBytes             uint64                         `json:"device_memory_bytes,omitempty"`
+	RecommendedWorkingSetBytes    uint64                         `json:"recommended_working_set_bytes,omitempty"`
+	ContextLength                 int                            `json:"context_length"`
+	CachePolicy                   KVCachePolicy                  `json:"cache_policy"`
+	CacheMode                     KVCacheMode                    `json:"cache_mode,omitempty"`
+	BatchSize                     int                            `json:"batch_size"`
+	PrefillChunkSize              int                            `json:"prefill_chunk_size"`
+	ParallelSlots                 int                            `json:"parallel_slots"`
+	PromptCache                   bool                           `json:"prompt_cache"`
+	PromptCacheMinTokens          int                            `json:"prompt_cache_min_tokens"`
+	PreferredQuantization         int                            `json:"preferred_quantization,omitempty"`
+	ModelQuantization             int                            `json:"model_quantization,omitempty"`
+	ModelQuantizationType         string                         `json:"model_quantization_type,omitempty"`
+	ModelQuantizationFamily       string                         `json:"model_quantization_family,omitempty"`
+	ModelPackedQuantization       *JANGPackedQuantizationProfile `json:"model_packed_quantization,omitempty"`
+	ModelWeightBytes              uint64                         `json:"model_weight_bytes,omitempty"`
+	ModelForwardSkeletonValidated bool                           `json:"model_forward_skeleton_validated,omitempty"`
+	ModelForwardSkeletonBytes     uint64                         `json:"model_forward_skeleton_bytes,omitempty"`
+	ExpertResidency               ExpertResidencyPlan            `json:"expert_residency,omitempty"`
+	MemoryLimitBytes              uint64                         `json:"memory_limit_bytes,omitempty"`
+	CacheLimitBytes               uint64                         `json:"cache_limit_bytes,omitempty"`
+	WiredLimitBytes               uint64                         `json:"wired_limit_bytes,omitempty"`
+	EstimatedKVCacheBytes         uint64                         `json:"estimated_kv_cache_bytes,omitempty"`
+	EstimatedKVCacheModeBytes     uint64                         `json:"estimated_kv_cache_mode_bytes,omitempty"`
+	KVCacheSavingsRatio           float64                        `json:"kv_cache_savings_ratio,omitempty"`
+	Notes                         []string                       `json:"notes,omitempty"`
 }
 
 // PlanMemory chooses opinionated local inference settings from measured memory.
@@ -88,7 +93,7 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 	plan.CacheLimitBytes = percentBytes(workingSet, 8)
 	plan.WiredLimitBytes = percentBytes(workingSet, 75)
 
-	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture := modelMemoryHints(input)
+	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture, modelWeightBytes := modelMemoryHints(input)
 	if modelContext > 0 && modelContext < plan.ContextLength {
 		plan.ContextLength = modelContext
 		plan.Notes = append(plan.Notes, "context capped by model metadata")
@@ -96,10 +101,21 @@ func PlanMemory(input MemoryPlanInput) MemoryPlan {
 	plan.ModelQuantization = modelQuant
 	plan.ModelQuantizationType = modelQuantType
 	plan.ModelQuantizationFamily = modelQuantFamily
+	if input.Pack != nil {
+		plan.ModelPackedQuantization = CloneJANGPackedQuantizationProfile(input.Pack.PackedQuantization)
+		if input.Pack.MiniMaxM2LayerSkeleton != nil {
+			plan.ModelForwardSkeletonValidated = true
+			plan.ModelForwardSkeletonBytes = input.Pack.MiniMaxM2LayerSkeleton.EstimatedBytes()
+			plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
+		}
+	}
+	plan.ModelWeightBytes = modelWeightBytes
 	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
 	}
 	applyModelArchitectureMemoryHints(&plan, modelArchitecture)
+	applyModelQuantizationMemoryHints(&plan)
+	applyExpertResidencyMemoryHints(&plan, input.Pack, modelArchitecture)
 	plan.EstimatedKVCacheBytes = estimateKVCacheBytes(plan, input, KVCacheModeFP16)
 	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytes(plan, input, plan.CacheMode)
 	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
@@ -218,6 +234,9 @@ func baseMemoryPlan(class MemoryClass) MemoryPlan {
 }
 
 func estimateKVCacheBytes(plan MemoryPlan, input MemoryPlanInput, mode KVCacheMode) uint64 {
+	if !memoryPlanUsesGenerationKVCache(input) {
+		return 0
+	}
 	if plan.ContextLength <= 0 {
 		return 0
 	}
@@ -266,13 +285,14 @@ func kvEstimateShape(input MemoryPlanInput, class MemoryClass) (layers, hidden i
 	}
 }
 
-func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, quantType, quantFamily, architecture string) {
+func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, quantType, quantFamily, architecture string, weightBytes uint64) {
 	if input.Pack != nil {
 		contextLength = input.Pack.ContextLength
 		quantization = input.Pack.QuantBits
 		quantType = input.Pack.QuantType
 		quantFamily = input.Pack.QuantFamily
 		architecture = input.Pack.Architecture
+		weightBytes = input.Pack.WeightBytes
 	}
 	if input.ModelInfo != nil {
 		if input.ModelInfo.Architecture != "" {
@@ -285,11 +305,15 @@ func modelMemoryHints(input MemoryPlanInput) (contextLength, quantization int, q
 			quantization = input.ModelInfo.QuantBits
 		}
 	}
-	return contextLength, quantization, quantType, quantFamily, architecture
+	return contextLength, quantization, quantType, quantFamily, architecture, weightBytes
 }
 
 func applyModelArchitectureMemoryHints(plan *MemoryPlan, architecture string) {
-	switch normalizeKnownArchitecture(architecture) {
+	normalized := normalizeKnownArchitecture(architecture)
+	if profile, ok := LookupArchitectureProfile(architecture); ok {
+		normalized = profile.ID
+	}
+	switch normalized {
 	case "qwen3_moe":
 		plan.Notes = append(plan.Notes, "Qwen3-MoE sparse expert routing increases memory pressure; prefer compact KV cache modes on constrained Apple memory")
 		if plan.MachineClass == MemoryClassApple24GB || plan.MachineClass == MemoryClassApple32GB {
@@ -298,7 +322,139 @@ func applyModelArchitectureMemoryHints(plan *MemoryPlan, architecture string) {
 		}
 	case "qwen3_next":
 		plan.Notes = append(plan.Notes, "Qwen3-Next uses nested text_config metadata; keep context and cache policy tied to text model limits")
+	case "minimax_m2":
+		plan.Notes = append(plan.Notes, "MiniMax M2 MoE has a large routed-expert footprint; keep prefill narrow and prefer paged cache on Apple unified memory")
+		plan.ParallelSlots = 1
+		plan.BatchSize = 1
+		if plan.PrefillChunkSize > 2048 {
+			plan.PrefillChunkSize = 2048
+		}
+		if plan.ContextLength > 32768 {
+			plan.ContextLength = 32768
+			plan.Notes = append(plan.Notes, "MiniMax M2 context capped for 96GB-class local inference")
+		}
+		if plan.MachineClass == MemoryClassApple16GB || plan.MachineClass == MemoryClassApple24GB || plan.MachineClass == MemoryClassApple32GB {
+			plan.ContextLength = minPositive(plan.ContextLength, 8192)
+			plan.CacheMode = KVCacheModeKQ8VQ4
+			plan.Notes = append(plan.Notes, "MiniMax M2 requires asymmetric compact KV cache below 64GB")
+		}
+	case "bert":
+		applyEncoderMemoryHints(plan, "BERT embedding encoder")
+	case "bert_rerank":
+		applyEncoderMemoryHints(plan, "BERT cross-encoder rerank")
 	}
+}
+
+func applyEncoderMemoryHints(plan *MemoryPlan, label string) {
+	plan.CachePolicy = KVCacheDefault
+	plan.CacheMode = KVCacheModeDefault
+	plan.PromptCache = false
+	plan.PromptCacheMinTokens = 0
+	if plan.PrefillChunkSize == 0 || plan.PrefillChunkSize > 512 {
+		plan.PrefillChunkSize = 512
+	}
+	switch plan.MachineClass {
+	case MemoryClassApple16GB, MemoryClassApple24GB:
+		if plan.BatchSize < 8 {
+			plan.BatchSize = 8
+		}
+	case MemoryClassApple32GB:
+		if plan.BatchSize < 16 {
+			plan.BatchSize = 16
+		}
+	case MemoryClassApple64GB, MemoryClassApple96GB:
+		if plan.BatchSize < 32 {
+			plan.BatchSize = 32
+		}
+	case MemoryClassApple128GB:
+		if plan.BatchSize < 48 {
+			plan.BatchSize = 48
+		}
+	default:
+		if plan.BatchSize < 4 {
+			plan.BatchSize = 4
+		}
+	}
+	plan.Notes = append(plan.Notes, label+" uses pooled sequence outputs and does not allocate generation KV cache")
+}
+
+func memoryPlanUsesGenerationKVCache(input MemoryPlanInput) bool {
+	architecture := ""
+	if input.ModelInfo != nil {
+		architecture = input.ModelInfo.Architecture
+	}
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		architecture = input.Pack.Architecture
+	}
+	return modelPackUsesGenerationKVCache(input.Pack, architecture)
+}
+
+func applyModelQuantizationMemoryHints(plan *MemoryPlan) {
+	if plan.ModelQuantizationFamily != "jang" && plan.ModelQuantizationType != "jangtq" {
+		return
+	}
+	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
+}
+
+func applyExpertResidencyMemoryHints(plan *MemoryPlan, pack *ModelPack, architecture string) {
+	if plan == nil {
+		return
+	}
+	if pack != nil {
+		if pack.MiniMaxM2 != nil {
+			plan.ExpertResidency = PlanMiniMaxM2ExpertResidency(*pack.MiniMaxM2, *plan, nil)
+			plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
+			return
+		}
+		if pack.Architecture != "" {
+			architecture = pack.Architecture
+		}
+	}
+	profile, ok := LookupArchitectureProfile(architecture)
+	if !ok || !profile.MoE {
+		return
+	}
+	plan.ExpertResidency = ExpertResidencyPlan{
+		Enabled:                 true,
+		Mode:                    ExpertResidencyModeLazy,
+		Architecture:            profile.ID,
+		MaxResidentExperts:      genericMoEResidentExpertLimit(plan.MachineClass),
+		PageInBatchSize:         1,
+		EvictionPolicy:          ExpertEvictionLRU,
+		FirstUseLatencyExpected: true,
+		Notes:                   []string{"MoE model uses lazy expert residency until backend-specific expert byte estimates are available"},
+	}
+	plan.Notes = append(plan.Notes, "lazy expert residency enabled for MoE architecture")
+}
+
+func genericMoEResidentExpertLimit(class MemoryClass) int {
+	switch class {
+	case MemoryClassApple16GB, MemoryClassApple24GB:
+		return 2
+	case MemoryClassApple32GB:
+		return 4
+	case MemoryClassApple64GB:
+		return 8
+	case MemoryClassApple96GB:
+		return 16
+	case MemoryClassApple128GB:
+		return 24
+	default:
+		return 2
+	}
+}
+
+func minPositive(a, b int) int {
+	if a <= 0 {
+		return b
+	}
+	if b <= 0 {
+		return a
+	}
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func percentBytes(value uint64, percent uint64) uint64 {
@@ -308,7 +464,7 @@ func percentBytes(value uint64, percent uint64) uint64 {
 	return value * percent / 100
 }
 
-var memoryPlannerDeviceInfo = GetDeviceInfo
+var memoryPlannerDeviceInfo = safeRuntimeDeviceInfo
 
 func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	var plan MemoryPlan

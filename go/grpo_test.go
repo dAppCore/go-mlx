@@ -116,6 +116,38 @@ func TestGRPORewardContainsAnswer_ExtractsReasoningAnswer_Good(t *testing.T) {
 	}
 }
 
+func TestRunGRPOReasoningTraining_ResumeMaxSamplesExactReward_Good(t *testing.T) {
+	resume := core.PathJoin(t.TempDir(), "resume")
+	if err := SaveGRPOCheckpointMetadata(resume, GRPOCheckpointMetadata{Step: 9, GroupSize: 1}); err != nil {
+		t.Fatalf("SaveGRPOCheckpointMetadata() error = %v", err)
+	}
+
+	rolloutCalls := 0
+	result, err := RunGRPOReasoningTraining(context.Background(), GRPORunner{
+		Rollout: func(_ context.Context, req GRPORolloutRequest) ([]GRPORollout, error) {
+			rolloutCalls++
+			return []GRPORollout{{Answer: req.Sample.ExpectedAnswer, TokenIDs: []int32{1}, LogProb: -0.2}}, nil
+		},
+	}, NewSFTSliceDataset([]SFTSample{
+		{Prompt: "first", Response: "alpha"},
+		{Prompt: "second", Response: "beta"},
+	}), GRPOConfig{
+		GroupSize:   1,
+		MaxSamples:  1,
+		ResumePath:  resume,
+		RewardFuncs: []GRPORewardFunc{GRPORewardExactAnswer(3)},
+	})
+	if err != nil {
+		t.Fatalf("RunGRPOReasoningTraining() error = %v", err)
+	}
+	if result.ResumedFrom == nil || result.ResumedFrom.Step != 9 || rolloutCalls != 1 {
+		t.Fatalf("resume=%+v rolloutCalls=%d, want resume step 9 and one bounded rollout", result.ResumedFrom, rolloutCalls)
+	}
+	if result.Metrics.RewardMean != 3 || len(result.Updates) != 1 || result.Updates[0].Rollouts[0].Reward != 3 {
+		t.Fatalf("result = %+v update=%+v, want exact-answer reward", result.Metrics, result.Updates)
+	}
+}
+
 func TestRunGRPOReasoningTraining_RequiresRollout_Bad(t *testing.T) {
 	_, err := RunGRPOReasoningTraining(context.Background(), GRPORunner{}, NewSFTSliceDataset([]SFTSample{{Prompt: "p", Response: "r"}}), GRPOConfig{
 		RewardFuncs: []GRPORewardFunc{GRPORewardContainsAnswer(1)},
@@ -125,6 +157,86 @@ func TestRunGRPOReasoningTraining_RequiresRollout_Bad(t *testing.T) {
 	}
 	if !core.Contains(core.Lower(err.Error()), "rollout") {
 		t.Fatalf("error = %v, want rollout context", err)
+	}
+}
+
+func TestBuildGRPOUpdate_ErrorBranches_Bad(t *testing.T) {
+	request := GRPORolloutRequest{
+		Step:      1,
+		Epoch:     1,
+		GroupSize: 2,
+		Sample:    GRPOSample{Prompt: "p", ExpectedAnswer: "a"},
+	}
+	cases := []struct {
+		name     string
+		rollouts []GRPORollout
+		cfg      GRPOConfig
+		want     string
+	}{
+		{
+			name: "empty",
+			want: "no completions",
+		},
+		{
+			name:     "group_mismatch",
+			rollouts: []GRPORollout{{Answer: "a"}},
+			want:     "group size",
+		},
+		{
+			name:     "reward_error",
+			rollouts: []GRPORollout{{Answer: "a"}, {Answer: "a"}},
+			cfg: GRPOConfig{RewardFuncs: []GRPORewardFunc{func(GRPORewardContext) (GRPOReward, error) {
+				return GRPOReward{}, core.NewError("reward failed")
+			}}},
+			want: "reward failed",
+		},
+		{
+			name:     "nonfinite_reward",
+			rollouts: []GRPORollout{{Answer: "a"}, {Answer: "a"}},
+			cfg: GRPOConfig{RewardFuncs: []GRPORewardFunc{func(GRPORewardContext) (GRPOReward, error) {
+				return GRPOReward{Score: math.Inf(1)}, nil
+			}}},
+			want: "finite",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildGRPOUpdate(context.Background(), GRPORunner{}, request, tc.rollouts, normalizeGRPOConfig(tc.cfg))
+			if err == nil || !core.Contains(core.Lower(err.Error()), tc.want) {
+				t.Fatalf("buildGRPOUpdate() error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestGRPORewardExactAnswerAndMetadataErrors_Bad(t *testing.T) {
+	reward, err := GRPORewardExactAnswer(0)(GRPORewardContext{
+		Sample:  GRPOSample{ExpectedAnswer: "alpha"},
+		Rollout: GRPORollout{Answer: "beta"},
+	})
+	if err != nil {
+		t.Fatalf("GRPORewardExactAnswer() error = %v", err)
+	}
+	if reward.Score != 0 || reward.Weight != 1 || reward.Detail != "missing" {
+		t.Fatalf("reward = %+v, want default weight miss", reward)
+	}
+	if err := SaveGRPOCheckpointMetadata("", GRPOCheckpointMetadata{}); err == nil {
+		t.Fatal("SaveGRPOCheckpointMetadata(empty) error = nil")
+	}
+	if _, err := LoadGRPOCheckpointMetadata(""); err == nil {
+		t.Fatal("LoadGRPOCheckpointMetadata(empty) error = nil")
+	}
+	dir := t.TempDir()
+	writeModelPackFile(t, grpoCheckpointMetadataPath(dir), "{")
+	if _, err := LoadGRPOCheckpointMetadata(dir); err == nil {
+		t.Fatal("LoadGRPOCheckpointMetadata(invalid JSON) error = nil")
+	}
+	if _, err := RunGRPOReasoningTraining(context.Background(), GRPORunner{
+		Rollout: func(context.Context, GRPORolloutRequest) ([]GRPORollout, error) {
+			return nil, nil
+		},
+	}, NewSFTSliceDataset([]SFTSample{{Prompt: "p", Response: "a"}}), GRPOConfig{ResumePath: dir}); err == nil {
+		t.Fatal("RunGRPOReasoningTraining(invalid resume metadata) error = nil")
 	}
 }
 

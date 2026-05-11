@@ -53,6 +53,22 @@ func (d DType) String() string {
 	return "unknown"
 }
 
+// DTypeByteSize returns the storage byte width for one value of dtype.
+func DTypeByteSize(dtype DType) int {
+	switch dtype {
+	case DTypeBool, DTypeUint8, DTypeInt8:
+		return 1
+	case DTypeUint16, DTypeInt16, DTypeFloat16, DTypeBFloat16:
+		return 2
+	case DTypeUint32, DTypeInt32, DTypeFloat32:
+		return 4
+	case DTypeUint64, DTypeInt64, DTypeFloat64, DTypeComplex64:
+		return 8
+	default:
+		return 0
+	}
+}
+
 var dtypeFromString = map[string]DType{
 	"bool": DTypeBool, "BOOL": DTypeBool,
 	"uint8": DTypeUint8, "U8": DTypeUint8,

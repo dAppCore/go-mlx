@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"math"
 	"testing"
 
 	"dappco.re/go"
@@ -559,6 +560,26 @@ func TestGemma4_InferPerLayerInputSize_GatingFallback_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_InferPerLayerInputSize_PackedEmbeddingProjectionWins_Good(t *testing.T) {
+	coverageTokens := "InferPerLayerInputSize PackedEmbeddingProjectionWins"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	embeddingPacked := FromValues(make([]uint32, 16*32), 16, 32)
+	projection := seqArray(1.20, 256, 8)
+	defer Free(embeddingPacked, projection)
+
+	got := inferGemma4PerLayerInputSize(map[string]*Array{
+		"model.embed_tokens_per_layer.weight":     embeddingPacked,
+		"model.per_layer_model_projection.weight": projection,
+	}, 4)
+	if got != 64 {
+		t.Fatalf("inferGemma4PerLayerInputSize() = %d, want 64", got)
+	}
+}
+
 func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
 	coverageTokens := "NormalizePerLayerTensor TransposedEmbedding"
 	if coverageTokens == "" {
@@ -623,6 +644,36 @@ func TestGemma4_AttentionScale_Good(t *testing.T) {
 	if got != 1.0 {
 		t.Fatalf("gemma4AttentionScale(512) = %f, want 1.0", got)
 	}
+}
+
+func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
+	coverageTokens := "PrecomputeNormWeights UsesDirectScale"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	weight := FromValues([]float32{0.125, 2.5}, 2)
+	defer Free(weight)
+	model := &Gemma4Model{
+		Norm: &RMSNormModule{Weight: weight},
+		Layers: []*Gemma4DecoderLayer{{
+			InputNorm: &RMSNormModule{Weight: weight},
+			Attention: &Gemma4Attention{
+				QNorm: &RMSNormModule{Weight: weight},
+				KNorm: &RMSNormModule{Weight: weight},
+			},
+		}},
+	}
+	precomputeGemma4ScaledWeights(model)
+	defer Free(model.NormScaled, model.Layers[0].InputNormScaled, model.Layers[0].Attention.QNormScaled, model.Layers[0].Attention.KNormScaled)
+
+	if err := Eval(model.NormScaled, model.Layers[0].InputNormScaled, model.Layers[0].Attention.QNormScaled, model.Layers[0].Attention.KNormScaled); err != nil {
+		t.Fatalf("Eval scaled norm weights: %v", err)
+	}
+	floatSliceApprox(t, model.NormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, model.Layers[0].InputNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, model.Layers[0].Attention.QNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, model.Layers[0].Attention.KNormScaled.Floats(), []float32{0.125, 2.5})
 }
 
 func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
@@ -1232,6 +1283,83 @@ func TestGemma4_LoadAndForwardDenseModel_LongSlidingPrompt_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_LastSequenceHidden_Good_HandlesRankVariants(t *testing.T) {
+	coverageTokens := "LastSequenceHidden HandlesRankVariants"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	rank3 := FromValues([]float32{
+		1, 2,
+		3, 4,
+		5, 6,
+	}, 1, 3, 2)
+	last3 := gemma4LastSequenceHidden(rank3, 3)
+	defer Free(last3)
+	if got := last3.Shape(); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
+		t.Fatalf("rank3 last shape = %v, want [1 1 2]", got)
+	}
+
+	rank2 := FromValues([]float32{
+		1, 2,
+		3, 4,
+		5, 6,
+	}, 3, 2)
+	last2 := gemma4LastSequenceHidden(rank2, 3)
+	if got := last2.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("rank2 last shape = %v, want [1 2]", got)
+	}
+	proj2 := gemma4ProjectionHidden(last2)
+	if got := proj2.Shape(); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
+		t.Fatalf("rank2 projection shape = %v, want [1 1 2]", got)
+	}
+	contig2 := gemma4ContiguousHidden(proj2)
+	defer Free(contig2)
+	if err := Eval(contig2); err != nil {
+		t.Fatalf("Eval(contig2) error = %v", err)
+	}
+	if !contig2.IsRowContiguous() {
+		t.Fatalf("rank2 projection is not contiguous")
+	}
+
+	rank1 := FromValues([]float32{1, 2}, 2)
+	last1 := gemma4LastSequenceHidden(rank1, 3)
+	if got := last1.Shape(); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("rank1 last shape = %v, want [2]", got)
+	}
+	proj1 := gemma4ProjectionHidden(last1)
+	defer Free(proj1)
+	if got := proj1.Shape(); len(got) != 3 || got[0] != 1 || got[1] != 1 || got[2] != 2 {
+		t.Fatalf("rank1 projection shape = %v, want [1 1 2]", got)
+	}
+}
+
+func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
+	coverageTokens := "CachedAttentionMask OffsetsAndWindow"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	mask := buildGemma4CachedAttentionMask(1, 2, 5, 3, 2)
+	defer Free(mask)
+	values := mask.Floats()
+	if len(values) != 10 {
+		t.Fatalf("mask values = %d, want 10", len(values))
+	}
+	negInf := float32(math.Inf(-1))
+	want := []float32{
+		negInf, negInf, 0, 0, negInf,
+		negInf, negInf, negInf, 0, 0,
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("mask[%d] = %v, want %v (all=%v)", i, values[i], want[i], values)
+		}
+	}
+}
+
 func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 	coverageTokens := "LoadAndForwardDenseModelFromGGUF"
 	if coverageTokens == "" {
@@ -1690,7 +1818,7 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	defer cache.Reset()
 	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 
-	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg)
+	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -1757,7 +1885,7 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
-	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg)
+	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0)
 	defer func() {
 		Free(x, out)
 		kv.free()

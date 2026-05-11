@@ -220,6 +220,8 @@ func messagesToSFTSample(messages []Message, cfg ChatTemplateConfig, format stri
 func FormatChatMessages(messages []Message, cfg ChatTemplateConfig) string {
 	template := chatTemplateName(cfg)
 	switch template {
+	case "gemma4":
+		return formatDatasetGemma4Chat(messages, cfg)
 	case "gemma":
 		return formatDatasetGemmaChat(messages, cfg)
 	case "qwen":
@@ -244,6 +246,26 @@ func formatDatasetGemmaChat(messages []Message, cfg ChatTemplateConfig) string {
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<start_of_turn>model\n")
+	}
+	return builder.String()
+}
+
+func formatDatasetGemma4Chat(messages []Message, cfg ChatTemplateConfig) string {
+	builder := core.NewBuilder()
+	builder.WriteString("<bos>")
+	for _, msg := range messages {
+		role := normalizeDatasetRole(msg.Role)
+		switch role {
+		case "assistant":
+			role = "model"
+		case "system", "user":
+		default:
+			continue
+		}
+		builder.WriteString("<|turn>" + role + "\n" + core.Trim(msg.Content) + "<turn|>\n")
+	}
+	if !cfg.NoGenerationPrompt {
+		builder.WriteString("<|turn>model\n")
 	}
 	return builder.String()
 }
@@ -299,7 +321,9 @@ func chatTemplateName(cfg ChatTemplateConfig) string {
 		return template
 	}
 	switch core.Lower(core.Trim(cfg.Architecture)) {
-	case "gemma", "gemma2", "gemma3", "gemma3_text", "gemma4", "gemma4_text":
+	case "gemma4", "gemma4_text":
+		return "gemma4"
+	case "gemma", "gemma2", "gemma3", "gemma3_text":
 		return "gemma"
 	case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next":
 		return "qwen"

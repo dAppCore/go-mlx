@@ -137,6 +137,60 @@ func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
 	}
 }
 
+func TestMetal_NewPromptSnapshotCaches_UsesSnapshotSafePhysicalModes_Good(t *testing.T) {
+	coverageTokens := "NewPromptSnapshotCaches UsesSnapshotSafePhysicalModes"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cases := map[KVCacheMode]any{
+		KVCacheModeQ8:     (*QuantizedKVCache)(nil),
+		KVCacheModePaged:  (*PagedKVCache)(nil),
+		KVCacheModeKQ8VQ4: (*RotatingKVCache)(nil),
+	}
+	for mode, want := range cases {
+		model := &Model{
+			model:      &fakeModel{numLayers: 1},
+			contextLen: 4096,
+			cacheMode:  string(mode),
+		}
+
+		caches := model.newPromptSnapshotCaches()
+		switch want.(type) {
+		case *QuantizedKVCache:
+			if _, ok := caches[0].(*QuantizedKVCache); !ok {
+				t.Fatalf("mode %q cache[0] = %T, want *QuantizedKVCache", mode, caches[0])
+			}
+		case *PagedKVCache:
+			if _, ok := caches[0].(*PagedKVCache); !ok {
+				t.Fatalf("mode %q cache[0] = %T, want *PagedKVCache", mode, caches[0])
+			}
+		case *RotatingKVCache:
+			if _, ok := caches[0].(*RotatingKVCache); !ok {
+				t.Fatalf("mode %q cache[0] = %T, want *RotatingKVCache fallback", mode, caches[0])
+			}
+		}
+	}
+}
+
+func TestMetal_RuntimeCachesSnapshotSafe_FlagsPhysicalModes_Good(t *testing.T) {
+	coverageTokens := "RuntimeCachesSnapshotSafe FlagsPhysicalModes"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	for _, mode := range []KVCacheMode{KVCacheModeQ8, KVCacheModePaged} {
+		m := &Model{cacheMode: string(mode)}
+		if !m.runtimeCachesSnapshotSafe() {
+			t.Fatalf("mode %q runtimeCachesSnapshotSafe = false, want true", mode)
+		}
+	}
+	if (&Model{cacheMode: string(KVCacheModeKQ8VQ4)}).runtimeCachesSnapshotSafe() {
+		t.Fatal("k-q8-v-q4 runtimeCachesSnapshotSafe = true, want false until q4 prefix slicing lands")
+	}
+	if !(&Model{}).runtimeCachesSnapshotSafe() {
+		t.Fatal("default runtimeCachesSnapshotSafe = false, want true")
+	}
+}
+
 // fakeModel is a minimal InternalModel for testing cache creation.
 type fakeModel struct {
 	numLayers int

@@ -7,6 +7,8 @@ package metal
 import (
 	"context"
 	"testing"
+
+	"dappco.re/go"
 )
 
 type fakeDetachCache struct {
@@ -235,6 +237,74 @@ func TestPromptCache_RestoresShorterKVPrefix_Good(t *testing.T) {
 	}
 }
 
+func TestPromptCache_MatchesExactNoLogitsByReplayingFinalToken_Good(t *testing.T) {
+	coverageTokens := "PromptCache ExactNoLogitsReplaysFinal"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 2,
+		promptCache: &promptCacheEntry{
+			tokens:          []int32{1, 2, 3},
+			cacheableTokens: 3,
+		},
+	}
+
+	entry, prefixLen := model.promptCacheMatch([]int32{1, 2, 3})
+
+	if entry == nil || prefixLen != 2 {
+		t.Fatalf("promptCacheMatch exact no-logits = (%v, %d), want entry with prefix 2", entry, prefixLen)
+	}
+}
+
+func TestPromptCache_RestoreFromKVSnapshotWithoutLogits_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVSnapshotWithoutLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model:                &fakeModel{numLayers: 1},
+		modelType:            "gemma4_text",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+	}
+	defer model.clearPromptCache()
+	snapshot := &KVSnapshot{
+		Version:      KVSnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1, 2},
+		TokenOffset:  2,
+		SeqLen:       2,
+		HeadDim:      2,
+		Layers: []KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []KVHeadSnapshot{{
+				Key:   []float32{1, 2, 3, 4},
+				Value: []float32{5, 6, 7, 8},
+			}},
+		}},
+	}
+
+	if err := model.RestorePromptCacheFromKV(context.Background(), snapshot); err != nil {
+		t.Fatalf("RestorePromptCacheFromKV() error = %v", err)
+	}
+
+	if model.promptCache == nil {
+		t.Fatal("promptCache = nil, want installed entry")
+	}
+	if model.promptCache.logits != nil {
+		t.Fatalf("promptCache.logits = %v, want nil prefix logits", model.promptCache.logits)
+	}
+	if model.promptCache.cacheableTokens != 2 || len(model.promptCache.tokens) != 2 {
+		t.Fatalf("promptCache metadata = %+v, want two-token prefix", model.promptCache)
+	}
+	if len(model.promptCache.caches) != 1 || model.promptCache.caches[0].keys == nil || model.promptCache.caches[0].values == nil {
+		t.Fatalf("promptCache caches = %+v, want restored KV tensors", model.promptCache.caches)
+	}
+}
+
 func TestPromptCache_SkipsWrappedRotatingCache_Bad(t *testing.T) {
 	coverageTokens := "PromptCache SkipsWrappedRotatingCache"
 	if coverageTokens == "" {
@@ -436,6 +506,37 @@ func (m *chunkedPrefillModel) Tokenizer() *Tokenizer               { return nil 
 func (m *chunkedPrefillModel) ModelType() string                   { return "chunked-prefill-test" }
 func (m *chunkedPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
+type lastLogitsPrefillModel struct {
+	fullCalls int
+	lastLens  []int
+	invalid   bool
+}
+
+func (m *lastLogitsPrefillModel) Forward(tokens *Array, _ []Cache) *Array {
+	m.fullCalls++
+	seqLen := tokens.Dim(1)
+	return Zeros([]int32{1, int32(seqLen), 64}, DTypeFloat32)
+}
+
+func (m *lastLogitsPrefillModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
+	return m.Forward(tokens, caches)
+}
+
+func (m *lastLogitsPrefillModel) ForwardLastTokenLogits(tokens *Array, _ *Array, _ []Cache) *Array {
+	seqLen := tokens.Dim(1)
+	m.lastLens = append(m.lastLens, seqLen)
+	if m.invalid {
+		return &Array{}
+	}
+	return Zeros([]int32{1, 1, 2}, DTypeFloat32)
+}
+
+func (m *lastLogitsPrefillModel) NewCache() []Cache                   { return nil }
+func (m *lastLogitsPrefillModel) NumLayers() int                      { return 0 }
+func (m *lastLogitsPrefillModel) Tokenizer() *Tokenizer               { return nil }
+func (m *lastLogitsPrefillModel) ModelType() string                   { return "last-logits-prefill-test" }
+func (m *lastLogitsPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
 func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 	coverageTokens := "PrefillTokenBlock ChunksByPlanner"
 	if coverageTokens == "" {
@@ -460,8 +561,68 @@ func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 			t.Fatalf("seqLens = %v, want %v", inner.seqLens, want)
 		}
 	}
-	if logits.Dim(1) != 1 {
-		t.Fatalf("last logits seq len = %d, want 1", logits.Dim(1))
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("last logits shape = %v, want [1 2]", got)
+	}
+}
+
+func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock UsesLastTokenLogitsModel"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
+
+	inner := &lastLogitsPrefillModel{}
+	model := &Model{model: inner, prefillChunkSize: 2}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, nil)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+
+	if inner.fullCalls != 0 {
+		t.Fatalf("full forward calls = %d, want 0", inner.fullCalls)
+	}
+	want := []int{2, 2, 1}
+	if len(inner.lastLens) != len(want) {
+		t.Fatalf("lastLens = %v, want %v", inner.lastLens, want)
+	}
+	for i := range want {
+		if inner.lastLens[i] != want[i] {
+			t.Fatalf("lastLens = %v, want %v", inner.lastLens, want)
+		}
+	}
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("logits shape = %v, want [1 2]", got)
+	}
+}
+
+func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock FallsBackWhenLastTokenLogitsInvalid"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
+
+	inner := &lastLogitsPrefillModel{invalid: true}
+	model := &Model{model: inner, prefillChunkSize: 2}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3}, nil)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+
+	if inner.fullCalls != 2 {
+		t.Fatalf("full forward calls = %d, want 2", inner.fullCalls)
+	}
+	if len(inner.lastLens) != 2 {
+		t.Fatalf("last logits attempts = %d, want 2", len(inner.lastLens))
+	}
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 64 {
+		t.Fatalf("fallback logits shape = %v, want [1 64]", got)
 	}
 }
 
@@ -480,6 +641,30 @@ func TestModel_FormatChat_Gemma2UsesGemmaTemplate_Good(t *testing.T) {
 	want := "<start_of_turn>user\nHello<end_of_turn>\n" +
 		"<start_of_turn>model\nHi<end_of_turn>\n" +
 		"<start_of_turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
+	coverageTokens := "FormatChat Gemma4UsesModelTemplate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{modelType: "gemma4_text"}
+
+	got := model.formatChat([]ChatMessage{
+		{Role: "system", Content: " be brief "},
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi"},
+		{Role: "user", Content: "Again"},
+	})
+
+	want := "<bos><|turn>system\nbe brief<turn|>\n" +
+		"<|turn>user\nHello<turn|>\n" +
+		"<|turn>model\nHi<turn|>\n" +
+		"<|turn>user\nAgain<turn|>\n" +
+		"<|turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
 	}
@@ -573,6 +758,35 @@ func TestGenerate_Model_Err_Ugly(t *testing.T) {
 	}
 	if variant != "Ugly" {
 		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestGenerate_Model_StagedMiniMaxReturnsDecodeError_Bad(t *testing.T) {
+	coverageTokens := "Model Generate StagedMiniMaxReturnsDecodeError"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &miniMaxM2StagedModel{
+			plan: miniMaxM2NativeLoadPlan{
+				Config: miniMaxM2LoadConfig{
+					ModelType:       "minimax_m2",
+					NumHiddenLayers: 62,
+				},
+			},
+		},
+		modelType: "minimax_m2",
+	}
+
+	tokenCount := 0
+	for range model.Generate(context.Background(), "hello", GenerateConfig{MaxTokens: 1}) {
+		tokenCount++
+	}
+	if tokenCount != 0 {
+		t.Fatalf("generated %d token(s), want none before MiniMax decode kernels are linked", tokenCount)
+	}
+	if err := model.Err(); err == nil || !core.Contains(err.Error(), "minimax_m2") || !core.Contains(err.Error(), "decode") {
+		t.Fatalf("Err() = %v, want minimax_m2 decode diagnostic", err)
 	}
 }
 
@@ -888,5 +1102,35 @@ func TestGenerate_Model_CaptureKV_Ugly(t *testing.T) {
 	}
 	if variant != "Ugly" {
 		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestGenerate_LastTokenLogits_Good(t *testing.T) {
+	coverageTokens := "Generate LastTokenLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	oneDim := FromValues([]float32{1, 2, 3}, 3)
+	twoDim := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	threeDim := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 2, 3)
+	defer Free(oneDim, twoDim, threeDim)
+
+	for name, logits := range map[string]*Array{
+		"one":   oneDim,
+		"two":   twoDim,
+		"three": threeDim,
+	} {
+		last, err := lastTokenLogits(logits)
+		if err != nil {
+			t.Fatalf("%s lastTokenLogits: %v", name, err)
+		}
+		if err := Eval(last); err != nil {
+			Free(last)
+			t.Fatalf("%s Eval(last): %v", name, err)
+		}
+		if last.NumDims() != 2 || last.Dim(0) != 1 || last.Dim(1) != 3 {
+			t.Fatalf("%s last shape = %v, want [1 3]", name, last.Shape())
+		}
+		Free(last)
 	}
 }

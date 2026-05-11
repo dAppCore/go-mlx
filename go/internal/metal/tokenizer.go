@@ -33,6 +33,8 @@ type Tokenizer struct {
 	hasBOS   bool
 	hasEOS   bool
 
+	addPrefixSpace bool
+
 	// GPT-2 byte-level BPE support (used by Qwen, GPT, Llama, etc.)
 	isGPT2BPE   bool
 	gpt2Decoder map[rune]byte // Unicode char → original byte
@@ -50,6 +52,14 @@ type mergePair struct {
 
 // tokenizerJSON is the HuggingFace tokenizer.json format.
 type tokenizerJSON struct {
+	Normalizer struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	} `json:"normalizer"`
+	PreTokenizer struct {
+		Type     string `json:"type"`
+		Behavior string `json:"behavior"`
+	} `json:"pre_tokenizer"`
 	Model struct {
 		Type         string `json:"type"`
 		Vocab        any    `json:"vocab"`
@@ -100,9 +110,10 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	}
 
 	tokenizer := &Tokenizer{
-		vocab:    make(map[string]int32),
-		invVocab: make(map[int32]string),
-		special:  make(map[string]int32),
+		vocab:          make(map[string]int32),
+		invVocab:       make(map[int32]string),
+		special:        make(map[string]int32),
+		addPrefixSpace: true,
 	}
 
 	// Vocab arrives as any (map[string]interface{} from JSON) — convert
@@ -186,6 +197,10 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		tokenizer.isGPT2BPE = true
 		tokenizer.gpt2Decoder, tokenizer.gpt2Encoder = buildGPT2ByteMaps()
 	}
+	if tj.Normalizer.Type == "Replace" && tj.Normalizer.Content == "▁" &&
+		tj.PreTokenizer.Type == "Split" && tj.PreTokenizer.Behavior == "MergedWithPrevious" {
+		tokenizer.addPrefixSpace = false
+	}
 
 	if id, ok := tokenizer.special["<bos>"]; ok {
 		tokenizer.bosToken = id
@@ -212,6 +227,11 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 	}
 	// Llama 3: <|eot_id|> is the turn-end token
 	if id, ok := tokenizer.special["<|eot_id|>"]; ok {
+		tokenizer.eosToken = id
+		tokenizer.hasEOS = true
+	}
+	// Gemma 4: <turn|> is the assistant turn stop token.
+	if id, ok := tokenizer.special["<turn|>"]; ok {
 		tokenizer.eosToken = id
 		tokenizer.hasEOS = true
 	}
@@ -243,12 +263,12 @@ func (t *Tokenizer) nextSpecialBoundary(input string) int {
 	return end
 }
 
-func normalizeSentencePieceSegment(segment string) string {
+func (t *Tokenizer) normalizeSentencePieceSegment(segment string) string {
 	if segment == "" {
 		return ""
 	}
 	normalized := core.Replace(segment, " ", "▁")
-	if !core.HasPrefix(normalized, "▁") {
+	if t.addPrefixSpace && !core.HasPrefix(normalized, "▁") {
 		normalized = "▁" + normalized
 	}
 	return normalized
@@ -352,7 +372,7 @@ func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
 }
 
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
-	spText := normalizeSentencePieceSegment(segment)
+	spText := t.normalizeSentencePieceSegment(segment)
 	if spText == "" {
 		return nil
 	}
@@ -412,6 +432,14 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 	return tokens
 }
 
+func (t *Tokenizer) shouldPrependBOS(text string) bool {
+	if !t.hasBOS {
+		return false
+	}
+	bosText := t.invVocab[t.bosToken]
+	return bosText == "" || !core.HasPrefix(text, bosText)
+}
+
 // Encode converts text to token IDs (prepends BOS token).
 //
 //	ids := tok.Encode("Hello world") // → []int32{2, 9906, 1917}
@@ -421,7 +449,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 	}
 
 	tokens := make([]int32, 0, len(text)+1)
-	if t.hasBOS {
+	if t.shouldPrependBOS(text) {
 		tokens = append(tokens, t.bosToken)
 	}
 
@@ -449,7 +477,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 // encodeGPT2 encodes text using GPT-2 byte-level BPE.
 func (t *Tokenizer) encodeGPT2(text string) []int32 {
 	tokens := make([]int32, 0, len(text)+1)
-	if t.hasBOS {
+	if t.shouldPrependBOS(text) {
 		tokens = append(tokens, t.bosToken)
 	}
 

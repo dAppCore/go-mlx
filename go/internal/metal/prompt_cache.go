@@ -20,13 +20,93 @@ type promptCacheEntry struct {
 }
 
 type cacheSnapshot struct {
-	keys     *Array
-	values   *Array
-	offset   int
-	length   int
-	step     int
-	maxSize  int
-	rotating bool
+	mode       KVCacheMode
+	keys       *Array
+	values     *Array
+	keyScale   *Array
+	valueScale *Array
+	keyDtype   DType
+	valueDtype DType
+	keyShape   []int32
+	valueShape []int32
+	keyBits    int
+	valueBits  int
+	kPages     []*Array
+	vPages     []*Array
+	offset     int
+	length     int
+	step       int
+	maxSize    int
+	rotating   bool
+}
+
+func (snapshot cacheSnapshot) arrays() []*Array {
+	out := make([]*Array, 0, 4+len(snapshot.kPages)+len(snapshot.vPages))
+	if snapshot.keys != nil {
+		out = append(out, snapshot.keys)
+	}
+	if snapshot.values != nil {
+		out = append(out, snapshot.values)
+	}
+	if snapshot.keyScale != nil {
+		out = append(out, snapshot.keyScale)
+	}
+	if snapshot.valueScale != nil {
+		out = append(out, snapshot.valueScale)
+	}
+	out = append(out, snapshot.kPages...)
+	out = append(out, snapshot.vPages...)
+	return out
+}
+
+func cacheSnapshotEvalArrays(index int, snapshot cacheSnapshot) []promptCacheEvalArray {
+	arrays := snapshot.arrays()
+	out := make([]promptCacheEvalArray, 0, len(arrays))
+	for i, array := range arrays {
+		out = append(out, promptCacheEvalArray{
+			label: core.Sprintf("cache[%d].state[%d]", index, i),
+			array: array,
+		})
+	}
+	return out
+}
+
+func freeCacheSnapshot(snapshot cacheSnapshot) {
+	Free(snapshot.keys, snapshot.values, snapshot.keyScale, snapshot.valueScale)
+	Free(snapshot.kPages...)
+	Free(snapshot.vPages...)
+}
+
+type promptCacheEvalArray struct {
+	label string
+	array *Array
+}
+
+func evalPromptCacheArrays(scope string, arrays []promptCacheEvalArray) error {
+	raw := make([]*Array, 0, len(arrays))
+	for _, item := range arrays {
+		raw = append(raw, item.array)
+	}
+	if err := Eval(raw...); err != nil {
+		for _, item := range arrays {
+			if item.array == nil || !item.array.Valid() {
+				continue
+			}
+			if itemErr := Eval(item.array); itemErr != nil {
+				return core.E("prompt cache", scope+" "+item.label, itemErr)
+			}
+		}
+		return core.E("prompt cache", scope, err)
+	}
+	return nil
+}
+
+func detachPromptCacheArrays(arrays []promptCacheEvalArray) {
+	raw := make([]*Array, 0, len(arrays))
+	for _, item := range arrays {
+		raw = append(raw, item.array)
+	}
+	Detach(raw...)
 }
 
 func longestTokenPrefix(a, b []int32) int {
@@ -69,6 +149,12 @@ func (m *Model) promptCacheMatch(tokens []int32) (*promptCacheEntry, int) {
 	if prefixLen == len(tokens) && prefixLen != len(entry.tokens) {
 		return nil, 0
 	}
+	if prefixLen == len(tokens) && prefixLen == len(entry.tokens) && (entry.logits == nil || !entry.logits.Valid()) {
+		if prefixLen <= 1 {
+			return nil, 0
+		}
+		return entry, prefixLen - 1
+	}
 	return entry, prefixLen
 }
 
@@ -80,12 +166,23 @@ func (m *Model) clearPromptCache() {
 	m.promptCache = nil
 }
 
+// ClearPromptCache drops the model-owned prompt cache without touching loaded
+// weights or adapter state.
+func (m *Model) ClearPromptCache() {
+	if m == nil {
+		return
+	}
+	release := m.acquirePromptCache()
+	defer release()
+	m.clearPromptCache()
+}
+
 func (entry *promptCacheEntry) free() {
 	if entry == nil {
 		return
 	}
 	for _, snapshot := range entry.caches {
-		Free(snapshot.keys, snapshot.values)
+		freeCacheSnapshot(snapshot)
 	}
 	Free(entry.logits)
 	entry.tokens = nil
@@ -126,10 +223,12 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32) (promptPrepar
 		freeCaches(caches)
 		return promptPreparation{}, err
 	}
-	if err := m.storePromptCache(tokens, caches, logits); err != nil {
-		Free(logits)
-		freeCaches(caches)
-		return promptPreparation{}, err
+	if m.runtimeCachesSnapshotSafe() {
+		if err := m.storePromptCache(tokens, caches, logits); err != nil {
+			Free(logits)
+			freeCaches(caches)
+			return promptPreparation{}, err
+		}
 	}
 	return promptPreparation{
 		caches:          caches,
@@ -137,6 +236,15 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32) (promptPrepar
 		duration:        time.Since(start),
 		cacheMissTokens: len(tokens),
 	}, nil
+}
+
+func (m *Model) runtimeCachesSnapshotSafe() bool {
+	switch KVCacheMode(m.cacheMode) {
+	case KVCacheModeKQ8VQ4:
+		return false
+	default:
+		return true
+	}
 }
 
 func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []Cache) (*Array, error) {
@@ -154,7 +262,7 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 			nextLogits, err := m.prefillTokenBlockOnce(ctx, tokens[start:end], caches)
 			if err != nil {
 				Free(logits)
-				return nil, err
+				return nil, core.E("Model.Generate", core.Sprintf("prefill chunk %d:%d", start, end), err)
 			}
 			Free(logits)
 			logits = nextLogits
@@ -173,15 +281,41 @@ func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, cache
 
 	vInput := FromValues(tokens, len(tokens))
 	input := Reshape(vInput, 1, int32(len(tokens)))
-	logits := m.model.Forward(input, caches)
-	Free(vInput, input)
-
-	if err := Eval(logits); err != nil {
+	logits, usedLastTokenPath := m.forwardLastTokenLogits(input, nil, caches)
+	if logits == nil || !logits.Valid() {
+		_ = lastError()
 		Free(logits)
+		usedLastTokenPath = false
+		logits = m.model.Forward(input, caches)
+	}
+	Free(vInput)
+	if logits == nil {
+		Free(input)
+		return nil, core.NewError("Model.Generate: model forward returned nil logits")
+	}
+	lastLogits, err := materializeLastTokenLogits(logits)
+	if err != nil && usedLastTokenPath {
+		fallbackLogits := m.model.Forward(input, caches)
+		lastLogits, err = materializeLastTokenLogits(fallbackLogits)
+	}
+	Free(input)
+	if err != nil {
 		return nil, core.E("Model.Generate", "prefill", err)
 	}
-	detachEvalState(logits, caches)
-	return logits, nil
+	detachCaches(caches)
+	return lastLogits, nil
+}
+
+func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
+	if m != nil && core.Env("GO_MLX_ENABLE_LAST_LOGITS_PREFILL") == "1" {
+		if lastModel, ok := m.model.(LastTokenLogitsModel); ok {
+			return lastModel.ForwardLastTokenLogits(tokens, mask, caches), true
+		}
+	}
+	if mask != nil {
+		return m.model.ForwardMasked(tokens, mask, caches), false
+	}
+	return m.model.Forward(tokens, caches), false
 }
 
 func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEntry, tokens []int32, prefixLen int) ([]Cache, *Array, error) {
@@ -214,14 +348,14 @@ func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEn
 		vInput := FromValues([]int32{id}, 1)
 		input := Reshape(vInput, 1, 1)
 		oldLogits := logits
-		logits = m.model.Forward(input, caches)
+		nextLogits := m.model.Forward(input, caches)
 		Free(vInput, input, oldLogits)
-		if err := Eval(logits); err != nil {
-			Free(logits)
+		logits, err = materializeLastTokenLogits(nextLogits)
+		if err != nil {
 			freeCaches(caches)
 			return nil, nil, core.E("Model.Generate", "prompt cache suffix", err)
 		}
-		detachEvalState(logits, caches)
+		detachCaches(caches)
 	}
 	if logits == nil {
 		freeCaches(caches)
@@ -247,6 +381,76 @@ func (m *Model) storePromptCache(tokens []int32, caches []Cache, logits *Array) 
 	return nil
 }
 
+// RestorePromptCacheFromKV installs a captured KV prefix directly into the
+// model-owned prompt cache. Prefix snapshots do not need logits; exact prompt
+// hits replay only the final token to recover logits.
+func (m *Model) RestorePromptCacheFromKV(ctx context.Context, snapshot *KVSnapshot) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if !m.promptCacheEnabled {
+		return core.NewError("mlx: prompt cache is disabled")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var restoreErr error
+	if deviceErr := m.withDevice(func() {
+		entry, err := m.newPromptCacheEntryFromKVSnapshot(snapshot)
+		if err == nil {
+			m.clearPromptCache()
+			m.promptCache = entry
+		}
+		restoreErr = err
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return restoreErr
+}
+
+// RestorePromptCacheFromKVBlocks installs a captured KV prefix from streamed
+// contiguous blocks. Paged cache blocks are appended as page arrays, avoiding a
+// full-prefix contiguous Metal allocation during restore.
+func (m *Model) RestorePromptCacheFromKVBlocks(ctx context.Context, source KVSnapshotBlockSource) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if !m.promptCacheEnabled {
+		return core.NewError("mlx: prompt cache is disabled")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	release, err := m.acquireSlot(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	releasePromptCache := m.acquirePromptCache()
+	defer releasePromptCache()
+
+	var restoreErr error
+	if deviceErr := m.withDevice(func() {
+		entry, err := m.newPromptCacheEntryFromKVBlocks(ctx, source)
+		if err == nil {
+			m.clearPromptCache()
+			m.promptCache = entry
+		}
+		restoreErr = err
+	}); deviceErr != nil {
+		return deviceErr
+	}
+	return restoreErr
+}
+
 func (m *Model) adapterCacheKey() string {
 	if m == nil {
 		return ""
@@ -260,13 +464,478 @@ func (m *Model) adapterCacheKey() string {
 	return ""
 }
 
+func (m *Model) newPromptCacheEntryFromKVSnapshot(snapshot *KVSnapshot) (*promptCacheEntry, error) {
+	if err := m.validatePromptCacheKVSnapshot(snapshot); err != nil {
+		return nil, err
+	}
+	templates := m.newCaches()
+	defer freeCaches(templates)
+	if len(templates) == 0 {
+		return nil, core.NewError("mlx: model has no KV caches")
+	}
+	entry := &promptCacheEntry{
+		tokens:          append([]int32(nil), snapshot.Tokens...),
+		cacheableTokens: len(snapshot.Tokens),
+		adapterHash:     m.adapterCacheKey(),
+		caches:          make([]cacheSnapshot, len(templates)),
+	}
+	populated := make([]bool, len(templates))
+	for _, layer := range snapshot.Layers {
+		if len(layer.Heads) == 0 || layer.CacheIndex < 0 {
+			continue
+		}
+		if layer.CacheIndex >= len(templates) {
+			entry.free()
+			return nil, core.NewError("mlx: KV snapshot cache index exceeds model cache count")
+		}
+		if populated[layer.CacheIndex] {
+			continue
+		}
+		cacheSnapshot, err := cacheSnapshotFromKVLayer(snapshot, layer, templates[layer.CacheIndex])
+		if err != nil {
+			entry.free()
+			return nil, err
+		}
+		entry.caches[layer.CacheIndex] = cacheSnapshot
+		populated[layer.CacheIndex] = true
+	}
+	for i, ok := range populated {
+		if !ok {
+			entry.free()
+			return nil, core.E("Model.RestorePromptCacheFromKV", core.Sprintf("missing cache %d", i), nil)
+		}
+	}
+	var evalArrays []*Array
+	for _, snapshot := range entry.caches {
+		evalArrays = append(evalArrays, snapshot.arrays()...)
+	}
+	if len(snapshot.Logits) > 0 || len(snapshot.LogitShape) > 0 {
+		logits, err := restoreSnapshotLogits(snapshot)
+		if err != nil {
+			entry.free()
+			return nil, err
+		}
+		entry.logits = logits
+	}
+	if err := Eval(evalArrays...); err != nil {
+		entry.free()
+		return nil, core.E("prompt cache", "restore KV snapshot", err)
+	}
+	Detach(evalArrays...)
+	return entry, nil
+}
+
+func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSnapshotBlockSource) (*promptCacheEntry, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	prefixTokens := source.PrefixTokens
+	if prefixTokens <= 0 {
+		prefixTokens = source.TokenCount
+	}
+	if prefixTokens <= 0 {
+		return nil, core.NewError("mlx: KV block source has no prefix tokens")
+	}
+	if source.TokenCount > 0 && prefixTokens > source.TokenCount {
+		return nil, core.NewError("mlx: KV block prefix exceeds token count")
+	}
+	if source.BlockCount <= 0 {
+		return nil, core.NewError("mlx: KV block source has no blocks")
+	}
+	if source.Load == nil {
+		return nil, core.NewError("mlx: KV block source has no loader")
+	}
+
+	templates := m.newCaches()
+	defer freeCaches(templates)
+	if len(templates) == 0 {
+		return nil, core.NewError("mlx: model has no KV caches")
+	}
+	entry := &promptCacheEntry{
+		tokens:          make([]int32, 0, prefixTokens),
+		cacheableTokens: prefixTokens,
+		adapterHash:     m.adapterCacheKey(),
+		caches:          make([]cacheSnapshot, len(templates)),
+	}
+	populated := make([]bool, len(templates))
+	nextStart := 0
+	var logitSnapshot *KVSnapshot
+
+	for index := 0; index < source.BlockCount && nextStart < prefixTokens; index++ {
+		select {
+		case <-ctx.Done():
+			entry.free()
+			return nil, ctx.Err()
+		default:
+		}
+
+		block, err := source.Load(ctx, index)
+		if err != nil {
+			entry.free()
+			return nil, err
+		}
+		if block.Index != index {
+			entry.free()
+			return nil, core.NewError("mlx: KV block source returned unexpected block index")
+		}
+		if block.TokenStart != nextStart || block.TokenCount <= 0 {
+			entry.free()
+			return nil, core.NewError("mlx: KV block source returned non-contiguous blocks")
+		}
+		if block.TokenStart+block.TokenCount > prefixTokens {
+			entry.free()
+			return nil, core.NewError("mlx: KV block source returned tokens beyond prefix")
+		}
+		if block.Snapshot == nil || len(block.Snapshot.Tokens) != block.TokenCount {
+			entry.free()
+			return nil, core.NewError("mlx: KV block snapshot token count mismatch")
+		}
+		if err := m.validatePromptCacheKVSnapshot(block.Snapshot); err != nil {
+			entry.free()
+			return nil, err
+		}
+
+		populatedInBlock := make([]bool, len(templates))
+		entry.tokens = append(entry.tokens, block.Snapshot.Tokens...)
+		for _, layer := range block.Snapshot.Layers {
+			if len(layer.Heads) == 0 || layer.CacheIndex < 0 {
+				continue
+			}
+			if layer.CacheIndex >= len(templates) {
+				entry.free()
+				return nil, core.NewError("mlx: KV snapshot cache index exceeds model cache count")
+			}
+			if populatedInBlock[layer.CacheIndex] {
+				continue
+			}
+			populatedInBlock[layer.CacheIndex] = true
+			part, err := cacheSnapshotFromKVLayer(block.Snapshot, layer, templates[layer.CacheIndex])
+			if err != nil {
+				entry.free()
+				return nil, err
+			}
+			if !populated[layer.CacheIndex] {
+				entry.caches[layer.CacheIndex] = part
+				populated[layer.CacheIndex] = true
+				continue
+			}
+			if err := appendCacheSnapshotBlock(&entry.caches[layer.CacheIndex], part); err != nil {
+				freeCacheSnapshot(part)
+				entry.free()
+				return nil, err
+			}
+		}
+		if len(block.Snapshot.Logits) > 0 || len(block.Snapshot.LogitShape) > 0 {
+			logitSnapshot = block.Snapshot
+		}
+		nextStart += block.TokenCount
+	}
+
+	if nextStart != prefixTokens || len(entry.tokens) != prefixTokens {
+		entry.free()
+		return nil, core.NewError("mlx: KV block source does not cover requested prefix")
+	}
+	for i, ok := range populated {
+		if !ok {
+			entry.free()
+			return nil, core.E("Model.RestorePromptCacheFromKVBlocks", core.Sprintf("missing cache %d", i), nil)
+		}
+	}
+	if logitSnapshot != nil {
+		logits, err := restoreSnapshotLogits(logitSnapshot)
+		if err != nil {
+			entry.free()
+			return nil, err
+		}
+		entry.logits = logits
+	}
+
+	var evalArrays []promptCacheEvalArray
+	for i, snapshot := range entry.caches {
+		evalArrays = append(evalArrays, cacheSnapshotEvalArrays(i, snapshot)...)
+	}
+	if entry.logits != nil {
+		evalArrays = append(evalArrays, promptCacheEvalArray{label: "logits", array: entry.logits})
+	}
+	if err := evalPromptCacheArrays("restore KV blocks", evalArrays); err != nil {
+		entry.free()
+		return nil, err
+	}
+	detachPromptCacheArrays(evalArrays)
+	return entry, nil
+}
+
+func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
+	if dst == nil {
+		return core.NewError("prompt cache: missing destination cache snapshot")
+	}
+	if dst.mode != block.mode {
+		return core.NewError("prompt cache: cache block mode mismatch")
+	}
+	dstLen := snapshotCacheLength(*dst)
+	blockLen := snapshotCacheLength(block)
+	if dstLen <= 0 || blockLen <= 0 {
+		return core.NewError("prompt cache: invalid cache block length")
+	}
+	if dst.mode == KVCacheModePaged {
+		if len(block.kPages) == 0 || len(block.kPages) != len(block.vPages) {
+			return core.NewError("prompt cache: invalid paged cache block")
+		}
+		pageSize := dst.step
+		if pageSize <= 0 {
+			pageSize = block.step
+		}
+		if pageSize <= 0 {
+			pageSize = 256
+		}
+		for i := range block.kPages {
+			transferred, err := appendPagedCacheSnapshotPage(dst, block.kPages[i], block.vPages[i], pageSize)
+			if err != nil {
+				return err
+			}
+			if !transferred {
+				Free(block.kPages[i], block.vPages[i])
+			}
+		}
+		dst.length = dstLen + blockLen
+		dst.offset = block.offset
+		if dst.offset <= 0 {
+			dst.offset = dst.length
+		}
+		if dst.step <= 0 {
+			dst.step = block.step
+		}
+		if dst.maxSize <= 0 {
+			dst.maxSize = block.maxSize
+		}
+		dst.rotating = dst.rotating || block.rotating
+		return nil
+	}
+
+	leftK, leftV, err := cacheSnapshotFloatArrays(*dst)
+	if err != nil {
+		return err
+	}
+	rightK, rightV, err := cacheSnapshotFloatArrays(block)
+	if err != nil {
+		Free(leftK, leftV)
+		return err
+	}
+	if err := validateCacheSnapshotConcat(leftK, rightK); err != nil {
+		Free(leftK, leftV, rightK, rightV)
+		return err
+	}
+	if err := validateCacheSnapshotConcat(leftV, rightV); err != nil {
+		Free(leftK, leftV, rightK, rightV)
+		return err
+	}
+
+	mergedK := Concatenate([]*Array{leftK, rightK}, 2)
+	mergedV := Concatenate([]*Array{leftV, rightV}, 2)
+	Free(leftK, leftV, rightK, rightV)
+	mode := dst.mode
+	keyDtype := dst.keyDtype
+	valueDtype := dst.valueDtype
+	keyBits := dst.keyBits
+	valueBits := dst.valueBits
+	step := dst.step
+	maxSize := dst.maxSize
+	rotating := dst.rotating || block.rotating
+	offset := block.offset
+	freeCacheSnapshot(*dst)
+
+	*dst = cacheSnapshot{
+		mode:     mode,
+		offset:   offset,
+		length:   dstLen + blockLen,
+		step:     step,
+		maxSize:  maxSize,
+		rotating: rotating,
+	}
+	if dst.offset <= 0 {
+		dst.offset = dst.length
+	}
+	if mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 {
+		if keyBits <= 0 {
+			keyBits = 8
+		}
+		if valueBits <= 0 {
+			valueBits = keyBits
+		}
+		dst.keyDtype = keyDtype
+		dst.valueDtype = valueDtype
+		dst.keyBits = keyBits
+		dst.valueBits = valueBits
+		dst.keys, dst.keyScale, dst.keyShape = quantizeCacheArray(mergedK, keyBits)
+		dst.values, dst.valueScale, dst.valueShape = quantizeCacheArray(mergedV, valueBits)
+		Free(mergedK, mergedV)
+		return nil
+	}
+	dst.keys = mergedK
+	dst.values = mergedV
+	return nil
+}
+
+func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array, pageSize int) (bool, error) {
+	if dst == nil || keyPage == nil || valuePage == nil || !keyPage.Valid() || !valuePage.Valid() {
+		return false, core.NewError("prompt cache: invalid paged cache page")
+	}
+	if len(dst.kPages) != len(dst.vPages) {
+		return false, core.NewError("prompt cache: invalid destination paged cache")
+	}
+	if pageSize <= 0 {
+		pageSize = 256
+	}
+	pageLen := pagedArrayLen(keyPage)
+	if pageLen <= 0 || pagedArrayLen(valuePage) != pageLen {
+		return false, core.NewError("prompt cache: invalid paged cache page length")
+	}
+	if len(dst.kPages) > 0 {
+		last := len(dst.kPages) - 1
+		if err := validateCacheSnapshotConcat(dst.kPages[last], keyPage); err != nil {
+			return false, err
+		}
+		if err := validateCacheSnapshotConcat(dst.vPages[last], valuePage); err != nil {
+			return false, err
+		}
+	}
+
+	start := 0
+	transferred := false
+	for start < pageLen {
+		last := len(dst.kPages) - 1
+		if last >= 0 {
+			room := pageSize - pagedArrayLen(dst.kPages[last])
+			if room > 0 {
+				take := min(room, pageLen-start)
+				appendPagedCacheSnapshotPiece(dst, last, keyPage, valuePage, start, take)
+				start += take
+				continue
+			}
+		}
+		take := min(pageSize, pageLen-start)
+		if start == 0 && take == pageLen {
+			dst.kPages = append(dst.kPages, keyPage)
+			dst.vPages = append(dst.vPages, valuePage)
+			transferred = true
+			start += take
+			continue
+		}
+		kPiece, vPiece := slicePagedCacheSnapshotPiece(keyPage, valuePage, start, take)
+		dst.kPages = append(dst.kPages, Copy(kPiece))
+		dst.vPages = append(dst.vPages, Copy(vPiece))
+		Free(kPiece, vPiece)
+		start += take
+	}
+	return transferred, nil
+}
+
+func appendPagedCacheSnapshotPiece(dst *cacheSnapshot, last int, keyPage, valuePage *Array, start, take int) {
+	kPiece, vPiece := slicePagedCacheSnapshotPiece(keyPage, valuePage, start, take)
+	oldK, oldV := dst.kPages[last], dst.vPages[last]
+	dst.kPages[last] = Concatenate([]*Array{oldK, kPiece}, 2)
+	dst.vPages[last] = Concatenate([]*Array{oldV, vPiece}, 2)
+	Free(oldK, oldV, kPiece, vPiece)
+}
+
+func slicePagedCacheSnapshotPiece(keyPage, valuePage *Array, start, take int) (*Array, *Array) {
+	kShape := keyPage.Shape()
+	vShape := valuePage.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 {
+		return keyPage.Clone(), valuePage.Clone()
+	}
+	return Slice(keyPage, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]}),
+		Slice(valuePage, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]})
+}
+
+func cacheSnapshotFloatArrays(snapshot cacheSnapshot) (*Array, *Array, error) {
+	switch snapshot.mode {
+	case KVCacheModePaged:
+		keys, values := concatenatePagedState(snapshot.kPages, snapshot.vPages)
+		if keys == nil || values == nil {
+			Free(keys, values)
+			return nil, nil, core.NewError("prompt cache: invalid paged cache snapshot")
+		}
+		return keys, values, nil
+	case KVCacheModeQ8, KVCacheModeKQ8VQ4:
+		if snapshot.keys == nil || snapshot.values == nil || snapshot.keyScale == nil || snapshot.valueScale == nil {
+			return nil, nil, core.NewError("prompt cache: invalid quantized cache snapshot")
+		}
+		keyBits := snapshot.keyBits
+		if keyBits <= 0 {
+			keyBits = 8
+		}
+		valueBits := snapshot.valueBits
+		if valueBits <= 0 {
+			valueBits = keyBits
+		}
+		return dequantizeCacheArray(snapshot.keys, snapshot.keyScale, snapshot.keyDtype, snapshot.keyShape, keyBits),
+			dequantizeCacheArray(snapshot.values, snapshot.valueScale, snapshot.valueDtype, snapshot.valueShape, valueBits), nil
+	default:
+		if snapshot.keys == nil || snapshot.values == nil {
+			return nil, nil, core.NewError("prompt cache: invalid cache snapshot")
+		}
+		return Copy(snapshot.keys), Copy(snapshot.values), nil
+	}
+}
+
+func validateCacheSnapshotConcat(left, right *Array) error {
+	if left == nil || right == nil || !left.Valid() || !right.Valid() {
+		return core.NewError("prompt cache: invalid cache concat arrays")
+	}
+	leftShape := left.Shape()
+	rightShape := right.Shape()
+	if len(leftShape) != len(rightShape) {
+		return core.NewError("prompt cache: cache block rank mismatch")
+	}
+	if len(leftShape) < 3 {
+		return nil
+	}
+	for i := range leftShape {
+		if i == 2 {
+			continue
+		}
+		if leftShape[i] != rightShape[i] {
+			return core.NewError("prompt cache: cache block shape mismatch")
+		}
+	}
+	return nil
+}
+
+func (m *Model) validatePromptCacheKVSnapshot(snapshot *KVSnapshot) error {
+	if snapshot == nil {
+		return core.NewError("mlx: KV snapshot is nil")
+	}
+	if snapshot.Version <= 0 || snapshot.Version > KVSnapshotVersion {
+		return core.NewError("mlx: unsupported KV snapshot version")
+	}
+	info := m.Info()
+	if snapshot.Architecture != "" && info.Architecture != "" && snapshot.Architecture != info.Architecture {
+		return core.NewError("mlx: KV snapshot architecture does not match model")
+	}
+	if len(snapshot.Tokens) == 0 {
+		return core.NewError("mlx: KV snapshot has no tokens")
+	}
+	seqLen := snapshot.SeqLen
+	if seqLen <= 0 {
+		seqLen = len(snapshot.Tokens)
+	}
+	if seqLen <= 0 || len(snapshot.Tokens) != seqLen || snapshot.HeadDim <= 0 {
+		return core.NewError("mlx: KV snapshot has invalid tensor dimensions")
+	}
+	if len(snapshot.Layers) == 0 {
+		return core.NewError("mlx: KV snapshot has no layers")
+	}
+	return nil
+}
+
 func newPromptCacheEntry(tokens []int32, caches []Cache, logits *Array) (*promptCacheEntry, error) {
 	entry := &promptCacheEntry{
 		tokens:          append([]int32(nil), tokens...),
 		cacheableTokens: len(tokens),
 		caches:          make([]cacheSnapshot, len(caches)),
 	}
-	var evalArrays []*Array
+	var evalArrays []promptCacheEvalArray
 	for i, cache := range caches {
 		snapshot, ok, err := snapshotCache(cache, len(tokens))
 		if err != nil {
@@ -279,16 +948,16 @@ func newPromptCacheEntry(tokens []int32, caches []Cache, logits *Array) (*prompt
 		}
 		entry.caches[i] = snapshot
 		entry.cacheableTokens = min(entry.cacheableTokens, snapshot.offset)
-		evalArrays = append(evalArrays, snapshot.keys, snapshot.values)
+		evalArrays = append(evalArrays, cacheSnapshotEvalArrays(i, snapshot)...)
 	}
 
 	entry.logits = Copy(logits)
-	evalArrays = append(evalArrays, entry.logits)
-	if err := Eval(evalArrays...); err != nil {
+	evalArrays = append(evalArrays, promptCacheEvalArray{label: "logits", array: entry.logits})
+	if err := evalPromptCacheArrays("snapshot", evalArrays); err != nil {
 		entry.free()
-		return nil, core.E("prompt cache", "snapshot", err)
+		return nil, err
 	}
-	Detach(evalArrays...)
+	detachPromptCacheArrays(evalArrays)
 	return entry, nil
 }
 
@@ -298,6 +967,15 @@ func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 	}
 	if cache.Offset() != cache.Len() || cache.Len() < tokenLen {
 		return cacheSnapshot{}, false, nil
+	}
+	switch c := cache.(type) {
+	case *QuantizedKVCache:
+		if c.keyBits != 8 || c.valueBits != 8 {
+			return cacheSnapshot{}, false, nil
+		}
+		return snapshotQuantizedCache(c, tokenLen, tokenLen)
+	case *PagedKVCache:
+		return snapshotPagedCache(c, tokenLen, tokenLen)
 	}
 	state, ownedState := cacheReadState(cache)
 	defer Free(ownedState...)
@@ -328,18 +1006,6 @@ func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 		snapshot.step = c.step
 	case *KVCache:
 		snapshot.step = c.step
-	case *QuantizedKVCache:
-		snapshot.step = c.step
-		if c.maxSize > 0 {
-			snapshot.rotating = true
-			snapshot.maxSize = c.maxSize
-		}
-	case *PagedKVCache:
-		snapshot.step = c.pageSize
-		if c.maxSize > 0 {
-			snapshot.rotating = true
-			snapshot.maxSize = c.maxSize
-		}
 	default:
 		Free(keys, values)
 		return cacheSnapshot{}, false, nil
@@ -366,16 +1032,241 @@ func copyCachePrefix(array *Array, tokenLen int) (*Array, error) {
 	return Copy(prefix), nil
 }
 
+func snapshotQuantizedCache(cache *QuantizedKVCache, tokenLen, offset int) (cacheSnapshot, bool, error) {
+	if cache == nil || cache.keys == nil || cache.values == nil || cache.keyScale == nil || cache.valueScale == nil {
+		return cacheSnapshot{}, false, nil
+	}
+	if tokenLen <= 0 || tokenLen > cache.Len() {
+		return cacheSnapshot{}, false, nil
+	}
+	mode := KVCacheModeQ8
+	if cache.keyBits != 8 || cache.valueBits != 8 {
+		mode = KVCacheModeKQ8VQ4
+	}
+	keys, keyShape, err := copyQuantizedCachePrefix(cache.keys, cache.keyShape, tokenLen, cache.keyBits)
+	if err != nil {
+		return cacheSnapshot{}, false, err
+	}
+	values, valueShape, err := copyQuantizedCachePrefix(cache.values, cache.valueShape, tokenLen, cache.valueBits)
+	if err != nil {
+		Free(keys)
+		return cacheSnapshot{}, false, err
+	}
+	keyScale := Copy(cache.keyScale)
+	valueScale := Copy(cache.valueScale)
+	if offset <= 0 {
+		offset = tokenLen
+	}
+	snapshot := cacheSnapshot{
+		mode:       mode,
+		keys:       keys,
+		values:     values,
+		keyScale:   keyScale,
+		valueScale: valueScale,
+		keyDtype:   cache.keyDtype,
+		valueDtype: cache.valueDtype,
+		keyShape:   keyShape,
+		valueShape: valueShape,
+		keyBits:    cache.keyBits,
+		valueBits:  cache.valueBits,
+		offset:     offset,
+		length:     tokenLen,
+		step:       cache.step,
+		maxSize:    cache.maxSize,
+		rotating:   cache.maxSize > 0,
+	}
+	return snapshot, true, nil
+}
+
+func copyQuantizedCachePrefix(array *Array, logicalShape []int32, tokenLen, bits int) (*Array, []int32, error) {
+	if array == nil || !array.Valid() {
+		return nil, nil, core.NewError("prompt cache: invalid quantized cache array")
+	}
+	shape := append([]int32(nil), logicalShape...)
+	if len(shape) == 0 {
+		shape = append([]int32(nil), array.Shape()...)
+	}
+	if bits == 4 {
+		if len(shape) >= 3 && int(shape[2]) != tokenLen {
+			return nil, nil, core.NewError("prompt cache: q4 prefix slicing is not supported")
+		}
+		return Copy(array), shape, nil
+	}
+	copied, err := copyCachePrefix(array, tokenLen)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(shape) >= 3 {
+		shape[2] = int32(tokenLen)
+	}
+	return copied, shape, nil
+}
+
+func snapshotPagedCache(cache *PagedKVCache, tokenLen, offset int) (cacheSnapshot, bool, error) {
+	if cache == nil || len(cache.kPages) == 0 || len(cache.vPages) == 0 {
+		return cacheSnapshot{}, false, nil
+	}
+	if tokenLen <= 0 || tokenLen > cache.Len() {
+		return cacheSnapshot{}, false, nil
+	}
+	kPages, vPages, err := copyPagedCachePrefix(cache.kPages, cache.vPages, tokenLen)
+	if err != nil {
+		return cacheSnapshot{}, false, err
+	}
+	if offset <= 0 {
+		offset = tokenLen
+	}
+	pageSize := cache.pageSize
+	if pageSize <= 0 {
+		pageSize = 256
+	}
+	return cacheSnapshot{
+		mode:     KVCacheModePaged,
+		kPages:   kPages,
+		vPages:   vPages,
+		offset:   offset,
+		length:   tokenLen,
+		step:     pageSize,
+		maxSize:  cache.maxSize,
+		rotating: cache.maxSize > 0,
+	}, true, nil
+}
+
+func pageCacheArrays(keys, values *Array, pageSize int) ([]*Array, []*Array, bool, error) {
+	if keys == nil || values == nil || !keys.Valid() || !values.Valid() {
+		return nil, nil, false, core.NewError("prompt cache: invalid page source arrays")
+	}
+	kShape := keys.Shape()
+	vShape := values.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 {
+		return []*Array{Copy(keys)}, []*Array{Copy(values)}, false, nil
+	}
+	if pageSize <= 0 {
+		pageSize = 256
+	}
+	seqLen := int(kShape[2])
+	if seqLen != int(vShape[2]) {
+		return nil, nil, false, core.NewError("prompt cache: key/value page source length mismatch")
+	}
+	if seqLen <= pageSize {
+		return []*Array{keys}, []*Array{values}, true, nil
+	}
+	kPages := make([]*Array, 0, (seqLen+pageSize-1)/pageSize)
+	vPages := make([]*Array, 0, (seqLen+pageSize-1)/pageSize)
+	for start := 0; start < seqLen; start += pageSize {
+		end := min(seqLen, start+pageSize)
+		kPage := Slice(keys, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(end), kShape[3]})
+		vPage := Slice(values, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(end), vShape[3]})
+		kPages = append(kPages, Copy(kPage))
+		vPages = append(vPages, Copy(vPage))
+		Free(kPage, vPage)
+	}
+	return kPages, vPages, false, nil
+}
+
+func copyPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*Array, error) {
+	if len(kPages) == 0 || len(kPages) != len(vPages) {
+		return nil, nil, core.NewError("prompt cache: invalid paged cache state")
+	}
+	remaining := tokenLen
+	outK := make([]*Array, 0, len(kPages))
+	outV := make([]*Array, 0, len(vPages))
+	for i := range kPages {
+		if remaining <= 0 {
+			break
+		}
+		kPage := kPages[i]
+		vPage := vPages[i]
+		if kPage == nil || vPage == nil || !kPage.Valid() || !vPage.Valid() {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page")
+		}
+		pageLen := pagedArrayLen(kPage)
+		if pageLen <= 0 {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page length")
+		}
+		take := min(pageLen, remaining)
+		kCopy, err := copyPagePrefix(kPage, take)
+		if err != nil {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, err
+		}
+		vCopy, err := copyPagePrefix(vPage, take)
+		if err != nil {
+			Free(kCopy)
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, err
+		}
+		outK = append(outK, kCopy)
+		outV = append(outV, vCopy)
+		remaining -= take
+	}
+	if remaining > 0 {
+		Free(outK...)
+		Free(outV...)
+		return nil, nil, core.NewError("prompt cache: paged cache shorter than prefix")
+	}
+	return outK, outV, nil
+}
+
+func copyPagePrefix(page *Array, tokenLen int) (*Array, error) {
+	shape := page.Shape()
+	if len(shape) < 4 {
+		return Copy(page), nil
+	}
+	if tokenLen > int(shape[2]) {
+		return nil, core.NewError("prompt cache: page shorter than prefix")
+	}
+	prefix := page
+	if tokenLen != int(shape[2]) {
+		prefix = Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(tokenLen), shape[3]})
+		defer Free(prefix)
+	}
+	return Copy(prefix), nil
+}
+
 func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, error) {
 	caches := make([]Cache, len(snapshots))
 	var evalArrays []*Array
 	for i, snapshot := range snapshots {
-		keys, err := copyCachePrefix(snapshot.keys, prefixLen)
+		restoreLen := snapshotCacheLength(snapshot)
+		if restoreLen > prefixLen {
+			restoreLen = prefixLen
+		}
+		if restoreLen <= 0 {
+			continue
+		}
+		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
+			cache, arrays, err := restoreQuantizedCacheSnapshot(snapshot, restoreLen, prefixLen)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
+			continue
+		}
+		if snapshot.mode == KVCacheModePaged {
+			cache, arrays, err := restorePagedCacheSnapshot(snapshot, restoreLen, prefixLen)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
+			continue
+		}
+		keys, err := copyCachePrefix(snapshot.keys, restoreLen)
 		if err != nil {
 			freeCaches(caches)
 			return nil, err
 		}
-		values, err := copyCachePrefix(snapshot.values, prefixLen)
+		values, err := copyCachePrefix(snapshot.values, restoreLen)
 		if err != nil {
 			Free(keys)
 			freeCaches(caches)
@@ -389,7 +1280,7 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 				offset:  prefixLen,
 				maxSize: snapshot.maxSize,
 				step:    snapshot.step,
-				idx:     prefixLen,
+				idx:     restoreLen,
 			}
 			continue
 		}
@@ -406,4 +1297,81 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 	}
 	Detach(evalArrays...)
 	return caches, nil
+}
+
+func restoreQuantizedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+	if prefixLen <= 0 {
+		return nil, nil, core.NewError("prompt cache: invalid quantized prefix length")
+	}
+	keys, keyShape, err := copyQuantizedCachePrefix(snapshot.keys, snapshot.keyShape, prefixLen, snapshot.keyBits)
+	if err != nil {
+		return nil, nil, err
+	}
+	values, valueShape, err := copyQuantizedCachePrefix(snapshot.values, snapshot.valueShape, prefixLen, snapshot.valueBits)
+	if err != nil {
+		Free(keys)
+		return nil, nil, err
+	}
+	keyScale := Copy(snapshot.keyScale)
+	valueScale := Copy(snapshot.valueScale)
+	if offset <= 0 {
+		offset = prefixLen
+	}
+	step := snapshot.step
+	if step <= 0 {
+		step = 256
+	}
+	keyBits := snapshot.keyBits
+	if keyBits <= 0 {
+		keyBits = 8
+	}
+	valueBits := snapshot.valueBits
+	if valueBits <= 0 {
+		valueBits = keyBits
+	}
+	cache := &QuantizedKVCache{
+		keys:       keys,
+		values:     values,
+		keyScale:   keyScale,
+		valueScale: valueScale,
+		keyDtype:   snapshot.keyDtype,
+		valueDtype: snapshot.valueDtype,
+		keyShape:   keyShape,
+		valueShape: valueShape,
+		offset:     offset,
+		maxSize:    snapshot.maxSize,
+		step:       step,
+		keyBits:    keyBits,
+		valueBits:  valueBits,
+	}
+	return cache, []*Array{keys, values, keyScale, valueScale}, nil
+}
+
+func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+	if prefixLen <= 0 {
+		return nil, nil, core.NewError("prompt cache: invalid paged prefix length")
+	}
+	kPages, vPages, err := copyPagedCachePrefix(snapshot.kPages, snapshot.vPages, prefixLen)
+	if err != nil {
+		return nil, nil, err
+	}
+	if offset <= 0 {
+		offset = prefixLen
+	}
+	pageSize := snapshot.step
+	if pageSize <= 0 {
+		pageSize = 256
+	}
+	cache := &PagedKVCache{
+		kPages:   kPages,
+		vPages:   vPages,
+		offset:   offset,
+		length:   prefixLen,
+		maxSize:  snapshot.maxSize,
+		pageSize: pageSize,
+	}
+	arrays := make([]*Array, 0, len(kPages)+len(vPages))
+	arrays = append(arrays, kPages...)
+	arrays = append(arrays, vPages...)
+	return cache, arrays, nil
 }

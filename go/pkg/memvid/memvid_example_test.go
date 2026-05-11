@@ -19,6 +19,11 @@ func ExampleResolve() {
 	// Output: Resolve
 }
 
+func ExampleResolveURI() {
+	core.Println("ResolveURI")
+	// Output: ResolveURI
+}
+
 func ExampleMergeRef() {
 	core.Println("MergeRef")
 	// Output: MergeRef
@@ -47,6 +52,11 @@ func ExampleInMemoryStore_Get() {
 func ExampleInMemoryStore_Resolve() {
 	core.Println("InMemoryStore_Resolve")
 	// Output: InMemoryStore_Resolve
+}
+
+func ExampleInMemoryStore_ResolveURI() {
+	core.Println("InMemoryStore_ResolveURI")
+	// Output: InMemoryStore_ResolveURI
 }
 
 func ExampleInMemoryStore_Put() {

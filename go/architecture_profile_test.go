@@ -1,0 +1,71 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import "testing"
+
+func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
+	coverageTokens := "ArchitectureProfile MetadataFamilies"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cases := []struct {
+		name       string
+		input      string
+		wantID     string
+		wantParser string
+		wantMoE    bool
+		wantEmbed  bool
+		wantNative bool
+	}{
+		{name: "minimax", input: "MiniMaxM2ForCausalLM", wantID: "minimax_m2", wantParser: "minimax", wantMoE: true},
+		{name: "mixtral", input: "MixtralForCausalLM", wantID: "mixtral", wantParser: "mistral", wantMoE: true},
+		{name: "mistral", input: "mistral", wantID: "mistral", wantParser: "mistral"},
+		{name: "phi", input: "Phi3ForCausalLM", wantID: "phi", wantParser: "generic"},
+		{name: "deepseek", input: "DeepseekV3ForCausalLM", wantID: "deepseek", wantParser: "deepseek-r1", wantMoE: true},
+		{name: "gptoss", input: "GptOssForCausalLM", wantID: "gpt_oss", wantParser: "gpt-oss", wantMoE: true},
+		{name: "bert", input: "BertModel", wantID: "bert", wantParser: "generic", wantEmbed: true},
+		{name: "bert-rerank", input: "BertForSequenceClassification", wantID: "bert_rerank", wantParser: "generic"},
+		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile, ok := LookupArchitectureProfile(tc.input)
+			if !ok {
+				t.Fatalf("LookupArchitectureProfile(%q) ok = false", tc.input)
+			}
+			if profile.ID != tc.wantID || profile.ParserID != tc.wantParser {
+				t.Fatalf("profile = %+v, want id %q parser %q", profile, tc.wantID, tc.wantParser)
+			}
+			if profile.MoE != tc.wantMoE || profile.Embeddings != tc.wantEmbed || profile.NativeRuntime != tc.wantNative {
+				t.Fatalf("profile flags = moe:%v embeddings:%v native:%v, want %v/%v/%v", profile.MoE, profile.Embeddings, profile.NativeRuntime, tc.wantMoE, tc.wantEmbed, tc.wantNative)
+			}
+			if tc.name == "bert-rerank" && !profile.Rerank {
+				t.Fatalf("profile = %+v, want rerank profile", profile)
+			}
+		})
+	}
+}
+
+func TestArchitectureProfile_BuiltinIDs_Good(t *testing.T) {
+	profiles := BuiltinArchitectureProfiles()
+	if len(profiles) < 12 {
+		t.Fatalf("BuiltinArchitectureProfiles len = %d, want broad feature-parity target list", len(profiles))
+	}
+	seen := map[string]bool{}
+	for _, profile := range profiles {
+		if profile.ID == "" {
+			t.Fatalf("profile missing ID: %+v", profile)
+		}
+		if seen[profile.ID] {
+			t.Fatalf("duplicate profile ID %q", profile.ID)
+		}
+		seen[profile.ID] = true
+	}
+	for _, id := range []string{"gemma4_text", "qwen3_next", "qwen3_moe", "minimax_m2", "mixtral", "deepseek", "gpt_oss", "bert", "bert_rerank"} {
+		if !seen[id] {
+			t.Fatalf("missing builtin architecture profile %q", id)
+		}
+	}
+}

@@ -6,8 +6,10 @@ package mlx
 
 import (
 	"context"
+	"iter"
 
 	core "dappco.re/go"
+	memvid "dappco.re/go/inference/state"
 )
 
 // Model is a stub on unsupported builds.
@@ -26,6 +28,11 @@ func (m *Model) Generate(_ string, _ ...GenerateOption) (string, error) {
 	return "", core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
+// GenerateChunks returns an availability error on unsupported builds.
+func (m *Model) GenerateChunks(_ context.Context, _ iter.Seq[string], _ ...GenerateOption) (string, error) {
+	return "", core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
 // Chat returns an availability error on unsupported builds.
 func (m *Model) Chat(_ []Message, _ ...GenerateOption) (string, error) {
 	return "", core.NewError("mlx: native MLX support is unavailable in this build")
@@ -33,6 +40,21 @@ func (m *Model) Chat(_ []Message, _ ...GenerateOption) (string, error) {
 
 // WarmPromptCache returns an availability error on unsupported builds.
 func (m *Model) WarmPromptCache(_ string) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// WarmPromptCacheChunks returns an availability error on unsupported builds.
+func (m *Model) WarmPromptCacheChunks(_ context.Context, _ iter.Seq[string]) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// WarmPromptCacheFromKV returns an availability error on unsupported builds.
+func (m *Model) WarmPromptCacheFromKV(_ *KVSnapshot) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// WarmPromptCacheFromMemvidBlocks returns an availability error on unsupported builds.
+func (m *Model) WarmPromptCacheFromMemvidBlocks(_ context.Context, _ memvid.Store, _ *KVSnapshotMemvidBlockBundle, _ int) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
@@ -87,6 +109,21 @@ func (m *Model) CaptureKV(_ string) (*KVSnapshot, error) {
 	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
+// CaptureKVWithOptions returns an availability error on unsupported builds.
+func (m *Model) CaptureKVWithOptions(_ string, _ KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// CaptureKVChunks returns an availability error on unsupported builds.
+func (m *Model) CaptureKVChunks(_ context.Context, _ iter.Seq[string]) (*KVSnapshot, error) {
+	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// CaptureKVChunksWithOptions returns an availability error on unsupported builds.
+func (m *Model) CaptureKVChunksWithOptions(_ context.Context, _ iter.Seq[string], _ KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
 // NewSession returns an availability error on unsupported builds.
 func (m *Model) NewSession() (*ModelSession, error) {
 	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
@@ -128,6 +165,11 @@ func (s *ModelSession) Prefill(_ string) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
+// AppendPrompt returns an availability error on unsupported builds.
+func (s *ModelSession) AppendPrompt(_ string) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
 // Generate returns an availability error on unsupported builds.
 func (s *ModelSession) Generate(_ ...GenerateOption) (string, error) {
 	return "", core.NewError("mlx: native MLX support is unavailable in this build")
@@ -142,6 +184,11 @@ func (s *ModelSession) GenerateStream(_ context.Context, _ ...GenerateOption) <-
 
 // CaptureKV returns an availability error on unsupported builds.
 func (s *ModelSession) CaptureKV() (*KVSnapshot, error) {
+	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// CaptureKVWithOptions returns an availability error on unsupported builds.
+func (s *ModelSession) CaptureKVWithOptions(_ KVSnapshotCaptureOptions) (*KVSnapshot, error) {
 	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
@@ -165,8 +212,33 @@ func (s *ModelSession) LoadKV(_ string) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
+// SaveKVToMemvid returns an availability error on unsupported builds.
+func (s *ModelSession) SaveKVToMemvid(_ context.Context, _ memvid.Writer, _ KVSnapshotMemvidOptions) (memvid.ChunkRef, error) {
+	return memvid.ChunkRef{}, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// LoadKVFromMemvid returns an availability error on unsupported builds.
+func (s *ModelSession) LoadKVFromMemvid(_ context.Context, _ memvid.Store, _ memvid.ChunkRef) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// SaveKVBlocksToMemvid returns an availability error on unsupported builds.
+func (s *ModelSession) SaveKVBlocksToMemvid(_ context.Context, _ memvid.Writer, _ KVSnapshotMemvidBlockOptions) (*KVSnapshotMemvidBlockBundle, error) {
+	return nil, core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// LoadKVBlocksFromMemvid returns an availability error on unsupported builds.
+func (s *ModelSession) LoadKVBlocksFromMemvid(_ context.Context, _ memvid.Store, _ *KVSnapshotMemvidBlockBundle) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
 // RestoreBundle returns an availability error on unsupported builds.
 func (s *ModelSession) RestoreBundle(_ *StateBundle) error {
+	return core.NewError("mlx: native MLX support is unavailable in this build")
+}
+
+// RestoreBundleFromMemvid returns an availability error on unsupported builds.
+func (s *ModelSession) RestoreBundleFromMemvid(_ context.Context, _ *StateBundle, _ memvid.Store) error {
 	return core.NewError("mlx: native MLX support is unavailable in this build")
 }
 

@@ -142,12 +142,13 @@ type HFModelFitConfig struct {
 
 // HFModelMetadata is the subset of Hugging Face/local metadata needed for fit planning.
 type HFModelMetadata struct {
-	ID          string        `json:"id,omitempty"`
-	ModelID     string        `json:"modelId,omitempty"`
-	Tags        []string      `json:"tags,omitempty"`
-	PipelineTag string        `json:"pipeline_tag,omitempty"`
-	Config      HFModelConfig `json:"config,omitempty"`
-	Files       []HFModelFile `json:"siblings,omitempty"`
+	ID          string                `json:"id,omitempty"`
+	ModelID     string                `json:"modelId,omitempty"`
+	Tags        []string              `json:"tags,omitempty"`
+	PipelineTag string                `json:"pipeline_tag,omitempty"`
+	Config      HFModelConfig         `json:"config,omitempty"`
+	Files       []HFModelFile         `json:"siblings,omitempty"`
+	JANG        *JANGQuantizationInfo `json:"jang,omitempty"`
 }
 
 // HFModelFile describes one model repository file.
@@ -203,6 +204,8 @@ type HFModelFitPlan struct {
 	WeightFormat          string        `json:"weight_format,omitempty"`
 	QuantBits             int           `json:"quant_bits,omitempty"`
 	QuantGroup            int           `json:"quant_group,omitempty"`
+	QuantType             string        `json:"quant_type,omitempty"`
+	QuantFamily           string        `json:"quant_family,omitempty"`
 	WeightBytes           uint64        `json:"weight_bytes,omitempty"`
 	ExpectedKVBytes       uint64        `json:"expected_kv_bytes,omitempty"`
 	ExpectedRuntimeBytes  uint64        `json:"expected_runtime_bytes,omitempty"`
@@ -210,8 +213,11 @@ type HFModelFitPlan struct {
 	ContextLimit          int           `json:"context_limit,omitempty"`
 	ContextRecommendation int           `json:"context_recommendation,omitempty"`
 	MemoryPlan            MemoryPlan    `json:"memory_plan"`
+	MemoryFits            bool          `json:"memory_fits"`
 	InferenceFits         bool          `json:"inference_fits"`
 	Training              HFTrainingFit `json:"training"`
+	Embeddings            bool          `json:"embeddings,omitempty"`
+	Rerank                bool          `json:"rerank,omitempty"`
 	Notes                 []string      `json:"notes,omitempty"`
 }
 
@@ -337,10 +343,12 @@ func inspectLocalHFModelMetadata(path string) (HFModelMetadata, string, error) {
 		return HFModelMetadata{}, root, core.E("PlanHFModelFits", "parse local config.json", hfFitResultError(result))
 	}
 	files := localHFModelFiles(root)
+	jang, _ := readJANGQuantizationInfo(root)
 	return HFModelMetadata{
 		ID:     localHFModelID(path, root),
 		Config: config,
 		Files:  files,
+		JANG:   jang,
 	}, root, nil
 }
 
@@ -403,7 +411,19 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 	arch := config.architecture()
 	contextLimit := config.contextLength()
 	quantBits, quantGroup := config.quantization()
+	quantType := config.quantizationType()
+	quantFamily := ""
 	format, weightBytes := hfWeightFormatAndBytes(meta.Files)
+	jang := meta.JANG
+	if jang == nil {
+		jang = inferJANGQuantizationFromHF(meta)
+	}
+	if jang != nil {
+		quantBits = firstPositive(jang.BitsDefault, quantBits)
+		quantGroup = firstPositive(jang.GroupSize, quantGroup)
+		quantType = jangQuantizationType(jang)
+		quantFamily = "jang"
+	}
 	if quantBits == 0 {
 		quantBits = inferHFQuantBits(meta.Files)
 	}
@@ -413,13 +433,20 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 		SupportedArchitecture: modelPackSupportedArchitecture(arch),
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
+		QuantType:             quantType,
+		QuantFamily:           quantFamily,
 		ContextLength:         contextLimit,
+		WeightBytes:           weightBytes,
 	}
+	inspectModelPackTaskProfiles(&pack, "")
 	memoryPlan := PlanMemory(MemoryPlanInput{Device: cfg.Device, Pack: &pack})
 	if cfg.ContextHint > 0 && cfg.ContextHint < memoryPlan.ContextLength {
 		memoryPlan.ContextLength = cfg.ContextHint
 	}
-	kvBytes := estimateHFModelKVBytes(config, memoryPlan.ContextLength, memoryPlan.BatchSize, cfg.KVBytes)
+	kvBytes := uint64(0)
+	if modelPackUsesGenerationKVCache(&pack, arch) {
+		kvBytes = estimateHFModelKVBytes(config, memoryPlan.ContextLength, memoryPlan.BatchSize, cfg.KVBytes)
+	}
 	runtimeBytes := estimateRuntimeOverheadBytes(weightBytes)
 	totalBytes := weightBytes + kvBytes + runtimeBytes
 	limit := memoryPlan.MemoryLimitBytes
@@ -439,6 +466,8 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 		WeightFormat:          format,
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
+		QuantType:             quantType,
+		QuantFamily:           quantFamily,
 		WeightBytes:           weightBytes,
 		ExpectedKVBytes:       kvBytes,
 		ExpectedRuntimeBytes:  runtimeBytes,
@@ -446,9 +475,12 @@ func planHFModelFit(entry hfFitEntry, cfg HFModelFitConfig) HFModelFitPlan {
 		ContextLimit:          contextLimit,
 		ContextRecommendation: memoryPlan.ContextLength,
 		MemoryPlan:            memoryPlan,
+		Embeddings:            pack.Embedding != nil,
+		Rerank:                pack.Rerank != nil,
 	}
-	plan.NativeLoadable = plan.SupportedArchitecture && format != ""
-	plan.InferenceFits = plan.NativeLoadable && weightBytes > 0 && (limit == 0 || totalBytes <= limit)
+	plan.NativeLoadable = plan.SupportedArchitecture && modelPackNativeRuntimeSupported(arch) && format != ""
+	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
+	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateHFTrainingFit(config, plan, limit, cfg.LoRARank)
 	plan.Notes = hfFitNotes(plan, limit)
 	return plan
@@ -594,6 +626,9 @@ func hfFitNotes(plan HFModelFitPlan, memoryLimit uint64) []string {
 	if !plan.SupportedArchitecture {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
+	if plan.SupportedArchitecture && !modelPackNativeRuntimeSupported(plan.Architecture) {
+		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
+	}
 	if plan.WeightBytes == 0 {
 		notes = append(notes, "weight byte size is unknown")
 	}
@@ -625,6 +660,11 @@ func (config HFModelConfig) normalized() HFModelConfig {
 
 func (config HFModelConfig) architecture() string {
 	config = config.normalized()
+	for _, arch := range config.Architectures {
+		if modelType := architectureFromTransformersName(arch); modelType == "bert_rerank" {
+			return modelType
+		}
+	}
 	if config.ModelType != "" {
 		return normalizeKnownArchitecture(config.ModelType)
 	}
@@ -651,6 +691,18 @@ func (config HFModelConfig) quantization() (bits, group int) {
 		return 0, 0
 	}
 	return quant.Bits, quant.GroupSize
+}
+
+func (config HFModelConfig) quantizationType() string {
+	config = config.normalized()
+	quant := config.QuantizationConfig
+	if quant == nil {
+		quant = config.Quantization
+	}
+	if quant == nil {
+		return ""
+	}
+	return quant.Type
 }
 
 func (file HFModelFile) filename() string {

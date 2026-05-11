@@ -17,8 +17,10 @@ import (
 // SessionHandle is the native model-state session interface.
 type SessionHandle interface {
 	Prefill(context.Context, string) error
+	AppendPrompt(context.Context, string) error
 	Generate(context.Context, GenerateConfig) iter.Seq[Token]
 	CaptureKV(context.Context) (*KVSnapshot, error)
+	RangeKVBlocks(context.Context, int, KVSnapshotCaptureOptions, func(KVSnapshotBlock) (bool, error)) error
 	Fork(context.Context) (SessionHandle, error)
 	Reset()
 	Close() error
@@ -96,6 +98,59 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 	return nil
 }
 
+// AppendPrompt tokenises prompt and appends its KV/logit state to the current
+// session without resetting the retained prefix.
+func (s *ModelSession) AppendPrompt(ctx context.Context, prompt string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForAppend(); err != nil {
+		s.err = err
+		return err
+	}
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	start := time.Now()
+	var appendErr error
+	if deviceErr := s.model.withDevice(func() {
+		tokens := s.model.tokenizer.Encode(prompt)
+		if len(s.tokens) > 0 {
+			tokens = stripImplicitChunkBOS(s.model.tokenizer, tokens)
+		}
+		if len(tokens) == 0 {
+			appendErr = core.NewError("ModelSession.AppendPrompt: empty prompt after tokenisation")
+			return
+		}
+		logits, err := s.model.prefillTokenBlock(ctx, tokens, s.caches)
+		if err != nil {
+			appendErr = core.E("ModelSession.AppendPrompt", "prefill", err)
+			return
+		}
+		oldLogits := s.logits
+		s.logits = logits
+		Free(oldLogits)
+		s.tokens = append(s.tokens, tokens...)
+		s.tokenOffset += len(tokens)
+		s.prefillDuration += time.Since(start)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if appendErr != nil {
+		s.err = appendErr
+		return appendErr
+	}
+	return nil
+}
+
 // Generate streams tokens from the retained session state.
 func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
@@ -165,9 +220,11 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		default:
 		}
 
-		l1 := SliceAxis(s.logits, 1, int32(s.logits.Dim(1)-1), int32(s.logits.Dim(1)))
-		lastPos := Reshape(l1, 1, int32(l1.Dim(2)))
-		Free(l1)
+		lastPos, err := lastTokenLogits(s.logits)
+		if err != nil {
+			s.err = core.E("ModelSession.Generate", core.Sprintf("last logits step %d", i), err)
+			return
+		}
 
 		if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
 			oldLastPos := lastPos
@@ -224,14 +281,14 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 
 	nextLogits := s.model.model.Forward(input, s.caches)
 	Free(input)
-	if err := Eval(nextLogits); err != nil {
-		Free(nextLogits)
+	materialized, err := materializeLastTokenLogits(nextLogits)
+	if err != nil {
 		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), err)
 	}
 	oldLogits := s.logits
-	s.logits = nextLogits
+	s.logits = materialized
 	Free(oldLogits)
-	detachEvalState(s.logits, s.caches)
+	detachCaches(s.caches)
 	s.tokens = append(s.tokens, id)
 	s.generated = append(s.generated, id)
 	s.tokenOffset++
@@ -240,6 +297,12 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 
 // CaptureKV copies the session's current KV cache tensors to CPU memory.
 func (s *ModelSession) CaptureKV(ctx context.Context) (*KVSnapshot, error) {
+	return s.CaptureKVWithOptions(ctx, KVSnapshotCaptureOptions{})
+}
+
+// CaptureKVWithOptions copies the session's current KV cache tensors to CPU
+// memory with explicit capture options.
+func (s *ModelSession) CaptureKVWithOptions(ctx context.Context, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -262,7 +325,7 @@ func (s *ModelSession) CaptureKV(ctx context.Context) (*KVSnapshot, error) {
 		capture  error
 	)
 	if deviceErr := s.model.withDevice(func() {
-		snapshot, capture = s.model.snapshotKVCaches(s.tokens, s.caches, s.logits)
+		snapshot, capture = s.model.snapshotKVCachesWithOptions(s.tokens, s.caches, opts, s.logits)
 		if snapshot != nil {
 			snapshot.Generated = append([]int32(nil), s.generated...)
 			if s.tokenOffset > 0 {
@@ -277,6 +340,87 @@ func (s *ModelSession) CaptureKV(ctx context.Context) (*KVSnapshot, error) {
 		s.err = capture
 	}
 	return snapshot, capture
+}
+
+// RangeKVBlocks streams contiguous KV blocks from the retained session state
+// without first assembling a full CPU-side KV snapshot.
+func (s *ModelSession) RangeKVBlocks(ctx context.Context, blockSize int, opts KVSnapshotCaptureOptions, yield func(KVSnapshotBlock) (bool, error)) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if yield == nil {
+		return core.NewError("mlx: KV block yield is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForGeneration(); err != nil {
+		s.err = err
+		return err
+	}
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	var streamErr error
+	if deviceErr := s.model.withDevice(func() {
+		streamErr = s.rangeKVBlocksLocked(ctx, blockSize, opts, yield)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if streamErr != nil {
+		s.err = streamErr
+	}
+	return streamErr
+}
+
+func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, opts KVSnapshotCaptureOptions, yield func(KVSnapshotBlock) (bool, error)) error {
+	if blockSize <= 0 {
+		return core.NewError("mlx: KV snapshot block size must be > 0")
+	}
+	seqLen := kvSnapshotSeqLen(s.tokens, s.caches)
+	if seqLen <= 0 || len(s.tokens) < seqLen {
+		return core.NewError("mlx: KV block stream has invalid token state")
+	}
+	snapshotTokens := s.tokens[len(s.tokens)-seqLen:]
+	baseOffset := s.tokenOffset - seqLen
+	if baseOffset < 0 {
+		baseOffset = 0
+	}
+	boundaries := s.model.kvBlockBoundaries(blockSize, seqLen, s.caches)
+	if len(boundaries) < 2 {
+		return core.NewError("mlx: KV block stream has no block boundaries")
+	}
+	for i := 0; i < len(boundaries)-1; i++ {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		start := boundaries[i]
+		end := boundaries[i+1]
+		block, err := s.model.snapshotKVCacheBlockWithOptions(snapshotTokens, s.caches, baseOffset, start, end, end == seqLen, opts, s.logits)
+		if err != nil {
+			return err
+		}
+		ok, err := yield(KVSnapshotBlock{
+			Index:      i,
+			TokenStart: start,
+			TokenCount: end - start,
+			Snapshot:   block,
+		})
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	}
+	return nil
 }
 
 // RestoreKV replaces the session's retained state with a restorable KV snapshot.
@@ -316,6 +460,70 @@ func (s *ModelSession) RestoreKV(ctx context.Context, snapshot *KVSnapshot) erro
 	return restoreErr
 }
 
+// RestoreKVBlocks replaces the session state from streamed KV blocks without
+// first assembling a CPU-side full-prefix snapshot.
+func (s *ModelSession) RestoreKVBlocks(ctx context.Context, source KVSnapshotBlockSource) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForMutation(); err != nil {
+		s.err = err
+		return err
+	}
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	var restoreErr error
+	if deviceErr := s.model.withDevice(func() {
+		restoreErr = s.restoreKVBlocksLocked(ctx, source)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if restoreErr != nil {
+		s.err = restoreErr
+		return restoreErr
+	}
+	return nil
+}
+
+func (s *ModelSession) restoreKVBlocksLocked(ctx context.Context, source KVSnapshotBlockSource) error {
+	entry, err := s.model.newPromptCacheEntryFromKVBlocks(ctx, source)
+	if err != nil {
+		return err
+	}
+	defer entry.free()
+	caches, err := restoreSessionCaches(entry.caches)
+	if err != nil {
+		return err
+	}
+	var logits *Array
+	if entry.logits != nil {
+		logits = Copy(entry.logits)
+		if err := Eval(logits); err != nil {
+			Free(logits)
+			freeCaches(caches)
+			return core.E("ModelSession.RestoreKVBlocks", "restore logits", err)
+		}
+		Detach(logits)
+	}
+	s.resetState()
+	s.caches = caches
+	s.logits = logits
+	s.tokens = append([]int32(nil), entry.tokens...)
+	s.generated = nil
+	s.tokenOffset = len(entry.tokens)
+	s.prefillDuration = 0
+	return nil
+}
+
 func (s *ModelSession) restoreKVLocked(snapshot *KVSnapshot) error {
 	if err := s.model.validateKVSnapshot(snapshot); err != nil {
 		return err
@@ -324,10 +532,13 @@ func (s *ModelSession) restoreKVLocked(snapshot *KVSnapshot) error {
 	if err != nil {
 		return core.E("ModelSession.RestoreKV", "restore cache", err)
 	}
-	logits, err := restoreSnapshotLogits(snapshot)
-	if err != nil {
-		freeCaches(caches)
-		return core.E("ModelSession.RestoreKV", "restore logits", err)
+	var logits *Array
+	if len(snapshot.Logits) > 0 || len(snapshot.LogitShape) > 0 {
+		logits, err = restoreSnapshotLogits(snapshot)
+		if err != nil {
+			freeCaches(caches)
+			return core.E("ModelSession.RestoreKV", "restore logits", err)
+		}
 	}
 	s.resetState()
 	s.caches = caches
@@ -456,10 +667,20 @@ func (s *ModelSession) readyForMutation() error {
 }
 
 func (s *ModelSession) readyForGeneration() error {
+	if err := s.readyForAppend(); err != nil {
+		return err
+	}
+	if s.logits == nil || !s.logits.Valid() {
+		return core.NewError("mlx: model session has no restorable logits")
+	}
+	return nil
+}
+
+func (s *ModelSession) readyForAppend() error {
 	if err := s.readyForMutation(); err != nil {
 		return err
 	}
-	if len(s.caches) == 0 || s.logits == nil || !s.logits.Valid() {
+	if len(s.caches) == 0 {
 		return core.NewError("mlx: model session has no prefilled state")
 	}
 	return nil
@@ -496,19 +717,9 @@ func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {
 		state = c.State()
 		snapshot.step = c.step
 	case *QuantizedKVCache:
-		state, ownedState = c.ReadState()
-		snapshot.step = c.step
-		if c.maxSize > 0 {
-			snapshot.rotating = true
-			snapshot.maxSize = c.maxSize
-		}
+		return snapshotQuantizedCache(c, c.Len(), c.Offset())
 	case *PagedKVCache:
-		state, ownedState = c.ReadState()
-		snapshot.step = c.pageSize
-		if c.maxSize > 0 {
-			snapshot.rotating = true
-			snapshot.maxSize = c.maxSize
-		}
+		return snapshotPagedCache(c, c.Len(), c.Offset())
 	default:
 		return cacheSnapshot{}, false, nil
 	}
@@ -540,6 +751,28 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 	for i, snapshot := range snapshots {
 		length := snapshotCacheLength(snapshot)
 		if snapshot.keys == nil || snapshot.values == nil || length <= 0 {
+			if snapshot.mode != KVCacheModePaged {
+				continue
+			}
+		}
+		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
+			cache, arrays, err := restoreQuantizedCacheSnapshot(snapshot, length, snapshot.offset)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
+			continue
+		}
+		if snapshot.mode == KVCacheModePaged {
+			cache, arrays, err := restorePagedCacheSnapshot(snapshot, length, snapshot.offset)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
 			continue
 		}
 		keys, err := copyCachePrefix(snapshot.keys, length)
@@ -603,7 +836,7 @@ func snapshotCacheLength(snapshot cacheSnapshot) int {
 
 func freeCacheSnapshots(snapshots []cacheSnapshot) {
 	for _, snapshot := range snapshots {
-		Free(snapshot.keys, snapshot.values)
+		freeCacheSnapshot(snapshot)
 	}
 }
 
@@ -623,9 +856,6 @@ func (m *Model) validateKVSnapshot(snapshot *KVSnapshot) error {
 	}
 	if len(snapshot.Layers) == 0 {
 		return core.NewError("mlx: KV snapshot has no layers")
-	}
-	if len(snapshot.Logits) == 0 || len(snapshot.LogitShape) == 0 {
-		return core.NewError("mlx: KV snapshot has no restorable logits")
 	}
 	return nil
 }
@@ -672,44 +902,57 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	if snapshot == nil {
 		return cacheSnapshot{}, core.NewError("mlx: KV snapshot is nil")
 	}
-	seqLen := snapshot.SeqLen
-	if seqLen <= 0 {
-		seqLen = len(snapshot.Tokens)
+	globalSeqLen := snapshot.SeqLen
+	if globalSeqLen <= 0 {
+		globalSeqLen = len(snapshot.Tokens)
 	}
-	if seqLen <= 0 {
+	if globalSeqLen <= 0 {
 		return cacheSnapshot{}, core.NewError("mlx: KV snapshot has no sequence length")
 	}
 	numHeads := len(layer.Heads)
 	if numHeads <= 0 {
 		return cacheSnapshot{}, core.NewError("mlx: KV snapshot layer has no heads")
 	}
-	keyDim := snapshot.HeadDim
-	if keyDim <= 0 {
-		keyDim = inferSnapshotHeadDim(layer.Heads[0].Key, seqLen)
-	}
-	valueDim := inferSnapshotHeadDim(layer.Heads[0].Value, seqLen)
-	if keyDim <= 0 || valueDim <= 0 {
-		return cacheSnapshot{}, core.NewError("mlx: KV snapshot has invalid head dimensions")
+	seqLen, keyDim, valueDim, err := inferSnapshotLayerCacheShape(layer.Heads, globalSeqLen, snapshot.HeadDim)
+	if err != nil {
+		return cacheSnapshot{}, err
 	}
 
-	keys := make([]float32, 0, numHeads*seqLen*keyDim)
-	values := make([]float32, 0, numHeads*seqLen*valueDim)
 	for _, head := range layer.Heads {
-		if len(head.Key) != seqLen*keyDim {
-			return cacheSnapshot{}, core.NewError("mlx: KV snapshot key tensor has unexpected size")
+		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, keyDim, true); err != nil {
+			return cacheSnapshot{}, err
 		}
-		if len(head.Value) != seqLen*valueDim {
-			return cacheSnapshot{}, core.NewError("mlx: KV snapshot value tensor has unexpected size")
+		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, valueDim, false); err != nil {
+			return cacheSnapshot{}, err
 		}
-		keys = append(keys, head.Key...)
-		values = append(values, head.Value...)
 	}
 
-	keyArray := FromValues(keys, 1, numHeads, seqLen, keyDim)
-	valueArray := FromValues(values, 1, numHeads, seqLen, valueDim)
+	keyArray, keyNative, err := kvLayerNativeArray(layer.Heads, seqLen, keyDim, true)
+	if err != nil {
+		return cacheSnapshot{}, err
+	}
+	if !keyNative {
+		keys := make([]float32, 0, numHeads*seqLen*keyDim)
+		for _, head := range layer.Heads {
+			keys = append(keys, head.Key...)
+		}
+		keyArray = FromValues(keys, 1, numHeads, seqLen, keyDim)
+	}
+	valueArray, valueNative, err := kvLayerNativeArray(layer.Heads, seqLen, valueDim, false)
+	if err != nil {
+		Free(keyArray)
+		return cacheSnapshot{}, err
+	}
+	if !valueNative {
+		values := make([]float32, 0, numHeads*seqLen*valueDim)
+		for _, head := range layer.Heads {
+			values = append(values, head.Value...)
+		}
+		valueArray = FromValues(values, 1, numHeads, seqLen, valueDim)
+	}
 	offset := snapshot.TokenOffset
 	if offset <= 0 {
-		offset = seqLen
+		offset = globalSeqLen
 	}
 	result := cacheSnapshot{
 		keys:   keyArray,
@@ -725,12 +968,184 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 		result.step = c.step
 	case *KVCache:
 		result.step = c.step
+	case *QuantizedKVCache:
+		if c.keyBits == 8 && c.valueBits == 8 {
+			result.mode = KVCacheModeQ8
+			result.keyDtype = keyArray.Dtype()
+			result.valueDtype = valueArray.Dtype()
+			result.keyBits = c.keyBits
+			result.valueBits = c.valueBits
+			result.keys, result.keyScale, result.keyShape = quantizeCacheArray(keyArray, c.keyBits)
+			result.values, result.valueScale, result.valueShape = quantizeCacheArray(valueArray, c.valueBits)
+			Free(keyArray, valueArray)
+		}
+		result.step = c.step
+		if c.maxSize > 0 {
+			result.rotating = true
+			result.maxSize = c.maxSize
+		}
+	case *PagedKVCache:
+		pagesK, pagesV, adopted, err := pageCacheArrays(keyArray, valueArray, c.pageSize)
+		if err != nil {
+			Free(keyArray, valueArray)
+			return cacheSnapshot{}, err
+		}
+		result.mode = KVCacheModePaged
+		result.kPages = pagesK
+		result.vPages = pagesV
+		if !adopted {
+			Free(keyArray, valueArray)
+		}
+		result.keys = nil
+		result.values = nil
+		result.step = c.pageSize
+		if c.maxSize > 0 {
+			result.rotating = true
+			result.maxSize = c.maxSize
+		}
 	case nil:
 	default:
 		Free(keyArray, valueArray)
 		return cacheSnapshot{}, core.NewError("mlx: unsupported KV cache type")
 	}
 	return result, nil
+}
+
+func inferSnapshotLayerCacheShape(heads []KVHeadSnapshot, globalSeqLen, fallbackHeadDim int) (int, int, int, error) {
+	if len(heads) == 0 {
+		return 0, 0, 0, core.NewError("mlx: KV snapshot layer has no heads")
+	}
+	keyLen, keyDim := inferSnapshotHeadTensorCacheShape(heads[0], globalSeqLen, fallbackHeadDim, true)
+	valueLen, valueDim := inferSnapshotHeadTensorCacheShape(heads[0], globalSeqLen, fallbackHeadDim, false)
+	if keyLen <= 0 || keyDim <= 0 || valueLen <= 0 || valueDim <= 0 {
+		return 0, 0, 0, core.NewError("mlx: KV snapshot has invalid head dimensions")
+	}
+	if keyLen != valueLen {
+		return 0, 0, 0, core.NewError("mlx: KV snapshot key/value cache lengths differ")
+	}
+	return keyLen, keyDim, valueDim, nil
+}
+
+func inferSnapshotHeadTensorCacheShape(head KVHeadSnapshot, globalSeqLen, fallbackHeadDim int, key bool) (int, int) {
+	values := head.Value
+	if key {
+		values = head.Key
+	}
+	if len(values) > 0 {
+		return inferSnapshotTensorElementCacheShape(len(values), globalSeqLen, fallbackHeadDim)
+	}
+	raw, dtype := kvHeadRawTensor(head, key)
+	bytesPerValue := DTypeByteSize(dtype)
+	if len(raw) > 0 && bytesPerValue > 0 && len(raw)%bytesPerValue == 0 {
+		return inferSnapshotTensorElementCacheShape(len(raw)/bytesPerValue, globalSeqLen, fallbackHeadDim)
+	}
+	return 0, 0
+}
+
+func inferSnapshotTensorCacheShape(values []float32, globalSeqLen, fallbackHeadDim int) (int, int) {
+	if len(values) == 0 {
+		return 0, 0
+	}
+	return inferSnapshotTensorElementCacheShape(len(values), globalSeqLen, fallbackHeadDim)
+}
+
+func inferSnapshotTensorElementCacheShape(elements, globalSeqLen, fallbackHeadDim int) (int, int) {
+	if elements <= 0 {
+		return 0, 0
+	}
+	if globalSeqLen > 0 && elements%globalSeqLen == 0 {
+		return globalSeqLen, elements / globalSeqLen
+	}
+	if fallbackHeadDim > 0 && elements%fallbackHeadDim == 0 {
+		return elements / fallbackHeadDim, fallbackHeadDim
+	}
+	return 0, 0
+}
+
+func validateSnapshotHeadTensorCacheShape(head KVHeadSnapshot, seqLen, dim int, key bool) error {
+	if seqLen <= 0 || dim <= 0 {
+		return core.NewError("mlx: KV snapshot has invalid head dimensions")
+	}
+	values := head.Value
+	if key {
+		values = head.Key
+	}
+	if len(values) > 0 && len(values) != seqLen*dim {
+		if key {
+			return core.NewError("mlx: KV snapshot key tensor has unexpected size")
+		}
+		return core.NewError("mlx: KV snapshot value tensor has unexpected size")
+	}
+	raw, dtype := kvHeadRawTensor(head, key)
+	if len(raw) == 0 {
+		if len(values) == 0 {
+			if key {
+				return core.NewError("mlx: KV snapshot key tensor has unexpected size")
+			}
+			return core.NewError("mlx: KV snapshot value tensor has unexpected size")
+		}
+		return nil
+	}
+	bytesPerValue := DTypeByteSize(dtype)
+	if bytesPerValue <= 0 || len(raw) != seqLen*dim*bytesPerValue {
+		if key {
+			return core.NewError("mlx: KV snapshot native key tensor has unexpected size")
+		}
+		return core.NewError("mlx: KV snapshot native value tensor has unexpected size")
+	}
+	return nil
+}
+
+func kvLayerNativeArray(heads []KVHeadSnapshot, seqLen, headDim int, key bool) (*Array, bool, error) {
+	raw, dtype, ok, err := kvLayerRawTensor(heads, seqLen, headDim, key)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	array := FromRawBytes(raw, []int{1, len(heads), seqLen, headDim}, dtype)
+	return array, true, nil
+}
+
+func kvLayerRawTensor(heads []KVHeadSnapshot, seqLen, headDim int, key bool) ([]byte, DType, bool, error) {
+	if len(heads) == 0 {
+		return nil, 0, false, nil
+	}
+	firstRaw, firstDType := kvHeadRawTensor(heads[0], key)
+	if len(firstRaw) == 0 {
+		for _, head := range heads[1:] {
+			raw, _ := kvHeadRawTensor(head, key)
+			if len(raw) > 0 {
+				return nil, 0, false, core.NewError("mlx: KV snapshot mixes native and float32 tensor heads")
+			}
+		}
+		return nil, 0, false, nil
+	}
+	bytesPerValue := DTypeByteSize(firstDType)
+	if bytesPerValue <= 0 {
+		return nil, 0, false, core.NewError("mlx: unsupported KV snapshot native tensor dtype")
+	}
+	expectedBytes := seqLen * headDim * bytesPerValue
+	raw := make([]byte, 0, len(heads)*expectedBytes)
+	for _, head := range heads {
+		headRaw, headDType := kvHeadRawTensor(head, key)
+		if len(headRaw) == 0 {
+			return nil, 0, false, core.NewError("mlx: KV snapshot mixes native and float32 tensor heads")
+		}
+		if headDType != firstDType {
+			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor dtype mismatch")
+		}
+		if len(headRaw) != expectedBytes {
+			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor byte length mismatch")
+		}
+		raw = append(raw, headRaw...)
+	}
+	return raw, firstDType, true, nil
+}
+
+func kvHeadRawTensor(head KVHeadSnapshot, key bool) ([]byte, DType) {
+	if key {
+		return head.KeyBytes, head.KeyDType
+	}
+	return head.ValueBytes, head.ValueDType
 }
 
 func inferSnapshotHeadDim(values []float32, seqLen int) int {

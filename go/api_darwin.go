@@ -9,6 +9,7 @@ import (
 	"iter"
 
 	core "dappco.re/go"
+	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metal"
 )
 
@@ -31,8 +32,36 @@ type nativePromptCacheWarmer interface {
 	WarmPromptCache(context.Context, string) error
 }
 
+type nativePromptCacheChunkWarmer interface {
+	WarmPromptCacheChunks(context.Context, iter.Seq[string]) error
+}
+
+type nativePromptCacheKVRestorer interface {
+	RestorePromptCacheFromKV(context.Context, *metal.KVSnapshot) error
+}
+
+type nativePromptCacheKVBlockRestorer interface {
+	RestorePromptCacheFromKVBlocks(context.Context, metal.KVSnapshotBlockSource) error
+}
+
 type nativeKVSnapshotter interface {
 	CaptureKV(context.Context, string) (*metal.KVSnapshot, error)
+}
+
+type nativeKVSnapshotterWithOptions interface {
+	CaptureKVWithOptions(context.Context, string, metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error)
+}
+
+type nativeKVChunkSnapshotter interface {
+	CaptureKVChunks(context.Context, iter.Seq[string]) (*metal.KVSnapshot, error)
+}
+
+type nativeKVChunkSnapshotterWithOptions interface {
+	CaptureKVChunksWithOptions(context.Context, iter.Seq[string], metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error)
+}
+
+type nativeChunkGenerator interface {
+	GenerateChunks(context.Context, iter.Seq[string], metal.GenerateConfig) iter.Seq[metal.Token]
 }
 
 type nativeLoRALoader interface {
@@ -423,8 +452,12 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *KVSnapshot {
 		}
 		for j, head := range layer.Heads {
 			layers[i].Heads[j] = KVHeadSnapshot{
-				Key:   append([]float32(nil), head.Key...),
-				Value: append([]float32(nil), head.Value...),
+				Key:        append([]float32(nil), head.Key...),
+				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
+				KeyBytes:   append([]byte(nil), head.KeyBytes...),
+				Value:      append([]float32(nil), head.Value...),
+				ValueDType: rootKVHeadDType(head.ValueDType, head.ValueBytes),
+				ValueBytes: append([]byte(nil), head.ValueBytes...),
 			}
 		}
 	}
@@ -458,8 +491,12 @@ func toMetalKVSnapshot(result *KVSnapshot) *metal.KVSnapshot {
 		}
 		for j, head := range layer.Heads {
 			layers[i].Heads[j] = metal.KVHeadSnapshot{
-				Key:   append([]float32(nil), head.Key...),
-				Value: append([]float32(nil), head.Value...),
+				Key:        append([]float32(nil), head.Key...),
+				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
+				KeyBytes:   append([]byte(nil), head.KeyBytes...),
+				Value:      append([]float32(nil), head.Value...),
+				ValueDType: metalKVHeadDType(head.ValueDType, head.ValueBytes),
+				ValueBytes: append([]byte(nil), head.ValueBytes...),
 			}
 		}
 	}
@@ -477,6 +514,38 @@ func toMetalKVSnapshot(result *KVSnapshot) *metal.KVSnapshot {
 		LogitShape:    append([]int32(nil), result.LogitShape...),
 		Logits:        append([]float32(nil), result.Logits...),
 		Layers:        layers,
+	}
+}
+
+func toMetalKVSnapshotCaptureOptions(opts KVSnapshotCaptureOptions) metal.KVSnapshotCaptureOptions {
+	return metal.KVSnapshotCaptureOptions{RawKVOnly: opts.RawKVOnly}
+}
+
+func rootKVHeadDType(dtype metal.DType, raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	switch dtype {
+	case metal.DTypeFloat32, metal.DTypeFloat16, metal.DTypeBFloat16:
+		return dtype.String()
+	default:
+		return ""
+	}
+}
+
+func metalKVHeadDType(dtype string, raw []byte) metal.DType {
+	if len(raw) == 0 {
+		return 0
+	}
+	switch dtype {
+	case "float32", "F32":
+		return metal.DTypeFloat32
+	case "float16", "F16":
+		return metal.DTypeFloat16
+	case "bfloat16", "BF16":
+		return metal.DTypeBFloat16
+	default:
+		return 0
 	}
 }
 
@@ -520,6 +589,32 @@ func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error)
 	return builder.String(), nil
 }
 
+// GenerateChunks produces a buffered string result from streaming prompt chunks.
+// Chunked prompts avoid one giant tokenizer call while preserving one logical
+// prompt token stream for cache matching and KV capture.
+func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opts ...GenerateOption) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return "", core.NewError("mlx: model is nil")
+	}
+	if generator, ok := m.model.(nativeChunkGenerator); ok {
+		cfg := applyGenerateOptions(opts)
+		filter := newThinkingChannelProcessor(cfg.Thinking, m.Info())
+		builder := core.NewBuilder()
+		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
+			builder.WriteString(filter.Process(tok.Text))
+		}
+		builder.WriteString(filter.Flush())
+		if err := m.model.Err(); err != nil {
+			return "", err
+		}
+		return builder.String(), nil
+	}
+	return m.Generate(promptChunksToString(chunks), opts...)
+}
+
 // WarmPromptCache prefills the exact token-prefix cache for a stable prompt prefix.
 func (m *Model) WarmPromptCache(prompt string) error {
 	if m == nil || m.model == nil {
@@ -530,6 +625,146 @@ func (m *Model) WarmPromptCache(prompt string) error {
 		return core.NewError("mlx: native model does not support prompt cache warming")
 	}
 	return warmer.WarmPromptCache(context.Background(), prompt)
+}
+
+// WarmPromptCacheChunks prefills the exact token-prefix cache from streaming
+// prompt chunks without building or tokenizing one giant prompt string.
+func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if warmer, ok := m.model.(nativePromptCacheChunkWarmer); ok {
+		return warmer.WarmPromptCacheChunks(ctx, chunks)
+	}
+	return m.WarmPromptCache(promptChunksToString(chunks))
+}
+
+// WarmPromptCacheFromKV installs a captured K/V prefix directly as the model prompt cache.
+func (m *Model) WarmPromptCacheFromKV(snapshot *KVSnapshot) error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	restorer, ok := m.model.(nativePromptCacheKVRestorer)
+	if !ok {
+		return core.NewError("mlx: native model does not support KV prompt cache restore")
+	}
+	return restorer.RestorePromptCacheFromKV(context.Background(), toMetalKVSnapshot(snapshot))
+}
+
+// WarmPromptCacheFromMemvidBlocks loads the requested memvid KV prefix blocks and
+// installs them directly as the model prompt cache.
+func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	if restorer, ok := m.model.(nativePromptCacheKVBlockRestorer); ok {
+		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
+		if err != nil {
+			return err
+		}
+		return restorer.RestorePromptCacheFromKVBlocks(ctx, source)
+	}
+	snapshot, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
+	if err != nil {
+		return err
+	}
+	restorer, ok := m.model.(nativePromptCacheKVRestorer)
+	if !ok {
+		return core.NewError("mlx: native model does not support KV prompt cache restore")
+	}
+	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
+}
+
+func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if store == nil {
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid store is nil")
+	}
+	if err := validateKVSnapshotMemvidBlockBundle(bundle); err != nil {
+		return metal.KVSnapshotBlockSource{}, err
+	}
+	if prefixTokens <= 0 {
+		prefixTokens = bundle.TokenCount
+	}
+	if prefixTokens > bundle.TokenCount {
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid KV prefix exceeds bundle token count")
+	}
+	refs := make([]KVSnapshotMemvidBlockRef, 0, len(bundle.Blocks))
+	for _, ref := range bundle.Blocks {
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
+		refs = append(refs, ref)
+		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+			break
+		}
+	}
+	if len(refs) == 0 {
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid KV prefix has no covering blocks")
+	}
+	source := metal.KVSnapshotBlockSource{
+		TokenCount:   bundle.TokenCount,
+		PrefixTokens: prefixTokens,
+		BlockCount:   len(refs),
+	}
+	source.Load = func(loadCtx context.Context, index int) (metal.KVSnapshotBlock, error) {
+		if loadCtx == nil {
+			loadCtx = ctx
+		}
+		if index < 0 || index >= len(refs) {
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block index is out of range")
+		}
+		ref := refs[index]
+		loadOpts := KVSnapshotLoadOptions{}
+		if bundle.KVEncoding == KVSnapshotEncodingNative {
+			loadOpts.RawKVOnly = true
+		}
+		block, err := loadKVSnapshotMemvidBlockWithOptions(loadCtx, store, ref, loadOpts)
+		if err != nil {
+			return metal.KVSnapshotBlock{}, err
+		}
+		if block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block metadata mismatch")
+		}
+		snapshot := block.Snapshot
+		if snapshot == nil {
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block snapshot is nil")
+		}
+		if block.TokenStart+block.TokenCount > prefixTokens {
+			trimTokens := prefixTokens - block.TokenStart
+			if trimTokens <= 0 {
+				return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV prefix has invalid trim range")
+			}
+			baseOffset := effectiveKVSnapshotTokenOffset(snapshot) - effectiveKVSnapshotSeqLen(snapshot)
+			if baseOffset < 0 {
+				baseOffset = 0
+			}
+			trimmed, trimErr := snapshot.sliceBlock(0, trimTokens, baseOffset, false)
+			if trimErr != nil {
+				return metal.KVSnapshotBlock{}, trimErr
+			}
+			snapshot = trimmed
+			block.TokenCount = trimTokens
+		}
+		if block.TokenStart+block.TokenCount < bundle.TokenCount {
+			clearKVSnapshotTerminalState(snapshot)
+		}
+		return metal.KVSnapshotBlock{
+			Index:      index,
+			TokenStart: block.TokenStart,
+			TokenCount: block.TokenCount,
+			Snapshot:   toMetalKVSnapshot(snapshot),
+		}, nil
+	}
+	return source, nil
 }
 
 // GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
@@ -739,8 +974,25 @@ func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 
 // CaptureKV runs a single prefill pass and returns extracted K/V cache tensors.
 func (m *Model) CaptureKV(prompt string) (*KVSnapshot, error) {
+	return m.CaptureKVWithOptions(prompt, KVSnapshotCaptureOptions{})
+}
+
+// CaptureKVWithOptions runs a single prefill pass and returns extracted K/V
+// cache tensors with explicit capture options.
+func (m *Model) CaptureKVWithOptions(prompt string, opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
 	if m == nil || m.model == nil {
 		return nil, core.NewError("mlx: model is nil")
+	}
+	if snapshotter, ok := m.model.(nativeKVSnapshotterWithOptions); ok {
+		result, err := snapshotter.CaptureKVWithOptions(context.Background(), prompt, toMetalKVSnapshotCaptureOptions(opts))
+		if err != nil {
+			return nil, err
+		}
+		snapshot := toRootKVSnapshot(result)
+		if opts.RawKVOnly {
+			dropKVSnapshotFloat32(snapshot)
+		}
+		return snapshot, nil
 	}
 	snapshotter, ok := m.model.(nativeKVSnapshotter)
 	if !ok {
@@ -750,7 +1002,62 @@ func (m *Model) CaptureKV(prompt string) (*KVSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
-	return toRootKVSnapshot(result), nil
+	snapshot := toRootKVSnapshot(result)
+	if opts.RawKVOnly {
+		dropKVSnapshotFloat32(snapshot)
+	}
+	return snapshot, nil
+}
+
+// CaptureKVChunks captures K/V state from streaming prompt chunks without one
+// giant prompt-tokenization pass.
+func (m *Model) CaptureKVChunks(ctx context.Context, chunks iter.Seq[string]) (*KVSnapshot, error) {
+	return m.CaptureKVChunksWithOptions(ctx, chunks, KVSnapshotCaptureOptions{})
+}
+
+// CaptureKVChunksWithOptions captures K/V state from streaming prompt chunks
+// with explicit capture options.
+func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[string], opts KVSnapshotCaptureOptions) (*KVSnapshot, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	if snapshotter, ok := m.model.(nativeKVChunkSnapshotterWithOptions); ok {
+		result, err := snapshotter.CaptureKVChunksWithOptions(ctx, chunks, toMetalKVSnapshotCaptureOptions(opts))
+		if err != nil {
+			return nil, err
+		}
+		snapshot := toRootKVSnapshot(result)
+		if opts.RawKVOnly {
+			dropKVSnapshotFloat32(snapshot)
+		}
+		return snapshot, nil
+	}
+	if snapshotter, ok := m.model.(nativeKVChunkSnapshotter); ok {
+		result, err := snapshotter.CaptureKVChunks(ctx, chunks)
+		if err != nil {
+			return nil, err
+		}
+		snapshot := toRootKVSnapshot(result)
+		if opts.RawKVOnly {
+			dropKVSnapshotFloat32(snapshot)
+		}
+		return snapshot, nil
+	}
+	return m.CaptureKVWithOptions(promptChunksToString(chunks), opts)
+}
+
+func promptChunksToString(chunks iter.Seq[string]) string {
+	builder := core.NewBuilder()
+	if chunks == nil {
+		return ""
+	}
+	for chunk := range chunks {
+		builder.WriteString(chunk)
+	}
+	return builder.String()
 }
 
 // Tokenizer returns the model tokenizer.

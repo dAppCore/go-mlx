@@ -13,6 +13,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
+	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/internal/metal"
 )
@@ -46,6 +47,14 @@ type fakeNativeModel struct {
 	unloadLoRAErr        error
 	warmPrompt           string
 	warmErr              error
+	restoredPromptKV     *metal.KVSnapshot
+	restorePromptKVErr   error
+	restoredPromptBlocks []metal.KVSnapshotBlock
+	restoreBlockPrefix   int
+	restoreBlockErr      error
+	warmChunks           []string
+	capturedChunks       []string
+	generatedChunks      []string
 	closeErr             error
 	closeCalls           int
 }
@@ -98,6 +107,10 @@ func (m *fakeNativeModel) InspectAttention(_ context.Context, _ string) (*metal.
 func (m *fakeNativeModel) CaptureKV(_ context.Context, _ string) (*metal.KVSnapshot, error) {
 	return m.kvSnapshot, m.err
 }
+func (m *fakeNativeModel) CaptureKVChunks(_ context.Context, chunks iter.Seq[string]) (*metal.KVSnapshot, error) {
+	m.capturedChunks = collectStringSeq(chunks)
+	return m.kvSnapshot, m.err
+}
 func (m *fakeNativeModel) LastMetrics() metal.Metrics { return m.metrics }
 func (m *fakeNativeModel) ModelType() string {
 	if m.modelType != "" {
@@ -121,12 +134,74 @@ func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.Genera
 		}
 	}
 }
+func (m *fakeNativeModel) GenerateChunks(_ context.Context, chunks iter.Seq[string], cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastGenerateConfig = cfg
+	m.generatedChunks = collectStringSeq(chunks)
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range m.tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
 func (m *fakeNativeModel) WarmPromptCache(_ context.Context, prompt string) error {
 	m.warmPrompt = prompt
 	return m.warmErr
 }
+func (m *fakeNativeModel) WarmPromptCacheChunks(_ context.Context, chunks iter.Seq[string]) error {
+	m.warmChunks = collectStringSeq(chunks)
+	return m.warmErr
+}
+func (m *fakeNativeModel) RestorePromptCacheFromKV(_ context.Context, snapshot *metal.KVSnapshot) error {
+	m.restoredPromptKV = snapshot
+	return m.restorePromptKVErr
+}
+func (m *fakeNativeModel) RestorePromptCacheFromKVBlocks(ctx context.Context, source metal.KVSnapshotBlockSource) error {
+	m.restoreBlockPrefix = source.PrefixTokens
+	for i := 0; i < source.BlockCount; i++ {
+		block, err := source.Load(ctx, i)
+		if err != nil {
+			return err
+		}
+		m.restoredPromptBlocks = append(m.restoredPromptBlocks, block)
+		if block.TokenStart+block.TokenCount >= source.PrefixTokens {
+			break
+		}
+	}
+	return m.restoreBlockErr
+}
 func (m *fakeNativeModel) NewSession() metal.SessionHandle {
 	return m.session
+}
+
+func collectStringSeq(chunks iter.Seq[string]) []string {
+	out := []string{}
+	if chunks == nil {
+		return out
+	}
+	for chunk := range chunks {
+		out = append(out, chunk)
+	}
+	return out
+}
+
+func seqStrings(values ...string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for _, value := range values {
+			if !yield(value) {
+				return
+			}
+		}
+	}
+}
+
+func collectTokensFromChannel(tokens <-chan Token) []Token {
+	out := []Token{}
+	for token := range tokens {
+		out = append(out, token)
+	}
+	return out
 }
 
 func TestAPIGenerateOptions_Good(t *testing.T) {
@@ -137,6 +212,7 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithTopP(0.9),
 		WithMinP(0.05),
 		WithLogits(),
+		WithReturnLogits(),
 		WithStopTokens(1, 2),
 		WithRepeatPenalty(1.1),
 	})
@@ -161,10 +237,11 @@ func TestAPILoadOptions_Good(t *testing.T) {
 		WithPromptCache(false),
 		WithPromptCacheMinTokens(4096),
 		WithQuantization(4),
+		WithExpectedQuantization(4),
 		WithDevice("cpu"),
 		WithAdapterPath("/models/lora/demo"),
 	})
-	if cfg.ContextLength != 8192 || cfg.ParallelSlots != 4 || cfg.PromptCache || cfg.PromptCacheMinTokens != 4096 || cfg.Quantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
+	if cfg.ContextLength != 8192 || cfg.ParallelSlots != 4 || cfg.PromptCache || cfg.PromptCacheMinTokens != 4096 || cfg.Quantization != 4 || cfg.ExpectedQuantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
 		t.Fatalf("unexpected load config: %+v", cfg)
 	}
 }
@@ -318,6 +395,97 @@ func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
 	}
 }
 
+func TestModelWarmPromptCacheFromMemvidBlocks_Good(t *testing.T) {
+	coverageTokens := "WarmPromptCacheFromMemvidBlocks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	source := memvid.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, KVSnapshotMemvidBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+	}
+	store := &recordingMemvidStore{store: source}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), store, bundle, 2); err != nil {
+		t.Fatalf("WarmPromptCacheFromMemvidBlocks() error = %v", err)
+	}
+
+	if len(store.resolved) != 1 || store.resolved[0] != bundle.Blocks[0].Memvid.ChunkID {
+		t.Fatalf("resolved chunks = %v, want only first block chunk %d", store.resolved, bundle.Blocks[0].Memvid.ChunkID)
+	}
+	if native.restoredPromptKV != nil {
+		t.Fatal("restoredPromptKV != nil, want streaming block restore without assembled full snapshot")
+	}
+	if native.restoreBlockPrefix != 2 {
+		t.Fatalf("restoreBlockPrefix = %d, want 2", native.restoreBlockPrefix)
+	}
+	if len(native.restoredPromptBlocks) != 1 {
+		t.Fatalf("restoredPromptBlocks = %d, want one prefix block", len(native.restoredPromptBlocks))
+	}
+	restored := native.restoredPromptBlocks[0].Snapshot
+	if restored == nil || restored.TokenOffset != 2 || restored.SeqLen != 2 || len(restored.Tokens) != 2 {
+		t.Fatalf("restored block snapshot = %+v, want first two-token prefix", restored)
+	}
+	if len(restored.Logits) != 0 {
+		t.Fatalf("restored block Logits = %v, want none for prefix warm", restored.Logits)
+	}
+}
+
+func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
+	coverageTokens := "WarmPromptCacheFromMemvidBlocks NativeRawOnly"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	source := memvid.NewInMemoryStore(nil)
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	head := &snapshot.Layers[0].Heads[0]
+	for _, value := range head.Key {
+		head.KeyBytes = appendUint16LE(head.KeyBytes, float32ToFloat16(value))
+	}
+	for _, value := range head.Value {
+		head.ValueBytes = appendUint16LE(head.ValueBytes, float32ToFloat16(value))
+	}
+	head.Key = nil
+	head.Value = nil
+	head.KeyDType = "float16"
+	head.ValueDType = "float16"
+	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, KVSnapshotMemvidBlockOptions{
+		BlockSize:  2,
+		KVEncoding: KVSnapshotEncodingNative,
+	})
+	if err != nil {
+		t.Fatalf("SaveMemvidBlocks(native) error = %v", err)
+	}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), source, bundle, 2); err != nil {
+		t.Fatalf("WarmPromptCacheFromMemvidBlocks(native raw-only) error = %v", err)
+	}
+
+	if len(native.restoredPromptBlocks) != 1 {
+		t.Fatalf("restoredPromptBlocks = %d, want one prefix block", len(native.restoredPromptBlocks))
+	}
+	restored := native.restoredPromptBlocks[0].Snapshot
+	if restored == nil || len(restored.Layers) == 0 || len(restored.Layers[0].Heads) == 0 {
+		t.Fatalf("restored block snapshot = %+v, want native raw-only head", restored)
+	}
+	restoredHead := restored.Layers[0].Heads[0]
+	if len(restoredHead.Key) != 0 || len(restoredHead.Value) != 0 {
+		t.Fatalf("restored float32 key/value lengths = %d/%d, want raw-only", len(restoredHead.Key), len(restoredHead.Value))
+	}
+	if restoredHead.KeyDType != metal.DTypeFloat16 || restoredHead.ValueDType != metal.DTypeFloat16 {
+		t.Fatalf("restored dtypes = %v/%v, want float16", restoredHead.KeyDType, restoredHead.ValueDType)
+	}
+	if len(restoredHead.KeyBytes) != 8 || len(restoredHead.ValueBytes) != 8 {
+		t.Fatalf("restored bytes = %d/%d, want two tokens x dim two x f16", len(restoredHead.KeyBytes), len(restoredHead.ValueBytes))
+	}
+}
+
 func TestModelGenerateBuffered_Error_Bad(t *testing.T) {
 	coverageTokens := "Error"
 	if coverageTokens == "" {
@@ -450,6 +618,52 @@ func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
 	}
 	if events[0].Token == nil || events[0].Token.ID != 9 || events[0].Token.Text != "Z" {
 		t.Fatalf("probe token = %+v", events[0].Token)
+	}
+}
+
+func TestAPIProbeConversion_AllFields_Good(t *testing.T) {
+	meta := map[string]string{"scope": "unit"}
+	logitMeta := map[string]string{"logits": "kept"}
+	got := toRootProbeEvent(metal.ProbeEvent{
+		Kind:  metal.ProbeEventLogits,
+		Phase: metal.ProbePhaseDecode,
+		Step:  6,
+		Meta:  meta,
+		Token: &metal.ProbeToken{ID: 1, Text: "tok", PromptTokens: 2, GeneratedTokens: 3},
+		Logits: &metal.ProbeLogits{
+			Shape:      []int32{1, 2},
+			VocabSize:  16,
+			MaxTokenID: 4,
+			MaxLogit:   1.5,
+			MinTokenID: 5,
+			MinLogit:   -1.5,
+			MeanLogit:  0.25,
+			Top:        []metal.ProbeLogit{{TokenID: 4, Logit: 1.5, Probability: 0.7}},
+			Values:     []float32{0.1, 0.2},
+			Meta:       logitMeta,
+		},
+		Entropy:        &metal.ProbeEntropy{Value: 0.4, Unit: "nats"},
+		SelectedHeads:  &metal.ProbeHeadSelection{Layer: 2, Heads: []int{1, 3}, Scores: []float64{0.5, 0.6}},
+		LayerCoherence: &metal.ProbeLayerCoherence{Layer: 3, KeyCoherence: 0.1, ValueCoherence: 0.2, CrossAlignment: 0.3, KVCoupling: 0.4, HeadEntropy: 0.5, PhaseLock: 0.6},
+		RouterDecision: &metal.ProbeRouterDecision{Layer: 4, TokenID: 7, ExpertIDs: []int{8, 9}, Weights: []float32{0.25, 0.75}, Temperature: 0.8},
+		Residual:       &metal.ProbeResidualSummary{Layer: 5, Mean: 0.1, Variance: 0.2, RMS: 0.3, L2Norm: 0.4, MaxAbs: 0.5},
+		Cache:          &metal.ProbeCachePressure{PromptTokens: 10, GeneratedTokens: 2, LayerCount: 6, CacheTokens: 12, ProcessedTokens: 14, MaxCacheTokens: 20, Utilization: 0.6, Rotating: true},
+		Memory:         &metal.ProbeMemoryPressure{ActiveBytes: 100, PeakBytes: 200, CacheBytes: 50},
+		Training:       &metal.ProbeTraining{Step: 6, Epoch: 1, Loss: 0.9, LearningRate: 0.01, GradNorm: 0.3},
+	})
+	if got.Token == nil || got.Logits == nil || got.SelectedHeads == nil || got.RouterDecision == nil || got.Training == nil {
+		t.Fatalf("probe event = %+v, want all nested payloads", got)
+	}
+	if got.Meta["scope"] != "unit" || got.Logits.Top[0].TokenID != 4 || got.Cache == nil || !got.Cache.Rotating {
+		t.Fatalf("probe event = %+v, want cloned meta/logits/cache", got)
+	}
+	got.Meta["scope"] = "changed"
+	got.Logits.Meta["logits"] = "changed"
+	if meta["scope"] != "unit" || logitMeta["logits"] != "kept" {
+		t.Fatal("probe conversion leaked metadata map mutation")
+	}
+	if toRootProbeLogits(nil) != nil || cloneMetalProbeMeta(nil) != nil {
+		t.Fatal("empty probe helpers should return nil")
 	}
 }
 
@@ -664,6 +878,130 @@ func TestModelCaptureKV_Good(t *testing.T) {
 	}
 }
 
+func TestModelWarmPromptCacheChunks_Good(t *testing.T) {
+	coverageTokens := "WarmPromptCacheChunks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("<bos>", "chunk")); err != nil {
+		t.Fatalf("WarmPromptCacheChunks() error = %v", err)
+	}
+	if !reflect.DeepEqual(native.warmChunks, []string{"<bos>", "chunk"}) {
+		t.Fatalf("warm chunks = %#v", native.warmChunks)
+	}
+}
+
+func TestModelWarmPromptCacheFromKV_Good(t *testing.T) {
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+	snapshot := &KVSnapshot{
+		Version:      KVSnapshotVersion,
+		Architecture: "qwen3",
+		Tokens:       []int32{1},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       1,
+		HeadDim:      1,
+		Layers: []KVLayerSnapshot{{
+			Layer: 0,
+			Heads: []KVHeadSnapshot{{
+				Key:        []float32{1},
+				Value:      []float32{2},
+				KeyBytes:   []byte{1, 2},
+				ValueBytes: []byte{3, 4},
+				KeyDType:   "float16",
+				ValueDType: "bfloat16",
+			}},
+		}},
+	}
+
+	if err := model.WarmPromptCacheFromKV(snapshot); err != nil {
+		t.Fatalf("WarmPromptCacheFromKV() error = %v", err)
+	}
+	if native.restoredPromptKV == nil || native.restoredPromptKV.Layers[0].Heads[0].KeyDType != metal.DTypeFloat16 {
+		t.Fatalf("restored KV = %+v, want converted raw dtype", native.restoredPromptKV)
+	}
+	if err := (&Model{model: nativeWithoutPromptCache{}}).WarmPromptCacheFromKV(snapshot); err == nil {
+		t.Fatal("WarmPromptCacheFromKV(unsupported) error = nil")
+	}
+}
+
+func TestAPIKVHeadDTypeAndChunkStringHelpers_Good(t *testing.T) {
+	if rootKVHeadDType(metal.DTypeFloat16, []byte{1}) != "float16" {
+		t.Fatal("rootKVHeadDType(float16) did not preserve dtype")
+	}
+	if rootKVHeadDType(metal.DTypeFloat32, nil) != "" || rootKVHeadDType(metal.DTypeInt8, []byte{1}) != "" {
+		t.Fatal("rootKVHeadDType should reject empty raw data and unsupported dtype")
+	}
+	if metalKVHeadDType("F32", []byte{1}) != metal.DTypeFloat32 || metalKVHeadDType("BF16", []byte{1}) != metal.DTypeBFloat16 {
+		t.Fatal("metalKVHeadDType aliases did not map to metal dtypes")
+	}
+	if metalKVHeadDType("bad", []byte{1}) != 0 || metalKVHeadDType("float16", nil) != 0 {
+		t.Fatal("metalKVHeadDType should reject empty raw data and unsupported dtype")
+	}
+	if promptChunksToString(seqStrings("a", "b", "c")) != "abc" || promptChunksToString(nil) != "" {
+		t.Fatal("promptChunksToString returned unexpected string")
+	}
+}
+
+func TestModelGenerateChunks_Good(t *testing.T) {
+	coverageTokens := "GenerateChunks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{tokens: []metal.Token{{Text: "ok"}}}
+	model := &Model{model: native}
+
+	got, err := model.GenerateChunks(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7))
+	if err != nil {
+		t.Fatalf("GenerateChunks() error = %v", err)
+	}
+	if got != "ok" {
+		t.Fatalf("GenerateChunks() = %q, want ok", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelCaptureKVChunks_Good(t *testing.T) {
+	coverageTokens := "CaptureKVChunks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{kvSnapshot: &metal.KVSnapshot{
+		Version:      metal.KVSnapshotVersion,
+		Architecture: "gemma4_text",
+		Tokens:       []int32{1, 2, 3},
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       3,
+		HeadDim:      1,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer: 0,
+			Heads: []metal.KVHeadSnapshot{{Key: []float32{1, 2, 3}, Value: []float32{4, 5, 6}}},
+		}},
+	}}
+	model := &Model{model: native}
+
+	snapshot, err := model.CaptureKVChunks(context.Background(), seqStrings("prefix", "suffix"))
+	if err != nil {
+		t.Fatalf("CaptureKVChunks() error = %v", err)
+	}
+	if snapshot.SeqLen != 3 {
+		t.Fatalf("SeqLen = %d, want 3", snapshot.SeqLen)
+	}
+	if !reflect.DeepEqual(native.capturedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("captured chunks = %#v", native.capturedChunks)
+	}
+}
+
 func TestModelClose_Idempotent_Good(t *testing.T) {
 	coverageTokens := "Idempotent"
 	if coverageTokens == "" {
@@ -693,6 +1031,83 @@ func TestModelClose_Idempotent_Good(t *testing.T) {
 	}
 	if native.closeCalls != 1 {
 		t.Fatalf("close calls after second Close = %d, want 1", native.closeCalls)
+	}
+}
+
+func TestModelErrAndTokenizer_Good(t *testing.T) {
+	wantErr := core.NewError("model failed")
+	tokenizer := &Tokenizer{tok: &metal.Tokenizer{}}
+	model := &Model{model: &fakeNativeModel{err: wantErr}, tok: tokenizer}
+	if !core.Is(model.Err(), wantErr) {
+		t.Fatalf("Err() = %v, want %v", model.Err(), wantErr)
+	}
+	if model.Tokenizer() != tokenizer {
+		t.Fatal("Tokenizer() did not return model tokenizer")
+	}
+	if (*Model)(nil).Err() != nil || (*Model)(nil).Tokenizer() != nil {
+		t.Fatal("nil model Err/Tokenizer should return nil")
+	}
+}
+
+func TestModelNilPublicSurface_Bad(t *testing.T) {
+	var model *Model
+	if _, err := model.Generate("x"); err == nil {
+		t.Fatal("Generate(nil model) error = nil")
+	}
+	if _, err := model.Chat([]Message{{Role: "user", Content: "x"}}); err == nil {
+		t.Fatal("Chat(nil model) error = nil")
+	}
+	if _, err := model.GenerateChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("GenerateChunks(nil model) error = nil")
+	}
+	if err := model.WarmPromptCache("x"); err == nil {
+		t.Fatal("WarmPromptCache(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("WarmPromptCacheChunks(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheFromKV(&KVSnapshot{}); err == nil {
+		t.Fatal("WarmPromptCacheFromKV(nil model) error = nil")
+	}
+	if err := model.WarmPromptCacheFromMemvidBlocks(context.Background(), nil, nil, 0); err == nil {
+		t.Fatal("WarmPromptCacheFromMemvidBlocks(nil model) error = nil")
+	}
+	if _, err := model.Classify([]string{"x"}); err == nil {
+		t.Fatal("Classify(nil model) error = nil")
+	}
+	if _, err := model.BatchGenerate([]string{"x"}); err == nil {
+		t.Fatal("BatchGenerate(nil model) error = nil")
+	}
+	if _, err := model.InspectAttention("x"); err == nil {
+		t.Fatal("InspectAttention(nil model) error = nil")
+	}
+	if _, err := model.CaptureKV("x"); err == nil {
+		t.Fatal("CaptureKV(nil model) error = nil")
+	}
+	if _, err := model.CaptureKVChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("CaptureKVChunks(nil model) error = nil")
+	}
+	if _, err := model.LoadLoRA("/tmp/missing"); err == nil {
+		t.Fatal("LoadLoRA(nil model) error = nil")
+	}
+	if err := model.UnloadLoRA(); err == nil {
+		t.Fatal("UnloadLoRA(nil model) error = nil")
+	}
+	if _, err := model.SwapLoRA("/tmp/missing"); err == nil {
+		t.Fatal("SwapLoRA(nil model) error = nil")
+	}
+	if NewLoRA(model, nil) != nil {
+		t.Fatal("NewLoRA(nil model) != nil")
+	}
+	if model.MergeLoRA(nil) != nil {
+		t.Fatal("MergeLoRA(nil adapter) should return receiver")
+	}
+
+	if tokens := collectTokensFromChannel(model.GenerateStream(context.Background(), "x")); len(tokens) != 0 {
+		t.Fatalf("GenerateStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
+		t.Fatalf("ChatStream(nil model) tokens = %+v, want none", tokens)
 	}
 }
 

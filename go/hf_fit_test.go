@@ -181,6 +181,103 @@ func TestPlanHFModelFits_QwenNextNestedTextConfig_Good(t *testing.T) {
 	}
 }
 
+func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]HFModelMetadata{
+			"BAAI/bge-small-en-v1.5": {
+				ID:          "BAAI/bge-small-en-v1.5",
+				PipelineTag: "feature-extraction",
+				Config: HFModelConfig{
+					ModelType:             "bert",
+					Architectures:         []string{"BertModel"},
+					HiddenSize:            384,
+					NumHiddenLayers:       12,
+					MaxPositionEmbeddings: 512,
+				},
+				Files: []HFModelFile{{Name: "model.safetensors", Size: 130 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanHFModelFits(context.Background(), HFModelFitConfig{
+		ModelIDs: []string{"BAAI/bge-small-en-v1.5"},
+		Device:   DeviceInfo{MemorySize: 16 * MemoryGiB, MaxRecommendedWorkingSetSize: 13 * MemoryGiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanHFModelFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	plan := report.Models[0]
+	if plan.Architecture != "bert" || !plan.SupportedArchitecture {
+		t.Fatalf("architecture support = %q %v", plan.Architecture, plan.SupportedArchitecture)
+	}
+	if plan.ExpectedKVBytes != 0 || plan.MemoryPlan.CacheMode != KVCacheModeDefault || plan.MemoryPlan.PromptCache {
+		t.Fatalf("encoder memory = kv:%d plan:%+v, want no generation KV cache", plan.ExpectedKVBytes, plan.MemoryPlan)
+	}
+	if plan.ContextRecommendation != 512 {
+		t.Fatalf("ContextRecommendation = %d, want 512", plan.ContextRecommendation)
+	}
+}
+
+func TestPlanHFModelFits_MiniMaxJANGTQMemoryFit_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]HFModelMetadata{
+			"dealignai/MiniMax-M2.7-JANGTQ-CRACK": {
+				ID:   "dealignai/MiniMax-M2.7-JANGTQ-CRACK",
+				Tags: []string{"mlx", "jang", "jangtq", "minimax_m2"},
+				Config: HFModelConfig{
+					ModelType:             "minimax_m2",
+					Architectures:         []string{"MiniMaxM2ForCausalLM"},
+					HiddenSize:            3072,
+					NumHiddenLayers:       62,
+					NumAttentionHeads:     48,
+					NumKeyValueHeads:      8,
+					HeadDim:               128,
+					MaxPositionEmbeddings: 196608,
+					Quantization:          &HFQuantizationConfig{Bits: 8, GroupSize: 64, Type: "affine"},
+				},
+				Files: []HFModelFile{
+					{Name: "model-00001-of-00061.safetensors", Size: 60 * MemoryGiB},
+					{Name: "jangtq_runtime.safetensors", Size: 20 * 1024},
+					{Name: "chat_template.jinja", Size: 6 * 1024},
+				},
+			},
+		},
+	}
+
+	report, err := PlanHFModelFits(context.Background(), HFModelFitConfig{
+		ModelIDs: []string{"dealignai/MiniMax-M2.7-JANGTQ-CRACK"},
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 * MemoryGiB,
+			MaxRecommendedWorkingSetSize: 90 * MemoryGiB,
+		},
+		Source: source,
+	})
+	if err != nil {
+		t.Fatalf("PlanHFModelFits() error = %v", err)
+	}
+	plan := report.Models[0]
+	if plan.Architecture != "minimax_m2" || !plan.SupportedArchitecture {
+		t.Fatalf("architecture support = %q/%v", plan.Architecture, plan.SupportedArchitecture)
+	}
+	if plan.QuantBits != 2 || plan.QuantType != "jangtq" || plan.QuantFamily != "jang" {
+		t.Fatalf("quantization = bits:%d type:%q family:%q", plan.QuantBits, plan.QuantType, plan.QuantFamily)
+	}
+	if !plan.MemoryFits || plan.InferenceFits {
+		t.Fatalf("fit flags = memory:%v inference:%v, want memory fit but runtime gated", plan.MemoryFits, plan.InferenceFits)
+	}
+	if plan.ContextRecommendation != 32768 || plan.MemoryPlan.BatchSize != 1 {
+		t.Fatalf("context/batch = %d/%d, want 32768/1", plan.ContextRecommendation, plan.MemoryPlan.BatchSize)
+	}
+	if !hfFitPlanHasNote(plan, "runtime") {
+		t.Fatalf("Notes = %+v, want runtime gate note", plan.Notes)
+	}
+}
+
 func TestPlanHFModelFits_RequiresSourceForQuery_Bad(t *testing.T) {
 	_, err := PlanHFModelFits(context.Background(), HFModelFitConfig{Query: "gemma"})
 	if err == nil {
@@ -431,4 +528,13 @@ func TestHFModelFitHelpers_Ugly(t *testing.T) {
 	if err := hfFitResultError(core.Result{Value: "bad", OK: false}); err == nil || !core.Contains(err.Error(), "core result failed") {
 		t.Fatalf("hfFitResultError(non-error) = %v", err)
 	}
+}
+
+func hfFitPlanHasNote(plan HFModelFitPlan, fragment string) bool {
+	for _, note := range plan.Notes {
+		if core.Contains(note, fragment) {
+			return true
+		}
+	}
+	return false
 }

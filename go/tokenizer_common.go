@@ -29,12 +29,27 @@ func stripImplicitBOS(tok tokenizerImpl, tokens []int32) []int32 {
 	return append([]int32(nil), tokens...)
 }
 
+func hasExplicitBOSPrefix(tok tokenizerImpl, text string) bool {
+	if tok == nil || !tok.HasBOSToken() {
+		return false
+	}
+	bosText := tok.IDToken(tok.BOS())
+	return bosText != "" && core.HasPrefix(text, bosText)
+}
+
+func stripImplicitBOSForText(tok tokenizerImpl, text string, tokens []int32) []int32 {
+	if hasExplicitBOSPrefix(tok, text) {
+		return append([]int32(nil), tokens...)
+	}
+	return stripImplicitBOS(tok, tokens)
+}
+
 // Encode converts text to token IDs without the model-internal implicit BOS token.
 func (t *Tokenizer) Encode(text string) ([]int32, error) {
 	if t == nil || t.tok == nil {
 		return nil, core.NewError("mlx: tokenizer is nil")
 	}
-	return stripImplicitBOS(t.tok, t.tok.Encode(text)), nil
+	return stripImplicitBOSForText(t.tok, text, t.tok.Encode(text)), nil
 }
 
 // Decode converts token IDs back to text.
@@ -55,7 +70,7 @@ func (t *Tokenizer) TokenID(text string) (int32, bool) {
 	}
 	// The public tokenizer API accepts plain-text tokens such as "hello",
 	// while the internal tokenizer stores model-native forms like "▁hello".
-	encoded := stripImplicitBOS(t.tok, t.tok.Encode(text))
+	encoded := stripImplicitBOSForText(t.tok, text, t.tok.Encode(text))
 	if len(encoded) == 1 {
 		return encoded[0], true
 	}

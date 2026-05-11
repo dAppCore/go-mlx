@@ -1,0 +1,528 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+//go:build darwin && arm64
+
+package metal
+
+import (
+	"context"
+	"encoding/binary"
+	"math"
+	"reflect"
+	"testing"
+
+	"dappco.re/go"
+)
+
+func TestPromptCache_PagedKVCacheSnapshotIsEvaluable_Good(t *testing.T) {
+	coverageTokens := "PromptCache PagedKVCacheSnapshotIsEvaluable"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(8, 2)
+	k, v := makeKV(3)
+	defer Free(k, v)
+
+	outK, outV := cache.Update(k, v, 3)
+	logits := Add(outK, outV)
+	defer Free(outK, outV, logits)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval logits: %v", err)
+	}
+	detachEvalState(logits, []Cache{cache})
+	defer cache.Reset()
+
+	entry, err := newPromptCacheEntry([]int32{1, 2, 3}, []Cache{cache}, logits)
+	if err != nil {
+		t.Fatalf("newPromptCacheEntry() error = %v", err)
+	}
+	defer entry.free()
+
+	if len(entry.caches) != 1 || entry.cacheableTokens != 3 {
+		t.Fatalf("entry cache shape = len %d cacheable %d, want 1/3", len(entry.caches), entry.cacheableTokens)
+	}
+}
+
+func TestPromptCache_PagedKVCacheSnapshotsTransformedPages_Good(t *testing.T) {
+	coverageTokens := "PromptCache PagedKVCacheSnapshotsTransformedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(8, 2)
+	kBase := seqArray(0.10, 1, 3, 2, 4)
+	vBase := seqArray(0.20, 1, 3, 2, 4)
+	kBFloat := AsType(kBase, DTypeBFloat16)
+	vBFloat := AsType(vBase, DTypeBFloat16)
+	kStrided := AsStrided(kBFloat, []int32{1, 2, 3, 4}, []int64{24, 4, 8, 1}, 0)
+	vStrided := AsStrided(vBFloat, []int32{1, 2, 3, 4}, []int64{24, 4, 8, 1}, 0)
+	kNormed := RMSNormNoScale(kStrided, 1e-6)
+	vNormed := RMSNormNoScale(vStrided, 1e-6)
+	k := RoPE(kNormed, 4, false, 10000, 1, 0)
+	v := vNormed
+	defer Free(kBase, vBase, kBFloat, vBFloat, kStrided, vStrided, kNormed, vNormed, k)
+
+	outK, outV := cache.Update(k, v, 3)
+	logits := Add(outK, outV)
+	defer Free(outK, outV, logits)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval logits: %v", err)
+	}
+	detachEvalState(logits, []Cache{cache})
+	defer cache.Reset()
+
+	entry, err := newPromptCacheEntry([]int32{1, 2, 3}, []Cache{cache}, logits)
+	if err != nil {
+		t.Fatalf("newPromptCacheEntry() error = %v", err)
+	}
+	defer entry.free()
+}
+
+func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoresQuantizedQ8Prefix"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewQuantizedKVCache(0, 8, 8)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
+	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
+	fullK, fullV := cache.Update(k, v, 4)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval quantized cache update: %v", err)
+	}
+	Free(k, v, fullK, fullV)
+	defer freeCaches([]Cache{cache})
+
+	snapshot, ok, err := snapshotCache(cache, 4)
+	if err != nil {
+		t.Fatalf("snapshotCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache() ok = false, want true")
+	}
+	defer freeCacheSnapshots([]cacheSnapshot{snapshot})
+	if snapshot.mode != KVCacheModeQ8 {
+		t.Fatalf("snapshot mode = %q, want q8", snapshot.mode)
+	}
+
+	restored, err := restorePromptCaches([]cacheSnapshot{snapshot}, 2)
+	if err != nil {
+		t.Fatalf("restorePromptCaches() error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*QuantizedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *QuantizedKVCache", restored[0])
+	}
+	if restoredCache.Len() != 2 || restoredCache.Offset() != 2 {
+		t.Fatalf("restored len/offset = %d/%d, want 2/2", restoredCache.Len(), restoredCache.Offset())
+	}
+	state, owned := restoredCache.ReadState()
+	defer Free(owned...)
+	if len(state) != 2 || state[0].Shape()[2] != 2 {
+		t.Fatalf("restored state shape = %v, want prefix length 2", state)
+	}
+}
+
+func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoresPagedPrefix"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(0, 2)
+	k := FromValues([]float32{1, 2, 3, 4, 5}, 1, 1, 5, 1)
+	v := FromValues([]float32{6, 7, 8, 9, 10}, 1, 1, 5, 1)
+	fullK, fullV := cache.Update(k, v, 5)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval paged cache update: %v", err)
+	}
+	Free(k, v, fullK, fullV)
+	defer freeCaches([]Cache{cache})
+
+	snapshot, ok, err := snapshotCache(cache, 5)
+	if err != nil {
+		t.Fatalf("snapshotCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache() ok = false, want true")
+	}
+	defer freeCacheSnapshots([]cacheSnapshot{snapshot})
+	if snapshot.mode != KVCacheModePaged || len(snapshot.kPages) != 3 {
+		t.Fatalf("snapshot mode/pages = %q/%d, want paged physical state", snapshot.mode, len(snapshot.kPages))
+	}
+
+	restored, err := restorePromptCaches([]cacheSnapshot{snapshot}, 3)
+	if err != nil {
+		t.Fatalf("restorePromptCaches() error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
+	}
+	if restoredCache.Len() != 3 || restoredCache.Offset() != 3 || len(restoredCache.kPages) != 2 {
+		t.Fatalf("restored len/offset/pages = %d/%d/%d, want 3/3/2", restoredCache.Len(), restoredCache.Offset(), len(restoredCache.kPages))
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksStreamsPagedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 2},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			switch index {
+			case 0:
+				return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshot(0, []int32{1, 2})}, nil
+			case 1:
+				return KVSnapshotBlock{Index: 1, TokenStart: 2, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshot(2, []int32{3, 4})}, nil
+			default:
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	if model.promptCache == nil {
+		t.Fatal("promptCache = nil, want restored block cache")
+	}
+	if got := model.promptCache.tokens; !reflect.DeepEqual(got, []int32{1, 2, 3, 4}) {
+		t.Fatalf("prompt cache tokens = %v, want [1 2 3 4]", got)
+	}
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || cache.keys != nil || cache.values != nil {
+		t.Fatalf("cache snapshot mode/contiguous = %q/%v/%v, want paged without full contiguous arrays", cache.mode, cache.keys, cache.values)
+	}
+	if cache.length != 4 || cache.offset != 4 || len(cache.kPages) != 1 || len(cache.vPages) != 1 {
+		t.Fatalf("cache length/offset/pages = %d/%d/%d/%d, want 4/4/1/1", cache.length, cache.offset, len(cache.kPages), len(cache.vPages))
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksReplaysExactHitWithoutLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	native := &fakePagedModel{numLayers: 1, pageSize: 2}
+	model := &Model{
+		model:                native,
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			switch index {
+			case 0:
+				return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshot(0, []int32{1, 2})}, nil
+			case 1:
+				return KVSnapshotBlock{Index: 1, TokenStart: 2, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshot(2, []int32{3, 4})}, nil
+			default:
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+		},
+	}
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+
+	prep, err := model.preparePrompt(context.Background(), []int32{1, 2, 3, 4})
+	if err != nil {
+		t.Fatalf("preparePrompt() error = %v", err)
+	}
+	defer Free(prep.logits)
+	defer freeCaches(prep.caches)
+	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	}
+	if native.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want replay of final prompt token", native.forwardCalls)
+	}
+	if prep.logits == nil || !prep.logits.Valid() {
+		t.Fatal("preparePrompt logits invalid after replay")
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksPreservesNativeDType_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksPreservesNativeDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 2},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   2,
+		PrefixTokens: 2,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index != 0 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			snapshot := kvSnapshotBlockTestSnapshot(0, []int32{1, 2})
+			head := &snapshot.Layers[0].Heads[0]
+			head.KeyDType = DTypeBFloat16
+			head.ValueDType = DTypeBFloat16
+			head.KeyBytes = bf16Bytes(head.Key)
+			head.ValueBytes = bf16Bytes(head.Value)
+			return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 || cache.kPages[0].Dtype() != DTypeBFloat16 {
+		t.Fatalf("restored cache mode/pages/dtype = %q/%d/%v, want paged bf16", cache.mode, len(cache.kPages), cache.kPages[0].Dtype())
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksAcceptsNativeRawOnly_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksAcceptsNativeRawOnly"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 2},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   2,
+		PrefixTokens: 2,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index != 0 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			snapshot := kvSnapshotBlockTestSnapshot(0, []int32{1, 2})
+			head := &snapshot.Layers[0].Heads[0]
+			head.KeyDType = DTypeBFloat16
+			head.ValueDType = DTypeBFloat16
+			head.KeyBytes = bf16Bytes(head.Key)
+			head.ValueBytes = bf16Bytes(head.Value)
+			head.Key = nil
+			head.Value = nil
+			return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks(raw-only) error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 || cache.kPages[0].Dtype() != DTypeBFloat16 {
+		t.Fatalf("restored cache mode/pages/dtype = %q/%d/%v, want paged bf16", cache.mode, len(cache.kPages), cache.kPages[0].Dtype())
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksCoalescesPagedPages_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksCoalescesPagedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 4},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index < 0 || index > 1 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			tokens := []int32{int32(index*2 + 1), int32(index*2 + 2)}
+			snapshot := kvSnapshotBlockTestSnapshot(index*2, tokens)
+			return KVSnapshotBlock{Index: index, TokenStart: index * 2, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 {
+		t.Fatalf("restored cache mode/pages = %q/%d, want paged single coalesced page", cache.mode, len(cache.kPages))
+	}
+	if got := pagedArrayLen(cache.kPages[0]); got != 4 {
+		t.Fatalf("coalesced page length = %d, want 4", got)
+	}
+	keys, values, err := cacheSnapshotFloatArrays(cache)
+	if err != nil {
+		t.Fatalf("cacheSnapshotFloatArrays() error = %v", err)
+	}
+	defer Free(keys, values)
+	if err := Eval(keys, values); err != nil {
+		t.Fatalf("Eval coalesced cache: %v", err)
+	}
+	if got := keys.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("coalesced keys = %v, want [1 2 3 4]", got)
+	}
+	if got := values.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("coalesced values = %v, want [1 2 3 4]", got)
+	}
+}
+
+func TestPromptCache_RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 4},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index < 0 || index > 1 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			tokens := []int32{int32(index*2 + 1), int32(index*2 + 2)}
+			snapshot := kvSnapshotBlockTestSnapshot(index*2, tokens)
+			duplicate := snapshot.Layers[0]
+			duplicate.Layer = 1
+			duplicate.CacheIndex = 0
+			duplicate.Heads = cloneKVSnapshotHeads(duplicate.Heads)
+			snapshot.Layers = append(snapshot.Layers, duplicate)
+			return KVSnapshotBlock{Index: index, TokenStart: index * 2, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.length != 4 || cache.offset != 4 {
+		t.Fatalf("cache length/offset = %d/%d, want 4/4", cache.length, cache.offset)
+	}
+	keys, values, err := cacheSnapshotFloatArrays(cache)
+	if err != nil {
+		t.Fatalf("cacheSnapshotFloatArrays() error = %v", err)
+	}
+	defer Free(keys, values)
+	if err := Eval(keys, values); err != nil {
+		t.Fatalf("Eval duplicate cache: %v", err)
+	}
+	if got := keys.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("deduped keys = %v, want [1 2 3 4]", got)
+	}
+	if got := values.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("deduped values = %v, want [1 2 3 4]", got)
+	}
+}
+
+type fakePagedModel struct {
+	numLayers    int
+	pageSize     int
+	forwardCalls int
+}
+
+func (f *fakePagedModel) Forward(_ *Array, _ []Cache) *Array {
+	f.forwardCalls++
+	return Zeros([]int32{1, 1, 8}, DTypeFloat32)
+}
+func (f *fakePagedModel) ForwardMasked(_ *Array, _ *Array, _ []Cache) *Array { return nil }
+func (f *fakePagedModel) NewCache() []Cache {
+	caches := make([]Cache, f.numLayers)
+	for i := range caches {
+		caches[i] = NewPagedKVCache(0, f.pageSize)
+	}
+	return caches
+}
+func (f *fakePagedModel) NumLayers() int                      { return f.numLayers }
+func (f *fakePagedModel) Tokenizer() *Tokenizer               { return nil }
+func (f *fakePagedModel) ModelType() string                   { return "fake" }
+func (f *fakePagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func kvSnapshotBlockTestSnapshot(tokenStart int, tokens []int32) *KVSnapshot {
+	values := make([]float32, len(tokens))
+	for i := range tokens {
+		values[i] = float32(tokenStart + i + 1)
+	}
+	return &KVSnapshot{
+		Version:      KVSnapshotVersion,
+		Architecture: "fake",
+		Tokens:       append([]int32(nil), tokens...),
+		TokenOffset:  tokenStart + len(tokens),
+		NumLayers:    1,
+		NumHeads:     1,
+		SeqLen:       len(tokens),
+		HeadDim:      1,
+		Layers: []KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []KVHeadSnapshot{{
+				Key:   append([]float32(nil), values...),
+				Value: append([]float32(nil), values...),
+			}},
+		}},
+	}
+}
+
+func bf16Bytes(values []float32) []byte {
+	out := make([]byte, 0, len(values)*2)
+	var buf [2]byte
+	for _, value := range values {
+		binary.LittleEndian.PutUint16(buf[:], uint16(math.Float32bits(value)>>16))
+		out = append(out, buf[:]...)
+	}
+	return out
+}

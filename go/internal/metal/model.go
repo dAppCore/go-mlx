@@ -37,6 +37,13 @@ type InternalModel interface {
 	ApplyLoRA(cfg LoRAConfig) *LoRAAdapter
 }
 
+// LastTokenLogitsModel is an optional fast prefill path for architectures that
+// can project only the final sequence position instead of allocating
+// [batch, sequence, vocab] logits for long context warmup.
+type LastTokenLogitsModel interface {
+	ForwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) *Array
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int `json:"group_size"`
@@ -121,6 +128,8 @@ func probeModelType(data []byte) (string, error) {
 			return "qwen2", nil
 		case core.Contains(arch, "Llama"):
 			return "llama", nil
+		case core.Contains(arch, "MiniMaxM2"):
+			return "minimax_m2", nil
 		}
 	}
 	return "", nil
@@ -132,6 +141,8 @@ func normalizeProbeModelType(value string) string {
 	switch value {
 	case "qwen3_5":
 		return "qwen3_next"
+	case "minimaxm2", "minimax_m2":
+		return "minimax_m2"
 	default:
 		return value
 	}
@@ -182,7 +193,8 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
-// "qwen3", "qwen3_next", "qwen3_moe", "qwen2", and "llama".
+// "qwen3", "qwen3_next", "qwen3_moe", "qwen2", "llama", and recognized
+// staged architectures such as "minimax_m2".
 func loadModel(modelPath string) (InternalModel, error) {
 	root := resolveModelRoot(modelPath)
 	str, err := coreio.Local.Read(core.JoinPath(root, "config.json"))
@@ -205,6 +217,12 @@ func loadModel(modelPath string) (InternalModel, error) {
 		return loadGemma4TextModel(modelPath)
 	case "gemma4":
 		return loadGemma4MultiModalModel(modelPath)
+	case "minimax_m2":
+		model, err := loadMiniMaxM2StagedModel(modelPath, data)
+		if err != nil {
+			return nil, core.E("model.loadModel", "validate minimax_m2 native load", err)
+		}
+		return model, nil
 	default:
 		return nil, core.E("model.loadModel", "unsupported architecture: "+modelType, nil)
 	}

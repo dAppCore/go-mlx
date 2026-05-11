@@ -853,32 +853,6 @@ func inferGemma4PerLayerInputSize(weights map[string]*Array, numHiddenLayers int
 	if numHiddenLayers <= 0 {
 		return 0
 	}
-	if w := gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight"); w != nil {
-		shape := w.Shape()
-		switch len(shape) {
-		case 2:
-			if shape[1]%numHiddenLayers == 0 {
-				return shape[1] / numHiddenLayers
-			}
-		case 3:
-			if shape[1] == numHiddenLayers {
-				return shape[2]
-			}
-			if shape[2] == numHiddenLayers {
-				return shape[1]
-			}
-		default:
-			if len(shape) > 1 {
-				featureSize := int32(1)
-				for _, dim := range shape[1:] {
-					featureSize *= dim
-				}
-				if featureSize%numHiddenLayers == 0 {
-					return featureSize / numHiddenLayers
-				}
-			}
-		}
-	}
 	if w := gemma4WeightAny(weights, "model.per_layer_model_projection.weight"); w != nil {
 		shape := w.Shape()
 		if len(shape) >= 2 {
@@ -902,6 +876,32 @@ func inferGemma4PerLayerInputSize(weights map[string]*Array, numHiddenLayers int
 			shape := w.Shape()
 			if len(shape) >= 2 && shape[len(shape)-1] > 0 {
 				return shape[len(shape)-1]
+			}
+		}
+	}
+	if w := gemma4WeightAny(weights, "model.embed_tokens_per_layer.weight"); w != nil {
+		shape := w.Shape()
+		switch len(shape) {
+		case 2:
+			if shape[1]%numHiddenLayers == 0 {
+				return shape[1] / numHiddenLayers
+			}
+		case 3:
+			if shape[1] == numHiddenLayers {
+				return shape[2]
+			}
+			if shape[2] == numHiddenLayers {
+				return shape[1]
+			}
+		default:
+			if len(shape) > 1 {
+				featureSize := int32(1)
+				for _, dim := range shape[1:] {
+					featureSize *= dim
+				}
+				if featureSize%numHiddenLayers == 0 {
+					return featureSize / numHiddenLayers
+				}
 			}
 		}
 	}
@@ -1200,10 +1200,10 @@ func gemma4MaterializeRetainedWeights(retained map[*Array]struct{}) {
 
 func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 	if m.Norm != nil {
-		m.NormScaled = AddScalar(m.Norm.Weight, 1.0)
+		m.NormScaled = Copy(m.Norm.Weight)
 	}
 	if m.PerLayerProjNorm != nil && m.PerLayerProjNorm.Weight != nil {
-		m.PerLayerProjNormScaled = AddScalar(m.PerLayerProjNorm.Weight, 1.0)
+		m.PerLayerProjNormScaled = Copy(m.PerLayerProjNorm.Weight)
 	}
 
 	var scaled []*Array
@@ -1211,35 +1211,35 @@ func precomputeGemma4ScaledWeights(m *Gemma4Model) {
 
 	for _, layer := range m.Layers {
 		if layer.InputNorm != nil && layer.InputNorm.Weight != nil {
-			layer.InputNormScaled = AddScalar(layer.InputNorm.Weight, 1.0)
+			layer.InputNormScaled = Copy(layer.InputNorm.Weight)
 		}
 		if layer.PostAttnNorm != nil && layer.PostAttnNorm.Weight != nil {
-			layer.PostAttnNormScaled = AddScalar(layer.PostAttnNorm.Weight, 1.0)
+			layer.PostAttnNormScaled = Copy(layer.PostAttnNorm.Weight)
 		}
 		if layer.PreFFNorm != nil && layer.PreFFNorm.Weight != nil {
-			layer.PreFFNormScaled = AddScalar(layer.PreFFNorm.Weight, 1.0)
+			layer.PreFFNormScaled = Copy(layer.PreFFNorm.Weight)
 		}
 		if layer.PostFFNorm != nil && layer.PostFFNorm.Weight != nil {
-			layer.PostFFNormScaled = AddScalar(layer.PostFFNorm.Weight, 1.0)
+			layer.PostFFNormScaled = Copy(layer.PostFFNorm.Weight)
 		}
 		if layer.PreFFNorm2 != nil && layer.PreFFNorm2.Weight != nil {
-			layer.PreFFNorm2Scaled = AddScalar(layer.PreFFNorm2.Weight, 1.0)
+			layer.PreFFNorm2Scaled = Copy(layer.PreFFNorm2.Weight)
 		}
 		if layer.PostFFNorm1 != nil && layer.PostFFNorm1.Weight != nil {
-			layer.PostFFNorm1Scaled = AddScalar(layer.PostFFNorm1.Weight, 1.0)
+			layer.PostFFNorm1Scaled = Copy(layer.PostFFNorm1.Weight)
 		}
 		if layer.PostFFNorm2 != nil && layer.PostFFNorm2.Weight != nil {
-			layer.PostFFNorm2Scaled = AddScalar(layer.PostFFNorm2.Weight, 1.0)
+			layer.PostFFNorm2Scaled = Copy(layer.PostFFNorm2.Weight)
 		}
 		if layer.PostPerLayerInputNorm != nil && layer.PostPerLayerInputNorm.Weight != nil {
-			layer.PostPerLayerInputNormScaled = AddScalar(layer.PostPerLayerInputNorm.Weight, 1.0)
+			layer.PostPerLayerInputNormScaled = Copy(layer.PostPerLayerInputNorm.Weight)
 		}
 		if layer.Attention != nil {
 			if layer.Attention.QNorm != nil && layer.Attention.QNorm.Weight != nil {
-				layer.Attention.QNormScaled = AddScalar(layer.Attention.QNorm.Weight, 1.0)
+				layer.Attention.QNormScaled = Copy(layer.Attention.QNorm.Weight)
 			}
 			if layer.Attention.KNorm != nil && layer.Attention.KNorm.Weight != nil {
-				layer.Attention.KNormScaled = AddScalar(layer.Attention.KNorm.Weight, 1.0)
+				layer.Attention.KNormScaled = Copy(layer.Attention.KNorm.Weight)
 			}
 			scaled = append(scaled, layer.Attention.QNormScaled, layer.Attention.KNormScaled, layer.Attention.RopeFreqs)
 		}
@@ -1604,6 +1604,29 @@ func buildGemma4SlidingMask(batchSize, seqLen, window int32) *Array {
 	return FromValues(data, int(batchSize), 1, int(seqLen), int(seqLen))
 }
 
+func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, window int32) *Array {
+	negInf := float32(math.Inf(-1))
+	data := make([]float32, int(batchSize)*int(queryLen)*int(keyLen))
+	for b := range batchSize {
+		base := int(b) * int(queryLen) * int(keyLen)
+		for i := range queryLen {
+			queryPos := offset + i
+			for j := range keyLen {
+				allowed := j <= queryPos
+				if window > 0 && allowed {
+					allowed = queryPos-j < window
+				}
+				if allowed {
+					data[base+int(i)*int(keyLen)+int(j)] = 0
+				} else {
+					data[base+int(i)*int(keyLen)+int(j)] = negInf
+				}
+			}
+		}
+	}
+	return FromValues(data, int(batchSize), 1, int(queryLen), int(keyLen))
+}
+
 func gemma4CombineMasks(base, extra *Array) *Array {
 	if base == nil {
 		return extra
@@ -1622,6 +1645,93 @@ func (m *Gemma4Model) Forward(tokens *Array, caches []Cache) *Array {
 
 // ForwardMasked runs the forward pass with an explicit attention mask.
 func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
+	h, _, _ := m.forwardHidden(tokens, mask, caches)
+	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
+	out := m.Output.Forward(normed)
+	Free(h, normed)
+	if m.Cfg.FinalLogitSoftcapping > 0 {
+		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
+		Free(out)
+		out = softcapped
+	}
+	return out
+}
+
+// ForwardLastTokenLogits runs prefill while projecting only the final sequence
+// position. Long local-context warmup needs KV cache updates for every token,
+// but generation only consumes logits from the last token; avoiding full
+// [sequence, vocab] logits keeps Gemma 4 prefill inside Apple memory limits.
+func (m *Gemma4Model) ForwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) *Array {
+	h, _, L := m.forwardHidden(tokens, mask, caches)
+	h = gemma4LastSequenceHidden(h, L)
+	h = gemma4ProjectionHidden(h)
+	h = gemma4ContiguousHidden(h)
+	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
+	out := m.Output.Forward(normed)
+	Free(h, normed)
+	if m.Cfg.FinalLogitSoftcapping > 0 {
+		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
+		Free(out)
+		out = softcapped
+	}
+	return out
+}
+
+func gemma4LastSequenceHidden(h *Array, seqLen int32) *Array {
+	if h == nil || !h.Valid() || seqLen <= 1 {
+		return h
+	}
+	ndim := h.NumDims()
+	var axis int
+	switch {
+	case ndim >= 3:
+		axis = ndim - 2
+	case ndim == 2:
+		axis = 0
+	default:
+		return h
+	}
+	dim := h.Dim(axis)
+	if dim <= 1 {
+		return h
+	}
+	start := int32(dim - 1)
+	if seqLen > 0 && seqLen <= int32(dim) {
+		start = seqLen - 1
+	}
+	last := SliceAxis(h, axis, start, start+1)
+	Free(h)
+	return last
+}
+
+func gemma4ProjectionHidden(h *Array) *Array {
+	if h == nil || !h.Valid() {
+		return h
+	}
+	switch h.NumDims() {
+	case 1:
+		out := Reshape(h, 1, 1, int32(h.Dim(0)))
+		Free(h)
+		return out
+	case 2:
+		out := Reshape(h, 1, int32(h.Dim(0)), int32(h.Dim(1)))
+		Free(h)
+		return out
+	default:
+		return h
+	}
+}
+
+func gemma4ContiguousHidden(h *Array) *Array {
+	if h == nil || !h.Valid() || h.IsRowContiguous() {
+		return h
+	}
+	out := Contiguous(h)
+	Free(h)
+	return out
+}
+
+func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) (*Array, int32, int32) {
 	m.ensureCacheLayout()
 
 	shape := tokens.Shape()
@@ -1690,16 +1800,7 @@ func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) 
 			kv.free()
 		}
 	}()
-
-	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
-	out := m.Output.Forward(normed)
-	Free(h, normed)
-	if m.Cfg.FinalLogitSoftcapping > 0 {
-		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
-		Free(out)
-		out = softcapped
-	}
-	return out
+	return h, B, L
 }
 
 func logitSoftcap(x *Array, softcap float32) *Array {
@@ -1715,7 +1816,11 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 	residual := x
 
 	normed := RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
-	attnOut, kv := l.Attention.forward(normed, c, B, L, mask, prev, cfg)
+	window := int32(0)
+	if l.IsSliding {
+		window = cfg.SlidingWindow
+	}
+	attnOut, kv := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window)
 	Free(normed)
 	attnNormed := RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
 	Free(attnOut)
@@ -1787,7 +1892,7 @@ func (a *Gemma4Attention) applyRoPE(x *Array, offset int) *Array {
 	return RoPE(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offset)
 }
 
-func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig) (*Array, sharedKV) {
+func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32) (*Array, sharedKV) {
 	qProj := a.QProj.Forward(x)
 	q := AsStrided(qProj, []int32{B, cfg.NumAttentionHeads, L, a.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * a.HeadDim), int64(a.HeadDim), int64(cfg.NumAttentionHeads * a.HeadDim), 1}, 0)
@@ -1872,11 +1977,17 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			repeated = true
 		}
 
+		var cachedMask *Array
+		if offset > 0 && L > 1 {
+			cachedMask = buildGemma4CachedAttentionMask(B, L, int32(kAttn.Dim(2)), int32(offset), window)
+			mask = cachedMask
+		}
 		if mask != nil {
 			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, a.Scale)
 		} else {
 			out = ScaledDotProductAttention(q, kAttn, vAttn, a.Scale, L > 1)
 		}
+		Free(cachedMask)
 		if repeated {
 			Free(kAttn, vAttn)
 		}

@@ -7,7 +7,7 @@ import (
 	"math"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/pkg/memvid"
+	memvid "dappco.re/go/inference/state"
 )
 
 const sessionArtifactKind = "go-mlx/session-state"

@@ -6,6 +6,10 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	core "dappco.re/go"
+	memvid "dappco.re/go/inference/state"
+	filestore "dappco.re/go/inference/state/filestore"
 )
 
 func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing.T) {
@@ -93,6 +97,15 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 		IncludeAdapterFuse:  true,
 		IncludePerplexity:   true,
 		IncludeKVCacheBench: true,
+		QuantizationProfile: BuildJANGPackedQuantizationProfile(&JANGQuantizationInfo{
+			WeightFormat:     "mxtq",
+			Profile:          "JANGTQ",
+			Method:           "affine+mxtq",
+			GroupSize:        64,
+			BitsDefault:      2,
+			RoutedExpertBits: 2,
+			AttentionBits:    8,
+		}),
 		EvalSamples: []WorkloadEvalSample{
 			{Prompt: "a", Response: "b"},
 			{Text: "plain eval text"},
@@ -121,6 +134,9 @@ func TestRunWorkloadBench_AggregatesFastEvalAdapterAndPerplexity_Good(t *testing
 	}
 	if report.KVCache.Version != KVCacheBenchReportVersion || report.KVCache.RecommendedMode == "" {
 		t.Fatalf("KV cache report = %+v, want populated mode comparison", report.KVCache)
+	}
+	if report.QuantizationProfile == nil || report.QuantizationProfile.Type != "jangtq" || report.QuantizationProfile.RoleBits[string(JANGTensorRoleRoutedExpert)] != 2 {
+		t.Fatalf("quantization profile = %+v, want JANGTQ bench metadata", report.QuantizationProfile)
 	}
 	if report.Summary.PrefillTokensPerSec != 200 || report.Summary.DecodeTokensPerSec != 75 || report.Summary.PeakMemoryBytes != 8<<20 {
 		t.Fatalf("summary = %+v, want fast-eval throughput and memory mirrored", report.Summary)
@@ -170,6 +186,151 @@ func TestRunWorkloadBench_UsesDatasetEvalReport_Good(t *testing.T) {
 	}
 	if !evalQualityPassed(report.Evaluation.Quality, "perplexity_finite") {
 		t.Fatalf("quality = %+v", report.Evaluation.Quality.Checks)
+	}
+}
+
+func TestRunWorkloadBench_SummarizesMemvidKVBlockWarm_Good(t *testing.T) {
+	warmed := false
+	storePath := core.PathJoin(t.TempDir(), "bench-kv-blocks.mvlog")
+	runner := WorkloadBenchRunner{
+		FastEval: FastEvalRunner{
+			Generate: func(_ context.Context, prompt string, cfg GenerateConfig) (FastEvalGeneration, error) {
+				metrics := Metrics{
+					PromptTokens:          3,
+					GeneratedTokens:       cfg.MaxTokens,
+					PromptCacheMisses:     1,
+					PromptCacheMissTokens: 3,
+				}
+				if warmed && prompt == "stable prefix" {
+					metrics.PromptCacheHits = 1
+					metrics.PromptCacheMisses = 0
+					metrics.PromptCacheHitTokens = 2
+					metrics.PromptCacheMissTokens = 1
+				}
+				return FastEvalGeneration{Text: "ok", Metrics: metrics}, nil
+			},
+			CaptureKV: func(context.Context, string) (*KVSnapshot, error) {
+				return fastEvalTestSnapshot(), nil
+			},
+			WarmPromptCacheFromMemvidBlocks: func(ctx context.Context, store memvid.Store, bundle *KVSnapshotMemvidBlockBundle, prefixTokens int) error {
+				if _, err := LoadKVSnapshotPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens); err != nil {
+					return err
+				}
+				warmed = true
+				return nil
+			},
+		},
+	}
+
+	report, err := RunWorkloadBench(context.Background(), runner, WorkloadBenchConfig{
+		FastEval: FastEvalConfig{
+			Prompt:                      "baseline",
+			CachePrompt:                 "stable prefix",
+			MaxTokens:                   1,
+			Runs:                        1,
+			IncludeMemvidKVBlockWarm:    true,
+			MemvidKVBlockSize:           2,
+			MemvidKVPrefixTokens:        3,
+			MemvidKVBlockStorePath:      storePath,
+			IncludePromptCache:          false,
+			IncludeKVRestore:            false,
+			IncludeStateBundleRoundTrip: false,
+			IncludeProbeOverhead:        false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunWorkloadBench() error = %v", err)
+	}
+
+	if report.Summary.PromptCacheSource != filestore.CodecFile || report.Summary.MemvidKVBlocksRead != 2 {
+		t.Fatalf("summary cache fields = %+v, want memvid source and two blocks read", report.Summary)
+	}
+	if report.Summary.MemvidKVBlockStorePath != storePath || report.Summary.MemvidKVBlockStoreBytes <= 0 {
+		t.Fatalf("summary file store = path %q bytes %d, want file-backed store", report.Summary.MemvidKVBlockStorePath, report.Summary.MemvidKVBlockStoreBytes)
+	}
+	if report.Summary.PromptTokensAvoided != 2 || report.Summary.PromptCacheReplayTokens != 1 || report.Summary.PromptCacheExactFallbackReplayTokens != 1 {
+		t.Fatalf("summary token fields = %+v, want avoided=2 replay=1 exact=1", report.Summary)
+	}
+	if report.Summary.MemvidKVBlockRestoreDuration <= 0 {
+		t.Fatalf("summary restore duration = %v, want measured duration", report.Summary.MemvidKVBlockRestoreDuration)
+	}
+}
+
+func TestRunWorkloadBench_SummarizesDecodeOptimisations_Good(t *testing.T) {
+	runner := WorkloadBenchRunner{
+		FastEval: FastEvalRunner{
+			Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+				return FastEvalGeneration{
+					Tokens:  []Token{{ID: 1, Text: "A"}, {ID: 2, Text: "B"}},
+					Metrics: Metrics{GeneratedTokens: 2, DecodeTokensPerSec: 20},
+				}, nil
+			},
+			DraftGenerate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+				return FastEvalGeneration{Tokens: []Token{{ID: 1, Text: "A"}, {ID: 9, Text: "?"}}}, nil
+			},
+		},
+	}
+
+	report, err := RunWorkloadBench(context.Background(), runner, WorkloadBenchConfig{
+		FastEval: FastEvalConfig{
+			Prompt:                    "baseline",
+			MaxTokens:                 2,
+			Runs:                      1,
+			IncludeSpeculativeDecode:  true,
+			SpeculativeDraftTokens:    2,
+			IncludePromptLookupDecode: true,
+			PromptLookupTokens:        []Token{{ID: 1, Text: "A"}, {ID: 9, Text: "?"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunWorkloadBench() error = %v", err)
+	}
+	if report.Summary.SpeculativeAcceptedTokens != 1 || report.Summary.SpeculativeAcceptanceRate != 0.5 {
+		t.Fatalf("summary speculative = %+v, want one accepted at 0.5", report.Summary)
+	}
+	if report.Summary.PromptLookupAcceptedTokens != 1 || report.Summary.PromptLookupAcceptanceRate != 0.5 {
+		t.Fatalf("summary prompt lookup = %+v, want one accepted at 0.5", report.Summary)
+	}
+}
+
+func TestRunWorkloadBench_SummarizesExpertResidency_Good(t *testing.T) {
+	runner := WorkloadBenchRunner{
+		FastEval: FastEvalRunner{
+			Generate: func(context.Context, string, GenerateConfig) (FastEvalGeneration, error) {
+				return FastEvalGeneration{Text: "ok", Metrics: Metrics{GeneratedTokens: 1, DecodeTokensPerSec: 20}}, nil
+			},
+		},
+		MeasureExpertResidency: func(context.Context, ExpertResidencyPlan) (ExpertResidencyStats, error) {
+			return ExpertResidencyStats{
+				ResidentExperts:     4,
+				PeakResidentExperts: 6,
+				PageIns:             3,
+				PageOuts:            1,
+				LoadedBytes:         2048,
+				EvictedBytes:        512,
+				FirstUseLatency:     5,
+				TotalLoadDuration:   9,
+			}, nil
+		},
+	}
+
+	report, err := RunWorkloadBench(context.Background(), runner, WorkloadBenchConfig{
+		FastEval:               FastEvalConfig{Prompt: "baseline", MaxTokens: 1, Runs: 1},
+		IncludeExpertResidency: true,
+		ExpertResidency: ExpertResidencyPlan{
+			Enabled:            true,
+			Mode:               ExpertResidencyModeLazy,
+			MaxResidentExperts: 8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunWorkloadBench() error = %v", err)
+	}
+	if !report.ExpertResidency.Attempted || report.ExpertResidency.Stats.PageIns != 3 {
+		t.Fatalf("expert residency report = %+v, want attempted stats", report.ExpertResidency)
+	}
+	if report.Summary.ExpertResidencyPageIns != 3 || report.Summary.ExpertResidencyFirstUseLatency != 5 || report.Summary.ExpertResidencyLoadedBytes != 2048 {
+		t.Fatalf("summary expert residency = %+v, want page-ins/latency/bytes", report.Summary)
 	}
 }
 
@@ -233,5 +394,119 @@ func TestWorkloadBench_NewModelWorkloadBenchRunner_Ugly(t *testing.T) {
 	runner := NewModelWorkloadBenchRunner(&Model{})
 	if runner.FastEval.Generate == nil || runner.LoadAdapter == nil || runner.FuseAdapter == nil {
 		t.Fatalf("runner = %+v, want fast eval and adapter hooks", runner)
+	}
+}
+
+func TestWorkloadBenchOptionalErrorBranches_Bad(t *testing.T) {
+	var adapterReport WorkloadAdapterReport
+	if adapter := runWorkloadAdapterLoad(context.Background(), WorkloadBenchRunner{}, WorkloadBenchConfig{}, &adapterReport); adapter.Path != "" || adapterReport.Load.Error == "" {
+		t.Fatalf("adapter load without path = %+v report=%+v, want error", adapter, adapterReport)
+	}
+	adapterReport = WorkloadAdapterReport{}
+	if adapter := runWorkloadAdapterLoad(context.Background(), WorkloadBenchRunner{}, WorkloadBenchConfig{AdapterPath: "/adapters/a"}, &adapterReport); adapter.Path != "" || adapterReport.Load.Error == "" {
+		t.Fatalf("adapter load unsupported = %+v report=%+v, want error", adapter, adapterReport)
+	}
+	adapterReport = WorkloadAdapterReport{}
+	adapter := runWorkloadAdapterLoad(context.Background(), WorkloadBenchRunner{
+		LoadAdapter: func(context.Context, string) (WorkloadAdapterInfo, error) {
+			return WorkloadAdapterInfo{}, core.NewError("load failed")
+		},
+	}, WorkloadBenchConfig{AdapterPath: "/adapters/a"}, &adapterReport)
+	if adapter.Path != "" || adapterReport.Load.Error == "" || adapterReport.Load.Duration <= 0 {
+		t.Fatalf("adapter load failure = %+v report=%+v, want timed error", adapter, adapterReport)
+	}
+
+	runWorkloadAdapterFuse(context.Background(), WorkloadBenchRunner{}, WorkloadAdapterInfo{}, nil)
+	adapterReport = WorkloadAdapterReport{Load: WorkloadLatencyReport{Error: "load failed"}}
+	runWorkloadAdapterFuse(context.Background(), WorkloadBenchRunner{}, WorkloadAdapterInfo{}, &adapterReport)
+	if adapterReport.Fuse.Error == "" {
+		t.Fatalf("fuse after failed load report = %+v, want error", adapterReport)
+	}
+	adapterReport = WorkloadAdapterReport{}
+	runWorkloadAdapterFuse(context.Background(), WorkloadBenchRunner{}, WorkloadAdapterInfo{}, &adapterReport)
+	if adapterReport.Fuse.Error == "" {
+		t.Fatalf("fuse without adapter report = %+v, want error", adapterReport)
+	}
+	adapterReport = WorkloadAdapterReport{}
+	runWorkloadAdapterFuse(context.Background(), WorkloadBenchRunner{}, WorkloadAdapterInfo{Path: "/adapters/a"}, &adapterReport)
+	if adapterReport.Fuse.Error == "" {
+		t.Fatalf("fuse unsupported report = %+v, want error", adapterReport)
+	}
+	adapterReport = WorkloadAdapterReport{}
+	runWorkloadAdapterFuse(context.Background(), WorkloadBenchRunner{
+		FuseAdapter: func(context.Context, WorkloadAdapterInfo) error {
+			return core.NewError("fuse failed")
+		},
+	}, WorkloadAdapterInfo{Path: "/adapters/a"}, &adapterReport)
+	if adapterReport.Fuse.Error == "" || adapterReport.Fuse.Duration <= 0 {
+		t.Fatalf("fuse failure report = %+v, want timed error", adapterReport)
+	}
+
+	if report := runWorkloadEvaluation(context.Background(), WorkloadBenchRunner{}, WorkloadBenchConfig{IncludePerplexity: true}); report.Error == "" {
+		t.Fatalf("perplexity unsupported report = %+v, want error", report)
+	}
+	if report := runWorkloadEvaluation(context.Background(), WorkloadBenchRunner{
+		EvaluatePerplexity: func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error) {
+			return WorkloadEvalMetrics{}, nil
+		},
+	}, WorkloadBenchConfig{IncludePerplexity: true}); report.Error == "" {
+		t.Fatalf("perplexity no samples report = %+v, want error", report)
+	}
+	if report := runWorkloadEvaluation(context.Background(), WorkloadBenchRunner{
+		EvaluatePerplexity: func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error) {
+			return WorkloadEvalMetrics{}, core.NewError("eval failed")
+		},
+	}, WorkloadBenchConfig{IncludePerplexity: true, EvalSamples: []WorkloadEvalSample{{Text: "sample"}}}); report.Error == "" || report.Duration <= 0 {
+		t.Fatalf("perplexity failure report = %+v, want timed error", report)
+	}
+	if report := runWorkloadExpertResidency(context.Background(), WorkloadBenchRunner{}, WorkloadBenchConfig{IncludeExpertResidency: true}); report.Error == "" {
+		t.Fatalf("expert unsupported report = %+v, want error", report)
+	}
+	if report := runWorkloadExpertResidency(context.Background(), WorkloadBenchRunner{
+		MeasureExpertResidency: func(context.Context, ExpertResidencyPlan) (ExpertResidencyStats, error) {
+			return ExpertResidencyStats{}, core.NewError("residency failed")
+		},
+	}, WorkloadBenchConfig{IncludeExpertResidency: true}); report.Error == "" || report.Duration <= 0 {
+		t.Fatalf("expert failure report = %+v, want timed error", report)
+	}
+}
+
+func TestWorkloadBenchHelpers_Good(t *testing.T) {
+	if summary := summarizeWorkloadBench(nil); summary != (WorkloadBenchSummary{}) {
+		t.Fatalf("summarizeWorkloadBench(nil) = %+v, want zero summary", summary)
+	}
+	evalMetrics := workloadEvalMetricsFromEval(EvalMetrics{Samples: 2, Tokens: 7, Loss: 1.5, Perplexity: 4.4})
+	if evalMetrics.Samples != 2 || evalMetrics.Tokens != 7 || evalMetrics.Perplexity != 4.4 {
+		t.Fatalf("workload eval metrics = %+v, want copied metrics", evalMetrics)
+	}
+	adapter := workloadAdapterInfo("/adapters/domain", &LoRAAdapter{})
+	if adapter.Name != "domain" || adapter.Path != "/adapters/domain" {
+		t.Fatalf("workload adapter info = %+v, want adapter path/name metadata", adapter)
+	}
+	cloned := cloneWorkloadAdapterInfo(adapter)
+	cloned.TargetKeys = []string{"mutated"}
+	if len(adapter.TargetKeys) != 0 {
+		t.Fatalf("adapter target keys were aliased: %+v", adapter.TargetKeys)
+	}
+	samples := []WorkloadEvalSample{{Text: "sample", Meta: map[string]string{"id": "1"}}}
+	clonedSamples := cloneWorkloadEvalSamples(samples)
+	clonedSamples[0].Meta["id"] = "2"
+	if samples[0].Meta["id"] != "1" {
+		t.Fatalf("eval sample metadata was aliased: %+v", samples[0].Meta)
+	}
+	if cloneWorkloadEvalSamples(nil) != nil {
+		t.Fatal("cloneWorkloadEvalSamples(nil) != nil")
+	}
+	if nonZeroDuration(0) <= 0 || nonZeroDuration(time.Millisecond) != time.Millisecond {
+		t.Fatal("nonZeroDuration() did not preserve positive durations")
+	}
+
+	report := runWorkloadEvaluation(context.Background(), WorkloadBenchRunner{
+		EvaluatePerplexity: func(context.Context, []WorkloadEvalSample) (WorkloadEvalMetrics, error) {
+			return WorkloadEvalMetrics{Loss: 1}, nil
+		},
+	}, WorkloadBenchConfig{EvalSamples: []WorkloadEvalSample{{Text: "sample"}}})
+	if report.Error != "" || report.Metrics.Samples != 1 || report.Metrics.Perplexity == 0 {
+		t.Fatalf("perplexity success report = %+v, want default sample count and exp(loss)", report)
 	}
 }

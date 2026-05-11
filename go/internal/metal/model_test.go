@@ -6,6 +6,7 @@ package metal
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	"dappco.re/go"
@@ -170,6 +171,228 @@ func TestModel_LoadModel_Qwen3MoERejectsSparseRouting_Bad(t *testing.T) {
 	}
 }
 
+func TestModel_LoadModel_MiniMaxJANGStagedLoader_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "minimax_m2",
+		"architectures": ["MiniMaxM2ForCausalLM"],
+		"hidden_size": 3072,
+		"intermediate_size": 1536,
+		"num_hidden_layers": 62,
+		"num_attention_heads": 48,
+		"num_key_value_heads": 8,
+		"head_dim": 128,
+		"vocab_size": 200064,
+		"max_position_embeddings": 1048576,
+		"num_local_experts": 256,
+		"num_experts_per_tok": 8,
+		"use_routing_bias": true
+	}`)
+	writeMinimalTokenizer(t, dir)
+	writeMiniMaxM2JANGConfig(t, dir)
+	writeMiniMaxM2SafetensorsHeader(t, core.JoinPath(dir, "model.safetensors"), miniMaxM2FirstLayerTensorNames(false))
+
+	model, err := loadModel(dir)
+	if err != nil {
+		t.Fatalf("loadModel(minimax_m2 staged fixture) error = %v", err)
+	}
+	if model.ModelType() != "minimax_m2" {
+		t.Fatalf("ModelType() = %q, want minimax_m2", model.ModelType())
+	}
+	if model.NumLayers() != 62 {
+		t.Fatalf("NumLayers() = %d, want 62", model.NumLayers())
+	}
+	if caches := model.NewCache(); caches != nil {
+		t.Fatalf("NewCache() = %#v, want nil until MiniMax decode kernels are linked", caches)
+	}
+	if model.Tokenizer() == nil {
+		t.Fatal("Tokenizer() = nil, want staged loader to expose tokenizer metadata")
+	}
+	info := (&Model{model: model, tokenizer: model.Tokenizer(), modelType: model.ModelType()}).Info()
+	if info.VocabSize != 200064 || info.HiddenSize != 3072 || info.ContextLength != 1048576 {
+		t.Fatalf("Info() = %+v, want MiniMax config metadata", info)
+	}
+	if info.QuantBits != 2 || info.QuantGroup != 64 {
+		t.Fatalf("Info() quant = %d/%d, want 2/64", info.QuantBits, info.QuantGroup)
+	}
+	staged, ok := model.(*miniMaxM2StagedModel)
+	if !ok {
+		t.Fatalf("model type = %T, want *miniMaxM2StagedModel", model)
+	}
+	if len(staged.plan.LayerSkeleton.Attention) != 4 || staged.plan.LayerSkeleton.RouterGate.Name == "" || staged.plan.LayerSkeleton.RouterBias == nil {
+		t.Fatalf("LayerSkeleton = %+v, want attention plus router metadata", staged.plan.LayerSkeleton)
+	}
+	if staged.plan.LayerSkeleton.Attention[0].PackedBytes == 0 {
+		t.Fatalf("LayerSkeleton attention = %+v, want packed byte metadata", staged.plan.LayerSkeleton.Attention)
+	}
+	payloadRefs, err := staged.plan.ResolveExpertPayloadRefs(0, []int{0})
+	if err != nil {
+		t.Fatalf("ResolveExpertPayloadRefs() error = %v", err)
+	}
+	expert0 := payloadRefs[0]
+	if expert0.PackedBytes == 0 || expert0.GateProj.Path == "" || expert0.GateProj.DataStart <= 0 {
+		t.Fatalf("expert payload refs = %+v, want packed byte refs without payload loading", expert0)
+	}
+	if expert0.GateProj.ByteLen != 1179648 || expert0.UpProj.ByteLen != 1179648 || expert0.DownProj.ByteLen != 1179648 {
+		t.Fatalf("expert payload byte lengths = gate:%d up:%d down:%d, want JANGTQ packed expert refs", expert0.GateProj.ByteLen, expert0.UpProj.ByteLen, expert0.DownProj.ByteLen)
+	}
+}
+
+func TestModel_LoadModel_MiniMaxJANGMissingTokenizer_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "minimax_m2",
+		"architectures": ["MiniMaxM2ForCausalLM"],
+		"hidden_size": 3072,
+		"intermediate_size": 1536,
+		"num_hidden_layers": 62,
+		"num_attention_heads": 48,
+		"num_key_value_heads": 8,
+		"head_dim": 128,
+		"vocab_size": 200064,
+		"num_local_experts": 256,
+		"num_experts_per_tok": 8,
+		"use_routing_bias": true
+	}`)
+	writeMiniMaxM2JANGConfig(t, dir)
+	writeMiniMaxM2SafetensorsHeader(t, core.JoinPath(dir, "model.safetensors"), miniMaxM2FirstLayerTensorNames(false))
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected MiniMax staged loader tokenizer error")
+	}
+	if !core.Contains(err.Error(), "minimax_m2") || !core.Contains(err.Error(), "tokenizer") {
+		t.Fatalf("error = %v, want minimax_m2 tokenizer diagnostic", err)
+	}
+}
+
+func TestModel_LoadModel_MiniMaxJANGRuntimeGuardMissingTensor_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "minimax_m2",
+		"architectures": ["MiniMaxM2ForCausalLM"],
+		"hidden_size": 3072,
+		"intermediate_size": 1536,
+		"num_hidden_layers": 62,
+		"num_attention_heads": 48,
+		"num_key_value_heads": 8,
+		"head_dim": 128,
+		"vocab_size": 200064,
+		"num_local_experts": 256,
+		"num_experts_per_tok": 8,
+		"use_routing_bias": true
+	}`)
+	writeMiniMaxM2JANGConfig(t, dir)
+	writeMiniMaxM2SafetensorsHeader(t, core.JoinPath(dir, "model.safetensors"), miniMaxM2FirstLayerTensorNames(true))
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected MiniMax tensor validation error")
+	}
+	if !core.Contains(err.Error(), "minimax_m2") || !core.Contains(err.Error(), "up_proj") {
+		t.Fatalf("error = %v, want missing expert up_proj diagnostic", err)
+	}
+}
+
+func writeMiniMaxM2JANGConfig(t *testing.T, dir string) {
+	t.Helper()
+	if err := coreio.Local.Write(core.JoinPath(dir, "jang_config.json"), `{
+		"version": 1,
+		"weight_format": "mxtq",
+		"profile": "JANGTQ_K",
+		"mxtq_bits": {
+			"attention": 8,
+			"routed_expert": 2,
+			"embed_tokens": 8,
+			"lm_head": 8
+		},
+		"quantization": {
+			"method": "affine+mxtq",
+			"group_size": 64,
+			"bits_default": 2
+		}
+	}`); err != nil {
+		t.Fatalf("write jang_config.json: %v", err)
+	}
+}
+
+func miniMaxM2FirstLayerTensorNames(omitExpertUp bool) []string {
+	names := []string{
+		"model.layers.0.self_attn.q_proj.weight",
+		"model.layers.0.self_attn.k_proj.weight",
+		"model.layers.0.self_attn.v_proj.weight",
+		"model.layers.0.self_attn.o_proj.weight",
+		"model.layers.0.block_sparse_moe.gate.weight",
+		"model.layers.0.block_sparse_moe.e_score_correction_bias",
+		"model.layers.0.block_sparse_moe.experts.0.gate_proj.weight",
+		"model.layers.0.block_sparse_moe.experts.0.down_proj.weight",
+	}
+	if !omitExpertUp {
+		names = append(names, "model.layers.0.block_sparse_moe.experts.0.up_proj.weight")
+	}
+	return names
+}
+
+func writeMiniMaxM2SafetensorsHeader(t *testing.T, path string, names []string) {
+	t.Helper()
+	type entry struct {
+		DType       string `json:"dtype"`
+		Shape       []int  `json:"shape"`
+		DataOffsets [2]int `json:"data_offsets"`
+	}
+	header := map[string]entry{}
+	cursor := 0
+	for _, name := range names {
+		dtype, shape, byteLen := miniMaxM2TestSafetensorsTensorLayout(name)
+		header[name] = entry{DType: dtype, Shape: shape, DataOffsets: [2]int{cursor, cursor + byteLen}}
+		cursor += byteLen
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		t.Fatalf("marshal safetensors header: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+	copy(out[8:], headerBytes)
+	if result := core.WriteFile(path, out, 0o644); !result.OK {
+		t.Fatalf("write safetensors header: %v", result.Value)
+	}
+}
+
+func miniMaxM2TestSafetensorsTensorLayout(name string) (string, []int, int) {
+	const (
+		hidden       = 3072
+		qSize        = 6144
+		kvSize       = 1024
+		intermediate = 1536
+		experts      = 256
+	)
+	switch {
+	case core.Contains(name, "self_attn.q_proj.weight"):
+		bytes := qSize * hidden
+		return "U8", []int{bytes}, bytes
+	case core.Contains(name, "self_attn.k_proj.weight"), core.Contains(name, "self_attn.v_proj.weight"):
+		bytes := kvSize * hidden
+		return "U8", []int{bytes}, bytes
+	case core.Contains(name, "self_attn.o_proj.weight"):
+		bytes := hidden * qSize
+		return "U8", []int{bytes}, bytes
+	case core.Contains(name, "block_sparse_moe.gate.weight"):
+		return "F32", []int{experts, hidden}, experts * hidden * 4
+	case core.Contains(name, "e_score_correction_bias"):
+		return "F32", []int{experts}, experts * 4
+	case core.Contains(name, ".gate_proj.weight"), core.Contains(name, ".up_proj.weight"):
+		bytes := (intermediate * hidden * 2) / 8
+		return "U8", []int{bytes}, bytes
+	case core.Contains(name, ".down_proj.weight"):
+		bytes := (hidden * intermediate * 2) / 8
+		return "U8", []int{bytes}, bytes
+	default:
+		return "F32", []int{1}, 4
+	}
+}
+
 func TestModel_ProbeModelType_QwenFamilyArchitectures_Good(t *testing.T) {
 	cases := []struct {
 		name string
@@ -179,6 +402,7 @@ func TestModel_ProbeModelType_QwenFamilyArchitectures_Good(t *testing.T) {
 		{name: "moe", data: `{"architectures":["Qwen3MoeForCausalLM"]}`, want: "qwen3_moe"},
 		{name: "next", data: `{"architectures":["Qwen3NextForCausalLM"]}`, want: "qwen3_next"},
 		{name: "alias", data: `{"model_type":"qwen3_5"}`, want: "qwen3_next"},
+		{name: "minimax", data: `{"architectures":["MiniMaxM2ForCausalLM"]}`, want: "minimax_m2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

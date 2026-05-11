@@ -164,6 +164,26 @@ func (s *Store) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) 
 	}, nil
 }
 
+func (s *Store) ResolveURI(ctx context.Context, uri string) (memvid.Chunk, error) {
+	if core.Trim(uri) == "" {
+		return memvid.Chunk{}, &memvid.URIChunkNotFoundError{URI: uri}
+	}
+	view, err := s.viewURI(ctx, uri)
+	if err != nil {
+		return memvid.Chunk{}, err
+	}
+	return memvid.Chunk{
+		Ref: memvid.ChunkRef{
+			ChunkID:        int(view.Frame.ID),
+			FrameOffset:    view.Frame.ID,
+			HasFrameOffset: true,
+			Codec:          memvid.CodecQRVideo,
+			Segment:        s.path,
+		},
+		Text: view.text(),
+	}, nil
+}
+
 func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (memvid.ChunkRef, error) {
 	if err := s.ready(); err != nil {
 		return memvid.ChunkRef{}, err

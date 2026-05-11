@@ -227,6 +227,7 @@ func TestModelConfigProbe_CommonArchitectureNames_Good(t *testing.T) {
 		{architecture: "Qwen3ForCausalLM", want: "qwen3"},
 		{architecture: "Qwen2ForCausalLM", want: "qwen2"},
 		{architecture: "LlamaForCausalLM", want: "llama"},
+		{architecture: "MiniMaxM2ForCausalLM", want: "minimax_m2"},
 		{architecture: "UnknownForCausalLM", want: ""},
 	}
 

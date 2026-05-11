@@ -31,6 +31,9 @@ type BatchResult struct {
 //
 //	results, err := m.Classify(ctx, []string{"The capital of France is", "2+2="}, cfg, false)
 func (m *Model) Classify(ctx context.Context, prompts []string, cfg GenerateConfig, returnLogits bool) ([]ClassifyResult, error) {
+	if err := m.requireTextRuntime("Model.Classify"); err != nil {
+		return nil, err
+	}
 	var (
 		results []ClassifyResult
 		err     error
@@ -167,6 +170,9 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 //	results, err := m.BatchGenerate(ctx, []string{"The capital of France is", "2+2="}, cfg)
 //	for _, r := range results { fmt.Println(r.Tokens) }
 func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg GenerateConfig) ([]BatchResult, error) {
+	if err := m.requireTextRuntime("Model.BatchGenerate"); err != nil {
+		return nil, err
+	}
 	var (
 		results []BatchResult
 		err     error

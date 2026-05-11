@@ -8,16 +8,17 @@ import "sync"
 type ProbeEventKind string
 
 const (
-	ProbeEventToken          ProbeEventKind = "token"
-	ProbeEventLogits         ProbeEventKind = "logits"
-	ProbeEventEntropy        ProbeEventKind = "entropy"
-	ProbeEventSelectedHeads  ProbeEventKind = "selected_heads"
-	ProbeEventLayerCoherence ProbeEventKind = "layer_coherence"
-	ProbeEventRouterDecision ProbeEventKind = "router_decision"
-	ProbeEventResidual       ProbeEventKind = "residual_summary"
-	ProbeEventCachePressure  ProbeEventKind = "cache_pressure"
-	ProbeEventMemoryPressure ProbeEventKind = "memory_pressure"
-	ProbeEventTraining       ProbeEventKind = "training"
+	ProbeEventToken           ProbeEventKind = "token"
+	ProbeEventLogits          ProbeEventKind = "logits"
+	ProbeEventEntropy         ProbeEventKind = "entropy"
+	ProbeEventSelectedHeads   ProbeEventKind = "selected_heads"
+	ProbeEventLayerCoherence  ProbeEventKind = "layer_coherence"
+	ProbeEventRouterDecision  ProbeEventKind = "router_decision"
+	ProbeEventExpertResidency ProbeEventKind = "expert_residency"
+	ProbeEventResidual        ProbeEventKind = "residual_summary"
+	ProbeEventCachePressure   ProbeEventKind = "cache_pressure"
+	ProbeEventMemoryPressure  ProbeEventKind = "memory_pressure"
+	ProbeEventTraining        ProbeEventKind = "training"
 )
 
 // ProbePhase identifies where the event was emitted in the runtime.
@@ -31,20 +32,21 @@ const (
 
 // ProbeEvent is the first-class event envelope for inference and training probes.
 type ProbeEvent struct {
-	Kind           ProbeEventKind        `json:"kind"`
-	Phase          ProbePhase            `json:"phase,omitempty"`
-	Step           int                   `json:"step"`
-	Token          *ProbeToken           `json:"token,omitempty"`
-	Logits         *ProbeLogits          `json:"logits,omitempty"`
-	Entropy        *ProbeEntropy         `json:"entropy,omitempty"`
-	SelectedHeads  *ProbeHeadSelection   `json:"selected_heads,omitempty"`
-	LayerCoherence *ProbeLayerCoherence  `json:"layer_coherence,omitempty"`
-	RouterDecision *ProbeRouterDecision  `json:"router_decision,omitempty"`
-	Residual       *ProbeResidualSummary `json:"residual,omitempty"`
-	Cache          *ProbeCachePressure   `json:"cache,omitempty"`
-	Memory         *ProbeMemoryPressure  `json:"memory,omitempty"`
-	Training       *ProbeTraining        `json:"training,omitempty"`
-	Meta           map[string]string     `json:"meta,omitempty"`
+	Kind            ProbeEventKind        `json:"kind"`
+	Phase           ProbePhase            `json:"phase,omitempty"`
+	Step            int                   `json:"step"`
+	Token           *ProbeToken           `json:"token,omitempty"`
+	Logits          *ProbeLogits          `json:"logits,omitempty"`
+	Entropy         *ProbeEntropy         `json:"entropy,omitempty"`
+	SelectedHeads   *ProbeHeadSelection   `json:"selected_heads,omitempty"`
+	LayerCoherence  *ProbeLayerCoherence  `json:"layer_coherence,omitempty"`
+	RouterDecision  *ProbeRouterDecision  `json:"router_decision,omitempty"`
+	ExpertResidency *ProbeExpertResidency `json:"expert_residency,omitempty"`
+	Residual        *ProbeResidualSummary `json:"residual,omitempty"`
+	Cache           *ProbeCachePressure   `json:"cache,omitempty"`
+	Memory          *ProbeMemoryPressure  `json:"memory,omitempty"`
+	Training        *ProbeTraining        `json:"training,omitempty"`
+	Meta            map[string]string     `json:"meta,omitempty"`
 }
 
 // ProbeToken records a selected token and local decode position.
@@ -107,6 +109,18 @@ type ProbeRouterDecision struct {
 	ExpertIDs   []int     `json:"expert_ids,omitempty"`
 	Weights     []float32 `json:"weights,omitempty"`
 	Temperature float32   `json:"temperature,omitempty"`
+}
+
+// ProbeExpertResidency records MoE expert paging and residency transitions.
+type ProbeExpertResidency struct {
+	Action             ExpertResidencyAction `json:"action"`
+	Layer              int                   `json:"layer,omitempty"`
+	ExpertIDs          []int                 `json:"expert_ids,omitempty"`
+	ResidentExperts    int                   `json:"resident_experts,omitempty"`
+	MaxResidentExperts int                   `json:"max_resident_experts,omitempty"`
+	LoadedBytes        uint64                `json:"loaded_bytes,omitempty"`
+	EvictedBytes       uint64                `json:"evicted_bytes,omitempty"`
+	Duration           int64                 `json:"duration,omitempty"`
 }
 
 // ProbeResidualSummary records compact residual-stream statistics.
@@ -285,6 +299,11 @@ func cloneProbeEvent(event ProbeEvent) ProbeEvent {
 		router.ExpertIDs = append([]int(nil), event.RouterDecision.ExpertIDs...)
 		router.Weights = append([]float32(nil), event.RouterDecision.Weights...)
 		out.RouterDecision = &router
+	}
+	if event.ExpertResidency != nil {
+		residency := *event.ExpertResidency
+		residency.ExpertIDs = append([]int(nil), event.ExpertResidency.ExpertIDs...)
+		out.ExpertResidency = &residency
 	}
 	if event.Residual != nil {
 		residual := *event.Residual
