@@ -2,164 +2,114 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
 
-func TestProbeRecorder_RecordsDefensiveCopies_Good(t *testing.T) {
-	recorder := NewProbeRecorder()
-	event := ProbeEvent{
-		Kind:  ProbeEventLogits,
-		Phase: ProbePhaseDecode,
-		Step:  3,
-		Token: &ProbeToken{
-			ID:              7,
-			Text:            "answer",
-			PromptTokens:    11,
-			GeneratedTokens: 2,
-		},
-		Logits: &ProbeLogits{
-			Shape:      []int32{1, 4},
-			VocabSize:  4,
-			MaxTokenID: 7,
-			MaxLogit:   4.5,
-			Top:        []ProbeLogit{{TokenID: 7, Logit: 4.5, Probability: 0.75}},
-		},
-		Cache: &ProbeCachePressure{
-			LayerCount:      2,
-			CacheTokens:     16,
-			ProcessedTokens: 18,
-		},
-		Meta: map[string]string{"source": "test"},
-	}
+	"dappco.re/go/mlx/probe"
+)
 
-	recorder.EmitProbe(event)
-	event.Token.Text = "mutated"
-	event.Logits.Shape[0] = 99
-	event.Logits.Top[0].Logit = -1
-	event.Meta["source"] = "mutated"
+// These tests cover the mlx-root probe.go shim. The canonical
+// algorithmic coverage lives in go-mlx/go/probe/probe_test.go; here we
+// verify the alias surface + the mlx-specific GenerateOption helpers.
 
-	events := recorder.Events()
-	if len(events) != 1 {
-		t.Fatalf("Events() len = %d, want 1", len(events))
+func TestProbeAliases_PointAtProbePackage_Good(t *testing.T) {
+	// Type aliases are identical types in Go's type system, so this
+	// assignment compiles only if the alias is wired through.
+	var event ProbeEvent = probe.Event{Kind: probe.KindToken, Token: &probe.Token{ID: 7}}
+	if event.Kind != ProbeEventToken {
+		t.Fatalf("Kind = %q, want %q", event.Kind, ProbeEventToken)
 	}
-	if events[0].Token.Text != "answer" {
-		t.Fatalf("recorded token text = %q, want answer", events[0].Token.Text)
-	}
-	if events[0].Logits.Shape[0] != 1 {
-		t.Fatalf("recorded logits shape = %v, want [1 4]", events[0].Logits.Shape)
-	}
-	if events[0].Logits.Top[0].Logit != 4.5 {
-		t.Fatalf("recorded top logit = %f, want 4.5", events[0].Logits.Top[0].Logit)
-	}
-	if events[0].Meta["source"] != "test" {
-		t.Fatalf("recorded meta source = %q, want test", events[0].Meta["source"])
-	}
-
-	events[0].Logits.Top[0].TokenID = 99
-	again := recorder.Events()
-	if again[0].Logits.Top[0].TokenID != 7 {
-		t.Fatalf("Events() returned aliased top logits: %+v", again[0].Logits.Top)
+	if event.Token.ID != 7 {
+		t.Fatalf("Token.ID = %d, want 7", event.Token.ID)
 	}
 }
 
-func TestProbeSinkFunc_Good(t *testing.T) {
-	called := false
-	ProbeSinkFunc(func(event ProbeEvent) {
-		called = event.Kind == ProbeEventMemoryPressure
-	}).EmitProbe(ProbeEvent{Kind: ProbeEventMemoryPressure})
-
-	if !called {
-		t.Fatal("ProbeSinkFunc did not emit event")
+func TestProbeEventConstants_PreservedAtMlxRoot_Good(t *testing.T) {
+	cases := []struct {
+		got, want ProbeEventKind
+	}{
+		{ProbeEventToken, "token"},
+		{ProbeEventLogits, "logits"},
+		{ProbeEventEntropy, "entropy"},
+		{ProbeEventSelectedHeads, "selected_heads"},
+		{ProbeEventLayerCoherence, "layer_coherence"},
+		{ProbeEventRouterDecision, "router_decision"},
+		{ProbeEventExpertResidency, "expert_residency"},
+		{ProbeEventResidual, "residual_summary"},
+		{ProbeEventCachePressure, "cache_pressure"},
+		{ProbeEventMemoryPressure, "memory_pressure"},
+		{ProbeEventTraining, "training"},
+	}
+	for _, c := range cases {
+		if c.got != c.want {
+			t.Fatalf("constant = %q, want %q", c.got, c.want)
+		}
 	}
 }
 
-func TestProbeSinkFunc_Nil_Bad(t *testing.T) {
-	var sink ProbeSinkFunc
-
-	sink.EmitProbe(ProbeEvent{Kind: ProbeEventToken})
-}
-
-func TestProbeBus_Fanout_Good(t *testing.T) {
-	first := NewProbeRecorder()
-	second := NewProbeRecorder()
-	bus := NewProbeBus(first)
-	bus.Add(second)
-
-	bus.EmitProbe(ProbeEvent{
-		Kind:  ProbeEventTraining,
-		Phase: ProbePhaseTraining,
-		Training: &ProbeTraining{
-			Step: 13,
-			Loss: 0.125,
-		},
-	})
-
-	if got := len(first.Events()); got != 1 {
-		t.Fatalf("first recorder events = %d, want 1", got)
-	}
-	events := second.Events()
-	if len(events) != 1 {
-		t.Fatalf("second recorder events = %d, want 1", len(events))
-	}
-	if events[0].Training == nil || events[0].Training.Step != 13 || events[0].Training.Loss != 0.125 {
-		t.Fatalf("training event = %+v", events[0])
+func TestProbePhaseConstants_PreservedAtMlxRoot_Good(t *testing.T) {
+	if ProbePhasePrefill != "prefill" || ProbePhaseDecode != "decode" || ProbePhaseTraining != "training" {
+		t.Fatalf("phase constants drifted: %q %q %q", ProbePhasePrefill, ProbePhaseDecode, ProbePhaseTraining)
 	}
 }
 
-func TestProbeBus_FanoutDefensiveCopy_Ugly(t *testing.T) {
-	recorder := NewProbeRecorder()
-	bus := NewProbeBus(
-		ProbeSinkFunc(func(event ProbeEvent) {
-			event.Training.Loss = 9
-		}),
-		recorder,
-	)
-
-	bus.EmitProbe(ProbeEvent{
-		Kind:     ProbeEventTraining,
-		Phase:    ProbePhaseTraining,
-		Training: &ProbeTraining{Step: 1, Loss: 0.5},
-	})
-
-	events := recorder.Events()
-	if len(events) != 1 {
-		t.Fatalf("events len = %d, want 1", len(events))
-	}
-	if events[0].Training == nil || events[0].Training.Loss != 0.5 {
-		t.Fatalf("fanout leaked mutation into recorder: %+v", events[0])
+func TestExpertResidencyAction_AliasIdentity_Good(t *testing.T) {
+	// Cross-package equality between the mlx-root alias and the canonical
+	// probe-package constant — proves the alias wires the same type.
+	if ExpertResidencyActionPageIn != probe.ExpertResidencyActionPageIn {
+		t.Fatal("ExpertResidencyAction alias drifted from probe package")
 	}
 }
 
-func TestProbeOptionsAndClonePayloads_Ugly(t *testing.T) {
+func TestNewProbeBusAndRecorder_Wiring_Good(t *testing.T) {
+	rec := NewProbeRecorder()
+	bus := NewProbeBus(rec)
+	bus.EmitProbe(ProbeEvent{Kind: ProbeEventToken, Token: &ProbeToken{ID: 1}})
+	events := rec.Events()
+	if len(events) != 1 || events[0].Kind != ProbeEventToken || events[0].Token.ID != 1 {
+		t.Fatalf("events = %+v", events)
+	}
+}
+
+func TestWithProbeSink_SetsConfigField_Good(t *testing.T) {
+	rec := NewProbeRecorder()
+	var cfg GenerateConfig
+	WithProbeSink(rec)(&cfg)
+	if cfg.ProbeSink == nil {
+		t.Fatal("ProbeSink not set by WithProbeSink")
+	}
+	cfg.ProbeSink.EmitProbe(ProbeEvent{Kind: ProbeEventToken})
+	if len(rec.Events()) != 1 {
+		t.Fatal("ProbeSink not wired to recorder")
+	}
+}
+
+func TestWithProbeCallback_NilIsNoOp_Ugly(t *testing.T) {
 	var cfg GenerateConfig
 	WithProbeCallback(nil)(&cfg)
 	if cfg.ProbeSink != nil {
-		t.Fatalf("nil callback configured sink: %+v", cfg.ProbeSink)
+		t.Fatal("WithProbeCallback(nil) installed a sink")
 	}
-	called := false
-	WithProbeCallback(func(event ProbeEvent) {
-		called = event.Kind == ProbeEventRouterDecision
-	})(&cfg)
-	cfg.ProbeSink.EmitProbe(ProbeEvent{Kind: ProbeEventRouterDecision})
-	if !called {
-		t.Fatal("probe callback was not invoked")
-	}
+}
 
-	event := cloneProbeEvent(ProbeEvent{
-		Kind:           ProbeEventSelectedHeads,
-		SelectedHeads:  &ProbeHeadSelection{Heads: []int{1, 2}, Scores: []float64{0.25, 0.75}},
-		LayerCoherence: &ProbeLayerCoherence{Layer: 2, KeyCoherence: 0.5},
-		RouterDecision: &ProbeRouterDecision{ExpertIDs: []int{3}, Weights: []float32{0.9}},
-		ExpertResidency: &ProbeExpertResidency{
-			Action:    ExpertResidencyActionPageIn,
-			ExpertIDs: []int{5},
-		},
-		Residual: &ProbeResidualSummary{Layer: 1, RMS: 0.2},
-		Memory:   &ProbeMemoryPressure{ActiveBytes: 10},
-	})
-	event.SelectedHeads.Heads[0] = 9
-	event.RouterDecision.ExpertIDs[0] = 8
-	event.ExpertResidency.ExpertIDs[0] = 7
-	if event.LayerCoherence.Layer != 2 || event.Residual.RMS != 0.2 || event.Memory.ActiveBytes != 10 {
-		t.Fatalf("cloned scalar payloads = %+v", event)
+func TestWithProbeCallback_DispatchesEvent_Good(t *testing.T) {
+	var got ProbeEvent
+	var cfg GenerateConfig
+	WithProbeCallback(func(e ProbeEvent) { got = e })(&cfg)
+	if cfg.ProbeSink == nil {
+		t.Fatal("WithProbeCallback(non-nil) did not install sink")
+	}
+	cfg.ProbeSink.EmitProbe(ProbeEvent{Kind: ProbeEventLogits, Step: 4})
+	if got.Kind != ProbeEventLogits || got.Step != 4 {
+		t.Fatalf("got = %+v", got)
+	}
+}
+
+func TestProbeSinkFunc_AdaptsClosure_Good(t *testing.T) {
+	called := false
+	var sink ProbeSink = ProbeSinkFunc(func(_ ProbeEvent) { called = true })
+	sink.EmitProbe(ProbeEvent{Kind: ProbeEventToken})
+	if !called {
+		t.Fatal("ProbeSinkFunc did not dispatch")
 	}
 }

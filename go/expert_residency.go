@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/probe"
 )
 
 // ExpertResidencyMode names how routed MoE experts are kept resident.
@@ -27,13 +28,14 @@ const (
 )
 
 // ExpertResidencyAction names probe-visible expert residency transitions.
-type ExpertResidencyAction string
+// Aliased from dappco.re/go/mlx/probe/.
+type ExpertResidencyAction = probe.ExpertResidencyAction
 
 const (
-	ExpertResidencyActionStartup ExpertResidencyAction = "startup"
-	ExpertResidencyActionPageIn  ExpertResidencyAction = "page_in"
-	ExpertResidencyActionEvict   ExpertResidencyAction = "evict"
-	ExpertResidencyActionHit     ExpertResidencyAction = "hit"
+	ExpertResidencyActionStartup = probe.ExpertResidencyActionStartup
+	ExpertResidencyActionPageIn  = probe.ExpertResidencyActionPageIn
+	ExpertResidencyActionEvict   = probe.ExpertResidencyActionEvict
+	ExpertResidencyActionHit     = probe.ExpertResidencyActionHit
 )
 
 // ExpertResidencyPlan is a backend-neutral MoE residency policy. It is small
