@@ -9,14 +9,15 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/gguf"
 )
 
 func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_, _ = LoadModel("/tmp/model", WithContextLength(128), WithQuantization(4), WithDevice("cpu"))
 	_, _ = LoadTokenizer("/tmp/tokenizer.json")
 	_, _ = LoadModelFromMedium(nil, "models/example", WithMedium(nil))
-	_, _ = ReadGGUFInfo("/tmp/model.gguf")
-	_ = DiscoverModels("/tmp/models")
+	_, _ = gguf.ReadInfo("/tmp/model.gguf")
+	_ = gguf.DiscoverModels("/tmp/models")
 
 	model := &Model{}
 	_, _ = model.Generate("hello", WithMaxTokens(8), WithTemperature(0.7), WithTopK(10), WithTopP(0.9), WithMinP(0.05))
