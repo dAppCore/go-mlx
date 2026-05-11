@@ -9,6 +9,7 @@ import (
 
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/agent"
 )
 
 // WakeAgentMemory returns an availability error on unsupported builds.
