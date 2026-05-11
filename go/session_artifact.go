@@ -4,39 +4,22 @@ package mlx
 
 import (
 	"context"
-	"math"
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
 
 const sessionArtifactKind = "go-mlx/session-state"
 
-// SAMIResult is the SAMI BOResult-compatible model-state visualization schema.
-type SAMIResult struct {
-	Model               string    `json:"model"`
-	Prompt              string    `json:"prompt"`
-	Architecture        string    `json:"architecture"`
-	NumLayers           int       `json:"num_layers"`
-	NumHeads            int       `json:"num_heads"`
-	SeqLen              int       `json:"seq_len"`
-	HeadDim             int       `json:"head_dim"`
-	MeanCoherence       float64   `json:"mean_coherence"`
-	MeanCrossAlignment  float64   `json:"mean_cross_alignment"`
-	MeanHeadEntropy     float64   `json:"mean_head_entropy"`
-	PhaseLockScore      float64   `json:"phase_lock_score"`
-	JointCollapseCount  int       `json:"joint_collapse_count"`
-	LayerCoherence      []float64 `json:"layer_coherence"`
-	LayerCrossAlignment []float64 `json:"layer_cross_alignment"`
-	Composite           float64   `json:"composite"`
-}
+// SAMIResult is the SAMI BOResult-compatible model-state visualization
+// schema. Aliased from dappco.re/go/mlx/bundle/.
+type SAMIResult = bundle.SAMIResult
 
 // SAMIOptions labels a SAMI export with caller-owned provenance.
-type SAMIOptions struct {
-	Model  string
-	Prompt string
-}
+// Aliased from dappco.re/go/mlx/bundle/.
+type SAMIOptions = bundle.SAMIOptions
 
 // SessionArtifactOptions controls local model-state artifact export.
 type SessionArtifactOptions struct {
@@ -80,52 +63,10 @@ type SessionArtifactSnapshot struct {
 }
 
 // SAMIFromKV converts K/V analysis into SAMI's visualization schema.
+//
+//	sami := mlx.SAMIFromKV(snapshot, analysis, mlx.SAMIOptions{Model: name})
 func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) SAMIResult {
-	if snapshot == nil {
-		return SAMIResult{}
-	}
-	if analysis == nil {
-		analysis = kv.Analyze(snapshot)
-	}
-	numLayers := snapshot.NumLayers
-	if numLayers <= 0 {
-		numLayers = len(snapshot.Layers)
-	}
-	meanCoherence := meanUnit(analysis.MeanKeyCoherence, analysis.MeanValueCoherence)
-	meanCross := clampUnit(analysis.MeanCrossAlignment)
-	layerCoherence := make([]float64, numLayers)
-	layerCross := make([]float64, numLayers)
-	for layer := range numLayers {
-		layerCoherence[layer] = meanUnit(
-			layerMetric(analysis.LayerKeyCoherence, layer, analysis.MeanKeyCoherence),
-			layerMetric(analysis.LayerValueCoherence, layer, analysis.MeanValueCoherence),
-		)
-		layerCross[layer] = layerMetric(analysis.LayerCrossAlignment, layer, analysis.MeanCrossAlignment)
-	}
-	jointCollapseCount := analysis.JointCollapseCount
-	if jointCollapseCount < 0 {
-		jointCollapseCount = 0
-	}
-	if numLayers > 0 && jointCollapseCount > numLayers {
-		jointCollapseCount = numLayers
-	}
-	return SAMIResult{
-		Model:               opts.Model,
-		Prompt:              opts.Prompt,
-		Architecture:        snapshot.Architecture,
-		NumLayers:           numLayers,
-		NumHeads:            snapshot.NumHeads,
-		SeqLen:              snapshot.SeqLen,
-		HeadDim:             snapshot.HeadDim,
-		MeanCoherence:       meanCoherence,
-		MeanCrossAlignment:  meanCross,
-		MeanHeadEntropy:     clampUnit(analysis.MeanHeadEntropy),
-		PhaseLockScore:      clampUnit(analysis.PhaseLockScore),
-		JointCollapseCount:  jointCollapseCount,
-		LayerCoherence:      layerCoherence,
-		LayerCrossAlignment: layerCross,
-		Composite:           clampRange(float64(analysis.Composite())/100.0, 0, 100),
-	}
+	return bundle.SAMIFromKV(snapshot, analysis, opts)
 }
 
 // ExportSessionArtifacts writes optional KV binary data and optional memvid JSON.
@@ -210,30 +151,3 @@ func sessionArtifactResultError(result core.Result) error {
 	return core.NewError("core result failed")
 }
 
-func layerMetric(values []float64, index int, fallback float64) float64 {
-	if index >= 0 && index < len(values) {
-		return clampUnit(values[index])
-	}
-	return clampUnit(fallback)
-}
-
-func meanUnit(a, b float64) float64 {
-	return clampUnit((clampUnit(a) + clampUnit(b)) / 2.0)
-}
-
-func clampUnit(value float64) float64 {
-	return clampRange(value, 0, 1)
-}
-
-func clampRange(value, minValue, maxValue float64) float64 {
-	if math.IsNaN(value) || math.IsInf(value, 0) {
-		return minValue
-	}
-	if value < minValue {
-		return minValue
-	}
-	if value > maxValue {
-		return maxValue
-	}
-	return value
-}

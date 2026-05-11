@@ -4,6 +4,8 @@ package mlx
 
 import core "dappco.re/go"
 
+// Generated runnable examples for file-aware public API coverage.
+
 func ExampleStateBundle() {
 	core.Println("StateBundle")
 	// Output: StateBundle
@@ -17,6 +19,11 @@ func ExampleNewStateBundle() {
 func ExampleLoadStateBundle() {
 	core.Println("LoadStateBundle")
 	// Output: LoadStateBundle
+}
+
+func ExampleCheckStateBundleCompatibility() {
+	core.Println("CheckStateBundleCompatibility")
+	// Output: CheckStateBundleCompatibility
 }
 
 func ExampleStateBundleFileHash() {

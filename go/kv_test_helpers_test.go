@@ -9,6 +9,31 @@ import (
 	"dappco.re/go/mlx/kv"
 )
 
+func stateBundleTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2},
+		Generated:     []int32{2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 8,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{1, 0, 0, 1},
+				Value: []float32{0, 1, 1, 0},
+			}},
+		}},
+	}
+}
+
 func kvSnapshotBlocksTestSnapshot() *kv.Snapshot {
 	return &kv.Snapshot{
 		Version:       kv.SnapshotVersion,

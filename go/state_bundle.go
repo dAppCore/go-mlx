@@ -3,33 +3,44 @@
 package mlx
 
 import (
-	"context"
-
-	core "dappco.re/go"
-	"dappco.re/go/mlx/lora"
 	memvid "dappco.re/go/inference/state"
+	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
 
+// Legacy aliases — the canonical state-bundle package lives at
+// dappco.re/go/mlx/bundle/. mlx-root callers keep their existing
+// StateBundle* surface via these aliases plus the wrapper constructors
+// below.
+type (
+	StateBundle          = bundle.Bundle
+	StateBundleModel     = bundle.Model
+	StateBundlePrompt    = bundle.Prompt
+	StateBundleTokenizer = bundle.Tokenizer
+	StateBundleRuntime   = bundle.Runtime
+	StateBundleAdapter   = bundle.Adapter
+	StateBundleSampler   = bundle.Sampler
+	StateBundleRef       = bundle.Ref
+)
+
+// Schema constants forwarded from the bundle package.
 const (
-	// StateBundleVersion is the portable model-state bundle schema version.
-	StateBundleVersion = 1
-	// StateBundleKind identifies go-mlx state-bundle JSON payloads.
-	StateBundleKind = "go-mlx/state-bundle"
-	// StateBundleRefMemvid identifies a memvid cold-storage reference.
-	StateBundleRefMemvid = "memvid"
+	StateBundleVersion   = bundle.Version
+	StateBundleKind      = bundle.Kind
+	StateBundleRefMemvid = bundle.RefMemvid
 )
 
 // StateBundleOptions labels a state bundle with caller-owned provenance.
+// Carries mlx-shaped ModelInfo + GenerateConfig at the boundary; the
+// wrapper NewStateBundle converts to bundle.Options before delegating.
 type StateBundleOptions struct {
-	Model     string
-	ModelPath string
-	ModelInfo ModelInfo
-	Prompt    string
-	Tokenizer StateBundleTokenizer
-	Runtime   StateBundleRuntime
-	Adapter   StateBundleAdapter
-	// AdapterPath is retained for callers that do not need the richer adapter identity.
+	Model       string
+	ModelPath   string
+	ModelInfo   ModelInfo
+	Prompt      string
+	Tokenizer   StateBundleTokenizer
+	Runtime     StateBundleRuntime
+	Adapter     StateBundleAdapter
 	AdapterPath string
 	KVPath      string
 	Sampler     GenerateConfig
@@ -40,158 +51,32 @@ type StateBundleOptions struct {
 	Meta        map[string]string
 }
 
-// StateBundle is a portable, strict model-state artifact.
-type StateBundle struct {
-	Version   int                  `json:"version"`
-	Kind      string               `json:"kind"`
-	Model     StateBundleModel     `json:"model"`
-	Prompt    StateBundlePrompt    `json:"prompt"`
-	Tokenizer StateBundleTokenizer `json:"tokenizer"`
-	Runtime   StateBundleRuntime   `json:"runtime"`
-	Adapter   StateBundleAdapter   `json:"adapter,omitempty"`
-	Sampler   StateBundleSampler   `json:"sampler"`
-	KV        *kv.Snapshot          `json:"kv,omitempty"`
-	KVPath    string               `json:"kv_path,omitempty"`
-	KVHash    string               `json:"kv_hash"`
-	Analysis  *kv.Analysis          `json:"analysis,omitempty"`
-	SAMI      *SAMIResult          `json:"sami,omitempty"`
-	Refs      []StateBundleRef     `json:"refs,omitempty"`
-	Meta      map[string]string    `json:"meta,omitempty"`
-}
-
-// StateBundleModel identifies the model expected by the bundle.
-type StateBundleModel struct {
-	Name          string `json:"name,omitempty"`
-	Path          string `json:"path,omitempty"`
-	Architecture  string `json:"architecture"`
-	VocabSize     int    `json:"vocab_size,omitempty"`
-	NumLayers     int    `json:"num_layers,omitempty"`
-	HiddenSize    int    `json:"hidden_size,omitempty"`
-	QuantBits     int    `json:"quant_bits,omitempty"`
-	QuantGroup    int    `json:"quant_group,omitempty"`
-	ContextLength int    `json:"context_length,omitempty"`
-	Hash          string `json:"hash,omitempty"`
-}
-
-// StateBundlePrompt identifies the prompt/token state captured by the bundle.
-type StateBundlePrompt struct {
-	Text        string `json:"text,omitempty"`
-	Hash        string `json:"hash,omitempty"`
-	TokenCount  int    `json:"token_count"`
-	TokenOffset int    `json:"token_offset"`
-}
-
-// StateBundleTokenizer identifies tokenizer and chat-template compatibility.
-type StateBundleTokenizer struct {
-	Kind             string `json:"kind,omitempty"`
-	Path             string `json:"path,omitempty"`
-	Version          string `json:"version,omitempty"`
-	Hash             string `json:"hash,omitempty"`
-	VocabSize        int    `json:"vocab_size,omitempty"`
-	BOS              int32  `json:"bos,omitempty"`
-	EOS              int32  `json:"eos,omitempty"`
-	ChatTemplate     string `json:"chat_template,omitempty"`
-	ChatTemplateHash string `json:"chat_template_hash,omitempty"`
-}
-
-// StateBundleRuntime identifies the go-mlx runtime that created the bundle.
-type StateBundleRuntime struct {
-	Name     string `json:"name,omitempty"`
-	Version  string `json:"version,omitempty"`
-	Build    string `json:"build,omitempty"`
-	Platform string `json:"platform,omitempty"`
-}
-
-// StateBundleAdapter identifies an optional LoRA adapter applied to the model.
-type StateBundleAdapter struct {
-	Name       string   `json:"name,omitempty"`
-	Path       string   `json:"path,omitempty"`
-	Hash       string   `json:"hash,omitempty"`
-	Rank       int      `json:"rank,omitempty"`
-	Alpha      float32  `json:"alpha,omitempty"`
-	Scale      float32  `json:"scale,omitempty"`
-	TargetKeys []string `json:"target_keys,omitempty"`
-}
-
-// StateBundleSampler stores generation settings needed for reproducible replay.
-type StateBundleSampler struct {
-	MaxTokens     int     `json:"max_tokens"`
-	Temperature   float32 `json:"temperature"`
-	TopK          int     `json:"top_k"`
-	TopP          float32 `json:"top_p"`
-	MinP          float32 `json:"min_p"`
-	StopTokens    []int32 `json:"stop_tokens,omitempty"`
-	RepeatPenalty float32 `json:"repeat_penalty"`
-}
-
-// StateBundleRef links external cold-storage artifacts such as memvid chunks.
-type StateBundleRef struct {
-	Kind   string          `json:"kind"`
-	URI    string          `json:"uri"`
-	Hash   string          `json:"hash,omitempty"`
-	Title  string          `json:"title,omitempty"`
-	Track  string          `json:"track,omitempty"`
-	Memvid memvid.ChunkRef `json:"memvid,omitempty"`
-}
-
 // NewStateBundle builds a portable state bundle around a restorable KV snapshot.
+//
+//	bundle, err := mlx.NewStateBundle(snapshot, opts)
 func NewStateBundle(snapshot *kv.Snapshot, opts StateBundleOptions) (*StateBundle, error) {
-	if snapshot == nil {
-		return nil, core.NewError("mlx: KV snapshot is nil")
-	}
-	snap := snapshot.Clone()
-	if snap.Version == 0 {
-		snap.Version = kv.SnapshotVersion
-	}
-	if snap.TokenOffset == 0 {
-		snap.TokenOffset = len(snap.Tokens)
-	}
-	kvHash, err := kv.HashSnapshot(snap)
-	if err != nil {
-		return nil, err
-	}
-	analysis := opts.Analysis
-	if analysis == nil {
-		analysis = kv.Analyze(snap)
-	}
-	sami := opts.SAMI
-	if sami == nil {
-		result := SAMIFromKV(snap, analysis, SAMIOptions{Model: opts.Model, Prompt: opts.Prompt})
-		sami = &result
-	}
-	model := stateBundleModel(snap, opts)
-	tokenizer := stateBundleTokenizer(opts.Tokenizer)
-	runtime := stateBundleRuntime(opts.Runtime)
-	adapter := stateBundleAdapter(opts.Adapter, opts.AdapterPath, opts.ModelInfo.Adapter)
-	bundle := &StateBundle{
-		Version: StateBundleVersion,
-		Kind:    StateBundleKind,
-		Model:   model,
-		Prompt: StateBundlePrompt{
-			Text:        opts.Prompt,
-			Hash:        stateHash(opts.Prompt),
-			TokenCount:  len(snap.Tokens),
-			TokenOffset: snap.TokenOffset,
-		},
-		Tokenizer: tokenizer,
-		Runtime:   runtime,
-		Adapter:   adapter,
-		Sampler:   stateSamplerFromGenerateConfig(opts.Sampler),
-		KV:        snap,
-		KVPath:    opts.KVPath,
-		KVHash:    kvHash,
-		Analysis:  analysis,
-		SAMI:      sami,
-		Refs:      stateBundleRefs(opts.Refs, opts.MemvidRefs),
-		Meta:      cloneStateBundleMeta(opts.Meta),
-	}
-	if stateBundleAdapterEmpty(bundle.Adapter) {
-		bundle.Adapter = StateBundleAdapter{}
-	}
-	return bundle, nil
+	return bundle.New(snapshot, bundle.Options{
+		Model:       opts.Model,
+		ModelPath:   opts.ModelPath,
+		Source:      modelInfoToBundle(opts.ModelInfo),
+		Prompt:      opts.Prompt,
+		Tokenizer:   opts.Tokenizer,
+		Runtime:     opts.Runtime,
+		Adapter:     opts.Adapter,
+		AdapterPath: opts.AdapterPath,
+		KVPath:      opts.KVPath,
+		Sampler:     stateSamplerFromGenerateConfig(opts.Sampler),
+		Analysis:    opts.Analysis,
+		SAMI:        opts.SAMI,
+		Refs:        opts.Refs,
+		MemvidRefs:  opts.MemvidRefs,
+		Meta:        opts.Meta,
+	})
 }
 
 // ExportBundle captures a live session and returns a portable state bundle.
+//
+//	bundle, err := session.ExportBundle(opts)
 func (s *ModelSession) ExportBundle(opts StateBundleOptions) (*StateBundle, error) {
 	snapshot, err := s.CaptureKV()
 	if err != nil {
@@ -200,156 +85,25 @@ func (s *ModelSession) ExportBundle(opts StateBundleOptions) (*StateBundle, erro
 	return NewStateBundle(snapshot, opts)
 }
 
-// Save writes the state bundle as stable JSON.
-func (b *StateBundle) Save(path string) error {
-	if err := b.Validate(); err != nil {
-		return err
-	}
-	data := core.JSONMarshalIndent(b, "", "  ")
-	if !data.OK {
-		return core.E("StateBundle.Save", "marshal bundle", stateBundleResultError(data))
-	}
-	if result := core.WriteFile(path, data.Value.([]byte), 0o600); !result.OK {
-		return core.E("StateBundle.Save", "write bundle", stateBundleResultError(result))
-	}
-	return nil
-}
-
 // LoadStateBundle reads a bundle saved by (*StateBundle).Save.
+//
+//	bundle, err := mlx.LoadStateBundle(path)
 func LoadStateBundle(path string) (*StateBundle, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return nil, core.E("LoadStateBundle", "read bundle", stateBundleResultError(read))
-	}
-	data, ok := read.Value.([]byte)
-	if !ok {
-		return nil, core.E("LoadStateBundle", "read bundle returned non-byte data", nil)
-	}
-	var bundle StateBundle
-	if result := core.JSONUnmarshal(data, &bundle); !result.OK {
-		return nil, core.E("LoadStateBundle", "parse bundle", stateBundleResultError(result))
-	}
-	if err := bundle.Validate(); err != nil {
-		return nil, err
-	}
-	return &bundle, nil
-}
-
-// Snapshot returns a defensive KV snapshot copy, loading KVPath when needed.
-func (b *StateBundle) Snapshot() (*kv.Snapshot, error) {
-	if b == nil {
-		return nil, core.NewError("mlx: state bundle is nil")
-	}
-	if b.KV != nil {
-		return b.KV.Clone(), nil
-	}
-	if b.KVPath == "" {
-		return nil, core.NewError("mlx: state bundle has no KV snapshot")
-	}
-	snapshot, err := kv.Load(b.KVPath)
-	if err != nil {
-		return nil, err
-	}
-	if b.KVHash != "" {
-		got, hashErr := kv.HashSnapshot(snapshot)
-		if hashErr != nil {
-			return nil, hashErr
-		}
-		if got != b.KVHash {
-			return nil, core.NewError("mlx: state bundle KV hash mismatch")
-		}
-	}
-	return snapshot, nil
-}
-
-// SnapshotFromMemvid returns the bundle KV snapshot, resolving memvid refs when
-// the bundle keeps KV state in cold storage instead of embedding it.
-func (b *StateBundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*kv.Snapshot, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if b == nil {
-		return nil, core.NewError("mlx: state bundle is nil")
-	}
-	if b.KV != nil || b.KVPath != "" {
-		return b.Snapshot()
-	}
-	ref, ok := b.memvidKVRef()
-	if !ok {
-		return nil, core.NewError("mlx: state bundle has no memvid KV snapshot")
-	}
-	snapshot, err := kv.LoadFromMemvid(ctx, store, ref)
-	if err != nil {
-		return nil, err
-	}
-	if b.KVHash != "" {
-		got, hashErr := kv.HashSnapshot(snapshot)
-		if hashErr != nil {
-			return nil, hashErr
-		}
-		if got != b.KVHash {
-			return nil, core.NewError("mlx: state bundle KV hash mismatch")
-		}
-	}
-	return snapshot, nil
-}
-
-func (b *StateBundle) memvidKVRef() (memvid.ChunkRef, bool) {
-	if b == nil {
-		return memvid.ChunkRef{}, false
-	}
-	for _, ref := range b.Refs {
-		if ref.Kind == StateBundleRefMemvid {
-			return ref.Memvid, true
-		}
-	}
-	return memvid.ChunkRef{}, false
-}
-
-// Validate checks schema version, kind, and embedded KV hash integrity.
-func (b *StateBundle) Validate() error {
-	if b == nil {
-		return core.NewError("mlx: state bundle is nil")
-	}
-	if b.Version <= 0 || b.Version > StateBundleVersion {
-		return core.NewError("mlx: unsupported state bundle version")
-	}
-	if b.Kind != StateBundleKind {
-		return core.NewError("mlx: invalid state bundle kind")
-	}
-	if b.KV == nil && b.KVPath == "" {
-		if _, ok := b.memvidKVRef(); !ok {
-			return core.NewError("mlx: state bundle has no KV snapshot")
-		}
-		return nil
-	}
-	if b.KV != nil && b.KVHash != "" {
-		got, err := kv.HashSnapshot(b.KV)
-		if err != nil {
-			return err
-		}
-		if got != b.KVHash {
-			return core.NewError("mlx: state bundle KV hash mismatch")
-		}
-	}
-	return nil
+	return bundle.Load(path)
 }
 
 // CheckStateBundleCompatibility verifies that a loaded model can safely restore a bundle.
-func CheckStateBundleCompatibility(info ModelInfo, bundle *StateBundle) error {
-	if bundle == nil {
-		return core.NewError("mlx: state bundle is nil")
-	}
-	if err := bundle.Validate(); err != nil {
-		return err
-	}
-	if bundle.Model.Architecture != "" && info.Architecture != "" && bundle.Model.Architecture != info.Architecture {
-		return core.NewError("mlx: state bundle model architecture mismatch")
-	}
-	if bundle.Model.NumLayers > 0 && info.NumLayers > 0 && bundle.Model.NumLayers != info.NumLayers {
-		return core.NewError("mlx: state bundle model layer mismatch")
-	}
-	return checkStateBundleAdapterCompatibility(info.Adapter, bundle.Adapter)
+//
+//	if err := mlx.CheckStateBundleCompatibility(model.Info(), bundle); err != nil { … }
+func CheckStateBundleCompatibility(info ModelInfo, b *StateBundle) error {
+	return bundle.CheckCompatibility(modelInfoToBundle(info), b)
+}
+
+// StateBundleFileHash hashes an external file for strict bundle metadata.
+//
+//	hash, err := mlx.StateBundleFileHash(path)
+func StateBundleFileHash(path string) (string, error) {
+	return bundle.FileHash(path)
 }
 
 func stateSamplerFromGenerateConfig(cfg GenerateConfig) StateBundleSampler {
@@ -364,182 +118,36 @@ func stateSamplerFromGenerateConfig(cfg GenerateConfig) StateBundleSampler {
 	}
 }
 
-// StateBundleFileHash hashes an external file for strict bundle metadata.
-func StateBundleFileHash(path string) (string, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return "", core.E("StateBundleFileHash", "read file", stateBundleResultError(read))
-	}
-	data, ok := read.Value.([]byte)
-	if !ok {
-		return "", core.E("StateBundleFileHash", "read file returned non-byte data", nil)
-	}
-	return core.SHA256Hex(data), nil
-}
-
-func stateBundleModel(snapshot *kv.Snapshot, opts StateBundleOptions) StateBundleModel {
-	info := opts.ModelInfo
-	arch := info.Architecture
-	if arch == "" && snapshot != nil {
-		arch = snapshot.Architecture
-	}
-	numLayers := info.NumLayers
-	if numLayers == 0 && snapshot != nil {
-		numLayers = snapshot.NumLayers
-	}
-	model := StateBundleModel{
-		Name:          opts.Model,
-		Path:          opts.ModelPath,
-		Architecture:  arch,
+func modelInfoToBundle(info ModelInfo) bundle.ModelInfo {
+	return bundle.ModelInfo{
+		Architecture:  info.Architecture,
 		VocabSize:     info.VocabSize,
-		NumLayers:     numLayers,
+		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,
 		QuantBits:     info.QuantBits,
 		QuantGroup:    info.QuantGroup,
 		ContextLength: info.ContextLength,
-	}
-	model.Hash = stateHash(core.Join("\n", model.Name, model.Path, model.Architecture, core.Sprintf("%d", model.VocabSize), core.Sprintf("%d", model.NumLayers), core.Sprintf("%d", model.QuantBits), core.Sprintf("%d", model.ContextLength)))
-	return model
-}
-
-func stateBundleTokenizer(tokenizer StateBundleTokenizer) StateBundleTokenizer {
-	if tokenizer.Hash == "" && tokenizer.Path != "" {
-		tokenizer.Hash = stateHash(tokenizer.Path)
-	}
-	if tokenizer.ChatTemplateHash == "" && tokenizer.ChatTemplate != "" {
-		tokenizer.ChatTemplateHash = stateHash(tokenizer.ChatTemplate)
-	}
-	return tokenizer
-}
-
-func stateBundleRuntime(runtime StateBundleRuntime) StateBundleRuntime {
-	if runtime.Name == "" {
-		runtime.Name = "go-mlx"
-	}
-	return runtime
-}
-
-func stateBundleAdapter(adapter StateBundleAdapter, adapterPath string, info lora.AdapterInfo) StateBundleAdapter {
-	if stateBundleAdapterEmpty(adapter) && !info.IsEmpty() {
-		adapter = stateBundleAdapterFromInfo(info)
-	}
-	if adapter.Path == "" {
-		adapter.Path = adapterPath
-	}
-	if adapter.Hash == "" {
-		adapter.Hash = stateHash(core.Join("\n", adapter.Name, adapter.Path, core.Sprintf("%d", adapter.Rank), core.Sprintf("%f", adapter.Alpha), core.Sprintf("%f", adapter.Scale), core.Join(",", adapter.TargetKeys...)))
-	}
-	if adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0 {
-		adapter.Hash = ""
-	}
-	adapter.TargetKeys = append([]string(nil), adapter.TargetKeys...)
-	return adapter
-}
-
-func stateBundleAdapterEmpty(adapter StateBundleAdapter) bool {
-	return adapter.Name == "" && adapter.Path == "" && adapter.Hash == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0
-}
-
-func stateBundleAdapterFromInfo(info lora.AdapterInfo) StateBundleAdapter {
-	return StateBundleAdapter{
-		Name:       info.Name,
-		Path:       info.Path,
-		Hash:       info.Hash,
-		Rank:       info.Rank,
-		Alpha:      info.Alpha,
-		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		Adapter:       info.Adapter,
 	}
 }
 
-func stateBundleAdapterToInfo(adapter StateBundleAdapter) lora.AdapterInfo {
-	return lora.AdapterInfo{
-		Name:       adapter.Name,
-		Path:       adapter.Path,
-		Hash:       adapter.Hash,
-		Rank:       adapter.Rank,
-		Alpha:      adapter.Alpha,
-		Scale:      adapter.Scale,
-		TargetKeys: append([]string(nil), adapter.TargetKeys...),
-	}
+// stateBundleTokenizer fills missing Tokenizer hash fields. Retained as
+// a mlx-root private helper for callers (session_agent_darwin,
+// kv_snapshot_index) that use the old in-package name.
+func stateBundleTokenizer(t StateBundleTokenizer) StateBundleTokenizer {
+	return bundle.NormaliseTokenizer(t)
 }
 
-func checkStateBundleAdapterCompatibility(active lora.AdapterInfo, expected StateBundleAdapter) error {
-	if stateBundleAdapterEmpty(expected) {
-		return nil
-	}
-	if active.IsEmpty() {
-		return core.NewError("mlx: state bundle requires a LoRA adapter but model has none")
-	}
-	want := stateBundleAdapterToInfo(expected)
-	if want.Hash != "" && active.Hash != "" && want.Hash != active.Hash {
-		return core.NewError("mlx: state bundle LoRA adapter hash mismatch")
-	}
-	if want.Path != "" && active.Path != "" && want.Path != active.Path && (want.Hash == "" || active.Hash == "") {
-		return core.NewError("mlx: state bundle LoRA adapter path mismatch")
-	}
-	if want.Rank > 0 && active.Rank > 0 && want.Rank != active.Rank {
-		return core.NewError("mlx: state bundle LoRA adapter rank mismatch")
-	}
-	if want.Alpha != 0 && active.Alpha != 0 && want.Alpha != active.Alpha {
-		return core.NewError("mlx: state bundle LoRA adapter alpha mismatch")
-	}
-	return nil
+// stateHash returns the SHA-256 hex of a string. Retained as a
+// mlx-root private helper for callers (kv_snapshot_index) that use the
+// old in-package name.
+func stateHash(s string) string {
+	return bundle.HashString(s)
 }
 
-func stateBundleRefs(refs []StateBundleRef, memvidRefs []memvid.ChunkRef) []StateBundleRef {
-	if len(refs) == 0 && len(memvidRefs) == 0 {
-		return nil
-	}
-	out := make([]StateBundleRef, 0, len(refs)+len(memvidRefs))
-	for _, ref := range refs {
-		out = append(out, ref)
-	}
-	for _, ref := range memvidRefs {
-		out = append(out, StateBundleRef{
-			Kind:   StateBundleRefMemvid,
-			URI:    stateMemvidURI(ref),
-			Hash:   stateHash(stateMemvidURI(ref)),
-			Memvid: ref,
-		})
-	}
-	return out
-}
-
+// stateMemvidURI renders a memvid chunk reference as a memvid:// URI.
+// Retained as a mlx-root private helper for state_bundle_test.go.
 func stateMemvidURI(ref memvid.ChunkRef) string {
-	if ref.Segment != "" {
-		return core.Sprintf("memvid://%s#chunk=%d", ref.Segment, ref.ChunkID)
-	}
-	return core.Sprintf("memvid://chunk/%d", ref.ChunkID)
+	return bundle.MemvidURI(ref)
 }
 
-func cloneStateBundleMeta(meta map[string]string) map[string]string {
-	if len(meta) == 0 {
-		return nil
-	}
-	cloned := make(map[string]string, len(meta))
-	for key, value := range meta {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func stateHash(value string) string {
-	if value == "" {
-		return ""
-	}
-	return core.SHA256HexString(value)
-}
-
-func stateBundleResultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	if text, ok := result.Value.(string); ok {
-		return core.NewError(text)
-	}
-	return core.NewError("core result failed")
-}
