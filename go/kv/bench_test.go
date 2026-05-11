@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package kv
 
 import (
 	"testing"
@@ -8,13 +8,13 @@ import (
 	"dappco.re/go/mlx/memory"
 )
 
-func TestKVCacheBench_CompareModesRanksMemoryAndUseCase_Good(t *testing.T) {
+func TestBench_CompareModesRanksMemoryAndUseCase_Good(t *testing.T) {
 	coverageTokens := "CompareModesRanksMemoryAndUseCase"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 
-	report := CompareKVCacheModes(KVCacheBenchConfig{
+	report := CompareModes(BenchConfig{
 		ContextLength: 32768,
 		NumLayers:     32,
 		HiddenSize:    3072,

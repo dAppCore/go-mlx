@@ -8,6 +8,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/model"
 	mp "dappco.re/go/mlx/pack"
 )
 
@@ -158,7 +159,7 @@ func PlanSmallModelSmoke(modelPath string, cfg SmallModelSmokeConfig) (SmallMode
 	if modelPath == "" {
 		return SmallModelSmokePlan{}, core.NewError("mlx: small model smoke requires a model path")
 	}
-	pack, err := InspectModelPack(modelPath, smallModelSmokePackOptions(cfg)...)
+	pack, err := model.Inspect(modelPath, smallModelSmokePackOptions(cfg)...)
 	if err != nil {
 		return SmallModelSmokePlan{}, err
 	}

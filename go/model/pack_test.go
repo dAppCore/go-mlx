@@ -1,18 +1,17 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package model
 
 import (
-	"dappco.re/go/mlx/memory"
 	"testing"
 
 	core "dappco.re/go"
-	mp "dappco.re/go/mlx/pack"
-	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
+	mp "dappco.re/go/mlx/pack"
 )
 
 const modelPackTokenizerJSON = `{
@@ -61,9 +60,9 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
-	pack, err := InspectModelPack(dir, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(131072))
+	pack, err := Inspect(dir, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(131072))
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -107,9 +106,9 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 		},
 	)
 
-	pack, err := InspectModelPack(ggufPath, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(65536))
+	pack, err := Inspect(ggufPath, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(65536))
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -138,9 +137,9 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 		writeModelPackFile(t, core.PathJoin(dir, "model.gguf"), "stub")
 
-		pack, err := InspectModelPack(dir, mp.WithPackRequireChatTemplate(false))
+		pack, err := Inspect(dir, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
-			t.Fatalf("InspectModelPack() error = %v", err)
+			t.Fatalf("Inspect() error = %v", err)
 		}
 		if pack.Format != mp.ModelPackFormatMixed || !pack.HasIssue(mp.ModelPackIssueMixedWeightFormats) {
 			t.Fatalf("pack = %+v, want mixed weight issue", pack)
@@ -154,9 +153,9 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(dir, "a.gguf"), "stub")
 		writeModelPackFile(t, core.PathJoin(dir, "b.gguf"), "stub")
 
-		pack, err := InspectModelPack(dir, mp.WithPackRequireChatTemplate(false))
+		pack, err := Inspect(dir, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
-			t.Fatalf("InspectModelPack() error = %v", err)
+			t.Fatalf("Inspect() error = %v", err)
 		}
 		if pack.Format != mp.ModelPackFormatGGUF || !pack.HasIssue(mp.ModelPackIssueMultipleGGUF) {
 			t.Fatalf("pack = %+v, want multiple GGUF issue", pack)
@@ -167,9 +166,9 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		missing := t.TempDir()
 		writeModelPackFile(t, core.PathJoin(missing, "tokenizer.json"), modelPackTokenizerJSON)
 		writeModelPackFile(t, core.PathJoin(missing, "model.safetensors"), "stub")
-		pack, err := InspectModelPack(missing, mp.WithPackRequireChatTemplate(false))
+		pack, err := Inspect(missing, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
-			t.Fatalf("InspectModelPack(missing config) error = %v", err)
+			t.Fatalf("Inspect(missing config) error = %v", err)
 		}
 		if !pack.HasIssue(mp.ModelPackIssueMissingConfig) || !pack.HasIssue(mp.ModelPackIssueMissingArchitecture) {
 			t.Fatalf("issues = %+v, want missing config and architecture", pack.Issues)
@@ -179,9 +178,9 @@ func TestInspectModelPack_WeightAndConfigEdgeCases_Bad(t *testing.T) {
 		writeModelPackFile(t, core.PathJoin(invalid, "config.json"), "{")
 		writeModelPackFile(t, core.PathJoin(invalid, "tokenizer.json"), modelPackTokenizerJSON)
 		writeModelPackFile(t, core.PathJoin(invalid, "model.safetensors"), "stub")
-		pack, err = InspectModelPack(invalid, mp.WithPackRequireChatTemplate(false))
+		pack, err = Inspect(invalid, mp.WithPackRequireChatTemplate(false))
 		if err != nil {
-			t.Fatalf("InspectModelPack(invalid config) error = %v", err)
+			t.Fatalf("Inspect(invalid config) error = %v", err)
 		}
 		if !pack.HasIssue(mp.ModelPackIssueInvalidConfig) {
 			t.Fatalf("issues = %+v, want invalid config", pack.Issues)
@@ -221,9 +220,9 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "qwen3_next")
 
-	pack, err := InspectModelPack(dir, mp.WithPackMaxContextLength(131072))
+	pack, err := Inspect(dir, mp.WithPackMaxContextLength(131072))
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -254,9 +253,9 @@ func TestInspectModelPack_SafetensorsQwen3MoEArchitectureFallback_Good(t *testin
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -303,9 +302,9 @@ func TestInspectModelPack_MiniMaxJANGTQPack_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00061.safetensors"), "stub")
 	writeModelPackFile(t, core.PathJoin(dir, "jangtq_runtime.safetensors"), "stub")
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -363,9 +362,9 @@ func TestInspectModelPack_CodebookVQPackFailsClearly_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if pack.Codebook == nil || pack.Codebook.Format != codebook.FormatVQ || len(pack.Codebook.Tensors) != 1 {
 		t.Fatalf("codebook profile = %+v, want VQ model-pack feature flag", pack.Codebook)
@@ -428,9 +427,9 @@ func TestInspectModelPack_MiniMaxLayerSkeletonFromSafetensors_Good(t *testing.T)
 	}
 	writeMiniMaxM2RawSafetensors(t, core.PathJoin(dir, "model.safetensors"), miniMaxM2SkeletonRawTensors(t, plan, false))
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
@@ -493,9 +492,9 @@ func TestInspectModelPack_MetadataOnlyArchitectureProfiles_Good(t *testing.T) {
 			writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 			writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
 
-			pack, err := InspectModelPack(dir)
+			pack, err := Inspect(dir)
 			if err != nil {
-				t.Fatalf("InspectModelPack() error = %v", err)
+				t.Fatalf("Inspect() error = %v", err)
 			}
 			if !pack.Valid() {
 				t.Fatalf("pack should be metadata-valid, issues = %+v", pack.Issues)
@@ -550,9 +549,9 @@ func TestInspectModelPack_BertSentenceTransformerEmbeddings_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be metadata-valid, issues = %+v", pack.Issues)
@@ -582,9 +581,9 @@ func TestInspectModelPack_BertCrossEncoderRerank_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
 	writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 
-	pack, err := InspectModelPack(dir)
+	pack, err := Inspect(dir)
 	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
+		t.Fatalf("Inspect() error = %v", err)
 	}
 	if !pack.Valid() {
 		t.Fatalf("pack should be metadata-valid, issues = %+v", pack.Issues)
@@ -597,37 +596,6 @@ func TestInspectModelPack_BertCrossEncoderRerank_Good(t *testing.T) {
 	}
 	if !modelPackHasCapability(pack, inference.CapabilityRerank) {
 		t.Fatalf("capabilities = %+v, want rerank capability", pack.Capabilities)
-	}
-}
-
-func TestInspectModelPack_GGUFQuantizationFlowsToMemoryPlan_Good(t *testing.T) {
-	dir := t.TempDir()
-	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
-		"model_type": "qwen3",
-		"hidden_size": 2048,
-		"num_hidden_layers": 28,
-		"max_position_embeddings": 40960
-	}`)
-	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
-	ggufPath := core.PathJoin(dir, "model.gguf")
-	writeTestGGUF(t, ggufPath,
-		[]ggufMetaSpec{
-			{Key: "general.architecture", ValueType: gguf.ValueTypeString, Value: "qwen3"},
-			{Key: "general.file_type", ValueType: gguf.ValueTypeUint32, Value: uint32(15)},
-		},
-		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{256, 128}}},
-	)
-
-	pack, err := InspectModelPack(dir)
-	if err != nil {
-		t.Fatalf("InspectModelPack() error = %v", err)
-	}
-	plan := PlanMemory(MemoryPlanInput{
-		Device: DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
-		Pack:   &pack,
-	})
-	if plan.ModelQuantization != 4 || plan.ModelQuantizationType != "q4_k_m" || plan.ModelQuantizationFamily != "qk" {
-		t.Fatalf("memory quantization = %+v", plan)
 	}
 }
 
@@ -645,7 +613,7 @@ func TestValidateModelPack_MissingTokenizer_Bad(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{"model_type":"gemma3"}`)
 	writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 
-	pack, err := ValidateModelPack(dir)
+	pack, err := Validate(dir)
 	if err == nil {
 		t.Fatal("expected validation error for missing tokenizer")
 	}
@@ -658,7 +626,7 @@ func TestValidateModelPack_QuantizationAndContext_Ugly(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
-	pack, err := ValidateModelPack(dir, mp.WithPackQuantization(8), mp.WithPackMaxContextLength(8192))
+	pack, err := Validate(dir, mp.WithPackQuantization(8), mp.WithPackMaxContextLength(8192))
 	if err == nil {
 		t.Fatal("expected validation error for quantization/context mismatch")
 	}
@@ -680,7 +648,7 @@ func TestValidateModelPack_GGUFInvalidTensorMetadata_Bad(t *testing.T) {
 		[]ggufTensorSpec{{Name: "model.layers.0.self_attn.q_proj.weight", Type: ggufTensorTypeQ4K, Dims: []uint64{127, 128}}},
 	)
 
-	pack, err := ValidateModelPack(dir)
+	pack, err := Validate(dir)
 	if err == nil {
 		t.Fatal("expected validation error for invalid GGUF tensor metadata")
 	}

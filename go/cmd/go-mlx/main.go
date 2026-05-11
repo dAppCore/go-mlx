@@ -12,6 +12,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/pack"
 )
 
@@ -185,7 +186,7 @@ func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) 
 	if *maxContext > 0 {
 		options = append(options, pack.WithPackMaxContextLength(*maxContext))
 	}
-	pack, err := mlx.InspectModelPack(fs.Arg(0), options...)
+	pack, err := model.Inspect(fs.Arg(0), options...)
 	if err != nil {
 		core.Print(stderr, "go-mlx pack: %v", err)
 		return 1

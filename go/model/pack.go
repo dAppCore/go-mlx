@@ -1,6 +1,8 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+// Package model holds model-pack inspection and validation utilities that
+// operate on local directories or GGUF files without loading weights.
+package model
 
 import (
 	"sort"
@@ -9,14 +11,16 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
-	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/model/minimax/m2"
+	mp "dappco.re/go/mlx/pack"
 	"dappco.re/go/mlx/profile"
 )
 
-// InspectModelPack validates a local model directory or GGUF file without loading weights.
-func InspectModelPack(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
+// Inspect validates a local model directory or GGUF file without loading weights.
+//
+//	pack, err := model.Inspect(modelPath)
+func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
 	cfg := mp.ApplyOptions(opts)
 	resolvedPath := modelPath
 	if abs := core.PathAbs(modelPath); abs.OK {
@@ -56,16 +60,38 @@ func InspectModelPack(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPac
 	return pack, nil
 }
 
-// ValidateModelPack returns an error when InspectModelPack finds validation issues.
-func ValidateModelPack(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
-	pack, err := InspectModelPack(modelPath, opts...)
+// firstNonEmpty returns the first non-empty string after trimming whitespace.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if core.Trim(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// firstPositive returns the first positive value from a list.
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+// Validate returns an error when Inspect finds validation issues.
+//
+//	pack, err := model.Validate(modelPath)
+func Validate(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error) {
+	pack, err := Inspect(modelPath, opts...)
 	if err != nil {
 		return pack, err
 	}
 	if pack.Valid() {
 		return pack, nil
 	}
-	return pack, core.NewError("mlx: invalid model pack: " + pack.IssueSummary())
+	return pack, core.NewError("model: invalid model pack: " + pack.IssueSummary())
 }
 
 func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe, error) {
@@ -232,8 +258,14 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
 		return
 	}
-	if _, err := LoadTokenizer(tokenizerPath); err != nil {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, err.Error(), tokenizerPath)
+	read := core.ReadFile(tokenizerPath)
+	if !read.OK {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, read.Value.(error).Error(), tokenizerPath)
+		return
+	}
+	var probe map[string]any
+	if result := core.JSONUnmarshal(read.Value.([]byte), &probe); !result.OK {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, result.Value.(error).Error(), tokenizerPath)
 		return
 	}
 	pack.TokenizerPath = tokenizerPath
@@ -590,9 +622,17 @@ func finalizeModelPack(pack *mp.ModelPack) {
 	pack.OK = !pack.HasErrorIssue()
 }
 
-func modelPackSupportedArchitecture(architecture string) bool {
+// SupportsArchitecture reports whether the named architecture has a known
+// profile registered in dappco.re/go/mlx/profile.
+//
+//	if model.SupportsArchitecture("qwen3") { ... }
+func SupportsArchitecture(architecture string) bool {
 	_, ok := profile.LookupArchitectureProfile(architecture)
 	return ok
+}
+
+func modelPackSupportedArchitecture(architecture string) bool {
+	return SupportsArchitecture(architecture)
 }
 
 func modelPackNativeRuntimeSupported(architecture string) bool {

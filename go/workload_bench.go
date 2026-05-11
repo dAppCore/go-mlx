@@ -12,6 +12,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/inference/quant/jang"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/model/minimax/m2"
 )
@@ -78,7 +79,7 @@ type WorkloadBenchRunner struct {
 type WorkloadBenchReport struct {
 	Version             int                            `json:"version"`
 	FastEval            *bench.Report                `json:"fast_eval,omitempty"`
-	KVCache             KVCacheBenchReport             `json:"kv_cache,omitempty"`
+	KVCache             kv.BenchReport                 `json:"kv_cache,omitempty"`
 	QuantizationProfile *jang.PackedProfile `json:"quantization_profile,omitempty"`
 	Adapter             WorkloadAdapterReport          `json:"adapter"`
 	Evaluation          WorkloadEvaluationReport       `json:"evaluation"`
@@ -237,7 +238,7 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 		report.Evaluation = runWorkloadEvaluation(ctx, runner, cfg)
 	}
 	if cfg.IncludeKVCacheBench && report.FastEval != nil {
-		report.KVCache = CompareKVCacheModes(kvCacheBenchConfigFromModelInfo(benchInfoToModel(report.FastEval.ModelInfo)))
+		report.KVCache = kv.CompareModes(kvBenchConfigFromModelInfo(benchInfoToModel(report.FastEval.ModelInfo)))
 	}
 	if cfg.IncludeExpertResidency {
 		report.ExpertResidency = runWorkloadExpertResidency(ctx, runner, cfg)
@@ -254,8 +255,8 @@ func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	return cfg
 }
 
-func kvCacheBenchConfigFromModelInfo(info ModelInfo) KVCacheBenchConfig {
-	return KVCacheBenchConfig{
+func kvBenchConfigFromModelInfo(info ModelInfo) kv.BenchConfig {
+	return kv.BenchConfig{
 		ContextLength: info.ContextLength,
 		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,

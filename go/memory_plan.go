@@ -4,8 +4,9 @@ package mlx
 
 import (
 	"dappco.re/go/mlx/memory"
-	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/model/minimax/m2"
+	mp "dappco.re/go/mlx/pack"
 )
 
 // MemoryPlanInput supplies measured hardware and optional model metadata.
@@ -101,7 +102,7 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 		plan = *cfg.MemoryPlan
 	} else if cfg.AutoMemoryPlan {
 		var pack *mp.ModelPack
-		if inspected, err := InspectModelPack(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
+		if inspected, err := model.Inspect(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
 		}
 		plan = PlanMemory(MemoryPlanInput{

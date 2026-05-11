@@ -16,6 +16,7 @@ import (
 	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/model"
 	"dappco.re/go/mlx/profile"
 	"dappco.re/go/mlx/probe"
 )
@@ -35,7 +36,7 @@ func (backend *metalbackend) SetRuntimeMemoryLimits(limits inference.RuntimeMemo
 	return applied
 }
 
-func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.ModelIdentity, memoryBytes uint64) (*inference.ModelFitReport, error) {
+func (backend *metalbackend) PlanModelFit(ctx context.Context, ident inference.ModelIdentity, memoryBytes uint64) (*inference.ModelFitReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -49,24 +50,24 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, model inference.M
 		device.MaxRecommendedWorkingSetSize = memoryBytes
 	}
 	modelInfo := ModelInfo{
-		Architecture:  model.Architecture,
-		VocabSize:     model.VocabSize,
-		NumLayers:     model.NumLayers,
-		HiddenSize:    model.HiddenSize,
-		QuantBits:     model.QuantBits,
-		QuantGroup:    model.QuantGroup,
-		ContextLength: model.ContextLength,
+		Architecture:  ident.Architecture,
+		VocabSize:     ident.VocabSize,
+		NumLayers:     ident.NumLayers,
+		HiddenSize:    ident.HiddenSize,
+		QuantBits:     ident.QuantBits,
+		QuantGroup:    ident.QuantGroup,
+		ContextLength: ident.ContextLength,
 	}
 	plan := PlanMemory(MemoryPlanInput{Device: device, ModelInfo: &modelInfo})
-	architectureOK := model.Architecture == "" || modelPackSupportedArchitecture(model.Architecture)
-	quantizationOK := model.QuantBits == 0 || plan.PreferredQuantization == 0 || model.QuantBits <= plan.PreferredQuantization
+	architectureOK := ident.Architecture == "" || model.SupportsArchitecture(ident.Architecture)
+	quantizationOK := ident.QuantBits == 0 || plan.PreferredQuantization == 0 || ident.QuantBits <= plan.PreferredQuantization
 	fits := architectureOK && quantizationOK
 	if plan.MemoryLimitBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes > plan.MemoryLimitBytes {
 		fits = false
 	}
 
 	return &inference.ModelFitReport{
-		Model:          model,
+		Model:          ident,
 		Fits:           fits,
 		MemoryPlan:     toInferenceMemoryPlan(plan),
 		ArchitectureOK: architectureOK,
