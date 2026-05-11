@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"testing"
 
 	core "dappco.re/go"
@@ -13,7 +14,7 @@ func TestSmallModelSmokeBudget_Q4Under26GiB_Good(t *testing.T) {
 	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/gemma-small-q4",
 		QuantBits:      4,
-		WeightBytes:    5 * MemoryGiB,
+		WeightBytes:    5 * memory.GiB,
 		NativeLoadable: true,
 		OK:             true,
 	}, SmallModelSmokeConfig{})
@@ -21,7 +22,7 @@ func TestSmallModelSmokeBudget_Q4Under26GiB_Good(t *testing.T) {
 	if !budget.SafeToLoad {
 		t.Fatalf("SafeToLoad = false, want true: %+v", budget)
 	}
-	if budget.MaxWeightBytes != 26*MemoryGiB || budget.RequiredQuantization != 4 {
+	if budget.MaxWeightBytes != 26*memory.GiB || budget.RequiredQuantization != 4 {
 		t.Fatalf("defaults = max:%d quant:%d, want 26GiB/q4", budget.MaxWeightBytes, budget.RequiredQuantization)
 	}
 }
@@ -30,7 +31,7 @@ func TestSmallModelSmokeBudget_RejectsOversizeQ4_Bad(t *testing.T) {
 	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/qwen-large-q4",
 		QuantBits:      4,
-		WeightBytes:    27 * MemoryGiB,
+		WeightBytes:    27 * memory.GiB,
 		NativeLoadable: true,
 		OK:             true,
 	}, SmallModelSmokeConfig{})
@@ -47,7 +48,7 @@ func TestSmallModelSmokeBudget_RejectsNonQ4_Bad(t *testing.T) {
 	budget := EvaluateSmallModelSmokeBudget(mp.ModelPack{
 		Path:           "/models/gemma-small-bf16",
 		QuantBits:      16,
-		WeightBytes:    8 * MemoryGiB,
+		WeightBytes:    8 * memory.GiB,
 		NativeLoadable: true,
 		OK:             true,
 	}, SmallModelSmokeConfig{})
@@ -68,12 +69,12 @@ func TestSmallModelSmokeBudget_RejectsUnsafeMetadata_Bad(t *testing.T) {
 	}{
 		{
 			name: "invalid pack",
-			pack: mp.ModelPack{OK: false, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 4},
+			pack: mp.ModelPack{OK: false, NativeLoadable: true, WeightBytes: memory.GiB, QuantBits: 4},
 			want: "validation",
 		},
 		{
 			name: "not native loadable",
-			pack: mp.ModelPack{OK: true, NativeLoadable: false, WeightBytes: MemoryGiB, QuantBits: 4},
+			pack: mp.ModelPack{OK: true, NativeLoadable: false, WeightBytes: memory.GiB, QuantBits: 4},
 			want: "native-loadable",
 		},
 		{
@@ -83,7 +84,7 @@ func TestSmallModelSmokeBudget_RejectsUnsafeMetadata_Bad(t *testing.T) {
 		},
 		{
 			name: "unknown quantization",
-			pack: mp.ModelPack{OK: true, NativeLoadable: true, WeightBytes: MemoryGiB, QuantBits: 0},
+			pack: mp.ModelPack{OK: true, NativeLoadable: true, WeightBytes: memory.GiB, QuantBits: 0},
 			want: "quantization is unknown",
 		},
 	}
@@ -104,8 +105,8 @@ func TestPlanSmallModelSmoke_CapsContextForAppleSmoke_Good(t *testing.T) {
 	plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
 		Device: DeviceInfo{
 			Architecture:                 "apple9",
-			MemorySize:                   96 * MemoryGiB,
-			MaxRecommendedWorkingSetSize: 90 * MemoryGiB,
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
 		},
 	})
 	if err != nil {
@@ -142,7 +143,7 @@ func TestPlanSmallModelSmoke_RedactsChatTemplateByDefault_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "chat_template.jinja"), "large-template-body")
 
 	plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
-		Device: DeviceInfo{MemorySize: 16 * MemoryGiB},
+		Device: DeviceInfo{MemorySize: 16 * memory.GiB},
 	})
 	if err != nil {
 		t.Fatalf("PlanSmallModelSmoke() error = %v", err)
@@ -194,7 +195,7 @@ func TestSmallModelSmokeHelpers_Good(t *testing.T) {
 	if len(smallModelSmokePackOptions(cfg)) != 2 {
 		t.Fatalf("pack options len = %d, want chat-template option plus quantization", len(smallModelSmokePackOptions(cfg)))
 	}
-	load := smallModelSmokeLoadPlan(MemoryPlan{
+	load := smallModelSmokeLoadPlan(memory.Plan{
 		ContextLength:        16384,
 		ParallelSlots:        3,
 		PromptCache:          true,
@@ -208,7 +209,7 @@ func TestSmallModelSmokeHelpers_Good(t *testing.T) {
 	if load.ContextLength != 4096 || load.BatchSize != 2 || load.PrefillChunkSize != 128 || load.PromptCacheMinTokens != DefaultSmallModelSmokePromptCacheMinSize {
 		t.Fatalf("load plan = %+v, want capped smoke shape", load)
 	}
-	opts := smallModelSmokeLoadOptions(SmallModelSmokePlan{MemoryPlan: MemoryPlan{}, Load: load}, SmallModelSmokeConfig{
+	opts := smallModelSmokeLoadOptions(SmallModelSmokePlan{MemoryPlan: memory.Plan{}, Load: load}, SmallModelSmokeConfig{
 		AdditionalLoadOptions: []LoadOption{WithDevice("cpu")},
 	})
 	if len(opts) != 13 {

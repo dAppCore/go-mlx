@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"context"
 	"iter"
 	"reflect"
@@ -1368,7 +1369,7 @@ func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel() error = %v", err)
 	}
-	if model.cfg.MemoryPlan == nil || model.cfg.MemoryPlan.MachineClass != MemoryClassApple16GB {
+	if model.cfg.MemoryPlan == nil || model.cfg.MemoryPlan.MachineClass != memory.ClassApple16GB {
 		t.Fatalf("model memory plan = %+v, want 16GB class", model.cfg.MemoryPlan)
 	}
 	if err := model.Close(); err != nil {

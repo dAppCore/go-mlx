@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"testing"
 
 	core "dappco.re/go"
@@ -622,7 +623,7 @@ func TestInspectModelPack_GGUFQuantizationFlowsToMemoryPlan_Good(t *testing.T) {
 		t.Fatalf("InspectModelPack() error = %v", err)
 	}
 	plan := PlanMemory(MemoryPlanInput{
-		Device: DeviceInfo{MemorySize: 96 * MemoryGiB, MaxRecommendedWorkingSetSize: 86 * MemoryGiB},
+		Device: DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
 		Pack:   &pack,
 	})
 	if plan.ModelQuantization != 4 || plan.ModelQuantizationType != "q4_k_m" || plan.ModelQuantizationFamily != "qk" {

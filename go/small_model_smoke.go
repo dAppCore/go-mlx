@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"context"
 
 	core "dappco.re/go"
@@ -10,7 +11,7 @@ import (
 )
 
 const (
-	DefaultSmallModelSmokeMaxWeightBytes     = 26 * MemoryGiB
+	DefaultSmallModelSmokeMaxWeightBytes     = 26 * memory.GiB
 	DefaultSmallModelSmokeQuantization       = 4
 	DefaultSmallModelSmokeMaxContextLength   = 8192
 	DefaultSmallModelSmokeMaxBatchSize       = 1
@@ -56,8 +57,8 @@ type SmallModelSmokeLoadPlan struct {
 	PromptCache          bool          `json:"prompt_cache"`
 	PromptCacheMinTokens int           `json:"prompt_cache_min_tokens,omitempty"`
 	Quantization         int           `json:"quantization,omitempty"`
-	CachePolicy          KVCachePolicy `json:"cache_policy,omitempty"`
-	CacheMode            KVCacheMode   `json:"cache_mode,omitempty"`
+	CachePolicy          memory.KVCachePolicy `json:"cache_policy,omitempty"`
+	CacheMode            memory.KVCacheMode   `json:"cache_mode,omitempty"`
 	BatchSize            int           `json:"batch_size"`
 	PrefillChunkSize     int           `json:"prefill_chunk_size"`
 	MemoryLimitBytes     uint64        `json:"memory_limit_bytes,omitempty"`
@@ -71,7 +72,7 @@ type SmallModelSmokePlan struct {
 	ModelPath  string                  `json:"model_path"`
 	Pack       mp.ModelPack               `json:"pack"`
 	Budget     SmallModelSmokeBudget   `json:"budget"`
-	MemoryPlan MemoryPlan              `json:"memory_plan"`
+	MemoryPlan memory.Plan              `json:"memory_plan"`
 	Load       SmallModelSmokeLoadPlan `json:"load"`
 	Notes      []string                `json:"notes,omitempty"`
 }
@@ -258,7 +259,7 @@ func smallModelSmokePackOptions(cfg SmallModelSmokeConfig) []mp.ModelPackOption 
 	return opts
 }
 
-func smallModelSmokeLoadPlan(plan MemoryPlan, cfg SmallModelSmokeConfig) SmallModelSmokeLoadPlan {
+func smallModelSmokeLoadPlan(plan memory.Plan, cfg SmallModelSmokeConfig) SmallModelSmokeLoadPlan {
 	contextLength := plan.ContextLength
 	if cfg.MaxContextLength > 0 && (contextLength == 0 || contextLength > cfg.MaxContextLength) {
 		contextLength = cfg.MaxContextLength

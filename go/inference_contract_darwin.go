@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"context"
 
 	core "dappco.re/go"
@@ -315,10 +316,10 @@ var (
 		"nvfp4",
 	}
 	metalCapabilityCacheModes = []string{
-		string(KVCacheModeFP16),
-		string(KVCacheModeQ8),
-		string(KVCacheModeKQ8VQ4),
-		string(KVCacheModePaged),
+		string(memory.KVCacheModeFP16),
+		string(memory.KVCacheModeQ8),
+		string(memory.KVCacheModeKQ8VQ4),
+		string(memory.KVCacheModePaged),
 	}
 )
 
@@ -447,7 +448,7 @@ func adapterIdentityLabels(name string, scale float32) map[string]string {
 	return labels
 }
 
-func toInferenceMemoryPlan(plan MemoryPlan) inference.MemoryPlan {
+func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 	return inference.MemoryPlan{
 		MachineClass:      string(plan.MachineClass),
 		DeviceMemoryBytes: plan.DeviceMemoryBytes,
@@ -456,7 +457,7 @@ func toInferenceMemoryPlan(plan MemoryPlan) inference.MemoryPlan {
 		CacheMode:         string(plan.CacheMode),
 		Quantization:      core.Sprintf("%d-bit", plan.PreferredQuantization),
 		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
-		TrainingFeasible:  plan.MachineClass != MemoryClassApple16GB,
+		TrainingFeasible:  plan.MachineClass != memory.ClassApple16GB,
 		Notes:             append([]string(nil), plan.Notes...),
 	}
 }

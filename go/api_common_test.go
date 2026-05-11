@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"testing"
 
 	core "dappco.re/go"
@@ -817,12 +818,12 @@ func TestApiCommon_WithMedium_Ugly(t *testing.T) {
 }
 
 func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
-	plan := MemoryPlan{ContextLength: 8192, CachePolicy: KVCacheRotating, CacheMode: KVCacheModeQ8}
+	plan := memory.Plan{ContextLength: 8192, CachePolicy: memory.KVCacheRotating, CacheMode: memory.KVCacheModeQ8}
 	cfg := applyLoadOptions([]LoadOption{
 		WithAutoMemoryPlan(false),
 		WithMemoryPlan(plan),
-		WithCachePolicy(KVCacheFull),
-		WithKVCacheMode(KVCacheModeKQ8VQ4),
+		WithCachePolicy(memory.KVCacheFull),
+		WithKVCacheMode(memory.KVCacheModeKQ8VQ4),
 		WithBatchSize(3),
 		WithPrefillChunkSize(256),
 		WithAllocatorLimits(10, 3, 7),
@@ -831,9 +832,9 @@ func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 		t.Fatal("AutoMemoryPlan = true, want false")
 	}
 	if cfg.MemoryPlan == nil || cfg.MemoryPlan.ContextLength != 8192 {
-		t.Fatalf("MemoryPlan = %+v, want explicit plan", cfg.MemoryPlan)
+		t.Fatalf("memory.Plan = %+v, want explicit plan", cfg.MemoryPlan)
 	}
-	if cfg.CachePolicy != KVCacheFull || cfg.CacheMode != KVCacheModeKQ8VQ4 || cfg.BatchSize != 3 || cfg.PrefillChunkSize != 256 {
+	if cfg.CachePolicy != memory.KVCacheFull || cfg.CacheMode != memory.KVCacheModeKQ8VQ4 || cfg.BatchSize != 3 || cfg.PrefillChunkSize != 256 {
 		t.Fatalf("planner shape = policy %q mode %q batch %d prefill %d", cfg.CachePolicy, cfg.CacheMode, cfg.BatchSize, cfg.PrefillChunkSize)
 	}
 	if cfg.MemoryLimitBytes != 10 || cfg.CacheLimitBytes != 3 || cfg.WiredLimitBytes != 7 {
@@ -846,9 +847,9 @@ func TestApiCommon_WithKVCacheMode_AppliesValue_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	cfg := applyLoadOptions([]LoadOption{WithKVCacheMode(KVCacheModeQ8)})
-	if cfg.CacheMode != KVCacheModeQ8 {
-		t.Fatalf("CacheMode = %q, want %q", cfg.CacheMode, KVCacheModeQ8)
+	cfg := applyLoadOptions([]LoadOption{WithKVCacheMode(memory.KVCacheModeQ8)})
+	if cfg.CacheMode != memory.KVCacheModeQ8 {
+		t.Fatalf("CacheMode = %q, want %q", cfg.CacheMode, memory.KVCacheModeQ8)
 	}
 }
 
@@ -862,10 +863,10 @@ func TestApiCommon_NormalizeLoadConfig_RejectsNegativePlannerShape_Bad(t *testin
 }
 
 func TestApiCommon_WithMemoryPlan_ClonesPlan_Ugly(t *testing.T) {
-	plan := MemoryPlan{ContextLength: 8192}
+	plan := memory.Plan{ContextLength: 8192}
 	cfg := applyLoadOptions([]LoadOption{WithMemoryPlan(plan)})
 	plan.ContextLength = 4096
 	if cfg.MemoryPlan == nil || cfg.MemoryPlan.ContextLength != 8192 {
-		t.Fatalf("MemoryPlan = %+v, want cloned 8192 plan", cfg.MemoryPlan)
+		t.Fatalf("memory.Plan = %+v, want cloned 8192 plan", cfg.MemoryPlan)
 	}
 }

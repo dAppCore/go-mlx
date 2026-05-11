@@ -8,46 +8,6 @@ import (
 	"dappco.re/go/mlx/model/minimax/m2"
 )
 
-// MemoryGiB is the number of bytes in a gibibyte.
-const MemoryGiB = memory.GiB
-
-// Legacy aliases — the canonical memory planner lives at
-// dappco.re/go/mlx/memory/. mlx-root callers keep their existing
-// Memory* + KVCache* + ExpertResidency* surface via these aliases.
-type (
-	MemoryClass   = memory.Class
-	KVCachePolicy = memory.KVCachePolicy
-	KVCacheMode   = memory.KVCacheMode
-	MemoryPlan    = memory.Plan
-)
-
-// Memory class constants forwarded from the memory package.
-const (
-	MemoryClassUnknown    = memory.ClassUnknown
-	MemoryClassApple16GB  = memory.ClassApple16GB
-	MemoryClassApple24GB  = memory.ClassApple24GB
-	MemoryClassApple32GB  = memory.ClassApple32GB
-	MemoryClassApple64GB  = memory.ClassApple64GB
-	MemoryClassApple96GB  = memory.ClassApple96GB
-	MemoryClassApple128GB = memory.ClassApple128GB
-)
-
-// KV cache policy constants forwarded from the memory package.
-const (
-	KVCacheDefault  = memory.KVCacheDefault
-	KVCacheRotating = memory.KVCacheRotating
-	KVCacheFull     = memory.KVCacheFull
-)
-
-// KV cache mode constants forwarded from the memory package.
-const (
-	KVCacheModeDefault = memory.KVCacheModeDefault
-	KVCacheModeFP16    = memory.KVCacheModeFP16
-	KVCacheModeQ8      = memory.KVCacheModeQ8
-	KVCacheModeKQ8VQ4  = memory.KVCacheModeKQ8VQ4
-	KVCacheModePaged   = memory.KVCacheModePaged
-)
-
 // MemoryPlanInput supplies measured hardware and optional model metadata.
 // Carries mlx-shaped DeviceInfo + ModelInfo at the boundary; PlanMemory
 // converts to memory.Input before delegating.
@@ -62,7 +22,7 @@ type MemoryPlanInput struct {
 // expert-residency and forward-skeleton hints on top.
 //
 //	plan := mlx.PlanMemory(mlx.MemoryPlanInput{Device: dev, Pack: &pack})
-func PlanMemory(input MemoryPlanInput) MemoryPlan {
+func PlanMemory(input MemoryPlanInput) memory.Plan {
 	plan := memory.NewPlan(memory.Input{
 		Device:    deviceInfoToMemory(input.Device),
 		Pack:      input.Pack,
@@ -136,7 +96,7 @@ func maxPositive(a, b int) int {
 var memoryPlannerDeviceInfo = safeRuntimeDeviceInfo
 
 func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
-	var plan MemoryPlan
+	var plan memory.Plan
 	if cfg.MemoryPlan != nil {
 		plan = *cfg.MemoryPlan
 	} else if cfg.AutoMemoryPlan {

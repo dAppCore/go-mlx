@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"context"
 	"testing"
 	"time"
@@ -48,8 +49,8 @@ func TestRunSmallModelSmoke_ForwardsBudgetedLoadOptions_Good(t *testing.T) {
 		ModelPath: dir,
 		Device: DeviceInfo{
 			Architecture:                 "apple9",
-			MemorySize:                   96 * MemoryGiB,
-			MaxRecommendedWorkingSetSize: 90 * MemoryGiB,
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
 		},
 		Workload: WorkloadBenchConfig{
 			FastEval: FastEvalConfig{

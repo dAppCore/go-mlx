@@ -257,7 +257,7 @@ func kvCacheBenchConfigFromModelInfo(info ModelInfo) KVCacheBenchConfig {
 		ContextLength: info.ContextLength,
 		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,
-		Modes:         []KVCacheMode{KVCacheModeFP16, KVCacheModePaged, KVCacheModeQ8, KVCacheModeKQ8VQ4},
+		Modes:         []memory.KVCacheMode{memory.KVCacheModeFP16, memory.KVCacheModePaged, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4},
 	}
 }
 

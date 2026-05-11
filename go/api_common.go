@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
@@ -196,9 +197,9 @@ type LoadConfig struct {
 	AdapterPath          string
 	Medium               coreio.Medium
 	AutoMemoryPlan       bool
-	MemoryPlan           *MemoryPlan
-	CachePolicy          KVCachePolicy
-	CacheMode            KVCacheMode
+	MemoryPlan           *memory.Plan
+	CachePolicy          memory.KVCachePolicy
+	CacheMode            memory.KVCacheMode
 	BatchSize            int
 	PrefillChunkSize     int
 	ExpectedQuantization int
@@ -276,7 +277,7 @@ func WithAutoMemoryPlan(enabled bool) LoadOption {
 }
 
 // WithMemoryPlan applies an explicit memory plan instead of probing the device.
-func WithMemoryPlan(plan MemoryPlan) LoadOption {
+func WithMemoryPlan(plan memory.Plan) LoadOption {
 	return func(c *LoadConfig) {
 		cloned := plan
 		c.MemoryPlan = &cloned
@@ -285,12 +286,12 @@ func WithMemoryPlan(plan MemoryPlan) LoadOption {
 }
 
 // WithCachePolicy selects the KV cache policy used by the native backend.
-func WithCachePolicy(policy KVCachePolicy) LoadOption {
+func WithCachePolicy(policy memory.KVCachePolicy) LoadOption {
 	return func(c *LoadConfig) { c.CachePolicy = policy }
 }
 
 // WithKVCacheMode selects the native KV cache storage mode.
-func WithKVCacheMode(mode KVCacheMode) LoadOption {
+func WithKVCacheMode(mode memory.KVCacheMode) LoadOption {
 	return func(c *LoadConfig) { c.CacheMode = mode }
 }
 
@@ -347,7 +348,7 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 		return LoadConfig{}, core.NewError("mlx: expected quantization bits must be >= 0")
 	}
 	switch cfg.CacheMode {
-	case KVCacheModeDefault, KVCacheModeFP16, KVCacheModeQ8, KVCacheModeKQ8VQ4, KVCacheModePaged:
+	case memory.KVCacheModeDefault, memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
 	default:
 		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
 	}

@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/mlx/memory"
 	"context"
 	"testing"
 	"time"
@@ -147,7 +148,7 @@ func TestInferenceContract_MetalBackendCapabilities_Good_UsesSafeDeviceInfoHook(
 	called := false
 	metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
 		called = true
-		return DeviceInfo{Architecture: "test-metal", MemorySize: 16 * MemoryGiB}
+		return DeviceInfo{Architecture: "test-metal", MemorySize: 16 * memory.GiB}
 	}
 	t.Cleanup(func() { metalCapabilityDeviceInfo = previous })
 
@@ -223,7 +224,7 @@ func TestInferenceContract_MetalBackendPlanModelFit_Good(t *testing.T) {
 		ContextLength: 32768,
 		NumLayers:     28,
 		HiddenSize:    2048,
-	}, 16*MemoryGiB)
+	}, 16*memory.GiB)
 	if err != nil {
 		t.Fatalf("PlanModelFit: %v", err)
 	}
@@ -231,7 +232,7 @@ func TestInferenceContract_MetalBackendPlanModelFit_Good(t *testing.T) {
 		t.Fatalf("PlanModelFit report = %+v, want supported qwen3/q4", report)
 	}
 	if report.MemoryPlan.ContextLength == 0 || report.MemoryPlan.CacheMode == "" {
-		t.Fatalf("MemoryPlan = %+v, want context/cache recommendation", report.MemoryPlan)
+		t.Fatalf("memory.Plan = %+v, want context/cache recommendation", report.MemoryPlan)
 	}
 }
 
@@ -239,7 +240,7 @@ func TestInferenceContract_MetalBackendPlanModelFit_Bad(t *testing.T) {
 	report, err := (&metalbackend{}).PlanModelFit(context.Background(), inference.ModelIdentity{
 		Architecture: "unknown-transformer",
 		QuantBits:    16,
-	}, 8*MemoryGiB)
+	}, 8*memory.GiB)
 	if err != nil {
 		t.Fatalf("PlanModelFit: %v", err)
 	}

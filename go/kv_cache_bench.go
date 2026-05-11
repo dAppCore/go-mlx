@@ -2,6 +2,8 @@
 
 package mlx
 
+import "dappco.re/go/mlx/memory"
+
 const KVCacheBenchReportVersion = 1
 
 // KVCacheBenchConfig describes a model/context shape for cache-mode comparison.
@@ -10,7 +12,7 @@ type KVCacheBenchConfig struct {
 	NumLayers     int           `json:"num_layers"`
 	HiddenSize    int           `json:"hidden_size"`
 	DTypeBytes    int           `json:"dtype_bytes,omitempty"`
-	Modes         []KVCacheMode `json:"modes,omitempty"`
+	Modes         []memory.KVCacheMode `json:"modes,omitempty"`
 }
 
 // KVCacheBenchReport compares cache modes for one model/context shape.
@@ -18,13 +20,13 @@ type KVCacheBenchReport struct {
 	Version         int                `json:"version"`
 	Config          KVCacheBenchConfig `json:"config"`
 	Modes           []KVCacheModeBench `json:"modes"`
-	RecommendedMode KVCacheMode        `json:"recommended_mode,omitempty"`
+	RecommendedMode memory.KVCacheMode        `json:"recommended_mode,omitempty"`
 	Notes           []string           `json:"notes,omitempty"`
 }
 
 // KVCacheModeBench is one mode's estimated memory and tradeoff profile.
 type KVCacheModeBench struct {
-	Mode                   KVCacheMode `json:"mode"`
+	Mode                   memory.KVCacheMode `json:"mode"`
 	KeyBits                int         `json:"key_bits,omitempty"`
 	ValueBits              int         `json:"value_bits,omitempty"`
 	StorageBytes           uint64      `json:"storage_bytes"`
@@ -40,7 +42,7 @@ func CompareKVCacheModes(cfg KVCacheBenchConfig) KVCacheBenchReport {
 		Version: KVCacheBenchReportVersion,
 		Config:  cfg,
 	}
-	fpBytes := kvCacheModeStorageBytes(cfg, KVCacheModeFP16)
+	fpBytes := kvCacheModeStorageBytes(cfg, memory.KVCacheModeFP16)
 	for _, mode := range cfg.Modes {
 		bench := kvCacheModeBench(cfg, mode, fpBytes)
 		report.Modes = append(report.Modes, bench)
@@ -53,7 +55,7 @@ func CompareKVCacheModes(cfg KVCacheBenchConfig) KVCacheBenchReport {
 }
 
 // ByMode returns the comparison row for mode, or a zero row when missing.
-func (r KVCacheBenchReport) ByMode(mode KVCacheMode) KVCacheModeBench {
+func (r KVCacheBenchReport) ByMode(mode memory.KVCacheMode) KVCacheModeBench {
 	for _, bench := range r.Modes {
 		if bench.Mode == mode {
 			return bench
@@ -76,12 +78,12 @@ func normalizeKVCacheBenchConfig(cfg KVCacheBenchConfig) KVCacheBenchConfig {
 		cfg.DTypeBytes = 2
 	}
 	if len(cfg.Modes) == 0 {
-		cfg.Modes = []KVCacheMode{KVCacheModeFP16, KVCacheModePaged, KVCacheModeQ8, KVCacheModeKQ8VQ4}
+		cfg.Modes = []memory.KVCacheMode{memory.KVCacheModeFP16, memory.KVCacheModePaged, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4}
 	}
 	return cfg
 }
 
-func kvCacheModeBench(cfg KVCacheBenchConfig, mode KVCacheMode, fpBytes uint64) KVCacheModeBench {
+func kvCacheModeBench(cfg KVCacheBenchConfig, mode memory.KVCacheMode, fpBytes uint64) KVCacheModeBench {
 	keyBits, valueBits := kvCacheModeBits(mode, cfg.DTypeBytes)
 	storage := kvCacheModeStorageBytes(cfg, mode)
 	relative := float64(1)
@@ -99,11 +101,11 @@ func kvCacheModeBench(cfg KVCacheBenchConfig, mode KVCacheMode, fpBytes uint64) 
 	}
 }
 
-func kvCacheModeBits(mode KVCacheMode, dtypeBytes int) (keyBits, valueBits int) {
+func kvCacheModeBits(mode memory.KVCacheMode, dtypeBytes int) (keyBits, valueBits int) {
 	switch mode {
-	case KVCacheModeQ8:
+	case memory.KVCacheModeQ8:
 		return 8, 8
-	case KVCacheModeKQ8VQ4:
+	case memory.KVCacheModeKQ8VQ4:
 		return 8, 4
 	default:
 		bits := dtypeBytes * 8
@@ -111,54 +113,54 @@ func kvCacheModeBits(mode KVCacheMode, dtypeBytes int) (keyBits, valueBits int) 
 	}
 }
 
-func kvCacheModeStorageBytes(cfg KVCacheBenchConfig, mode KVCacheMode) uint64 {
+func kvCacheModeStorageBytes(cfg KVCacheBenchConfig, mode memory.KVCacheMode) uint64 {
 	elements := uint64(cfg.ContextLength) * uint64(cfg.NumLayers) * uint64(cfg.HiddenSize) * 2
 	switch mode {
-	case KVCacheModeQ8:
+	case memory.KVCacheModeQ8:
 		return elements
-	case KVCacheModeKQ8VQ4:
+	case memory.KVCacheModeKQ8VQ4:
 		return elements * 3 / 4
 	default:
 		return elements * uint64(cfg.DTypeBytes)
 	}
 }
 
-func kvCacheModeDecodePenalty(mode KVCacheMode) float64 {
+func kvCacheModeDecodePenalty(mode memory.KVCacheMode) float64 {
 	switch mode {
-	case KVCacheModeQ8:
+	case memory.KVCacheModeQ8:
 		return 0.08
-	case KVCacheModeKQ8VQ4:
+	case memory.KVCacheModeKQ8VQ4:
 		return 0.14
-	case KVCacheModePaged:
+	case memory.KVCacheModePaged:
 		return 0.02
 	default:
 		return 0
 	}
 }
 
-func kvCacheModeWinsWhen(mode KVCacheMode) string {
+func kvCacheModeWinsWhen(mode memory.KVCacheMode) string {
 	switch mode {
-	case KVCacheModeQ8:
+	case memory.KVCacheModeQ8:
 		return "memory pressure dominates and q4 value loss is not justified"
-	case KVCacheModeKQ8VQ4:
+	case memory.KVCacheModeKQ8VQ4:
 		return "small unified-memory machines need maximum KV savings"
-	case KVCacheModePaged:
+	case memory.KVCacheModePaged:
 		return "memory is available but long-context allocation churn hurts"
 	default:
 		return "quality and raw decode speed dominate memory pressure"
 	}
 }
 
-func recommendKVCacheMode(cfg KVCacheBenchConfig) KVCacheMode {
-	fpBytes := kvCacheModeStorageBytes(cfg, KVCacheModeFP16)
+func recommendKVCacheMode(cfg KVCacheBenchConfig) memory.KVCacheMode {
+	fpBytes := kvCacheModeStorageBytes(cfg, memory.KVCacheModeFP16)
 	switch {
-	case fpBytes >= 20*MemoryGiB:
-		return KVCacheModeKQ8VQ4
-	case fpBytes >= 2*MemoryGiB:
-		return KVCacheModeQ8
+	case fpBytes >= 20*memory.GiB:
+		return memory.KVCacheModeKQ8VQ4
+	case fpBytes >= 2*memory.GiB:
+		return memory.KVCacheModeQ8
 	case cfg.ContextLength >= 65536:
-		return KVCacheModePaged
+		return memory.KVCacheModePaged
 	default:
-		return KVCacheModeFP16
+		return memory.KVCacheModeFP16
 	}
 }
