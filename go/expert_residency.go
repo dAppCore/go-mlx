@@ -8,23 +8,26 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/probe"
 )
 
 // ExpertResidencyMode names how routed MoE experts are kept resident.
-type ExpertResidencyMode string
+// Aliased from dappco.re/go/mlx/memory/.
+type ExpertResidencyMode = memory.ExpertResidencyMode
 
 const (
-	ExpertResidencyModeOff    ExpertResidencyMode = ""
-	ExpertResidencyModePinned ExpertResidencyMode = "pinned"
-	ExpertResidencyModeLazy   ExpertResidencyMode = "lazy"
+	ExpertResidencyModeOff    = memory.ExpertResidencyModeOff
+	ExpertResidencyModePinned = memory.ExpertResidencyModePinned
+	ExpertResidencyModeLazy   = memory.ExpertResidencyModeLazy
 )
 
 // ExpertEvictionPolicy names the cold-expert eviction strategy.
-type ExpertEvictionPolicy string
+// Aliased from dappco.re/go/mlx/memory/.
+type ExpertEvictionPolicy = memory.ExpertEvictionPolicy
 
 const (
-	ExpertEvictionLRU ExpertEvictionPolicy = "lru"
+	ExpertEvictionLRU = memory.ExpertEvictionLRU
 )
 
 // ExpertResidencyAction names probe-visible expert residency transitions.
@@ -38,27 +41,9 @@ const (
 	ExpertResidencyActionHit     = probe.ExpertResidencyActionHit
 )
 
-// ExpertResidencyPlan is a backend-neutral MoE residency policy. It is small
-// enough for memory planners and benchmark reports while still explicit about
-// hot experts, resident limits, and expected first-use pressure.
-type ExpertResidencyPlan struct {
-	Enabled                 bool                 `json:"enabled"`
-	Mode                    ExpertResidencyMode  `json:"mode,omitempty"`
-	Architecture            string               `json:"architecture,omitempty"`
-	TotalExperts            int                  `json:"total_experts,omitempty"`
-	ExpertsPerToken         int                  `json:"experts_per_token,omitempty"`
-	HotExpertIDs            []int                `json:"hot_expert_ids,omitempty"`
-	StartupExpertIDs        []int                `json:"startup_expert_ids,omitempty"`
-	HotExperts              int                  `json:"hot_experts,omitempty"`
-	MaxResidentExperts      int                  `json:"max_resident_experts,omitempty"`
-	PageInBatchSize         int                  `json:"page_in_batch_size,omitempty"`
-	EvictionPolicy          ExpertEvictionPolicy `json:"eviction_policy,omitempty"`
-	EstimatedExpertBytes    uint64               `json:"estimated_expert_bytes,omitempty"`
-	EstimatedResidentBytes  uint64               `json:"estimated_resident_bytes,omitempty"`
-	MaxResidentBytes        uint64               `json:"max_resident_bytes,omitempty"`
-	FirstUseLatencyExpected bool                 `json:"first_use_latency_expected,omitempty"`
-	Notes                   []string             `json:"notes,omitempty"`
-}
+// ExpertResidencyPlan is a backend-neutral MoE residency policy.
+// Aliased from dappco.re/go/mlx/memory/.
+type ExpertResidencyPlan = memory.ExpertResidencyPlan
 
 // ExpertResidencyStats records measured hot-load, page-in, and eviction
 // behaviour. Backends can feed this directly into workload bench reports.
