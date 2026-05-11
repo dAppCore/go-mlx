@@ -1,8 +1,7 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && !nomlx
 
-package mlx
+package compute
 
 import (
 	"testing"
@@ -14,7 +13,7 @@ import (
 
 func requireComputeSession(t *testing.T) Session {
 	t.Helper()
-	if !MetalAvailable() {
+	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
 	session, err := NewSession()
@@ -1114,7 +1113,7 @@ func TestComputeSession_SessionLabelPrefixesCompiledKernelNames_Good(t *testing.
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	if !MetalAvailable() {
+	if !metal.MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
 

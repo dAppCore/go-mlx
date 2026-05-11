@@ -1,8 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && !nomlx
-
-package mlx
+package compute
 
 import (
 	"math"
@@ -15,21 +13,27 @@ import (
 var defaultComputeBackend Compute = computebackend{}
 var newComputeMetalKernel = metal.NewMetalKernel
 
-// DefaultCompute returns the package's default Metal compute backend.
+//	info := compute.DefaultCompute().DeviceInfo()
+//	fmt.Printf("%s %d MB\n", info.Architecture, info.MemorySize/1024/1024)
+type DeviceInfo = metal.DeviceInfo
+
+//	c := compute.DefaultCompute()
+//	if c.Available() { /* use c */ }
 func DefaultCompute() Compute { return defaultComputeBackend }
 
-// NewSession creates a compute session from the default Metal backend.
+//	session, _ := compute.NewSession(compute.WithSessionLabel("frame-pipe"))
+//	defer session.Close()
 func NewSession(opts ...SessionOption) (Session, error) {
 	return defaultComputeBackend.NewSession(opts...)
 }
 
 type computebackend struct{}
 
-func (computebackend) Available() bool        { return MetalAvailable() }
-func (computebackend) DeviceInfo() DeviceInfo { return GetDeviceInfo() }
+func (computebackend) Available() bool        { return metal.MetalAvailable() }
+func (computebackend) DeviceInfo() DeviceInfo { return metal.GetDeviceInfo() }
 
 func (computebackend) NewSession(opts ...SessionOption) (Session, error) {
-	if !MetalAvailable() {
+	if !metal.MetalAvailable() {
 		return nil, computeErr(ComputeErrorUnavailable, "new_session", "", "", "Metal compute is unavailable")
 	}
 
