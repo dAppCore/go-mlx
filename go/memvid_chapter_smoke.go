@@ -370,7 +370,7 @@ func runMemvidKVChapterSmokeChapter(ctx context.Context, runner MemvidKVChapterR
 		report.AnswerDuration = generation.Metrics.TotalDuration
 	}
 	report.AnswerDuration = nonZeroDuration(report.AnswerDuration)
-	report.Answer = firstNonEmpty(generation.Text, decodeTokensText(generation.Tokens))
+	report.Answer = firstNonEmpty(generation.Text, renderTokensText(generation.Tokens))
 	report.Plausible = memvidKVChapterSmokeAnswerPlausible(report.Answer, chapter.ExpectedTerms)
 	return report, nil
 }

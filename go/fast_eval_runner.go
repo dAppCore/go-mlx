@@ -8,6 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
+	"dappco.re/go/inference/decode"
 	memvid "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/kv"
@@ -335,11 +336,11 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 func modelBenchSpeculativeDecode(model *Model) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
-		result, err := RunSpeculativeDecode(ctx, SpeculativeDecodeConfig{
+		result, err := decode.Speculative(ctx, decode.SpeculativeConfig{
 			Prompt:         cfg.Prompt,
 			MaxTokens:      cfg.MaxTokens,
 			DraftTokens:    cfg.SpeculativeDraftTokens,
-			GenerateConfig: toBenchGenerateOptions(cfg.GenerateOptions(nil)),
+			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
 			TargetGenerate: benchModelDecodeGenerate(model),
 			DraftGenerate:  benchModelDecodeGenerate(model),
 		})
@@ -360,14 +361,14 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 			report.Error = "prompt lookup tokens are required"
 			return report
 		}
-		lookupTokens := make([]Token, len(cfg.PromptLookupTokens))
+		lookupTokens := make([]decode.Token, len(cfg.PromptLookupTokens))
 		for i, id := range cfg.PromptLookupTokens {
-			lookupTokens[i] = Token{ID: id}
+			lookupTokens[i] = decode.Token{ID: id}
 		}
-		result, err := RunPromptLookupDecode(ctx, PromptLookupDecodeConfig{
+		result, err := decode.PromptLookup(ctx, decode.PromptLookupConfig{
 			Prompt:         cfg.Prompt,
 			MaxTokens:      cfg.MaxTokens,
-			GenerateConfig: toBenchGenerateOptions(cfg.GenerateOptions(nil)),
+			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
 			TargetGenerate: benchModelDecodeGenerate(model),
 			LookupTokens:   lookupTokens,
 		})
@@ -381,7 +382,7 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 	}
 }
 
-func decodeResultToBench(result DecodeOptimisationResult) bench.DecodeOptimisationResult {
+func decodeResultToBench(result decode.Result) bench.DecodeOptimisationResult {
 	tokenIDs := make([]int32, len(result.Tokens))
 	for i, tok := range result.Tokens {
 		tokenIDs[i] = tok.ID
@@ -408,35 +409,17 @@ func decodeResultToBench(result DecodeOptimisationResult) bench.DecodeOptimisati
 	}
 }
 
-func benchModelDecodeGenerate(model *Model) DecodeGenerateFunc {
-	return func(ctx context.Context, prompt string, cfg GenerateConfig) (DecodeGeneration, error) {
+func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
+	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
 		if model == nil {
-			return DecodeGeneration{}, core.NewError("mlx: bench decode runner has nil model")
+			return decode.Generation{}, core.NewError("mlx: bench decode runner has nil model")
 		}
-		opts := []GenerateOption{
-			WithMaxTokens(cfg.MaxTokens),
-			WithTemperature(cfg.Temperature),
-		}
-		if cfg.TopK > 0 {
-			opts = append(opts, WithTopK(cfg.TopK))
-		}
-		if cfg.TopP > 0 {
-			opts = append(opts, WithTopP(cfg.TopP))
-		}
-		if cfg.MinP > 0 {
-			opts = append(opts, WithMinP(cfg.MinP))
-		}
-		if len(cfg.StopTokens) > 0 {
-			opts = append(opts, WithStopTokens(cfg.StopTokens...))
-		}
-		if cfg.RepeatPenalty > 0 {
-			opts = append(opts, WithRepeatPenalty(cfg.RepeatPenalty))
-		}
+		opts := []GenerateOption{WithMaxTokens(cfg.MaxTokens)}
 		text, err := model.Generate(prompt, opts...)
 		if err != nil {
-			return DecodeGeneration{}, err
+			return decode.Generation{}, err
 		}
-		return DecodeGeneration{Text: text, Metrics: model.Metrics()}, nil
+		return decode.Generation{Text: text}, nil
 	}
 }
 

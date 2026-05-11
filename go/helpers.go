@@ -30,6 +30,18 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
+// renderTokensText concatenates Token.Text || Token.Value across a token
+// slice. Used by memvid_chapter_smoke when no Text was reported.
+//
+//	text := renderTokensText(tokens)
+func renderTokensText(tokens []Token) string {
+	builder := core.NewBuilder()
+	for _, token := range tokens {
+		builder.WriteString(firstNonEmpty(token.Text, token.Value))
+	}
+	return builder.String()
+}
+
 // indexString locates substr inside s, returning its index or -1.
 // Shared between hf_fit and openai.go.
 //
