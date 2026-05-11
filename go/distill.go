@@ -10,6 +10,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
+	"dappco.re/go/mlx/probe"
 )
 
 const DistillCheckpointMetadataVersion = 1
@@ -37,7 +38,7 @@ type DistillConfig struct {
 	EvalEvery       int                `json:"eval_every,omitempty"`
 	ResumePath      string             `json:"resume_path,omitempty"`
 	MaxSamples      int                `json:"max_samples,omitempty"`
-	ProbeSink       ProbeSink          `json:"-"`
+	ProbeSink       probe.Sink          `json:"-"`
 }
 
 // DistillRunner supplies the model-specific operations for distillation.
@@ -439,9 +440,9 @@ func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss DistillLoss
 	if cfg.ProbeSink == nil {
 		return
 	}
-	cfg.ProbeSink.EmitProbe(ProbeEvent{
-		Kind:  ProbeEventTraining,
-		Phase: ProbePhaseTraining,
+	cfg.ProbeSink.EmitProbe(probe.Event{
+		Kind:  probe.KindTraining,
+		Phase: probe.PhaseTraining,
 		Step:  result.Metrics.Steps,
 		Meta: map[string]string{
 			"distillation":     "true",
@@ -452,7 +453,7 @@ func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss DistillLoss
 			"checkpoint_count": core.Sprintf("%d", len(result.Checkpoints)),
 			"evaluation_count": core.Sprintf("%d", len(result.Evaluations)),
 		},
-		Training: &ProbeTraining{
+		Training: &probe.Training{
 			Step:         result.Metrics.Steps,
 			Epoch:        epoch,
 			Loss:         loss.Value,

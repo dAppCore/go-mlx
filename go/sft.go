@@ -2,7 +2,10 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/probe"
+)
 
 // SFTSample is one supervised fine-tuning record.
 type SFTSample struct {
@@ -85,7 +88,7 @@ type SFTConfig struct {
 	ResumePath                string
 	Merge                     bool
 	NoEOS                     bool
-	ProbeSink                 ProbeSink
+	ProbeSink                 probe.Sink
 }
 
 // SFTBatch is a tokenized training batch with shifted targets.

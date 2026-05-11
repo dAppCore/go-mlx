@@ -14,6 +14,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {
@@ -431,17 +432,17 @@ func TestInferenceContract_RootProbeSink_Good(t *testing.T) {
 	sink := inferenceProbeSink{sink: inference.ProbeSinkFunc(func(event inference.ProbeEvent) {
 		got = event
 	})}
-	sink.EmitProbe(ProbeEvent{
-		Kind:  ProbeEventToken,
-		Phase: ProbePhaseDecode,
+	sink.EmitProbe(probe.Event{
+		Kind:  probe.KindToken,
+		Phase: probe.PhaseDecode,
 		Step:  3,
 		Meta:  map[string]string{"k": "v"},
-		Token: &ProbeToken{ID: 8, Text: "tok", PromptTokens: 1, GeneratedTokens: 2},
-		Entropy: &ProbeEntropy{
+		Token: &probe.Token{ID: 8, Text: "tok", PromptTokens: 1, GeneratedTokens: 2},
+		Entropy: &probe.Entropy{
 			Value: 0.7,
 			Unit:  "nats",
 		},
-		Training: &ProbeTraining{
+		Training: &probe.Training{
 			Epoch:        1,
 			Step:         3,
 			Loss:         0.4,
@@ -451,7 +452,7 @@ func TestInferenceContract_RootProbeSink_Good(t *testing.T) {
 	if got.Token == nil || got.Token.Text != "tok" || got.Entropy == nil || got.Training == nil || got.Labels["k"] != "v" {
 		t.Fatalf("root probe event = %+v, want token/entropy/training", got)
 	}
-	inferenceProbeSink{}.EmitProbe(ProbeEvent{Kind: ProbeEventToken})
+	inferenceProbeSink{}.EmitProbe(probe.Event{Kind: probe.KindToken})
 }
 
 type inferenceContractDatasetStream struct {

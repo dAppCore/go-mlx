@@ -14,6 +14,7 @@ import (
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/probe"
 )
 
 type fakeNativeSession struct {
@@ -326,11 +327,11 @@ func TestSessionNilGuards_Bad(t *testing.T) {
 }
 
 func TestSessionGenerate_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "SessionGenerate ProbeSink"
+	coverageTokens := "SessionGenerate probe.Sink"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 	nativeSession := &fakeNativeSession{
 		probeEvents: []metal.ProbeEvent{{
 			Kind:  metal.ProbeEventEntropy,
@@ -348,13 +349,13 @@ func TestSessionGenerate_ForwardsProbeSink_Good(t *testing.T) {
 	}
 
 	if nativeSession.cfg.ProbeSink == nil {
-		t.Fatal("native ProbeSink = nil, want configured")
+		t.Fatal("native probe.Sink = nil, want configured")
 	}
 	events := recorder.Events()
 	if len(events) != 1 {
 		t.Fatalf("probe events len = %d, want 1", len(events))
 	}
-	if events[0].Kind != ProbeEventEntropy || events[0].Entropy == nil || events[0].Entropy.Value != 0.42 {
+	if events[0].Kind != probe.KindEntropy || events[0].Entropy == nil || events[0].Entropy.Value != 0.42 {
 		t.Fatalf("probe event = %+v", events[0])
 	}
 }

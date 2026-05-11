@@ -10,6 +10,7 @@ import (
 
 	"dappco.re/go"
 	"dappco.re/go/inference"
+	"dappco.re/go/mlx/probe"
 )
 
 func unsupportedBuildError() error {
@@ -56,7 +57,7 @@ type LoRAConfig struct {
 	TargetLayers []string
 	Lambda       float32
 	DType        DType
-	ProbeSink    ProbeSink
+	ProbeSink    probe.Sink
 }
 
 // Batch describes one RFC-style training batch.
@@ -74,7 +75,7 @@ type TrainConfig struct {
 	EvalInterval   int
 	SaveInterval   int
 	EvalLossThresh float64
-	ProbeSink      ProbeSink
+	ProbeSink      probe.Sink
 }
 
 // AdamW is a stub optimiser on unsupported builds.

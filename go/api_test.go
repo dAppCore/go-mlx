@@ -18,6 +18,7 @@ import (
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/probe"
 )
 
 type fakeNativeModel struct {
@@ -584,11 +585,11 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 }
 
 func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "ProbeSink"
+	coverageTokens := "probe.Sink"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 	native := &fakeNativeModel{
 		probeEvents: []metal.ProbeEvent{{
 			Kind:  metal.ProbeEventToken,
@@ -609,13 +610,13 @@ func TestModelGenerate_ForwardsProbeSink_Good(t *testing.T) {
 	}
 
 	if native.lastGenerateConfig.ProbeSink == nil {
-		t.Fatal("native ProbeSink = nil, want configured")
+		t.Fatal("native probe.Sink = nil, want configured")
 	}
 	events := recorder.Events()
 	if len(events) != 1 {
 		t.Fatalf("probe events len = %d, want 1", len(events))
 	}
-	if events[0].Kind != ProbeEventToken || events[0].Phase != ProbePhaseDecode {
+	if events[0].Kind != probe.KindToken || events[0].Phase != probe.PhaseDecode {
 		t.Fatalf("probe event = %+v", events[0])
 	}
 	if events[0].Token == nil || events[0].Token.ID != 9 || events[0].Token.Text != "Z" {
@@ -1175,11 +1176,11 @@ func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
 }
 
 func TestNewLoRA_ForwardsProbeSink_Good(t *testing.T) {
-	coverageTokens := "NewLoRA ProbeSink"
+	coverageTokens := "NewLoRA probe.Sink"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 	wantAdapter := &metal.LoRAAdapter{}
 	native := &fakeNativeModel{loraAdapter: wantAdapter}
 	model := &Model{model: native}
@@ -1190,7 +1191,7 @@ func TestNewLoRA_ForwardsProbeSink_Good(t *testing.T) {
 		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
 	}
 	if native.lastLoRAConfig.ProbeSink == nil {
-		t.Fatal("native LoRA ProbeSink = nil, want configured")
+		t.Fatal("native LoRA probe.Sink = nil, want configured")
 	}
 	native.lastLoRAConfig.ProbeSink.EmitProbe(metal.ProbeEvent{
 		Kind:  metal.ProbeEventTraining,

@@ -12,6 +12,7 @@ import (
 	memvid "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/probe"
 )
 
 // NewModelFastEvalRunner adapts a loaded Model to bench.Runner with
@@ -64,7 +65,7 @@ func toModelGenerateOptions(opts bench.GenerateOptions) []GenerateOption {
 	if opts.RepeatPenalty > 0 {
 		out = append(out, WithRepeatPenalty(opts.RepeatPenalty))
 	}
-	if sink, ok := opts.ProbeSink.(ProbeSink); ok && sink != nil {
+	if sink, ok := opts.ProbeSink.(probe.Sink); ok && sink != nil {
 		out = append(out, WithProbeSink(sink))
 	}
 	return out
@@ -303,7 +304,7 @@ func modelBenchStateBundle(model *Model) func(context.Context, bench.Config, ben
 func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, time.Duration) bench.ProbeReport {
 	return func(ctx context.Context, cfg bench.Config, baseline time.Duration) bench.ProbeReport {
 		report := bench.ProbeReport{Attempted: true}
-		recorder := NewProbeRecorder()
+		recorder := probe.NewRecorder()
 		opts := cfg.GenerateOptions(recorder)
 		start := time.Now()
 		if _, err := model.Generate(cfg.Prompt, toModelGenerateOptions(opts)...); err != nil {

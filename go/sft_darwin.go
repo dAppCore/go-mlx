@@ -8,6 +8,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/probe"
 )
 
 // TrainSFT runs native supervised LoRA fine-tuning against a loaded MLX model.
@@ -224,9 +225,9 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 	}
 
 	if sink := sftProbeSink(cfg); sink != nil {
-		sink.EmitProbe(ProbeEvent{
-			Kind:  ProbeEventTraining,
-			Phase: ProbePhaseTraining,
+		sink.EmitProbe(probe.Event{
+			Kind:  probe.KindTraining,
+			Phase: probe.PhaseTraining,
 			Step:  result.Steps,
 			Meta: map[string]string{
 				"batch_size":                  core.Sprintf("%d", cfg.BatchSize),
@@ -236,7 +237,7 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 				"optimizer_step":              core.Sprintf("%d", result.OptimizerSteps),
 				"sft_checkpoint_metadata_ver": core.Sprintf("%d", SFTCheckpointMetadataVersion),
 			},
-			Training: &ProbeTraining{
+			Training: &probe.Training{
 				Step:         result.Steps,
 				Epoch:        epoch,
 				Loss:         lossValue,
@@ -263,7 +264,7 @@ func sftAdapterStep(adapter *LoRAAdapter, batches []SFTBatch, optimizer *AdamW) 
 	return adapter.StepAccumulated(metalBatches, targets, optimizer)
 }
 
-func sftProbeSink(cfg SFTConfig) ProbeSink {
+func sftProbeSink(cfg SFTConfig) probe.Sink {
 	if cfg.ProbeSink != nil {
 		return cfg.ProbeSink
 	}

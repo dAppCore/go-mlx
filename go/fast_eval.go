@@ -8,6 +8,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/probe"
 )
 
 // Legacy type aliases — the driver-neutral orchestration lives in
@@ -66,7 +67,7 @@ func toBenchGenerateOptions(opts bench.GenerateOptions) GenerateConfig {
 		StopTokens:    append([]int32(nil), opts.StopTokens...),
 		RepeatPenalty: opts.RepeatPenalty,
 	}
-	if sink, ok := opts.ProbeSink.(ProbeSink); ok {
+	if sink, ok := opts.ProbeSink.(probe.Sink); ok {
 		cfg.ProbeSink = sink
 	}
 	return cfg

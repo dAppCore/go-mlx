@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
+	"dappco.re/go/mlx/probe"
 )
 
 func (backend *metalbackend) Capabilities() inference.CapabilityReport {
@@ -547,14 +548,14 @@ type inferenceProbeSink struct {
 	sink inference.ProbeSink
 }
 
-func (sink inferenceProbeSink) EmitProbe(event ProbeEvent) {
+func (sink inferenceProbeSink) EmitProbe(event probe.Event) {
 	if sink.sink == nil {
 		return
 	}
 	sink.sink.EmitProbe(toInferenceRootProbeEvent(event))
 }
 
-func toInferenceRootProbeEvent(event ProbeEvent) inference.ProbeEvent {
+func toInferenceRootProbeEvent(event probe.Event) inference.ProbeEvent {
 	out := inference.ProbeEvent{
 		Kind:   inference.ProbeEventKind(event.Kind),
 		Phase:  inference.ProbePhase(event.Phase),

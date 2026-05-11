@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/probe"
 )
 
 const GRPOCheckpointMetadataVersion = 1
@@ -25,7 +26,7 @@ type GRPOConfig struct {
 	ResumePath       string           `json:"resume_path,omitempty"`
 	MaxSamples       int              `json:"max_samples,omitempty"`
 	RewardFuncs      []GRPORewardFunc `json:"-"`
-	ProbeSink        ProbeSink        `json:"-"`
+	ProbeSink        probe.Sink        `json:"-"`
 }
 
 // GRPORunner supplies the model-specific operations for experimental GRPO.
@@ -436,9 +437,9 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch 
 	if cfg.ProbeSink == nil {
 		return
 	}
-	cfg.ProbeSink.EmitProbe(ProbeEvent{
-		Kind:  ProbeEventTraining,
-		Phase: ProbePhaseTraining,
+	cfg.ProbeSink.EmitProbe(probe.Event{
+		Kind:  probe.KindTraining,
+		Phase: probe.PhaseTraining,
 		Step:  result.Metrics.Steps,
 		Meta: map[string]string{
 			"grpo_experimental": "true",
@@ -450,7 +451,7 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch 
 			"checkpoint_count":  core.Sprintf("%d", len(result.Checkpoints)),
 			"evaluation_count":  core.Sprintf("%d", len(result.Evaluations)),
 		},
-		Training: &ProbeTraining{
+		Training: &probe.Training{
 			Step:         result.Metrics.Steps,
 			Epoch:        epoch,
 			Loss:         update.Loss,

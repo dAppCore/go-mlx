@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestModelTrainSFT_NilModel_Bad(t *testing.T) {
@@ -115,10 +116,10 @@ func TestSFTStreamingPacker_BadAndHelpers(t *testing.T) {
 	if loss := sftAdapterStep(nil, nil, nil); loss != nil {
 		t.Fatalf("sftAdapterStep(empty) = %+v, want nil", loss)
 	}
-	if sink := sftProbeSink(SFTConfig{ProbeSink: NewProbeRecorder()}); sink == nil {
+	if sink := sftProbeSink(SFTConfig{ProbeSink: probe.NewRecorder()}); sink == nil {
 		t.Fatal("sftProbeSink did not prefer direct SFT probe sink")
 	}
-	if sink := sftProbeSink(SFTConfig{LoRA: LoRAConfig{ProbeSink: NewProbeRecorder()}}); sink == nil {
+	if sink := sftProbeSink(SFTConfig{LoRA: LoRAConfig{ProbeSink: probe.NewRecorder()}}); sink == nil {
 		t.Fatal("sftProbeSink did not fall back to LoRA probe sink")
 	}
 }
@@ -144,7 +145,7 @@ func TestSFTDatasetEpoch_EmptyErrorAndCancelledBranches_Bad(t *testing.T) {
 	}
 
 	native := &fakeNativeModel{loraAdapter: &metal.LoRAAdapter{}}
-	adapter, err := (&Model{model: native}).sftAdapter(SFTConfig{LoRA: LoRAConfig{ProbeSink: NewProbeRecorder(), Lambda: 0.25}})
+	adapter, err := (&Model{model: native}).sftAdapter(SFTConfig{LoRA: LoRAConfig{ProbeSink: probe.NewRecorder(), Lambda: 0.25}})
 	if err != nil {
 		t.Fatalf("sftAdapter() error = %v", err)
 	}

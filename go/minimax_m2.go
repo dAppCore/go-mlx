@@ -5,6 +5,7 @@ package mlx
 import (
 	"dappco.re/go/inference/quant/jang"
 	"dappco.re/go/mlx/model/minimax/m2"
+	"dappco.re/go/mlx/probe"
 )
 
 // Legacy aliases — the canonical MiniMax M2 implementation lives at
@@ -84,7 +85,7 @@ func LoadMiniMaxM2PackedExpertsForDecisionsFromSafetensors(plan MiniMaxM2TensorP
 // and loads only the routed packed experts.
 //
 //	load, err := mlx.LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan, files, layer, hidden, tokens, sink)
-func LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan MiniMaxM2TensorPlan, weightFiles []string, layer int, hidden [][]float32, tokenIDs []int32, sink ProbeSink) (MiniMaxM2LazyExpertLoad, error) {
+func LoadMiniMaxM2LazyExpertsForHiddenFromSafetensors(plan MiniMaxM2TensorPlan, weightFiles []string, layer int, hidden [][]float32, tokenIDs []int32, sink probe.Sink) (MiniMaxM2LazyExpertLoad, error) {
 	return m2.LoadLazyExpertsForHidden(plan, weightFiles, layer, hidden, tokenIDs, sink)
 }
 
@@ -130,6 +131,6 @@ func BuildMiniMaxM2LayerForwardSkeletonFromSafetensors(plan MiniMaxM2TensorPlan,
 // MiniMaxM2RouterProbeEvents emits router-decision probe events for a layer.
 //
 //	events := mlx.MiniMaxM2RouterProbeEvents(layer, tokenIDs, decisions)
-func MiniMaxM2RouterProbeEvents(layer int, tokenIDs []int32, decisions []MiniMaxM2RouterDecision) []ProbeEvent {
+func MiniMaxM2RouterProbeEvents(layer int, tokenIDs []int32, decisions []MiniMaxM2RouterDecision) []probe.Event {
 	return m2.RouterProbeEvents(layer, tokenIDs, decisions)
 }

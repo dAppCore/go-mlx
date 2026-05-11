@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestRunGRPOReasoningTraining_GroupRolloutsRewardKLCheckpointProbe_Good(t *testing.T) {
@@ -16,7 +17,7 @@ func TestRunGRPOReasoningTraining_GroupRolloutsRewardKLCheckpointProbe_Good(t *t
 	if err != nil {
 		t.Fatalf("LoadJSONLDataset() error = %v", err)
 	}
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 	checkpointDir := core.PathJoin(t.TempDir(), "checkpoints")
 	var updates []GRPOUpdate
 	evalCalls := 0

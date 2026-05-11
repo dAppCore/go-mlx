@@ -15,6 +15,7 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/probe"
 )
 
 type nativeModel interface {
@@ -214,7 +215,7 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	}
 }
 
-func toMetalProbeSink(sink ProbeSink) metal.ProbeSink {
+func toMetalProbeSink(sink probe.Sink) metal.ProbeSink {
 	if sink == nil {
 		return nil
 	}
@@ -223,16 +224,16 @@ func toMetalProbeSink(sink ProbeSink) metal.ProbeSink {
 	})
 }
 
-func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
-	out := ProbeEvent{
-		Kind:  ProbeEventKind(event.Kind),
-		Phase: ProbePhase(event.Phase),
+func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
+	out := probe.Event{
+		Kind:  probe.Kind(event.Kind),
+		Phase: probe.Phase(event.Phase),
 		Step:  event.Step,
 		Meta:  cloneMetalProbeMeta(event.Meta),
 	}
 	if event.Token != nil {
 		token := *event.Token
-		out.Token = &ProbeToken{
+		out.Token = &probe.Token{
 			ID:              token.ID,
 			Text:            token.Text,
 			PromptTokens:    token.PromptTokens,
@@ -241,7 +242,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Logits != nil {
 		logits := *event.Logits
-		out.Logits = &ProbeLogits{
+		out.Logits = &probe.Logits{
 			Shape:      append([]int32(nil), logits.Shape...),
 			VocabSize:  logits.VocabSize,
 			MaxTokenID: logits.MaxTokenID,
@@ -256,11 +257,11 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Entropy != nil {
 		entropy := *event.Entropy
-		out.Entropy = &ProbeEntropy{Value: entropy.Value, Unit: entropy.Unit}
+		out.Entropy = &probe.Entropy{Value: entropy.Value, Unit: entropy.Unit}
 	}
 	if event.SelectedHeads != nil {
 		heads := *event.SelectedHeads
-		out.SelectedHeads = &ProbeHeadSelection{
+		out.SelectedHeads = &probe.HeadSelection{
 			Layer:  heads.Layer,
 			Heads:  append([]int(nil), heads.Heads...),
 			Scores: append([]float64(nil), heads.Scores...),
@@ -268,7 +269,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.LayerCoherence != nil {
 		coherence := *event.LayerCoherence
-		out.LayerCoherence = &ProbeLayerCoherence{
+		out.LayerCoherence = &probe.LayerCoherence{
 			Layer:          coherence.Layer,
 			KeyCoherence:   coherence.KeyCoherence,
 			ValueCoherence: coherence.ValueCoherence,
@@ -280,7 +281,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.RouterDecision != nil {
 		router := *event.RouterDecision
-		out.RouterDecision = &ProbeRouterDecision{
+		out.RouterDecision = &probe.RouterDecision{
 			Layer:       router.Layer,
 			TokenID:     router.TokenID,
 			ExpertIDs:   append([]int(nil), router.ExpertIDs...),
@@ -290,7 +291,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Residual != nil {
 		residual := *event.Residual
-		out.Residual = &ProbeResidualSummary{
+		out.Residual = &probe.ResidualSummary{
 			Layer:    residual.Layer,
 			Mean:     residual.Mean,
 			Variance: residual.Variance,
@@ -301,7 +302,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Cache != nil {
 		cache := *event.Cache
-		out.Cache = &ProbeCachePressure{
+		out.Cache = &probe.CachePressure{
 			PromptTokens:    cache.PromptTokens,
 			GeneratedTokens: cache.GeneratedTokens,
 			LayerCount:      cache.LayerCount,
@@ -314,7 +315,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Memory != nil {
 		memory := *event.Memory
-		out.Memory = &ProbeMemoryPressure{
+		out.Memory = &probe.MemoryPressure{
 			ActiveBytes: memory.ActiveBytes,
 			PeakBytes:   memory.PeakBytes,
 			CacheBytes:  memory.CacheBytes,
@@ -322,7 +323,7 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	}
 	if event.Training != nil {
 		training := *event.Training
-		out.Training = &ProbeTraining{
+		out.Training = &probe.Training{
 			Step:         training.Step,
 			Epoch:        training.Epoch,
 			Loss:         training.Loss,
@@ -333,13 +334,13 @@ func toRootProbeEvent(event metal.ProbeEvent) ProbeEvent {
 	return out
 }
 
-func toRootProbeLogits(logits []metal.ProbeLogit) []ProbeLogit {
+func toRootProbeLogits(logits []metal.ProbeLogit) []probe.Logit {
 	if len(logits) == 0 {
 		return nil
 	}
-	out := make([]ProbeLogit, len(logits))
+	out := make([]probe.Logit, len(logits))
 	for i, logit := range logits {
-		out[i] = ProbeLogit{
+		out[i] = probe.Logit{
 			TokenID:     logit.TokenID,
 			Logit:       logit.Logit,
 			Probability: logit.Probability,

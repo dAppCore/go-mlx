@@ -10,6 +10,7 @@ import (
 	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/probe"
 )
 
 const (
@@ -98,7 +99,7 @@ type GenerateConfig struct {
 	ReturnLogits  bool
 	StopTokens    []int32
 	RepeatPenalty float32
-	ProbeSink     ProbeSink
+	ProbeSink     probe.Sink
 	Thinking      parser.Config
 }
 
@@ -157,6 +158,23 @@ func WithStopTokens(ids ...int32) GenerateOption {
 // WithRepeatPenalty sets the repetition penalty.
 func WithRepeatPenalty(p float32) GenerateOption {
 	return func(c *GenerateConfig) { c.RepeatPenalty = p }
+}
+
+// WithProbeSink streams typed probe events during generation.
+//
+//	model.Generate(prompt, mlx.WithProbeSink(sink))
+func WithProbeSink(sink probe.Sink) GenerateOption {
+	return func(c *GenerateConfig) { c.ProbeSink = sink }
+}
+
+// WithProbeCallback streams typed probe events to a callback during generation.
+//
+//	model.Generate(prompt, mlx.WithProbeCallback(func(e probe.Event) { … }))
+func WithProbeCallback(callback func(probe.Event)) GenerateOption {
+	if callback == nil {
+		return func(*GenerateConfig) {}
+	}
+	return WithProbeSink(probe.SinkFunc(callback))
 }
 
 func applyGenerateOptions(opts []GenerateOption) GenerateConfig {

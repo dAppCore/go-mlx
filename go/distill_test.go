@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/eval"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t *testing.T) {
@@ -23,7 +24,7 @@ func TestRunKnowledgeDistillation_OfflineTeacherCacheCheckpointEvalProbe_Good(t 
 		{Prompt: "prompt", Response: "response"},
 		{Prompt: "prompt", Response: "response"},
 	})
-	recorder := NewProbeRecorder()
+	recorder := probe.NewRecorder()
 	cache := NewMemoryDistillLogitCache()
 	checkpointDir := core.PathJoin(t.TempDir(), "checkpoints")
 	teacherCalls := 0

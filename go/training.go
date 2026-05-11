@@ -7,6 +7,7 @@ package mlx
 import (
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/probe"
 )
 
 // Array is a Metal GPU tensor.
@@ -24,7 +25,7 @@ type LoRAConfig struct {
 	TargetLayers []string
 	Lambda       float32
 	DType        DType
-	ProbeSink    ProbeSink
+	ProbeSink    probe.Sink
 }
 
 // Batch describes one RFC-style training batch.
@@ -38,7 +39,7 @@ type TrainConfig struct {
 	EvalInterval   int
 	SaveInterval   int
 	EvalLossThresh float64
-	ProbeSink      ProbeSink
+	ProbeSink      probe.Sink
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.

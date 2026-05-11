@@ -10,6 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/lora"
+	"dappco.re/go/mlx/probe"
 )
 
 // These tests cover the mlx-side fast_eval boundary surface:
@@ -93,17 +94,17 @@ func TestToBenchGenerateOptions_CopiesScalars_Good(t *testing.T) {
 }
 
 func TestToBenchGenerateOptions_ProbeSinkPassthrough_Good(t *testing.T) {
-	sink := ProbeSinkFunc(func(_ ProbeEvent) {})
-	got := toBenchGenerateOptions(bench.GenerateOptions{MaxTokens: 1, ProbeSink: ProbeSink(sink)})
+	sink := probe.SinkFunc(func(_ probe.Event) {})
+	got := toBenchGenerateOptions(bench.GenerateOptions{MaxTokens: 1, ProbeSink: probe.Sink(sink)})
 	if got.ProbeSink == nil {
-		t.Fatal("ProbeSink not forwarded")
+		t.Fatal("probe.Sink not forwarded")
 	}
 }
 
 func TestToBenchGenerateOptions_NonProbeSinkIgnored_Ugly(t *testing.T) {
 	got := toBenchGenerateOptions(bench.GenerateOptions{MaxTokens: 1, ProbeSink: "not-a-sink"})
 	if got.ProbeSink != nil {
-		t.Fatal("non-ProbeSink value should not propagate")
+		t.Fatal("non-probe.Sink value should not propagate")
 	}
 }
 
