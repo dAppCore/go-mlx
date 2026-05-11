@@ -9,11 +9,12 @@ import (
 	"iter"
 
 	core "dappco.re/go"
-	"dappco.re/go/mlx/gguf"
+	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
@@ -573,7 +574,7 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 }
 
 // Chat produces a buffered string result using the model's native chat template.
-func (m *Model) Chat(messages []Message, opts ...GenerateOption) (string, error) {
+func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
@@ -808,7 +809,7 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 }
 
 // ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
-func (m *Model) ChatStream(ctx context.Context, messages []Message, opts ...GenerateOption) <-chan Token {
+func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, opts ...GenerateOption) <-chan Token {
 	out := make(chan Token)
 	go func() {
 		defer close(out)

@@ -122,7 +122,7 @@ func TestInferenceAdapterChat_Good(t *testing.T) {
 	}
 
 	adapter := NewInferenceAdapter(model, "mlx")
-	result, err := adapter.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, GenOpts{MaxTokens: 8})
+	result, err := adapter.Chat(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{MaxTokens: 8})
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestInferenceAdapterChatStream_CallbackError_Bad(t *testing.T) {
 	}
 
 	adapter := NewInferenceAdapter(model, "mlx")
-	err := adapter.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(token string) error {
+	err := adapter.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(token string) error {
 		if token == "one" {
 			return wantErr
 		}

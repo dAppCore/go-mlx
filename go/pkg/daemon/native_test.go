@@ -7,12 +7,13 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
 )
 
 type fakeNativeModel struct {
 	generatePrompt string
-	chatMessages   []mlx.Message
+	chatMessages   []inference.Message
 	err            error
 	closed         bool
 	metrics        mlx.Metrics
@@ -27,8 +28,8 @@ func (model *fakeNativeModel) GenerateStream(_ context.Context, prompt string, _
 	return ch
 }
 
-func (model *fakeNativeModel) ChatStream(_ context.Context, messages []mlx.Message, _ ...mlx.GenerateOption) <-chan mlx.Token {
-	model.chatMessages = append([]mlx.Message(nil), messages...)
+func (model *fakeNativeModel) ChatStream(_ context.Context, messages []inference.Message, _ ...mlx.GenerateOption) <-chan mlx.Token {
+	model.chatMessages = append([]inference.Message(nil), messages...)
 	ch := make(chan mlx.Token, 1)
 	ch <- mlx.Token{Text: "chat"}
 	close(ch)

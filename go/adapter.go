@@ -9,9 +9,6 @@ import (
 	"dappco.re/go/inference"
 )
 
-// Message aliases inference.Message for the adapter-style API.
-type Message = inference.Message
-
 // GenOpts controls buffered adapter generation.
 type GenOpts struct {
 	MaxTokens int
@@ -142,7 +139,7 @@ func (adapter *InferenceAdapter) GenerateStream(ctx context.Context, prompt stri
 }
 
 // Chat collects a streamed chat response into a single string.
-func (adapter *InferenceAdapter) Chat(ctx context.Context, messages []Message, opts GenOpts) (Result, error) {
+func (adapter *InferenceAdapter) Chat(ctx context.Context, messages []inference.Message, opts GenOpts) (Result, error) {
 	if adapter == nil || adapter.model == nil {
 		return Result{}, core.NewError("mlx: inference adapter is nil")
 	}
@@ -166,7 +163,7 @@ func (adapter *InferenceAdapter) Chat(ctx context.Context, messages []Message, o
 }
 
 // ChatStream forwards chat token text to a callback.
-func (adapter *InferenceAdapter) ChatStream(ctx context.Context, messages []Message, opts GenOpts, cb TokenCallback) error {
+func (adapter *InferenceAdapter) ChatStream(ctx context.Context, messages []inference.Message, opts GenOpts, cb TokenCallback) error {
 	if adapter == nil || adapter.model == nil {
 		return core.NewError("mlx: inference adapter is nil")
 	}

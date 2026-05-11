@@ -7,6 +7,7 @@ import (
 	"io"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/chat"
 )
 
@@ -14,12 +15,8 @@ const datasetScannerMaxBytes = 16 * 1024 * 1024
 
 // DatasetConfig controls JSONL ingestion and chat sample normalization.
 type DatasetConfig struct {
-	ChatTemplate ChatTemplateConfig
+	ChatTemplate chat.Config
 }
-
-// ChatTemplateConfig selects the native chat template used for message
-// datasets. Aliased from dappco.re/go/mlx/chat/.
-type ChatTemplateConfig = chat.Config
 
 // DatasetBatchConfig controls tokenizer batching for training/eval streams.
 type DatasetBatchConfig struct {
@@ -163,33 +160,33 @@ func (r datasetJSONRecord) toSFTSample(cfg DatasetConfig) (SFTSample, bool, erro
 	return SFTSample{}, false, nil
 }
 
-func datasetMessages(records []datasetMessageRecord) []Message {
-	out := make([]Message, 0, len(records))
+func datasetMessages(records []datasetMessageRecord) []inference.Message {
+	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
 		role := normalizeDatasetRole(record.Role)
 		content := core.Trim(record.Content)
 		if role == "" && content == "" {
 			continue
 		}
-		out = append(out, Message{Role: role, Content: content})
+		out = append(out, inference.Message{Role: role, Content: content})
 	}
 	return out
 }
 
-func datasetShareGPTMessages(records []datasetShareGPTRecord) []Message {
-	out := make([]Message, 0, len(records))
+func datasetShareGPTMessages(records []datasetShareGPTRecord) []inference.Message {
+	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
 		role := normalizeDatasetRole(record.From)
 		content := core.Trim(record.Value)
 		if role == "" && content == "" {
 			continue
 		}
-		out = append(out, Message{Role: role, Content: content})
+		out = append(out, inference.Message{Role: role, Content: content})
 	}
 	return out
 }
 
-func messagesToSFTSample(messages []Message, cfg ChatTemplateConfig, format string) (SFTSample, bool, error) {
+func messagesToSFTSample(messages []inference.Message, cfg chat.Config, format string) (SFTSample, bool, error) {
 	if len(messages) == 0 {
 		return SFTSample{}, false, nil
 	}
@@ -201,7 +198,7 @@ func messagesToSFTSample(messages []Message, cfg ChatTemplateConfig, format stri
 		}
 	}
 	if assistantIdx < 0 {
-		text := FormatChatMessages(messages, ChatTemplateConfig{
+		text := FormatChatMessages(messages, chat.Config{
 			Architecture:       cfg.Architecture,
 			Template:           cfg.Template,
 			NoGenerationPrompt: true,
@@ -218,11 +215,11 @@ func messagesToSFTSample(messages []Message, cfg ChatTemplateConfig, format stri
 // Forwards to dappco.re/go/mlx/chat/.
 //
 //	text := mlx.FormatChatMessages(messages, cfg)
-func FormatChatMessages(messages []Message, cfg ChatTemplateConfig) string {
+func FormatChatMessages(messages []inference.Message, cfg chat.Config) string {
 	return chat.Format(messages, cfg)
 }
 
-func chatTemplateName(cfg ChatTemplateConfig) string {
+func chatTemplateName(cfg chat.Config) string {
 	return chat.TemplateName(cfg)
 }
 
@@ -357,11 +354,11 @@ func formatReasoningResponse(thinking, solution string) string {
 	return thinking + "\n\n" + solution
 }
 
-func cloneMessages(messages []Message) []Message {
+func cloneMessages(messages []inference.Message) []inference.Message {
 	if len(messages) == 0 {
 		return nil
 	}
-	out := make([]Message, len(messages))
+	out := make([]inference.Message, len(messages))
 	copy(out, messages)
 	return out
 }

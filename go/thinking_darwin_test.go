@@ -10,6 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
@@ -86,7 +87,7 @@ func TestModelChat_GemmaThinkingHide_Good(t *testing.T) {
 		},
 	}
 
-	got, err := model.Chat([]Message{{Role: "user", Content: "hi"}}, WithHideThinking())
+	got, err := model.Chat([]inference.Message{{Role: "user", Content: "hi"}}, WithHideThinking())
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}

@@ -21,10 +21,10 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 
 	model := &Model{}
 	_, _ = model.Generate("hello", WithMaxTokens(8), WithTemperature(0.7), WithTopK(10), WithTopP(0.9), WithMinP(0.05))
-	_, _ = model.Chat([]Message{{Role: "user", Content: "hi"}}, WithMaxTokens(8))
+	_, _ = model.Chat([]inference.Message{{Role: "user", Content: "hi"}}, WithMaxTokens(8))
 	for range model.GenerateStream(context.Background(), "hello") {
 	}
-	for range model.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}}) {
+	for range model.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "hi"}}) {
 	}
 	_, _ = model.Classify([]string{"hello"}, WithLogits())
 	_, _ = model.BatchGenerate([]string{"hello"})
@@ -120,8 +120,8 @@ func TestUnsupportedBuildAPISurface_Compile(t *testing.T) {
 	_ = streamAdapter.Model()
 	_, _ = streamAdapter.Generate(nil, "hello", GenOpts{MaxTokens: 8, Temp: 0.1})
 	_ = streamAdapter.GenerateStream(nil, "hello", GenOpts{}, func(string) error { return nil })
-	_, _ = streamAdapter.Chat(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{})
-	_ = streamAdapter.ChatStream(nil, []Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(string) error { return nil })
+	_, _ = streamAdapter.Chat(nil, []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{})
+	_ = streamAdapter.ChatStream(nil, []inference.Message{{Role: "user", Content: "hi"}}, GenOpts{}, func(string) error { return nil })
 	_, _ = NewMLXBackend("/tmp/model")
 
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
 )
 
@@ -15,7 +16,7 @@ const defaultNativeModelName = "default"
 
 type nativeGenerateModel interface {
 	GenerateStream(context.Context, string, ...mlx.GenerateOption) <-chan mlx.Token
-	ChatStream(context.Context, []mlx.Message, ...mlx.GenerateOption) <-chan mlx.Token
+	ChatStream(context.Context, []inference.Message, ...mlx.GenerateOption) <-chan mlx.Token
 	WarmPromptCache(string) error
 	Metrics() mlx.Metrics
 	Err() error
@@ -180,10 +181,10 @@ func (runner *NativeGenerateRunner) generateOptions(req GenerateRequest) []mlx.G
 	return opts
 }
 
-func toMLXMessages(messages []Message) []mlx.Message {
-	out := make([]mlx.Message, len(messages))
+func toMLXMessages(messages []Message) []inference.Message {
+	out := make([]inference.Message, len(messages))
 	for i, message := range messages {
-		out[i] = mlx.Message{Role: message.Role, Content: message.Content}
+		out[i] = inference.Message{Role: message.Role, Content: message.Content}
 	}
 	return out
 }

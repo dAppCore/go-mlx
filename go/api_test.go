@@ -678,7 +678,7 @@ func TestModelChatBuffered_Good(t *testing.T) {
 		},
 	}
 
-	got, err := model.Chat([]Message{{Role: "user", Content: "hello"}}, WithTopP(0.8))
+	got, err := model.Chat([]inference.Message{{Role: "user", Content: "hello"}}, WithTopP(0.8))
 	if err != nil {
 		t.Fatalf("Chat() error = %v", err)
 	}
@@ -696,7 +696,7 @@ func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
 		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
 	}
 	model := &Model{model: native}
-	messages := []Message{
+	messages := []inference.Message{
 		{Role: "system", Content: "Be terse."},
 		{Role: "user", Content: "hello"},
 	}
@@ -1058,7 +1058,7 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	if _, err := model.Generate("x"); err == nil {
 		t.Fatal("Generate(nil model) error = nil")
 	}
-	if _, err := model.Chat([]Message{{Role: "user", Content: "x"}}); err == nil {
+	if _, err := model.Chat([]inference.Message{{Role: "user", Content: "x"}}); err == nil {
 		t.Fatal("Chat(nil model) error = nil")
 	}
 	if _, err := model.GenerateChunks(context.Background(), seqStrings("x")); err == nil {
@@ -1110,7 +1110,7 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	if tokens := collectTokensFromChannel(model.GenerateStream(context.Background(), "x")); len(tokens) != 0 {
 		t.Fatalf("GenerateStream(nil model) tokens = %+v, want none", tokens)
 	}
-	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
+	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
 		t.Fatalf("ChatStream(nil model) tokens = %+v, want none", tokens)
 	}
 }

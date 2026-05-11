@@ -5,6 +5,7 @@
 package mlx
 
 import (
+	"dappco.re/go/inference"
 	"context"
 	"iter"
 
@@ -37,7 +38,7 @@ func (m *Model) GenerateChunks(_ context.Context, _ iter.Seq[string], _ ...Gener
 }
 
 // Chat returns an availability error on unsupported builds.
-func (m *Model) Chat(_ []Message, _ ...GenerateOption) (string, error) {
+func (m *Model) Chat(_ []inference.Message, _ ...GenerateOption) (string, error) {
 	return "", core.NewError("mlx: native MLX support is unavailable in this build")
 }
 
@@ -69,7 +70,7 @@ func (m *Model) GenerateStream(_ context.Context, _ string, _ ...GenerateOption)
 }
 
 // ChatStream closes immediately on unsupported builds.
-func (m *Model) ChatStream(_ context.Context, _ []Message, _ ...GenerateOption) <-chan Token {
+func (m *Model) ChatStream(_ context.Context, _ []inference.Message, _ ...GenerateOption) <-chan Token {
 	ch := make(chan Token)
 	close(ch)
 	return ch

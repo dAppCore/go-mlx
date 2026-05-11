@@ -12,6 +12,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/eval"
+	"dappco.re/go/mlx/chat"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/profile"
@@ -84,7 +85,7 @@ func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (st
 	if adapter == nil || adapter.model == nil {
 		return "", core.NewError("mlx: model is nil")
 	}
-	return FormatChatMessages(messages, ChatTemplateConfig{Architecture: adapter.model.ModelType()}), nil
+	return FormatChatMessages(messages, chat.Config{Architecture: adapter.model.ModelType()}), nil
 }
 
 func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity, error) {

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/chat"
 )
 
 func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
@@ -19,7 +21,7 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 		`{"problem":"2+2","thinking":"add the pair","solution":"4"}`,
 	)
 	dataset, err := LoadJSONLDataset(strings.NewReader(input), DatasetConfig{
-		ChatTemplate: ChatTemplateConfig{Architecture: "qwen3"},
+		ChatTemplate: chat.Config{Architecture: "qwen3"},
 	})
 	if err != nil {
 		t.Fatalf("LoadJSONLDataset() error = %v", err)
@@ -62,24 +64,24 @@ func TestLoadJSONLDataset_RecognizesTrainingFormats_Good(t *testing.T) {
 }
 
 func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
-	messages := []Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
-	qwen := FormatChatMessages(messages, ChatTemplateConfig{Architecture: "qwen3"})
+	messages := []inference.Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}}
+	qwen := FormatChatMessages(messages, chat.Config{Architecture: "qwen3"})
 	if qwen != "<|im_start|>system\nsys<|im_end|>\n<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n" {
 		t.Fatalf("qwen template = %q", qwen)
 	}
-	gemma := FormatChatMessages(messages, ChatTemplateConfig{Architecture: "gemma4_text"})
+	gemma := FormatChatMessages(messages, chat.Config{Architecture: "gemma4_text"})
 	if gemma != "<bos><|turn>system\nsys<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n" {
 		t.Fatalf("gemma template = %q", gemma)
 	}
-	gemma3 := FormatChatMessages(messages, ChatTemplateConfig{Architecture: "gemma3_text"})
+	gemma3 := FormatChatMessages(messages, chat.Config{Architecture: "gemma3_text"})
 	if gemma3 != "<start_of_turn>user\nsys<end_of_turn>\n<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" {
 		t.Fatalf("gemma3 template = %q", gemma3)
 	}
-	llama := FormatChatMessages([]Message{{Role: "user", Content: "hi"}}, ChatTemplateConfig{Architecture: "llama"})
+	llama := FormatChatMessages([]inference.Message{{Role: "user", Content: "hi"}}, chat.Config{Architecture: "llama"})
 	if llama != "<|begin_of_text|><|start_header_id|>user<|end_header_id|>\n\nhi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n" {
 		t.Fatalf("llama template = %q", llama)
 	}
-	plain := FormatChatMessages([]Message{{Role: "system"}, {Role: "user", Content: "plain"}}, ChatTemplateConfig{Template: "plain", NoGenerationPrompt: true})
+	plain := FormatChatMessages([]inference.Message{{Role: "system"}, {Role: "user", Content: "plain"}}, chat.Config{Template: "plain", NoGenerationPrompt: true})
 	if plain != "plain\n" {
 		t.Fatalf("plain template = %q, want plain line", plain)
 	}
