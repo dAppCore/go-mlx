@@ -1,6 +1,6 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package merge
 
 import (
 	"context"
@@ -13,31 +13,32 @@ import (
 	"dappco.re/go/mlx/safetensors"
 )
 
-// ModelMergeMethod names the tensor merge algorithm.
-type ModelMergeMethod string
+// Method names the tensor merge algorithm.
+type Method string
 
 const (
-	ModelMergeLinear ModelMergeMethod = "linear"
-	ModelMergeSLERP  ModelMergeMethod = "slerp"
-	ModelMergeTIES   ModelMergeMethod = "ties"
-	ModelMergeDARE   ModelMergeMethod = "dare"
+	MethodLinear Method = "linear"
+	MethodSLERP  Method = "slerp"
+	MethodTIES   Method = "ties"
+	MethodDARE   Method = "dare"
 
-	ModelMergeProvenanceFile      = "model_merge_provenance.json"
+	ProvenanceFile      = "model_merge_provenance.json"
 	modelMergeOutputWeights       = "model.safetensors"
 	modelMergeTensorChunkElements = 1 << 20
 )
 
-// ModelMergeSource identifies one local model pack participating in a merge.
-type ModelMergeSource struct {
-	Path   string  `json:"path"`
-	Weight float64 `json:"weight,omitempty"`
+// Source identifies a pre-validated model pack participating in a merge.
+// Callers run mlx.ValidateModelPack on each source before invoking merge.Packs.
+type Source struct {
+	Pack   mp.ModelPack `json:"pack"`
+	Weight float64      `json:"weight,omitempty"`
 }
 
-// ModelMergeOptions configures local model-pack tensor merging.
-type ModelMergeOptions struct {
-	Sources                   []ModelMergeSource `json:"sources"`
+// Options configures local model-pack tensor merging.
+type Options struct {
+	Sources                   []Source `json:"sources"`
 	OutputPath                string             `json:"output_path"`
-	Method                    ModelMergeMethod   `json:"method,omitempty"`
+	Method                    Method   `json:"method,omitempty"`
 	T                         float64            `json:"t,omitempty"`
 	AllowArchitectureMismatch bool               `json:"allow_architecture_mismatch,omitempty"`
 	AllowTokenizerMismatch    bool               `json:"allow_tokenizer_mismatch,omitempty"`
@@ -45,27 +46,28 @@ type ModelMergeOptions struct {
 	Labels                    map[string]string  `json:"labels,omitempty"`
 }
 
-// ModelMergeResult reports the generated merged model pack.
-type ModelMergeResult struct {
-	OutputPath     string           `json:"output_path"`
-	WeightPath     string           `json:"weight_path"`
-	ProvenancePath string           `json:"provenance_path"`
-	Method         ModelMergeMethod `json:"method"`
-	T              float64          `json:"t,omitempty"`
-	Sources        []mp.ModelPack      `json:"sources"`
-	Pack           mp.ModelPack        `json:"pack"`
-	TensorCount    int              `json:"tensor_count"`
-	MergedTensors  int              `json:"merged_tensors"`
-	CopiedTensors  int              `json:"copied_tensors,omitempty"`
-	SkippedTensors []string         `json:"skipped_tensors,omitempty"`
+// Result reports the paths of the generated merged model pack and its
+// per-tensor counts. Callers re-validate via mlx.ValidateModelPack(OutputPath)
+// when they need a populated pack.ModelPack.
+type Result struct {
+	OutputPath     string         `json:"output_path"`
+	WeightPath     string         `json:"weight_path"`
+	ProvenancePath string         `json:"provenance_path"`
+	Method         Method         `json:"method"`
+	T              float64        `json:"t,omitempty"`
+	Sources        []mp.ModelPack `json:"sources"`
+	TensorCount    int            `json:"tensor_count"`
+	MergedTensors  int            `json:"merged_tensors"`
+	CopiedTensors  int            `json:"copied_tensors,omitempty"`
+	SkippedTensors []string       `json:"skipped_tensors,omitempty"`
 }
 
-// ModelMergeProvenance records how a merged pack was produced.
-type ModelMergeProvenance struct {
+// Provenance records how a merged pack was produced.
+type Provenance struct {
 	Version        int                `json:"version"`
-	Method         ModelMergeMethod   `json:"method"`
+	Method         Method   `json:"method"`
 	T              float64            `json:"t,omitempty"`
-	Sources        []ModelMergeSource `json:"sources"`
+	Sources        []Source `json:"sources"`
 	SourcePacks    []mp.ModelPack        `json:"source_packs"`
 	OutputWeight   string             `json:"output_weight"`
 	MergedTensors  int                `json:"merged_tensors"`
@@ -74,29 +76,29 @@ type ModelMergeProvenance struct {
 	Labels         map[string]string  `json:"labels,omitempty"`
 }
 
-type modelMergePrepared struct {
-	Method  ModelMergeMethod
+type prepared struct {
+	Method  Method
 	T       float64
-	Sources []ModelMergeSource
+	Sources []Source
 	Packs   []mp.ModelPack
 	Output  string
 }
 
-// MergeModelPacks merges compatible local safetensors model packs and writes a loadable pack.
-func MergeModelPacks(ctx context.Context, opts ModelMergeOptions) (*ModelMergeResult, error) {
+// Packs merges compatible local safetensors model packs and writes a loadable pack.
+func Packs(ctx context.Context, opts Options) (*Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	prepared, err := prepareModelMerge(ctx, opts)
+	prepared, err := prepare(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	indexes, err := indexModelMergeSources(prepared.Packs)
+	indexes, err := indexSources(prepared.Packs)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateModelMergeTensorIndexes(indexes, opts.AllowTensorMismatch); err != nil {
+	if err := validateTensorIndexes(indexes, opts.AllowTensorMismatch); err != nil {
 		return nil, err
 	}
 
@@ -106,8 +108,8 @@ func MergeModelPacks(ctx context.Context, opts ModelMergeOptions) (*ModelMergeRe
 		return nil, err
 	}
 
-	provenancePath := core.PathJoin(prepared.Output, ModelMergeProvenanceFile)
-	if err := writeModelMergeProvenance(provenancePath, ModelMergeProvenance{
+	provenancePath := core.PathJoin(prepared.Output, ProvenanceFile)
+	if err := writeProvenance(provenancePath, Provenance{
 		Version:        1,
 		Method:         prepared.Method,
 		T:              prepared.T,
@@ -122,18 +124,13 @@ func MergeModelPacks(ctx context.Context, opts ModelMergeOptions) (*ModelMergeRe
 		return nil, err
 	}
 
-	pack, err := ValidateModelPack(prepared.Output)
-	if err != nil {
-		return nil, core.E("MergeModelPacks", "validate generated model pack", err)
-	}
-	return &ModelMergeResult{
+	return &Result{
 		OutputPath:     prepared.Output,
 		WeightPath:     weightPath,
 		ProvenancePath: provenancePath,
 		Method:         prepared.Method,
 		T:              prepared.T,
 		Sources:        prepared.Packs,
-		Pack:           pack,
 		TensorCount:    len(indexes[0].Names),
 		MergedTensors:  merged,
 		CopiedTensors:  copied,
@@ -141,79 +138,74 @@ func MergeModelPacks(ctx context.Context, opts ModelMergeOptions) (*ModelMergeRe
 	}, nil
 }
 
-func prepareModelMerge(ctx context.Context, opts ModelMergeOptions) (modelMergePrepared, error) {
+func prepare(ctx context.Context, opts Options) (prepared, error) {
 	if err := ctx.Err(); err != nil {
-		return modelMergePrepared{}, err
+		return prepared{}, err
 	}
 	if len(opts.Sources) < 2 {
-		return modelMergePrepared{}, core.NewError("mlx: model merge requires at least two sources")
+		return prepared{}, core.NewError("mlx: model merge requires at least two sources")
 	}
 	if opts.OutputPath == "" {
-		return modelMergePrepared{}, core.NewError("mlx: merged model output path is required")
+		return prepared{}, core.NewError("mlx: merged model output path is required")
 	}
 	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
-		return modelMergePrepared{}, core.NewError("mlx: merged output path must be a model-pack directory")
+		return prepared{}, core.NewError("mlx: merged output path must be a model-pack directory")
 	}
 
 	method := opts.Method
 	if method == "" {
-		method = ModelMergeLinear
+		method = MethodLinear
 	}
 	switch method {
-	case ModelMergeLinear, ModelMergeSLERP:
-	case ModelMergeTIES, ModelMergeDARE:
-		return modelMergePrepared{}, core.NewError("mlx: model merge method " + string(method) + " is reserved as a future sparse-merge hook and is not implemented yet")
+	case MethodLinear, MethodSLERP:
+	case MethodTIES, MethodDARE:
+		return prepared{}, core.NewError("mlx: model merge method " + string(method) + " is reserved as a future sparse-merge hook and is not implemented yet")
 	default:
-		return modelMergePrepared{}, core.NewError("mlx: unsupported model merge method: " + string(method))
+		return prepared{}, core.NewError("mlx: unsupported model merge method: " + string(method))
 	}
-	if method == ModelMergeSLERP && len(opts.Sources) != 2 {
-		return modelMergePrepared{}, core.NewError("mlx: SLERP model merge requires exactly two sources")
+	if method == MethodSLERP && len(opts.Sources) != 2 {
+		return prepared{}, core.NewError("mlx: SLERP model merge requires exactly two sources")
 	}
 	if opts.T < 0 || opts.T > 1 {
-		return modelMergePrepared{}, core.NewError("mlx: model merge t must be between 0 and 1")
+		return prepared{}, core.NewError("mlx: model merge t must be between 0 and 1")
 	}
 
 	output := opts.OutputPath
 	if abs := core.PathAbs(output); abs.OK {
 		output = abs.Value.(string)
 	}
-	if err := ensureEmptyModelMergeDestination(output); err != nil {
-		return modelMergePrepared{}, err
+	if err := ensureEmptyDestination(output); err != nil {
+		return prepared{}, err
 	}
 
 	packs := make([]mp.ModelPack, 0, len(opts.Sources))
-	normalizedSources := make([]ModelMergeSource, 0, len(opts.Sources))
+	normalizedSources := make([]Source, 0, len(opts.Sources))
 	for _, source := range opts.Sources {
-		if source.Path == "" {
-			return modelMergePrepared{}, core.NewError("mlx: model merge source path is required")
-		}
-		pack, err := ValidateModelPack(source.Path)
-		if err != nil {
-			return modelMergePrepared{}, core.E("MergeModelPacks", "validate source model pack", err)
+		pack := source.Pack
+		if pack.Root == "" {
+			return prepared{}, core.NewError("mlx: model merge source pack is required")
 		}
 		if pack.Format != mp.ModelPackFormatSafetensors {
-			return modelMergePrepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
+			return prepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
 		}
 		if samePath(pack.Root, output) {
-			return modelMergePrepared{}, core.NewError("mlx: merged output path must differ from source model path")
+			return prepared{}, core.NewError("mlx: merged output path must differ from source model path")
 		}
-		normalized := source
-		normalized.Path = pack.Root
 		packs = append(packs, pack)
-		normalizedSources = append(normalizedSources, normalized)
+		normalizedSources = append(normalizedSources, source)
 	}
 
-	if err := validateModelMergePackCompatibility(packs, opts); err != nil {
-		return modelMergePrepared{}, err
+	if err := validatePackCompatibility(packs, opts); err != nil {
+		return prepared{}, err
 	}
 	if result := core.MkdirAll(output, 0o755); !result.OK {
-		return modelMergePrepared{}, core.E("MergeModelPacks", "create merged model directory", modelMergeResultError(result))
+		return prepared{}, core.E("Packs", "create merged model directory", resultError(result))
 	}
 	if err := copyModelPackMetadata(packs[0].Root, output); err != nil {
-		return modelMergePrepared{}, err
+		return prepared{}, err
 	}
 
-	return modelMergePrepared{
+	return prepared{
 		Method:  method,
 		T:       opts.T,
 		Sources: normalizedSources,
@@ -222,12 +214,12 @@ func prepareModelMerge(ctx context.Context, opts ModelMergeOptions) (modelMergeP
 	}, nil
 }
 
-func ensureEmptyModelMergeDestination(output string) error {
+func ensureEmptyDestination(output string) error {
 	if stat := core.Stat(output); !stat.OK {
 		if core.IsNotExist(stat.Value.(error)) {
 			return nil
 		}
-		return core.E("MergeModelPacks", "inspect output path", modelMergeResultError(stat))
+		return core.E("Packs", "inspect output path", resultError(stat))
 	}
 	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
 	if len(weights) > 0 {
@@ -236,7 +228,7 @@ func ensureEmptyModelMergeDestination(output string) error {
 	return nil
 }
 
-func validateModelMergePackCompatibility(packs []mp.ModelPack, opts ModelMergeOptions) error {
+func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 	base := packs[0]
 	for i := 1; i < len(packs); i++ {
 		pack := packs[i]
@@ -246,13 +238,13 @@ func validateModelMergePackCompatibility(packs []mp.ModelPack, opts ModelMergeOp
 		if opts.AllowTokenizerMismatch {
 			continue
 		}
-		baseHash, err := StateBundleFileHash(base.TokenizerPath)
+		baseHash, err := hashFile(base.TokenizerPath)
 		if err != nil {
-			return core.E("MergeModelPacks", "hash base tokenizer", err)
+			return core.E("Packs", "hash base tokenizer", err)
 		}
-		hash, err := StateBundleFileHash(pack.TokenizerPath)
+		hash, err := hashFile(pack.TokenizerPath)
 		if err != nil {
-			return core.E("MergeModelPacks", "hash tokenizer", err)
+			return core.E("Packs", "hash tokenizer", err)
 		}
 		if hash != baseHash {
 			return core.NewError("mlx: model merge tokenizer mismatch")
@@ -261,7 +253,7 @@ func validateModelMergePackCompatibility(packs []mp.ModelPack, opts ModelMergeOp
 	return nil
 }
 
-func indexModelMergeSources(packs []mp.ModelPack) ([]safetensors.Index, error) {
+func indexSources(packs []mp.ModelPack) ([]safetensors.Index, error) {
 	indexes := make([]safetensors.Index, 0, len(packs))
 	for _, pack := range packs {
 		index, err := safetensors.IndexFiles(pack.WeightFiles)
@@ -273,7 +265,7 @@ func indexModelMergeSources(packs []mp.ModelPack) ([]safetensors.Index, error) {
 	return indexes, nil
 }
 
-func validateModelMergeTensorIndexes(indexes []safetensors.Index, allowMismatch bool) error {
+func validateTensorIndexes(indexes []safetensors.Index, allowMismatch bool) error {
 	base := indexes[0]
 	for i := 1; i < len(indexes); i++ {
 		index := indexes[i]
@@ -305,18 +297,18 @@ func validateModelMergeTensorIndexes(indexes []safetensors.Index, allowMismatch 
 	return nil
 }
 
-func writeMergedSafetensors(ctx context.Context, path string, indexes []safetensors.Index, method ModelMergeMethod, t float64, sources []ModelMergeSource, allowMismatch bool) (int, int, []string, error) {
-	header := buildMergedSafetensorsHeader(indexes[0])
+func writeMergedSafetensors(ctx context.Context, path string, indexes []safetensors.Index, method Method, t float64, sources []Source, allowMismatch bool) (int, int, []string, error) {
+	header := buildMergedHeader(indexes[0])
 	created := core.Create(path)
 	if !created.OK {
-		return 0, 0, nil, modelMergeResultError(created)
+		return 0, 0, nil, resultError(created)
 	}
 	file := created.Value.(*core.OSFile)
 	defer file.Close()
 
 	encoded := core.JSONMarshal(header)
 	if !encoded.OK {
-		return 0, 0, nil, modelMergeResultError(encoded)
+		return 0, 0, nil, resultError(encoded)
 	}
 	headerBytes := encoded.Value.([]byte)
 	if err := binary.Write(file, binary.LittleEndian, uint64(len(headerBytes))); err != nil {
@@ -326,7 +318,7 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 		return 0, 0, nil, err
 	}
 
-	linearWeights, err := normalizedMergeWeights(sources)
+	linearWeights, err := normalizedWeights(sources)
 	if err != nil {
 		return 0, 0, nil, err
 	}
@@ -338,18 +330,18 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 		if err := ctx.Err(); err != nil {
 			return 0, 0, nil, err
 		}
-		if method == ModelMergeLinear || method == ModelMergeSLERP {
-			refs, complete, err := readMergeTensorRefs(indexes, name)
+		if method == MethodLinear || method == MethodSLERP {
+			refs, complete, err := readTensorRefs(indexes, name)
 			if err != nil {
 				return 0, 0, nil, err
 			}
 			switch {
 			case complete:
 				var err error
-				if method == ModelMergeSLERP {
-					err = writeSLERPMergedTensorChunks(ctx, file, refs, t, modelMergeTensorChunkElements)
+				if method == MethodSLERP {
+					err = writeSLERPChunks(ctx, file, refs, t, modelMergeTensorChunkElements)
 				} else {
-					err = writeLinearMergedTensorChunks(ctx, file, refs, linearWeights, modelMergeTensorChunkElements)
+					err = writeLinearChunks(ctx, file, refs, linearWeights, modelMergeTensorChunkElements)
 				}
 				if err != nil {
 					return 0, 0, nil, err
@@ -366,7 +358,7 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 			}
 			continue
 		}
-		values, complete, err := readMergeTensorValues(indexes, name)
+		values, complete, err := readTensorValues(indexes, name)
 		if err != nil {
 			return 0, 0, nil, err
 		}
@@ -392,7 +384,7 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	return merged, copied, skipped, nil
 }
 
-func readMergeTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.TensorRef, bool, error) {
+func readTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.TensorRef, bool, error) {
 	refs := make([]safetensors.TensorRef, 0, len(indexes))
 	var shape []uint64
 	complete := true
@@ -413,7 +405,7 @@ func readMergeTensorRefs(indexes []safetensors.Index, name string) ([]safetensor
 	return refs, complete && len(refs) == len(indexes), nil
 }
 
-func buildMergedSafetensorsHeader(index safetensors.Index) map[string]safetensors.HeaderEntry {
+func buildMergedHeader(index safetensors.Index) map[string]safetensors.HeaderEntry {
 	header := make(map[string]safetensors.HeaderEntry, len(index.Names))
 	var offset int64
 	for _, name := range index.Names {
@@ -433,7 +425,7 @@ func buildMergedSafetensorsHeader(index safetensors.Index) map[string]safetensor
 	return header
 }
 
-func readMergeTensorValues(indexes []safetensors.Index, name string) ([][]float32, bool, error) {
+func readTensorValues(indexes []safetensors.Index, name string) ([][]float32, bool, error) {
 	values := make([][]float32, 0, len(indexes))
 	var shape []uint64
 	complete := true
@@ -458,7 +450,7 @@ func readMergeTensorValues(indexes []safetensors.Index, name string) ([][]float3
 	return values, complete && len(values) == len(indexes), nil
 }
 
-func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
+func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
 	if len(refs) == 0 {
 		return core.NewError("mlx: no tensors to merge")
 	}
@@ -502,12 +494,12 @@ func writeLinearMergedTensorChunks(ctx context.Context, file *core.OSFile, refs 
 	return nil
 }
 
-func writeSLERPMergedTensorChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, t float64, chunkElements int) error {
+func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, t float64, chunkElements int) error {
 	weights, err := slerpChunkedWeights(ctx, refs, t, chunkElements)
 	if err != nil {
 		return err
 	}
-	return writeLinearMergedTensorChunks(ctx, file, refs, weights, chunkElements)
+	return writeLinearChunks(ctx, file, refs, weights, chunkElements)
 }
 
 func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t float64, chunkElements int) ([]float64, error) {
@@ -566,18 +558,18 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 	}, nil
 }
 
-func mergeTensorValues(values [][]float32, method ModelMergeMethod, t float64, weights []float64) ([]float32, error) {
+func mergeTensorValues(values [][]float32, method Method, t float64, weights []float64) ([]float32, error) {
 	switch method {
-	case ModelMergeLinear:
-		return linearMergeTensorValues(values, weights)
-	case ModelMergeSLERP:
-		return slerpMergeTensorValues(values, t)
+	case MethodLinear:
+		return linearMerge(values, weights)
+	case MethodSLERP:
+		return slerpMerge(values, t)
 	default:
 		return nil, core.NewError("mlx: unsupported model merge method: " + string(method))
 	}
 }
 
-func linearMergeTensorValues(values [][]float32, weights []float64) ([]float32, error) {
+func linearMerge(values [][]float32, weights []float64) ([]float32, error) {
 	if len(values) == 0 {
 		return nil, core.NewError("mlx: no tensors to merge")
 	}
@@ -594,7 +586,7 @@ func linearMergeTensorValues(values [][]float32, weights []float64) ([]float32, 
 	return out, nil
 }
 
-func slerpMergeTensorValues(values [][]float32, t float64) ([]float32, error) {
+func slerpMerge(values [][]float32, t float64) ([]float32, error) {
 	if len(values) != 2 {
 		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
 	}
@@ -614,21 +606,21 @@ func slerpMergeTensorValues(values [][]float32, t float64) ([]float32, error) {
 		normB += bv * bv
 	}
 	if normA == 0 || normB == 0 {
-		return linearMergeTensorValues(values, []float64{1 - t, t})
+		return linearMerge(values, []float64{1 - t, t})
 	}
 	cosTheta := dot / (math.Sqrt(normA) * math.Sqrt(normB))
 	cosTheta = clampFloat64(cosTheta, -1, 1)
 	if math.Abs(cosTheta) > 0.9995 {
-		return linearMergeTensorValues(values, []float64{1 - t, t})
+		return linearMerge(values, []float64{1 - t, t})
 	}
 	theta := math.Acos(cosTheta)
 	sinTheta := math.Sin(theta)
 	scaleA := math.Sin((1-t)*theta) / sinTheta
 	scaleB := math.Sin(t*theta) / sinTheta
-	return linearMergeTensorValues(values, []float64{scaleA, scaleB})
+	return linearMerge(values, []float64{scaleA, scaleB})
 }
 
-func normalizedMergeWeights(sources []ModelMergeSource) ([]float64, error) {
+func normalizedWeights(sources []Source) ([]float64, error) {
 	weights := make([]float64, len(sources))
 	var total float64
 	var explicit bool
@@ -667,16 +659,16 @@ func writeFloat32Values(file *core.OSFile, values []float32) error {
 	return err
 }
 
-func writeModelMergeProvenance(path string, provenance ModelMergeProvenance) error {
+func writeProvenance(path string, provenance Provenance) error {
 	slices := append([]string(nil), provenance.SkippedTensors...)
 	sort.Strings(slices)
 	provenance.SkippedTensors = slices
 	data := core.JSONMarshal(provenance)
 	if !data.OK {
-		return core.E("MergeModelPacks", "marshal merge provenance", modelMergeResultError(data))
+		return core.E("Packs", "marshal merge provenance", resultError(data))
 	}
 	if result := core.WriteFile(path, data.Value.([]byte), 0o644); !result.OK {
-		return core.E("MergeModelPacks", "write merge provenance", modelMergeResultError(result))
+		return core.E("Packs", "write merge provenance", resultError(result))
 	}
 	return nil
 }
@@ -703,7 +695,7 @@ func clampFloat64(value, minValue, maxValue float64) float64 {
 	return value
 }
 
-func modelMergeResultError(result core.Result) error {
+func resultError(result core.Result) error {
 	if result.OK {
 		return nil
 	}
@@ -774,4 +766,16 @@ func modelPackCopyResultError(result core.Result) error {
 		return err
 	}
 	return core.NewError("model pack metadata copy failed")
+}
+
+func hashFile(path string) (string, error) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return "", resultError(read)
+	}
+	data, ok := read.Value.([]byte)
+	if !ok {
+		return "", core.NewError("merge: read file returned non-byte data")
+	}
+	return core.SHA256Hex(data), nil
 }

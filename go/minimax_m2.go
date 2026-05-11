@@ -1002,3 +1002,15 @@ func miniMaxM2Score(value float32, scoringFunc string) float32 {
 		return value
 	}
 }
+
+func sameUint64Slice(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
