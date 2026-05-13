@@ -3,8 +3,8 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
 	"context"
+	"dappco.re/go/mlx/dataset"
 	"math"
 	"testing"
 
@@ -305,4 +305,15 @@ func distillTestLogits(batch SFTBatch, vocab int, preferred int, scale float32) 
 		}
 	}
 	return out
+}
+
+// writeModelPackFile is a small test helper that writes a file under
+// the test's temp dir. Lives here (rather than in a separate
+// `*_test_helpers_test.go`) per the test-file-per-source convention —
+// distill_test.go and grpo_test.go both call it from the same package.
+func writeModelPackFile(t *testing.T, path string, data string) {
+	t.Helper()
+	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
+		t.Fatalf("write %s: %v", path, result.Value)
+	}
 }
