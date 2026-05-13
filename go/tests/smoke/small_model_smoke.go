@@ -1,8 +1,9 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package smoke
 
 import (
+	mlx "dappco.re/go/mlx"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/memory"
 	"context"
@@ -31,11 +32,11 @@ type SmallModelSmokeConfig struct {
 	MaxContextLength       int                 `json:"max_context_length,omitempty"`
 	MaxBatchSize           int                 `json:"max_batch_size,omitempty"`
 	MaxPrefillChunkSize    int                 `json:"max_prefill_chunk_size,omitempty"`
-	Device                 DeviceInfo          `json:"device,omitempty"`
+	Device                 mlx.DeviceInfo          `json:"device,omitempty"`
 	IncludeWorkloadBench   bool                `json:"include_workload_bench"`
 	IncludeChatTemplate    bool                `json:"include_chat_template"`
-	Workload               WorkloadBenchConfig `json:"workload,omitempty"`
-	AdditionalLoadOptions  []LoadOption        `json:"-"`
+	Workload               mlx.WorkloadBenchConfig `json:"workload,omitempty"`
+	AdditionalLoadOptions  []mlx.LoadOption        `json:"-"`
 	RequireNativeLoadable  bool                `json:"require_native_loadable"`
 	RequireValidModelPack  bool                `json:"require_valid_model_pack"`
 	RequireKnownWeightSize bool                `json:"require_known_weight_size"`
@@ -85,7 +86,7 @@ type SmallModelSmokeReport struct {
 	Plan       SmallModelSmokePlan  `json:"plan"`
 	Skipped    bool                 `json:"skipped"`
 	SkipReason string               `json:"skip_reason,omitempty"`
-	Bench      *WorkloadBenchReport `json:"bench,omitempty"`
+	Bench      *mlx.WorkloadBenchReport `json:"bench,omitempty"`
 	Error      string               `json:"error,omitempty"`
 }
 
@@ -108,7 +109,7 @@ func DefaultSmallModelSmokeConfig() SmallModelSmokeConfig {
 		RequireNativeLoadable:  true,
 		RequireValidModelPack:  true,
 		RequireKnownWeightSize: true,
-		Workload: WorkloadBenchConfig{
+		Workload: mlx.WorkloadBenchConfig{
 			FastEval:            fast,
 			IncludeKVCacheBench: true,
 		},
@@ -167,7 +168,7 @@ func PlanSmallModelSmoke(modelPath string, cfg SmallModelSmokeConfig) (SmallMode
 	if !cfg.IncludeChatTemplate {
 		pack.ChatTemplate = ""
 	}
-	memoryPlan := PlanMemory(MemoryPlanInput{Device: cfg.Device, Pack: &pack})
+	memoryPlan := mlx.PlanMemory(mlx.MemoryPlanInput{Device: cfg.Device, Pack: &pack})
 	plan := SmallModelSmokePlan{
 		ModelPath:  modelPath,
 		Pack:       pack,
@@ -201,7 +202,7 @@ func RunSmallModelSmoke(ctx context.Context, cfg SmallModelSmokeConfig) (*SmallM
 		report.SkipReason = plan.Budget.Reason
 		return report, nil
 	}
-	model, err := LoadModel(plan.ModelPath, smallModelSmokeLoadOptions(plan, cfg)...)
+	model, err := mlx.LoadModel(plan.ModelPath, smallModelSmokeLoadOptions(plan, cfg)...)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -210,7 +211,7 @@ func RunSmallModelSmoke(ctx context.Context, cfg SmallModelSmokeConfig) (*SmallM
 	if !cfg.IncludeWorkloadBench {
 		return report, nil
 	}
-	bench, err := RunModelWorkloadBench(ctx, model, cfg.Workload)
+	bench, err := mlx.RunModelWorkloadBench(ctx, model, cfg.Workload)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -295,22 +296,31 @@ func smallModelSmokeLoadPlan(plan memory.Plan, cfg SmallModelSmokeConfig) SmallM
 	}
 }
 
-func smallModelSmokeLoadOptions(plan SmallModelSmokePlan, cfg SmallModelSmokeConfig) []LoadOption {
+func smallModelSmokeLoadOptions(plan SmallModelSmokePlan, cfg SmallModelSmokeConfig) []mlx.LoadOption {
 	load := plan.Load
-	opts := []LoadOption{
-		WithMemoryPlan(plan.MemoryPlan),
-		WithContextLength(load.ContextLength),
-		WithParallelSlots(load.ParallelSlots),
-		WithPromptCache(load.PromptCache),
-		WithPromptCacheMinTokens(load.PromptCacheMinTokens),
-		WithQuantization(load.Quantization),
-		WithExpectedQuantization(load.Quantization),
-		WithCachePolicy(load.CachePolicy),
-		WithKVCacheMode(load.CacheMode),
-		WithBatchSize(load.BatchSize),
-		WithPrefillChunkSize(load.PrefillChunkSize),
-		WithAllocatorLimits(load.MemoryLimitBytes, load.CacheLimitBytes, load.WiredLimitBytes),
+	opts := []mlx.LoadOption{
+		mlx.WithMemoryPlan(plan.MemoryPlan),
+		mlx.WithContextLength(load.ContextLength),
+		mlx.WithParallelSlots(load.ParallelSlots),
+		mlx.WithPromptCache(load.PromptCache),
+		mlx.WithPromptCacheMinTokens(load.PromptCacheMinTokens),
+		mlx.WithQuantization(load.Quantization),
+		mlx.WithExpectedQuantization(load.Quantization),
+		mlx.WithCachePolicy(load.CachePolicy),
+		mlx.WithKVCacheMode(load.CacheMode),
+		mlx.WithBatchSize(load.BatchSize),
+		mlx.WithPrefillChunkSize(load.PrefillChunkSize),
+		mlx.WithAllocatorLimits(load.MemoryLimitBytes, load.CacheLimitBytes, load.WiredLimitBytes),
 	}
 	opts = append(opts, cfg.AdditionalLoadOptions...)
 	return opts
+}
+
+// maxPositive returns the larger of two ints, with a positive floor:
+// when both args are non-positive, returns b unconditionally.
+func maxPositive(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

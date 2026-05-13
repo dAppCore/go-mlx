@@ -1,8 +1,9 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package smoke
 
 import (
+	mlx "dappco.re/go/mlx"
 	"testing"
 
 	core "dappco.re/go"

@@ -1,8 +1,9 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-package mlx
+package smoke
 
 import (
+	mlx "dappco.re/go/mlx"
 	"context"
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
@@ -106,7 +107,7 @@ func TestPlanSmallModelSmoke_CapsContextForAppleSmoke_Good(t *testing.T) {
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
 	plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
-		Device: DeviceInfo{
+		Device: mlx.DeviceInfo{
 			Architecture:                 "apple9",
 			MemorySize:                   96 * memory.GiB,
 			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
@@ -146,7 +147,7 @@ func TestPlanSmallModelSmoke_RedactsChatTemplateByDefault_Good(t *testing.T) {
 	writeModelPackFile(t, core.PathJoin(dir, "chat_template.jinja"), "large-template-body")
 
 	plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
-		Device: DeviceInfo{MemorySize: 16 * memory.GiB},
+		Device: mlx.DeviceInfo{MemorySize: 16 * memory.GiB},
 	})
 	if err != nil {
 		t.Fatalf("PlanSmallModelSmoke() error = %v", err)
@@ -188,7 +189,7 @@ func TestSmallModelSmokeHelpers_Good(t *testing.T) {
 		MaxContextLength:     4096,
 		MaxBatchSize:         2,
 		MaxPrefillChunkSize:  128,
-		Workload: WorkloadBenchConfig{
+		Workload: mlx.WorkloadBenchConfig{
 			FastEval: bench.Config{Prompt: "custom", MaxTokens: 2},
 		},
 	})
@@ -213,7 +214,7 @@ func TestSmallModelSmokeHelpers_Good(t *testing.T) {
 		t.Fatalf("load plan = %+v, want capped smoke shape", load)
 	}
 	opts := smallModelSmokeLoadOptions(SmallModelSmokePlan{MemoryPlan: memory.Plan{}, Load: load}, SmallModelSmokeConfig{
-		AdditionalLoadOptions: []LoadOption{WithDevice("cpu")},
+		AdditionalLoadOptions: []mlx.LoadOption{mlx.WithDevice("cpu")},
 	})
 	if len(opts) != 13 {
 		t.Fatalf("load options len = %d, want base options plus additional option", len(opts))
@@ -269,12 +270,12 @@ func TestRunSmallModelSmoke_ForwardsBudgetedLoadOptions_Good(t *testing.T) {
 
 	report, err := RunSmallModelSmoke(context.Background(), SmallModelSmokeConfig{
 		ModelPath: dir,
-		Device: DeviceInfo{
+		Device: mlx.DeviceInfo{
 			Architecture:                 "apple9",
 			MemorySize:                   96 * memory.GiB,
 			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
 		},
-		Workload: WorkloadBenchConfig{
+		Workload: mlx.WorkloadBenchConfig{
 			FastEval: bench.Config{
 				Prompt:             "hi",
 				CachePrompt:        "hi",
