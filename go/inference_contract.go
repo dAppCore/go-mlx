@@ -1,13 +1,12 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/inference/bench"
-	"dappco.re/go/mlx/memory"
 	"context"
+	"dappco.re/go/inference/bench"
+	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/memory"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -16,8 +15,8 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/model"
-	"dappco.re/go/mlx/profile"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/profile"
 )
 
 func (backend *metalbackend) Capabilities() inference.CapabilityReport {

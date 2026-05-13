@@ -3,8 +3,8 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
 	"context"
+	"dappco.re/go/mlx/dataset"
 	"math"
 	"sync"
 	"time"
@@ -30,15 +30,15 @@ type DistillLogits [][][]float32
 // DistillConfig controls native knowledge distillation over dataset streams.
 type DistillConfig struct {
 	Batch           dataset.BatchConfig `json:"batch"`
-	Epochs          int                `json:"epochs,omitempty"`
-	Temperature     float64            `json:"temperature,omitempty"`
-	Loss            DistillLossKind    `json:"loss,omitempty"`
-	LearningRate    float64            `json:"learning_rate,omitempty"`
-	CheckpointDir   string             `json:"checkpoint_dir,omitempty"`
-	CheckpointEvery int                `json:"checkpoint_every,omitempty"`
-	EvalEvery       int                `json:"eval_every,omitempty"`
-	ResumePath      string             `json:"resume_path,omitempty"`
-	MaxSamples      int                `json:"max_samples,omitempty"`
+	Epochs          int                 `json:"epochs,omitempty"`
+	Temperature     float64             `json:"temperature,omitempty"`
+	Loss            DistillLossKind     `json:"loss,omitempty"`
+	LearningRate    float64             `json:"learning_rate,omitempty"`
+	CheckpointDir   string              `json:"checkpoint_dir,omitempty"`
+	CheckpointEvery int                 `json:"checkpoint_every,omitempty"`
+	EvalEvery       int                 `json:"eval_every,omitempty"`
+	ResumePath      string              `json:"resume_path,omitempty"`
+	MaxSamples      int                 `json:"max_samples,omitempty"`
 	ProbeSink       probe.Sink          `json:"-"`
 }
 
@@ -114,24 +114,24 @@ type DistillResult struct {
 
 // DistillCheckpointMetadata is the portable JSON sidecar for distillation checkpoints.
 type DistillCheckpointMetadata struct {
-	Version            int                `json:"version"`
-	Path               string             `json:"path"`
-	ResumePath         string             `json:"resume_path,omitempty"`
-	Step               int                `json:"step"`
-	Epoch              int                `json:"epoch"`
-	Samples            int                `json:"samples"`
-	Tokens             int                `json:"tokens"`
-	Loss               float64            `json:"loss"`
-	KL                 float64            `json:"kl"`
-	SoftCrossEntropy   float64            `json:"soft_cross_entropy"`
-	TeacherEntropy     float64            `json:"teacher_entropy"`
-	Temperature        float64            `json:"temperature"`
-	LossKind           DistillLossKind    `json:"loss_kind"`
+	Version            int                 `json:"version"`
+	Path               string              `json:"path"`
+	ResumePath         string              `json:"resume_path,omitempty"`
+	Step               int                 `json:"step"`
+	Epoch              int                 `json:"epoch"`
+	Samples            int                 `json:"samples"`
+	Tokens             int                 `json:"tokens"`
+	Loss               float64             `json:"loss"`
+	KL                 float64             `json:"kl"`
+	SoftCrossEntropy   float64             `json:"soft_cross_entropy"`
+	TeacherEntropy     float64             `json:"teacher_entropy"`
+	Temperature        float64             `json:"temperature"`
+	LossKind           DistillLossKind     `json:"loss_kind"`
 	Batch              dataset.BatchConfig `json:"batch"`
-	Teacher            ModelInfo          `json:"teacher"`
-	Student            ModelInfo          `json:"student"`
-	TeacherCacheHits   int                `json:"teacher_cache_hits,omitempty"`
-	TeacherCacheMisses int                `json:"teacher_cache_misses,omitempty"`
+	Teacher            ModelInfo           `json:"teacher"`
+	Student            ModelInfo           `json:"student"`
+	TeacherCacheHits   int                 `json:"teacher_cache_hits,omitempty"`
+	TeacherCacheMisses int                 `json:"teacher_cache_misses,omitempty"`
 }
 
 // DistillCheckpointContext is passed to optional checkpoint writers.
@@ -154,9 +154,9 @@ type DistillEvalContext struct {
 
 // DistillEvalResult records one eval hook result during distillation.
 type DistillEvalResult struct {
-	Step    int         `json:"step"`
-	Epoch   int         `json:"epoch,omitempty"`
-	Name    string      `json:"name,omitempty"`
+	Step    int          `json:"step"`
+	Epoch   int          `json:"epoch,omitempty"`
+	Name    string       `json:"name,omitempty"`
 	Metrics eval.Metrics `json:"metrics,omitempty"`
 	Report  *eval.Report `json:"report,omitempty"`
 }

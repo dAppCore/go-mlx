@@ -3,9 +3,9 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/inference/bench"
 	"context"
+	"dappco.re/go/inference/bench"
+	"dappco.re/go/mlx/dataset"
 	"math"
 	"time"
 
@@ -21,18 +21,18 @@ const WorkloadBenchReportVersion = 1
 
 // WorkloadBenchConfig controls the library-first local workload benchmark.
 type WorkloadBenchConfig struct {
-	FastEval               bench.Config                 `json:"fast_eval"`
-	Eval                   eval.Config                     `json:"eval,omitempty"`
-	EvalDataset            dataset.Dataset                     `json:"-"`
-	AdapterPath            string                         `json:"adapter_path,omitempty"`
-	IncludeAdapterLoad     bool                           `json:"include_adapter_load"`
-	IncludeAdapterFuse     bool                           `json:"include_adapter_fuse"`
-	IncludePerplexity      bool                           `json:"include_perplexity"`
-	IncludeKVCacheBench    bool                           `json:"include_kv_cache_bench"`
-	IncludeExpertResidency bool                           `json:"include_expert_residency"`
-	ExpertResidency        memory.ExpertResidencyPlan            `json:"expert_residency,omitempty"`
-	QuantizationProfile    *jang.PackedProfile `json:"quantization_profile,omitempty"`
-	EvalSamples            []WorkloadEvalSample           `json:"eval_samples,omitempty"`
+	FastEval               bench.Config               `json:"fast_eval"`
+	Eval                   eval.Config                `json:"eval,omitempty"`
+	EvalDataset            dataset.Dataset            `json:"-"`
+	AdapterPath            string                     `json:"adapter_path,omitempty"`
+	IncludeAdapterLoad     bool                       `json:"include_adapter_load"`
+	IncludeAdapterFuse     bool                       `json:"include_adapter_fuse"`
+	IncludePerplexity      bool                       `json:"include_perplexity"`
+	IncludeKVCacheBench    bool                       `json:"include_kv_cache_bench"`
+	IncludeExpertResidency bool                       `json:"include_expert_residency"`
+	ExpertResidency        memory.ExpertResidencyPlan `json:"expert_residency,omitempty"`
+	QuantizationProfile    *jang.PackedProfile        `json:"quantization_profile,omitempty"`
+	EvalSamples            []WorkloadEvalSample       `json:"eval_samples,omitempty"`
 }
 
 // WorkloadEvalSample is one record used by benchmark eval hooks.
@@ -77,14 +77,14 @@ type WorkloadBenchRunner struct {
 
 // WorkloadBenchReport is a JSON-friendly report for local model workloads.
 type WorkloadBenchReport struct {
-	Version             int                            `json:"version"`
-	FastEval            *bench.Report                `json:"fast_eval,omitempty"`
-	KVCache             kv.BenchReport                 `json:"kv_cache,omitempty"`
-	QuantizationProfile *jang.PackedProfile `json:"quantization_profile,omitempty"`
-	Adapter             WorkloadAdapterReport          `json:"adapter"`
-	Evaluation          WorkloadEvaluationReport       `json:"evaluation"`
-	ExpertResidency     WorkloadExpertResidencyReport  `json:"expert_residency"`
-	Summary             WorkloadBenchSummary           `json:"summary"`
+	Version             int                           `json:"version"`
+	FastEval            *bench.Report                 `json:"fast_eval,omitempty"`
+	KVCache             kv.BenchReport                `json:"kv_cache,omitempty"`
+	QuantizationProfile *jang.PackedProfile           `json:"quantization_profile,omitempty"`
+	Adapter             WorkloadAdapterReport         `json:"adapter"`
+	Evaluation          WorkloadEvaluationReport      `json:"evaluation"`
+	ExpertResidency     WorkloadExpertResidencyReport `json:"expert_residency"`
+	Summary             WorkloadBenchSummary          `json:"summary"`
 }
 
 // WorkloadBenchSummary mirrors the high-signal metrics needed for quick comparisons.
@@ -149,18 +149,18 @@ type WorkloadEvaluationReport struct {
 	Attempted bool                `json:"attempted"`
 	Duration  time.Duration       `json:"duration,omitempty"`
 	Metrics   WorkloadEvalMetrics `json:"metrics,omitempty"`
-	Quality   eval.QualityReport   `json:"quality,omitempty"`
-	Report    *eval.Report         `json:"report,omitempty"`
+	Quality   eval.QualityReport  `json:"quality,omitempty"`
+	Report    *eval.Report        `json:"report,omitempty"`
 	Error     string              `json:"error,omitempty"`
 }
 
 // WorkloadExpertResidencyReport records optional lazy expert residency timing.
 type WorkloadExpertResidencyReport struct {
-	Attempted bool                 `json:"attempted"`
-	Duration  time.Duration        `json:"duration,omitempty"`
+	Attempted bool                        `json:"attempted"`
+	Duration  time.Duration               `json:"duration,omitempty"`
 	Plan      memory.ExpertResidencyPlan  `json:"plan,omitempty"`
 	Stats     memory.ExpertResidencyStats `json:"stats,omitempty"`
-	Error     string               `json:"error,omitempty"`
+	Error     string                      `json:"error,omitempty"`
 }
 
 // DefaultWorkloadBenchConfig returns a small laptop-safe workload benchmark config.

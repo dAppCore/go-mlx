@@ -1,6 +1,5 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-
 package mlx
 
 import (
@@ -12,8 +11,8 @@ import (
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
 	mlxbundle "dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/probe"
 )
 

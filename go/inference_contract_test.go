@@ -1,14 +1,12 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-//go:build darwin && arm64 && !nomlx
-
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
-	"dappco.re/go/inference/bench"
-	"dappco.re/go/mlx/memory"
 	"context"
+	"dappco.re/go/inference/bench"
+	"dappco.re/go/mlx/dataset"
+	"dappco.re/go/mlx/memory"
 	"testing"
 	"time"
 
@@ -16,8 +14,8 @@ import (
 	"dappco.re/go/inference/eval"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
-	"dappco.re/go/mlx/profile"
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/profile"
 )
 
 func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testing.T) {

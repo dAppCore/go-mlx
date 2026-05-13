@@ -1,18 +1,17 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-
 package mlx
 
 import (
-	"dappco.re/go/mlx/blockcache"
 	"context"
+	"dappco.re/go/mlx/blockcache"
 
 	core "dappco.re/go"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/bundle"
-	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/kv"
 )
 
 type nativeModelSessionFactory interface {
