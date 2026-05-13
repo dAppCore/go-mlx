@@ -1,16 +1,17 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
+//go:build darwin && arm64 && !nomlx
+
 package mlx
 
 import (
-	"dappco.re/go/mlx/memory"
 	"testing"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/memory"
 )
 
-// Generated file-aware compliance coverage.
 func TestApiCommon_AttentionSnapshot_HasQueries_Good(t *testing.T) {
 	coverageTokens := "AttentionSnapshot HasQueries"
 	if coverageTokens == "" {
