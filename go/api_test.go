@@ -5,21 +5,22 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/memory"
 	"context"
-	"iter"
-	"reflect"
-	"testing"
-	"time"
-
 	core "dappco.re/go"
-	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/inference"
 	memvid "dappco.re/go/inference/state"
 	coreio "dappco.re/go/io"
-	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/kv"
+	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/probe"
+	"encoding/binary"
+	"iter"
+	"math"
+	"reflect"
+	"testing"
+	"time"
 )
 
 type fakeNativeModel struct {
@@ -1557,4 +1558,110 @@ func apiTestResultError(result core.Result) error {
 		return err
 	}
 	return nil
+}
+
+// appendUint16LE appends value to out in little-endian byte order.
+func appendUint16LE(out []byte, value uint16) []byte {
+	var buf [2]byte
+	binary.LittleEndian.PutUint16(buf[:], value)
+	return append(out, buf[:]...)
+}
+
+// float32ToFloat16 converts a float32 to IEEE-754 float16 bits.
+// Used by api_test.go to build binary tensor fixtures.
+func float32ToFloat16(value float32) uint16 {
+	bits := math.Float32bits(value)
+	sign := uint16((bits >> 16) & 0x8000)
+	exp := int((bits >> 23) & 0xff)
+	frac := bits & 0x7fffff
+	if exp == 255 {
+		if frac == 0 {
+			return sign | 0x7c00
+		}
+		return sign | 0x7e00
+	}
+	exp = exp - 127 + 15
+	if exp >= 31 {
+		return sign | 0x7c00
+	}
+	if exp <= 0 {
+		if exp < -10 {
+			return sign
+		}
+		frac |= 0x800000
+		shift := uint32(14 - exp)
+		return sign | uint16(frac>>shift)
+	}
+	return sign | uint16(exp<<10) | uint16(frac>>13)
+}
+
+func stateBundleTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2},
+		Generated:     []int32{2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        2,
+		HeadDim:       2,
+		NumQueryHeads: 8,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{1, 0, 0, 1},
+				Value: []float32{0, 1, 1, 0},
+			}},
+		}},
+	}
+}
+
+func kvSnapshotBlocksTestSnapshot() *kv.Snapshot {
+	return &kv.Snapshot{
+		Version:       kv.SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2, 3, 4},
+		Generated:     []int32{4},
+		TokenOffset:   4,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        4,
+		HeadDim:       2,
+		NumQueryHeads: 1,
+		LogitShape:    []int32{1, 1, 3},
+		Logits:        []float32{0.1, 0.2, 0.7},
+		Layers: []kv.LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []kv.HeadSnapshot{{
+				Key:   []float32{10, 11, 12, 13, 14, 15, 16, 17},
+				Value: []float32{20, 21, 22, 23, 24, 25, 26, 27},
+			}},
+		}},
+	}
+}
+
+type recordingMemvidStore struct {
+	store    memvid.Store
+	resolved []int
+}
+
+func (s *recordingMemvidStore) Get(ctx context.Context, chunkID int) (string, error) {
+	s.resolved = append(s.resolved, chunkID)
+	return s.store.Get(ctx, chunkID)
+}
+
+func (s *recordingMemvidStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+	s.resolved = append(s.resolved, chunkID)
+	return memvid.Resolve(ctx, s.store, chunkID)
+}
+
+type failingMemvidWriter struct{}
+
+func (failingMemvidWriter) Put(ctx context.Context, text string, opts memvid.PutOptions) (memvid.ChunkRef, error) {
+	return memvid.ChunkRef{}, context.Canceled
 }
