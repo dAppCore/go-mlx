@@ -3,8 +3,8 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
 	"context"
+	"dappco.re/go/mlx/dataset"
 	"math"
 	"strings"
 	"testing"

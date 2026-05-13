@@ -19,11 +19,11 @@ const (
 	ggufValueTypeInt8    = 1
 	ggufValueTypeUint16  = 2
 	ggufValueTypeInt16   = 3
-	ValueTypeUint32  = 4
+	ValueTypeUint32      = 4
 	ggufValueTypeInt32   = 5
 	ggufValueTypeFloat32 = 6
 	ggufValueTypeBool    = 7
-	ValueTypeString  = 8
+	ValueTypeString      = 8
 	ggufValueTypeArray   = 9
 	ggufValueTypeUint64  = 10
 	ggufValueTypeInt64   = 11
@@ -33,11 +33,11 @@ const (
 const (
 	ggufTensorTypeF32      = 0
 	ggufTensorTypeF16      = 1
-	TensorTypeQ4_0     = 2
+	TensorTypeQ4_0         = 2
 	ggufTensorTypeQ4_1     = 3
 	ggufTensorTypeQ5_0     = 6
 	ggufTensorTypeQ5_1     = 7
-	TensorTypeQ8_0     = 8
+	TensorTypeQ8_0         = 8
 	ggufTensorTypeQ8_1     = 9
 	ggufTensorTypeQ2K      = 10
 	ggufTensorTypeQ3K      = 11
@@ -109,9 +109,9 @@ const (
 // ValidationIssue describes one GGUF tensor metadata validation issue.
 type ValidationIssue struct {
 	Severity ValidationSeverity `json:"severity"`
-	Code     string                 `json:"code"`
-	Message  string                 `json:"message"`
-	Tensor   string                 `json:"tensor,omitempty"`
+	Code     string             `json:"code"`
+	Message  string             `json:"message"`
+	Tensor   string             `json:"tensor,omitempty"`
 }
 
 // TensorInfo describes one tensor entry from the GGUF directory.
@@ -141,14 +141,14 @@ type TensorTypeSummary struct {
 
 // QuantizationInfo captures GGML quantization metadata beyond bit width.
 type QuantizationInfo struct {
-	Type         string                  `json:"type,omitempty"`
-	Family       string                  `json:"family,omitempty"`
-	Bits         int                     `json:"bits,omitempty"`
-	GroupSize    int                     `json:"group_size,omitempty"`
-	FileType     int                     `json:"file_type,omitempty"`
-	FileTypeName string                  `json:"file_type_name,omitempty"`
-	Version      int                     `json:"version,omitempty"`
-	Mixed        bool                    `json:"mixed,omitempty"`
+	Type         string              `json:"type,omitempty"`
+	Family       string              `json:"family,omitempty"`
+	Bits         int                 `json:"bits,omitempty"`
+	GroupSize    int                 `json:"group_size,omitempty"`
+	FileType     int                 `json:"file_type,omitempty"`
+	FileTypeName string              `json:"file_type_name,omitempty"`
+	Version      int                 `json:"version,omitempty"`
+	Mixed        bool                `json:"mixed,omitempty"`
 	TensorTypes  []TensorTypeSummary `json:"tensor_types,omitempty"`
 }
 

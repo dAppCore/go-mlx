@@ -194,4 +194,3 @@ func TestFastEvalResultError_NonErrValueGetsFallback_Bad(t *testing.T) {
 		t.Fatal("fastEvalResultError() error = nil for non-error value, want fallback")
 	}
 }
-

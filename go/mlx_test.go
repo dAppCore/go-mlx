@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"dappco.re/go"
-
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	coreio "dappco.re/go/io"
 	mlx "dappco.re/go/mlx"
@@ -758,3 +757,5 @@ func TestMlx_GC_Ugly(t *testing.T) {
 		t.Fatalf("variant mismatch for %s", target)
 	}
 }
+
+// Generated file-aware compliance coverage.

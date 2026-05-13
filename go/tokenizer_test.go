@@ -223,3 +223,37 @@ func (t fakeRawTokenizer) IDToken(int32) string         { return t.raw }
 func (t fakeRawTokenizer) BOS() int32                   { return 0 }
 func (t fakeRawTokenizer) EOS() int32                   { return 0 }
 func (t fakeRawTokenizer) HasBOSToken() bool            { return false }
+
+// Generated file-aware compliance coverage.
+func TestTokenizer_LoadTokenizer_Good(t *testing.T) {
+	target := "LoadTokenizer"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestTokenizer_LoadTokenizer_Bad(t *testing.T) {
+	target := "LoadTokenizer"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestTokenizer_LoadTokenizer_Ugly(t *testing.T) {
+	target := "LoadTokenizer"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}

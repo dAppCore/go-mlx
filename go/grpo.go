@@ -3,8 +3,8 @@
 package mlx
 
 import (
-	"dappco.re/go/mlx/dataset"
 	"context"
+	"dappco.re/go/mlx/dataset"
 	"math"
 	"time"
 
@@ -27,7 +27,7 @@ type GRPOConfig struct {
 	ResumePath       string           `json:"resume_path,omitempty"`
 	MaxSamples       int              `json:"max_samples,omitempty"`
 	RewardFuncs      []GRPORewardFunc `json:"-"`
-	ProbeSink        probe.Sink        `json:"-"`
+	ProbeSink        probe.Sink       `json:"-"`
 }
 
 // GRPORunner supplies the model-specific operations for experimental GRPO.
