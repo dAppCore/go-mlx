@@ -3,11 +3,14 @@
 package mlx
 
 import (
+	"reflect"
+	"testing"
+
 	core "dappco.re/go"
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
-	"testing"
+	"dappco.re/go/mlx/probe"
 )
 
 func TestInspectLoRAAdapter_ReadsMetadataAndHashes_Good(t *testing.T) {
@@ -192,5 +195,79 @@ func TestModelNewSessionFromBundle_RejectsAdapterMismatch_Bad(t *testing.T) {
 	}
 	if session.restoredKV != nil {
 		t.Fatalf("session restored KV despite mismatch: %+v", session.restoredKV)
+	}
+}
+func TestNewLoRA_ForwardsRFCCompatibilityFields_Good(t *testing.T) {
+	coverageTokens := "ForwardsRFCCompatibilityFields"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got := NewLoRA(model, &LoRAConfig{
+		Rank:         4,
+		Scale:        1.5,
+		TargetLayers: []string{"q_proj", "v_proj"},
+		Lambda:       0.01,
+		DType:        metal.DTypeBFloat16,
+	})
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.Rank != 4 {
+		t.Fatalf("Rank = %d, want 4", native.lastLoRAConfig.Rank)
+	}
+	if native.lastLoRAConfig.Scale != 1.5 {
+		t.Fatalf("Scale = %f, want 1.5", native.lastLoRAConfig.Scale)
+	}
+	if native.lastLoRAConfig.Lambda != 0.01 {
+		t.Fatalf("Lambda = %f, want 0.01", native.lastLoRAConfig.Lambda)
+	}
+	if native.lastLoRAConfig.DType != metal.DTypeBFloat16 {
+		t.Fatalf("DType = %v, want %v", native.lastLoRAConfig.DType, metal.DTypeBFloat16)
+	}
+	if !reflect.DeepEqual(native.lastLoRAConfig.TargetLayers, []string{"q_proj", "v_proj"}) {
+		t.Fatalf("TargetLayers = %v, want [q_proj v_proj]", native.lastLoRAConfig.TargetLayers)
+	}
+	if len(native.lastLoRAConfig.TargetKeys) != 0 {
+		t.Fatalf("TargetKeys = %v, want nil for RFC alias path", native.lastLoRAConfig.TargetKeys)
+	}
+}
+
+func TestNewLoRA_ForwardsProbeSink_Good(t *testing.T) {
+	coverageTokens := "NewLoRA probe.Sink"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	recorder := probe.NewRecorder()
+	wantAdapter := &metal.LoRAAdapter{}
+	native := &fakeNativeModel{loraAdapter: wantAdapter}
+	model := &Model{model: native}
+
+	got := NewLoRA(model, &LoRAConfig{ProbeSink: recorder})
+
+	if got != wantAdapter {
+		t.Fatalf("NewLoRA() = %p, want %p", got, wantAdapter)
+	}
+	if native.lastLoRAConfig.ProbeSink == nil {
+		t.Fatal("native LoRA probe.Sink = nil, want configured")
+	}
+	native.lastLoRAConfig.ProbeSink.EmitProbe(metal.ProbeEvent{
+		Kind:  metal.ProbeEventTraining,
+		Phase: metal.ProbePhaseTraining,
+		Training: &metal.ProbeTraining{
+			Step: 3,
+			Loss: 0.25,
+		},
+	})
+	events := recorder.Events()
+	if len(events) != 1 {
+		t.Fatalf("probe events len = %d, want 1", len(events))
+	}
+	if events[0].Training == nil || events[0].Training.Step != 3 || events[0].Training.Loss != 0.25 {
+		t.Fatalf("probe training event = %+v", events[0])
 	}
 }

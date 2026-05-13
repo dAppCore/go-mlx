@@ -3,9 +3,11 @@
 package mlx
 
 import (
+	"reflect"
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 )
@@ -867,5 +869,110 @@ func TestApiCommon_WithMemoryPlan_ClonesPlan_Ugly(t *testing.T) {
 	plan.ContextLength = 4096
 	if cfg.MemoryPlan == nil || cfg.MemoryPlan.ContextLength != 8192 {
 		t.Fatalf("memory.Plan = %+v, want cloned 8192 plan", cfg.MemoryPlan)
+	}
+}
+func TestAPIGenerateOptions_Good(t *testing.T) {
+	cfg := applyGenerateOptions([]GenerateOption{
+		WithMaxTokens(64),
+		WithTemperature(0.7),
+		WithTopK(20),
+		WithTopP(0.9),
+		WithMinP(0.05),
+		WithLogits(),
+		WithReturnLogits(),
+		WithStopTokens(1, 2),
+		WithRepeatPenalty(1.1),
+	})
+	if cfg.MaxTokens != 64 || cfg.Temperature != 0.7 || cfg.TopK != 20 || cfg.TopP != 0.9 || cfg.MinP != 0.05 {
+		t.Fatalf("unexpected generate config: %+v", cfg)
+	}
+	if !cfg.ReturnLogits {
+		t.Fatal("ReturnLogits = false, want true")
+	}
+	if !reflect.DeepEqual(cfg.StopTokens, []int32{1, 2}) {
+		t.Fatalf("stop tokens = %v", cfg.StopTokens)
+	}
+	if cfg.RepeatPenalty != 1.1 {
+		t.Fatalf("repeat penalty = %f, want 1.1", cfg.RepeatPenalty)
+	}
+}
+
+func TestAPILoadOptions_Good(t *testing.T) {
+	cfg := applyLoadOptions([]LoadOption{
+		WithContextLength(8192),
+		WithParallelSlots(4),
+		WithPromptCache(false),
+		WithPromptCacheMinTokens(4096),
+		WithQuantization(4),
+		WithExpectedQuantization(4),
+		WithDevice("cpu"),
+		WithAdapterPath("/models/lora/demo"),
+	})
+	if cfg.ContextLength != 8192 || cfg.ParallelSlots != 4 || cfg.PromptCache || cfg.PromptCacheMinTokens != 4096 || cfg.Quantization != 4 || cfg.ExpectedQuantization != 4 || cfg.Device != "cpu" || cfg.AdapterPath != "/models/lora/demo" {
+		t.Fatalf("unexpected load config: %+v", cfg)
+	}
+}
+
+func TestAPIProbeConversion_AllFields_Good(t *testing.T) {
+	meta := map[string]string{"scope": "unit"}
+	logitMeta := map[string]string{"logits": "kept"}
+	got := toRootProbeEvent(metal.ProbeEvent{
+		Kind:  metal.ProbeEventLogits,
+		Phase: metal.ProbePhaseDecode,
+		Step:  6,
+		Meta:  meta,
+		Token: &metal.ProbeToken{ID: 1, Text: "tok", PromptTokens: 2, GeneratedTokens: 3},
+		Logits: &metal.ProbeLogits{
+			Shape:      []int32{1, 2},
+			VocabSize:  16,
+			MaxTokenID: 4,
+			MaxLogit:   1.5,
+			MinTokenID: 5,
+			MinLogit:   -1.5,
+			MeanLogit:  0.25,
+			Top:        []metal.ProbeLogit{{TokenID: 4, Logit: 1.5, Probability: 0.7}},
+			Values:     []float32{0.1, 0.2},
+			Meta:       logitMeta,
+		},
+		Entropy:        &metal.ProbeEntropy{Value: 0.4, Unit: "nats"},
+		SelectedHeads:  &metal.ProbeHeadSelection{Layer: 2, Heads: []int{1, 3}, Scores: []float64{0.5, 0.6}},
+		LayerCoherence: &metal.ProbeLayerCoherence{Layer: 3, KeyCoherence: 0.1, ValueCoherence: 0.2, CrossAlignment: 0.3, KVCoupling: 0.4, HeadEntropy: 0.5, PhaseLock: 0.6},
+		RouterDecision: &metal.ProbeRouterDecision{Layer: 4, TokenID: 7, ExpertIDs: []int{8, 9}, Weights: []float32{0.25, 0.75}, Temperature: 0.8},
+		Residual:       &metal.ProbeResidualSummary{Layer: 5, Mean: 0.1, Variance: 0.2, RMS: 0.3, L2Norm: 0.4, MaxAbs: 0.5},
+		Cache:          &metal.ProbeCachePressure{PromptTokens: 10, GeneratedTokens: 2, LayerCount: 6, CacheTokens: 12, ProcessedTokens: 14, MaxCacheTokens: 20, Utilization: 0.6, Rotating: true},
+		Memory:         &metal.ProbeMemoryPressure{ActiveBytes: 100, PeakBytes: 200, CacheBytes: 50},
+		Training:       &metal.ProbeTraining{Step: 6, Epoch: 1, Loss: 0.9, LearningRate: 0.01, GradNorm: 0.3},
+	})
+	if got.Token == nil || got.Logits == nil || got.SelectedHeads == nil || got.RouterDecision == nil || got.Training == nil {
+		t.Fatalf("probe event = %+v, want all nested payloads", got)
+	}
+	if got.Meta["scope"] != "unit" || got.Logits.Top[0].TokenID != 4 || got.Cache == nil || !got.Cache.Rotating {
+		t.Fatalf("probe event = %+v, want cloned meta/logits/cache", got)
+	}
+	got.Meta["scope"] = "changed"
+	got.Logits.Meta["logits"] = "changed"
+	if meta["scope"] != "unit" || logitMeta["logits"] != "kept" {
+		t.Fatal("probe conversion leaked metadata map mutation")
+	}
+	if toRootProbeLogits(nil) != nil || cloneMetalProbeMeta(nil) != nil {
+		t.Fatal("empty probe helpers should return nil")
+	}
+}
+
+func TestAPIKVHeadDTypeAndChunkStringHelpers_Good(t *testing.T) {
+	if rootKVHeadDType(metal.DTypeFloat16, []byte{1}) != "float16" {
+		t.Fatal("rootKVHeadDType(float16) did not preserve dtype")
+	}
+	if rootKVHeadDType(metal.DTypeFloat32, nil) != "" || rootKVHeadDType(metal.DTypeInt8, []byte{1}) != "" {
+		t.Fatal("rootKVHeadDType should reject empty raw data and unsupported dtype")
+	}
+	if metalKVHeadDType("F32", []byte{1}) != metal.DTypeFloat32 || metalKVHeadDType("BF16", []byte{1}) != metal.DTypeBFloat16 {
+		t.Fatal("metalKVHeadDType aliases did not map to metal dtypes")
+	}
+	if metalKVHeadDType("bad", []byte{1}) != 0 || metalKVHeadDType("float16", nil) != 0 {
+		t.Fatal("metalKVHeadDType should reject empty raw data and unsupported dtype")
+	}
+	if promptChunksToString(seqStrings("a", "b", "c")) != "abc" || promptChunksToString(nil) != "" {
+		t.Fatal("promptChunksToString returned unexpected string")
 	}
 }
