@@ -22,3 +22,11 @@
 	path = external/go-io
 	url = https://github.com/dappcore/go-io.git
 	branch = dev
+[submodule "external/go-ai"]
+	path = external/go-ai
+	url = https://github.com/dappcore/go-ai.git
+	branch = dev
+[submodule "external/go-ml"]
+	path = external/go-ml
+	url = https://github.com/dappcore/go-ml.git
+	branch = dev
