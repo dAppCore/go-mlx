@@ -1,0 +1,20 @@
+diff --git a/mlx/backend/metal/device.cpp b/mlx/backend/metal/device.cpp
+index 15824d6c..9055cc12 100644
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -35,8 +35,13 @@ auto get_metal_version() {
+ 
+ auto load_device() {
+   auto devices = MTL::CopyAllDevices();
+-  auto device = static_cast<MTL::Device*>(devices->object(0))
+-      ?: MTL::CreateSystemDefaultDevice();
++  MTL::Device* device = nullptr;
++  if (devices && devices->count() > 0) {
++    device = static_cast<MTL::Device*>(devices->object(0));
++  }
++  if (!device) {
++    device = MTL::CreateSystemDefaultDevice();
++  }
+   if (!device) {
+     throw std::runtime_error("Failed to load device");
+   }

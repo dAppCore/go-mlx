@@ -17,7 +17,8 @@ set(CMAKE_INSTALL_RPATH "@loader_path")
 
 include(FetchContent)
 
-set(MLX_C_GIT_TAG "v0.4.1" CACHE STRING "")
+set(MLX_C_GIT_TAG "v0.6.0" CACHE STRING "")
+set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 
 FetchContent_Declare(
   mlx-c

@@ -1,0 +1,32 @@
+diff --git a/mlx/backend/metal/kernels/scaled_dot_product_attention.metal b/mlx/backend/metal/kernels/scaled_dot_product_attention.metal
+index c668d9d8..f00263e6 100644
+--- a/mlx/backend/metal/kernels/scaled_dot_product_attention.metal
++++ b/mlx/backend/metal/kernels/scaled_dot_product_attention.metal
+@@ -33,10 +33,13 @@ using namespace metal;
+   instantiate_sdpa_vector(type, 96, 96)          \
+   instantiate_sdpa_vector(type, 128, 128)        \
+   instantiate_sdpa_vector(type, 256, 256)        \
++  instantiate_sdpa_vector(type, 512, 512)        \
++  instantiate_sdpa_vector(type, 512, 256)        \
+   instantiate_sdpa_vector_aggregation(type, 64)  \
+   instantiate_sdpa_vector_aggregation(type, 96)  \
+   instantiate_sdpa_vector_aggregation(type, 128) \
+-  instantiate_sdpa_vector_aggregation(type, 256)
++  instantiate_sdpa_vector_aggregation(type, 256) \
++  instantiate_sdpa_vector_aggregation(type, 512)
+ 
+ instantiate_sdpa_vector_heads(float)
+ instantiate_sdpa_vector_heads(bfloat16_t)
+diff --git a/mlx/backend/metal/scaled_dot_product_attention.cpp b/mlx/backend/metal/scaled_dot_product_attention.cpp
+index 37e554f1..c50ecf9d 100644
+--- a/mlx/backend/metal/scaled_dot_product_attention.cpp
++++ b/mlx/backend/metal/scaled_dot_product_attention.cpp
+@@ -618,7 +618,7 @@ bool ScaledDotProductAttention::use_fallback(
+   const bool sdpa_vector_supported_head_dim =
+       query_head_dim == value_head_dim &&
+       (query_head_dim == 64 || query_head_dim == 96 || query_head_dim == 128 ||
+-       query_head_dim == 256);
++       query_head_dim == 256 || query_head_dim == 512);
+   const bool sdpa_full_supported_head_dim = query_head_dim == value_head_dim &&
+       (query_head_dim == 64 || query_head_dim == 80 || query_head_dim == 128);
+ 

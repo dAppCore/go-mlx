@@ -1,5 +1,5 @@
-#if defined(__has_include) && __has_include("../../lib/mlx/mlx/backend/cpu/available.cpp")
-#include "../../lib/mlx/mlx/backend/cpu/available.cpp"
+#if defined(__has_include) && __has_include("../../lib/mlx/mlx/backend/cpu/device_info.cpp")
+#include "../../lib/mlx/mlx/backend/cpu/device_info.cpp"
 #else
-#error "Missing forwarded source: ../../lib/mlx/mlx/backend/cpu/available.cpp. Initialise submodules with git submodule update --init --recursive or fix the forwarding include path."
+#error "Missing forwarded source: ../../lib/mlx/mlx/backend/cpu/device_info.cpp. Initialise submodules with git submodule update --init --recursive or fix the forwarding include path."
 #endif
