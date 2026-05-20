@@ -1002,6 +1002,38 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 	floatSliceApprox(t, model.Layers[0].Attention.KNormScaled.Floats(), []float32{0.125, 2.5})
 }
 
+func TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good(t *testing.T) {
+	coverageTokens := "ProportionalRoPEFreqs MatchesHFDefinition"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	freqs := gemma4ProportionalFreqs(512, 128, 1000000, 1)
+	defer Free(freqs)
+	if got := freqs.Shape(); len(got) != 1 || got[0] != 256 {
+		t.Fatalf("freq shape = %v, want [256]", got)
+	}
+	if err := Eval(freqs); err != nil {
+		t.Fatalf("Eval p-RoPE freqs: %v", err)
+	}
+
+	values := freqs.Floats()
+	for _, idx := range []int{0, 1, 63} {
+		want := math.Pow(1000000, float64(idx*2)/512.0)
+		got := float64(values[idx])
+		tolerance := math.Max(1e-5, math.Abs(want)*1e-5)
+		if math.Abs(got-want) > tolerance {
+			t.Fatalf("freq[%d] = %f, want %f", idx, got, want)
+		}
+	}
+	for i := 64; i < len(values); i++ {
+		if !math.IsInf(float64(values[i]), 1) {
+			t.Fatalf("freq[%d] = %f, want +Inf unrotated p-RoPE tail", i, values[i])
+		}
+	}
+}
+
 func TestGemma4_SwitchLinear_PrefixFallback_Good(t *testing.T) {
 	coverageTokens := "SwitchLinear PrefixFallback"
 	if coverageTokens == "" {
@@ -1651,6 +1683,76 @@ func TestGemma4_BuildCacheLayout_PromotesMissingOwner_Good(t *testing.T) {
 		if cacheIndexByLayer[i] != want {
 			t.Fatalf("CacheIndexByLayer[%d] = %d, want %d", i, cacheIndexByLayer[i], want)
 		}
+	}
+}
+
+func gemma4TestPatternLayers(numLayers int, pattern int32) []*Gemma4DecoderLayer {
+	layers := make([]*Gemma4DecoderLayer, numLayers)
+	for i := range layers {
+		layerType := "full_attention"
+		if pattern > 1 && (i+1)%int(pattern) != 0 {
+			layerType = "sliding_attention"
+		}
+		if i == len(layers)-1 {
+			layerType = "full_attention"
+		}
+		layers[i] = &Gemma4DecoderLayer{
+			LayerType: layerType,
+			IsSliding: layerType == "sliding_attention",
+		}
+	}
+	return layers
+}
+
+func TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good(t *testing.T) {
+	coverageTokens := "E4BSharedCacheLayout UsesLayerTypes"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	layers := gemma4TestPatternLayers(42, 6)
+
+	previous, cacheIndexByLayer := buildGemma4CacheLayout(layers, 18)
+
+	ownerCount := 0
+	for _, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx >= 0 {
+			ownerCount++
+		}
+	}
+	if ownerCount != 24 {
+		t.Fatalf("owner cache count = %d, want 24 pre-sharing owners", ownerCount)
+	}
+	if previous[24] != 22 {
+		t.Fatalf("PreviousKVs[24] = %d, want sliding owner 22", previous[24])
+	}
+	if previous[29] != 23 || previous[41] != 23 {
+		t.Fatalf("full shared PreviousKVs = %d/%d, want owner 23", previous[29], previous[41])
+	}
+	if cacheIndexByLayer[24] != -1 || cacheIndexByLayer[29] != -1 || cacheIndexByLayer[41] != -1 {
+		t.Fatalf("shared layers allocated caches: layer24=%d layer29=%d layer41=%d", cacheIndexByLayer[24], cacheIndexByLayer[29], cacheIndexByLayer[41])
+	}
+
+	model := &Gemma4Model{
+		Cfg: &Gemma4TextConfig{
+			NumHiddenLayers:   42,
+			NumKVSharedLayers: 18,
+			SlidingWindow:     512,
+		},
+		Layers: layers,
+	}
+	caches := model.NewCache()
+	if len(caches) != 24 {
+		t.Fatalf("len(caches) = %d, want 24", len(caches))
+	}
+	sliding, ok := caches[0].(*RotatingKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *RotatingKVCache", caches[0])
+	}
+	if sliding.maxSize != 512 {
+		t.Fatalf("sliding cache maxSize = %d, want 512", sliding.maxSize)
+	}
+	if _, ok := caches[5].(*KVCache); !ok {
+		t.Fatalf("cache[5] = %T, want *KVCache for first full-attention owner", caches[5])
 	}
 }
 

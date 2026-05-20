@@ -13,6 +13,9 @@ evidence.
   `full_attention`, and `Gemma4Model.NewCache` allocates `RotatingKVCache` for
   sliding layers and unbounded `KVCache` for global layers. Fixed-cache context
   replacement preserves the sliding window cap through `replacementCacheMaxSize`.
+  `TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good` now pins the E4B-style
+  42-layer, 18-shared-layer shape so local shared layers reuse the latest local
+  owner and never allocate full-context caches.
 - The fallback Gemma 4 layer map was wrong. The code used a default pattern of
   `5`, which creates four sliding layers followed by one global layer, and it
   also defaulted missing `num_kv_shared_layers` to `20`. Current Transformers
@@ -30,16 +33,21 @@ evidence.
 - Dual RoPE is already represented. Sliding layers use the `sliding_attention`
   rope parameters, while full layers use `full_attention`; proportional RoPE is
   precomputed into `Gemma4Attention.RopeFreqs` for full-attention layers rather
-  than using one unified RoPE base.
+  than using one unified RoPE base. The MLX `fast.rope` API expects wavelength
+  values and internally takes their reciprocal; `gemma4ProportionalFreqs` is
+  therefore the reciprocal form of the current Transformers proportional RoPE
+  definition, with `+Inf` entries for the unrotated tail. This is covered by
+  `TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good`.
 - Cross-layer KV sharing is already modelled. `buildGemma4CacheLayout` maps
   shared layers to the most recent owning layer of the same attention type and
   allocates caches only for owners. This matches the current Transformers
   `shared_kv_states[layer_type]` design.
-- Gemma 4 RMSNorm should not be changed to Gemma 3's zero-centred `1 + weight`
-  convention. Current Transformers `Gemma4RMSNorm` initialises weights to ones
-  and multiplies by `weight` directly; the existing go-mlx
-  `TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good` covers that direct
-  scale path. Gemma 3 remains the `1 + weight` path in this repo.
+- RMSNorm differs between the family members. Gemma 3 uses zero-centred
+  RMSNorm weights, initialised at zero and applied as `1 + weight`. Current
+  Transformers `Gemma4RMSNorm` initialises weights to ones and multiplies by
+  `weight` directly, so Gemma 4 must stay on the direct-scale path. The existing
+  go-mlx `TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good` covers that
+  direct scale path.
 - Per-layer embeddings are now retained but lazy at load time. The model still
   keeps `embed_tokens_per_layer` arrays alive for the full model lifetime, but
   they are excluded from the initial retained-weight `Materialize` pass so the
