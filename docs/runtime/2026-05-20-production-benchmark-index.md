@@ -85,6 +85,14 @@ that JSON artefacts parse, and that indexed paths remain referenced from this
 file. It intentionally only warns about extra `docs/runtime` working-tree
 fragments; deletion or quarantine of abandoned probes is a separate cleanup
 step so the verifier cannot destroy evidence while an investigation is active.
+After that pruning pass, run the stricter cleanup gate:
+
+```sh
+scripts/verify_production_benchmark_manifest.sh --strict-clean
+```
+
+`--strict-clean` keeps the same artefact checks but fails if `docs/runtime`
+still has non-manifest working-tree changes.
 
 Manifest coverage details not already shown in the tables above:
 
@@ -132,5 +140,5 @@ device from the runner, while the same workload with `-report-file` completed.
    graph/kernel work in the long-context attention path, not prompt-cache
    restore. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
-2. Prune or quarantine abandoned runtime fragments after the manifest verifier
-   is green and the canonical rows above are no longer needed for investigation.
+2. Prune or quarantine abandoned runtime fragments, then require
+   `scripts/verify_production_benchmark_manifest.sh --strict-clean` to pass.

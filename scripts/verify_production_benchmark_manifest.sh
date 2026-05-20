@@ -4,6 +4,17 @@
 set -euo pipefail
 
 manifest="docs/runtime/2026-05-20-production-benchmark-manifest.json"
+strict_clean=0
+
+if [[ "${1:-}" == "--strict-clean" ]]; then
+  strict_clean=1
+  shift
+fi
+
+if [[ "$#" -ne 0 ]]; then
+  echo "usage: $0 [--strict-clean]" >&2
+  exit 2
+fi
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
@@ -88,9 +99,16 @@ PY
 runtime_status="$(git status --short -- docs/runtime || true)"
 if [[ -n "$runtime_status" ]]; then
   runtime_status_count="$(printf '%s\n' "$runtime_status" | wc -l | tr -d ' ')"
-  echo "note: docs/runtime still has ${runtime_status_count} non-manifest working-tree changes"
+  if [[ "$strict_clean" -eq 1 ]]; then
+    echo "docs/runtime has ${runtime_status_count} non-manifest working-tree changes:" >&2
+  else
+    echo "note: docs/runtime still has ${runtime_status_count} non-manifest working-tree changes"
+  fi
   printf '%s\n' "$runtime_status" | sed -n '1,25p'
   if [[ "$runtime_status_count" -gt 25 ]]; then
     echo "... ${runtime_status_count} total; prune or quarantine in a separate cleanup pass"
+  fi
+  if [[ "$strict_clean" -eq 1 ]]; then
+    exit 1
   fi
 fi

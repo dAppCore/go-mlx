@@ -86,8 +86,8 @@ Production remains blocked until these gates are all satisfied:
       verifier at `scripts/verify_production_benchmark_manifest.sh`. The
       verifier checks file existence, git tracking, non-empty artefacts, JSON
       parseability, and index references. This gate remains open until the
-      extra runtime fragments are pruned or quarantined rather than merely
-      ignored by the manifest.
+      extra runtime fragments are pruned or quarantined and
+      `scripts/verify_production_benchmark_manifest.sh --strict-clean` passes.
 
 Do not close this goal because a short-context decode number is healthy. The
 production claim is repeated-workflow wall time and retained-state savings under
