@@ -323,6 +323,26 @@ func TestSample_HostUnsuppressedGreedyTokenSkipsSuppressedAndNaN_Good(t *testing
 	}
 }
 
+func TestSample_HostUnsuppressedGreedyTokenMaterializesLazyFloat32_Good(t *testing.T) {
+	coverageTokens := "HostUnsuppressedGreedyToken MaterializesLazyFloat32"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	base := FromValues([]float32{100, 1, 9, 11}, 1, 4)
+	zero := Zeros([]int32{1, 4}, DTypeFloat32)
+	logits := Add(base, zero)
+	defer Free(base, zero, logits)
+
+	token, err := hostUnsuppressedGreedyToken(logits, []int32{0})
+	if err != nil {
+		t.Fatalf("hostUnsuppressedGreedyToken: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got != 3 {
+		t.Fatalf("hostUnsuppressedGreedyToken = %d, want 3", got)
+	}
+}
+
 func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	coverageTokens := "NewSamplerWithSuppression BeforeTopPTopK"
 	if coverageTokens == "" {

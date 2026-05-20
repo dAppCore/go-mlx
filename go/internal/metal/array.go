@@ -507,8 +507,17 @@ func (t *Array) Floats() []float32 {
 		src = converted
 	}
 	src = ensureContiguous(src)
+	Materialize(src)
 	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		return nil
+	}
 	ptr := C.mlx_array_data_float32(src.ctx)
+	if ptr == nil {
+		Free(converted)
+		return nil
+	}
 	floats := make([]float32, n)
 	for i, f := range unsafe.Slice(ptr, n) {
 		floats[i] = float32(f)
