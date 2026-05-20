@@ -56,6 +56,23 @@ func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownNativePagedAttention"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "0")
+	t.Cleanup(restoreOff)
+	if nativePagedAttentionEnabled() {
+		t.Fatal("nativePagedAttentionEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1")
+	t.Cleanup(restoreOn)
+	if !nativePagedAttentionEnabled() {
+		t.Fatal("nativePagedAttentionEnabled() = false, want true")
+	}
+}
+
 func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownFixedGemma4SlidingCacheBound"
 	if coverageTokens == "" {

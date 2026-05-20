@@ -2630,11 +2630,23 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			Free(q)
 			q = qRoPE
 			qRoPEApplied = true
-			if pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
+			if nativePagedAttentionEnabled() && len(kv.Pages.Keys) > 1 {
+				var ok bool
+				var err error
+				out, ok, err = nativePagedSingleTokenAttention(q, kv.Pages.Keys, kv.Pages.Values, a.Scale)
+				if !ok || err != nil {
+					if err != nil {
+						core.Error("mlx: native paged attention failed; falling back to Go graph", "error", err)
+					}
+					out = nil
+				}
+			}
+			if out == nil && pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
 				kBase, vBase := concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
 				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, false)
 				Free(kBase, vBase)
-			} else {
+			}
+			if out == nil {
 				kPages, vPages := kv.Pages.Keys, kv.Pages.Values
 				var repeatedPages []*Array
 				if len(kPages) > 1 && pagedStateNeedsMaterializedRepeat(kv.Pages, repeatFactor) {

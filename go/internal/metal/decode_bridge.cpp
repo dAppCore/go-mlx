@@ -1077,6 +1077,82 @@ compiled_fixed_single_token_attention_matmul_masked() {
   return fn;
 }
 
+mlx::core::array paged_single_token_attention_impl(
+    const mlx::core::array& query,
+    const ArrayVector& key_pages,
+    const ArrayVector& value_pages,
+    float scale) {
+  if (key_pages.empty() || key_pages.size() != value_pages.size()) {
+    throw std::runtime_error("mlx: paged attention page arrays are invalid");
+  }
+  if (key_pages.size() == 1) {
+    return mlx::core::fast::scaled_dot_product_attention(
+        query,
+        key_pages[0],
+        value_pages[0],
+        scale);
+  }
+
+  ArrayVector score_pages;
+  score_pages.reserve(key_pages.size());
+  std::optional<mlx::core::array> global_max;
+  for (size_t i = 0; i < key_pages.size(); i++) {
+    auto key = key_pages[i];
+    auto value = value_pages[i];
+    if (key.ndim() != 4 || value.ndim() != 4 || query.ndim() != 4) {
+      throw std::runtime_error("mlx: paged attention expects rank-4 tensors");
+    }
+    const auto query_heads = query.shape(1);
+    const auto key_heads = key.shape(1);
+    if (key_heads <= 0 || query_heads % key_heads != 0) {
+      throw std::runtime_error("mlx: paged attention query heads must be a multiple of key heads");
+    }
+    const auto repeat_factor = query_heads / key_heads;
+    if (repeat_factor > 1) {
+      key = repeat_kv(key, repeat_factor);
+      value = repeat_kv(value, repeat_factor);
+    }
+
+    auto key_t = mlx::core::transpose(key, {0, 1, 3, 2});
+    auto score = mlx::core::matmul(query, key_t);
+    if (scale != 1.0f) {
+      score = mlx::core::multiply(score, mlx::core::array(scale, score.dtype()));
+    }
+    auto page_max = mlx::core::max(score, -1, true);
+    if (global_max.has_value()) {
+      global_max = mlx::core::maximum(global_max.value(), page_max);
+    } else {
+      global_max = page_max;
+    }
+    score_pages.push_back(score);
+  }
+
+  std::optional<mlx::core::array> denom;
+  std::optional<mlx::core::array> weighted;
+  for (size_t i = 0; i < score_pages.size(); i++) {
+    auto value = value_pages[i];
+    const auto query_heads = query.shape(1);
+    const auto value_heads = value.shape(1);
+    const auto repeat_factor = value_heads > 0 ? query_heads / value_heads : 1;
+    if (repeat_factor > 1) {
+      value = repeat_kv(value, repeat_factor);
+    }
+
+    auto shifted = mlx::core::subtract(score_pages[i], global_max.value());
+    auto exp_score = mlx::core::exp(shifted);
+    auto page_denom = mlx::core::sum(exp_score, -1, true);
+    auto page_weighted = mlx::core::matmul(exp_score, value);
+    if (denom.has_value()) {
+      denom = mlx::core::add(denom.value(), page_denom);
+      weighted = mlx::core::add(weighted.value(), page_weighted);
+    } else {
+      denom = page_denom;
+      weighted = page_weighted;
+    }
+  }
+  return mlx::core::divide(weighted.value(), denom.value());
+}
+
 bool fixed_wide_matmul_attention_enabled() {
   const char* value = std::getenv("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION");
   return value != nullptr && std::string(value) == "1";
@@ -1803,6 +1879,40 @@ extern "C" int go_mlx_compiled_fixed_sliding_single_token_attention(
     mlx_array_set_(*out, std::move(outputs[0]));
     mlx_array_set_(*new_keys, std::move(outputs[1]));
     mlx_array_set_(*new_values, std::move(outputs[2]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_native_paged_single_token_attention(
+    mlx_array* out,
+    const mlx_array query,
+    const mlx_array* key_pages,
+    const mlx_array* value_pages,
+    const int page_count,
+    const float scale,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    if (key_pages == nullptr || value_pages == nullptr || page_count <= 0) {
+      throw std::runtime_error("mlx: native paged attention pages are invalid");
+    }
+    ArrayVector keys;
+    ArrayVector values;
+    keys.reserve(static_cast<size_t>(page_count));
+    values.reserve(static_cast<size_t>(page_count));
+    for (int i = 0; i < page_count; i++) {
+      keys.push_back(mlx_array_get_(key_pages[i]));
+      values.push_back(mlx_array_get_(value_pages[i]));
+    }
+    auto output = paged_single_token_attention_impl(
+        mlx_array_get_(query),
+        keys,
+        values,
+        scale);
+    mlx_array_set_(*out, std::move(output));
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

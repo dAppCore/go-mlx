@@ -541,6 +541,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	expertIDFusedActivation := fs.Bool("expert-id-fused-activation", false, "enable fused activation inside the opt-in expert-ID matvec path")
 	sortedExpertPrefill := fs.Bool("sorted-expert-prefill", false, "enable the opt-in Gemma 4 sorted expert prefill MoE path")
 	pagedDecodeFastConcat := fs.Bool("paged-decode-fast-concat", false, "enable the opt-in Gemma 4 fast-SDPA concat path for multi-page decode")
+	nativePagedAttention := fs.Bool("native-paged-attention", false, "enable the opt-in native C++ paged attention reduction path")
 	nativeMLPMatVec := fs.Bool("native-mlp-matvec", false, "enable the opt-in native q4/q8 MLP matvec path")
 	nativeLinearMatVec := fs.Bool("native-linear-matvec", false, "enable the opt-in native q4/q8 single-token linear matvec path")
 	nativeGemma4FFNResidual := fs.Bool("native-gemma4-ffn-residual", false, "enable the opt-in native Gemma 4 MoE FFN residual path")
@@ -633,6 +634,9 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	}
 	if *pagedDecodeFastConcat {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1")()
+	}
+	if *nativePagedAttention {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1")()
 	}
 	if *nativeMLPMatVec {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_MLP_MATVEC", "1")()
@@ -1039,6 +1043,7 @@ func driverProfileRuntimeGateNames() []string {
 		"GO_MLX_ENABLE_EXPERT_ID_UNROLLED_Q4",
 		"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL",
 		"GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT",
+		"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION",
 		"GO_MLX_ENABLE_LAST_LOGITS_PREFILL",
 		"GO_MLX_ENABLE_NATIVE_GELU_GATE_MUL",
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",

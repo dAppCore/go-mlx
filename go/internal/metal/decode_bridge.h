@@ -244,6 +244,15 @@ int go_mlx_compiled_fixed_sliding_single_token_attention(
     const mlx_array last_index,
     const mlx_stream stream);
 
+int go_mlx_native_paged_single_token_attention(
+    mlx_array* out,
+    const mlx_array query,
+    const mlx_array* key_pages,
+    const mlx_array* value_pages,
+    const int page_count,
+    const float scale,
+    const mlx_stream stream);
+
 #ifdef __cplusplus
 }
 #endif

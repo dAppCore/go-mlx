@@ -10,10 +10,12 @@ package metal
 
 int go_mlx_gelu_gate_mul(mlx_array* res, const mlx_array gate, const mlx_array up, const mlx_stream stream);
 int go_mlx_silu_gate_mul(mlx_array* res, const mlx_array gate, const mlx_array up, const mlx_stream stream);
+int go_mlx_native_paged_single_token_attention(mlx_array* res, const mlx_array query, const mlx_array* key_pages, const mlx_array* value_pages, int page_count, float scale, const mlx_stream stream);
 */
 import "C"
 
 import (
+	"runtime"
 	"unsafe"
 
 	"dappco.re/go"
@@ -204,6 +206,50 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 	out := Divide(weighted, denom)
 	Free(globalMax, denom, weighted)
 	return out
+}
+
+func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array, scale float32) (*Array, bool, error) {
+	if query == nil || !query.Valid() || len(keyPages) < 2 || len(keyPages) != len(valuePages) {
+		return nil, false, nil
+	}
+	pageCount := len(keyPages)
+	keyPtr := (*C.mlx_array)(C.calloc(C.size_t(pageCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
+	valuePtr := (*C.mlx_array)(C.calloc(C.size_t(pageCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
+	if keyPtr == nil || valuePtr == nil {
+		if keyPtr != nil {
+			C.free(unsafe.Pointer(keyPtr))
+		}
+		if valuePtr != nil {
+			C.free(unsafe.Pointer(valuePtr))
+		}
+		return nil, true, core.NewError("mlx.nativePagedSingleTokenAttention: allocate C page buffers failed")
+	}
+	defer C.free(unsafe.Pointer(keyPtr))
+	defer C.free(unsafe.Pointer(valuePtr))
+
+	keys := unsafe.Slice(keyPtr, pageCount)
+	values := unsafe.Slice(valuePtr, pageCount)
+	for i := 0; i < pageCount; i++ {
+		if keyPages[i] == nil || valuePages[i] == nil || !keyPages[i].Valid() || !valuePages[i].Valid() {
+			return nil, false, nil
+		}
+		keys[i] = keyPages[i].ctx
+		values[i] = valuePages[i].ctx
+	}
+
+	out := newArray("NATIVE_PAGED_ATTENTION", query)
+	rc := C.go_mlx_native_paged_single_token_attention(&out.ctx, query.ctx, keyPtr, valuePtr, C.int(pageCount), C.float(scale), DefaultStream().ctx)
+	runtime.KeepAlive(query)
+	runtime.KeepAlive(keyPages)
+	runtime.KeepAlive(valuePages)
+	if rc != 0 {
+		Free(out)
+		if err := lastError(); err != nil {
+			return nil, true, err
+		}
+		return nil, true, core.NewError("mlx.nativePagedSingleTokenAttention: native wrapper failed")
+	}
+	return out, true, nil
 }
 
 func singleTokenCausalMask(capacity int, offset *Array) *Array {
