@@ -2700,6 +2700,39 @@ func TestDriverProfileSummary_NativeEventBuckets_Good(t *testing.T) {
 	}
 }
 
+func TestDriverProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
+	summary := summariseDriverProfileRuns([]driverProfileRun{{
+		VisibleTokens: 2,
+		Metrics: mlx.Metrics{
+			GeneratedTokens: 2,
+			TokenPhases: []mlx.TokenPhaseTrace{
+				{
+					TotalDuration:      10 * time.Millisecond,
+					ForwardDuration:    8 * time.Millisecond,
+					SampleEvalDuration: time.Millisecond,
+					OtherDuration:      time.Millisecond,
+				},
+				{
+					TotalDuration:      20 * time.Millisecond,
+					ForwardDuration:    18 * time.Millisecond,
+					SampleEvalDuration: time.Millisecond,
+					OtherDuration:      time.Millisecond,
+				},
+			},
+		},
+	}})
+
+	if len(summary.TokenPhases) < 4 {
+		t.Fatalf("token phase summary = %+v, want total/forward/sample_eval/other buckets", summary.TokenPhases)
+	}
+	if summary.TokenPhases[0].Name != "total" || summary.TokenPhases[0].Count != 2 || summary.TokenPhases[0].Duration != 30*time.Millisecond || summary.TokenPhases[0].AverageDuration != 15*time.Millisecond {
+		t.Fatalf("total phase summary = %+v, want 30ms total and 15ms average", summary.TokenPhases[0])
+	}
+	if summary.TokenPhases[1].Name != "forward" || summary.TokenPhases[1].Duration != 26*time.Millisecond || summary.TokenPhases[1].AverageDuration != 13*time.Millisecond {
+		t.Fatalf("forward phase summary = %+v, want 26ms total and 13ms average", summary.TokenPhases[1])
+	}
+}
+
 func TestDriverProfileRunOverhead_ExcludesNativeMetricDuration_Good(t *testing.T) {
 	got := driverRunOverhead(100*time.Millisecond, mlx.Metrics{TotalDuration: 60 * time.Millisecond})
 	if got != 40*time.Millisecond {

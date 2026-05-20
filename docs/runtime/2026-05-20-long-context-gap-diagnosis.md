@@ -79,9 +79,30 @@ The next optimisation should target the 100k first-prefill and warm-decode
 kernel path directly. Re-running small-context or short-output smokes will not
 measure this boundary.
 
+## Token-Phase Trace
+
+A same-shape one-run trace was recorded with `GO_MLX_TRACE_FORWARD_EVAL=1` and
+`driver-profile -trace-token-phases` on the accepted README-repeat 100k shape.
+The raw trace is intentionally not tracked because it is about `17 MB`, but the
+compact derived note is tracked at
+`docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md`.
+
+The trace itself slows decode to `19.026 tok/s`, so it is diagnostic rather
+than a replacement for the accepted untraced `51.293 tok/s` row. The bucket
+split is still decisive: out of `53.817s` traced decode-loop time, `53.084s`
+is forward materialisation. Native event totals rank attention first at
+`22.745s`, then output at `10.643s`, FFN at `9.909s`, and attention residual at
+`7.817s`.
+
+The expensive attention layers are exactly the full-attention owners in the
+Gemma 4 local/full pattern: layers `4`, `9`, `14`, `19`, `24`, `29`, and `34`
+sit around `1.8-2.0ms` each per traced token, while local sliding-attention
+layers sit near the `0.3-0.4ms` band. The next implementation target should
+therefore stay focused on the full-attention paged/global K/V path.
+
 ## Rejected 100k Branches
 
-Two same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+Three same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |

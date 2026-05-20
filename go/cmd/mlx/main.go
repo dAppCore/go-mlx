@@ -286,6 +286,7 @@ type driverProfileSummary struct {
 	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
 	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
 }
 
@@ -1606,6 +1607,7 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	promptTokens := 0
 	prefillSamples := 0
 	decodeSamples := 0
+	tokenPhaseIndex := map[string]int{}
 	nativeEventIndex := map[string]int{}
 	for _, run := range runs {
 		accumulateDriverProfileSummaryMemory(&summary, run.Metrics)
@@ -1679,6 +1681,20 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 			summary.ProcessPeakResidentBytes = run.Metrics.ProcessPeakResidentBytes
 		}
 		for _, phase := range run.Metrics.TokenPhases {
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "forward", phase.ForwardDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "sample_eval", phase.SampleEvalDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "sample", phase.SampleDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "logits", phase.LogitsDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "token_read", phase.TokenReadDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "decode_text", phase.DecodeTextDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "probe_token", phase.ProbeTokenDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "yield", phase.YieldDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "next_input", phase.NextInputDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "materialize", phase.MaterializeDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "detach", phase.DetachDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "cache_probe", phase.CacheProbeDuration)
+			accumulateDriverProfileTokenPhase(&summary, tokenPhaseIndex, "other", phase.OtherDuration)
 			for _, event := range phase.NativeEvents {
 				if event.Name == "" || event.Duration <= 0 {
 					continue
@@ -1718,10 +1734,32 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 			summary.NativeEvents[i].AverageDuration = summary.NativeEvents[i].Duration / time.Duration(summary.NativeEvents[i].Count)
 		}
 	}
+	for i := range summary.TokenPhases {
+		if summary.TokenPhases[i].Count > 0 {
+			summary.TokenPhases[i].AverageDuration = summary.TokenPhases[i].Duration / time.Duration(summary.TokenPhases[i].Count)
+		}
+	}
+	sort.SliceStable(summary.TokenPhases, func(i, j int) bool {
+		return summary.TokenPhases[i].Duration > summary.TokenPhases[j].Duration
+	})
 	sort.SliceStable(summary.NativeEvents, func(i, j int) bool {
 		return summary.NativeEvents[i].Duration > summary.NativeEvents[j].Duration
 	})
 	return summary
+}
+
+func accumulateDriverProfileTokenPhase(summary *driverProfileSummary, index map[string]int, name string, duration time.Duration) {
+	if summary == nil || duration <= 0 || name == "" {
+		return
+	}
+	idx, ok := index[name]
+	if !ok {
+		summary.TokenPhases = append(summary.TokenPhases, driverProfileNativeEventSummary{Name: name})
+		idx = len(summary.TokenPhases) - 1
+		index[name] = idx
+	}
+	summary.TokenPhases[idx].Count++
+	summary.TokenPhases[idx].Duration += duration
 }
 
 func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics mlx.Metrics) {

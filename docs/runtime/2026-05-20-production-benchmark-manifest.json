@@ -79,6 +79,13 @@
       "indexed": true
     },
     {
+      "id": "gomlx-100k-token-phase-trace-summary",
+      "role": "diagnosis",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-no-fastconcat-rejected",
       "role": "rejected_diagnostic",
       "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-no-fastconcat-g1024-r1-energy100w.json",

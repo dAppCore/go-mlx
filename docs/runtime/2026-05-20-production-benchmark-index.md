@@ -35,6 +35,7 @@ Companion notes:
 - `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md`
 - `docs/runtime/2026-05-20-gemma4-e2b-c006-report-file-book.md`
 - `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`
+- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md`
 
 ## Runner Anchors
 
@@ -154,7 +155,9 @@ device from the runner, while the same workload with `-report-file` completed.
    native cause. Borrowing full paged-K/V page handles removed one source of
    per-token graph churn, but the remaining live boundary is still evaluated
    graph/kernel work in the long-context attention path, not prompt-cache
-   restore. The current diagnosis is recorded in
+   restore. The current token-phase trace isolates the worst attention buckets
+   to the full-attention owners, layers `4`, `9`, `14`, `19`, `24`, `29`, and
+   `34`. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.
