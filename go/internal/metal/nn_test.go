@@ -114,6 +114,49 @@ func TestEmbedding_Forward_Good(t *testing.T) {
 	floatSliceApprox(t, got, want)
 }
 
+func TestEmbedding_QuantizedForwardMatchesFullDequantize_Good(t *testing.T) {
+	coverageTokens := "QuantizedForward MatchesFullDequantize"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	w := FromValues([]uint8{
+		0, 1, 2, 3,
+		4, 5, 6, 7,
+		8, 9, 10, 11,
+	}, 3, 4)
+	scales := FromValues([]float32{
+		0.5, 0.25,
+		1.0, 0.75,
+		1.5, 1.25,
+	}, 3, 2)
+	biases := FromValues([]float32{
+		0.0, 1.0,
+		-1.0, 0.5,
+		2.0, -2.0,
+	}, 3, 2)
+	indices := FromValues([]int32{2, 0}, 1, 2)
+
+	emb := &Embedding{Weight: w, Scales: scales, Biases: biases, GroupSize: 2, Bits: 8}
+	got := emb.Forward(indices)
+	Materialize(got)
+
+	full := Dequantize(w, scales, biases, 2, 8)
+	want := Take(full, indices, 0)
+	Materialize(want)
+
+	gotShape := got.Shape()
+	wantShape := want.Shape()
+	if len(gotShape) != len(wantShape) {
+		t.Fatalf("shape = %v, want %v", gotShape, wantShape)
+	}
+	for i := range gotShape {
+		if gotShape[i] != wantShape[i] {
+			t.Fatalf("shape = %v, want %v", gotShape, wantShape)
+		}
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestEmbedding_AsLinear_Good(t *testing.T) {
 	w := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
 	emb := &Embedding{Weight: w}

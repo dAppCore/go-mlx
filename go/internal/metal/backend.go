@@ -18,10 +18,17 @@ func resolveLoadDevice(device DeviceType) (DeviceType, bool) {
 	if device == "" {
 		device = DeviceGPU
 	}
-	if device == DeviceGPU && !runtimeMetalAvailable() {
-		return DeviceCPU, true
-	}
 	return device, false
+}
+
+func ensureLoadDeviceAvailable(device DeviceType) error {
+	if device == "" {
+		device = DeviceGPU
+	}
+	if !runtimeMetalAvailable() {
+		return core.NewError("mlx: no usable Metal device available; refusing native MLX load because CPU fallback can abort this MLX build")
+	}
+	return nil
 }
 
 // LoadConfig holds configuration applied during model loading.
@@ -73,6 +80,9 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 	loadCfg.Device = resolvedDevice
 	if fellBack {
 		core.Warn("mlx: Metal unavailable, falling back to CPU")
+	}
+	if err := ensureLoadDeviceAvailable(loadCfg.Device); err != nil {
+		return nil, core.E("metal.LoadAndInit", "select device", err)
 	}
 	applyAllocatorLimits(loadCfg)
 

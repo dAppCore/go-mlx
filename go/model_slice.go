@@ -1,0 +1,382 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"context"
+
+	core "dappco.re/go"
+	"dappco.re/go/inference"
+	"dappco.re/go/mlx/model"
+	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
+)
+
+const modelSliceManifestVersion = "go-mlx.model-slice.v1"
+
+type modelSliceManifest struct {
+	Version   string                   `json:"version"`
+	Source    string                   `json:"source"`
+	Output    string                   `json:"output"`
+	Plan      inference.ModelSlicePlan `json:"plan"`
+	Weight    string                   `json:"weight"`
+	Tensors   []string                 `json:"tensors"`
+	Labels    map[string]string        `json:"labels,omitempty"`
+	WeightMap map[string]string        `json:"weight_map,omitempty"`
+}
+
+// ModelSliceInspection describes whether a materialised slice can be loaded as
+// a standalone model or needs split placement for omitted runtime components.
+type ModelSliceInspection struct {
+	Path                     string                     `json:"path"`
+	ManifestPath             string                     `json:"manifest_path"`
+	SourcePath               string                     `json:"source_path,omitempty"`
+	OutputPath               string                     `json:"output_path,omitempty"`
+	WeightPath               string                     `json:"weight_path,omitempty"`
+	Plan                     inference.ModelSlicePlan   `json:"plan"`
+	Standalone               bool                       `json:"standalone"`
+	RequiresSplitPlacement   bool                       `json:"requires_split_placement"`
+	LocalTensorBytes         int64                      `json:"local_tensor_bytes,omitempty"`
+	SourceTensorBytes        int64                      `json:"source_tensor_bytes,omitempty"`
+	OffloadTensorBytes       int64                      `json:"offload_tensor_bytes,omitempty"`
+	RetainedTensorRatio      float64                    `json:"retained_tensor_ratio,omitempty"`
+	MissingRuntimeComponents []inference.ModelComponent `json:"missing_runtime_components,omitempty"`
+	Notes                    []string                   `json:"notes,omitempty"`
+}
+
+// SliceModel materialises a logical model slice through the native Metal
+// backend planner without requiring callers to construct an unexported backend.
+func SliceModel(ctx context.Context, req inference.ModelSliceRequest) (*inference.ModelSlicePlan, error) {
+	return (&metalbackend{}).SliceModel(ctx, req)
+}
+
+// InspectModelSlice reads a slice manifest and reports whether it can be
+// reloaded as a complete model or needs split placement.
+func InspectModelSlice(path string) (ModelSliceInspection, error) {
+	manifestPath := core.PathJoin(path, "slice_manifest.json")
+	read := core.ReadFile(manifestPath)
+	if !read.OK {
+		return ModelSliceInspection{}, modelSliceResultError(read)
+	}
+	var manifest modelSliceManifest
+	if result := core.JSONUnmarshal(read.Value.([]byte), &manifest); !result.OK {
+		return ModelSliceInspection{}, modelSliceResultError(result)
+	}
+	localBytes := modelSliceLabelInt64(manifest.Plan.Labels, "selected_tensor_bytes")
+	sourceBytes := modelSliceLabelInt64(manifest.Plan.Labels, "source_tensor_bytes")
+	offloadBytes := sourceBytes - localBytes
+	if offloadBytes < 0 {
+		offloadBytes = 0
+	}
+	standalone, missing := modelSliceStandalone(manifest.Plan)
+	inspection := ModelSliceInspection{
+		Path:                     path,
+		ManifestPath:             manifestPath,
+		SourcePath:               manifest.Source,
+		OutputPath:               manifest.Output,
+		WeightPath:               core.PathJoin(path, manifest.Weight),
+		Plan:                     manifest.Plan,
+		Standalone:               standalone,
+		RequiresSplitPlacement:   !standalone,
+		LocalTensorBytes:         localBytes,
+		SourceTensorBytes:        sourceBytes,
+		OffloadTensorBytes:       offloadBytes,
+		MissingRuntimeComponents: missing,
+	}
+	if sourceBytes > 0 {
+		inspection.RetainedTensorRatio = float64(localBytes) / float64(sourceBytes)
+	}
+	if inspection.RequiresSplitPlacement {
+		inspection.Notes = append(inspection.Notes, "slice is not a standalone model; reload requires split placement for omitted runtime components")
+	}
+	return inspection, nil
+}
+
+func inspectModelSliceIfPresent(path string) (ModelSliceInspection, bool, error) {
+	manifestPath := core.PathJoin(path, "slice_manifest.json")
+	stat := core.Stat(manifestPath)
+	if !stat.OK {
+		if core.IsNotExist(stat.Value.(error)) {
+			return ModelSliceInspection{}, false, nil
+		}
+		return ModelSliceInspection{}, true, modelSliceResultError(stat)
+	}
+	inspection, err := InspectModelSlice(path)
+	return inspection, true, err
+}
+
+func (backend *metalbackend) SliceModel(ctx context.Context, req inference.ModelSliceRequest) (*inference.ModelSlicePlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	plan, err := backend.PlanModelSlice(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if core.Trim(req.OutputPath) == "" {
+		return nil, core.NewError("mlx: model slice output path is required")
+	}
+	if core.Trim(req.Model.Path) == "" {
+		return nil, core.NewError("mlx: model slice source path is required")
+	}
+
+	source, err := model.Inspect(req.Model.Path)
+	if err != nil {
+		return nil, err
+	}
+	if source.Format != mp.ModelPackFormatSafetensors {
+		return nil, core.NewError("mlx: model slice materialisation currently supports safetensors packs only")
+	}
+	if len(source.WeightFiles) == 0 {
+		return nil, core.NewError("mlx: model slice source has no safetensors weights")
+	}
+
+	index, err := safetensors.IndexFiles(source.WeightFiles)
+	if err != nil {
+		return nil, err
+	}
+	refs, names := selectModelSliceTensorRefs(*plan, index)
+	if len(refs) == 0 {
+		return nil, core.NewError("mlx: model slice selected no tensors")
+	}
+
+	if result := core.MkdirAll(req.OutputPath, 0o755); !result.OK {
+		return nil, modelSliceResultError(result)
+	}
+	for _, name := range modelSliceMetadataFiles(*plan) {
+		if err := copyModelSliceFile(source.Root, req.OutputPath, name); err != nil {
+			return nil, err
+		}
+	}
+
+	weightPath := core.PathJoin(req.OutputPath, "model.safetensors")
+	if err := safetensors.WriteSubset(ctx, weightPath, refs); err != nil {
+		return nil, err
+	}
+
+	plan.OutputPath = req.OutputPath
+	plan.SourcePath = req.Model.Path
+	if plan.Labels == nil {
+		plan.Labels = map[string]string{}
+	}
+	selectedBytes := tensorRefsByteLen(refs)
+	sourceTensorBytes := indexTensorByteLen(index)
+	plan.Labels["tensor_count"] = core.Sprintf("%d", len(refs))
+	plan.Labels["weight_file"] = "model.safetensors"
+	plan.Labels["source_weight_files"] = core.Sprintf("%d", len(source.WeightFiles))
+	plan.Labels["selected_tensor_bytes"] = core.Sprintf("%d", selectedBytes)
+	plan.Labels["source_tensor_bytes"] = core.Sprintf("%d", sourceTensorBytes)
+	if sourceTensorBytes > 0 {
+		plan.Labels["retained_tensor_ratio"] = core.Sprintf("%.4f", float64(selectedBytes)/float64(sourceTensorBytes))
+	}
+
+	if err := writeModelSliceManifest(req.OutputPath, *plan, names); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
+func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
+	required := []inference.ModelComponent{
+		inference.ModelComponentEmbeddings,
+		inference.ModelComponentAttention,
+		inference.ModelComponentFFN,
+		inference.ModelComponentLMHead,
+	}
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		return true, nil
+	}
+	missing := make([]inference.ModelComponent, 0, len(required))
+	for _, component := range required {
+		if !plan.HasComponent(component) {
+			missing = append(missing, component)
+		}
+	}
+	return len(missing) == 0, missing
+}
+
+func modelSliceLabelInt64(labels map[string]string, key string) int64 {
+	if len(labels) == 0 {
+		return 0
+	}
+	parsed := core.ParseInt(labels[key], 10, 64)
+	if !parsed.OK {
+		return 0
+	}
+	return parsed.Value.(int64)
+}
+
+func tensorRefsByteLen(refs []safetensors.TensorRef) int64 {
+	var total int64
+	for _, ref := range refs {
+		total += ref.ByteLen
+	}
+	return total
+}
+
+func indexTensorByteLen(index safetensors.Index) int64 {
+	var total int64
+	for _, name := range index.Names {
+		total += index.Tensors[name].ByteLen
+	}
+	return total
+}
+
+func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
+	refs := make([]safetensors.TensorRef, 0, len(index.Names))
+	names := make([]string, 0, len(index.Names))
+	for _, name := range index.Names {
+		if !modelSliceIncludesTensor(plan, name) {
+			continue
+		}
+		refs = append(refs, index.Tensors[name])
+		names = append(names, name)
+	}
+	return refs, names
+}
+
+func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		return true
+	}
+	lower := core.Lower(name)
+	switch {
+	case plan.HasComponent(inference.ModelComponentEmbeddings) && modelSliceTensorIsEmbedding(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentNorms) && modelSliceTensorIsNorm(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentAttention) && modelSliceTensorIsAttention(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentFFN) && modelSliceTensorIsFFN(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentGate) && modelSliceTensorIsGate(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentDownMeta) && modelSliceTensorIsDownMeta(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentRouter) && modelSliceTensorIsRouter(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentExperts) && modelSliceTensorIsExpert(lower):
+		return true
+	case plan.HasComponent(inference.ModelComponentLMHead) && modelSliceTensorIsLMHead(lower):
+		return true
+	default:
+		return false
+	}
+}
+
+func modelSliceTensorIsEmbedding(name string) bool {
+	return core.Contains(name, "embed") || core.Contains(name, ".wte.") || core.HasSuffix(name, ".wte.weight")
+}
+
+func modelSliceTensorIsNorm(name string) bool {
+	return core.Contains(name, "norm") || core.Contains(name, "layernorm")
+}
+
+func modelSliceTensorIsAttention(name string) bool {
+	return core.Contains(name, "self_attn") ||
+		core.Contains(name, "attention") ||
+		core.Contains(name, ".attn.") ||
+		modelSliceHasProjection(name, "q_proj") ||
+		modelSliceHasProjection(name, "k_proj") ||
+		modelSliceHasProjection(name, "v_proj") ||
+		modelSliceHasProjection(name, "o_proj") ||
+		modelSliceHasProjection(name, "out_proj")
+}
+
+func modelSliceTensorIsFFN(name string) bool {
+	return core.Contains(name, ".mlp.") ||
+		core.Contains(name, "feed_forward") ||
+		core.Contains(name, "ffn") ||
+		modelSliceHasProjection(name, "up_proj") ||
+		modelSliceHasProjection(name, "down_proj")
+}
+
+func modelSliceTensorIsGate(name string) bool {
+	return modelSliceHasProjection(name, "gate_proj") || core.Contains(name, ".gate.")
+}
+
+func modelSliceTensorIsDownMeta(name string) bool {
+	return core.Contains(name, "down_meta") || core.Contains(name, "down_proj.meta")
+}
+
+func modelSliceTensorIsRouter(name string) bool {
+	return core.Contains(name, "router") || core.Contains(name, "gate_score") || core.HasSuffix(name, ".gate.weight")
+}
+
+func modelSliceTensorIsExpert(name string) bool {
+	return core.Contains(name, "experts") || core.Contains(name, ".expert.")
+}
+
+func modelSliceTensorIsLMHead(name string) bool {
+	return name == "lm_head.weight" || core.HasPrefix(name, "lm_head.")
+}
+
+func modelSliceHasProjection(name, projection string) bool {
+	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
+}
+
+func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
+	files := []string{"config.json"}
+	if plan.HasComponent(inference.ModelComponentTokenizer) {
+		files = append(files, "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "special_tokens_map.json", "generation_config.json")
+	}
+	if plan.HasComponent(inference.ModelComponentLabels) {
+		files = append(files, "label_map.json", "labels.json", "id2label.json")
+	}
+	return files
+}
+
+func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
+	source := core.PathJoin(sourceRoot, name)
+	read := core.ReadFile(source)
+	if !read.OK {
+		if core.IsNotExist(read.Value.(error)) {
+			return nil
+		}
+		return read.Value.(error)
+	}
+	target := core.PathJoin(outputRoot, name)
+	if result := core.MkdirAll(core.PathDir(target), 0o755); !result.OK {
+		return modelSliceResultError(result)
+	}
+	if result := core.WriteFile(target, read.Value.([]byte), 0o644); !result.OK {
+		return modelSliceResultError(result)
+	}
+	return nil
+}
+
+func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
+	manifest := modelSliceManifest{
+		Version: modelSliceManifestVersion,
+		Source:  plan.SourcePath,
+		Output:  plan.OutputPath,
+		Plan:    plan,
+		Weight:  "model.safetensors",
+		Tensors: append([]string(nil), tensors...),
+		Labels:  cloneStringMap(plan.Labels),
+		WeightMap: map[string]string{
+			"model.safetensors": "selected tensors",
+		},
+	}
+	encoded := core.JSONMarshal(manifest)
+	if !encoded.OK {
+		return modelSliceResultError(encoded)
+	}
+	if result := core.WriteFile(core.PathJoin(outputRoot, "slice_manifest.json"), encoded.Value.([]byte), 0o644); !result.OK {
+		return modelSliceResultError(result)
+	}
+	return nil
+}
+
+func modelSliceResultError(result core.Result) error {
+	if result.OK {
+		return nil
+	}
+	if err, ok := result.Value.(error); ok {
+		return err
+	}
+	return core.NewError("mlx: model slice core result failed")
+}

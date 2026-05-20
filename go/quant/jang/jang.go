@@ -1,6 +1,5 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-
 // Package jang holds the Metal-side JANG/JANGTQ dequant + projection kernels.
 //
 //	out, _ := jang.DequantizePackedTensor(desc, packed, scales, biases)
@@ -12,13 +11,13 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 )
 
-//	res, _ := jang.ProjectPackedTensor(desc, packed, scales, biases, input, shape, bias)
+// res, _ := jang.ProjectPackedTensor(desc, packed, scales, biases, input, shape, bias)
 type PackedProjectionResult struct {
 	Values []float32 `json:"values"`
 	Shape  []int32   `json:"shape"`
 }
 
-//	out, _ := jang.DequantizePackedTensor(desc, packed, scales, biases)
+// out, _ := jang.DequantizePackedTensor(desc, packed, scales, biases)
 func DequantizePackedTensor(desc infjang.PackedTensorDescriptor, packed []byte, scales, biases []float32) ([]float32, error) {
 	if err := infjang.ValidatePackedTensor(desc, packed, scales, biases); err != nil {
 		return nil, err
@@ -41,12 +40,12 @@ func DequantizePackedTensor(desc infjang.PackedTensorDescriptor, packed []byte, 
 	return out.Floats(), nil
 }
 
-//	res, _ := jang.ProjectPackedTensor(desc, packed, scales, biases, input, shape, bias)
+// res, _ := jang.ProjectPackedTensor(desc, packed, scales, biases, input, shape, bias)
 func ProjectPackedTensor(desc infjang.PackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (PackedProjectionResult, error) {
 	return projectPackedTensor(desc, packed, scales, biases, input, inputShape, bias, false)
 }
 
-//	res, _ := jang.ProjectPackedTensorFused(desc, packed, scales, biases, input, shape, bias)
+// res, _ := jang.ProjectPackedTensorFused(desc, packed, scales, biases, input, shape, bias)
 func ProjectPackedTensorFused(desc infjang.PackedTensorDescriptor, packed []byte, scales, biases, input []float32, inputShape []int32, bias []float32) (PackedProjectionResult, error) {
 	return projectPackedTensor(desc, packed, scales, biases, input, inputShape, bias, true)
 }

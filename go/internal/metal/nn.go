@@ -4,16 +4,20 @@
 
 package metal
 
+import core "dappco.re/go"
+
 // Linear is a fully-connected layer: y = x @ W.T + bias.
 // For quantized models, set Scales/Biases/GroupSize/Bits to use QuantizedMatmul.
 // Set LoRA to inject a low-rank adapter (training only).
 type Linear struct {
-	Weight    *Array `weight:"weight"`
-	Scales    *Array `weight:"scales"`
-	Biases    *Array `weight:"biases"`
-	Bias      *Array `weight:"bias"`
-	GroupSize int
-	Bits      int
+	Weight           *Array `weight:"weight"`
+	Scales           *Array `weight:"scales"`
+	Biases           *Array `weight:"biases"`
+	Bias             *Array `weight:"bias"`
+	DenseFallbackT   *Array
+	GroupSize        int
+	Bits             int
+	QuantizationMode string
 
 	LoRA *LoRALinear // Optional LoRA adapter — if set, Forward routes through it
 }
@@ -29,25 +33,33 @@ func NewLinear(weight, bias *Array) *Linear {
 //
 //	projection := metal.NewQuantizedLinear(w, scales, biases, nil, 64, 4) // 4-bit, group=64
 func NewQuantizedLinear(weight, scales, biases, bias *Array, groupSize, bits int) *Linear {
+	return newQuantizedLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
+}
+
+// newQuantizedLinearWithMode creates a quantized Linear layer for a specific
+// MLX quantization mode.
+func newQuantizedLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *Linear {
 	return &Linear{
-		Weight:    weight,
-		Scales:    scales,
-		Biases:    biases,
-		Bias:      bias,
-		GroupSize: groupSize,
-		Bits:      bits,
+		Weight:           weight,
+		Scales:           scales,
+		Biases:           biases,
+		Bias:             bias,
+		GroupSize:        groupSize,
+		Bits:             bits,
+		QuantizationMode: normalizeQuantizationMode(mode),
 	}
 }
 
 // SwitchLinear is an expert-indexed linear layer backed by gather_mm / gather_qmm.
 type SwitchLinear struct {
-	Weight    *Array `weight:"weight"`
-	WeightT   *Array
-	Scales    *Array `weight:"scales"`
-	Biases    *Array `weight:"biases"`
-	Bias      *Array `weight:"bias"`
-	GroupSize int
-	Bits      int
+	Weight           *Array `weight:"weight"`
+	WeightT          *Array
+	Scales           *Array `weight:"scales"`
+	Biases           *Array `weight:"biases"`
+	Bias             *Array `weight:"bias"`
+	GroupSize        int
+	Bits             int
+	QuantizationMode string
 }
 
 // NewSwitchLinear creates a dense expert-indexed linear layer.
@@ -64,13 +76,20 @@ func NewSwitchLinear(weight, bias *Array) *SwitchLinear {
 
 // NewQuantizedSwitchLinear creates a quantized expert-indexed linear layer.
 func NewQuantizedSwitchLinear(weight, scales, biases, bias *Array, groupSize, bits int) *SwitchLinear {
+	return newQuantizedSwitchLinearWithMode(weight, scales, biases, bias, groupSize, bits, "affine")
+}
+
+// newQuantizedSwitchLinearWithMode creates a quantized expert-indexed linear
+// layer for a specific MLX quantization mode.
+func newQuantizedSwitchLinearWithMode(weight, scales, biases, bias *Array, groupSize, bits int, mode string) *SwitchLinear {
 	return &SwitchLinear{
-		Weight:    weight,
-		Scales:    scales,
-		Biases:    biases,
-		Bias:      bias,
-		GroupSize: groupSize,
-		Bits:      bits,
+		Weight:           weight,
+		Scales:           scales,
+		Biases:           biases,
+		Bias:             bias,
+		GroupSize:        groupSize,
+		Bits:             bits,
+		QuantizationMode: normalizeQuantizationMode(mode),
 	}
 }
 
@@ -91,7 +110,25 @@ func (linear *Linear) Forward(input *Array) *Array {
 func (linear *Linear) baseForward(input *Array) *Array {
 	var out *Array
 	if linear.Scales != nil {
-		out = QuantizedMatmul(input, linear.Weight, linear.Scales, linear.Biases, true, linear.GroupSize, linear.Bits)
+		if requiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
+			if linear.DenseFallbackT == nil || !linear.DenseFallbackT.Valid() {
+				denseWeight := dequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+				linear.DenseFallbackT = Transpose(denseWeight)
+				Free(denseWeight)
+			}
+			out = Matmul(input, linear.DenseFallbackT)
+		} else if isAffineQuantizationMode(linear.QuantizationMode) && nativeLinearMatVecRuntimeEnabled() {
+			if nativeOut, ok, err := quantizedDenseMatVec(input, linear); ok {
+				if err == nil {
+					return nativeOut
+				}
+				core.Error("mlx: native linear matvec failed; falling back to quantized matmul", "error", err)
+				Free(nativeOut)
+			}
+			out = quantizedMatmulMode(input, linear.Weight, linear.Scales, linear.Biases, true, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+		} else {
+			out = quantizedMatmulMode(input, linear.Weight, linear.Scales, linear.Biases, true, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+		}
 	} else {
 		weightTranspose := Transpose(linear.Weight)
 		out = Matmul(input, weightTranspose)
@@ -109,7 +146,16 @@ func (linear *Linear) baseForward(input *Array) *Array {
 func (linear *SwitchLinear) Forward(input, expertIndices *Array) *Array {
 	var out *Array
 	if linear.Scales != nil {
-		out = GatherQMM(input, linear.Weight, linear.Scales, linear.Biases, nil, expertIndices, true, linear.GroupSize, linear.Bits, "affine", false)
+		if requiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
+			if linear.WeightT == nil || !linear.WeightT.Valid() {
+				denseWeight := dequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+				linear.WeightT = Transpose(denseWeight, 0, 2, 1)
+				Free(denseWeight)
+			}
+			out = GatherMM(input, linear.WeightT, nil, expertIndices, false)
+		} else {
+			out = GatherQMM(input, linear.Weight, linear.Scales, linear.Biases, nil, expertIndices, true, linear.GroupSize, linear.Bits, linear.QuantizationMode, false)
+		}
 	} else {
 		if linear.WeightT == nil && linear.Weight != nil && linear.Weight.Valid() {
 			linear.WeightT = Transpose(linear.Weight, 0, 2, 1)
@@ -129,11 +175,12 @@ func (linear *SwitchLinear) Forward(input, expertIndices *Array) *Array {
 // Embedding is a lookup table for token embeddings.
 // For quantized models, set Scales/Biases/GroupSize/Bits to dequantize before lookup.
 type Embedding struct {
-	Weight    *Array `weight:"weight"`
-	Scales    *Array `weight:"scales"`
-	Biases    *Array `weight:"biases"`
-	GroupSize int
-	Bits      int
+	Weight           *Array `weight:"weight"`
+	Scales           *Array `weight:"scales"`
+	Biases           *Array `weight:"biases"`
+	GroupSize        int
+	Bits             int
+	QuantizationMode string
 }
 
 // Forward looks up embeddings for the given token indices.
@@ -141,9 +188,16 @@ type Embedding struct {
 //	y := emb.Forward(tokenIDs) // tokenIDs: [B, L] int32 → y: [B, L, hidden_dim]
 func (embedding *Embedding) Forward(tokenIDs *Array) *Array {
 	if embedding.Scales != nil {
-		w := Dequantize(embedding.Weight, embedding.Scales, embedding.Biases, embedding.GroupSize, embedding.Bits)
-		res := Take(w, tokenIDs, 0)
-		Free(w)
+		// Gather packed rows before dequantising to avoid materialising the full
+		// vocabulary table for a single decode token.
+		rows := Take(embedding.Weight, tokenIDs, 0)
+		scales := Take(embedding.Scales, tokenIDs, 0)
+		var biases *Array
+		if embedding.Biases != nil && embedding.Biases.Valid() {
+			biases = Take(embedding.Biases, tokenIDs, 0)
+		}
+		res := dequantizeMode(rows, scales, biases, embedding.GroupSize, embedding.Bits, embedding.QuantizationMode)
+		Free(rows, scales, biases)
 		return res
 	}
 	return Take(embedding.Weight, tokenIDs, 0)
@@ -154,11 +208,12 @@ func (embedding *Embedding) Forward(tokenIDs *Array) *Array {
 //	output := embedding.AsLinear() // share embed_tokens weights with lm_head (Gemma3)
 func (embedding *Embedding) AsLinear() *Linear {
 	return &Linear{
-		Weight:    embedding.Weight,
-		Scales:    embedding.Scales,
-		Biases:    embedding.Biases,
-		GroupSize: embedding.GroupSize,
-		Bits:      embedding.Bits,
+		Weight:           embedding.Weight,
+		Scales:           embedding.Scales,
+		Biases:           embedding.Biases,
+		GroupSize:        embedding.GroupSize,
+		Bits:             embedding.Bits,
+		QuantizationMode: embedding.QuantizationMode,
 	}
 }
 

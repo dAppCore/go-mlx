@@ -35,17 +35,17 @@ type MemvidIndexOptions struct {
 // MemvidIndex records model identity and named token spans for
 // restoring partial prefixes from a larger memvid KV block bundle.
 type MemvidIndex struct {
-	Version      int                                `json:"version"`
-	Kind         string                             `json:"kind"`
-	BundleURI    string                             `json:"bundle_uri,omitempty"`
-	SnapshotHash string                             `json:"snapshot_hash,omitempty"`
-	KVEncoding   kv.Encoding                 `json:"kv_encoding,omitempty"`
-	TokenCount   int                                `json:"token_count,omitempty"`
-	BlockSize    int                                `json:"block_size,omitempty"`
-	Model        bundle.Model                   `json:"model"`
-	Tokenizer    bundle.Tokenizer               `json:"tokenizer"`
+	Version      int                `json:"version"`
+	Kind         string             `json:"kind"`
+	BundleURI    string             `json:"bundle_uri,omitempty"`
+	SnapshotHash string             `json:"snapshot_hash,omitempty"`
+	KVEncoding   kv.Encoding        `json:"kv_encoding,omitempty"`
+	TokenCount   int                `json:"token_count,omitempty"`
+	BlockSize    int                `json:"block_size,omitempty"`
+	Model        bundle.Model       `json:"model"`
+	Tokenizer    bundle.Tokenizer   `json:"tokenizer"`
 	Entries      []MemvidIndexEntry `json:"entries,omitempty"`
-	Hash         string                             `json:"hash,omitempty"`
+	Hash         string             `json:"hash,omitempty"`
 }
 
 // MemvidIndexEntry names one logical span in a KV bundle. The

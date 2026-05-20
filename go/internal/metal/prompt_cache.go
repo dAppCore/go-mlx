@@ -17,6 +17,7 @@ type promptCacheEntry struct {
 	adapterHash     string
 	caches          []cacheSnapshot
 	logits          *Array
+	hidden          *Array
 }
 
 type cacheSnapshot struct {
@@ -158,6 +159,20 @@ func (m *Model) promptCacheMatch(tokens []int32) (*promptCacheEntry, int) {
 	return entry, prefixLen
 }
 
+func (m *Model) promptCacheMatchWithHidden(tokens []int32) (*promptCacheEntry, int) {
+	entry, prefixLen := m.promptCacheMatch(tokens)
+	if entry == nil {
+		return nil, 0
+	}
+	if prefixLen == len(tokens) && (entry.hidden == nil || !entry.hidden.Valid()) {
+		if prefixLen <= 1 {
+			return nil, 0
+		}
+		return entry, prefixLen - 1
+	}
+	return entry, prefixLen
+}
+
 func (m *Model) clearPromptCache() {
 	if m == nil || m.promptCache == nil {
 		return
@@ -185,14 +200,17 @@ func (entry *promptCacheEntry) free() {
 		freeCacheSnapshot(snapshot)
 	}
 	Free(entry.logits)
+	Free(entry.hidden)
 	entry.tokens = nil
 	entry.caches = nil
 	entry.logits = nil
+	entry.hidden = nil
 }
 
 type promptPreparation struct {
 	caches          []Cache
 	logits          *Array
+	hidden          *Array
 	duration        time.Duration
 	cacheHit        bool
 	cacheHitTokens  int
@@ -200,11 +218,14 @@ type promptPreparation struct {
 	restoreDuration time.Duration
 }
 
-func (m *Model) preparePrompt(ctx context.Context, tokens []int32) (promptPreparation, error) {
+const defaultLastTokenPrefillMinTokens = 512
+
+func (m *Model) preparePrompt(ctx context.Context, tokens []int32, cfg GenerateConfig) (promptPreparation, error) {
 	start := time.Now()
+	requestFixedSize := m.generationFixedGemma4CacheSize(len(tokens), cfg.MaxTokens)
 	if entry, prefixLen := m.promptCacheMatch(tokens); entry != nil {
 		restoreStart := time.Now()
-		caches, logits, err := m.prefillFromPromptCache(ctx, entry, tokens, prefixLen)
+		caches, logits, err := m.prefillFromPromptCache(ctx, entry, tokens, prefixLen, requestFixedSize)
 		restoreDuration := time.Since(restoreStart)
 		return promptPreparation{
 			caches:          caches,
@@ -217,7 +238,7 @@ func (m *Model) preparePrompt(ctx context.Context, tokens []int32) (promptPrepar
 		}, err
 	}
 
-	caches := m.newCaches()
+	caches := m.newCachesWithRequestFixedSize(requestFixedSize)
 	logits, err := m.prefillTokenBlock(ctx, tokens, caches)
 	if err != nil {
 		freeCaches(caches)
@@ -307,7 +328,7 @@ func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, cache
 }
 
 func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
-	if m != nil && core.Env("GO_MLX_ENABLE_LAST_LOGITS_PREFILL") == "1" {
+	if m != nil && m.useLastTokenLogitsPrefill(tokens, mask) {
 		if lastModel, ok := m.model.(LastTokenLogitsModel); ok {
 			return lastModel.ForwardLastTokenLogits(tokens, mask, caches), true
 		}
@@ -318,8 +339,56 @@ func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cach
 	return m.model.Forward(tokens, caches), false
 }
 
-func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEntry, tokens []int32, prefixLen int) ([]Cache, *Array, error) {
-	caches, err := restorePromptCaches(entry.caches, prefixLen)
+func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array) bool {
+	if m == nil {
+		return false
+	}
+	switch core.Lower(core.Trim(core.Env("GO_MLX_ENABLE_LAST_LOGITS_PREFILL"))) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	if mask != nil {
+		return false
+	}
+	if _, ok := m.model.(LastTokenLogitsModel); !ok {
+		return false
+	}
+	seqLen := prefillSequenceLength(tokens)
+	minTokens := lastTokenPrefillMinTokens()
+	return minTokens > 0 && seqLen >= minTokens
+}
+
+func prefillSequenceLength(tokens *Array) int {
+	if tokens == nil || !tokens.Valid() {
+		return 0
+	}
+	shape := tokens.Shape()
+	switch {
+	case len(shape) >= 2:
+		return int(shape[1])
+	case len(shape) == 1:
+		return int(shape[0])
+	default:
+		return 0
+	}
+}
+
+func lastTokenPrefillMinTokens() int {
+	value := core.Trim(core.Env("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS"))
+	if value == "" {
+		return defaultLastTokenPrefillMinTokens
+	}
+	parsed := core.ParseInt(value, 10, 64)
+	if !parsed.OK {
+		return defaultLastTokenPrefillMinTokens
+	}
+	return int(parsed.Value.(int64))
+}
+
+func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEntry, tokens []int32, prefixLen, requestFixedSize int) ([]Cache, *Array, error) {
+	caches, err := restorePromptCachesWithRequestFixedSize(entry.caches, prefixLen, requestFixedSize)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -930,6 +999,10 @@ func (m *Model) validatePromptCacheKVSnapshot(snapshot *KVSnapshot) error {
 }
 
 func newPromptCacheEntry(tokens []int32, caches []Cache, logits *Array) (*promptCacheEntry, error) {
+	return newPromptCacheEntryWithHidden(tokens, caches, logits, nil)
+}
+
+func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidden *Array) (*promptCacheEntry, error) {
 	entry := &promptCacheEntry{
 		tokens:          append([]int32(nil), tokens...),
 		cacheableTokens: len(tokens),
@@ -953,6 +1026,10 @@ func newPromptCacheEntry(tokens []int32, caches []Cache, logits *Array) (*prompt
 
 	entry.logits = Copy(logits)
 	evalArrays = append(evalArrays, promptCacheEvalArray{label: "logits", array: entry.logits})
+	if hidden != nil && hidden.Valid() {
+		entry.hidden = Copy(hidden)
+		evalArrays = append(evalArrays, promptCacheEvalArray{label: "hidden", array: entry.hidden})
+	}
 	if err := evalPromptCacheArrays("snapshot", evalArrays); err != nil {
 		entry.free()
 		return nil, err
@@ -964,6 +1041,16 @@ func newPromptCacheEntry(tokens []int32, caches []Cache, logits *Array) (*prompt
 func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 	if cache == nil || cache.State() == nil {
 		return cacheSnapshot{}, false, nil
+	}
+	if fixed, ok := cache.(*FixedKVCache); ok {
+		return snapshotFixedCache(fixed, tokenLen)
+	}
+	if paged, ok := cache.(*PagedKVCache); ok {
+		restoreLen := min(paged.Len(), tokenLen)
+		if restoreLen <= 0 {
+			return cacheSnapshot{}, false, nil
+		}
+		return snapshotPagedCache(paged, restoreLen, paged.Offset())
 	}
 	if cache.Offset() != cache.Len() || cache.Len() < tokenLen {
 		return cacheSnapshot{}, false, nil
@@ -1006,11 +1093,43 @@ func snapshotCache(cache Cache, tokenLen int) (cacheSnapshot, bool, error) {
 		snapshot.step = c.step
 	case *KVCache:
 		snapshot.step = c.step
+	case *FixedKVCache:
+		snapshot.mode = KVCacheModeFixed
+		snapshot.maxSize = c.maxSize
 	default:
 		Free(keys, values)
 		return cacheSnapshot{}, false, nil
 	}
 	return snapshot, true, nil
+}
+
+func snapshotFixedCache(cache *FixedKVCache, tokenLen int) (cacheSnapshot, bool, error) {
+	if cache == nil || tokenLen <= 0 || cache.Offset() < tokenLen || cache.Len() <= 0 {
+		return cacheSnapshot{}, false, nil
+	}
+	state, ownedState := cacheReadState(cache)
+	defer Free(ownedState...)
+	if len(state) < 2 || !state[0].Valid() || !state[1].Valid() {
+		return cacheSnapshot{}, false, nil
+	}
+	restoreLen := min(cache.Len(), tokenLen)
+	keys, err := copyCachePrefix(state[0], restoreLen)
+	if err != nil {
+		return cacheSnapshot{}, false, err
+	}
+	values, err := copyCachePrefix(state[1], restoreLen)
+	if err != nil {
+		Free(keys)
+		return cacheSnapshot{}, false, err
+	}
+	return cacheSnapshot{
+		mode:    KVCacheModeFixed,
+		keys:    keys,
+		values:  values,
+		offset:  tokenLen,
+		length:  restoreLen,
+		maxSize: cache.maxSize,
+	}, true, nil
 }
 
 func copyCachePrefix(array *Array, tokenLen int) (*Array, error) {
@@ -1109,7 +1228,9 @@ func snapshotPagedCache(cache *PagedKVCache, tokenLen, offset int) (cacheSnapsho
 	if tokenLen <= 0 || tokenLen > cache.Len() {
 		return cacheSnapshot{}, false, nil
 	}
-	kPages, vPages, err := copyPagedCachePrefix(cache.kPages, cache.vPages, tokenLen)
+	visibleKPages, visibleVPages, ownedVisible := cache.visiblePages()
+	defer Free(ownedVisible...)
+	kPages, vPages, err := copyPagedCachePrefix(visibleKPages, visibleVPages, tokenLen)
 	if err != nil {
 		return cacheSnapshot{}, false, err
 	}
@@ -1231,6 +1352,10 @@ func copyPagePrefix(page *Array, tokenLen int) (*Array, error) {
 }
 
 func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, error) {
+	return restorePromptCachesWithRequestFixedSize(snapshots, prefixLen, 0)
+}
+
+func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLen, requestFixedSize int) ([]Cache, error) {
 	caches := make([]Cache, len(snapshots))
 	var evalArrays []*Array
 	for i, snapshot := range snapshots {
@@ -1239,6 +1364,16 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 			restoreLen = prefixLen
 		}
 		if restoreLen <= 0 {
+			continue
+		}
+		if requestFixedSize > 0 || snapshot.mode == KVCacheModeFixed {
+			cache, arrays, err := restoreFixedCacheSnapshot(snapshot, restoreLen, prefixLen, requestFixedSize)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
 			continue
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
@@ -1297,6 +1432,65 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 	}
 	Detach(evalArrays...)
 	return caches, nil
+}
+
+func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int) (Cache, []*Array, error) {
+	if prefixLen <= 0 {
+		return nil, nil, core.NewError("prompt cache: invalid fixed prefix length")
+	}
+	maxSize := requestFixedSize
+	if maxSize <= 0 {
+		maxSize = snapshot.maxSize
+	}
+	if fixedGemma4SlidingCacheBoundEnabled() && snapshot.maxSize > 0 {
+		maxSize = min(maxSize, snapshot.maxSize)
+	}
+	if maxSize <= 0 {
+		maxSize = prefixLen
+	}
+	if maxSize < prefixLen {
+		return nil, nil, core.NewError("prompt cache: fixed cache capacity is smaller than prefix")
+	}
+
+	keys, values, err := cacheSnapshotFloatArrays(snapshot)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer Free(keys, values)
+
+	keyPrefix, err := copyCachePrefix(keys, prefixLen)
+	if err != nil {
+		return nil, nil, err
+	}
+	valuePrefix, err := copyCachePrefix(values, prefixLen)
+	if err != nil {
+		Free(keyPrefix)
+		return nil, nil, err
+	}
+	defer Free(keyPrefix, valuePrefix)
+
+	kShape := keyPrefix.Shape()
+	vShape := valuePrefix.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 {
+		return nil, nil, core.NewError("prompt cache: fixed cache restore requires rank-4 tensors")
+	}
+	if prefixLen > int(kShape[2]) || prefixLen > int(vShape[2]) {
+		return nil, nil, core.NewError("prompt cache: fixed cache prefix is shorter than requested")
+	}
+	if offset <= 0 {
+		offset = prefixLen
+	}
+
+	cache := NewFixedKVCache(maxSize)
+	cache.keys = Zeros([]int32{kShape[0], kShape[1], int32(maxSize), kShape[3]}, keyPrefix.Dtype())
+	cache.values = Zeros([]int32{vShape[0], vShape[1], int32(maxSize), vShape[3]}, valuePrefix.Dtype())
+	oldK, oldV := cache.keys, cache.values
+	cache.keys = SliceUpdateInplace(cache.keys, keyPrefix, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(prefixLen), kShape[3]})
+	cache.values = SliceUpdateInplace(cache.values, valuePrefix, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(prefixLen), vShape[3]})
+	Free(oldK, oldV)
+	cache.offset = offset
+	cache.length = prefixLen
+	return cache, []*Array{cache.keys, cache.values}, nil
 }
 
 func restoreQuantizedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
@@ -1365,6 +1559,7 @@ func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (C
 	cache := &PagedKVCache{
 		kPages:   kPages,
 		vPages:   vPages,
+		pageLens: pagedPageLensForPages(kPages, prefixLen),
 		offset:   offset,
 		length:   prefixLen,
 		maxSize:  snapshot.maxSize,

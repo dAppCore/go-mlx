@@ -143,9 +143,14 @@ func (probe *modelConfigProbe) quantGroup() int {
 func normalizeKnownArchitecture(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
+	value = core.Replace(value, ".", "_")
 	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
+	case "qwen2_5", "qwen25":
+		return "qwen2"
+	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
+		return "qwen3_6"
+	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
+		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
 	case "mixtral":
@@ -173,14 +178,20 @@ func normalizeKnownArchitecture(value string) string {
 //
 //	id := architectureFromTransformersName("Qwen3MoeForCausalLM")  // → "qwen3_moe"
 func architectureFromTransformersName(architecture string) string {
-	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
+	compact := compactArchitectureName(architecture)
 	switch {
 	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
 		return "bert_rerank"
+	case core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe"):
+		return "qwen3_6_moe"
+	case core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36"):
+		return "qwen3_6"
 	case core.Contains(compact, "qwen3moe"):
 		return "qwen3_moe"
 	case core.Contains(compact, "qwen3next"):
 		return "qwen3_next"
+	case core.Contains(compact, "gemma4assistant"):
+		return "gemma4_assistant"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):
@@ -210,4 +221,11 @@ func architectureFromTransformersName(architecture string) string {
 	default:
 		return ""
 	}
+}
+
+func compactArchitectureName(value string) string {
+	compact := core.Lower(value)
+	compact = core.Replace(compact, "_", "")
+	compact = core.Replace(compact, "-", "")
+	return core.Replace(compact, ".", "")
 }

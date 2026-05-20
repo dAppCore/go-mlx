@@ -76,6 +76,26 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
+func TestMemoryPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
+	plan := PlanMemory(MemoryPlanInput{
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   64 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 60 * memory.GiB,
+		},
+	})
+
+	if plan.MachineClass != memory.ClassApple64GB {
+		t.Fatalf("MachineClass = %q, want %q", plan.MachineClass, memory.ClassApple64GB)
+	}
+	if plan.BatchSize != 2 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
+		t.Fatalf("shape = batch %d prefill %d slots %d, want 2/4096/1", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
+	}
+	if plan.CacheMode != memory.KVCacheModePaged || !plan.PromptCache {
+		t.Fatalf("cache = mode %q prompt %t, want paged prompt cache", plan.CacheMode, plan.PromptCache)
+	}
+}
+
 func TestMemoryPlan_CapsContextToModel_Good(t *testing.T) {
 	pack := mp.ModelPack{ContextLength: 40960, QuantBits: 4}
 	plan := PlanMemory(MemoryPlanInput{

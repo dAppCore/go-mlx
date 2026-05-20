@@ -80,6 +80,7 @@ func formatGemma4(messages []Message, cfg Config) string {
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
+		builder.WriteString("<|channel>thought\n<channel|>")
 	}
 	return builder.String()
 }
@@ -147,7 +148,7 @@ func templateName(cfg Config) string {
 		return "gemma4"
 	case "gemma", "gemma2", "gemma3", "gemma3_text":
 		return "gemma"
-	case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next":
+	case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next", "qwen3_6", "qwen3_6_moe":
 		return "qwen"
 	case "llama", "llama3", "llama4":
 		return "llama"

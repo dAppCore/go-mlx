@@ -248,6 +248,241 @@ func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache PreallocKeepsVisiblePageLength"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enablePagedKVPrealloc
+	enablePagedKVPrealloc = true
+	t.Cleanup(func() { enablePagedKVPrealloc = old })
+
+	c := NewPagedKVCache(0, 4)
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	state := c.UpdatePages(k, v, 2)
+	state.Free()
+	k1, v1 := makeSingleTokenKV(9)
+	defer Free(k1, v1)
+	next := c.UpdatePages(k1, v1, 1)
+	defer next.Free()
+	defer c.Reset()
+
+	if len(c.State()) != 2 || c.State()[0].Shape()[2] != 4 {
+		t.Fatalf("backing page shape = %+v, want preallocated page length 4", c.State())
+	}
+	if len(next.Keys) != 1 || next.Keys[0].Shape()[2] != 3 {
+		t.Fatalf("visible page shape = %+v, want one 3-token page", next.Keys)
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 3 || read[1].Shape()[2] != 3 {
+		t.Fatalf("read state = %+v, want visible length 3", read)
+	}
+}
+
+func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache ReplaceSinglePageFromNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewPagedKVCache(4, 4)
+	k, v := makeKV(2)
+	state := c.ReplaceSinglePageFromNative(k, v, 2)
+	defer state.Free()
+	defer c.Reset()
+
+	if c.Len() != 2 || c.Offset() != 2 {
+		t.Fatalf("len/offset = %d/%d, want 2/2", c.Len(), c.Offset())
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("page count = %d/%d, want 1/1", len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0] == k || state.Values[0] == v {
+		t.Fatal("page state returned cache-owned arrays directly, want cloned handles")
+	}
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Shape()[2] != 2 || read[1].Shape()[2] != 2 {
+		t.Fatalf("read state = %+v, want single native page with length 2", read)
+	}
+}
+
+func TestFixedKVCache_UpdateKeepsStableStorage_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache Update"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 2, 2)
+	v := FromValues([]float32{10, 20, 30, 40}, 1, 1, 2, 2)
+	defer Free(k, v)
+
+	gotK, gotV := c.Update(k, v, 2)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 2 || gotV.Dim(2) != 2 {
+		t.Fatalf("valid cache dims = %d/%d, want 2/2", gotK.Dim(2), gotV.Dim(2))
+	}
+	state := c.State()
+	if len(state) != 2 || state[0].Dim(2) != 4 || state[1].Dim(2) != 4 {
+		t.Fatalf("fixed state dims = %v, want full capacity 4", state)
+	}
+
+	k1 := FromValues([]float32{5, 6}, 1, 1, 1, 2)
+	v1 := FromValues([]float32{50, 60}, 1, 1, 1, 2)
+	defer Free(k1, v1)
+	gotK2, gotV2 := c.Update(k1, v1, 1)
+	defer Free(gotK2, gotV2)
+	if gotK2.Dim(2) != 3 || gotV2.Dim(2) != 3 || c.Offset() != 3 || c.Len() != 3 {
+		t.Fatalf("cache len/offset = %d/%d dims %d/%d, want 3/3 dims 3/3", c.Len(), c.Offset(), gotK2.Dim(2), gotV2.Dim(2))
+	}
+	if err := Eval(gotK2, gotV2); err != nil {
+		t.Fatalf("Eval fixed cache: %v", err)
+	}
+	floatSliceApprox(t, gotK2.Floats(), []float32{1, 2, 3, 4, 5, 6})
+	floatSliceApprox(t, gotV2.Floats(), []float32{10, 20, 30, 40, 50, 60})
+}
+
+func TestFixedKVCache_LongPromptPreservesFullAttentionContext_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache LongPromptPreservesFullAttentionContext"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	k := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k, v)
+
+	gotK, gotV := c.Update(k, v, 6)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 6 || gotV.Dim(2) != 6 {
+		t.Fatalf("attention context dims = %d/%d, want full prompt 6/6", gotK.Dim(2), gotV.Dim(2))
+	}
+	if c.Offset() != 6 || c.Len() != 4 {
+		t.Fatalf("cache offset/len = %d/%d, want 6/4", c.Offset(), c.Len())
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval full prompt context: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{1, 2, 3, 4, 5, 6})
+	floatSliceApprox(t, gotV.Floats(), []float32{10, 20, 30, 40, 50, 60})
+
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if len(read) != 2 || read[0].Dim(2) != 4 || read[1].Dim(2) != 4 {
+		t.Fatalf("stored tail dims = %v, want bounded tail 4/4", read)
+	}
+	if err := Eval(read...); err != nil {
+		t.Fatalf("Eval stored tail: %v", err)
+	}
+	floatSliceApprox(t, read[0].Floats(), []float32{3, 4, 5, 6})
+	floatSliceApprox(t, read[1].Floats(), []float32{30, 40, 50, 60})
+}
+
+func TestFixedKVCache_ChunkedPromptPreservesTailPlusCurrentContext_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache ChunkedPromptPreservesTailPlusCurrentContext"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k1, v1)
+	firstK, firstV := c.Update(k1, v1, 6)
+	if err := Eval(firstK, firstV); err != nil {
+		t.Fatalf("Eval first chunk: %v", err)
+	}
+	Free(firstK, firstV)
+	c.Detach()
+
+	k2 := FromValues([]float32{7, 8}, 1, 1, 2, 1)
+	v2 := FromValues([]float32{70, 80}, 1, 1, 2, 1)
+	defer Free(k2, v2)
+	gotK, gotV := c.Update(k2, v2, 2)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 6 || gotV.Dim(2) != 6 {
+		t.Fatalf("chunk context dims = %d/%d, want previous tail plus current 6/6", gotK.Dim(2), gotV.Dim(2))
+	}
+	if c.Offset() != 8 || c.Len() != 4 {
+		t.Fatalf("cache offset/len = %d/%d, want 8/4", c.Offset(), c.Len())
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval second chunk context: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{3, 4, 5, 6, 7, 8})
+	floatSliceApprox(t, gotV.Floats(), []float32{30, 40, 50, 60, 70, 80})
+
+	read, owned := c.ReadState()
+	defer Free(owned...)
+	if err := Eval(read...); err != nil {
+		t.Fatalf("Eval stored second tail: %v", err)
+	}
+	floatSliceApprox(t, read[0].Floats(), []float32{5, 6, 7, 8})
+	floatSliceApprox(t, read[1].Floats(), []float32{50, 60, 70, 80})
+}
+
+func TestFixedKVCache_DecodeOverflowSurvivesDetach_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache DecodeOverflowSurvivesDetach"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	k1 := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 1, 6, 1)
+	v1 := FromValues([]float32{10, 20, 30, 40, 50, 60}, 1, 1, 6, 1)
+	defer Free(k1, v1)
+	firstK, firstV := c.Update(k1, v1, 6)
+	if err := Eval(firstK, firstV); err != nil {
+		t.Fatalf("Eval prompt chunk: %v", err)
+	}
+	Free(firstK, firstV)
+	c.Detach()
+
+	k2 := FromValues([]float32{7}, 1, 1, 1, 1)
+	v2 := FromValues([]float32{70}, 1, 1, 1, 1)
+	defer Free(k2, v2)
+	secondK, secondV := c.Update(k2, v2, 1)
+	if err := Eval(secondK, secondV); err != nil {
+		t.Fatalf("Eval first decode update: %v", err)
+	}
+	Free(secondK, secondV)
+	c.Detach()
+
+	k3 := FromValues([]float32{8}, 1, 1, 1, 1)
+	v3 := FromValues([]float32{80}, 1, 1, 1, 1)
+	defer Free(k3, v3)
+	gotK, gotV := c.Update(k3, v3, 1)
+	defer Free(gotK, gotV)
+	if gotK.Dim(2) != 4 || gotV.Dim(2) != 4 {
+		t.Fatalf("decode context dims = %d/%d, want bounded tail 4/4", gotK.Dim(2), gotV.Dim(2))
+	}
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval second decode update: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{5, 6, 7, 8})
+	floatSliceApprox(t, gotV.Floats(), []float32{50, 60, 70, 80})
+}
+
+func TestFixedKVCache_ReplaceFixedFromNative_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache ReplaceFixedFromNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+
+	state := c.ReplaceFixedFromNative(keys, values, 1)
+	defer state.Free()
+	if state.Keys == nil || state.Values == nil || state.Length != 1 {
+		t.Fatalf("state = %+v, want cloned full-capacity state with length 1", state)
+	}
+	if c.Offset() != 1 || c.Len() != 1 {
+		t.Fatalf("cache offset/len = %d/%d, want 1/1", c.Offset(), c.Len())
+	}
+	c.Reset()
+}
+
 func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)

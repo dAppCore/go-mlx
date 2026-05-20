@@ -3,15 +3,13 @@
 package smoke
 
 import (
-	mlx "dappco.re/go/mlx"
 	"context"
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
-	"dappco.re/go/mlx/internal/metal"
+	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/memory"
 	mp "dappco.re/go/mlx/pack"
 	"testing"
-	"time"
 )
 
 func TestSmallModelSmokeBudget_Q4Under26GiB_Good(t *testing.T) {
@@ -130,6 +128,167 @@ func TestPlanSmallModelSmoke_CapsContextForAppleSmoke_Good(t *testing.T) {
 	}
 }
 
+func TestPlanSmallModelSmoke_GemmaQwenCoverageMatrix_Good(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		modelType    string
+		architecture string
+		template     string
+	}{
+		{name: "gemma4", modelType: "gemma4_text", architecture: "gemma4_text", template: "gemma4"},
+		{name: "qwen2", modelType: "qwen2", architecture: "qwen2", template: "qwen"},
+		{name: "qwen3", modelType: "qwen3", architecture: "qwen3", template: "qwen"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeGoodSafetensorsPack(t, dir, tc.modelType)
+
+			plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
+				Device: mlx.DeviceInfo{
+					Architecture:                 "apple9",
+					MemorySize:                   96 * memory.GiB,
+					MaxRecommendedWorkingSetSize: 90 * memory.GiB,
+				},
+			})
+
+			if err != nil {
+				t.Fatalf("PlanSmallModelSmoke() error = %v", err)
+			}
+			if !plan.Budget.SafeToLoad {
+				t.Fatalf("SafeToLoad = false, want true for %s: %+v", tc.architecture, plan.Budget)
+			}
+			if plan.Pack.Architecture != tc.architecture || !plan.Pack.NativeLoadable || plan.Pack.ChatTemplateSource != mp.ModelPackChatTemplateNative {
+				t.Fatalf("pack = arch:%q native:%v template_source:%q, want %s native template", plan.Pack.Architecture, plan.Pack.NativeLoadable, plan.Pack.ChatTemplateSource, tc.architecture)
+			}
+			if plan.Pack.ChatTemplate != "" {
+				t.Fatalf("ChatTemplate = %q, want redacted body in smoke report", plan.Pack.ChatTemplate)
+			}
+			if plan.Load.ContextLength != DefaultSmallModelSmokeMaxContextLength || plan.Load.BatchSize != DefaultSmallModelSmokeMaxBatchSize || plan.Load.PrefillChunkSize > DefaultSmallModelSmokeMaxPrefillChunk {
+				t.Fatalf("load = %+v, want shared small-model smoke shape", plan.Load)
+			}
+			if !plan.Load.PromptCache || plan.Load.PromptCacheMinTokens <= 0 {
+				t.Fatalf("prompt cache load = %+v, want shared state-smoke cache settings", plan.Load)
+			}
+			if !DefaultSmallModelSmokeConfig().Workload.FastEval.IncludeMemvidKVBlockWarm {
+				t.Fatal("default smoke workload should include memvid KV warmup across model families")
+			}
+		})
+	}
+}
+
+func TestRunSmallModelSmoke_GemmaQwenPublicContracts_Good(t *testing.T) {
+	originalLoadAndBench := runSmallModelSmokeLoadAndBench
+	t.Cleanup(func() { runSmallModelSmokeLoadAndBench = originalLoadAndBench })
+
+	expected := map[string]string{}
+	seen := map[string]bool{}
+	runSmallModelSmokeLoadAndBench = func(ctx context.Context, modelPath string, opts []mlx.LoadOption, workload mlx.WorkloadBenchConfig, includeBench bool) (*mlx.WorkloadBenchReport, error) {
+		architecture := expected[modelPath]
+		if architecture == "" {
+			t.Fatalf("unexpected model path loaded: %q", modelPath)
+		}
+		if !includeBench {
+			t.Fatalf("%s includeBench = false, want workload bench generation path", architecture)
+		}
+		got := mlx.DefaultLoadConfig()
+		for _, opt := range opts {
+			opt(&got)
+		}
+		if got.ContextLength != DefaultSmallModelSmokeMaxContextLength || got.BatchSize != DefaultSmallModelSmokeMaxBatchSize {
+			t.Fatalf("%s load config = %+v, want shared smoke load shape", architecture, got)
+		}
+		if workload.FastEval.MaxTokens != DefaultSmallModelSmokeMaxTokens {
+			t.Fatalf("%s max tokens = %d, want shared smoke generation cap", architecture, workload.FastEval.MaxTokens)
+		}
+		seen[architecture] = true
+		return &mlx.WorkloadBenchReport{
+			Summary: mlx.WorkloadBenchSummary{
+				PrefillTokensPerSec: 200,
+				DecodeTokensPerSec:  40,
+			},
+		}, nil
+	}
+
+	for _, tc := range []struct {
+		name         string
+		modelType    string
+		architecture string
+	}{
+		{name: "gemma4", modelType: "gemma4_text", architecture: "gemma4_text"},
+		{name: "qwen2", modelType: "qwen2", architecture: "qwen2"},
+		{name: "qwen3", modelType: "qwen3", architecture: "qwen3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeGoodSafetensorsPack(t, dir, tc.modelType)
+			expected[dir] = tc.architecture
+
+			report, err := RunSmallModelSmoke(context.Background(), SmallModelSmokeConfig{
+				ModelPath: dir,
+				Device: mlx.DeviceInfo{
+					Architecture:                 "apple9",
+					MemorySize:                   96 * memory.GiB,
+					MaxRecommendedWorkingSetSize: 90 * memory.GiB,
+				},
+			})
+
+			if err != nil {
+				t.Fatalf("RunSmallModelSmoke() error = %v", err)
+			}
+			if report == nil || report.Skipped || report.Bench == nil {
+				t.Fatalf("report = %+v, want same load plus generation bench path", report)
+			}
+			if report.Plan.Pack.Architecture != tc.architecture {
+				t.Fatalf("architecture = %q, want %q", report.Plan.Pack.Architecture, tc.architecture)
+			}
+			if report.Bench.Summary.DecodeTokensPerSec != 40 {
+				t.Fatalf("bench summary = %+v, want fake generation metrics", report.Bench.Summary)
+			}
+		})
+	}
+	for _, architecture := range []string{"gemma4_text", "qwen2", "qwen3"} {
+		if !seen[architecture] {
+			t.Fatalf("architecture %s did not reach public load/generate contract path", architecture)
+		}
+	}
+}
+
+func TestPlanSmallModelSmoke_Qwen36FallbackSkipsNativeLoad_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["Qwen3_5ForConditionalGeneration"],
+		"model_type": "qwen3_5",
+		"text_config": {
+			"model_type": "qwen3_5_text",
+			"vocab_size": 248320,
+			"hidden_size": 5120,
+			"num_hidden_layers": 64,
+			"max_position_embeddings": 262144,
+			"layer_types": ["linear_attention", "full_attention"]
+		},
+		"quantization_config": {"bits": 4, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	plan, err := PlanSmallModelSmoke(dir, SmallModelSmokeConfig{
+		Device: mlx.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 90 * memory.GiB},
+	})
+
+	if err != nil {
+		t.Fatalf("PlanSmallModelSmoke() error = %v", err)
+	}
+	if plan.Pack.Architecture != "qwen3_6" || !plan.Pack.SupportedArchitecture || plan.Pack.NativeLoadable {
+		t.Fatalf("pack = arch:%q supported:%v native:%v, want recognised metadata-only qwen3_6", plan.Pack.Architecture, plan.Pack.SupportedArchitecture, plan.Pack.NativeLoadable)
+	}
+	if plan.Pack.HiddenSize != 5120 || plan.Pack.NumLayers != 64 || plan.Pack.ContextLength != 262144 {
+		t.Fatalf("shape metadata = hidden:%d layers:%d ctx:%d, want Qwen 3.6 text_config shape", plan.Pack.HiddenSize, plan.Pack.NumLayers, plan.Pack.ContextLength)
+	}
+	if plan.Budget.SafeToLoad || !core.Contains(plan.Budget.Reason, "native-loadable") {
+		t.Fatalf("budget = %+v, want guarded native-load skip for Qwen 3.6 fallback", plan.Budget)
+	}
+}
+
 func TestDefaultSmallModelSmokeConfig_UsesCapturedMemvidPrefix_Good(t *testing.T) {
 	cfg := DefaultSmallModelSmokeConfig()
 
@@ -240,30 +399,21 @@ func TestRunSmallModelSmoke_ForwardsBudgetedLoadOptions_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeGoodSafetensorsPack(t, dir, "gemma4_text")
 
-	originalLoadNativeModel := loadNativeModel
-	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+	originalLoadAndBench := runSmallModelSmokeLoadAndBench
+	t.Cleanup(func() { runSmallModelSmokeLoadAndBench = originalLoadAndBench })
 
-	var got metal.LoadConfig
-	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
-		got = cfg
-		return &fakeNativeModel{
-			info: metal.ModelInfo{
-				Architecture:  "gemma4_text",
-				ContextLength: 8192,
-				NumLayers:     26,
-				HiddenSize:    2048,
-				QuantBits:     4,
-			},
-			tokens: []metal.Token{{ID: 1, Text: "ok"}},
-			metrics: metal.Metrics{
-				PromptTokens:               4,
-				GeneratedTokens:            1,
-				PrefillTokensPerSec:        200,
-				DecodeTokensPerSec:         40,
-				TotalDuration:              time.Millisecond,
-				PromptCacheHits:            1,
-				PromptCacheHitTokens:       4,
-				PromptCacheRestoreDuration: time.Millisecond,
+	var gotPath string
+	var got mlx.LoadConfig
+	runSmallModelSmokeLoadAndBench = func(ctx context.Context, modelPath string, opts []mlx.LoadOption, workload mlx.WorkloadBenchConfig, includeBench bool) (*mlx.WorkloadBenchReport, error) {
+		gotPath = modelPath
+		got = mlx.DefaultLoadConfig()
+		for _, opt := range opts {
+			opt(&got)
+		}
+		return &mlx.WorkloadBenchReport{
+			Summary: mlx.WorkloadBenchSummary{
+				PrefillTokensPerSec: 200,
+				DecodeTokensPerSec:  40,
 			},
 		}, nil
 	}
@@ -291,8 +441,11 @@ func TestRunSmallModelSmoke_ForwardsBudgetedLoadOptions_Good(t *testing.T) {
 	if report == nil || report.Skipped || report.Bench == nil {
 		t.Fatalf("report = %+v, want loaded bench", report)
 	}
-	if got.ContextLen != 8192 || got.ExpectedQuantization != 4 {
-		t.Fatalf("load context/quant = %d/q%d, want 8192/q4", got.ContextLen, got.ExpectedQuantization)
+	if gotPath != dir {
+		t.Fatalf("model path = %q, want %q", gotPath, dir)
+	}
+	if got.ContextLength != 8192 || got.ExpectedQuantization != 4 {
+		t.Fatalf("load context/quant = %d/q%d, want 8192/q4", got.ContextLength, got.ExpectedQuantization)
 	}
 	if got.BatchSize != 1 || got.PrefillChunkSize > 1024 {
 		t.Fatalf("load shape = batch:%d prefill:%d, want small smoke shape", got.BatchSize, got.PrefillChunkSize)

@@ -84,6 +84,34 @@ func TestInspectModelPack_SafetensorsGemma4_Good(t *testing.T) {
 	}
 }
 
+func TestInspectModelPack_Gemma4AssistantAlias_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"model_type": "gemma4_assistant",
+		"architectures": ["Gemma4AssistantForCausalLM"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"vocab_size": 262144,
+			"hidden_size": 256,
+			"num_hidden_layers": 4,
+			"max_position_embeddings": 131072
+		}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
+
+	pack, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if pack.Architecture != "gemma4_assistant" || !pack.SupportedArchitecture || pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("architecture = %q supported=%v native=%v issues=%+v, want metadata-only gemma4_assistant", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.Issues)
+	}
+	if pack.NumLayers != 4 || pack.HiddenSize != 256 || pack.ContextLength != 131072 {
+		t.Fatalf("metadata = layers:%d hidden:%d ctx:%d, want assistant text_config metadata", pack.NumLayers, pack.HiddenSize, pack.ContextLength)
+	}
+}
+
 func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 	dir := t.TempDir()
 	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
@@ -235,6 +263,80 @@ func TestInspectModelPack_SafetensorsQwen3Next_Good(t *testing.T) {
 	}
 	if pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
 		t.Fatalf("chat template = source:%q name:%q, want native qwen", pack.ChatTemplateSource, pack.ChatTemplate)
+	}
+}
+
+func TestInspectModelPack_SafetensorsQwen25Native_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["Qwen2.5ForCausalLM"],
+		"model_type": "qwen2.5",
+		"vocab_size": 152064,
+		"hidden_size": 3584,
+		"num_hidden_layers": 28,
+		"max_position_embeddings": 131072,
+		"quantization_config": {"bits": 4, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackMaxContextLength(131072))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "qwen2" || !pack.SupportedArchitecture || !pack.NativeLoadable {
+		t.Fatalf("architecture/native = %q/%v/%v, want native qwen2", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable)
+	}
+	if pack.ChatTemplate != "qwen" {
+		t.Fatalf("ChatTemplate = %q, want qwen", pack.ChatTemplate)
+	}
+}
+
+func TestInspectModelPack_Qwen36HybridMetadataOnly_Good(t *testing.T) {
+	dir := t.TempDir()
+	writeModelPackFile(t, core.PathJoin(dir, "config.json"), `{
+		"architectures": ["Qwen3_5ForConditionalGeneration"],
+		"model_type": "qwen3_5",
+		"language_model_only": false,
+		"text_config": {
+			"model_type": "qwen3_5_text",
+			"vocab_size": 248320,
+			"hidden_size": 5120,
+			"intermediate_size": 17408,
+			"num_hidden_layers": 64,
+			"num_attention_heads": 24,
+			"num_key_value_heads": 4,
+			"head_dim": 256,
+			"max_position_embeddings": 262144,
+			"layer_types": ["linear_attention", "full_attention"],
+			"partial_rotary_factor": 0.25
+		},
+		"quantization": {"bits": 4, "group_size": 64}
+	}`)
+	writeModelPackFile(t, core.PathJoin(dir, "tokenizer.json"), modelPackTokenizerJSON)
+	writeModelPackFile(t, core.PathJoin(dir, "model-00001-of-00001.safetensors"), "stub")
+
+	pack, err := Inspect(dir, mp.WithPackRequireChatTemplate(false))
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	if !pack.Valid() {
+		t.Fatalf("pack should be valid, issues = %+v", pack.Issues)
+	}
+	if pack.Architecture != "qwen3_6" || !pack.SupportedArchitecture {
+		t.Fatalf("architecture = %q supported=%v, want supported qwen3_6", pack.Architecture, pack.SupportedArchitecture)
+	}
+	if pack.NativeLoadable || !pack.RequiresPythonConversion || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
+		t.Fatalf("runtime = native:%v python:%v issues:%+v, want metadata-only Qwen3.6", pack.NativeLoadable, pack.RequiresPythonConversion, pack.Issues)
+	}
+	if pack.ContextLength != 262144 || pack.NumLayers != 64 || pack.HiddenSize != 5120 || pack.QuantBits != 4 || pack.QuantGroup != 64 {
+		t.Fatalf("metadata = ctx:%d layers:%d hidden:%d quant:%d group:%d", pack.ContextLength, pack.NumLayers, pack.HiddenSize, pack.QuantBits, pack.QuantGroup)
+	}
+	if !pack.HasTokenizer || !pack.HasChatTemplate || pack.ChatTemplateSource != mp.ModelPackChatTemplateNative || pack.ChatTemplate != "qwen" {
+		t.Fatalf("tokenizer/chat = tokenizer:%v template:%v source:%q name:%q, want qwen native template", pack.HasTokenizer, pack.HasChatTemplate, pack.ChatTemplateSource, pack.ChatTemplate)
 	}
 }
 

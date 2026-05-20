@@ -29,9 +29,29 @@ func ExampleModelSession_Prefill() {
 	// Output: ModelSession_Prefill
 }
 
+func ExampleModelSession_PrefillChunks() {
+	core.Println("ModelSession_PrefillChunks")
+	// Output: ModelSession_PrefillChunks
+}
+
+func ExampleModelSession_PrefillTokens() {
+	core.Println("ModelSession_PrefillTokens")
+	// Output: ModelSession_PrefillTokens
+}
+
 func ExampleModelSession_AppendPrompt() {
 	core.Println("ModelSession_AppendPrompt")
 	// Output: ModelSession_AppendPrompt
+}
+
+func ExampleModelSession_AppendTokens() {
+	core.Println("ModelSession_AppendTokens")
+	// Output: ModelSession_AppendTokens
+}
+
+func ExampleModelSession_AppendPromptChunks() {
+	core.Println("ModelSession_AppendPromptChunks")
+	// Output: ModelSession_AppendPromptChunks
 }
 
 func ExampleModelSession_Generate() {

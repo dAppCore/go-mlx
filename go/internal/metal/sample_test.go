@@ -125,6 +125,162 @@ func TestSample_TopKSampler_NonPositiveK_NoOp_Good(t *testing.T) {
 	}
 }
 
+func TestSample_SuppressTokenLogits_Good(t *testing.T) {
+	coverageTokens := "SuppressTokenLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
+	filtered := suppressTokenLogits(logits, []int32{0})
+	defer Free(logits, filtered)
+	if err := Eval(filtered); err != nil {
+		t.Fatalf("Eval(suppressTokenLogits) error = %v", err)
+	}
+	got := filtered.Floats()
+	if got[0] >= got[3] {
+		t.Fatalf("suppressed logits = %v, want token 0 below token 3", got)
+	}
+}
+
+func TestSample_SuppressTokenLogitsThenTopK_Good(t *testing.T) {
+	coverageTokens := "SuppressTokenLogits TopK"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
+	filtered := suppressTokenLogits(logits, []int32{0})
+	defer Free(logits, filtered)
+	s := newSampler(1.0, 0, 0, 1)
+	token := s.Sample(filtered)
+	defer Free(token)
+	if err := Eval(token); err != nil {
+		t.Fatalf("Eval(sample) error = %v", err)
+	}
+	if token.Int() == 0 {
+		t.Fatal("sampled suppressed token 0")
+	}
+}
+
+func TestSample_SuppressTokenLogitsThenTopPTopK_Good(t *testing.T) {
+	coverageTokens := "SuppressTokenLogits TopP TopK"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
+	filtered := suppressTokenLogits(logits, []int32{0})
+	defer Free(logits, filtered)
+	s := newSampler(1.0, 0.95, 0, 3)
+	for range 10 {
+		token := s.Sample(filtered)
+		if err := Eval(token); err != nil {
+			Free(token)
+			t.Fatalf("Eval(sample) error = %v", err)
+		}
+		got := token.Int()
+		Free(token)
+		if got == 0 {
+			t.Fatal("sampled suppressed token 0")
+		}
+	}
+}
+
+func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
+	coverageTokens := "NewSamplerWithSuppression"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
+	defer Free(logits)
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	for range 10 {
+		token := s.Sample(logits)
+		if err := Eval(token); err != nil {
+			Free(token)
+			t.Fatalf("Eval(sample) error = %v", err)
+		}
+		got := token.Int()
+		Free(token)
+		if got == 0 {
+			t.Fatal("sampled suppressed token 0")
+		}
+	}
+}
+
+type fixedTokenSampler struct {
+	id int32
+}
+
+func (s fixedTokenSampler) Sample(logits *Array) *Array {
+	return FromValues([]int32{s.id}, 1)
+}
+
+func TestSample_SuppressionGuardFallsBackBeforeAppend_Good(t *testing.T) {
+	coverageTokens := "SuppressionGuard FallsBackBeforeAppend"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
+	defer Free(logits)
+
+	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, []int32{0})
+	if err != nil {
+		t.Fatalf("suppression guard: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got == 0 {
+		t.Fatalf("suppression guard token = %d, want non-suppressed fallback", got)
+	}
+}
+
+func TestSample_SuppressionGuardGemmaSizedIDs_Good(t *testing.T) {
+	coverageTokens := "SuppressionGuard GemmaSizedIDs"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	values := make([]float32, 258885)
+	values[0] = 100
+	values[123] = 10
+	logits := FromValues(values, 1, len(values))
+	defer Free(logits)
+	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+
+	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
+	if err != nil {
+		t.Fatalf("suppression guard: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got == 0 || tokenIDSuppressed(got, suppressTokens) {
+		t.Fatalf("suppression guard token = %d, want non-suppressed Gemma-sized fallback", got)
+	}
+}
+
+func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
+	coverageTokens := "NewSamplerWithSuppression BeforeTopPTopK"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	c, ok := s.(chain)
+	if !ok {
+		t.Fatalf("newSamplerWithSuppression returned %T, want chain", s)
+	}
+	if len(c) != 4 {
+		t.Fatalf("len(chain) = %d, want 4", len(c))
+	}
+	if _, ok := c[0].(Temperature); !ok {
+		t.Fatalf("chain[0] = %T, want Temperature", c[0])
+	}
+	if _, ok := c[1].(SuppressTokensSampler); !ok {
+		t.Fatalf("chain[1] = %T, want SuppressTokensSampler", c[1])
+	}
+	if _, ok := c[2].(TopP); !ok {
+		t.Fatalf("chain[2] = %T, want TopP", c[2])
+	}
+	if _, ok := c[3].(TopKSampler); !ok {
+		t.Fatalf("chain[3] = %T, want TopKSampler", c[3])
+	}
+}
+
 func TestSample_Chain_Good(t *testing.T) {
 	coverageTokens := "Chain"
 	if coverageTokens == "" {

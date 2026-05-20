@@ -6,6 +6,8 @@ package metal
 
 import (
 	"math"
+
+	core "dappco.re/go"
 )
 
 // Sampler transforms logits into a sampled token index.
@@ -23,9 +25,19 @@ type Sampler interface {
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
 //	s := newSampler(1.0, 0, 0.05, 0)   // min-p sampling
 func newSampler(temp, topP, minP float32, topK int) Sampler {
+	return newSamplerWithSuppression(temp, topP, minP, topK, nil)
+}
+
+func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressTokens []int32) Sampler {
+	if temp <= 0 && topP <= 0 && minP <= 0 && topK <= 0 && len(suppressTokens) > 0 {
+		return suppressedGreedy{tokens: append([]int32(nil), suppressTokens...)}
+	}
 	samplers := make([]Sampler, 0, 4)
 	if temp > 0 {
 		samplers = append(samplers, Temperature(temp))
+	}
+	if len(suppressTokens) > 0 {
+		samplers = append(samplers, SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
 	}
 	if topP > 0 && topP < 1 {
 		samplers = append(samplers, TopP(topP))
@@ -40,6 +52,38 @@ func newSampler(temp, topP, minP float32, topK int) Sampler {
 		return greedy{}
 	}
 	return chain(samplers)
+}
+
+func suppressTokenLogits(logits *Array, ids []int32) *Array {
+	if logits == nil || len(ids) == 0 {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	valid := make([]int32, 0, len(ids))
+	seen := map[int32]bool{}
+	for _, id := range ids {
+		if id < 0 || int(id) >= lastDim || seen[id] {
+			continue
+		}
+		seen[id] = true
+		valid = append(valid, id)
+	}
+	if len(valid) == 0 {
+		return logits.Clone()
+	}
+	idx := FromValues(valid, 1, len(valid))
+	inf := FromValue(float32(math.Inf(-1)))
+	if dtype := logits.Dtype(); dtype != DTypeFloat32 {
+		cast := AsType(inf, dtype)
+		Free(inf)
+		inf = cast
+	}
+	res := PutAlongAxis(logits, idx, inf, -1)
+	Free(idx, inf)
+	return res
 }
 
 // chain applies a sequence of samplers in order, then draws a categorical sample.
@@ -71,6 +115,59 @@ type greedy struct{}
 
 func (greedy) Sample(logits *Array) *Array {
 	return Argmax(logits, -1, false)
+}
+
+type suppressedGreedy struct {
+	tokens []int32
+}
+
+func (s suppressedGreedy) Sample(logits *Array) *Array {
+	filtered := suppressTokenLogits(logits, s.tokens)
+	token := Argmax(filtered, -1, false)
+	Free(filtered)
+	return token
+}
+
+type SuppressTokensSampler struct {
+	tokens []int32
+}
+
+func (s SuppressTokensSampler) Sample(logits *Array) *Array {
+	return suppressTokenLogits(logits, s.tokens)
+}
+
+func sampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32) (*Array, error) {
+	next := sampler.Sample(logits)
+	if err := Eval(next); err != nil {
+		Free(next)
+		return nil, err
+	}
+	if !tokenIDSuppressed(int32(next.Int()), suppressTokens) {
+		return next, nil
+	}
+	Free(next)
+	filtered := suppressTokenLogits(logits, suppressTokens)
+	next = suppressedGreedy{tokens: suppressTokens}.Sample(filtered)
+	Free(filtered)
+	if err := Eval(next); err != nil {
+		Free(next)
+		return nil, err
+	}
+	if tokenIDSuppressed(int32(next.Int()), suppressTokens) {
+		id := int32(next.Int())
+		Free(next)
+		return nil, core.NewError(core.Sprintf("mlx: sampler returned suppressed token %d after suppression guard", id))
+	}
+	return next, nil
+}
+
+func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
+	for _, suppressed := range suppressTokens {
+		if id == suppressed {
+			return true
+		}
+	}
+	return false
 }
 
 // Temperature scales logits by 1/temp before categorical sampling.

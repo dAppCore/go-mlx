@@ -49,19 +49,19 @@ type MemvidBlockOptions struct {
 
 // MemvidBlockBundle is a portable manifest for memvid KV blocks.
 type MemvidBlockBundle struct {
-	Version      int                        `json:"version"`
-	Kind         string                     `json:"kind"`
-	SnapshotHash string                     `json:"snapshot_hash,omitempty"`
+	Version      int              `json:"version"`
+	Kind         string           `json:"kind"`
+	SnapshotHash string           `json:"snapshot_hash,omitempty"`
 	KVEncoding   Encoding         `json:"kv_encoding,omitempty"`
-	Architecture string                     `json:"architecture,omitempty"`
-	TokenCount   int                        `json:"token_count,omitempty"`
-	TokenOffset  int                        `json:"token_offset,omitempty"`
-	BlockSize    int                        `json:"block_size,omitempty"`
-	NumLayers    int                        `json:"num_layers,omitempty"`
-	NumHeads     int                        `json:"num_heads,omitempty"`
-	SeqLen       int                        `json:"seq_len,omitempty"`
-	HeadDim      int                        `json:"head_dim,omitempty"`
-	ReusedBlocks int                        `json:"reused_blocks,omitempty"`
+	Architecture string           `json:"architecture,omitempty"`
+	TokenCount   int              `json:"token_count,omitempty"`
+	TokenOffset  int              `json:"token_offset,omitempty"`
+	BlockSize    int              `json:"block_size,omitempty"`
+	NumLayers    int              `json:"num_layers,omitempty"`
+	NumHeads     int              `json:"num_heads,omitempty"`
+	SeqLen       int              `json:"seq_len,omitempty"`
+	HeadDim      int              `json:"head_dim,omitempty"`
+	ReusedBlocks int              `json:"reused_blocks,omitempty"`
 	Blocks       []MemvidBlockRef `json:"blocks,omitempty"`
 }
 

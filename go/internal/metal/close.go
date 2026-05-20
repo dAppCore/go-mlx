@@ -9,7 +9,7 @@ func freeLinear(l *Linear) {
 	if l == nil {
 		return
 	}
-	Free(l.Weight, l.Scales, l.Biases, l.Bias)
+	Free(l.Weight, l.Scales, l.Biases, l.Bias, l.DenseFallbackT)
 	if l.LoRA != nil {
 		Free(l.LoRA.A, l.LoRA.B)
 	}
@@ -100,6 +100,9 @@ func closeGemma4(m *Gemma4Model) {
 	freeLinear(m.PerLayerModelProj)
 	freeRMSNorm(m.PerLayerProjNorm)
 	Free(m.NormScaled, m.PerLayerProjNormScaled)
+	if m.compiledPerLayerInputs != nil {
+		m.compiledPerLayerInputs.Free()
+	}
 
 	if m.Output != nil && m.Output.Weight != nil &&
 		(m.EmbedTokens == nil || m.Output.Weight != m.EmbedTokens.Weight) {
@@ -107,6 +110,24 @@ func closeGemma4(m *Gemma4Model) {
 	}
 
 	for _, layer := range m.Layers {
+		if layer.compiledNativeOwnerDecode != nil {
+			layer.compiledNativeOwnerDecode.Free()
+		}
+		if layer.compiledNativeSharedDecode != nil {
+			layer.compiledNativeSharedDecode.Free()
+		}
+		if layer.compiledNativeFixedOwnerDecode != nil {
+			layer.compiledNativeFixedOwnerDecode.Free()
+		}
+		if layer.compiledNativeFixedSharedDecode != nil {
+			layer.compiledNativeFixedSharedDecode.Free()
+		}
+		if layer.compiledNativeFixedMaskedOwnerDecode != nil {
+			layer.compiledNativeFixedMaskedOwnerDecode.Free()
+		}
+		if layer.compiledNativeFixedMaskedSharedDecode != nil {
+			layer.compiledNativeFixedMaskedSharedDecode.Free()
+		}
 		freeRMSNorm(layer.InputNorm)
 		freeRMSNorm(layer.PostAttnNorm)
 		freeRMSNorm(layer.PreFFNorm)
@@ -151,6 +172,7 @@ func closeGemma4(m *Gemma4Model) {
 		}
 
 		if layer.Experts != nil {
+			freeSwitchLinear(layer.Experts.GateUpProj)
 			freeSwitchLinear(layer.Experts.GateProj)
 			freeSwitchLinear(layer.Experts.UpProj)
 			freeSwitchLinear(layer.Experts.DownProj)

@@ -44,10 +44,38 @@ type LastTokenLogitsModel interface {
 	ForwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) *Array
 }
 
+// GreedyTokenModel is an optional decode path for deterministic generation.
+// It returns the next token directly, avoiding a retained logits tensor when
+// sampling is exactly greedy and no repeat penalty or probe sink is active.
+type GreedyTokenModel interface {
+	ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
-	GroupSize int `json:"group_size"`
-	Bits      int `json:"bits"`
+	GroupSize int    `json:"group_size"`
+	Bits      int    `json:"bits"`
+	Mode      string `json:"mode"`
+}
+
+func normalizeQuantizationMode(mode string) string {
+	mode = core.Lower(core.Trim(mode))
+	if mode == "" {
+		return "affine"
+	}
+	return mode
+}
+
+func isAffineQuantizationMode(mode string) bool {
+	return normalizeQuantizationMode(mode) == "affine"
+}
+
+func requiresDenseQuantizedMatmulFallback(mode string) bool {
+	// Older local metallib builds exposed MXFP8 dequantize without MXFP8 qmm.
+	// Keep a diagnostic fallback available, but prefer native MLX kernels by
+	// default on v0.31.1+.
+	return normalizeQuantizationMode(mode) == "mxfp8" &&
+		core.Env("GO_MLX_ENABLE_MXFP8_DENSE_FALLBACK") == "1"
 }
 
 func weightCandidates(name string) []string {
@@ -108,6 +136,10 @@ func probeModelType(data []byte) (string, error) {
 	}
 	for _, arch := range probe.Architectures {
 		switch {
+		case isQwen36MoEArchitecture(arch):
+			return "qwen3_6_moe", nil
+		case isQwen36Architecture(arch):
+			return "qwen3_6", nil
 		case isQwen3MoEArchitecture(arch):
 			return "qwen3_moe", nil
 		case isQwen3NextArchitecture(arch):
@@ -138,9 +170,14 @@ func probeModelType(data []byte) (string, error) {
 func normalizeProbeModelType(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
+	value = core.Replace(value, ".", "_")
 	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
+	case "qwen2_5", "qwen25":
+		return "qwen2"
+	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
+		return "qwen3_6"
+	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
+		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
 	default:
@@ -149,7 +186,20 @@ func normalizeProbeModelType(value string) string {
 }
 
 func compactArchitectureName(value string) string {
-	return core.Lower(core.Replace(core.Replace(value, "_", ""), "-", ""))
+	compact := core.Lower(value)
+	compact = core.Replace(compact, "_", "")
+	compact = core.Replace(compact, "-", "")
+	return core.Replace(compact, ".", "")
+}
+
+func isQwen36MoEArchitecture(value string) bool {
+	compact := compactArchitectureName(value)
+	return core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe")
+}
+
+func isQwen36Architecture(value string) bool {
+	compact := compactArchitectureName(value)
+	return core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36")
 }
 
 func isQwen3MoEArchitecture(value string) bool {
@@ -193,7 +243,7 @@ func loadGemma4MultiModalModel(modelPath string) (*Gemma4Model, error) {
 
 // loadModel auto-detects the model architecture from config.json and loads it.
 // Supports "gemma3", "gemma3_text", "gemma2", "gemma4", "gemma4_text",
-// "qwen3", "qwen3_next", "qwen3_moe", "qwen2", "llama", and recognized
+// "qwen3", "qwen3_next", "qwen2", "llama", and recognized
 // staged architectures such as "minimax_m2".
 func loadModel(modelPath string) (InternalModel, error) {
 	root := resolveModelRoot(modelPath)
@@ -209,12 +259,20 @@ func loadModel(modelPath string) (InternalModel, error) {
 	}
 
 	switch modelType {
-	case "qwen3", "qwen3_next", "qwen3_moe", "qwen2", "llama":
+	case "qwen3", "qwen3_next", "qwen2", "llama":
 		return LoadQwen3(modelPath)
+	case "qwen3_6":
+		return nil, core.E("model.loadModel", "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet; use mlx_lm fallback", nil)
+	case "qwen3_6_moe":
+		return nil, core.E("model.loadModel", "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet; use mlx_lm fallback", nil)
+	case "qwen3_moe":
+		return nil, core.E("model.loadModel", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
 	case "gemma3", "gemma3_text", "gemma2":
 		return LoadGemma3(modelPath)
 	case "gemma4_text":
 		return loadGemma4TextModel(modelPath)
+	case "gemma4_assistant":
+		return nil, core.E("model.loadModel", "gemma4_assistant native MTP drafter loading is not implemented yet", nil)
 	case "gemma4":
 		return loadGemma4MultiModalModel(modelPath)
 	case "minimax_m2":

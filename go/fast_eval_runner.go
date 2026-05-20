@@ -20,6 +20,12 @@ import (
 // NewModelFastEvalRunner adapts a loaded Model to bench.Runner with
 // verb-shaped callbacks for each driver-specific bench section.
 func NewModelFastEvalRunner(model *Model) bench.Runner {
+	return NewModelFastEvalRunnerWithDraft(model, nil)
+}
+
+// NewModelFastEvalRunnerWithDraft adapts a loaded target Model plus an optional
+// assistant/draft Model to bench.Runner.
+func NewModelFastEvalRunnerWithDraft(model, draft *Model) bench.Runner {
 	return bench.Runner{
 		Info: func(ctx context.Context) bench.Info {
 			if err := ctx.Err(); err != nil || model == nil {
@@ -42,9 +48,20 @@ func NewModelFastEvalRunner(model *Model) bench.Runner {
 		BenchKVRestore:          modelBenchKVRestore(model),
 		BenchStateBundle:        modelBenchStateBundle(model),
 		BenchProbeOverhead:      modelBenchProbeOverhead(model),
-		BenchSpeculativeDecode:  modelBenchSpeculativeDecode(model),
+		BenchSpeculativeDecode:  modelBenchSpeculativeDecode(model, draft),
 		BenchPromptLookupDecode: modelBenchPromptLookupDecode(model),
 	}
+}
+
+// NewModelFastEvalRunnerWithSpeculativePair adapts a loaded speculative pair
+// without dropping assistant-only native state.
+func NewModelFastEvalRunnerWithSpeculativePair(pair *SpeculativePair) bench.Runner {
+	if pair == nil {
+		return NewModelFastEvalRunner(nil)
+	}
+	runner := NewModelFastEvalRunnerWithDraft(pair.Target, pair.Draft)
+	runner.BenchSpeculativeDecode = modelBenchSpeculativePairDecode(pair)
+	return runner
 }
 
 func toModelGenerateOptions(opts bench.GenerateOptions) []GenerateOption {
@@ -336,7 +353,11 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 	}
 }
 
-func modelBenchSpeculativeDecode(model *Model) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
+func modelBenchSpeculativeDecode(model, draft *Model) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
+	draftModel := draft
+	if draftModel == nil {
+		draftModel = model
+	}
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
 		result, err := decode.Speculative(ctx, decode.SpeculativeConfig{
@@ -345,7 +366,31 @@ func modelBenchSpeculativeDecode(model *Model) func(context.Context, bench.Confi
 			DraftTokens:    cfg.SpeculativeDraftTokens,
 			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
 			TargetGenerate: benchModelDecodeGenerate(model),
-			DraftGenerate:  benchModelDecodeGenerate(model),
+			DraftGenerate:  benchModelDecodeGenerate(draftModel),
+		})
+		if err != nil {
+			report.Error = err.Error()
+			return report
+		}
+		report.Result = decodeResultToBench(result)
+		report.Metrics = report.Result.Metrics
+		return report
+	}
+}
+
+func modelBenchSpeculativePairDecode(pair *SpeculativePair) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
+	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
+		report := bench.DecodeOptimisationReport{Attempted: true}
+		if pair == nil {
+			report.Error = "mlx: speculative pair is nil"
+			return report
+		}
+		result, err := pair.Generate(ctx, cfg.Prompt, SpeculativeDecodeConfig{
+			MaxTokens:   cfg.MaxTokens,
+			DraftTokens: cfg.SpeculativeDraftTokens,
+			GenerateConfig: GenerateConfig{
+				MaxTokens: cfg.MaxTokens,
+			},
 		})
 		if err != nil {
 			report.Error = err.Error()
@@ -396,33 +441,56 @@ func decodeResultToBench(result decode.Result) bench.DecodeOptimisationResult {
 		Text:   result.Text,
 		Tokens: tokenIDs,
 		Metrics: bench.DecodeOptimisationMetrics{
-			TargetTokens:   result.Metrics.TargetTokens,
-			DraftTokens:    result.Metrics.DraftTokens,
-			LookupTokens:   result.Metrics.LookupTokens,
-			AcceptedTokens: result.Metrics.AcceptedTokens,
-			RejectedTokens: result.Metrics.RejectedTokens,
-			EmittedTokens:  result.Metrics.EmittedTokens,
-			AcceptanceRate: result.Metrics.AcceptanceRate,
-			TargetCalls:    result.Metrics.TargetCalls,
-			DraftCalls:     result.Metrics.DraftCalls,
-			Duration:       result.Metrics.Duration,
-			TargetDuration: result.Metrics.TargetDuration,
-			DraftDuration:  result.Metrics.DraftDuration,
+			TargetTokens:        result.Metrics.TargetTokens,
+			DraftTokens:         result.Metrics.DraftTokens,
+			LookupTokens:        result.Metrics.LookupTokens,
+			AcceptedTokens:      result.Metrics.AcceptedTokens,
+			RejectedTokens:      result.Metrics.RejectedTokens,
+			EmittedTokens:       result.Metrics.EmittedTokens,
+			AcceptanceRate:      result.Metrics.AcceptanceRate,
+			TargetCalls:         result.Metrics.TargetCalls,
+			DraftCalls:          result.Metrics.DraftCalls,
+			Duration:            result.Metrics.Duration,
+			TargetDuration:      result.Metrics.TargetDuration,
+			DraftDuration:       result.Metrics.DraftDuration,
+			VisibleTokensPerSec: decodeTokensPerSecond(result.Metrics.EmittedTokens, result.Metrics.Duration),
+			TargetTokensPerSec:  decodeTokensPerSecond(result.Metrics.TargetTokens, result.Metrics.TargetDuration),
+			DraftTokensPerSec:   decodeTokensPerSecond(result.Metrics.DraftTokens, result.Metrics.DraftDuration),
 		},
 	}
 }
 
+func decodeTokensPerSecond(tokens int, duration time.Duration) float64 {
+	if tokens <= 0 || duration <= 0 {
+		return 0
+	}
+	return float64(tokens) / duration.Seconds()
+}
+
 func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
+	return modelDecodeGenerate(model, DefaultGenerateConfig())
+}
+
+func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc {
 	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
-		if model == nil {
+		if model == nil || model.model == nil {
 			return decode.Generation{}, core.NewError("mlx: bench decode runner has nil model")
 		}
-		opts := []GenerateOption{WithMaxTokens(cfg.MaxTokens)}
-		text, err := model.Generate(prompt, opts...)
-		if err != nil {
+		generateCfg := base
+		if cfg.MaxTokens > 0 {
+			generateCfg.MaxTokens = cfg.MaxTokens
+		}
+		tokens := []decode.Token{}
+		for token := range model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
+			tokens = append(tokens, decode.Token{
+				ID:   token.ID,
+				Text: token.Text,
+			})
+		}
+		if err := model.model.Err(); err != nil {
 			return decode.Generation{}, err
 		}
-		return decode.Generation{Text: text}, nil
+		return decode.Generation{Tokens: tokens, Text: decode.TokensText(tokens)}, nil
 	}
 }
 

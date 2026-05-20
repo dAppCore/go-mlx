@@ -57,17 +57,10 @@ func currentDefaultDevice() (DeviceType, error) {
 
 func setDefaultDevice(device DeviceType) error {
 	Init()
-	var kind C.mlx_device_type
-	switch device {
-	case DeviceCPU:
-		kind = C.MLX_CPU
-	case DeviceGPU:
-		kind = C.MLX_GPU
-	default:
-		return core.E("metal.setDefaultDevice", "unsupported device: "+string(device), nil)
+	dev, err := newCDevice(device)
+	if err != nil {
+		return core.E("metal.setDefaultDevice", "device", err)
 	}
-
-	dev := C.mlx_device_new_type(kind, 0)
 	defer C.mlx_device_free(dev)
 
 	if rc := C.mlx_set_default_device(dev); rc != 0 {
@@ -77,6 +70,27 @@ func setDefaultDevice(device DeviceType) error {
 		return core.E("metal.setDefaultDevice", "set default device", nil)
 	}
 	return nil
+}
+
+func newCDevice(device DeviceType) (C.mlx_device, error) {
+	Init()
+	var kind C.mlx_device_type
+	switch device {
+	case DeviceCPU:
+		kind = C.MLX_CPU
+	case DeviceGPU:
+		kind = C.MLX_GPU
+	default:
+		return C.mlx_device{}, core.E("metal.newCDevice", "unsupported device: "+string(device), nil)
+	}
+	dev := C.mlx_device_new_type(kind, 0)
+	if dev.ctx == nil {
+		if err := lastError(); err != nil {
+			return C.mlx_device{}, core.E("metal.newCDevice", "create device", err)
+		}
+		return C.mlx_device{}, core.E("metal.newCDevice", "create device", nil)
+	}
+	return dev, nil
 }
 
 func withDefaultDevice(device DeviceType, fn func()) error {

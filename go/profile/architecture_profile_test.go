@@ -31,6 +31,10 @@ func TestArchitectureProfile_MetadataFamilies_Good(t *testing.T) {
 		{name: "bert", input: "BertModel", wantID: "bert", wantParser: "generic", wantEmbed: true},
 		{name: "bert-rerank", input: "BertForSequenceClassification", wantID: "bert_rerank", wantParser: "generic"},
 		{name: "qwen-native", input: "qwen3", wantID: "qwen3", wantParser: "qwen", wantNative: true},
+		{name: "qwen2-5-native", input: "Qwen2.5ForCausalLM", wantID: "qwen2", wantParser: "qwen", wantNative: true},
+		{name: "gemma4-assistant", input: "gemma4_assistant", wantID: "gemma4_assistant", wantParser: "gemma"},
+		{name: "qwen36-dense", input: "Qwen3_5ForConditionalGeneration", wantID: "qwen3_6", wantParser: "qwen"},
+		{name: "qwen36-moe", input: "Qwen3_5MoeForConditionalGeneration", wantID: "qwen3_6_moe", wantParser: "qwen", wantMoE: true},
 	}
 
 	for _, tc := range cases {
@@ -67,7 +71,7 @@ func TestArchitectureProfile_BuiltinIDs_Good(t *testing.T) {
 		}
 		seen[profile.ID] = true
 	}
-	for _, id := range []string{"gemma4_text", "qwen3_next", "qwen3_moe", "minimax_m2", "mixtral", "deepseek", "gpt_oss", "bert", "bert_rerank"} {
+	for _, id := range []string{"gemma4_text", "gemma4_assistant", "qwen2", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe", "minimax_m2", "mixtral", "deepseek", "gpt_oss", "bert", "bert_rerank"} {
 		if !seen[id] {
 			t.Fatalf("missing builtin architecture profile %q", id)
 		}

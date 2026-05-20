@@ -178,6 +178,23 @@ func (m *deviceInternalModel) ForwardLastTokenLogits(tokens *Array, mask *Array,
 	return out
 }
 
+func (m *deviceInternalModel) ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array {
+	greedyModel, ok := m.inner.(GreedyTokenModel)
+	if !ok {
+		logits := m.ForwardMasked(tokens, mask, caches)
+		token := Argmax(logits, -1, false)
+		Free(logits)
+		return token
+	}
+	var out *Array
+	if err := withDefaultDevice(m.device, func() {
+		out = greedyModel.ForwardGreedyToken(tokens, mask, caches)
+	}); err != nil {
+		core.Error("mlx: internal greedy-token forward", "error", err)
+	}
+	return out
+}
+
 func (m *deviceInternalModel) NewCache() []Cache {
 	return m.inner.NewCache()
 }

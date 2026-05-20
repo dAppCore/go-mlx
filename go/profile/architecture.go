@@ -83,8 +83,12 @@ func ArchitectureID(value string) string {
 	if normalized == "bert_rerank" {
 		return normalized
 	}
-	compact := core.Replace(core.Replace(normalized, "_", ""), "-", "")
+	compact := compactArchitectureName(normalized)
 	switch {
+	case core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe"):
+		return "qwen3_6_moe"
+	case core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36"):
+		return "qwen3_6"
 	case core.Contains(compact, "qwen3moe"):
 		return "qwen3_moe"
 	case core.Contains(compact, "qwen3next"):
@@ -117,10 +121,13 @@ func builtinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
 		nativeProfile("gemma4", "gemma", "gemma", []string{"Gemma4ForConditionalGeneration"}),
 		nativeProfile("gemma4_text", "gemma", "gemma", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
+		metadataProfile("gemma4_assistant", "gemma", "gemma", "gemma", false, false, []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter graph pending; standalone generation unsupported"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
-		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM"}),
+		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
 		nativeProfile("qwen3", "qwen", "qwen", []string{"Qwen3ForCausalLM"}),
-		nativeProfile("qwen3_next", "qwen", "qwen", []string{"Qwen3NextForCausalLM", "Qwen3.5ForCausalLM"}),
+		nativeProfile("qwen3_next", "qwen", "qwen", []string{"Qwen3NextForCausalLM"}),
+		metadataProfile("qwen3_6", "qwen", "qwen", "qwen", false, false, []string{"Qwen3_5ForConditionalGeneration", "Qwen3.5ForConditionalGeneration", "Qwen3_6ForConditionalGeneration", "Qwen3.6ForConditionalGeneration", "Qwen3_5ForCausalLM", "Qwen3.5ForCausalLM"}, []string{"hybrid linear-attention native kernels pending; use mlx_lm fallback for generation"}),
+		metadataProfile("qwen3_6_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3_5MoeForConditionalGeneration", "Qwen3.5MoeForConditionalGeneration", "Qwen3_6MoeForConditionalGeneration", "Qwen3.6MoeForConditionalGeneration"}, []string{"hybrid linear-attention and sparse expert native kernels pending; use mlx_lm fallback for generation"}),
 		metadataProfile("qwen3_moe", "qwen", "qwen", "qwen", true, false, []string{"Qwen3MoeForCausalLM"}, []string{"sparse expert router kernels pending"}),
 		metadataProfile("minimax_m2", "minimax", "minimax", "minimax", true, false, []string{"MiniMaxM2ForCausalLM"}, []string{"JANGTQ/MXTQ packed expert kernels pending"}),
 		metadataProfile("mistral", "mistral", "mistral", "mistral", false, false, []string{"MistralForCausalLM"}, nil),
@@ -256,9 +263,14 @@ func ArchitectureIDs() []string {
 func normalizeKnownArchitecture(value string) string {
 	value = core.Lower(core.Trim(value))
 	value = core.Replace(value, "-", "_")
+	value = core.Replace(value, ".", "_")
 	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
+	case "qwen2_5", "qwen25":
+		return "qwen2"
+	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
+		return "qwen3_6"
+	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
+		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
 	case "mixtral":
@@ -281,14 +293,20 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func architectureFromTransformersName(architecture string) string {
-	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
+	compact := compactArchitectureName(architecture)
 	switch {
 	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
 		return "bert_rerank"
+	case core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe"):
+		return "qwen3_6_moe"
+	case core.Contains(compact, "qwen35") || core.Contains(compact, "qwen36"):
+		return "qwen3_6"
 	case core.Contains(compact, "qwen3moe"):
 		return "qwen3_moe"
 	case core.Contains(compact, "qwen3next"):
 		return "qwen3_next"
+	case core.Contains(compact, "gemma4assistant"):
+		return "gemma4_assistant"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):
@@ -318,4 +336,11 @@ func architectureFromTransformersName(architecture string) string {
 	default:
 		return ""
 	}
+}
+
+func compactArchitectureName(value string) string {
+	compact := core.Lower(value)
+	compact = core.Replace(compact, "_", "")
+	compact = core.Replace(compact, "-", "")
+	return core.Replace(compact, ".", "")
 }

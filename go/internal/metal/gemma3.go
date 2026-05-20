@@ -88,8 +88,10 @@ type MLP struct {
 	DownProj *Linear
 }
 
-// compiledGELU is a singleton for the compiled GELU function.
+// compiledGELU is retained for standalone GELU call sites.
 var compiledGELU *CompiledFunc
+var enableNativeGELUGateMul = core.Env("GO_MLX_ENABLE_NATIVE_GELU_GATE_MUL") == "1"
+var enableCompiledGELU = core.Env("GO_MLX_ENABLE_COMPILED_GELU") == "1"
 
 func getCompiledGELU() *CompiledFunc {
 	if compiledGELU == nil {
@@ -98,6 +100,30 @@ func getCompiledGELU() *CompiledFunc {
 		}, true)
 	}
 	return compiledGELU
+}
+
+func geluGateMul(gate, up *Array) *Array {
+	if enableNativeGELUGateMul {
+		return GELUGateMul(gate, up)
+	}
+	activated := geluActivation(gate)
+	out := Mul(activated, up)
+	Free(activated)
+	return out
+}
+
+func geluActivation(x *Array) *Array {
+	if enableCompiledGELU {
+		return getCompiledGELU().Call(x)[0]
+	}
+	return geluApprox(x)
+}
+
+func siluGateMul(gate, up *Array) *Array {
+	activated := SiLU(gate)
+	out := Mul(activated, up)
+	Free(activated)
+	return out
 }
 
 // geluApprox computes GELU using the tanh approximation:
@@ -429,7 +455,11 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 		oldK, oldV := k, v
 		pages := paged.UpdatePages(k, v, int(L))
 		Free(oldK, oldV)
-		kPages, vPages, repeatedPages := repeatPagedState(pages, repeatFactor)
+		kPages, vPages := pages.Keys, pages.Values
+		var repeatedPages []*Array
+		if pagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
+			kPages, vPages, repeatedPages = repeatPagedState(pages, repeatFactor)
+		}
 		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
 		Free(repeatedPages...)
 		pages.Free()
@@ -466,12 +496,22 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 }
 
 func (m *MLP) forward(x *Array) *Array {
+	if out, ok, err := nativeMLPMatVec(x, m); ok {
+		if err == nil {
+			return out
+		}
+		core.Error("mlx: native MLP matvec failed; falling back to Go graph", "error", err)
+	}
+	if out, ok, err := nativeMLPGELU(x, m); ok {
+		if err == nil {
+			return out
+		}
+		core.Error("mlx: native MLP GELU failed; falling back to Go graph", "error", err)
+	}
 	gateProj := m.GateProj.Forward(x)
-	gate := getCompiledGELU().Call(gateProj)[0]
-	Free(gateProj)
 	upProj := m.UpProj.Forward(x)
-	activated := Mul(gate, upProj)
-	Free(gate, upProj)
+	activated := geluGateMul(gateProj, upProj)
+	Free(gateProj, upProj)
 	result := m.DownProj.Forward(activated)
 	Free(activated)
 	return result

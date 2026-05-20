@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	DefaultHealthPath       = "/v1/health"
+	DefaultHealthPath            = "/v1/health"
 	DefaultAdminWakePath         = "/v1/runtime/wake"
 	DefaultAdminSleepPath        = "/v1/runtime/sleep"
 	DefaultAdminCacheEntriesPath = "/v1/cache/entries"

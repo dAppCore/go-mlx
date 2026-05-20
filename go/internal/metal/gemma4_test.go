@@ -275,7 +275,7 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 			"num_key_value_heads": 1,
 			"head_dim": 256,
 			"layer_types": ["sliding_attention", "full_attention"],
-			"quantization": {"group_size": 64, "bits": 4}
+			"quantization": {"group_size": 64, "bits": 4, "mode": "affine"}
 		}
 	}`))
 	if err != nil {
@@ -284,11 +284,37 @@ func TestGemma4_ParseConfig_NestedQuantization_Good(t *testing.T) {
 	if cfg.ModelType != "gemma4" {
 		t.Fatalf("ModelType = %q, want gemma4", cfg.ModelType)
 	}
-	if cfg.Quantization == nil || cfg.Quantization.GroupSize != 64 || cfg.Quantization.Bits != 4 {
-		t.Fatalf("Quantization = %+v, want group_size=64 bits=4", cfg.Quantization)
+	if cfg.Quantization == nil || cfg.Quantization.GroupSize != 64 || cfg.Quantization.Bits != 4 || cfg.Quantization.Mode != "affine" {
+		t.Fatalf("Quantization = %+v, want group_size=64 bits=4 mode=affine", cfg.Quantization)
 	}
 	if got := cfg.LayerTypes; len(got) != 2 || got[0] != "sliding_attention" || got[1] != "full_attention" {
 		t.Fatalf("LayerTypes = %v, want explicit nested layer types", got)
+	}
+}
+
+func TestGemma4_ParseConfig_TopLevelMXFPQuantization_Good(t *testing.T) {
+	coverageTokens := "ParseConfig TopLevelMXFPQuantization"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"quantization": {"group_size": 32, "bits": 8, "mode": "mxfp8"},
+		"text_config": {
+			"hidden_size": 1024,
+			"num_hidden_layers": 2,
+			"intermediate_size": 2048,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"layer_types": ["sliding_attention", "full_attention"]
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.Quantization == nil || cfg.Quantization.GroupSize != 32 || cfg.Quantization.Bits != 8 || cfg.Quantization.Mode != "mxfp8" {
+		t.Fatalf("Quantization = %+v, want group_size=32 bits=8 mode=mxfp8", cfg.Quantization)
 	}
 }
 
@@ -601,6 +627,114 @@ func TestGemma4_NormalizePerLayerTensor_TransposedEmbedding_Good(t *testing.T) {
 	floatSliceApprox(t, output.Floats(), []float32{1, 4, 2, 5, 3, 6})
 }
 
+func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
+	coverageTokens := "CompiledPerLayerInputs MatchesGoGraph"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	m := &Gemma4Model{
+		EmbedTokensPerLayer: &Embedding{Weight: FromValues([]float32{
+			0.1, 0.2, 0.3, 0.4,
+			0.5, 0.6, 0.7, 0.8,
+			0.9, 1.0, 1.1, 1.2,
+		}, 3, 4)},
+		PerLayerModelProj: NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4, 0.5, -0.2, 0.7, 0.6}, 4, 2), nil),
+		PerLayerProjNorm:  &RMSNormModule{Weight: FromValues([]float32{1, 1}, 2)},
+		PerLayerProjNormScaled: FromValues([]float32{
+			1, 1,
+		}, 2),
+		Cfg: &Gemma4TextConfig{
+			HiddenSize:              2,
+			HiddenSizePerLayerInput: 2,
+			NumHiddenLayers:         2,
+			RMSNormEps:              1e-6,
+		},
+	}
+	defer closeGemma4(m)
+
+	tokens := FromValues([]int32{1}, 1, 1)
+	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
+	defer Free(tokens, hidden)
+
+	old := enableCompiledGemma4PerLayerInputs
+	enableCompiledGemma4PerLayerInputs = false
+	base := m.computePerLayerInputs(tokens, hidden)
+	if err := Eval(base...); err != nil {
+		t.Fatalf("base per-layer inputs eval: %v", err)
+	}
+	baseFloats := make([][]float32, len(base))
+	for i := range base {
+		baseFloats[i] = append([]float32(nil), base[i].Floats()...)
+	}
+	Free(base...)
+
+	enableCompiledGemma4PerLayerInputs = true
+	t.Cleanup(func() { enableCompiledGemma4PerLayerInputs = old })
+	compiled := m.computePerLayerInputs(tokens, hidden)
+	defer Free(compiled...)
+	if err := Eval(compiled...); err != nil {
+		t.Fatalf("compiled per-layer inputs eval: %v", err)
+	}
+	if len(compiled) != len(baseFloats) {
+		t.Fatalf("compiled per-layer count = %d, want %d", len(compiled), len(baseFloats))
+	}
+	for i := range compiled {
+		floatSliceApprox(t, compiled[i].Floats(), baseFloats[i])
+	}
+}
+
+func TestGemma4_DisablePerLayerInputsDiagnostic_Bad(t *testing.T) {
+	coverageTokens := "DisablePerLayerInputsDiagnostic"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	m := &Gemma4Model{
+		EmbedTokensPerLayer:    &Embedding{Weight: FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2)},
+		PerLayerModelProj:      NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
+		PerLayerProjNorm:       &RMSNormModule{Weight: FromValues([]float32{1, 1}, 2)},
+		PerLayerProjNormScaled: FromValues([]float32{1, 1}, 2),
+		Cfg:                    &Gemma4TextConfig{HiddenSize: 2, HiddenSizePerLayerInput: 2, NumHiddenLayers: 1, RMSNormEps: 1e-6},
+	}
+	defer closeGemma4(m)
+
+	old := disableGemma4PerLayerInputs
+	disableGemma4PerLayerInputs = true
+	t.Cleanup(func() { disableGemma4PerLayerInputs = old })
+
+	tokens := FromValues([]int32{1}, 1, 1)
+	hidden := FromValues([]float32{0.5, -0.25}, 1, 1, 2)
+	defer Free(tokens, hidden)
+
+	if got := m.computePerLayerInputs(tokens, hidden); got != nil {
+		Free(got...)
+		t.Fatal("computePerLayerInputs() = non-nil with diagnostic disable gate")
+	}
+}
+
+func TestGemma4_FixedAttentionMaskCapacityOffset_Good(t *testing.T) {
+	coverageTokens := "FixedAttentionMaskCapacityOffset"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+
+	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 1)
+	if !ok || capacity != 2336 || offset != 2204 {
+		t.Fatalf("full fixed mask = capacity %d offset %d ok %v, want 2336/2204/true", capacity, offset, ok)
+	}
+
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 1024, offset: 2204, length: 1024}, sharedKV{}, 1); ok {
+		t.Fatal("overflowed sliding fixed cache should not build an absolute-position causal mask")
+	}
+
+	if _, _, ok := fixedGemma4AttentionMaskCapacityOffset(&FixedKVCache{maxSize: 2336, offset: 2204}, sharedKV{}, 2); ok {
+		t.Fatal("multi-token decode should not use the single-token shared fixed mask")
+	}
+}
+
 func TestGemma4_OutputLinear_TiedFallback_Good(t *testing.T) {
 	coverageTokens := "OutputLinear TiedFallback"
 	if coverageTokens == "" {
@@ -803,6 +937,159 @@ func TestGemma4_QuantPredicate_RouterForces8Bit_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_QuantPredicate_RouterPreservesMXFPMode_Good(t *testing.T) {
+	coverageTokens := "QuantPredicate RouterPreservesMXFPMode"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	defaultQ := &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}
+
+	routerQ := gemma4QuantPredicate("model.layers.0.router.proj", defaultQ)
+	if routerQ == nil {
+		t.Fatal("router quantization predicate returned nil")
+	}
+	if routerQ.GroupSize != 32 || routerQ.Bits != 8 || routerQ.Mode != "mxfp8" {
+		t.Fatalf("router quantization = %+v, want mxfp8 group_size=32 bits=8", routerQ)
+	}
+}
+
+func TestGemma4_QuantForWeight_AllowsMLXCommunityVariants_Good(t *testing.T) {
+	coverageTokens := "QuantForWeight AllowsMLXCommunityVariants"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cases := []struct {
+		name string
+		in   *QuantizationConfig
+		want *QuantizationConfig
+	}{
+		{name: "mxfp4", in: &QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}, want: &QuantizationConfig{GroupSize: 32, Bits: 4, Mode: "mxfp4"}},
+		{name: "mxfp8", in: &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}, want: &QuantizationConfig{GroupSize: 32, Bits: 8, Mode: "mxfp8"}},
+		{name: "affine5", in: &QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}, want: &QuantizationConfig{GroupSize: 64, Bits: 5, Mode: "affine"}},
+		{name: "affine6", in: &QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}, want: &QuantizationConfig{GroupSize: 64, Bits: 6, Mode: "affine"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := gemma4QuantForWeight("model.layers.0.mlp.gate_proj", tc.in, nil, nil)
+			if got == nil {
+				t.Fatal("gemma4QuantForWeight returned nil")
+			}
+			if got.GroupSize != tc.want.GroupSize || got.Bits != tc.want.Bits || got.Mode != tc.want.Mode {
+				t.Fatalf("quantization = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGemma4_QuantForWeight_DetectsAffineOverrideInsideMXFP_Good(t *testing.T) {
+	coverageTokens := "QuantForWeight DetectsAffineOverrideInsideMXFP"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	weight := Zeros([]int32{2112, 704}, DTypeUint32)
+	scales := Zeros([]int32{2112, 44}, DTypeFloat32)
+	defer Free(weight, scales)
+
+	got := gemma4QuantForWeight("model.layers.0.mlp.gate_proj", &QuantizationConfig{
+		GroupSize: 32,
+		Bits:      4,
+		Mode:      "mxfp4",
+	}, weight, scales)
+	if got == nil {
+		t.Fatal("gemma4QuantForWeight returned nil")
+	}
+	if got.Mode != "affine" || got.GroupSize != 64 || got.Bits != 8 {
+		t.Fatalf("quantization = %+v, want affine group_size=64 bits=8", got)
+	}
+}
+
+func TestGemma4_QuantForWeight_InfersAffineDefaultsFromPackedWeights_Good(t *testing.T) {
+	coverageTokens := "QuantForWeight InfersAffineDefaultsFromPackedWeights"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	weight := Zeros([]int32{256, 192}, DTypeUint32)
+	scales := Zeros([]int32{256, 24}, DTypeFloat32)
+	defer Free(weight, scales)
+
+	got := gemma4QuantForWeight("model.layers.0.self_attn.k_proj", nil, weight, scales)
+	if got == nil {
+		t.Fatal("gemma4QuantForWeight returned nil")
+	}
+	if got.Mode != "affine" || got.GroupSize != 64 || got.Bits != 4 {
+		t.Fatalf("quantization = %+v, want inferred affine group_size=64 bits=4", got)
+	}
+}
+
+func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
+	coverageTokens := "ValidateQuantizationConfig Bad"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	err := validateGemma4QuantizationConfig(&QuantizationConfig{GroupSize: 32, Bits: 7, Mode: "mxfp8"})
+	if err == nil || !core.Contains(err.Error(), "mxfp8") {
+		t.Fatalf("validateGemma4QuantizationConfig error = %v, want mxfp8 bits diagnostic", err)
+	}
+}
+
+func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
+	coverageTokens := "Linear Infers8BitOverrideFromScales"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	weight := Zeros([]int32{2112, 704}, DTypeUint32)
+	scales := Zeros([]int32{2112, 44}, DTypeFloat32)
+	biases := Zeros([]int32{2112, 44}, DTypeFloat32)
+	defer Free(weight, scales, biases)
+
+	layer := gemma4Linear(map[string]*Array{
+		"model.layers.0.mlp.gate_proj.weight": weight,
+		"model.layers.0.mlp.gate_proj.scales": scales,
+		"model.layers.0.mlp.gate_proj.biases": biases,
+	}, "model.layers.0.mlp.gate_proj", &QuantizationConfig{GroupSize: 64, Bits: 4})
+	if layer == nil {
+		t.Fatal("expected quantized layer")
+	}
+	defer freeLinear(layer)
+
+	if layer.GroupSize != 64 || layer.Bits != 8 {
+		t.Fatalf("quantization = group_size=%d bits=%d, want group_size=64 bits=8", layer.GroupSize, layer.Bits)
+	}
+}
+
+func TestGemma4_SwitchLinear_Preserves4BitWhenShapesMatchDefault_Good(t *testing.T) {
+	coverageTokens := "SwitchLinear Preserves4BitWhenShapesMatchDefault"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	weight := Zeros([]int32{128, 2112, 352}, DTypeUint32)
+	scales := Zeros([]int32{128, 2112, 44}, DTypeFloat32)
+	biases := Zeros([]int32{128, 2112, 44}, DTypeFloat32)
+	defer Free(weight, scales, biases)
+
+	layer := gemma4SwitchLinear(map[string]*Array{
+		"model.layers.0.experts.switch_glu.gate_proj.weight": weight,
+		"model.layers.0.experts.switch_glu.gate_proj.scales": scales,
+		"model.layers.0.experts.switch_glu.gate_proj.biases": biases,
+	}, &QuantizationConfig{GroupSize: 64, Bits: 4}, "model.layers.0.experts.switch_glu.gate_proj")
+	if layer == nil {
+		t.Fatal("expected quantized switch layer")
+	}
+	defer freeSwitchLinear(layer)
+
+	if layer.GroupSize != 64 || layer.Bits != 4 {
+		t.Fatalf("quantization = group_size=%d bits=%d, want group_size=64 bits=4", layer.GroupSize, layer.Bits)
+	}
+}
+
 func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	coverageTokens := "SanitizeWeights GateUpProj"
 	if coverageTokens == "" {
@@ -828,11 +1115,15 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 
 	gate := sanitized["model.layers.0.experts.switch_glu.gate_proj.weight"]
 	up := sanitized["model.layers.0.experts.switch_glu.up_proj.weight"]
+	fused := sanitized["model.layers.0.experts.switch_glu.gate_up_proj.weight"]
 	if gate == nil || up == nil {
 		t.Fatal("expected split switch_glu gate_proj and up_proj weights")
 	}
+	if fused != gateUp {
+		t.Fatal("expected sanitization to retain fused switch_glu gate_up_proj weight")
+	}
 	if _, ok := sanitized["model.layers.0.experts.gate_up_proj.weight"]; ok {
-		t.Fatal("gate_up_proj should be replaced by split weights")
+		t.Fatal("legacy gate_up_proj key should be replaced by switch_glu keys")
 	}
 	if _, ok := sanitized["model.layers.0.experts.gate_proj.weight"]; ok {
 		t.Fatal("legacy direct gate_proj key should not be emitted during sanitization")
@@ -858,8 +1149,8 @@ func TestGemma4_SanitizeWeights_GateUpProj_Good(t *testing.T) {
 	if !up.IsRowContiguous() {
 		t.Fatal("up split should be row-contiguous")
 	}
-	if gateUp.Valid() {
-		t.Fatal("gate_up source tensor should be freed after split sanitization")
+	if !gateUp.Valid() {
+		t.Fatal("gate_up source tensor should be retained for fused expert projection")
 	}
 	if vision.Valid() {
 		t.Fatal("vision tower tensor should be freed after sanitization")
@@ -888,14 +1179,104 @@ func TestGemma4_SanitizeWeights_GateUpProjBias2D_Good(t *testing.T) {
 
 	gate := sanitized["model.layers.0.experts.switch_glu.gate_proj.biases"]
 	up := sanitized["model.layers.0.experts.switch_glu.up_proj.biases"]
+	fused := sanitized["model.layers.0.experts.switch_glu.gate_up_proj.biases"]
 	if gate == nil || up == nil {
 		t.Fatal("expected split switch_glu gate_proj and up_proj biases")
+	}
+	if fused != biases {
+		t.Fatal("expected fused switch_glu gate_up_proj biases to be retained")
 	}
 	if got := gate.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
 		t.Fatalf("gate bias split shape = %v, want [2 2]", got)
 	}
 	if got := up.Shape(); len(got) != 2 || got[0] != 2 || got[1] != 2 {
 		t.Fatalf("up bias split shape = %v, want [2 2]", got)
+	}
+}
+
+func TestGemma4_Experts_FusedGateUpMatchesSplit_Good(t *testing.T) {
+	coverageTokens := "Experts FusedGateUpMatchesSplit"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	expertWeight := func(e0, e1 []float32) *Array {
+		data := append(append([]float32{}, e0...), e1...)
+		return FromValues(data, 2, 2, 2)
+	}
+	gateValues0 := []float32{1.0, 0.2, -0.1, 0.7}
+	gateValues1 := []float32{0.3, -0.6, 0.9, 0.1}
+	upValues0 := []float32{0.5, -0.4, 0.8, 0.2}
+	upValues1 := []float32{-0.2, 0.4, 0.1, 0.6}
+	downValues0 := []float32{0.6, -0.2, 0.4, 0.8}
+	downValues1 := []float32{0.1, 0.5, -0.3, 0.7}
+
+	splitGateWeight := expertWeight(gateValues0, gateValues1)
+	splitUpWeight := expertWeight(upValues0, upValues1)
+	splitDownWeight := expertWeight(downValues0, downValues1)
+	fusedGateWeight := expertWeight(gateValues0, gateValues1)
+	fusedUpWeight := expertWeight(upValues0, upValues1)
+	fusedWeight := Concatenate([]*Array{fusedGateWeight, fusedUpWeight}, 1)
+	Materialize(fusedWeight)
+	Free(fusedGateWeight, fusedUpWeight)
+	fusedDownWeight := expertWeight(downValues0, downValues1)
+
+	splitExperts := &Gemma4Experts{
+		GateProj: NewSwitchLinear(splitGateWeight, nil),
+		UpProj:   NewSwitchLinear(splitUpWeight, nil),
+		DownProj: NewSwitchLinear(splitDownWeight, nil),
+	}
+	fusedExperts := &Gemma4Experts{
+		GateUpProj: NewSwitchLinear(fusedWeight, nil),
+		GateProj:   NewSwitchLinear(expertWeight(gateValues0, gateValues1), nil),
+		UpProj:     NewSwitchLinear(expertWeight(upValues0, upValues1), nil),
+		DownProj:   NewSwitchLinear(fusedDownWeight, nil),
+	}
+	defer func() {
+		freeSwitchLinear(splitExperts.GateProj)
+		freeSwitchLinear(splitExperts.UpProj)
+		freeSwitchLinear(splitExperts.DownProj)
+		freeSwitchLinear(fusedExperts.GateUpProj)
+		freeSwitchLinear(fusedExperts.GateProj)
+		freeSwitchLinear(fusedExperts.UpProj)
+		freeSwitchLinear(fusedExperts.DownProj)
+	}()
+
+	x := FromValues([]float32{0.25, -0.75}, 1, 1, 2)
+	topKIndices := FromValues([]int32{1}, 1, 1, 1)
+	topKWeights := FromValues([]float32{0.8}, 1, 1, 1)
+	defer Free(x, topKIndices, topKWeights)
+
+	want := splitExperts.forward(x, topKIndices, topKWeights, "")
+	got := fusedExperts.forward(x, topKIndices, topKWeights, "")
+	defer Free(want, got)
+
+	if err := Eval(want, got); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestGemma4_Experts_FusedGateUpDecodeOnly_Bad(t *testing.T) {
+	coverageTokens := "Experts FusedGateUpDecodeOnly"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	decode := FromValues([]float32{0.25, -0.75}, 1, 1, 2)
+	prefill := FromValues([]float32{
+		0.25, -0.75,
+		0.5, 0.125,
+	}, 1, 2, 2)
+	defer Free(decode, prefill)
+
+	if !gemma4UseFusedExpertGateUp(decode) {
+		t.Fatal("single-token decode should use fused gate_up projection")
+	}
+	if gemma4UseFusedExpertGateUp(prefill) {
+		t.Fatal("multi-token prefill should keep split gate/up projections")
 	}
 }
 
@@ -1078,6 +1459,25 @@ func TestGemma4_BuildCacheLayout_PromotesMissingOwner_Good(t *testing.T) {
 		if cacheIndexByLayer[i] != want {
 			t.Fatalf("CacheIndexByLayer[%d] = %d, want %d", i, cacheIndexByLayer[i], want)
 		}
+	}
+}
+
+func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
+	coverageTokens := "SharedKV InvalidPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	kv := sharedKV{
+		Pages: PagedKVState{
+			Keys:   []*Array{nil},
+			Values: []*Array{nil},
+		},
+	}
+	if kv.hasPages() {
+		t.Fatal("nil page handles should not count as usable K/V state")
+	}
+	if kv.hasState() {
+		t.Fatal("invalid pages should not count as usable K/V state")
 	}
 }
 
@@ -1624,7 +2024,7 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil)
 	defer Free(kv.Keys, kv.Values)
 
 	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
@@ -1634,8 +2034,8 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	Free(h1)
 
 	h2In := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
-	topKIndices, topKWeights := layer.Router.forward(h2In)
-	h2 := layer.Experts.forward(h2In, topKIndices, topKWeights)
+	topKIndices, topKWeights := layer.Router.forward(x)
+	h2 := layer.Experts.forward(h2In, topKIndices, topKWeights, "")
 	Free(h2In, topKIndices, topKWeights)
 	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
 	Free(h2)
@@ -1655,8 +2055,8 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
-func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
-	coverageTokens := "DecoderLayer MoERouterUsesPreFFNorm2Input"
+func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing.T) {
+	coverageTokens := "DecoderLayer MoERouterUsesAttentionResidualInput"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -1739,7 +2139,7 @@ func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{2, 1}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil)
 	defer Free(kv.Keys, kv.Values)
 
 	h2InForCheck := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
@@ -1751,7 +2151,6 @@ func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
 	if residualIndices.DataInt32()[0] == normedIndices.DataInt32()[0] {
 		t.Fatal("expected residual-stream and pre-normalized router inputs to pick different experts")
 	}
-	Free(residualIndices, residualWeights)
 
 	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
 	h1 := layer.MLP.forward(h1In)
@@ -1759,8 +2158,8 @@ func TestGemma4_DecoderLayer_MoERouterUsesPreFFNorm2Input_Good(t *testing.T) {
 	h1Normed := RMSNorm(h1, layer.PostFFNorm1Scaled, cfg.RMSNormEps)
 	Free(h1)
 
-	h2 := layer.Experts.forward(h2InForCheck, normedIndices, normedWeights)
-	Free(h2InForCheck, normedIndices, normedWeights)
+	h2 := layer.Experts.forward(h2InForCheck, residualIndices, residualWeights, "")
+	Free(h2InForCheck, normedIndices, normedWeights, residualIndices, residualWeights)
 	h2Normed := RMSNorm(h2, layer.PostFFNorm2Scaled, cfg.RMSNormEps)
 	Free(h2)
 
@@ -1818,7 +2217,7 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	defer cache.Reset()
 	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 
-	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0)
+	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -1833,6 +2232,67 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	if len(kv.Pages.Keys) != 1 || len(kv.Pages.Values) != 1 {
 		t.Fatalf("shared pages = %d/%d, want one K/V page", len(kv.Pages.Keys), len(kv.Pages.Values))
 	}
+}
+
+func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention FixedCacheUsesNativeBridge"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		KProj:          NewLinear(identity(), nil),
+		VProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    ones(),
+		KNormScaled:    ones(),
+		HeadDim:        2,
+		NKVHeads:       1,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	fixed := NewFixedKVCache(4)
+	paged := NewPagedKVCache(4, 2)
+	defer fixed.Reset()
+	defer paged.Reset()
+
+	fixedX := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	pagedX := fixedX.Clone()
+	defer Free(fixedX, pagedX)
+
+	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	defer Free(fixedOut, pagedOut)
+	defer fixedKV.free()
+	defer pagedKV.free()
+	if !fixedKV.Fixed {
+		t.Fatal("fixed-cache attention did not return fixed shared KV from native bridge")
+	}
+	if state := fixed.State(); len(state) != 2 || state[0].Dim(2) != 4 || state[1].Dim(2) != 4 {
+		t.Fatalf("fixed cache state shape = %v, want full-capacity state", state)
+	}
+	if err := Eval(fixedOut, pagedOut); err != nil {
+		t.Fatalf("Eval(fixed/paged attention) error = %v", err)
+	}
+	floatSliceApprox(t, fixedOut.Floats(), pagedOut.Floats())
 }
 
 func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
@@ -1885,7 +2345,7 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
-	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0)
+	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -1895,6 +2355,55 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	if kv.Keys != nil || kv.Values != nil {
 		t.Fatalf("shared KV materialized contiguous arrays: %v/%v", kv.Keys != nil, kv.Values != nil)
+	}
+}
+
+func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *testing.T) {
+	coverageTokens := "Gemma4Attention CacheUpdateNilFallback"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		KProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    FromValues([]float32{1, 1}, 2),
+		KNormScaled:    FromValues([]float32{1, 1}, 2),
+		HeadDim:        2,
+		NKVHeads:       1,
+		UseKEqV:        true,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	defer func() {
+		Free(x, out)
+		kv.free()
+	}()
+
+	if !gemma4ValidKV(kv.Keys, kv.Values) {
+		t.Fatal("local K/V fallback was not retained after cache update returned nil")
+	}
+	if err := Eval(out); err != nil {
+		t.Fatalf("Eval(out): %v", err)
 	}
 }
 

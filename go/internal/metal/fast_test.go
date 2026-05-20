@@ -84,6 +84,42 @@ func TestFast_LayerNorm_WithBias_Good(t *testing.T) {
 	}
 }
 
+func TestFast_GELUGateMul_Good(t *testing.T) {
+	gate := FromValues([]float32{0, 1}, 2)
+	up := FromValues([]float32{2, 3}, 2)
+	defer Free(gate, up)
+
+	got := GELUGateMul(gate, up)
+	defer Free(got)
+	if err := Eval(got); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	want := Mul(geluApprox(gate), up)
+	defer Free(want)
+	if err := Eval(want); err != nil {
+		t.Fatalf("Eval want: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestFast_SiLUGateMul_Good(t *testing.T) {
+	gate := FromValues([]float32{0, 1}, 2)
+	up := FromValues([]float32{2, 3}, 2)
+	defer Free(gate, up)
+
+	got := SiLUGateMul(gate, up)
+	defer Free(got)
+	if err := Eval(got); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	want := Mul(SiLU(gate), up)
+	defer Free(want)
+	if err := Eval(want); err != nil {
+		t.Fatalf("Eval want: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestFast_RoPE_Good(t *testing.T) {
 	// RoPE on a small input: [B=1, L=1, H=1, D=4]
 	x := FromValues([]float32{1, 0, 1, 0}, 1, 1, 1, 4)
@@ -101,6 +137,25 @@ func TestFast_RoPE_Good(t *testing.T) {
 	if math.Abs(float64(got[0])-1.0) > 1e-3 {
 		t.Errorf("RoPE[0] = %f, want ≈1.0 (cos(0) rotation)", got[0])
 	}
+}
+
+func TestFast_RoPEWithOffsetArray_Good(t *testing.T) {
+	target := "RoPEWithOffsetArray"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	x := FromValues([]float32{1, 0, 1, 0}, 1, 1, 1, 4)
+	offset := FromValue(0)
+	defer Free(x, offset)
+
+	got := RoPEWithOffsetArray(x, 4, false, 10000.0, 1.0, offset, nil)
+	want := RoPE(x, 4, false, 10000.0, 1.0, 0)
+	defer Free(got, want)
+
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval(RoPEWithOffsetArray) error = %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
 func TestFast_RoPE_ShapePreserved_Good(t *testing.T) {
@@ -185,6 +240,158 @@ func TestFast_ScaledDotProductAttentionPagedMatchesConcat_Good(t *testing.T) {
 	floatSliceApprox(t, paged.Floats(), expected.Floats())
 }
 
+func TestFast_ScaledDotProductAttentionPagedBroadcastsSingleKVHead_Good(t *testing.T) {
+	coverageTokens := "ScaledDotProductAttentionPaged BroadcastsSingleKVHead"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 4, 1, 2)
+	k1 := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
+	k2 := FromValues([]float32{1, 1, -1, 0}, 1, 1, 2, 2)
+	v1 := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)
+	v2 := FromValues([]float32{5, 5, -2, 1}, 1, 1, 2, 2)
+	defer Free(q, k1, k2, v1, v2)
+
+	scale := float32(1.0 / math.Sqrt(2.0))
+	direct := ScaledDotProductAttentionPaged(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	k1Repeated := RepeatKV(k1, 4)
+	k2Repeated := RepeatKV(k2, 4)
+	v1Repeated := RepeatKV(v1, 4)
+	v2Repeated := RepeatKV(v2, 4)
+	expected := ScaledDotProductAttentionPaged(q, []*Array{k1Repeated, k2Repeated}, []*Array{v1Repeated, v2Repeated}, scale)
+	defer Free(direct, k1Repeated, k2Repeated, v1Repeated, v2Repeated, expected)
+	if err := Eval(direct, expected); err != nil {
+		t.Fatalf("Eval paged grouped query attention: %v", err)
+	}
+	floatSliceApprox(t, direct.Floats(), expected.Floats())
+}
+
+func TestFast_ScaledDotProductAttention_GroupedQueryMatchesRepeated_Good(t *testing.T) {
+	coverageTokens := "ScaledDotProductAttention GroupedQueryMatchesRepeated"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 4, 1, 2)
+	k := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 0,
+		0, -1,
+		-1, -1,
+	}, 1, 2, 3, 2)
+	v := FromValues([]float32{
+		10, 0,
+		0, 10,
+		20, 20,
+		30, 0,
+		0, 30,
+		40, 40,
+	}, 1, 2, 3, 2)
+	defer Free(q, k, v)
+
+	direct := ScaledDotProductAttention(q, k, v, 1, false)
+	kRepeated := RepeatKV(k, 2)
+	vRepeated := RepeatKV(v, 2)
+	expected := ScaledDotProductAttention(q, kRepeated, vRepeated, 1, false)
+	defer Free(direct, kRepeated, vRepeated, expected)
+	if err := Eval(direct, expected); err != nil {
+		t.Fatalf("Eval(grouped query attention) error = %v", err)
+	}
+	floatSliceApprox(t, direct.Floats(), expected.Floats())
+}
+
+func TestFast_ScaledDotProductAttention_CausalGroupedQueryMatchesRepeated_Good(t *testing.T) {
+	coverageTokens := "ScaledDotProductAttention CausalGroupedQueryMatchesRepeated"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+		1, -1,
+		0.5, 1,
+		1, 0.5,
+		-0.5, 1,
+	}, 1, 4, 2, 2)
+	k := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 0,
+	}, 1, 2, 2, 2)
+	v := FromValues([]float32{
+		10, 0,
+		0, 10,
+		30, 0,
+		0, 30,
+	}, 1, 2, 2, 2)
+	defer Free(q, k, v)
+
+	direct := ScaledDotProductAttention(q, k, v, 1, true)
+	kRepeated := RepeatKV(k, 2)
+	vRepeated := RepeatKV(v, 2)
+	expected := ScaledDotProductAttention(q, kRepeated, vRepeated, 1, true)
+	defer Free(direct, kRepeated, vRepeated, expected)
+	if err := Eval(direct, expected); err != nil {
+		t.Fatalf("Eval(causal grouped query attention) error = %v", err)
+	}
+	floatSliceApprox(t, direct.Floats(), expected.Floats())
+}
+
+func TestFast_ScaledDotProductAttentionWithMask_GroupedQueryMatchesRepeated_Good(t *testing.T) {
+	coverageTokens := "ScaledDotProductAttentionWithMask GroupedQueryMatchesRepeated"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 4, 1, 2)
+	k := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 0,
+		0, -1,
+		-1, -1,
+	}, 1, 2, 3, 2)
+	v := FromValues([]float32{
+		10, 0,
+		0, 10,
+		20, 20,
+		30, 0,
+		0, 30,
+		40, 40,
+	}, 1, 2, 3, 2)
+	mask := FromValues([]float32{0, 0, -1e9}, 1, 1, 1, 3)
+	defer Free(q, k, v, mask)
+
+	direct := ScaledDotProductAttentionWithMask(q, k, v, mask, 1)
+	kRepeated := RepeatKV(k, 2)
+	vRepeated := RepeatKV(v, 2)
+	expected := ScaledDotProductAttentionWithMask(q, kRepeated, vRepeated, mask, 1)
+	defer Free(direct, kRepeated, vRepeated, expected)
+	if err := Eval(direct, expected); err != nil {
+		t.Fatalf("Eval(masked grouped query attention) error = %v", err)
+	}
+	floatSliceApprox(t, direct.Floats(), expected.Floats())
+}
+
 func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 	q := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
 	k := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
@@ -202,6 +409,163 @@ func TestFast_ScaledDotProductAttentionWithMask_Good(t *testing.T) {
 	if shape[0] != 1 || shape[1] != 1 || shape[2] != 2 || shape[3] != 2 {
 		t.Errorf("shape = %v, want [1 1 2 2]", shape)
 	}
+}
+
+func TestFast_singleTokenCausalMask_Good(t *testing.T) {
+	target := "singleTokenCausalMask"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
+	k := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 1, 4, 2)
+	v := FromValues([]float32{
+		10, 0,
+		0, 10,
+		30, 30,
+		40, 40,
+	}, 1, 1, 4, 2)
+	offset := FromValue(1)
+	defer Free(q, k, v, offset)
+
+	mask := singleTokenCausalMask(4, offset)
+	defer Free(mask)
+	if err := Eval(mask); err != nil {
+		t.Fatalf("Eval(mask) error = %v", err)
+	}
+	floatSliceApprox(t, mask.Floats(), []float32{0, 0, -1e9, -1e9})
+
+	got := ScaledDotProductAttentionWithMask(q, k, v, mask, 1)
+	kValid := Slice(k, []int32{0, 0, 0, 0}, []int32{1, 1, 2, 2})
+	vValid := Slice(v, []int32{0, 0, 0, 0}, []int32{1, 1, 2, 2})
+	want := ScaledDotProductAttention(q, kValid, vValid, 1, false)
+	defer Free(got, kValid, vValid, want)
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval(masked attention) error = %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
+func TestFast_singleTokenCacheUpdate_Good(t *testing.T) {
+	target := "singleTokenCacheUpdate"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	cache := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	token := FromValues([]float32{7, 8}, 1, 1, 1, 2)
+	offset := FromValue(2)
+	defer Free(cache, token, offset)
+
+	got := singleTokenCacheUpdate(cache, token, offset)
+	defer Free(got)
+	if err := Eval(got); err != nil {
+		t.Fatalf("Eval(updated cache) error = %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), []float32{0, 0, 0, 0, 7, 8, 0, 0})
+}
+
+func TestFast_singleTokenCacheUpdate_CompiledGood(t *testing.T) {
+	target := "singleTokenCacheUpdate compiled"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	compiled := CompileShapeless(func(inputs []*Array) []*Array {
+		updated := singleTokenCacheUpdate(inputs[0], inputs[1], inputs[2])
+		mask := singleTokenCausalMask(4, inputs[2])
+		return []*Array{updated, mask}
+	}, true)
+	defer compiled.Free()
+
+	cache := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	tokenA := FromValues([]float32{1, 2}, 1, 1, 1, 2)
+	offsetA := FromValue(1)
+	tokenB := FromValues([]float32{3, 4}, 1, 1, 1, 2)
+	offsetB := FromValue(2)
+	defer Free(cache, tokenA, offsetA, tokenB, offsetB)
+
+	first := compiled.Call(cache, tokenA, offsetA)
+	if len(first) != 2 {
+		t.Fatalf("first compiled outputs = %d, want 2", len(first))
+	}
+	defer Free(first...)
+	if err := Eval(first...); err != nil {
+		t.Fatalf("Eval(first) error = %v", err)
+	}
+	floatSliceApprox(t, first[0].Floats(), []float32{0, 0, 1, 2, 0, 0, 0, 0})
+	floatSliceApprox(t, first[1].Floats(), []float32{0, 0, -1e9, -1e9})
+
+	second := compiled.Call(first[0], tokenB, offsetB)
+	if len(second) != 2 {
+		t.Fatalf("second compiled outputs = %d, want 2", len(second))
+	}
+	defer Free(second...)
+	if err := Eval(second...); err != nil {
+		t.Fatalf("Eval(second) error = %v", err)
+	}
+	floatSliceApprox(t, second[0].Floats(), []float32{0, 0, 1, 2, 3, 4, 0, 0})
+	floatSliceApprox(t, second[1].Floats(), []float32{0, 0, 0, -1e9})
+}
+
+func TestFast_fixedSingleTokenAttention_CompiledGood(t *testing.T) {
+	target := "fixedSingleTokenAttention compiled"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	compiled := CompileShapeless(func(inputs []*Array) []*Array {
+		out, keys, values := fixedSingleTokenAttention(inputs[0], inputs[1], inputs[2], inputs[3], inputs[4], inputs[5], 1)
+		return []*Array{out, keys, values}
+	}, true)
+	defer compiled.Free()
+
+	query := FromValues([]float32{1, 0}, 1, 1, 1, 2)
+	keyCache := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	valueCache := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	keyA := FromValues([]float32{1, 0}, 1, 1, 1, 2)
+	valueA := FromValues([]float32{10, 0}, 1, 1, 1, 2)
+	offsetA := FromValue(0)
+	keyB := FromValues([]float32{0, 1}, 1, 1, 1, 2)
+	valueB := FromValues([]float32{0, 20}, 1, 1, 1, 2)
+	offsetB := FromValue(1)
+	defer Free(query, keyCache, valueCache, keyA, valueA, offsetA, keyB, valueB, offsetB)
+
+	first := compiled.Call(query, keyCache, valueCache, keyA, valueA, offsetA)
+	if len(first) != 3 {
+		t.Fatalf("first compiled outputs = %d, want 3", len(first))
+	}
+	defer Free(first...)
+	if err := Eval(first...); err != nil {
+		t.Fatalf("Eval(first) error = %v", err)
+	}
+	wantFirst := ScaledDotProductAttention(query, keyA, valueA, 1, false)
+	defer Free(wantFirst)
+	if err := Eval(wantFirst); err != nil {
+		t.Fatalf("Eval(want first) error = %v", err)
+	}
+	floatSliceApprox(t, first[0].Floats(), wantFirst.Floats())
+	floatSliceApprox(t, first[1].Floats(), []float32{1, 0, 0, 0, 0, 0, 0, 0})
+
+	second := compiled.Call(query, first[1], first[2], keyB, valueB, offsetB)
+	if len(second) != 3 {
+		t.Fatalf("second compiled outputs = %d, want 3", len(second))
+	}
+	defer Free(second...)
+	if err := Eval(second...); err != nil {
+		t.Fatalf("Eval(second) error = %v", err)
+	}
+	keysValid := Slice(second[1], []int32{0, 0, 0, 0}, []int32{1, 1, 2, 2})
+	valuesValid := Slice(second[2], []int32{0, 0, 0, 0}, []int32{1, 1, 2, 2})
+	wantSecond := ScaledDotProductAttention(query, keysValid, valuesValid, 1, false)
+	defer Free(keysValid, valuesValid, wantSecond)
+	if err := Eval(wantSecond); err != nil {
+		t.Fatalf("Eval(want second) error = %v", err)
+	}
+	floatSliceApprox(t, second[0].Floats(), wantSecond.Floats())
+	floatSliceApprox(t, second[1].Floats(), []float32{1, 0, 0, 1, 0, 0, 0, 0})
+	floatSliceApprox(t, second[2].Floats(), []float32{10, 0, 0, 20, 0, 0, 0, 0})
 }
 
 // Generated file-aware compliance coverage.

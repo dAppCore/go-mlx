@@ -13,16 +13,16 @@ import (
 var defaultComputeBackend Compute = computebackend{}
 var newComputeMetalKernel = metal.NewMetalKernel
 
-//	info := compute.DefaultCompute().DeviceInfo()
-//	fmt.Printf("%s %d MB\n", info.Architecture, info.MemorySize/1024/1024)
+// info := compute.DefaultCompute().DeviceInfo()
+// fmt.Printf("%s %d MB\n", info.Architecture, info.MemorySize/1024/1024)
 type DeviceInfo = metal.DeviceInfo
 
-//	c := compute.DefaultCompute()
-//	if c.Available() { /* use c */ }
+// c := compute.DefaultCompute()
+// if c.Available() { /* use c */ }
 func DefaultCompute() Compute { return defaultComputeBackend }
 
-//	session, _ := compute.NewSession(compute.WithSessionLabel("frame-pipe"))
-//	defer session.Close()
+// session, _ := compute.NewSession(compute.WithSessionLabel("frame-pipe"))
+// defer session.Close()
 func NewSession(opts ...SessionOption) (Session, error) {
 	return defaultComputeBackend.NewSession(opts...)
 }

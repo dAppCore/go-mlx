@@ -173,9 +173,9 @@ type Plan struct {
 // Defaults that mirror the mlx-root local-inference baselines. Kept
 // here so the memory package is self-contained.
 const (
-	defaultLocalContextLength    = 131072
-	defaultLocalParallelSlots    = 1
-	defaultPromptCacheMinTokens  = 2048
+	defaultLocalContextLength   = 131072
+	defaultLocalParallelSlots   = 1
+	defaultPromptCacheMinTokens = 2048
 )
 
 // NewPlan chooses opinionated local inference settings from measured memory.
@@ -294,7 +294,7 @@ func baseClassPlan(class Class) Plan {
 			CachePolicy:           KVCacheRotating,
 			CacheMode:             KVCacheModePaged,
 			BatchSize:             2,
-			PrefillChunkSize:      2048,
+			PrefillChunkSize:      4096,
 			ParallelSlots:         1,
 			PromptCache:           true,
 			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
@@ -418,11 +418,29 @@ func applyArchitectureHints(plan *Plan, architecture string) {
 		normalized = p.ID
 	}
 	switch normalized {
+	case "qwen2":
+		plan.Notes = append(plan.Notes, "Qwen2.x uses the native Qwen decoder; long contexts benefit from paged or compact KV cache modes on Apple unified memory")
 	case "qwen3_moe":
 		plan.Notes = append(plan.Notes, "Qwen3-MoE sparse expert routing increases memory pressure; prefer compact KV cache modes on constrained Apple memory")
 		if plan.MachineClass == ClassApple24GB || plan.MachineClass == ClassApple32GB {
 			plan.CacheMode = KVCacheModeKQ8VQ4
 			plan.Notes = append(plan.Notes, "Qwen3-MoE uses asymmetric K@q8,V@q4 cache below 64GB")
+		}
+	case "qwen3_6":
+		plan.Notes = append(plan.Notes, "Qwen3.6 uses hybrid linear attention; native Go kernels are pending, so prefer the mlx_lm fallback backend")
+		plan.ParallelSlots = 1
+		if plan.PrefillChunkSize > 2048 {
+			plan.PrefillChunkSize = 2048
+		}
+	case "qwen3_6_moe":
+		plan.Notes = append(plan.Notes, "Qwen3.6-MoE uses hybrid linear attention plus routed experts; native Go kernels are pending, so prefer the mlx_lm fallback backend")
+		plan.ParallelSlots = 1
+		if plan.PrefillChunkSize > 2048 {
+			plan.PrefillChunkSize = 2048
+		}
+		if plan.MachineClass == ClassApple16GB || plan.MachineClass == ClassApple24GB || plan.MachineClass == ClassApple32GB {
+			plan.CacheMode = KVCacheModeKQ8VQ4
+			plan.Notes = append(plan.Notes, "Qwen3.6-MoE uses asymmetric K@q8,V@q4 cache below 64GB")
 		}
 	case "qwen3_next":
 		plan.Notes = append(plan.Notes, "Qwen3-Next uses nested text_config metadata; keep context and cache policy tied to text model limits")
@@ -578,9 +596,14 @@ func percentBytes(value uint64, percent uint64) uint64 {
 func normalizeKnownArchitecture(value string) string {
 	value = lowerASCII(trimSpace(value))
 	value = replaceASCII(value, '-', '_')
+	value = replaceASCII(value, '.', '_')
 	switch value {
-	case "qwen3_5":
-		return "qwen3_next"
+	case "qwen2_5", "qwen25":
+		return "qwen2"
+	case "qwen3_5", "qwen3_5_text", "qwen3_6", "qwen3_6_text", "qwen35", "qwen36":
+		return "qwen3_6"
+	case "qwen3_5_moe", "qwen3_6_moe", "qwen35_moe", "qwen36_moe":
+		return "qwen3_6_moe"
 	case "minimaxm2", "minimax_m2":
 		return "minimax_m2"
 	case "mixtral":

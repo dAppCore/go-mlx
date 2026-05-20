@@ -102,4 +102,3 @@ func minPositive(a, b int) int {
 	}
 	return b
 }
-

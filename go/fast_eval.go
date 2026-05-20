@@ -19,6 +19,24 @@ func RunFastEvalBench(ctx context.Context, model *Model, cfg bench.Config) (*ben
 	return RunFastEval(ctx, NewModelFastEvalRunner(model), cfg)
 }
 
+// RunFastEvalBenchWithDraft runs the benchmark harness with an optional draft
+// model for speculative decode reporting.
+func RunFastEvalBenchWithDraft(ctx context.Context, model, draft *Model, cfg bench.Config) (*bench.Report, error) {
+	if model == nil {
+		return nil, core.NewError("mlx: model is nil")
+	}
+	return RunFastEval(ctx, NewModelFastEvalRunnerWithDraft(model, draft), cfg)
+}
+
+// RunFastEvalBenchWithSpeculativePair runs the benchmark harness against a
+// loaded target/draft pair, preserving native assistant-only pair state.
+func RunFastEvalBenchWithSpeculativePair(ctx context.Context, pair *SpeculativePair, cfg bench.Config) (*bench.Report, error) {
+	if pair == nil || pair.Target == nil {
+		return nil, core.NewError("mlx: speculative pair is nil")
+	}
+	return RunFastEval(ctx, NewModelFastEvalRunnerWithSpeculativePair(pair), cfg)
+}
+
 // RunFastEval runs a local benchmark/eval suite against the supplied runner.
 func RunFastEval(ctx context.Context, runner bench.Runner, cfg bench.Config) (*bench.Report, error) {
 	return bench.Run(ctx, runner, cfg)
@@ -47,6 +65,7 @@ func fromMlxMetrics(m Metrics) bench.GenerationMetrics {
 	return bench.GenerationMetrics{
 		PromptTokens:               m.PromptTokens,
 		GeneratedTokens:            m.GeneratedTokens,
+		FirstTokenDuration:         m.FirstTokenDuration,
 		PrefillDuration:            m.PrefillDuration,
 		DecodeDuration:             m.DecodeDuration,
 		TotalDuration:              m.TotalDuration,

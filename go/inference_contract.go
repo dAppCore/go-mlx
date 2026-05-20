@@ -74,9 +74,76 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, ident inference.M
 	}, nil
 }
 
+func (backend *metalbackend) PlanModelSlice(ctx context.Context, req inference.ModelSliceRequest) (*inference.ModelSlicePlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	plan, err := inference.PlanModelSlice(req)
+	if err != nil {
+		return nil, err
+	}
+	if plan.Labels == nil {
+		plan.Labels = map[string]string{}
+	}
+	plan.Labels["backend"] = "metal"
+	plan.Labels["library"] = "go-mlx"
+	plan.Notes = append(plan.Notes, "go-mlx can materialise LarQL-style safetensors slices; local dense split execution is experimental and remote FFN/expert execution remains backend work")
+	return &plan, nil
+}
+
+func (backend *metalbackend) PlanSplitInference(ctx context.Context, req inference.SplitInferenceRequest) (*inference.SplitInferencePlan, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	mode := req.Mode
+	if mode == "" {
+		mode = inference.SplitInferenceModeLocal
+	}
+	localPreset := req.LocalPreset
+	if localPreset == "" {
+		localPreset = inference.ModelSlicePresetFull
+		switch mode {
+		case inference.SplitInferenceModeRemoteFFN, inference.SplitInferenceModeRemoteEmbedFFN, inference.SplitInferenceModeRemoteExperts:
+			localPreset = inference.ModelSlicePresetClient
+		}
+	}
+	local, err := backend.PlanModelSlice(ctx, inference.ModelSliceRequest{
+		Preset:  localPreset,
+		Model:   req.Model,
+		Adapter: req.Adapter,
+		Labels:  req.Labels,
+	})
+	if err != nil {
+		return nil, err
+	}
+	plan := &inference.SplitInferencePlan{
+		Mode:       mode,
+		Model:      req.Model,
+		Adapter:    req.Adapter,
+		LocalSlice: *local,
+		Endpoints:  cloneInferenceSplitEndpoints(req.Endpoints),
+		Labels:     cloneInferenceLabels(req.Labels),
+	}
+	if plan.Labels == nil {
+		plan.Labels = map[string]string{}
+	}
+	plan.Labels["backend"] = "metal"
+	plan.Labels["library"] = "go-mlx"
+	if err := inference.ValidateSplitInferencePlan(*plan); err != nil {
+		return nil, err
+	}
+	return plan, nil
+}
+
 func (adapter *metaladapter) Capabilities() inference.CapabilityReport {
 	if adapter == nil || adapter.model == nil {
-		return metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, false)
+		return metalCapabilityReportWithLoadReady(inference.ModelIdentity{}, inference.AdapterIdentity{}, false, true)
 	}
 	return metalCapabilityReport(toInferenceModelIdentity(adapter.rootModel().Info()), adapter.ActiveAdapter(), true)
 }
@@ -236,6 +303,10 @@ var metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
 }
 
 func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
+	return metalCapabilityReportWithLoadReady(model, adapter, available, available)
+}
+
+func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool, loadReady bool) inference.CapabilityReport {
 	device := metalCapabilityDeviceInfo(available)
 	runtimeLabels := map[string]string{}
 	if device.MemorySize > 0 {
@@ -244,12 +315,21 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 	if device.MaxRecommendedWorkingSetSize > 0 {
 		runtimeLabels["working_set_bytes"] = core.Sprintf("%d", device.MaxRecommendedWorkingSetSize)
 	}
+	runtimeLabels["load_available"] = boolLabel(loadReady)
 	if len(runtimeLabels) == 0 {
 		runtimeLabels = nil
 	}
+	modelLoadCapability := inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime)
+	if !loadReady {
+		modelLoadCapability = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
+	}
 	capabilities := []inference.Capability{
-		inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime),
+		modelLoadCapability,
 		inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityRuntimeDiscovery, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityAutoTuning, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityModelReplace, inference.CapabilityGroupRuntime),
+		inference.SupportedCapability(inference.CapabilityModelSlice, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
@@ -276,11 +356,17 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 		inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
 		inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
 		inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
+		inference.ExperimentalCapability(inference.CapabilitySplitInference, inference.CapabilityGroupModel, "local dense Qwen split execution supports Metal attention/logits plus CPU FFN; remote FFN/expert execution is not wired yet"),
+		inference.PlannedCapability(inference.CapabilityDifferentialLoad, inference.CapabilityGroupRuntime, "base/fine-tune differential loading belongs in go-ai/go-ml orchestration"),
+		inference.PlannedCapability(inference.CapabilityVIndex, inference.CapabilityGroupProbe, "LarQL-style vindex extraction is planned for research queries"),
 		inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
 	}
 	capabilities = append(capabilities, profile.AlgorithmCapabilities()...)
+	if !loadReady {
+		capabilities = markMetalUnavailableCapabilities(capabilities)
+	}
 	return inference.CapabilityReport{
 		Runtime: inference.RuntimeIdentity{
 			Backend:       "metal",
@@ -297,6 +383,53 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 		Capabilities:  capabilities,
 		Labels:        map[string]string{"library": "go-mlx"},
 	}
+}
+
+func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inference.Capability {
+	loadBlocked := map[inference.CapabilityID]bool{
+		inference.CapabilityModelLoad:      true,
+		inference.CapabilityAutoTuning:     true,
+		inference.CapabilityBenchmark:      true,
+		inference.CapabilityEvaluation:     true,
+		inference.CapabilityGenerate:       true,
+		inference.CapabilityChat:           true,
+		inference.CapabilityClassify:       true,
+		inference.CapabilityBatchGenerate:  true,
+		inference.CapabilityLoRAInference:  true,
+		inference.CapabilityStateBundle:    true,
+		inference.CapabilityKVSnapshot:     true,
+		inference.CapabilityPromptCache:    true,
+		inference.CapabilityAgentMemory:    true,
+		inference.CapabilityStateWake:      true,
+		inference.CapabilityStateSleep:     true,
+		inference.CapabilityStateFork:      true,
+		inference.CapabilityLoRATraining:   true,
+		inference.CapabilityDistillation:   true,
+		inference.CapabilityGRPO:           true,
+		inference.CapabilityProbeEvents:    true,
+		inference.CapabilityAttentionProbe: true,
+		inference.CapabilityLogitProbe:     true,
+		inference.CapabilityScheduler:      true,
+		inference.CapabilityRequestCancel:  true,
+		inference.CapabilityCacheBlocks:    true,
+		inference.CapabilityCacheWarm:      true,
+	}
+	const detail = "native Metal runtime is unavailable; no usable Metal device is visible for model loading"
+	for i := range capabilities {
+		if !loadBlocked[capabilities[i].ID] {
+			continue
+		}
+		capabilities[i].Status = inference.CapabilityStatusUnsupported
+		if core.Contains(capabilities[i].Detail, "native Metal runtime is unavailable") {
+			continue
+		}
+		if capabilities[i].Detail == "" {
+			capabilities[i].Detail = detail
+		} else {
+			capabilities[i].Detail = detail + "; " + capabilities[i].Detail
+		}
+	}
+	return capabilities
 }
 
 var (
@@ -647,6 +780,18 @@ func cloneInferenceLabels(labels map[string]string) map[string]string {
 	out := make(map[string]string, len(labels))
 	for key, value := range labels {
 		out[key] = value
+	}
+	return out
+}
+
+func cloneInferenceSplitEndpoints(endpoints []inference.SplitEndpoint) []inference.SplitEndpoint {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	out := make([]inference.SplitEndpoint, len(endpoints))
+	for i, endpoint := range endpoints {
+		out[i] = endpoint
+		out[i].Labels = cloneInferenceLabels(endpoint.Labels)
 	}
 	return out
 }

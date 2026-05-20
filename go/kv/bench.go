@@ -20,11 +20,11 @@ type BenchConfig struct {
 
 // BenchReport compares cache modes for one model/context shape.
 type BenchReport struct {
-	Version         int                 `json:"version"`
-	Config          BenchConfig         `json:"config"`
-	Modes           []ModeBench         `json:"modes"`
-	RecommendedMode memory.KVCacheMode  `json:"recommended_mode,omitempty"`
-	Notes           []string            `json:"notes,omitempty"`
+	Version         int                `json:"version"`
+	Config          BenchConfig        `json:"config"`
+	Modes           []ModeBench        `json:"modes"`
+	RecommendedMode memory.KVCacheMode `json:"recommended_mode,omitempty"`
+	Notes           []string           `json:"notes,omitempty"`
 }
 
 // ModeBench is one mode's estimated memory and tradeoff profile.

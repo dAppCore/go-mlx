@@ -6,6 +6,7 @@ package metal
 
 import (
 	"context"
+	"iter"
 	"testing"
 
 	"dappco.re/go"
@@ -487,6 +488,187 @@ func TestModel_NewCaches_ShrinksOversizedRotatingCache_Good(t *testing.T) {
 	}
 }
 
+func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
+	coverageTokens := "NewCaches PagedPreservesRotatingCacheBound"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(1024),
+			},
+		},
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newCaches()
+	full, ok := caches[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
+	}
+	if full.maxSize != 4096 {
+		t.Fatalf("cache[0].maxSize = %d, want 4096", full.maxSize)
+	}
+
+	sliding, ok := caches[1].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
+	}
+	if sliding.maxSize != 1024 {
+		t.Fatalf("cache[1].maxSize = %d, want inherited sliding bound 1024", sliding.maxSize)
+	}
+}
+
+func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
+	coverageTokens := "NewCaches FixedGemma4UsesUniformContextBound"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(1024),
+			},
+		},
+		modelType:  "gemma4_text",
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newCaches()
+	full, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if full.maxSize != 4096 {
+		t.Fatalf("cache[0].maxSize = %d, want 4096", full.maxSize)
+	}
+
+	sliding, ok := caches[1].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
+	}
+	if sliding.maxSize != 4096 {
+		t.Fatalf("cache[1].maxSize = %d, want uniform context bound 4096", sliding.maxSize)
+	}
+}
+
+func TestModel_NewGenerationCaches_FixedGemma4RightSizesRequest_Good(t *testing.T) {
+	coverageTokens := "NewGenerationCaches FixedGemma4RightSizesRequest"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+
+	model := &Model{
+		model:      &fakeModel{numLayers: 1},
+		modelType:  "gemma4_text",
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newGenerationCaches(2204, GenerateConfig{MaxTokens: 128})
+	cache, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if cache.maxSize != 2336 {
+		t.Fatalf("cache.maxSize = %d, want prompt+decode rounded to 2336", cache.maxSize)
+	}
+}
+
+func TestModel_NewGenerationCaches_FixedGemma4KeepsUniformRequestSize_Good(t *testing.T) {
+	coverageTokens := "NewGenerationCaches FixedGemma4KeepsUniformRequestSize"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(1024),
+			},
+		},
+		modelType:  "gemma4_text",
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newGenerationCaches(2204, GenerateConfig{MaxTokens: 128})
+	full, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if full.maxSize != 2336 {
+		t.Fatalf("cache[0].maxSize = %d, want request-sized fixed bound 2336", full.maxSize)
+	}
+	sliding, ok := caches[1].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
+	}
+	if sliding.maxSize != 2336 {
+		t.Fatalf("cache[1].maxSize = %d, want request-sized fixed bound 2336", sliding.maxSize)
+	}
+}
+
+func TestModel_NewGenerationCaches_FixedGemma4SlidingBoundGate_Good(t *testing.T) {
+	coverageTokens := "NewGenerationCaches FixedGemma4SlidingBoundGate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+	restore := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Cleanup(restore)
+
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(1024),
+			},
+		},
+		modelType:  "gemma4_text",
+		contextLen: 32768,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newGenerationCaches(28637, GenerateConfig{MaxTokens: 128})
+	full, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if full.maxSize != 28768 {
+		t.Fatalf("cache[0].maxSize = %d, want request-sized fixed bound 28768", full.maxSize)
+	}
+	sliding, ok := caches[1].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
+	}
+	if sliding.maxSize != 1024 {
+		t.Fatalf("cache[1].maxSize = %d, want sliding fixed bound 1024", sliding.maxSize)
+	}
+}
+
 type chunkedPrefillModel struct {
 	seqLens []int
 }
@@ -536,6 +718,55 @@ func (m *lastLogitsPrefillModel) NumLayers() int                      { return 0
 func (m *lastLogitsPrefillModel) Tokenizer() *Tokenizer               { return nil }
 func (m *lastLogitsPrefillModel) ModelType() string                   { return "last-logits-prefill-test" }
 func (m *lastLogitsPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+type boundedGenerateModel struct {
+	forwardCalls int
+}
+
+func (m *boundedGenerateModel) Forward(tokens *Array, _ []Cache) *Array {
+	m.forwardCalls++
+	seqLen := tokens.Dim(1)
+	return Zeros([]int32{1, int32(seqLen), 2}, DTypeFloat32)
+}
+
+func (m *boundedGenerateModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
+	return m.Forward(tokens, caches)
+}
+func (m *boundedGenerateModel) NewCache() []Cache                   { return nil }
+func (m *boundedGenerateModel) NumLayers() int                      { return 0 }
+func (m *boundedGenerateModel) Tokenizer() *Tokenizer               { return nil }
+func (m *boundedGenerateModel) ModelType() string                   { return "bounded-generate-test" }
+func (m *boundedGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+type directGreedyGenerateModel struct {
+	forwardCalls int
+	greedyCalls  int
+}
+
+func (m *directGreedyGenerateModel) Forward(tokens *Array, _ []Cache) *Array {
+	m.forwardCalls++
+	seqLen := tokens.Dim(1)
+	data := make([]float32, int(seqLen)*2)
+	for i := range seqLen {
+		data[int(i)*2+1] = 1
+	}
+	return FromValues(data, 1, int(seqLen), 2)
+}
+
+func (m *directGreedyGenerateModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
+	return m.Forward(tokens, caches)
+}
+
+func (m *directGreedyGenerateModel) ForwardGreedyToken(_ *Array, _ *Array, _ []Cache) *Array {
+	m.greedyCalls++
+	return FromValues([]int32{0}, 1)
+}
+
+func (m *directGreedyGenerateModel) NewCache() []Cache                   { return nil }
+func (m *directGreedyGenerateModel) NumLayers() int                      { return 0 }
+func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer               { return nil }
+func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-greedy-generate-test" }
+func (m *directGreedyGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 	coverageTokens := "PrefillTokenBlock ChunksByPlanner"
@@ -599,6 +830,60 @@ func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 	}
 }
 
+func TestModel_PrefillTokenBlock_AutoUsesLastTokenForLongPrompt_Good(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock AutoUsesLastTokenForLongPrompt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "4")
+
+	inner := &lastLogitsPrefillModel{}
+	model := &Model{model: inner}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, nil)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+
+	if inner.fullCalls != 0 {
+		t.Fatalf("full forward calls = %d, want 0", inner.fullCalls)
+	}
+	if len(inner.lastLens) != 1 || inner.lastLens[0] != 5 {
+		t.Fatalf("lastLens = %v, want [5]", inner.lastLens)
+	}
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("logits shape = %v, want [1 2]", got)
+	}
+}
+
+func TestModel_PrefillTokenBlock_AutoKeepsShortPromptOnFullPath_Bad(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock AutoKeepsShortPromptOnFullPath"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Setenv("GO_MLX_LAST_LOGITS_PREFILL_MIN_TOKENS", "8")
+
+	inner := &lastLogitsPrefillModel{}
+	model := &Model{model: inner}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3}, nil)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+
+	if inner.fullCalls != 1 {
+		t.Fatalf("full forward calls = %d, want 1", inner.fullCalls)
+	}
+	if len(inner.lastLens) != 0 {
+		t.Fatalf("lastLens = %v, want none", inner.lastLens)
+	}
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 64 {
+		t.Fatalf("logits shape = %v, want [1 64]", got)
+	}
+}
+
 func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *testing.T) {
 	coverageTokens := "PrefillTokenBlock FallsBackWhenLastTokenLogitsInvalid"
 	if coverageTokens == "" {
@@ -623,6 +908,236 @@ func TestModel_PrefillTokenBlock_FallsBackWhenLastTokenLogitsInvalid_Good(t *tes
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 64 {
 		t.Fatalf("fallback logits shape = %v, want [1 64]", got)
+	}
+}
+
+func TestModel_Generate_DoesNotForwardAfterFinalToken_Good(t *testing.T) {
+	coverageTokens := "Generate DoesNotForwardAfterFinalToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	var got []Token
+	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 1}) {
+		got = append(got, token)
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	if len(got) != 1 {
+		t.Fatalf("generated tokens = %d, want 1", len(got))
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want only the prompt prefill", inner.forwardCalls)
+	}
+}
+
+func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
+	coverageTokens := "Generate TraceTokenPhases"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 2 {
+		t.Fatalf("TokenPhases length = %d, want 2; phases=%+v", len(phases), phases)
+	}
+	if phases[0].Step != 0 || phases[1].Step != 1 {
+		t.Fatalf("phase steps = %+v, want ordered step traces", phases)
+	}
+	if phases[0].ForwardDuration <= 0 {
+		t.Fatalf("first phase forward duration = %s, want next-token forward timing", phases[0].ForwardDuration)
+	}
+	if !phases[1].FinalToken || phases[1].ForwardDuration != 0 {
+		t.Fatalf("final phase = %+v, want final token with no forward timing", phases[1])
+	}
+	if phases[0].TotalDuration <= 0 || phases[1].TotalDuration <= 0 {
+		t.Fatalf("phase totals = %+v, want positive token timings", phases)
+	}
+}
+
+func TestModel_Generate_KeepsDecodeLogitsLazyBetweenTokens_Good(t *testing.T) {
+	coverageTokens := "Generate KeepsDecodeLogitsLazyBetweenTokens"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 2 {
+		t.Fatalf("TokenPhases length = %d, want 2; phases=%+v", len(phases), phases)
+	}
+	if phases[0].MaterializeDuration != 0 {
+		t.Fatalf("first phase materialize duration = %s, want lazy next-token logits", phases[0].MaterializeDuration)
+	}
+}
+
+func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
+	coverageTokens := "Generate AsyncDecodePrefetch"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableAsyncDecodePrefetch
+	enableAsyncDecodePrefetch = true
+	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+
+	out := Zeros([]int32{1, 1, 2}, DTypeFloat32)
+	defer Free(out)
+	if err := asyncDecodePrefetch(0, "test", out); err != nil {
+		t.Fatalf("asyncDecodePrefetch() error = %v", err)
+	}
+	if err := Eval(out); err != nil {
+		t.Fatalf("Eval after asyncDecodePrefetch() error = %v", err)
+	}
+}
+
+func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
+	coverageTokens := "Generate AsyncDecodePrefetch"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableAsyncDecodePrefetch
+	enableAsyncDecodePrefetch = true
+	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+
+	if err := asyncDecodePrefetch(0, "nil", nil); err != nil {
+		t.Fatalf("asyncDecodePrefetch(nil) error = %v", err)
+	}
+}
+
+func TestModel_Generate_GenerationStream_Good(t *testing.T) {
+	coverageTokens := "Generate GenerationStream"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableGenerationStream
+	enableGenerationStream = true
+	t.Cleanup(func() { enableGenerationStream = old })
+
+	model := &Model{device: DeviceGPU}
+	if err := model.withGenerationStream(func() {
+		out := Zeros([]int32{1}, DTypeFloat32)
+		defer Free(out)
+		if evalErr := Eval(out); evalErr != nil {
+			t.Fatalf("Eval under generation stream: %v", evalErr)
+		}
+	}); err != nil {
+		t.Fatalf("withGenerationStream() error = %v", err)
+	}
+}
+
+func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
+	coverageTokens := "Generate GenerationStream"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableGenerationStream
+	enableGenerationStream = false
+	t.Cleanup(func() { enableGenerationStream = old })
+	restore := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "0")
+	t.Cleanup(restore)
+
+	called := false
+	model := &Model{device: DeviceGPU}
+	if err := model.withGenerationStream(func() { called = true }); err != nil {
+		t.Fatalf("withGenerationStream() gate off error = %v", err)
+	}
+	if !called {
+		t.Fatal("withGenerationStream() did not call function with gate off")
+	}
+}
+
+func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
+	coverageTokens := "Generate UsesDirectGreedyToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableDirectGreedyToken
+	enableDirectGreedyToken = true
+	t.Cleanup(func() { enableDirectGreedyToken = old })
+
+	inner := &directGreedyGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+	}
+	var got []Token
+	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
+		got = append(got, token)
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 0 {
+		t.Fatalf("tokens = %+v, want IDs [1 0]", got)
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want only prompt prefill", inner.forwardCalls)
+	}
+	if inner.greedyCalls != 1 {
+		t.Fatalf("ForwardGreedyToken calls = %d, want one direct decode call", inner.greedyCalls)
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 2 || phases[0].ForwardDuration <= 0 || phases[1].ForwardDuration != 0 {
+		t.Fatalf("phases = %+v, want direct greedy forward on first step only", phases)
+	}
+}
+
+func TestModel_Generate_DirectGreedyRejectsRepeatPenalty_Bad(t *testing.T) {
+	coverageTokens := "Generate DirectGreedyRejectsRepeatPenalty"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableDirectGreedyToken
+	enableDirectGreedyToken = true
+	t.Cleanup(func() { enableDirectGreedyToken = old })
+
+	inner := &directGreedyGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+	}
+	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, RepeatPenalty: 1.1}) {
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	if inner.greedyCalls != 0 {
+		t.Fatalf("ForwardGreedyToken calls = %d, want disabled when repeat penalty needs logits history", inner.greedyCalls)
+	}
+	if inner.forwardCalls != 2 {
+		t.Fatalf("Forward calls = %d, want prompt plus logits decode fallback", inner.forwardCalls)
 	}
 }
 
@@ -664,10 +1179,57 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 		"<|turn>user\nHello<turn|>\n" +
 		"<|turn>model\nHi<turn|>\n" +
 		"<|turn>user\nAgain<turn|>\n" +
-		"<|turn>model\n"
+		"<|turn>model\n<|channel>thought\n<channel|>"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
 	}
+}
+
+func TestModel_FormatChatChunks_Gemma4MatchesFormattedPrompt_Good(t *testing.T) {
+	coverageTokens := "FormatChatChunks Gemma4MatchesFormattedPrompt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{modelType: "gemma4_text"}
+	messages := []ChatMessage{
+		{Role: "system", Content: " be brief "},
+		{Role: "user", Content: "abcdef"},
+		{Role: "assistant", Content: "Hi"},
+	}
+
+	chunks := collectChatChunks(model.formatChatChunks(messages, 2))
+	got := core.Join("", chunks...)
+	want := model.formatChat(messages)
+
+	if got != want {
+		t.Fatalf("joined chat chunks = %q, want %q", got, want)
+	}
+	if len(chunks) <= len(messages) {
+		t.Fatalf("chunks = %#v, want bounded content chunks plus template chunks", chunks)
+	}
+}
+
+func TestModel_FormatChatChunks_QwenMatchesFormattedPrompt_Good(t *testing.T) {
+	model := &Model{modelType: "qwen3"}
+	messages := []ChatMessage{
+		{Role: "system", Content: "abc"},
+		{Role: "user", Content: "defghi"},
+	}
+
+	got := core.Join("", collectChatChunks(model.formatChatChunks(messages, 3))...)
+	want := model.formatChat(messages)
+
+	if got != want {
+		t.Fatalf("joined qwen chat chunks = %q, want %q", got, want)
+	}
+}
+
+func collectChatChunks(chunks iter.Seq[string]) []string {
+	out := []string{}
+	for chunk := range chunks {
+		out = append(out, chunk)
+	}
+	return out
 }
 
 // Generated file-aware compliance coverage.

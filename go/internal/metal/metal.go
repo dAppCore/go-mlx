@@ -6,9 +6,9 @@
 package metal
 
 /*
-#cgo CXXFLAGS: -std=gnu++17 -O2 -DNDEBUG -Wno-deprecated-declarations -include ${SRCDIR}/mlx_build_config.h
-#cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DMLX_USE_ACCELERATE
-#cgo CFLAGS: -mmacosx-version-min=14.0
+#cgo CXXFLAGS: -std=gnu++20 -mmacosx-version-min=26.0 -O2 -DNDEBUG -Wno-deprecated-declarations -include ${SRCDIR}/mlx_build_config.h
+#cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DFMT_CONSTEVAL= -DMLX_USE_ACCELERATE
+#cgo CFLAGS: -mmacosx-version-min=26.0
 #cgo darwin CFLAGS: -x objective-c
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx-c
@@ -17,13 +17,18 @@ package metal
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/json/single_include/nlohmann
 #cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include
 #cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include/metal_cpp
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
+#cgo CPPFLAGS: -I${SRCDIR}/../../../build/_deps/metal_cpp-src
+#cgo CPPFLAGS: -I${SRCDIR}/../../../cpp/build/_deps/metal_cpp-src
+#cgo CPPFLAGS: -I${SRCDIR}/../../../cpp/cmake-build-debug/_deps/metal_cpp-src
+#cgo darwin LDFLAGS: -mmacosx-version-min=26.0 -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/sysctl.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include "mlx/c/mlx.h"
@@ -63,6 +68,93 @@ static bool mlx_go_metal_has_usable_device(void) {
 #endif
         return ok;
     }
+}
+
+typedef struct {
+    char name[128];
+    char architecture[128];
+    size_t max_buffer_length;
+    size_t max_recommended_working_set_size;
+    size_t memory_size;
+} mlx_go_host_device_info_t;
+
+static void mlx_go_copy_nsstring(char *dst, size_t dst_len, NSString *value) {
+    if (dst == NULL || dst_len == 0 || value == nil) {
+        return;
+    }
+    const char *raw = [value UTF8String];
+    if (raw == NULL) {
+        return;
+    }
+    strncpy(dst, raw, dst_len - 1);
+    dst[dst_len - 1] = '\0';
+}
+
+static void mlx_go_copy_sysctl_string(char *dst, size_t dst_len, const char *key) {
+    if (dst == NULL || dst_len == 0 || key == NULL) {
+        return;
+    }
+    size_t size = dst_len;
+    if (sysctlbyname(key, dst, &size, NULL, 0) != 0) {
+        return;
+    }
+    dst[dst_len - 1] = '\0';
+}
+
+static uint64_t mlx_go_sysctl_uint64(const char *key) {
+    uint64_t value = 0;
+    size_t size = sizeof(value);
+    if (key == NULL || sysctlbyname(key, &value, &size, NULL, 0) != 0) {
+        return 0;
+    }
+    return value;
+}
+
+static mlx_go_host_device_info_t mlx_go_host_device_info(void) {
+    mlx_go_host_device_info_t info;
+    memset(&info, 0, sizeof(info));
+    @autoreleasepool {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        NSArray<id<MTLDevice>> *devices = nil;
+        if (device == nil) {
+            devices = MTLCopyAllDevices();
+            if (devices != nil && devices.count > 0) {
+                device = [devices objectAtIndex:0];
+#if !__has_feature(objc_arc)
+                [device retain];
+#endif
+            }
+        }
+        if (device != nil) {
+            mlx_go_copy_nsstring(info.name, sizeof(info.name), device.name);
+            mlx_go_copy_nsstring(info.architecture, sizeof(info.architecture), device.name);
+            info.max_buffer_length = (size_t)device.maxBufferLength;
+            if ([device respondsToSelector:@selector(recommendedMaxWorkingSetSize)]) {
+                info.max_recommended_working_set_size = (size_t)device.recommendedMaxWorkingSetSize;
+                info.memory_size = info.max_recommended_working_set_size;
+            }
+#if !__has_feature(objc_arc)
+            [device release];
+#endif
+        }
+#if !__has_feature(objc_arc)
+        [devices release];
+#endif
+    }
+    if (info.name[0] == '\0') {
+        mlx_go_copy_sysctl_string(info.name, sizeof(info.name), "machdep.cpu.brand_string");
+    }
+    if (info.architecture[0] == '\0') {
+        strncpy(info.architecture, info.name, sizeof(info.architecture) - 1);
+        info.architecture[sizeof(info.architecture) - 1] = '\0';
+    }
+    if (info.memory_size == 0) {
+        info.memory_size = (size_t)mlx_go_sysctl_uint64("hw.memsize");
+    }
+    if (info.max_recommended_working_set_size == 0 && info.memory_size > 0) {
+        info.max_recommended_working_set_size = (size_t)((uint64_t)info.memory_size * 9 / 10);
+    }
+    return info;
 }
 */
 import "C"
@@ -111,6 +203,17 @@ func usableMetalDeviceNoInit() bool {
 	return bool(C.mlx_go_metal_has_usable_device())
 }
 
+func hostDeviceInfo() DeviceInfo {
+	info := C.mlx_go_host_device_info()
+	return DeviceInfo{
+		Name:                         C.GoString(&info.name[0]),
+		Architecture:                 C.GoString(&info.architecture[0]),
+		MaxBufferLength:              uint64(info.max_buffer_length),
+		MaxRecommendedWorkingSetSize: uint64(info.max_recommended_working_set_size),
+		MemorySize:                   uint64(info.memory_size),
+	}
+}
+
 func setDefaultCPUDeviceNoInit() {
 	if usableMetalDeviceNoInit() {
 		return
@@ -146,8 +249,8 @@ func Init() {
 
 		C.set_error_handler()
 		// Some headless macOS environments expose the MLX runtime without a
-		// usable Metal device. Defaulting to CPU keeps direct array operations
-		// and explicit cpu loads functional instead of aborting on first alloc.
+		// usable Metal device. Keep initialisation deterministic here; model
+		// loading validates the device before creating MLX streams.
 		setDefaultCPUDeviceNoInit()
 	})
 }

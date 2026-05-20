@@ -4,9 +4,12 @@ package mlx
 
 import (
 	"context"
+	"iter"
+
 	"dappco.re/go/mlx/blockcache"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference/parser"
 	memvid "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/bundle"
@@ -30,10 +33,27 @@ type nativeSessionKVSnapshotterWithOptions interface {
 	CaptureKVWithOptions(context.Context, metal.KVSnapshotCaptureOptions) (*metal.KVSnapshot, error)
 }
 
+type nativeSessionChunkPrefiller interface {
+	PrefillChunks(context.Context, iter.Seq[string]) error
+}
+
+type nativeSessionChunkAppender interface {
+	AppendPromptChunks(context.Context, iter.Seq[string]) error
+}
+
+type nativeSessionTokenPrefiller interface {
+	PrefillTokens(context.Context, []int32) error
+}
+
+type nativeSessionTokenAppender interface {
+	AppendTokens(context.Context, []int32) error
+}
+
 // ModelSession is a persistent model-state handle with retained KV cache.
 type ModelSession struct {
 	session     metal.SessionHandle
 	info        ModelInfo
+	tok         *Tokenizer
 	agentMemory *agent.WakeReport
 }
 
@@ -50,7 +70,7 @@ func (m *Model) NewSession() (*ModelSession, error) {
 	if session == nil {
 		return nil, core.NewError("mlx: native model returned nil session")
 	}
-	return &ModelSession{session: session, info: m.Info()}, nil
+	return &ModelSession{session: session, info: m.Info(), tok: m.Tokenizer()}, nil
 }
 
 // NewSessionFromKV creates a persistent session restored from a KV snapshot.
@@ -91,6 +111,34 @@ func (s *ModelSession) Prefill(prompt string) error {
 	return s.session.Prefill(context.Background(), prompt)
 }
 
+// PrefillChunks loads bounded prompt chunks into the retained session KV state.
+func (s *ModelSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.session == nil {
+		return core.NewError("mlx: model session is nil")
+	}
+	if prefiller, ok := s.session.(nativeSessionChunkPrefiller); ok {
+		return prefiller.PrefillChunks(ctx, chunks)
+	}
+	return s.Prefill(promptChunksToString(chunks))
+}
+
+// PrefillTokens loads model-native token IDs into the retained session KV state.
+func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.session == nil {
+		return core.NewError("mlx: model session is nil")
+	}
+	if prefiller, ok := s.session.(nativeSessionTokenPrefiller); ok {
+		return prefiller.PrefillTokens(ctx, append([]int32(nil), tokens...))
+	}
+	return core.NewError("mlx: native model session does not support token prefill")
+}
+
 // AppendPrompt appends prompt tokens to the retained session KV state without
 // replaying the existing prefix.
 func (s *ModelSession) AppendPrompt(prompt string) error {
@@ -100,15 +148,48 @@ func (s *ModelSession) AppendPrompt(prompt string) error {
 	return s.session.AppendPrompt(context.Background(), prompt)
 }
 
+// AppendPromptChunks appends bounded prompt chunks to the retained session KV
+// state without replaying the existing prefix.
+func (s *ModelSession) AppendPromptChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.session == nil {
+		return core.NewError("mlx: model session is nil")
+	}
+	if appender, ok := s.session.(nativeSessionChunkAppender); ok {
+		return appender.AppendPromptChunks(ctx, chunks)
+	}
+	return s.AppendPrompt(promptChunksToString(chunks))
+}
+
+// AppendTokens appends model-native token IDs to the retained session KV state
+// without replaying the existing prefix.
+func (s *ModelSession) AppendTokens(ctx context.Context, tokens []int32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if s == nil || s.session == nil {
+		return core.NewError("mlx: model session is nil")
+	}
+	if appender, ok := s.session.(nativeSessionTokenAppender); ok {
+		return appender.AppendTokens(ctx, append([]int32(nil), tokens...))
+	}
+	return core.NewError("mlx: native model session does not support token append")
+}
+
 // Generate produces a buffered string from the retained session state.
 func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	if s == nil || s.session == nil {
 		return "", core.NewError("mlx: model session is nil")
 	}
+	cfg := applyGenerateOptions(opts)
+	filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
 	builder := core.NewBuilder()
-	for tok := range s.session.Generate(context.Background(), toMetalGenerateConfig(applyGenerateOptions(opts))) {
-		builder.WriteString(tok.Text)
+	for tok := range s.session.Generate(context.Background(), toMetalGenerateConfig(cfg)) {
+		builder.WriteString(filter.Process(sessionParserTokenText(s.tok, tok)))
 	}
+	builder.WriteString(filter.Flush())
 	if err := s.session.Err(); err != nil {
 		return "", err
 	}
@@ -126,19 +207,60 @@ func (s *ModelSession) GenerateStream(ctx context.Context, opts ...GenerateOptio
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		cfg := toMetalGenerateConfig(applyGenerateOptions(opts))
-		for tok := range s.session.Generate(ctx, cfg) {
+		cfg := applyGenerateOptions(opts)
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
+		for tok := range s.session.Generate(ctx, toMetalGenerateConfig(cfg)) {
 			if ctx.Err() != nil {
 				return
 			}
+			text := filter.Process(sessionParserTokenText(s.tok, tok))
+			if text == "" {
+				continue
+			}
 			select {
-			case out <- toRootToken(tok):
+			case out <- Token{ID: tok.ID, Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	return out
+}
+
+func sessionParserTokenText(tok *Tokenizer, token metal.Token) string {
+	if tok != nil {
+		if text := tok.IDToken(token.ID); sessionParserControlToken(text) {
+			return text
+		}
+	}
+	return token.Text
+}
+
+func sessionParserControlToken(text string) bool {
+	if text == "" {
+		return false
+	}
+	return core.Contains(text, "<|channel>") ||
+		core.Contains(text, "<channel|>") ||
+		core.Contains(text, "<start_of_turn>") ||
+		core.Contains(text, "<end_of_turn>") ||
+		core.Contains(text, "<think>") ||
+		core.Contains(text, "</think>") ||
+		core.Contains(text, "<thinking>") ||
+		core.Contains(text, "</thinking>") ||
+		core.Contains(text, "<thought>") ||
+		core.Contains(text, "</thought>") ||
+		core.Contains(text, "<reasoning>") ||
+		core.Contains(text, "</reasoning>") ||
+		core.Contains(text, "<analysis>") ||
+		core.Contains(text, "</analysis>")
 }
 
 // CaptureKV copies the current retained KV cache tensors to CPU memory.
@@ -357,7 +479,7 @@ func (s *ModelSession) Fork() (*ModelSession, error) {
 	if forked == nil {
 		return nil, core.NewError("mlx: native model returned nil session fork")
 	}
-	return &ModelSession{session: forked, info: s.info, agentMemory: agent.CloneWakeReport(s.agentMemory)}, nil
+	return &ModelSession{session: forked, info: s.info, tok: s.tok, agentMemory: agent.CloneWakeReport(s.agentMemory)}, nil
 }
 
 // Reset releases retained state and leaves the session ready for another prefill.

@@ -14,21 +14,23 @@ import (
 
 // Qwen3Config holds Qwen 3 model configuration.
 type Qwen3Config struct {
-	ModelType             string  `json:"model_type"`
-	HiddenSize            int32   `json:"hidden_size"`
-	NumHiddenLayers       int32   `json:"num_hidden_layers"`
-	IntermediateSize      int32   `json:"intermediate_size"`
-	MoEIntermediateSize   int32   `json:"moe_intermediate_size"`
-	NumAttentionHeads     int32   `json:"num_attention_heads"`
-	NumKeyValueHeads      int32   `json:"num_key_value_heads"`
-	NumExperts            int32   `json:"num_experts"`
-	NumExpertsPerTok      int32   `json:"num_experts_per_tok"`
-	DecoderSparseStep     int32   `json:"decoder_sparse_step"`
-	HeadDim               int32   `json:"head_dim"`
-	VocabSize             int32   `json:"vocab_size"`
-	RMSNormEps            float32 `json:"rms_norm_eps"`
-	RopeTheta             float32 `json:"rope_theta"`
-	MaxPositionEmbeddings int32   `json:"max_position_embeddings"`
+	ModelType             string   `json:"model_type"`
+	HiddenSize            int32    `json:"hidden_size"`
+	NumHiddenLayers       int32    `json:"num_hidden_layers"`
+	IntermediateSize      int32    `json:"intermediate_size"`
+	MoEIntermediateSize   int32    `json:"moe_intermediate_size"`
+	NumAttentionHeads     int32    `json:"num_attention_heads"`
+	NumKeyValueHeads      int32    `json:"num_key_value_heads"`
+	NumExperts            int32    `json:"num_experts"`
+	NumExpertsPerTok      int32    `json:"num_experts_per_tok"`
+	DecoderSparseStep     int32    `json:"decoder_sparse_step"`
+	HeadDim               int32    `json:"head_dim"`
+	VocabSize             int32    `json:"vocab_size"`
+	RMSNormEps            float32  `json:"rms_norm_eps"`
+	RopeTheta             float32  `json:"rope_theta"`
+	PartialRotaryFactor   float32  `json:"partial_rotary_factor"`
+	MaxPositionEmbeddings int32    `json:"max_position_embeddings"`
+	LayerTypes            []string `json:"layer_types"`
 
 	Quantization *QuantizationConfig `json:"-"`
 	Scale        float32             `json:"-"` // 1/sqrt(head_dim)
@@ -157,8 +159,14 @@ func mergeQwen3TextConfig(top, text Qwen3Config) Qwen3Config {
 	if text.RopeTheta == 0 {
 		text.RopeTheta = top.RopeTheta
 	}
+	if text.PartialRotaryFactor == 0 {
+		text.PartialRotaryFactor = top.PartialRotaryFactor
+	}
 	if text.MaxPositionEmbeddings == 0 {
 		text.MaxPositionEmbeddings = top.MaxPositionEmbeddings
+	}
+	if len(text.LayerTypes) == 0 && len(top.LayerTypes) > 0 {
+		text.LayerTypes = append([]string(nil), top.LayerTypes...)
 	}
 	return text
 }
@@ -173,13 +181,42 @@ func firstQwen3Quantization(configs ...*QuantizationConfig) *QuantizationConfig 
 }
 
 func (cfg *Qwen3Config) IsMoE() bool {
-	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
+	return cfg != nil && (cfg.ModelType == "qwen3_moe" || cfg.ModelType == "qwen3_6_moe" || cfg.NumExperts > 0 || cfg.NumExpertsPerTok > 0 || cfg.MoEIntermediateSize > 0)
+}
+
+func (cfg *Qwen3Config) IsQwen36Hybrid() bool {
+	if cfg == nil {
+		return false
+	}
+	switch normalizeProbeModelType(cfg.ModelType) {
+	case "qwen3_6", "qwen3_6_moe":
+		return true
+	}
+	for _, layerType := range cfg.LayerTypes {
+		if normalizeQwen3LayerType(layerType) == "linear_attention" {
+			return true
+		}
+	}
+	return cfg.PartialRotaryFactor > 0 && cfg.PartialRotaryFactor < 1
+}
+
+func normalizeQwen3LayerType(value string) string {
+	value = core.Lower(core.Trim(value))
+	value = core.Replace(value, "-", "_")
+	return core.Replace(value, ".", "_")
+}
+
+func qwen36NativeGuardMessage(modelType string) string {
+	if normalizeProbeModelType(modelType) == "qwen3_6_moe" {
+		return "qwen3_6_moe hybrid linear attention and sparse expert routing are not implemented in the native Go loader yet; use mlx_lm fallback"
+	}
+	return "qwen3_6 hybrid linear attention is not implemented in the native Go loader yet; use mlx_lm fallback"
 }
 
 func detectQwenModelType(configData []byte, weights map[string]*Array) string {
 	if detected, err := probeModelType(configData); err == nil {
 		switch detected {
-		case "llama", "qwen2", "qwen3", "qwen3_next", "qwen3_moe":
+		case "llama", "qwen2", "qwen3", "qwen3_next", "qwen3_6", "qwen3_6_moe", "qwen3_moe":
 			return detected
 		}
 	}
@@ -204,6 +241,9 @@ func LoadQwen3(modelPath string) (*Qwen3Model, error) {
 	cfg, err := parseQwen3Config(data)
 	if err != nil {
 		return nil, core.E("qwen3.LoadQwen3", "parse config", err)
+	}
+	if cfg.IsQwen36Hybrid() {
+		return nil, core.E("qwen3.LoadQwen3", qwen36NativeGuardMessage(cfg.ModelType), nil)
 	}
 	if cfg.IsMoE() {
 		return nil, core.E("qwen3.LoadQwen3", "qwen3_moe sparse expert routing is not implemented in the native Go loader yet", nil)
@@ -406,7 +446,11 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 		oldK, oldV := k, v
 		pages := paged.UpdatePages(k, v, int(L))
 		Free(oldK, oldV)
-		kPages, vPages, repeatedPages := repeatPagedState(pages, repeatFactor)
+		kPages, vPages := pages.Keys, pages.Values
+		var repeatedPages []*Array
+		if pagedStateNeedsMaterializedRepeat(pages, repeatFactor) {
+			kPages, vPages, repeatedPages = repeatPagedState(pages, repeatFactor)
+		}
 		out = ScaledDotProductAttentionPaged(q, kPages, vPages, cfg.Scale)
 		Free(repeatedPages...)
 		pages.Free()
@@ -445,11 +489,9 @@ func (a *Qwen3Attention) forward(x *Array, c Cache, B, L int32, mask *Array, cfg
 // forward computes SwiGLU: down(silu(gate(x)) * up(x)).
 func (m *Qwen3MLP) forward(x *Array) *Array {
 	gateProj := m.GateProj.Forward(x)
-	gate := SiLU(gateProj)
-	Free(gateProj)
 	upProj := m.UpProj.Forward(x)
-	activated := Mul(gate, upProj)
-	Free(gate, upProj)
+	activated := siluGateMul(gateProj, upProj)
+	Free(gateProj, upProj)
 	result := m.DownProj.Forward(activated)
 	Free(activated)
 	return result

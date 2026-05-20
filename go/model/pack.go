@@ -250,7 +250,6 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 	return &cloned
 }
 
-
 func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
 	stat := core.Stat(tokenizerPath)
@@ -369,6 +368,10 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 func modelPackUnsupportedRuntimeMessage(architecture string) string {
 	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
 		switch {
+		case profile.ID == "qwen3_6":
+			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet; use mlx_lm fallback: " + architecture
+		case profile.ID == "qwen3_6_moe":
+			return "architecture is recognized, but native hybrid linear-attention and sparse expert loading are not implemented yet; use mlx_lm fallback: " + architecture
 		case profile.Embeddings:
 			return "architecture is recognized, but native embedding encoder loading is not implemented yet: " + architecture
 		case profile.Rerank:
@@ -651,4 +654,3 @@ func modelPackRequiresChatTemplate(architecture string) bool {
 	profile, ok := profile.LookupArchitectureProfile(architecture)
 	return !ok || profile.RequiresChatTemplate
 }
-

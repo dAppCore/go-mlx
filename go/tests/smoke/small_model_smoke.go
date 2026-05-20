@@ -3,10 +3,10 @@
 package smoke
 
 import (
-	mlx "dappco.re/go/mlx"
-	"dappco.re/go/inference/bench"
-	"dappco.re/go/mlx/memory"
 	"context"
+	"dappco.re/go/inference/bench"
+	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/memory"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/blockcache"
@@ -26,20 +26,20 @@ const (
 
 // SmallModelSmokeConfig configures a laptop-safe native MLX smoke pass.
 type SmallModelSmokeConfig struct {
-	ModelPath              string              `json:"model_path,omitempty"`
-	MaxWeightBytes         uint64              `json:"max_weight_bytes,omitempty"`
-	RequiredQuantization   int                 `json:"required_quantization,omitempty"`
-	MaxContextLength       int                 `json:"max_context_length,omitempty"`
-	MaxBatchSize           int                 `json:"max_batch_size,omitempty"`
-	MaxPrefillChunkSize    int                 `json:"max_prefill_chunk_size,omitempty"`
+	ModelPath              string                  `json:"model_path,omitempty"`
+	MaxWeightBytes         uint64                  `json:"max_weight_bytes,omitempty"`
+	RequiredQuantization   int                     `json:"required_quantization,omitempty"`
+	MaxContextLength       int                     `json:"max_context_length,omitempty"`
+	MaxBatchSize           int                     `json:"max_batch_size,omitempty"`
+	MaxPrefillChunkSize    int                     `json:"max_prefill_chunk_size,omitempty"`
 	Device                 mlx.DeviceInfo          `json:"device,omitempty"`
-	IncludeWorkloadBench   bool                `json:"include_workload_bench"`
-	IncludeChatTemplate    bool                `json:"include_chat_template"`
+	IncludeWorkloadBench   bool                    `json:"include_workload_bench"`
+	IncludeChatTemplate    bool                    `json:"include_chat_template"`
 	Workload               mlx.WorkloadBenchConfig `json:"workload,omitempty"`
 	AdditionalLoadOptions  []mlx.LoadOption        `json:"-"`
-	RequireNativeLoadable  bool                `json:"require_native_loadable"`
-	RequireValidModelPack  bool                `json:"require_valid_model_pack"`
-	RequireKnownWeightSize bool                `json:"require_known_weight_size"`
+	RequireNativeLoadable  bool                    `json:"require_native_loadable"`
+	RequireValidModelPack  bool                    `json:"require_valid_model_pack"`
+	RequireKnownWeightSize bool                    `json:"require_known_weight_size"`
 }
 
 // SmallModelSmokeBudget records the conservative load/no-load decision.
@@ -56,38 +56,38 @@ type SmallModelSmokeBudget struct {
 
 // SmallModelSmokeLoadPlan is the MLX load shape produced by the smoke planner.
 type SmallModelSmokeLoadPlan struct {
-	ContextLength        int           `json:"context_length"`
-	ParallelSlots        int           `json:"parallel_slots"`
-	PromptCache          bool          `json:"prompt_cache"`
-	PromptCacheMinTokens int           `json:"prompt_cache_min_tokens,omitempty"`
-	Quantization         int           `json:"quantization,omitempty"`
+	ContextLength        int                  `json:"context_length"`
+	ParallelSlots        int                  `json:"parallel_slots"`
+	PromptCache          bool                 `json:"prompt_cache"`
+	PromptCacheMinTokens int                  `json:"prompt_cache_min_tokens,omitempty"`
+	Quantization         int                  `json:"quantization,omitempty"`
 	CachePolicy          memory.KVCachePolicy `json:"cache_policy,omitempty"`
 	CacheMode            memory.KVCacheMode   `json:"cache_mode,omitempty"`
-	BatchSize            int           `json:"batch_size"`
-	PrefillChunkSize     int           `json:"prefill_chunk_size"`
-	MemoryLimitBytes     uint64        `json:"memory_limit_bytes,omitempty"`
-	CacheLimitBytes      uint64        `json:"cache_limit_bytes,omitempty"`
-	WiredLimitBytes      uint64        `json:"wired_limit_bytes,omitempty"`
+	BatchSize            int                  `json:"batch_size"`
+	PrefillChunkSize     int                  `json:"prefill_chunk_size"`
+	MemoryLimitBytes     uint64               `json:"memory_limit_bytes,omitempty"`
+	CacheLimitBytes      uint64               `json:"cache_limit_bytes,omitempty"`
+	WiredLimitBytes      uint64               `json:"wired_limit_bytes,omitempty"`
 }
 
 // SmallModelSmokePlan is a metadata-only decision about whether a model should
 // be touched by a native Apple smoke run.
 type SmallModelSmokePlan struct {
 	ModelPath  string                  `json:"model_path"`
-	Pack       mp.ModelPack               `json:"pack"`
+	Pack       mp.ModelPack            `json:"pack"`
 	Budget     SmallModelSmokeBudget   `json:"budget"`
-	MemoryPlan memory.Plan              `json:"memory_plan"`
+	MemoryPlan memory.Plan             `json:"memory_plan"`
 	Load       SmallModelSmokeLoadPlan `json:"load"`
 	Notes      []string                `json:"notes,omitempty"`
 }
 
 // SmallModelSmokeReport captures a guarded native smoke run.
 type SmallModelSmokeReport struct {
-	Plan       SmallModelSmokePlan  `json:"plan"`
-	Skipped    bool                 `json:"skipped"`
-	SkipReason string               `json:"skip_reason,omitempty"`
+	Plan       SmallModelSmokePlan      `json:"plan"`
+	Skipped    bool                     `json:"skipped"`
+	SkipReason string                   `json:"skip_reason,omitempty"`
 	Bench      *mlx.WorkloadBenchReport `json:"bench,omitempty"`
-	Error      string               `json:"error,omitempty"`
+	Error      string                   `json:"error,omitempty"`
 }
 
 // DefaultSmallModelSmokeConfig returns the Apple-local smoke defaults: q4 only,
@@ -202,22 +202,25 @@ func RunSmallModelSmoke(ctx context.Context, cfg SmallModelSmokeConfig) (*SmallM
 		report.SkipReason = plan.Budget.Reason
 		return report, nil
 	}
-	model, err := mlx.LoadModel(plan.ModelPath, smallModelSmokeLoadOptions(plan, cfg)...)
-	if err != nil {
-		report.Error = err.Error()
-		return report, err
-	}
-	defer model.Close()
-	if !cfg.IncludeWorkloadBench {
-		return report, nil
-	}
-	bench, err := mlx.RunModelWorkloadBench(ctx, model, cfg.Workload)
+	bench, err := runSmallModelSmokeLoadAndBench(ctx, plan.ModelPath, smallModelSmokeLoadOptions(plan, cfg), cfg.Workload, cfg.IncludeWorkloadBench)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
 	}
 	report.Bench = bench
 	return report, nil
+}
+
+var runSmallModelSmokeLoadAndBench = func(ctx context.Context, modelPath string, opts []mlx.LoadOption, workload mlx.WorkloadBenchConfig, includeBench bool) (*mlx.WorkloadBenchReport, error) {
+	model, err := mlx.LoadModel(modelPath, opts...)
+	if err != nil {
+		return nil, err
+	}
+	defer model.Close()
+	if !includeBench {
+		return nil, nil
+	}
+	return mlx.RunModelWorkloadBench(ctx, model, workload)
 }
 
 func normalizeSmallModelSmokeConfig(cfg SmallModelSmokeConfig) SmallModelSmokeConfig {

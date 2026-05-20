@@ -98,6 +98,106 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 	return nil
 }
 
+// PrefillChunks tokenises bounded prompt chunks and stores their KV/logit state
+// in the session.
+func (s *ModelSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForMutation(); err != nil {
+		s.err = err
+		return err
+	}
+	s.resetState()
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	start := time.Now()
+	var prefillErr error
+	if deviceErr := s.model.withDevice(func() {
+		caches := s.model.newCaches()
+		tokens, logits, err := s.model.prefillPromptChunksWithPrefix(ctx, chunks, caches, false, "ModelSession.PrefillChunks")
+		if err != nil {
+			freeCaches(caches)
+			prefillErr = err
+			return
+		}
+		s.caches = caches
+		s.logits = logits
+		s.tokens = append([]int32(nil), tokens...)
+		s.generated = nil
+		s.tokenOffset = len(tokens)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if prefillErr != nil {
+		s.err = prefillErr
+		return prefillErr
+	}
+	s.prefillDuration = time.Since(start)
+	return nil
+}
+
+// PrefillTokens stores already-tokenised prompt state in the session.
+func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForMutation(); err != nil {
+		s.err = err
+		return err
+	}
+	s.resetState()
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	start := time.Now()
+	var prefillErr error
+	if deviceErr := s.model.withDevice(func() {
+		promptTokens := append([]int32(nil), tokens...)
+		if len(promptTokens) == 0 {
+			prefillErr = core.NewError("ModelSession.PrefillTokens: empty prompt tokens")
+			return
+		}
+		caches := s.model.newCaches()
+		logits, err := s.model.prefillTokenBlock(ctx, promptTokens, caches)
+		if err != nil {
+			freeCaches(caches)
+			prefillErr = core.E("ModelSession.PrefillTokens", "prefill", err)
+			return
+		}
+		s.caches = caches
+		s.logits = logits
+		s.tokens = promptTokens
+		s.generated = nil
+		s.tokenOffset = len(promptTokens)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if prefillErr != nil {
+		s.err = prefillErr
+		return prefillErr
+	}
+	s.prefillDuration = time.Since(start)
+	return nil
+}
+
 // AppendPrompt tokenises prompt and appends its KV/logit state to the current
 // session without resetting the retained prefix.
 func (s *ModelSession) AppendPrompt(ctx context.Context, prompt string) error {
@@ -151,6 +251,104 @@ func (s *ModelSession) AppendPrompt(ctx context.Context, prompt string) error {
 	return nil
 }
 
+// AppendTokens appends already-tokenised prompt state without replaying the
+// retained prefix.
+func (s *ModelSession) AppendTokens(ctx context.Context, tokens []int32) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForAppend(); err != nil {
+		s.err = err
+		return err
+	}
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	start := time.Now()
+	var appendErr error
+	if deviceErr := s.model.withDevice(func() {
+		promptTokens := append([]int32(nil), tokens...)
+		if len(s.tokens) > 0 {
+			promptTokens = stripImplicitChunkBOS(s.model.tokenizer, promptTokens)
+		}
+		if len(promptTokens) == 0 {
+			appendErr = core.NewError("ModelSession.AppendTokens: empty prompt tokens")
+			return
+		}
+		logits, err := s.model.prefillTokenBlock(ctx, promptTokens, s.caches)
+		if err != nil {
+			appendErr = core.E("ModelSession.AppendTokens", "prefill", err)
+			return
+		}
+		oldLogits := s.logits
+		s.logits = logits
+		Free(oldLogits)
+		s.tokens = append(s.tokens, promptTokens...)
+		s.tokenOffset += len(promptTokens)
+		s.prefillDuration += time.Since(start)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if appendErr != nil {
+		s.err = appendErr
+		return appendErr
+	}
+	return nil
+}
+
+// AppendPromptChunks tokenises bounded prompt chunks and appends their KV/logit
+// state without replaying the retained prefix.
+func (s *ModelSession) AppendPromptChunks(ctx context.Context, chunks iter.Seq[string]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = nil
+	if err := s.readyForAppend(); err != nil {
+		s.err = err
+		return err
+	}
+	release, err := s.model.acquireSlot(ctx)
+	if err != nil {
+		s.err = err
+		return err
+	}
+	defer release()
+
+	start := time.Now()
+	var appendErr error
+	if deviceErr := s.model.withDevice(func() {
+		tokens, logits, err := s.model.prefillPromptChunksWithPrefix(ctx, chunks, s.caches, len(s.tokens) > 0, "ModelSession.AppendPromptChunks")
+		if err != nil {
+			appendErr = err
+			return
+		}
+		oldLogits := s.logits
+		s.logits = logits
+		Free(oldLogits)
+		s.tokens = append(s.tokens, tokens...)
+		s.tokenOffset += len(tokens)
+		s.prefillDuration += time.Since(start)
+	}); deviceErr != nil {
+		s.err = deviceErr
+		return deviceErr
+	}
+	if appendErr != nil {
+		s.err = appendErr
+		return appendErr
+	}
+	return nil
+}
+
 // Generate streams tokens from the retained session state.
 func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Seq[Token] {
 	return func(yield func(Token) bool) {
@@ -182,26 +380,33 @@ func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Se
 func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, yield func(Token) bool) {
 	totalStart := time.Now()
 	ResetPeakMemory()
-	sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
+	sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
 	promptLen := len(s.tokens)
 	if s.tokenOffset > promptLen {
 		promptLen = s.tokenOffset
 	}
 	genCount := 0
+	var firstTokenDuration time.Duration
 	history := append([]int32(nil), s.generated...)
 	emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, len(s.generated), -1, s.caches)
 	emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
 	defer func() {
 		decodeDur := time.Since(totalStart)
+		processMemory := GetProcessMemory()
 		metrics := Metrics{
-			PromptTokens:      promptLen,
-			GeneratedTokens:   genCount,
-			PrefillDuration:   s.prefillDuration,
-			DecodeDuration:    decodeDur,
-			TotalDuration:     s.prefillDuration + decodeDur,
-			PeakMemoryBytes:   GetPeakMemory(),
-			ActiveMemoryBytes: GetActiveMemory(),
+			PromptTokens:               promptLen,
+			GeneratedTokens:            genCount,
+			FirstTokenDuration:         firstTokenDuration,
+			PrefillDuration:            s.prefillDuration,
+			DecodeDuration:             decodeDur,
+			TotalDuration:              s.prefillDuration + decodeDur,
+			PeakMemoryBytes:            GetPeakMemory(),
+			ActiveMemoryBytes:          GetActiveMemory(),
+			CacheMemoryBytes:           GetCacheMemory(),
+			ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
+			ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
+			ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
 		}
 		if s.prefillDuration > 0 {
 			metrics.PrefillTokensPerSec = float64(promptLen) / s.prefillDuration.Seconds()
@@ -220,32 +425,52 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		default:
 		}
 
-		lastPos, err := lastTokenLogits(s.logits)
-		if err != nil {
-			s.err = core.E("ModelSession.Generate", core.Sprintf("last logits step %d", i), err)
-			return
-		}
+		var next *Array
+		nextEvaluated := false
+		if nativeGreedyDecodeAvailable(cfg, history, s.logits) {
+			var err error
+			next, err = nativeGreedyDecodeToken(s.logits)
+			if err != nil {
+				s.err = core.E("ModelSession.Generate", core.Sprintf("native greedy decode step %d", i), err)
+				return
+			}
+		} else {
+			lastPos, err := lastTokenLogits(s.logits)
+			if err != nil {
+				s.err = core.E("ModelSession.Generate", core.Sprintf("last logits step %d", i), err)
+				return
+			}
 
-		if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
-			oldLastPos := lastPos
-			lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
-			Free(oldLastPos)
-		}
+			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
+				oldLastPos := lastPos
+				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
+				Free(oldLastPos)
+			}
+			if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
+				s.err = core.E("ModelSession.Generate", core.Sprintf("probe logits step %d", i), err)
+				Free(lastPos)
+				return
+			}
 
-		if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
-			s.err = core.E("ModelSession.Generate", core.Sprintf("probe logits step %d", i), err)
+			var sampleErr error
+			next, sampleErr = sampleTokenWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens)
 			Free(lastPos)
-			return
+			if sampleErr != nil {
+				s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), sampleErr)
+				return
+			}
+			nextEvaluated = true
 		}
-
-		next := sampler.Sample(lastPos)
-		if err := Eval(next); err != nil {
-			s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), err)
-			Free(lastPos, next)
-			return
+		if !nextEvaluated {
+			if err := Eval(next); err != nil {
+				s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), err)
+				Free(next)
+				return
+			}
 		}
+		detachCaches(s.caches)
 		id := int32(next.Int())
-		Free(lastPos, next)
+		Free(next)
 		text := s.model.tokenizer.DecodeToken(id)
 		emitProbeToken(cfg.ProbeSink, ProbePhaseDecode, i, id, text, promptLen, len(s.generated)+1)
 
@@ -263,6 +488,9 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		}
 
 		genCount++
+		if firstTokenDuration == 0 {
+			firstTokenDuration = time.Since(totalStart)
+		}
 		if !yield(Token{ID: id, Text: text}) {
 			return
 		}
@@ -279,16 +507,17 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 	input := Reshape(vInput, 1, 1)
 	Free(vInput)
 
-	nextLogits := s.model.model.Forward(input, s.caches)
+	nextLogits, _ := s.model.forwardLastTokenLogits(input, nil, s.caches)
 	Free(input)
-	materialized, err := materializeLastTokenLogits(nextLogits)
-	if err != nil {
-		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), err)
+	if nextLogits == nil || !nextLogits.Valid() {
+		if err := lastError(); err != nil {
+			return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), err)
+		}
+		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), core.NewError("model forward returned nil logits"))
 	}
 	oldLogits := s.logits
-	s.logits = materialized
+	s.logits = nextLogits
 	Free(oldLogits)
-	detachCaches(s.caches)
 	s.tokens = append(s.tokens, id)
 	s.generated = append(s.generated, id)
 	s.tokenOffset++
@@ -720,6 +949,10 @@ func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {
 		return snapshotQuantizedCache(c, c.Len(), c.Offset())
 	case *PagedKVCache:
 		return snapshotPagedCache(c, c.Len(), c.Offset())
+	case *FixedKVCache:
+		state, ownedState = c.ReadState()
+		snapshot.mode = KVCacheModeFixed
+		snapshot.maxSize = c.maxSize
 	default:
 		return cacheSnapshot{}, false, nil
 	}
@@ -767,6 +1000,16 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 		}
 		if snapshot.mode == KVCacheModePaged {
 			cache, arrays, err := restorePagedCacheSnapshot(snapshot, length, snapshot.offset)
+			if err != nil {
+				freeCaches(caches)
+				return nil, err
+			}
+			caches[i] = cache
+			evalArrays = append(evalArrays, arrays...)
+			continue
+		}
+		if snapshot.mode == KVCacheModeFixed {
+			cache, arrays, err := restoreFixedCacheSnapshot(snapshot, length, snapshot.offset, 0)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
@@ -984,6 +1227,13 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 			result.rotating = true
 			result.maxSize = c.maxSize
 		}
+	case *FixedKVCache:
+		if c.maxSize > 0 && seqLen > c.maxSize {
+			Free(keyArray, valueArray)
+			return cacheSnapshot{}, core.NewError("mlx: KV snapshot exceeds fixed cache capacity")
+		}
+		result.mode = KVCacheModeFixed
+		result.maxSize = c.maxSize
 	case *PagedKVCache:
 		pagesK, pagesV, adopted, err := pageCacheArrays(keyArray, valueArray, c.pageSize)
 		if err != nil {

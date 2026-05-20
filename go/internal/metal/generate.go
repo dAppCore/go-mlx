@@ -26,22 +26,30 @@ type ChatMessage struct {
 	Content string
 }
 
+var (
+	enableAsyncDecodePrefetch = core.Env("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH") == "1"
+	enableGenerationStream    = core.Env("GO_MLX_ENABLE_GENERATION_STREAM") == "1"
+)
+
 // GenerateConfig holds generation parameters.
 type GenerateConfig struct {
-	MaxTokens     int
-	Temperature   float32
-	TopK          int
-	TopP          float32
-	MinP          float32
-	StopTokens    []int32
-	RepeatPenalty float32
-	ProbeSink     ProbeSink
+	MaxTokens        int
+	Temperature      float32
+	TopK             int
+	TopP             float32
+	MinP             float32
+	StopTokens       []int32
+	SuppressTokens   []int32
+	RepeatPenalty    float32
+	ProbeSink        ProbeSink
+	TraceTokenPhases bool
 }
 
 // Metrics holds performance metrics from the last inference operation.
 type Metrics struct {
 	PromptTokens               int
 	GeneratedTokens            int
+	FirstTokenDuration         time.Duration
 	PrefillDuration            time.Duration
 	DecodeDuration             time.Duration
 	TotalDuration              time.Duration
@@ -49,12 +57,46 @@ type Metrics struct {
 	DecodeTokensPerSec         float64
 	PeakMemoryBytes            uint64
 	ActiveMemoryBytes          uint64
+	CacheMemoryBytes           uint64
+	ProcessVirtualMemoryBytes  uint64
+	ProcessResidentMemoryBytes uint64
+	ProcessPeakResidentBytes   uint64
 	PromptCacheHits            int
 	PromptCacheMisses          int
 	PromptCacheHitTokens       int
 	PromptCacheMissTokens      int
 	PromptCacheRestoreDuration time.Duration
+	TokenPhases                []TokenPhaseTrace
 	Adapter                    AdapterInfo
+}
+
+// TokenPhaseTrace reports coarse timing buckets for one decode-loop token.
+type TokenPhaseTrace struct {
+	Step                int                `json:"step"`
+	FinalToken          bool               `json:"final_token,omitempty"`
+	TotalDuration       time.Duration      `json:"total_duration,omitempty"`
+	LogitsDuration      time.Duration      `json:"logits_duration,omitempty"`
+	SampleDuration      time.Duration      `json:"sample_duration,omitempty"`
+	SampleEvalDuration  time.Duration      `json:"sample_eval_duration,omitempty"`
+	TokenReadDuration   time.Duration      `json:"token_read_duration,omitempty"`
+	DecodeTextDuration  time.Duration      `json:"decode_text_duration,omitempty"`
+	ProbeTokenDuration  time.Duration      `json:"probe_token_duration,omitempty"`
+	YieldDuration       time.Duration      `json:"yield_duration,omitempty"`
+	NextInputDuration   time.Duration      `json:"next_input_duration,omitempty"`
+	ForwardDuration     time.Duration      `json:"forward_duration,omitempty"`
+	MaterializeDuration time.Duration      `json:"materialize_duration,omitempty"`
+	DetachDuration      time.Duration      `json:"detach_duration,omitempty"`
+	CacheProbeDuration  time.Duration      `json:"cache_probe_duration,omitempty"`
+	OtherDuration       time.Duration      `json:"other_duration,omitempty"`
+	NativeEvents        []NativePhaseTrace `json:"native_events,omitempty"`
+}
+
+// NativePhaseTrace reports a gated native materialisation event inside a
+// decode forward pass.
+type NativePhaseTrace struct {
+	Name     string        `json:"name"`
+	Duration time.Duration `json:"duration"`
+	Error    string        `json:"error,omitempty"`
 }
 
 // AdapterInfo identifies an active LoRA inference adapter.
@@ -258,6 +300,19 @@ func (m *Model) Chat(ctx context.Context, messages []ChatMessage, cfg GenerateCo
 	return m.Generate(ctx, prompt, cfg)
 }
 
+// ChatChunks formats messages with the native chat template and streams tokens
+// from bounded prompt chunks.
+func (m *Model) ChatChunks(ctx context.Context, messages []ChatMessage, chunkBytes int, cfg GenerateConfig) iter.Seq[Token] {
+	if err := m.requireTextRuntime("Model.ChatChunks"); err != nil {
+		return func(yield func(Token) bool) {
+			if m != nil {
+				m.lastErr = err
+			}
+		}
+	}
+	return m.GenerateChunks(ctx, m.formatChatChunks(messages, chunkBytes), cfg)
+}
+
 // WarmPromptCache prefills and stores an exact token-prefix KV cache.
 func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
 	if err := m.requireTextRuntime("Model.WarmPromptCache"); err != nil {
@@ -276,8 +331,13 @@ func (m *Model) WarmPromptCache(ctx context.Context, prompt string) error {
 
 	var warmErr error
 	if deviceErr := m.withDevice(func() {
-		tokens := m.tokenizer.Encode(prompt)
-		warmErr = m.warmPromptCacheTokens(ctx, tokens)
+		streamErr := m.withGenerationStream(func() {
+			tokens := m.tokenizer.Encode(prompt)
+			warmErr = m.warmPromptCacheTokens(ctx, tokens)
+		})
+		if streamErr != nil {
+			warmErr = streamErr
+		}
 	}); deviceErr != nil {
 		return deviceErr
 	}
@@ -303,7 +363,12 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 
 	var warmErr error
 	if deviceErr := m.withDevice(func() {
-		warmErr = m.warmPromptCacheChunks(ctx, chunks)
+		streamErr := m.withGenerationStream(func() {
+			warmErr = m.warmPromptCacheChunks(ctx, chunks)
+		})
+		if streamErr != nil {
+			warmErr = streamErr
+		}
 	}); deviceErr != nil {
 		return deviceErr
 	}
@@ -339,7 +404,6 @@ func (m *Model) warmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 //	    fmt.Print(tok.Text)
 //	}
 func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
-	inner := m.generate(ctx, prompt, cfg)
 	return func(yield func(Token) bool) {
 		if m == nil {
 			return
@@ -358,7 +422,13 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		defer release()
 		releasePromptCache := m.acquirePromptCache()
 		defer releasePromptCache()
-		if err := m.withDevice(func() { inner(yield) }); err != nil {
+		if err := m.withDevice(func() {
+			if streamErr := m.withGenerationStream(func() {
+				m.generate(ctx, prompt, cfg)(yield)
+			}); streamErr != nil {
+				m.lastErr = streamErr
+			}
+		}); err != nil {
 			m.lastErr = err
 		}
 	}
@@ -387,16 +457,32 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], cfg
 		releasePromptCache := m.acquirePromptCache()
 		defer releasePromptCache()
 		if err := m.withDevice(func() {
-			tokens, encodeErr := m.encodePromptChunks(chunks)
-			if encodeErr != nil {
-				m.lastErr = encodeErr
-				return
+			if streamErr := m.withGenerationStream(func() {
+				tokens, encodeErr := m.encodePromptChunks(chunks)
+				if encodeErr != nil {
+					m.lastErr = encodeErr
+					return
+				}
+				m.generateTokens(ctx, tokens, cfg)(yield)
+			}); streamErr != nil {
+				m.lastErr = streamErr
 			}
-			m.generateTokens(ctx, tokens, cfg)(yield)
 		}); err != nil {
 			m.lastErr = err
 		}
 	}
+}
+
+func generationStreamEnabled() bool {
+	return enableGenerationStream || generationStreamRuntimeEnabled()
+}
+
+func (m *Model) withGenerationStream(fn func()) error {
+	if !generationStreamEnabled() {
+		fn()
+		return nil
+	}
+	return withTemporaryDefaultStream(m.modelDevice(), fn)
 }
 
 func (m *Model) generate(ctx context.Context, prompt string, cfg GenerateConfig) iter.Seq[Token] {
@@ -430,6 +516,10 @@ func (m *Model) encodePromptChunks(chunks iter.Seq[string]) ([]int32, error) {
 }
 
 func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string], caches []Cache) ([]int32, *Array, error) {
+	return m.prefillPromptChunksWithPrefix(ctx, chunks, caches, false, "Model.GenerateChunks")
+}
+
+func (m *Model) prefillPromptChunksWithPrefix(ctx context.Context, chunks iter.Seq[string], caches []Cache, seenContent bool, scope string) ([]int32, *Array, error) {
 	if m == nil || m.tokenizer == nil {
 		return nil, nil, core.NewError("mlx: tokenizer is nil")
 	}
@@ -437,8 +527,10 @@ func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string]
 		return nil, nil, core.NewError("mlx: prompt chunks are nil")
 	}
 	tokens := []int32{}
-	seenContent := false
 	var logits *Array
+	if scope == "" {
+		scope = "Model.GenerateChunks"
+	}
 	for chunk := range chunks {
 		if chunk == "" {
 			continue
@@ -453,7 +545,7 @@ func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string]
 		nextLogits, err := m.prefillTokenBlock(ctx, ids, caches)
 		if err != nil {
 			Free(logits)
-			return nil, nil, core.E("Model.GenerateChunks", core.Sprintf("prefill chunk tokens=%d", len(tokens)), err)
+			return nil, nil, core.E(scope, core.Sprintf("prefill chunk tokens=%d", len(tokens)), err)
 		}
 		Free(logits)
 		logits = nextLogits
@@ -461,7 +553,7 @@ func (m *Model) prefillPromptChunks(ctx context.Context, chunks iter.Seq[string]
 		seenContent = true
 	}
 	if len(tokens) == 0 {
-		return nil, nil, core.NewError("Model.GenerateChunks: empty prompt after tokenisation")
+		return nil, nil, core.NewError(scope + ": empty prompt after tokenisation")
 	}
 	return tokens, logits, nil
 }
@@ -482,7 +574,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		ResetPeakMemory()
 
 		promptLen := len(tokens)
-		prepared, err := m.preparePrompt(ctx, tokens)
+		prepared, err := m.preparePrompt(ctx, tokens, cfg)
 		if err != nil {
 			m.lastErr = err
 			return
@@ -494,21 +586,30 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, 0, -1, caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
-		sampler := newSampler(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK)
+		sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
 		var genCount int
+		var firstTokenDuration time.Duration
+		var tokenPhases []TokenPhaseTrace
 
 		defer func() {
 			decodeDur := time.Since(totalStart) - prefillDur
 			totalDur := time.Since(totalStart)
+			processMemory := GetProcessMemory()
 			m.lastMetrics = Metrics{
-				PromptTokens:      promptLen,
-				GeneratedTokens:   genCount,
-				PrefillDuration:   prefillDur,
-				DecodeDuration:    decodeDur,
-				TotalDuration:     totalDur,
-				PeakMemoryBytes:   GetPeakMemory(),
-				ActiveMemoryBytes: GetActiveMemory(),
-				Adapter:           m.Adapter(),
+				PromptTokens:               promptLen,
+				GeneratedTokens:            genCount,
+				FirstTokenDuration:         firstTokenDuration,
+				PrefillDuration:            prefillDur,
+				DecodeDuration:             decodeDur,
+				TotalDuration:              totalDur,
+				PeakMemoryBytes:            GetPeakMemory(),
+				ActiveMemoryBytes:          GetActiveMemory(),
+				CacheMemoryBytes:           GetCacheMemory(),
+				ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
+				ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
+				ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
+				TokenPhases:                tokenPhases,
+				Adapter:                    m.Adapter(),
 			}
 			if prefillDur > 0 {
 				m.lastMetrics.PrefillTokensPerSec = float64(promptLen) / prefillDur.Seconds()
@@ -527,12 +628,21 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		}()
 
 		var history []int32 // for repeat penalty
+		var directNext *Array
 
 		defer func() {
-			Free(logits)
+			Free(logits, directNext)
 		}()
 
 		for i := range cfg.MaxTokens {
+			tracePhases := cfg.TraceTokenPhases
+			var phaseStart, phaseLast time.Time
+			var phase TokenPhaseTrace
+			if tracePhases {
+				phaseStart = time.Now()
+				phaseLast = phaseStart
+				phase = TokenPhaseTrace{Step: i}
+			}
 			select {
 			case <-ctx.Done():
 				m.lastErr = ctx.Err()
@@ -540,75 +650,277 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			default:
 			}
 
-			lastPos, err := lastTokenLogits(logits)
-			if err != nil {
-				m.lastErr = core.E("Model.Generate", core.Sprintf("last logits step %d", i), err)
-				return
-			}
+			var next *Array
+			nextEvaluated := false
+			if directNext != nil {
+				next = directNext
+				directNext = nil
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			} else if nativeGreedyDecodeAvailable(cfg, history, logits) {
+				var err error
+				next, err = nativeGreedyDecodeToken(logits)
+				if err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("native greedy decode step %d", i), err)
+					return
+				}
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+			} else {
+				lastPos, err := lastTokenLogits(logits)
+				if err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("last logits step %d", i), err)
+					return
+				}
 
-			if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
-				oldLastPos := lastPos
-				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
-				Free(oldLastPos)
-			}
+				if cfg.RepeatPenalty > 1.0 && len(history) > 0 {
+					oldLastPos := lastPos
+					lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
+					Free(oldLastPos)
+				}
+				if tracePhases {
+					phase.LogitsDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
 
-			if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
-				m.lastErr = core.E("Model.Generate", core.Sprintf("probe logits step %d", i), err)
+				if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("probe logits step %d", i), err)
+					Free(lastPos)
+					return
+				}
+				if tracePhases {
+					phase.CacheProbeDuration += time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
+
+				var sampleErr error
+				next, sampleErr = sampleTokenWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens)
+				if sampleErr != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), sampleErr)
+					Free(lastPos)
+					return
+				}
+				nextEvaluated = true
+				if tracePhases {
+					phase.SampleDuration = time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
 				Free(lastPos)
-				return
 			}
-
-			next := sampler.Sample(lastPos)
-			if err := Eval(next); err != nil {
-				m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
-				Free(lastPos, next)
-				return
+			if !nextEvaluated {
+				if err := Eval(next); err != nil {
+					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), err)
+					Free(next)
+					return
+				}
+			}
+			if tracePhases {
+				phase.SampleEvalDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+			// Eval(next) also materialises the lazy decode forward that produced
+			// logits for this token, so detach caches at this boundary.
+			detachCaches(caches)
+			if tracePhases {
+				phase.DetachDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
+			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
+			if tracePhases {
+				phase.CacheProbeDuration += time.Since(phaseLast)
+				phaseLast = time.Now()
 			}
 
 			id := int32(next.Int())
+			if tracePhases {
+				phase.TokenReadDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 			history = append(history, id)
 			text := m.tokenizer.DecodeToken(id)
+			if tracePhases {
+				phase.DecodeTextDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 			emitProbeToken(cfg.ProbeSink, ProbePhaseDecode, i, id, text, promptLen, genCount+1)
-			Free(lastPos)
+			if tracePhases {
+				phase.ProbeTokenDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 
 			if m.tokenizer.HasEOSToken() && id == m.tokenizer.EOSToken() {
 				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
 				return
 			}
 			if slices.Contains(cfg.StopTokens, id) {
 				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
 				return
 			}
 
 			genCount++
+			if firstTokenDuration == 0 {
+				firstTokenDuration = time.Since(totalStart)
+			}
 			if !yield(Token{ID: id, Text: text}) {
 				Free(next)
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
 				return
 			}
+			if tracePhases {
+				phase.YieldDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 			Free(next)
+			if i == cfg.MaxTokens-1 {
+				if tracePhases {
+					phase.FinalToken = true
+					tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+				}
+				return
+			}
 
 			vNextInput := FromValues([]int32{id}, 1)
 			nextInput := Reshape(vNextInput, 1, 1)
 			Free(vNextInput)
-
-			oldLogits := logits
-			nextLogits := m.model.Forward(nextInput, caches)
-			Free(nextInput, oldLogits)
-			logits, err = materializeLastTokenLogits(nextLogits)
-			if err != nil {
-				m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
-				return
+			if tracePhases {
+				phase.NextInputDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
 			}
 
-			// Detach cache arrays to break the computation graph.
-			// Without this, each step's logits holds shared_ptrs through the
-			// entire forward pass (SDPA → Slice → cache), pinning hundreds of
-			// Metal buffers per step that accumulate to tens of GB.
-			detachCaches(caches)
-			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
-			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
+			oldLogits := logits
+			if directGreedyTokenAvailable(cfg, history, m.model) {
+				if tracePhases {
+					resetNativePhaseTraceEvents()
+				}
+				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches)
+				if tracePhases {
+					phase.ForwardDuration = time.Since(phaseLast)
+					phase.NativeEvents = takeNativePhaseTraceEvents()
+					phaseLast = time.Now()
+				}
+				Free(nextInput)
+				if nextToken == nil || !nextToken.Valid() {
+					if err := lastError(); err != nil {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct greedy decode step %d", i), err)
+					} else {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("direct greedy decode step %d", i), core.NewError("model forward returned nil token"))
+					}
+					Free(oldLogits, nextToken)
+					logits = nil
+					return
+				}
+				Free(oldLogits)
+				logits = nil
+				directNext = nextToken
+				if err := asyncDecodePrefetch(i, "direct greedy token", directNext); err != nil {
+					m.lastErr = err
+					return
+				}
+			} else {
+				if tracePhases {
+					resetNativePhaseTraceEvents()
+				}
+				nextLogits, _ := m.forwardLastTokenLogits(nextInput, nil, caches)
+				if tracePhases {
+					phase.ForwardDuration = time.Since(phaseLast)
+					phase.NativeEvents = takeNativePhaseTraceEvents()
+					phaseLast = time.Now()
+				}
+				Free(nextInput)
+				if nextLogits == nil || !nextLogits.Valid() {
+					if err := lastError(); err != nil {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), err)
+					} else {
+						m.lastErr = core.E("Model.Generate", core.Sprintf("decode step %d", i), core.NewError("model forward returned nil logits"))
+					}
+					Free(oldLogits, nextLogits)
+					logits = nil
+					return
+				}
+				Free(oldLogits)
+				logits = nextLogits
+				if err := asyncDecodePrefetch(i, "next logits", logits); err != nil {
+					m.lastErr = err
+					return
+				}
+			}
+			if tracePhases {
+				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+			}
 		}
 	}
+}
+
+func directGreedyTokenAvailable(cfg GenerateConfig, history []int32, model InternalModel) bool {
+	if !directGreedyTokenEnabled() {
+		return false
+	}
+	if _, ok := model.(GreedyTokenModel); !ok {
+		return false
+	}
+	return cfg.ProbeSink == nil &&
+		cfg.Temperature == 0 &&
+		cfg.TopP == 0 &&
+		cfg.MinP == 0 &&
+		cfg.TopK == 0 &&
+		(cfg.RepeatPenalty <= 1 || len(history) == 0)
+}
+
+func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
+	greedyModel, ok := m.model.(GreedyTokenModel)
+	if !ok {
+		return nil, false
+	}
+	return greedyModel.ForwardGreedyToken(tokens, mask, caches), true
+}
+
+func asyncDecodePrefetch(step int, label string, out *Array) error {
+	if !enableAsyncDecodePrefetch || out == nil || !out.Valid() {
+		return nil
+	}
+	if err := EvalAsync(out); err != nil {
+		return core.E("Model.Generate", core.Sprintf("async prefetch %s step %d", label, step), err)
+	}
+	return nil
+}
+
+func appendTokenPhaseTrace(phases []TokenPhaseTrace, phase TokenPhaseTrace, start time.Time) []TokenPhaseTrace {
+	phase.TotalDuration = time.Since(start)
+	if accounted := tokenPhaseAccountedDuration(phase); phase.TotalDuration > accounted {
+		phase.OtherDuration = phase.TotalDuration - accounted
+	}
+	return append(phases, phase)
+}
+
+func tokenPhaseAccountedDuration(phase TokenPhaseTrace) time.Duration {
+	return phase.LogitsDuration +
+		phase.SampleDuration +
+		phase.SampleEvalDuration +
+		phase.TokenReadDuration +
+		phase.DecodeTextDuration +
+		phase.ProbeTokenDuration +
+		phase.YieldDuration +
+		phase.NextInputDuration +
+		phase.ForwardDuration +
+		phase.MaterializeDuration +
+		phase.DetachDuration +
+		phase.CacheProbeDuration
 }
 
 // InspectAttention runs a single prefill pass and returns post-RoPE K tensors.
@@ -883,6 +1195,14 @@ func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array 
 // newCaches creates per-layer KV caches. If contextLen is set, all unbounded
 // caches are replaced with RotatingKVCache to cap memory usage.
 func (m *Model) newCaches() []Cache {
+	return m.newCachesWithRequestFixedSize(0)
+}
+
+func (m *Model) newGenerationCaches(promptTokens int, cfg GenerateConfig) []Cache {
+	return m.newCachesWithRequestFixedSize(m.generationFixedGemma4CacheSize(promptTokens, cfg.MaxTokens))
+}
+
+func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 	caches := m.model.NewCache()
 	if mode := KVCacheMode(m.cacheMode); mode == KVCacheModeQ8 || mode == KVCacheModeKQ8VQ4 || mode == KVCacheModePaged {
 		maxSize := 0
@@ -890,18 +1210,86 @@ func (m *Model) newCaches() []Cache {
 			maxSize = m.contextLen
 		}
 		for i := range caches {
+			layerMaxSize := replacementCacheMaxSize(caches[i], maxSize)
 			switch mode {
 			case KVCacheModeQ8:
-				caches[i] = NewQuantizedKVCache(maxSize, 8, 8)
+				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 8)
 			case KVCacheModeKQ8VQ4:
-				caches[i] = NewQuantizedKVCache(maxSize, 8, 4)
+				caches[i] = NewQuantizedKVCache(layerMaxSize, 8, 4)
 			case KVCacheModePaged:
-				caches[i] = NewPagedKVCache(maxSize, 256)
+				if fixedGemma4CacheEnabled() && maxSize > 0 && (m.modelType == "gemma4" || m.modelType == "gemma4_text") {
+					fixedSize := fixedGemma4CacheSize(maxSize, requestFixedSize)
+					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
+						fixedSize = min(fixedSize, layerMaxSize)
+					}
+					caches[i] = NewFixedKVCache(fixedSize)
+				} else {
+					caches[i] = NewPagedKVCache(layerMaxSize, 256)
+				}
 			}
 		}
 		return caches
 	}
 	return m.applyContextCachePolicy(caches)
+}
+
+func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int {
+	if m == nil || !fixedGemma4CacheEnabled() || promptTokens <= 0 || maxTokens <= 0 {
+		return 0
+	}
+	if KVCacheMode(m.cacheMode) != KVCacheModePaged || m.contextLen <= 0 {
+		return 0
+	}
+	modelType := m.modelType
+	if modelType == "" && m.model != nil {
+		modelType = m.model.ModelType()
+	}
+	if modelType != "gemma4" && modelType != "gemma4_text" {
+		return 0
+	}
+	size := promptTokens + maxTokens
+	if size < promptTokens {
+		return 0
+	}
+	return roundUpPositive(size, 32)
+}
+
+func fixedGemma4CacheSize(maxSize, requestSize int) int {
+	if maxSize <= 0 {
+		return maxSize
+	}
+	parsed := core.ParseInt(core.Trim(core.Env("GO_MLX_FIXED_GEMMA4_CACHE_SIZE")), 10, 64)
+	if parsed.OK {
+		size := int(parsed.Value.(int64))
+		if size > 0 {
+			return min(size, maxSize)
+		}
+	}
+	if requestSize > 0 {
+		return min(requestSize, maxSize)
+	}
+	return maxSize
+}
+
+func roundUpPositive(value, multiple int) int {
+	if value <= 0 || multiple <= 0 {
+		return value
+	}
+	remainder := value % multiple
+	if remainder == 0 {
+		return value
+	}
+	return value + multiple - remainder
+}
+
+func replacementCacheMaxSize(cache Cache, maxSize int) int {
+	if maxSize <= 0 {
+		return maxSize
+	}
+	if rotating, ok := cache.(*RotatingKVCache); ok && rotating.maxSize > 0 {
+		return min(maxSize, rotating.maxSize)
+	}
+	return maxSize
 }
 
 func (m *Model) newPromptSnapshotCaches() []Cache {
@@ -959,6 +1347,50 @@ func (m *Model) formatChat(messages []ChatMessage) string {
 	}
 }
 
+func (m *Model) formatChatChunks(messages []ChatMessage, chunkBytes int) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		switch m.modelType {
+		case "gemma4", "gemma4_text":
+			formatGemma4ChatChunks(messages, chunkBytes, yield)
+		case "gemma2", "gemma3", "gemma3_text":
+			formatGemmaChatChunks(messages, chunkBytes, yield)
+		case "qwen2", "qwen3":
+			formatQwenChatChunks(messages, chunkBytes, yield)
+		case "llama":
+			formatLlamaChatChunks(messages, chunkBytes, yield)
+		default:
+			for _, msg := range messages {
+				if !yieldChatTextChunks(yield, msg.Content+"\n", chunkBytes) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func yieldChatTextChunks(yield func(string) bool, text string, chunkBytes int) bool {
+	if text == "" {
+		return true
+	}
+	if chunkBytes <= 0 || len(text) <= chunkBytes {
+		return yield(text)
+	}
+	start := 0
+	for index := range text {
+		if index == start || index-start < chunkBytes {
+			continue
+		}
+		if !yield(text[start:index]) {
+			return false
+		}
+		start = index
+	}
+	if start < len(text) {
+		return yield(text[start:])
+	}
+	return true
+}
+
 func formatGemmaChat(messages []ChatMessage) string {
 	builder := core.NewBuilder()
 	for _, msg := range messages {
@@ -973,6 +1405,22 @@ func formatGemmaChat(messages []ChatMessage) string {
 	}
 	builder.WriteString("<start_of_turn>model\n")
 	return builder.String()
+}
+
+func formatGemmaChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system", "user":
+			if !yield("<start_of_turn>user\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<end_of_turn>\n") {
+				return
+			}
+		case "assistant":
+			if !yield("<start_of_turn>model\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<end_of_turn>\n") {
+				return
+			}
+		}
+	}
+	yield("<start_of_turn>model\n")
 }
 
 func formatGemma4Chat(messages []ChatMessage) string {
@@ -994,7 +1442,35 @@ func formatGemma4Chat(messages []ChatMessage) string {
 		builder.WriteString("<|turn>" + role + "\n" + content + "<turn|>\n")
 	}
 	builder.WriteString("<|turn>model\n")
+	builder.WriteString("<|channel>thought\n<channel|>")
 	return builder.String()
+}
+
+func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
+	if !yield("<bos>") {
+		return
+	}
+	for _, msg := range messages {
+		role := core.Lower(core.Trim(msg.Role))
+		content := core.Trim(msg.Content)
+		switch role {
+		case "assistant", "model":
+			role = "model"
+		case "developer", "system":
+			role = "system"
+		case "human", "user":
+			role = "user"
+		default:
+			continue
+		}
+		if !yield("<|turn>"+role+"\n") || !yieldChatTextChunks(yield, content, chunkBytes) || !yield("<turn|>\n") {
+			return
+		}
+	}
+	if !yield("<|turn>model\n") {
+		return
+	}
+	yield("<|channel>thought\n<channel|>")
 }
 
 func formatQwenChat(messages []ChatMessage) string {
@@ -1006,6 +1482,15 @@ func formatQwenChat(messages []ChatMessage) string {
 	return builder.String()
 }
 
+func formatQwenChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
+	for _, msg := range messages {
+		if !yield("<|im_start|>"+msg.Role+"\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<|im_end|>\n") {
+			return
+		}
+	}
+	yield("<|im_start|>assistant\n")
+}
+
 func formatLlamaChat(messages []ChatMessage) string {
 	builder := core.NewBuilder()
 	builder.WriteString("<|begin_of_text|>")
@@ -1014,6 +1499,18 @@ func formatLlamaChat(messages []ChatMessage) string {
 	}
 	builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
 	return builder.String()
+}
+
+func formatLlamaChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
+	if !yield("<|begin_of_text|>") {
+		return
+	}
+	for _, msg := range messages {
+		if !yield("<|start_header_id|>"+msg.Role+"<|end_header_id|>\n\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<|eot_id|>") {
+			return
+		}
+	}
+	yield("<|start_header_id|>assistant<|end_header_id|>\n\n")
 }
 
 func lastTokenLogits(logits *Array) (*Array, error) {

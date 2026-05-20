@@ -137,6 +137,61 @@ func TestMetal_NewCaches_KVCacheModePaged_Good(t *testing.T) {
 	}
 }
 
+func TestMetal_NewCaches_KVCacheModePagedFixedGemma4_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModePaged FixedGemma4"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = true
+	defer func() { enableFixedGemma4Cache = old }()
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "256")
+
+	m := &Model{
+		model:      &fakeModel{numLayers: 1},
+		modelType:  "gemma4",
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := m.newCaches()
+	cache, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache behind Gemma4 fixed-cache env gate", caches[0])
+	}
+	if cache.maxSize != 256 {
+		t.Fatalf("fixed cache max = %d, want 256 from env bucket", cache.maxSize)
+	}
+}
+
+func TestMetal_NewCaches_KVCacheModePagedFixedGemma4RuntimeGate_Good(t *testing.T) {
+	coverageTokens := "NewCaches KVCacheModePaged FixedGemma4 RuntimeGate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableFixedGemma4Cache
+	enableFixedGemma4Cache = false
+	t.Cleanup(func() { enableFixedGemma4Cache = old })
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "256")
+
+	m := &Model{
+		model:      &fakeModel{numLayers: 1},
+		modelType:  "gemma4",
+		contextLen: 4096,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := m.newCaches()
+	cache, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache behind Gemma4 fixed-cache runtime gate", caches[0])
+	}
+	if cache.maxSize != 256 {
+		t.Fatalf("fixed cache max = %d, want 256 from env bucket", cache.maxSize)
+	}
+}
+
 func TestMetal_NewPromptSnapshotCaches_UsesSnapshotSafePhysicalModes_Good(t *testing.T) {
 	coverageTokens := "NewPromptSnapshotCaches UsesSnapshotSafePhysicalModes"
 	if coverageTokens == "" {

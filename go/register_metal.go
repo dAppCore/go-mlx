@@ -107,6 +107,7 @@ func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadO
 		AdapterPath:          loadOptions.AdapterPath,
 		Device:               metal.DeviceType(deviceName),
 		CachePolicy:          string(plan.CachePolicy),
+		KVCacheMode:          string(plan.CacheMode),
 		BatchSize:            plan.BatchSize,
 		PrefillChunkSize:     plan.PrefillChunkSize,
 		ExpectedQuantization: plan.PreferredQuantization,

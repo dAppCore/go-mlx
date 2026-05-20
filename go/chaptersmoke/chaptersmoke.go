@@ -16,8 +16,8 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	filestore "dappco.re/go/inference/state/filestore"
 	memvid "dappco.re/go/inference/state"
+	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/blockcache"
 	"dappco.re/go/mlx/kv"
 	memvidcli "dappco.re/go/mlx/pkg/memvid/cli"
@@ -75,12 +75,12 @@ type Input struct {
 
 // Report captures the full smoke result.
 type Report struct {
-	StoreDir  string           `json:"store_dir,omitempty"`
-	StorePath string           `json:"store_path,omitempty"`
-	FileCount int              `json:"file_count,omitempty"`
-	BlockSize int              `json:"block_size,omitempty"`
-	Chapters  []ChapterReport  `json:"chapters,omitempty"`
-	Error     string           `json:"error,omitempty"`
+	StoreDir  string          `json:"store_dir,omitempty"`
+	StorePath string          `json:"store_path,omitempty"`
+	FileCount int             `json:"file_count,omitempty"`
+	BlockSize int             `json:"block_size,omitempty"`
+	Chapters  []ChapterReport `json:"chapters,omitempty"`
+	Error     string          `json:"error,omitempty"`
 }
 
 // ChapterReport reports one save, reopen, restore, and answer cycle from a

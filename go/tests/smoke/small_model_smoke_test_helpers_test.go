@@ -3,7 +3,6 @@
 package smoke
 
 import (
-	mlx "dappco.re/go/mlx"
 	"testing"
 
 	core "dappco.re/go"

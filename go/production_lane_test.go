@@ -1,0 +1,128 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package mlx
+
+import (
+	"testing"
+
+	core "dappco.re/go"
+	"dappco.re/go/mlx/profile"
+)
+
+func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
+	lane := DefaultProductionLane()
+
+	if lane.ModelID != "mlx-community/gemma-4-e2b-it-4bit" {
+		t.Fatalf("ModelID = %q, want Gemma 4 E2B q4", lane.ModelID)
+	}
+	if lane.Architecture != "gemma4_text" || lane.ChatTemplate != "gemma4" || lane.QuantBits != 4 {
+		t.Fatalf("lane identity = %+v, want Gemma 4 text q4 with Gemma chat template", lane)
+	}
+	if lane.ContextLength != 4096 || lane.MaxTokens != 128 || lane.Runs != 3 {
+		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want GOAL.md target shape", lane.ContextLength, lane.MaxTokens, lane.Runs)
+	}
+	if ProductionLaneLongContextLength != 32768 || ProductionLaneLongFormContextLength != 65536 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 {
+		t.Fatalf("long context shape = context:%d longform:%d tokens:%d prefill:%d prompt:%d, want opencode-sized chunk defaults", ProductionLaneLongContextLength, ProductionLaneLongFormContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes)
+	}
+	if lane.IncludeOutput || !lane.TraceTokenPhases {
+		t.Fatalf("profile reporting = include_output:%v trace:%v, want hidden output plus token phase trace", lane.IncludeOutput, lane.TraceTokenPhases)
+	}
+	if !core.Contains(lane.Prompt, "retained model state") {
+		t.Fatalf("Prompt = %q, want retained-state production prompt", lane.Prompt)
+	}
+}
+
+func TestProductionLane_ArchitectureProfileNative_Good(t *testing.T) {
+	lane := DefaultProductionLane()
+	prof, ok := profile.LookupArchitectureProfile(lane.Architecture)
+
+	if !ok {
+		t.Fatalf("profile.LookupArchitectureProfile(%q) = false", lane.Architecture)
+	}
+	if !prof.NativeRuntime || !prof.Generation || !prof.Chat {
+		t.Fatalf("architecture profile = %+v, want native chat/generation runtime", prof)
+	}
+	if prof.ChatTemplate != lane.ChatTemplate {
+		t.Fatalf("ChatTemplate = %q, want lane template %q", prof.ChatTemplate, lane.ChatTemplate)
+	}
+}
+
+func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
+	gates := DefaultGemma4FastRuntimeGates()
+	seen := map[string]bool{}
+	for _, gate := range gates {
+		seen[gate] = true
+	}
+
+	for _, want := range []string{
+		Gemma4FastRuntimeGateExpertIDMatVec,
+		Gemma4FastRuntimeGateExpertIDFused,
+		Gemma4FastRuntimeGateSortedExpertPrefill,
+		Gemma4FastRuntimeGateNativeMLPMatVec,
+		Gemma4FastRuntimeGateNativeRouterMatVec,
+		Gemma4FastRuntimeGateNativeRouterTopK,
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateDirectGreedyToken,
+		Gemma4FastRuntimeGateGenerationStream,
+	} {
+		if !seen[want] {
+			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, missing %s", gates, want)
+		}
+	}
+	for _, rejected := range []string{
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
+	} {
+		if seen[rejected] {
+			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, should exclude rejected gate %s", gates, rejected)
+		}
+	}
+}
+
+func TestProductionLane_LongContextGemma4FastRuntimeGates_Good(t *testing.T) {
+	gates := LongContextGemma4FastRuntimeGates()
+	if len(gates) != 1 || gates[0] != Gemma4FastRuntimeGateFixedGemma4Sliding {
+		t.Fatalf("LongContextGemma4FastRuntimeGates() = %v, want sliding fixed cache bound", gates)
+	}
+}
+
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLong_Good(t *testing.T) {
+	gates := Gemma4FastRuntimeGatesForContext(ProductionLaneLongFormContextLength + 1)
+	seen := map[string]bool{}
+	for _, gate := range gates {
+		seen[gate] = true
+	}
+	for _, rejected := range []string{
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
+	} {
+		if seen[rejected] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, should exclude %s for hyper-long context", gates, rejected)
+		}
+	}
+	if !seen[Gemma4FastRuntimeGateGenerationStream] || !seen[Gemma4FastRuntimeGateExpertIDMatVec] || !seen[Gemma4FastRuntimeGatePagedDecodeFastConcat] {
+		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing non-fixed fast gates", gates)
+	}
+}
+
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_LongFormKeepsFixed_Good(t *testing.T) {
+	gates := Gemma4FastRuntimeGatesForContext(ProductionLaneLongFormContextLength)
+	seen := map[string]bool{}
+	for _, gate := range gates {
+		seen[gate] = true
+	}
+	for _, want := range []string{
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateGenerationStream,
+	} {
+		if !seen[want] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for long-form context", gates, want)
+		}
+	}
+}

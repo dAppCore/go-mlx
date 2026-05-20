@@ -68,6 +68,25 @@ func TestNewPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
+func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
+	plan := NewPlan(Input{
+		Device: DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   64 * GiB,
+			MaxRecommendedWorkingSetSize: 60 * GiB,
+		},
+	})
+	if plan.MachineClass != ClassApple64GB {
+		t.Fatalf("MachineClass = %q, want %q", plan.MachineClass, ClassApple64GB)
+	}
+	if plan.BatchSize != 2 || plan.PrefillChunkSize != 4096 || plan.ParallelSlots != 1 {
+		t.Fatalf("shape = batch %d prefill %d slots %d, want 2/4096/1", plan.BatchSize, plan.PrefillChunkSize, plan.ParallelSlots)
+	}
+	if plan.CacheMode != KVCacheModePaged || !plan.PromptCache {
+		t.Fatalf("cache = mode %q prompt %t, want paged prompt cache", plan.CacheMode, plan.PromptCache)
+	}
+}
+
 func TestNewPlan_CapsContextToModelPack_Good(t *testing.T) {
 	pack := mp.ModelPack{ContextLength: 40960, QuantBits: 4}
 	plan := NewPlan(Input{
@@ -119,7 +138,7 @@ func TestNewPlan_MiniMaxArchitectureHintsAndCaps_Good(t *testing.T) {
 
 func TestNewPlan_BertEmbeddingDisablesGenerationCache_Good(t *testing.T) {
 	pack := mp.ModelPack{
-		Architecture:  "bert", ContextLength: 512,
+		Architecture: "bert", ContextLength: 512,
 		NumLayers: 12, HiddenSize: 768,
 		Embedding:   &mp.ModelEmbeddingProfile{Dimension: 768, Pooling: "mean", MaxSequenceLength: 512},
 		WeightBytes: 420 * 1024 * 1024,
@@ -243,12 +262,16 @@ func TestPercentBytes_GuardsAgainstZero_Ugly(t *testing.T) {
 
 func TestNormalizeKnownArchitecture_KnownAliases_Good(t *testing.T) {
 	cases := map[string]string{
-		"qwen3_5":           "qwen3_next",
-		"MiniMax-M2":        "minimax_m2",
-		"  bert ":           "bert",
+		"qwen3_5":            "qwen3_6",
+		"qwen3.6":            "qwen3_6",
+		"qwen3_5_text":       "qwen3_6",
+		"qwen3_5_moe":        "qwen3_6_moe",
+		"qwen2.5":            "qwen2",
+		"MiniMax-M2":         "minimax_m2",
+		"  bert ":            "bert",
 		"bert_cross_encoder": "bert_rerank",
-		"phi3":              "phi",
-		"unknown-arch":      "unknown_arch",
+		"phi3":               "phi",
+		"unknown-arch":       "unknown_arch",
 	}
 	for in, want := range cases {
 		if got := normalizeKnownArchitecture(in); got != want {

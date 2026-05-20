@@ -60,22 +60,22 @@ type SleepOptions struct {
 
 // SleepReport describes the durable state written by Sleep.
 type SleepReport struct {
-	IndexURI        string             `json:"index_uri,omitempty"`
-	EntryURI        string             `json:"entry_uri,omitempty"`
-	BundleURI       string             `json:"bundle_uri,omitempty"`
-	ParentEntryURI  string             `json:"parent_entry_uri,omitempty"`
-	ParentBundleURI string             `json:"parent_bundle_uri,omitempty"`
-	ParentIndexURI  string             `json:"parent_index_uri,omitempty"`
-	Title           string             `json:"title,omitempty"`
-	TokenCount      int                `json:"token_count,omitempty"`
-	BlockSize       int                `json:"block_size,omitempty"`
-	BlocksWritten   int                `json:"blocks_written,omitempty"`
-	BlocksReused    int                `json:"blocks_reused,omitempty"`
-	KVEncoding      kv.Encoding `json:"kv_encoding,omitempty"`
-	IndexHash       string             `json:"index_hash,omitempty"`
-	SnapshotHash    string             `json:"snapshot_hash,omitempty"`
-	BundleRef       memvid.ChunkRef    `json:"bundle_ref,omitempty"`
-	IndexRef        memvid.ChunkRef    `json:"index_ref,omitempty"`
+	IndexURI        string          `json:"index_uri,omitempty"`
+	EntryURI        string          `json:"entry_uri,omitempty"`
+	BundleURI       string          `json:"bundle_uri,omitempty"`
+	ParentEntryURI  string          `json:"parent_entry_uri,omitempty"`
+	ParentBundleURI string          `json:"parent_bundle_uri,omitempty"`
+	ParentIndexURI  string          `json:"parent_index_uri,omitempty"`
+	Title           string          `json:"title,omitempty"`
+	TokenCount      int             `json:"token_count,omitempty"`
+	BlockSize       int             `json:"block_size,omitempty"`
+	BlocksWritten   int             `json:"blocks_written,omitempty"`
+	BlocksReused    int             `json:"blocks_reused,omitempty"`
+	KVEncoding      kv.Encoding     `json:"kv_encoding,omitempty"`
+	IndexHash       string          `json:"index_hash,omitempty"`
+	SnapshotHash    string          `json:"snapshot_hash,omitempty"`
+	BundleRef       memvid.ChunkRef `json:"bundle_ref,omitempty"`
+	IndexRef        memvid.ChunkRef `json:"index_ref,omitempty"`
 }
 
 type WakePlan struct {

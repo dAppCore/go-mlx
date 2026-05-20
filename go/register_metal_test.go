@@ -8,6 +8,7 @@ import (
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/memory"
 )
 
 func TestMetalBackendLoadModel_ForwardsCPUDeviceWhenGPULayersZero_Good(t *testing.T) {
@@ -53,6 +54,40 @@ func TestMetalBackendLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 	}
 	if got.ParallelSlots != 4 {
 		t.Fatalf("ParallelSlots = %d, want 4", got.ParallelSlots)
+	}
+}
+
+func TestMetalBackendLoadModel_ForwardsPlannerCacheMode_Good(t *testing.T) {
+	coverageTokens := "ForwardsPlannerCacheMode"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoad := loadBackendModel
+	originalDeviceInfo := memoryPlannerDeviceInfo
+	t.Cleanup(func() {
+		loadBackendModel = originalLoad
+		memoryPlannerDeviceInfo = originalDeviceInfo
+	})
+
+	memoryPlannerDeviceInfo = func() DeviceInfo {
+		return DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 << 30,
+			MaxRecommendedWorkingSetSize: 90 << 30,
+		}
+	}
+	var got metal.LoadConfig
+	loadBackendModel = func(_ string, cfg metal.LoadConfig) (*metal.Model, error) {
+		got = cfg
+		return &metal.Model{}, nil
+	}
+
+	backend := &metalbackend{}
+	if _, err := backend.LoadModel("/tmp/model"); err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	if got.CachePolicy != string(memory.KVCacheRotating) || got.KVCacheMode != string(memory.KVCacheModePaged) {
+		t.Fatalf("cache = %q/%q, want planner paged cache", got.CachePolicy, got.KVCacheMode)
 	}
 }
 

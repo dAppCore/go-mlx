@@ -9,6 +9,8 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
+	"dappco.re/go/inference/decode"
+	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
@@ -70,6 +72,147 @@ func TestRunFastEval_SmokesSyntheticRunner_Good(t *testing.T) {
 	}
 	if report.Generation.Runs != 1 || report.Generation.GeneratedTokens != 1 {
 		t.Fatalf("report.Generation = %+v, want Runs=1 Tokens=1", report.Generation)
+	}
+}
+
+func TestBenchModelDecodeGenerate_ReturnsTokenMetrics_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{
+		{ID: 1, Text: "A"},
+		{ID: 2, Text: "B"},
+	}}
+	model := &Model{model: native}
+
+	result, err := benchModelDecodeGenerate(model)(context.Background(), "prompt", decode.GenerateConfig{MaxTokens: 2})
+	if err != nil {
+		t.Fatalf("benchModelDecodeGenerate() error = %v", err)
+	}
+	if result.Text != "AB" {
+		t.Fatalf("Text = %q, want AB", result.Text)
+	}
+	if len(result.Tokens) != 2 || result.Tokens[0].ID != 1 || result.Tokens[1].ID != 2 {
+		t.Fatalf("Tokens = %+v, want token IDs copied", result.Tokens)
+	}
+	if native.lastGenerateConfig.MaxTokens != 2 {
+		t.Fatalf("MaxTokens = %d, want 2", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelBenchSpeculativeDecode_ReportsAcceptance_Good(t *testing.T) {
+	model := &Model{model: &fakeNativeModel{tokens: []metal.Token{
+		{ID: 1, Text: "A"},
+		{ID: 2, Text: "B"},
+	}}}
+
+	report := modelBenchSpeculativeDecode(model, nil)(context.Background(), bench.Config{
+		Prompt:                 "prompt",
+		MaxTokens:              2,
+		SpeculativeDraftTokens: 2,
+	})
+	if report.Error != "" {
+		t.Fatalf("Error = %q, want empty", report.Error)
+	}
+	if !report.Attempted {
+		t.Fatal("Attempted = false, want true")
+	}
+	if report.Metrics.AcceptedTokens != 2 || report.Metrics.RejectedTokens != 0 || report.Metrics.AcceptanceRate != 1 {
+		t.Fatalf("Metrics = %+v, want full speculative acceptance", report.Metrics)
+	}
+	if report.Metrics.TargetTokens != 2 || report.Metrics.DraftTokens != 2 {
+		t.Fatalf("token counts = %+v, want target=2 draft=2", report.Metrics)
+	}
+	if report.Metrics.VisibleTokensPerSec <= 0 || report.Metrics.TargetTokensPerSec <= 0 || report.Metrics.DraftTokensPerSec <= 0 {
+		t.Fatalf("token rates = %+v, want visible/target/draft rates", report.Metrics)
+	}
+}
+
+func TestModelBenchSpeculativeDecode_UsesDraftModel_Good(t *testing.T) {
+	targetNative := &fakeNativeModel{tokens: []metal.Token{
+		{ID: 1, Text: "A"},
+		{ID: 2, Text: "B"},
+	}}
+	draftNative := &fakeNativeModel{tokens: []metal.Token{
+		{ID: 1, Text: "A"},
+		{ID: 3, Text: "C"},
+	}}
+	target := &Model{model: targetNative}
+	draft := &Model{model: draftNative}
+
+	report := modelBenchSpeculativeDecode(target, draft)(context.Background(), bench.Config{
+		Prompt:                 "prompt",
+		MaxTokens:              2,
+		SpeculativeDraftTokens: 2,
+	})
+	if report.Error != "" {
+		t.Fatalf("Error = %q, want empty", report.Error)
+	}
+	if report.Metrics.AcceptedTokens != 1 || report.Metrics.RejectedTokens != 1 {
+		t.Fatalf("Metrics = %+v, want one accepted and one rejected token", report.Metrics)
+	}
+	if targetNative.lastGenerateConfig.MaxTokens != 2 || draftNative.lastGenerateConfig.MaxTokens != 2 {
+		t.Fatalf("MaxTokens target=%d draft=%d, want 2/2", targetNative.lastGenerateConfig.MaxTokens, draftNative.lastGenerateConfig.MaxTokens)
+	}
+}
+
+func TestModelBenchSpeculativePairDecode_UsesNativeAssistantPair_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		gemma4AssistantResult: metal.Gemma4AssistantGenerateResult{
+			Tokens:         []metal.Token{{ID: 7, Text: "G"}},
+			Text:           "G",
+			TargetTokens:   1,
+			DraftTokens:    2,
+			AcceptedTokens: 1,
+			RejectedTokens: 1,
+			TargetCalls:    2,
+			DraftCalls:     1,
+			Duration:       time.Second,
+			TargetDuration: 500 * time.Millisecond,
+			DraftDuration:  250 * time.Millisecond,
+		},
+	}
+	assistant := &metal.Gemma4AssistantPair{Assistant: &metal.Gemma4AssistantModel{}}
+	pair := &SpeculativePair{
+		Target:          &Model{model: native},
+		Gemma4Assistant: assistant,
+	}
+
+	report := modelBenchSpeculativePairDecode(pair)(context.Background(), bench.Config{
+		Prompt:                 "prompt",
+		MaxTokens:              1,
+		SpeculativeDraftTokens: 2,
+	})
+	if report.Error != "" {
+		t.Fatalf("Error = %q, want empty", report.Error)
+	}
+	if native.gemma4AssistantPair != assistant {
+		t.Fatal("native assistant pair was not used")
+	}
+	if native.lastGemma4AssistantPrompt != "prompt" || native.lastGemma4AssistantDraftTokens != 2 {
+		t.Fatalf("native args prompt=%q draft=%d", native.lastGemma4AssistantPrompt, native.lastGemma4AssistantDraftTokens)
+	}
+	if report.Metrics.AcceptedTokens != 1 || report.Metrics.RejectedTokens != 1 || report.Metrics.VisibleTokensPerSec != 1 {
+		t.Fatalf("Metrics = %+v, want native assistant metrics", report.Metrics)
+	}
+}
+
+func TestModelBenchPromptLookupDecode_ReportsAcceptance_Good(t *testing.T) {
+	model := &Model{model: &fakeNativeModel{tokens: []metal.Token{
+		{ID: 1, Text: "A"},
+		{ID: 2, Text: "B"},
+	}}}
+
+	report := modelBenchPromptLookupDecode(model)(context.Background(), bench.Config{
+		Prompt:             "prompt",
+		MaxTokens:          2,
+		PromptLookupTokens: []int32{1, 99},
+	})
+	if report.Error != "" {
+		t.Fatalf("Error = %q, want empty", report.Error)
+	}
+	if report.Metrics.AcceptedTokens != 1 || report.Metrics.RejectedTokens != 1 {
+		t.Fatalf("Metrics = %+v, want one accept and one reject", report.Metrics)
+	}
+	if report.Metrics.TargetTokens != 2 {
+		t.Fatalf("TargetTokens = %d, want 2", report.Metrics.TargetTokens)
 	}
 }
 

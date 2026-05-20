@@ -1,6 +1,5 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-
 package compute
 
 import core "dappco.re/go"

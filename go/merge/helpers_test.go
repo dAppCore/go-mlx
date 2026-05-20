@@ -58,6 +58,7 @@ func float32ToFloat16(value float32) uint16 {
 	}
 	return half
 }
+
 type safetensorTestTensor struct {
 	Name  string
 	Shape []int

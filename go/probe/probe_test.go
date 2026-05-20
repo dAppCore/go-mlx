@@ -82,8 +82,8 @@ func TestBus_AddNilIgnored_Ugly(t *testing.T) {
 
 func TestBus_NilReceiver_Ugly(t *testing.T) {
 	var b *Bus
-	b.Add(NewRecorder())   // must not panic
-	b.EmitProbe(Event{})   // must not panic
+	b.Add(NewRecorder()) // must not panic
+	b.EmitProbe(Event{}) // must not panic
 }
 
 func TestSinkFunc_NilFuncIsSilent_Ugly(t *testing.T) {
@@ -121,12 +121,12 @@ func TestBus_ConcurrentSafe_Good(t *testing.T) {
 func TestCloneEvent_DefensiveCopiesAllPayloads_Good(t *testing.T) {
 	src := Event{
 		Kind: KindLogits, Step: 1,
-		Token:  &Token{ID: 1, Text: "x"},
-		Logits: &Logits{Shape: []int32{1, 2}, Top: []Logit{{TokenID: 1}}, Values: []float32{0.1}, Meta: map[string]string{"k": "v"}},
-		SelectedHeads: &HeadSelection{Heads: []int{0, 1}, Scores: []float64{0.5}},
-		RouterDecision: &RouterDecision{ExpertIDs: []int{0, 1}, Weights: []float32{0.5, 0.5}},
+		Token:           &Token{ID: 1, Text: "x"},
+		Logits:          &Logits{Shape: []int32{1, 2}, Top: []Logit{{TokenID: 1}}, Values: []float32{0.1}, Meta: map[string]string{"k": "v"}},
+		SelectedHeads:   &HeadSelection{Heads: []int{0, 1}, Scores: []float64{0.5}},
+		RouterDecision:  &RouterDecision{ExpertIDs: []int{0, 1}, Weights: []float32{0.5, 0.5}},
 		ExpertResidency: &ExpertResidency{Action: ExpertResidencyActionPageIn, ExpertIDs: []int{0}},
-		Meta: map[string]string{"prompt": "p"},
+		Meta:            map[string]string{"prompt": "p"},
 	}
 	out := CloneEvent(src)
 	// Mutate originals.

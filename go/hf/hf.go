@@ -146,13 +146,13 @@ type FitConfig struct {
 
 // ModelMetadata is the subset of Hugging Face/local metadata needed for fit planning.
 type ModelMetadata struct {
-	ID          string                `json:"id,omitempty"`
-	ModelID     string                `json:"modelId,omitempty"`
-	Tags        []string              `json:"tags,omitempty"`
-	PipelineTag string                `json:"pipeline_tag,omitempty"`
-	Config      ModelConfig         `json:"config,omitempty"`
-	Files       []ModelFile         `json:"siblings,omitempty"`
-	JANG        *jang.Info `json:"jang,omitempty"`
+	ID          string      `json:"id,omitempty"`
+	ModelID     string      `json:"modelId,omitempty"`
+	Tags        []string    `json:"tags,omitempty"`
+	PipelineTag string      `json:"pipeline_tag,omitempty"`
+	Config      ModelConfig `json:"config,omitempty"`
+	Files       []ModelFile `json:"siblings,omitempty"`
+	JANG        *jang.Info  `json:"jang,omitempty"`
 }
 
 // ModelFile describes one model repository file.
@@ -165,17 +165,17 @@ type ModelFile struct {
 
 // ModelConfig mirrors common transformer config fields exposed by HF.
 type ModelConfig struct {
-	ModelType             string                `json:"model_type,omitempty"`
-	Architectures         []string              `json:"architectures,omitempty"`
-	VocabSize             int                   `json:"vocab_size,omitempty"`
-	HiddenSize            int                   `json:"hidden_size,omitempty"`
-	IntermediateSize      int                   `json:"intermediate_size,omitempty"`
-	NumHiddenLayers       int                   `json:"num_hidden_layers,omitempty"`
-	NumAttentionHeads     int                   `json:"num_attention_heads,omitempty"`
-	NumKeyValueHeads      int                   `json:"num_key_value_heads,omitempty"`
-	HeadDim               int                   `json:"head_dim,omitempty"`
-	MaxPositionEmbeddings int                   `json:"max_position_embeddings,omitempty"`
-	ContextLength         int                   `json:"context_length,omitempty"`
+	ModelType             string              `json:"model_type,omitempty"`
+	Architectures         []string            `json:"architectures,omitempty"`
+	VocabSize             int                 `json:"vocab_size,omitempty"`
+	HiddenSize            int                 `json:"hidden_size,omitempty"`
+	IntermediateSize      int                 `json:"intermediate_size,omitempty"`
+	NumHiddenLayers       int                 `json:"num_hidden_layers,omitempty"`
+	NumAttentionHeads     int                 `json:"num_attention_heads,omitempty"`
+	NumKeyValueHeads      int                 `json:"num_key_value_heads,omitempty"`
+	HeadDim               int                 `json:"head_dim,omitempty"`
+	MaxPositionEmbeddings int                 `json:"max_position_embeddings,omitempty"`
+	ContextLength         int                 `json:"context_length,omitempty"`
 	Quantization          *QuantizationConfig `json:"quantization,omitempty"`
 	QuantizationConfig    *QuantizationConfig `json:"quantization_config,omitempty"`
 	TextConfig            *ModelConfig        `json:"text_config,omitempty"`
@@ -190,39 +190,39 @@ type QuantizationConfig struct {
 
 // FitReport is the top-level library output for HF/local model fit planning.
 type FitReport struct {
-	Query       string           `json:"query,omitempty"`
-	Device      memory.DeviceInfo       `json:"device"`
+	Query       string            `json:"query,omitempty"`
+	Device      memory.DeviceInfo `json:"device"`
 	DeviceClass memory.Class      `json:"device_class"`
 	MemoryPlan  memory.Plan       `json:"memory_plan"`
-	Models      []FitPlan `json:"models"`
+	Models      []FitPlan         `json:"models"`
 }
 
 // FitPlan is one model's local Apple fit estimate.
 type FitPlan struct {
-	ModelID               string        `json:"model_id,omitempty"`
-	LocalPath             string        `json:"local_path,omitempty"`
-	Source                string        `json:"source"`
-	Architecture          string        `json:"architecture,omitempty"`
-	SupportedArchitecture bool          `json:"supported_architecture"`
-	NativeLoadable        bool          `json:"native_loadable"`
-	WeightFormat          string        `json:"weight_format,omitempty"`
-	QuantBits             int           `json:"quant_bits,omitempty"`
-	QuantGroup            int           `json:"quant_group,omitempty"`
-	QuantType             string        `json:"quant_type,omitempty"`
-	QuantFamily           string        `json:"quant_family,omitempty"`
-	WeightBytes           uint64        `json:"weight_bytes,omitempty"`
-	ExpectedKVBytes       uint64        `json:"expected_kv_bytes,omitempty"`
-	ExpectedRuntimeBytes  uint64        `json:"expected_runtime_bytes,omitempty"`
-	ExpectedTotalBytes    uint64        `json:"expected_total_bytes,omitempty"`
-	ContextLimit          int           `json:"context_limit,omitempty"`
-	ContextRecommendation int           `json:"context_recommendation,omitempty"`
-	MemoryPlan            memory.Plan    `json:"memory_plan"`
-	MemoryFits            bool          `json:"memory_fits"`
-	InferenceFits         bool          `json:"inference_fits"`
+	ModelID               string      `json:"model_id,omitempty"`
+	LocalPath             string      `json:"local_path,omitempty"`
+	Source                string      `json:"source"`
+	Architecture          string      `json:"architecture,omitempty"`
+	SupportedArchitecture bool        `json:"supported_architecture"`
+	NativeLoadable        bool        `json:"native_loadable"`
+	WeightFormat          string      `json:"weight_format,omitempty"`
+	QuantBits             int         `json:"quant_bits,omitempty"`
+	QuantGroup            int         `json:"quant_group,omitempty"`
+	QuantType             string      `json:"quant_type,omitempty"`
+	QuantFamily           string      `json:"quant_family,omitempty"`
+	WeightBytes           uint64      `json:"weight_bytes,omitempty"`
+	ExpectedKVBytes       uint64      `json:"expected_kv_bytes,omitempty"`
+	ExpectedRuntimeBytes  uint64      `json:"expected_runtime_bytes,omitempty"`
+	ExpectedTotalBytes    uint64      `json:"expected_total_bytes,omitempty"`
+	ContextLimit          int         `json:"context_limit,omitempty"`
+	ContextRecommendation int         `json:"context_recommendation,omitempty"`
+	MemoryPlan            memory.Plan `json:"memory_plan"`
+	MemoryFits            bool        `json:"memory_fits"`
+	InferenceFits         bool        `json:"inference_fits"`
 	Training              TrainingFit `json:"training"`
-	Embeddings            bool          `json:"embeddings,omitempty"`
-	Rerank                bool          `json:"rerank,omitempty"`
-	Notes                 []string      `json:"notes,omitempty"`
+	Embeddings            bool        `json:"embeddings,omitempty"`
+	Rerank                bool        `json:"rerank,omitempty"`
+	Notes                 []string    `json:"notes,omitempty"`
 }
 
 // TrainingFit describes rough training feasibility for local Apple hardware.
@@ -736,7 +736,7 @@ func fitResultError(result core.Result) error {
 	return core.NewError("core result failed")
 }
 
-//	info := mlx.InferJANG(meta)
+// info := mlx.InferJANG(meta)
 func InferJANG(meta ModelMetadata) *jang.Info {
 	needle := core.Lower(firstNonEmpty(meta.ID, meta.ModelID))
 	for _, tag := range meta.Tags {

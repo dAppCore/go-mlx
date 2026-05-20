@@ -277,7 +277,7 @@ func agentMemorySleepOptionsFromInference(req inference.AgentMemorySleepRequest)
 			KVEncoding: kv.Encoding(req.Encoding),
 		},
 		Labels: agentMemoryLabelsFromInference(req.Labels),
-		Meta:   cloneStringMap(req.Metadata),
+		Meta:   agentMemoryMetadataFromInference(req),
 	}
 }
 
@@ -379,4 +379,35 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 	}
 	core.SliceSort(out)
 	return out
+}
+
+func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map[string]string {
+	meta := cloneStringMap(req.Metadata)
+	meta = addAgentMemoryMetadata(meta, "adapter_hash", req.Adapter.Hash)
+	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
+	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
+	if req.Adapter.Rank != 0 {
+		meta = addAgentMemoryMetadata(meta, "adapter_rank", core.Sprintf("%d", req.Adapter.Rank))
+	}
+	if req.Adapter.Alpha != 0 {
+		meta = addAgentMemoryMetadata(meta, "adapter_alpha", core.Sprintf("%g", req.Adapter.Alpha))
+	}
+	meta = addAgentMemoryMetadata(meta, "runtime_backend", req.Runtime.Backend)
+	meta = addAgentMemoryMetadata(meta, "runtime_device", req.Runtime.Device)
+	meta = addAgentMemoryMetadata(meta, "runtime_cache_mode", req.Runtime.CacheMode)
+	meta = addAgentMemoryMetadata(meta, "runtime_version", req.Runtime.Version)
+	return meta
+}
+
+func addAgentMemoryMetadata(meta map[string]string, key, value string) map[string]string {
+	if core.Trim(value) == "" {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	if meta[key] == "" {
+		meta[key] = value
+	}
+	return meta
 }

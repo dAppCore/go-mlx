@@ -68,6 +68,10 @@ type nativeChunkGenerator interface {
 	GenerateChunks(context.Context, iter.Seq[string], metal.GenerateConfig) iter.Seq[metal.Token]
 }
 
+type nativeChatChunkGenerator interface {
+	ChatChunks(context.Context, []metal.ChatMessage, int, metal.GenerateConfig) iter.Seq[metal.Token]
+}
+
 type nativeLoRALoader interface {
 	LoadLoRA(string) (*metal.LoRAAdapter, error)
 }
@@ -133,6 +137,18 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			}
 			appendCleanup(&cleanup, adapterCleanup)
 		}
+	}
+	if slice, ok, sliceErr := inspectModelSliceIfPresent(resolvedPath); sliceErr != nil {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return nil, core.ErrorJoin(sliceErr, cleanupErr)
+		}
+		return nil, sliceErr
+	} else if ok && slice.RequiresSplitPlacement {
+		err := core.NewError("mlx: model slice requires split placement; use LoadSplitExecutor or lthn-mlx slice-smoke -split")
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			return nil, core.ErrorJoin(err, cleanupErr)
+		}
+		return nil, err
 	}
 	cfg = applyMemoryPlanToLoadConfig(resolvedPath, cfg)
 	if resolvedAdapterPath != "" {
@@ -203,14 +219,16 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	return metal.GenerateConfig{
-		MaxTokens:     cfg.MaxTokens,
-		Temperature:   cfg.Temperature,
-		TopK:          cfg.TopK,
-		TopP:          cfg.TopP,
-		MinP:          cfg.MinP,
-		StopTokens:    cfg.StopTokens,
-		RepeatPenalty: cfg.RepeatPenalty,
-		ProbeSink:     toMetalProbeSink(cfg.ProbeSink),
+		MaxTokens:        cfg.MaxTokens,
+		Temperature:      cfg.Temperature,
+		TopK:             cfg.TopK,
+		TopP:             cfg.TopP,
+		MinP:             cfg.MinP,
+		StopTokens:       cfg.StopTokens,
+		SuppressTokens:   cfg.SuppressTokens,
+		RepeatPenalty:    cfg.RepeatPenalty,
+		ProbeSink:        toMetalProbeSink(cfg.ProbeSink),
+		TraceTokenPhases: cfg.TraceTokenPhases,
 	}
 }
 
@@ -363,6 +381,7 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 	return Metrics{
 		PromptTokens:               metrics.PromptTokens,
 		GeneratedTokens:            metrics.GeneratedTokens,
+		FirstTokenDuration:         metrics.FirstTokenDuration,
 		PrefillDuration:            metrics.PrefillDuration,
 		DecodeDuration:             metrics.DecodeDuration,
 		TotalDuration:              metrics.TotalDuration,
@@ -370,13 +389,62 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 		DecodeTokensPerSec:         metrics.DecodeTokensPerSec,
 		PeakMemoryBytes:            metrics.PeakMemoryBytes,
 		ActiveMemoryBytes:          metrics.ActiveMemoryBytes,
+		CacheMemoryBytes:           metrics.CacheMemoryBytes,
+		ProcessVirtualMemoryBytes:  metrics.ProcessVirtualMemoryBytes,
+		ProcessResidentMemoryBytes: metrics.ProcessResidentMemoryBytes,
+		ProcessPeakResidentBytes:   metrics.ProcessPeakResidentBytes,
 		PromptCacheHits:            metrics.PromptCacheHits,
 		PromptCacheMisses:          metrics.PromptCacheMisses,
 		PromptCacheHitTokens:       metrics.PromptCacheHitTokens,
 		PromptCacheMissTokens:      metrics.PromptCacheMissTokens,
 		PromptCacheRestoreDuration: metrics.PromptCacheRestoreDuration,
+		TokenPhases:                toRootTokenPhaseTraces(metrics.TokenPhases),
 		Adapter:                    toRootAdapterInfo(metrics.Adapter),
 	}
+}
+
+func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
+	if len(phases) == 0 {
+		return nil
+	}
+	out := make([]TokenPhaseTrace, len(phases))
+	for i, phase := range phases {
+		out[i] = TokenPhaseTrace{
+			Step:                phase.Step,
+			FinalToken:          phase.FinalToken,
+			TotalDuration:       phase.TotalDuration,
+			LogitsDuration:      phase.LogitsDuration,
+			SampleDuration:      phase.SampleDuration,
+			SampleEvalDuration:  phase.SampleEvalDuration,
+			TokenReadDuration:   phase.TokenReadDuration,
+			DecodeTextDuration:  phase.DecodeTextDuration,
+			ProbeTokenDuration:  phase.ProbeTokenDuration,
+			YieldDuration:       phase.YieldDuration,
+			NextInputDuration:   phase.NextInputDuration,
+			ForwardDuration:     phase.ForwardDuration,
+			MaterializeDuration: phase.MaterializeDuration,
+			DetachDuration:      phase.DetachDuration,
+			CacheProbeDuration:  phase.CacheProbeDuration,
+			OtherDuration:       phase.OtherDuration,
+			NativeEvents:        toRootNativePhaseTraces(phase.NativeEvents),
+		}
+	}
+	return out
+}
+
+func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]NativePhaseTrace, len(events))
+	for i, event := range events {
+		out[i] = NativePhaseTrace{
+			Name:     event.Name,
+			Duration: event.Duration,
+			Error:    event.Error,
+		}
+	}
+	return out
 }
 
 func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
@@ -806,6 +874,110 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 	return out
 }
 
+// GenerateChunksStream streams tokens from bounded prompt chunks without
+// building or tokenizing one giant prompt string.
+func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string], opts ...GenerateOption) <-chan Token {
+	out := make(chan Token)
+	go func() {
+		defer close(out)
+		if m == nil || m.model == nil {
+			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		cfg := applyGenerateOptions(opts)
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		if generator, ok := m.model.(nativeChunkGenerator); ok {
+			for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
+				text := filter.Process(tok.Text)
+				if text == "" {
+					continue
+				}
+				select {
+				case out <- Token{ID: tok.ID, Value: text, Text: text}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		} else {
+			for tok := range m.model.Generate(ctx, promptChunksToString(chunks), toMetalGenerateConfig(cfg)) {
+				text := filter.Process(tok.Text)
+				if text == "" {
+					continue
+				}
+				select {
+				case out <- Token{ID: tok.ID, Value: text, Text: text}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
+// ChatChunksStream streams chat tokens through the native template while
+// feeding long message content as bounded prompt chunks.
+func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Message, chunkBytes int, opts ...GenerateOption) <-chan Token {
+	out := make(chan Token)
+	go func() {
+		defer close(out)
+		if m == nil || m.model == nil {
+			return
+		}
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		cfg := applyGenerateOptions(opts)
+		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		metalMessages := make([]metal.ChatMessage, len(messages))
+		for i, msg := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		}
+		if generator, ok := m.model.(nativeChatChunkGenerator); ok {
+			for tok := range generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)) {
+				text := filter.Process(tok.Text)
+				if text == "" {
+					continue
+				}
+				select {
+				case out <- Token{ID: tok.ID, Value: text, Text: text}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		} else {
+			for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
+				text := filter.Process(tok.Text)
+				if text == "" {
+					continue
+				}
+				select {
+				case out <- Token{ID: tok.ID, Value: text, Text: text}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+		if text := filter.Flush(); text != "" {
+			select {
+			case out <- Token{Value: text, Text: text}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out
+}
+
 // ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
 func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, opts ...GenerateOption) <-chan Token {
 	out := make(chan Token)
@@ -938,14 +1110,25 @@ func (m *Model) Info() ModelInfo {
 		}
 	}
 	return ModelInfo{
-		Architecture:  architecture,
-		VocabSize:     vocabSize,
-		NumLayers:     numLayers,
-		HiddenSize:    hiddenSize,
-		QuantBits:     quantBits,
-		QuantGroup:    quantGroup,
-		ContextLength: contextLength,
-		Adapter:       m.Adapter(),
+		Architecture:         architecture,
+		VocabSize:            vocabSize,
+		NumLayers:            numLayers,
+		HiddenSize:           hiddenSize,
+		QuantBits:            quantBits,
+		QuantGroup:           quantGroup,
+		ContextLength:        contextLength,
+		ParallelSlots:        m.cfg.ParallelSlots,
+		PromptCache:          m.cfg.PromptCache,
+		PromptCacheMinTokens: m.cfg.PromptCacheMinTokens,
+		CachePolicy:          m.cfg.CachePolicy,
+		CacheMode:            m.cfg.CacheMode,
+		BatchSize:            m.cfg.BatchSize,
+		PrefillChunkSize:     m.cfg.PrefillChunkSize,
+		ExpectedQuantization: m.cfg.ExpectedQuantization,
+		MemoryLimitBytes:     m.cfg.MemoryLimitBytes,
+		CacheLimitBytes:      m.cfg.CacheLimitBytes,
+		WiredLimitBytes:      m.cfg.WiredLimitBytes,
+		Adapter:              m.Adapter(),
 	}
 }
 

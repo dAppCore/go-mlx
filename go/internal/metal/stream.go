@@ -6,10 +6,50 @@ package metal
 
 /*
 #include "mlx/c/mlx.h"
+
+static const char* go_mlx_device_info_string(mlx_device_info info, const char* key) {
+	const char* value = NULL;
+	if (mlx_device_info_get_string(&value, info, key) != 0) {
+		return NULL;
+	}
+	return value;
+}
+
+static size_t go_mlx_device_info_size(mlx_device_info info, const char* key) {
+	size_t value = 0;
+	if (mlx_device_info_get_size(&value, info, key) != 0) {
+		return 0;
+	}
+	return value;
+}
+
+static const char* go_mlx_device_info_name(mlx_device_info info) {
+	return go_mlx_device_info_string(info, "device_name");
+}
+
+static const char* go_mlx_device_info_architecture(mlx_device_info info) {
+	return go_mlx_device_info_string(info, "architecture");
+}
+
+static size_t go_mlx_device_info_max_buffer_length(mlx_device_info info) {
+	return go_mlx_device_info_size(info, "max_buffer_length");
+}
+
+static size_t go_mlx_device_info_max_recommended_working_set_size(mlx_device_info info) {
+	return go_mlx_device_info_size(info, "max_recommended_working_set_size");
+}
+
+static size_t go_mlx_device_info_memory_size(mlx_device_info info) {
+	return go_mlx_device_info_size(info, "memory_size");
+}
 */
 import "C"
 
-import "sync"
+import (
+	"sync"
+
+	core "dappco.re/go"
+)
 
 // Stream wraps an mlx_stream handle for dispatching operations.
 type Stream struct {
@@ -25,12 +65,22 @@ var (
 
 	defaultCPUStream     *Stream
 	defaultCPUStreamOnce sync.Once
+
+	defaultStreamOverrideMu sync.RWMutex
+	defaultStreamOverride   *Stream
+	defaultStreamContextMu  sync.Mutex
 )
 
 // DefaultStream returns the default stream for the current default device.
 //
 //	C.mlx_zeros(&out.ctx, ..., metal.DefaultStream().ctx)
 func DefaultStream() *Stream {
+	defaultStreamOverrideMu.RLock()
+	override := defaultStreamOverride
+	defaultStreamOverrideMu.RUnlock()
+	if override != nil && override.ctx.ctx != nil {
+		return override
+	}
 	defaultStreamOnce.Do(func() {
 		defaultStream = &Stream{}
 	})
@@ -60,6 +110,95 @@ func DefaultCPUStream() *Stream {
 		defaultCPUStream = &Stream{ctx: C.mlx_default_cpu_stream_new()}
 	})
 	return defaultCPUStream
+}
+
+func withTemporaryDefaultStream(device DeviceType, fn func()) error {
+	if fn == nil {
+		return nil
+	}
+	if device == "" {
+		device = DeviceGPU
+	}
+	stream, err := newStreamForDevice(device)
+	if err != nil {
+		return err
+	}
+	defer C.mlx_stream_free(stream.ctx)
+
+	previous, err := currentDefaultStreamForDevice(device)
+	if err != nil {
+		return err
+	}
+	defer C.mlx_stream_free(previous.ctx)
+
+	defaultStreamContextMu.Lock()
+	defer defaultStreamContextMu.Unlock()
+
+	if rc := C.mlx_set_default_stream(stream.ctx); rc != 0 {
+		if err := lastError(); err != nil {
+			return core.E("metal.withTemporaryDefaultStream", "set default stream", err)
+		}
+		return core.E("metal.withTemporaryDefaultStream", "set default stream", nil)
+	}
+	defaultStreamOverrideMu.Lock()
+	defaultStreamOverride = stream
+	defaultStreamOverrideMu.Unlock()
+	defer func() {
+		defaultStreamOverrideMu.Lock()
+		defaultStreamOverride = nil
+		defaultStreamOverrideMu.Unlock()
+		if rc := C.mlx_set_default_stream(previous.ctx); rc != 0 {
+			if err := lastError(); err != nil {
+				core.Error("mlx: restore default stream", "error", err)
+			}
+		}
+	}()
+
+	fn()
+	return nil
+}
+
+func newStreamForDevice(device DeviceType) (*Stream, error) {
+	dev, err := newCDevice(device)
+	if err != nil {
+		return nil, err
+	}
+	defer C.mlx_device_free(dev)
+
+	stream := &Stream{ctx: C.mlx_stream_new_device(dev)}
+	if stream.ctx.ctx == nil {
+		if err := lastError(); err != nil {
+			return nil, core.E("metal.newStreamForDevice", "new stream", err)
+		}
+		return nil, core.E("metal.newStreamForDevice", "new stream", nil)
+	}
+	return stream, nil
+}
+
+func currentDefaultStreamForDevice(device DeviceType) (*Stream, error) {
+	Init()
+	switch device {
+	case DeviceCPU:
+		stream := &Stream{ctx: C.mlx_default_cpu_stream_new()}
+		if stream.ctx.ctx == nil {
+			if err := lastError(); err != nil {
+				return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", err)
+			}
+			return nil, core.E("metal.currentDefaultStreamForDevice", "cpu stream", nil)
+		}
+		return stream, nil
+	case DeviceGPU, "":
+		stream := &Stream{ctx: C.mlx_default_gpu_stream_new()}
+		if stream.ctx.ctx == nil {
+			if err := lastError(); err != nil {
+				return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", err)
+			}
+			return nil, core.E("metal.currentDefaultStreamForDevice", "gpu stream", nil)
+		}
+		return stream, nil
+	default:
+		return nil, core.E("metal.currentDefaultStreamForDevice", "unsupported device: "+string(device), nil)
+	}
 }
 
 // Synchronize waits for all pending operations on the stream to complete.
@@ -163,22 +302,54 @@ func SetWiredLimit(limit uint64) uint64 {
 
 // DeviceInfo holds Metal GPU hardware information.
 type DeviceInfo struct {
+	Name                         string
 	Architecture                 string
 	MaxBufferLength              uint64
 	MaxRecommendedWorkingSetSize uint64
 	MemorySize                   uint64
 }
 
+// HostDeviceInfo returns host-reported Apple GPU memory without initialising
+// MLX or checking bundled metallib availability.
+func HostDeviceInfo() DeviceInfo { return hostDeviceInfo() }
+
 // GetDeviceInfo returns Metal GPU hardware information.
 func GetDeviceInfo() DeviceInfo {
+	host := hostDeviceInfo()
 	if !MetalAvailable() {
-		return DeviceInfo{}
+		return host
 	}
-	info := C.mlx_metal_device_info()
-	return DeviceInfo{
-		Architecture:                 C.GoString(&info.architecture[0]),
-		MaxBufferLength:              uint64(info.max_buffer_length),
-		MaxRecommendedWorkingSetSize: uint64(info.max_recommended_working_set_size),
-		MemorySize:                   uint64(info.memory_size),
+	dev, err := newCDevice(DeviceGPU)
+	if err != nil {
+		return host
 	}
+	defer C.mlx_device_free(dev)
+	info := C.mlx_device_info_new()
+	defer C.mlx_device_info_free(info)
+	if rc := C.mlx_device_info_get(&info, dev); rc != 0 {
+		return host
+	}
+	device := DeviceInfo{
+		Name:                         C.GoString(C.go_mlx_device_info_name(info)),
+		Architecture:                 C.GoString(C.go_mlx_device_info_architecture(info)),
+		MaxBufferLength:              uint64(C.go_mlx_device_info_max_buffer_length(info)),
+		MaxRecommendedWorkingSetSize: uint64(C.go_mlx_device_info_max_recommended_working_set_size(info)),
+		MemorySize:                   uint64(C.go_mlx_device_info_memory_size(info)),
+	}
+	if device.Name == "" {
+		device.Name = host.Name
+	}
+	if device.Architecture == "" {
+		device.Architecture = host.Architecture
+	}
+	if device.MaxBufferLength == 0 {
+		device.MaxBufferLength = host.MaxBufferLength
+	}
+	if device.MaxRecommendedWorkingSetSize == 0 {
+		device.MaxRecommendedWorkingSetSize = host.MaxRecommendedWorkingSetSize
+	}
+	if device.MemorySize == 0 {
+		device.MemorySize = host.MemorySize
+	}
+	return device
 }

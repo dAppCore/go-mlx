@@ -105,6 +105,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	coreio "dappco.re/go/io"
 	"dappco.re/go/mlx/internal/metal"
@@ -141,21 +142,56 @@ type Token struct {
 
 // Metrics reports performance counters from the last inference call.
 type Metrics struct {
-	PromptTokens               int              `json:"prompt_tokens"`
-	GeneratedTokens            int              `json:"generated_tokens"`
-	PrefillDuration            time.Duration    `json:"prefill_duration"`
-	DecodeDuration             time.Duration    `json:"decode_duration"`
-	TotalDuration              time.Duration    `json:"total_duration"`
-	PrefillTokensPerSec        float64          `json:"prefill_tokens_per_sec"`
-	DecodeTokensPerSec         float64          `json:"decode_tokens_per_sec"`
-	PeakMemoryBytes            uint64           `json:"peak_memory_bytes"`
-	ActiveMemoryBytes          uint64           `json:"active_memory_bytes"`
-	PromptCacheHits            int              `json:"prompt_cache_hits,omitempty"`
-	PromptCacheMisses          int              `json:"prompt_cache_misses,omitempty"`
-	PromptCacheHitTokens       int              `json:"prompt_cache_hit_tokens,omitempty"`
-	PromptCacheMissTokens      int              `json:"prompt_cache_miss_tokens,omitempty"`
-	PromptCacheRestoreDuration time.Duration    `json:"prompt_cache_restore_duration,omitempty"`
-	Adapter                    lora.AdapterInfo `json:"adapter,omitempty"`
+	PromptTokens               int               `json:"prompt_tokens"`
+	GeneratedTokens            int               `json:"generated_tokens"`
+	FirstTokenDuration         time.Duration     `json:"first_token_duration,omitempty"`
+	PrefillDuration            time.Duration     `json:"prefill_duration"`
+	DecodeDuration             time.Duration     `json:"decode_duration"`
+	TotalDuration              time.Duration     `json:"total_duration"`
+	PrefillTokensPerSec        float64           `json:"prefill_tokens_per_sec"`
+	DecodeTokensPerSec         float64           `json:"decode_tokens_per_sec"`
+	PeakMemoryBytes            uint64            `json:"peak_memory_bytes"`
+	ActiveMemoryBytes          uint64            `json:"active_memory_bytes"`
+	CacheMemoryBytes           uint64            `json:"cache_memory_bytes"`
+	ProcessVirtualMemoryBytes  uint64            `json:"process_virtual_memory_bytes"`
+	ProcessResidentMemoryBytes uint64            `json:"process_resident_memory_bytes"`
+	ProcessPeakResidentBytes   uint64            `json:"process_peak_resident_bytes"`
+	PromptCacheHits            int               `json:"prompt_cache_hits,omitempty"`
+	PromptCacheMisses          int               `json:"prompt_cache_misses,omitempty"`
+	PromptCacheHitTokens       int               `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptCacheMissTokens      int               `json:"prompt_cache_miss_tokens,omitempty"`
+	PromptCacheRestoreDuration time.Duration     `json:"prompt_cache_restore_duration,omitempty"`
+	TokenPhases                []TokenPhaseTrace `json:"token_phases,omitempty"`
+	Adapter                    lora.AdapterInfo  `json:"adapter,omitempty"`
+}
+
+// TokenPhaseTrace reports the coarse decode-loop cost for one generated token.
+type TokenPhaseTrace struct {
+	Step                int                `json:"step"`
+	FinalToken          bool               `json:"final_token,omitempty"`
+	TotalDuration       time.Duration      `json:"total_duration,omitempty"`
+	LogitsDuration      time.Duration      `json:"logits_duration,omitempty"`
+	SampleDuration      time.Duration      `json:"sample_duration,omitempty"`
+	SampleEvalDuration  time.Duration      `json:"sample_eval_duration,omitempty"`
+	TokenReadDuration   time.Duration      `json:"token_read_duration,omitempty"`
+	DecodeTextDuration  time.Duration      `json:"decode_text_duration,omitempty"`
+	ProbeTokenDuration  time.Duration      `json:"probe_token_duration,omitempty"`
+	YieldDuration       time.Duration      `json:"yield_duration,omitempty"`
+	NextInputDuration   time.Duration      `json:"next_input_duration,omitempty"`
+	ForwardDuration     time.Duration      `json:"forward_duration,omitempty"`
+	MaterializeDuration time.Duration      `json:"materialize_duration,omitempty"`
+	DetachDuration      time.Duration      `json:"detach_duration,omitempty"`
+	CacheProbeDuration  time.Duration      `json:"cache_probe_duration,omitempty"`
+	OtherDuration       time.Duration      `json:"other_duration,omitempty"`
+	NativeEvents        []NativePhaseTrace `json:"native_events,omitempty"`
+}
+
+// NativePhaseTrace reports an optional native materialisation event captured
+// during a decode forward pass.
+type NativePhaseTrace struct {
+	Name     string        `json:"name"`
+	Duration time.Duration `json:"duration"`
+	Error    string        `json:"error,omitempty"`
 }
 
 // ClassifyResult holds the sampled token for a single prompt and optional logits.
@@ -189,28 +225,41 @@ func (s *AttentionSnapshot) HasQueries() bool {
 
 // ModelInfo describes a loaded model.
 type ModelInfo struct {
-	Architecture  string
-	VocabSize     int
-	NumLayers     int
-	HiddenSize    int
-	QuantBits     int
-	QuantGroup    int
-	ContextLength int
-	Adapter       lora.AdapterInfo
+	Architecture         string
+	VocabSize            int
+	NumLayers            int
+	HiddenSize           int
+	QuantBits            int
+	QuantGroup           int
+	ContextLength        int
+	ParallelSlots        int
+	PromptCache          bool
+	PromptCacheMinTokens int
+	CachePolicy          memory.KVCachePolicy
+	CacheMode            memory.KVCacheMode
+	BatchSize            int
+	PrefillChunkSize     int
+	ExpectedQuantization int
+	MemoryLimitBytes     uint64
+	CacheLimitBytes      uint64
+	WiredLimitBytes      uint64
+	Adapter              lora.AdapterInfo
 }
 
 // GenerateConfig holds generation parameters for the RFC-style root API.
 type GenerateConfig struct {
-	MaxTokens     int
-	Temperature   float32
-	TopK          int
-	TopP          float32
-	MinP          float32
-	ReturnLogits  bool
-	StopTokens    []int32
-	RepeatPenalty float32
-	ProbeSink     probe.Sink
-	Thinking      parser.Config
+	MaxTokens        int
+	Temperature      float32
+	TopK             int
+	TopP             float32
+	MinP             float32
+	ReturnLogits     bool
+	StopTokens       []int32
+	SuppressTokens   []int32
+	RepeatPenalty    float32
+	ProbeSink        probe.Sink
+	TraceTokenPhases bool
+	Thinking         parser.Config
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
@@ -265,9 +314,19 @@ func WithStopTokens(ids ...int32) GenerateOption {
 	return func(c *GenerateConfig) { c.StopTokens = ids }
 }
 
+// WithSuppressTokens masks token IDs out of the sampling distribution.
+func WithSuppressTokens(ids ...int32) GenerateOption {
+	return func(c *GenerateConfig) { c.SuppressTokens = ids }
+}
+
 // WithRepeatPenalty sets the repetition penalty.
 func WithRepeatPenalty(p float32) GenerateOption {
 	return func(c *GenerateConfig) { c.RepeatPenalty = p }
+}
+
+// WithTokenPhaseTrace records per-token decode-loop timings in Metrics.
+func WithTokenPhaseTrace() GenerateOption {
+	return func(c *GenerateConfig) { c.TraceTokenPhases = true }
 }
 
 // WithProbeSink streams typed probe events during generation.
@@ -315,6 +374,7 @@ type LoadConfig struct {
 	MemoryLimitBytes     uint64
 	CacheLimitBytes      uint64
 	WiredLimitBytes      uint64
+	SplitInference       *inference.SplitInferencePlan
 }
 
 // DefaultLoadConfig returns sensible defaults for root-package loading.
@@ -423,6 +483,15 @@ func WithAllocatorLimits(memory, cache, wired uint64) LoadOption {
 	}
 }
 
+// WithSplitInference attaches a validated split-inference plan to the load
+// request. Remote execution is still planned; local plans are accepted so UIs
+// can persist the same shape before backend execution lands.
+func WithSplitInference(plan inference.SplitInferencePlan) LoadOption {
+	return func(c *LoadConfig) {
+		c.SplitInference = cloneSplitInferencePlan(plan)
+	}
+}
+
 func applyLoadOptions(opts []LoadOption) LoadConfig {
 	cfg := DefaultLoadConfig()
 	for _, opt := range opts {
@@ -456,6 +525,18 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ExpectedQuantization < 0 {
 		return LoadConfig{}, core.NewError("mlx: expected quantization bits must be >= 0")
 	}
+	if cfg.SplitInference != nil {
+		if err := inference.ValidateSplitInferencePlan(*cfg.SplitInference); err != nil {
+			return LoadConfig{}, err
+		}
+		mode := cfg.SplitInference.Mode
+		if mode == "" {
+			mode = inference.SplitInferenceModeLocal
+		}
+		if mode != inference.SplitInferenceModeLocal {
+			return LoadConfig{}, core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+		}
+	}
 	switch cfg.CacheMode {
 	case memory.KVCacheModeDefault, memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
 	default:
@@ -473,4 +554,14 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	default:
 		return LoadConfig{}, core.NewError("mlx: unsupported device: " + device)
 	}
+}
+
+func cloneSplitInferencePlan(plan inference.SplitInferencePlan) *inference.SplitInferencePlan {
+	cloned := plan
+	cloned.LocalSlice.Components = append([]inference.ModelComponent(nil), plan.LocalSlice.Components...)
+	cloned.LocalSlice.Notes = append([]string(nil), plan.LocalSlice.Notes...)
+	cloned.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
+	cloned.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
+	cloned.Labels = cloneInferenceLabels(plan.Labels)
+	return &cloned
 }

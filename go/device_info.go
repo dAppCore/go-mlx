@@ -2,14 +2,17 @@
 
 package mlx
 
-import core "dappco.re/go"
+import (
+	core "dappco.re/go"
+	"dappco.re/go/mlx/internal/metal"
+)
 
 func safeRuntimeDeviceInfo() DeviceInfo {
 	// mlx-c can abort the process when its bundled metallib is not discoverable.
-	// Capability and fit-planning reports must stay safe in package tests and
-	// headless agent runs, so callers opt into native device probing explicitly.
+	// Use host-reported memory for planning by default, and only opt into the
+	// full native MLX device probe when the caller explicitly asks for it.
 	if core.Env("GO_MLX_REPORT_DEVICE_INFO") != "1" {
-		return DeviceInfo{}
+		return metal.HostDeviceInfo()
 	}
 	return GetDeviceInfo()
 }

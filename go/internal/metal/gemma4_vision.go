@@ -785,7 +785,7 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			pli = perLayerInputs[i]
 		}
 
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg)
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil)
 		Free(h)
 		h = nextH
 		intermediates[i] = kv
@@ -1187,7 +1187,7 @@ func gemma4VisionRotatePart(x, cos, sin *Array) *Array {
 
 func (m *Gemma4VisionMLP) Forward(x *Array) *Array {
 	gate := m.GateProj.Forward(x)
-	activated := getCompiledGELU().Call(gate)[0]
+	activated := geluActivation(gate)
 	Free(gate)
 	var hidden *Array
 	if m.UpProj != nil {
@@ -1265,7 +1265,7 @@ func (p *Gemma4MultiModalProjector) Forward(x *Array) *Array {
 	}
 	if p.Linear1 != nil && p.Linear2 != nil {
 		hidden := p.Linear1.Forward(normed)
-		activated := getCompiledGELU().Call(hidden)[0]
+		activated := geluActivation(hidden)
 		Free(hidden, normed)
 		out := p.Linear2.Forward(activated)
 		Free(activated)

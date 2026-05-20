@@ -172,6 +172,146 @@ func TestPromptCache_RestoresPagedPrefix_Good(t *testing.T) {
 	}
 }
 
+func TestPromptCache_RestoresSlidingPagedTail_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoresSlidingPagedTail"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(2, 2)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
+	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
+	fullK, fullV := cache.Update(k, v, 4)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval paged cache update: %v", err)
+	}
+	Free(k, v, fullK, fullV)
+	defer freeCaches([]Cache{cache})
+
+	snapshot, ok, err := snapshotCache(cache, 4)
+	if err != nil {
+		t.Fatalf("snapshotCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache() ok = false, want true")
+	}
+	defer freeCacheSnapshots([]cacheSnapshot{snapshot})
+	if snapshot.mode != KVCacheModePaged || snapshot.maxSize != 2 || snapshot.length != 2 || snapshot.offset != 4 {
+		t.Fatalf("snapshot mode/max/length/offset = %q/%d/%d/%d, want paged/2/2/4", snapshot.mode, snapshot.maxSize, snapshot.length, snapshot.offset)
+	}
+
+	restored, err := restorePromptCaches([]cacheSnapshot{snapshot}, 4)
+	if err != nil {
+		t.Fatalf("restorePromptCaches() error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
+	}
+	if restoredCache.Len() != 2 || restoredCache.Offset() != 4 || restoredCache.maxSize != 2 {
+		t.Fatalf("restored len/offset/max = %d/%d/%d, want 2/4/2", restoredCache.Len(), restoredCache.Offset(), restoredCache.maxSize)
+	}
+}
+
+func TestPromptCache_RestoresFixedPrefix_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoresFixedPrefix"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewFixedKVCache(6)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
+	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
+	fullK, fullV := cache.Update(k, v, 4)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval fixed cache update: %v", err)
+	}
+	Free(k, v, fullK, fullV)
+	defer freeCaches([]Cache{cache})
+
+	snapshot, ok, err := snapshotCache(cache, 4)
+	if err != nil {
+		t.Fatalf("snapshotCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache() ok = false, want true")
+	}
+	defer freeCacheSnapshots([]cacheSnapshot{snapshot})
+	if snapshot.mode != KVCacheModeFixed || snapshot.maxSize != 6 {
+		t.Fatalf("snapshot mode/maxSize = %q/%d, want fixed/6", snapshot.mode, snapshot.maxSize)
+	}
+
+	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 3, 8)
+	if err != nil {
+		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *FixedKVCache", restored[0])
+	}
+	if restoredCache.Len() != 3 || restoredCache.Offset() != 3 || restoredCache.maxSize != 8 {
+		t.Fatalf("restored len/offset/max = %d/%d/%d, want 3/3/8", restoredCache.Len(), restoredCache.Offset(), restoredCache.maxSize)
+	}
+	state := restoredCache.State()
+	if len(state) != 2 || state[0].Shape()[2] != 8 {
+		t.Fatalf("fixed backing shape = %v, want capacity 8", state)
+	}
+	readState, owned := restoredCache.ReadState()
+	defer Free(owned...)
+	if len(readState) != 2 || readState[0].Shape()[2] != 3 {
+		t.Fatalf("readable fixed prefix shape = %v, want length 3", readState)
+	}
+}
+
+func TestPromptCache_RestoresSlidingFixedTail_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoresSlidingFixedTail"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	restoreGate := SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Cleanup(restoreGate)
+
+	cache := NewFixedKVCache(2)
+	k := FromValues([]float32{1, 2, 3, 4}, 1, 1, 4, 1)
+	v := FromValues([]float32{5, 6, 7, 8}, 1, 1, 4, 1)
+	fullK, fullV := cache.Update(k, v, 4)
+	if err := Eval(fullK, fullV); err != nil {
+		t.Fatalf("Eval fixed cache update: %v", err)
+	}
+	Free(k, v, fullK, fullV)
+	defer freeCaches([]Cache{cache})
+
+	snapshot, ok, err := snapshotCache(cache, 4)
+	if err != nil {
+		t.Fatalf("snapshotCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotCache() ok = false, want true")
+	}
+	defer freeCacheSnapshots([]cacheSnapshot{snapshot})
+	if snapshot.mode != KVCacheModeFixed || snapshot.maxSize != 2 || snapshot.length != 2 || snapshot.offset != 4 {
+		t.Fatalf("snapshot mode/max/length/offset = %q/%d/%d/%d, want fixed/2/2/4", snapshot.mode, snapshot.maxSize, snapshot.length, snapshot.offset)
+	}
+
+	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 4, 8)
+	if err != nil {
+		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+	}
+	defer freeCaches(restored)
+	restoredCache, ok := restored[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *FixedKVCache", restored[0])
+	}
+	if restoredCache.Len() != 2 || restoredCache.Offset() != 4 || restoredCache.maxSize != 2 {
+		t.Fatalf("restored len/offset/max = %d/%d/%d, want 2/4/2", restoredCache.Len(), restoredCache.Offset(), restoredCache.maxSize)
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksStreamsPagedPages"
 	if coverageTokens == "" {
@@ -221,6 +361,71 @@ func TestPromptCache_RestoreFromKVBlocksStreamsPagedPages_Good(t *testing.T) {
 	}
 }
 
+func TestPromptCache_RestoreFromKVBlocksUsesFixedGenerationCache_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksUsesFixedGenerationCache"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
+
+	native := &fakePagedModel{numLayers: 1, pageSize: 2}
+	model := &Model{
+		model:                native,
+		modelType:            "gemma4_text",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+		contextLen:           64,
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			switch index {
+			case 0:
+				return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshotForArchitecture("gemma4_text", 0, []int32{1, 2})}, nil
+			case 1:
+				return KVSnapshotBlock{Index: 1, TokenStart: 2, TokenCount: 2, Snapshot: kvSnapshotBlockTestSnapshotForArchitecture("gemma4_text", 2, []int32{3, 4})}, nil
+			default:
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	if model.promptCache == nil || len(model.promptCache.caches) != 1 {
+		t.Fatal("promptCache = nil, want fixed restored block cache")
+	}
+	if cache := model.promptCache.caches[0]; cache.mode != KVCacheModeFixed || cache.maxSize != 64 {
+		t.Fatalf("restored cache mode/max = %q/%d, want fixed/64", cache.mode, cache.maxSize)
+	}
+
+	prep, err := model.preparePrompt(context.Background(), []int32{1, 2, 3, 4}, GenerateConfig{MaxTokens: 2})
+	if err != nil {
+		t.Fatalf("preparePrompt() error = %v", err)
+	}
+	defer Free(prep.logits)
+	defer freeCaches(prep.caches)
+	if !prep.cacheHit || prep.cacheHitTokens != 3 || prep.cacheMissTokens != 1 {
+		t.Fatalf("preparePrompt cache hit/miss = %v/%d/%d, want hit 3/1", prep.cacheHit, prep.cacheHitTokens, prep.cacheMissTokens)
+	}
+	restoredCache, ok := prep.caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("preparePrompt cache = %T, want *FixedKVCache", prep.caches[0])
+	}
+	if restoredCache.maxSize != 32 {
+		t.Fatalf("preparePrompt fixed maxSize = %d, want request-sized 32", restoredCache.maxSize)
+	}
+	if native.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want replay of final prompt token only", native.forwardCalls)
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksReplaysExactHitWithoutLogits"
 	if coverageTokens == "" {
@@ -256,7 +461,7 @@ func TestPromptCache_RestoreFromKVBlocksReplaysExactHitWithoutLogits_Good(t *tes
 	}
 	defer model.ClearPromptCache()
 
-	prep, err := model.preparePrompt(context.Background(), []int32{1, 2, 3, 4})
+	prep, err := model.preparePrompt(context.Background(), []int32{1, 2, 3, 4}, GenerateConfig{MaxTokens: 1})
 	if err != nil {
 		t.Fatalf("preparePrompt() error = %v", err)
 	}
@@ -493,13 +698,17 @@ func (f *fakePagedModel) ModelType() string                   { return "fake" }
 func (f *fakePagedModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 func kvSnapshotBlockTestSnapshot(tokenStart int, tokens []int32) *KVSnapshot {
+	return kvSnapshotBlockTestSnapshotForArchitecture("fake", tokenStart, tokens)
+}
+
+func kvSnapshotBlockTestSnapshotForArchitecture(architecture string, tokenStart int, tokens []int32) *KVSnapshot {
 	values := make([]float32, len(tokens))
 	for i := range tokens {
 		values[i] = float32(tokenStart + i + 1)
 	}
 	return &KVSnapshot{
 		Version:      KVSnapshotVersion,
-		Architecture: "fake",
+		Architecture: architecture,
 		Tokens:       append([]int32(nil), tokens...),
 		TokenOffset:  tokenStart + len(tokens),
 		NumLayers:    1,

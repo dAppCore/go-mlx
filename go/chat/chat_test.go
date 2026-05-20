@@ -31,7 +31,7 @@ func TestFormat_Gemma4Template_Good(t *testing.T) {
 	if !strings.Contains(got, "<|turn>user\nhi<turn|>") {
 		t.Fatalf("missing trimmed user turn: %q", got)
 	}
-	if !strings.HasSuffix(got, "<|turn>model\n") {
+	if !strings.HasSuffix(got, "<|turn>model\n<|channel>thought\n<channel|>") {
 		t.Fatalf("missing generation prompt: %q", got)
 	}
 }
@@ -81,14 +81,16 @@ func TestFormat_NoGenerationPrompt_Suppresses_Good(t *testing.T) {
 
 func TestTemplateName_ArchitectureFamilies_Good(t *testing.T) {
 	cases := map[string]string{
-		"gemma4_text":  "gemma4",
-		"gemma3":       "gemma",
-		"gemma3_text":  "gemma",
-		"qwen3_moe":    "qwen",
-		"qwen3_next":   "qwen",
-		"llama3":       "llama",
-		"unknown":      "",
-		"":             "",
+		"gemma4_text": "gemma4",
+		"gemma3":      "gemma",
+		"gemma3_text": "gemma",
+		"qwen3_moe":   "qwen",
+		"qwen3_next":  "qwen",
+		"qwen3_6":     "qwen",
+		"qwen3_6_moe": "qwen",
+		"llama3":      "llama",
+		"unknown":     "",
+		"":            "",
 	}
 	for arch, want := range cases {
 		if got := TemplateName(Config{Architecture: arch}); got != want {

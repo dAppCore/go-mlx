@@ -19,6 +19,13 @@ func optionalInt(v int) C.mlx_optional_int {
 	}
 }
 
+func optionalArray(a *Array) C.mlx_array {
+	if a == nil || !a.Valid() {
+		return C.mlx_array{}
+	}
+	return a.ctx
+}
+
 // Add returns element-wise a + b.
 func Add(a, b *Array) *Array {
 	out := newArray("ADD", a, b)
@@ -53,6 +60,12 @@ func MulScalar(a *Array, s float32) *Array {
 func Divide(a, b *Array) *Array {
 	out := newArray("DIV", a, b)
 	C.mlx_divide(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+func floorDivide(a, b *Array) *Array {
+	out := newArray("FLOOR_DIVIDE", a, b)
+	C.mlx_floor_divide(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 
@@ -239,14 +252,20 @@ func Conv2d(input, weight *Array, strideH, strideW, padH, padW, dilationH, dilat
 
 // QuantizedMatmul performs quantized matrix multiplication.
 func QuantizedMatmul(x, w, scales, biases *Array, transpose bool, groupSize, bits int) *Array {
+	return quantizedMatmulMode(x, w, scales, biases, transpose, groupSize, bits, "affine")
+}
+
+// quantizedMatmulMode performs quantized matrix multiplication using the given
+// MLX quantization mode.
+func quantizedMatmulMode(x, w, scales, biases *Array, transpose bool, groupSize, bits int, mode string) *Array {
 	out := newArray("QMATMUL", x, w, scales, biases)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	mode := C.CString("affine")
-	defer C.free(unsafe.Pointer(mode))
+	cMode := C.CString(normalizeQuantizationMode(mode))
+	defer C.free(unsafe.Pointer(cMode))
 	C.mlx_quantized_matmul(
-		&out.ctx, x.ctx, w.ctx, scales.ctx, biases.ctx,
-		C._Bool(transpose), gs, b, mode,
+		&out.ctx, x.ctx, w.ctx, scales.ctx, optionalArray(biases),
+		C._Bool(transpose), gs, b, cMode,
 		DefaultStream().ctx,
 	)
 	return out
@@ -271,7 +290,7 @@ func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bo
 	out := newArray("GATHER_QMM", x, w, scales, biases, lhsIndices, rhsIndices)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	cMode := C.CString(mode)
+	cMode := C.CString(normalizeQuantizationMode(mode))
 	defer C.free(unsafe.Pointer(cMode))
 
 	var cBiases, cLHS, cRHS C.mlx_array
@@ -464,13 +483,19 @@ func Argpartition(a *Array, kth, axis int) *Array {
 //
 //	fullW := metal.Dequantize(w, scales, biases, 64, 4) // 4-bit weights, group=64
 func Dequantize(w, scales, biases *Array, groupSize, bits int) *Array {
+	return dequantizeMode(w, scales, biases, groupSize, bits, "affine")
+}
+
+// dequantizeMode restores a quantized array to full precision using the given
+// MLX quantization mode.
+func dequantizeMode(w, scales, biases *Array, groupSize, bits int, mode string) *Array {
 	out := newArray("DEQUANTIZE", w, scales, biases)
 	gs := optionalInt(groupSize)
 	b := optionalInt(bits)
-	mode := C.CString("affine")
-	defer C.free(unsafe.Pointer(mode))
+	cMode := C.CString(normalizeQuantizationMode(mode))
+	defer C.free(unsafe.Pointer(cMode))
 	noDtype := C.mlx_optional_dtype{has_value: C._Bool(false)}
-	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, biases.ctx, gs, b, mode, noDtype, DefaultStream().ctx)
+	C.mlx_dequantize(&out.ctx, w.ctx, scales.ctx, optionalArray(biases), gs, b, cMode, optionalArray(nil), noDtype, DefaultStream().ctx)
 	return out
 }
 
@@ -535,6 +560,12 @@ func Round(a *Array) *Array {
 func Greater(a, b *Array) *Array {
 	out := newArray("GREATER", a, b)
 	C.mlx_greater(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+func lessEqual(a, b *Array) *Array {
+	out := newArray("LESS_EQUAL", a, b)
+	C.mlx_less_equal(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
 	return out
 }
 

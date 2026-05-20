@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
@@ -40,11 +41,14 @@ func TestInferenceContract_MetalAdapterImplementsSharedInterfaces_Good(t *testin
 }
 
 func TestInferenceContract_MetalBackendImplementsFitPlanner_Good(t *testing.T) {
-	target := "metalbackend ModelFitPlanner CapabilityReporter"
+	target := "metalbackend ModelFitPlanner ModelSlicePlanner ModelSlicer SplitPlanner CapabilityReporter"
 	if target == "" {
 		t.Fatalf("missing coverage target for %s", t.Name())
 	}
 	var _ inference.ModelFitPlanner = (*metalbackend)(nil)
+	var _ inference.ModelSlicePlanner = (*metalbackend)(nil)
+	var _ inference.ModelSlicer = (*metalbackend)(nil)
+	var _ inference.SplitPlanner = (*metalbackend)(nil)
 	var _ inference.CapabilityReporter = (*metalbackend)(nil)
 	var _ inference.RuntimeMemoryLimiter = (*metalbackend)(nil)
 }
@@ -58,7 +62,7 @@ func TestInferenceContract_MetalBackendRuntimeMemoryLimits_UglyZero(t *testing.T
 }
 
 func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
-	report := (&metalbackend{}).Capabilities()
+	report := metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, true)
 
 	if report.Runtime.Backend != "metal" || !report.Runtime.NativeRuntime {
 		t.Fatalf("runtime = %+v, want native metal", report.Runtime)
@@ -83,6 +87,12 @@ func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
 	}
 	if !report.Supports(inference.CapabilityAgentMemory) || !report.Supports(inference.CapabilityStateWake) || !report.Supports(inference.CapabilityStateSleep) || !report.Supports(inference.CapabilityStateFork) {
 		t.Fatalf("capabilities = %+v, want agent memory wake/sleep/fork support", report.CapabilityIDs())
+	}
+	if !report.Supports(inference.CapabilityModelSlice) {
+		t.Fatalf("capabilities = %+v, want model slice planning support", report.CapabilityIDs())
+	}
+	if cap, ok := report.Capability(inference.CapabilitySplitInference); !ok || cap.Status != inference.CapabilityStatusExperimental {
+		t.Fatalf("split inference capability = %+v ok=%v, want experimental local dense split support", cap, ok)
 	}
 	for _, id := range []inference.CapabilityID{
 		inference.CapabilityResponsesAPI,
@@ -131,6 +141,40 @@ func TestInferenceContract_MetalBackendCapabilities_Good(t *testing.T) {
 	}
 	if cap, _ := report.Capability(inference.CapabilitySpeculativeDecode); cap.Labels["runtime_status"] != string(profile.AlgorithmRuntimeExperimental) {
 		t.Fatalf("speculative capability = %+v, want experimental runtime status", cap)
+	}
+}
+
+func TestInferenceContract_MetalBackendCapabilities_BadUnavailableLoad(t *testing.T) {
+	report := metalCapabilityReport(inference.ModelIdentity{}, inference.AdapterIdentity{}, false)
+
+	if report.Available {
+		t.Fatal("Available = true, want false")
+	}
+	for _, id := range []inference.CapabilityID{
+		inference.CapabilityModelLoad,
+		inference.CapabilityAutoTuning,
+		inference.CapabilityBenchmark,
+		inference.CapabilityEvaluation,
+		inference.CapabilityGenerate,
+		inference.CapabilityChat,
+		inference.CapabilityStateWake,
+	} {
+		if report.Supports(id) {
+			t.Fatalf("capabilities = %+v, %s should not be usable without native Metal", report.Capabilities, id)
+		}
+		capability, ok := report.Capability(id)
+		if !ok {
+			t.Fatalf("%s capability missing", id)
+		}
+		if capability.Status != inference.CapabilityStatusUnsupported {
+			t.Fatalf("%s status = %q, want unsupported", id, capability.Status)
+		}
+		if !core.Contains(capability.Detail, "Metal") {
+			t.Fatalf("%s detail = %q, want Metal availability reason", id, capability.Detail)
+		}
+	}
+	if !report.Supports(inference.CapabilityRuntimeDiscovery) || !report.Supports(inference.CapabilityMemoryPlanning) {
+		t.Fatalf("capabilities = %+v, metadata discovery/planning should remain usable", report.Capabilities)
 	}
 }
 
@@ -257,6 +301,48 @@ func TestInferenceContract_MetalBackendPlanModelFit_Ugly(t *testing.T) {
 
 	if err == nil {
 		t.Fatalf("PlanModelFit cancelled error = nil, report=%+v", report)
+	}
+}
+
+func TestInferenceContract_MetalBackendPlanModelSlice_Good(t *testing.T) {
+	plan, err := (&metalbackend{}).PlanModelSlice(context.Background(), inference.ModelSliceRequest{
+		Preset: inference.ModelSlicePresetClient,
+		Model:  inference.ModelIdentity{Architecture: "qwen3", QuantBits: 4},
+	})
+
+	if err != nil {
+		t.Fatalf("PlanModelSlice: %v", err)
+	}
+	if plan == nil || plan.Preset != inference.ModelSlicePresetClient {
+		t.Fatalf("PlanModelSlice = %+v, want client plan", plan)
+	}
+	if !plan.HasComponent(inference.ModelComponentAttention) || plan.HasComponent(inference.ModelComponentFFN) {
+		t.Fatalf("components = %+v, want local attention without FFN", plan.Components)
+	}
+	if plan.Labels["backend"] != "metal" {
+		t.Fatalf("labels = %+v, want backend=metal", plan.Labels)
+	}
+}
+
+func TestInferenceContract_MetalBackendPlanSplitInference_Good(t *testing.T) {
+	plan, err := (&metalbackend{}).PlanSplitInference(context.Background(), inference.SplitInferenceRequest{
+		Mode:        inference.SplitInferenceModeRemoteFFN,
+		LocalPreset: inference.ModelSlicePresetClient,
+		Endpoints: []inference.SplitEndpoint{{
+			ID:   "ffn-0",
+			Role: inference.SplitEndpointRoleFFN,
+			URL:  "http://127.0.0.1:8765",
+		}},
+	})
+
+	if err != nil {
+		t.Fatalf("PlanSplitInference: %v", err)
+	}
+	if plan == nil || plan.Mode != inference.SplitInferenceModeRemoteFFN {
+		t.Fatalf("PlanSplitInference = %+v, want remote FFN plan", plan)
+	}
+	if !plan.LocalSlice.HasComponent(inference.ModelComponentAttention) || plan.LocalSlice.HasComponent(inference.ModelComponentFFN) {
+		t.Fatalf("local slice = %+v, want attention-only client", plan.LocalSlice.Components)
 	}
 }
 

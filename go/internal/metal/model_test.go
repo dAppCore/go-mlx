@@ -105,6 +105,31 @@ func TestModel_LoadModel_Gemma4NestedTextConfig_Good(t *testing.T) {
 	}
 }
 
+func TestModel_LoadModel_Gemma4AssistantUsesTextConfig_Good(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "gemma4_assistant",
+		"architectures": ["Gemma4AssistantForCausalLM"],
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 256,
+			"num_hidden_layers": 4,
+			"num_attention_heads": 4,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"vocab_size": 262144
+		}
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected assistant loader boundary error")
+	}
+	if !core.Contains(err.Error(), "gemma4_assistant native MTP drafter loading is not implemented yet") {
+		t.Errorf("expected assistant loader boundary error, got: %v", err)
+	}
+}
+
 func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
@@ -128,7 +153,7 @@ func TestModel_LoadModel_ArchitecturesFallback_Good(t *testing.T) {
 func TestModel_LoadModel_Qwen3NextNestedTextConfig_Good(t *testing.T) {
 	dir := t.TempDir()
 	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
-		"model_type": "qwen3_5",
+		"model_type": "qwen3_next",
 		"text_config": {
 			"model_type": "qwen3_next",
 			"hidden_size": 1024,
@@ -145,6 +170,52 @@ func TestModel_LoadModel_Qwen3NextNestedTextConfig_Good(t *testing.T) {
 	}
 	if !core.Contains(err.Error(), "tokenizer") && !core.Contains(err.Error(), "qwen") {
 		t.Errorf("expected qwen loader error, got: %v", err)
+	}
+}
+
+func TestModel_ProbeModelType_Qwen25And36Aliases_Good(t *testing.T) {
+	cases := map[string]string{
+		`{"model_type":"qwen2.5","architectures":["Qwen2.5ForCausalLM"]}`:                                   "qwen2",
+		`{"model_type":"qwen3_5","architectures":["Qwen3_5ForConditionalGeneration"]}`:                      "qwen3_6",
+		`{"model_type":"qwen3_5_moe","architectures":["Qwen3_5MoeForConditionalGeneration"]}`:               "qwen3_6_moe",
+		`{"text_config":{"model_type":"qwen3_5_text"},"architectures":["Qwen3_5ForConditionalGeneration"]}`: "qwen3_6",
+	}
+	for config, want := range cases {
+		got, err := probeModelType([]byte(config))
+		if err != nil {
+			t.Fatalf("probeModelType(%s) error = %v", config, err)
+		}
+		if got != want {
+			t.Fatalf("probeModelType(%s) = %q, want %q", config, got, want)
+		}
+	}
+}
+
+func TestModel_LoadModel_Qwen36HybridRuntimeGuard_Bad(t *testing.T) {
+	dir := t.TempDir()
+	_ = coreio.Local.Write(core.JoinPath(dir, "config.json"), `{
+		"model_type": "qwen3_5",
+		"architectures": ["Qwen3_5ForConditionalGeneration"],
+		"text_config": {
+			"model_type": "qwen3_5_text",
+			"hidden_size": 5120,
+			"intermediate_size": 17408,
+			"num_hidden_layers": 64,
+			"num_attention_heads": 24,
+			"num_key_value_heads": 4,
+			"head_dim": 256,
+			"vocab_size": 248320,
+			"max_position_embeddings": 262144,
+			"layer_types": ["linear_attention", "full_attention"]
+		}
+	}`)
+
+	_, err := loadModel(dir)
+	if err == nil {
+		t.Fatal("expected explicit Qwen3.6 native runtime guard")
+	}
+	if !core.Contains(err.Error(), "qwen3_6") || !core.Contains(err.Error(), "linear attention") {
+		t.Fatalf("error = %v, want qwen3_6 linear attention guard", err)
 	}
 }
 

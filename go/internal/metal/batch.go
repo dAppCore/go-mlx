@@ -150,13 +150,18 @@ func (m *Model) classify(ctx context.Context, prompts []string, cfg GenerateConf
 	}
 
 	totalDur := time.Since(totalStart)
+	processMemory := GetProcessMemory()
 	m.lastMetrics = Metrics{
-		PromptTokens:      totalPromptTokens,
-		GeneratedTokens:   int(N), // One token sampled per prompt
-		PrefillDuration:   totalDur,
-		TotalDuration:     totalDur,
-		PeakMemoryBytes:   GetPeakMemory(),
-		ActiveMemoryBytes: GetActiveMemory(),
+		PromptTokens:               totalPromptTokens,
+		GeneratedTokens:            int(N), // One token sampled per prompt
+		PrefillDuration:            totalDur,
+		TotalDuration:              totalDur,
+		PeakMemoryBytes:            GetPeakMemory(),
+		ActiveMemoryBytes:          GetActiveMemory(),
+		CacheMemoryBytes:           GetCacheMemory(),
+		ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
+		ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
+		ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
 	}
 	if totalDur > 0 {
 		m.lastMetrics.PrefillTokensPerSec = float64(totalPromptTokens) / totalDur.Seconds()
@@ -398,14 +403,19 @@ func (m *Model) batchGenerate(ctx context.Context, prompts []string, cfg Generat
 
 	totalDur := time.Since(totalStart)
 	decodeDur := totalDur - prefillDur
+	processMemory := GetProcessMemory()
 	m.lastMetrics = Metrics{
-		PromptTokens:      totalPromptTokens,
-		GeneratedTokens:   totalGenerated,
-		PrefillDuration:   prefillDur,
-		DecodeDuration:    decodeDur,
-		TotalDuration:     totalDur,
-		PeakMemoryBytes:   GetPeakMemory(),
-		ActiveMemoryBytes: GetActiveMemory(),
+		PromptTokens:               totalPromptTokens,
+		GeneratedTokens:            totalGenerated,
+		PrefillDuration:            prefillDur,
+		DecodeDuration:             decodeDur,
+		TotalDuration:              totalDur,
+		PeakMemoryBytes:            GetPeakMemory(),
+		ActiveMemoryBytes:          GetActiveMemory(),
+		CacheMemoryBytes:           GetCacheMemory(),
+		ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
+		ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
+		ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
 	}
 	if prefillDur > 0 {
 		m.lastMetrics.PrefillTokensPerSec = float64(totalPromptTokens) / prefillDur.Seconds()

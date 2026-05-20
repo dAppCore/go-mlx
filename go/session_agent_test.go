@@ -78,6 +78,12 @@ func TestAgentMemoryWakeSleep_Good(t *testing.T) {
 	if awakeNative.restoredKV == nil || len(awakeNative.restoredKV.Tokens) != 2 {
 		t.Fatalf("restored KV = %+v", awakeNative.restoredKV)
 	}
+	if err := awake.AppendPrompt("\n\nQuestion: Which city was retained by the restored state?\nAnswer:"); err != nil {
+		t.Fatalf("AppendPrompt(restored question) error = %v", err)
+	}
+	if core.Contains(awakeNative.appendPrompt, "Rome") {
+		t.Fatalf("restored-state question prompt = %q, want no retained answer text", awakeNative.appendPrompt)
+	}
 	text, err := awake.Generate(WithMaxTokens(1))
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
@@ -159,6 +165,8 @@ func TestAgentMemoryInferenceContract_Good(t *testing.T) {
 		EntryURI:  "mlx://agent/contract",
 		Title:     "contract state",
 		Tokenizer: tokenizer,
+		Adapter:   inference.AdapterIdentity{Hash: "adapter-contract", Format: "lora"},
+		Runtime:   inference.RuntimeIdentity{Backend: "metal", CacheMode: "paged-q8"},
 		BlockSize: 1,
 		Encoding:  string(kv.EncodingNative),
 		Metadata:  map[string]string{"suite": "inference"},
@@ -172,6 +180,13 @@ func TestAgentMemoryInferenceContract_Good(t *testing.T) {
 	}
 	if sleep.Index.URI == "" || sleep.Bundle.URI == "" {
 		t.Fatalf("SleepState refs = %+v/%+v, want index and bundle refs", sleep.Index, sleep.Bundle)
+	}
+	index, err := agent.LoadMemvidIndex(ctx, store, sleep.Index.URI)
+	if err != nil {
+		t.Fatalf("agent.LoadMemvidIndex(contract) error = %v", err)
+	}
+	if index.Entries[0].Meta["adapter_hash"] != "adapter-contract" || index.Entries[0].Meta["runtime_backend"] != "metal" || index.Entries[0].Meta["runtime_cache_mode"] != "paged-q8" {
+		t.Fatalf("contract metadata = %+v, want adapter/runtime identity", index.Entries[0].Meta)
 	}
 
 	awakeNative := &fakeNativeSession{}
@@ -188,6 +203,34 @@ func TestAgentMemoryInferenceContract_Good(t *testing.T) {
 	}
 	if wake.Entry.URI != sleep.Entry.URI || wake.PrefixTokens != 2 || awakeNative.restoredKV == nil {
 		t.Fatalf("WakeState() = %+v restored=%+v, want restored contract state", wake, awakeNative.restoredKV)
+	}
+}
+
+func TestAppendAndSleepAgentMemory_NoReply_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	native := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
+	session := &ModelSession{
+		session: native,
+		info:    ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
+	}
+
+	report, err := session.AppendAndSleepAgentMemory(ctx, "repo observation: tests pass", store, agent.SleepOptions{
+		EntryURI: "mlx://agent/no-reply",
+		Title:    "No reply observation",
+	})
+
+	if err != nil {
+		t.Fatalf("AppendAndSleepAgentMemory() error = %v", err)
+	}
+	if native.appendPrompt != "repo observation: tests pass" {
+		t.Fatalf("append prompt = %q, want observation", native.appendPrompt)
+	}
+	if native.generateCalls != 0 {
+		t.Fatalf("Generate calls = %d, want no-reply append/sleep path", native.generateCalls)
+	}
+	if report.EntryURI != "mlx://agent/no-reply" || report.TokenCount != 2 {
+		t.Fatalf("report = %+v, want durable two-token state", report)
 	}
 }
 

@@ -4,7 +4,10 @@
 
 package metal
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
 	coverageTokens := "SessionCacheSnapshot RestoresWrappedRotatingOffset"
@@ -286,6 +289,97 @@ func TestSessionKVSnapshot_RestoreWithoutLogitsAllowsAppendState_Good(t *testing
 	}
 	if err := session.readyForGeneration(); err == nil {
 		t.Fatal("readyForGeneration(no logits) error = nil")
+	}
+}
+
+func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
+	coverageTokens := "ModelSession Generate LazyNativeGreedyState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{1},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	var got []Token
+	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
+		got = append(got, token)
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if len(got) != 1 || got[0].ID != 0 || got[0].Text != "x" {
+		t.Fatalf("generated tokens = %+v, want one greedy token", got)
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want one lazy advance", inner.forwardCalls)
+	}
+	if shape := session.logits.Shape(); len(shape) != 3 || shape[1] != 1 {
+		t.Fatalf("session logits shape = %v, want lazy single-step logits", shape)
+	}
+}
+
+func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
+	coverageTokens := "ModelSession Generate RequiresGenerationState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	session := &ModelSession{model: &Model{tokenizer: &Tokenizer{}}}
+	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
+		t.Fatal("Generate yielded token without retained state")
+	}
+	if session.Err() == nil {
+		t.Fatal("Generate() error = nil, want retained-state error")
+	}
+}
+
+func TestModelSession_Generate_UglyProbeKeepsLogitEvents(t *testing.T) {
+	coverageTokens := "ModelSession Generate ProbeKeepsLogitEvents"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{1},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	var logitEvents int
+	cfg := GenerateConfig{
+		MaxTokens: 1,
+		ProbeSink: ProbeSinkFunc(func(event ProbeEvent) {
+			if event.Kind == ProbeEventLogits {
+				logitEvents++
+			}
+		}),
+	}
+	for range session.Generate(context.Background(), cfg) {
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if logitEvents == 0 {
+		t.Fatal("logit probe events = 0, want fallback sampling path to preserve probes")
 	}
 }
 

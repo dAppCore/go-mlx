@@ -4,10 +4,14 @@
 
 package metal
 
-import "testing"
+import (
+	"testing"
 
-func TestBackend_ResolveLoadDevice_FallsBackToCPUWhenMetalUnavailable_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice FallsBackToCPUWhenMetalUnavailable"
+	core "dappco.re/go"
+)
+
+func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalUnavailable_Good(t *testing.T) {
+	coverageTokens := "ResolveLoadDevice KeepsGPUWhenMetalUnavailable"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -16,16 +20,16 @@ func TestBackend_ResolveLoadDevice_FallsBackToCPUWhenMetalUnavailable_Good(t *te
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
 
 	got, fellBack := resolveLoadDevice(DeviceGPU)
-	if got != DeviceCPU {
-		t.Fatalf("resolveLoadDevice(gpu) = %q, want cpu", got)
+	if got != DeviceGPU {
+		t.Fatalf("resolveLoadDevice(gpu) = %q, want gpu", got)
 	}
-	if !fellBack {
-		t.Fatal("resolveLoadDevice(gpu) should report CPU fallback when Metal is unavailable")
+	if fellBack {
+		t.Fatal("resolveLoadDevice(gpu) should not silently fall back to CPU")
 	}
 }
 
-func TestBackend_ResolveLoadDevice_DefaultsToCPUWhenMetalUnavailable_Good(t *testing.T) {
-	coverageTokens := "ResolveLoadDevice DefaultsToCPUWhenMetalUnavailable"
+func TestBackend_ResolveLoadDevice_DefaultsToGPUWhenMetalUnavailable_Good(t *testing.T) {
+	coverageTokens := "ResolveLoadDevice DefaultsToGPUWhenMetalUnavailable"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
@@ -34,11 +38,11 @@ func TestBackend_ResolveLoadDevice_DefaultsToCPUWhenMetalUnavailable_Good(t *tes
 	t.Cleanup(func() { runtimeMetalAvailable = previous })
 
 	got, fellBack := resolveLoadDevice("")
-	if got != DeviceCPU {
-		t.Fatalf("resolveLoadDevice(\"\") = %q, want cpu", got)
+	if got != DeviceGPU {
+		t.Fatalf("resolveLoadDevice(\"\") = %q, want gpu", got)
 	}
-	if !fellBack {
-		t.Fatal("resolveLoadDevice(\"\") should report CPU fallback when Metal is unavailable")
+	if fellBack {
+		t.Fatal("resolveLoadDevice(\"\") should not silently fall back to CPU")
 	}
 }
 
@@ -75,6 +79,38 @@ func TestBackend_ResolveLoadDevice_KeepsGPUWhenMetalAvailable_Good(t *testing.T)
 	}
 	if fellBack {
 		t.Fatal("resolveLoadDevice(gpu) should not report fallback when Metal is available")
+	}
+}
+
+func TestBackend_EnsureLoadDeviceAvailable_RejectsMissingMetal_Bad(t *testing.T) {
+	coverageTokens := "EnsureLoadDeviceAvailable RejectsMissingMetal"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	previous := runtimeMetalAvailable
+	runtimeMetalAvailable = func() bool { return false }
+	t.Cleanup(func() { runtimeMetalAvailable = previous })
+
+	err := ensureLoadDeviceAvailable(DeviceGPU)
+	if err == nil {
+		t.Fatal("ensureLoadDeviceAvailable(gpu) error = nil, want missing Metal error")
+	}
+	if !core.Contains(err.Error(), "usable Metal") {
+		t.Fatalf("error = %v, want usable Metal message", err)
+	}
+}
+
+func TestBackend_EnsureLoadDeviceAvailable_AllowsMetalDevice_Good(t *testing.T) {
+	coverageTokens := "EnsureLoadDeviceAvailable AllowsMetalDevice"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	previous := runtimeMetalAvailable
+	runtimeMetalAvailable = func() bool { return true }
+	t.Cleanup(func() { runtimeMetalAvailable = previous })
+
+	if err := ensureLoadDeviceAvailable(DeviceGPU); err != nil {
+		t.Fatalf("ensureLoadDeviceAvailable(gpu) error = %v, want nil", err)
 	}
 }
 

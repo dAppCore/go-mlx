@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
@@ -820,6 +821,10 @@ func TestApiCommon_WithMedium_Ugly(t *testing.T) {
 
 func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 	plan := memory.Plan{ContextLength: 8192, CachePolicy: memory.KVCacheRotating, CacheMode: memory.KVCacheModeQ8}
+	split := inference.SplitInferencePlan{
+		Mode:       inference.SplitInferenceModeLocal,
+		LocalSlice: inference.ModelSlicePlan{Preset: inference.ModelSlicePresetFull},
+	}
 	cfg := applyLoadOptions([]LoadOption{
 		WithAutoMemoryPlan(false),
 		WithMemoryPlan(plan),
@@ -828,6 +833,7 @@ func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 		WithBatchSize(3),
 		WithPrefillChunkSize(256),
 		WithAllocatorLimits(10, 3, 7),
+		WithSplitInference(split),
 	})
 	if cfg.AutoMemoryPlan {
 		t.Fatal("AutoMemoryPlan = true, want false")
@@ -840,6 +846,13 @@ func TestApiCommon_WithMemoryPlannerLoadOptions_Good(t *testing.T) {
 	}
 	if cfg.MemoryLimitBytes != 10 || cfg.CacheLimitBytes != 3 || cfg.WiredLimitBytes != 7 {
 		t.Fatalf("limits = %d/%d/%d, want 10/3/7", cfg.MemoryLimitBytes, cfg.CacheLimitBytes, cfg.WiredLimitBytes)
+	}
+	if cfg.SplitInference == nil || cfg.SplitInference.Mode != inference.SplitInferenceModeLocal {
+		t.Fatalf("SplitInference = %+v, want cloned local plan", cfg.SplitInference)
+	}
+	split.Mode = inference.SplitInferenceModeRemoteFFN
+	if cfg.SplitInference.Mode != inference.SplitInferenceModeLocal {
+		t.Fatalf("WithSplitInference leaked caller mutation: %+v", cfg.SplitInference)
 	}
 }
 
@@ -863,6 +876,28 @@ func TestApiCommon_NormalizeLoadConfig_RejectsNegativePlannerShape_Bad(t *testin
 	}
 }
 
+func TestApiCommon_NormalizeLoadConfig_RejectsRemoteSplit_Bad(t *testing.T) {
+	_, err := normalizeLoadConfig(LoadConfig{
+		SplitInference: &inference.SplitInferencePlan{
+			Mode: inference.SplitInferenceModeRemoteFFN,
+			LocalSlice: inference.ModelSlicePlan{
+				Preset:     inference.ModelSlicePresetClient,
+				Components: []inference.ModelComponent{inference.ModelComponentAttention},
+			},
+			Endpoints: []inference.SplitEndpoint{{
+				ID:   "ffn-0",
+				Role: inference.SplitEndpointRoleFFN,
+			}},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected remote split execution error")
+	}
+	if !core.Contains(err.Error(), "split inference execution is planned") {
+		t.Fatalf("error = %v, want split execution planned message", err)
+	}
+}
+
 func TestApiCommon_WithMemoryPlan_ClonesPlan_Ugly(t *testing.T) {
 	plan := memory.Plan{ContextLength: 8192}
 	cfg := applyLoadOptions([]LoadOption{WithMemoryPlan(plan)})
@@ -882,6 +917,7 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithReturnLogits(),
 		WithStopTokens(1, 2),
 		WithRepeatPenalty(1.1),
+		WithTokenPhaseTrace(),
 	})
 	if cfg.MaxTokens != 64 || cfg.Temperature != 0.7 || cfg.TopK != 20 || cfg.TopP != 0.9 || cfg.MinP != 0.05 {
 		t.Fatalf("unexpected generate config: %+v", cfg)
@@ -894,6 +930,9 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 	}
 	if cfg.RepeatPenalty != 1.1 {
 		t.Fatalf("repeat penalty = %f, want 1.1", cfg.RepeatPenalty)
+	}
+	if !cfg.TraceTokenPhases {
+		t.Fatal("TraceTokenPhases = false, want true")
 	}
 }
 

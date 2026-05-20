@@ -22,7 +22,7 @@ const (
 	MethodTIES   Method = "ties"
 	MethodDARE   Method = "dare"
 
-	ProvenanceFile      = "model_merge_provenance.json"
+	ProvenanceFile                = "model_merge_provenance.json"
 	modelMergeOutputWeights       = "model.safetensors"
 	modelMergeTensorChunkElements = 1 << 20
 )
@@ -36,14 +36,14 @@ type Source struct {
 
 // Options configures local model-pack tensor merging.
 type Options struct {
-	Sources                   []Source `json:"sources"`
-	OutputPath                string             `json:"output_path"`
-	Method                    Method   `json:"method,omitempty"`
-	T                         float64            `json:"t,omitempty"`
-	AllowArchitectureMismatch bool               `json:"allow_architecture_mismatch,omitempty"`
-	AllowTokenizerMismatch    bool               `json:"allow_tokenizer_mismatch,omitempty"`
-	AllowTensorMismatch       bool               `json:"allow_tensor_mismatch,omitempty"`
-	Labels                    map[string]string  `json:"labels,omitempty"`
+	Sources                   []Source          `json:"sources"`
+	OutputPath                string            `json:"output_path"`
+	Method                    Method            `json:"method,omitempty"`
+	T                         float64           `json:"t,omitempty"`
+	AllowArchitectureMismatch bool              `json:"allow_architecture_mismatch,omitempty"`
+	AllowTokenizerMismatch    bool              `json:"allow_tokenizer_mismatch,omitempty"`
+	AllowTensorMismatch       bool              `json:"allow_tensor_mismatch,omitempty"`
+	Labels                    map[string]string `json:"labels,omitempty"`
 }
 
 // Result reports the paths of the generated merged model pack and its
@@ -64,16 +64,16 @@ type Result struct {
 
 // Provenance records how a merged pack was produced.
 type Provenance struct {
-	Version        int                `json:"version"`
-	Method         Method   `json:"method"`
-	T              float64            `json:"t,omitempty"`
-	Sources        []Source `json:"sources"`
-	SourcePacks    []mp.ModelPack        `json:"source_packs"`
-	OutputWeight   string             `json:"output_weight"`
-	MergedTensors  int                `json:"merged_tensors"`
-	CopiedTensors  int                `json:"copied_tensors,omitempty"`
-	SkippedTensors []string           `json:"skipped_tensors,omitempty"`
-	Labels         map[string]string  `json:"labels,omitempty"`
+	Version        int               `json:"version"`
+	Method         Method            `json:"method"`
+	T              float64           `json:"t,omitempty"`
+	Sources        []Source          `json:"sources"`
+	SourcePacks    []mp.ModelPack    `json:"source_packs"`
+	OutputWeight   string            `json:"output_weight"`
+	MergedTensors  int               `json:"merged_tensors"`
+	CopiedTensors  int               `json:"copied_tensors,omitempty"`
+	SkippedTensors []string          `json:"skipped_tensors,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
 }
 
 type prepared struct {

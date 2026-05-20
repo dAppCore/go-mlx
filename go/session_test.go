@@ -19,10 +19,15 @@ import (
 type fakeNativeSession struct {
 	prefillPrompt    string
 	appendPrompt     string
+	prefillChunks    []string
+	appendChunks     []string
+	prefillTokens    []int32
+	appendTokens     []int32
 	prefillErr       error
 	appendErr        error
 	tokens           []metal.Token
 	cfg              metal.GenerateConfig
+	generateCalls    int
 	probeEvents      []metal.ProbeEvent
 	afterGenerate    func(*fakeNativeSession)
 	kv               *metal.KVSnapshot
@@ -45,13 +50,45 @@ func (s *fakeNativeSession) Prefill(_ context.Context, prompt string) error {
 	return s.prefillErr
 }
 
+func (s *fakeNativeSession) PrefillChunks(_ context.Context, chunks iter.Seq[string]) error {
+	s.prefillChunks = collectSessionChunks(chunks)
+	return s.prefillErr
+}
+
+func (s *fakeNativeSession) PrefillTokens(_ context.Context, tokens []int32) error {
+	s.prefillTokens = append([]int32(nil), tokens...)
+	return s.prefillErr
+}
+
 func (s *fakeNativeSession) AppendPrompt(_ context.Context, prompt string) error {
 	s.appendPrompt = prompt
 	return s.appendErr
 }
 
+func (s *fakeNativeSession) AppendPromptChunks(_ context.Context, chunks iter.Seq[string]) error {
+	s.appendChunks = collectSessionChunks(chunks)
+	return s.appendErr
+}
+
+func (s *fakeNativeSession) AppendTokens(_ context.Context, tokens []int32) error {
+	s.appendTokens = append([]int32(nil), tokens...)
+	return s.appendErr
+}
+
+func collectSessionChunks(chunks iter.Seq[string]) []string {
+	out := []string{}
+	if chunks == nil {
+		return out
+	}
+	for chunk := range chunks {
+		out = append(out, chunk)
+	}
+	return out
+}
+
 func (s *fakeNativeSession) Generate(_ context.Context, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	s.cfg = cfg
+	s.generateCalls++
 	return func(yield func(metal.Token) bool) {
 		defer func() {
 			if s.afterGenerate != nil {
@@ -264,6 +301,42 @@ func TestSessionPrefillAndGenerate_Good(t *testing.T) {
 	}
 }
 
+func TestSessionPrefillChunks_Good(t *testing.T) {
+	coverageTokens := "SessionPrefillChunks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	nativeSession := &fakeNativeSession{}
+	session := &ModelSession{session: nativeSession}
+
+	if err := session.PrefillChunks(context.Background(), seqStrings("stable ", "context")); err != nil {
+		t.Fatalf("PrefillChunks() error = %v", err)
+	}
+
+	if got := core.Join("", nativeSession.prefillChunks...); got != "stable context" {
+		t.Fatalf("prefill chunks = %#v, joined %q", nativeSession.prefillChunks, got)
+	}
+}
+
+func TestSessionPrefillTokens_Good(t *testing.T) {
+	coverageTokens := "SessionPrefillTokens"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	nativeSession := &fakeNativeSession{}
+	session := &ModelSession{session: nativeSession}
+	tokens := []int32{11, 12}
+
+	if err := session.PrefillTokens(context.Background(), tokens); err != nil {
+		t.Fatalf("PrefillTokens() error = %v", err)
+	}
+	tokens[0] = 99
+
+	if got := nativeSession.prefillTokens; len(got) != 2 || got[0] != 11 || got[1] != 12 {
+		t.Fatalf("prefill tokens = %v, want copied 11/12", got)
+	}
+}
+
 func TestSessionAppendPrompt_Good(t *testing.T) {
 	coverageTokens := "SessionAppendPrompt"
 	if coverageTokens == "" {
@@ -281,10 +354,58 @@ func TestSessionAppendPrompt_Good(t *testing.T) {
 	}
 }
 
+func TestSessionAppendTokens_Good(t *testing.T) {
+	coverageTokens := "SessionAppendTokens"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	nativeSession := &fakeNativeSession{}
+	session := &ModelSession{session: nativeSession}
+	tokens := []int32{21, 22}
+
+	if err := session.AppendTokens(context.Background(), tokens); err != nil {
+		t.Fatalf("AppendTokens() error = %v", err)
+	}
+	tokens[0] = 99
+
+	if got := nativeSession.appendTokens; len(got) != 2 || got[0] != 21 || got[1] != 22 {
+		t.Fatalf("append tokens = %v, want copied 21/22", got)
+	}
+}
+
+func TestSessionAppendPromptChunks_Good(t *testing.T) {
+	coverageTokens := "SessionAppendPromptChunks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	nativeSession := &fakeNativeSession{}
+	session := &ModelSession{session: nativeSession}
+
+	if err := session.AppendPromptChunks(context.Background(), seqStrings("\n\nQuestion: ", "who?\nAnswer:")); err != nil {
+		t.Fatalf("AppendPromptChunks() error = %v", err)
+	}
+
+	if got := core.Join("", nativeSession.appendChunks...); got != "\n\nQuestion: who?\nAnswer:" {
+		t.Fatalf("append chunks = %#v, joined %q", nativeSession.appendChunks, got)
+	}
+}
+
 func TestSessionNilGuards_Bad(t *testing.T) {
 	var session *ModelSession
 	if err := session.AppendPrompt("x"); err == nil {
 		t.Fatal("expected nil append prompt error")
+	}
+	if err := session.AppendPromptChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("expected nil append prompt chunks error")
+	}
+	if err := session.PrefillChunks(context.Background(), seqStrings("x")); err == nil {
+		t.Fatal("expected nil prefill chunks error")
+	}
+	if err := session.AppendTokens(context.Background(), []int32{1}); err == nil {
+		t.Fatal("expected nil append tokens error")
+	}
+	if err := session.PrefillTokens(context.Background(), []int32{1}); err == nil {
+		t.Fatal("expected nil prefill tokens error")
 	}
 	if text, err := session.Generate(); err == nil || text != "" {
 		t.Fatalf("Generate(nil) = %q/%v, want error", text, err)
@@ -571,6 +692,68 @@ func TestSessionGenerateStream_Good(t *testing.T) {
 		case <-timeout:
 			t.Fatal("timed out waiting for stream")
 		}
+	}
+}
+
+func TestSessionGenerateStream_HideGemma4Thinking_Good(t *testing.T) {
+	coverageTokens := "SessionGenerateStream HideGemma4Thinking"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	session := &ModelSession{
+		info: ModelInfo{Architecture: "gemma4_text"},
+		session: &fakeNativeSession{
+			tokens: []metal.Token{
+				{ID: 7, Text: "<|channel>thought\nprivate plan"},
+				{ID: 8, Text: "<channel|>Chapter 2"},
+			},
+		},
+	}
+
+	ch := session.GenerateStream(context.Background(), WithHideThinking())
+	got := core.NewBuilder()
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case tok, ok := <-ch:
+			if !ok {
+				if got.String() != "Chapter 2" {
+					t.Fatalf("stream text = %q, want Chapter 2", got.String())
+				}
+				return
+			}
+			got.WriteString(tok.Text)
+		case <-timeout:
+			t.Fatal("timed out waiting for stream")
+		}
+	}
+}
+
+func TestSessionParserTokenText_PreservesDecodedContent_Good(t *testing.T) {
+	coverageTokens := "SessionParserTokenText PreservesDecodedContent"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "Plain"}}
+
+	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: " Plain"})
+
+	if got != " Plain" {
+		t.Fatalf("parser token text = %q, want decoded stream text", got)
+	}
+}
+
+func TestSessionParserTokenText_PreservesControlToken_Good(t *testing.T) {
+	coverageTokens := "SessionParserTokenText PreservesControlToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	tok := &Tokenizer{tok: fakeRawTokenizer{raw: "<|channel>thought\n"}}
+
+	got := sessionParserTokenText(tok, metal.Token{ID: 7, Text: ""})
+
+	if got != "<|channel>thought\n" {
+		t.Fatalf("parser token text = %q, want raw control token", got)
 	}
 }
 

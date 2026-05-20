@@ -17,11 +17,11 @@ type ResidencyLoader func(context.Context, int, int) (PackedExpertWeights, error
 
 // ResidencyConfig configures a lazy resident expert set.
 type ResidencyConfig struct {
-	Plan      TensorPlan            `json:"plan"`
-	Layer     int                            `json:"layer,omitempty"`
-	Policy    memory.ExpertResidencyPlan            `json:"policy"`
-	Loader    ResidencyLoader `json:"-"`
-	ProbeSink probe.Sink                      `json:"-"`
+	Plan      TensorPlan                 `json:"plan"`
+	Layer     int                        `json:"layer,omitempty"`
+	Policy    memory.ExpertResidencyPlan `json:"policy"`
+	Loader    ResidencyLoader            `json:"-"`
+	ProbeSink probe.Sink                 `json:"-"`
 	now       func() time.Time
 }
 

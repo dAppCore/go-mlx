@@ -570,6 +570,8 @@ func architectureFromTransformersName(architecture string) string {
 		return "qwen3_moe"
 	case core.Contains(compact, "qwen3next"):
 		return "qwen3_next"
+	case core.Contains(compact, "gemma4assistant"):
+		return "gemma4_assistant"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):

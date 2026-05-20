@@ -12,6 +12,12 @@ import (
 	coreio "dappco.re/go/io"
 )
 
+var enableCompiledGemma4PerLayerInputs = core.Env("GO_MLX_ENABLE_COMPILED_GEMMA4_PER_LAYER_INPUTS") == "1"
+
+// GO_MLX_DISABLE_GEMMA4_PER_LAYER_INPUTS is a correctness-breaking diagnostic.
+// It exists only to isolate the Gemma 4 per-layer input cost.
+var disableGemma4PerLayerInputs = core.Env("GO_MLX_DISABLE_GEMMA4_PER_LAYER_INPUTS") == "1"
+
 // Gemma4TextConfig holds Gemma 4 text model configuration.
 type Gemma4TextConfig struct {
 	ModelType                 string                `json:"model_type"`
@@ -79,6 +85,9 @@ type Gemma4Model struct {
 	PreviousKVs       []int32
 	CacheIndexByLayer []int32
 	modelType         string
+
+	compiledPerLayerInputs       *CompiledFunc
+	compiledPerLayerInputsFailed bool
 }
 
 // Gemma4DecoderLayer is a single transformer block.
@@ -116,6 +125,19 @@ type Gemma4DecoderLayer struct {
 	IsSliding     bool
 	DoubleWideMLP bool
 	LayerIdx      int32
+
+	compiledNativeOwnerDecode             *CompiledFunc
+	compiledNativeSharedDecode            *CompiledFunc
+	compiledNativeFixedOwnerDecode        *CompiledFunc
+	compiledNativeFixedSharedDecode       *CompiledFunc
+	compiledNativeFixedMaskedOwnerDecode  *CompiledFunc
+	compiledNativeFixedMaskedSharedDecode *CompiledFunc
+	compiledNativeOwnerFailed             bool
+	compiledNativeSharedFailed            bool
+	compiledNativeFixedOwnerFailed        bool
+	compiledNativeFixedSharedFailed       bool
+	compiledNativeFixedMaskedOwnerFailed  bool
+	compiledNativeFixedMaskedSharedFailed bool
 }
 
 // Gemma4Attention implements Gemma 4 attention with per-layer RoPE and K-eq-V.
@@ -153,9 +175,10 @@ type Gemma4Router struct {
 
 // Gemma4Experts holds the SwitchGLU sparse MoE block.
 type Gemma4Experts struct {
-	GateProj *SwitchLinear
-	UpProj   *SwitchLinear
-	DownProj *SwitchLinear
+	GateUpProj *SwitchLinear
+	GateProj   *SwitchLinear
+	UpProj     *SwitchLinear
+	DownProj   *SwitchLinear
 }
 
 type sharedKV struct {
@@ -163,19 +186,32 @@ type sharedKV struct {
 	Values *Array
 	Pages  PagedKVState
 	Offset int
+	Fixed  bool
 }
 
 func (kv sharedKV) hasState() bool {
-	return (kv.Keys != nil && kv.Values != nil) || kv.hasPages()
+	return (kv.Keys != nil && kv.Keys.Valid() && kv.Values != nil && kv.Values.Valid()) || kv.hasPages()
 }
 
 func (kv sharedKV) hasPages() bool {
-	return len(kv.Pages.Keys) > 0 && len(kv.Pages.Keys) == len(kv.Pages.Values)
+	if len(kv.Pages.Keys) == 0 || len(kv.Pages.Keys) != len(kv.Pages.Values) {
+		return false
+	}
+	for i := range kv.Pages.Keys {
+		if kv.Pages.Keys[i] == nil || !kv.Pages.Keys[i].Valid() || kv.Pages.Values[i] == nil || !kv.Pages.Values[i].Valid() {
+			return false
+		}
+	}
+	return true
 }
 
 func (kv sharedKV) free() {
 	Free(kv.Keys, kv.Values)
 	kv.Pages.Free()
+}
+
+func gemma4ValidKV(k, v *Array) bool {
+	return k != nil && k.Valid() && v != nil && v.Valid()
 }
 
 func defaultGemma4RopeParameters(cfg *Gemma4TextConfig) map[string]RopeParams {
@@ -612,6 +648,49 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	return &cfg, nil
 }
 
+func validateGemma4QuantizationConfig(q *QuantizationConfig) error {
+	if q == nil {
+		return nil
+	}
+	if q.GroupSize < 0 {
+		return core.NewError("gemma4: quantization group_size must be >= 0")
+	}
+	if q.Bits < 0 {
+		return core.NewError("gemma4: quantization bits must be >= 0")
+	}
+	mode := normalizeQuantizationMode(q.Mode)
+	switch mode {
+	case "affine":
+		if q.Bits != 0 && q.Bits != 2 && q.Bits != 3 && q.Bits != 4 && q.Bits != 5 && q.Bits != 6 && q.Bits != 8 {
+			return core.NewError(core.Sprintf("gemma4: affine quantization bits %d are unsupported", q.Bits))
+		}
+	case "mxfp4":
+		if q.GroupSize != 0 && q.GroupSize != 32 {
+			return core.NewError(core.Sprintf("gemma4: mxfp4 quantization requires group_size=32, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 4 {
+			return core.NewError(core.Sprintf("gemma4: mxfp4 quantization requires bits=4, got %d", q.Bits))
+		}
+	case "mxfp8":
+		if q.GroupSize != 0 && q.GroupSize != 32 {
+			return core.NewError(core.Sprintf("gemma4: mxfp8 quantization requires group_size=32, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 8 {
+			return core.NewError(core.Sprintf("gemma4: mxfp8 quantization requires bits=8, got %d", q.Bits))
+		}
+	case "nvfp4":
+		if q.GroupSize != 0 && q.GroupSize != 16 {
+			return core.NewError(core.Sprintf("gemma4: nvfp4 quantization requires group_size=16, got %d", q.GroupSize))
+		}
+		if q.Bits != 0 && q.Bits != 4 {
+			return core.NewError(core.Sprintf("gemma4: nvfp4 quantization requires bits=4, got %d", q.Bits))
+		}
+	default:
+		return core.NewError(core.Sprintf("gemma4: unsupported quantization mode %q", q.Mode))
+	}
+	return nil
+}
+
 func gemma4NegativeConfigField(cfg *Gemma4TextConfig) string {
 	checks := []struct {
 		name  string
@@ -658,6 +737,15 @@ func gemma4NegativeConfigField(cfg *Gemma4TextConfig) string {
 
 func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *QuantizationConfig {
 	if core.HasSuffix(path, "router.proj") {
+		if defaultConfig != nil {
+			q := *defaultConfig
+			q.Mode = normalizeQuantizationMode(q.Mode)
+			if isAffineQuantizationMode(q.Mode) {
+				q.GroupSize = 64
+				q.Bits = 8
+			}
+			return &q
+		}
 		return &QuantizationConfig{GroupSize: 64, Bits: 8}
 	}
 	if defaultConfig != nil {
@@ -667,6 +755,81 @@ func gemma4QuantPredicate(path string, defaultConfig *QuantizationConfig) *Quant
 	// the quantization block, let MLX use its affine defaults instead of
 	// silently downgrading the layer to an incorrect dense projection.
 	return &QuantizationConfig{}
+}
+
+func gemma4QuantForWeight(path string, defaultConfig *QuantizationConfig, weight, scales *Array) *QuantizationConfig {
+	q := gemma4QuantPredicate(path, defaultConfig)
+	if q == nil {
+		return nil
+	}
+	resolved := *q
+	resolved.Mode = normalizeQuantizationMode(resolved.Mode)
+	if resolved.Mode == "mxfp4" && resolved.Bits == 0 {
+		resolved.Bits = 4
+	}
+	if resolved.Mode == "mxfp8" && resolved.Bits == 0 {
+		resolved.Bits = 8
+	}
+	if (resolved.Mode == "mxfp4" || resolved.Mode == "mxfp8") && resolved.GroupSize == 0 {
+		resolved.GroupSize = 32
+	}
+	if resolved.Mode == "nvfp4" {
+		if resolved.Bits == 0 {
+			resolved.Bits = 4
+		}
+		if resolved.GroupSize == 0 {
+			resolved.GroupSize = 16
+		}
+	}
+	if !isAffineQuantizationMode(resolved.Mode) &&
+		resolved.GroupSize > 0 &&
+		inferGemma4QuantBits(weight, scales, resolved.GroupSize) == 0 {
+		if inferred := inferGemma4QuantBits(weight, scales, 64); inferred > 0 {
+			resolved.Mode = "affine"
+			resolved.GroupSize = 64
+			resolved.Bits = inferred
+		}
+	}
+	if isAffineQuantizationMode(resolved.Mode) && resolved.GroupSize <= 0 && weight != nil && weight.Valid() && weight.Dtype() == DTypeUint32 {
+		if inferred := inferGemma4QuantBits(weight, scales, 64); inferred > 0 {
+			resolved.GroupSize = 64
+			resolved.Bits = inferred
+		}
+	}
+	if isAffineQuantizationMode(resolved.Mode) {
+		if inferred := inferGemma4QuantBits(weight, scales, resolved.GroupSize); inferred > 0 {
+			resolved.Bits = inferred
+		}
+	}
+	return &resolved
+}
+
+func inferGemma4QuantBits(weight, scales *Array, groupSize int) int {
+	if weight == nil || scales == nil || groupSize <= 0 || !weight.Valid() || !scales.Valid() {
+		return 0
+	}
+	wShape := weight.Shape()
+	sShape := scales.Shape()
+	if len(wShape) == 0 || len(sShape) == 0 {
+		return 0
+	}
+	weightCols := int(wShape[len(wShape)-1])
+	scaleCols := int(sShape[len(sShape)-1])
+	if weightCols <= 0 || scaleCols <= 0 {
+		return 0
+	}
+	numerator := weightCols * 32
+	denominator := scaleCols * groupSize
+	if denominator <= 0 || numerator%denominator != 0 {
+		return 0
+	}
+	bits := numerator / denominator
+	switch bits {
+	case 2, 3, 4, 5, 6, 8:
+		return bits
+	default:
+		return 0
+	}
 }
 
 func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
@@ -725,13 +888,21 @@ func sanitizeGemma4Weights(raw map[string]*Array) map[string]*Array {
 			if core.HasSuffix(canonical, ".experts.gate_up_proj"+suffix) {
 				base := core.TrimSuffix(canonical, suffix)
 				base = core.TrimSuffix(base, ".gate_up_proj")
+				fused := base + ".switch_glu.gate_up_proj" + suffix
+				if prev, ok := sanitized[fused]; ok && prev != arr {
+					delete(retained, prev)
+					discarded = append(discarded, prev)
+				}
+				sanitized[fused] = arr
+				if arr != nil {
+					retained[arr] = struct{}{}
+				}
 				gate, up, ok := splitGemma4GateUpArray(arr)
 				if !ok {
-					break
+					goto nextWeight
 				}
 				sanitized[base+".switch_glu.gate_proj"+suffix] = gate
 				sanitized[base+".switch_glu.up_proj"+suffix] = up
-				discarded = append(discarded, arr)
 				goto nextWeight
 			}
 			if core.HasSuffix(canonical, ".experts.down_proj"+suffix) {
@@ -917,8 +1088,8 @@ func gemma4Linear(weights map[string]*Array, prefix string, defaultQ *Quantizati
 	biases := gemma4WeightAny(weights, prefix+".biases")
 	bias := gemma4WeightAny(weights, prefix+".bias")
 	if scales != nil {
-		if q := gemma4QuantPredicate(prefix, defaultQ); q != nil {
-			return NewQuantizedLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+		if q := gemma4QuantForWeight(prefix, defaultQ, weight, scales); q != nil {
+			return newQuantizedLinearWithMode(weight, scales, biases, bias, q.GroupSize, q.Bits, q.Mode)
 		}
 	}
 	return NewLinear(weight, bias)
@@ -934,8 +1105,8 @@ func gemma4SwitchLinear(weights map[string]*Array, defaultQ *QuantizationConfig,
 		biases := gemma4WeightAny(weights, prefix+".biases")
 		bias := gemma4WeightAny(weights, prefix+".bias")
 		if scales != nil {
-			if q := gemma4QuantPredicate(prefix, defaultQ); q != nil {
-				return NewQuantizedSwitchLinear(weight, scales, biases, bias, q.GroupSize, q.Bits)
+			if q := gemma4QuantForWeight(prefix, defaultQ, weight, scales); q != nil {
+				return newQuantizedSwitchLinearWithMode(weight, scales, biases, bias, q.GroupSize, q.Bits, q.Mode)
 			}
 		}
 		return NewSwitchLinear(weight, bias)
@@ -1161,6 +1332,7 @@ func gemma4RetainedWeights(m *Gemma4Model) map[*Array]struct{} {
 		}
 
 		if experts := layer.Experts; experts != nil {
+			gemma4TrackSwitchLinear(retained, experts.GateUpProj)
 			gemma4TrackSwitchLinear(retained, experts.GateProj)
 			gemma4TrackSwitchLinear(retained, experts.UpProj)
 			gemma4TrackSwitchLinear(retained, experts.DownProj)
@@ -1284,6 +1456,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	if err != nil {
 		return nil, core.E("gemma4.LoadGemma4", "parse config", err)
 	}
+	if err := validateGemma4QuantizationConfig(cfg.Quantization); err != nil {
+		return nil, core.E("gemma4.LoadGemma4", "validate quantization", err)
+	}
 
 	tok, err := LoadTokenizer(core.JoinPath(root, "tokenizer.json"))
 	if err != nil {
@@ -1330,9 +1505,10 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 	if embedScales := gemma4WeightAny(weights, "model.embed_tokens.scales"); embedScales != nil {
 		embed.Scales = embedScales
 		embed.Biases = gemma4WeightAny(weights, "model.embed_tokens.biases")
-		if cfg.Quantization != nil {
-			embed.GroupSize = cfg.Quantization.GroupSize
-			embed.Bits = cfg.Quantization.Bits
+		if q := gemma4QuantForWeight("model.embed_tokens", cfg.Quantization, embed.Weight, embedScales); q != nil {
+			embed.GroupSize = q.GroupSize
+			embed.Bits = q.Bits
+			embed.QuantizationMode = q.Mode
 		}
 	}
 
@@ -1342,9 +1518,10 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 		if scales := gemma4WeightAny(weights, "model.embed_tokens_per_layer.scales"); scales != nil {
 			embedPerLayer.Scales = scales
 			embedPerLayer.Biases = gemma4WeightAny(weights, "model.embed_tokens_per_layer.biases")
-			if cfg.Quantization != nil {
-				embedPerLayer.GroupSize = cfg.Quantization.GroupSize
-				embedPerLayer.Bits = cfg.Quantization.Bits
+			if q := gemma4QuantForWeight("model.embed_tokens_per_layer", cfg.Quantization, embedPerLayer.Weight, scales); q != nil {
+				embedPerLayer.GroupSize = q.GroupSize
+				embedPerLayer.Bits = q.Bits
+				embedPerLayer.QuantizationMode = q.Mode
 			}
 		}
 	}
@@ -1462,6 +1639,10 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 				Eps:            cfg.RMSNormEps,
 			}
 			layer.Experts = &Gemma4Experts{
+				GateUpProj: gemma4SwitchLinear(weights, cfg.Quantization,
+					prefix+".experts.switch_glu.gate_up_proj",
+					prefix+".experts.gate_up_proj",
+				),
 				GateProj: gemma4SwitchLinear(weights, cfg.Quantization,
 					prefix+".experts.switch_glu.gate_proj",
 					prefix+".experts.gate_proj",
@@ -1547,10 +1728,21 @@ func gemma4NormalizePerLayerTensor(x *Array, batchSize, seqLen, numLayers, hidde
 }
 
 func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
+	if disableGemma4PerLayerInputs {
+		return nil
+	}
 	if m.EmbedTokensPerLayer == nil || m.PerLayerModelProj == nil || m.PerLayerProjNorm == nil || m.PerLayerProjNormScaled == nil {
 		return nil
 	}
 	B, L := tokens.Shape()[0], tokens.Shape()[1]
+	if combined, ok := m.compiledPerLayerInputTensor(tokens, hidden); ok {
+		return m.splitPerLayerInputTensor(combined)
+	}
+	combined := m.perLayerInputTensor(tokens, hidden, B, L)
+	return m.splitPerLayerInputTensor(combined)
+}
+
+func (m *Gemma4Model) perLayerInputTensor(tokens, hidden *Array, B, L int32) *Array {
 	perLayer := m.EmbedTokensPerLayer.Forward(tokens)
 	scale := float32(math.Sqrt(float64(m.Cfg.HiddenSizePerLayerInput)))
 	scaled := MulScalar(perLayer, scale)
@@ -1575,6 +1767,14 @@ func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 	combinedScaled := MulScalar(combined, float32(math.Pow(2, -0.5)))
 	Free(combined)
 	combined = combinedScaled
+	return combined
+}
+
+func (m *Gemma4Model) splitPerLayerInputTensor(combined *Array) []*Array {
+	if combined == nil || !combined.Valid() {
+		return nil
+	}
+	defer Free(combined)
 
 	perLayerInputs := make([]*Array, m.Cfg.NumHiddenLayers)
 	for i := range m.Cfg.NumHiddenLayers {
@@ -1582,8 +1782,44 @@ func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 		perLayerInputs[i] = Squeeze(sliced, 2)
 		Free(sliced)
 	}
-	Free(combined)
 	return perLayerInputs
+}
+
+func (m *Gemma4Model) compiledPerLayerInputTensor(tokens, hidden *Array) (_ *Array, ok bool) {
+	if !enableCompiledGemma4PerLayerInputs || m.compiledPerLayerInputsFailed {
+		return nil, false
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			core.Error("mlx: compiled Gemma 4 per-layer inputs failed; falling back to Go graph", "error", recovered)
+			m.compiledPerLayerInputsFailed = true
+			if m.compiledPerLayerInputs != nil {
+				m.compiledPerLayerInputs.Free()
+				m.compiledPerLayerInputs = nil
+			}
+			ok = false
+		}
+	}()
+	if m.compiledPerLayerInputs == nil || !m.compiledPerLayerInputs.Valid() {
+		m.compiledPerLayerInputs = CompileShapeless(func(inputs []*Array) []*Array {
+			if len(inputs) < 2 {
+				return nil
+			}
+			shape := inputs[0].Shape()
+			if len(shape) < 2 {
+				return nil
+			}
+			out := m.perLayerInputTensor(inputs[0], inputs[1], shape[0], shape[1])
+			return []*Array{out}
+		}, true)
+	}
+	outs := m.compiledPerLayerInputs.Call(tokens, hidden)
+	if len(outs) != 1 || outs[0] == nil || !outs[0].Valid() {
+		Free(outs...)
+		m.compiledPerLayerInputsFailed = true
+		return nil, false
+	}
+	return outs[0], true
 }
 
 func buildGemma4SlidingMask(batchSize, seqLen, window int32) *Array {
@@ -1627,6 +1863,98 @@ func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, window 
 	return FromValues(data, int(batchSize), 1, int(queryLen), int(keyLen))
 }
 
+func fixedSingleTokenCausalMaskFromHost(batchSize int32, capacity, offset int) *Array {
+	if batchSize <= 0 || capacity <= 0 {
+		return nil
+	}
+	data := make([]float32, int(batchSize)*capacity)
+	for b := range int(batchSize) {
+		base := b * capacity
+		for i := range capacity {
+			if i > offset {
+				data[base+i] = -1e9
+			}
+		}
+	}
+	return FromValues(data, int(batchSize), 1, 1, capacity)
+}
+
+type fixedGemma4AttentionMaskSet struct {
+	batchSize int32
+	seqLen    int32
+	disabled  bool
+	masks     map[fixedGemma4AttentionMaskKey]*Array
+	owned     []*Array
+}
+
+type fixedGemma4AttentionMaskKey struct {
+	capacity int
+	offset   int
+}
+
+func newFixedGemma4AttentionMaskSet(batchSize, seqLen int32, mask *Array) *fixedGemma4AttentionMaskSet {
+	return &fixedGemma4AttentionMaskSet{
+		batchSize: batchSize,
+		seqLen:    seqLen,
+		disabled:  !fixedGemma4SharedMaskEnabled() || mask != nil || seqLen != 1,
+	}
+}
+
+func (s *fixedGemma4AttentionMaskSet) ForLayer(cache Cache, prev sharedKV) *Array {
+	if s == nil || s.disabled {
+		return nil
+	}
+	capacity, offset, ok := fixedGemma4AttentionMaskCapacityOffset(cache, prev, s.seqLen)
+	if !ok {
+		return nil
+	}
+	key := fixedGemma4AttentionMaskKey{capacity: capacity, offset: offset}
+	if s.masks == nil {
+		s.masks = make(map[fixedGemma4AttentionMaskKey]*Array)
+	}
+	if mask := s.masks[key]; mask != nil && mask.Valid() {
+		return mask
+	}
+	mask := fixedSingleTokenCausalMaskFromHost(s.batchSize, capacity, offset)
+	if mask == nil || !mask.Valid() {
+		Free(mask)
+		return nil
+	}
+	s.masks[key] = mask
+	s.owned = append(s.owned, mask)
+	return mask
+}
+
+func (s *fixedGemma4AttentionMaskSet) Free() {
+	if s == nil {
+		return
+	}
+	Free(s.owned...)
+	s.owned = nil
+	s.masks = nil
+}
+
+func fixedGemma4AttentionMaskCapacityOffset(cache Cache, prev sharedKV, seqLen int32) (int, int, bool) {
+	if seqLen != 1 {
+		return 0, 0, false
+	}
+	if fixed, ok := cache.(*FixedKVCache); ok && fixed != nil && fixed.maxSize > 0 {
+		offset := fixed.Offset()
+		if offset >= 0 && offset+int(seqLen) <= fixed.maxSize {
+			return fixed.maxSize, offset, true
+		}
+		return 0, 0, false
+	}
+	if prev.Fixed && prev.Keys != nil && prev.Keys.Valid() && prev.Keys.NumDims() == 4 {
+		capacity := int(prev.Keys.Dim(2))
+		offset := prev.Offset
+		if capacity > 0 && offset >= 0 && offset+int(seqLen) <= capacity {
+			return capacity, offset, true
+		}
+	}
+	return 0, 0, false
+}
+
 func gemma4CombineMasks(base, extra *Array) *Array {
 	if base == nil {
 		return extra
@@ -1662,19 +1990,89 @@ func (m *Gemma4Model) ForwardMasked(tokens *Array, mask *Array, caches []Cache) 
 // but generation only consumes logits from the last token; avoiding full
 // [sequence, vocab] logits keeps Gemma 4 prefill inside Apple memory limits.
 func (m *Gemma4Model) ForwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) *Array {
+	out, hidden := m.ForwardLastTokenLogitsAndHidden(tokens, mask, caches)
+	Free(hidden)
+	return out
+}
+
+// ForwardLastTokenLogitsAndHidden runs prefill while returning both final
+// position logits and the corresponding target hidden state before output
+// normalisation. The hidden state is the seed consumed by attached MTP
+// assistants.
+func (m *Gemma4Model) ForwardLastTokenLogitsAndHidden(tokens *Array, mask *Array, caches []Cache) (*Array, *Array) {
 	h, _, L := m.forwardHidden(tokens, mask, caches)
 	h = gemma4LastSequenceHidden(h, L)
 	h = gemma4ProjectionHidden(h)
 	h = gemma4ContiguousHidden(h)
+	if out, ok, err := nativeLastTokenOutputLogits(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, m.Cfg.FinalLogitSoftcapping); ok {
+		if err == nil {
+			return out, h
+		}
+		core.Error("mlx: native Gemma 4 last-token output failed; falling back to Go graph", "error", err)
+	}
 	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
 	out := m.Output.Forward(normed)
-	Free(h, normed)
+	Free(normed)
 	if m.Cfg.FinalLogitSoftcapping > 0 {
 		softcapped := logitSoftcap(out, m.Cfg.FinalLogitSoftcapping)
 		Free(out)
 		out = softcapped
 	}
+	return out, h
+}
+
+// ForwardGreedyToken runs a forward pass and returns the greedy next token
+// directly. Final logit softcapping is monotonic, so greedy selection can skip
+// materialising a softcapped logits tensor.
+func (m *Gemma4Model) ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array {
+	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches); ok {
+		if err == nil {
+			traceNativeMaterialize("gemma4.model.greedy_token", out)
+			return out
+		}
+		core.Error("mlx: native Gemma 4 model greedy token failed; falling back to Go graph", "error", err)
+	}
+	h, _, L := m.forwardHidden(tokens, mask, caches)
+	h = gemma4LastSequenceHidden(h, L)
+	h = gemma4ProjectionHidden(h)
+	h = gemma4ContiguousHidden(h)
+	if out, ok, err := nativeLastTokenGreedyToken(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps); ok {
+		if err == nil {
+			Free(h)
+			return out
+		}
+		core.Error("mlx: native Gemma 4 greedy token failed; falling back to Go graph", "error", err)
+	}
+	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
+	logits := m.Output.Forward(normed)
+	out := Argmax(logits, -1, false)
+	Free(h, normed, logits)
 	return out
+}
+
+func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, caches []Cache) (*Array, bool, error) {
+	if !nativeGemma4ModelGreedyEnabled() || mask != nil || tokens == nil || !tokens.Valid() {
+		return nil, false, nil
+	}
+	m.ensureCacheLayout()
+	shape := tokens.Shape()
+	if len(shape) != 2 || shape[0] <= 0 || shape[1] != 1 {
+		return nil, false, nil
+	}
+
+	h := m.EmbedTokens.Forward(tokens)
+	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
+	scaledH := MulScalar(h, embeddingScale)
+	Free(h)
+	h = scaledH
+	defer Free(h)
+
+	perLayerInputs := m.computePerLayerInputs(tokens, h)
+	defer Free(perLayerInputs...)
+	fixedMasks := newFixedGemma4AttentionMaskSet(shape[0], shape[1], nil)
+	defer fixedMasks.Free()
+
+	return nativeGemma4FixedGreedyToken(h, perLayerInputs, caches, m, fixedMasks)
 }
 
 func gemma4LastSequenceHidden(h *Array, seqLen int32) *Array {
@@ -1747,6 +2145,8 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 	defer Free(perLayerInputs...)
 
 	var ownedMasks []*Array
+	fixedMasks := newFixedGemma4AttentionMaskSet(B, L, mask)
+	defer fixedMasks.Free()
 	fullMask := mask
 	slidingMask := mask
 	if mask == nil {
@@ -1787,7 +2187,8 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 			pli = perLayerInputs[i]
 		}
 
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg)
+		fixedMask := fixedMasks.ForLayer(cache, prev)
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask)
 		Free(h)
 		h = nextH
 		intermediates[i] = kv
@@ -1812,7 +2213,28 @@ func logitSoftcap(x *Array, softcap float32) *Array {
 	return out
 }
 
-func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig) (*Array, sharedKV) {
+func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *Array) (*Array, sharedKV) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
+		}
+	}()
+	traceEnabled := nativePhaseTraceEnabled()
+	if out, kv, ok, err := compiledGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
+		if err == nil {
+			l.traceNativeMaterialize(traceEnabled, "compiled_layer", out)
+			return out, kv
+		}
+		core.Error("mlx: compiled Gemma 4 decode layer failed; falling back to Go graph", "error", err)
+	}
+	if out, kv, ok, err := nativeGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
+		if err == nil {
+			l.traceNativeMaterialize(traceEnabled, "native_layer", out)
+			return out, kv
+		}
+		core.Error("mlx: native Gemma 4 decode layer failed; falling back to Go graph", "error", err)
+	}
+
 	residual := x
 
 	normed := RMSNorm(x, l.InputNormScaled, cfg.RMSNormEps)
@@ -1820,36 +2242,83 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 	if l.IsSliding {
 		window = cfg.SlidingWindow
 	}
-	attnOut, kv := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window)
+	var h *Array
+	var kv sharedKV
+	if nativeGemma4FixedOwnerAttentionResidualEnabled() && !l.IsSliding && !prev.hasState() && L == 1 && mask == nil {
+		if fixed, ok := c.(*FixedKVCache); ok {
+			if nativeH, nativeKV, ok, err := nativeGemma4FixedOwnerAttentionResidualBlock(residual, normed, fixed, fixedMask, l.Attention, l.PostAttnNormScaled, cfg); ok {
+				h = nativeH
+				kv = nativeKV
+				l.traceNativeMaterialize(traceEnabled, "attention_residual", h)
+			} else if err != nil {
+				core.Error("mlx: native Gemma 4 fixed owner attention residual failed; falling back to Go graph", "error", err)
+			}
+		}
+	}
+	if h == nil {
+		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask)
+		kv = nativeKV
+		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
+		if nativeGemma4ResidualNormEnabled() {
+			if nativeH, ok, err := nativeResidualNormAdd(residual, attnOut, l.PostAttnNormScaled, cfg.RMSNormEps); ok {
+				h = nativeH
+			} else if err != nil {
+				core.Error("mlx: native Gemma 4 attention residual failed; falling back to Go graph", "error", err)
+			}
+		}
+		if h == nil {
+			attnNormed := RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
+			h = Add(residual, attnNormed)
+			Free(attnNormed)
+		}
+		Free(attnOut)
+		l.traceNativeMaterialize(traceEnabled, "attention_residual", h)
+	}
 	Free(normed)
-	attnNormed := RMSNorm(attnOut, l.PostAttnNormScaled, cfg.RMSNormEps)
-	Free(attnOut)
-	h := Add(residual, attnNormed)
-	Free(attnNormed)
 
 	residual = h
 	var ffResidual *Array
+	var hNext *Array
 	if l.EnableMoE && l.Router != nil && l.Experts != nil {
 		h1In := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		h1 := l.MLP.forward(h1In)
+		l.traceNativeMaterialize(traceEnabled, "ffn_local_mlp", h1)
 		Free(h1In)
-		h1Normed := RMSNorm(h1, l.PostFFNorm1Scaled, cfg.RMSNormEps)
-		Free(h1)
 
 		h2In := RMSNorm(h, l.PreFFNorm2Scaled, cfg.RMSNormEps)
-		topKIndices, topKWeights := l.Router.forward(h2In)
-		h2 := l.Experts.forward(h2In, topKIndices, topKWeights)
+		topKIndices, topKWeights := l.Router.forward(h)
+		l.traceNativeMaterialize(traceEnabled, "ffn_router", topKIndices, topKWeights)
+		expertTracePrefix := ""
+		if traceEnabled {
+			expertTracePrefix = l.nativeTraceName("ffn_expert")
+		}
+		h2 := l.Experts.forward(h2In, topKIndices, topKWeights, expertTracePrefix)
+		l.traceNativeMaterialize(traceEnabled, "ffn_experts", h2)
 		Free(h2In, topKIndices, topKWeights)
-		h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
-		Free(h2)
 
-		// Gemma 4 MoE layers normalise each branch independently, then apply
-		// the standard post-feedforward norm to the combined branch output
-		// before adding it back to the residual path.
-		combined := Add(h1Normed, h2Normed)
-		Free(h1Normed, h2Normed)
-		ffResidual = RMSNorm(combined, l.PostFFNormScaled, cfg.RMSNormEps)
-		Free(combined)
+		if nativeOut, ok, err := nativeGemma4FFNResidual(residual, h1, h2, l.PostFFNorm1Scaled, l.PostFFNorm2Scaled, l.PostFFNormScaled, cfg.RMSNormEps); ok {
+			if err == nil {
+				hNext = nativeOut
+				l.traceNativeMaterialize(traceEnabled, "ffn_residual", hNext)
+			} else {
+				core.Error("mlx: native Gemma 4 FFN residual failed; falling back to Go graph", "error", err)
+			}
+		}
+		if hNext == nil {
+			h1Normed := RMSNorm(h1, l.PostFFNorm1Scaled, cfg.RMSNormEps)
+			l.traceNativeMaterialize(traceEnabled, "ffn_local_norm", h1Normed)
+			h2Normed := RMSNorm(h2, l.PostFFNorm2Scaled, cfg.RMSNormEps)
+			l.traceNativeMaterialize(traceEnabled, "ffn_expert_norm", h2Normed)
+
+			// Gemma 4 MoE layers normalise each branch independently, then apply
+			// the standard post-feedforward norm to the combined branch output
+			// before adding it back to the residual path.
+			combined := Add(h1Normed, h2Normed)
+			Free(h1Normed, h2Normed)
+			ffResidual = RMSNorm(combined, l.PostFFNormScaled, cfg.RMSNormEps)
+			Free(combined)
+		}
+		Free(h1, h2)
 	} else {
 		ffIn := RMSNorm(h, l.PreFFNormScaled, cfg.RMSNormEps)
 		ff := l.MLP.forward(ffIn)
@@ -1857,16 +2326,20 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		ffResidual = RMSNorm(ff, l.PostFFNormScaled, cfg.RMSNormEps)
 		Free(ff)
 	}
+	if ffResidual != nil {
+		l.traceNativeMaterialize(traceEnabled, "ffn", ffResidual)
+	}
 
-	hNext := Add(residual, ffResidual)
-	Free(h, ffResidual)
+	if hNext == nil {
+		hNext = Add(residual, ffResidual)
+		Free(ffResidual)
+	}
+	Free(h)
 
 	if l.PerLayerInputGate != nil && l.PerLayerProjection != nil && l.PostPerLayerInputNormScaled != nil && perLayerInput != nil {
 		gate := l.PerLayerInputGate.Forward(hNext)
-		activated := getCompiledGELU().Call(gate)[0]
+		multiplied := geluGateMul(gate, perLayerInput)
 		Free(gate)
-		multiplied := Mul(activated, perLayerInput)
-		Free(activated)
 		projected := l.PerLayerProjection.Forward(multiplied)
 		Free(multiplied)
 		projectedNormed := RMSNorm(projected, l.PostPerLayerInputNormScaled, cfg.RMSNormEps)
@@ -1881,8 +2354,20 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		Free(hNext)
 		hNext = scaled
 	}
+	l.traceNativeMaterialize(traceEnabled, "output", hNext)
 
 	return hNext, kv
+}
+
+func (l *Gemma4DecoderLayer) traceNativeMaterialize(enabled bool, phase string, arrays ...*Array) {
+	if !enabled {
+		return
+	}
+	traceNativeMaterialize(l.nativeTraceName(phase), arrays...)
+}
+
+func (l *Gemma4DecoderLayer) nativeTraceName(phase string) string {
+	return core.Sprintf("gemma4.layer.%02d.%s", l.LayerIdx, phase)
 }
 
 func (a *Gemma4Attention) applyRoPE(x *Array, offset int) *Array {
@@ -1892,7 +2377,17 @@ func (a *Gemma4Attention) applyRoPE(x *Array, offset int) *Array {
 	return RoPE(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offset)
 }
 
-func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32) (*Array, sharedKV) {
+func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array) (*Array, sharedKV) {
+	if nativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.hasState() && L == 1 && mask == nil {
+		if fixed, ok := c.(*FixedKVCache); ok {
+			if out, kv, ok, err := nativeGemma4FixedOwnerAttentionBlock(x, fixed, fixedMask, a, cfg); ok {
+				return out, kv
+			} else if err != nil {
+				core.Error("mlx: native Gemma 4 fixed owner attention failed; falling back to Go graph", "error", err)
+			}
+		}
+	}
+
 	qProj := a.QProj.Forward(x)
 	q := AsStrided(qProj, []int32{B, cfg.NumAttentionHeads, L, a.HeadDim},
 		[]int64{int64(L * cfg.NumAttentionHeads * a.HeadDim), int64(a.HeadDim), int64(cfg.NumAttentionHeads * a.HeadDim), 1}, 0)
@@ -1903,6 +2398,8 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 
 	kv := prev
 	offset := 0
+	var out *Array
+	qRoPEApplied := false
 	if !kv.hasState() {
 		kProj := a.KProj.Forward(x)
 		k := AsStrided(kProj, []int32{B, a.NKVHeads, L, a.HeadDim},
@@ -1936,14 +2433,68 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 
 		if c != nil {
 			oldK, oldV := k, v
-			if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
-				pages := paged.UpdatePages(k, v, int(L))
-				Free(oldK, oldV)
-				kv = sharedKV{Pages: pages, Offset: offset}
-			} else {
-				k, v = c.Update(k, v, int(L))
-				Free(oldK, oldV)
-				kv = sharedKV{Keys: k, Values: v, Offset: offset}
+			if fixed, ok := c.(*FixedKVCache); ok && L == 1 && mask == nil && fixed.maxSize > 0 {
+				kShape := k.Shape()
+				vShape := v.Shape()
+				fixed.ensureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
+				state := fixed.FixedState()
+				if state.Keys != nil && state.Values != nil {
+					qRoPE := a.applyRoPE(q, offset)
+					Free(q)
+					q = qRoPE
+					qRoPEApplied = true
+
+					var nativeOut, nativeKeys, nativeValues *Array
+					var ok bool
+					var err error
+					if fixed.Offset()+int(L) <= fixed.maxSize {
+						offsetArray := FromValue(offset)
+						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSingleTokenAttention(q, state.Keys, state.Values, k, v, offsetArray, fixedMask, a.Scale)
+						Free(offsetArray)
+					} else if nativeFixedSlidingAttentionEnabled() && fixed.length >= fixed.maxSize {
+						shiftIndices, lastIndex := fixed.slidingUpdateInputs()
+						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSlidingSingleTokenAttention(q, state.Keys, state.Values, k, v, shiftIndices, lastIndex, a.Scale)
+					}
+					state.Free()
+					if ok {
+						fixedState := fixed.ReplaceFixedFromNative(nativeKeys, nativeValues, int(L))
+						if gemma4ValidKV(fixedState.Keys, fixedState.Values) && nativeOut != nil && nativeOut.Valid() {
+							kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}
+							out = nativeOut
+							Free(oldK, oldV)
+						} else {
+							core.Error("mlx: native fixed owner attention returned invalid K/V state; falling back to Go graph")
+							Free(nativeOut)
+							fixedState.Free()
+						}
+					} else if err != nil {
+						core.Error("mlx: native fixed owner attention failed; falling back to Go graph", "error", err)
+					}
+				} else {
+					state.Free()
+				}
+			}
+			if out == nil {
+				if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
+					pages := paged.UpdatePages(k, v, int(L))
+					pagedKV := sharedKV{Pages: pages, Offset: offset}
+					if pagedKV.hasPages() {
+						Free(oldK, oldV)
+						kv = pagedKV
+					} else {
+						pages.Free()
+						kv = sharedKV{Keys: oldK, Values: oldV, Offset: offset}
+					}
+				} else {
+					k, v = c.Update(k, v, int(L))
+					if gemma4ValidKV(k, v) {
+						Free(oldK, oldV)
+						kv = sharedKV{Keys: k, Values: v, Offset: offset}
+					} else {
+						Free(k, v)
+						kv = sharedKV{Keys: oldK, Values: oldV, Offset: offset}
+					}
+				}
 			}
 		} else {
 			kv = sharedKV{Keys: k, Values: v, Offset: offset}
@@ -1952,46 +2503,68 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 		offset = kv.Offset
 	}
 
-	qRoPE := a.applyRoPE(q, offset)
-	Free(q)
-	q = qRoPE
-
-	repeatFactor := cfg.NumAttentionHeads / a.NKVHeads
-	var out *Array
-	if kv.hasPages() && L == 1 && mask == nil {
-		kPages, vPages, repeatedPages := repeatPagedState(kv.Pages, repeatFactor)
-		out = ScaledDotProductAttentionPaged(q, kPages, vPages, a.Scale)
-		Free(repeatedPages...)
-	} else {
-		kBase, vBase := kv.Keys, kv.Values
-		var ownedContiguous []*Array
-		if (kBase == nil || vBase == nil) && kv.hasPages() {
-			kBase, vBase = concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
-			ownedContiguous = append(ownedContiguous, kBase, vBase)
-		}
-		kAttn, vAttn := kBase, vBase
-		repeated := false
-		if repeatFactor > 1 {
-			kAttn = RepeatKV(kBase, repeatFactor)
-			vAttn = RepeatKV(vBase, repeatFactor)
-			repeated = true
-		}
-
-		var cachedMask *Array
-		if offset > 0 && L > 1 {
-			cachedMask = buildGemma4CachedAttentionMask(B, L, int32(kAttn.Dim(2)), int32(offset), window)
-			mask = cachedMask
-		}
-		if mask != nil {
-			out = ScaledDotProductAttentionWithMask(q, kAttn, vAttn, mask, a.Scale)
+	if out == nil {
+		repeatFactor := cfg.NumAttentionHeads / a.NKVHeads
+		if kv.hasPages() && L == 1 && mask == nil {
+			qRoPE := a.applyRoPE(q, offset)
+			Free(q)
+			q = qRoPE
+			qRoPEApplied = true
+			if pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
+				kBase, vBase := concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
+				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, false)
+				Free(kBase, vBase)
+			} else {
+				kPages, vPages := kv.Pages.Keys, kv.Pages.Values
+				var repeatedPages []*Array
+				if len(kPages) > 1 && pagedStateNeedsMaterializedRepeat(kv.Pages, repeatFactor) {
+					kPages, vPages, repeatedPages = repeatPagedState(kv.Pages, repeatFactor)
+				}
+				out = ScaledDotProductAttentionPaged(q, kPages, vPages, a.Scale)
+				Free(repeatedPages...)
+			}
 		} else {
-			out = ScaledDotProductAttention(q, kAttn, vAttn, a.Scale, L > 1)
+			kBase, vBase := kv.Keys, kv.Values
+			var ownedContiguous []*Array
+			if (kBase == nil || vBase == nil) && kv.hasPages() {
+				kBase, vBase = concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
+				ownedContiguous = append(ownedContiguous, kBase, vBase)
+			}
+			if !gemma4ValidKV(kBase, vBase) {
+				Free(q)
+				Free(ownedContiguous...)
+				panic("mlx: Gemma 4 attention missing valid K/V state")
+			}
+			var cachedMask *Array
+			if offset > 0 && L > 1 {
+				cachedMask = buildGemma4CachedAttentionMask(B, L, int32(kBase.Dim(2)), int32(offset), window)
+				mask = cachedMask
+			} else if kv.Fixed && L == 1 && mask == nil {
+				offsetArray := FromValue(offset)
+				cachedMask = singleTokenCausalMask(int(kBase.Dim(2)), offsetArray)
+				Free(offsetArray)
+				mask = cachedMask
+			}
+			if !qRoPEApplied {
+				qRoPE := a.applyRoPE(q, offset)
+				Free(q)
+				q = qRoPE
+				qRoPEApplied = true
+			}
+			if mask != nil {
+				out = ScaledDotProductAttentionWithMask(q, kBase, vBase, mask, a.Scale)
+			} else {
+				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, L > 1)
+			}
+			Free(cachedMask)
+			Free(ownedContiguous...)
 		}
-		Free(cachedMask)
-		if repeated {
-			Free(kAttn, vAttn)
-		}
-		Free(ownedContiguous...)
+	}
+	if !qRoPEApplied {
+		qRoPE := a.applyRoPE(q, offset)
+		Free(q)
+		q = qRoPE
+		qRoPEApplied = true
 	}
 	Free(q)
 
@@ -1999,9 +2572,22 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 	Free(out)
 	reshaped := Reshape(transposed, B, L, cfg.NumAttentionHeads*a.HeadDim)
 	Free(transposed)
-	result := a.OProj.Forward(reshaped)
+	result := a.forwardOProjection(reshaped)
 	Free(reshaped)
 	return result, kv
+}
+
+func (a *Gemma4Attention) forwardOProjection(x *Array) *Array {
+	if nativeGemma4AttentionOMatVecEnabled() {
+		out, ok, err := quantizedDenseMatVec(x, a.OProj)
+		if err != nil {
+			core.Error("mlx: native Gemma 4 attention output matvec failed; falling back to Go graph", "error", err)
+			Free(out)
+		} else if ok {
+			return out
+		}
+	}
+	return a.OProj.Forward(x)
 }
 
 func (r *Gemma4Router) forward(x *Array) (*Array, *Array) {
@@ -2011,13 +2597,28 @@ func (r *Gemma4Router) forward(x *Array) (*Array, *Array) {
 		defer Free(scaled)
 	}
 	normed := RMSNorm(x, scaled, r.Eps)
-	expertScores := r.Proj.Forward(normed)
+	expertScores, ok, err := nativeGemma4RouterMatVecScores(normed, r.Proj)
+	if !ok {
+		expertScores = r.Proj.Forward(normed)
+	} else if err != nil {
+		core.Error("mlx: native Gemma 4 router matvec failed; falling back to Go graph", "error", err)
+		Free(expertScores)
+		expertScores = r.Proj.Forward(normed)
+	}
 	Free(normed)
 
 	numExperts := expertScores.Dim(expertScores.NumDims() - 1)
 	topK := int(r.TopK)
 	if topK <= 0 || topK > numExperts {
 		topK = numExperts
+	}
+	if topKIndices, topKWeights, ok, err := nativeGemma4RouterTopK(expertScores, r.PerExpertScale, topK); ok {
+		if err == nil {
+			Free(expertScores)
+			return topKIndices, topKWeights
+		}
+		core.Error("mlx: native Gemma 4 router top-k failed; falling back to Go graph", "error", err)
+		Free(topKIndices, topKWeights)
 	}
 	kth := numExperts - topK
 	topKIndices := Argpartition(expertScores, kth, -1)
@@ -2038,28 +2639,303 @@ func (r *Gemma4Router) forward(x *Array) (*Array, *Array) {
 	return topKIndices, weighted
 }
 
-func (e *Gemma4Experts) forward(x, topKIndices, topKWeights *Array) *Array {
+func (e *Gemma4Experts) forward(x, topKIndices, topKWeights *Array, tracePrefix string) *Array {
+	trace := func(phase string, arrays ...*Array) {
+		if tracePrefix == "" {
+			return
+		}
+		traceNativeMaterialize(tracePrefix+"."+phase, arrays...)
+	}
+	if result, ok := e.forwardExpertIDMatVec(x, topKIndices, topKWeights, trace); ok {
+		return result
+	}
+	if result, ok := e.forwardSortedExpertPrefill(x, topKIndices, topKWeights, trace); ok {
+		return result
+	}
 	expanded1 := ExpandDims(x, 2)
 	expanded := ExpandDims(expanded1, 2)
 	Free(expanded1)
 
-	up := e.UpProj.Forward(expanded, topKIndices)
-	gate := e.GateProj.Forward(expanded, topKIndices)
-	activatedGate := getCompiledGELU().Call(gate)[0]
-	Free(gate)
-	activated := Mul(activatedGate, up)
-	Free(activatedGate, up)
+	var gate, up *Array
+	if e.GateUpProj != nil && gemma4UseFusedExpertGateUp(x) {
+		gateUp := e.GateUpProj.Forward(expanded, topKIndices)
+		trace("gate_up", gateUp)
+		var ok bool
+		gate, up, ok = splitLastDimArray(gateUp)
+		Free(gateUp)
+		if !ok {
+			gate, up = nil, nil
+		}
+	}
+	if gate == nil || up == nil {
+		Free(gate, up)
+		up = e.UpProj.Forward(expanded, topKIndices)
+		trace("up", up)
+		gate = e.GateProj.Forward(expanded, topKIndices)
+		trace("gate", gate)
+	}
+	Free(expanded)
+	activated := geluGateMul(gate, up)
+	trace("activation", activated)
+	Free(gate, up)
 	down := e.DownProj.Forward(activated, topKIndices)
+	trace("down", down)
 	Free(activated)
 	downSqueezed := Squeeze(down, 3)
 	Free(down)
 
 	weightsExpanded := ExpandDims(topKWeights, 3)
 	weighted := Mul(weightsExpanded, downSqueezed)
+	trace("weighted", weighted)
 	Free(weightsExpanded, downSqueezed)
 	result := Sum(weighted, -2, false)
+	trace("sum", result)
 	Free(weighted)
 	return result
+}
+
+func (e *Gemma4Experts) forwardSortedExpertPrefill(x, topKIndices, topKWeights *Array, trace func(string, ...*Array)) (*Array, bool) {
+	if !sortedExpertPrefillEnabled() {
+		return nil, false
+	}
+	if !gemma4SortedExpertPrefillCompatible(e) {
+		return nil, false
+	}
+	if x == nil || topKIndices == nil || topKWeights == nil || !x.Valid() || !topKIndices.Valid() || !topKWeights.Valid() {
+		return nil, false
+	}
+	xShape := x.Shape()
+	indicesShape := topKIndices.Shape()
+	if len(xShape) != 3 || len(indicesShape) != 3 || indicesShape[0] != xShape[0] || indicesShape[1] != xShape[1] {
+		return nil, false
+	}
+	if xShape[1] <= 1 {
+		return nil, false
+	}
+	batch := int(xShape[0])
+	seqLen := int(xShape[1])
+	hidden := int(xShape[2])
+	topK := int(indicesShape[2])
+	routes := topKIndices.Size()
+	if batch <= 0 || seqLen <= 1 || hidden <= 0 || topK <= 0 || routes != batch*seqLen*topK || topKWeights.Size() != routes {
+		return nil, false
+	}
+	numExperts := int(e.DownProj.Weight.Shape()[0])
+	if routes < 16 || numExperts <= 0 || routes/numExperts < 4 {
+		return nil, false
+	}
+
+	flatIndices := Reshape(topKIndices, int32(routes))
+	sortOrder := Argsort(flatIndices, -1)
+	sortedIndices := Take(flatIndices, sortOrder, 0)
+	routePositions := Arange(0, float64(routes), 1, DTypeInt32)
+	sortedRoutePositions := Take(routePositions, sortOrder, 0)
+	topKDivisor := FromValue(topK)
+	sortedTokenPositions := floorDivide(sortedRoutePositions, topKDivisor)
+	flatX := Reshape(x, int32(batch*seqLen), int32(hidden))
+	sortedInputFlat := Take(flatX, sortedTokenPositions, 0)
+	sortedInput := Reshape(sortedInputFlat, int32(routes), 1, int32(hidden))
+	Free(routePositions, sortedRoutePositions, topKDivisor, sortedTokenPositions, flatX, sortedInputFlat)
+	defer Free(flatIndices, sortOrder, sortedIndices, sortedInput)
+
+	gate := gemma4SwitchLinearForwardSortedRoutes(e.GateProj, sortedInput, sortedIndices)
+	trace("sorted_gate", gate)
+	up := gemma4SwitchLinearForwardSortedRoutes(e.UpProj, sortedInput, sortedIndices)
+	trace("sorted_up", up)
+	activated := geluGateMul(gate, up)
+	trace("sorted_activation", activated)
+	Free(gate, up)
+	down := gemma4SwitchLinearForwardSortedRoutes(e.DownProj, activated, sortedIndices)
+	trace("sorted_down", down)
+	Free(activated)
+
+	flatWeights := Reshape(topKWeights, int32(routes))
+	sortedWeights := Take(flatWeights, sortOrder, 0)
+	weightsExpanded1 := ExpandDims(sortedWeights, 1)
+	weightsExpanded := ExpandDims(weightsExpanded1, 2)
+	weightedSorted := Mul(weightsExpanded, down)
+	trace("sorted_weighted", weightedSorted)
+	Free(flatWeights, sortedWeights, weightsExpanded1, weightsExpanded, down)
+
+	inverseOrder := Argsort(sortOrder, -1)
+	weightedOriginal := Take(weightedSorted, inverseOrder, 0)
+	weightedSqueezed := Squeeze(weightedOriginal, 1)
+	grouped := Reshape(weightedSqueezed, int32(batch), int32(seqLen), int32(topK), int32(hidden))
+	result := Sum(grouped, -2, false)
+	trace("sorted_sum", result)
+	Free(weightedSorted, inverseOrder, weightedOriginal, weightedSqueezed, grouped)
+	return result, true
+}
+
+func gemma4SortedExpertPrefillCompatible(e *Gemma4Experts) bool {
+	return e != nil &&
+		gemma4ExpertIDMatVecSwitchCompatible(e.GateProj) &&
+		gemma4ExpertIDMatVecSwitchCompatible(e.UpProj) &&
+		gemma4ExpertIDMatVecSwitchCompatible(e.DownProj)
+}
+
+func gemma4SwitchLinearForwardSortedRoutes(linear *SwitchLinear, input, expertIndices *Array) *Array {
+	var out *Array
+	if requiresDenseQuantizedMatmulFallback(linear.QuantizationMode) {
+		denseWeight := dequantizeMode(linear.Weight, linear.Scales, linear.Biases, linear.GroupSize, linear.Bits, linear.QuantizationMode)
+		weightTranspose := Transpose(denseWeight, 0, 2, 1)
+		out = GatherMM(input, weightTranspose, nil, expertIndices, true)
+		Free(denseWeight, weightTranspose)
+	} else {
+		out = GatherQMM(input, linear.Weight, linear.Scales, linear.Biases, nil, expertIndices, true, linear.GroupSize, linear.Bits, linear.QuantizationMode, true)
+	}
+	if linear.Bias != nil && linear.Bias.Valid() {
+		bias := Take(linear.Bias, expertIndices, 0)
+		biasExpanded := ExpandDims(bias, bias.NumDims()-1)
+		oldOut := out
+		out = Add(out, biasExpanded)
+		Free(oldOut, bias, biasExpanded)
+	}
+	return out
+}
+
+func (e *Gemma4Experts) forwardExpertIDMatVec(x, topKIndices, topKWeights *Array, trace func(string, ...*Array)) (*Array, bool) {
+	if !expertIDMatVecEnabled() {
+		return nil, false
+	}
+	if e == nil || e.DownProj == nil {
+		return nil, false
+	}
+	hasFusedGateUp := gemma4ExpertIDMatVecSwitchCompatible(e.GateUpProj)
+	hasSplitGateUp := gemma4ExpertIDMatVecSwitchCompatible(e.GateProj) && gemma4ExpertIDMatVecSwitchCompatible(e.UpProj)
+	if (!hasFusedGateUp && !hasSplitGateUp) || !gemma4ExpertIDMatVecSwitchCompatible(e.DownProj) {
+		return nil, false
+	}
+	if x == nil || topKIndices == nil || topKWeights == nil || !x.Valid() || !topKIndices.Valid() || !topKWeights.Valid() {
+		return nil, false
+	}
+	xShape := x.Shape()
+	indicesShape := topKIndices.Shape()
+	if len(xShape) != 3 || xShape[0] != 1 || xShape[1] != 1 || len(indicesShape) != 3 || indicesShape[0] != 1 || indicesShape[1] != 1 {
+		return nil, false
+	}
+	hidden := int(xShape[2])
+	routes := int(indicesShape[2])
+	if hidden <= 0 || routes <= 0 || topKWeights.Size() != routes {
+		return nil, false
+	}
+
+	xFlat := Reshape(x, 1, int32(hidden))
+	idsFlat := Reshape(topKIndices, int32(routes))
+	defer Free(xFlat, idsFlat)
+
+	var activated *Array
+	if hasFusedGateUp && expertIDFusedActivationEnabled() {
+		var err error
+		activated, err = quantizedExpertIDGELUGateUpMatVec(xFlat, e.GateUpProj.Weight, e.GateUpProj.Scales, e.GateUpProj.Biases, idsFlat, e.GateUpProj.GroupSize, e.GateUpProj.Bits)
+		if err != nil {
+			core.Error("mlx: Gemma 4 expert id fused activation matvec failed; falling back", "error", err)
+			return nil, false
+		}
+		trace("activation_id_matvec", activated)
+	} else if hasFusedGateUp {
+		gateUp, err := quantizedExpertIDMatVec(xFlat, e.GateUpProj.Weight, e.GateUpProj.Scales, e.GateUpProj.Biases, idsFlat, e.GateUpProj.GroupSize, e.GateUpProj.Bits)
+		if err != nil {
+			core.Error("mlx: Gemma 4 expert id matvec gate/up failed; falling back", "error", err)
+			return nil, false
+		}
+		trace("gate_up_id_matvec", gateUp)
+		gate, up, ok := splitLastDimArray(gateUp)
+		Free(gateUp)
+		if !ok {
+			Free(gate, up)
+			return nil, false
+		}
+		activated = geluGateMul(gate, up)
+		trace("activation_id_matvec", activated)
+		Free(gate, up)
+	} else if expertIDFusedActivationEnabled() {
+		var err error
+		activated, err = quantizedExpertIDGELUSplitGateUpMatVec(
+			xFlat,
+			e.GateProj.Weight, e.GateProj.Scales, e.GateProj.Biases,
+			e.UpProj.Weight, e.UpProj.Scales, e.UpProj.Biases,
+			idsFlat,
+			e.GateProj.GroupSize,
+			e.GateProj.Bits,
+		)
+		if err != nil {
+			core.Error("mlx: Gemma 4 expert id split gate/up fused activation matvec failed; falling back", "error", err)
+			return nil, false
+		}
+		trace("activation_split_id_matvec", activated)
+	} else {
+		up, err := quantizedExpertIDMatVec(xFlat, e.UpProj.Weight, e.UpProj.Scales, e.UpProj.Biases, idsFlat, e.UpProj.GroupSize, e.UpProj.Bits)
+		if err != nil {
+			core.Error("mlx: Gemma 4 expert id matvec up failed; falling back", "error", err)
+			return nil, false
+		}
+		trace("up_id_matvec", up)
+		gate, err := quantizedExpertIDMatVec(xFlat, e.GateProj.Weight, e.GateProj.Scales, e.GateProj.Biases, idsFlat, e.GateProj.GroupSize, e.GateProj.Bits)
+		if err != nil {
+			Free(up)
+			core.Error("mlx: Gemma 4 expert id matvec gate failed; falling back", "error", err)
+			return nil, false
+		}
+		trace("gate_id_matvec", gate)
+		activated = geluGateMul(gate, up)
+		trace("activation_id_matvec", activated)
+		Free(gate, up)
+	}
+
+	weightsFlat := Reshape(topKWeights, int32(routes))
+	down, err := quantizedExpertIDWeightedMatVecSum(activated, weightsFlat, e.DownProj.Weight, e.DownProj.Scales, e.DownProj.Biases, idsFlat, e.DownProj.GroupSize, e.DownProj.Bits)
+	Free(weightsFlat)
+	Free(activated)
+	if err != nil {
+		core.Error("mlx: Gemma 4 expert id weighted matvec down failed; falling back", "error", err)
+		return nil, false
+	}
+	trace("down_weighted_sum_id_matvec", down)
+	result := Reshape(down, 1, 1, int32(hidden))
+	Free(down)
+	return result, true
+}
+
+func gemma4ExpertIDMatVecSwitchCompatible(linear *SwitchLinear) bool {
+	return linear != nil &&
+		linear.Weight != nil && linear.Weight.Valid() &&
+		linear.Scales != nil && linear.Scales.Valid() &&
+		linear.Biases != nil && linear.Biases.Valid() &&
+		linear.GroupSize > 0 &&
+		isAffineQuantizationMode(linear.QuantizationMode) &&
+		(linear.Bits == 2 || linear.Bits == 4 || linear.Bits == 8)
+}
+
+func gemma4UseFusedExpertGateUp(x *Array) bool {
+	if x == nil || !x.Valid() {
+		return false
+	}
+	shape := x.Shape()
+	return len(shape) >= 2 && shape[1] == 1
+}
+
+func splitLastDimArray(a *Array) (*Array, *Array, bool) {
+	if a == nil || !a.Valid() {
+		return nil, nil, false
+	}
+	shape := a.Shape()
+	if len(shape) == 0 {
+		return nil, nil, false
+	}
+	axis := len(shape) - 1
+	mid := shape[axis] / 2
+	if mid <= 0 || shape[axis]%2 != 0 {
+		return nil, nil, false
+	}
+	starts := make([]int32, len(shape))
+	ends := append([]int32(nil), shape...)
+	ends[axis] = mid
+	left := Slice(a, starts, ends)
+	starts[axis] = mid
+	ends = append([]int32(nil), shape...)
+	right := Slice(a, starts, ends)
+	return left, right, true
 }
 
 // NewCache creates per-layer KV caches for Gemma 4.

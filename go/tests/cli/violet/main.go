@@ -287,4 +287,3 @@ func closeFDs(fds ...int) error {
 	}
 	return err
 }
-

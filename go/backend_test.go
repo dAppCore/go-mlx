@@ -1029,44 +1029,53 @@ func TestApiDarwin_JVP_Ugly(t *testing.T) {
 }
 
 type fakeNativeModel struct {
-	err                  error
-	info                 metal.ModelInfo
-	tokenizer            *metal.Tokenizer
-	tokens               []metal.Token
-	chatTokens           []metal.Token
-	classifyResults      []metal.ClassifyResult
-	batchResults         []metal.BatchResult
-	metrics              metal.Metrics
-	modelType            string
-	attention            *metal.AttentionResult
-	kvSnapshot           *metal.KVSnapshot
-	session              metal.SessionHandle
-	probeEvents          []metal.ProbeEvent
-	classifyReturnLogits bool
-	lastGenerateConfig   metal.GenerateConfig
-	lastChatConfig       metal.GenerateConfig
-	lastBatchConfig      metal.GenerateConfig
-	lastClassifyConfig   metal.GenerateConfig
-	lastChatMessages     []metal.ChatMessage
-	lastLoRAConfig       metal.LoRAConfig
-	loraAdapter          *metal.LoRAAdapter
-	loadedLoRAPath       string
-	loadedLoRAAdapter    *metal.LoRAAdapter
-	loadedLoRAErr        error
-	unloadLoRACalls      int
-	unloadLoRAErr        error
-	warmPrompt           string
-	warmErr              error
-	restoredPromptKV     *metal.KVSnapshot
-	restorePromptKVErr   error
-	restoredPromptBlocks []metal.KVSnapshotBlock
-	restoreBlockPrefix   int
-	restoreBlockErr      error
-	warmChunks           []string
-	capturedChunks       []string
-	generatedChunks      []string
-	closeErr             error
-	closeCalls           int
+	err                            error
+	info                           metal.ModelInfo
+	tokenizer                      *metal.Tokenizer
+	tokens                         []metal.Token
+	chatTokens                     []metal.Token
+	classifyResults                []metal.ClassifyResult
+	batchResults                   []metal.BatchResult
+	metrics                        metal.Metrics
+	modelType                      string
+	attention                      *metal.AttentionResult
+	kvSnapshot                     *metal.KVSnapshot
+	session                        metal.SessionHandle
+	probeEvents                    []metal.ProbeEvent
+	gemma4AssistantPair            *metal.Gemma4AssistantPair
+	gemma4AssistantResult          metal.Gemma4AssistantGenerateResult
+	gemma4AssistantErr             error
+	classifyReturnLogits           bool
+	lastGenerateConfig             metal.GenerateConfig
+	lastGemma4AssistantConfig      metal.GenerateConfig
+	lastGemma4AssistantPrompt      string
+	lastGemma4AssistantDraftTokens int
+	lastChatConfig                 metal.GenerateConfig
+	lastChatChunkConfig            metal.GenerateConfig
+	lastChatChunkBytes             int
+	lastBatchConfig                metal.GenerateConfig
+	lastClassifyConfig             metal.GenerateConfig
+	lastChatMessages               []metal.ChatMessage
+	lastChatChunkMessages          []metal.ChatMessage
+	lastLoRAConfig                 metal.LoRAConfig
+	loraAdapter                    *metal.LoRAAdapter
+	loadedLoRAPath                 string
+	loadedLoRAAdapter              *metal.LoRAAdapter
+	loadedLoRAErr                  error
+	unloadLoRACalls                int
+	unloadLoRAErr                  error
+	warmPrompt                     string
+	warmErr                        error
+	restoredPromptKV               *metal.KVSnapshot
+	restorePromptKVErr             error
+	restoredPromptBlocks           []metal.KVSnapshotBlock
+	restoreBlockPrefix             int
+	restoreBlockErr                error
+	warmChunks                     []string
+	capturedChunks                 []string
+	generatedChunks                []string
+	closeErr                       error
+	closeCalls                     int
 }
 
 func (m *fakeNativeModel) ApplyLoRA(cfg metal.LoRAConfig) *metal.LoRAAdapter {
@@ -1088,6 +1097,22 @@ func (m *fakeNativeModel) BatchGenerate(_ context.Context, _ []string, cfg metal
 func (m *fakeNativeModel) Chat(_ context.Context, messages []metal.ChatMessage, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	m.lastChatConfig = cfg
 	m.lastChatMessages = append([]metal.ChatMessage(nil), messages...)
+	tokens := m.chatTokens
+	if len(tokens) == 0 {
+		tokens = m.tokens
+	}
+	return func(yield func(metal.Token) bool) {
+		for _, tok := range tokens {
+			if !yield(tok) {
+				return
+			}
+		}
+	}
+}
+func (m *fakeNativeModel) ChatChunks(_ context.Context, messages []metal.ChatMessage, chunkBytes int, cfg metal.GenerateConfig) iter.Seq[metal.Token] {
+	m.lastChatChunkConfig = cfg
+	m.lastChatChunkMessages = append([]metal.ChatMessage(nil), messages...)
+	m.lastChatChunkBytes = chunkBytes
 	tokens := m.chatTokens
 	if len(tokens) == 0 {
 		tokens = m.tokens
@@ -1143,6 +1168,13 @@ func (m *fakeNativeModel) Generate(_ context.Context, _ string, cfg metal.Genera
 			}
 		}
 	}
+}
+func (m *fakeNativeModel) GenerateGemma4Assistant(_ context.Context, pair *metal.Gemma4AssistantPair, prompt string, cfg metal.GenerateConfig, draftTokens int) (metal.Gemma4AssistantGenerateResult, error) {
+	m.gemma4AssistantPair = pair
+	m.lastGemma4AssistantPrompt = prompt
+	m.lastGemma4AssistantConfig = cfg
+	m.lastGemma4AssistantDraftTokens = draftTokens
+	return m.gemma4AssistantResult, m.gemma4AssistantErr
 }
 func (m *fakeNativeModel) GenerateChunks(_ context.Context, chunks iter.Seq[string], cfg metal.GenerateConfig) iter.Seq[metal.Token] {
 	m.lastGenerateConfig = cfg
@@ -1502,6 +1534,23 @@ func TestModelGenerateStream_Good(t *testing.T) {
 	}
 }
 
+func TestModelGenerateChunksStream_Good(t *testing.T) {
+	native := &fakeNativeModel{tokens: []metal.Token{{ID: 7, Text: "A"}, {ID: 8, Text: "B"}}}
+	model := &Model{model: native}
+
+	got := collectTokensFromChannel(model.GenerateChunksStream(context.Background(), seqStrings("prefix", "suffix"), WithMaxTokens(7)))
+
+	if len(got) != 2 || got[0].Value != "A" || got[1].Text != "B" {
+		t.Fatalf("GenerateChunksStream() tokens = %+v, want A/B", got)
+	}
+	if !reflect.DeepEqual(native.generatedChunks, []string{"prefix", "suffix"}) {
+		t.Fatalf("generated chunks = %#v", native.generatedChunks)
+	}
+	if native.lastGenerateConfig.MaxTokens != 7 {
+		t.Fatalf("MaxTokens = %d, want 7", native.lastGenerateConfig.MaxTokens)
+	}
+}
+
 func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 	coverageTokens := "ForwardsOptions"
 	if coverageTokens == "" {
@@ -1636,6 +1685,35 @@ func TestModelChatStream_ForwardsMessagesAndOptions_Good(t *testing.T) {
 	}
 	if native.lastChatConfig.RepeatPenalty != 1.05 {
 		t.Fatalf("RepeatPenalty = %f, want 1.05", native.lastChatConfig.RepeatPenalty)
+	}
+}
+
+func TestModelChatChunksStream_ForwardsMessagesAndChunkBytes_Good(t *testing.T) {
+	native := &fakeNativeModel{
+		chatTokens: []metal.Token{{ID: 3, Text: "Hi"}},
+	}
+	model := &Model{model: native}
+	messages := []inference.Message{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}
+
+	got := collectTokensFromChannel(model.ChatChunksStream(context.Background(), messages, 4096, WithMaxTokens(7), WithTopP(0.85)))
+
+	if len(got) != 1 || got[0].Text != "Hi" {
+		t.Fatalf("ChatChunksStream() = %+v, want Hi", got)
+	}
+	if !reflect.DeepEqual(native.lastChatChunkMessages, []metal.ChatMessage{
+		{Role: "system", Content: "Be terse."},
+		{Role: "user", Content: "hello"},
+	}) {
+		t.Fatalf("Chat chunk messages = %+v", native.lastChatChunkMessages)
+	}
+	if native.lastChatChunkBytes != 4096 {
+		t.Fatalf("chunk bytes = %d, want 4096", native.lastChatChunkBytes)
+	}
+	if native.lastChatChunkConfig.MaxTokens != 7 || native.lastChatChunkConfig.TopP != 0.85 {
+		t.Fatalf("chat chunk cfg = %+v, want max tokens/top-p", native.lastChatChunkConfig)
 	}
 }
 
@@ -2010,6 +2088,12 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	if tokens := collectTokensFromChannel(model.GenerateStream(context.Background(), "x")); len(tokens) != 0 {
 		t.Fatalf("GenerateStream(nil model) tokens = %+v, want none", tokens)
 	}
+	if tokens := collectTokensFromChannel(model.GenerateChunksStream(context.Background(), seqStrings("x"))); len(tokens) != 0 {
+		t.Fatalf("GenerateChunksStream(nil model) tokens = %+v, want none", tokens)
+	}
+	if tokens := collectTokensFromChannel(model.ChatChunksStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}}, 8)); len(tokens) != 0 {
+		t.Fatalf("ChatChunksStream(nil model) tokens = %+v, want none", tokens)
+	}
 	if tokens := collectTokensFromChannel(model.ChatStream(context.Background(), []inference.Message{{Role: "user", Content: "x"}})); len(tokens) != 0 {
 		t.Fatalf("ChatStream(nil model) tokens = %+v, want none", tokens)
 	}
@@ -2196,6 +2280,13 @@ func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 	}
 	if model.cfg.MemoryPlan == nil || model.cfg.MemoryPlan.MachineClass != memory.ClassApple16GB {
 		t.Fatalf("model memory plan = %+v, want 16GB class", model.cfg.MemoryPlan)
+	}
+	info := model.Info()
+	if info.CacheMode != memory.KVCacheModeKQ8VQ4 || info.CachePolicy != memory.KVCacheRotating {
+		t.Fatalf("info cache = %q/%q, want planner cache", info.CachePolicy, info.CacheMode)
+	}
+	if info.ContextLength != 8192 || info.PrefillChunkSize != 512 || info.BatchSize != 1 {
+		t.Fatalf("info runtime shape = ctx:%d prefill:%d batch:%d, want planner shape", info.ContextLength, info.PrefillChunkSize, info.BatchSize)
 	}
 	if err := model.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)

@@ -7,10 +7,17 @@ package metal
 /*
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
+
+int go_mlx_gelu_gate_mul(mlx_array* res, const mlx_array gate, const mlx_array up, const mlx_stream stream);
+int go_mlx_silu_gate_mul(mlx_array* res, const mlx_array gate, const mlx_array up, const mlx_stream stream);
 */
 import "C"
 
-import "unsafe"
+import (
+	"unsafe"
+
+	"dappco.re/go"
+)
 
 // RMSNorm applies Root Mean Square normalization using a fused Metal kernel.
 //
@@ -39,6 +46,32 @@ func LayerNorm(x, weight, bias *Array, eps float32) *Array {
 	return out
 }
 
+// GELUGateMul computes GELU(gate) * up inside the native MLX wrapper.
+func GELUGateMul(gate, up *Array) *Array {
+	out := newArray("FAST_GELU_GATE_MUL", gate, up)
+	rc := C.go_mlx_gelu_gate_mul(&out.ctx, gate.ctx, up.ctx, DefaultStream().ctx)
+	if rc != 0 {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic(core.E("mlx.GELUGateMul", core.Sprintf("native wrapper failed (rc=%d)", rc), nil))
+	}
+	return out
+}
+
+// SiLUGateMul computes SiLU(gate) * up inside the native MLX wrapper.
+func SiLUGateMul(gate, up *Array) *Array {
+	out := newArray("FAST_SILU_GATE_MUL", gate, up)
+	rc := C.go_mlx_silu_gate_mul(&out.ctx, gate.ctx, up.ctx, DefaultStream().ctx)
+	if rc != 0 {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic(core.E("mlx.SiLUGateMul", core.Sprintf("native wrapper failed (rc=%d)", rc), nil))
+	}
+	return out
+}
+
 // RoPE applies Rotary Position Embeddings using a fused Metal kernel.
 //
 //	q = metal.RoPE(q, int(cfg.HeadDim), false, cfg.RopeTheta, 1.0, cache.Offset())
@@ -64,6 +97,29 @@ func RoPEWithFreqs(x *Array, dims int, traditional bool, base float32, scale flo
 		},
 		C.float(scale),
 		C.int(offset),
+		cFreqs,
+		DefaultStream().ctx,
+	)
+	return out
+}
+
+func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, scale float32, offset *Array, freqs *Array) *Array {
+	out := newArray("FAST_ROPE_DYNAMIC", x, offset)
+	var cFreqs C.mlx_array
+	if freqs != nil {
+		cFreqs = freqs.ctx
+	}
+	C.mlx_fast_rope_dynamic(
+		&out.ctx,
+		x.ctx,
+		C.int(dims),
+		C._Bool(traditional),
+		C.mlx_optional_float{
+			value:     C.float(base),
+			has_value: C._Bool(base != 0),
+		},
+		C.float(scale),
+		offset.ctx,
 		cFreqs,
 		DefaultStream().ctx,
 	)
@@ -148,6 +204,35 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 	out := Divide(weighted, denom)
 	Free(globalMax, denom, weighted)
 	return out
+}
+
+func singleTokenCausalMask(capacity int, offset *Array) *Array {
+	idx := Arange(0, float64(capacity), 1, DTypeInt32)
+	reshaped := Reshape(idx, 1, 1, 1, int32(capacity))
+	valid := lessEqual(reshaped, offset)
+	zero := FromValue(float32(0))
+	negInf := FromValue(float32(-1e9))
+	mask := Where(valid, zero, negInf)
+	Free(idx, reshaped, valid, zero, negInf)
+	return mask
+}
+
+func singleTokenCacheUpdate(cache, token, offset *Array) *Array {
+	shape := token.Shape()
+	offsetIndex := Reshape(offset, 1, 1, 1, 1)
+	indices := BroadcastTo(offsetIndex, shape)
+	updated := PutAlongAxis(cache, indices, token, 2)
+	Free(offsetIndex, indices)
+	return updated
+}
+
+func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *Array, scale float32) (*Array, *Array, *Array) {
+	updatedKeys := singleTokenCacheUpdate(keyCache, key, offset)
+	updatedValues := singleTokenCacheUpdate(valueCache, value, offset)
+	mask := singleTokenCausalMask(int(updatedKeys.Dim(2)), offset)
+	out := ScaledDotProductAttentionWithMask(query, updatedKeys, updatedValues, mask, scale)
+	Free(mask)
+	return out, updatedKeys, updatedValues
 }
 
 // ScaledDotProductAttentionWithMask computes attention with an explicit mask.
