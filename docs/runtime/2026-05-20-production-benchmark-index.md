@@ -33,6 +33,7 @@ Companion notes:
 
 - `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md`
 - `docs/runtime/2026-05-20-gemma4-e2b-c006-report-file-book.md`
+- `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`
 
 ## Runner Anchors
 
@@ -87,6 +88,7 @@ device from the runner, while the same workload with `-report-file` completed.
 
 1. Close the `mlx_lm` and llama.cpp cached-runner gap or isolate the specific
    native cause. The most likely live boundary is evaluated graph/kernel work in
-   the long-context path, not prompt-cache restore.
+   the long-context path, not prompt-cache restore. The current diagnosis is
+   recorded in `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Prune or quarantine abandoned runtime fragments after the canonical rows
    above are no longer needed for investigation.
