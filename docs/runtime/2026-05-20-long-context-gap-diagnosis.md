@@ -78,3 +78,15 @@ every generated token.
 The next optimisation should target the 100k first-prefill and warm-decode
 kernel path directly. Re-running small-context or short-output smokes will not
 measure this boundary.
+
+## Replay Harness
+
+Use `scripts/gemma4_context_ramp.sh` for the next context-scaling pass. The
+tracked harness now defaults to the current E2B q4 production snapshot and uses
+`driver-profile -report-file` so each row is emitted by the runner rather than
+by shell stdout redirection. Override `GO_MLX_MODEL` and `GO_MLX_MODEL_LABEL`
+when comparing E4B, 26B, or future model snapshots.
+
+The next long-turn fairness pass should keep the accepted repeat/context ladder
+but set `GO_MLX_RAMP_MAX_TOKENS=5120`. That measures the 100k warm-decode path
+with a generation budget large enough to avoid another tiny-token smoke.
