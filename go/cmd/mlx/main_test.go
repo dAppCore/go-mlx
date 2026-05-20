@@ -811,6 +811,47 @@ func TestRunCommand_ChapterProfilePromptRepeat_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ChapterProfileReportFile_Good(t *testing.T) {
+	originalRun := runChapterProfile
+	t.Cleanup(func() { runChapterProfile = originalRun })
+	runChapterProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg chapterProfileOptions) (*chapterProfileReport, error) {
+		return &chapterProfileReport{
+			Version:           1,
+			ModelPath:         modelPath,
+			ContextBytes:      len(cfg.ContextPrompt),
+			PremiseBytes:      len(cfg.Premise),
+			ChaptersRequested: cfg.Chapters,
+			ChapterMaxTokens:  cfg.ChapterMaxTokens,
+			ChapterMinTokens:  cfg.ChapterMinTokens,
+			OutputPath:        cfg.OutputPath,
+			Summary: chapterProfileSummary{
+				SuccessfulTurns: 1,
+				VisibleTokens:   768,
+			},
+		}, nil
+	}
+	dir := t.TempDir()
+	reportPath := core.PathJoin(dir, "reports", "chapter.json")
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"chapter-profile", "-report-file", reportPath, "-premise", "packet story", "-chapters", "1", "-chapter-max-tokens", "32", "-chapter-min-tokens", "16", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	read := core.ReadFile(reportPath)
+	if !read.OK {
+		t.Fatalf("ReadFile(%q): %v", reportPath, read.Value)
+	}
+	data := string(read.Value.([]byte))
+	if !core.Contains(data, `"model_path": "/models/demo"`) || !core.Contains(data, `"successful_turns": 1`) {
+		t.Fatalf("report file = %q, want chapter profile JSON", data)
+	}
+	if core.Contains(stdout.String(), `"model_path"`) {
+		t.Fatalf("stdout = %q, should keep JSON in report file unless -json is set", stdout.String())
+	}
+}
+
 func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	originalRun := runChapterProfile
 	t.Cleanup(func() { runChapterProfile = originalRun })

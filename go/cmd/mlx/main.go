@@ -1831,6 +1831,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	fs := flag.NewFlagSet(cliCommandName("chapter-profile"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON chapter profile")
+	reportFile := fs.String("report-file", "", "write JSON chapter profile to a file")
 	contextPrompt := fs.String("prompt", "", "context prompt to prefill before chapter turns")
 	contextPromptFile := fs.String("prompt-file", "", "read context prompt text from a file")
 	promptChunkBytes := fs.Int("prompt-chunk-bytes", 0, "split retained context and turn prompts into bounded byte chunks")
@@ -2016,7 +2017,8 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	if report != nil && *estimatePowerWatts > 0 {
 		report.EstimatedEnergy = estimateChapterProfileEnergy(report, *estimatePowerWatts)
 	}
-	if *jsonOut {
+	reportPath := core.Trim(*reportFile)
+	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &chapterProfileReport{
 				Version:           1,
@@ -2051,12 +2053,22 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			core.Print(stderr, "%s chapter-profile: marshal report failed", cliName())
 			return 1
 		}
-		core.WriteString(stdout, string(data.Value.([]byte)))
-		core.WriteString(stdout, "\n")
+		if reportPath != "" {
+			if writeErr := writeChapterProfileReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
+				core.Print(stderr, "%s chapter-profile: write report file: %v", cliName(), writeErr)
+				return 1
+			}
+		}
+		if *jsonOut {
+			core.WriteString(stdout, string(data.Value.([]byte)))
+			core.WriteString(stdout, "\n")
+		}
 		if err != nil {
 			return 1
 		}
-		return 0
+		if *jsonOut {
+			return 0
+		}
 	}
 	if err != nil {
 		core.Print(stderr, "%s chapter-profile: %v", cliName(), err)
@@ -2064,6 +2076,27 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	}
 	printChapterProfileSummary(stdout, report)
 	return 0
+}
+
+func writeChapterProfileReportFile(path string, data []byte) error {
+	path = core.Trim(path)
+	if path == "" {
+		return nil
+	}
+	dir := core.PathDir(path)
+	if dir != "" && dir != "." {
+		if result := core.MkdirAll(dir, 0o755); !result.OK {
+			return core.Errorf("create directory: %v", result.Value)
+		}
+	}
+	withNewline := append([]byte(nil), data...)
+	if len(withNewline) == 0 || withNewline[len(withNewline)-1] != '\n' {
+		withNewline = append(withNewline, '\n')
+	}
+	if result := core.WriteFile(path, withNewline, 0o644); !result.OK {
+		return core.Errorf("%v", result.Value)
+	}
+	return nil
 }
 
 var runChapterProfile = defaultRunChapterProfile
