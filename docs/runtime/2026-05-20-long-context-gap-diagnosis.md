@@ -102,12 +102,14 @@ therefore stay focused on the full-attention paged/global K/V path.
 
 ## Rejected 100k Branches
 
-Three same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+Five same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |
 | Paged K/V without fast concat | `100937` prompt tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s` wall, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Avoiding the concat makes the per-page Go/MLX attention graph much slower than the accepted borrowed-page fast-concat lane. |
 | Native C++ paged attention reduction | `100937` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s` wall, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Moving the same page-reduction graph behind one C++ call trims only a little overhead; the missing path is a fused/custom paged-attention kernel. |
+| Larger `2048`-token pages | `101005` prompt tokens, paged K/V `2048`, accepted fast gates | `80.787s` wall, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected. Fewer pages do not improve the borrowed fast-concat path; cache memory rises and decode falls below the accepted `1024`-page row. |
+| Preallocated `1024`-token pages | `101005` prompt tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s` wall, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected. In-place page updates do not beat the accepted concat-backed page append path at 100k and slightly increase active memory. |
 | Fixed cache with sliding layers bounded | `100937` prompt tokens, fixed Gemma 4 cache, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13748980782` bytes over the `12884901888` byte guard | Rejected. Hyper-long fixed cache is not the default path until a narrower global-only/native attention storage plan exists. |
 | Right-sized fixed cache with sliding layers bounded | README repeat `46`, fixed cache size forced to `102400`, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13682988726` bytes over the `12884901888` byte guard | Rejected. Right-sizing below the full `131072` context does not bring active memory under the production guard. |
 
@@ -115,8 +117,9 @@ The current boundary is therefore narrower than "turn off concat" or "restore
 fixed cache": go-mlx needs a fused native paged/global-attention path that
 avoids both per-token full K/V concatenation and the active-memory footprint of
 a full fixed cache. A C++ wrapper around the existing page-reduction graph is
-not enough, and a right-sized fixed cache is still too memory-heavy on the
-guarded 100k lane.
+not enough, larger page geometry does not help, preallocated pages do not help,
+and a right-sized fixed cache is still too memory-heavy on the guarded 100k
+lane.
 
 ## Model-Native Cache Diagnostic
 
