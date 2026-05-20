@@ -25,6 +25,9 @@ const (
 	// ProductionLaneLongContextPromptChunkBytes is the proven large-context
 	// prompt chunk size for avoiding repeated giant-string tokenisation.
 	ProductionLaneLongContextPromptChunkBytes = 4096
+	// ProductionLaneHyperLongPagedKVPageSize is the current fastest recorded
+	// paged K/V block size for 100k retained-state runs.
+	ProductionLaneHyperLongPagedKVPageSize = 1024
 	// ProductionLaneLongFormContextLength is the default chapter-profile
 	// context for retained long-form agentic generation.
 	ProductionLaneLongFormContextLength = 65536

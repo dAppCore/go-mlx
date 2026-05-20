@@ -282,6 +282,28 @@ func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_HyperLongDefaultPageSize_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache HyperLongDefaultPageSize"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "")
+
+	normal := NewPagedKVCache(32768, 0)
+	hyperLong := NewPagedKVCache(131072, 0)
+	sliding := NewPagedKVCache(512, 0)
+
+	if normal.pageSize != defaultPagedKVPageSize {
+		t.Fatalf("normal pageSize = %d, want %d", normal.pageSize, defaultPagedKVPageSize)
+	}
+	if hyperLong.pageSize != hyperLongPagedKVPageSize {
+		t.Fatalf("hyperLong pageSize = %d, want %d", hyperLong.pageSize, hyperLongPagedKVPageSize)
+	}
+	if sliding.pageSize != defaultPagedKVPageSize {
+		t.Fatalf("sliding pageSize = %d, want %d", sliding.pageSize, defaultPagedKVPageSize)
+	}
+}
+
 func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache ReplaceSinglePageFromNative"
 	if coverageTokens == "" {

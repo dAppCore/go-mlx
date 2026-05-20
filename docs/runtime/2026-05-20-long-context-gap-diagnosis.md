@@ -37,21 +37,27 @@ completed `10/10` turns in `105.946990083s`.
 ## Production Gap
 
 The slower path is the accepted 100k retained workflow, not the shorter C006
-continuation lane.
+continuation lane. The first corrective change is now in the default fast lane:
+hyper-long paged K/V caches use `1024`-token pages instead of the old `512`
+default, and the CLI records that choice as
+`GO_MLX_PAGED_KV_PAGE_SIZE=1024`.
 
 | Runner | Shape | Warm per-turn decode | First prefill | Restore |
 | --- | --- | ---: | ---: | ---: |
-| go-mlx | `101005` prompt tokens, `10x1024` retained turns | about `23.4s` per `1024` tokens, `43.617 tok/s` | `157.168s`, `642.657 tok/s` | `2.116ms` average |
+| go-mlx current | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024` | about `20.25s` per warm `1024` tokens, `50.566 tok/s` | `60.193s`, `1678.094 tok/s` | `0.365ms` average |
+| go-mlx previous | `101005` prompt tokens, `10x1024` retained turns | about `23.4s` per `1024` tokens, `43.617 tok/s` | `157.168s`, `642.657 tok/s` | `2.116ms` average |
 | llama.cpp server | `100926` prompt tokens, `10x1024` cached-prefix turns | about `12.5s` per `1024` tokens, `82.680 tok/s` | `89.122s`, `1132.450 tok/s` | `45.591ms` warm prompt work |
 | `mlx_lm` | `100935` cached prompt tokens, `10x1024` turns | about `10.0s` per `1024` tokens, `103.971 tok/s` | about `18.5s`, `5465.549 tok/s` | cached prefix in-process |
 
 The retained-state restore is already cheap enough that it is not the active
-loss. The active loss is the evaluated long-context graph and kernel path:
+loss. The page-size correction improves the 100k row from `408.483s` to
+`262.995s`, a `1.553x` wall/energy improvement, but the active loss is still
+the evaluated long-context graph and kernel path:
 
-- go-mlx cold 100k prefill is `1.76x` slower than llama.cpp and `8.5x` slower
-  than the configured `mlx_lm` harness.
-- go-mlx warm 100k decode is `1.90x` slower than llama.cpp and `2.38x` slower
-  than `mlx_lm`.
+- go-mlx cold 100k prefill is now `1.48x` faster than llama.cpp but still
+  `3.26x` slower than the configured `mlx_lm` harness.
+- go-mlx warm 100k decode remains `1.64x` slower than llama.cpp and `2.06x`
+  slower than `mlx_lm`.
 - The one-run token-phase trace records around `22ms` per generated token. Most
   of that wait is attributed under `cache_probe_duration`, but the label is
   misleading for the direct-greedy/async path: it is where the lazy next-token
@@ -60,13 +66,14 @@ loss. The active loss is the evaluated long-context graph and kernel path:
 
 ## Working Explanation
 
-go-mlx has the retained-prefix architecture working, but its 100k decode path
-still evaluates a heavier per-token MLX graph than llama.cpp or `mlx_lm`.
-The likely live boundary is full-attention K/V access and mask/graph
-materialisation over a very large retained context, combined with paged-cache
-view/concat behaviour. The shorter C006 path stays near the useful `75-80 tok/s`
-band because it does not carry a 100k prompt prefix through every generated
-token.
+go-mlx has the retained-prefix architecture working, and the old paged-cache
+block geometry was a real part of the long-context loss. The remaining 100k
+decode path still evaluates a heavier per-token MLX graph than llama.cpp or
+`mlx_lm`. The likely live boundary is full-attention K/V access and mask/graph
+materialisation over a very large retained context, combined with the
+paged-cache view/concat attention path. The shorter C006 path stays near the
+useful `75-80 tok/s` band because it does not carry a 100k prompt prefix through
+every generated token.
 
 The next optimisation should target the 100k first-prefill and warm-decode
 kernel path directly. Re-running small-context or short-output smokes will not
