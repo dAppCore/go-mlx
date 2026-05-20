@@ -32,10 +32,14 @@ func LoadGGUF(path string) iter.Seq2[string, *Array] {
 		cPath := C.CString(path)
 		defer C.free(unsafe.Pointer(cPath))
 
-		cpu := C.mlx_default_cpu_stream_new()
-		defer C.mlx_stream_free(cpu)
+		cpu, err := newStreamForDevice(DeviceCPU)
+		if err != nil {
+			core.Error("mlx: load gguf cpu stream", "error", err)
+			return
+		}
+		defer C.mlx_stream_free(cpu.ctx)
 
-		rc := C.mlx_load_gguf_arrays(&string2array, cPath, cpu)
+		rc := C.mlx_load_gguf_arrays(&string2array, cPath, cpu.ctx)
 		if rc != 0 {
 			return
 		}

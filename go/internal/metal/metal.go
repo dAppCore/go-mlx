@@ -196,11 +196,15 @@ func metalAvailableNoInit() bool {
 	return bool(available)
 }
 
+func hostMetalDeviceAvailableNoInit() bool {
+	return bool(C.mlx_go_metal_has_usable_device())
+}
+
 func usableMetalDeviceNoInit() bool {
 	if !metalAvailableNoInit() {
 		return false
 	}
-	return bool(C.mlx_go_metal_has_usable_device())
+	return hostMetalDeviceAvailableNoInit()
 }
 
 func hostDeviceInfo() DeviceInfo {

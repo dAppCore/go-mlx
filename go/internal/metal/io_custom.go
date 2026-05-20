@@ -282,10 +282,14 @@ func LoadSafetensorsFromReader(rws io.ReadWriteSeeker, size int64, label string)
 		string2string := C.mlx_map_string_to_string_new()
 		defer C.mlx_map_string_to_string_free(string2string)
 
-		cpu := C.mlx_default_cpu_stream_new()
-		defer C.mlx_stream_free(cpu)
+		cpu, err := newStreamForDevice(DeviceCPU)
+		if err != nil {
+			core.Error("mlx: load safetensors reader cpu stream", "error", err)
+			return
+		}
+		defer C.mlx_stream_free(cpu.ctx)
 
-		rc := C.mlx_load_safetensors_reader(&string2array, &string2string, reader, cpu)
+		rc := C.mlx_load_safetensors_reader(&string2array, &string2string, reader, cpu.ctx)
 		if rc != 0 {
 			return
 		}
