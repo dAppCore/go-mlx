@@ -170,6 +170,22 @@ energy, `2.384x` faster on raw decode, and `8.505x` faster on the one-time
 100k cache prefill. The older retained-state argument is still architecturally
 useful, but it does not beat the current Python MLX stack on this shape.
 
+Rejected go-mlx cache-only chunk prefill diagnostic:
+
+- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-cacheonly-prefill-r46-ctx131072-g1024-r10-energy100w.json`
+- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-cacheonly-prefill-r46-ctx131072-g1024-r10-energy100w.stderr`
+
+The diagnostic changed chunked prefill so intermediate chunks evaluated cache
+state only and delayed logits materialisation until the final chunk, closer to
+the MLX-LM prefill shape. It improved cold go-mlx prefill from `157.168s` /
+`642.657 tok/s` to `116.210s` / `869.159 tok/s`, but the full 10-run workload
+failed `10/10` runs on the repeated-sentence quality guard. The summed runtime
+for the failed diagnostic was `365.468s`, and decode stayed in the same
+`~43.8 tok/s` band, so this does not close the `mlx_lm` gap and is not an
+accepted production row. The path is now gated behind
+`GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL=1` for further investigation rather
+than enabled by default.
+
 Current vLLM Metal 100k attempt:
 
 - `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stdout`

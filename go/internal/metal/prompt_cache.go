@@ -280,6 +280,13 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 			if end > len(tokens) {
 				end = len(tokens)
 			}
+			if end < len(tokens) && len(caches) > 0 && RuntimeGateEnabled("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL") {
+				if err := m.prefillTokenBlockCacheOnly(ctx, tokens[start:end], caches); err != nil {
+					Free(logits)
+					return nil, core.E("Model.Generate", core.Sprintf("prefill chunk %d:%d", start, end), err)
+				}
+				continue
+			}
 			nextLogits, err := m.prefillTokenBlockOnce(ctx, tokens[start:end], caches)
 			if err != nil {
 				Free(logits)
@@ -291,6 +298,48 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 		return logits, nil
 	}
 	return m.prefillTokenBlockOnce(ctx, tokens, caches)
+}
+
+func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, caches []Cache) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	if len(tokens) == 0 {
+		return core.NewError("Model.Generate: empty prefill cache-only block")
+	}
+	vInput := FromValues(tokens, len(tokens))
+	input := Reshape(vInput, 1, int32(len(tokens)))
+	logits := m.model.Forward(input, caches)
+	Free(vInput, input)
+	if logits == nil || !logits.Valid() {
+		Free(logits)
+		return core.NewError("Model.Generate: cache-only prefill returned nil logits")
+	}
+	cacheState := prefillCacheStateArrays(caches)
+	if len(cacheState) == 0 {
+		Free(logits)
+		return core.NewError("Model.Generate: cache-only prefill produced no cache state")
+	}
+	if err := Eval(cacheState...); err != nil {
+		Free(logits)
+		return core.E("Model.Generate", "cache-only prefill", err)
+	}
+	Free(logits)
+	detachCaches(caches)
+	return nil
+}
+
+func prefillCacheStateArrays(caches []Cache) []*Array {
+	var arrays []*Array
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		arrays = append(arrays, cache.State()...)
+	}
+	return arrays
 }
 
 func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, caches []Cache) (*Array, error) {

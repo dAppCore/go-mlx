@@ -7,6 +7,7 @@ package metal
 import (
 	"context"
 	"iter"
+	"reflect"
 	"testing"
 
 	"dappco.re/go"
@@ -719,6 +720,45 @@ func (m *lastLogitsPrefillModel) Tokenizer() *Tokenizer               { return n
 func (m *lastLogitsPrefillModel) ModelType() string                   { return "last-logits-prefill-test" }
 func (m *lastLogitsPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
+type cacheOnlyChunkPrefillModel struct {
+	fullLens []int
+	lastLens []int
+}
+
+func (m *cacheOnlyChunkPrefillModel) Forward(tokens *Array, caches []Cache) *Array {
+	seqLen := int(tokens.Dim(1))
+	m.fullLens = append(m.fullLens, seqLen)
+	m.updateCache(seqLen, caches)
+	return Zeros([]int32{1, int32(seqLen), 64}, DTypeFloat32)
+}
+
+func (m *cacheOnlyChunkPrefillModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
+	return m.Forward(tokens, caches)
+}
+
+func (m *cacheOnlyChunkPrefillModel) ForwardLastTokenLogits(tokens *Array, _ *Array, caches []Cache) *Array {
+	seqLen := int(tokens.Dim(1))
+	m.lastLens = append(m.lastLens, seqLen)
+	m.updateCache(seqLen, caches)
+	return Zeros([]int32{1, 1, 2}, DTypeFloat32)
+}
+
+func (m *cacheOnlyChunkPrefillModel) updateCache(seqLen int, caches []Cache) {
+	if len(caches) == 0 || caches[0] == nil {
+		return
+	}
+	k := Zeros([]int32{1, 1, int32(seqLen), 1}, DTypeFloat32)
+	v := Zeros([]int32{1, 1, int32(seqLen), 1}, DTypeFloat32)
+	fullK, fullV := caches[0].Update(k, v, seqLen)
+	Free(fullK, fullV)
+}
+
+func (m *cacheOnlyChunkPrefillModel) NewCache() []Cache                   { return []Cache{NewKVCache()} }
+func (m *cacheOnlyChunkPrefillModel) NumLayers() int                      { return 1 }
+func (m *cacheOnlyChunkPrefillModel) Tokenizer() *Tokenizer               { return nil }
+func (m *cacheOnlyChunkPrefillModel) ModelType() string                   { return "cache-only-chunk-prefill-test" }
+func (m *cacheOnlyChunkPrefillModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
 type boundedGenerateModel struct {
 	forwardCalls int
 }
@@ -824,6 +864,40 @@ func TestModel_PrefillTokenBlock_UsesLastTokenLogitsModel_Good(t *testing.T) {
 		if inner.lastLens[i] != want[i] {
 			t.Fatalf("lastLens = %v, want %v", inner.lastLens, want)
 		}
+	}
+	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("logits shape = %v, want [1 2]", got)
+	}
+}
+
+func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock EvaluatesIntermediateChunksCacheOnly"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	restoreCacheOnly := SetRuntimeGate("GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL", "1")
+	t.Cleanup(restoreCacheOnly)
+	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
+
+	inner := &cacheOnlyChunkPrefillModel{}
+	caches := inner.NewCache()
+	model := &Model{model: inner, prefillChunkSize: 2}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, caches)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+	defer freeCaches(caches)
+
+	if got, want := inner.fullLens, []int{2, 2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
+	}
+	if got, want := inner.lastLens, []int{1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("last-logits chunk lengths = %v, want %v", got, want)
+	}
+	if caches[0].Offset() != 5 {
+		t.Fatalf("cache offset = %d, want 5", caches[0].Offset())
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("logits shape = %v, want [1 2]", got)
