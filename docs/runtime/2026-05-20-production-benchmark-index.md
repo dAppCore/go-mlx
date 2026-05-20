@@ -12,11 +12,13 @@ The default small-model continuation path is accepted on
 `mlx-community/gemma-4-e2b-it-4bit`: the C006 10-chapter run completed, stayed
 on prompt through the final chapter, and ended without visible planning or
 postscript text. The overall production goal is still not complete because the
-same-shape runner-anchor gate and long-context performance gap remain open.
+long-context performance gap and runtime-fragment cleanup remain open.
 
-The current measured blocker is `mlx_lm`: on the 100k cached workflow it is
-`3.408x` faster by wall time and estimated energy than go-mlx. That makes
-go-mlx's long-context prefill/decode path the next optimisation boundary.
+The current measured blockers are `mlx_lm` and llama.cpp: on the 100k cached
+workflow, `mlx_lm` is `3.408x` faster by wall time and estimated energy than
+go-mlx, while the cached llama.cpp server row is `1.906x` faster by wall time.
+That makes go-mlx's long-context prefill/decode path the next optimisation
+boundary.
 
 ## Accepted go-mlx Artefacts
 
@@ -38,13 +40,14 @@ Companion notes:
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | go-mlx | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-guarded-r46-ctx131072-g1024-r10-longturn-naturalstop-energy100w.json` | MLX 4bit, `101005` prompt tokens, `10x1024` retained turns | `408.483s` | `43.617 tok/s` decode | `642.657 tok/s` cold prefill, `2.116ms` warm restore | `3.699 GiB` active MLX, `6.509 GiB` peak RSS | `40848.257 J` | Accepted go-mlx baseline |
 | `mlx_lm` | `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json` | Same MLX 4bit snapshot, `100935` cached prompt tokens, `10x1024` turns | `119.866s` including load+prefill | `103.971 tok/s` decode | `5465.549 tok/s` prefill | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` | Current configured winner; go-mlx is `3.408x` slower by wall/energy |
-| llama.cpp | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json` | GGUF `Q4_K_M`, cold `pp101005+tg1024`, one run | `94.904s` | `1075.081 tok/s` combined | Cold replay only | Not recorded in JSON | `9490.352 J` if normalised at `100 W` | Cold calibration only; cached-prefix workflow still missing |
+| llama.cpp server | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json` | GGUF `Q4_K_M`, `100926` prompt tokens, `10x1024` cached-prefix turns | `214.205s` | `82.680 tok/s` decode | `1132.450 tok/s` first prefill, `45.591ms` average warm prompt work with `100921` cached tokens | `4.435 GiB` peak RSS | `21420.531 J` | Same-shape cached runner anchor; beats go-mlx by `1.906x` wall/energy |
+| llama.cpp cold | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json` | GGUF `Q4_K_M`, cold `pp101005+tg1024`, one run | `94.904s` | `1075.081 tok/s` combined | Cold replay only | Not recorded in JSON | `9490.352 J` if normalised at `100 W` | Calibration only; superseded by server cached-prefix row for runner-gate evidence |
 | vLLM Metal | `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr` | Same MLX 4bit snapshot, `100935` input, `1024` output | n/a | n/a | n/a | n/a | n/a | Metal path starts, then strict MLX-LM load rejects extra Gemma 4 shared-K/V tensors |
 
 Cold llama.cpp replay over ten turns would be roughly `949.035s` at the
 measured one-run wall time, so go-mlx still beats CLI-style repeated cold
-replay. That does not close the runner gate because `mlx_lm` already has a
-faster cached-prefix row on the same workflow.
+replay. The server-side cached-prefix row is the fairer retained-workflow
+anchor and beats go-mlx on the same repeated shape.
 
 ## Seven-Format E2B Matrix
 
@@ -62,8 +65,8 @@ Source note: `docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md`.
 
 This matrix is a loader and short-latency smoke, not production acceptance
 evidence. The raw go-mlx rows and external per-quant rows are now replay-grade;
-the production runner-anchor gate remains open because it requires the accepted
-100k retained workflow rather than this short matrix.
+the production decision still comes from the accepted 100k retained workflow
+rather than this short matrix.
 
 ## Replay Environment
 
@@ -82,10 +85,8 @@ device from the runner, while the same workload with `-report-file` completed.
 
 ## Next Work
 
-1. Close the `mlx_lm` gap or isolate the specific native cause. The most likely
-   live boundary is evaluated graph/kernel work in the long-context path, not
-   prompt-cache restore.
-2. Produce a fair cached-prefix llama.cpp row or document why llama.cpp cannot
-   run that same retained workflow.
-3. Prune or quarantine abandoned runtime fragments after the canonical rows
+1. Close the `mlx_lm` and llama.cpp cached-runner gap or isolate the specific
+   native cause. The most likely live boundary is evaluated graph/kernel work in
+   the long-context path, not prompt-cache restore.
+2. Prune or quarantine abandoned runtime fragments after the canonical rows
    above are no longer needed for investigation.
