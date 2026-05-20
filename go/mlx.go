@@ -127,6 +127,8 @@ func GC() { metal.RuntimeGC() }
 const (
 	// DefaultLocalContextLength bounds KV growth for local workstation runs.
 	DefaultLocalContextLength = 131072
+	// DefaultGemma4SlidingWindow caps Gemma 4 local-attention cache growth.
+	DefaultGemma4SlidingWindow = 512
 	// DefaultLocalParallelSlots keeps one foreground native request active.
 	DefaultLocalParallelSlots = 1
 	// DefaultPromptCacheMinTokens avoids cache overhead for short prompts.
@@ -232,6 +234,7 @@ type ModelInfo struct {
 	QuantBits            int
 	QuantGroup           int
 	ContextLength        int
+	Gemma4SlidingWindow  int
 	ParallelSlots        int
 	PromptCache          bool
 	PromptCacheMinTokens int
@@ -361,6 +364,7 @@ type LoadConfig struct {
 	PromptCache          bool
 	PromptCacheMinTokens int
 	Quantization         int
+	Gemma4SlidingWindow  int
 	Device               string
 	AdapterPath          string
 	Medium               coreio.Medium
@@ -381,6 +385,7 @@ type LoadConfig struct {
 func DefaultLoadConfig() LoadConfig {
 	return LoadConfig{
 		ContextLength:        DefaultLocalContextLength,
+		Gemma4SlidingWindow:  DefaultGemma4SlidingWindow,
 		ParallelSlots:        DefaultLocalParallelSlots,
 		PromptCache:          true,
 		PromptCacheMinTokens: DefaultPromptCacheMinTokens,
@@ -395,6 +400,12 @@ type LoadOption func(*LoadConfig)
 // WithContextLength bounds the KV cache to the given context window.
 func WithContextLength(n int) LoadOption {
 	return func(c *LoadConfig) { c.ContextLength = n }
+}
+
+// WithGemma4SlidingWindow caps Gemma 4 local sliding-window attention layers
+// independently of the full/global context length. 0 leaves the model config.
+func WithGemma4SlidingWindow(n int) LoadOption {
+	return func(c *LoadConfig) { c.Gemma4SlidingWindow = n }
 }
 
 // WithParallelSlots bounds concurrent native inference calls for this model.
@@ -503,6 +514,9 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ContextLength < 0 {
 		return LoadConfig{}, core.NewError("mlx: context length must be >= 0")
+	}
+	if cfg.Gemma4SlidingWindow < 0 {
+		return LoadConfig{}, core.NewError("mlx: Gemma 4 sliding window must be >= 0")
 	}
 	if cfg.ParallelSlots < 0 {
 		return LoadConfig{}, core.NewError("mlx: parallel slots must be >= 0")

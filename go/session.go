@@ -397,6 +397,13 @@ func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Wr
 
 // LoadKVBlocksFromMemvid restores retained session state from per-block KV chunks.
 func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle) error {
+	return s.LoadKVPrefixBlocksFromMemvid(ctx, store, bundle, 0)
+}
+
+// LoadKVPrefixBlocksFromMemvid restores a retained session state from the
+// memvid KV blocks needed to cover prefixTokens. Native sessions consume the
+// blocks as a stream, avoiding a full CPU-side assembled snapshot.
+func (s *ModelSession) LoadKVPrefixBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -407,7 +414,7 @@ func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.
 		return core.NewError("mlx: memvid KV block bundle is nil")
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, bundle.TokenCount)
+		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
 		if err != nil {
 			return err
 		}
@@ -417,7 +424,11 @@ func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.
 		s.agentMemory = nil
 		return nil
 	}
-	snapshot, err := kv.LoadFromMemvidBlocks(ctx, store, bundle)
+	loadOpts := kv.LoadOptions{}
+	if bundle.KVEncoding == kv.EncodingNative {
+		loadOpts.RawKVOnly = true
+	}
+	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, loadOpts)
 	if err != nil {
 		return err
 	}

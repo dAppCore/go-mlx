@@ -1840,7 +1840,7 @@ func buildGemma4SlidingMask(batchSize, seqLen, window int32) *Array {
 	return FromValues(data, int(batchSize), 1, int(seqLen), int(seqLen))
 }
 
-func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, window int32) *Array {
+func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, keyStart, window int32) *Array {
 	negInf := float32(math.Inf(-1))
 	data := make([]float32, int(batchSize)*int(queryLen)*int(keyLen))
 	for b := range batchSize {
@@ -1848,9 +1848,10 @@ func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, window 
 		for i := range queryLen {
 			queryPos := offset + i
 			for j := range keyLen {
-				allowed := j <= queryPos
+				keyPos := keyStart + j
+				allowed := keyPos <= queryPos
 				if window > 0 && allowed {
-					allowed = queryPos-j < window
+					allowed = queryPos-keyPos < window
 				}
 				if allowed {
 					data[base+int(i)*int(keyLen)+int(j)] = 0
@@ -2537,7 +2538,12 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			}
 			var cachedMask *Array
 			if offset > 0 && L > 1 {
-				cachedMask = buildGemma4CachedAttentionMask(B, L, int32(kBase.Dim(2)), int32(offset), window)
+				keyLen := int32(kBase.Dim(2))
+				keyStart := int32(offset) + L - keyLen
+				if keyStart < 0 {
+					keyStart = 0
+				}
+				cachedMask = buildGemma4CachedAttentionMask(B, L, keyLen, int32(offset), keyStart, window)
 				mask = cachedMask
 			} else if kv.Fixed && L == 1 && mask == nil {
 				offsetArray := FromValue(offset)

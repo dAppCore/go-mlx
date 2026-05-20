@@ -147,18 +147,66 @@ func sampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTok
 	}
 	Free(next)
 	filtered := suppressTokenLogits(logits, suppressTokens)
-	next = suppressedGreedy{tokens: suppressTokens}.Sample(filtered)
+	if err := Eval(filtered); err != nil {
+		Free(filtered)
+		return nil, err
+	}
+	next = greedy{}.Sample(filtered)
 	Free(filtered)
 	if err := Eval(next); err != nil {
 		Free(next)
 		return nil, err
 	}
 	if tokenIDSuppressed(int32(next.Int()), suppressTokens) {
+		Free(next)
+		next, err := hostUnsuppressedGreedyToken(logits, suppressTokens)
+		if err != nil {
+			return nil, err
+		}
+		if err := Eval(next); err != nil {
+			Free(next)
+			return nil, err
+		}
+		if !tokenIDSuppressed(int32(next.Int()), suppressTokens) {
+			return next, nil
+		}
 		id := int32(next.Int())
 		Free(next)
 		return nil, core.NewError(core.Sprintf("mlx: sampler returned suppressed token %d after suppression guard", id))
 	}
 	return next, nil
+}
+
+func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array, error) {
+	if logits == nil || !logits.Valid() {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	values := logits.Floats()
+	if len(values) == 0 {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	suppressed := make(map[int32]bool, len(suppressTokens))
+	for _, id := range suppressTokens {
+		if id >= 0 {
+			suppressed[id] = true
+		}
+	}
+	bestID := int32(-1)
+	bestValue := float32(math.Inf(-1))
+	for id, value := range values {
+		tokenID := int32(id)
+		if suppressed[tokenID] || math.IsNaN(float64(value)) {
+			continue
+		}
+		if bestID < 0 || value > bestValue {
+			bestID = tokenID
+			bestValue = value
+		}
+	}
+	if bestID < 0 {
+		return nil, core.NewError("mlx: no finite unsuppressed logits available")
+	}
+	return FromValues([]int32{bestID}, 1), nil
 }
 
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {

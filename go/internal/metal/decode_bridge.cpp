@@ -1399,6 +1399,23 @@ struct Gemma4LayerState {
   std::optional<mlx::core::array> values;
 };
 
+enum class Gemma4KVPath {
+  Shared,
+  Owner,
+};
+
+Gemma4KVPath gemma4_kv_path(const go_mlx_gemma4_layer_args& args) {
+  switch (args.owns_kv) {
+    case 0:
+      return Gemma4KVPath::Shared;
+    case 1:
+      return Gemma4KVPath::Owner;
+    default:
+      throw std::runtime_error("mlx: Gemma 4 layer KV ownership flag is invalid");
+      std::unreachable();
+  }
+}
+
 mlx::core::array gemma4_fixed_greedy_token_impl(
     const go_mlx_gemma4_model_greedy_args& model_args,
     mlx_array* new_keys,
@@ -1414,17 +1431,26 @@ mlx::core::array gemma4_fixed_greedy_token_impl(
   std::vector<Gemma4LayerState> states(static_cast<size_t>(model_args.layer_count));
   for (int i = 0; i < model_args.layer_count; i++) {
     auto layer_args = model_args.layers[i];
+    const auto kv_path = gemma4_kv_path(layer_args);
     mlx::core::array prev_keys = get_required(layer_args.prev_keys, "prev_keys");
     mlx::core::array prev_values = get_required(layer_args.prev_values, "prev_values");
-    if (!layer_args.owns_kv) {
-      const int prev = model_args.previous_kvs[i];
-      if (prev < 0 || prev >= i ||
-          !states[static_cast<size_t>(prev)].keys.has_value() ||
-          !states[static_cast<size_t>(prev)].values.has_value()) {
-        throw std::runtime_error("mlx: Gemma 4 model greedy shared KV owner is invalid");
+    switch (kv_path) {
+      case Gemma4KVPath::Shared: {
+        const int prev = model_args.previous_kvs[i];
+        if (prev < 0 || prev >= i ||
+            !states[static_cast<size_t>(prev)].keys.has_value() ||
+            !states[static_cast<size_t>(prev)].values.has_value()) {
+          throw std::runtime_error("mlx: Gemma 4 model greedy shared KV owner is invalid");
+        }
+        prev_keys = *states[static_cast<size_t>(prev)].keys;
+        prev_values = *states[static_cast<size_t>(prev)].values;
+        break;
       }
-      prev_keys = *states[static_cast<size_t>(prev)].keys;
-      prev_values = *states[static_cast<size_t>(prev)].values;
+      case Gemma4KVPath::Owner:
+        break;
+      default:
+        throw std::runtime_error("mlx: Gemma 4 model greedy KV path is invalid");
+        std::unreachable();
     }
 
     auto outputs = gemma4_decode_layer_impl_with_state(

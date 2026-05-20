@@ -2301,6 +2301,25 @@ func TestDriverProfileGeneration_TraceTokenPhasesOption_Good(t *testing.T) {
 	}
 }
 
+func TestDriverProfileGeneration_StopAndSuppressTokens_Good(t *testing.T) {
+	model := &fakeDriverProfileModel{}
+
+	_ = profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
+		Prompt:           "hello",
+		MaxTokens:        2,
+		Chat:             true,
+		StopTokenIDs:     []int32{1, 106},
+		SuppressTokenIDs: []int32{0, 2, 105},
+	})
+
+	if got := model.lastConfig.StopTokens; len(got) != 2 || got[0] != 1 || got[1] != 106 {
+		t.Fatalf("StopTokens = %v, want [1 106]", got)
+	}
+	if got := model.lastConfig.SuppressTokens; len(got) != 3 || got[0] != 0 || got[1] != 2 || got[2] != 105 {
+		t.Fatalf("SuppressTokens = %v, want [0 2 105]", got)
+	}
+}
+
 func TestDriverProfileSafetyLimits_DerivesFromResolvedMemory_Good(t *testing.T) {
 	limits := resolveDriverProfileSafetyLimits(driverProfileSafetyLimits{}, &tuneProfileLoadSettings{
 		MemoryLimitBytes: 64 * memory.GiB,

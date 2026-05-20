@@ -782,7 +782,7 @@ func (r *kvSnapshotReader) bytes() []byte {
 	if raw == nil {
 		return nil
 	}
-	return append([]byte(nil), raw...)
+	return raw
 }
 
 func (r *kvSnapshotReader) f32s() []float32 {

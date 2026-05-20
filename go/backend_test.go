@@ -2237,6 +2237,37 @@ func TestLoadModel_ForwardsParallelSlots_Good(t *testing.T) {
 	}
 }
 
+func TestLoadModel_ForwardsGemma4SlidingWindow_Good(t *testing.T) {
+	coverageTokens := "ForwardsGemma4SlidingWindow"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if modelPath != "/does/not/matter" {
+			t.Fatalf("modelPath = %q, want /does/not/matter", modelPath)
+		}
+		if cfg.Gemma4SlidingWindow != 256 {
+			t.Fatalf("Gemma4SlidingWindow = %d, want 256", cfg.Gemma4SlidingWindow)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text"}}, nil
+	}
+
+	model, err := LoadModel("/does/not/matter", WithGemma4SlidingWindow(256))
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	info := model.Info()
+	if info.Gemma4SlidingWindow != 256 {
+		t.Fatalf("Info().Gemma4SlidingWindow = %d, want 256", info.Gemma4SlidingWindow)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 	coverageTokens := "AppliesMemoryPlanFromDevice"
 	if coverageTokens == "" {

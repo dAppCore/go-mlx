@@ -487,6 +487,9 @@ func TestApiCommon_DefaultLoadConfig_LocalRunnerDefaults_Good(t *testing.T) {
 	if cfg.ContextLength != DefaultLocalContextLength {
 		t.Fatalf("ContextLength = %d, want %d", cfg.ContextLength, DefaultLocalContextLength)
 	}
+	if cfg.Gemma4SlidingWindow != DefaultGemma4SlidingWindow {
+		t.Fatalf("Gemma4SlidingWindow = %d, want %d", cfg.Gemma4SlidingWindow, DefaultGemma4SlidingWindow)
+	}
 	if cfg.ParallelSlots != DefaultLocalParallelSlots {
 		t.Fatalf("ParallelSlots = %d, want %d", cfg.ParallelSlots, DefaultLocalParallelSlots)
 	}
@@ -550,6 +553,24 @@ func TestApiCommon_WithContextLength_Ugly(t *testing.T) {
 	}
 	if variant != "Ugly" {
 		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithGemma4SlidingWindow_AppliesValue_Good(t *testing.T) {
+	coverageTokens := "WithGemma4SlidingWindow"
+	cfg := applyLoadOptions([]LoadOption{WithGemma4SlidingWindow(512)})
+	if cfg.Gemma4SlidingWindow != 512 {
+		t.Fatalf("Gemma4SlidingWindow = %d, want 512", cfg.Gemma4SlidingWindow)
+	}
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+}
+
+func TestApiCommon_NormalizeLoadConfig_RejectsNegativeGemma4SlidingWindow_Bad(t *testing.T) {
+	_, err := normalizeLoadConfig(LoadConfig{Gemma4SlidingWindow: -1})
+	if err == nil {
+		t.Fatal("expected negative Gemma 4 sliding-window error")
 	}
 }
 

@@ -34,6 +34,7 @@ func ensureLoadDeviceAvailable(device DeviceType) error {
 // LoadConfig holds configuration applied during model loading.
 type LoadConfig struct {
 	ContextLen           int    // Context window size (0 = local default)
+	Gemma4SlidingWindow  int    // Gemma 4 local-attention window cap (0 = model default)
 	ParallelSlots        int    // Concurrent inference slots (0 = local default)
 	DisablePromptCache   bool   // Disable exact token-prefix prompt cache
 	PromptCacheMinTokens int    // Minimum stable prefix tokens before cache reuse
@@ -117,6 +118,7 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		model.adapter = adapter
 		model.adapterInfo = adapterInfoFromLoRA(loadCfg.AdapterPath, adapter)
 	}
+	applyGemma4SlidingWindow(im, loadCfg.Gemma4SlidingWindow)
 	if loadCfg.ContextLen > 0 {
 		model.contextLen = loadCfg.ContextLen
 	}
@@ -136,6 +138,19 @@ func LoadAndInit(path string, cfg ...LoadConfig) (*Model, error) {
 		}
 	}
 	return model, nil
+}
+
+func applyGemma4SlidingWindow(im InternalModel, window int) {
+	if window <= 0 {
+		return
+	}
+	model, ok := im.(*Gemma4Model)
+	if !ok || model == nil || model.Cfg == nil {
+		return
+	}
+	if model.Cfg.SlidingWindow <= 0 || model.Cfg.SlidingWindow > int32(window) {
+		model.Cfg.SlidingWindow = int32(window)
+	}
 }
 
 func normalizeMetalLoadConfig(cfg LoadConfig) LoadConfig {

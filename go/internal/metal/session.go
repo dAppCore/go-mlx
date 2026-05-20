@@ -1351,7 +1351,10 @@ func kvLayerNativeArray(heads []KVHeadSnapshot, seqLen, headDim int, key bool) (
 	if err != nil || !ok {
 		return nil, ok, err
 	}
-	array := FromRawBytes(raw, []int{1, len(heads), seqLen, headDim}, dtype)
+	array, err := fromPinnedRawBytes(raw, []int{1, len(heads), seqLen, headDim}, dtype)
+	if err != nil {
+		return nil, false, err
+	}
 	return array, true, nil
 }
 
@@ -1374,6 +1377,12 @@ func kvLayerRawTensor(heads []KVHeadSnapshot, seqLen, headDim int, key bool) ([]
 		return nil, 0, false, core.NewError("mlx: unsupported KV snapshot native tensor dtype")
 	}
 	expectedBytes := seqLen * headDim * bytesPerValue
+	if len(heads) == 1 {
+		if len(firstRaw) != expectedBytes {
+			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor byte length mismatch")
+		}
+		return firstRaw, firstDType, true, nil
+	}
 	raw := make([]byte, 0, len(heads)*expectedBytes)
 	for _, head := range heads {
 		headRaw, headDType := kvHeadRawTensor(head, key)

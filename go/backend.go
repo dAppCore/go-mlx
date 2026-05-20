@@ -163,6 +163,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 	native, err := loadNativeModel(resolvedPath, metal.LoadConfig{
 		ContextLen:           cfg.ContextLength,
+		Gemma4SlidingWindow:  cfg.Gemma4SlidingWindow,
 		ParallelSlots:        cfg.ParallelSlots,
 		DisablePromptCache:   !cfg.PromptCache,
 		PromptCacheMinTokens: cfg.PromptCacheMinTokens,
@@ -565,10 +566,10 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			layers[i].Heads[j] = metal.KVHeadSnapshot{
 				Key:        append([]float32(nil), head.Key...),
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
-				KeyBytes:   append([]byte(nil), head.KeyBytes...),
+				KeyBytes:   head.KeyBytes,
 				Value:      append([]float32(nil), head.Value...),
 				ValueDType: metalKVHeadDType(head.ValueDType, head.ValueBytes),
-				ValueBytes: append([]byte(nil), head.ValueBytes...),
+				ValueBytes: head.ValueBytes,
 			}
 		}
 	}
@@ -1080,6 +1081,10 @@ func (m *Model) Info() ModelInfo {
 	if m.cfg.ContextLength > 0 {
 		contextLength = m.cfg.ContextLength
 	}
+	gemma4SlidingWindow := info.Gemma4SlidingWindow
+	if gemma4SlidingWindow == 0 && m.cfg.Gemma4SlidingWindow > 0 {
+		gemma4SlidingWindow = m.cfg.Gemma4SlidingWindow
+	}
 	architecture := info.Architecture
 	vocabSize := info.VocabSize
 	numLayers := info.NumLayers
@@ -1117,6 +1122,7 @@ func (m *Model) Info() ModelInfo {
 		QuantBits:            quantBits,
 		QuantGroup:           quantGroup,
 		ContextLength:        contextLength,
+		Gemma4SlidingWindow:  gemma4SlidingWindow,
 		ParallelSlots:        m.cfg.ParallelSlots,
 		PromptCache:          m.cfg.PromptCache,
 		PromptCacheMinTokens: m.cfg.PromptCacheMinTokens,

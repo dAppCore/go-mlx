@@ -1742,7 +1742,7 @@ func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
 	}
 	requireMetalRuntime(t)
 
-	mask := buildGemma4CachedAttentionMask(1, 2, 5, 3, 2)
+	mask := buildGemma4CachedAttentionMask(1, 2, 5, 3, 0, 2)
 	defer Free(mask)
 	values := mask.Floats()
 	if len(values) != 10 {
@@ -1752,6 +1752,31 @@ func TestGemma4_CachedAttentionMask_Good_OffsetsAndWindow(t *testing.T) {
 	want := []float32{
 		negInf, negInf, 0, 0, negInf,
 		negInf, negInf, negInf, 0, 0,
+	}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("mask[%d] = %v, want %v (all=%v)", i, values[i], want[i], values)
+		}
+	}
+}
+
+func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
+	coverageTokens := "CachedAttentionMask TrimmedKeyStart"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	mask := buildGemma4CachedAttentionMask(1, 2, 5, 8, 5, 4)
+	defer Free(mask)
+	values := mask.Floats()
+	if len(values) != 10 {
+		t.Fatalf("mask values = %d, want 10", len(values))
+	}
+	negInf := float32(math.Inf(-1))
+	want := []float32{
+		negInf, 0, 0, 0, negInf,
+		negInf, negInf, 0, 0, 0,
 	}
 	for i := range want {
 		if values[i] != want[i] {

@@ -608,6 +608,43 @@ func TestModelSessionMemvidKVBlocks_Good_SaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestModelSessionMemvidKVBlocks_Good_LoadPrefixStreamsOnlyNeededBlocks(t *testing.T) {
+	store := memvid.NewInMemoryStore(nil)
+	nativeSession := &fakeNativeSession{
+		kvBlocks: []metal.KVSnapshotBlock{
+			{
+				Index:      0,
+				TokenStart: 0,
+				TokenCount: 2,
+				Snapshot:   testNativeKVBlock([]int32{10, 20}, 2, []float32{1, 2, 3, 4}, []float32{9, 10, 11, 12}, nil, nil),
+			},
+			{
+				Index:      1,
+				TokenStart: 2,
+				TokenCount: 2,
+				Snapshot:   testNativeKVBlock([]int32{30, 40}, 4, []float32{5, 6, 7, 8}, []float32{13, 14, 15, 16}, nil, nil),
+			},
+		},
+	}
+	session := &ModelSession{session: nativeSession}
+	bundle, err := session.SaveKVBlocksToMemvid(context.Background(), store, kv.MemvidBlockOptions{BlockSize: 2})
+	if err != nil {
+		t.Fatalf("SaveKVBlocksToMemvid() error = %v", err)
+	}
+
+	restoredNative := &fakeNativeSession{}
+	restored := &ModelSession{session: restoredNative}
+	if err := restored.LoadKVPrefixBlocksFromMemvid(context.Background(), store, bundle, 2); err != nil {
+		t.Fatalf("LoadKVPrefixBlocksFromMemvid() error = %v", err)
+	}
+	if len(restoredNative.restoredBlocks) != 1 {
+		t.Fatalf("restored blocks = %+v, want one streamed prefix block", restoredNative.restoredBlocks)
+	}
+	if got := restoredNative.restoredBlocks[0].Snapshot.Tokens; len(got) != 2 || got[0] != 10 || got[1] != 20 {
+		t.Fatalf("restored prefix tokens = %+v, want [10 20]", got)
+	}
+}
+
 func testNativeKVBlock(tokens []int32, tokenOffset int, key, value, logits []float32, generated []int32) *metal.KVSnapshot {
 	snapshot := &metal.KVSnapshot{
 		Version:       metal.KVSnapshotVersion,

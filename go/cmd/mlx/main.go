@@ -219,6 +219,8 @@ type driverProfileOptions struct {
 	IncludeOutput    bool                      `json:"include_output,omitempty"`
 	Chat             bool                      `json:"chat,omitempty"`
 	TraceTokenPhases bool                      `json:"trace_token_phases,omitempty"`
+	StopTokenIDs     []int32                   `json:"-"`
+	SuppressTokenIDs []int32                   `json:"-"`
 	SafetyLimits     driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
@@ -235,6 +237,8 @@ type driverProfileReport struct {
 	Chat              bool                      `json:"chat,omitempty"`
 	TraceTokenPhases  bool                      `json:"trace_token_phases,omitempty"`
 	SafetyLimits      driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	StopTokenIDs      []int32                   `json:"stop_token_ids,omitempty"`
+	SuppressTokenIDs  []int32                   `json:"suppress_token_ids,omitempty"`
 	RuntimeGates      map[string]string         `json:"runtime_gates,omitempty"`
 	Load              *tuneProfileLoadSettings  `json:"load,omitempty"`
 	Runs              []driverProfileRun        `json:"runs,omitempty"`
@@ -943,6 +947,14 @@ func defaultRunDriverProfile(ctx context.Context, modelPath string, loadOptions 
 	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(model.Info()))
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
 	report.SafetyLimits = opts.SafetyLimits
+	if opts.Chat {
+		template := chapterProfileTemplate("", model.Info().Architecture)
+		stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(template, model.Tokenizer())
+		opts.StopTokenIDs = stopTokenIDs
+		opts.SuppressTokenIDs = suppressTokenIDs
+		report.StopTokenIDs = stopTokenIDs
+		report.SuppressTokenIDs = suppressTokenIDs
+	}
 	defer model.Close()
 	if err := driverProfileMetricsSafetyError("load", model.Metrics(), opts.SafetyLimits); err != nil {
 		report.Error = err.Error()
@@ -1383,6 +1395,12 @@ func driverProfileGenerateOptions(opts driverProfileOptions) []mlx.GenerateOptio
 	}
 	if opts.TraceTokenPhases {
 		generateOptions = append(generateOptions, mlx.WithTokenPhaseTrace())
+	}
+	if len(opts.StopTokenIDs) > 0 {
+		generateOptions = append(generateOptions, mlx.WithStopTokens(opts.StopTokenIDs...))
+	}
+	if len(opts.SuppressTokenIDs) > 0 {
+		generateOptions = append(generateOptions, mlx.WithSuppressTokens(opts.SuppressTokenIDs...))
 	}
 	return generateOptions
 }

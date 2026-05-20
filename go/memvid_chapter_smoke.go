@@ -43,16 +43,8 @@ func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chapter
 				return chaptersmoke.Generation{}, err
 			}
 			defer session.Close()
-			loadOpts := kv.LoadOptions{}
-			if bundle != nil && bundle.KVEncoding == kv.EncodingNative {
-				loadOpts.RawKVOnly = true
-			}
 			restoreStart := time.Now()
-			snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, loadOpts)
-			if err != nil {
-				return chaptersmoke.Generation{}, err
-			}
-			if err := session.RestoreKV(snapshot); err != nil {
+			if err := session.LoadKVPrefixBlocksFromMemvid(ctx, store, bundle, prefixTokens); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
 			restoreDuration := time.Since(restoreStart)

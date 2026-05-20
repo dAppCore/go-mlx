@@ -195,14 +195,15 @@ func (m *Model) acquireSlot(ctx context.Context) (func(), error) {
 
 // ModelInfo holds metadata about a loaded model.
 type ModelInfo struct {
-	Architecture  string
-	VocabSize     int
-	NumLayers     int
-	HiddenSize    int
-	QuantBits     int
-	QuantGroup    int
-	ContextLength int
-	Adapter       AdapterInfo
+	Architecture        string
+	VocabSize           int
+	NumLayers           int
+	HiddenSize          int
+	QuantBits           int
+	QuantGroup          int
+	ContextLength       int
+	Gemma4SlidingWindow int
+	Adapter             AdapterInfo
 }
 
 // Info returns metadata about the loaded model.
@@ -227,6 +228,7 @@ func (m *Model) Info() ModelInfo {
 		info.VocabSize = int(v.Cfg.VocabSize)
 		info.HiddenSize = int(v.Cfg.HiddenSize)
 		info.ContextLength = int(v.Cfg.MaxPositionEmbeddings)
+		info.Gemma4SlidingWindow = int(v.Cfg.SlidingWindow)
 		if v.Cfg.Quantization != nil {
 			info.QuantBits = v.Cfg.Quantization.Bits
 			info.QuantGroup = v.Cfg.Quantization.GroupSize

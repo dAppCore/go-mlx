@@ -9,6 +9,13 @@
 #define MLX_USE_ACCELERATE 1
 #define MLX_VERSION "0.30.1"
 
+#ifdef __cplusplus
+#include <exception>
+#if __cplusplus < 202302L
+#error "go-mlx native bridge requires C++23 or newer"
+#endif
+#endif
+
 // METAL_PATH is not used when building via CGo. The device.cpp copy in
 // this package resolves the metallib path at runtime using __FILE__.
 // This fallback is kept for non-CGo builds.

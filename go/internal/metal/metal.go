@@ -6,7 +6,7 @@
 package metal
 
 /*
-#cgo CXXFLAGS: -std=gnu++20 -mmacosx-version-min=26.0 -O2 -DNDEBUG -Wno-deprecated-declarations -include ${SRCDIR}/mlx_build_config.h
+#cgo CXXFLAGS: -std=gnu++23 -mmacosx-version-min=26.0 -O2 -DNDEBUG -Wno-deprecated-declarations -include ${SRCDIR}/mlx_build_config.h
 #cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DFMT_CONSTEVAL= -DMLX_USE_ACCELERATE
 #cgo CFLAGS: -mmacosx-version-min=26.0
 #cgo darwin CFLAGS: -x objective-c

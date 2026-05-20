@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"math"
 	"testing"
 )
 
@@ -251,6 +252,74 @@ func TestSample_SuppressionGuardGemmaSizedIDs_Good(t *testing.T) {
 	defer Free(token)
 	if got := int32(token.Int()); got == 0 || tokenIDSuppressed(got, suppressTokens) {
 		t.Fatalf("suppression guard token = %d, want non-suppressed Gemma-sized fallback", got)
+	}
+}
+
+func TestSample_SuppressionGuardGemmaSizedBFloat16IDs_Good(t *testing.T) {
+	coverageTokens := "SuppressionGuard GemmaSizedBFloat16IDs"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	values := make([]float32, 258885)
+	values[0] = 100
+	values[123] = 10
+	base := FromValues(values, 1, len(values))
+	logits := AsType(base, DTypeBFloat16)
+	defer Free(base, logits)
+	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+
+	token, err := sampleTokenWithSuppressionGuard(logits, fixedTokenSampler{id: 0}, suppressTokens)
+	if err != nil {
+		t.Fatalf("suppression guard: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got != 123 {
+		t.Fatalf("suppression guard token = %d, want 123", got)
+	}
+}
+
+func TestSample_SuppressionGuardLastTokenView_Good(t *testing.T) {
+	coverageTokens := "SuppressionGuard LastTokenView"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	values := make([]float32, 2*258885)
+	values[258885] = 100
+	values[258885+123] = 10
+	base := FromValues(values, 1, 2, 258885)
+	logits := AsType(base, DTypeBFloat16)
+	last, err := lastTokenLogits(logits)
+	if err != nil {
+		t.Fatalf("lastTokenLogits: %v", err)
+	}
+	defer Free(base, logits, last)
+	suppressTokens := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+
+	token, err := sampleTokenWithSuppressionGuard(last, fixedTokenSampler{id: 0}, suppressTokens)
+	if err != nil {
+		t.Fatalf("suppression guard: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got != 123 {
+		t.Fatalf("suppression guard token = %d, want 123", got)
+	}
+}
+
+func TestSample_HostUnsuppressedGreedyTokenSkipsSuppressedAndNaN_Good(t *testing.T) {
+	coverageTokens := "HostUnsuppressedGreedyToken SkipsSuppressedAndNaN"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{100, float32(math.NaN()), 9, 11}, 1, 4)
+	defer Free(logits)
+
+	token, err := hostUnsuppressedGreedyToken(logits, []int32{0})
+	if err != nil {
+		t.Fatalf("hostUnsuppressedGreedyToken: %v", err)
+	}
+	defer Free(token)
+	if got := int32(token.Int()); got != 3 {
+		t.Fatalf("hostUnsuppressedGreedyToken = %d, want 3", got)
 	}
 }
 
