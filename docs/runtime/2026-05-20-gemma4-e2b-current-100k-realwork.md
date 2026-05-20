@@ -107,7 +107,37 @@ chapter marker.
 
 ## Remaining External Work
 
+Current llama.cpp cold anchor:
+
+- `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json`
+- `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.stderr`
+
+Shape:
+
+- Model: `unsloth/gemma-4-E2B-it-GGUF`
+- File: `gemma-4-E2B-it-Q4_K_M.gguf`
+- Command shape: `llama-bench -pg 101005,1024 -r 1 -ngl 99 -fa 1`
+- Backend: `BLAS,MTL`
+- Device: `MTL0 (Apple M3 Ultra)` in stderr
+- K/V cache type: `f16`
+
+Result:
+
+| Runner | Shape | Wall | Throughput |
+| --- | --- | ---: | ---: |
+| llama.cpp | cold `pp101005+tg1024` | `94.904s` | `1075.081 tok/s` combined |
+| go-mlx | cold run 1 of retained profile | `197.060s` | `43.556 tok/s` decode plus `642.657 tok/s` prefill |
+| go-mlx | 10 retained turns | `408.483s` | `43.617 tok/s` average decode |
+
+The llama.cpp row is a cold calibration anchor, not a retained-prefix runner
+win/loss verdict. If the same cold replay were repeated ten times, the measured
+llama.cpp wall would be roughly `949.035s`; the go-mlx retained-prefix workflow
+is `408.483s`. A fair cached-prefix llama.cpp workflow and configured
+`mlx_lm`/vLLM rows are still required before the separate runner-anchor gate can
+close.
+
 These artefacts satisfy the current go-mlx 100k retained-state and book
 workflow gates. They do not satisfy the separate same-shape runner-anchor gate:
-`mlx_lm`, vLLM, and llama.cpp still need comparable current 100k or documented
-failure rows before the overall production goal can close.
+`mlx_lm`, vLLM, and a cached-prefix llama.cpp workflow still need comparable
+current 100k or documented failure rows before the overall production goal can
+close.
