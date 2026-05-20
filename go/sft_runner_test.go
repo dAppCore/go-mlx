@@ -195,12 +195,18 @@ func TestSFTAdamWConfig_UsesExplicitOptimizer_Bad(t *testing.T) {
 			Beta2:          0.98,
 			WeightDecay:    0,
 			WeightDecaySet: true,
+			PackedState:    false,
+			PackedStateSet: true,
 		},
 	})
 
 	adam := sftAdamWConfig(cfg)
-	if adam.LearningRate != 3e-4 || adam.Beta1 != 0.85 || adam.Beta2 != 0.98 || adam.WeightDecay != 0 {
+	if adam.LearningRate != 3e-4 || adam.Beta1 != 0.85 || adam.Beta2 != 0.98 || adam.WeightDecay != 0 || adam.PackedState {
 		t.Fatalf("adam = %+v, want explicit optimizer config", adam)
+	}
+	meta := sftAdamWMetadata(adam)
+	if meta.PackedState {
+		t.Fatalf("adam metadata = %+v, want explicit packed-state setting", meta)
 	}
 }
 

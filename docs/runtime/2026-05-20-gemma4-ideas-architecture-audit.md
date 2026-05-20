@@ -20,7 +20,7 @@ as vague research items, and missing paths should be named as concrete work.
 | Cross-layer KV sharing | Shipped | `go/internal/metal/gemma4.go:1130-1160` builds shared owners by attention type; `TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good` verifies shared layers allocate no fresh cache | Keep |
 | Unified K=V storage | Rejected for final cache tensors | `go/internal/metal/gemma4.go:2527-2550` shares the projection source with a ref-counted MLX handle, then K takes KNorm+RoPE while V takes value RMSNorm; `TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good` guards that the final cache tensors diverge | Do not pack final K/V into one state slab. A future raw-projection timeline would need to store pre-transform projection plus metadata and recompute K/V on restore, which is not the zero-copy inference state path |
 | LoRA PLE gradient isolation | Covered by default targets, needs policy guard if broadened | `DefaultLoRAConfig` targets `q_proj` and `v_proj` in `go/internal/metal/lora.go:146-155`; Gemma 4 LoRA only wraps named projection modules in `go/internal/metal/gemma4.go:3125-3181`; PLE embeddings are not trainable by default | Add a guard/test before enabling broad "all linear" LoRA on Gemma 4 |
-| AdamW state layout | Not shipped | `go/internal/metal/optim.go:18-28` stores `m` and `v` as per-parameter slices; `go/internal/metal/optim.go:132-140` allocates each moment separately | Pack LoRA A/B plus m/v into aligned contiguous slabs before claiming training-loop memory optimisation |
+| AdamW state layout | Shipped for homogeneous matrix moments | `go/internal/metal/optim.go` enables `PackedState` by default, keeps AdamW `m`/`v` in contiguous MLX slabs when parameter shapes and dtypes permit, and exposes an explicit fallback knob; `go/internal/metal/optim_test.go` covers packed, disabled, and mixed-dtype fallback paths; `go/sft.go` preserves the setting through SFT metadata/config replay | Keep the mdspan-backed parameter/file slab as part of the future LoRA delta `.mp4` timeline rather than claiming it from optimiser state alone |
 | LoRA delta `.mp4` timeline | Not shipped | Existing KV state bridge handles inference snapshots, not training delta tracks | Design after the runner can complete a real LoRA step |
 | MTP drafter co-training | Research only | Native MTP inference exists, but current GOAL rows reject it as production decode until acceptance improves | Revisit after target-model SFT is stable |
 | Public training surface | Mostly shipped, adapter still open | `go/training.go:11-72` exports arrays, LoRA, AdamW, cache, dtype, and `InternalModel`; `go/training.go:211-219` exposes `TrainingModel`; `go/backend.go:1268-1307` exposes `Model.Tokenizer` and `NewLoRA`; `go/sft.go:592-659` exposes `Model.TrainSFT` | Build the downstream `gomlxrunner` against this surface or add only the missing thin wrappers it proves necessary |
@@ -28,10 +28,10 @@ as vague research items, and missing paths should be named as concrete work.
 ## Practical Read
 
 The next useful engineering target is not another broad C++23 conversion. That
-baseline is already present. The highest-signal remaining items from the updated
-`IDEAS.md` are:
+baseline is already present, and AdamW now packs compatible moment state by
+default. The highest-signal remaining items from the updated `IDEAS.md` are:
 
-1. Packed LoRA/AdamW training memory so the optimiser does not allocate and
-   update one small moment array per trainable matrix.
-2. A downstream `gomlxrunner` compile pass that proves the public training
+1. A downstream `gomlxrunner` compile pass that proves the public training
    surface is sufficient for `lthn/desktop`.
+2. The LoRA delta `.mp4` timeline, including mdspan-backed parameter/file slabs,
+   after one real runner step works end-to-end.

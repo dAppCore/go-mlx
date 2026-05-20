@@ -130,6 +130,9 @@ func TestOptim_AdamW_ConfigExplicitZero_Good(t *testing.T) {
 	if opt.Beta1 != 0.9 || opt.Beta2 != 0.999 || opt.Eps != 1e-8 {
 		t.Fatalf("defaults not preserved: beta1=%f beta2=%f eps=%f", opt.Beta1, opt.Beta2, opt.Eps)
 	}
+	if !opt.PackedState {
+		t.Fatal("PackedState = false, want default packed optimiser state")
+	}
 }
 
 func TestOptim_AdamW_Reset_Good(t *testing.T) {
@@ -203,6 +206,91 @@ func TestOptim_AdamW_Reset_ReleasesMoments_Good(t *testing.T) {
 	}
 	if firstV.Valid() {
 		t.Fatal("Reset should free the second-moment buffer")
+	}
+}
+
+func TestOptim_AdamW_PacksHomogeneousMatrixMoments_Good(t *testing.T) {
+	coverageTokens := "AdamW PacksHomogeneousMatrixMoments"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	a := Zeros([]int32{2, 3}, DTypeFloat32)
+	b := Zeros([]int32{4, 2}, DTypeFloat32)
+	gradA := FromValues([]float32{1, 1, 1, 1, 1, 1}, 2, 3)
+	gradB := FromValues([]float32{0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5}, 4, 2)
+	Materialize(a, b, gradA, gradB)
+	defer Free(a, b, gradA, gradB)
+
+	opt := NewAdamW(0.01)
+	updated := opt.Step([]*Array{a, b}, []*Array{gradA, gradB})
+	defer Free(updated...)
+
+	if opt.packed == nil {
+		t.Fatal("packed state = nil, want contiguous AdamW moment slabs")
+	}
+	if got := opt.packed.m.Shape(); len(got) != 1 || got[0] != 14 {
+		t.Fatalf("packed m shape = %v, want [14]", got)
+	}
+	if got := opt.packed.v.Shape(); len(got) != 1 || got[0] != 14 {
+		t.Fatalf("packed v shape = %v, want [14]", got)
+	}
+	if len(opt.m) != 2 || len(opt.v) != 2 {
+		t.Fatalf("moment views = %d/%d, want 2/2", len(opt.m), len(opt.v))
+	}
+	if got := opt.m[0].Shape(); len(got) != 2 || got[0] != 2 || got[1] != 3 {
+		t.Fatalf("first m view shape = %v, want [2 3]", got)
+	}
+	if got := opt.v[1].Shape(); len(got) != 2 || got[0] != 4 || got[1] != 2 {
+		t.Fatalf("second v view shape = %v, want [4 2]", got)
+	}
+}
+
+func TestOptim_AdamW_PackedStateCanBeDisabled_Bad(t *testing.T) {
+	coverageTokens := "AdamW PackedStateCanBeDisabled"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	param := Zeros([]int32{2, 2}, DTypeFloat32)
+	grad := FromValues([]float32{1, 1, 1, 1}, 2, 2)
+	Materialize(param, grad)
+	defer Free(param, grad)
+
+	opt := NewAdamW(&AdamWConfig{PackedState: false, PackedStateSet: true})
+	updated := opt.Step([]*Array{param}, []*Array{grad})
+	defer Free(updated...)
+
+	if opt.PackedState {
+		t.Fatal("PackedState = true, want explicit disabled config")
+	}
+	if opt.packed != nil {
+		t.Fatal("packed state allocated despite explicit disable")
+	}
+	if len(opt.m) != 1 || opt.m[0] == nil || !opt.m[0].Valid() {
+		t.Fatal("fallback per-parameter moment was not retained")
+	}
+}
+
+func TestOptim_AdamW_PackedStateFallsBackForMixedDTypes_Ugly(t *testing.T) {
+	coverageTokens := "AdamW PackedStateFallsBackForMixedDTypes"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	paramA := Zeros([]int32{2, 2}, DTypeFloat32)
+	paramB := Zeros([]int32{2, 2}, DTypeBFloat16)
+	gradA := FromValues([]float32{1, 1, 1, 1}, 2, 2)
+	gradB := AsType(gradA, DTypeBFloat16)
+	Materialize(paramA, paramB, gradA, gradB)
+	defer Free(paramA, paramB, gradA, gradB)
+
+	opt := NewAdamW(0.01)
+	updated := opt.Step([]*Array{paramA, paramB}, []*Array{gradA, gradB})
+	defer Free(updated...)
+
+	if opt.packed != nil {
+		t.Fatal("packed state allocated for mixed-dtype parameters")
+	}
+	if len(opt.m) != 2 || opt.m[0] == nil || opt.m[1] == nil {
+		t.Fatal("mixed-dtype fallback moments were not retained")
 	}
 }
 

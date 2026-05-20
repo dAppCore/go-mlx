@@ -64,6 +64,7 @@ type SFTAdamWMetadata struct {
 	Beta2        float64 `json:"beta2"`
 	Eps          float64 `json:"eps"`
 	WeightDecay  float64 `json:"weight_decay"`
+	PackedState  bool    `json:"packed_state"`
 }
 
 // SFTCheckpointMetadata is the portable JSON sidecar for checkpoints and final adapters.
@@ -372,6 +373,7 @@ func sftAdamWMetadata(cfg AdamWConfig) SFTAdamWMetadata {
 		Beta2:        cfg.Beta2,
 		Eps:          cfg.Eps,
 		WeightDecay:  cfg.WeightDecay,
+		PackedState:  cfg.PackedState,
 	}
 }
 
@@ -392,6 +394,9 @@ func sftAdamWConfig(cfg SFTConfig) AdamWConfig {
 	}
 	if cfg.AdamW.WeightDecay != 0 || cfg.AdamW.WeightDecaySet {
 		adam.WeightDecay = cfg.AdamW.WeightDecay
+	}
+	if cfg.AdamW.PackedState || cfg.AdamW.PackedStateSet {
+		adam.PackedState = cfg.AdamW.PackedState
 	}
 	if cfg.LearningRate != 0 {
 		adam.LearningRate = cfg.LearningRate

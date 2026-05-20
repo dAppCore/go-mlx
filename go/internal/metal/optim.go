@@ -21,10 +21,13 @@ type AdamW struct {
 	Beta2       float64 // Second moment decay (default 0.999)
 	Eps         float64 // Numerical stability (default 1e-8)
 	WeightDecay float64 // Decoupled weight decay (default 0.01)
+	PackedState bool    // Store moments in contiguous slabs when parameter layout permits.
 
 	step int      // Number of updates performed
 	m    []*Array // First moment estimates (positional, parallel to params)
 	v    []*Array // Second moment estimates (positional, parallel to params)
+
+	packed *adamWPackedState
 }
 
 // AdamWConfig configures AdamW optimiser construction.
@@ -34,12 +37,14 @@ type AdamWConfig struct {
 	Beta2        float64
 	Eps          float64
 	WeightDecay  float64
+	PackedState  bool
 
 	LearningRateSet bool
 	Beta1Set        bool
 	Beta2Set        bool
 	EpsSet          bool
 	WeightDecaySet  bool
+	PackedStateSet  bool
 }
 
 // DefaultAdamWConfig returns the standard AdamW hyperparameters.
@@ -50,6 +55,7 @@ func DefaultAdamWConfig() AdamWConfig {
 		Beta2:        0.999,
 		Eps:          1e-8,
 		WeightDecay:  0.01,
+		PackedState:  true,
 	}
 }
 
@@ -86,6 +92,7 @@ func NewAdamW(config any) *AdamW {
 		Beta2:       cfg.Beta2,
 		Eps:         cfg.Eps,
 		WeightDecay: cfg.WeightDecay,
+		PackedState: cfg.PackedState,
 	}
 }
 
@@ -106,7 +113,23 @@ func mergeAdamWConfig(defaults AdamWConfig, override AdamWConfig) AdamWConfig {
 	if override.WeightDecay != 0 || override.WeightDecaySet {
 		cfg.WeightDecay = override.WeightDecay
 	}
+	if override.PackedState || override.PackedStateSet {
+		cfg.PackedState = override.PackedState
+	}
 	return cfg
+}
+
+type adamWPackedParam struct {
+	start int32
+	end   int32
+	shape []int32
+}
+
+type adamWPackedState struct {
+	m      *Array
+	v      *Array
+	dtype  DType
+	layout []adamWPackedParam
 }
 
 // Step performs one optimisation step: updates parameters using gradients.
@@ -116,6 +139,7 @@ func mergeAdamWConfig(defaults AdamWConfig, override AdamWConfig) AdamWConfig {
 //	parameters = optimizer.Step(parameters, gradients) // one Adam step per mini-batch
 func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 	optimizer.step++
+	packed := optimizer.ensurePackedState(parameters)
 
 	// Bias correction factors: compensate for zero-initialised moments.
 	biasCorrection1 := 1.0 - math.Pow(optimizer.Beta1, float64(optimizer.step))
@@ -127,6 +151,12 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 	for len(optimizer.m) < len(parameters) {
 		optimizer.m = append(optimizer.m, nil)
 		optimizer.v = append(optimizer.v, nil)
+	}
+
+	var nextM, nextV []*Array
+	if packed {
+		nextM = make([]*Array, len(parameters))
+		nextV = make([]*Array, len(parameters))
 	}
 
 	for i, parameter := range parameters {
@@ -170,11 +200,20 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 		Free(mHat, vHat, decayed, sqrtVHat, denom, stepBase, step)
 
 		// Store updated moments
-		optimizer.m[i] = m
-		optimizer.v[i] = v
-		Free(oldM, oldV)
+		if packed {
+			nextM[i] = m
+			nextV[i] = v
+		} else {
+			optimizer.m[i] = m
+			optimizer.v[i] = v
+			Free(oldM, oldV)
+		}
 
 		updated[i] = newParam
+	}
+
+	if packed {
+		optimizer.replacePackedMoments(nextM, nextV)
 	}
 
 	return updated
@@ -186,7 +225,195 @@ func (optimizer *AdamW) Step(parameters []*Array, gradients []*Array) []*Array {
 func (optimizer *AdamW) Reset() {
 	Free(optimizer.m...)
 	Free(optimizer.v...)
+	if optimizer.packed != nil {
+		Free(optimizer.packed.m, optimizer.packed.v)
+		optimizer.packed = nil
+	}
 	optimizer.step = 0
 	optimizer.m = nil
 	optimizer.v = nil
+}
+
+func (optimizer *AdamW) ensurePackedState(parameters []*Array) bool {
+	if optimizer == nil || !optimizer.PackedState {
+		optimizer.releasePackedStateOnly()
+		return false
+	}
+	layout, dtype, ok := adamWPackedLayout(parameters)
+	if !ok {
+		optimizer.releasePackedStateOnly()
+		return false
+	}
+	if optimizer.packed != nil && adamWPackedLayoutEqual(optimizer.packed.layout, layout) && optimizer.packed.dtype == dtype {
+		if len(optimizer.m) == len(layout) && len(optimizer.v) == len(layout) {
+			return true
+		}
+		Free(optimizer.m...)
+		Free(optimizer.v...)
+		optimizer.m, optimizer.v = optimizer.packed.views()
+		return true
+	}
+
+	Free(optimizer.m...)
+	Free(optimizer.v...)
+	if optimizer.packed != nil {
+		Free(optimizer.packed.m, optimizer.packed.v)
+	}
+	total := int(layout[len(layout)-1].end)
+	optimizer.packed = &adamWPackedState{
+		m:      Zeros([]int32{int32(total)}, dtype),
+		v:      Zeros([]int32{int32(total)}, dtype),
+		dtype:  dtype,
+		layout: cloneAdamWPackedLayout(layout),
+	}
+	optimizer.m, optimizer.v = optimizer.packed.views()
+	return true
+}
+
+func (optimizer *AdamW) releasePackedStateOnly() {
+	if optimizer == nil || optimizer.packed == nil {
+		return
+	}
+	Free(optimizer.m...)
+	Free(optimizer.v...)
+	Free(optimizer.packed.m, optimizer.packed.v)
+	optimizer.packed = nil
+	optimizer.m = nil
+	optimizer.v = nil
+}
+
+func (optimizer *AdamW) replacePackedMoments(nextM, nextV []*Array) {
+	if optimizer == nil || optimizer.packed == nil || len(nextM) == 0 || len(nextM) != len(nextV) {
+		return
+	}
+	mFlat := make([]*Array, len(nextM))
+	vFlat := make([]*Array, len(nextV))
+	for i := range nextM {
+		mFlat[i] = Reshape(nextM[i], optimizer.packed.layout[i].end-optimizer.packed.layout[i].start)
+		vFlat[i] = Reshape(nextV[i], optimizer.packed.layout[i].end-optimizer.packed.layout[i].start)
+	}
+	oldMViews, oldVViews := optimizer.m, optimizer.v
+	oldMSlab, oldVSlab := optimizer.packed.m, optimizer.packed.v
+	if len(mFlat) == 1 {
+		optimizer.packed.m = mFlat[0].Clone()
+		optimizer.packed.v = vFlat[0].Clone()
+	} else {
+		optimizer.packed.m = Concatenate(mFlat, 0)
+		optimizer.packed.v = Concatenate(vFlat, 0)
+	}
+	optimizer.m, optimizer.v = optimizer.packed.views()
+	Free(oldMViews...)
+	Free(oldVViews...)
+	Free(oldMSlab, oldVSlab)
+	Free(mFlat...)
+	Free(vFlat...)
+	Free(nextM...)
+	Free(nextV...)
+}
+
+func (state *adamWPackedState) views() ([]*Array, []*Array) {
+	if state == nil || state.m == nil || state.v == nil {
+		return nil, nil
+	}
+	momentsM := make([]*Array, len(state.layout))
+	momentsV := make([]*Array, len(state.layout))
+	for i, desc := range state.layout {
+		momentsM[i] = adamWPackedView(state.m, desc)
+		momentsV[i] = adamWPackedView(state.v, desc)
+	}
+	return momentsM, momentsV
+}
+
+func adamWPackedView(slab *Array, desc adamWPackedParam) *Array {
+	flat := Slice(slab, []int32{desc.start}, []int32{desc.end})
+	view := Reshape(flat, desc.shape...)
+	Free(flat)
+	return view
+}
+
+func adamWPackedLayout(parameters []*Array) ([]adamWPackedParam, DType, bool) {
+	if len(parameters) == 0 {
+		return nil, 0, false
+	}
+	layout := make([]adamWPackedParam, len(parameters))
+	var dtype DType
+	var offset int32
+	for i, parameter := range parameters {
+		if parameter == nil || !parameter.Valid() {
+			return nil, 0, false
+		}
+		shape := parameter.Shape()
+		if len(shape) == 0 {
+			return nil, 0, false
+		}
+		size, ok := adamWShapeSize(shape)
+		if !ok {
+			return nil, 0, false
+		}
+		if i == 0 {
+			dtype = parameter.Dtype()
+		} else if parameter.Dtype() != dtype {
+			return nil, 0, false
+		}
+		next := offset + int32(size)
+		if next <= offset {
+			return nil, 0, false
+		}
+		layout[i] = adamWPackedParam{
+			start: offset,
+			end:   next,
+			shape: append([]int32(nil), shape...),
+		}
+		offset = next
+	}
+	return layout, dtype, true
+}
+
+func adamWShapeSize(shape []int32) (int, bool) {
+	if len(shape) == 0 {
+		return 0, false
+	}
+	total := 1
+	for _, dim := range shape {
+		if dim <= 0 {
+			return 0, false
+		}
+		if total > int(^uint32(0)>>1)/int(dim) {
+			return 0, false
+		}
+		total *= int(dim)
+	}
+	return total, true
+}
+
+func adamWPackedLayoutEqual(a, b []adamWPackedParam) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].start != b[i].start || a[i].end != b[i].end || len(a[i].shape) != len(b[i].shape) {
+			return false
+		}
+		for j := range a[i].shape {
+			if a[i].shape[j] != b[i].shape[j] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func cloneAdamWPackedLayout(src []adamWPackedParam) []adamWPackedParam {
+	if len(src) == 0 {
+		return nil
+	}
+	cloned := make([]adamWPackedParam, len(src))
+	for i, desc := range src {
+		cloned[i] = adamWPackedParam{
+			start: desc.start,
+			end:   desc.end,
+			shape: append([]int32(nil), desc.shape...),
+		}
+	}
+	return cloned
 }

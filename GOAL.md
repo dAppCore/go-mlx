@@ -1257,14 +1257,15 @@ implementation that the orchestrator can drive.
 
 ### Gemma 4 architecture and training audit (2026-05-20)
 
-9 of 12 IDEAS.md architectural/training items are now resolved in Go:
+10 of 12 IDEAS.md architectural/training items are now resolved in Go:
 hybrid 5:1 attention (`gemma4.go:631-637`), sliding window size config
 (`gemma4.go:587`), dual RoPE bases 10k/1M (`defaultGemma4RopeParameters`),
 cross-layer KV sharing (`sharedKV` + `CacheIndexByLayer`), per-layer
 embeddings via `mlx_take`, MoE top-2 sparse routing
 (`gemma4_router_topk.go`), PLE gradient isolation through LoRA target
-filtering, final-cache K=V rejection with a guard test, and Gemma4 assistant
-drafter + speculative decode (`gemma4_assistant*.go`).
+filtering, final-cache K=V rejection with a guard test, packed AdamW moment
+state for homogeneous matrix parameters, and Gemma4 assistant drafter +
+speculative decode (`gemma4_assistant*.go`).
 
 - [x] Record the updated IDEAS.md architecture/training audit in
       `docs/runtime/2026-05-20-gemma4-ideas-architecture-audit.md`.
@@ -1285,8 +1286,15 @@ drafter + speculative decode (`gemma4_assistant*.go`).
       guards that final snapshot/restore state must keep separate key/value
       arrays unless a future raw-projection state format chooses to recompute
       final K/V on restore.
-- [ ] Implement packed LoRA/AdamW state. Current AdamW moment state is
-      per-parameter `m`/`v` arrays; it is not a contiguous mdspan-backed slab.
+- [x] Implement packed AdamW moment state for LoRA-style matrix parameters.
+      `DefaultAdamWConfig` enables packed state by default; homogeneous
+      same-dtype parameter layouts keep `m`/`v` in contiguous MLX slabs with
+      shaped views for the existing update math, while scalar/mixed-dtype
+      parameters fall back to the prior per-parameter state. Guard coverage:
+      `TestOptim_AdamW_PacksHomogeneousMatrixMoments_Good`,
+      `TestOptim_AdamW_PackedStateCanBeDisabled_Bad`,
+      `TestOptim_AdamW_PackedStateFallsBackForMixedDTypes_Ugly`, and
+      `TestSFTAdamWConfig_UsesExplicitOptimizer_Bad`.
 - [ ] Design the LoRA delta `.mp4` timeline after one real native LoRA runner
       step works end-to-end.
 - [ ] Revisit MTP drafter co-training only after target-model SFT is stable;
