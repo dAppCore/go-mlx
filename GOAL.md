@@ -1298,6 +1298,10 @@ speculative decode (`gemma4_assistant*.go`).
       `TestSFTAdamWConfig_UsesExplicitOptimizer_Bad`.
 - [ ] Design the LoRA delta `.mp4` timeline after one real native LoRA runner
       step works end-to-end.
+      The latest `IDEAS.md` addendum turns this into the next training-state
+      design target, not an immediate bridge rewrite: capture LoRA A/B delta
+      tracks as timeline state only after a real native runner step can produce
+      an inspectable adapter update.
 - [ ] Revisit MTP drafter co-training only after target-model SFT is stable;
       current native MTP is still an inference R&D lane, not a training lane.
 
@@ -1366,6 +1370,25 @@ speculative decode (`gemma4_assistant*.go`).
       substrate-shift experiment in `host-uk/core/plans/rfc/research/experiments/worf/`
       requires both conditions; both must produce identical token output
       under identical seeds when the model weights are unchanged.
+
+      Mechanical switch progress: go-mlx now exposes `Model.ClearPromptCache()`
+      so a preloaded runner can force a fresh prefill without unloading weights.
+      The downstream `gomlxrunner` normalises `cont`/`trad`, appends
+      `mlx.WithPromptCache(false)` for TRAD loads, and clears prompt cache
+      before TRAD `GenerateResponse` calls. Verification from `lthn/desktop`
+      after fast-forwarding `external/mlx` to `89d2dfb`:
+
+      ```sh
+      env GOWORK=/Users/snider/Code/lthn/desktop/go.work \
+        GOCACHE=/private/tmp/codex-lthn-desktop-cache \
+        MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+        CGO_CPPFLAGS=-I/Users/snider/Code/core/go-mlx/dist/include/metal_cpp \
+        go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
+      ```
+
+      Remaining before this box closes: seeded CONT-vs-TRAD output parity and
+      the two control conditions from `02-method.md` (`TRAD-no-replay` and
+      `CONT-with-gap`).
 
 ### Per-turn capture for the substrate-shift experiment
 

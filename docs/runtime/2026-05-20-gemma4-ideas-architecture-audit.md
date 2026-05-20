@@ -33,8 +33,19 @@ default. The highest-signal remaining items from the updated `IDEAS.md` are:
 
 1. The LoRA delta `.mp4` timeline, including mdspan-backed parameter/file slabs,
    after one real runner step works end-to-end.
-2. The `gomlxrunner` substrate switch and 180-run capture harness, which are
-   downstream workflow tasks rather than new go-mlx API blockers.
+2. The `gomlxrunner` substrate controls and 180-run capture harness, which are
+   downstream workflow tasks rather than broad go-mlx API blockers. The one
+   missing root API proven by the downstream switch was explicit prompt-cache
+   clearing, now exposed as `Model.ClearPromptCache()` for TRAD comparison
+   runners.
+
+The latest fine-tuning addendum in `IDEAS.md` does not add a new immediate
+native bridge blocker. It reinforces the same split: keep PLE tables out of the
+default LoRA gradient target set, keep AdamW moments contiguous when shapes make
+that safe, and only design the LoRA delta `.mp4` training timeline after a real
+native LoRA runner step has produced an inspectable update. MTP drafter
+co-training remains dependent on stable target-model SFT and better native MTP
+acceptance; it is not part of the current production decode path.
 
 The first downstream compile pass is now green from `lthn/desktop`:
 
@@ -50,3 +61,9 @@ The build requires desktop `external/mlx` at `1cefb03` and
 `external/inference` at `f0af335`; it still borrows go-mlx's
 `dist/include/metal_cpp` headers because the desktop external checkout has not
 generated its own Metal-cpp include tree.
+
+The follow-up substrate-switch compile pass uses desktop `external/mlx` at
+`89d2dfb`, where `Model.ClearPromptCache()` is available. The downstream
+`gomlxrunner` can now disable prompt cache for TRAD loads and clear prompt cache
+before TRAD generation calls; seeded output-parity and the two control
+conditions remain experiment-harness work, not a completed production gate.
