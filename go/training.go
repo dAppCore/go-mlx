@@ -16,14 +16,15 @@ type LoRAAdapter = metal.LoRAAdapter
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank         int
-	Alpha        float32
-	Scale        float32
-	TargetKeys   []string
-	TargetLayers []string
-	Lambda       float32
-	DType        DType
-	ProbeSink    probe.Sink
+	Rank                       int
+	Alpha                      float32
+	Scale                      float32
+	TargetKeys                 []string
+	TargetLayers               []string
+	Lambda                     float32
+	DType                      DType
+	AllowGemma4ExtendedTargets bool
+	ProbeSink                  probe.Sink
 }
 
 // Batch describes one RFC-style training batch.
@@ -94,26 +95,28 @@ func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
 
 func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
 	return metal.LoRAConfig{
-		Rank:         cfg.Rank,
-		Alpha:        cfg.Alpha,
-		Scale:        cfg.Scale,
-		TargetKeys:   append([]string(nil), cfg.TargetKeys...),
-		TargetLayers: append([]string(nil), cfg.TargetLayers...),
-		Lambda:       cfg.Lambda,
-		DType:        metal.DType(cfg.DType),
-		ProbeSink:    toMetalProbeSink(cfg.ProbeSink),
+		Rank:                       cfg.Rank,
+		Alpha:                      cfg.Alpha,
+		Scale:                      cfg.Scale,
+		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
+		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		Lambda:                     cfg.Lambda,
+		DType:                      metal.DType(cfg.DType),
+		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
+		ProbeSink:                  toMetalProbeSink(cfg.ProbeSink),
 	}
 }
 
 func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
 	return LoRAConfig{
-		Rank:         cfg.Rank,
-		Alpha:        cfg.Alpha,
-		Scale:        cfg.Scale,
-		TargetKeys:   append([]string(nil), cfg.TargetKeys...),
-		TargetLayers: append([]string(nil), cfg.TargetLayers...),
-		Lambda:       cfg.Lambda,
-		DType:        DType(cfg.DType),
+		Rank:                       cfg.Rank,
+		Alpha:                      cfg.Alpha,
+		Scale:                      cfg.Scale,
+		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
+		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		Lambda:                     cfg.Lambda,
+		DType:                      DType(cfg.DType),
+		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
 	}
 }
 

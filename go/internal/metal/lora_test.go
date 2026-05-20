@@ -655,6 +655,62 @@ func TestLora_NormalizeConfig_NegativeRankUsesDefault_Good(t *testing.T) {
 	}
 }
 
+func TestLora_NormalizeGemma4LoRAConfig_DefaultsToSafeAttentionTargets_Good(t *testing.T) {
+	coverageTokens := "NormalizeGemma4LoRAConfig DefaultsToSafeAttentionTargets"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg := normalizeGemma4LoRAConfig(LoRAConfig{})
+	want := []string{"q_proj", "v_proj", "o_proj"}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+	if !sameStringSlice(cfg.TargetLayers, want) {
+		t.Fatalf("TargetLayers = %v, want %v", cfg.TargetLayers, want)
+	}
+}
+
+func TestLora_NormalizeGemma4LoRAConfig_FiltersPLETargets_Bad(t *testing.T) {
+	coverageTokens := "NormalizeGemma4LoRAConfig FiltersPLETargets"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+		TargetKeys: []string{"q_proj", "router.proj", "per_layer_input_gate", "per_layer_projection", "o_proj"},
+	})
+	want := []string{"q_proj", "o_proj"}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+}
+
+func TestLora_NormalizeGemma4LoRAConfig_AllowsExtendedTargets_Ugly(t *testing.T) {
+	coverageTokens := "NormalizeGemma4LoRAConfig AllowsExtendedTargets"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg := normalizeGemma4LoRAConfig(LoRAConfig{
+		AllowGemma4ExtendedTargets: true,
+		TargetKeys:                 []string{"router.proj", "per_layer_projection"},
+	})
+	want := []string{"router.proj", "per_layer_projection"}
+	if !sameStringSlice(cfg.TargetKeys, want) {
+		t.Fatalf("TargetKeys = %v, want %v", cfg.TargetKeys, want)
+	}
+}
+
+func sameStringSlice(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // --- parseLoRAWeightName ---
 
 func TestLora_ParseLoRAWeightName_Good(t *testing.T) {
@@ -1120,9 +1176,10 @@ func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	defer closeGemma4(model)
 
 	adapter := model.ApplyLoRA(LoRAConfig{
-		Rank:       2,
-		Alpha:      4,
-		TargetKeys: []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
+		Rank:                       2,
+		Alpha:                      4,
+		AllowGemma4ExtendedTargets: true,
+		TargetKeys:                 []string{"router.proj", "per_layer_input_gate", "per_layer_projection"},
 	})
 
 	if adapter.Layers["model.layers.0.router.proj"] == nil {
@@ -1142,6 +1199,45 @@ func TestLora_ApplyLoRA_Gemma4ExtendedTargets_Good(t *testing.T) {
 	}
 	if model.Layers[0].PerLayerProjection.LoRA == nil {
 		t.Fatal("per_layer_projection should have an attached LoRA adapter")
+	}
+}
+
+func TestLora_ApplyLoRA_Gemma4PLETargetsRequireOptIn_Bad(t *testing.T) {
+	requireMetalRuntime(t)
+
+	weights := []float32{
+		1, 2, 3, 4,
+		5, 6, 7, 8,
+		9, 10, 11, 12,
+	}
+	qProj := NewLinear(FromValues(weights, 3, 4), nil)
+	perLayerProjection := NewLinear(FromValues(weights, 3, 4), nil)
+
+	model := &Gemma4Model{
+		Layers: []*Gemma4DecoderLayer{
+			{
+				Attention:          &Gemma4Attention{QProj: qProj},
+				MLP:                &MLP{},
+				PerLayerProjection: perLayerProjection,
+			},
+		},
+	}
+	defer closeGemma4(model)
+
+	adapter := model.ApplyLoRA(LoRAConfig{
+		Rank:       2,
+		Alpha:      4,
+		TargetKeys: []string{"q_proj", "per_layer_projection"},
+	})
+
+	if adapter.Layers["model.layers.0.self_attn.q_proj"] == nil {
+		t.Fatal("expected safe q_proj LoRA layer")
+	}
+	if adapter.Layers["model.layers.0.per_layer_projection"] != nil {
+		t.Fatal("per_layer_projection should require AllowGemma4ExtendedTargets")
+	}
+	if model.Layers[0].PerLayerProjection.LoRA != nil {
+		t.Fatal("per_layer_projection should not have an attached LoRA adapter without opt-in")
 	}
 }
 

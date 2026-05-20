@@ -1262,8 +1262,9 @@ hybrid 5:1 attention (`gemma4.go:631-637`), sliding window size config
 (`gemma4.go:587`), dual RoPE bases 10k/1M (`defaultGemma4RopeParameters`),
 cross-layer KV sharing (`sharedKV` + `CacheIndexByLayer`), per-layer
 embeddings via `mlx_take`, MoE top-2 sparse routing
-(`gemma4_router_topk.go`), PLE gradient isolation through LoRA target
-filtering, final-cache K=V rejection with a guard test, packed AdamW moment
+(`gemma4_router_topk.go`), PLE gradient isolation through the Gemma 4 LoRA
+safe-target policy and opt-in extended-target guard tests, final-cache K=V
+rejection with a guard test, packed AdamW moment
 state for homogeneous matrix parameters, and Gemma4 assistant drafter +
 speculative decode (`gemma4_assistant*.go`).
 

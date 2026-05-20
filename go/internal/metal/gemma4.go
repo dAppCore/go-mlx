@@ -3126,7 +3126,7 @@ func (m *Gemma4Model) ModelType() string { return m.modelType }
 
 // ApplyLoRA wraps target projection layers with LoRA adapters for training.
 func (m *Gemma4Model) ApplyLoRA(cfg LoRAConfig) *LoRAAdapter {
-	cfg = normalizeLoRAConfig(cfg)
+	cfg = normalizeGemma4LoRAConfig(cfg)
 	adapter := &LoRAAdapter{
 		Layers: make(map[string]*LoRALinear),
 		Config: cfg,

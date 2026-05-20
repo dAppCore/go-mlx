@@ -55,16 +55,24 @@ fmt.Printf("LoRA params: %d\n", concreteAdapter.TotalParams())
 
 ```go
 type LoRAConfig struct {
-    Rank       int      // decomposition rank (default 8)
-    Alpha      float32  // scaling factor (default 16)
-    TargetKeys []string // weight name suffixes to target (default: q_proj, v_proj)
-    DType      DType    // training dtype for A/B (default Float32; BFloat16 for mixed precision)
+    Rank                       int      // decomposition rank (default 8)
+    Alpha                      float32  // scaling factor (default 16)
+    TargetKeys                 []string // weight name suffixes to target (default: q_proj, v_proj)
+    DType                      DType    // training dtype for A/B (default Float32; BFloat16 for mixed precision)
+    AllowGemma4ExtendedTargets bool     // opt into Gemma 4 non q/v/o targets
 }
 ```
 
 `DefaultLoRAConfig()` returns `{Rank: 8, Alpha: 16, TargetKeys: ["q_proj", "v_proj"], DType: Float32}`.
 
 Common target keys: `q_proj`, `k_proj`, `v_proj`, `o_proj`, `gate_proj`, `up_proj`, `down_proj`.
+
+Gemma 4 applies an additional safe-target policy for native fine-tuning. With
+no explicit targets, Gemma 4 LoRA uses `q_proj`, `v_proj`, and `o_proj`. If
+targets are provided, Gemma 4 filters them to those three attention projections
+unless `AllowGemma4ExtendedTargets` is set. That keeps per-layer embedding
+(PLE), router, and MLP projections static by default and prevents accidental
+broad "all linear" training from inflating the backward graph.
 
 ### Saving and Loading Adapters
 

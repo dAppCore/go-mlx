@@ -133,14 +133,15 @@ func (layer *LoRALinear) ParamCount() int {
 
 // LoRAConfig specifies which layers to apply LoRA to and with what parameters.
 type LoRAConfig struct {
-	Rank         int      // Decomposition rank (default 8)
-	Alpha        float32  // Scaling factor (default 16)
-	Scale        float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
-	TargetKeys   []string // Weight name suffixes to target (default: q_proj, v_proj)
-	TargetLayers []string // RFC alias for TargetKeys
-	Lambda       float32  // RFC compatibility field for regularisation (currently informational only)
-	DType        DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
-	ProbeSink    ProbeSink
+	Rank                       int      // Decomposition rank (default 8)
+	Alpha                      float32  // Scaling factor (default 16)
+	Scale                      float32  // RFC alias for Alpha/Rank. When Alpha is unset, Alpha = Scale * Rank.
+	TargetKeys                 []string // Weight name suffixes to target (default: q_proj, v_proj)
+	TargetLayers               []string // RFC alias for TargetKeys
+	Lambda                     float32  // RFC compatibility field for regularisation (currently informational only)
+	DType                      DType    // Training dtype for A/B (default Float32; use BFloat16 for mixed precision)
+	AllowGemma4ExtendedTargets bool     // Opt into Gemma 4 non q/v/o targets, including PLE/router/MLP projections.
+	ProbeSink                  ProbeSink
 }
 
 // DefaultLoRAConfig returns the standard LoRA configuration for LLM fine-tuning.
@@ -207,6 +208,46 @@ func normalizeLoRAConfig(cfg LoRAConfig) LoRAConfig {
 		cfg.DType = DTypeFloat32
 	}
 	return cfg
+}
+
+func normalizeGemma4LoRAConfig(cfg LoRAConfig) LoRAConfig {
+	explicitTargets := len(cfg.TargetKeys) > 0 || len(cfg.TargetLayers) > 0
+	cfg = normalizeLoRAConfig(cfg)
+	if !explicitTargets {
+		cfg.TargetKeys = []string{"q_proj", "v_proj", "o_proj"}
+		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
+	}
+	if cfg.AllowGemma4ExtendedTargets {
+		return cfg
+	}
+
+	targets := make([]string, 0, len(cfg.TargetKeys))
+	skipped := make([]string, 0)
+	for _, target := range cfg.TargetKeys {
+		if gemma4SafeLoRATarget(target) {
+			targets = append(targets, target)
+			continue
+		}
+		skipped = append(skipped, target)
+	}
+	if len(skipped) > 0 {
+		core.Warn("gemma4 lora: skipping extended targets without opt-in",
+			"targets", skipped,
+			"set", "AllowGemma4ExtendedTargets",
+		)
+	}
+	cfg.TargetKeys = targets
+	cfg.TargetLayers = append([]string(nil), targets...)
+	return cfg
+}
+
+func gemma4SafeLoRATarget(target string) bool {
+	switch target {
+	case "q_proj", "v_proj", "o_proj":
+		return true
+	default:
+		return false
+	}
 }
 
 // TotalParams returns the total number of trainable parameters across all LoRA layers.

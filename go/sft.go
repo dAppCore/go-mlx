@@ -48,13 +48,14 @@ const SFTCheckpointMetadataVersion = 1
 
 // SFTLoRAMetadata records the adapter identity needed to reproduce an SFT run.
 type SFTLoRAMetadata struct {
-	Rank         int      `json:"rank"`
-	Alpha        float32  `json:"alpha"`
-	Scale        float32  `json:"scale,omitempty"`
-	TargetKeys   []string `json:"target_keys,omitempty"`
-	TargetLayers []string `json:"target_layers,omitempty"`
-	Lambda       float32  `json:"lambda,omitempty"`
-	DType        string   `json:"dtype,omitempty"`
+	Rank                       int      `json:"rank"`
+	Alpha                      float32  `json:"alpha"`
+	Scale                      float32  `json:"scale,omitempty"`
+	TargetKeys                 []string `json:"target_keys,omitempty"`
+	TargetLayers               []string `json:"target_layers,omitempty"`
+	Lambda                     float32  `json:"lambda,omitempty"`
+	DType                      string   `json:"dtype,omitempty"`
+	AllowGemma4ExtendedTargets bool     `json:"allow_gemma4_extended_targets,omitempty"`
 }
 
 // SFTAdamWMetadata records optimizer hyperparameters for checkpoint replay.
@@ -356,13 +357,14 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 func sftLoRAMetadata(cfg LoRAConfig) SFTLoRAMetadata {
 	cfg = normalizeSFTLoRAConfig(cfg)
 	return SFTLoRAMetadata{
-		Rank:         cfg.Rank,
-		Alpha:        cfg.Alpha,
-		Scale:        cfg.Scale,
-		TargetKeys:   append([]string(nil), cfg.TargetKeys...),
-		TargetLayers: append([]string(nil), cfg.TargetLayers...),
-		Lambda:       cfg.Lambda,
-		DType:        cfg.DType.String(),
+		Rank:                       cfg.Rank,
+		Alpha:                      cfg.Alpha,
+		Scale:                      cfg.Scale,
+		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
+		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		Lambda:                     cfg.Lambda,
+		DType:                      cfg.DType.String(),
+		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
 	}
 }
 
