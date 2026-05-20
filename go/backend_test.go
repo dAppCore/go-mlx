@@ -1072,6 +1072,7 @@ type fakeNativeModel struct {
 	restoreBlockPrefix             int
 	restoreBlockErr                error
 	warmChunks                     []string
+	clearPromptCacheCalls          int
 	capturedChunks                 []string
 	generatedChunks                []string
 	closeErr                       error
@@ -1194,6 +1195,9 @@ func (m *fakeNativeModel) WarmPromptCache(_ context.Context, prompt string) erro
 func (m *fakeNativeModel) WarmPromptCacheChunks(_ context.Context, chunks iter.Seq[string]) error {
 	m.warmChunks = collectStringSeq(chunks)
 	return m.warmErr
+}
+func (m *fakeNativeModel) ClearPromptCache() {
+	m.clearPromptCacheCalls++
 }
 func (m *fakeNativeModel) RestorePromptCacheFromKV(_ context.Context, snapshot *metal.KVSnapshot) error {
 	m.restoredPromptKV = snapshot
@@ -1392,6 +1396,46 @@ func TestModelWarmPromptCache_UnsupportedNative_Bad(t *testing.T) {
 
 	if err := model.WarmPromptCache("stable prefix"); err == nil {
 		t.Fatal("expected unsupported prompt cache error")
+	}
+}
+
+func TestModelClearPromptCache_ForwardsToNative_Good(t *testing.T) {
+	coverageTokens := "ClearPromptCache ForwardsToNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	native := &fakeNativeModel{}
+	model := &Model{model: native}
+
+	if err := model.ClearPromptCache(); err != nil {
+		t.Fatalf("ClearPromptCache: %v", err)
+	}
+	if native.clearPromptCacheCalls != 1 {
+		t.Fatalf("clearPromptCacheCalls = %d, want 1", native.clearPromptCacheCalls)
+	}
+}
+
+func TestModelClearPromptCache_UnsupportedNative_Bad(t *testing.T) {
+	coverageTokens := "ClearPromptCache UnsupportedNative"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{model: nativeWithoutPromptCache{}}
+
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("expected unsupported prompt cache clearing error")
+	}
+}
+
+func TestModelClearPromptCache_NilModel_Ugly(t *testing.T) {
+	coverageTokens := "ClearPromptCache NilModel"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	var model *Model
+
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("ClearPromptCache(nil model) error = nil")
 	}
 }
 
@@ -2047,6 +2091,9 @@ func TestModelNilPublicSurface_Bad(t *testing.T) {
 	}
 	if err := model.WarmPromptCacheChunks(context.Background(), seqStrings("x")); err == nil {
 		t.Fatal("WarmPromptCacheChunks(nil model) error = nil")
+	}
+	if err := model.ClearPromptCache(); err == nil {
+		t.Fatal("ClearPromptCache(nil model) error = nil")
 	}
 	if err := model.WarmPromptCacheFromKV(&kv.Snapshot{}); err == nil {
 		t.Fatal("WarmPromptCacheFromKV(nil model) error = nil")

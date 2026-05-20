@@ -70,6 +70,11 @@ func ExampleModel_CaptureKV() {
 	// Output: Model_CaptureKV
 }
 
+func ExampleModel_ClearPromptCache() {
+	core.Println("Model_ClearPromptCache")
+	// Output: Model_ClearPromptCache
+}
+
 func ExampleModel_Tokenizer() {
 	core.Println("Model_Tokenizer")
 	// Output: Model_Tokenizer

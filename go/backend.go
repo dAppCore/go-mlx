@@ -40,6 +40,10 @@ type nativePromptCacheChunkWarmer interface {
 	WarmPromptCacheChunks(context.Context, iter.Seq[string]) error
 }
 
+type nativePromptCacheClearer interface {
+	ClearPromptCache()
+}
+
 type nativePromptCacheKVRestorer interface {
 	RestorePromptCacheFromKV(context.Context, *metal.KVSnapshot) error
 }
@@ -725,6 +729,21 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 		return warmer.WarmPromptCacheChunks(ctx, chunks)
 	}
 	return m.WarmPromptCache(promptChunksToString(chunks))
+}
+
+// ClearPromptCache drops the exact token-prefix KV cache without unloading the
+// model. TRAD comparison runners use this to force a fresh prefill between
+// turns while keeping the same loaded weights.
+func (m *Model) ClearPromptCache() error {
+	if m == nil || m.model == nil {
+		return core.NewError("mlx: model is nil")
+	}
+	clearer, ok := m.model.(nativePromptCacheClearer)
+	if !ok {
+		return core.NewError("mlx: native model does not support prompt cache clearing")
+	}
+	clearer.ClearPromptCache()
+	return nil
 }
 
 // WarmPromptCacheFromKV installs a captured K/V prefix directly as the model prompt cache.
