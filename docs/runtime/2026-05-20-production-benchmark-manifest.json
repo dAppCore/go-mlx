@@ -5,9 +5,14 @@
   "canonical_index": "docs/runtime/2026-05-20-production-benchmark-index.md",
   "verifier": "scripts/verify_production_benchmark_manifest.sh",
   "production_status": "not_complete",
+  "runtime_fragment_cleanup": {
+    "status": "strict_clean",
+    "quarantine_path": "docs/runtime/.quarantine/2026-05-20-noncanonical",
+    "quarantined_untracked_count": 137,
+    "pruned_tracked_count": 3
+  },
   "open_gates": [
-    "long_context_degradation",
-    "runtime_fragment_pruning"
+    "long_context_degradation"
   ],
   "artifacts": [
     {

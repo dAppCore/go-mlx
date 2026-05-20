@@ -76,18 +76,20 @@ Production remains blocked until these gates are all satisfied:
 - [x] `lthn/lemer-mlx` or the chosen default small-model lane has an accepted
       prompt/template path for multi-turn story/workflow continuation, not just a
       native-load smoke pass.
-- [ ] The canonical benchmark artefacts are cleaned, indexed, and reproducible
+- [x] The canonical benchmark artefacts are cleaned, indexed, and reproducible
       enough that a new worker can replay the production path without digging
       through abandoned JSON and stderr fragments.
 
-      Manifest progress: the canonical production artefacts now have a tracked
+      The canonical production artefacts now have a tracked
       manifest at
       `docs/runtime/2026-05-20-production-benchmark-manifest.json` and a
       verifier at `scripts/verify_production_benchmark_manifest.sh`. The
       verifier checks file existence, git tracking, non-empty artefacts, JSON
-      parseability, and index references. This gate remains open until the
-      extra runtime fragments are pruned or quarantined and
-      `scripts/verify_production_benchmark_manifest.sh --strict-clean` passes.
+      parseability, and index references. The strict cleanup gate
+      `scripts/verify_production_benchmark_manifest.sh --strict-clean` now
+      passes after pruning three obsolete tracked 2026-05-19 book fragments and
+      quarantining 137 noncanonical generated runtime fragments under the
+      ignored `docs/runtime/.quarantine/2026-05-20-noncanonical/` directory.
 
 Do not close this goal because a short-context decode number is healthy. The
 production claim is repeated-workflow wall time and retained-state savings under

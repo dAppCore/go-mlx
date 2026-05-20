@@ -11,8 +11,9 @@ the main path so a new worker does not need to infer which JSON files matter.
 The default small-model continuation path is accepted on
 `mlx-community/gemma-4-e2b-it-4bit`: the C006 10-chapter run completed, stayed
 on prompt through the final chapter, and ended without visible planning or
-postscript text. The overall production goal is still not complete because the
-long-context performance gap and runtime-fragment cleanup remain open.
+postscript text. The benchmark artefact set is now indexed, strict-verified,
+and cleaned. The overall production goal is still not complete because the
+long-context performance gap remains open.
 
 The current measured blockers are still `mlx_lm` and llama.cpp: after the
 borrowed paged-K/V state change, `mlx_lm` is `2.170x` faster by wall time and
@@ -94,6 +95,10 @@ scripts/verify_production_benchmark_manifest.sh --strict-clean
 `--strict-clean` keeps the same artefact checks but fails if `docs/runtime`
 still has non-manifest working-tree changes.
 
+Cleanup completed by pruning three obsolete tracked 2026-05-19 book fragments
+and moving 137 noncanonical generated runtime fragments into the ignored
+`docs/runtime/.quarantine/2026-05-20-noncanonical/` directory.
+
 Manifest coverage details not already shown in the tables above:
 
 - Accepted 100k retained-book markdown:
@@ -140,5 +145,5 @@ device from the runner, while the same workload with `-report-file` completed.
    graph/kernel work in the long-context attention path, not prompt-cache
    restore. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
-2. Prune or quarantine abandoned runtime fragments, then require
-   `scripts/verify_production_benchmark_manifest.sh --strict-clean` to pass.
+2. Keep the strict manifest gate green whenever new canonical runtime evidence
+   is added.
