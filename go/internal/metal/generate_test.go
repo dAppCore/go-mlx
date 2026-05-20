@@ -523,6 +523,54 @@ func TestModel_NewCaches_PagedPreservesRotatingCacheBound_Good(t *testing.T) {
 	}
 }
 
+func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
+	coverageTokens := "NewCaches PagedPageSizeEnvOverride"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "1024")
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(512),
+			},
+		},
+		contextLen: 131072,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newCaches()
+	full, ok := caches[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
+	}
+	if full.pageSize != 1024 {
+		t.Fatalf("cache[0].pageSize = %d, want env page size 1024", full.pageSize)
+	}
+	sliding, ok := caches[1].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
+	}
+	if sliding.maxSize != 512 || sliding.pageSize != 512 {
+		t.Fatalf("sliding cache max/page = %d/%d, want 512/512 capped env size", sliding.maxSize, sliding.pageSize)
+	}
+}
+
+func TestPagedKVCache_PageSizeEnvOverrideCapsToMax_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache PageSizeEnvOverrideCapsToMax"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "8192")
+
+	cache := NewPagedKVCache(512, 0)
+
+	if cache.pageSize != 512 {
+		t.Fatalf("cache.pageSize = %d, want capped max size 512", cache.pageSize)
+	}
+}
+
 func TestModel_NewCaches_FixedGemma4UsesUniformContextBound_Good(t *testing.T) {
 	coverageTokens := "NewCaches FixedGemma4UsesUniformContextBound"
 	if coverageTokens == "" {
@@ -779,8 +827,9 @@ func (m *boundedGenerateModel) ModelType() string                   { return "bo
 func (m *boundedGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
 type directGreedyGenerateModel struct {
-	forwardCalls int
-	greedyCalls  int
+	forwardCalls          int
+	greedyCalls           int
+	suppressedGreedyCalls int
 }
 
 func (m *directGreedyGenerateModel) Forward(tokens *Array, _ []Cache) *Array {
@@ -800,6 +849,11 @@ func (m *directGreedyGenerateModel) ForwardMasked(tokens *Array, _ *Array, cache
 func (m *directGreedyGenerateModel) ForwardGreedyToken(_ *Array, _ *Array, _ []Cache) *Array {
 	m.greedyCalls++
 	return FromValues([]int32{0}, 1)
+}
+
+func (m *directGreedyGenerateModel) ForwardGreedyTokenWithSuppression(_ *Array, _ *Array, _ []Cache, _ []int32) *Array {
+	m.suppressedGreedyCalls++
+	return FromValues([]int32{1}, 1)
 }
 
 func (m *directGreedyGenerateModel) NewCache() []Cache                   { return nil }
@@ -1184,6 +1238,46 @@ func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	phases := model.LastMetrics().TokenPhases
 	if len(phases) != 2 || phases[0].ForwardDuration <= 0 || phases[1].ForwardDuration != 0 {
 		t.Fatalf("phases = %+v, want direct greedy forward on first step only", phases)
+	}
+}
+
+func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
+	coverageTokens := "Generate UsesSuppressedDirectGreedyToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableDirectGreedyToken
+	enableDirectGreedyToken = true
+	t.Cleanup(func() { enableDirectGreedyToken = old })
+
+	inner := &directGreedyGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+	}
+	var got []Token
+	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{
+		MaxTokens:        2,
+		SuppressTokens:   []int32{0},
+		TraceTokenPhases: true,
+	}) {
+		got = append(got, token)
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	if len(got) != 2 || got[0].ID != 1 || got[1].ID != 1 {
+		t.Fatalf("tokens = %+v, want IDs [1 1]", got)
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want only prompt prefill", inner.forwardCalls)
+	}
+	if inner.greedyCalls != 0 {
+		t.Fatalf("ForwardGreedyToken calls = %d, want suppression-aware path instead", inner.greedyCalls)
+	}
+	if inner.suppressedGreedyCalls != 1 {
+		t.Fatalf("ForwardGreedyTokenWithSuppression calls = %d, want one direct decode call", inner.suppressedGreedyCalls)
 	}
 }
 

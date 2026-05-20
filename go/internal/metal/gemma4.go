@@ -2044,7 +2044,17 @@ func (m *Gemma4Model) ForwardLastTokenLogitsAndHidden(tokens *Array, mask *Array
 // directly. Final logit softcapping is monotonic, so greedy selection can skip
 // materialising a softcapped logits tensor.
 func (m *Gemma4Model) ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array {
-	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches); ok {
+	return m.forwardGreedyToken(tokens, mask, caches, nil)
+}
+
+// ForwardGreedyTokenWithSuppression runs the same greedy decode path while
+// masking chat-template and modality token IDs before argmax.
+func (m *Gemma4Model) ForwardGreedyTokenWithSuppression(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array {
+	return m.forwardGreedyToken(tokens, mask, caches, suppressTokens)
+}
+
+func (m *Gemma4Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array {
+	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches, suppressTokens); ok {
 		if err == nil {
 			traceNativeMaterialize("gemma4.model.greedy_token", out)
 			return out
@@ -2055,7 +2065,7 @@ func (m *Gemma4Model) ForwardGreedyToken(tokens *Array, mask *Array, caches []Ca
 	h = gemma4LastSequenceHidden(h, L)
 	h = gemma4ProjectionHidden(h)
 	h = gemma4ContiguousHidden(h)
-	if out, ok, err := nativeLastTokenGreedyToken(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps); ok {
+	if out, ok, err := nativeLastTokenGreedyToken(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, suppressTokens...); ok {
 		if err == nil {
 			Free(h)
 			return out
@@ -2064,12 +2074,23 @@ func (m *Gemma4Model) ForwardGreedyToken(tokens *Array, mask *Array, caches []Ca
 	}
 	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
 	logits := m.Output.Forward(normed)
-	out := Argmax(logits, -1, false)
+	var out *Array
+	if len(suppressTokens) > 0 {
+		var err error
+		out, err = sampleTokenWithSuppressionGuard(logits, newSamplerWithSuppression(0, 0, 0, 0, suppressTokens), suppressTokens)
+		if err != nil {
+			core.Error("mlx: Gemma 4 suppressed greedy fallback failed; falling back to unsuppressed argmax", "error", err)
+			Free(out)
+			out = Argmax(logits, -1, false)
+		}
+	} else {
+		out = Argmax(logits, -1, false)
+	}
 	Free(h, normed, logits)
 	return out
 }
 
-func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, caches []Cache) (*Array, bool, error) {
+func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) (*Array, bool, error) {
 	if !nativeGemma4ModelGreedyEnabled() || mask != nil || tokens == nil || !tokens.Valid() {
 		return nil, false, nil
 	}
@@ -2091,7 +2112,7 @@ func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, 
 	fixedMasks := newFixedGemma4AttentionMaskSet(shape[0], shape[1], nil)
 	defer fixedMasks.Free()
 
-	return nativeGemma4FixedGreedyToken(h, perLayerInputs, caches, m, fixedMasks)
+	return nativeGemma4FixedGreedyToken(h, perLayerInputs, caches, m, fixedMasks, suppressTokens...)
 }
 
 func gemma4LastSequenceHidden(h *Array, seqLen int32) *Array {

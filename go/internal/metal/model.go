@@ -51,6 +51,12 @@ type GreedyTokenModel interface {
 	ForwardGreedyToken(tokens *Array, mask *Array, caches []Cache) *Array
 }
 
+// SuppressedGreedyTokenModel can produce a greedy token while masking out
+// template or modality token IDs that must not be sampled.
+type SuppressedGreedyTokenModel interface {
+	ForwardGreedyTokenWithSuppression(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array
+}
+
 // QuantizationConfig holds quantization parameters from config.json.
 type QuantizationConfig struct {
 	GroupSize int    `json:"group_size"`

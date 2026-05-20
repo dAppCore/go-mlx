@@ -239,6 +239,40 @@ func TestDecode_nativeLastTokenGreedyToken_Good(t *testing.T) {
 	}
 }
 
+func TestDecode_nativeLastTokenGreedyTokenSuppressesIDs_Good(t *testing.T) {
+	target := "nativeLastTokenGreedyToken suppress IDs"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	hidden := FromValues([]float32{1, 2}, 1, 1, 2)
+	normWeight := FromValues([]float32{1, 1}, 2)
+	outputWeight := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+	}, 3, 2)
+	output := NewLinear(outputWeight, nil)
+	defer Free(hidden, normWeight, outputWeight)
+
+	got, ok, err := nativeLastTokenGreedyToken(hidden, normWeight, output, 1e-6, 2)
+	if err != nil {
+		t.Fatalf("nativeLastTokenGreedyToken() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativeLastTokenGreedyToken() ok = false, want true")
+	}
+	defer Free(got)
+
+	if err := Eval(got); err != nil {
+		t.Fatalf("Eval(tokens) error = %v", err)
+	}
+	if gotID := got.Int(); gotID != 1 {
+		t.Fatalf("suppressed token = %d, want 1 after suppressing argmax ID 2", gotID)
+	}
+}
+
 func TestDecode_nativeLastTokenGreedyToken_Bad(t *testing.T) {
 	target := "nativeLastTokenGreedyToken"
 	if target == "" {

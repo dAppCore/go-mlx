@@ -2316,6 +2316,9 @@ func TestDriverProfileGeneration_TraceTokenPhasesOption_Good(t *testing.T) {
 	if !model.lastConfig.TraceTokenPhases {
 		t.Fatalf("TraceTokenPhases = false, want true; cfg=%+v", model.lastConfig)
 	}
+	if model.lastConfig.ProbeSink != nil {
+		t.Fatalf("ProbeSink = %T, want nil so driver-profile keeps the direct greedy path", model.lastConfig.ProbeSink)
+	}
 }
 
 func TestDriverProfileGeneration_StopAndSuppressTokens_Good(t *testing.T) {

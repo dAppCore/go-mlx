@@ -810,7 +810,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				if tracePhases {
 					resetNativePhaseTraceEvents()
 				}
-				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches)
+				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, cfg.SuppressTokens)
 				if tracePhases {
 					phase.ForwardDuration = time.Since(phaseLast)
 					phase.NativeEvents = takeNativePhaseTraceEvents()
@@ -881,10 +881,23 @@ func directGreedyTokenAvailable(cfg GenerateConfig, history []int32, model Inter
 		cfg.TopP == 0 &&
 		cfg.MinP == 0 &&
 		cfg.TopK == 0 &&
+		(len(cfg.SuppressTokens) == 0 || suppressedGreedyTokenAvailable(model)) &&
 		(cfg.RepeatPenalty <= 1 || len(history) == 0)
 }
 
-func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
+func suppressedGreedyTokenAvailable(model InternalModel) bool {
+	_, ok := model.(SuppressedGreedyTokenModel)
+	return ok
+}
+
+func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) (*Array, bool) {
+	if len(suppressTokens) > 0 {
+		greedyModel, ok := m.model.(SuppressedGreedyTokenModel)
+		if !ok {
+			return nil, false
+		}
+		return greedyModel.ForwardGreedyTokenWithSuppression(tokens, mask, caches, suppressTokens), true
+	}
 	greedyModel, ok := m.model.(GreedyTokenModel)
 	if !ok {
 		return nil, false
@@ -1226,7 +1239,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 					}
 					caches[i] = NewFixedKVCache(fixedSize)
 				} else {
-					caches[i] = NewPagedKVCache(layerMaxSize, 256)
+					caches[i] = NewPagedKVCache(layerMaxSize, 0)
 				}
 			}
 		}

@@ -29,6 +29,13 @@ int go_mlx_compiled_dense_last_token(
 	const mlx_array norm_weight,
 	const mlx_array output_weight,
 	const mlx_stream stream);
+int go_mlx_compiled_dense_last_token_suppressed(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array suppress_token_ids,
+	const mlx_stream stream);
 int go_mlx_compiled_q4_g64_last_token(
 	mlx_array* res,
 	const mlx_array hidden,
@@ -36,6 +43,15 @@ int go_mlx_compiled_q4_g64_last_token(
 	const mlx_array output_weight,
 	const mlx_array output_scales,
 	const mlx_array output_biases,
+	const mlx_stream stream);
+int go_mlx_compiled_q4_g64_last_token_suppressed(
+	mlx_array* res,
+	const mlx_array hidden,
+	const mlx_array norm_weight,
+	const mlx_array output_weight,
+	const mlx_array output_scales,
+	const mlx_array output_biases,
+	const mlx_array suppress_token_ids,
 	const mlx_stream stream);
 int go_mlx_compiled_dense_mlp_gelu(
 	mlx_array* res,
@@ -289,30 +305,56 @@ func nativeLastTokenOutputAvailable(hidden, normWeight *Array, output *Linear, e
 		output.Bits == 4
 }
 
-func nativeLastTokenGreedyToken(hidden, normWeight *Array, output *Linear, eps float32) (*Array, bool, error) {
+func nativeLastTokenGreedyToken(hidden, normWeight *Array, output *Linear, eps float32, suppressTokens ...int32) (*Array, bool, error) {
 	if !nativeLastTokenGreedyTokenAvailable(hidden, normWeight, output, eps) {
 		return nil, false, nil
 	}
 	out := newArray("FAST_LAST_TOKEN_GREEDY", hidden, normWeight, output.Weight, output.Scales, output.Biases)
 	var rc C.int
+	suppress := suppressTokenArray(suppressTokens)
+	defer Free(suppress)
 	if output.Scales != nil {
-		rc = C.go_mlx_compiled_q4_g64_last_token(
-			&out.ctx,
-			hidden.ctx,
-			normWeight.ctx,
-			output.Weight.ctx,
-			output.Scales.ctx,
-			output.Biases.ctx,
-			DefaultStream().ctx,
-		)
+		if suppress != nil {
+			rc = C.go_mlx_compiled_q4_g64_last_token_suppressed(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				suppress.ctx,
+				DefaultStream().ctx,
+			)
+		} else {
+			rc = C.go_mlx_compiled_q4_g64_last_token(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				output.Scales.ctx,
+				output.Biases.ctx,
+				DefaultStream().ctx,
+			)
+		}
 	} else {
-		rc = C.go_mlx_compiled_dense_last_token(
-			&out.ctx,
-			hidden.ctx,
-			normWeight.ctx,
-			output.Weight.ctx,
-			DefaultStream().ctx,
-		)
+		if suppress != nil {
+			rc = C.go_mlx_compiled_dense_last_token_suppressed(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				suppress.ctx,
+				DefaultStream().ctx,
+			)
+		} else {
+			rc = C.go_mlx_compiled_dense_last_token(
+				&out.ctx,
+				hidden.ctx,
+				normWeight.ctx,
+				output.Weight.ctx,
+				DefaultStream().ctx,
+			)
+		}
 	}
 	if rc != 0 {
 		Free(out)
@@ -322,6 +364,13 @@ func nativeLastTokenGreedyToken(hidden, normWeight *Array, output *Linear, eps f
 		return nil, true, core.E("mlx.nativeLastTokenGreedyToken", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
 	}
 	return out, true, nil
+}
+
+func suppressTokenArray(ids []int32) *Array {
+	if len(ids) == 0 {
+		return nil
+	}
+	return FromValues(append([]int32(nil), ids...), len(ids))
 }
 
 func nativeLastTokenGreedyTokenAvailable(hidden, normWeight *Array, output *Linear, eps float32) bool {
@@ -855,7 +904,7 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 	return out, prev, true, nil
 }
 
-func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet) (*Array, bool, error) {
+func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppressTokens ...int32) (*Array, bool, error) {
 	if reason := nativeGemma4FixedGreedyTokenUnavailableReason(h, perLayerInputs, caches, model, fixedMasks); reason != "" {
 		traceNativeSkip("gemma4.model.greedy_token.skip", reason)
 		return nil, false, nil
@@ -949,6 +998,12 @@ func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Ca
 		output_scales:    cArray(model.Output.Scales),
 		output_biases:    cArray(model.Output.Biases),
 		output_quantized: 0,
+	}
+	suppress := suppressTokenArray(suppressTokens)
+	defer Free(suppress)
+	if suppress != nil {
+		args.suppress_token_ids = suppress.ctx
+		args.has_suppress_token_ids = 1
 	}
 	if model.Output.Scales != nil && model.Output.Scales.Valid() {
 		args.output_quantized = 1

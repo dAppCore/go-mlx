@@ -1,7 +1,9 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-#include <exception>
 #include <cstdlib>
+#include <cstdint>
+#include <exception>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -65,6 +67,25 @@ mlx::core::array softcap30(const mlx::core::array& logits) {
   return mlx::core::multiply(capped, scale);
 }
 
+mlx::core::array suppress_token_logits(
+    const mlx::core::array& logits,
+    const mlx::core::array& suppress_token_ids) {
+  if (suppress_token_ids.size() == 0) {
+    return logits;
+  }
+  auto update_shape = logits.shape();
+  if (update_shape.empty()) {
+    throw std::runtime_error("mlx: suppress-token logits rank is invalid");
+  }
+  update_shape.back() = suppress_token_ids.size();
+  auto indices = mlx::core::reshape(suppress_token_ids, update_shape);
+  auto updates = mlx::core::full(
+      update_shape,
+      -std::numeric_limits<float>::infinity(),
+      logits.dtype());
+  return mlx::core::put_along_axis(logits, indices, updates, -1);
+}
+
 const std::function<ArrayVector(const ArrayVector&)>&
 compiled_dense_last_logits_softcap30() {
   static const auto fn = mlx::core::compile(
@@ -121,6 +142,23 @@ compiled_dense_last_token() {
 }
 
 const std::function<ArrayVector(const ArrayVector&)>&
+compiled_dense_last_token_suppressed() {
+  static const auto fn = mlx::core::compile(
+      [](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != 4) {
+          throw std::runtime_error("mlx: dense suppressed last-token inputs are invalid");
+        }
+        auto normed = mlx::core::fast::rms_norm(inputs[0], inputs[1], 1e-6f);
+        auto weight_t = mlx::core::transpose(inputs[2]);
+        auto logits = mlx::core::matmul(normed, weight_t);
+        logits = suppress_token_logits(logits, inputs[3]);
+        return {mlx::core::argmax(logits, -1, false)};
+      },
+      true);
+  return fn;
+}
+
+const std::function<ArrayVector(const ArrayVector&)>&
 compiled_q4_g64_last_token() {
   static const auto fn = mlx::core::compile(
       [](const ArrayVector& inputs) -> ArrayVector {
@@ -137,6 +175,30 @@ compiled_q4_g64_last_token() {
             64,
             4,
             "affine");
+        return {mlx::core::argmax(logits, -1, false)};
+      },
+      true);
+  return fn;
+}
+
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_q4_g64_last_token_suppressed() {
+  static const auto fn = mlx::core::compile(
+      [](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != 6) {
+          throw std::runtime_error("mlx: q4 suppressed last-token inputs are invalid");
+        }
+        auto normed = mlx::core::fast::rms_norm(inputs[0], inputs[1], 1e-6f);
+        auto logits = mlx::core::quantized_matmul(
+            normed,
+            inputs[2],
+            inputs[3],
+            inputs[4],
+            true,
+            64,
+            4,
+            "affine");
+        logits = suppress_token_logits(logits, inputs[5]);
         return {mlx::core::argmax(logits, -1, false)};
       },
       true);
@@ -1492,6 +1554,11 @@ mlx::core::array gemma4_fixed_greedy_token_impl(
         normed,
         get_required(model_args.output_weight, "output_weight"));
   }
+  if (model_args.has_suppress_token_ids) {
+    logits = suppress_token_logits(
+        logits,
+        get_required(model_args.suppress_token_ids, "suppress_token_ids"));
+  }
   return mlx::core::argmax(logits, -1, false);
 }
 
@@ -1810,6 +1877,29 @@ extern "C" int go_mlx_compiled_dense_last_token(
   return 0;
 }
 
+extern "C" int go_mlx_compiled_dense_last_token_suppressed(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array suppress_token_ids,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(suppress_token_ids)};
+    auto outputs = compiled_dense_last_token_suppressed()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
 extern "C" int go_mlx_compiled_q4_g64_last_token(
     mlx_array* res,
     const mlx_array hidden,
@@ -1827,6 +1917,33 @@ extern "C" int go_mlx_compiled_q4_g64_last_token(
         mlx_array_get_(output_scales),
         mlx_array_get_(output_biases)};
     auto outputs = compiled_q4_g64_last_token()(inputs);
+    mlx_array_set_(*res, std::move(outputs[0]));
+  } catch (std::exception& e) {
+    mlx_error(e.what());
+    return 1;
+  }
+  return 0;
+}
+
+extern "C" int go_mlx_compiled_q4_g64_last_token_suppressed(
+    mlx_array* res,
+    const mlx_array hidden,
+    const mlx_array norm_weight,
+    const mlx_array output_weight,
+    const mlx_array output_scales,
+    const mlx_array output_biases,
+    const mlx_array suppress_token_ids,
+    const mlx_stream stream) {
+  try {
+    (void)stream;
+    ArrayVector inputs = {
+        mlx_array_get_(hidden),
+        mlx_array_get_(norm_weight),
+        mlx_array_get_(output_weight),
+        mlx_array_get_(output_scales),
+        mlx_array_get_(output_biases),
+        mlx_array_get_(suppress_token_ids)};
+    auto outputs = compiled_q4_g64_last_token_suppressed()(inputs);
     mlx_array_set_(*res, std::move(outputs[0]));
   } catch (std::exception& e) {
     mlx_error(e.what());

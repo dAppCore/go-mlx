@@ -6,6 +6,10 @@ package metal
 
 import core "dappco.re/go"
 
+const (
+	defaultPagedKVPageSize = 256
+)
+
 var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"
 
 // Cache manages key-value pairs for transformer attention layers.
@@ -777,10 +781,27 @@ func pagedStateNeedsMaterializedRepeat(state PagedKVState, factor int32) bool {
 
 // NewPagedKVCache creates a page/block-oriented cache.
 func NewPagedKVCache(maxSize, pageSize int) *PagedKVCache {
-	if pageSize <= 0 {
-		pageSize = 256
-	}
+	pageSize = resolvePagedKVPageSize(maxSize, pageSize)
 	return &PagedKVCache{maxSize: maxSize, pageSize: pageSize}
+}
+
+func resolvePagedKVPageSize(maxSize, requested int) int {
+	pageSize := requested
+	if pageSize <= 0 {
+		pageSize = defaultPagedKVPageSize
+	}
+	if parsed := core.ParseInt(core.Trim(core.Env("GO_MLX_PAGED_KV_PAGE_SIZE")), 10, 64); parsed.OK {
+		if value := int(parsed.Value.(int64)); value > 0 {
+			pageSize = value
+		}
+	}
+	if pageSize <= 0 {
+		pageSize = defaultPagedKVPageSize
+	}
+	if maxSize > 0 && pageSize > maxSize {
+		pageSize = maxSize
+	}
+	return pageSize
 }
 
 func (c *PagedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {

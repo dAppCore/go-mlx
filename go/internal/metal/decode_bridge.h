@@ -176,6 +176,8 @@ typedef struct go_mlx_gemma4_model_greedy_args_ {
   mlx_array output_scales;
   mlx_array output_biases;
   int output_quantized;
+  mlx_array suppress_token_ids;
+  int has_suppress_token_ids;
 } go_mlx_gemma4_model_greedy_args;
 
 int go_mlx_gemma4_decode_layer(

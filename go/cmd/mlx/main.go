@@ -1051,6 +1051,7 @@ func driverProfileRuntimeGateNames() []string {
 		"GO_MLX_ENABLE_GENERATION_STREAM",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
 		"GO_MLX_ENABLE_PAGED_KV_PREALLOC",
+		"GO_MLX_PAGED_KV_PAGE_SIZE",
 	}
 }
 
@@ -1282,37 +1283,6 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 	currentLine := ""
 	lastLine := ""
 	repeatedLineCount := 0
-	generateOptions = append(generateOptions, mlx.WithProbeCallback(func(event probe.Event) {
-		if event.Kind != probe.KindToken || event.Token == nil {
-			return
-		}
-		if len(sampledTokenIDs) < 32 {
-			sampledTokenIDs = append(sampledTokenIDs, event.Token.ID)
-			sampledTokenTexts = append(sampledTokenTexts, event.Token.Text)
-		}
-		if probeErr != nil {
-			return
-		}
-		if err := driverProfileMetricsSafetyError(core.Sprintf("run %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
-			probeErr = err
-			cancelGeneration()
-			return
-		}
-		if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
-			repeatedTokenCount = 0
-			return
-		}
-		if repeatedTokenCount == 0 || event.Token.ID != repeatedTokenID {
-			repeatedTokenID = event.Token.ID
-			repeatedTokenCount = 1
-		} else {
-			repeatedTokenCount++
-		}
-		if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
-			probeErr = core.NewError(core.Sprintf("driver-profile: run %d sampled token %d for %d consecutive tokens", index, event.Token.ID, repeatedTokenCount))
-			cancelGeneration()
-		}
-	}))
 	if opts.PromptChunkBytes > 0 && opts.Chat {
 		tokenStream = model.ChatChunksStream(generationCtx, []inference.Message{{Role: "user", Content: opts.Prompt}}, opts.PromptChunkBytes, generateOptions...)
 	} else if opts.PromptChunkBytes > 0 {
@@ -1327,6 +1297,32 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 			firstToken = bench.NonZeroDuration(time.Since(start))
 		}
 		visibleTokens++
+		if len(sampledTokenIDs) < 32 {
+			sampledTokenIDs = append(sampledTokenIDs, token.ID)
+			sampledTokenTexts = append(sampledTokenTexts, token.Text)
+		}
+		if probeErr == nil {
+			if err := driverProfileMetricsSafetyError(core.Sprintf("run %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
+				probeErr = err
+				cancelGeneration()
+				break
+			}
+			if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
+				repeatedTokenCount = 0
+			} else {
+				if repeatedTokenCount == 0 || token.ID != repeatedTokenID {
+					repeatedTokenID = token.ID
+					repeatedTokenCount = 1
+				} else {
+					repeatedTokenCount++
+				}
+				if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
+					probeErr = core.NewError(core.Sprintf("driver-profile: run %d sampled token %d for %d consecutive tokens", index, token.ID, repeatedTokenCount))
+					cancelGeneration()
+					break
+				}
+			}
+		}
 		if opts.IncludeOutput {
 			builder.WriteString(token.Text)
 		}
