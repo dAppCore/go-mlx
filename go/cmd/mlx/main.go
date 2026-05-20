@@ -2375,17 +2375,18 @@ func chapterProfileLengthInstruction(minTokens int) string {
 	if minTokens <= 0 {
 		return "use the available token budget naturally; do not force a tiny answer."
 	}
-	paragraphs := minTokens / 90
-	if minTokens%90 != 0 {
+	targetTokens := minTokens + minTokens/4
+	paragraphs := targetTokens / 80
+	if targetTokens%80 != 0 {
 		paragraphs++
 	}
 	if paragraphs < 8 {
 		paragraphs = 8
 	}
-	if paragraphs > 18 {
-		paragraphs = 18
+	if paragraphs > 24 {
+		paragraphs = 24
 	}
-	return core.Sprintf("write at least %d visible tokens before the end marker, as no fewer than %d substantial prose paragraphs with concrete scene movement. If the chapter feels complete before that length, add another scene beat before writing the end marker.", minTokens, paragraphs)
+	return core.Sprintf("write comfortably past the floor: at least %d visible tokens, aiming for around %d, before the end marker, as no fewer than %d substantial prose paragraphs with concrete scene movement. If the chapter feels complete before that length, add another scene beat before writing the end marker.", minTokens, targetTokens, paragraphs)
 }
 
 func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens int, enableThinking bool) string {
@@ -4597,17 +4598,28 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	jsonOut := fs.Bool("json", false, "print JSON report")
 	profilePath := fs.String("profile", "", "saved tuning profile to apply before loading the model")
 	prompt := fs.String("prompt", cfg.Prompt, "baseline benchmark prompt")
+	promptFile := fs.String("prompt-file", "", "read baseline benchmark prompt text from a file")
+	promptRepeat := fs.Int("prompt-repeat", 1, "repeat the resolved benchmark prompt N times")
+	promptSuffix := fs.String("prompt-suffix", "", "append extra text to the resolved benchmark prompt")
+	promptSuffixFile := fs.String("prompt-suffix-file", "", "read prompt suffix text from a file")
 	cachePrompt := fs.String("cache-prompt", "", "stable prompt used for prompt-cache and KV restore checks")
 	maxTokens := fs.Int("max-tokens", cfg.MaxTokens, "generated tokens per pass")
 	runs := fs.Int("runs", cfg.Runs, "baseline generation passes")
 	contextLen := fs.Int("context", 0, "override context length")
+	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
+	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
 	device := fs.String("device", "", "execution device: gpu or cpu")
+	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
 	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for speculative decode metrics")
 	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 2, "draft tokens proposed per speculative decode pass")
 	noCache := fs.Bool("no-cache", false, "skip prompt-cache warm/hit check")
 	noRestore := fs.Bool("no-restore", false, "skip KV restore latency check")
 	noBundle := fs.Bool("no-bundle", false, "skip state-bundle round trip check")
 	noProbes := fs.Bool("no-probes", false, "skip probe overhead check")
+	memvidKVWarm := fs.Bool("memvid-kv-warm", false, "include memvid KV block build, restore, and warmed generation check")
+	memvidKVBlockSize := fs.Int("memvid-kv-block-size", 0, "memvid KV block size in tokens; 0 uses the runtime default")
+	memvidKVPrefixTokens := fs.Int("memvid-kv-prefix-tokens", 0, "tokens to restore from memvid KV blocks; 0 restores the full captured prefix")
+	memvidKVStore := fs.String("memvid-kv-store", "", "path for the memvid KV block store; empty uses a temporary file")
 	fs.Usage = func() {
 		core.WriteString(stderr, core.Sprintf("Usage: %s bench [flags] [model-path]\n", cliName()))
 		fs.VisitAll(func(f *flag.Flag) {
@@ -4624,11 +4636,57 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 		return 2
 	}
+	visitedFlags := driverProfileVisitedFlags(fs)
+	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, *profilePath) {
+		for _, restore := range applyGemma4FastLaneDefaults(
+			visitedFlags,
+			contextLen,
+			cacheMode,
+			prefillChunkSize,
+			nil,
+			mlx.ProductionLaneContextLength,
+		) {
+			defer restore()
+		}
+	}
 	if fs.NArg() > 1 || (fs.NArg() == 0 && core.Trim(*profilePath) == "") {
 		core.WriteString(stderr, core.Sprintf("%s bench: expected one model path or -profile\n", cliName()))
 		fs.Usage()
 		return 2
 	}
+	if *promptRepeat < 1 {
+		core.WriteString(stderr, core.Sprintf("%s bench: prompt repeat must be >= 1\n", cliName()))
+		return 2
+	}
+	if *memvidKVBlockSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s bench: memvid KV block size must be >= 0\n", cliName()))
+		return 2
+	}
+	if *memvidKVPrefixTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s bench: memvid KV prefix tokens must be >= 0\n", cliName()))
+		return 2
+	}
+	if *prefillChunkSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s bench: prefill chunk size must be >= 0\n", cliName()))
+		return 2
+	}
+	if core.Trim(*promptFile) != "" {
+		read := core.ReadFile(*promptFile)
+		if !read.OK {
+			core.Print(stderr, "%s bench: prompt file: %v", cliName(), read.Value)
+			return 1
+		}
+		*prompt = string(read.Value.([]byte))
+	}
+	if core.Trim(*promptSuffixFile) != "" {
+		read := core.ReadFile(*promptSuffixFile)
+		if !read.OK {
+			core.Print(stderr, "%s bench: prompt suffix file: %v", cliName(), read.Value)
+			return 1
+		}
+		*promptSuffix = string(read.Value.([]byte))
+	}
+	resolvedPrompt := appendDriverProfilePromptSuffix(repeatDriverProfilePrompt(*prompt, *promptRepeat), *promptSuffix)
 
 	modelPath := ""
 	loadOptions := []mlx.LoadOption{}
@@ -4655,7 +4713,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 	cfg.Model = core.PathBase(modelPath)
 	cfg.ModelPath = modelPath
-	cfg.Prompt = *prompt
+	cfg.Prompt = resolvedPrompt
 	cfg.CachePrompt = *cachePrompt
 	cfg.MaxTokens = *maxTokens
 	cfg.Runs = *runs
@@ -4663,6 +4721,10 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	cfg.IncludeKVRestore = !*noRestore
 	cfg.IncludeStateBundleRoundTrip = !*noBundle
 	cfg.IncludeProbeOverhead = !*noProbes
+	cfg.IncludeMemvidKVBlockWarm = *memvidKVWarm
+	cfg.MemvidKVBlockSize = *memvidKVBlockSize
+	cfg.MemvidKVPrefixTokens = *memvidKVPrefixTokens
+	cfg.MemvidKVBlockStorePath = core.Trim(*memvidKVStore)
 	if *speculativeDraftTokens < 0 {
 		core.WriteString(stderr, core.Sprintf("%s bench: speculative draft tokens must be >= 0\n", cliName()))
 		return 2
@@ -4675,6 +4737,19 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 
 	if *contextLen > 0 {
 		loadOptions = append(loadOptions, mlx.WithContextLength(*contextLen))
+	}
+	if *prefillChunkSize > 0 {
+		loadOptions = append(loadOptions, mlx.WithPrefillChunkSize(*prefillChunkSize))
+	}
+	if core.Trim(*cacheMode) != "" {
+		mode := memory.KVCacheMode(core.Trim(*cacheMode))
+		switch mode {
+		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
+		default:
+			core.WriteString(stderr, core.Sprintf("%s bench: unsupported cache mode %q\n", cliName(), string(mode)))
+			return 2
+		}
+		loadOptions = append(loadOptions, mlx.WithKVCacheMode(mode))
 	}
 	if *device != "" {
 		loadOptions = append(loadOptions, mlx.WithDevice(*device))

@@ -2079,6 +2079,56 @@ func TestGemma4_CachedAttentionMask_Good_TrimmedKeyStart(t *testing.T) {
 	}
 }
 
+func TestGemma4_RuntimeMaskCache_Good_ReusesChunkMasks(t *testing.T) {
+	coverageTokens := "RuntimeMaskCache ReusesChunkMasks"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := newGemma4RuntimeMaskCache()
+	defer cache.Free()
+
+	first := cache.CachedAttentionMask(1, 2, 5, 8, 5, 4)
+	second := cache.CachedAttentionMask(1, 2, 5, 8, 5, 4)
+	if first == nil || !first.Valid() {
+		t.Fatal("first cached attention mask is invalid")
+	}
+	if first != second {
+		t.Fatal("cached attention mask was rebuilt for identical shape/window")
+	}
+	if len(cache.owned) != 1 {
+		t.Fatalf("runtime mask cache owns %d masks, want 1", len(cache.owned))
+	}
+
+	otherWindow := cache.CachedAttentionMask(1, 2, 5, 8, 5, 2)
+	if otherWindow == nil || !otherWindow.Valid() {
+		t.Fatal("other-window cached attention mask is invalid")
+	}
+	if otherWindow == first {
+		t.Fatal("runtime mask cache reused a mask with a different sliding window")
+	}
+	if len(cache.owned) != 2 {
+		t.Fatalf("runtime mask cache owns %d masks after window split, want 2", len(cache.owned))
+	}
+}
+
+func TestGemma4_SlidingCausalContextLen_Good(t *testing.T) {
+	coverageTokens := "SlidingCausalContextLen"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	if got := gemma4SlidingCausalContextLen(512, 1024, 512); got != 1023 {
+		t.Fatalf("context len = %d, want 1023 for previous window plus current chunk", got)
+	}
+	if got := gemma4SlidingCausalContextLen(128, 2048, 512); got != 639 {
+		t.Fatalf("context len = %d, want 639 for 512-token window and 128-token chunk", got)
+	}
+	if got := gemma4SlidingCausalContextLen(513, 2048, 512); got != 2048 {
+		t.Fatalf("context len = %d, want full key span when chunk exceeds window", got)
+	}
+}
+
 func TestGemma4_LoadAndForwardDenseModelFromGGUF_Good(t *testing.T) {
 	coverageTokens := "LoadAndForwardDenseModelFromGGUF"
 	if coverageTokens == "" {
@@ -2343,7 +2393,7 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil)
 	defer Free(kv.Keys, kv.Values)
 
 	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
@@ -2458,7 +2508,7 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 	}
 	x := FromValues([]float32{2, 1}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil)
 	defer Free(kv.Keys, kv.Values)
 
 	h2InForCheck := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
@@ -2536,7 +2586,7 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	defer cache.Reset()
 	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 
-	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -2597,8 +2647,8 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	pagedX := fixedX.Clone()
 	defer Free(fixedX, pagedX)
 
-	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil)
-	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
 	defer Free(fixedOut, pagedOut)
 	defer fixedKV.free()
 	defer pagedKV.free()
@@ -2664,7 +2714,7 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
-	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil)
+	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil, nil)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -2712,7 +2762,7 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 		RMSNormEps:        1e-6,
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
-	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil)
+	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
 	defer func() {
 		Free(x, out)
 		kv.free()

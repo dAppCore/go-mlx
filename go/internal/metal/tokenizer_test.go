@@ -346,10 +346,10 @@ func TestTokenizer_BPEMerge_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	tok := &Tokenizer{
-		mergeRanks: map[string]int{
-			"h e":  0,
-			"l l":  1,
-			"he l": 2,
+		mergeRanks: map[mergeKey]int{
+			{a: "h", b: "e"}:  0,
+			{a: "l", b: "l"}:  1,
+			{a: "he", b: "l"}: 2,
 		},
 	}
 
@@ -369,12 +369,63 @@ func TestTokenizer_BPEMerge_Good(t *testing.T) {
 	}
 }
 
+func TestTokenizer_BPEMerge_OverlappingPairs_Good(t *testing.T) {
+	coverageTokens := "BPEMerge OverlappingPairs"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	tok := &Tokenizer{
+		mergeRanks: map[mergeKey]int{
+			{a: "a", b: "b"}:   1,
+			{a: "b", b: "c"}:   0,
+			{a: "bc", b: "d"}:  0,
+			{a: "a", b: "bcd"}: 0,
+		},
+	}
+
+	got := tok.bpeMerge([]string{"a", "b", "c", "d"})
+	want := []string{"abcd"}
+	if len(got) != len(want) {
+		t.Fatalf("bpeMerge = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("bpeMerge[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+func TestTokenizer_BPEMerge_LeftMostTie_Good(t *testing.T) {
+	coverageTokens := "BPEMerge LeftMostTie"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	tok := &Tokenizer{
+		mergeRanks: map[mergeKey]int{
+			{a: "a", b: "b"}:  0,
+			{a: "c", b: "d"}:  0,
+			{a: "ab", b: "c"}: 0,
+		},
+	}
+
+	got := tok.bpeMerge([]string{"a", "b", "c", "d"})
+	want := []string{"abc", "d"}
+	if len(got) != len(want) {
+		t.Fatalf("bpeMerge = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("bpeMerge[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
 func TestTokenizer_BPEMerge_NoMerges_Good(t *testing.T) {
 	coverageTokens := "BPEMerge NoMerges"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	tok := &Tokenizer{mergeRanks: map[string]int{}}
+	tok := &Tokenizer{mergeRanks: map[mergeKey]int{}}
 	symbols := []string{"a", "b", "c"}
 	got := tok.bpeMerge(symbols)
 	if len(got) != 3 {
@@ -387,7 +438,7 @@ func TestTokenizer_BPEMerge_SingleSymbol_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	tok := &Tokenizer{mergeRanks: map[string]int{"a b": 0}}
+	tok := &Tokenizer{mergeRanks: map[mergeKey]int{{a: "a", b: "b"}: 0}}
 	got := tok.bpeMerge([]string{"x"})
 	if len(got) != 1 || got[0] != "x" {
 		t.Errorf("bpeMerge single = %v, want [x]", got)
@@ -399,9 +450,10 @@ func TestTokenizer_EncodeCachesSentencePieceSegments_Good(t *testing.T) {
 		vocab: map[string]int32{
 			"▁ab": 7,
 		},
-		mergeRanks: map[string]int{
-			"▁ a":  0,
-			"▁a b": 1,
+		addPrefixSpace: true,
+		mergeRanks: map[mergeKey]int{
+			{a: "▁", b: "a"}:  0,
+			{a: "▁a", b: "b"}: 1,
 		},
 	}
 
@@ -602,7 +654,7 @@ func TestTokenizer_BPEMerge_NilSymbols_Ugly(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	tok := &Tokenizer{mergeRanks: map[string]int{"a b": 0}}
+	tok := &Tokenizer{mergeRanks: map[mergeKey]int{{a: "a", b: "b"}: 0}}
 	got := tok.bpeMerge([]string{})
 	if len(got) != 0 {
 		t.Errorf("bpeMerge(empty) = %v, want empty", got)

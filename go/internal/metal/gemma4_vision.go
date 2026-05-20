@@ -785,7 +785,7 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			pli = perLayerInputs[i]
 		}
 
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil)
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil, nil)
 		Free(h)
 		h = nextH
 		intermediates[i] = kv

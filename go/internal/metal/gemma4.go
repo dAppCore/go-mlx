@@ -1882,6 +1882,82 @@ func buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, keyStar
 	return FromValues(data, int(batchSize), 1, int(queryLen), int(keyLen))
 }
 
+type gemma4CachedAttentionMaskKey struct {
+	batchSize int32
+	queryLen  int32
+	keyLen    int32
+	offset    int32
+	keyStart  int32
+	window    int32
+}
+
+type gemma4RuntimeMaskCache struct {
+	masks map[gemma4CachedAttentionMaskKey]*Array
+	owned []*Array
+}
+
+func newGemma4RuntimeMaskCache() *gemma4RuntimeMaskCache {
+	return &gemma4RuntimeMaskCache{}
+}
+
+func (c *gemma4RuntimeMaskCache) CachedAttentionMask(batchSize, queryLen, keyLen, offset, keyStart, window int32) *Array {
+	if c == nil {
+		return buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, keyStart, window)
+	}
+	key := gemma4CachedAttentionMaskKey{
+		batchSize: batchSize,
+		queryLen:  queryLen,
+		keyLen:    keyLen,
+		offset:    offset,
+		keyStart:  keyStart,
+		window:    window,
+	}
+	if c.masks == nil {
+		c.masks = make(map[gemma4CachedAttentionMaskKey]*Array)
+	}
+	if mask := c.masks[key]; mask != nil && mask.Valid() {
+		return mask
+	}
+	mask := buildGemma4CachedAttentionMask(batchSize, queryLen, keyLen, offset, keyStart, window)
+	if mask == nil || !mask.Valid() {
+		Free(mask)
+		return nil
+	}
+	c.masks[key] = mask
+	c.owned = append(c.owned, mask)
+	return mask
+}
+
+func (c *gemma4RuntimeMaskCache) Free() {
+	if c == nil {
+		return
+	}
+	Free(c.owned...)
+	c.owned = nil
+	c.masks = nil
+}
+
+func gemma4CanUseOffsetCausalAttention(queryLen, keyLen, window int32) bool {
+	if queryLen <= 1 || keyLen <= 0 {
+		return false
+	}
+	if window <= 0 {
+		return true
+	}
+	return queryLen <= window && keyLen <= window+queryLen-1
+}
+
+func gemma4SlidingCausalContextLen(queryLen, keyLen, window int32) int {
+	if queryLen <= 1 || keyLen <= 0 || window <= 0 || queryLen > window {
+		return int(keyLen)
+	}
+	needed := window + queryLen - 1
+	if needed >= keyLen {
+		return int(keyLen)
+	}
+	return int(needed)
+}
+
 func fixedSingleTokenCausalMaskFromHost(batchSize int32, capacity, offset int) *Array {
 	if batchSize <= 0 || capacity <= 0 {
 		return nil
@@ -2185,6 +2261,8 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 	defer Free(perLayerInputs...)
 
 	var ownedMasks []*Array
+	runtimeMasks := newGemma4RuntimeMaskCache()
+	defer runtimeMasks.Free()
 	fixedMasks := newFixedGemma4AttentionMaskSet(B, L, mask)
 	defer fixedMasks.Free()
 	fullMask := mask
@@ -2228,7 +2306,7 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 		}
 
 		fixedMask := fixedMasks.ForLayer(cache, prev)
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask)
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask, runtimeMasks)
 		Free(h)
 		h = nextH
 		intermediates[i] = kv
@@ -2253,7 +2331,7 @@ func logitSoftcap(x *Array, softcap float32) *Array {
 	return out
 }
 
-func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *Array) (*Array, sharedKV) {
+func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache) (*Array, sharedKV) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
@@ -2296,7 +2374,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		}
 	}
 	if h == nil {
-		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask)
+		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
 		if nativeGemma4ResidualNormEnabled() {
@@ -2417,7 +2495,7 @@ func (a *Gemma4Attention) applyRoPE(x *Array, offset int) *Array {
 	return RoPE(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offset)
 }
 
-func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array) (*Array, sharedKV) {
+func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache) (*Array, sharedKV) {
 	if nativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.hasState() && L == 1 && mask == nil {
 		if fixed, ok := c.(*FixedKVCache); ok {
 			if out, kv, ok, err := nativeGemma4FixedOwnerAttentionBlock(x, fixed, fixedMask, a, cfg); ok {
@@ -2575,19 +2653,43 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				Free(ownedContiguous...)
 				panic("mlx: Gemma 4 attention missing valid K/V state")
 			}
-			var cachedMask *Array
-			if offset > 0 && L > 1 {
-				keyLen := int32(kBase.Dim(2))
-				keyStart := int32(offset) + L - keyLen
-				if keyStart < 0 {
-					keyStart = 0
+			if mask == nil && offset > 0 && L > 1 && window > 0 {
+				localContextLen := gemma4SlidingCausalContextLen(L, int32(kBase.Dim(2)), window)
+				tailK, tailV := cacheTail(kBase, vBase, localContextLen)
+				if tailK != kBase {
+					ownedContiguous = append(ownedContiguous, tailK)
+					kBase = tailK
 				}
-				cachedMask = buildGemma4CachedAttentionMask(B, L, keyLen, int32(offset), keyStart, window)
-				mask = cachedMask
+				if tailV != vBase {
+					ownedContiguous = append(ownedContiguous, tailV)
+					vBase = tailV
+				}
+			}
+			var cachedMask *Array
+			cachedMaskOwned := false
+			useCausalAttention := false
+			if mask == nil && offset > 0 && L > 1 {
+				keyLen := int32(kBase.Dim(2))
+				if gemma4CanUseOffsetCausalAttention(L, keyLen, window) {
+					useCausalAttention = true
+				} else {
+					keyStart := int32(offset) + L - keyLen
+					if keyStart < 0 {
+						keyStart = 0
+					}
+					if runtimeMasks != nil {
+						cachedMask = runtimeMasks.CachedAttentionMask(B, L, keyLen, int32(offset), keyStart, window)
+					} else {
+						cachedMask = buildGemma4CachedAttentionMask(B, L, keyLen, int32(offset), keyStart, window)
+						cachedMaskOwned = true
+					}
+					mask = cachedMask
+				}
 			} else if kv.Fixed && L == 1 && mask == nil {
 				offsetArray := FromValue(offset)
 				cachedMask = singleTokenCausalMask(int(kBase.Dim(2)), offsetArray)
 				Free(offsetArray)
+				cachedMaskOwned = true
 				mask = cachedMask
 			}
 			if !qRoPEApplied {
@@ -2598,10 +2700,14 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			}
 			if mask != nil {
 				out = ScaledDotProductAttentionWithMask(q, kBase, vBase, mask, a.Scale)
+			} else if useCausalAttention {
+				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, true)
 			} else {
 				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, L > 1)
 			}
-			Free(cachedMask)
+			if cachedMaskOwned {
+				Free(cachedMask)
+			}
 			Free(ownedContiguous...)
 		}
 	}

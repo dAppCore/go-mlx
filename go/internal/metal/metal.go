@@ -201,10 +201,17 @@ func hostMetalDeviceAvailableNoInit() bool {
 }
 
 func usableMetalDeviceNoInit() bool {
-	if !metalAvailableNoInit() {
+	if !hostMetalDeviceAvailableNoInit() {
 		return false
 	}
-	return hostMetalDeviceAvailableNoInit()
+	if metalAvailableNoInit() {
+		return true
+	}
+	// The bundled CGo MLX source build can report the MLX-level Metal flag as
+	// unavailable even when the process has a real MTLDevice. Host Metal is the
+	// load-safety boundary here; later GPU stream/device creation still returns
+	// an MLX error if the backend cannot execute.
+	return true
 }
 
 func hostDeviceInfo() DeviceInfo {

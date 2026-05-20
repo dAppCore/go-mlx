@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"container/heap"
 	"slices"
 	"sync"
 
@@ -24,7 +25,7 @@ type Tokenizer struct {
 	vocab        map[string]int32
 	invVocab     map[int32]string
 	merges       []mergePair
-	mergeRanks   map[string]int // "a b" → rank for O(1) merge lookup
+	mergeRanks   map[mergeKey]int
 	special      map[string]int32
 	specialOrder []string
 
@@ -48,6 +49,56 @@ type Tokenizer struct {
 type mergePair struct {
 	a, b string
 	rank int
+}
+
+type mergeKey struct {
+	a string
+	b string
+}
+
+type bpeNode struct {
+	token   string
+	prev    int
+	next    int
+	alive   bool
+	version uint32
+}
+
+type bpeCandidate struct {
+	rank         int
+	left         int
+	right        int
+	leftVersion  uint32
+	rightVersion uint32
+}
+
+type bpeCandidateHeap []bpeCandidate
+
+func (h bpeCandidateHeap) Len() int {
+	return len(h)
+}
+
+func (h bpeCandidateHeap) Less(i, j int) bool {
+	if h[i].rank != h[j].rank {
+		return h[i].rank < h[j].rank
+	}
+	return h[i].left < h[j].left
+}
+
+func (h bpeCandidateHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+}
+
+func (h *bpeCandidateHeap) Push(x any) {
+	*h = append(*h, x.(bpeCandidate))
+}
+
+func (h *bpeCandidateHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
 }
 
 // tokenizerJSON is the HuggingFace tokenizer.json format.
@@ -159,9 +210,9 @@ func LoadTokenizer(path string) (*Tokenizer, error) {
 		}
 	}
 
-	tokenizer.mergeRanks = make(map[string]int, len(tokenizer.merges))
+	tokenizer.mergeRanks = make(map[mergeKey]int, len(tokenizer.merges))
 	for _, merge := range tokenizer.merges {
-		tokenizer.mergeRanks[merge.a+" "+merge.b] = merge.rank
+		tokenizer.mergeRanks[mergeKey{a: merge.a, b: merge.b}] = merge.rank
 	}
 
 	for _, added := range tj.AddedTokens {
@@ -310,28 +361,81 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 // bpeMerge applies BPE merges to a sequence of symbols until no more merges apply.
 // Uses the standard algorithm: repeatedly find the lowest-rank adjacent pair and merge it.
 func (t *Tokenizer) bpeMerge(symbols []string) []string {
-	for len(symbols) > 1 {
-		// Find the pair with the lowest merge rank.
-		bestRank := -1
-		bestIdx := -1
-		for i := range len(symbols) - 1 {
-			key := symbols[i] + " " + symbols[i+1]
-			if rank, ok := t.mergeRanks[key]; ok {
-				if bestRank < 0 || rank < bestRank {
-					bestRank = rank
-					bestIdx = i
-				}
-			}
-		}
-		if bestIdx < 0 {
-			break // No more merges available.
-		}
-		// Merge the pair at bestIdx without allocating a replacement slice.
-		symbols[bestIdx] += symbols[bestIdx+1]
-		copy(symbols[bestIdx+1:], symbols[bestIdx+2:])
-		symbols = symbols[:len(symbols)-1]
+	if len(symbols) <= 1 || len(t.mergeRanks) == 0 {
+		return symbols
 	}
-	return symbols
+
+	nodes := make([]bpeNode, len(symbols))
+	for i, sym := range symbols {
+		nodes[i] = bpeNode{
+			token: sym,
+			prev:  i - 1,
+			next:  i + 1,
+			alive: true,
+		}
+	}
+	nodes[len(nodes)-1].next = -1
+
+	candidates := make(bpeCandidateHeap, 0, len(nodes)-1)
+	pushPair := func(left int) {
+		if left < 0 || left >= len(nodes) || !nodes[left].alive {
+			return
+		}
+		right := nodes[left].next
+		if right < 0 || right >= len(nodes) || !nodes[right].alive {
+			return
+		}
+		rank, ok := t.mergeRanks[mergeKey{a: nodes[left].token, b: nodes[right].token}]
+		if !ok {
+			return
+		}
+		heap.Push(&candidates, bpeCandidate{
+			rank:         rank,
+			left:         left,
+			right:        right,
+			leftVersion:  nodes[left].version,
+			rightVersion: nodes[right].version,
+		})
+	}
+	for i := 0; i < len(nodes)-1; i++ {
+		pushPair(i)
+	}
+	heap.Init(&candidates)
+
+	for candidates.Len() > 0 {
+		candidate := heap.Pop(&candidates).(bpeCandidate)
+		left, right := candidate.left, candidate.right
+		if left < 0 || right < 0 || left >= len(nodes) || right >= len(nodes) {
+			continue
+		}
+		if !nodes[left].alive || !nodes[right].alive || nodes[left].next != right || nodes[right].prev != left {
+			continue
+		}
+		if nodes[left].version != candidate.leftVersion || nodes[right].version != candidate.rightVersion {
+			continue
+		}
+		if rank, ok := t.mergeRanks[mergeKey{a: nodes[left].token, b: nodes[right].token}]; !ok || rank != candidate.rank {
+			continue
+		}
+
+		nodes[left].token += nodes[right].token
+		nodes[left].next = nodes[right].next
+		nodes[left].version++
+		nodes[right].alive = false
+		nodes[right].version++
+		if next := nodes[right].next; next >= 0 {
+			nodes[next].prev = left
+		}
+
+		pushPair(nodes[left].prev)
+		pushPair(left)
+	}
+
+	merged := symbols[:0]
+	for i := 0; i >= 0; i = nodes[i].next {
+		merged = append(merged, nodes[i].token)
+	}
+	return merged
 }
 
 func tokenizerBPECacheKey(kind, segment string) string {

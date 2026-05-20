@@ -202,6 +202,27 @@ func TestFast_ScaledDotProductAttention_Causal_Good(t *testing.T) {
 	}
 }
 
+func TestFast_ScaledDotProductAttention_CausalOffset_Good(t *testing.T) {
+	target := "ScaledDotProductAttention CausalOffset"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	q := FromValues([]float32{0, 0}, 1, 1, 2, 1)
+	k := FromValues([]float32{0, 0, 0, 0, 0}, 1, 1, 5, 1)
+	v := FromValues([]float32{10, 20, 30, 40, 50}, 1, 1, 5, 1)
+	mask := FromValues([]float32{0, 0, 0, 0, -1e9, 0, 0, 0, 0, 0}, 1, 1, 2, 5)
+	defer Free(q, k, v, mask)
+
+	got := ScaledDotProductAttention(q, k, v, 1, true)
+	want := ScaledDotProductAttentionWithMask(q, k, v, mask, 1)
+	defer Free(got, want)
+
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval(causal offset attention) error = %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestFast_ScaledDotProductAttention_NonCausal_Good(t *testing.T) {
 	// Non-causal: all positions attend to all
 	q := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)

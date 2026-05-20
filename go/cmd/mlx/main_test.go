@@ -112,6 +112,63 @@ func TestRunCommand_BenchJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_BenchPromptFileMemvidKVWarm_Good(t *testing.T) {
+	originalLoad := loadBenchModel
+	originalRun := runBenchReport
+	t.Cleanup(func() {
+		loadBenchModel = originalLoad
+		runBenchReport = originalRun
+	})
+
+	dir := t.TempDir()
+	promptPath := core.PathJoin(dir, "prompt.txt")
+	suffixPath := core.PathJoin(dir, "suffix.txt")
+	writeCLIPackFile(t, promptPath, "alpha")
+	writeCLIPackFile(t, suffixPath, "omega")
+
+	var gotCfg bench.Config
+	loadBenchModel = func(string, ...mlx.LoadOption) (*mlx.Model, error) {
+		return &mlx.Model{}, nil
+	}
+	runBenchReport = func(_ context.Context, _ *mlx.Model, cfg bench.Config) (*bench.Report, error) {
+		gotCfg = cfg
+		return &bench.Report{
+			Version: bench.ReportVersion,
+			Config:  cfg,
+			MemvidKVBlockWarm: bench.MemvidKVBlockWarmReport{
+				Attempted: true,
+				BlockSize: 512,
+			},
+		}, nil
+	}
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"bench",
+		"-json",
+		"-prompt-file", promptPath,
+		"-prompt-repeat", "2",
+		"-prompt-suffix-file", suffixPath,
+		"-memvid-kv-warm",
+		"-memvid-kv-block-size", "512",
+		"-memvid-kv-prefix-tokens", "1024",
+		"-memvid-kv-store", "/tmp/bench.mvlog",
+		"/models/demo",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.Prompt != "alpha\n\nalpha\n\nomega" {
+		t.Fatalf("bench prompt = %q, want repeated prompt plus suffix", gotCfg.Prompt)
+	}
+	if !gotCfg.IncludeMemvidKVBlockWarm || gotCfg.MemvidKVBlockSize != 512 || gotCfg.MemvidKVPrefixTokens != 1024 || gotCfg.MemvidKVBlockStorePath != "/tmp/bench.mvlog" {
+		t.Fatalf("memvid bench cfg = %+v, want explicit KV block warm settings", gotCfg)
+	}
+	if !core.Contains(stdout.String(), `"include_memvid_kv_block_warm": true`) || !core.Contains(stdout.String(), `"memvid_kv_block_size": 512`) {
+		t.Fatalf("stdout = %q, want memvid bench config", stdout.String())
+	}
+}
+
 func TestRunCommand_BenchSpeculativeDraftModel_Good(t *testing.T) {
 	originalLoadPair := loadSpeculativePair
 	originalRunDraft := runBenchReportWithDraft
@@ -983,7 +1040,7 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 	if !core.Contains(prompt, "at least 1024 visible tokens") {
 		t.Fatalf("prompt = %q, want real-workload length instruction", prompt)
 	}
-	if !core.Contains(prompt, "no fewer than 12 substantial prose paragraphs") {
+	if !core.Contains(prompt, "no fewer than 16 substantial prose paragraphs") {
 		t.Fatalf("prompt = %q, want concrete longform structure instruction", prompt)
 	}
 	if !core.Contains(prompt, chapterProfileEndMarker) {
