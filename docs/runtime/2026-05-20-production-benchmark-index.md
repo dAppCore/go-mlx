@@ -19,13 +19,17 @@ The current measured blockers are still `mlx_lm` and llama.cpp: after shared
 full-K/V reuse for paged full-attention owners, `mlx_lm` is `1.928x` faster by
 wall time and estimated energy than go-mlx on the 100k cached workflow, while
 the cached llama.cpp server row is `1.079x` faster by wall time. That keeps
-go-mlx's long-context decode path as the next optimisation boundary.
+go-mlx's long-context decode path as the next optimisation boundary. A
+follow-up `5120` token-budget diagnostic now shows the current go-mlx path
+holds the same `~60 tok/s` decode band for `2489` token natural turns with
+bounded memory, but that prompt shape does not force a full `5k` token output.
 
 ## Accepted go-mlx Artefacts
 
 | Purpose | Artefact | Shape | Result |
 | --- | --- | --- | --- |
 | 100k retained workflow | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, shared full-K/V reuse for full-attention layers | `231.109s`, `60.011 tok/s` decode, `1678.322 tok/s` cold prefill, `0.368ms` warm restore, `3.710 GiB` active MLX, `23110.937 J` at `100 W` |
+| 100k sustained long-turn diagnostic | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g5120-budget-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x5120` budget, natural stop at `2489` tokens per turn, same retained prefix and shared full-K/V reuse | `475.571s`, `59.947 tok/s` decode, `59.962 tok/s` warm decode, `0.362ms` warm restore, `3.726 GiB` active MLX, `47557.087 J` at `100 W` |
 | 100k retained book | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-energy100w.json` | `10` chapters, `8192` token budget, `768` visible-token floor, thinking enabled | `482.081s`, `41.442 tok/s` decode, `11425` visible tokens, `4.261 GiB` active MLX |
 | C006 accepted continuation | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json` | `10` chapters, `8192` token budget, `512` visible-token floor, thinking enabled | `105.947s`, `80.343 tok/s` decode, `8201` visible tokens, `3.396 GB` active MLX |
 | C006 markdown | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` | Captured book output | Operator-reviewed as on-prompt through the final silence |

@@ -30,6 +30,13 @@
       "indexed": true
     },
     {
+      "id": "gomlx-100k-sustained-long-turn-diagnostic",
+      "role": "long_turn_diagnostic",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g5120-budget-r10-shared-fullkv-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-realwork-note",
       "role": "accepted_go_mlx_workflow_note",
       "path": "docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md",

@@ -70,6 +70,35 @@ loss is still the evaluated long-context graph and kernel path:
   graph synchronises in practice, not evidence that prompt-cache restore is
   slow.
 
+## Sustained Long-Turn Check
+
+A follow-up `driver-profile` diagnostic kept the accepted `101005` token
+prompt, `context=131072`, paged K/V `1024`, shared full-K/V reuse, and `12 GiB`
+active/RSS guards, but raised the generation budget from `1024` to `5120`.
+The prompt naturally stopped at `2489` generated/visible tokens per turn, so
+this is not a true forced `5k` row. It does test a much larger real turn than
+the accepted runner-anchor row.
+
+| Metric | Value |
+| --- | ---: |
+| Successful runs | `10/10` |
+| Generated / visible tokens | `24890` |
+| Average decode | `59.94667601709725 tok/s` |
+| Warm decode min / max | `59.926061615914335` / `60.00645786751182 tok/s` |
+| Warm wall average | `41.525169310s` |
+| Warm restore average | `0.36199ms` |
+| Cold prefill | `1680.309200848654 tok/s` |
+| Active MLX memory | `4000601698` bytes |
+| Process RSS | `3383967744` bytes |
+| Estimated energy at `100 W` | `47557.0868251 J` |
+
+This bounds one suspected failure mode: large generated turns are not causing
+decode collapse or host-memory growth on the current shared-full-K/V path. The
+remaining gap is still the baseline 100k attention cost versus cached
+llama.cpp/`mlx_lm`, not long-turn allocator growth. A future fairness row that
+requires `5k+` visible tokens should change the prompt/task shape rather than
+ignore model stop tokens.
+
 ## Working Explanation
 
 go-mlx has the retained-prefix architecture working, and the old paged-cache
@@ -159,6 +188,7 @@ tracked harness now defaults to the current E2B q4 production snapshot and uses
 by shell stdout redirection. Override `GO_MLX_MODEL` and `GO_MLX_MODEL_LABEL`
 when comparing E4B, 26B, or future model snapshots.
 
-The next long-turn fairness pass should keep the accepted repeat/context ladder
-but set `GO_MLX_RAMP_MAX_TOKENS=5120`. That measures the 100k warm-decode path
-with a generation budget large enough to avoid another tiny-token smoke.
+The `5120` token-budget fairness pass has now been run at the accepted 100k
+shape and is recorded as a sustained long-turn diagnostic. The next context
+ladder should use a suffix that naturally demands `5k+` visible tokens if the
+goal is to measure a full-budget turn rather than the model's natural stop.

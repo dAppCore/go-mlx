@@ -69,6 +69,46 @@ That improves the same 100k retained workflow by `1.170x` on decode and
 still much slower than the short and 29k lanes, but the retained-prefix path
 removes repeated prompt setup at agentic workflow scale.
 
+## Sustained Long-Turn Diagnostic
+
+Diagnostic artefact:
+
+- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g5120-budget-r10-shared-fullkv-energy100w.json`
+
+Shape:
+
+- Same model, prompt repeat, suffix, context, cache mode, page size, and memory
+  guards as the accepted retained-prefix profile
+- Runs: `10`
+- Generation budget: `5120` tokens per run
+- Natural stop: `2489` generated and visible tokens per run
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful runs | `10/10` |
+| Generated / visible tokens | `24890` |
+| Total wall time | `475.571s` |
+| Average decode | `59.947 tok/s` |
+| Warm decode band | `59.926` to `60.006 tok/s` |
+| Warm run wall average | `41.525s` |
+| Warm restore average | `0.362 ms` |
+| Cold prefill | `1680.309 tok/s` |
+| Peak MLX active memory | `3.726 GiB` |
+| Peak process RSS | `3.152 GiB` |
+| Process virtual reservation | `682.399 GiB` |
+| Estimated energy | `47557.087 J` |
+| Joules per visible token | `1.911 J/token` |
+
+This is not a new runner-anchor row because the prompt naturally stops below
+the full `5120` token budget. It is still useful long-output evidence: compared
+with the accepted `1024` token row, decode stays flat at the same `~60 tok/s`
+band over `2.43x` more visible output per retained turn, and memory remains
+bounded under the same `12 GiB` active/RSS guards. A true `5k+` generated-token
+row needs a prompt shape that naturally asks for that much output, not an
+ignore-EOS shortcut.
+
 ## Retained 10-Chapter Book
 
 Accepted artefacts:
