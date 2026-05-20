@@ -1327,11 +1327,74 @@ func pageCacheArrays(keys, values *Array, pageSize int) ([]*Array, []*Array, boo
 		end := min(seqLen, start+pageSize)
 		kPage := Slice(keys, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(end), kShape[3]})
 		vPage := Slice(values, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(end), vShape[3]})
-		kPages = append(kPages, Copy(kPage))
-		vPages = append(vPages, Copy(vPage))
-		Free(kPage, vPage)
+		kPages = append(kPages, kPage)
+		vPages = append(vPages, vPage)
 	}
 	return kPages, vPages, false, nil
+}
+
+func viewPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*Array, error) {
+	if len(kPages) == 0 || len(kPages) != len(vPages) {
+		return nil, nil, core.NewError("prompt cache: invalid paged cache state")
+	}
+	remaining := tokenLen
+	outK := make([]*Array, 0, len(kPages))
+	outV := make([]*Array, 0, len(vPages))
+	for i := range kPages {
+		if remaining <= 0 {
+			break
+		}
+		kPage := kPages[i]
+		vPage := vPages[i]
+		if kPage == nil || vPage == nil || !kPage.Valid() || !vPage.Valid() {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page")
+		}
+		pageLen := pagedArrayLen(kPage)
+		if pageLen <= 0 {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page length")
+		}
+		take := min(pageLen, remaining)
+		kView, err := viewPagePrefix(kPage, take)
+		if err != nil {
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, err
+		}
+		vView, err := viewPagePrefix(vPage, take)
+		if err != nil {
+			Free(kView)
+			Free(outK...)
+			Free(outV...)
+			return nil, nil, err
+		}
+		outK = append(outK, kView)
+		outV = append(outV, vView)
+		remaining -= take
+	}
+	if remaining > 0 {
+		Free(outK...)
+		Free(outV...)
+		return nil, nil, core.NewError("prompt cache: paged cache shorter than prefix")
+	}
+	return outK, outV, nil
+}
+
+func viewPagePrefix(page *Array, tokenLen int) (*Array, error) {
+	shape := page.Shape()
+	if len(shape) < 4 {
+		return page.Clone(), nil
+	}
+	if tokenLen > int(shape[2]) {
+		return nil, core.NewError("prompt cache: page shorter than prefix")
+	}
+	if tokenLen == int(shape[2]) {
+		return page.Clone(), nil
+	}
+	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(tokenLen), shape[3]}), nil
 }
 
 func copyPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*Array, error) {
@@ -1594,7 +1657,7 @@ func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (C
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid paged prefix length")
 	}
-	kPages, vPages, err := copyPagedCachePrefix(snapshot.kPages, snapshot.vPages, prefixLen)
+	kPages, vPages, err := viewPagedCachePrefix(snapshot.kPages, snapshot.vPages, prefixLen)
 	if err != nil {
 		return nil, nil, err
 	}
