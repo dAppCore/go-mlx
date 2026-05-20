@@ -1,0 +1,196 @@
+{
+  "spdx_licence_identifier": "EUPL-1.2",
+  "date": "2026-05-20",
+  "purpose": "Machine-readable canonical artefact set for the Gemma 4 E2B production benchmark lane.",
+  "canonical_index": "docs/runtime/2026-05-20-production-benchmark-index.md",
+  "verifier": "scripts/verify_production_benchmark_manifest.sh",
+  "production_status": "not_complete",
+  "open_gates": [
+    "long_context_degradation",
+    "runtime_fragment_pruning"
+  ],
+  "artifacts": [
+    {
+      "id": "production-index",
+      "role": "index",
+      "path": "docs/runtime/2026-05-20-production-benchmark-index.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-100k-retained-workflow",
+      "role": "accepted_go_mlx_workflow",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-borrowed-pages-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-100k-realwork-note",
+      "role": "accepted_go_mlx_workflow_note",
+      "path": "docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-100k-retained-book-json",
+      "role": "accepted_go_mlx_book",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-100k-retained-book-md",
+      "role": "accepted_go_mlx_book",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-book.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-c006-book-note",
+      "role": "accepted_continuation_note",
+      "path": "docs/runtime/2026-05-20-gemma4-e2b-c006-report-file-book.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-c006-book-json",
+      "role": "accepted_continuation",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-c006-book-md",
+      "role": "accepted_continuation",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "long-context-gap-diagnosis",
+      "role": "diagnosis",
+      "path": "docs/runtime/2026-05-20-long-context-gap-diagnosis.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "mlx-lm-100k-cached",
+      "role": "runner_anchor",
+      "path": "docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "mlx-lm-strict-load-failure",
+      "role": "runner_failure_evidence",
+      "path": "docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-strict-load-failure.stderr",
+      "kind": "text",
+      "indexed": true
+    },
+    {
+      "id": "llamacpp-cached-server-note",
+      "role": "runner_anchor_note",
+      "path": "docs/runtime/2026-05-20-llamacpp-gemma4-e2b-100k-cached-server.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "llamacpp-cached-server-json",
+      "role": "runner_anchor",
+      "path": "docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "llamacpp-cold-json",
+      "role": "calibration",
+      "path": "docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "vllm-metal-load-failure-stdout",
+      "role": "runner_failure_evidence",
+      "path": "docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stdout",
+      "kind": "text",
+      "indexed": true
+    },
+    {
+      "id": "vllm-metal-load-failure-stderr",
+      "role": "runner_failure_evidence",
+      "path": "docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr",
+      "kind": "text",
+      "indexed": true
+    },
+    {
+      "id": "quant-matrix-note",
+      "role": "quant_matrix",
+      "path": "docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "external-quant-rows",
+      "role": "quant_matrix_anchor",
+      "path": "docs/runtime/2026-05-20-gemma4-e2b-external-quant-rows.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "quant-mxfp4-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-mxfp4-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-mxfp8-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-mxfp8-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-4bit-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-5bit-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-5bit-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-6bit-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-6bit-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-8bit-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-8bit-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "quant-bf16-json",
+      "role": "quant_matrix_json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-bf16-current-quant-matrix-3run-readme-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "chapter-profile-safety",
+      "role": "safety_note",
+      "path": "docs/runtime/2026-05-20-chapter-profile-safety.md",
+      "kind": "markdown",
+      "indexed": true
+    }
+  ]
+}

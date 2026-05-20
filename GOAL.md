@@ -80,6 +80,15 @@ Production remains blocked until these gates are all satisfied:
       enough that a new worker can replay the production path without digging
       through abandoned JSON and stderr fragments.
 
+      Manifest progress: the canonical production artefacts now have a tracked
+      manifest at
+      `docs/runtime/2026-05-20-production-benchmark-manifest.json` and a
+      verifier at `scripts/verify_production_benchmark_manifest.sh`. The
+      verifier checks file existence, git tracking, non-empty artefacts, JSON
+      parseability, and index references. This gate remains open until the
+      extra runtime fragments are pruned or quarantined rather than merely
+      ignored by the manifest.
+
 Do not close this goal because a short-context decode number is healthy. The
 production claim is repeated-workflow wall time and retained-state savings under
 real output budgets, with runner anchors and energy assumptions exposed.

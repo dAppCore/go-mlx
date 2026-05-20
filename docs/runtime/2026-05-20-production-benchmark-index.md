@@ -69,6 +69,46 @@ evidence. The raw go-mlx rows and external per-quant rows are now replay-grade;
 the production decision still comes from the accepted 100k retained workflow
 rather than this short matrix.
 
+## Replay Manifest
+
+This file is `docs/runtime/2026-05-20-production-benchmark-index.md`.
+
+The canonical artefact set is pinned in
+`docs/runtime/2026-05-20-production-benchmark-manifest.json`. Verify it with:
+
+```sh
+scripts/verify_production_benchmark_manifest.sh
+```
+
+The verifier checks that every manifest path exists, is tracked, is non-empty,
+that JSON artefacts parse, and that indexed paths remain referenced from this
+file. It intentionally only warns about extra `docs/runtime` working-tree
+fragments; deletion or quarantine of abandoned probes is a separate cleanup
+step so the verifier cannot destroy evidence while an investigation is active.
+
+Manifest coverage details not already shown in the tables above:
+
+- Accepted 100k retained-book markdown:
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-book.md`
+- Strict `mlx_lm` load failure evidence:
+  `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-strict-load-failure.stderr`
+- llama.cpp cached-server note:
+  `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-100k-cached-server.md`
+- vLLM Metal stdout companion:
+  `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stdout`
+- External quant rows:
+  `docs/runtime/2026-05-20-gemma4-e2b-external-quant-rows.md`
+- Safety note:
+  `docs/runtime/2026-05-20-chapter-profile-safety.md`
+- Seven-format raw JSON rows:
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-mxfp4-current-quant-matrix-3run-readme-energy100w.json`,
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-mxfp8-current-quant-matrix-3run-readme-energy100w.json`,
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-quant-matrix-3run-readme-energy100w.json`,
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-5bit-current-quant-matrix-3run-readme-energy100w.json`,
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-6bit-current-quant-matrix-3run-readme-energy100w.json`,
+  `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-8bit-current-quant-matrix-3run-readme-energy100w.json`,
+  and `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-bf16-current-quant-matrix-3run-readme-energy100w.json`.
+
 ## Replay Environment
 
 Use the workspace-aware setup; do not force standalone `GOWORK=off` for this
@@ -92,5 +132,5 @@ device from the runner, while the same workload with `-report-file` completed.
    graph/kernel work in the long-context attention path, not prompt-cache
    restore. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
-2. Prune or quarantine abandoned runtime fragments after the canonical rows
-   above are no longer needed for investigation.
+2. Prune or quarantine abandoned runtime fragments after the manifest verifier
+   is green and the canonical rows above are no longer needed for investigation.
