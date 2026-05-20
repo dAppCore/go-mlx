@@ -79,6 +79,20 @@ The next optimisation should target the 100k first-prefill and warm-decode
 kernel path directly. Re-running small-context or short-output smokes will not
 measure this boundary.
 
+## Rejected 100k Branches
+
+Two same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+
+| Probe | Shape | Result | Verdict |
+| --- | --- | ---: | --- |
+| Paged K/V without fast concat | `100937` prompt tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s` wall, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Avoiding the concat makes the per-page Go/MLX attention graph much slower than the accepted borrowed-page fast-concat lane. |
+| Fixed cache with sliding layers bounded | `100937` prompt tokens, fixed Gemma 4 cache, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13748980782` bytes over the `12884901888` byte guard | Rejected. Hyper-long fixed cache is not the default path until a narrower global-only/native attention storage plan exists. |
+
+The current boundary is therefore narrower than "turn off concat" or "restore
+fixed cache": go-mlx needs a native paged/global-attention path that avoids both
+per-token full K/V concatenation and the active-memory footprint of a full
+fixed cache.
+
 ## Replay Harness
 
 Use `scripts/gemma4_context_ramp.sh` for the next context-scaling pass. The

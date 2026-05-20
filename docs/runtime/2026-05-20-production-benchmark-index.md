@@ -51,6 +51,16 @@ measured one-run wall time, so go-mlx still beats CLI-style repeated cold
 replay. The server-side cached-prefix row is the fairer retained-workflow
 anchor and beats go-mlx on the same repeated shape.
 
+## Rejected Long-Context Diagnostics
+
+These artefacts are indexed because they bound the active 100k blocker, but
+they are not accepted production paths.
+
+| Probe | Artefact | Comparable shape | Result | Verdict |
+| --- | --- | --- | ---: | --- |
+| No paged fast-concat | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-no-fastconcat-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s`, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected; page-by-page attention graph is slower than the accepted borrowed-page fast-concat lane |
+| Hyper-long fixed cache | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, fixed Gemma 4 cache, shared fixed mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13748980782` bytes | Rejected; fixed full-capacity global K/V is over the production memory guard |
+
 ## Seven-Format E2B Matrix
 
 Source note: `docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md`.
