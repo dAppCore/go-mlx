@@ -518,6 +518,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	fs := flag.NewFlagSet(cliCommandName("driver-profile"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON driver profile")
+	reportFile := fs.String("report-file", "", "write JSON driver profile to a file")
 	profilePath := fs.String("profile", "", "saved tuning profile to apply before loading the model")
 	prompt := fs.String("prompt", "Answer in one short sentence: why does retained model state matter?", "prompt/question to run")
 	promptFile := fs.String("prompt-file", "", "read prompt/question text from a file")
@@ -795,7 +796,8 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if report != nil && *estimatePowerWatts > 0 {
 		report.EstimatedEnergy = estimateDriverProfileEnergy(report, *estimatePowerWatts)
 	}
-	if *jsonOut {
+	reportPath := core.Trim(*reportFile)
+	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &driverProfileReport{
 				Version:           1,
@@ -824,12 +826,22 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 			core.Print(stderr, "%s driver-profile: marshal report failed", cliName())
 			return 1
 		}
-		core.WriteString(stdout, string(data.Value.([]byte)))
-		core.WriteString(stdout, "\n")
+		if reportPath != "" {
+			if writeErr := writeJSONReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
+				core.Print(stderr, "%s driver-profile: write report file: %v", cliName(), writeErr)
+				return 1
+			}
+		}
+		if *jsonOut {
+			core.WriteString(stdout, string(data.Value.([]byte)))
+			core.WriteString(stdout, "\n")
+		}
 		if err != nil {
 			return 1
 		}
-		return 0
+		if *jsonOut {
+			return 0
+		}
 	}
 	if err != nil {
 		core.Print(stderr, "%s driver-profile: %v", cliName(), err)
@@ -2054,7 +2066,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			return 1
 		}
 		if reportPath != "" {
-			if writeErr := writeChapterProfileReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
+			if writeErr := writeJSONReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
 				core.Print(stderr, "%s chapter-profile: write report file: %v", cliName(), writeErr)
 				return 1
 			}
@@ -2078,7 +2090,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	return 0
 }
 
-func writeChapterProfileReportFile(path string, data []byte) error {
+func writeJSONReportFile(path string, data []byte) error {
 	path = core.Trim(path)
 	if path == "" {
 		return nil

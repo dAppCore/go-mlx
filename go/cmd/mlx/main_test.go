@@ -470,6 +470,66 @@ func TestRunCommand_DriverProfileProfileJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DriverProfileReportFile_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		return &driverProfileReport{
+			Version:       1,
+			ModelPath:     modelPath,
+			PromptBytes:   len(cfg.Prompt),
+			MaxTokens:     cfg.MaxTokens,
+			RequestedRuns: cfg.Runs,
+			Runs: []driverProfileRun{
+				{
+					Index:         1,
+					Duration:      100 * time.Millisecond,
+					VisibleTokens: 4,
+					Metrics: mlx.Metrics{
+						PromptTokens:        11,
+						GeneratedTokens:     4,
+						PrefillDuration:     10 * time.Millisecond,
+						DecodeDuration:      90 * time.Millisecond,
+						TotalDuration:       100 * time.Millisecond,
+						PrefillTokensPerSec: 1100,
+						DecodeTokensPerSec:  44.4,
+					},
+				},
+			},
+			Summary: driverProfileSummary{
+				SuccessfulRuns:             1,
+				GeneratedTokens:            4,
+				VisibleTokens:              4,
+				TotalDuration:              100 * time.Millisecond,
+				PrefillTokensPerSecAverage: 1100,
+				DecodeTokensPerSecAverage:  44.4,
+			},
+		}, nil
+	}
+	reportPath := core.PathJoin(t.TempDir(), "nested", "driver-profile.json")
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"driver-profile", "-report-file", reportPath, "-prompt", "state smoke", "-max-tokens", "4", "-runs", "1", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	data := core.ReadFile(reportPath)
+	if !data.OK {
+		t.Fatalf("read report file: %v", data.Value)
+	}
+	text := string(data.Value.([]byte))
+	if !core.Contains(text, `"model_path": "/models/demo"`) || !core.Contains(text, `"decode_tokens_per_sec_average": 44.4`) {
+		t.Fatalf("report file = %q, want driver profile JSON", text)
+	}
+	if core.Contains(stdout.String(), `"model_path"`) {
+		t.Fatalf("stdout = %q, did not want JSON without -json", stdout.String())
+	}
+	if !core.Contains(stdout.String(), "driver profile:") {
+		t.Fatalf("stdout = %q, want human summary", stdout.String())
+	}
+}
+
 func TestRunCommand_DriverProfileEstimatedPowerWatts_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
