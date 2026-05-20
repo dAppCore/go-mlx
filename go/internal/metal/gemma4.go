@@ -587,13 +587,10 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		cfg.SlidingWindow = 512
 	}
 	if cfg.SlidingWindowPattern == 0 {
-		cfg.SlidingWindowPattern = 5
+		cfg.SlidingWindowPattern = 6
 	}
 	if cfg.MaxPositionEmbeddings == 0 {
 		cfg.MaxPositionEmbeddings = 131072
-	}
-	if cfg.NumKVSharedLayers == 0 && wrapper.NumKVSharedLayers == nil && wrapper.TextConfig.NumKVSharedLayers == nil {
-		cfg.NumKVSharedLayers = 20
 	}
 	if cfg.FinalLogitSoftcapping == 0 {
 		cfg.FinalLogitSoftcapping = 30
@@ -640,6 +637,9 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 				cfg.LayerTypes[i] = "full_attention"
 			}
 		}
+	}
+	if len(cfg.LayerTypes) > 0 {
+		cfg.LayerTypes[len(cfg.LayerTypes)-1] = "full_attention"
 	}
 	if len(cfg.LayerTypes) < int(cfg.NumHiddenLayers) {
 		return nil, core.E("gemma4.parseConfig", "layer_types shorter than num_hidden_layers", nil)
@@ -1342,6 +1342,15 @@ func gemma4RetainedWeights(m *Gemma4Model) map[*Array]struct{} {
 	return retained
 }
 
+func gemma4LazyRetainedWeights(m *Gemma4Model) map[*Array]struct{} {
+	lazy := make(map[*Array]struct{})
+	if m == nil {
+		return lazy
+	}
+	gemma4TrackEmbedding(lazy, m.EmbedTokensPerLayer)
+	return lazy
+}
+
 func gemma4FreeUnusedWeights(weights map[string]*Array, retained map[*Array]struct{}) {
 	freed := make(map[*Array]struct{})
 	for _, arr := range weights {
@@ -1359,14 +1368,22 @@ func gemma4FreeUnusedWeights(weights map[string]*Array, retained map[*Array]stru
 	}
 }
 
-func gemma4MaterializeRetainedWeights(retained map[*Array]struct{}) {
+func gemma4MaterializableRetainedWeights(retained, lazy map[*Array]struct{}) []*Array {
 	all := make([]*Array, 0, len(retained))
 	for arr := range retained {
 		if arr == nil || !arr.Valid() {
 			continue
 		}
+		if _, ok := lazy[arr]; ok {
+			continue
+		}
 		all = append(all, arr)
 	}
+	return all
+}
+
+func gemma4MaterializeRetainedWeights(retained, lazy map[*Array]struct{}) {
+	all := gemma4MaterializableRetainedWeights(retained, lazy)
 	Materialize(all...)
 }
 
@@ -1689,8 +1706,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 
 	m.PreviousKVs, m.CacheIndexByLayer = buildGemma4CacheLayout(m.Layers, cfg.NumKVSharedLayers)
 	retainedWeights := gemma4RetainedWeights(m)
+	lazyWeights := gemma4LazyRetainedWeights(m)
 	gemma4FreeUnusedWeights(weights, retainedWeights)
-	gemma4MaterializeRetainedWeights(retainedWeights)
+	gemma4MaterializeRetainedWeights(retainedWeights, lazyWeights)
 	precomputeGemma4ScaledWeights(m)
 
 	loadSucceeded = true

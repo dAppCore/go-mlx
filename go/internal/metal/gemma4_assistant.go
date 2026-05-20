@@ -173,7 +173,7 @@ func LoadGemma4Assistant(modelPath string) (*Gemma4AssistantModel, error) {
 	}
 	retained := gemma4AssistantRetainedWeights(m)
 	gemma4FreeUnusedWeights(weights, retained)
-	gemma4MaterializeRetainedWeights(retained)
+	gemma4MaterializeRetainedWeights(retained, nil)
 	loadSucceeded = true
 	return m, nil
 }

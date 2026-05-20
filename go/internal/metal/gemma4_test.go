@@ -29,6 +29,20 @@ func freeWeightMap(weights map[string]*Array) {
 	}
 }
 
+func arraySetContains(set map[*Array]struct{}, arr *Array) bool {
+	_, ok := set[arr]
+	return ok
+}
+
+func arraySliceContains(arrays []*Array, needle *Array) bool {
+	for _, arr := range arrays {
+		if arr == needle {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	coverageTokens := "ParseConfig Defaults"
 	if coverageTokens == "" {
@@ -61,8 +75,8 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	if cfg.SlidingWindow != 512 {
 		t.Errorf("SlidingWindow = %d, want 512", cfg.SlidingWindow)
 	}
-	if cfg.NumKVSharedLayers != 20 {
-		t.Errorf("NumKVSharedLayers = %d, want 20", cfg.NumKVSharedLayers)
+	if cfg.NumKVSharedLayers != 0 {
+		t.Errorf("NumKVSharedLayers = %d, want 0", cfg.NumKVSharedLayers)
 	}
 	if cfg.FinalLogitSoftcapping != 30 {
 		t.Errorf("FinalLogitSoftcapping = %f, want 30", cfg.FinalLogitSoftcapping)
@@ -75,8 +89,8 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 		"sliding_attention",
 		"sliding_attention",
 		"sliding_attention",
-		"full_attention",
 		"sliding_attention",
+		"full_attention",
 	}
 	for i, got := range cfg.LayerTypes {
 		if got != want[i] {
@@ -88,6 +102,42 @@ func TestGemma4_ParseConfig_Defaults_Good(t *testing.T) {
 	}
 	if cfg.RopeParameters["sliding_attention"].RopeTheta != 10000 {
 		t.Errorf("sliding attention rope theta = %f, want 10000", cfg.RopeParameters["sliding_attention"].RopeTheta)
+	}
+}
+
+func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T) {
+	coverageTokens := "ParseConfig DefaultLayerTypesForceFinalGlobal"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4_text",
+		"hidden_size": 1024,
+		"num_hidden_layers": 7,
+		"intermediate_size": 2048,
+		"num_attention_heads": 4,
+		"num_key_value_heads": 1,
+		"head_dim": 256
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	want := []string{
+		"sliding_attention",
+		"sliding_attention",
+		"sliding_attention",
+		"sliding_attention",
+		"sliding_attention",
+		"full_attention",
+		"full_attention",
+	}
+	if len(cfg.LayerTypes) != len(want) {
+		t.Fatalf("LayerTypes len = %d, want %d", len(cfg.LayerTypes), len(want))
+	}
+	for i, got := range cfg.LayerTypes {
+		if got != want[i] {
+			t.Fatalf("LayerTypes[%d] = %q, want %q", i, got, want[i])
+		}
 	}
 }
 
@@ -682,6 +732,52 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 	}
 	for i := range compiled {
 		floatSliceApprox(t, compiled[i].Floats(), baseFloats[i])
+	}
+}
+
+func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
+	coverageTokens := "PerLayerEmbedding RetainedLazy"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Gemma4Model{
+		EmbedTokensPerLayer: &Embedding{
+			Weight: FromValues([]float32{0.1, 0.2, 0.3, 0.4}, 2, 2),
+			Scales: FromValues([]float32{1.0, 1.0}, 2, 1),
+			Biases: FromValues([]float32{0.0, 0.0}, 2, 1),
+		},
+		PerLayerModelProj: NewLinear(FromValues([]float32{0.2, 0.1, -0.3, 0.4}, 2, 2), nil),
+		Output:            NewLinear(FromValues([]float32{0.5, -0.2, 0.7, 0.6}, 2, 2), nil),
+	}
+	defer closeGemma4(model)
+
+	retained := gemma4RetainedWeights(model)
+	lazy := gemma4LazyRetainedWeights(model)
+	materializable := gemma4MaterializableRetainedWeights(retained, lazy)
+
+	for _, arr := range []*Array{
+		model.EmbedTokensPerLayer.Weight,
+		model.EmbedTokensPerLayer.Scales,
+		model.EmbedTokensPerLayer.Biases,
+	} {
+		if !arraySetContains(retained, arr) {
+			t.Fatal("per-layer embedding arrays must stay retained for model lifetime")
+		}
+		if !arraySetContains(lazy, arr) {
+			t.Fatal("per-layer embedding arrays should stay lazy at load time")
+		}
+		if arraySliceContains(materializable, arr) {
+			t.Fatal("per-layer embedding arrays should not be eagerly materialized")
+		}
+	}
+
+	if !arraySliceContains(materializable, model.PerLayerModelProj.Weight) {
+		t.Fatal("per-layer projection should still be eagerly materialized")
+	}
+	if !arraySliceContains(materializable, model.Output.Weight) {
+		t.Fatal("output projection should still be eagerly materialized")
 	}
 }
 

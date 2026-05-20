@@ -304,7 +304,7 @@ func buildGemma4VisionComponents(cfg *Gemma4TextConfig, weights map[string]*Arra
 
 	retained := gemma4VisionRetainedWeights(vision, projector)
 	gemma4FreeUnusedWeights(weights, retained)
-	gemma4MaterializeRetainedWeights(retained)
+	gemma4MaterializeRetainedWeights(retained, nil)
 	return vision, projector, nil
 }
 
