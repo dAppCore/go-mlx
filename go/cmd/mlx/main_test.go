@@ -983,6 +983,9 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 	if !core.Contains(prompt, "at least 1024 visible tokens") {
 		t.Fatalf("prompt = %q, want real-workload length instruction", prompt)
 	}
+	if !core.Contains(prompt, "no fewer than 12 substantial prose paragraphs") {
+		t.Fatalf("prompt = %q, want concrete longform structure instruction", prompt)
+	}
 	if !core.Contains(prompt, chapterProfileEndMarker) {
 		t.Fatalf("prompt = %q, want chapter end marker instruction", prompt)
 	}
@@ -1045,6 +1048,20 @@ func TestChapterProfileObserveEndMarker_Fragmented_Good(t *testing.T) {
 	}
 	if !chapterProfileObserveEndMarker(&window, "CHAPTER]]") {
 		t.Fatal("observe did not see fragmented end marker")
+	}
+}
+
+func TestChapterProfileMissingEndMarkerError_AllowsNaturalStopAfterFloor_Good(t *testing.T) {
+	if err := chapterProfileMissingEndMarkerError(2, false, 882, 8192); err != "" {
+		t.Fatalf("missing marker err = %q, want natural stop accepted below max tokens", err)
+	}
+}
+
+func TestChapterProfileMissingEndMarkerError_RejectsMaxTokenExhaustion_Bad(t *testing.T) {
+	err := chapterProfileMissingEndMarkerError(2, false, 8192, 8192)
+
+	if !core.Contains(err, "reached max tokens 8192 before end marker") {
+		t.Fatalf("missing marker err = %q, want max-token exhaustion", err)
 	}
 }
 

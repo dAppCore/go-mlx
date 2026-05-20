@@ -2,6 +2,13 @@
 
 # Gemma 4 E2B 4bit 100k Retained-State Run
 
+Supersession note, 2026-05-20: the historical accepted 10-turn row in this
+file used only `128` generated tokens per turn. The current guarded
+real-workload refresh is now recorded in
+`docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md`; it uses
+`1024` generated tokens per turn for the retained-prefix profile and a captured
+10-chapter book run at the same 100k-class context.
+
 This note records the 2026-05-19 investigation into the 100k-token E2B 4bit
 long-context lane. The important finding is that the fixed retained-cache path
 was not merely inefficient: it could reserve hundreds of GiB of MLX active or

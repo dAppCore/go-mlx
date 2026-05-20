@@ -733,6 +733,19 @@ SDPA graph.
 Detailed report:
 `docs/runtime/2026-05-19-gemma4-e2b-100k-retained-paged.md`
 
+Current real-workload refresh:
+`docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md`
+
+The 2026-05-20 refresh supersedes the old `128` generated-token 100k row for
+go-mlx acceptance. It records a current guarded E2B q4 retained-prefix profile
+with `101005` prompt tokens, `10` runs, `1024` generated tokens per run,
+`43.617 tok/s` average decode, `642.657 tok/s` cold prefill, `2.116ms` average
+warm restore, `408.483s` total wall time, `1414.491s` prompt setup saved versus
+replayed prefill, `3.699 GiB` peak MLX active memory, `5.049 GiB` peak process
+RSS, and `40848.257 J` at the normalised `100 W` estimate. The same refresh
+also records the accepted 100k retained 10-chapter book artefact with `11425`
+visible tokens across `10/10` turns.
+
 The E2B 4bit 100k pass exposed two separate behaviours. The fixed retained
 cache path can make warm setup look fast, but it is not acceptable at 100k:
 the three-run probe reached `197.17 GiB` MLX active memory and `1232.02 GiB`

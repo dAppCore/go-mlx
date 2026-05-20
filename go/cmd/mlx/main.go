@@ -2379,7 +2379,17 @@ func chapterProfileLengthInstruction(minTokens int) string {
 	if minTokens <= 0 {
 		return "use the available token budget naturally; do not force a tiny answer."
 	}
-	return core.Sprintf("write at least %d visible tokens before the end marker.", minTokens)
+	paragraphs := minTokens / 90
+	if minTokens%90 != 0 {
+		paragraphs++
+	}
+	if paragraphs < 8 {
+		paragraphs = 8
+	}
+	if paragraphs > 18 {
+		paragraphs = 18
+	}
+	return core.Sprintf("write at least %d visible tokens before the end marker, as no fewer than %d substantial prose paragraphs with concrete scene movement. If the chapter feels complete before that length, add another scene beat before writing the end marker.", minTokens, paragraphs)
 }
 
 func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens int, enableThinking bool) string {
@@ -2554,6 +2564,9 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 	builder.WriteString(visiblePrefill)
 	outputStream := newChapterProfileOutputStream(opts.OutputWriter)
 	if outputStream != nil {
+		if chapter > 1 {
+			outputStream.Write("\n\n")
+		}
 		outputStream.Write(visiblePrefill)
 		if err := outputStream.Err(); err != nil {
 			turn.Error = err.Error()
@@ -2698,12 +2711,8 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 		turn.Error = err.Error()
 		return turn
 	}
-	if !endMarkerSeen {
-		if turn.Metrics.GeneratedTokens >= opts.ChapterMaxTokens {
-			turn.Error = core.Sprintf("chapter-profile: chapter %d reached max tokens %d before end marker %s", chapter, opts.ChapterMaxTokens, chapterProfileEndMarker)
-			return turn
-		}
-		turn.Error = core.Sprintf("chapter-profile: chapter %d stopped before end marker %s", chapter, chapterProfileEndMarker)
+	if err := chapterProfileMissingEndMarkerError(chapter, endMarkerSeen, turn.Metrics.GeneratedTokens, opts.ChapterMaxTokens); err != "" {
+		turn.Error = err
 		return turn
 	}
 	if err := chapterProfileTurnSafetyError(template, chapter, visibleOutput, turn, opts.SafetyLimits); err != nil {
@@ -2730,6 +2739,16 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 		}
 	}
 	return turn
+}
+
+func chapterProfileMissingEndMarkerError(chapter int, endMarkerSeen bool, generatedTokens, maxTokens int) string {
+	if endMarkerSeen {
+		return ""
+	}
+	if generatedTokens >= maxTokens {
+		return core.Sprintf("chapter-profile: chapter %d reached max tokens %d before end marker %s", chapter, maxTokens, chapterProfileEndMarker)
+	}
+	return ""
 }
 
 func chapterProfileGenerateOptions(opts chapterProfileOptions) []mlx.GenerateOption {
