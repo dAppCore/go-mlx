@@ -1,0 +1,166 @@
+mx.metal.device_info is deprecated and will be removed in a future version. Use mx.device_info instead.
+(EngineCore pid=10540) Process EngineCore:
+(EngineCore pid=10540) Traceback (most recent call last):
+(EngineCore pid=10540)   File "/Users/snider/Library/Application Support/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+(EngineCore pid=10540)     self.run()
+(EngineCore pid=10540)   File "/Users/snider/Library/Application Support/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/multiprocessing/process.py", line 108, in run
+(EngineCore pid=10540)     self._target(*self._args, **self._kwargs)
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1140, in run_engine_core
+(EngineCore pid=10540)     raise e
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 1110, in run_engine_core
+(EngineCore pid=10540)     engine_core = EngineCoreProc(*args, engine_index=dp_rank, **kwargs)
+(EngineCore pid=10540)                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=10540)     return func(*args, **kwargs)
+(EngineCore pid=10540)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 876, in __init__
+(EngineCore pid=10540)     super().__init__(
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core.py", line 118, in __init__
+(EngineCore pid=10540)     self.model_executor = executor_class(vllm_config)
+(EngineCore pid=10540)                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+(EngineCore pid=10540)     return func(*args, **kwargs)
+(EngineCore pid=10540)            ^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/executor/abstract.py", line 109, in __init__
+(EngineCore pid=10540)     self._init_executor()
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/executor/uniproc_executor.py", line 52, in _init_executor
+(EngineCore pid=10540)     self.driver_worker.load_model()
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm_metal/v1/worker.py", line 147, in load_model
+(EngineCore pid=10540)     self.model_runner.load_model()
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm_metal/v1/model_runner.py", line 373, in load_model
+(EngineCore pid=10540)     self._model_lifecycle.load()
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm_metal/v1/model_lifecycle.py", line 156, in load
+(EngineCore pid=10540)     model, tokenizer = self._load_generation_model(model_name, is_vlm)
+(EngineCore pid=10540)                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm_metal/v1/model_lifecycle.py", line 198, in _load_generation_model
+(EngineCore pid=10540)     model, tokenizer = mlx_lm_load(
+(EngineCore pid=10540)                        ^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/mlx_lm/utils.py", line 491, in load
+(EngineCore pid=10540)     model, config = load_model(model_path, lazy, model_config=model_config)
+(EngineCore pid=10540)                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/mlx_lm/utils.py", line 415, in load_model
+(EngineCore pid=10540)     model.load_weights(list(weights.items()), strict=strict)
+(EngineCore pid=10540)   File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/mlx/nn/layers/base.py", line 185, in load_weights
+(EngineCore pid=10540)     raise ValueError(
+(EngineCore pid=10540) ValueError: Received 80 parameters not in model: 
+(EngineCore pid=10540) language_model.model.layers.15.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.15.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.15.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.15.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.16.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.16.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.16.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.16.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.17.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.17.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.17.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.17.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.18.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.18.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.18.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.18.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.19.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.19.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.19.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.19.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.20.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.20.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.20.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.20.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.21.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.21.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.21.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.21.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.22.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.22.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.22.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.22.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.23.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.23.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.23.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.23.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.24.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.24.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.24.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.24.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.25.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.25.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.25.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.25.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.26.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.26.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.26.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.26.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.27.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.27.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.27.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.27.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.28.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.28.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.28.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.28.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.29.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.29.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.29.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.29.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.30.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.30.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.30.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.30.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.31.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.31.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.31.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.31.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.32.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.32.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.32.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.32.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.33.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.33.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.33.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.33.self_attn.v_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.34.self_attn.k_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.34.self_attn.k_proj.scales,
+(EngineCore pid=10540) language_model.model.layers.34.self_attn.v_proj.biases,
+(EngineCore pid=10540) language_model.model.layers.34.self_attn.v_proj.scales.
+Traceback (most recent call last):
+  File "/Users/snider/.venv-vllm-metal/bin/vllm", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/entrypoints/cli/main.py", line 92, in main
+    args.dispatch_function(args)
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/entrypoints/cli/benchmark/latency.py", line 21, in cmd
+    main(args)
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/benchmarks/latency.py", line 87, in main
+    llm = LLM.from_engine_args(engine_args)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 413, in from_engine_args
+    return cls(**vars(engine_args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/entrypoints/llm.py", line 381, in __init__
+    self.llm_engine = LLMEngine.from_engine_args(
+                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 170, in from_engine_args
+    return cls(
+           ^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/llm_engine.py", line 104, in __init__
+    self.engine_core = EngineCoreClient.make_client(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 101, in make_client
+    return SyncMPClient(vllm_config, executor_class, log_stats)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/tracing/otel.py", line 178, in sync_wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 723, in __init__
+    super().__init__(
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/core_client.py", line 535, in __init__
+    with launch_core_engines(
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/snider/Library/Application Support/uv/python/cpython-3.12.13-macos-aarch64-none/lib/python3.12/contextlib.py", line 144, in __exit__
+    next(self.gen)
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1119, in launch_core_engines
+    wait_for_engine_startup(
+  File "/Users/snider/.venv-vllm-metal/lib/python3.12/site-packages/vllm/v1/engine/utils.py", line 1178, in wait_for_engine_startup
+    raise RuntimeError(
+RuntimeError: Engine core initialization failed. See root cause above. Failed core proc(s): {}

@@ -136,8 +136,62 @@ is `408.483s`. A fair cached-prefix llama.cpp workflow and configured
 `mlx_lm`/vLLM rows are still required before the separate runner-anchor gate can
 close.
 
+Current `mlx_lm` cached workflow anchor:
+
+- `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json`
+- `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.stderr`
+- Strict-load failure preserved at
+  `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-strict-load-failure.stderr`
+
+Shape:
+
+- Runner: `mlx_lm` `0.31.3` on `mlx` `0.31.2`
+- Model: same local `mlx-community/gemma-4-e2b-it-4bit` snapshot as go-mlx
+- Prompt: README repeated `46` times plus the same agentic suffix
+- Cache prompt tokens: `100935`
+- Cached suffix tokens per turn: `5`
+- Generation budget: `1024` tokens per turn
+- Runs: `10`
+- Prefill step size: `512`
+- Loader: non-strict MLX-LM load, explicitly ignoring the unused shared-K/V
+  extra tensors that make the stock CLI fail strict loading
+- Power estimate: normalised `100 W`, not measured power
+
+Result:
+
+| Runner | Wall | Decode | Cold/cache prefill | Peak memory | Energy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| go-mlx retained | `408.483s` | `43.617 tok/s` | `642.657 tok/s` | `3.699 GiB` active MLX, `6.509 GiB` peak RSS | `40848.257 J` |
+| `mlx_lm` cached | `119.866s` including load+prefill | `103.971 tok/s` | `5465.549 tok/s` | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` |
+
+This is a current configured runner loss for go-mlx. On the comparable cached
+100k/1024x10 workflow, `mlx_lm` is `3.408x` faster by wall time and estimated
+energy, `2.384x` faster on raw decode, and `8.505x` faster on the one-time
+100k cache prefill. The older retained-state argument is still architecturally
+useful, but it does not beat the current Python MLX stack on this shape.
+
+Current vLLM Metal 100k attempt:
+
+- `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stdout`
+- `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr`
+
+Shape:
+
+- Runner: `/Users/snider/.venv-vllm-metal/bin/vllm`, `vllm 0.20.0+cpu` with
+  the Metal plugin active
+- Command shape: `vllm bench latency --max-model-len 131072 --input-len 100935
+  --output-len 1024 --batch-size 1 --num-iters 1 --num-iters-warmup 0`
+- Model: same local `mlx-community/gemma-4-e2b-it-4bit` snapshot as go-mlx
+
+Result: vLLM reaches the Metal engine initialisation path, sets MLX device
+`gpu, 0`, enables chunked prefill at `16384`, then fails during MLX-LM strict
+model load with the same shared-K/V extra parameter class. No latency JSON is
+written. This remains a compatibility failure until vLLM Metal exposes the same
+non-strict/sanitised Gemma 4 E2B load path used by the in-process `mlx_lm`
+anchor above.
+
 These artefacts satisfy the current go-mlx 100k retained-state and book
 workflow gates. They do not satisfy the separate same-shape runner-anchor gate:
-`mlx_lm`, vLLM, and a cached-prefix llama.cpp workflow still need comparable
-current 100k or documented failure rows before the overall production goal can
-close.
+`mlx_lm` now has a faster current cached-prefix row, vLLM has a current
+documented Metal load failure, and cached-prefix llama.cpp still needs a
+comparable current workflow row before the overall production goal can close.
