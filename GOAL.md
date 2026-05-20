@@ -1246,6 +1246,129 @@ Silicon machines.
   `TestComparePacks_ReportsShapeMismatch_Ugly` provide a chunked safetensors
   delta report with aggregate and per-tensor metrics.
 
+## Workstream 8: Training-Pipeline Enablement
+
+**Purpose:** unblock the lthn/desktop autocratic-cascade Phase A training loop
+against go-mlx's exported training surface. The downstream chain (corpus
+reader, sandwich builder, R₁ store, CL-BPL envelope detector, training
+orchestrator, training-window UI) shipped 2026-05-20 in lthn/desktop. The
+remaining bottleneck is on this side: training types and a `Runner`
+implementation that the orchestrator can drive.
+
+### Gemma 4 architecture and training audit (2026-05-20)
+
+8 of 12 IDEAS.md architectural items confirmed shipped in Go:
+hybrid 5:1 attention (`gemma4.go:631-637`), sliding window size config
+(`gemma4.go:587`), dual RoPE bases 10k/1M (`defaultGemma4RopeParameters`),
+cross-layer KV sharing (`sharedKV` + `CacheIndexByLayer`), per-layer
+embeddings via `mlx_take`, MoE top-2 sparse routing
+(`gemma4_router_topk.go`), PLE gradient isolation through LoRA target
+filtering, and Gemma4 assistant drafter + speculative decode
+(`gemma4_assistant*.go`).
+
+- [x] Record the updated IDEAS.md architecture/training audit in
+      `docs/runtime/2026-05-20-gemma4-ideas-architecture-audit.md`.
+- [x] Confirm p-RoPE is covered by the mlx-c side. Go precomputes the
+      proportional frequency array and MLX's Metal RoPE kernels use the
+      `rope_*freqs*` path when that array is supplied.
+- [x] Confirm RMSNorm kernel semantics. The native kernel multiplies the
+      supplied scale directly; Gemma 4 currently precomputes direct scale and
+      has a test protecting that convention. Do not add `(1 + weight)` until
+      the MLX-community Gemma 4 weight convention proves it is zero-centred.
+- [x] Confirm the C++23/pinned-byte bridge baseline. The repo-local native
+      build requires C++23, and the pinned raw byte bridge already uses
+      `runtime.Pinner`, `std::mdspan`, and `mlx_array_new_data_managed_payload`.
+- [ ] Implement or explicitly reject unified K=V/global-layer state storage.
+      Cross-layer KV sharing is shipped, but `UseKEqV` still clones K into V
+      and snapshot restore still constructs separate key/value arrays.
+- [ ] Implement packed LoRA/AdamW state. Current AdamW moment state is
+      per-parameter `m`/`v` arrays; it is not a contiguous mdspan-backed slab.
+- [ ] Design the LoRA delta `.mp4` timeline after one real native LoRA runner
+      step works end-to-end.
+- [ ] Revisit MTP drafter co-training only after target-model SFT is stable;
+      current native MTP is still an inference R&D lane, not a training lane.
+
+### Training types export
+
+- [x] Map the current public training surface from `go-mlx/go` for downstream
+      use. The root package already exports `LoRAConfig`, `LoRAAdapter`,
+      `AdamW`, `AdamWConfig`, `Cache`, `Array`, `TrainingModel`,
+      `Model.Tokenizer`, `NewLoRA`, and `Model.TrainSFT`; the internal model
+      returned by `TrainingModel` exposes `Forward`, `NewCache`, `Tokenizer`,
+      and `ApplyLoRA`.
+- [ ] Compile the lthn/desktop `gomlxrunner` against that surface and add only
+      the thin wrapper names that the adapter proves necessary. A top-level
+      `Tokenizer(model)` function is not available as named because the package
+      already owns the exported `Tokenizer` type; prefer `Model.Tokenizer()`
+      unless the downstream interface forces a different accessor name.
+- [ ] Tag a release version that the lthn/desktop go.mod can pin against,
+      or wire workspace-mode build path so lthn/desktop picks up the export
+      via `external/`.
+
+### `gomlxrunner` adapter — the single concrete handoff
+
+- [ ] Build `gomlxrunner` as a thin Go package implementing the
+      `training.Runner` interface from
+      `dappco.re/lthn/desktop/pkg/training`. Live target likely
+      `lthn/desktop/go/pkg/gomlxrunner/` so it depends on go-mlx but not the
+      other way round. Required methods (signatures already locked in
+      lthn/desktop):
+
+      ```go
+      type Runner interface {
+          StepBatch(prompt, target string) core.Result // wraps Forward + LoRA grad step, returns loss
+          GenerateResponse(prompt string) core.Result  // single-turn inference, returns text
+          ModelID() string                              // canonical ID per production_lane.go
+          Substrate() string                            // "CONT" or "TRAD"
+          Tier() int                                    // 0..3 cascade tier
+      }
+      ```
+
+- [ ] Substrate switch on the runner. CONT is the production-default (KV
+      mount, no re-prefill, matches the 2026-05-20 c006 corrected-window
+      run). TRAD is the comparison condition (full re-prefill per turn). The
+      substrate-shift experiment in `host-uk/core/plans/rfc/research/experiments/worf/`
+      requires both conditions; both must produce identical token output
+      under identical seeds when the model weights are unchanged.
+
+### Per-turn capture for the substrate-shift experiment
+
+- [ ] A 180-run capture script (Go or Python) that wraps the Runner and
+      produces the per-run JSONL the `stats.py` analyser expects:
+
+      ```
+      header line:  {"type":"run_meta", subject, probe, condition, seed, model, timestamp}
+      10 turn rows: {"type":"turn", turn, text, features:{11 keys}, self_ref_count,
+                     terminal_count, timing_ms, kv_norm}
+      ```
+
+      Format pinned in `host-uk/core/plans/rfc/research/experiments/worf/02-method.md` §6.
+      Output tree at `~/Lethean/data/experiments/substrate-shift/<subject>/<probe>/<condition>/<seed>.jsonl`.
+
+### Downstream chain (already shipped in lthn/desktop, no work here)
+
+When the items above land, the full cascade fires without further changes
+to lthn/desktop. For confidence:
+
+- `pkg/seeds` — Hypnos corpus reader, 13 tests green
+- `pkg/sandwich` — LEK-1 builder with SHA-256 pinned digest, 8 tests green
+- `pkg/r1` — append-only JSONL corpus with `AtomicAppendLineLarge` write path,
+  Tier + MaxTier filter for cascade reads, Wails surface, 40 tests green
+- `pkg/clbpl` — envelope detector with `core.Mutex`-guarded WailsService,
+  race-clean, 32 tests green
+- `pkg/contentshield` — non-LLM tier-1 scoring (sycophancy + grammar imprint
+  + differential + authority), 79 tests green
+- `pkg/training` — Service + Runner interface + FixtureRunner + Phase A loop
+  + ctx-cancellable Run + per-Service Mutex guard, 9 tests + 1 example
+- `frontend/src/lit/ext/training-window.ts` — operator UI with fixture data
+  shaped to match `pkg/r1` + `pkg/clbpl` surfaces, 8 vitest green
+- `RFC.fork-tree.md` — Phase A rotation order locked (english → european →
+  latam → russian → middle-east → chinese → african)
+
+The lthn/desktop side is gated only on (a) the training types export, (b)
+the `gomlxrunner` adapter, and (c) the substrate switch. Three small pieces
+on this side unlock the entire Phase A training pipeline downstream.
+
 ## Verification Commands
 
 Run these before claiming a production-gate candidate is ready for review:
