@@ -17,8 +17,7 @@ MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib
 
 Accepted artefact:
 
-- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-guarded-r46-ctx131072-g1024-r10-longturn-naturalstop-energy100w.json`
-- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-guarded-r46-ctx131072-g1024-r10-longturn-naturalstop-energy100w.stderr`
+- `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-borrowed-pages-energy100w.json`
 - Prompt suffix: `docs/runtime/2026-05-20-agentic-long-turn-suffix.md`
 
 Shape:
@@ -33,6 +32,9 @@ Shape:
 - Runs: `10`
 - Generation budget: `1024` tokens per run
 - Cache mode: `paged`
+- Hyper-long page size: `1024`
+- Page-state policy: borrowed full physical page handles, owned slices only for
+  partial preallocated pages
 - Active/RSS hard caps: `12 GiB` each
 - Process virtual memory: recorded, not capped
 - Power estimate: normalised `100 W`, not measured power
@@ -43,23 +45,26 @@ Result:
 | --- | ---: |
 | Successful runs | `10/10` |
 | Generated tokens | `10240` |
-| Total wall time | `408.483s` |
-| Cold prefill | `642.657 tok/s` |
-| Average decode | `43.617 tok/s` |
-| Warm restore average | `2.116 ms` |
-| Warm run wall band | `23.323s` to `23.649s` |
-| Peak MLX active memory | `3.699 GiB` |
-| Peak process RSS | `5.049 GiB` |
-| Process peak RSS | `6.509 GiB` |
-| Process virtual reservation | `738.747 GiB` |
-| Estimated energy | `40848.257 J` |
-| Prompt setup saved vs replay | `1414.491s` |
-| Estimated setup energy saved | `141449.142 J` |
+| Total wall time | `260.093s` |
+| Cold prefill | `1678.071 tok/s` |
+| Average decode | `51.293 tok/s` |
+| Warm restore average | `0.372 ms` |
+| Warm run wall band | `19.953s` to `19.983s` |
+| Peak MLX active memory | `3.710 GiB` |
+| Peak process RSS | `3.156 GiB` |
+| Process peak RSS | `3.156 GiB` |
+| Process virtual reservation | `684.481 GiB` |
+| Estimated energy | `26009.334 J` |
+| Prompt setup saved vs replay | `541.717s` |
+| Estimated setup energy saved | `54171.665 J` |
 | Prompt setup speedup | `9.999x` |
 
-This supersedes the previous accepted 100k evidence that only generated
-`128` tokens per turn. Raw 100k decode is still much slower than the short and
-29k lanes, but the retained-prefix path removes the repeated prompt setup at
+This supersedes the adaptive page-size row at
+`docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-adaptive-page1024-energy100w.json`.
+Borrowing full page handles removes repeated per-token page clone graph churn
+and improves the same 100k retained workflow by `1.014x` on decode and
+`1.011x` on wall/energy. Raw 100k decode is still much slower than the short
+and 29k lanes, but the retained-prefix path removes repeated prompt setup at
 agentic workflow scale.
 
 ## Retained 10-Chapter Book
@@ -126,15 +131,14 @@ Result:
 | Runner | Shape | Wall | Throughput |
 | --- | --- | ---: | ---: |
 | llama.cpp | cold `pp101005+tg1024` | `94.904s` | `1075.081 tok/s` combined |
-| go-mlx | cold run 1 of retained profile | `197.060s` | `43.556 tok/s` decode plus `642.657 tok/s` prefill |
-| go-mlx | 10 retained turns | `408.483s` | `43.617 tok/s` average decode |
+| go-mlx | cold run 1 of retained profile | `80.330s` | `51.148 tok/s` decode plus `1678.071 tok/s` prefill |
+| go-mlx | 10 retained turns | `260.093s` | `51.293 tok/s` average decode |
 
 The llama.cpp row is a cold calibration anchor, not a retained-prefix runner
 win/loss verdict. If the same cold replay were repeated ten times, the measured
 llama.cpp wall would be roughly `949.035s`; the go-mlx retained-prefix workflow
-is `408.483s`. A fair cached-prefix llama.cpp workflow and configured
-`mlx_lm`/vLLM rows are still required before the separate runner-anchor gate can
-close.
+is `260.093s`. The cached-prefix llama.cpp workflow below is the fairer runner
+anchor and still beats go-mlx on the same repeated shape.
 
 Current `mlx_lm` cached workflow anchor:
 
@@ -161,12 +165,12 @@ Result:
 
 | Runner | Wall | Decode | Cold/cache prefill | Peak memory | Energy |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| go-mlx retained | `408.483s` | `43.617 tok/s` | `642.657 tok/s` | `3.699 GiB` active MLX, `6.509 GiB` peak RSS | `40848.257 J` |
+| go-mlx retained | `260.093s` | `51.293 tok/s` | `1678.071 tok/s` | `3.710 GiB` active MLX, `3.156 GiB` peak RSS | `26009.334 J` |
 | `mlx_lm` cached | `119.866s` including load+prefill | `103.971 tok/s` | `5465.549 tok/s` | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` |
 
 This is a current configured runner loss for go-mlx. On the comparable cached
-100k/1024x10 workflow, `mlx_lm` is `3.408x` faster by wall time and estimated
-energy, `2.384x` faster on raw decode, and `8.505x` faster on the one-time
+100k/1024x10 workflow, `mlx_lm` is `2.170x` faster by wall time and estimated
+energy, `2.027x` faster on raw decode, and `3.257x` faster on the one-time
 100k cache prefill. The older retained-state argument is still architecturally
 useful, but it does not beat the current Python MLX stack on this shape.
 
@@ -208,6 +212,6 @@ anchor above.
 
 These artefacts satisfy the current go-mlx 100k retained-state and book
 workflow gates. They do not satisfy the separate same-shape runner-anchor gate:
-`mlx_lm` now has a faster current cached-prefix row, vLLM has a current
-documented Metal load failure, and cached-prefix llama.cpp still needs a
-comparable current workflow row before the overall production goal can close.
+`mlx_lm` and cached-prefix llama.cpp still have faster current rows, while vLLM
+has a current documented Metal load failure. The overall production goal remains
+blocked on the long-context decode gap.

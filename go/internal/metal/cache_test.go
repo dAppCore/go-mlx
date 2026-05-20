@@ -248,6 +248,66 @@ func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache BorrowedPageStateAvoidsFullPageClones"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewPagedKVCache(4, 2)
+	k, v := makeKV(4)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdateBorrowedPages(k, v, 4)
+	defer state.Free()
+	cacheState := c.State()
+
+	if state.Length != 4 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("page state = len %d K pages %d V pages %d, want 4/2/2", state.Length, len(state.Keys), len(state.Values))
+	}
+	if len(state.Owned) != 0 {
+		t.Fatalf("borrowed state owned arrays = %d, want zero for full physical pages", len(state.Owned))
+	}
+	if len(cacheState) != 4 || state.Keys[0] != cacheState[0] || state.Keys[1] != cacheState[1] {
+		t.Fatal("borrowed state did not return cache-owned full K pages")
+	}
+	if state.Values[0] != cacheState[2] || state.Values[1] != cacheState[3] {
+		t.Fatal("borrowed state did not return cache-owned full V pages")
+	}
+}
+
+func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache BorrowedPageStateOwnsPartialPreallocSlices"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enablePagedKVPrealloc
+	enablePagedKVPrealloc = true
+	t.Cleanup(func() { enablePagedKVPrealloc = old })
+
+	c := NewPagedKVCache(0, 4)
+	k, v := makeKV(2)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdateBorrowedPages(k, v, 2)
+	defer state.Free()
+	cacheState := c.State()
+
+	if len(cacheState) != 2 || cacheState[0].Shape()[2] != 4 || cacheState[1].Shape()[2] != 4 {
+		t.Fatalf("backing page state = %+v, want full preallocated K/V pages", cacheState)
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 || state.Keys[0].Shape()[2] != 2 || state.Values[0].Shape()[2] != 2 {
+		t.Fatalf("borrowed visible pages = %+v/%+v, want 2-token K/V slices", state.Keys, state.Values)
+	}
+	if len(state.Owned) != 2 {
+		t.Fatalf("borrowed state owned arrays = %d, want K/V visible slices", len(state.Owned))
+	}
+	if state.Keys[0] == cacheState[0] || state.Values[0] == cacheState[1] {
+		t.Fatal("partial preallocated state returned backing pages directly")
+	}
+}
+
 func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache PreallocKeepsVisiblePageLength"
 	if coverageTokens == "" {

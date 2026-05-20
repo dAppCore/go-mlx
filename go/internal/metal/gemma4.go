@@ -2594,7 +2594,7 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			}
 			if out == nil {
 				if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
-					pages := paged.UpdatePages(k, v, int(L))
+					pages := paged.UpdateBorrowedPages(k, v, int(L))
 					pagedKV := sharedKV{Pages: pages, Offset: offset}
 					if pagedKV.hasPages() {
 						Free(oldK, oldV)

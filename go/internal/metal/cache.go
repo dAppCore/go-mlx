@@ -734,7 +734,9 @@ type PagedKVCache struct {
 	pageSize       int
 }
 
-// PagedKVState is a cloned, caller-owned view of a paged K/V cache.
+// PagedKVState is a view of a paged K/V cache. Keys and Values may borrow
+// cache-owned arrays; Owned lists transient visible slices that callers must
+// release with Free.
 type PagedKVState struct {
 	Keys   []*Array
 	Values []*Array
@@ -742,7 +744,7 @@ type PagedKVState struct {
 	Length int
 }
 
-// Free releases the cloned page handles returned by UpdatePages or PageState.
+// Free releases transient visible slices returned with the page state.
 func (s PagedKVState) Free() {
 	Free(s.Owned...)
 }
@@ -831,6 +833,18 @@ func (c *PagedKVCache) UpdatePages(k, v *Array, seqLen int) PagedKVState {
 	return c.PageState()
 }
 
+// UpdateBorrowedPages adds new K/V tensors and returns page handles that borrow
+// full physical pages from the cache. Partial preallocated pages are still
+// returned as owned visible slices. Use this only for immediate decode attention
+// before the cache mutates again.
+func (c *PagedKVCache) UpdateBorrowedPages(k, v *Array, seqLen int) PagedKVState {
+	added := c.appendPages(k, v, seqLen)
+	c.offset += added
+	c.length += added
+	c.trimToMaxSize()
+	return c.BorrowedPageState()
+}
+
 func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) PagedKVState {
 	Free(c.kPages...)
 	Free(c.vPages...)
@@ -842,8 +856,8 @@ func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) Page
 	return c.PageState()
 }
 
-// PageState returns cloned page handles for attention kernels that consume
-// block tables or page lists directly.
+// PageState returns cloned page handles for callers that need an independently
+// freeable view of the current page list.
 func (c *PagedKVCache) PageState() PagedKVState {
 	state := PagedKVState{Length: c.length}
 	if len(c.kPages) == 0 || len(c.vPages) == 0 {
@@ -859,6 +873,34 @@ func (c *PagedKVCache) PageState() PagedKVState {
 	for i, page := range c.vPages {
 		state.Values[i] = c.visiblePage(page, i)
 		state.Owned = append(state.Owned, state.Values[i])
+	}
+	return state
+}
+
+// BorrowedPageState returns page handles for attention kernels that consume
+// block tables or page lists directly. Full pages are borrowed from the cache to
+// avoid per-token clone graph churn; only partial preallocated views are owned.
+func (c *PagedKVCache) BorrowedPageState() PagedKVState {
+	state := PagedKVState{Length: c.length}
+	if len(c.kPages) == 0 || len(c.vPages) == 0 {
+		return state
+	}
+	state.Keys = make([]*Array, len(c.kPages))
+	state.Values = make([]*Array, len(c.vPages))
+	state.Owned = make([]*Array, 0, len(c.kPages)+len(c.vPages))
+	for i, page := range c.kPages {
+		visible, owned := c.borrowVisiblePage(page, i)
+		state.Keys[i] = visible
+		if owned {
+			state.Owned = append(state.Owned, visible)
+		}
+	}
+	for i, page := range c.vPages {
+		visible, owned := c.borrowVisiblePage(page, i)
+		state.Values[i] = visible
+		if owned {
+			state.Owned = append(state.Owned, visible)
+		}
 	}
 	return state
 }
@@ -1149,6 +1191,18 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 		return page.Clone()
 	}
 	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]})
+}
+
+func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
+	if page == nil || !page.Valid() {
+		return nil, false
+	}
+	shape := page.Shape()
+	length := c.pageLen(i)
+	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
+		return page, false
+	}
+	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]}), true
 }
 
 func (c *PagedKVCache) visiblePages() (kPages, vPages, owned []*Array) {
