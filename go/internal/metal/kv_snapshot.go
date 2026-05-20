@@ -13,7 +13,7 @@ import (
 
 const (
 	// KVSnapshotVersion is the native KV snapshot schema version.
-	KVSnapshotVersion = 3
+	KVSnapshotVersion = 4
 )
 
 // KVSnapshot is a CPU-readable copy of model key/value cache tensors.
@@ -44,6 +44,12 @@ type KVSnapshotCaptureOptions struct {
 type KVLayerSnapshot struct {
 	Layer      int
 	CacheIndex int
+	KeyDType   DType
+	KeyBytes   []byte
+	KeyShape   []int32
+	ValueDType DType
+	ValueBytes []byte
+	ValueShape []int32
 	Heads      []KVHeadSnapshot
 }
 
@@ -226,6 +232,12 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 		layers[layerIdx] = KVLayerSnapshot{
 			Layer:      layerIdx,
 			CacheIndex: cacheIdx,
+			KeyDType:   snapshot.KeyDType,
+			KeyBytes:   snapshot.KeyBytes,
+			KeyShape:   append([]int32(nil), snapshot.KeyShape...),
+			ValueDType: snapshot.ValueDType,
+			ValueBytes: snapshot.ValueBytes,
+			ValueShape: append([]int32(nil), snapshot.ValueShape...),
 			Heads:      cloneKVSnapshotHeads(snapshot.Heads),
 		}
 		if numHeads == 0 {
@@ -320,6 +332,12 @@ func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, 
 			}
 			cacheSnapshots[cacheIdx] = snapshot
 		}
+		layers[layerIdx].KeyDType = snapshot.KeyDType
+		layers[layerIdx].KeyBytes = snapshot.KeyBytes
+		layers[layerIdx].KeyShape = append([]int32(nil), snapshot.KeyShape...)
+		layers[layerIdx].ValueDType = snapshot.ValueDType
+		layers[layerIdx].ValueBytes = snapshot.ValueBytes
+		layers[layerIdx].ValueShape = append([]int32(nil), snapshot.ValueShape...)
 		layers[layerIdx].Heads = cloneKVSnapshotHeads(snapshot.Heads)
 		if numHeads == 0 {
 			numHeads = snapshot.NumHeads
@@ -367,9 +385,15 @@ func kvSnapshotSeqLen(tokens []int32, caches []Cache) int {
 }
 
 type kvCacheSnapshot struct {
-	NumHeads int
-	HeadDim  int
-	Heads    []KVHeadSnapshot
+	NumHeads   int
+	HeadDim    int
+	KeyDType   DType
+	KeyBytes   []byte
+	KeyShape   []int32
+	ValueDType DType
+	ValueBytes []byte
+	ValueShape []int32
+	Heads      []KVHeadSnapshot
 }
 
 func inspectKVCache(cache Cache, seqLen int) (kvCacheSnapshot, bool) {
@@ -417,12 +441,28 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 	vDType := vSliced.Dtype()
 	kRaw := kSliced.RawBytes()
 	vRaw := vSliced.RawBytes()
+	kNativeShape := append([]int32(nil), kSliced.Shape()...)
+	vNativeShape := append([]int32(nil), vSliced.Shape()...)
 	var kFlat, vFlat []float32
 	if !opts.RawKVOnly {
 		kFlat = kSliced.Floats()
 		vFlat = vSliced.Floats()
 	}
 	Free(kSliced, vSliced)
+
+	if opts.RawKVOnly {
+		return kvCacheSnapshot{
+			NumHeads:   numHeads,
+			HeadDim:    headDim,
+			KeyDType:   kDType,
+			KeyBytes:   kRaw,
+			KeyShape:   kNativeShape,
+			ValueDType: vDType,
+			ValueBytes: vRaw,
+			ValueShape: vNativeShape,
+			Heads:      make([]KVHeadSnapshot, numHeads),
+		}, true
+	}
 
 	blockLen := end - start
 	heads := make([]KVHeadSnapshot, numHeads)

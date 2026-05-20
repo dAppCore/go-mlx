@@ -13,7 +13,7 @@ import (
 
 const (
 	// SnapshotVersion is the on-disk binary format version for KV snapshots.
-	SnapshotVersion = 3
+	SnapshotVersion = 4
 
 	kvSnapshotMagic = "MLXKV001"
 )
@@ -71,6 +71,12 @@ type Snapshot struct {
 type LayerSnapshot struct {
 	Layer      int
 	CacheIndex int
+	KeyDType   string
+	KeyBytes   []byte
+	KeyShape   []int32
+	ValueDType string
+	ValueBytes []byte
+	ValueShape []int32
 	Heads      []HeadSnapshot
 }
 
@@ -209,6 +215,9 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
 		version = 3
 	}
+	if snapshotHasLayerNativeTensors(s) && version < 4 {
+		version = 4
+	}
 	if version <= 0 || version > SnapshotVersion {
 		return 0, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -227,6 +236,20 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	}
 	for _, layer := range s.Layers {
 		size += 12 // layer, cache index, head count
+		if version >= 4 {
+			keySize, err := kvSnapshotEncodedTensorSize(nil, layer.KeyDType, layer.KeyBytes, encoding)
+			if err != nil {
+				return 0, core.E("Snapshot.Save", "encode layer key tensor", err)
+			}
+			valueSize, err := kvSnapshotEncodedTensorSize(nil, layer.ValueDType, layer.ValueBytes, encoding)
+			if err != nil {
+				return 0, core.E("Snapshot.Save", "encode layer value tensor", err)
+			}
+			size += 4 + len(layer.KeyShape)*4
+			size += keySize
+			size += 4 + len(layer.ValueShape)*4
+			size += valueSize
+		}
 		for _, head := range layer.Heads {
 			if version >= 3 {
 				keySize, err := kvSnapshotEncodedTensorSize(head.Key, head.KeyDType, head.KeyBytes, encoding)
@@ -269,6 +292,9 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
 		version = 3
 	}
+	if snapshotHasLayerNativeTensors(s) && version < 4 {
+		version = 4
+	}
 	if version <= 0 || version > SnapshotVersion {
 		return nil, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -304,6 +330,18 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 		data = appendKVI32(data, int32(layer.Layer))
 		data = appendKVI32(data, int32(layer.CacheIndex))
 		data = appendKVU32(data, uint32(len(layer.Heads)))
+		if version >= 4 {
+			data = appendKVI32s(data, layer.KeyShape)
+			data, err = appendKVEncodedTensor(data, nil, layer.KeyDType, layer.KeyBytes, encoding)
+			if err != nil {
+				return nil, core.E("Snapshot.Save", "encode layer key tensor", err)
+			}
+			data = appendKVI32s(data, layer.ValueShape)
+			data, err = appendKVEncodedTensor(data, nil, layer.ValueDType, layer.ValueBytes, encoding)
+			if err != nil {
+				return nil, core.E("Snapshot.Save", "encode layer value tensor", err)
+			}
+		}
 		for _, head := range layer.Heads {
 			if version >= 3 {
 				data, err = appendKVEncodedTensor(data, head.Key, head.KeyDType, head.KeyBytes, encoding)
@@ -345,6 +383,9 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
 		version = 3
 	}
+	if snapshotHasLayerNativeTensors(s) && version < 4 {
+		version = 4
+	}
 	stream := kvSnapshotStreamWriter{writer: writer}
 	stream.bytes([]byte(kvSnapshotMagic))
 	stream.u32(uint32(version))
@@ -376,6 +417,16 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 		stream.i32(int32(layer.Layer))
 		stream.i32(int32(layer.CacheIndex))
 		stream.u32(uint32(len(layer.Heads)))
+		if version >= 4 {
+			stream.i32s(layer.KeyShape)
+			if err := stream.encodedTensor(nil, layer.KeyDType, layer.KeyBytes, encoding); err != nil {
+				return core.E("Snapshot.Save", "encode layer key tensor", err)
+			}
+			stream.i32s(layer.ValueShape)
+			if err := stream.encodedTensor(nil, layer.ValueDType, layer.ValueBytes, encoding); err != nil {
+				return core.E("Snapshot.Save", "encode layer value tensor", err)
+			}
+		}
 		for _, head := range layer.Heads {
 			if version >= 3 {
 				if err := stream.encodedTensor(head.Key, head.KeyDType, head.KeyBytes, encoding); err != nil {
@@ -460,6 +511,16 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			layer.Layer = int(reader.i32())
 			layer.CacheIndex = int(reader.i32())
 			headCount := int(reader.u32())
+			if snapshot.Version >= 4 {
+				layer.KeyShape = reader.i32s()
+				key := reader.encodedTensor(LoadOptions{RawKVOnly: true})
+				layer.KeyDType = key.DType
+				layer.KeyBytes = key.Bytes
+				layer.ValueShape = reader.i32s()
+				value := reader.encodedTensor(LoadOptions{RawKVOnly: true})
+				layer.ValueDType = value.DType
+				layer.ValueBytes = value.Bytes
+			}
 			if headCount > 0 {
 				layer.Heads = make([]HeadSnapshot, headCount)
 				for headIdx := range layer.Heads {
@@ -512,6 +573,14 @@ func appendKVU32(dst []byte, value uint32) []byte {
 
 func appendKVI32(dst []byte, value int32) []byte {
 	return appendKVU32(dst, uint32(value))
+}
+
+func appendKVI32s(dst []byte, values []int32) []byte {
+	dst = appendKVU32(dst, uint32(len(values)))
+	for _, value := range values {
+		dst = appendKVI32(dst, value)
+	}
+	return dst
 }
 
 func appendKVF32s(dst []byte, values []float32) []byte {
@@ -708,6 +777,13 @@ func (w *kvSnapshotStreamWriter) i32(value int32) {
 	w.u32(uint32(value))
 }
 
+func (w *kvSnapshotStreamWriter) i32s(values []int32) {
+	w.u32(uint32(len(values)))
+	for _, value := range values {
+		w.i32(value)
+	}
+}
+
 func (w *kvSnapshotStreamWriter) f32s(values []float32) {
 	w.u32(uint32(len(values)))
 	for _, value := range values {
@@ -774,6 +850,18 @@ func (r *kvSnapshotReader) i32() int32 {
 func (r *kvSnapshotReader) string() string {
 	size := int(r.u32())
 	return string(r.read(size))
+}
+
+func (r *kvSnapshotReader) i32s() []int32 {
+	size := int(r.u32())
+	if size <= 0 {
+		return nil
+	}
+	values := make([]int32, size)
+	for i := range values {
+		values[i] = r.i32()
+	}
+	return values
 }
 
 func (r *kvSnapshotReader) bytes() []byte {
@@ -897,6 +985,12 @@ func cloneKVLayers(src []LayerSnapshot) []LayerSnapshot {
 		cloned[i] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			KeyDType:   layer.KeyDType,
+			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
+			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			ValueDType: layer.ValueDType,
+			ValueBytes: append([]byte(nil), layer.ValueBytes...),
+			ValueShape: append([]int32(nil), layer.ValueShape...),
 			Heads:      cloneKVHeads(layer.Heads),
 		}
 	}
@@ -952,7 +1046,7 @@ func ResultError(result core.Result) error {
 	return core.NewError("unknown filesystem error")
 }
 
-const defaultCacheBlockSize = 128
+const defaultCacheBlockSize = 512
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
@@ -979,6 +1073,9 @@ func requiresNativeEncoding(snapshot *Snapshot) bool {
 	if snapshot == nil {
 		return false
 	}
+	if snapshotHasLayerNativeTensors(snapshot) {
+		return true
+	}
 	for _, layer := range snapshot.Layers {
 		for _, head := range layer.Heads {
 			if len(head.Key) == 0 && len(head.KeyBytes) > 0 {
@@ -987,6 +1084,18 @@ func requiresNativeEncoding(snapshot *Snapshot) bool {
 			if len(head.Value) == 0 && len(head.ValueBytes) > 0 {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func snapshotHasLayerNativeTensors(snapshot *Snapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, layer := range snapshot.Layers {
+		if len(layer.KeyBytes) > 0 || len(layer.ValueBytes) > 0 {
+			return true
 		}
 	}
 	return false

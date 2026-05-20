@@ -285,6 +285,58 @@ func TestKVSnapshot_SaveLoadNativeRawOnly_Good(t *testing.T) {
 	}
 }
 
+func TestKVSnapshot_SaveLoadNativeLayerRawOnly_Good(t *testing.T) {
+	keyBytes := appendUint16LE(nil, float32ToFloat16(1))
+	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(2))
+	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(3))
+	keyBytes = appendUint16LE(keyBytes, float32ToFloat16(4))
+	valueBytes := appendUint16LE(nil, uint16(math.Float32bits(5)>>16))
+	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(6)>>16))
+	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(7)>>16))
+	valueBytes = appendUint16LE(valueBytes, uint16(math.Float32bits(8)>>16))
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2},
+		TokenOffset:   2,
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        2,
+		HeadDim:       1,
+		NumQueryHeads: 2,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "float16",
+			KeyBytes:   keyBytes,
+			KeyShape:   []int32{1, 2, 2, 1},
+			ValueDType: "bfloat16",
+			ValueBytes: valueBytes,
+			ValueShape: []int32{1, 2, 2, 1},
+			Heads:      make([]HeadSnapshot, 2),
+		}},
+	}
+	path := core.PathJoin(t.TempDir(), "native-layer-raw-only.kvbin")
+
+	if err := snapshot.SaveWithOptions(path, SaveOptions{KVEncoding: EncodingNative}); err != nil {
+		t.Fatalf("SaveWithOptions(native layer raw-only) error = %v", err)
+	}
+	loaded, err := LoadWithOptions(path, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadWithOptions(native layer raw-only) error = %v", err)
+	}
+	layer := loaded.Layers[0]
+	if loaded.Version != SnapshotVersion || !equalBytes(layer.KeyBytes, keyBytes) || !equalBytes(layer.ValueBytes, valueBytes) {
+		t.Fatalf("loaded native layer = version:%d key:%v value:%v", loaded.Version, layer.KeyBytes, layer.ValueBytes)
+	}
+	if len(layer.Heads) != 2 || len(layer.Heads[0].KeyBytes) != 0 || len(layer.Heads[1].ValueBytes) != 0 {
+		t.Fatalf("loaded heads = %+v, want shape-only heads without duplicated raw bytes", layer.Heads)
+	}
+	if len(layer.KeyShape) != 4 || layer.KeyShape[1] != 2 || layer.KeyShape[2] != 2 {
+		t.Fatalf("loaded key shape = %v, want [1 2 2 1]", layer.KeyShape)
+	}
+}
+
 func TestKVSnapshot_EncodedSizeMatchesSerialisedBytes_Good(t *testing.T) {
 	nativeKey := appendUint16LE(nil, float32ToFloat16(1))
 	nativeKey = appendUint16LE(nativeKey, float32ToFloat16(2))

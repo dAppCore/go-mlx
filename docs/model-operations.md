@@ -133,7 +133,7 @@ Per-head access via `Head(layer, head)` makes the snapshot directly usable for a
 - `KVSnapshotEncodingFloat32` (default) — bit-exact preservation
 - `KVSnapshotEncodingQ8` — symmetric int8 + per-tensor scale; ~4× smaller, suitable for archive but not bit-stable round-trip
 
-The format version is `KVSnapshotVersion = 3` with magic header `MLXKV001`.
+The format version is `KVSnapshotVersion = 4` with magic header `MLXKV001`.
 
 ## HuggingFace Fit Planner
 

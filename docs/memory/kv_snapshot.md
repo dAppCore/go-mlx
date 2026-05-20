@@ -16,7 +16,7 @@ This file owns the **format spec** (magic, version, encoding enum, save/load/cap
 ```
 +-----------------------------------------------------+
 | magic = "MLXKV001"            (8 bytes)             |
-| version = 3                   (4 bytes uint32)      |
+| version = 4                   (4 bytes uint32)      |
 | encoding flag                 (1 byte)              |
 | reserved                      (3 bytes)             |
 | layer count                   (4 bytes uint32)      |
@@ -28,7 +28,7 @@ This file owns the **format spec** (magic, version, encoding enum, save/load/cap
 +-----------------------------------------------------+
 ```
 
-`KVSnapshotVersion = 3`. Older snapshots are not auto-upgraded — `LoadKVSnapshot` returns an error and the caller decides whether to re-capture.
+`KVSnapshotVersion = 4`. Version 4 can store Metal-oriented rank-4 layer K/V slabs before any legacy per-head tensors, allowing native memvid blocks to restore through pinned MLX arrays without rebuilding heads first. Older snapshots are not auto-upgraded — `LoadKVSnapshot` returns an error and the caller decides whether to re-capture.
 
 ## Encoding
 

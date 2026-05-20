@@ -129,7 +129,7 @@ func TestRegisterMetalCache_NilAdapter_GoodBad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CacheStats(nil adapter) error = %v", err)
 	}
-	if stats.Labels["block_size"] != "128" || stats.CacheMode == "" {
+	if stats.Labels["block_size"] != "512" || stats.CacheMode == "" {
 		t.Fatalf("CacheStats = %+v, want default block-prefix labels", stats)
 	}
 	entries, err := adapter.CacheEntries(context.Background(), nil)

@@ -3,7 +3,7 @@
 // Package blockcache exposes a block-prefix cache metadata layer that fronts
 // the native prompt cache with stable, portable block identities.
 //
-//	service := blockcache.New(blockcache.Config{BlockSize: 128, ...})
+//	service := blockcache.New(blockcache.Config{BlockSize: 512, ...})
 //	stats, _ := service.CacheStats(ctx)
 package blockcache
 
@@ -19,7 +19,7 @@ import (
 const (
 	// DefaultBlockSize is the token chunk size used for portable block
 	// prefix identities when callers do not choose a size.
-	DefaultBlockSize = 128
+	DefaultBlockSize = 512
 
 	// DiskPathEnv enables disk-backed block metadata for loaded inference
 	// adapters without adding provider/runtime dependencies.
@@ -77,7 +77,7 @@ type memvidPayload struct {
 
 // New returns a cache metadata service with stable prefix refs.
 //
-//	service := blockcache.New(blockcache.Config{BlockSize: 128})
+//	service := blockcache.New(blockcache.Config{BlockSize: 512})
 func New(cfg Config) *Service {
 	if cfg.BlockSize <= 0 {
 		cfg.BlockSize = DefaultBlockSize

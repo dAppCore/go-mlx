@@ -131,8 +131,8 @@ func TestKVSnapshotMemvidHelpers_Good(t *testing.T) {
 	if opts.Tags["caller"] != "yes" || opts.Tags["kv_hash"] != "hash" || opts.Tags["payload_bytes"] != "32" {
 		t.Fatalf("put option tags = %+v, want caller and KV tags", opts.Tags)
 	}
-	if got := effectiveVersion(snapshot, EncodingQ8); got != 3 {
-		t.Fatalf("effectiveVersion(q8) = %d, want 3", got)
+	if got := effectiveVersion(snapshot, EncodingQ8); got != SnapshotVersion {
+		t.Fatalf("effectiveVersion(q8) = %d, want %d", got, SnapshotVersion)
 	}
 	if got := EffectiveTokenOffset(&Snapshot{Tokens: []int32{1, 2, 3}}); got != 3 {
 		t.Fatalf("EffectiveTokenOffset(default) = %d, want token length", got)

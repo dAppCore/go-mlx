@@ -212,6 +212,20 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		}
 		localStart := overlapStart - windowStart
 		localEnd := overlapEnd - windowStart
+		keyLayerBytes, keyLayerShape, err := sliceKVSnapshotLayerRawTensor(layer.KeyBytes, layer.KeyDType, layer.KeyShape, localStart, localEnd)
+		if err != nil {
+			return nil, core.E("Snapshot.SplitBlocks", "slice native layer key tensor", err)
+		}
+		valueLayerBytes, valueLayerShape, err := sliceKVSnapshotLayerRawTensor(layer.ValueBytes, layer.ValueDType, layer.ValueShape, localStart, localEnd)
+		if err != nil {
+			return nil, core.E("Snapshot.SplitBlocks", "slice native layer value tensor", err)
+		}
+		layers[layerIndex].KeyDType = layer.KeyDType
+		layers[layerIndex].KeyBytes = keyLayerBytes
+		layers[layerIndex].KeyShape = keyLayerShape
+		layers[layerIndex].ValueDType = layer.ValueDType
+		layers[layerIndex].ValueBytes = valueLayerBytes
+		layers[layerIndex].ValueShape = valueLayerShape
 		layers[layerIndex].Heads = make([]HeadSnapshot, len(layer.Heads))
 		for headIndex, head := range layer.Heads {
 			key, err := sliceKVSnapshotTensor(head.Key, localStart, localEnd, s.HeadDim, windowLen)
@@ -262,6 +276,24 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 
 func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, error) {
 	windowLen := 0
+	for _, length := range []int{
+		kvSnapshotLayerRawWindowLen(layer.KeyBytes, layer.KeyDType, layer.KeyShape, seqLen),
+		kvSnapshotLayerRawWindowLen(layer.ValueBytes, layer.ValueDType, layer.ValueShape, seqLen),
+	} {
+		if length < 0 {
+			return 0, core.NewError("mlx: KV snapshot layer raw shape does not match sequence dimensions")
+		}
+		if length <= 0 {
+			continue
+		}
+		if windowLen == 0 {
+			windowLen = length
+			continue
+		}
+		if windowLen != length {
+			return 0, core.NewError("mlx: KV snapshot layer mixes cache window lengths")
+		}
+	}
 	for _, head := range layer.Heads {
 		for _, length := range []int{
 			kvSnapshotTensorWindowLen(len(head.Key), seqLen, headDim),
@@ -311,6 +343,30 @@ func kvSnapshotRawTensorWindowLen(raw []byte, dtype string, seqLen, headDim int)
 	return kvSnapshotTensorWindowLen(len(raw)/bytesPerValue, seqLen, headDim)
 }
 
+func kvSnapshotLayerRawWindowLen(raw []byte, dtype string, shape []int32, seqLen int) int {
+	if len(raw) == 0 {
+		return 0
+	}
+	_, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
+	if bytesPerValue <= 0 || len(shape) != 4 {
+		return -1
+	}
+	elements := 1
+	for _, dim := range shape {
+		if dim <= 0 {
+			return -1
+		}
+		elements *= int(dim)
+	}
+	if len(raw) != elements*bytesPerValue {
+		return -1
+	}
+	if seqLen > 0 && int(shape[2]) > seqLen {
+		return -1
+	}
+	return int(shape[2])
+}
+
 func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([]float32, error) {
 	if len(values) == 0 {
 		return nil, nil
@@ -356,6 +412,37 @@ func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valu
 		return nil, core.NewError("mlx: invalid KV snapshot raw tensor block range")
 	}
 	return append([]byte(nil), raw[begin:finish]...), nil
+}
+
+func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, start, end int) ([]byte, []int32, error) {
+	if len(raw) == 0 {
+		return nil, nil, nil
+	}
+	_, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
+	if bytesPerValue <= 0 || len(shape) != 4 {
+		return nil, nil, core.NewError("mlx: unsupported KV snapshot layer raw tensor")
+	}
+	B, H, L, D := int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])
+	if B <= 0 || H <= 0 || L <= 0 || D <= 0 || start < 0 || end <= start || end > L {
+		return nil, nil, core.NewError("mlx: invalid KV snapshot layer raw tensor range")
+	}
+	if len(raw) != B*H*L*D*bytesPerValue {
+		return nil, nil, core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
+	}
+	take := end - start
+	out := make([]byte, B*H*take*D*bytesPerValue)
+	dst := 0
+	rowBytes := take * D * bytesPerValue
+	for b := range B {
+		for h := range H {
+			src := (((b*H+h)*L + start) * D) * bytesPerValue
+			copy(out[dst:dst+rowBytes], raw[src:src+rowBytes])
+			dst += rowBytes
+		}
+	}
+	outShape := append([]int32(nil), shape...)
+	outShape[2] = int32(take)
+	return out, outShape, nil
 }
 
 // AssembleBlocks reassembles contiguous blocks produced by SplitBlocks.
@@ -421,6 +508,10 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 		out[i] = LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			KeyDType:   layer.KeyDType,
+			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			ValueDType: layer.ValueDType,
+			ValueShape: append([]int32(nil), layer.ValueShape...),
 		}
 		if len(layer.Heads) > 0 {
 			out[i].Heads = make([]HeadSnapshot, len(layer.Heads))
@@ -442,6 +533,18 @@ func appendKVSnapshotBlock(dst *Snapshot, block *Snapshot) error {
 	dst.Tokens = append(dst.Tokens, block.Tokens...)
 	dst.SeqLen += block.SeqLen
 	for layerIndex, layer := range block.Layers {
+		if len(layer.KeyBytes) > 0 {
+			dstLayer := &dst.Layers[layerIndex]
+			if err := appendKVSnapshotLayerRawBlock(&dstLayer.KeyDType, &dstLayer.KeyBytes, &dstLayer.KeyShape, layer.KeyDType, layer.KeyBytes, layer.KeyShape); err != nil {
+				return core.E("AssembleBlocks", "append native layer key tensor", err)
+			}
+		}
+		if len(layer.ValueBytes) > 0 {
+			dstLayer := &dst.Layers[layerIndex]
+			if err := appendKVSnapshotLayerRawBlock(&dstLayer.ValueDType, &dstLayer.ValueBytes, &dstLayer.ValueShape, layer.ValueDType, layer.ValueBytes, layer.ValueShape); err != nil {
+				return core.E("AssembleBlocks", "append native layer value tensor", err)
+			}
+		}
 		if len(layer.Heads) == 0 {
 			continue
 		}
@@ -463,6 +566,57 @@ func appendKVSnapshotBlock(dst *Snapshot, block *Snapshot) error {
 			}
 		}
 	}
+	return nil
+}
+
+func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape *[]int32, dtype string, raw []byte, shape []int32) error {
+	if len(raw) == 0 {
+		return nil
+	}
+	dtype, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
+	if dtype == "" || bytesPerValue <= 0 || len(shape) != 4 {
+		return core.NewError("mlx: unsupported KV snapshot layer raw tensor")
+	}
+	blockShape := append([]int32(nil), shape...)
+	B, H, L, D := int(blockShape[0]), int(blockShape[1]), int(blockShape[2]), int(blockShape[3])
+	if B <= 0 || H <= 0 || L <= 0 || D <= 0 || len(raw) != B*H*L*D*bytesPerValue {
+		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
+	}
+	if *dstDType == "" {
+		*dstDType = dtype
+	} else if *dstDType != dtype {
+		return core.NewError("mlx: KV snapshot layer raw tensor dtype mismatch")
+	}
+	if len(*dstBytes) == 0 {
+		*dstBytes = append((*dstBytes)[:0], raw...)
+		*dstShape = blockShape
+		return nil
+	}
+	if len(*dstShape) != 4 || int((*dstShape)[0]) != B || int((*dstShape)[1]) != H || int((*dstShape)[3]) != D {
+		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
+	}
+	oldShape := append([]int32(nil), (*dstShape)...)
+	oldLen := int(oldShape[2])
+	if oldLen <= 0 || len(*dstBytes) != B*H*oldLen*D*bytesPerValue {
+		return core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
+	}
+	totalLen := oldLen + L
+	merged := make([]byte, B*H*totalLen*D*bytesPerValue)
+	oldRowBytes := oldLen * D * bytesPerValue
+	newRowBytes := L * D * bytesPerValue
+	totalRowBytes := totalLen * D * bytesPerValue
+	for b := range B {
+		for h := range H {
+			row := b*H + h
+			dstStart := row * totalRowBytes
+			oldStart := row * oldRowBytes
+			newStart := row * newRowBytes
+			copy(merged[dstStart:dstStart+oldRowBytes], (*dstBytes)[oldStart:oldStart+oldRowBytes])
+			copy(merged[dstStart+oldRowBytes:dstStart+oldRowBytes+newRowBytes], raw[newStart:newStart+newRowBytes])
+		}
+	}
+	*dstBytes = merged
+	(*dstShape)[2] = int32(totalLen)
 	return nil
 }
 

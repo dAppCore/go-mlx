@@ -1112,7 +1112,7 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 	snapshots := make([]cacheSnapshot, len(templates))
 	populated := make([]bool, len(templates))
 	for _, layer := range snapshot.Layers {
-		if len(layer.Heads) == 0 || layer.CacheIndex < 0 {
+		if !kvLayerSnapshotHasState(layer) || layer.CacheIndex < 0 {
 			continue
 		}
 		if layer.CacheIndex >= len(templates) {
@@ -1152,46 +1152,9 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	if globalSeqLen <= 0 {
 		return cacheSnapshot{}, core.NewError("mlx: KV snapshot has no sequence length")
 	}
-	numHeads := len(layer.Heads)
-	if numHeads <= 0 {
-		return cacheSnapshot{}, core.NewError("mlx: KV snapshot layer has no heads")
-	}
-	seqLen, keyDim, valueDim, err := inferSnapshotLayerCacheShape(layer.Heads, globalSeqLen, snapshot.HeadDim)
+	keyArray, valueArray, seqLen, err := kvLayerArrays(snapshot, layer, globalSeqLen)
 	if err != nil {
 		return cacheSnapshot{}, err
-	}
-
-	for _, head := range layer.Heads {
-		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, keyDim, true); err != nil {
-			return cacheSnapshot{}, err
-		}
-		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, valueDim, false); err != nil {
-			return cacheSnapshot{}, err
-		}
-	}
-
-	keyArray, keyNative, err := kvLayerNativeArray(layer.Heads, seqLen, keyDim, true)
-	if err != nil {
-		return cacheSnapshot{}, err
-	}
-	if !keyNative {
-		keys := make([]float32, 0, numHeads*seqLen*keyDim)
-		for _, head := range layer.Heads {
-			keys = append(keys, head.Key...)
-		}
-		keyArray = FromValues(keys, 1, numHeads, seqLen, keyDim)
-	}
-	valueArray, valueNative, err := kvLayerNativeArray(layer.Heads, seqLen, valueDim, false)
-	if err != nil {
-		Free(keyArray)
-		return cacheSnapshot{}, err
-	}
-	if !valueNative {
-		values := make([]float32, 0, numHeads*seqLen*valueDim)
-		for _, head := range layer.Heads {
-			values = append(values, head.Value...)
-		}
-		valueArray = FromValues(values, 1, numHeads, seqLen, valueDim)
 	}
 	offset := snapshot.TokenOffset
 	if offset <= 0 {
@@ -1202,7 +1165,7 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 		values: valueArray,
 		offset: offset,
 		length: seqLen,
-		step:   256,
+		step:   defaultPagedKVPageSize,
 	}
 	switch c := template.(type) {
 	case *RotatingKVCache:
@@ -1259,6 +1222,118 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 		return cacheSnapshot{}, core.NewError("mlx: unsupported KV cache type")
 	}
 	return result, nil
+}
+
+func kvLayerSnapshotHasState(layer KVLayerSnapshot) bool {
+	return len(layer.Heads) > 0 || (len(layer.KeyBytes) > 0 && len(layer.ValueBytes) > 0)
+}
+
+func kvLayerArrays(snapshot *KVSnapshot, layer KVLayerSnapshot, globalSeqLen int) (*Array, *Array, int, error) {
+	if len(layer.KeyBytes) > 0 || len(layer.ValueBytes) > 0 {
+		keyArray, valueArray, seqLen, err := kvLayerNativeSlabArrays(layer)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		return keyArray, valueArray, seqLen, nil
+	}
+
+	numHeads := len(layer.Heads)
+	if numHeads <= 0 {
+		return nil, nil, 0, core.NewError("mlx: KV snapshot layer has no heads")
+	}
+	seqLen, keyDim, valueDim, err := inferSnapshotLayerCacheShape(layer.Heads, globalSeqLen, snapshot.HeadDim)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+
+	for _, head := range layer.Heads {
+		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, keyDim, true); err != nil {
+			return nil, nil, 0, err
+		}
+		if err := validateSnapshotHeadTensorCacheShape(head, seqLen, valueDim, false); err != nil {
+			return nil, nil, 0, err
+		}
+	}
+
+	keyArray, keyNative, err := kvLayerNativeArray(layer.Heads, seqLen, keyDim, true)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if !keyNative {
+		keys := make([]float32, 0, numHeads*seqLen*keyDim)
+		for _, head := range layer.Heads {
+			keys = append(keys, head.Key...)
+		}
+		keyArray = FromValues(keys, 1, numHeads, seqLen, keyDim)
+	}
+	valueArray, valueNative, err := kvLayerNativeArray(layer.Heads, seqLen, valueDim, false)
+	if err != nil {
+		Free(keyArray)
+		return nil, nil, 0, err
+	}
+	if !valueNative {
+		values := make([]float32, 0, numHeads*seqLen*valueDim)
+		for _, head := range layer.Heads {
+			values = append(values, head.Value...)
+		}
+		valueArray = FromValues(values, 1, numHeads, seqLen, valueDim)
+	}
+	return keyArray, valueArray, seqLen, nil
+}
+
+func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error) {
+	keyShape, keySeqLen, err := validateKVLayerNativeSlab(layer.KeyBytes, layer.KeyDType, layer.KeyShape)
+	if err != nil {
+		return nil, nil, 0, core.E("mlx: KV snapshot native layer key", "validate", err)
+	}
+	valueShape, valueSeqLen, err := validateKVLayerNativeSlab(layer.ValueBytes, layer.ValueDType, layer.ValueShape)
+	if err != nil {
+		return nil, nil, 0, core.E("mlx: KV snapshot native layer value", "validate", err)
+	}
+	if keySeqLen != valueSeqLen || keyShape[0] != valueShape[0] || keyShape[1] != valueShape[1] {
+		return nil, nil, 0, core.NewError("mlx: KV snapshot native layer key/value shapes differ")
+	}
+	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToInts(keyShape), layer.KeyDType)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	valueArray, err := fromPinnedRawBytes(layer.ValueBytes, int32ShapeToInts(valueShape), layer.ValueDType)
+	if err != nil {
+		Free(keyArray)
+		return nil, nil, 0, err
+	}
+	return keyArray, valueArray, keySeqLen, nil
+}
+
+func validateKVLayerNativeSlab(raw []byte, dtype DType, shape []int32) ([]int32, int, error) {
+	if len(raw) == 0 || len(shape) != 4 {
+		return nil, 0, core.NewError("missing native slab")
+	}
+	byteSize := DTypeByteSize(dtype)
+	if byteSize <= 0 {
+		return nil, 0, core.NewError("unsupported dtype")
+	}
+	count := 1
+	out := make([]int32, len(shape))
+	for i, dim := range shape {
+		if dim <= 0 {
+			return nil, 0, core.NewError("invalid shape")
+		}
+		out[i] = dim
+		count *= int(dim)
+	}
+	if count*byteSize != len(raw) {
+		return nil, 0, core.NewError("byte length does not match shape")
+	}
+	return out, int(out[2]), nil
+}
+
+func int32ShapeToInts(shape []int32) []int {
+	out := make([]int, len(shape))
+	for i, dim := range shape {
+		out[i] = int(dim)
+	}
+	return out
 }
 
 func inferSnapshotLayerCacheShape(heads []KVHeadSnapshot, globalSeqLen, fallbackHeadDim int) (int, int, int, error) {

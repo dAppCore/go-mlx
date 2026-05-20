@@ -599,7 +599,7 @@ func (m *Model) newPromptCacheEntryFromKVSnapshot(snapshot *KVSnapshot) (*prompt
 	}
 	populated := make([]bool, len(templates))
 	for _, layer := range snapshot.Layers {
-		if len(layer.Heads) == 0 || layer.CacheIndex < 0 {
+		if !kvLayerSnapshotHasState(layer) || layer.CacheIndex < 0 {
 			continue
 		}
 		if layer.CacheIndex >= len(templates) {
@@ -716,7 +716,7 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 		populatedInBlock := make([]bool, len(templates))
 		entry.tokens = append(entry.tokens, block.Snapshot.Tokens...)
 		for _, layer := range block.Snapshot.Layers {
-			if len(layer.Heads) == 0 || layer.CacheIndex < 0 {
+			if !kvLayerSnapshotHasState(layer) || layer.CacheIndex < 0 {
 				continue
 			}
 			if layer.CacheIndex >= len(templates) {
@@ -804,7 +804,7 @@ func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
 			pageSize = block.step
 		}
 		if pageSize <= 0 {
-			pageSize = 256
+			pageSize = defaultPagedKVPageSize
 		}
 		for i := range block.kPages {
 			transferred, err := appendPagedCacheSnapshotPage(dst, block.kPages[i], block.vPages[i], pageSize)
@@ -902,7 +902,7 @@ func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array,
 		return false, core.NewError("prompt cache: invalid destination paged cache")
 	}
 	if pageSize <= 0 {
-		pageSize = 256
+		pageSize = defaultPagedKVPageSize
 	}
 	pageLen := pagedArrayLen(keyPage)
 	if pageLen <= 0 || pagedArrayLen(valuePage) != pageLen {
@@ -1288,7 +1288,7 @@ func snapshotPagedCache(cache *PagedKVCache, tokenLen, offset int) (cacheSnapsho
 	}
 	pageSize := cache.pageSize
 	if pageSize <= 0 {
-		pageSize = 256
+		pageSize = defaultPagedKVPageSize
 	}
 	return cacheSnapshot{
 		mode:     KVCacheModePaged,
@@ -1312,7 +1312,7 @@ func pageCacheArrays(keys, values *Array, pageSize int) ([]*Array, []*Array, boo
 		return []*Array{Copy(keys)}, []*Array{Copy(values)}, false, nil
 	}
 	if pageSize <= 0 {
-		pageSize = 256
+		pageSize = defaultPagedKVPageSize
 	}
 	seqLen := int(kShape[2])
 	if seqLen != int(vShape[2]) {
@@ -1625,7 +1625,7 @@ func restoreQuantizedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int
 	}
 	step := snapshot.step
 	if step <= 0 {
-		step = 256
+		step = defaultPagedKVPageSize
 	}
 	keyBits := snapshot.keyBits
 	if keyBits <= 0 {
@@ -1666,7 +1666,7 @@ func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (C
 	}
 	pageSize := snapshot.step
 	if pageSize <= 0 {
-		pageSize = 256
+		pageSize = defaultPagedKVPageSize
 	}
 	cache := &PagedKVCache{
 		kPages:   kPages,

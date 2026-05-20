@@ -521,6 +521,12 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			KeyDType:   rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyBytes:   layer.KeyBytes,
+			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			ValueDType: rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueBytes: layer.ValueBytes,
+			ValueShape: append([]int32(nil), layer.ValueShape...),
 			Heads:      make([]kv.HeadSnapshot, len(layer.Heads)),
 		}
 		for j, head := range layer.Heads {
@@ -560,6 +566,12 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
+			KeyDType:   metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
+			KeyBytes:   layer.KeyBytes,
+			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			ValueDType: metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
+			ValueBytes: layer.ValueBytes,
+			ValueShape: append([]int32(nil), layer.ValueShape...),
 			Heads:      make([]metal.KVHeadSnapshot, len(layer.Heads)),
 		}
 		for j, head := range layer.Heads {

@@ -7,7 +7,7 @@ package metal
 import core "dappco.re/go"
 
 const (
-	defaultPagedKVPageSize = 256
+	defaultPagedKVPageSize = 512
 )
 
 var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"

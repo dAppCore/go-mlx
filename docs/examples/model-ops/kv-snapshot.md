@@ -105,7 +105,7 @@ Exact-bit KV restore is on the roadmap (`docs/model-state-roadmap.md`) — today
 | | |
 |---|---|
 | Magic | `MLXKV001` |
-| Version | `KVSnapshotVersion = 3` |
+| Version | `KVSnapshotVersion = 4` |
 | Encoding | `KVSnapshotEncodingFloat32` (default) or `KVSnapshotEncodingQ8` |
 | File | Binary, big-endian length prefixes, `MarshalBinary`/`UnmarshalBinary` round-trip |
 

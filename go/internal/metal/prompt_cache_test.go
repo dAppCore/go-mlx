@@ -564,6 +564,66 @@ func TestPromptCache_RestoreFromKVBlocksAcceptsNativeRawOnly_Good(t *testing.T) 
 	}
 }
 
+func TestPromptCache_RestoreFromKVBlocksAcceptsNativeLayerRawOnly_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksAcceptsNativeLayerRawOnly"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 2},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+		cacheMode:            string(KVCacheModePaged),
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   2,
+		PrefixTokens: 2,
+		BlockCount:   1,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index != 0 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			snapshot := kvSnapshotBlockTestSnapshot(0, []int32{1, 2})
+			snapshot.NumHeads = 2
+			snapshot.HeadDim = 1
+			snapshot.Layers[0].KeyDType = DTypeFloat32
+			snapshot.Layers[0].KeyBytes = f32Bytes([]float32{1, 2, 3, 4})
+			snapshot.Layers[0].KeyShape = []int32{1, 2, 2, 1}
+			snapshot.Layers[0].ValueDType = DTypeFloat32
+			snapshot.Layers[0].ValueBytes = f32Bytes([]float32{5, 6, 7, 8})
+			snapshot.Layers[0].ValueShape = []int32{1, 2, 2, 1}
+			snapshot.Layers[0].Heads = make([]KVHeadSnapshot, 2)
+			return KVSnapshotBlock{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks(layer raw-only) error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 1 || cache.kPages[0].Dtype() != DTypeFloat32 {
+		t.Fatalf("restored cache mode/pages/dtype = %q/%d/%v, want paged f32", cache.mode, len(cache.kPages), cache.kPages[0].Dtype())
+	}
+	keys, values, err := cacheSnapshotFloatArrays(cache)
+	if err != nil {
+		t.Fatalf("cacheSnapshotFloatArrays() error = %v", err)
+	}
+	defer Free(keys, values)
+	if err := Eval(keys, values); err != nil {
+		t.Fatalf("Eval layer raw cache: %v", err)
+	}
+	if got := keys.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("layer raw keys = %v, want [1 2 3 4]", got)
+	}
+	if got := values.Floats(); !reflect.DeepEqual(got, []float32{5, 6, 7, 8}) {
+		t.Fatalf("layer raw values = %v, want [5 6 7 8]", got)
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksCoalescesPagedPages_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksCoalescesPagedPages"
 	if coverageTokens == "" {
@@ -731,6 +791,16 @@ func bf16Bytes(values []float32) []byte {
 	var buf [2]byte
 	for _, value := range values {
 		binary.LittleEndian.PutUint16(buf[:], uint16(math.Float32bits(value)>>16))
+		out = append(out, buf[:]...)
+	}
+	return out
+}
+
+func f32Bytes(values []float32) []byte {
+	out := make([]byte, 0, len(values)*4)
+	var buf [4]byte
+	for _, value := range values {
+		binary.LittleEndian.PutUint32(buf[:], math.Float32bits(value))
 		out = append(out, buf[:]...)
 	}
 	return out

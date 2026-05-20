@@ -194,6 +194,9 @@ func effectiveVersion(snapshot *Snapshot, encoding Encoding) int {
 	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
 		version = 3
 	}
+	if snapshotHasLayerNativeTensors(snapshot) && version < 4 {
+		version = 4
+	}
 	return version
 }
 
