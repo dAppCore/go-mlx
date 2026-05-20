@@ -47,7 +47,8 @@ The submodule initialisation is required because `internal/metal/` contains
 forwarding translation units that include sources from `lib/mlx`, `lib/mlx-c`,
 and `lib/generated`.
 
-CMake fetches mlx-c v0.4.1 from GitHub and builds it with:
+CMake fetches mlx-c v0.6.0 from GitHub and builds it against the local
+patched `lib/mlx` submodule with:
 
 - `MLX_BUILD_SAFETENSORS=ON` -- required for model loading
 - `MLX_BUILD_GGUF=ON` -- enables GGUF load/save support
@@ -133,7 +134,8 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(CMAKE_INSTALL_RPATH "@loader_path")
 
 include(FetchContent)
-set(MLX_C_GIT_TAG "v0.4.1" CACHE STRING "")
+set(MLX_C_GIT_TAG "v0.6.0" CACHE STRING "")
+set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 FetchContent_Declare(
   mlx-c
   GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
@@ -230,8 +232,8 @@ CGO call overhead floors at approximately 170 us per operation (Metal command bu
 ```
 go-mlx
 +-- forge.lthn.ai/core/go-inference  (shared interfaces, zero dependencies)
-+-- mlx-c v0.4.1                     (CMake, fetched at go generate time)
-    +-- Apple MLX (Metal GPU compute)
++-- mlx-c v0.6.0                     (CMake, fetched at go generate time)
+    +-- Apple MLX v0.31.1             (local patched lib/mlx submodule)
         +-- Foundation, Metal, Accelerate frameworks
 ```
 

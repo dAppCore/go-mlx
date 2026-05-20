@@ -41,23 +41,26 @@ internal/metal/                                   <-- All CGO code
     +-- metal.go       Init, error handler, Eval, Materialize
     |
     v
-mlx-c v0.4.1                                     <-- C API (fetched by CMake)
+mlx-c v0.6.0                                     <-- C API (fetched by CMake)
     |
     v
-Apple MLX / Metal / Accelerate                    <-- GPU compute
+Apple MLX v0.31.1 / Metal / Accelerate            <-- local patched lib/mlx
 ```
 
 ## CGO Binding
 
 ### Build Chain
 
-mlx-c is fetched and built by CMake via `go generate ./...`. The `CMakeLists.txt` at the module root pulls mlx-c v0.4.1 from GitHub:
+mlx-c is fetched and built by CMake via `go generate ./...`. The
+`CMakeLists.txt` at the module root pulls mlx-c v0.6.0 from GitHub and points
+mlx-c's nested MLX dependency at the local patched `lib/mlx` submodule:
 
 ```cmake
+set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 FetchContent_Declare(
   mlx-c
   GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
-  GIT_TAG "v0.4.1"
+  GIT_TAG "v0.6.0"
 )
 ```
 

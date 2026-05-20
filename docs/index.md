@@ -89,7 +89,8 @@ Models may be loaded from **HuggingFace safetensors shards** or **GGUF checkpoin
 |-------------|---------------------|-------------|
 | Gemma 3 | `gemma3`, `gemma3_text`, `gemma2` | 1B, 4B, 27B |
 | Gemma 4 | `gemma4`, `gemma4_text` | E2B, E4B, 26B MoE, 31B |
-| Qwen 3 | `qwen3`, `qwen2` | 8B+ |
+| Qwen 2 / 3 | `qwen2`, `qwen3`, `qwen3_next` | 8B+ |
+| Qwen 3.6 | `qwen3_6`, `qwen3_6_moe` | metadata + `mlx_lm` fallback |
 | Llama 3 | `llama` | 8B+ |
 
 ## Package Layout

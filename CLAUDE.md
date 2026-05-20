@@ -44,6 +44,7 @@ After Mantis #1241, all Go code lives under `go/`:
 ```
 go/                          Go module root (dappco.re/go/mlx)
   *.go                       Public root API: model, tokenizer, compute, training, eval, distill, GRPO, hf-fit, merge, gguf-quantize, kv-snapshot, lora-fuse
+  cmd/mlx/                   CLI tool (built with `-o core-mlx`; consumers rename: lthn-mlx)
   cmd/violet/                Unix-socket sidecar daemon
   internal/metal/            All CGO code (mlx-c bindings)
   mlxlm/                     CGO-free Python subprocess backend

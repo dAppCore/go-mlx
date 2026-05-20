@@ -71,11 +71,12 @@ cmake --build build --parallel
 cmake --install build
 ```
 
-CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
+CMake fetches mlx-c v0.6.0 from GitHub and builds it against the local
+patched `lib/mlx` submodule with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
 - `MLX_BUILD_GGUF=ON` (GGUF load/save support)
 - `BUILD_SHARED_LIBS=ON`
-- macOS deployment target: 13.3 (minimum required by MLX)
+- macOS deployment target: 26.0 (go-mlx supported minimum)
 
 The built library installs to `dist/include/` and `dist/lib/`. Build time is approximately 2 minutes on M3 Ultra.
 
@@ -285,7 +286,7 @@ Co-Authored-By: Virgil <virgil@lethean.io>
 set(MLX_BUILD_SAFETENSORS ON)   # Required for model loading
 set(MLX_BUILD_GGUF ON)          # GGUF load/save support
 set(BUILD_SHARED_LIBS ON)       # Shared .dylib for rpath loading
-set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3)  # MLX minimum
+set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)  # go-mlx supported minimum
 ```
 
 To force a clean rebuild:
@@ -322,8 +323,8 @@ go build -tags nomlxlm ./...
 ```
 go-mlx
 ├── dappco.re/go/inference           (shared interfaces, zero dependencies)
-└── mlx-c v0.4.1                     (CMake, fetched from GitHub at generate time)
-    └── Apple MLX (Metal GPU compute)
+└── mlx-c v0.6.0                     (CMake, fetched from GitHub at generate time)
+    └── Apple MLX v0.31.1             (local patched lib/mlx submodule)
         └── Foundation, Metal, Accelerate frameworks
 ```
 

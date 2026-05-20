@@ -5,11 +5,15 @@ description: Merge model packs, quantise to GGUF, snapshot KV state, and plan Hu
 
 # Model Operations
 
-The root `mlx` package owns four model-pack-level operations beyond inference and training. Each takes a model directory in, produces another directory out, and writes a JSON provenance record so the operation is auditable.
+The `mlx` package and its operation subpackages own model-pack-level operations
+beyond inference and training. Mutating operations write JSON provenance records
+so the operation is auditable; inspection operations return serialisable reports
+that higher-level research tooling can store beside eval results.
 
 | Operation | Function | Output |
 |-----------|----------|--------|
 | Merge | `MergeModelPacks` | New safetensors pack (Linear / SLERP / TIES / DARE) |
+| Compare | `merge.ComparePacks` | Base/fine-tuned tensor delta report |
 | GGUF quantise | `QuantizeModelPackToGGUF` | GGUF checkpoint (Q8_0 / Q4_0 / Q4_K_M) |
 | KV snapshot | `KVSnapshot.Save` / `LoadKVSnapshot` | Portable binary KV cache (Float32 or Q8 int8) |
 | HF fit | `PlanHFModelFits` | Memory-fit plan against HuggingFace Hub metadata |
@@ -41,6 +45,28 @@ result, err := mlx.MergeModelPacks(ctx, mlx.ModelMergeOptions{
 | `ModelMergeDARE`   | Drop-And-REscale — randomly zeros parameters then rescales to preserve expectation |
 
 Architecture, tokenizer, and tensor-shape compatibility are checked by default. Pass `AllowArchitectureMismatch`, `AllowTokenizerMismatch`, or `AllowTensorMismatch` to relax the checks for cross-architecture experiments. The result writes `model.safetensors`, copies metadata files from the first source, and emits `model_merge_provenance.json` listing all sources, the method, and per-tensor merge/copy/skip counts.
+
+## Weight Comparison
+
+Compare a base safetensors pack with a fine-tuned pack without loading either
+model through Metal:
+
+```go
+report, err := merge.ComparePacks(ctx, merge.CompareOptions{
+    Base:             basePack,
+    FineTuned:        tunedPack,
+    IncludeUnchanged: false,
+    Labels:           map[string]string{"run": "domain-a-sft"},
+})
+fmt.Printf("%d changed tensors, mean abs delta %.6f\n",
+    report.ChangedTensors, report.MeanAbsDelta)
+```
+
+The report carries aggregate counts, missing/extra/shape-mismatch diagnostics,
+and per-tensor distance metrics (`mean_abs_delta`, `rms_delta`, `max_abs_delta`,
+`l2_delta`, and `cosine`). This keeps the research query path explicit: training
+deltas can be inspected from weight files directly instead of guessed from a
+single eval score.
 
 ## GGUF Quantisation
 

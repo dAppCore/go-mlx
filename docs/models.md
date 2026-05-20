@@ -97,7 +97,7 @@ Gemma 4 chat formatting follows the same turn template as Gemma 3.
 
 ### Qwen 3 / Qwen 2 / Llama 3
 
-**Config values:** `qwen3`, `qwen2`, `llama`
+**Config values:** `qwen3`, `qwen3_next`, `qwen2`, `llama`
 
 These three architectures share one loader (`LoadQwen3`) and one decoder implementation. Decoder structure per layer (standard pre-norm):
 
@@ -115,6 +115,16 @@ input -> InputNorm    -> Attention -> residual add
 MLP: SwiGLU gate -- `down(silu(gate(x)) * up(x))`.
 
 Qwen 2 vs Qwen 3 detection: if `model_type` is absent, the presence of `model.layers.0.self_attn.q_norm.weight` in the weights distinguishes Qwen 3 (present) from Qwen 2 (absent).
+
+Qwen 2.5 checkpoints are canonicalised to `qwen2` and use the same native decoder. The loader also recognises `Qwen2.5ForCausalLM` / `qwen2.5` aliases when inspecting model packs.
+
+### Qwen 3.6
+
+**Config values:** `qwen3_6`, `qwen3_6_moe`
+
+Qwen 3.6 configs use Qwen chat formatting and are recognised as supported model-pack metadata. Native Go generation is intentionally gated because current Qwen 3.6 MLX configs expose hybrid `linear_attention` / full-attention layer schedules, and the native decoder only implements the dense Qwen 2/3 attention path today.
+
+Use the `mlxlm` fallback backend for Qwen 3.6 generation until native hybrid linear-attention kernels and sparse expert routing are implemented. `PlanLocalTuning` will route `qwen3_6` and `qwen3_6_moe` candidates to `mlx_lm` automatically.
 
 ## Weight Loading
 

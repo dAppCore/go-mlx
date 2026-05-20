@@ -80,7 +80,7 @@ Five distinct areas, each with its own doc subtree:
 
 ## Status snapshot (2026-05-11)
 
-**Production**: dense models (Gemma 3/4 dense, Qwen 3, Llama 3) — load, inference, scheduler, block cache, KV snapshots, agent memory wake/sleep/fork, SFT, LoRA, distillation, GRPO, eval, model pack validation, GGUF read+write, memory planning, frame compute.
+**Production**: dense models (Gemma 3/4 dense, Qwen 2/3, Llama 3) — load, inference, scheduler, block cache, KV snapshots, agent memory wake/sleep/fork, SFT, LoRA, distillation, GRPO, eval, model pack validation, GGUF read+write, memory planning, frame compute. Qwen 3.6 model packs are recognised and planned through the `mlx_lm` fallback while native hybrid linear-attention kernels are pending.
 
 **Phase 1 in flight** (vMLX parity sprint, started 2026-05-09): MiniMax M2/2.7 MoE forward, JANGTQ_K weight load, codebook VQ kernels, expert residency native path, disk-backed block cache.
 
@@ -95,7 +95,7 @@ go-mlx/
 │   ├── internal/metal/     ← CGO bindings to mlx-c (44 files, internal)
 │   ├── mlxlm/              ← CGO-free Python subprocess fallback
 │   ├── cmd/violet/         ← Unix-socket sidecar daemon
-│   ├── cmd/go-mlx/         ← CLI tool
+│   ├── cmd/mlx/            ← CLI tool (built with `-o core-mlx`; consumers rename: lthn-mlx, etc.)
 │   ├── pkg/daemon/         ← daemon implementation
 │   ├── pkg/memvid/         ← QR-video knowledge-pack codec
 │   └── tests/              ← integration tests
@@ -103,14 +103,16 @@ go-mlx/
 ├── docs/                   ← YOU ARE HERE
 ├── examples/               per-feature usage walkthroughs
 ├── external/               vendored core libraries
-├── lib/mlx/                upstream MLX submodule (v0.30.1)
+├── lib/mlx/                upstream MLX submodule (v0.31.1)
 └── patches/                local patches to lib/mlx
 ```
 
 ## Where to start
 
 - **Caller (loading a model)** → [`runtime/register_metal.md`](runtime/register_metal.md) + [`runtime/adapter.md`](runtime/adapter.md)
+- **Local setup / autotune UI** → [`runtime/local_autotune.md`](runtime/local_autotune.md)
 - **Agent memory / book state** → [`memory/agent_memory.md`](memory/agent_memory.md)
+- **LTHN project context seed** → [`memory/agentic_project_seed.md`](memory/agentic_project_seed.md)
 - **Training Vi or a custom model** → [`training/README.md`](training/README.md) → [`training/sft.md`](training/sft.md) → [`training/distill.md`](training/distill.md)
 - **Understanding the vMLX parity work** → [`moe/README.md`](moe/README.md) + `docs/vmlx-feature-gap-report.md`
 - **Serving many requests** → [`inference/scheduler.md`](inference/scheduler.md)

@@ -57,6 +57,7 @@ Everything that turns **live runtime state** into **durable bytes** and back. Th
 | `kv_snapshot_index.go` | [kv_snapshot_index.md](kv_snapshot_index.md) | Bundle index across entries + parents |
 | `kv_snapshot_memvid.go` | [kv_snapshot_memvid.md](kv_snapshot_memvid.md) | Memvid QR-video integration |
 | `state_bundle.go` | [state_bundle.md](state_bundle.md) | JSON envelope encode/decode |
+| LTHN project seed | [agentic_project_seed.md](agentic_project_seed.md) | Agentic wake/reload/compact workflow |
 | `medium.go` | [medium.md](medium.md) | Load model files via io.Medium (S3 / local / memvid / …) |
 | `kv_analysis.go` | (planned) | KV inspection utilities — entropy, layer balance |
 | `kv_cache_bench.go` | (planned) | KV cache benchmark harness |
@@ -71,6 +72,8 @@ The thesis: a model's **runtime state IS a filesystem object**. Once the KV cach
 - Mass-distribute a knowledge pack as a `.mp4` — phones can scan it; HTTP can stream it; YouTube can host it.
 - Fork an agent into 100 divergent continuations from one parent — no re-prefill of the shared prefix.
 - Train one base model + 50 personality bundles → users wake whichever persona fits the task.
+- Seed a project agent with operator + repository memory, then checkpoint only
+  the new suffix after each task.
 
 Every file in this directory exists to make that thesis cheap, fast, and portable.
 
@@ -89,5 +92,6 @@ See [`agent_memory.md`](agent_memory.md) for context on what's being measured.
 - `../../../go-inference/docs/state/agent_memory.md` — the Session + Forker interfaces
 - `../../../go-inference/docs/state/identity.md` — Bundle DTO
 - `../../../go-inference/docs/state/store.md` — Store / Resolver / Writer interfaces
+- [`agentic_project_seed.md`](agentic_project_seed.md) — LTHN app/CLI workflow for project context seeds
 - `cmd/violet/` — Unix-socket sidecar exposing wake/sleep over IPC
 - `pkg/memvid/` — the QR-video codec
