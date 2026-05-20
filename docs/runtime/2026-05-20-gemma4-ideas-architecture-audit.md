@@ -18,7 +18,7 @@ as vague research items, and missing paths should be named as concrete work.
 | Proportional RoPE | Covered | Go precomputes Gemma 4 p-RoPE frequencies in `go/internal/metal/gemma4.go:1198-1224`; MLX selects `rope_*freqs*` kernels when a frequency array is supplied in `lib/mlx/mlx/backend/metal/rope.cpp:98-105`; Metal consumes per-dimension frequencies in `lib/mlx/mlx/backend/metal/kernels/rope.metal:69-81`; `TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good` protects the HF formula | No patch now |
 | RMSNorm scale convention | Audited, leave direct-scale unless model weights prove otherwise | The MLX kernel multiplies the supplied scale exactly in `lib/mlx/mlx/backend/metal/kernels/rms_norm.metal:67-72`; Go passes the precomputed weight directly via `go/internal/metal/fast.go:25-31`; Gemma 4 currently copies norm weights in `go/internal/metal/gemma4.go:1390-1433`; `TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good` asserts direct scale | Do not blindly add `(1 + weight)`; validate MLX-community Gemma 4 weight convention first |
 | Cross-layer KV sharing | Shipped | `go/internal/metal/gemma4.go:1130-1160` builds shared owners by attention type; `TestGemma4_E4BSharedCacheLayoutUsesLayerTypes_Good` verifies shared layers allocate no fresh cache | Keep |
-| Unified K=V storage | Not shipped | `go/internal/metal/gemma4.go:2527-2530` clones K when `UseKEqV`; snapshot restore still creates separate key/value arrays in `go/internal/metal/session.go:1296-1305` | Implement a single multiplexed state layout for K=V/global layers, or document why LoRA q/v routing needs the split |
+| Unified K=V storage | Rejected for final cache tensors | `go/internal/metal/gemma4.go:2527-2550` shares the projection source with a ref-counted MLX handle, then K takes KNorm+RoPE while V takes value RMSNorm; `TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good` guards that the final cache tensors diverge | Do not pack final K/V into one state slab. A future raw-projection timeline would need to store pre-transform projection plus metadata and recompute K/V on restore, which is not the zero-copy inference state path |
 | LoRA PLE gradient isolation | Covered by default targets, needs policy guard if broadened | `DefaultLoRAConfig` targets `q_proj` and `v_proj` in `go/internal/metal/lora.go:146-155`; Gemma 4 LoRA only wraps named projection modules in `go/internal/metal/gemma4.go:3125-3181`; PLE embeddings are not trainable by default | Add a guard/test before enabling broad "all linear" LoRA on Gemma 4 |
 | AdamW state layout | Not shipped | `go/internal/metal/optim.go:18-28` stores `m` and `v` as per-parameter slices; `go/internal/metal/optim.go:132-140` allocates each moment separately | Pack LoRA A/B plus m/v into aligned contiguous slabs before claiming training-loop memory optimisation |
 | LoRA delta `.mp4` timeline | Not shipped | Existing KV state bridge handles inference snapshots, not training delta tracks | Design after the runner can complete a real LoRA step |
@@ -31,10 +31,7 @@ The next useful engineering target is not another broad C++23 conversion. That
 baseline is already present. The highest-signal remaining items from the updated
 `IDEAS.md` are:
 
-1. Unified K=V/global-layer state so state restore and `.mp4` snapshots stop
-   carrying separate key and value slabs where the model architecture does not
-   require them.
-2. Packed LoRA/AdamW training memory so the optimiser does not allocate and
+1. Packed LoRA/AdamW training memory so the optimiser does not allocate and
    update one small moment array per trainable matrix.
-3. A downstream `gomlxrunner` compile pass that proves the public training
+2. A downstream `gomlxrunner` compile pass that proves the public training
    surface is sufficient for `lthn/desktop`.

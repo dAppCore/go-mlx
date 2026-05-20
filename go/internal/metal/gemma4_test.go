@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"reflect"
 	"testing"
 
 	"dappco.re/go"
@@ -2773,6 +2774,66 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 	}
 	if err := Eval(out); err != nil {
 		t.Fatalf("Eval(out): %v", err)
+	}
+}
+
+func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention KEqVDoesNotAliasFinalCache"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		KProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    FromValues([]float32{1, 1}, 2),
+		KNormScaled:    FromValues([]float32{1, 1}, 2),
+		HeadDim:        2,
+		NKVHeads:       1,
+		UseKEqV:        true,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	x := FromValues([]float32{
+		1, 0,
+		0, 1,
+	}, 1, 2, 2)
+	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 2, nil, sharedKV{}, cfg, 0, nil, nil)
+	defer func() {
+		Free(x, out)
+		kv.free()
+	}()
+
+	if !gemma4ValidKV(kv.Keys, kv.Values) {
+		t.Fatal("K=V path did not retain final K/V tensors")
+	}
+	if err := Eval(kv.Keys, kv.Values); err != nil {
+		t.Fatalf("Eval(K/V): %v", err)
+	}
+	keys := kv.Keys.Floats()
+	values := kv.Values.Floats()
+	if len(keys) != len(values) {
+		t.Fatalf("K/V lengths = %d/%d, want same shape", len(keys), len(values))
+	}
+	if reflect.DeepEqual(keys, values) {
+		t.Fatal("K=V final cache tensors unexpectedly alias; KNorm/RoPE and value RMSNorm should diverge")
 	}
 }
 

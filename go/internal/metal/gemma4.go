@@ -2526,6 +2526,8 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 
 		var v *Array
 		if a.UseKEqV {
+			// Gemma 4 K=V shares the projection source, not the final cache
+			// tensors: K still takes KNorm+RoPE, while V takes value RMSNorm.
 			v = k.Clone()
 		} else {
 			vProj := a.VProj.Forward(x)

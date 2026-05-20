@@ -1257,14 +1257,14 @@ implementation that the orchestrator can drive.
 
 ### Gemma 4 architecture and training audit (2026-05-20)
 
-8 of 12 IDEAS.md architectural items confirmed shipped in Go:
+9 of 12 IDEAS.md architectural/training items are now resolved in Go:
 hybrid 5:1 attention (`gemma4.go:631-637`), sliding window size config
 (`gemma4.go:587`), dual RoPE bases 10k/1M (`defaultGemma4RopeParameters`),
 cross-layer KV sharing (`sharedKV` + `CacheIndexByLayer`), per-layer
 embeddings via `mlx_take`, MoE top-2 sparse routing
 (`gemma4_router_topk.go`), PLE gradient isolation through LoRA target
-filtering, and Gemma4 assistant drafter + speculative decode
-(`gemma4_assistant*.go`).
+filtering, final-cache K=V rejection with a guard test, and Gemma4 assistant
+drafter + speculative decode (`gemma4_assistant*.go`).
 
 - [x] Record the updated IDEAS.md architecture/training audit in
       `docs/runtime/2026-05-20-gemma4-ideas-architecture-audit.md`.
@@ -1278,9 +1278,13 @@ filtering, and Gemma4 assistant drafter + speculative decode
 - [x] Confirm the C++23/pinned-byte bridge baseline. The repo-local native
       build requires C++23, and the pinned raw byte bridge already uses
       `runtime.Pinner`, `std::mdspan`, and `mlx_array_new_data_managed_payload`.
-- [ ] Implement or explicitly reject unified K=V/global-layer state storage.
-      Cross-layer KV sharing is shipped, but `UseKEqV` still clones K into V
-      and snapshot restore still constructs separate key/value arrays.
+- [x] Explicitly reject unified K=V/global-layer final cache storage.
+      `attention_k_eq_v` shares the projection source with a ref-counted MLX
+      handle, but final K and V diverge because K takes KNorm+RoPE while V
+      takes value RMSNorm. `TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good`
+      guards that final snapshot/restore state must keep separate key/value
+      arrays unless a future raw-projection state format chooses to recompute
+      final K/V on restore.
 - [ ] Implement packed LoRA/AdamW state. Current AdamW moment state is
       per-parameter `m`/`v` arrays; it is not a contiguous mdspan-backed slab.
 - [ ] Design the LoRA delta `.mp4` timeline after one real native LoRA runner
