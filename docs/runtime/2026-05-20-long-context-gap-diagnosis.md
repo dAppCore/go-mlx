@@ -118,6 +118,30 @@ a full fixed cache. A C++ wrapper around the existing page-reduction graph is
 not enough, and a right-sized fixed cache is still too memory-heavy on the
 guarded 100k lane.
 
+## Model-Native Cache Diagnostic
+
+The obvious `mlx_lm` comparison raised one useful diagnostic branch: try the
+existing `-cache-mode fp16` path, which leaves Gemma 4 closer to its model-native
+`KVCache`/`RotatingKVCache` split instead of replacing everything with the
+production paged cache. Before the fix, the 100k shape failed during chunked
+prefill at chunk `1024:1536` with MLX's "Attempting to eval an array without a
+primitive" error. Disabling last-logits prefill did not move the failure, so the
+bug was cache state materialisation before detach, not logits slicing or
+sampling.
+
+`prefillTokenBlockOnce` now evaluates non-paged cache state before detaching
+chunked prefill caches. Paged caches are intentionally excluded from this extra
+eval so the accepted production lane does not gain a new synchronisation point.
+Focused coverage is in
+`TestPromptCache_EvalCachesBeforeDetachSkipsPagedCaches_Good` and
+`TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good`.
+
+After that fix, the same `fp16`/rotating 100k diagnostic passed the old prefill
+boundary but then crashed in decode before writing a report, with the stack
+entering `mlx_fast_rms_norm`. That rejects model-native `fp16`/rotating as a
+production shortcut for the 100k lane. It remains a useful bug boundary, but the
+current optimisation target stays the paged/global-attention path.
+
 ## Replay Harness
 
 Use `scripts/gemma4_context_ramp.sh` for the next context-scaling pass. The

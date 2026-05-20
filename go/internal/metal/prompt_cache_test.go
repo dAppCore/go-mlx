@@ -81,6 +81,71 @@ func TestPromptCache_PagedKVCacheSnapshotsTransformedPages_Good(t *testing.T) {
 	defer entry.free()
 }
 
+func TestPromptCache_EvalCachesBeforeDetachSkipsPagedCaches_Good(t *testing.T) {
+	coverageTokens := "PromptCache EvalCachesBeforeDetachSkipsPagedCaches"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	kvCache := NewKVCache()
+	pagedCache := NewPagedKVCache(8, 2)
+	k, v := makeKV(2)
+	defer Free(k, v)
+	kvK, kvV := kvCache.Update(k, v, 2)
+	pagedK, pagedV := pagedCache.Update(k, v, 2)
+	defer Free(kvK, kvV, pagedK, pagedV)
+	defer kvCache.Reset()
+	defer pagedCache.Reset()
+
+	state := cacheStateArraysForDetach([]Cache{kvCache, pagedCache})
+	if len(state) != 2 {
+		t.Fatalf("cacheStateArraysForDetach len = %d, want only KVCache K/V state", len(state))
+	}
+	if state[0] != kvCache.keys || state[1] != kvCache.values {
+		t.Fatal("cacheStateArraysForDetach should include contiguous KVCache state and skip paged pages")
+	}
+	if err := evalCachesBeforeDetach([]Cache{kvCache, pagedCache}); err != nil {
+		t.Fatalf("evalCachesBeforeDetach: %v", err)
+	}
+}
+
+func TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good(t *testing.T) {
+	coverageTokens := "PromptCache EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewKVCache()
+	defer cache.Reset()
+
+	k1 := FromValues([]float32{1, 2}, 1, 1, 2, 1)
+	v1 := FromValues([]float32{10, 20}, 1, 1, 2, 1)
+	defer Free(k1, v1)
+	firstK, firstV := cache.Update(k1, v1, 2)
+	logits := Add(firstK, firstV)
+	if err := Eval(logits); err != nil {
+		t.Fatalf("Eval first logits: %v", err)
+	}
+	if err := evalCachesBeforeDetach([]Cache{cache}); err != nil {
+		t.Fatalf("evalCachesBeforeDetach first chunk: %v", err)
+	}
+	detachCaches([]Cache{cache})
+	Free(firstK, firstV, logits)
+
+	k2 := FromValues([]float32{3, 4}, 1, 1, 2, 1)
+	v2 := FromValues([]float32{30, 40}, 1, 1, 2, 1)
+	defer Free(k2, v2)
+	gotK, gotV := cache.Update(k2, v2, 2)
+	defer Free(gotK, gotV)
+	if err := Eval(gotK, gotV); err != nil {
+		t.Fatalf("Eval second chunk cache: %v", err)
+	}
+	floatSliceApprox(t, gotK.Floats(), []float32{1, 2, 3, 4})
+	floatSliceApprox(t, gotV.Floats(), []float32{10, 20, 30, 40})
+}
+
 func TestPromptCache_RestoresQuantizedQ8Prefix_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoresQuantizedQ8Prefix"
 	if coverageTokens == "" {

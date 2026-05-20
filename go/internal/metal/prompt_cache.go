@@ -337,7 +337,11 @@ func prefillCacheStateArrays(caches []Cache) []*Array {
 		if cache == nil {
 			continue
 		}
-		arrays = append(arrays, cache.State()...)
+		for _, state := range cache.State() {
+			if state != nil && state.Valid() {
+				arrays = append(arrays, state)
+			}
+		}
 	}
 	return arrays
 }
@@ -372,8 +376,38 @@ func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, cache
 	if err != nil {
 		return nil, core.E("Model.Generate", "prefill", err)
 	}
+	if err := evalCachesBeforeDetach(caches); err != nil {
+		Free(lastLogits)
+		return nil, core.E("Model.Generate", "prefill cache state", err)
+	}
 	detachCaches(caches)
 	return lastLogits, nil
+}
+
+func evalCachesBeforeDetach(caches []Cache) error {
+	state := cacheStateArraysForDetach(caches)
+	if len(state) == 0 {
+		return nil
+	}
+	return Eval(state...)
+}
+
+func cacheStateArraysForDetach(caches []Cache) []*Array {
+	arrays := make([]*Array, 0)
+	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		if _, paged := cache.(*PagedKVCache); paged {
+			continue
+		}
+		for _, state := range cache.State() {
+			if state != nil && state.Valid() {
+				arrays = append(arrays, state)
+			}
+		}
+	}
+	return arrays
 }
 
 func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
