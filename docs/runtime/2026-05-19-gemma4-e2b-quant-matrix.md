@@ -12,6 +12,10 @@ decode does not regress. It is not the acceptance benchmark for agentic
 workflows. Long-form generation and retained-state wall time are tracked below
 and in `docs/runtime/2026-05-19-runner-calibration.md`.
 
+Current raw go-mlx quant artefacts live in
+`docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md`. Keep this file as the
+historical v0.31.1/v0.31.3 comparison note.
+
 ## go-mlx MLX-community Quant Matrix
 
 | Quant | Model | Status | Decode tok/s | Cold prefill tok/s | Summary prefill tok/s | Wall s | Peak GiB | J/visible token |

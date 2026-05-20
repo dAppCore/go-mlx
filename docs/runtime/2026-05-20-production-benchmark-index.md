@@ -48,25 +48,22 @@ faster cached-prefix row on the same workflow.
 
 ## Seven-Format E2B Matrix
 
-Source note: `docs/runtime/2026-05-19-gemma4-e2b-quant-matrix.md`. This is a
-summary-only matrix in the current tree: the raw JSON/stderr artefacts named by
-that older note are not present, so the seven-format gate still needs a rerun
-or recovery of those files before it can be treated as replay-grade evidence.
+Source note: `docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md`.
 
 | Quant | go-mlx status | Decode tok/s | Cold prefill tok/s | Peak GiB | Anchor status |
 | --- | --- | ---: | ---: | ---: | --- |
-| `mxfp4` | ok after affine override fix | `109.197` | `3735.077` | `5.139` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `mxfp8` | ok | `102.757` | `3096.460` | `6.516` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `4bit` | ok | `123.346` | `3724.280` | `4.607` | llama.cpp `Q4_K_M` anchor exists; `mlx_lm`/vLLM load failures recorded |
-| `5bit` | ok | `110.243` | `3711.742` | `5.047` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `6bit` | ok | `103.056` | `3683.675` | `5.586` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `8bit` | ok | `101.268` | `3728.024` | `6.665` | llama.cpp `Q8_0` anchor exists; `mlx_lm`/vLLM load failures recorded |
-| `bf16` | ok | `28.854` | `3594.309` | `11.790` | external per-quant failure artefact still missing |
+| `mxfp4` | ok after lazy-logit materialisation fix | `84.282` | `3094.590` | `4.794` | no llama.cpp equivalent; external per-quant failure artefact still missing |
+| `mxfp8` | ok | `74.631` | `2102.044` | `6.256` | no llama.cpp equivalent; external per-quant failure artefact still missing |
+| `4bit` | ok | `107.914` | `2600.048` | `7.660` | llama.cpp `Q4_K_M` anchor exists; `mlx_lm`/vLLM rows still need current per-quant refresh |
+| `5bit` | ok | `76.489` | `2412.525` | `4.719` | no llama.cpp equivalent; external per-quant failure artefact still missing |
+| `6bit` | ok | `73.411` | `2297.405` | `5.446` | no llama.cpp equivalent; external per-quant failure artefact still missing |
+| `8bit` | ok | `78.326` | `2082.905` | `6.338` | llama.cpp `Q8_0` anchor exists; `mlx_lm`/vLLM rows still need current per-quant refresh |
+| `bf16` | ok | `27.703` | `1366.643` | `16.179` | external per-quant failure artefact still missing |
 
 This matrix is a loader and short-latency smoke, not production acceptance
-evidence. The seven-format gate remains open until the raw go-mlx rows are
-recovered or rerun and the missing external per-quant rows are either measured
-or recorded as explicit command/version/error failures.
+evidence. The raw go-mlx rows are now replay-grade; the seven-format gate
+remains open until the missing external per-quant rows are either measured or
+recorded as explicit command/version/error failures.
 
 ## Replay Environment
 
@@ -90,8 +87,7 @@ device from the runner, while the same workload with `-report-file` completed.
    prompt-cache restore.
 2. Produce a fair cached-prefix llama.cpp row or document why llama.cpp cannot
    run that same retained workflow.
-3. Recover or rerun the seven raw go-mlx quant JSON artefacts, then fill the
-   missing external rows for `mxfp4`, `mxfp8`, `5bit`, `6bit`, and `bf16` with
-   command, runner version, and exact load error.
+3. Fill the missing external rows for `mxfp4`, `mxfp8`, `5bit`, `6bit`, and
+   `bf16` with command, runner version, and exact load error.
 4. Prune or quarantine abandoned runtime fragments after the canonical rows
    above are no longer needed for investigation.
