@@ -48,7 +48,10 @@ faster cached-prefix row on the same workflow.
 
 ## Seven-Format E2B Matrix
 
-Source note: `docs/runtime/2026-05-19-gemma4-e2b-quant-matrix.md`.
+Source note: `docs/runtime/2026-05-19-gemma4-e2b-quant-matrix.md`. This is a
+summary-only matrix in the current tree: the raw JSON/stderr artefacts named by
+that older note are not present, so the seven-format gate still needs a rerun
+or recovery of those files before it can be treated as replay-grade evidence.
 
 | Quant | go-mlx status | Decode tok/s | Cold prefill tok/s | Peak GiB | Anchor status |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -61,9 +64,9 @@ Source note: `docs/runtime/2026-05-19-gemma4-e2b-quant-matrix.md`.
 | `bf16` | ok | `28.854` | `3594.309` | `11.790` | external per-quant failure artefact still missing |
 
 This matrix is a loader and short-latency smoke, not production acceptance
-evidence. The seven-format gate remains open until the missing external
-per-quant rows are either measured or recorded as explicit command/version/error
-failures.
+evidence. The seven-format gate remains open until the raw go-mlx rows are
+recovered or rerun and the missing external per-quant rows are either measured
+or recorded as explicit command/version/error failures.
 
 ## Replay Environment
 
@@ -87,7 +90,8 @@ device from the runner, while the same workload with `-report-file` completed.
    prompt-cache restore.
 2. Produce a fair cached-prefix llama.cpp row or document why llama.cpp cannot
    run that same retained workflow.
-3. Fill the missing external rows for `mxfp4`, `mxfp8`, `5bit`, `6bit`, and
-   `bf16` with command, runner version, and exact load error.
+3. Recover or rerun the seven raw go-mlx quant JSON artefacts, then fill the
+   missing external rows for `mxfp4`, `mxfp8`, `5bit`, `6bit`, and `bf16` with
+   command, runner version, and exact load error.
 4. Prune or quarantine abandoned runtime fragments after the canonical rows
    above are no longer needed for investigation.

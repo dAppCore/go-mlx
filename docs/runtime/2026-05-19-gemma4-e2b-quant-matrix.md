@@ -76,7 +76,12 @@ default does not match a weight/scales tensor pair and infers the affine
 group-64 override instead. The fixed MXFP4 README profile now completes at
 `109.19709288036368 tok/s`.
 
-Artifacts:
+Historical artefact names:
+
+The metric table above is the current source for these short-latency numbers,
+but the raw JSON/stderr files named below are not present in the current tree.
+Recover or rerun them before treating this matrix as replay-grade evidence for
+the production gate.
 
 - `docs/runtime/2026-05-19-go-mlx-gemma4-e2b-mxfp4-v0311-quant-matrix-3run-readme-energy100w.json`
 - `docs/runtime/2026-05-19-go-mlx-gemma4-e2b-mxfp8-v0311-quant-matrix-3run-readme-energy100w.json`
