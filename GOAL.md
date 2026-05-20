@@ -1309,18 +1309,37 @@ speculative decode (`gemma4_assistant*.go`).
       `Model.Tokenizer`, `NewLoRA`, and `Model.TrainSFT`; the internal model
       returned by `TrainingModel` exposes `Forward`, `NewCache`, `Tokenizer`,
       and `ApplyLoRA`.
-- [ ] Compile the lthn/desktop `gomlxrunner` against that surface and add only
+- [x] Compile the lthn/desktop `gomlxrunner` against that surface and add only
       the thin wrapper names that the adapter proves necessary. A top-level
       `Tokenizer(model)` function is not available as named because the package
       already owns the exported `Tokenizer` type; prefer `Model.Tokenizer()`
-      unless the downstream interface forces a different accessor name.
-- [ ] Tag a release version that the lthn/desktop go.mod can pin against,
+      unless the downstream interface forces a different accessor name. Verified
+      from `lthn/desktop` with:
+
+      ```sh
+      env GOWORK=/Users/snider/Code/lthn/desktop/go.work \
+        GOCACHE=/private/tmp/codex-lthn-desktop-cache \
+        MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+        CGO_CPPFLAGS=-I/Users/snider/Code/core/go-mlx/dist/include/metal_cpp \
+        go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
+      ```
+
+      Result: `ok dappco.re/lthn/desktop/pkg/gomlxrunner` and
+      `ok dappco.re/lthn/desktop/pkg/training`. The downstream workspace needs
+      `external/mlx` at `1cefb03` and `external/inference` at `f0af335`; the
+      compile uses the go-mlx Metal-cpp include directory until desktop's
+      external/mlx checkout grows its own generated `dist/include/metal_cpp`
+      artefact.
+- [x] Tag a release version that the lthn/desktop go.mod can pin against,
       or wire workspace-mode build path so lthn/desktop picks up the export
-      via `external/`.
+      via `external/`. The active path is workspace mode:
+      `lthn/desktop/go.work` includes `./external/mlx/go`, and
+      `go/go.mod` requires `dappco.re/go/mlx v0.10.0` while resolving the live
+      external during development.
 
 ### `gomlxrunner` adapter — the single concrete handoff
 
-- [ ] Build `gomlxrunner` as a thin Go package implementing the
+- [x] Build `gomlxrunner` as a thin Go package implementing the
       `training.Runner` interface from
       `dappco.re/lthn/desktop/pkg/training`. Live target likely
       `lthn/desktop/go/pkg/gomlxrunner/` so it depends on go-mlx but not the
@@ -1337,6 +1356,10 @@ speculative decode (`gemma4_assistant*.go`).
       }
       ```
 
+      The package now provides `Config`, `New`, `NewFromModel`, `StepBatch`,
+      `GenerateResponse`, `ModelID`, `Substrate`, `Tier`, and `Close`. It uses
+      `Model.Tokenizer()`, `BuildSFTBatches`, `NewLoRA`, `AdamW`, and
+      `Model.Generate` without adding root-package wrapper names to go-mlx.
 - [ ] Substrate switch on the runner. CONT is the production-default (KV
       mount, no re-prefill, matches the 2026-05-20 c006 corrected-window
       run). TRAD is the comparison condition (full re-prefill per turn). The

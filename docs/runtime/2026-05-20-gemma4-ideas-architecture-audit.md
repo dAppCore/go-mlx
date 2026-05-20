@@ -23,7 +23,7 @@ as vague research items, and missing paths should be named as concrete work.
 | AdamW state layout | Shipped for homogeneous matrix moments | `go/internal/metal/optim.go` enables `PackedState` by default, keeps AdamW `m`/`v` in contiguous MLX slabs when parameter shapes and dtypes permit, and exposes an explicit fallback knob; `go/internal/metal/optim_test.go` covers packed, disabled, and mixed-dtype fallback paths; `go/sft.go` preserves the setting through SFT metadata/config replay | Keep the mdspan-backed parameter/file slab as part of the future LoRA delta `.mp4` timeline rather than claiming it from optimiser state alone |
 | LoRA delta `.mp4` timeline | Not shipped | Existing KV state bridge handles inference snapshots, not training delta tracks | Design after the runner can complete a real LoRA step |
 | MTP drafter co-training | Research only | Native MTP inference exists, but current GOAL rows reject it as production decode until acceptance improves | Revisit after target-model SFT is stable |
-| Public training surface | Mostly shipped, adapter still open | `go/training.go:11-72` exports arrays, LoRA, AdamW, cache, dtype, and `InternalModel`; `go/training.go:211-219` exposes `TrainingModel`; `go/backend.go:1268-1307` exposes `Model.Tokenizer` and `NewLoRA`; `go/sft.go:592-659` exposes `Model.TrainSFT` | Build the downstream `gomlxrunner` against this surface or add only the missing thin wrappers it proves necessary |
+| Public training surface | Shipped for the first downstream adapter | `go/training.go:11-72` exports arrays, LoRA, AdamW, cache, dtype, and `InternalModel`; `go/training.go:211-219` exposes `TrainingModel`; `go/backend.go:1268-1307` exposes `Model.Tokenizer` and `NewLoRA`; `go/sft.go:592-659` exposes `Model.TrainSFT`; `lthn/desktop/go/pkg/gomlxrunner` compiles against that surface without adding new go-mlx wrapper names | Keep future additions evidence-driven: only add root-package wrappers when a downstream compile proves the current surface is awkward or impossible |
 
 ## Practical Read
 
@@ -31,7 +31,22 @@ The next useful engineering target is not another broad C++23 conversion. That
 baseline is already present, and AdamW now packs compatible moment state by
 default. The highest-signal remaining items from the updated `IDEAS.md` are:
 
-1. A downstream `gomlxrunner` compile pass that proves the public training
-   surface is sufficient for `lthn/desktop`.
-2. The LoRA delta `.mp4` timeline, including mdspan-backed parameter/file slabs,
+1. The LoRA delta `.mp4` timeline, including mdspan-backed parameter/file slabs,
    after one real runner step works end-to-end.
+2. The `gomlxrunner` substrate switch and 180-run capture harness, which are
+   downstream workflow tasks rather than new go-mlx API blockers.
+
+The first downstream compile pass is now green from `lthn/desktop`:
+
+```sh
+env GOWORK=/Users/snider/Code/lthn/desktop/go.work \
+  GOCACHE=/private/tmp/codex-lthn-desktop-cache \
+  MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+  CGO_CPPFLAGS=-I/Users/snider/Code/core/go-mlx/dist/include/metal_cpp \
+  go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
+```
+
+The build requires desktop `external/mlx` at `1cefb03` and
+`external/inference` at `f0af335`; it still borrows go-mlx's
+`dist/include/metal_cpp` headers because the desktop external checkout has not
+generated its own Metal-cpp include tree.
