@@ -141,6 +141,102 @@ func TestGemma4_ParseConfig_DefaultLayerTypesForceFinalGlobal_Good(t *testing.T)
 	}
 }
 
+func TestGemma4_ParseConfig_PreservesE2BLayerMetadata_Good(t *testing.T) {
+	coverageTokens := "ParseConfig PreservesE2BLayerMetadata"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cfg, err := parseGemma4Config([]byte(`{
+		"model_type": "gemma4",
+		"text_config": {
+			"model_type": "gemma4_text",
+			"hidden_size": 1536,
+			"num_hidden_layers": 35,
+			"intermediate_size": 6144,
+			"num_attention_heads": 8,
+			"num_key_value_heads": 1,
+			"head_dim": 256,
+			"global_head_dim": 512,
+			"hidden_size_per_layer_input": 256,
+			"num_kv_shared_layers": 20,
+			"sliding_window": 512,
+			"layer_types": [
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention",
+				"sliding_attention", "sliding_attention", "sliding_attention", "sliding_attention", "full_attention"
+			],
+			"rope_parameters": {
+				"full_attention": {
+					"partial_rotary_factor": 0.25,
+					"rope_theta": 1000000.0,
+					"rope_type": "proportional"
+				},
+				"sliding_attention": {
+					"rope_theta": 10000.0,
+					"rope_type": "default"
+				}
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("parseGemma4Config: %v", err)
+	}
+	if cfg.SlidingWindow != 512 {
+		t.Fatalf("SlidingWindow = %d, want 512", cfg.SlidingWindow)
+	}
+	if cfg.NumKVSharedLayers != 20 {
+		t.Fatalf("NumKVSharedLayers = %d, want 20", cfg.NumKVSharedLayers)
+	}
+	if len(cfg.LayerTypes) != 35 {
+		t.Fatalf("LayerTypes len = %d, want 35", len(cfg.LayerTypes))
+	}
+	fullLayers := map[int]bool{4: true, 9: true, 14: true, 19: true, 24: true, 29: true, 34: true}
+	for i, got := range cfg.LayerTypes {
+		want := "sliding_attention"
+		if fullLayers[i] {
+			want = "full_attention"
+		}
+		if got != want {
+			t.Fatalf("LayerTypes[%d] = %q, want %q", i, got, want)
+		}
+	}
+	full := cfg.RopeParameters["full_attention"]
+	if full.RopeType != "proportional" || full.PartialRotaryFactor != 0.25 || full.RopeTheta != 1000000 {
+		t.Fatalf("full rope params = %+v, want proportional p-RoPE", full)
+	}
+
+	layers := make([]*Gemma4DecoderLayer, len(cfg.LayerTypes))
+	for i, layerType := range cfg.LayerTypes {
+		layers[i] = &Gemma4DecoderLayer{LayerType: layerType}
+	}
+	previous, cacheIndexByLayer := buildGemma4CacheLayout(layers, cfg.NumKVSharedLayers)
+	ownerCount := 0
+	for _, cacheIdx := range cacheIndexByLayer {
+		if cacheIdx >= 0 {
+			ownerCount++
+		}
+	}
+	if ownerCount != 15 {
+		t.Fatalf("owner cache count = %d, want 15 pre-sharing owners", ownerCount)
+	}
+	if previous[15] != 13 {
+		t.Fatalf("PreviousKVs[15] = %d, want sliding owner 13", previous[15])
+	}
+	if previous[19] != 14 {
+		t.Fatalf("PreviousKVs[19] = %d, want full owner 14", previous[19])
+	}
+	if previous[34] != 14 {
+		t.Fatalf("PreviousKVs[34] = %d, want full owner 14", previous[34])
+	}
+	if cacheIndexByLayer[15] != -1 || cacheIndexByLayer[19] != -1 || cacheIndexByLayer[34] != -1 {
+		t.Fatalf("shared layers allocated caches: layer15=%d layer19=%d layer34=%d", cacheIndexByLayer[15], cacheIndexByLayer[19], cacheIndexByLayer[34])
+	}
+}
+
 func TestGemma4_ParseConfig_ExplicitZeroSharedKV_Good(t *testing.T) {
 	coverageTokens := "ParseConfig ExplicitZeroSharedKV"
 	if coverageTokens == "" {

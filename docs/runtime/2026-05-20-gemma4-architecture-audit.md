@@ -22,6 +22,11 @@ evidence.
   cached E2B, E4B, 26B, 31B, and `lthn/lemer-mlx` configs already carry
   explicit `layer_types` and sharing counts, so this patch protects future or
   reduced configs rather than explaining previous benchmark deltas.
+- The ratio must stay metadata-driven. The cached E2B 4bit config declares a
+  four-sliding/one-full pattern with full layers at indexes
+  `4,9,14,19,24,29,34`, while cached E4B and 31B configs declare the
+  five-sliding/one-full pattern. The loader therefore preserves explicit
+  `layer_types` and uses the fallback pattern only when a config omits them.
 - Dual RoPE is already represented. Sliding layers use the `sliding_attention`
   rope parameters, while full layers use `full_attention`; proportional RoPE is
   precomputed into `Gemma4Attention.RopeFreqs` for full-attention layers rather
