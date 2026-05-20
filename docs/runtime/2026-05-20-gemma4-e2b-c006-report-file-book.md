@@ -69,6 +69,10 @@ env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
 | Estimated energy | `10594.699 J` |
 | Estimated energy per visible token | `1.292 J/token` |
 
+Operator review accepted this as the default small-model prompt/template path:
+the final chapter ended with the requested silence, stayed on point, and did
+not add visible planning or postscript text after the book's conclusion.
+
 ## Rejected Neighbor
 
 The same report-file path also captured a stricter `chapter_min_tokens=640`
