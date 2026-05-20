@@ -694,8 +694,10 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 					Free(lastPos)
 					return
 				}
-				if tracePhases {
+				if tracePhases && cfg.ProbeSink != nil {
 					phase.CacheProbeDuration += time.Since(phaseLast)
+				}
+				if tracePhases {
 					phaseLast = time.Now()
 				}
 
@@ -733,8 +735,10 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 			emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, genCount, i, caches)
 			emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
-			if tracePhases {
+			if tracePhases && cfg.ProbeSink != nil {
 				phase.CacheProbeDuration += time.Since(phaseLast)
+			}
+			if tracePhases {
 				phaseLast = time.Now()
 			}
 
