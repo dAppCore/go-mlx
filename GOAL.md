@@ -26,7 +26,60 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
   is 10+ turn wall-clock time with retained state, restore cost, prefill
   avoided, estimated energy delta, and effective throughput clearly reported.
 
-## Non-Negotiable Acceptance Criteria
+## Current Status: Production Path, Not Done
+
+This goal is not complete. Treat the evidence table below as a research ledger:
+it records useful wins, rejected probes, and historical results, but no row is a
+production sign-off unless it also satisfies the live gates in this section.
+
+The current production candidate is the q4-first `lthn-mlx driver-profile`
+fast Gemma 4 lane with retained state, paged/fixed-cache memory management, and
+machine-readable wall-clock, decode, prefill, restore, memory, and estimated
+energy reporting. The route to production is to make that candidate hold up
+under realistic repeated agentic workloads, then lock it against external
+runner anchors and long-context degradation.
+
+The small-model matrix target is the full `mlx-community` Gemma 4 E2B set:
+`mxfp4`, `mxfp8`, `4bit`, `5bit`, `6bit`, `8bit`, and `bf16`. Those formats
+must be recorded as supported, unsupported, or incompatible with go-mlx, vLLM,
+`mlx_lm`, and llama.cpp. llama.cpp comparisons use the nearest comparable GGUF
+quant when no native MLX-format equivalent exists.
+
+Production remains blocked until these gates are all satisfied:
+
+- [ ] A current guarded 100k-token E2B q4 retained-state run completes on the
+      target machine with 10+ turns, realistic generation length, bounded memory,
+      and recorded restore-versus-replay savings. Older 100k rows are historical
+      until re-run after the current safety and VM guard changes.
+- [ ] A guarded 10-chapter/full-book run completes with captured markdown,
+      enough output budget for real continuation, no late-turn degeneration, and
+      no tiny-token shortcut masquerading as workload evidence.
+- [ ] Same-shape runner anchors exist for the accepted workflow: go-mlx versus
+      configured `mlx_lm`, vLLM where it can load the model, and llama.cpp where
+      the model format is comparable. Report wall time, raw decode, prefill,
+      restore, memory, and estimated energy separately. Treat those as measured
+      stats, not the goal by themselves, unless a configured rival wins the
+      accepted repeated workflow; then the losing stat becomes the next boundary
+      to close.
+- [ ] The seven-format `mlx-community` E2B matrix is current for go-mlx and has
+      runner anchor rows for vLLM and llama.cpp where each runner can load a
+      comparable format. Loader failures must include command, version, and
+      error text rather than being silently skipped.
+- [ ] Long-context degradation is explained and improved or bounded. The 29k and
+      100k lanes must not collapse into a path that only looks good on README-
+      sized or `max_tokens=128` smoke prompts.
+- [ ] `lthn/lemer-mlx` or the chosen default small-model lane has an accepted
+      prompt/template path for multi-turn story/workflow continuation, not just a
+      native-load smoke pass.
+- [ ] The canonical benchmark artefacts are cleaned, indexed, and reproducible
+      enough that a new worker can replay the production path without digging
+      through abandoned JSON and stderr fragments.
+
+Do not close this goal because a short-context decode number is healthy. The
+production claim is repeated-workflow wall time and retained-state savings under
+real output budgets, with runner anchors and energy assumptions exposed.
+
+## Production Acceptance Criteria
 
 1. **Production runner win:** on the M3 Ultra target machine, go-mlx must beat
    configured Python/Metal alternatives such as `mlx_lm` and vLLM on a realistic
@@ -210,8 +263,11 @@ single-token decode. The active Gemma 4 26B A4B q4 snapshot has no
 stack: fixed-cache attention, local MLP, and routed expert activation/down
 kernels. Router projection/top-k and dense local-MLP matvecs now have small
 native wins, but are not enough alone. Direct grouped-query attention already avoids
-explicit K/V head expansion on Gemma 4 fast SDPA paths. The E2B floor is cleared;
-the remaining blocker is the Gemma 4 26B A4B q4 llama.cpp comparison.
+explicit K/V head expansion on Gemma 4 fast SDPA paths. The E2B short-context
+q4 floor is cleared, but that is not production acceptance. Production is still
+blocked by current guarded 100k retained-state reruns, accepted long-return or
+full-book evidence, bounded long-context decode behaviour, and same-shape
+external runner comparisons.
 
 ## Architecture Rules
 
@@ -591,16 +647,17 @@ agentic workflow win.
   functions per token. `compiled_greedy_decode_token()` is a static MLX
   compiled closure and the generator only uses it once logits are already
   single-step, leaving variable-shape prefill logits on the existing path.
-- [x] Record the native-boundary acceptance decision for the production goal.
+- [x] Record the native-boundary decision for the broad one-call wrapper.
   Go still owns architecture-level one-token forward orchestration, and the
   broad `GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY=1` wrapper remains rejected
-  because it regresses the 26B A4B q4 lane into the `50 tok/s` band. This is no
-  longer a completion blocker for the current q4-first agentic workflow: the
-  accepted production lane keeps the proven native sub-blocks in
-  `go/internal/metal`, keeps raw decode in the usable optimisation band, and
-  wins the large-context/8k-return q4-vs-BF16 wall-clock, memory, and estimated
-  energy comparison. The full one-token native boundary remains future R&D
-  under the candidate boundary list below. Current completion audit:
+  because it regresses the 26B A4B q4 lane into the `50 tok/s` band. This
+  resolves one rejected native-boundary branch; it does not complete the
+  production goal. The current q4-first candidate keeps the proven native
+  sub-blocks in `go/internal/metal` while the live production gates remain the
+  100k retained-state rerun, accepted long-form workflow evidence, long-context
+  decode bounds, and external runner anchors. The full one-token native
+  boundary remains future R&D under the candidate boundary list below.
+  Historical audit, now superseded as completion proof:
   `docs/runtime/2026-05-19-goal-completion-audit.md`.
 - [x] Re-run the benchmark command after every boundary change and record the
   before/after tok/s. The 2026-05-16 native-greedy/session rebuild produced
@@ -1177,7 +1234,7 @@ Silicon machines.
 
 ## Verification Commands
 
-Run these before claiming the goal lane is healthy:
+Run these before claiming a production-gate candidate is ready for review:
 
 ```bash
 cd /Users/snider/Code/core/go-mlx/go
@@ -1197,11 +1254,16 @@ git diff --check
 For performance claims, also run a `driver-profile` command with JSON output and
 save the result under `docs/runtime/`.
 
-## Done Means
+## Production-Ready Means
 
-- `bin/lthn-mlx` builds reproducibly.
+This is the handoff gate, not a description of the current state:
+
+- `bin/lthn-mlx` builds reproducibly from the workspace-aware command above.
 - The agentic memory lifecycle works without prompt-prefilling retained source
-  text.
+  text, and the 10+ turn retained-state path is measured against replayed
+  prefill.
+- The accepted workload uses realistic output budgets: long chapter/workflow
+  turns, not `max_tokens=8`, `32`, or `128` smoke-only shortcuts.
 - go-mlx is the best practical runner for the target repeated agentic workflow,
   or any faster external runner has a documented command, version, metric gap,
   and next native boundary to attack.
@@ -1210,5 +1272,7 @@ save the result under `docs/runtime/`.
   report proves raw decode is close enough and retained-state wall-clock wins
   decisively over a 10+ turn flow, including estimated energy saved when a
   wattage assumption is supplied.
+- Long-context memory use stays bounded for the small-model lane; a 5 GB model
+  must not reserve or report hundreds of GB during the accepted workflow.
 - Tests, build, diff hygiene, benchmark artefacts, and state smoke evidence are
   all present in the repo.
