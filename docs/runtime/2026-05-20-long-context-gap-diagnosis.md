@@ -40,23 +40,29 @@ The slower path is the accepted 100k retained workflow, not the shorter C006
 continuation lane. The first corrective change is now in the default fast lane:
 hyper-long paged K/V caches use `1024`-token pages instead of the old `512`
 default, and the CLI records that choice as
-`GO_MLX_PAGED_KV_PAGE_SIZE=1024`.
+`GO_MLX_PAGED_KV_PAGE_SIZE=1024`. The next corrective change retains the
+materialised full K/V handles produced by a full-attention owner layer so later
+shared full-attention layers can reuse them instead of re-concatenating the
+same paged state.
 
 | Runner | Shape | Warm per-turn decode | First prefill | Restore |
 | --- | --- | ---: | ---: | ---: |
-| go-mlx current | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024` | about `20.25s` per warm `1024` tokens, `50.566 tok/s` | `60.193s`, `1678.094 tok/s` | `0.365ms` average |
-| go-mlx previous | `101005` prompt tokens, `10x1024` retained turns | about `23.4s` per `1024` tokens, `43.617 tok/s` | `157.168s`, `642.657 tok/s` | `2.116ms` average |
+| go-mlx current | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, shared full-K/V reuse | about `17.07s` per warm `1024` tokens, `60.040 tok/s` | `60.186s`, `1678.322 tok/s` | `0.368ms` average |
+| go-mlx previous borrowed-page row | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024` | about `19.97s` per warm `1024` tokens, `51.310 tok/s` | `60.195s`, `1678.071 tok/s` | `0.372ms` average |
+| go-mlx previous page-size row | `101005` prompt tokens, `10x1024` retained turns | about `23.4s` per `1024` tokens, `43.617 tok/s` | `157.168s`, `642.657 tok/s` | `2.116ms` average |
 | llama.cpp server | `100926` prompt tokens, `10x1024` cached-prefix turns | about `12.5s` per `1024` tokens, `82.680 tok/s` | `89.122s`, `1132.450 tok/s` | `45.591ms` warm prompt work |
 | `mlx_lm` | `100935` cached prompt tokens, `10x1024` turns | about `10.0s` per `1024` tokens, `103.971 tok/s` | about `18.5s`, `5465.549 tok/s` | cached prefix in-process |
 
 The retained-state restore is already cheap enough that it is not the active
 loss. The page-size correction improves the 100k row from `408.483s` to
-`262.995s`, a `1.553x` wall/energy improvement, but the active loss is still
-the evaluated long-context graph and kernel path:
+`262.995s`, a `1.553x` wall/energy improvement. Borrowing full page handles
+then improves the accepted row to `260.093s` / `51.293 tok/s`, and shared
+full-K/V reuse improves it again to `231.109s` / `60.011 tok/s`. The active
+loss is still the evaluated long-context graph and kernel path:
 
 - go-mlx cold 100k prefill is now `1.48x` faster than llama.cpp but still
   `3.26x` slower than the configured `mlx_lm` harness.
-- go-mlx warm 100k decode remains `1.64x` slower than llama.cpp and `2.06x`
+- go-mlx warm 100k decode remains `1.38x` slower than llama.cpp and `1.73x`
   slower than `mlx_lm`.
 - The one-run token-phase trace records around `22ms` per generated token. Most
   of that wait is attributed under `cache_probe_duration`, but the label is
@@ -67,13 +73,13 @@ the evaluated long-context graph and kernel path:
 ## Working Explanation
 
 go-mlx has the retained-prefix architecture working, and the old paged-cache
-block geometry was a real part of the long-context loss. The remaining 100k
-decode path still evaluates a heavier per-token MLX graph than llama.cpp or
-`mlx_lm`. The likely live boundary is full-attention K/V access and mask/graph
-materialisation over a very large retained context, combined with the
-paged-cache view/concat attention path. The shorter C006 path stays near the
-useful `75-80 tok/s` band because it does not carry a 100k prompt prefix through
-every generated token.
+block geometry plus duplicate shared full-attention K/V materialisation were
+real parts of the long-context loss. The remaining 100k decode path still
+evaluates a heavier per-token MLX graph than llama.cpp or `mlx_lm`. The likely
+live boundary is full-attention K/V access and mask/graph materialisation over a
+very large retained context, combined with the paged-cache view/concat
+attention path. The shorter C006 path stays near the useful `75-80 tok/s` band
+because it does not carry a 100k prompt prefix through every generated token.
 
 The next optimisation should target the 100k first-prefill and warm-decode
 kernel path directly. Re-running small-context or short-output smokes will not
@@ -87,12 +93,12 @@ The raw trace is intentionally not tracked because it is about `17 MB`, but the
 compact derived note is tracked at
 `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md`.
 
-The trace itself slows decode to `19.026 tok/s`, so it is diagnostic rather
-than a replacement for the accepted untraced `51.293 tok/s` row. The bucket
-split is still decisive: out of `53.817s` traced decode-loop time, `53.084s`
-is forward materialisation. Native event totals rank attention first at
-`22.745s`, then output at `10.643s`, FFN at `9.909s`, and attention residual at
-`7.817s`.
+The trace itself was captured before shared full-K/V reuse and slows decode to
+`19.026 tok/s`, so it is diagnostic rather than a replacement for the current
+untraced `60.011 tok/s` row. The bucket split is still decisive: out of
+`53.817s` traced decode-loop time, `53.084s` is forward materialisation. Native
+event totals rank attention first at `22.745s`, then output at `10.643s`, FFN
+at `9.909s`, and attention residual at `7.817s`.
 
 The expensive attention layers are exactly the full-attention owners in the
 Gemma 4 local/full pattern: layers `4`, `9`, `14`, `19`, `24`, `29`, and `34`
@@ -106,7 +112,7 @@ Five same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |
-| Paged K/V without fast concat | `100937` prompt tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s` wall, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Avoiding the concat makes the per-page Go/MLX attention graph much slower than the accepted borrowed-page fast-concat lane. |
+| Paged K/V without fast concat | `100937` prompt tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s` wall, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Avoiding the concat makes the per-page Go/MLX attention graph much slower than the accepted paged fast-concat lane. |
 | Native C++ paged attention reduction | `100937` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s` wall, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Moving the same page-reduction graph behind one C++ call trims only a little overhead; the missing path is a fused/custom paged-attention kernel. |
 | Larger `2048`-token pages | `101005` prompt tokens, paged K/V `2048`, accepted fast gates | `80.787s` wall, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected. Fewer pages do not improve the borrowed fast-concat path; cache memory rises and decode falls below the accepted `1024`-page row. |
 | Preallocated `1024`-token pages | `101005` prompt tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s` wall, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected. In-place page updates do not beat the accepted concat-backed page append path at 100k and slightly increase active memory. |
@@ -115,11 +121,11 @@ Five same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 The current boundary is therefore narrower than "turn off concat" or "restore
 fixed cache": go-mlx needs a fused native paged/global-attention path that
-avoids both per-token full K/V concatenation and the active-memory footprint of
-a full fixed cache. A C++ wrapper around the existing page-reduction graph is
-not enough, larger page geometry does not help, preallocated pages do not help,
-and a right-sized fixed cache is still too memory-heavy on the guarded 100k
-lane.
+avoids both unnecessary full K/V rematerialisation and the active-memory
+footprint of a full fixed cache. A C++ wrapper around the existing
+page-reduction graph is not enough, larger page geometry does not help,
+preallocated pages do not help, and a right-sized fixed cache is still too
+memory-heavy on the guarded 100k lane.
 
 ## Model-Native Cache Diagnostic
 

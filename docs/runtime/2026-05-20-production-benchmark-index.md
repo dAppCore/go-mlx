@@ -15,17 +15,17 @@ postscript text. The benchmark artefact set is now indexed, strict-verified,
 and cleaned. The overall production goal is still not complete because the
 long-context performance gap remains open.
 
-The current measured blockers are still `mlx_lm` and llama.cpp: after the
-borrowed paged-K/V state change, `mlx_lm` is `2.170x` faster by wall time and
-estimated energy than go-mlx on the 100k cached workflow, while the cached
-llama.cpp server row is `1.214x` faster by wall time. That keeps go-mlx's
-long-context decode path as the next optimisation boundary.
+The current measured blockers are still `mlx_lm` and llama.cpp: after shared
+full-K/V reuse for paged full-attention owners, `mlx_lm` is `1.928x` faster by
+wall time and estimated energy than go-mlx on the 100k cached workflow, while
+the cached llama.cpp server row is `1.079x` faster by wall time. That keeps
+go-mlx's long-context decode path as the next optimisation boundary.
 
 ## Accepted go-mlx Artefacts
 
 | Purpose | Artefact | Shape | Result |
 | --- | --- | --- | --- |
-| 100k retained workflow | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-borrowed-pages-energy100w.json` | `101005` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, borrowed full page state | `260.093s`, `51.293 tok/s` decode, `1678.071 tok/s` cold prefill, `0.372ms` warm restore, `3.710 GiB` active MLX, `26009.334 J` at `100 W` |
+| 100k retained workflow | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, shared full-K/V reuse for full-attention layers | `231.109s`, `60.011 tok/s` decode, `1678.322 tok/s` cold prefill, `0.368ms` warm restore, `3.710 GiB` active MLX, `23110.937 J` at `100 W` |
 | 100k retained book | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-energy100w.json` | `10` chapters, `8192` token budget, `768` visible-token floor, thinking enabled | `482.081s`, `41.442 tok/s` decode, `11425` visible tokens, `4.261 GiB` active MLX |
 | C006 accepted continuation | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json` | `10` chapters, `8192` token budget, `512` visible-token floor, thinking enabled | `105.947s`, `80.343 tok/s` decode, `8201` visible tokens, `3.396 GB` active MLX |
 | C006 markdown | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` | Captured book output | Operator-reviewed as on-prompt through the final silence |
@@ -41,16 +41,17 @@ Companion notes:
 
 | Runner | Artefact | Comparable shape | Wall | Decode / throughput | Prefill / restore | Memory | Energy | Verdict |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| go-mlx | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-borrowed-pages-energy100w.json` | MLX 4bit, `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, borrowed full page state | `260.093s` | `51.293 tok/s` decode | `1678.071 tok/s` cold prefill, `0.372ms` warm restore | `3.710 GiB` active MLX, `3.156 GiB` peak RSS | `26009.334 J` | Current go-mlx baseline; `1.014x` faster on decode than the adaptive page-size row |
-| `mlx_lm` | `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json` | Same MLX 4bit snapshot, `100935` cached prompt tokens, `10x1024` turns | `119.866s` including load+prefill | `103.971 tok/s` decode | `5465.549 tok/s` prefill | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` | Current configured winner; go-mlx is `2.170x` slower by wall/energy |
-| llama.cpp server | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json` | GGUF `Q4_K_M`, `100926` prompt tokens, `10x1024` cached-prefix turns | `214.205s` | `82.680 tok/s` decode | `1132.450 tok/s` first prefill, `45.591ms` average warm prompt work with `100921` cached tokens | `4.435 GiB` peak RSS | `21420.531 J` | Same-shape cached runner anchor; beats go-mlx by `1.214x` wall/energy |
+| go-mlx | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | MLX 4bit, `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, shared full-K/V reuse for full-attention layers | `231.109s` | `60.011 tok/s` decode | `1678.322 tok/s` cold prefill, `0.368ms` warm restore | `3.710 GiB` active MLX, `3.146 GiB` peak RSS | `23110.937 J` | Current go-mlx baseline; `1.170x` faster on decode and `1.125x` faster by wall/energy than the borrowed-page row |
+| `mlx_lm` | `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json` | Same MLX 4bit snapshot, `100935` cached prompt tokens, `10x1024` turns | `119.866s` including load+prefill | `103.971 tok/s` decode | `5465.549 tok/s` prefill | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` | Current configured winner; go-mlx is `1.928x` slower by wall/energy |
+| llama.cpp server | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json` | GGUF `Q4_K_M`, `100926` prompt tokens, `10x1024` cached-prefix turns | `214.205s` | `82.680 tok/s` decode | `1132.450 tok/s` first prefill, `45.591ms` average warm prompt work with `100921` cached tokens | `4.435 GiB` peak RSS | `21420.531 J` | Same-shape cached runner anchor; beats go-mlx by `1.079x` wall/energy |
 | llama.cpp cold | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json` | GGUF `Q4_K_M`, cold `pp101005+tg1024`, one run | `94.904s` | `1075.081 tok/s` combined | Cold replay only | Not recorded in JSON | `9490.352 J` if normalised at `100 W` | Calibration only; superseded by server cached-prefix row for runner-gate evidence |
 | vLLM Metal | `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr` | Same MLX 4bit snapshot, `100935` input, `1024` output | n/a | n/a | n/a | n/a | n/a | Metal path starts, then strict MLX-LM load rejects extra Gemma 4 shared-K/V tensors |
 
 Cold llama.cpp replay over ten turns would be roughly `949.035s` at the
 measured one-run wall time, so go-mlx still beats CLI-style repeated cold
 replay. The server-side cached-prefix row is the fairer retained-workflow
-anchor and beats go-mlx on the same repeated shape.
+anchor and still beats go-mlx on the same repeated shape, but the gap is now
+down to `1.079x` wall/energy.
 
 ## Rejected Long-Context Diagnostics
 
@@ -59,7 +60,7 @@ they are not accepted production paths.
 
 | Probe | Artefact | Comparable shape | Result | Verdict |
 | --- | --- | --- | ---: | --- |
-| No paged fast-concat | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-no-fastconcat-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s`, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected; page-by-page attention graph is slower than the accepted borrowed-page fast-concat lane |
+| No paged fast-concat | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-no-fastconcat-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s`, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected; page-by-page attention graph is slower than the accepted paged fast-concat lane |
 | Native C++ paged attention | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-native-paged-attention-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s`, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected; one C++ call trims little overhead and does not replace a fused paged-attention kernel |
 | Larger paged K/V blocks | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-page2048-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `2048`, accepted fast gates | `80.787s`, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected; bigger pages reduce page count but lose decode speed and increase cache memory versus `1024` pages |
 | Preallocated paged K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-paged-prealloc-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s`, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected; in-place page updates do not improve the 100k decode path and slightly increase active memory |
@@ -156,11 +157,13 @@ device from the runner, while the same workload with `-report-file` completed.
 
 1. Close the `mlx_lm` and llama.cpp cached-runner gap or isolate the specific
    native cause. Borrowing full paged-K/V page handles removed one source of
-   per-token graph churn, but the remaining live boundary is still evaluated
-   graph/kernel work in the long-context attention path, not prompt-cache
-   restore. The current token-phase trace isolates the worst attention buckets
-   to the full-attention owners, layers `4`, `9`, `14`, `19`, `24`, `29`, and
-   `34`. The current diagnosis is recorded in
+   per-token graph churn, and retaining the owner materialised full K/V for
+   shared full-attention layers improved the accepted 100k workflow from
+   `260.093s` / `51.293 tok/s` to `231.109s` / `60.011 tok/s`. The remaining
+   live boundary is still evaluated graph/kernel work in the long-context
+   attention path, not prompt-cache restore. The current token-phase trace
+   isolates the worst attention buckets to the full-attention owners, layers
+   `4`, `9`, `14`, `19`, `24`, `29`, and `34`. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.

@@ -2630,7 +2630,10 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			Free(q)
 			q = qRoPE
 			qRoPEApplied = true
-			if nativePagedAttentionEnabled() && len(kv.Pages.Keys) > 1 {
+			if gemma4ValidKV(kv.Keys, kv.Values) {
+				out = ScaledDotProductAttention(q, kv.Keys, kv.Values, a.Scale, false)
+			}
+			if out == nil && nativePagedAttentionEnabled() && len(kv.Pages.Keys) > 1 {
 				var ok bool
 				var err error
 				out, ok, err = nativePagedSingleTokenAttention(q, kv.Pages.Keys, kv.Pages.Values, a.Scale)
@@ -2644,7 +2647,12 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			if out == nil && pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
 				kBase, vBase := concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
 				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, false)
-				Free(kBase, vBase)
+				if window == 0 {
+					kv.Keys = kBase
+					kv.Values = vBase
+				} else {
+					Free(kBase, vBase)
+				}
 			}
 			if out == nil {
 				kPages, vPages := kv.Pages.Keys, kv.Pages.Values

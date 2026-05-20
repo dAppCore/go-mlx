@@ -25,7 +25,7 @@
     {
       "id": "gomlx-100k-retained-workflow",
       "role": "accepted_go_mlx_workflow",
-      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-borrowed-pages-energy100w.json",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json",
       "kind": "json",
       "indexed": true
     },
