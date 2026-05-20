@@ -68,15 +68,19 @@ logits. `Array.Floats()` now materialises the row-contiguous source before raw
 `mlx_array_data_float32` access and returns an empty slice instead of walking a
 nil data pointer. The same MXFP4 row then completed `3/3` runs.
 
-## Open External Rows
+## External Rows
 
-This file closes the raw go-mlx side of the seven-format matrix. The matrix
-production gate remains open until external runner rows are refreshed:
+The external runner side now lives in
+`docs/runtime/2026-05-20-gemma4-e2b-external-quant-rows.md`.
 
-- llama.cpp comparable anchors for `4bit` and `8bit` remain the GGUF
-  `Q4_K_M`/`Q8_0` rows in the older matrix note.
-- `mlx_lm` and vLLM Metal need current per-quant command/version/error
-  artefacts for each unsupported or incompatible MLX-community snapshot.
-- There is no direct llama.cpp equivalent for MLX `mxfp4`, `mxfp8`, `5bit`,
-  `6bit`, or `bf16`; those rows should be labelled as nearest-comparable or
-  unsupported rather than silently omitted.
+That note records command, version, and error text for the external loader
+failures, plus successful comparable rows where a runner can load a format:
+
+- `mlx_lm.generate` fails all seven strict loads on extra Gemma 4 shared-K/V
+  tensors.
+- vLLM Metal fails the six quantised MLX snapshots at the same strict MLX-LM
+  load boundary, but BF16 loads and records `3.571706959s` one-batch latency for
+  `input_len=2205`, `output_len=128`.
+- llama.cpp has fresh current-shape GGUF anchors: `Q4_K_M` records
+  `4294.342 tok/s` prefill and `143.952 tok/s` decode; `Q8_0` records
+  `4460.410 tok/s` prefill and `122.513 tok/s` decode.

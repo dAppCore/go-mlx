@@ -52,18 +52,18 @@ Source note: `docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md`.
 
 | Quant | go-mlx status | Decode tok/s | Cold prefill tok/s | Peak GiB | Anchor status |
 | --- | --- | ---: | ---: | ---: | --- |
-| `mxfp4` | ok after lazy-logit materialisation fix | `84.282` | `3094.590` | `4.794` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `mxfp8` | ok | `74.631` | `2102.044` | `6.256` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `4bit` | ok | `107.914` | `2600.048` | `7.660` | llama.cpp `Q4_K_M` anchor exists; `mlx_lm`/vLLM rows still need current per-quant refresh |
-| `5bit` | ok | `76.489` | `2412.525` | `4.719` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `6bit` | ok | `73.411` | `2297.405` | `5.446` | no llama.cpp equivalent; external per-quant failure artefact still missing |
-| `8bit` | ok | `78.326` | `2082.905` | `6.338` | llama.cpp `Q8_0` anchor exists; `mlx_lm`/vLLM rows still need current per-quant refresh |
-| `bf16` | ok | `27.703` | `1366.643` | `16.179` | external per-quant failure artefact still missing |
+| `mxfp4` | ok after lazy-logit materialisation fix | `84.282` | `3094.590` | `4.794` | `mlx_lm` fails with `100` extra tensors; vLLM fails with `40`; no llama.cpp equivalent |
+| `mxfp8` | ok | `74.631` | `2102.044` | `6.256` | `mlx_lm` fails with `100` extra tensors; vLLM fails with `40`; no llama.cpp equivalent |
+| `4bit` | ok | `107.914` | `2600.048` | `7.660` | `mlx_lm` fails with `140` extra tensors; vLLM fails with `80`; llama.cpp `Q4_K_M` is `143.952 tok/s` decode |
+| `5bit` | ok | `76.489` | `2412.525` | `4.719` | `mlx_lm` fails with `140` extra tensors; vLLM fails with `80`; no llama.cpp equivalent |
+| `6bit` | ok | `73.411` | `2297.405` | `5.446` | `mlx_lm` fails with `140` extra tensors; vLLM fails with `80`; no llama.cpp equivalent |
+| `8bit` | ok | `78.326` | `2082.905` | `6.338` | `mlx_lm` fails with `140` extra tensors; vLLM fails with `80`; llama.cpp `Q8_0` is `122.513 tok/s` decode |
+| `bf16` | ok | `27.703` | `1366.643` | `16.179` | `mlx_lm` fails with `60` extra tensors; vLLM BF16 loads at `3.571706959s` latency for `2205+128`; no llama.cpp BF16 row |
 
 This matrix is a loader and short-latency smoke, not production acceptance
-evidence. The raw go-mlx rows are now replay-grade; the seven-format gate
-remains open until the missing external per-quant rows are either measured or
-recorded as explicit command/version/error failures.
+evidence. The raw go-mlx rows and external per-quant rows are now replay-grade;
+the production runner-anchor gate remains open because it requires the accepted
+100k retained workflow rather than this short matrix.
 
 ## Replay Environment
 
@@ -87,7 +87,5 @@ device from the runner, while the same workload with `-report-file` completed.
    prompt-cache restore.
 2. Produce a fair cached-prefix llama.cpp row or document why llama.cpp cannot
    run that same retained workflow.
-3. Fill the missing external rows for `mxfp4`, `mxfp8`, `5bit`, `6bit`, and
-   `bf16` with command, runner version, and exact load error.
-4. Prune or quarantine abandoned runtime fragments after the canonical rows
+3. Prune or quarantine abandoned runtime fragments after the canonical rows
    above are no longer needed for investigation.
