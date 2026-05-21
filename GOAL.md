@@ -1546,7 +1546,7 @@ speculative decode (`gemma4_assistant*.go`).
       `GenerateResponse`, `ModelID`, `Substrate`, `Tier`, and `Close`. It uses
       `Model.Tokenizer()`, `BuildSFTBatches`, `NewLoRA`, `AdamW`, and
       `Model.Generate` without adding root-package wrapper names to go-mlx.
-- [ ] Substrate switch on the runner. CONT is the production-default (KV
+- [x] Substrate switch on the runner. CONT is the production-default (KV
       mount, no re-prefill, matches the 2026-05-20 c006 corrected-window
       run). TRAD is the comparison condition (full re-prefill per turn). The
       substrate-shift experiment in `host-uk/core/plans/rfc/research/experiments/worf/`
@@ -1568,12 +1568,23 @@ speculative decode (`gemma4_assistant*.go`).
         go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
       ```
 
-      Remaining before this box closes: real-model seeded CONT-vs-TRAD output
-      parity. The two control conditions from `02-method.md`
-      (`TRAD-no-replay` and `CONT-with-gap`) are now represented in the
-      go-mlx condition contract and wired into the downstream `gomlxrunner`
-      adapter, but the output-equivalence claim still needs model-backed
-      evidence rather than config-level tests.
+      Real-model parity proof: `TestSubstrateParity_PromptCacheReplay_Good`
+      runs only when `GO_MLX_SUBSTRATE_PARITY_MODEL` points at a local model
+      pack. Against
+      `mlx-community/gemma-4-e2b-it-4bit` snapshot
+      `99d9a53ff828d365a8ecae538e45f80a08d612cd`, a cache miss, prompt-cache
+      hit, and forced replay produced identical chat output under
+      `WithSeed(42)`.
+
+      ```sh
+      env GO_MLX_SUBSTRATE_PARITY_MODEL=/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd \
+        MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+        GOCACHE=/private/tmp/go-mlx-gocache \
+        go test ./go -run TestSubstrateParity_PromptCacheReplay_Good -count=1 -v -timeout=10m
+      ```
+
+      Result: `ok dappco.re/go/mlx`, `PASS`,
+      `TestSubstrateParity_PromptCacheReplay_Good` in `3.25s`.
 
       Seed-control progress: go-mlx now exposes `SeedRandom(seed)` for
       run-level MLX RNG seeding plus `WithSeed(seed)` for single-call
