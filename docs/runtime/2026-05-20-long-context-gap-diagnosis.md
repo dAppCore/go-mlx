@@ -183,10 +183,30 @@ Focused coverage is in
 `TestPromptCache_EvalCachesBeforeDetachKeepsChunkedKVCacheEvaluable_Good`.
 
 After that fix, the same `fp16`/rotating 100k diagnostic passed the old prefill
-boundary but then crashed in decode before writing a report, with the stack
-entering `mlx_fast_rms_norm`. That rejects model-native `fp16`/rotating as a
-production shortcut for the 100k lane. It remains a useful bug boundary, but the
-current optimisation target stays the paged/global-attention path.
+boundary but exposed a stronger active-memory cliff. The local E2B MLX config
+declares `text_config.max_position_embeddings=131072`; this is the model's
+`128Ki` context cap, not an over-context setting. The failing 100k diagnostic is
+therefore under the model cap.
+
+The current bounded ladder is:
+
+| Shape | Result | Verdict |
+| --- | ---: | --- |
+| `28548` prompt tokens, `context=32768`, `fp16`/rotating | `10.886s` wall, `2631.245 tok/s` prefill, `4.702 GB` active MLX, `6.479 GB` peak MLX, `3.379 GB` RSS | Safe memory-slope row; generation stopped immediately, so it is not a decode row. |
+| `52677` prompt tokens, `context=65536`, `fp16`/rotating | `24.690s` wall, `2143.889 tok/s` prefill, `43.955 tok/s` decode over two generated tokens, `6.199 GB` active MLX, `8.771 GB` peak MLX, `3.369 GB` RSS | Safe medium-context row. |
+| `52677` prompt tokens, `context=131072`, `fp16`/rotating | `24.559s` wall, `2154.850 tok/s` prefill, `41.977 tok/s` decode over two generated tokens, `6.199 GB` active MLX, `8.771 GB` peak MLX, `3.383 GB` RSS | Confirms the configured context ceiling itself is not the memory cliff. |
+| README repeat `36`, `context=131072`, `fp16`/rotating | failed after one visible token at `28808918294` active bytes over the `12 GiB` guard | Rejected. Active MLX memory jumps nonlinearly between about `52k` and `80k` prompt tokens. |
+| Same `80k` shape with `-prefill-chunk-size 256` | failed after one visible token at `51768088226` active bytes | Rejected. Smaller prefill chunks worsen the cliff, so this is not a simple `chunk_len * key_len` scratch fix. |
+| Same `80k` shape with an experimental full-attention prefill layer eval boundary | failed after one visible token at `28904937562` active bytes | Rejected and removed from source. Layer-level materialisation does not reduce the active allocator cliff. |
+| README repeat `46`, `context=131072`, `fp16`/rotating | failed after one visible token at `64794744442` active bytes | Rejected. A rotating-cache copy-detach diagnostic was also byte-for-byte flat at `64794744526` active bytes and was removed from source. |
+
+This rejects model-native `fp16`/rotating as a drop-in replacement for the paged
+100k production lane. The active cliff is not caused by exceeding context, by
+retained rotating-tail slices, by smaller prefill chunks, or by keeping the
+whole prefill chunk graph lazy across full-attention layers. The current
+optimisation target stays the paged/global-attention path: a lower-level fused
+global attention or zero-copy state layout that avoids both full fixed-cache
+residency and per-token page concat.
 
 ## Replay Harness
 
