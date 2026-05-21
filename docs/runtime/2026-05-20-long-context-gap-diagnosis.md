@@ -168,6 +168,74 @@ rejects a pure MLX `slice_update` full-backing workaround; the next viable path
 needs the lower-level zero-copy/fused global-attention storage shape described
 in `IDEAS.md`, not another Go-orchestrated full-cache view.
 
+## 2026-05-21 Zero-Copy / Threshold Probe
+
+The latest probes treat `IDEAS.md` as the optimisation brief rather than a
+suggestion list. The C++23/raw-byte side of the "Zero-Copy Graph Injection" is
+already present in source: the raw bytes path uses Go `runtime.Pinner`, C++23
+`std::mdspan`, and `mlx_array_new_data_managed_payload`/strided MLX arrays.
+The new guarded paged-restore path wires that lower level into prompt-cache
+restore by keeping streamed KV block pages as their incoming page arrays instead
+of coalescing them into runtime-sized pages immediately.
+
+The C++23 status is explicit: the bridge cgo flags build with `-std=gnu++23`,
+the repo CMake entrypoints require C++23, `pinned_array_bridge.cpp` uses
+`std::mdspan` plus multidimensional `view[i, j, k, l]` indexing for strided
+view validation, and `decode_bridge.cpp` already uses `std::unreachable()` in
+the exhaustive Gemma 4 native KV ownership switch. The next use of those tools
+should be in the fused paged/global attention path, not scattered into cold
+validation code where it cannot move decode.
+
+| Probe | Result | Verdict |
+| --- | ---: | --- |
+| `context=65536`, fixed cache | `63625` prompt tokens, `46.976s` wall, `1985.425 tok/s` prefill, `68.909 tok/s` decode, `32.147s` first token, `7.175 GB` peak MLX, `5.312 GB` active MLX, `6.040 GB` MLX cache, `3.374 GB` RSS | Fixed remains faster at the threshold, but it is not the guarded 128Ki default path. |
+| `context=65537`, paged fast-concat | `63625` prompt tokens, `51.053s` wall, `1970.214 tok/s` prefill, `54.847 tok/s` decode, `32.383s` first token, `7.023 GB` peak MLX, `3.942 GB` active MLX, `6.553 GB` MLX cache, `3.397 GB` RSS | A one-token cap increase flips fixed to paged and exposes the decode cliff. |
+| `context=65537`, native paged attention | `74.078s` wall, `1970.895 tok/s` prefill, `24.555 tok/s` decode, `6.651 GB` MLX cache | Rejected. The current native page-list reduction is much slower than fast-concat. |
+| `context=65537`, paged fast-concat plus clear-cache | `52.127s` wall, `1899.350 tok/s` prefill, `55.233 tok/s` decode, `4` bytes MLX cache, `3.369 GB` RSS | Memory hygiene only. It clears allocator cache without closing decode. |
+| `context=131072`, paged fast-concat plus clear-cache | `100912` prompt tokens, `80.551s` wall, `1593.668 tok/s` prefill, `59.919 tok/s` decode, `63.463s` first token, `7.151 GB` peak MLX, `3.879 GB` active MLX, `4` bytes MLX cache, `3.368 GB` RSS | Stable memory at 128Ki, but speed remains in the current 100k band. |
+
+The zero-copy stack is therefore split into three parts:
+
+1. Raw bytes to pinned MLX arrays: implemented with Go `runtime.Pinner` and
+   C++23 `std::mdspan`.
+2. Restore-time paged state: now guarded by
+   `GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE=1` so incoming KV pages can be kept as
+   pages instead of immediately re-coalesced.
+3. Decode-time paged/global attention: still missing. The accepted 100k path
+   still depends on paged fast-concat during attention, so it is streamier on
+   restore than before but not yet streamy during the hot per-token attention
+   path.
+
+`GO_MLX_ENABLE_GENERATION_CLEAR_CACHE=1` and
+`GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL=256` are also useful, but they should be
+read as allocator discipline, not throughput evidence. They keep MLX cache
+memory flat during long runs and after chunked prefill, but they do not change
+the underlying paged/global attention work enough to beat the current external
+runner anchors.
+
+## Atomic-Chat Reference Notes
+
+Atomic-Chat is useful as a reference because its Metal/Gemma 4 stack is making
+the same architectural bets visible in `IDEAS.md`:
+
+- Its MLX backend surface includes APC, warm-memory/warm-disk tiers,
+  TurboQuant-style KV quantisation, and Gemma 4 MTP drafters.
+- Its llama.cpp fork documents TurboQuant KV types `turbo2`, `turbo3`, and
+  `turbo4`, with `turbo3` as the recommended default and a Metal TurboFlash
+  decode kernel.
+- Its Gemma 4 MTP design attaches the assistant to the target context instead
+  of allocating a second tokenizer, context, sampler, or draft KV cache. The
+  assistant reads the target K/V and uses the target's last hidden state.
+- Its MLX extension maps quantised Gemma 4 targets to bf16 assistant drafters
+  and treats mismatch as lower acceptance rate rather than output corruption,
+  because verification stays greedy.
+
+For go-mlx, this means TurboQuant K/V and MTP are valid follow-up R&D lanes, but
+they must be labelled separately from no-draft raw decode. The immediate no-draft
+gap remains the paged/global attention hot path: owner full-attention layers need
+a lower-level fused or directly strided storage path, not more Go-side page
+orchestration.
+
 ## Model-Native Cache Diagnostic
 
 The obvious `mlx_lm` comparison raised one useful diagnostic branch: try the
