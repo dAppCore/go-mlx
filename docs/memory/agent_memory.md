@@ -107,6 +107,13 @@ The folded index entry is labelled `folded-state` and records
 checkpoint remains available for exact continuation or forensics, while future
 turns wake the smaller folded state.
 
+Folded entries are intentionally treated as compact semantic state, not as a
+large raw K/V restore. When a wake target is labelled `folded-state` and its
+prefix is within the compact-state budget, the Metal backend reads the folded
+token prefix from the state file and prefills that small state into a fresh
+session. The wake report records `restore_strategy=folded-prefill`. Larger
+non-folded entries continue to use the K/V block restore path.
+
 The `state-ramp-profile` benchmark can exercise this lifecycle directly with
 `-fold-on-exhaustion -fold-store <path>`. When the ramp reaches its configured
 compaction threshold, the report includes the checkpoint and folded

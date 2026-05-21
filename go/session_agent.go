@@ -35,6 +35,8 @@ type AgentMemoryFoldReport struct {
 	FoldedPromptBytes int                `json:"folded_prompt_bytes,omitempty"`
 }
 
+const foldedAgentMemoryPrefillWakeMaxTokens = 16 * 1024
+
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
 func (m *Model) WakeAgentMemory(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	if ctx == nil {
@@ -91,6 +93,14 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 	if err != nil {
 		return nil, err
 	}
+	if shouldPrefillFoldedAgentMemory(plan.Entry) {
+		if err := s.prefillFoldedAgentMemory(ctx, store, plan, opts); err != nil {
+			return nil, err
+		}
+		plan.Report.RestoreStrategy = "folded-prefill"
+		s.agentMemory = agent.CloneWakeReport(plan.Report)
+		return plan.Report, nil
+	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
 		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, plan.Entry.PrefixTokens())
 		if err != nil {
@@ -99,6 +109,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 		if err := restorer.RestoreKVBlocks(ctx, source); err != nil {
 			return nil, err
 		}
+		plan.Report.RestoreStrategy = "kv-blocks"
 		s.agentMemory = agent.CloneWakeReport(plan.Report)
 		return plan.Report, nil
 	}
@@ -109,6 +120,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 	if err := s.RestoreKV(snapshot); err != nil {
 		return nil, err
 	}
+	plan.Report.RestoreStrategy = "snapshot"
 	s.agentMemory = agent.CloneWakeReport(plan.Report)
 	return plan.Report, nil
 }
@@ -116,6 +128,45 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 // Wake is a lifecycle alias for WakeAgentMemory.
 func (s *ModelSession) Wake(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*agent.WakeReport, error) {
 	return s.WakeAgentMemory(ctx, store, opts)
+}
+
+func shouldPrefillFoldedAgentMemory(entry agent.MemvidIndexEntry) bool {
+	if entry.PrefixTokens() <= 0 || entry.PrefixTokens() > foldedAgentMemoryPrefillWakeMaxTokens {
+		return false
+	}
+	if core.Lower(core.Trim(entry.Meta["folded_state"])) == "true" {
+		return true
+	}
+	for _, label := range entry.Labels {
+		if core.Lower(core.Trim(label)) == "folded-state" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store memvid.Store, plan *agent.WakePlan, opts agent.WakeOptions) error {
+	if s == nil || s.session == nil {
+		return core.NewError("mlx: model session is nil")
+	}
+	if plan == nil || plan.Bundle == nil {
+		return core.NewError("mlx: folded agent memory wake plan is nil")
+	}
+	loadOpts := opts.LoadOptions
+	if plan.Bundle.KVEncoding == kv.EncodingNative {
+		loadOpts.RawKVOnly = true
+	}
+	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), loadOpts)
+	if err != nil {
+		return core.E("mlx: folded agent memory prefill wake", "load tokens", err)
+	}
+	if snapshot == nil || len(snapshot.Tokens) == 0 {
+		return core.NewError("mlx: folded agent memory prefill wake loaded no tokens")
+	}
+	if err := s.PrefillTokens(ctx, snapshot.Tokens); err != nil {
+		return core.E("mlx: folded agent memory prefill wake", "prefill", err)
+	}
+	return nil
 }
 
 // WakeState implements the backend-neutral go-inference agent-memory contract.

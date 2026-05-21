@@ -318,8 +318,17 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WakeAgentMemory(folded) error = %v", err)
 	}
-	if wake.EntryURI != report.Folded.EntryURI || wake.PrefixTokens != report.Folded.TokenCount || continuedNative.restoredKV == nil {
-		t.Fatalf("folded wake = %+v restored=%+v, want folded state restored", wake, continuedNative.restoredKV)
+	if wake.EntryURI != report.Folded.EntryURI || wake.PrefixTokens != report.Folded.TokenCount {
+		t.Fatalf("folded wake = %+v, want folded entry and token count", wake)
+	}
+	if wake.RestoreStrategy != "folded-prefill" {
+		t.Fatalf("folded wake restore strategy = %q, want folded-prefill", wake.RestoreStrategy)
+	}
+	if len(continuedNative.prefillTokens) != report.Folded.TokenCount {
+		t.Fatalf("folded wake prefill tokens = %d, want %d", len(continuedNative.prefillTokens), report.Folded.TokenCount)
+	}
+	if continuedNative.restoredKV != nil {
+		t.Fatalf("folded wake restored KV = %+v, want compact token prefill path", continuedNative.restoredKV)
 	}
 	if err := continued.AppendPrompt("Next turn: continue from the folded state."); err != nil {
 		t.Fatalf("AppendPrompt(folded continuation) error = %v", err)

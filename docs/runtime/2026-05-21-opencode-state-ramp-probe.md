@@ -195,3 +195,43 @@ counts, folded wake latency, and an optional folded wake/continue turn governed
 by `-fold-continue-max-tokens`. If no semantic summary is provided, the harness
 uses a metric-only lifecycle summary so the state transition is measurable; real
 agent acceptance runs should pass a semantic summary from the compaction layer.
+
+## Folded Lifecycle Probe
+
+After the compact wake path was wired, a focused lifecycle rerun used the same
+Gemma 4 E2B 4-bit model, `30000` initial tokens, whole-turn append material,
+`1024` generation budget, and a `50000` compaction threshold. The turn floor was
+kept at `256` visible tokens but marked rather than failed so short model stops
+remain visible without blocking the compaction handoff.
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful turns before fold | `6/6` |
+| Initial retained state | `30000` tokens |
+| Exhausted checkpoint | `50714` tokens |
+| Folded compact state | `221` tokens |
+| Appended tokens | `16093` |
+| Generated/visible tokens | `4605` / `4601` |
+| Initial prefill | `2757.703 tok/s` |
+| Append average | `1903.262 tok/s` |
+| Raw decode average | `80.213 tok/s` |
+| Effective turn throughput | `69.908 tok/s` |
+| Total wall time before fold | `76.751s` |
+| Fold checkpoint + compact prefill | `1.800s` |
+| Folded wake latency | `86.637ms` |
+| Folded wake strategy | `folded-prefill` |
+| Folded continue | `15` tokens at `103.060 tok/s` |
+| Peak MLX memory | `3.283 GiB` |
+| Active MLX memory | `3.063 GiB` |
+| Process RSS | `3.255 GiB` |
+| Estimated energy at 100 W | `7675.102 J` |
+| Estimated total including fold lifecycle | `7885.064 J` |
+
+Verdict: the engine now recognises the live context boundary, writes an exact
+exhausted checkpoint, folds semantic summary/tail into a compact state, wakes
+that folded state without replaying the exhausted prefix, and continues without
+the prior non-finite-logits failure. The folded state wakes via
+`restore_strategy=folded-prefill` because the compact state is deliberately
+small; large non-folded checkpoints remain on the raw K/V block restore path.

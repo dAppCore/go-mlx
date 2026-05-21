@@ -26,16 +26,17 @@ type WakeOptions struct {
 
 // WakeReport describes the restored durable prefix.
 type WakeReport struct {
-	IndexURI     string `json:"index_uri,omitempty"`
-	EntryURI     string `json:"entry_uri,omitempty"`
-	BundleURI    string `json:"bundle_uri,omitempty"`
-	Title        string `json:"title,omitempty"`
-	PrefixTokens int    `json:"prefix_tokens,omitempty"`
-	BundleTokens int    `json:"bundle_tokens,omitempty"`
-	BlockSize    int    `json:"block_size,omitempty"`
-	BlocksRead   int    `json:"blocks_read,omitempty"`
-	IndexHash    string `json:"index_hash,omitempty"`
-	SnapshotHash string `json:"snapshot_hash,omitempty"`
+	IndexURI        string `json:"index_uri,omitempty"`
+	EntryURI        string `json:"entry_uri,omitempty"`
+	BundleURI       string `json:"bundle_uri,omitempty"`
+	Title           string `json:"title,omitempty"`
+	PrefixTokens    int    `json:"prefix_tokens,omitempty"`
+	BundleTokens    int    `json:"bundle_tokens,omitempty"`
+	BlockSize       int    `json:"block_size,omitempty"`
+	BlocksRead      int    `json:"blocks_read,omitempty"`
+	RestoreStrategy string `json:"restore_strategy,omitempty"`
+	IndexHash       string `json:"index_hash,omitempty"`
+	SnapshotHash    string `json:"snapshot_hash,omitempty"`
 }
 
 // SleepOptions controls how a live session is streamed to durable

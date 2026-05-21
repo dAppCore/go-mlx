@@ -73,7 +73,16 @@ prefill a folded state rather than append blindly. The package API now exposes
 that transition through `Model.FoldAgentMemory`: it sleeps the exhausted
 checkpoint, prefills a fresh session from summary-plus-tail text, sleeps the
 folded state with parent lineage, and records folded-state metadata for later
-wake/replay.
+wake/replay. Folded entries now wake with `restore_strategy=folded-prefill`:
+the engine reads the compact folded token prefix from the state file and
+prefills that small new window, while the exact exhausted checkpoint remains
+available on the raw K/V block path.
+
+The first folded lifecycle probe on the same E2B q4 lane is recorded in the
+runtime note: after `30000` initial tokens and `6` retained append/generate
+turns, the engine folded a `50714` token exhausted checkpoint into a `221` token
+compact state, woke it in `86.637ms`, and continued without replaying the
+exhausted prefix or hitting the prior non-finite-logits failure.
 
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
@@ -1235,8 +1244,9 @@ stuffing convention.
   folded entry, appends the next turn without replaying the summary text, and
   generates from the restored folded state. `state-ramp-profile` now exposes the
   same production handoff through `-fold-on-exhaustion`: it writes the exhausted
-  checkpoint and folded state to an explicit store, wakes the folded state, and
-  records the optional folded wake/continue turn in the benchmark report.
+  checkpoint and folded state to an explicit store, wakes the folded state with
+  `restore_strategy=folded-prefill`, and records the optional folded
+  wake/continue turn in the benchmark report.
 - [x] Reuse the current seed plus text memory when the operator does not want a
   new state file. `TestProjectSeed_PlanContinuationModes_Good` verifies
   `ProjectSeedReuseCurrent` avoids a sleep request and keeps the current seed
