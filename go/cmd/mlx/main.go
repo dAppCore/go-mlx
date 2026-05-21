@@ -16,7 +16,9 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/bench"
+	statefile "dappco.re/go/inference/state/filestore"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/model"
@@ -454,6 +456,13 @@ type stateRampProfileOptions struct {
 	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
+	FoldSummary               string                    `json:"-"`
+	FoldRecentTail            string                    `json:"-"`
+	FoldPrefillChunkBytes     int                       `json:"fold_prefill_chunk_bytes,omitempty"`
+	FoldContinuePrompt        string                    `json:"-"`
+	FoldContinueMaxTokens     int                       `json:"fold_continue_max_tokens,omitempty"`
 	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
@@ -483,6 +492,12 @@ type stateRampProfileReport struct {
 	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
+	FoldSummaryBytes          int                       `json:"fold_summary_bytes,omitempty"`
+	FoldRecentTailBytes       int                       `json:"fold_recent_tail_bytes,omitempty"`
+	FoldPrefillChunkBytes     int                       `json:"fold_prefill_chunk_bytes,omitempty"`
+	FoldContinueMaxTokens     int                       `json:"fold_continue_max_tokens,omitempty"`
 	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 	RuntimeGates              map[string]string         `json:"runtime_gates,omitempty"`
 	Load                      *tuneProfileLoadSettings  `json:"load,omitempty"`
@@ -490,6 +505,7 @@ type stateRampProfileReport struct {
 	InitialPrefillTokens      int                       `json:"initial_prefill_tokens,omitempty"`
 	Turns                     []stateRampProfileTurn    `json:"turns,omitempty"`
 	Summary                   stateRampProfileSummary   `json:"summary"`
+	Fold                      *stateRampProfileFold     `json:"fold,omitempty"`
 	EstimatedEnergy           *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
 	Error                     string                    `json:"error,omitempty"`
 }
@@ -544,11 +560,32 @@ type stateRampProfileSummary struct {
 }
 
 type stateRampProfileEnergy struct {
-	Method                string  `json:"method"`
-	PowerWatts            float64 `json:"power_watts"`
-	TotalJoules           float64 `json:"total_joules,omitempty"`
-	JoulesPerVisibleToken float64 `json:"joules_per_visible_token,omitempty"`
-	AppendJoules          float64 `json:"append_joules,omitempty"`
+	Method                         string  `json:"method"`
+	PowerWatts                     float64 `json:"power_watts"`
+	TotalJoules                    float64 `json:"total_joules,omitempty"`
+	JoulesPerVisibleToken          float64 `json:"joules_per_visible_token,omitempty"`
+	AppendJoules                   float64 `json:"append_joules,omitempty"`
+	FoldLifecycleJoules            float64 `json:"fold_lifecycle_joules,omitempty"`
+	TotalWithFoldLifecycleJoules   float64 `json:"total_with_fold_lifecycle_joules,omitempty"`
+	FoldContinueJoulesPerToken     float64 `json:"fold_continue_joules_per_visible_token,omitempty"`
+	FoldContinueEffectiveTokensSec float64 `json:"fold_continue_effective_tokens_per_sec,omitempty"`
+}
+
+type stateRampProfileFold struct {
+	Attempted           bool                  `json:"attempted"`
+	StorePath           string                `json:"store_path,omitempty"`
+	SummaryBytes        int                   `json:"summary_bytes,omitempty"`
+	RecentTailBytes     int                   `json:"recent_tail_bytes,omitempty"`
+	FoldedPromptBytes   int                   `json:"folded_prompt_bytes,omitempty"`
+	Duration            time.Duration         `json:"duration,omitempty"`
+	WakeDuration        time.Duration         `json:"wake_duration,omitempty"`
+	Checkpoint          *agent.SleepReport    `json:"checkpoint,omitempty"`
+	Folded              *agent.SleepReport    `json:"folded,omitempty"`
+	Wake                *agent.WakeReport     `json:"wake,omitempty"`
+	ContinuePromptBytes int                   `json:"continue_prompt_bytes,omitempty"`
+	ContinueTurn        *stateRampProfileTurn `json:"continue_turn,omitempty"`
+	SkippedReason       string                `json:"skipped_reason,omitempty"`
+	Error               string                `json:"error,omitempty"`
 }
 
 type driverProfileModel interface {
@@ -2044,6 +2081,15 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	repeatPenalty := fs.Float64("repeat-penalty", 1.0, "repeat penalty for generated turns")
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
+	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold")
+	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
+	foldSummary := fs.String("fold-summary", "", "summary text to seed the folded state; empty uses a benchmark lifecycle summary")
+	foldSummaryFile := fs.String("fold-summary-file", "", "read folded-state summary text from a file")
+	foldRecentTail := fs.String("fold-tail", "", "recent tail text to seed the folded state")
+	foldRecentTailFile := fs.String("fold-tail-file", "", "read folded-state recent tail text from a file")
+	foldPrefillChunkBytes := fs.Int("fold-prefill-chunk-bytes", 0, "byte chunk size for folded-state prefill; 0 uses the session default")
+	foldContinuePrompt := fs.String("fold-continue-prompt", "Confirm that the compacted retained state is live and name the next engineering action.", "prompt appended after waking the folded state")
+	foldContinueMaxTokens := fs.Int("fold-continue-max-tokens", 512, "generated tokens for the folded-state wake/continue check; 0 skips the check")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
 	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
@@ -2105,6 +2151,22 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 			return 1
 		}
 		*appendPrompt = string(read.Value.([]byte))
+	}
+	if core.Trim(*foldSummaryFile) != "" {
+		read := core.ReadFile(*foldSummaryFile)
+		if !read.OK {
+			core.Print(stderr, "%s state-ramp-profile: fold summary file: %v", cliName(), read.Value)
+			return 1
+		}
+		*foldSummary = string(read.Value.([]byte))
+	}
+	if core.Trim(*foldRecentTailFile) != "" {
+		read := core.ReadFile(*foldRecentTailFile)
+		if !read.OK {
+			core.Print(stderr, "%s state-ramp-profile: fold tail file: %v", cliName(), read.Value)
+			return 1
+		}
+		*foldRecentTail = string(read.Value.([]byte))
 	}
 	if *startTokens < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: start tokens must be >= 1\n", cliName()))
@@ -2173,6 +2235,18 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeat penalty must be >= 0\n", cliName()))
 		return 2
 	}
+	if *foldOnExhaustion && core.Trim(*foldStorePath) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when fold-on-exhaustion is enabled\n", cliName()))
+		return 2
+	}
+	if *foldPrefillChunkBytes < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold prefill chunk bytes must be >= 0\n", cliName()))
+		return 2
+	}
+	if *foldContinueMaxTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold continue max tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *repeatedTokenLoopLimit < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated token loop limit must be >= 1\n", cliName()))
 		return 2
@@ -2238,6 +2312,13 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		RepeatPenalty:             *repeatPenalty,
 		SuppressEOS:               *suppressEOS,
 		IncludeOutput:             *includeOutput,
+		FoldOnExhaustion:          *foldOnExhaustion,
+		FoldStorePath:             core.Trim(*foldStorePath),
+		FoldSummary:               *foldSummary,
+		FoldRecentTail:            *foldRecentTail,
+		FoldPrefillChunkBytes:     *foldPrefillChunkBytes,
+		FoldContinuePrompt:        *foldContinuePrompt,
+		FoldContinueMaxTokens:     *foldContinueMaxTokens,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -2279,6 +2360,12 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				RepeatPenalty:             *repeatPenalty,
 				SuppressEOS:               *suppressEOS,
 				IncludeOutput:             *includeOutput,
+				FoldOnExhaustion:          *foldOnExhaustion,
+				FoldStorePath:             core.Trim(*foldStorePath),
+				FoldSummaryBytes:          len(*foldSummary),
+				FoldRecentTailBytes:       len(*foldRecentTail),
+				FoldPrefillChunkBytes:     *foldPrefillChunkBytes,
+				FoldContinueMaxTokens:     *foldContinueMaxTokens,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -2348,6 +2435,12 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		RepeatPenalty:             opts.RepeatPenalty,
 		SuppressEOS:               opts.SuppressEOS,
 		IncludeOutput:             opts.IncludeOutput,
+		FoldOnExhaustion:          opts.FoldOnExhaustion,
+		FoldStorePath:             opts.FoldStorePath,
+		FoldSummaryBytes:          len(opts.FoldSummary),
+		FoldRecentTailBytes:       len(opts.FoldRecentTail),
+		FoldPrefillChunkBytes:     opts.FoldPrefillChunkBytes,
+		FoldContinueMaxTokens:     opts.FoldContinueMaxTokens,
 		SafetyLimits:              opts.SafetyLimits,
 		RuntimeGates:              driverProfileRuntimeGates(),
 	}
@@ -2453,6 +2546,12 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		}
 	}
 	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns, opts)
+	if opts.FoldOnExhaustion {
+		report.Fold = stateRampProfileFoldExhausted(ctx, model, session, report, opts)
+		if report.Fold != nil && report.Fold.Error != "" && firstErr == nil {
+			firstErr = core.NewError(report.Fold.Error)
+		}
+	}
 	if firstErr != nil {
 		report.Error = firstErr.Error()
 		return report, firstErr
@@ -2502,6 +2601,18 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	if opts.SafetyLimits.RepeatedSentenceLoopLimit <= 0 {
 		opts.SafetyLimits.RepeatedSentenceLoopLimit = profileDefaultRepeatedSentenceLoopLimit
+	}
+	opts.FoldStorePath = core.Trim(opts.FoldStorePath)
+	opts.FoldSummary = core.Trim(opts.FoldSummary)
+	opts.FoldRecentTail = core.Trim(opts.FoldRecentTail)
+	if opts.FoldPrefillChunkBytes < 0 {
+		opts.FoldPrefillChunkBytes = 0
+	}
+	if opts.FoldContinueMaxTokens < 0 {
+		opts.FoldContinueMaxTokens = 0
+	}
+	if opts.FoldContinuePrompt == "" {
+		opts.FoldContinuePrompt = "Confirm that the compacted retained state is live and name the next engineering action."
 	}
 	return opts
 }
@@ -2988,6 +3099,213 @@ func annotateStateRampProfileContextLifecycle(summary *stateRampProfileSummary, 
 	summary.CompactionReason = "live state reached the compaction threshold; checkpoint, summarise, and prefill a folded state from durable summary plus recent tail before appending more turns"
 }
 
+func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, report *stateRampProfileReport, opts stateRampProfileOptions) *stateRampProfileFold {
+	fold := &stateRampProfileFold{
+		StorePath:           opts.FoldStorePath,
+		SummaryBytes:        len(opts.FoldSummary),
+		RecentTailBytes:     len(opts.FoldRecentTail),
+		ContinuePromptBytes: len(opts.FoldContinuePrompt),
+	}
+	if report == nil || !report.Summary.FoldedStateRequired {
+		fold.SkippedReason = "live state did not reach the compaction threshold"
+		return fold
+	}
+	fold.Attempted = true
+	if model == nil || session == nil {
+		fold.Error = "state-ramp-profile: folded-state handoff requires a live model session"
+		return fold
+	}
+	if core.Trim(opts.FoldStorePath) == "" {
+		fold.Error = "state-ramp-profile: fold store path is required"
+		return fold
+	}
+	store, err := statefile.Create(ctx, opts.FoldStorePath)
+	if err != nil {
+		fold.Error = err.Error()
+		return fold
+	}
+	defer store.Close()
+
+	summary := stateRampProfileFoldSummary(report, opts)
+	tail := stateRampProfileFoldRecentTail(report, opts)
+	fold.SummaryBytes = len(summary)
+	fold.RecentTailBytes = len(tail)
+	foldPrompt := stateRampProfileInitialPrompt(opts.ChatTemplate, stateRampProfileFoldBody(summary, tail), opts.EnableThinking)
+	fold.FoldedPromptBytes = len(foldPrompt)
+	baseURI := stateRampProfileFoldBaseURI()
+	start := time.Now()
+	folded, foldReport, err := model.FoldAgentMemory(ctx, session, store, mlx.AgentMemoryFoldOptions{
+		Summary:           summary,
+		RecentTail:        tail,
+		FoldedPrompt:      foldPrompt,
+		PrefillChunkBytes: opts.FoldPrefillChunkBytes,
+		Checkpoint:        stateRampProfileFoldSleepOptions(report, baseURI, "checkpoint"),
+		Folded:            stateRampProfileFoldSleepOptions(report, baseURI, "folded"),
+	})
+	fold.Duration = bench.NonZeroDuration(time.Since(start))
+	if foldReport != nil {
+		fold.Checkpoint = foldReport.Checkpoint
+		fold.Folded = foldReport.Folded
+		fold.SummaryBytes = foldReport.SummaryBytes
+		fold.RecentTailBytes = foldReport.RecentTailBytes
+		fold.FoldedPromptBytes = foldReport.FoldedPromptBytes
+	}
+	if err != nil {
+		fold.Error = err.Error()
+		return fold
+	}
+	if folded != nil {
+		defer folded.Close()
+	}
+	if opts.FoldContinueMaxTokens <= 0 {
+		return fold
+	}
+	if fold.Folded == nil || fold.Folded.IndexURI == "" {
+		fold.Error = "state-ramp-profile: folded-state wake index is missing"
+		return fold
+	}
+	wakeStart := time.Now()
+	woken, wake, err := model.WakeAgentMemory(ctx, store, agent.WakeOptions{
+		IndexURI: fold.Folded.IndexURI,
+	})
+	fold.WakeDuration = bench.NonZeroDuration(time.Since(wakeStart))
+	fold.Wake = wake
+	if err != nil {
+		fold.Error = err.Error()
+		return fold
+	}
+	defer woken.Close()
+	continueTurn, err := stateRampProfileContinueFromFold(ctx, model, woken, fold, opts)
+	fold.ContinueTurn = continueTurn
+	if err != nil {
+		fold.Error = err.Error()
+	}
+	return fold
+}
+
+func stateRampProfileContinueFromFold(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, fold *stateRampProfileFold, opts stateRampProfileOptions) (*stateRampProfileTurn, error) {
+	if fold == nil || fold.Folded == nil {
+		return nil, core.NewError("state-ramp-profile: folded state is missing")
+	}
+	prompt := stateRampProfileTurnPrompt(opts.ChatTemplate, opts.FoldContinuePrompt, opts.EnableThinking)
+	tok := model.Tokenizer()
+	if tok == nil {
+		return nil, core.NewError("state-ramp-profile: model tokenizer is nil")
+	}
+	tokens, err := tok.Encode(prompt)
+	if err != nil {
+		return nil, err
+	}
+	continueOpts := opts
+	continueOpts.TurnMaxTokens = opts.FoldContinueMaxTokens
+	continueOpts.TurnMinTokens = 0
+	continueOpts.TurnMinTokensPolicy = "mark"
+	turn := stateRampProfileGenerateTurn(ctx, model, session, tokens, 0, len(tokens), fold.Folded.TokenCount, 1, continueOpts)
+	if turn.Error != "" {
+		return &turn, core.NewError(turn.Error)
+	}
+	return &turn, nil
+}
+
+func stateRampProfileFoldSummary(report *stateRampProfileReport, opts stateRampProfileOptions) string {
+	if summary := core.Trim(opts.FoldSummary); summary != "" {
+		return summary
+	}
+	if report == nil {
+		return "The previous retained state reached its live-token budget and was compacted into a folded state."
+	}
+	return core.Sprintf(
+		"The previous retained state reached the live-token budget at %d tokens after %d successful turns. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the exhausted prefix.",
+		report.Summary.FinalStateTokens,
+		report.Summary.SuccessfulTurns,
+		report.Summary.AppendedTokens,
+		report.Summary.GeneratedTokens,
+		report.Summary.DecodeTokensPerSecAverage,
+		report.Summary.EffectiveTurnTokensPerSec,
+	)
+}
+
+func stateRampProfileFoldRecentTail(report *stateRampProfileReport, opts stateRampProfileOptions) string {
+	if tail := core.Trim(opts.FoldRecentTail); tail != "" {
+		return tail
+	}
+	if report == nil || len(report.Turns) == 0 {
+		return ""
+	}
+	builder := core.NewBuilder()
+	start := len(report.Turns) - 3
+	if start < 0 {
+		start = 0
+	}
+	for i := start; i < len(report.Turns); i++ {
+		turn := report.Turns[i]
+		if core.Trim(turn.Output) == "" {
+			continue
+		}
+		builder.WriteString(core.Sprintf("Turn %d output:\n", turn.Index))
+		builder.WriteString(core.Trim(turn.Output))
+		builder.WriteString("\n\n")
+	}
+	return core.Trim(builder.String())
+}
+
+func stateRampProfileFoldBody(summary, tail string) string {
+	builder := core.NewBuilder()
+	builder.WriteString("The previous retained context window reached its live-token budget and has been compacted into this folded state.\n\n")
+	if core.Trim(summary) != "" {
+		builder.WriteString("<summary>\n")
+		builder.WriteString(core.Trim(summary))
+		builder.WriteString("\n</summary>\n\n")
+	}
+	if core.Trim(tail) != "" {
+		builder.WriteString("<recent_tail>\n")
+		builder.WriteString(core.Trim(tail))
+		builder.WriteString("\n</recent_tail>\n\n")
+	}
+	builder.WriteString("Use the summary as durable memory and the recent tail as the immediate continuation point. Do not assume the full exhausted context is still present.")
+	return builder.String()
+}
+
+func stateRampProfileFoldBaseURI() string {
+	return core.Sprintf("mlx://state-ramp/fold/%d", time.Now().UTC().UnixNano())
+}
+
+func stateRampProfileFoldSleepOptions(report *stateRampProfileReport, baseURI, kind string) agent.SleepOptions {
+	if core.Trim(baseURI) == "" {
+		baseURI = stateRampProfileFoldBaseURI()
+	}
+	kind = core.Trim(kind)
+	if kind == "" {
+		kind = "state"
+	}
+	uri := baseURI + "/" + kind
+	meta := map[string]string{
+		"source": "state-ramp-profile",
+		"kind":   kind,
+	}
+	if report != nil {
+		meta["start_tokens"] = core.Itoa(report.StartTokens)
+		meta["target_tokens"] = core.Itoa(report.TargetTokens)
+		meta["final_state_tokens"] = core.Itoa(report.Summary.FinalStateTokens)
+	}
+	return agent.SleepOptions{
+		EntryURI:  uri,
+		BundleURI: uri + "/bundle",
+		IndexURI:  uri + "/index",
+		Title:     "state ramp " + kind,
+		ModelPath: reportModelPath(report),
+		Labels:    []string{"state-ramp-profile", kind},
+		Meta:      meta,
+	}
+}
+
+func reportModelPath(report *stateRampProfileReport) string {
+	if report == nil {
+		return ""
+	}
+	return report.ModelPath
+}
+
 func estimateStateRampProfileEnergy(report *stateRampProfileReport, powerWatts float64) *stateRampProfileEnergy {
 	energy := &stateRampProfileEnergy{
 		Method:     "estimated_wall_clock_seconds_times_average_active_watts",
@@ -3001,7 +3319,30 @@ func estimateStateRampProfileEnergy(report *stateRampProfileReport, powerWatts f
 	if report.Summary.VisibleTokens > 0 {
 		energy.JoulesPerVisibleToken = energy.TotalJoules / float64(report.Summary.VisibleTokens)
 	}
+	if foldDuration := stateRampProfileFoldDuration(report.Fold); foldDuration > 0 {
+		energy.FoldLifecycleJoules = durationJoules(foldDuration, powerWatts)
+		energy.TotalWithFoldLifecycleJoules = energy.TotalJoules + energy.FoldLifecycleJoules
+	}
+	if report.Fold != nil && report.Fold.ContinueTurn != nil {
+		turn := report.Fold.ContinueTurn
+		turnWall := report.Fold.WakeDuration + turn.AppendDuration + turn.Duration
+		if turn.VisibleTokens > 0 && turnWall > 0 {
+			energy.FoldContinueJoulesPerToken = durationJoules(turnWall, powerWatts) / float64(turn.VisibleTokens)
+			energy.FoldContinueEffectiveTokensSec = float64(turn.VisibleTokens) / turnWall.Seconds()
+		}
+	}
 	return energy
+}
+
+func stateRampProfileFoldDuration(fold *stateRampProfileFold) time.Duration {
+	if fold == nil {
+		return 0
+	}
+	total := fold.Duration + fold.WakeDuration
+	if fold.ContinueTurn != nil {
+		total += fold.ContinueTurn.AppendDuration + fold.ContinueTurn.Duration
+	}
+	return total
 }
 
 func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileReport) {
@@ -3023,6 +3364,20 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 	}
 	if report.Summary.FoldedStateRequired {
 		core.WriteString(stdout, core.Sprintf("  context exhausted: folded state required at %d tokens (tail hint: %d tokens)\n", report.Summary.CompactionThresholdTokens, report.Summary.CompactionTailTokens))
+	}
+	if report.Fold != nil {
+		if report.Fold.Attempted {
+			core.WriteString(stdout, core.Sprintf("  folded state: %s in %s", report.Fold.StorePath, report.Fold.Duration))
+			if report.Fold.WakeDuration > 0 {
+				core.WriteString(stdout, core.Sprintf(", wake %s", report.Fold.WakeDuration))
+			}
+			if report.Fold.ContinueTurn != nil {
+				core.WriteString(stdout, core.Sprintf(", continue %d tokens at %.1f tok/s", report.Fold.ContinueTurn.VisibleTokens, report.Fold.ContinueTurn.Metrics.DecodeTokensPerSec))
+			}
+			core.WriteString(stdout, "\n")
+		} else if report.Fold.SkippedReason != "" {
+			core.WriteString(stdout, core.Sprintf("  folded state: skipped (%s)\n", report.Fold.SkippedReason))
+		}
 	}
 }
 

@@ -182,7 +182,16 @@ limit, and emits `context_exhausted`, `folded_state_required`,
 `compaction_threshold_tokens`, and `compaction_tail_tokens` in the summary. That
 boundary means the next production step is to checkpoint, summarise the exhausted
 window, keep a recent tail, and prefill a folded state before accepting more
-turns. The package API for that handoff is now `Model.FoldAgentMemory`, which
-sleeps the exhausted checkpoint, prefills a fresh session from summary plus
-recent tail text, sleeps the folded state with parent lineage, and records
-folded-state metadata in the durable index.
+turns.
+
+The package API for that handoff is `Model.FoldAgentMemory`, which sleeps the
+exhausted checkpoint, prefills a fresh session from summary plus recent tail
+text, sleeps the folded state with parent lineage, and records folded-state
+metadata in the durable index. The benchmark harness can now execute the same
+handoff with `-fold-on-exhaustion -fold-store <path>` plus optional
+`-fold-summary-file` and `-fold-tail-file`: when the lifecycle boundary is hit,
+the report records checkpoint/folded `SleepReport` data, folded prompt byte
+counts, folded wake latency, and an optional folded wake/continue turn governed
+by `-fold-continue-max-tokens`. If no semantic summary is provided, the harness
+uses a metric-only lifecycle summary so the state transition is measurable; real
+agent acceptance runs should pass a semantic summary from the compaction layer.

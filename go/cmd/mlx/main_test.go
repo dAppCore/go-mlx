@@ -800,6 +800,108 @@ func TestRunCommand_StateRampProfileCompactionValidation_Bad(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	var gotCfg stateRampProfileOptions
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		gotCfg = cfg
+		return &stateRampProfileReport{
+			Version:                   1,
+			ModelPath:                 modelPath,
+			FoldOnExhaustion:          cfg.FoldOnExhaustion,
+			FoldStorePath:             cfg.FoldStorePath,
+			FoldSummaryBytes:          len(cfg.FoldSummary),
+			FoldRecentTailBytes:       len(cfg.FoldRecentTail),
+			FoldPrefillChunkBytes:     cfg.FoldPrefillChunkBytes,
+			FoldContinueMaxTokens:     cfg.FoldContinueMaxTokens,
+			StartTokens:               cfg.StartTokens,
+			TargetTokens:              cfg.TargetTokens,
+			CompactionThresholdTokens: cfg.CompactionThresholdTokens,
+			CompactionTailTokens:      cfg.CompactionTailTokens,
+			Summary: stateRampProfileSummary{
+				FinalStateTokens:          cfg.CompactionThresholdTokens,
+				ContextExhausted:          true,
+				FoldedStateRequired:       true,
+				CompactionThresholdTokens: cfg.CompactionThresholdTokens,
+				CompactionTailTokens:      cfg.CompactionTailTokens,
+			},
+			Fold: &stateRampProfileFold{
+				Attempted:         true,
+				StorePath:         cfg.FoldStorePath,
+				SummaryBytes:      len(cfg.FoldSummary),
+				RecentTailBytes:   len(cfg.FoldRecentTail),
+				FoldedPromptBytes: 123,
+			},
+		}, nil
+	}
+	dir := t.TempDir()
+	summaryPath := core.PathJoin(dir, "summary.txt")
+	tailPath := core.PathJoin(dir, "tail.txt")
+	storePath := core.PathJoin(dir, "state.mvlog")
+	writeCLIPackFile(t, summaryPath, "summarised exhausted context")
+	writeCLIPackFile(t, tailPath, "recent continuation tail")
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-ramp-profile",
+		"-json",
+		"-fold-on-exhaustion",
+		"-fold-store", storePath,
+		"-fold-summary-file", summaryPath,
+		"-fold-tail-file", tailPath,
+		"-fold-prefill-chunk-bytes", "4096",
+		"-fold-continue-max-tokens", "640",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !gotCfg.FoldOnExhaustion || gotCfg.FoldStorePath != storePath {
+		t.Fatalf("fold cfg = %+v, want explicit folded-state store", gotCfg)
+	}
+	if gotCfg.FoldSummary != "summarised exhausted context" || gotCfg.FoldRecentTail != "recent continuation tail" {
+		t.Fatalf("fold text summary=%q tail=%q, want file contents", gotCfg.FoldSummary, gotCfg.FoldRecentTail)
+	}
+	if gotCfg.FoldPrefillChunkBytes != 4096 || gotCfg.FoldContinueMaxTokens != 640 {
+		t.Fatalf("fold prefill/continue = %d/%d, want configured values", gotCfg.FoldPrefillChunkBytes, gotCfg.FoldContinueMaxTokens)
+	}
+	for _, want := range []string{
+		`"fold_on_exhaustion": true`,
+		`"fold_store_path": "` + storePath + `"`,
+		`"fold_summary_bytes": 28`,
+		`"fold_recent_tail_bytes": 24`,
+		`"fold_prefill_chunk_bytes": 4096`,
+		`"fold_continue_max_tokens": 640`,
+		`"attempted": true`,
+		`"folded_prompt_bytes": 123`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for missing fold store")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-exhaustion", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "fold store path is required") {
+		t.Fatalf("stderr = %q, want fold store validation", stderr.String())
+	}
+}
+
 func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "User turn 3: Inspect the report.\n\n\treturn mem_", false)
 
@@ -929,6 +1031,48 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
 		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
+	}
+}
+
+func TestStateRampProfileFoldBody_Good(t *testing.T) {
+	body := stateRampProfileFoldBody("keep the architectural decision log", "last user asked for chapter 12")
+
+	for _, want := range []string{
+		"compacted into this folded state",
+		"<summary>",
+		"keep the architectural decision log",
+		"<recent_tail>",
+		"last user asked for chapter 12",
+		"Do not assume the full exhausted context is still present.",
+	} {
+		if !core.Contains(body, want) {
+			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestStateRampProfileFoldRecentTail_Good(t *testing.T) {
+	report := &stateRampProfileReport{
+		Turns: []stateRampProfileTurn{
+			{Index: 1, Output: "first"},
+			{Index: 2, Output: "second"},
+			{Index: 3, Output: "third"},
+			{Index: 4, Output: "fourth"},
+		},
+	}
+
+	tail := stateRampProfileFoldRecentTail(report, stateRampProfileOptions{})
+
+	if core.Contains(tail, "Turn 1 output") {
+		t.Fatalf("tail = %q, want only the latest three turns", tail)
+	}
+	for _, want := range []string{"Turn 2 output", "second", "Turn 3 output", "third", "Turn 4 output", "fourth"} {
+		if !core.Contains(tail, want) {
+			t.Fatalf("tail = %q, want %q", tail, want)
+		}
+	}
+	if !core.Contains(tail, "Turn 2 output:\nsecond\n\nTurn 3 output:\nthird\n\nTurn 4 output:\nfourth") {
+		t.Fatalf("tail = %q, want chronological order", tail)
 	}
 }
 

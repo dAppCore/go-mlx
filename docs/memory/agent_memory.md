@@ -107,6 +107,14 @@ The folded index entry is labelled `folded-state` and records
 checkpoint remains available for exact continuation or forensics, while future
 turns wake the smaller folded state.
 
+The `state-ramp-profile` benchmark can exercise this lifecycle directly with
+`-fold-on-exhaustion -fold-store <path>`. When the ramp reaches its configured
+compaction threshold, the report includes the checkpoint and folded
+`SleepReport`, folded wake latency, and an optional folded wake/continue turn.
+Pass `-fold-summary-file` and `-fold-tail-file` for semantic compaction; without
+them the harness uses a metric-only lifecycle summary so the state transition is
+measurable but not a useful agent memory.
+
 ## Compatibility check
 
 Defaults on. Compares `WakeRequest.Model.Hash` / `Tokenizer.Hash` against bundle's stored identity:

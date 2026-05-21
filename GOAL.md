@@ -110,9 +110,11 @@ Production remains blocked until these gates are all satisfied:
       tok/s. When this run reaches the live context budget, the accepted outcome
       is a reported `folded_state_required` boundary with a summary-plus-tail
       folded-state handoff, not further raw appends into an exhausted window.
-      The API-level handoff is now implemented by `Model.FoldAgentMemory`; the
-      remaining benchmark work is wiring it into the long-run harness and
-      measuring the folded wake/continue turn.
+      The API-level handoff is now implemented by `Model.FoldAgentMemory`, and
+      `state-ramp-profile` can execute it with `-fold-on-exhaustion` plus an
+      explicit `-fold-store` path. The remaining benchmark work is running the
+      accepted warm build-up with semantic summary/tail material and recording
+      the folded wake/continue turn against the runner anchors.
 - [x] A current guarded 100k-token E2B q4 retained-state run completes on the
       target machine with 10+ turns, realistic generation length, bounded memory,
       and recorded restore-versus-replay savings. This is now the hyper-long
@@ -1231,7 +1233,10 @@ stuffing convention.
   session from summary-plus-tail text, sleeps the folded state with parent
   lineage, then `TestFoldAgentMemory_CheckpointSummaryTail_Good` wakes the
   folded entry, appends the next turn without replaying the summary text, and
-  generates from the restored folded state.
+  generates from the restored folded state. `state-ramp-profile` now exposes the
+  same production handoff through `-fold-on-exhaustion`: it writes the exhausted
+  checkpoint and folded state to an explicit store, wakes the folded state, and
+  records the optional folded wake/continue turn in the benchmark report.
 - [x] Reuse the current seed plus text memory when the operator does not want a
   new state file. `TestProjectSeed_PlanContinuationModes_Good` verifies
   `ProjectSeedReuseCurrent` avoids a sleep request and keeps the current seed
