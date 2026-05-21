@@ -7,6 +7,7 @@
 #include <limits>
 #include <mdspan>
 
+#include "cgo_pinned_view.hpp"
 #include "mlx/c/array.h"
 #include "mlx/c/error.h"
 #include "mlx/c/ops.h"
@@ -79,23 +80,24 @@ bool validate_strided_view(
   }
 
   if (dim == 4) {
-    using extents_t = std::dextents<size_t, 4>;
-    using mapping_t = std::layout_stride::mapping<extents_t>;
-    std::array<size_t, 4> stride_values{
-        static_cast<size_t>(strides[0]) * item_size,
-        static_cast<size_t>(strides[1]) * item_size,
-        static_cast<size_t>(strides[2]) * item_size,
-        static_cast<size_t>(strides[3]) * item_size,
-    };
-    mapping_t mapping(
-        extents_t(
-            static_cast<size_t>(shape[0]),
-            static_cast<size_t>(shape[1]),
-            static_cast<size_t>(shape[2]),
-            static_cast<size_t>(shape[3])),
-        stride_values);
+    // Bounds-validate the strided view via cgo_pinned_view's mdspan
+    // helper — same construction as the hand-rolled mapping, just
+    // routed through the shared substrate so the layout-stride
+    // conventions stay single-sourced across go-cgo consumers.
+    // Strides are scaled by item_size so the std::byte view walks
+    // bytes; the helper takes element-strides (in std::byte that's
+    // bytes, so the multiplication is correct).
     auto* base = static_cast<const std::byte*>(data) + offset * item_size;
-    std::mdspan<const std::byte, extents_t, std::layout_stride> view(base, mapping);
+    auto view = lthn::cgo::pinned_view_4d<const std::byte>(
+        base,
+        static_cast<size_t>(shape[0]),
+        static_cast<size_t>(shape[1]),
+        static_cast<size_t>(shape[2]),
+        static_cast<size_t>(shape[3]),
+        static_cast<std::ptrdiff_t>(strides[0]) * static_cast<std::ptrdiff_t>(item_size),
+        static_cast<std::ptrdiff_t>(strides[1]) * static_cast<std::ptrdiff_t>(item_size),
+        static_cast<std::ptrdiff_t>(strides[2]) * static_cast<std::ptrdiff_t>(item_size),
+        static_cast<std::ptrdiff_t>(strides[3]) * static_cast<std::ptrdiff_t>(item_size));
     const std::byte* first = &view[0, 0, 0, 0];
     const std::byte* last = &view[
         static_cast<size_t>(shape[0] - 1),

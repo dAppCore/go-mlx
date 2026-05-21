@@ -10,6 +10,7 @@ package metal
 #cgo CXXFLAGS: -DACCELERATE_NEW_LAPACK -DFMT_HEADER_ONLY=1 -DFMT_CONSTEVAL= -DMLX_USE_ACCELERATE
 #cgo CFLAGS: -mmacosx-version-min=26.0
 #cgo darwin CFLAGS: -x objective-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../external/go-cgo/go
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx-c
 #cgo CPPFLAGS: -I${SRCDIR}/../../../lib/fmt/include
