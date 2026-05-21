@@ -854,6 +854,13 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		PrefixTokens: prefixTokens,
 		BlockCount:   len(refs),
 	}
+	// Hoist invariants out of the per-block closure. KVEncoding is bundle-
+	// scoped — checking it once at construction lets each Load call use
+	// the captured loadOpts directly without re-branching on every block.
+	loadOpts := kv.LoadOptions{}
+	if bundle.KVEncoding == kv.EncodingNative {
+		loadOpts.RawKVOnly = true
+	}
 	source.Load = func(loadCtx context.Context, index int) (metal.KVSnapshotBlock, error) {
 		if loadCtx == nil {
 			loadCtx = ctx
@@ -862,10 +869,6 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block index is out of range")
 		}
 		ref := refs[index]
-		loadOpts := kv.LoadOptions{}
-		if bundle.KVEncoding == kv.EncodingNative {
-			loadOpts.RawKVOnly = true
-		}
 		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
 		if err != nil {
 			return metal.KVSnapshotBlock{}, err
