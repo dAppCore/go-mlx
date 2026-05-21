@@ -462,6 +462,8 @@ type stateRampProfileOptions struct {
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
+	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
 	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
 	FoldSummary               string                    `json:"-"`
 	FoldRecentTail            string                    `json:"-"`
@@ -514,6 +516,8 @@ type stateRampProfileReport struct {
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
+	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
 	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
 	FoldSummaryBytes          int                       `json:"fold_summary_bytes,omitempty"`
 	FoldRecentTailBytes       int                       `json:"fold_recent_tail_bytes,omitempty"`
@@ -575,6 +579,10 @@ type stateRampProfileSummary struct {
 	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64        `json:"process_peak_resident_bytes,omitempty"`
 	ContextExhausted           bool          `json:"context_exhausted,omitempty"`
+	ContentDegraded            bool          `json:"content_degraded,omitempty"`
+	ContentDegradationTurn     int           `json:"content_degradation_turn,omitempty"`
+	ContentDegradationStreak   int           `json:"content_degradation_consecutive_turns,omitempty"`
+	ContentDegradationReason   string        `json:"content_degradation_reason,omitempty"`
 	FoldedStateRequired        bool          `json:"folded_state_required,omitempty"`
 	CompactionThresholdTokens  int           `json:"compaction_threshold_tokens,omitempty"`
 	CompactionTailTokens       int           `json:"compaction_tail_tokens,omitempty"`
@@ -2145,6 +2153,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold")
+	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when retained content degrades before the target")
+	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive below-floor marked turns required before folding on retained-content degradation")
 	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
 	foldSummary := fs.String("fold-summary", "", "summary text to seed the folded state; empty uses a benchmark lifecycle summary")
 	foldSummaryFile := fs.String("fold-summary-file", "", "read folded-state summary text from a file")
@@ -2298,8 +2308,20 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeat penalty must be >= 0\n", cliName()))
 		return 2
 	}
-	if *foldOnExhaustion && core.Trim(*foldStorePath) == "" {
-		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when fold-on-exhaustion is enabled\n", cliName()))
+	if *degradationMinConsecutive < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
+		return 2
+	}
+	if *foldOnDegradation && *turnMinTokens <= 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold-on-degradation requires turn-min-tokens > 0\n", cliName()))
+		return 2
+	}
+	if *foldOnDegradation && *turnMinTokensPolicy != "mark" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold-on-degradation requires turn min tokens policy mark\n", cliName()))
+		return 2
+	}
+	if (*foldOnExhaustion || *foldOnDegradation) && core.Trim(*foldStorePath) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when folding is enabled\n", cliName()))
 		return 2
 	}
 	if *foldPrefillChunkBytes < 0 {
@@ -2376,6 +2398,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		SuppressEOS:               *suppressEOS,
 		IncludeOutput:             *includeOutput,
 		FoldOnExhaustion:          *foldOnExhaustion,
+		FoldOnDegradation:         *foldOnDegradation,
+		DegradationMinConsecutive: *degradationMinConsecutive,
 		FoldStorePath:             core.Trim(*foldStorePath),
 		FoldSummary:               *foldSummary,
 		FoldRecentTail:            *foldRecentTail,
@@ -2424,6 +2448,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				SuppressEOS:               *suppressEOS,
 				IncludeOutput:             *includeOutput,
 				FoldOnExhaustion:          *foldOnExhaustion,
+				FoldOnDegradation:         *foldOnDegradation,
+				DegradationMinConsecutive: *degradationMinConsecutive,
 				FoldStorePath:             core.Trim(*foldStorePath),
 				FoldSummaryBytes:          len(*foldSummary),
 				FoldRecentTailBytes:       len(*foldRecentTail),
@@ -2499,6 +2525,8 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		SuppressEOS:               opts.SuppressEOS,
 		IncludeOutput:             opts.IncludeOutput,
 		FoldOnExhaustion:          opts.FoldOnExhaustion,
+		FoldOnDegradation:         opts.FoldOnDegradation,
+		DegradationMinConsecutive: opts.DegradationMinConsecutive,
 		FoldStorePath:             opts.FoldStorePath,
 		FoldSummaryBytes:          len(opts.FoldSummary),
 		FoldRecentTailBytes:       len(opts.FoldRecentTail),
@@ -2551,7 +2579,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		appendText = opts.Prompt
 		report.AppendPromptBytes = len(appendText)
 	}
-	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking)
+	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking, opts.TurnMinTokens)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -2585,6 +2613,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 
 	currentTokens := len(seedTokens)
 	sourceOffset := 0
+	consecutiveBelowMin := 0
 	var firstErr error
 	for turnIndex := 1; shouldRunStateRampTurn(turnIndex, currentTokens, opts); turnIndex++ {
 		turnSourceTokens, turnSourceOffset, appendCount := stateRampProfileTurnAppendSource(appendSourceTokens, appendTurnSections, sourceOffset, currentTokens, turnIndex, opts)
@@ -2602,14 +2631,22 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 				firstErr = core.NewError(turn.Error)
 			}
 		}
+		if turn.BelowMinTokens {
+			consecutiveBelowMin++
+		} else {
+			consecutiveBelowMin = 0
+		}
 		report.Turns = append(report.Turns, turn)
 		mlx.ClearCache()
 		if turn.Error != "" && stateRampProfileTurnErrorFatal(turn, opts) {
 			break
 		}
+		if stateRampProfileDegradationFoldReached(consecutiveBelowMin, opts) {
+			break
+		}
 	}
 	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns, opts)
-	if opts.FoldOnExhaustion {
+	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
 		report.Fold = stateRampProfileFoldExhausted(ctx, model, session, report, opts)
 		if report.Fold != nil && report.Fold.Error != "" && firstErr == nil {
 			firstErr = core.NewError(report.Fold.Error)
@@ -2655,6 +2692,9 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	if opts.TurnMinTokensPolicy != "mark" {
 		opts.TurnMinTokensPolicy = "fail"
+	}
+	if opts.DegradationMinConsecutive <= 0 {
+		opts.DegradationMinConsecutive = 2
 	}
 	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
@@ -2791,14 +2831,15 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 	}
 }
 
-func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool) string {
+func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool, minVisibleTokens ...int) string {
 	prompt = core.Trim(prompt)
+	floor := stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...)
 	switch template {
 	case "gemma4":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		writeStateRampProfileReferenceTurn(builder, prompt, floor)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		if !enableThinking {
 			builder.WriteString("<|channel>thought\n<channel|>")
@@ -2808,40 +2849,49 @@ func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool) st
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<start_of_turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		writeStateRampProfileReferenceTurn(builder, prompt, floor)
 		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
 		return builder.String()
 	case "qwen":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|im_start|>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		writeStateRampProfileReferenceTurn(builder, prompt, floor)
 		builder.WriteString("<|im_end|>\n<|im_start|>assistant\n")
 		return builder.String()
 	case "llama":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		writeStateRampProfileReferenceTurn(builder, prompt, floor)
 		builder.WriteString("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
 		return builder.String()
 	default:
-		return stateRampProfileReferenceTurn(prompt)
+		return stateRampProfileReferenceTurn(prompt, floor)
 	}
 }
 
-func stateRampProfileReferenceTurn(prompt string) string {
+func stateRampProfileReferenceTurn(prompt string, minVisibleTokens ...int) string {
 	prompt = core.Trim(prompt)
 	if prompt == "" {
 		return prompt
 	}
 	builder := core.NewBuilder()
 	builder.Grow(len(prompt) + 512)
-	writeStateRampProfileReferenceTurn(builder, prompt)
+	writeStateRampProfileReferenceTurn(builder, prompt, stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...))
 	return builder.String()
 }
 
-func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (int, error) }, prompt string) {
+func stateRampProfileRequestedVisibleTokenFloor(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (int, error) }, prompt string, minVisibleTokens ...int) {
 	prompt = core.Trim(prompt)
 	if prompt == "" {
 		return
@@ -2849,7 +2899,10 @@ func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (
 	builder.WriteString("Use the retained project context and the new turn material below. Answer the user request directly. Treat any code or document excerpts as reference material, not as text to continue.\n\n")
 	builder.WriteString("<turn_material>\n")
 	builder.WriteString(prompt)
-	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
+	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Do not explain what the user is asking; answer as the engineer doing the work. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
+	if floor := stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...); floor > 0 {
+		builder.WriteString(core.Sprintf(" For this measured workload, write at least %d visible tokens. If the direct answer is naturally shorter, expand with concrete evidence, the main risk, and the next validation step instead of stopping early.", floor))
+	}
 }
 
 func stateRampProfileVisibleOutput(template, output string) string {
@@ -2881,7 +2934,9 @@ func stateRampProfileOutputIssues(output string) []string {
 	if core.Contains(lower, "officially complete") ||
 		core.Contains(lower, "officially accepted") ||
 		core.Contains(lower, "officially validated") ||
-		core.Contains(lower, "production-ready") ||
+		core.Contains(lower, "is production-ready") ||
+		core.Contains(lower, "now production-ready") ||
+		core.Contains(lower, "deemed production-ready") ||
 		core.Contains(lower, "the implementation is now officially") {
 		issues = append(issues, "visible_false_completion_claim")
 	}
@@ -2895,7 +2950,7 @@ func stateRampProfileAssistantCloseSuffix(template string) string {
 	return chapterProfileAssistantHistorySuffix(template, "")
 }
 
-func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool) ([]int32, [][]int32, error) {
+func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool, minVisibleTokens int) ([]int32, [][]int32, error) {
 	if tok == nil {
 		return nil, nil, core.NewError("state-ramp-profile: model tokenizer is nil")
 	}
@@ -2917,7 +2972,7 @@ func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template
 			continue
 		}
 		if !stateRampProfilePlainTemplate(template) {
-			section = stateRampProfileTurnPrompt(template, section, enableThinking)
+			section = stateRampProfileTurnPrompt(template, section, enableThinking, minVisibleTokens)
 		}
 		tokens, err := tok.Encode(section)
 		if err != nil {
@@ -3149,6 +3204,17 @@ func stateRampProfileTurnErrorFatal(turn stateRampProfileTurn, opts stateRampPro
 	return !(turn.BelowMinTokens && opts.TurnMinTokensPolicy == "mark")
 }
 
+func stateRampProfileDegradationFoldReached(consecutiveBelowMin int, opts stateRampProfileOptions) bool {
+	if !opts.FoldOnDegradation || opts.TurnMinTokens <= 0 || opts.TurnMinTokensPolicy != "mark" {
+		return false
+	}
+	minConsecutive := opts.DegradationMinConsecutive
+	if minConsecutive <= 0 {
+		minConsecutive = 2
+	}
+	return consecutiveBelowMin >= minConsecutive
+}
+
 func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn, opts stateRampProfileOptions) stateRampProfileSummary {
 	summary := stateRampProfileSummary{
 		InitialPrefillTokens: initialTokens,
@@ -3209,8 +3275,43 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	if turnWallDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.EffectiveTurnTokensPerSec = float64(summary.GeneratedTokens) / turnWallDuration.Seconds()
 	}
+	annotateStateRampProfileContentDegradation(&summary, turns, opts)
 	annotateStateRampProfileContextLifecycle(&summary, opts)
 	return summary
+}
+
+func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary, turns []stateRampProfileTurn, opts stateRampProfileOptions) {
+	if summary == nil || !opts.FoldOnDegradation || opts.TurnMinTokens <= 0 || opts.TurnMinTokensPolicy != "mark" {
+		return
+	}
+	minConsecutive := opts.DegradationMinConsecutive
+	if minConsecutive <= 0 {
+		minConsecutive = 2
+	}
+	streak := 0
+	for _, turn := range turns {
+		if turn.BelowMinTokens {
+			streak++
+		} else {
+			streak = 0
+		}
+		if streak < minConsecutive {
+			continue
+		}
+		summary.ContentDegraded = true
+		summary.ContentDegradationTurn = turn.Index
+		summary.ContentDegradationStreak = streak
+		summary.ContentDegradationReason = core.Sprintf(
+			"retained context produced %d consecutive below-floor turns at turn %d; checkpoint, summarise, and prefill a folded state before appending more turns",
+			streak,
+			turn.Index,
+		)
+		summary.FoldedStateRequired = true
+		if summary.CompactionReason == "" {
+			summary.CompactionReason = summary.ContentDegradationReason
+		}
+		return
+	}
 }
 
 func annotateStateRampProfileContextLifecycle(summary *stateRampProfileSummary, opts stateRampProfileOptions) {
@@ -3242,7 +3343,7 @@ func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, sessio
 		ContinuePromptBytes: len(opts.FoldContinuePrompt),
 	}
 	if report == nil || !report.Summary.FoldedStateRequired {
-		fold.SkippedReason = "live state did not reach the compaction threshold"
+		fold.SkippedReason = "live state did not reach the compaction threshold or content-degradation boundary"
 		return fold
 	}
 	fold.Attempted = true
@@ -3347,7 +3448,19 @@ func stateRampProfileFoldSummary(report *stateRampProfileReport, opts stateRampP
 		return summary
 	}
 	if report == nil {
-		return "The previous retained state reached its live-token budget and was compacted into a folded state."
+		return "The previous retained state reached a compaction boundary and was compacted into a folded state."
+	}
+	if report.Summary.ContentDegraded {
+		return core.Sprintf(
+			"The previous retained state degraded at %d tokens after turn %d, with %d consecutive below-floor real-workload turns. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the degraded prefix.",
+			report.Summary.FinalStateTokens,
+			report.Summary.ContentDegradationTurn,
+			report.Summary.ContentDegradationStreak,
+			report.Summary.AppendedTokens,
+			report.Summary.GeneratedTokens,
+			report.Summary.DecodeTokensPerSecAverage,
+			report.Summary.EffectiveTurnTokensPerSec,
+		)
 	}
 	return core.Sprintf(
 		"The previous retained state reached the live-token budget at %d tokens after %d successful turns. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the exhausted prefix.",
@@ -3386,7 +3499,7 @@ func stateRampProfileFoldRecentTail(report *stateRampProfileReport, opts stateRa
 
 func stateRampProfileFoldBody(summary, tail string) string {
 	builder := core.NewBuilder()
-	builder.WriteString("The previous retained context window reached its live-token budget and has been compacted into this folded state.\n\n")
+	builder.WriteString("The previous retained context window has been compacted into this folded state.\n\n")
 	if core.Trim(summary) != "" {
 		builder.WriteString("<summary>\n")
 		builder.WriteString(core.Trim(summary))
@@ -3497,8 +3610,13 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 	if report.EstimatedEnergy != nil {
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 	}
-	if report.Summary.FoldedStateRequired {
+	if report.Summary.ContentDegraded {
+		core.WriteString(stdout, core.Sprintf("  content degraded: folded state required after %d consecutive below-floor turns at turn %d\n", report.Summary.ContentDegradationStreak, report.Summary.ContentDegradationTurn))
+	}
+	if report.Summary.ContextExhausted {
 		core.WriteString(stdout, core.Sprintf("  context exhausted: folded state required at %d tokens (tail hint: %d tokens)\n", report.Summary.CompactionThresholdTokens, report.Summary.CompactionTailTokens))
+	} else if report.Summary.FoldedStateRequired && report.Summary.CompactionReason != "" {
+		core.WriteString(stdout, core.Sprintf("  folded state required: %s\n", report.Summary.CompactionReason))
 	}
 	if report.Fold != nil {
 		if report.Fold.Attempted {

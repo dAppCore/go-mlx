@@ -906,6 +906,25 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileFoldDegradationValidation_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for invalid degradation fold options")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-degradation", "-fold-store", "/tmp/state.mvlog", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "fold-on-degradation requires turn-min-tokens > 0") {
+		t.Fatalf("stderr = %q, want degradation fold floor validation", stderr.String())
+	}
+}
+
 func TestRunCommand_StateWakeProfileJSON_Good(t *testing.T) {
 	originalRun := runStateWakeProfile
 	t.Cleanup(func() { runStateWakeProfile = originalRun })
@@ -1038,6 +1057,14 @@ func TestStateRampProfileOutputIssues_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileOutputIssuesAllowsNegativeReadiness_Good(t *testing.T) {
+	issues := stateRampProfileOutputIssues("The system is not yet production-ready because the next validation step is still open.")
+
+	if core.SliceContains(issues, "visible_false_completion_claim") {
+		t.Fatalf("issues = %v, want no false completion tag for negative readiness", issues)
+	}
+}
+
 func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "User turn 3: Inspect the report.\n\n\treturn mem_", false)
 
@@ -1049,10 +1076,24 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 		"</turn_material>",
 		"Honour any requested output length before stopping.",
 		"Do not continue or complete the reference excerpts.",
+		"Do not explain what the user is asking",
 		"Treat historical sign-off language as evidence to verify, not as current truth",
 		"Prefer the unresolved risk and next validation step over a completion claim.",
 		"<turn|>\n<|turn>model\n",
 		"<|channel>thought\n<channel|>",
+	} {
+		if !core.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, want %q", prompt, want)
+		}
+	}
+}
+
+func TestStateRampProfileTurnPromptVisibleFloor_Good(t *testing.T) {
+	prompt := stateRampProfileTurnPrompt("gemma4", "Review the latest turn.", false, 256)
+
+	for _, want := range []string{
+		"write at least 256 visible tokens",
+		"expand with concrete evidence, the main risk, and the next validation step",
 	} {
 		if !core.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, want %q", prompt, want)
@@ -1135,6 +1176,25 @@ func TestStateRampProfileTurnErrorFatal_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileDegradationFoldReached_Good(t *testing.T) {
+	opts := stateRampProfileOptions{
+		FoldOnDegradation:         true,
+		TurnMinTokens:             256,
+		TurnMinTokensPolicy:       "mark",
+		DegradationMinConsecutive: 2,
+	}
+	if stateRampProfileDegradationFoldReached(1, opts) {
+		t.Fatal("single below-floor turn triggered degradation fold")
+	}
+	if !stateRampProfileDegradationFoldReached(2, opts) {
+		t.Fatal("two consecutive below-floor turns did not trigger degradation fold")
+	}
+	opts.TurnMinTokensPolicy = "fail"
+	if stateRampProfileDegradationFoldReached(2, opts) {
+		t.Fatal("fail policy triggered degradation fold")
+	}
+}
+
 func TestStateRampProfileApplyVisibleTokenFloorPreservesClosedTurn_Good(t *testing.T) {
 	turn := stateRampProfileTurn{
 		Index:               7,
@@ -1193,6 +1253,64 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
 		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
+	}
+}
+
+func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
+	opts := stateRampProfileOptions{
+		TargetTokens:              100000,
+		CompactionThresholdTokens: 100000,
+		CompactionTailTokens:      8192,
+		TurnMinTokens:             256,
+		TurnMinTokensPolicy:       "mark",
+		FoldOnDegradation:         true,
+		DegradationMinConsecutive: 2,
+	}
+	summary := summariseStateRampProfileTurns(time.Second, 30000, []stateRampProfileTurn{
+		{
+			Index:               1,
+			TokensAfterGenerate: 65000,
+			VisibleTokens:       512,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 512,
+				DecodeDuration:  time.Second,
+			},
+		},
+		{
+			Index:               2,
+			TokensAfterGenerate: 78000,
+			VisibleTokens:       160,
+			BelowMinTokens:      true,
+			Error:               "below floor",
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 160,
+				DecodeDuration:  time.Second,
+			},
+		},
+		{
+			Index:               3,
+			TokensAfterGenerate: 83000,
+			VisibleTokens:       142,
+			BelowMinTokens:      true,
+			Error:               "below floor",
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 142,
+				DecodeDuration:  time.Second,
+			},
+		},
+	}, opts)
+
+	if summary.ContextExhausted {
+		t.Fatal("content degradation incorrectly marked context exhausted")
+	}
+	if !summary.ContentDegraded || !summary.FoldedStateRequired {
+		t.Fatalf("summary degradation = degraded:%v folded:%v, want degradation fold boundary", summary.ContentDegraded, summary.FoldedStateRequired)
+	}
+	if summary.ContentDegradationTurn != 3 || summary.ContentDegradationStreak != 2 {
+		t.Fatalf("degradation = turn:%d streak:%d, want turn 3 streak 2", summary.ContentDegradationTurn, summary.ContentDegradationStreak)
+	}
+	if !core.Contains(summary.CompactionReason, "below-floor turns") {
+		t.Fatalf("compaction reason = %q, want below-floor degradation reason", summary.CompactionReason)
 	}
 }
 
