@@ -612,9 +612,16 @@ func rootKVHeadDType(dtype metal.DType, raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
+	// Inline the three KV-supported dtype names to avoid the dtype.String()
+	// map lookup. Called per-head inside the KV snapshot clone hot path —
+	// thousands of invocations per snapshot.
 	switch dtype {
-	case metal.DTypeFloat32, metal.DTypeFloat16, metal.DTypeBFloat16:
-		return dtype.String()
+	case metal.DTypeFloat32:
+		return "float32"
+	case metal.DTypeFloat16:
+		return "float16"
+	case metal.DTypeBFloat16:
+		return "bfloat16"
 	default:
 		return ""
 	}
