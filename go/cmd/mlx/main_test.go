@@ -1049,6 +1049,8 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 		"</turn_material>",
 		"Honour any requested output length before stopping.",
 		"Do not continue or complete the reference excerpts.",
+		"Treat historical sign-off language as evidence to verify, not as current truth",
+		"Prefer the unresolved risk and next validation step over a completion claim.",
 		"<turn|>\n<|turn>model\n",
 		"<|channel>thought\n<channel|>",
 	} {

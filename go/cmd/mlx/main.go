@@ -2849,7 +2849,7 @@ func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (
 	builder.WriteString("Use the retained project context and the new turn material below. Answer the user request directly. Treat any code or document excerpts as reference material, not as text to continue.\n\n")
 	builder.WriteString("<turn_material>\n")
 	builder.WriteString(prompt)
-	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts.")
+	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
 }
 
 func stateRampProfileVisibleOutput(template, output string) string {
