@@ -32,8 +32,11 @@ The 2026-05-21 opencode-sized retained-state lane is recorded separately in
 now completes a `30000` token warmed Gemma 4 chat state plus `10` whole retained
 append/generate turns, captures output, keeps memory bounded, and reports
 decode, append wall time, effective turn throughput, and estimated energy. The
-overall interactive gate is still open until same-shape `mlx_lm`, llama.cpp,
-and vLLM anchors are recorded for this accepted shape.
+folded lifecycle row now promotes the context-exhaustion handoff into the
+canonical artefact set: it folds a `50714` token checkpoint into a `221` token
+compact state, wakes it with `restore_strategy=folded-prefill`, and continues.
+The overall interactive gate is still open until same-shape `mlx_lm`,
+llama.cpp, and vLLM anchors are recorded for this accepted shape.
 
 ## Accepted go-mlx Artefacts
 
@@ -46,6 +49,7 @@ and vLLM anchors are recorded for this accepted shape.
 | C006 accepted continuation | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json` | `10` chapters, `8192` token budget, `512` visible-token floor, thinking enabled | `105.947s`, `80.343 tok/s` decode, `8201` visible tokens, `3.396 GB` active MLX |
 | C006 markdown | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` | Captured book output | Operator-reviewed as on-prompt through the final silence |
 | Opencode-sized retained workflow | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | `30000` token warmed Gemma 4 chat state, `10` whole retained user turns, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX, `10774.150 J` at `100 W` |
+| Opencode fold lifecycle | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | `30000` token warmed state, `6` whole retained turns to a `50000` token compaction threshold, exhausted checkpoint plus summary/tail folded state, folded wake/continue turn | checkpoint `50714` tokens, folded state `221` tokens, `86.637ms` folded wake, `folded-prefill` restore, continue `15` tokens at `103.060 tok/s`, `3.283 GiB` peak MLX, `7885.064 J` including fold lifecycle at `100 W` |
 
 Companion notes:
 
@@ -62,6 +66,7 @@ Companion notes:
 | Delimited retained append turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json` | MLX 4bit, `30000` retained seed tokens from a real repo dump, `10` delimiter-separated user turns, `1024` token budget, Gemma 4 sampling defaults | `78.761s`, `77.533 tok/s` decode, `61.689 tok/s` effective turn throughput, `59146` final live tokens, `3.114 GiB` active MLX | Useful scaling evidence, not accepted; several turns naturally stopped after tiny outputs |
 | Strict floor with EOS suppression | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json` | Same input shape plus `512` visible-token floor and EOS suppression | Failed on turn 1 after `653` visible tokens by repeating `// Implementation_` for `128` lines | Rejected; EOS suppression forces volume but can turn a stop into degeneration |
 | Chat-shaped whole turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, Gemma 4 chat wrapping, `30000` retained seed tokens, `10` whole user turns, assistant-turn closure, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX | Accepted go-mlx row; external same-shape anchors still pending |
+| Folded lifecycle boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | Same model and whole-turn material, `30000` retained seed tokens, `50000` compaction threshold, `turn_min_tokens_policy=mark`, folded checkpoint plus compact state wake/continue | `76.751s` before fold, `80.213 tok/s` decode, `69.908 tok/s` effective turn throughput, checkpoint `50714`, folded `221`, wake `86.637ms`, continue `15` tokens | Accepted fold lifecycle row; proves the context boundary becomes a compact state instead of further raw appends |
 
 ## Runner Anchors
 

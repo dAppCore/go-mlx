@@ -53,6 +53,13 @@
       "indexed": true
     },
     {
+      "id": "opencode-state-ramp-fold-lifecycle-accepted",
+      "role": "accepted_go_mlx_fold_lifecycle",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-retained-workflow",
       "role": "accepted_go_mlx_workflow",
       "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-r46-g1024-paged-fp16kv-restoretyped-clearcache-r10-energy100w.json",

@@ -79,10 +79,12 @@ prefills that small new window, while the exact exhausted checkpoint remains
 available on the raw K/V block path.
 
 The first folded lifecycle probe on the same E2B q4 lane is recorded in the
-runtime note: after `30000` initial tokens and `6` retained append/generate
-turns, the engine folded a `50714` token exhausted checkpoint into a `221` token
-compact state, woke it in `86.637ms`, and continued without replaying the
-exhausted prefix or hitting the prior non-finite-logits failure.
+runtime note and manifest as
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json`:
+after `30000` initial tokens and `6` retained append/generate turns, the engine
+folded a `50714` token exhausted checkpoint into a `221` token compact state,
+woke it in `86.637ms`, and continued without replaying the exhausted prefix or
+hitting the prior non-finite-logits failure.
 
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
