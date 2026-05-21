@@ -86,6 +86,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runSliceSmokeCommand(ctx, args[1:], stdout, stderr)
 	case "state-ramp-profile":
 		return runStateRampProfileCommand(ctx, args[1:], stdout, stderr)
+	case "state-wake-profile":
+		return runStateWakeProfileCommand(ctx, args[1:], stdout, stderr)
 	case "tune-plan":
 		return runTunePlanCommand(ctx, args[1:], stdout, stderr)
 	case "tune-profile":
@@ -435,8 +437,8 @@ type chapterProfileEnergy struct {
 	JoulesPerToken float64 `json:"joules_per_visible_token,omitempty"`
 }
 
-const defaultStateRampFoldContinuePrompt = "Answer in final form only. In one concise paragraph, confirm that the compacted State is live and name the next engineering action. " +
-	"Do not describe this instruction, your reasoning, or future report structure."
+const defaultStateRampFoldContinuePrompt = "Return exactly one sentence starting with `The compacted State is live; next action:` and name this action: diagnose late-turn long-context content degradation before raising the stress target. " +
+	"Do not mention instructions, analysis, reasoning, plans, uncertainty, or report structure."
 
 type stateRampProfileOptions struct {
 	Prompt                    string                    `json:"prompt,omitempty"`
@@ -467,6 +469,22 @@ type stateRampProfileOptions struct {
 	FoldContinuePrompt        string                    `json:"-"`
 	FoldContinueMaxTokens     int                       `json:"fold_continue_max_tokens,omitempty"`
 	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+}
+
+type stateWakeProfileOptions struct {
+	StateStorePath string                    `json:"state_store_path,omitempty"`
+	IndexURI       string                    `json:"index_uri,omitempty"`
+	Prompt         string                    `json:"prompt,omitempty"`
+	ChatTemplate   string                    `json:"chat_template,omitempty"`
+	EnableThinking bool                      `json:"enable_thinking,omitempty"`
+	MaxTokens      int                       `json:"max_tokens,omitempty"`
+	Temperature    float64                   `json:"temperature,omitempty"`
+	TopP           float64                   `json:"top_p,omitempty"`
+	TopK           int                       `json:"top_k,omitempty"`
+	RepeatPenalty  float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS    bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput  bool                      `json:"include_output,omitempty"`
+	SafetyLimits   driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateRampProfileReport struct {
@@ -530,6 +548,7 @@ type stateRampProfileTurn struct {
 	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
 	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
 	Output                 string        `json:"output,omitempty"`
+	OutputIssues           []string      `json:"output_issues,omitempty"`
 	Metrics                mlx.Metrics   `json:"metrics"`
 	Error                  string        `json:"error,omitempty"`
 }
@@ -589,6 +608,47 @@ type stateRampProfileFold struct {
 	ContinueTurn        *stateRampProfileTurn `json:"continue_turn,omitempty"`
 	SkippedReason       string                `json:"skipped_reason,omitempty"`
 	Error               string                `json:"error,omitempty"`
+}
+
+type stateWakeProfileReport struct {
+	Version           int                       `json:"version"`
+	ModelPath         string                    `json:"model_path"`
+	LoadDuration      time.Duration             `json:"load_duration,omitempty"`
+	Load              *tuneProfileLoadSettings  `json:"load,omitempty"`
+	StateStorePath    string                    `json:"state_store_path"`
+	IndexURI          string                    `json:"index_uri"`
+	PromptBytes       int                       `json:"prompt_bytes"`
+	PromptTokens      int                       `json:"prompt_tokens,omitempty"`
+	ChatTemplate      string                    `json:"chat_template,omitempty"`
+	EnableThinking    bool                      `json:"enable_thinking,omitempty"`
+	MaxTokens         int                       `json:"max_tokens"`
+	Temperature       float64                   `json:"temperature,omitempty"`
+	TopP              float64                   `json:"top_p,omitempty"`
+	TopK              int                       `json:"top_k,omitempty"`
+	RepeatPenalty     float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS       bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput     bool                      `json:"include_output,omitempty"`
+	SafetyLimits      driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	RuntimeGates      map[string]string         `json:"runtime_gates,omitempty"`
+	StoreOpenDuration time.Duration             `json:"store_open_duration,omitempty"`
+	WakeDuration      time.Duration             `json:"wake_duration,omitempty"`
+	Wake              *agent.WakeReport         `json:"wake,omitempty"`
+	Turn              *stateRampProfileTurn     `json:"turn,omitempty"`
+	EstimatedEnergy   *stateWakeProfileEnergy   `json:"estimated_energy,omitempty"`
+	Error             string                    `json:"error,omitempty"`
+}
+
+type stateWakeProfileEnergy struct {
+	Method                  string  `json:"method"`
+	PowerWatts              float64 `json:"power_watts"`
+	TotalJoules             float64 `json:"total_joules,omitempty"`
+	WakeJoules              float64 `json:"wake_joules,omitempty"`
+	AppendJoules            float64 `json:"append_joules,omitempty"`
+	GenerationJoules        float64 `json:"generation_joules,omitempty"`
+	JoulesPerVisibleToken   float64 `json:"joules_per_visible_token,omitempty"`
+	EffectiveTokensPerSec   float64 `json:"effective_tokens_per_sec,omitempty"`
+	DecodeTokensPerSec      float64 `json:"decode_tokens_per_sec,omitempty"`
+	VisibleOutputIssueCount int     `json:"visible_output_issue_count,omitempty"`
 }
 
 type driverProfileModel interface {
@@ -2796,6 +2856,31 @@ func stateRampProfileVisibleOutput(template, output string) string {
 	return chapterProfileVisibleText(template, output)
 }
 
+func stateRampProfileOutputIssues(output string) []string {
+	text := core.Trim(output)
+	if text == "" {
+		return nil
+	}
+	lower := core.Lower(text)
+	issues := []string{}
+	if core.Contains(text, "<|channel>") || core.Contains(text, "<channel|>") || core.Contains(text, "<turn|>") || core.Contains(text, "<|turn>") {
+		issues = append(issues, "visible_chat_control_token")
+	}
+	if core.Contains(lower, "the user is asking") || core.Contains(lower, "the user's prompt") || core.Contains(lower, "the instruction is to") {
+		issues = append(issues, "visible_prompt_analysis")
+	}
+	if core.Contains(lower, "self-correction") || core.Contains(lower, "self correction") || core.Contains(lower, "i need to act as if") {
+		issues = append(issues, "visible_self_correction")
+	}
+	if core.Contains(text, "**Plan:**") || core.Contains(text, "Plan:\n") || core.Contains(text, "**Plan**") {
+		issues = append(issues, "visible_plan_scaffold")
+	}
+	if core.Contains(lower, "i don't have the actual results") || core.Contains(lower, "i do not have the actual results") {
+		issues = append(issues, "visible_missing_results_admission")
+	}
+	return issues
+}
+
 func stateRampProfileAssistantCloseSuffix(template string) string {
 	if stateRampProfilePlainTemplate(template) {
 		return ""
@@ -2987,6 +3072,7 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	turn.TokensAfterGenerate = turn.Metrics.PromptTokens + turn.Metrics.GeneratedTokens
 	if opts.IncludeOutput {
 		turn.Output = stateRampProfileVisibleOutput(opts.ChatTemplate, builder.String())
+		turn.OutputIssues = stateRampProfileOutputIssues(turn.Output)
 	}
 	if probeErr != nil {
 		turn.Error = probeErr.Error()
@@ -3413,6 +3499,443 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 		} else if report.Fold.SkippedReason != "" {
 			core.WriteString(stdout, core.Sprintf("  folded state: skipped (%s)\n", report.Fold.SkippedReason))
 		}
+	}
+}
+
+func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(cliCommandName("state-wake-profile"), flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print JSON State wake profile")
+	reportFile := fs.String("report-file", "", "write JSON State wake profile to a file")
+	stateStorePath := fs.String("state-store", "", "existing append-only State file to open")
+	indexURI := fs.String("index-uri", "", "State index URI to wake")
+	prompt := fs.String("prompt", defaultStateRampFoldContinuePrompt, "prompt appended after waking the selected State")
+	promptFile := fs.String("prompt-file", "", "read wake prompt text from a file")
+	chatTemplate := fs.String("chat-template", "", "chat template override for the wake prompt: gemma4, gemma, qwen, llama, or plain")
+	enableThinking := fs.Bool("enable-thinking", false, "enable Gemma 4 thinking control token in the wake prompt")
+	maxTokens := fs.Int("max-tokens", 512, "generated tokens for the wake/continue check")
+	temperature := fs.Float64("temperature", 1.0, "sampling temperature for the wake turn")
+	topP := fs.Float64("top-p", 0.95, "top-p sampling value for the wake turn")
+	topK := fs.Int("top-k", 64, "top-k sampling value for the wake turn")
+	repeatPenalty := fs.Float64("repeat-penalty", 1.0, "repeat penalty for the wake turn")
+	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during the wake turn")
+	includeOutput := fs.Bool("include-output", true, "include generated text in the report")
+	contextLen := fs.Int("context", 0, "override context length")
+	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
+	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	device := fs.String("device", "", "execution device: gpu or cpu")
+	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts")
+	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
+	maxActiveMemoryBytes := fs.Uint64("max-active-memory-bytes", 0, "abort if MLX active memory exceeds this many bytes; 0 derives from the resolved memory limit")
+	maxProcessVirtualMemoryBytes := fs.Uint64("max-process-virtual-memory-bytes", 0, "abort if process virtual memory exceeds this many bytes; 0 records process virtual memory without a hard cap")
+	maxProcessResidentMemoryBytes := fs.Uint64("max-process-resident-memory-bytes", 0, "abort if process resident memory exceeds this many bytes; 0 derives from the resolved memory limit")
+	repeatedTokenLoopLimit := fs.Int("repeated-token-loop-limit", driverProfileDefaultRepeatedTokenLoopLimit, "abort when this many consecutive sampled tokens have the same token id")
+	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
+	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one output")
+	fs.Usage = func() {
+		core.WriteString(stderr, core.Sprintf("Usage: %s state-wake-profile [flags] [model-path]\n", cliName()))
+		fs.VisitAll(func(f *flag.Flag) {
+			if f.DefValue == "" {
+				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
+				return
+			}
+			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
+		})
+	}
+	if err := fs.Parse(args); err != nil {
+		if core.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	visitedFlags := driverProfileVisitedFlags(fs)
+	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
+		for _, restore := range applyGemma4FastLaneDefaults(
+			visitedFlags,
+			contextLen,
+			cacheMode,
+			prefillChunkSize,
+			nil,
+			mlx.ProductionLaneHyperLongContextLength,
+		) {
+			defer restore()
+		}
+	}
+	if fs.NArg() != 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: expected one model path\n", cliName()))
+		fs.Usage()
+		return 2
+	}
+	if core.Trim(*stateStorePath) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: state store path is required\n", cliName()))
+		return 2
+	}
+	if core.Trim(*indexURI) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: index URI is required\n", cliName()))
+		return 2
+	}
+	if core.Trim(*promptFile) != "" {
+		read := core.ReadFile(*promptFile)
+		if !read.OK {
+			core.Print(stderr, "%s state-wake-profile: prompt file: %v", cliName(), read.Value)
+			return 1
+		}
+		*prompt = string(read.Value.([]byte))
+	}
+	if *maxTokens < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: max tokens must be >= 1\n", cliName()))
+		return 2
+	}
+	if *prefillChunkSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: prefill chunk size must be >= 0\n", cliName()))
+		return 2
+	}
+	if *estimatePowerWatts < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: estimated power watts must be >= 0\n", cliName()))
+		return 2
+	}
+	if *temperature < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: temperature must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topP < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: top-p must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topK < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: top-k must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatPenalty < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: repeat penalty must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatedTokenLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: repeated token loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+	if *repeatedLineLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: repeated line loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+	if *repeatedSentenceLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: repeated sentence loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+
+	loadOptions := []mlx.LoadOption{}
+	var loadSettings *tuneProfileLoadSettings
+	if *contextLen > 0 {
+		loadOptions = append(loadOptions, mlx.WithContextLength(*contextLen))
+		loadSettings = &tuneProfileLoadSettings{ContextLength: *contextLen}
+	}
+	if *prefillChunkSize > 0 {
+		loadOptions = append(loadOptions, mlx.WithPrefillChunkSize(*prefillChunkSize))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.PrefillChunkSize = *prefillChunkSize
+	}
+	if core.Trim(*cacheMode) != "" {
+		mode := memory.KVCacheMode(core.Trim(*cacheMode))
+		switch mode {
+		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
+		default:
+			core.WriteString(stderr, core.Sprintf("%s state-wake-profile: unsupported cache mode %q\n", cliName(), string(mode)))
+			return 2
+		}
+		loadOptions = append(loadOptions, mlx.WithKVCacheMode(mode))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.CacheMode = string(mode)
+	}
+	if *device != "" {
+		loadOptions = append(loadOptions, mlx.WithDevice(*device))
+	}
+
+	report, err := runStateWakeProfileGuarded(ctx, fs.Arg(0), loadOptions, stateWakeProfileOptions{
+		StateStorePath: core.Trim(*stateStorePath),
+		IndexURI:       core.Trim(*indexURI),
+		Prompt:         *prompt,
+		ChatTemplate:   *chatTemplate,
+		EnableThinking: *enableThinking,
+		MaxTokens:      *maxTokens,
+		Temperature:    *temperature,
+		TopP:           *topP,
+		TopK:           *topK,
+		RepeatPenalty:  *repeatPenalty,
+		SuppressEOS:    *suppressEOS,
+		IncludeOutput:  *includeOutput,
+		SafetyLimits: driverProfileSafetyLimits{
+			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
+			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
+			MaxProcessResidentMemoryBytes: *maxProcessResidentMemoryBytes,
+			RepeatedTokenLoopLimit:        *repeatedTokenLoopLimit,
+			RepeatedLineLoopLimit:         *repeatedLineLoopLimit,
+			RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
+		},
+	})
+	if report != nil && loadSettings != nil {
+		report.Load = mergeDriverProfileLoadSettings(loadSettings, report.Load)
+	}
+	if report != nil && *estimatePowerWatts > 0 {
+		report.EstimatedEnergy = estimateStateWakeProfileEnergy(report, *estimatePowerWatts)
+	}
+	reportPath := core.Trim(*reportFile)
+	if *jsonOut || reportPath != "" {
+		if report == nil {
+			report = &stateWakeProfileReport{
+				Version:        1,
+				ModelPath:      fs.Arg(0),
+				StateStorePath: core.Trim(*stateStorePath),
+				IndexURI:       core.Trim(*indexURI),
+				PromptBytes:    len(*prompt),
+				ChatTemplate:   *chatTemplate,
+				EnableThinking: *enableThinking,
+				MaxTokens:      *maxTokens,
+				Temperature:    *temperature,
+				TopP:           *topP,
+				TopK:           *topK,
+				RepeatPenalty:  *repeatPenalty,
+				SuppressEOS:    *suppressEOS,
+				IncludeOutput:  *includeOutput,
+			}
+		}
+		if err != nil && report.Error == "" {
+			report.Error = err.Error()
+		}
+		data := core.JSONMarshalIndent(report, "", "  ")
+		if !data.OK {
+			core.Print(stderr, "%s state-wake-profile: marshal report failed", cliName())
+			return 1
+		}
+		if reportPath != "" {
+			if writeErr := writeJSONReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
+				core.Print(stderr, "%s state-wake-profile: write report file: %v", cliName(), writeErr)
+				return 1
+			}
+		}
+		if *jsonOut {
+			core.WriteString(stdout, string(data.Value.([]byte)))
+			core.WriteString(stdout, "\n")
+		}
+		if err != nil {
+			return 1
+		}
+		if *jsonOut {
+			return 0
+		}
+	}
+	if err != nil {
+		core.Print(stderr, "%s state-wake-profile: %v", cliName(), err)
+		return 1
+	}
+	printStateWakeProfileSummary(stdout, report)
+	return 0
+}
+
+var runStateWakeProfile = defaultRunStateWakeProfile
+
+func runStateWakeProfileGuarded(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateWakeProfileOptions) (report *stateWakeProfileReport, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = core.NewError(core.Sprintf("state-wake-profile panic: %v", recovered))
+		}
+	}()
+	return runStateWakeProfile(ctx, modelPath, loadOptions, opts)
+}
+
+func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateWakeProfileOptions) (*stateWakeProfileReport, error) {
+	opts = normalizeStateWakeProfileOptions(opts)
+	report := &stateWakeProfileReport{
+		Version:        1,
+		ModelPath:      modelPath,
+		StateStorePath: opts.StateStorePath,
+		IndexURI:       opts.IndexURI,
+		PromptBytes:    len(opts.Prompt),
+		EnableThinking: opts.EnableThinking,
+		MaxTokens:      opts.MaxTokens,
+		Temperature:    opts.Temperature,
+		TopP:           opts.TopP,
+		TopK:           opts.TopK,
+		RepeatPenalty:  opts.RepeatPenalty,
+		SuppressEOS:    opts.SuppressEOS,
+		IncludeOutput:  opts.IncludeOutput,
+		SafetyLimits:   opts.SafetyLimits,
+		RuntimeGates:   driverProfileRuntimeGates(),
+	}
+	loadStart := time.Now()
+	model, err := loadBenchModel(modelPath, loadOptions...)
+	report.LoadDuration = bench.NonZeroDuration(time.Since(loadStart))
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if model == nil {
+		err := core.NewError("mlx: state wake profile loaded nil model")
+		report.Error = err.Error()
+		return report, err
+	}
+	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(model.Info()))
+	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	report.SafetyLimits = opts.SafetyLimits
+	defer model.Close()
+	if err := driverProfileMetricsSafetyError("load", model.Metrics(), opts.SafetyLimits); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	opts.ChatTemplate = chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
+	report.ChatTemplate = opts.ChatTemplate
+	tok := model.Tokenizer()
+	if tok == nil {
+		err := core.NewError("state-wake-profile: model tokenizer is nil")
+		report.Error = err.Error()
+		return report, err
+	}
+
+	openStart := time.Now()
+	store, err := statefile.Open(ctx, opts.StateStorePath)
+	report.StoreOpenDuration = bench.NonZeroDuration(time.Since(openStart))
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	defer store.Close()
+
+	wakeStart := time.Now()
+	session, wake, err := model.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: opts.IndexURI})
+	report.WakeDuration = bench.NonZeroDuration(time.Since(wakeStart))
+	report.Wake = wake
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	defer session.Close()
+	if err := driverProfileMetricsSafetyError("wake", model.Metrics(), opts.SafetyLimits); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+
+	prompt := stateRampProfileTurnPrompt(opts.ChatTemplate, opts.Prompt, opts.EnableThinking)
+	tokens, err := tok.Encode(prompt)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if len(tokens) == 0 {
+		err := core.NewError("state-wake-profile: wake prompt produced no tokens")
+		report.Error = err.Error()
+		return report, err
+	}
+	report.PromptTokens = len(tokens)
+	currentTokens := 0
+	if wake != nil {
+		currentTokens = wake.PrefixTokens
+	}
+	turnOpts := stateRampProfileOptions{
+		ChatTemplate:   opts.ChatTemplate,
+		EnableThinking: opts.EnableThinking,
+		TurnMaxTokens:  opts.MaxTokens,
+		Temperature:    opts.Temperature,
+		TopP:           opts.TopP,
+		TopK:           opts.TopK,
+		RepeatPenalty:  opts.RepeatPenalty,
+		SuppressEOS:    opts.SuppressEOS,
+		IncludeOutput:  opts.IncludeOutput,
+		SafetyLimits:   opts.SafetyLimits,
+	}
+	turn := stateRampProfileGenerateTurn(ctx, model, session, tokens, 0, len(tokens), currentTokens, 1, turnOpts)
+	report.Turn = &turn
+	if turn.Error != "" {
+		err := core.NewError(turn.Error)
+		report.Error = err.Error()
+		return report, err
+	}
+	return report, nil
+}
+
+func normalizeStateWakeProfileOptions(opts stateWakeProfileOptions) stateWakeProfileOptions {
+	opts.StateStorePath = core.Trim(opts.StateStorePath)
+	opts.IndexURI = core.Trim(opts.IndexURI)
+	opts.Prompt = core.Trim(opts.Prompt)
+	if opts.Prompt == "" {
+		opts.Prompt = defaultStateRampFoldContinuePrompt
+	}
+	if opts.MaxTokens <= 0 {
+		opts.MaxTokens = 512
+	}
+	if opts.Temperature < 0 {
+		opts.Temperature = 0
+	}
+	if opts.TopP < 0 {
+		opts.TopP = 0
+	}
+	if opts.TopK < 0 {
+		opts.TopK = 0
+	}
+	if opts.RepeatPenalty < 0 {
+		opts.RepeatPenalty = 0
+	}
+	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
+	}
+	if opts.SafetyLimits.RepeatedLineLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedLineLoopLimit = profileDefaultRepeatedLineLoopLimit
+	}
+	if opts.SafetyLimits.RepeatedSentenceLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedSentenceLoopLimit = profileDefaultRepeatedSentenceLoopLimit
+	}
+	return opts
+}
+
+func estimateStateWakeProfileEnergy(report *stateWakeProfileReport, powerWatts float64) *stateWakeProfileEnergy {
+	energy := &stateWakeProfileEnergy{
+		Method:     "estimated_wake_append_generate_seconds_times_average_active_watts",
+		PowerWatts: powerWatts,
+	}
+	if report == nil || powerWatts <= 0 {
+		return energy
+	}
+	if report.Turn != nil {
+		turnWall := report.WakeDuration + report.Turn.AppendDuration + report.Turn.Duration
+		energy.TotalJoules = durationJoules(turnWall, powerWatts)
+		energy.AppendJoules = durationJoules(report.Turn.AppendDuration, powerWatts)
+		energy.GenerationJoules = durationJoules(report.Turn.Duration, powerWatts)
+		if report.Turn.VisibleTokens > 0 && turnWall > 0 {
+			energy.JoulesPerVisibleToken = energy.TotalJoules / float64(report.Turn.VisibleTokens)
+			energy.EffectiveTokensPerSec = float64(report.Turn.VisibleTokens) / turnWall.Seconds()
+		}
+		energy.DecodeTokensPerSec = report.Turn.Metrics.DecodeTokensPerSec
+		energy.VisibleOutputIssueCount = len(report.Turn.OutputIssues)
+	}
+	energy.WakeJoules = durationJoules(report.WakeDuration, powerWatts)
+	return energy
+}
+
+func printStateWakeProfileSummary(stdout io.Writer, report *stateWakeProfileReport) {
+	if report == nil {
+		return
+	}
+	core.WriteString(stdout, core.Sprintf("state wake profile: %s\n", report.ModelPath))
+	if report.Wake != nil {
+		core.WriteString(stdout, core.Sprintf("  wake: %s, %d prefix tokens via %s\n", report.WakeDuration, report.Wake.PrefixTokens, report.Wake.RestoreStrategy))
+	} else {
+		core.WriteString(stdout, core.Sprintf("  wake: %s\n", report.WakeDuration))
+	}
+	if report.Turn != nil {
+		core.WriteString(stdout, core.Sprintf("  generated: %d visible tokens, decode: %.1f tok/s, wall: %s\n", report.Turn.VisibleTokens, report.Turn.Metrics.DecodeTokensPerSec, report.Turn.AppendDuration+report.Turn.Duration))
+		if len(report.Turn.OutputIssues) > 0 {
+			core.WriteString(stdout, core.Sprintf("  output issues: %s\n", core.Join(", ", report.Turn.OutputIssues...)))
+		}
+		core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, cache memory: %d MB, process resident: %d MB\n",
+			report.Turn.Metrics.PeakMemoryBytes/1024/1024,
+			report.Turn.Metrics.CacheMemoryBytes/1024/1024,
+			report.Turn.Metrics.ProcessResidentMemoryBytes/1024/1024,
+		))
+	}
+	if report.EstimatedEnergy != nil {
+		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 	}
 }
 
@@ -6571,6 +7094,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  slice   materialise a local model slice for split/reload tests\n")
 	core.WriteString(w, "  slice-smoke  materialise, reload, and benchmark a model slice\n")
 	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
+	core.WriteString(w, "  state-wake-profile  wake an existing State index and measure one continuation turn\n")
 	core.WriteString(w, "  tune-plan  plan local tuning candidates for a model\n")
 	core.WriteString(w, "  tune-profile  read a saved tuning profile and print reusable load settings\n")
 	core.WriteString(w, "  tune-run  run and stream local tuning candidate measurements\n")

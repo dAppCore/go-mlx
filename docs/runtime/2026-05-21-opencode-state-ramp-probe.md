@@ -462,6 +462,68 @@ degradation at long context: the rerun still has late turns below the `256`
 visible-token floor and the folded continuation visibly self-describes planning
 instead of answering cleanly.
 
+## Folded State Wake-Only Probe
+
+`state-wake-profile` now reopens an existing State store and wakes one indexed
+State without rebuilding the whole ramp. This keeps folded-State recovery tests
+cheap and avoids generating another 936 MiB full-timeline `.mvlog`.
+
+Report:
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json`
+
+Command:
+
+```sh
+env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+  /private/tmp/go-mlx-goal/lthn-mlx state-wake-profile \
+  -report-file /private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json \
+  -state-store /private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake.mvlog \
+  -index-uri mlx://state-ramp/fold/1779375833178783000/folded/index \
+  -chat-template gemma4 \
+  -max-tokens 256 \
+  -temperature 1.0 \
+  -top-p 0.95 \
+  -top-k 64 \
+  -repeat-penalty 1.0 \
+  -include-output \
+  -estimate-power-watts 100 \
+  -max-active-memory-bytes 12884901888 \
+  -max-process-resident-memory-bytes 25769803776 \
+  -repeated-line-loop-limit 128 \
+  -repeated-sentence-loop-limit 16 \
+  /Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd
+```
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Folded State prefix | `677` tokens across `3` blocks |
+| Wake strategy | `folded-prefill` |
+| Wake latency | `298.243ms` |
+| Prompt append latency | `77.407ms` |
+| Generated/visible tokens | `24` |
+| Raw decode | `99.194 tok/s` |
+| Effective wake+append+generation throughput | `38.832 tok/s` |
+| Peak MLX memory | `3.008 GiB` |
+| Active MLX memory | `2.781 GiB` |
+| Process RSS | `3.200 GiB` |
+| Estimated energy at 100 W | `61.805 J` |
+| Output issues | none |
+
+Captured output:
+
+```text
+The compacted State is live; next action: diagnose late-turn long-context content degradation before raising the stress target.
+```
+
+Verdict: the folded State wake path is live and the tightened continuation
+prompt stops the previous visible meta-reasoning in this recovery probe. This
+does not close the long-context degradation gate by itself: the 100k ramp still
+has late retained turns below the `256` visible-token floor. It does give the
+runner a cheap, canonical probe for folded-State recovery without repeating the
+full 100k build-up.
+
 ## AX Hot-Path Benchmark Pass
 
 The State wake path now has a Go benchmark contract. The folded wake path uses

@@ -13,6 +13,7 @@ import (
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -707,7 +708,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.CompactionThresholdTokens != 100000 || gotCfg.CompactionTailTokens != 8192 {
 		t.Fatalf("state ramp compaction cfg = threshold:%d tail:%d, want target-backed folded-state defaults", gotCfg.CompactionThresholdTokens, gotCfg.CompactionTailTokens)
 	}
-	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "final form only") {
+	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "The compacted State is live") {
 		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
 	}
 	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
@@ -902,6 +903,138 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 	if !core.Contains(stderr.String(), "fold store path is required") {
 		t.Fatalf("stderr = %q, want fold store validation", stderr.String())
+	}
+}
+
+func TestRunCommand_StateWakeProfileJSON_Good(t *testing.T) {
+	originalRun := runStateWakeProfile
+	t.Cleanup(func() { runStateWakeProfile = originalRun })
+	var gotCfg stateWakeProfileOptions
+	var gotLoad mlx.LoadConfig
+	runStateWakeProfile = func(_ context.Context, modelPath string, opts []mlx.LoadOption, cfg stateWakeProfileOptions) (*stateWakeProfileReport, error) {
+		gotCfg = cfg
+		gotLoad = mlx.DefaultLoadConfig()
+		for _, opt := range opts {
+			opt(&gotLoad)
+		}
+		return &stateWakeProfileReport{
+			Version:        1,
+			ModelPath:      modelPath,
+			StateStorePath: cfg.StateStorePath,
+			IndexURI:       cfg.IndexURI,
+			PromptBytes:    len(cfg.Prompt),
+			PromptTokens:   42,
+			ChatTemplate:   cfg.ChatTemplate,
+			EnableThinking: cfg.EnableThinking,
+			MaxTokens:      cfg.MaxTokens,
+			Temperature:    cfg.Temperature,
+			TopP:           cfg.TopP,
+			TopK:           cfg.TopK,
+			RepeatPenalty:  cfg.RepeatPenalty,
+			SuppressEOS:    cfg.SuppressEOS,
+			IncludeOutput:  cfg.IncludeOutput,
+			WakeDuration:   90 * time.Millisecond,
+			Wake: &agent.WakeReport{
+				IndexURI:        cfg.IndexURI,
+				PrefixTokens:    677,
+				BlocksRead:      3,
+				RestoreStrategy: "folded-prefill",
+			},
+			Turn: &stateRampProfileTurn{
+				Index:              1,
+				TokensBeforeAppend: 677,
+				AppendedTokens:     42,
+				AppendDuration:     10 * time.Millisecond,
+				Duration:           2 * time.Second,
+				VisibleTokens:      128,
+				Output:             "The compacted State is live; next action: run the wake-only degradation probe.",
+				Metrics: mlx.Metrics{
+					GeneratedTokens:            128,
+					DecodeDuration:             2 * time.Second,
+					DecodeTokensPerSec:         64,
+					PeakMemoryBytes:            3 << 30,
+					CacheMemoryBytes:           2 << 30,
+					ProcessResidentMemoryBytes: 1 << 30,
+					ProcessVirtualMemoryBytes:  5 << 30,
+					ProcessPeakResidentBytes:   1 << 30,
+					PromptCacheRestoreDuration: 90 * time.Millisecond,
+				},
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-wake-profile",
+		"-json",
+		"-state-store", "/tmp/state.mvlog",
+		"-index-uri", "mlx://state/folded/index",
+		"-chat-template", "gemma4",
+		"-enable-thinking",
+		"-max-tokens", "256",
+		"-temperature", "1",
+		"-top-p", "0.95",
+		"-top-k", "64",
+		"-repeat-penalty", "1",
+		"-suppress-eos",
+		"-estimate-power-watts", "100",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.StateStorePath != "/tmp/state.mvlog" || gotCfg.IndexURI != "mlx://state/folded/index" {
+		t.Fatalf("wake cfg state/index = %q/%q", gotCfg.StateStorePath, gotCfg.IndexURI)
+	}
+	if gotCfg.ChatTemplate != "gemma4" || !gotCfg.EnableThinking || gotCfg.MaxTokens != 256 || !gotCfg.SuppressEOS {
+		t.Fatalf("wake cfg = %+v, want Gemma 4 wake prompt settings", gotCfg)
+	}
+	if gotLoad.ContextLength != mlx.ProductionLaneHyperLongContextLength || gotLoad.CacheMode != memory.KVCacheModePaged || gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
+		t.Fatalf("load = %+v, want hyper-long fast lane defaults", gotLoad)
+	}
+	for _, want := range []string{
+		`"state_store_path": "/tmp/state.mvlog"`,
+		`"index_uri": "mlx://state/folded/index"`,
+		`"restore_strategy": "folded-prefill"`,
+		`"prompt_tokens": 42`,
+		`"max_tokens": 256`,
+		`"decode_tokens_per_sec": 64`,
+		`"total_joules": 210`,
+		`"effective_tokens_per_sec":`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
+	originalRun := runStateWakeProfile
+	t.Cleanup(func() { runStateWakeProfile = originalRun })
+	runStateWakeProfile = func(context.Context, string, []mlx.LoadOption, stateWakeProfileOptions) (*stateWakeProfileReport, error) {
+		t.Fatal("runStateWakeProfile called for invalid input")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-wake-profile", "-state-store", "/tmp/state.mvlog", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "index URI is required") {
+		t.Fatalf("stderr = %q, want index URI validation", stderr.String())
+	}
+}
+
+func TestStateRampProfileOutputIssues_Good(t *testing.T) {
+	issues := stateRampProfileOutputIssues("The user is asking me for a result.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden")
+
+	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold"} {
+		if !core.SliceContains(issues, want) {
+			t.Fatalf("issues = %v, want %s", issues, want)
+		}
 	}
 }
 

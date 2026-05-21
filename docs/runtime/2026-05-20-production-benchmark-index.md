@@ -39,10 +39,13 @@ The 100k warm build-up stress gate is now covered by the State token-wake rows:
 the first grows the warmed workflow to `102704` live tokens, folds a `677` token
 three-block compact State, wakes it in `223.207ms`, and continues for `512`
 tokens at `101.979 tok/s`; the follow-up full-timeline rerun writes a `101745`
-token exhausted checkpoint instead of the earlier `65536` token suffix. The
-remaining issue is explicit rather than hidden: late turns still fall below the
-`256` visible-token floor, so production remains open on long-context content
-degradation.
+token exhausted checkpoint instead of the earlier `65536` token suffix. A
+follow-up wake-only probe against the same folded State shows the folded
+recovery prompt itself is now bounded: the compact State wakes in `298.243ms`,
+answers in one sentence with no recorded output-shape issues, and generates at
+`99.194 tok/s` without rebuilding the 100k State. The remaining issue is
+explicit rather than hidden: late turns still fall below the `256` visible-token
+floor, so production remains open on long-context content degradation.
 The first same-shape `mlx_lm` anchor is also recorded: raw decode is faster,
 but the strict workload floor fails on turn 3, and the full marked run has `7`
 below-floor turns. The same-shape llama.cpp `Q4_K_M` anchor is now recorded and
@@ -69,6 +72,7 @@ full-timeline checkpoint rerun below.
 | Opencode fold lifecycle | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | `30000` token warmed State, `6` whole retained turns to a `50000` token compaction threshold, exhausted checkpoint plus summary/tail folded State, folded wake/continue turn | checkpoint `50714` tokens, folded State `221` tokens, `86.637ms` folded wake, `folded-prefill` restore, continue `15` tokens at `103.060 tok/s`, `3.283 GiB` peak MLX, `7885.064 J` including fold lifecycle at `100 W` |
 | Opencode 100k fold stress | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same `30000` token warmed State and whole-turn material, grows to `102704` live tokens, semantic summary/tail fold, `512` token folded continue | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, folded State `677` tokens across `3` blocks, wake `223.207ms`, continue `512` tokens at `101.979 tok/s`, RSS `3.426 GiB`; superseded by the full-timeline checkpoint rerun for checkpoint fidelity |
 | Opencode 100k full-timeline checkpoint | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json` | Same `30000` token warmed State and whole-turn material, grows to `101744` live tokens, writes the exhausted checkpoint from the full token timeline, semantic summary/tail fold, `512` token folded continue | checkpoint `101745` tokens across `201` blocks, `173.124s` before fold, `74.245 tok/s` decode, `56.179 tok/s` effective turn throughput, folded State `677` tokens across `3` blocks, wake `222.619ms`, continue `512` tokens at `100.577 tok/s`, RSS `3.356 GiB` |
+| Opencode folded wake-only probe | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json` | Reopens the existing full-timeline `.mvlog`, wakes `mlx://state-ramp/fold/1779375833178783000/folded/index`, appends the tightened one-sentence continuation prompt, and generates without rebuilding the 100k State | folded State `677` tokens across `3` blocks, wake `298.243ms`, prompt append `77.407ms`, continue `24` visible tokens at `99.194 tok/s`, no `output_issues`, `38.832` effective tok/s, `61.805 J` at `100 W` |
 
 Companion notes:
 
@@ -88,6 +92,7 @@ Companion notes:
 | Folded lifecycle boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | Same model and whole-turn material, `30000` retained seed tokens, `50000` compaction threshold, `turn_min_tokens_policy=mark`, folded checkpoint plus compact state wake/continue | `76.751s` before fold, `80.213 tok/s` decode, `69.908 tok/s` effective turn throughput, checkpoint `50714`, folded `221`, wake `86.637ms`, continue `15` tokens | Accepted fold lifecycle row; proves the context boundary becomes a compact state instead of further raw appends |
 | 100k folded State token wake | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same accepted material, `100000` compaction threshold, semantic summary/tail files, folded State wakes via token-only prefix load | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, live state `102704`, folded `677`, wake `223.207ms`, continue `512` at `101.979 tok/s` | Accepted for 100k lifecycle stress and the previous multi-block wake bug; checkpoint fidelity superseded by the full-timeline rerun |
 | 100k folded full-timeline checkpoint | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json` | Same accepted material, `100000` compaction threshold, full-token `RangeKVBlocks` checkpoint stream, semantic summary/tail files, folded State wakes via token-only prefix load | `173.124s` before fold, `74.245 tok/s` decode, `56.179 tok/s` effective turn throughput, live state `101744`, checkpoint `101745`, folded `677`, wake `222.619ms`, continue `512` at `100.577 tok/s` | Accepted for 100k checkpoint fidelity; not a content-floor pass because `10/23` late turns are below `256` visible tokens |
+| Folded State wake-only probe | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json` | Existing full-timeline folded State reopened by `state-wake-profile`; no 100k rebuild, tightened one-sentence continuation prompt | wake `298.243ms`, `24` visible tokens at `99.194 tok/s`, no `output_issues`, `3.200 GiB` RSS, `61.805 J` at `100 W` | Accepted as the cheap folded-State recovery probe; it bounds the earlier folded-continuation prompt drift but does not close late-turn long-context degradation |
 
 ## Opencode Runner Anchors
 

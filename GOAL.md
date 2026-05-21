@@ -114,9 +114,15 @@ rerun is recorded as
 it grows to `101744` live tokens, writes a `101745` token exhausted checkpoint,
 folds the same `677` token compact State, wakes it in `222.619ms`, and
 continues for `512` tokens at `100.577 tok/s`. This closes the warm build-up
-`100k` stress gate and the checkpoint capture-cap blocker. The remaining
-production blocker is late-turn content degradation (`10/23` turns below the
-`256` visible-token floor on the current full-timeline rerun).
+`100k` stress gate and the checkpoint capture-cap blocker. The wake-only
+follow-up probe is recorded as
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json`:
+it reopens the existing full-timeline State file, wakes the folded `677` token
+State in `298.243ms`, appends the tightened one-sentence recovery prompt in
+`77.407ms`, and generates `24` visible tokens at `99.194 tok/s` with no
+recorded `output_issues`. The remaining production blocker is late-turn content
+degradation (`10/23` turns below the `256` visible-token floor on the current
+full-timeline rerun).
 
 The retained-turn CLI path now has non-Metal `go test -benchmem` coverage for
 the hot state-ramp prompt/append/report functions. That benchmark pass found
@@ -151,7 +157,7 @@ Production remains blocked until these gates are all satisfied:
       Metal load-failure note. The runner anchors carry content-shape caveats:
       `mlx_lm` stops short on most marked turns, while llama.cpp emits visible
       Gemma channel markers.
-- [ ] A warm build-up stress run starts from the accepted `30k`-`40k` state,
+- [x] A warm build-up stress run starts from the accepted `30k`-`40k` state,
       appends/generates in retained state until the live context reaches about
       `100k`, and reports cumulative append cost, decode, wall time, memory,
       estimated energy, and delta versus one-shot `100k` prefill and replaying
@@ -166,9 +172,11 @@ Production remains blocked until these gates are all satisfied:
       folded-state handoff, not further raw appends into an exhausted window.
       The API-level handoff is now implemented by `Model.FoldAgentMemory`, and
       `state-ramp-profile` can execute it with `-fold-on-exhaustion` plus an
-      explicit `-fold-store` path. The remaining benchmark work is running the
-      accepted warm build-up with semantic summary/tail material and recording
-      the folded wake/continue turn against the runner anchors.
+      explicit `-fold-store` path. The accepted warm build-up with semantic
+      summary/tail material is now recorded by the 100k folded State token-wake
+      and full-timeline checkpoint rows; the wake-only `state-wake-profile` row
+      records the folded wake/continue turn without rerunning the full 100k
+      build-up.
 - [x] A current guarded 100k-token E2B q4 retained-state run completes on the
       target machine with 10+ turns, realistic generation length, bounded memory,
       and recorded restore-versus-replay savings. This is now the hyper-long
@@ -193,7 +201,9 @@ Production remains blocked until these gates are all satisfied:
       prompts. If the warm build-up curve bends upward around `60k`-`80k`,
       inspect MLX graph lifetime/eval boundaries, dynamic K/V concatenation or
       other `O(N^2)` movement, and local-layer leakage beyond the intended
-      sliding window.
+      sliding window. The folded wake prompt drift is now bounded by the
+      wake-only probe, but the full 100k ramp still has `10/23` late turns below
+      the `256` visible-token floor, so this gate remains open.
 - [x] `lthn/lemer-mlx` or the chosen default small-model lane has an accepted
       prompt/template path for multi-turn story/workflow continuation, not just a
       native-load smoke pass.

@@ -72,6 +72,13 @@
       "indexed": true
     },
     {
+      "id": "opencode-state-wake-fulltimeline-tightprompt",
+      "role": "accepted_go_mlx_folded_state_wake_probe",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "mlx-lm-opencode-strict-floor-failure",
       "role": "runner_failure_evidence",
       "path": "docs/runtime/2026-05-21-mlx-lm-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-energy100w.json",
