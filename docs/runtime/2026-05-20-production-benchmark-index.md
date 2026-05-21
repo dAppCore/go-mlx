@@ -35,6 +35,14 @@ decode, append wall time, effective turn throughput, and estimated energy. The
 folded lifecycle row now promotes the context-exhaustion handoff into the
 canonical artefact set: it folds a `50714` token checkpoint into a `221` token
 compact state, wakes it with `restore_strategy=folded-prefill`, and continues.
+The 100k warm build-up stress gate is now covered by the State token-wake row:
+it grows the same warmed workflow to `102704` live tokens, folds a `677` token
+three-block compact State, wakes it in `223.207ms`, and continues for `512`
+tokens at `101.979 tok/s`. Two issues remain explicit rather than hidden:
+six late turns fall below the `256` visible-token floor, and the exhausted
+checkpoint capture still reports `65536` tokens while the live state was over
+`100k`, so production remains open on long-context degradation and checkpoint
+capture fidelity.
 The first same-shape `mlx_lm` anchor is also recorded: raw decode is faster,
 but the strict workload floor fails on turn 3, and the full marked run has `7`
 below-floor turns. The same-shape llama.cpp `Q4_K_M` anchor is now recorded and
@@ -43,8 +51,8 @@ and estimated energy and leaks one visible Gemma channel marker per turn. The
 same-shape vLLM Metal attempt is recorded as a load failure: it reaches the
 Metal worker and chunked-prefill setup, then strict `mlx_lm` loading rejects
 `80` Gemma 4 shared/global K/V tensors. The interactive runner-anchor gate is
-now covered; production still remains open on the warm build-up `100k` stress
-lane and the long-context degradation boundary.
+now covered; production still remains open on the long-context degradation
+boundary and the `65536` token checkpoint-capture cap.
 
 ## Accepted go-mlx Artefacts
 
@@ -58,6 +66,7 @@ lane and the long-context degradation boundary.
 | C006 markdown | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` | Captured book output | Operator-reviewed as on-prompt through the final silence |
 | Opencode-sized retained workflow | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | `30000` token warmed Gemma 4 chat state, `10` whole retained user turns, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX, `10774.150 J` at `100 W` |
 | Opencode fold lifecycle | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | `30000` token warmed State, `6` whole retained turns to a `50000` token compaction threshold, exhausted checkpoint plus summary/tail folded State, folded wake/continue turn | checkpoint `50714` tokens, folded State `221` tokens, `86.637ms` folded wake, `folded-prefill` restore, continue `15` tokens at `103.060 tok/s`, `3.283 GiB` peak MLX, `7885.064 J` including fold lifecycle at `100 W` |
+| Opencode 100k fold stress | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same `30000` token warmed State and whole-turn material, grows to `102704` live tokens, semantic summary/tail fold, `512` token folded continue | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, folded State `677` tokens across `3` blocks, wake `223.207ms`, continue `512` tokens at `101.979 tok/s`, RSS `3.426 GiB`; caveat: exhausted checkpoint captured `65536` tokens |
 
 Companion notes:
 
@@ -75,6 +84,7 @@ Companion notes:
 | Strict floor with EOS suppression | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json` | Same input shape plus `512` visible-token floor and EOS suppression | Failed on turn 1 after `653` visible tokens by repeating `// Implementation_` for `128` lines | Rejected; EOS suppression forces volume but can turn a stop into degeneration |
 | Chat-shaped whole turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, Gemma 4 chat wrapping, `30000` retained seed tokens, `10` whole user turns, assistant-turn closure, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX | Accepted go-mlx row; same-shape runner anchors are now recorded or documented as load failures |
 | Folded lifecycle boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | Same model and whole-turn material, `30000` retained seed tokens, `50000` compaction threshold, `turn_min_tokens_policy=mark`, folded checkpoint plus compact state wake/continue | `76.751s` before fold, `80.213 tok/s` decode, `69.908 tok/s` effective turn throughput, checkpoint `50714`, folded `221`, wake `86.637ms`, continue `15` tokens | Accepted fold lifecycle row; proves the context boundary becomes a compact state instead of further raw appends |
+| 100k folded State token wake | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same accepted material, `100000` compaction threshold, semantic summary/tail files, folded State wakes via token-only prefix load | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, live state `102704`, folded `677`, wake `223.207ms`, continue `512` at `101.979 tok/s` | Accepted for 100k lifecycle stress and the previous multi-block wake bug; not a content-floor pass because `6/23` late turns are below `256` visible tokens, and checkpoint capture is capped at `65536` |
 
 ## Opencode Runner Anchors
 

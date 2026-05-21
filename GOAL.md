@@ -71,9 +71,9 @@ and `13120.245 J` estimated at `100 W`, but every turn includes a visible
 Gemma channel marker, so content-shape drift is recorded separately from speed.
 The same-shape vLLM Metal attempt is documented as a load failure: it reaches
 the Metal worker and chunked-prefill setup, then strict `mlx_lm` loading rejects
-`80` Gemma 4 shared/global K/V tensors. The accepted state must still be grown
-toward the `100k` stress lane. The
-state-ramp runner now treats that stress ceiling as a lifecycle boundary:
+`80` Gemma 4 shared/global K/V tensors. The accepted state has now been grown
+through the `100k` stress lane. The state-ramp runner treats that stress ceiling
+as a lifecycle boundary:
 fixed-turn ramps stop when the live state reaches the target or configured
 compaction threshold, and reports expose `context_exhausted`,
 `folded_state_required`, `compaction_threshold_tokens`, and
@@ -84,8 +84,10 @@ checkpoint, prefills a fresh session from summary-plus-tail text, sleeps the
 folded State with parent lineage, and records folded-state metadata for later
 wake/replay. Folded entries now wake with `restore_strategy=folded-prefill`:
 the engine reads only the compact folded token prefix from the State file and
-prefills that small new window, avoiding multi-block K/V assembly while the
-exact exhausted checkpoint remains available on the raw State K/V block path.
+prefills that small new window, avoiding multi-block K/V assembly. The 100k
+stress rerun proves the three-block folded State wake is fixed, but it also
+shows the raw exhausted checkpoint still captures `65536` tokens while the live
+State was over `100k`; exact checkpoint fidelity past `64k` remains open.
 The AX hot-path benchmark pass now records this contract:
 `BenchmarkLoadPrefixFromStateBlocks_MixedWindowThreeBlocks` is
 `18968 ns/op`, `80258 B/op`, `49 allocs/op`, while
@@ -99,6 +101,15 @@ after `30000` initial tokens and `6` retained append/generate turns, the engine
 folded a `50714` token exhausted checkpoint into a `221` token compact state,
 woke it in `86.637ms`, and continued without replaying the exhausted prefix or
 hitting the prior non-finite-logits failure.
+
+The 100k folded State token-wake rerun is now recorded as
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json`:
+it grows the same `30000` token warmed State to `102704` live tokens, folds a
+`677` token compact State across `3` blocks, wakes it in `223.207ms`, and
+continues for `512` tokens at `101.979 tok/s`. This closes the warm build-up
+`100k` stress gate. The remaining production blockers are now the late-turn
+content degradation (`6/23` turns below the `256` visible-token floor) and the
+`65536` token exhausted-checkpoint capture cap.
 
 The retained-turn CLI path now has non-Metal `go test -benchmem` coverage for
 the hot state-ramp prompt/append/report functions. That benchmark pass found

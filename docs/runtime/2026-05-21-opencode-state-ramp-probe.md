@@ -165,9 +165,9 @@ Result:
 
 Verdict: accepted as the current go-mlx opencode-sized retained workflow row.
 It does **not** close the overall production gate yet. The same-shape `mlx_lm`
-anchor is now recorded below, but llama.cpp and vLLM anchors still need to be
-run for this accepted shape, and the warm build-up from this state toward
-`100k` remains open.
+anchor and llama.cpp anchor are now recorded below. The warm build-up from this
+state toward `100k` is now recorded in the 100k folded State token-wake rerun
+below; vLLM remains documented as a same-shape load failure.
 
 ## mlx_lm Same-Shape Anchor
 
@@ -364,13 +364,58 @@ Result:
 | Estimated energy at 100 W | `7675.102 J` |
 | Estimated total including fold lifecycle | `7885.064 J` |
 
-Verdict: the engine now recognises the live context boundary, writes an exact
+Verdict: the engine now recognises the live context boundary, writes an
 exhausted checkpoint, folds semantic summary/tail into a compact State, wakes
 that folded State without replaying the exhausted prefix, and continues without
 the prior non-finite-logits failure. The folded State wakes via
 `restore_strategy=folded-prefill` because the compact State is deliberately
 small; large non-folded checkpoints remain on the raw State K/V block restore
 path.
+
+## 100k Folded State Token-Wake Rerun
+
+After the State token-only wake fix landed, the same semantic fold workflow was
+rerun from the accepted `30000` token warmed opencode shape to the `100000`
+compaction threshold.
+
+Report:
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json`
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful turns before fold | `17/23` |
+| Below-floor marked turns | `6/23` |
+| Initial retained State | `30000` tokens |
+| Final live State before fold | `102704` tokens |
+| Appended tokens | `62593` |
+| Generated/visible tokens | `10057` / `10057` |
+| Initial prefill | `2725.175 tok/s` |
+| Append average | `1586.425 tok/s` |
+| Raw decode average | `75.368 tok/s` |
+| Effective turn throughput | `58.162 tok/s` |
+| Total wall time before fold | `183.923s` |
+| Fold checkpoint + compact prefill | `2.104s` |
+| Folded compact State | `677` tokens across `3` blocks |
+| Folded wake latency | `223.207ms` |
+| Folded wake strategy | `folded-prefill` |
+| Folded continue | `512` tokens at `101.979 tok/s` |
+| Peak MLX memory | `3.661 GiB` |
+| Active MLX memory | `3.157 GiB` |
+| Process RSS | `3.426 GiB` |
+| Estimated energy at 100 W | `18392.311 J` |
+
+Verdict: the previous multi-block folded wake failure is fixed in the real
+model path. The folded State has three blocks and wakes via token-only prefill
+instead of K/V assembly, then completes the configured `512` token continuation.
+This closes the warm build-up `100k` stress gate.
+
+Two caveats remain open. First, long-context content degradation is visible:
+turns `17`, `19`, `20`, `21`, `22`, and `23` fall below the `256` visible-token
+floor. Second, the exhausted checkpoint still reports `65536` captured tokens
+while the live State was `102704` tokens, so exact checkpoint fidelity past
+`64k` is not yet proven even though the compact folded continuation works.
 
 ## AX Hot-Path Benchmark Pass
 

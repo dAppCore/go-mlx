@@ -12,8 +12,8 @@
     "pruned_tracked_count": 3
   },
   "open_gates": [
-    "warm_build_up_100k_stress",
-    "long_context_degradation"
+    "long_context_degradation",
+    "fold_checkpoint_100k_capture_cap"
   ],
   "artifacts": [
     {
@@ -55,6 +55,13 @@
       "id": "opencode-state-ramp-fold-lifecycle-accepted",
       "role": "accepted_go_mlx_fold_lifecycle",
       "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-100k-fold-tokenwake",
+      "role": "accepted_go_mlx_100k_fold_stress",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json",
       "kind": "json",
       "indexed": true
     },
