@@ -69,13 +69,13 @@ long-context graph and kernel path:
   `2.90x` slower than the configured `mlx_lm` harness.
 - go-mlx warm 100k decode is now `1.09x` slower than llama.cpp and `1.37x`
   slower than `mlx_lm`.
-- The latest token-phase trace still predates the fp16 K/V promotion. The older
-  one-run trace recorded `59.957 tok/s` on the shared-full-K/V path, with
-  Go-side forward graph construction only
-  `1.251ms/token`; most of the wait still lands in `sample_eval` at
-  `15.402ms/token`, which is where lazy MLX graph work synchronises in the
-  normal run. Refresh this trace on the promoted fp16 K/V path before the next
-  lower-level kernel change.
+- The refreshed one-run fp16 K/V token-phase trace records `75.859 tok/s` on
+  the promoted paged path, with Go-side forward graph construction only
+  `1.181ms/token`; most of the wait still lands in `sample_eval` at
+  `11.967ms/token`, which is where lazy MLX graph work synchronises in the
+  normal run. The forced native-event variant confirms attention is still the
+  largest hidden bucket and that owner full-attention layers `4`, `9`, and `14`
+  remain the next lower-level target.
 
 ## Sustained Long-Turn Check
 
@@ -124,28 +124,29 @@ measure this boundary.
 
 ## Token-Phase Trace
 
-A same-shape one-run trace was recorded with `GO_MLX_TRACE_FORWARD_EVAL=1` and
+A same-shape one-run trace was refreshed with the promoted fp16 paged-K/V
+storage default, `GO_MLX_TRACE_FORWARD_EVAL=1`, and
 `driver-profile -trace-token-phases` on the accepted README-repeat 100k shape.
-The raw trace is intentionally not tracked because it is about `17 MB`, but the
-compact derived note is tracked at
+The raw native-event trace is intentionally not tracked because it is about
+`17 MB`, but the compact derived note is tracked at
 `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md`.
 
-The trace was refreshed after shared full-K/V reuse. The normal token-phase run
-holds the current `60 tok/s` band, while the forced native-event variant slows
-decode to `21.207 tok/s`; that variant is diagnostic rather than a replacement
-for the current untraced `60.011 tok/s` row. The forced-materialisation bucket
-split is still decisive: out of `48.283s` traced decode-loop time, `47.593s` is
-forward materialisation. Native event totals rank attention first at `18.982s`,
-then output at `10.317s`, FFN at `9.314s`, and attention residual at `7.137s`.
+The normal token-phase run holds the current `76 tok/s` band, while the forced
+native-event variant slows decode to `22.541 tok/s`; that variant is diagnostic
+rather than a replacement for the current untraced `76.018 tok/s` 10-run row.
+The forced-materialisation bucket split is still decisive: out of `45.428s`
+traced decode-loop time, `44.710s` is forward materialisation. Native event
+totals rank attention first at `15.537s`, then output at `10.387s`, FFN at
+`9.658s`, and attention residual at `7.416s`.
 
 The expensive attention layers are exactly the full-attention owners in the
-Gemma 4 local/full pattern. Shared full-K/V reuse moved later shared
-full-attention layers `19`, `24`, `29`, and `34` down to about `1.03ms/token`.
-Early owner layers `4`, `9`, and `14` remain near `1.96-1.98ms/token`, while
-local sliding-attention layers sit near the `0.29-0.37ms` band. The next
-implementation target should therefore stay focused on owner-layer
-full-attention K/V work in the paged/global path, but not by simply retaining a
-second MLX full-cache tensor via `slice_update`.
+Gemma 4 local/full pattern. fp16 K/V moved later shared full-attention layers
+`19`, `24`, `29`, and `34` down to about `0.625ms/token`, and early owner
+layers `4`, `9`, and `14` down from the old `1.96-1.98ms/token` band to about
+`1.38ms/token`. That is useful but not enough; the next implementation target
+should therefore stay focused on owner-layer full-attention K/V work in the
+paged/global path, but not by simply retaining a second MLX full-cache tensor
+via `slice_update`.
 
 ## Rejected 100k Branches
 
@@ -158,7 +159,8 @@ Nine same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 | Native C++ paged attention without single-KV-head repeat | `100912` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`; C++23 wrapper broadcasts one-head K/V pages instead of materialising repeats | `103.696s` wall, `23.828 tok/s` decode, `1665.263 tok/s` prefill, `3.613 GiB` active MLX | Rejected. The no-repeat correction is valid and slightly better, but the page-reduction graph remains far below the accepted fast-concat path. |
 | Larger `2048`-token pages | `101005` prompt tokens, paged K/V `2048`, accepted fast gates | `80.787s` wall, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected. Fewer pages do not improve the borrowed fast-concat path; cache memory rises and decode falls below the accepted `1024`-page row. |
 | Preallocated `1024`-token pages | `101005` prompt tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s` wall, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected. In-place page updates do not beat the accepted concat-backed page append path at 100k and slightly increase active memory. |
-| Materialised owner full K/V | `100932` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s` wall, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected. Keeping a full backing tensor for the owner layers removes no visible decode cost and raises active/cache memory versus the accepted shared-full-K/V row. |
+| Materialised owner full K/V | `100932` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | Old shared-full-K/V row: `77.200s` wall, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX. Refreshed fp16 K/V row: `67.049s` wall, `75.565 tok/s` decode, `1891.664 tok/s` prefill, `3.875 GB` active MLX. | Rejected again. Keeping a full backing tensor for the owner layers remains flat-to-slower and raises active memory versus the promoted fp16 paged path. |
+| Attention O-projection matvec | `100932` prompt tokens, paged fp16 K/V `1024`, accepted fast gates plus `-native-gemma4-attention-o-matvec` | `67.101s` wall, `75.780 tok/s` decode, `1888.443 tok/s` prefill, `3.472 GB` active MLX | Rejected for the hyper-long lane. The output bucket is visible in the native-event trace, but the existing q4/q8 O-projection matvec path is flat against the promoted `75.859 tok/s` trace row. |
 | Fixed cache with sliding layers bounded | `100937` prompt tokens, fixed Gemma 4 cache, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13748980782` bytes over the `12884901888` byte guard | Rejected. Hyper-long fixed cache is not the default path until a narrower global-only/native attention storage plan exists. |
 | Right-sized fixed cache with sliding layers bounded | README repeat `46`, fixed cache size forced to `102400`, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13682988726` bytes over the `12884901888` byte guard | Rejected. Right-sizing below the full `131072` context does not bring active memory under the production guard. |
 | Borrowed fixed-cache native state | README repeat `46`, fixed Gemma 4 cache, shared mask, sliding cache bound, borrowed full-capacity K/V handles for native fixed-attention paths, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13660804802` bytes over the `12884901888` byte guard | Rejected. Avoiding fixed-state clones trims the obvious handle duplication but does not change the full fixed-cache attention graph footprint enough to make the branch viable. |
@@ -171,10 +173,11 @@ page-reduction graph is not enough, larger page geometry does not help,
 preallocated pages do not help, and a right-sized fixed cache is still too
 memory-heavy on the guarded 100k lane. Borrowed fixed-state handles remove an
 obvious clone path but leave the same active-memory cliff. The
-materialised-owner probe also
-rejects a pure MLX `slice_update` full-backing workaround; the next viable path
-needs the lower-level zero-copy/fused global-attention storage shape described
-in `IDEAS.md`, not another Go-orchestrated full-cache view.
+refreshed materialised-owner probe also rejects a pure MLX `slice_update`
+full-backing workaround under fp16, and the attention O-projection matvec check
+rejects a short-context matvec promotion as the missing long-context fix. The
+next viable path needs the lower-level zero-copy/fused global-attention storage
+shape described in `IDEAS.md`, not another Go-orchestrated full-cache view.
 
 ## 2026-05-21 Zero-Copy / Threshold Probe
 

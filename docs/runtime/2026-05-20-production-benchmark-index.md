@@ -23,7 +23,9 @@ keeps go-mlx's long-context MLX graph/kernel path as the next optimisation
 boundary. A previous `5120` token-budget diagnostic showed the shared-full-K/V
 path held the same `~60 tok/s` decode band for `2489` token natural turns with
 bounded memory, but that row predates the promoted hyper-long fp16 K/V default.
-A new long-turn row should be rerun after this promotion.
+The token-phase trace has been refreshed on the promoted fp16 K/V path and
+confirms the next live boundary is still owner-layer full-attention K/V work.
+A new long-turn row should still be rerun after this promotion.
 
 ## Accepted go-mlx Artefacts
 
@@ -71,7 +73,7 @@ they are not accepted production paths.
 | Native C++ paged attention, no single-KV-head repeat | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-native-paged-no-singlekv-repeat-g1024-r1-energy100w.json` | MLX 4bit, `100912` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`; C++ broadcasts one-head K/V pages | `103.696s`, `23.828 tok/s` decode, `1665.263 tok/s` prefill, `3.613 GiB` active MLX | Rejected; valid micro-optimisation but still far slower than the accepted fast-concat lane |
 | Larger paged K/V blocks | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-page2048-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `2048`, accepted fast gates | `80.787s`, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected; bigger pages reduce page count but lose decode speed and increase cache memory versus `1024` pages |
 | Preallocated paged K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-paged-prealloc-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s`, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected; in-place page updates do not improve the 100k decode path and slightly increase active memory |
-| Materialised owner K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-materialized-owner-g1024-r1-energy100w.json` | MLX 4bit, `100932` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s`, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected; full backing tensors for owner layers do not improve decode and increase active/cache memory |
+| Materialised owner K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-materialized-owner-g1024-r1-energy100w.json` | MLX 4bit, `100932` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | Tracked pre-fp16 row: `77.200s`, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX. Refreshed fp16 note: `75.565 tok/s` decode with higher active memory than the promoted path. | Rejected; full backing tensors for owner layers do not improve decode and increase active/cache memory |
 | Hyper-long fixed cache | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, fixed Gemma 4 cache, shared fixed mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13748980782` bytes | Rejected; fixed full-capacity global K/V is over the production memory guard |
 | Right-sized fixed cache | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-rightsized102400-g1024-r1-energy100w.json` | MLX 4bit, README repeat `46`, fixed Gemma 4 cache forced to `102400`, shared fixed mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13682988726` bytes | Rejected; reducing fixed cache capacity below `131072` still exceeds the production memory guard |
 | Borrowed fixed-cache native state | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-fixed-borrowed-g1024-r1-energy100w.json` | MLX 4bit, README repeat `46`, fixed Gemma 4 cache, shared fixed mask, sliding cache bound, borrowed full-capacity native K/V handles, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13660804802` bytes | Rejected; removing fixed-cache handle clones is correct but not enough to bring the full fixed-cache attention path under the production memory guard |
@@ -170,14 +172,16 @@ device from the runner, while the same workload with `-report-file` completed.
    `260.093s` / `51.293 tok/s` to `231.109s` / `60.011 tok/s`, and hyper-long
    fp16 K/V storage preserved through restore improved it again to `188.417s` /
    `76.018 tok/s`. The remaining live boundary is still evaluated MLX graph and
-   kernel work in the long-context attention path, not prompt-cache restore. A
-   refreshed token-phase trace should be captured on the promoted fp16 K/V lane
-   before the next kernel change. The older trace showed shared full-K/V reuse
-   moved layers `19`, `24`, `29`, and `34` down to about `1.03ms/token`, leaving
-   early full-attention owner layers `4`, `9`, and `14` as the likely next
-   target. The materialised-owner diagnostic rejected a pure MLX `slice_update`
-   backing tensor workaround, so the remaining path is a lower-level fused or
-   zero-copy global-attention storage shape. The current diagnosis is recorded in
+   kernel work in the long-context attention path, not prompt-cache restore. The
+   refreshed fp16 K/V token-phase trace records `75.859 tok/s`, with Go-side
+   forward graph construction at about `1.181ms/token` and lazy MLX eval at
+   about `11.967ms/token`. The native-event split ranks attention first at
+   `15.537s`; fp16 moved shared full-attention layers `19`, `24`, `29`, and
+   `34` to about `0.625ms/token`, but early full-attention owner layers `4`,
+   `9`, and `14` still sit around `1.38ms/token`. Refreshed materialised-owner
+   and attention O-projection matvec diagnostics are flat-to-slower, so the
+   remaining path is a lower-level fused or zero-copy global-attention storage
+   shape. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.
