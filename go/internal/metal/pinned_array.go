@@ -46,9 +46,13 @@ import (
 	core "dappco.re/go"
 )
 
+// pinnedRawArrayBuffer carries the Go-owned raw bytes plus the
+// core.PinnedView that keeps them at a stable address for mlx_array's
+// pinned-data slot. mlx retains the data pointer across mlx_eval, so
+// the pin must live until the C-side release callback fires.
 type pinnedRawArrayBuffer struct {
-	raw    []byte
-	pinner runtime.Pinner
+	raw  []byte
+	view core.PinnedView
 }
 
 var (
@@ -61,10 +65,10 @@ func registerPinnedRawArray(raw []byte) (uintptr, unsafe.Pointer, error) {
 		return 0, nil, core.NewError("mlx: pinned array data is empty")
 	}
 	buffer := &pinnedRawArrayBuffer{raw: raw}
-	buffer.pinner.Pin(&buffer.raw[0])
+	core.PinSlice(buffer.raw, &buffer.view)
 	id := pinnedRawArrayNextID.Add(1)
 	pinnedRawArrayBuffers.Store(id, buffer)
-	return id, unsafe.Pointer(unsafe.SliceData(buffer.raw)), nil
+	return id, buffer.view.Ptr(), nil
 }
 
 func unregisterPinnedRawArray(id uintptr) {
@@ -79,7 +83,7 @@ func unregisterPinnedRawArray(id uintptr) {
 	if !ok || buffer == nil {
 		return
 	}
-	buffer.pinner.Unpin()
+	buffer.view.Release()
 }
 
 //export goPinnedRawArrayRelease
