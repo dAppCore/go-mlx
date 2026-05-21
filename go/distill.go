@@ -487,22 +487,32 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	var softCE float64
 	var entropy float64
 	var tokens int
+	// Scratch buffers reused across every masked token — vocab size is
+	// constant (shape-checked above), so two pre-allocated float64 slices
+	// replace the per-call make inside logSoftmaxTemperature. For a 32k
+	// vocab and 1000 tokens this skips ~2000 256KB allocations per call.
+	var teacherScratch, studentScratch []float64
 	for i := range teacher {
 		for j := range teacher[i] {
 			if !distillMaskIncludes(mask, i, j) {
 				continue
 			}
-			teacherLogProbs, err := logSoftmaxTemperature(teacher[i][j], cfg.Temperature)
-			if err != nil {
+			vocab := len(teacher[i][j])
+			if cap(teacherScratch) < vocab {
+				teacherScratch = make([]float64, vocab)
+				studentScratch = make([]float64, vocab)
+			}
+			teacherScratch = teacherScratch[:vocab]
+			studentScratch = studentScratch[:vocab]
+			if err := logSoftmaxTemperatureInto(teacher[i][j], cfg.Temperature, teacherScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			studentLogProbs, err := logSoftmaxTemperature(student[i][j], cfg.Temperature)
-			if err != nil {
+			if err := logSoftmaxTemperatureInto(student[i][j], cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			for k, teacherLogProb := range teacherLogProbs {
+			for k, teacherLogProb := range teacherScratch {
 				prob := math.Exp(teacherLogProb)
-				softCE += -prob * studentLogProbs[k]
+				softCE += -prob * studentScratch[k]
 				entropy += -prob * teacherLogProb
 			}
 			tokens++
@@ -698,27 +708,47 @@ func logSoftmaxTemperature(logits []float32, temperature float64) ([]float64, er
 	if len(logits) == 0 {
 		return nil, core.NewError("mlx: distillation logits are empty")
 	}
-	maxLogit := math.Inf(-1)
 	scaled := make([]float64, len(logits))
+	if err := logSoftmaxTemperatureInto(logits, temperature, scaled); err != nil {
+		return nil, err
+	}
+	return scaled, nil
+}
+
+// logSoftmaxTemperatureInto writes len(logits) log-softmax values into out.
+// out must be pre-sized to len(logits); callers in the distillation hot
+// loop reuse the same scratch buffer across every masked token to skip
+// per-token allocation of vocab-sized float64 slices.
+func logSoftmaxTemperatureInto(logits []float32, temperature float64, out []float64) error {
+	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
+		return core.NewError("mlx: distillation temperature must be finite and positive")
+	}
+	if len(logits) == 0 {
+		return core.NewError("mlx: distillation logits are empty")
+	}
+	if len(out) != len(logits) {
+		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
+	}
+	maxLogit := math.Inf(-1)
 	for i, logit := range logits {
 		value := float64(logit) / temperature
 		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return nil, core.NewError("mlx: distillation logit is not finite")
+			return core.NewError("mlx: distillation logit is not finite")
 		}
-		scaled[i] = value
+		out[i] = value
 		if value > maxLogit {
 			maxLogit = value
 		}
 	}
 	var sumExp float64
-	for _, value := range scaled {
+	for _, value := range out {
 		sumExp += math.Exp(value - maxLogit)
 	}
 	logDenom := maxLogit + math.Log(sumExp)
-	for i, value := range scaled {
-		scaled[i] = value - logDenom
+	for i, value := range out {
+		out[i] = value - logDenom
 	}
-	return scaled, nil
+	return nil
 }
 
 func distillMaskIncludes(mask [][]float32, row, col int) bool {
