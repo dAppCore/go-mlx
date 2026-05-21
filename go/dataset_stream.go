@@ -27,6 +27,10 @@ func BuildDatasetBatches(tok *Tokenizer, ds dataset.Dataset, cfg dataset.BatchCo
 	cfg = normalizeDatasetBatchConfig(cfg)
 	builder := newSFTBatchBuilder(cfg.BatchSize)
 	packer := newDatasetPacker(cfg.MaxSeqLen, builder)
+	// Hoist per-sample SFTConfig out of the loop — buildSFTExample only
+	// reads MaxSeqLen + NoEOS and never mutates, so the same value is
+	// safe to share across every sample.
+	exampleCfg := SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS}
 	for {
 		sample, ok, err := ds.Next()
 		if err != nil {
@@ -35,7 +39,7 @@ func BuildDatasetBatches(tok *Tokenizer, ds dataset.Dataset, cfg dataset.BatchCo
 		if !ok {
 			break
 		}
-		example, usable, err := buildSFTExample(tok, sample, SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS})
+		example, usable, err := buildSFTExample(tok, sample, exampleCfg)
 		if err != nil {
 			return nil, err
 		}
