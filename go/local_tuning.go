@@ -47,8 +47,8 @@ const tuningMachineHashLabel = "machine_hash"
 
 func (backend *metalbackend) DiscoverMachine(ctx context.Context, req inference.MachineDiscoveryRequest) (*inference.MachineDiscoveryReport, error) {
 	report, err := DiscoverLocalRuntime(ctx, LocalDiscoveryConfig{
-		ModelDirs:         append([]string(nil), req.ModelDirs...),
-		Workloads:         append([]inference.TuningWorkload(nil), req.Workloads...),
+		ModelDirs:         core.SliceClone(req.ModelDirs),
+		Workloads:         core.SliceClone(req.Workloads),
 		MaxModels:         req.MaxModels,
 		IncludeModels:     req.IncludeModels,
 		IncludeCandidates: req.IncludeCandidates,
@@ -91,8 +91,8 @@ func DiscoverLocalRuntime(ctx context.Context, cfg LocalDiscoveryConfig) (infere
 		Runtime:      caps.Runtime,
 		Device:       deviceInfo,
 		Available:    caps.Available,
-		Capabilities: append([]inference.Capability(nil), caps.Capabilities...),
-		CacheModes:   append([]string(nil), caps.CacheModes...),
+		Capabilities: core.SliceClone(caps.Capabilities),
+		CacheModes:   core.SliceClone(caps.CacheModes),
 		Workloads:    workloads,
 		Labels:       withTuningMachineHash(cfg.Labels, machineHash),
 	}
@@ -420,7 +420,7 @@ func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,
-		Reasons:              append([]string(nil), plan.Notes...),
+		Reasons:              core.SliceClone(plan.Notes),
 		Labels:               map[string]string{"machine_class": string(plan.MachineClass)},
 	}
 	switch workload {
@@ -552,7 +552,7 @@ func tuningWorkloadsOrDefault(workloads []inference.TuningWorkload) []inference.
 	if len(workloads) == 0 {
 		return inference.DefaultTuningWorkloads()
 	}
-	return append([]inference.TuningWorkload(nil), workloads...)
+	return core.SliceClone(workloads)
 }
 
 func cloneTuningLabels(labels map[string]string) map[string]string {
