@@ -37,9 +37,12 @@ canonical artefact set: it folds a `50714` token checkpoint into a `221` token
 compact state, wakes it with `restore_strategy=folded-prefill`, and continues.
 The first same-shape `mlx_lm` anchor is also recorded: raw decode is faster,
 but the strict workload floor fails on turn 3, and the full marked run has `7`
-below-floor turns. The overall interactive gate is still open until llama.cpp
-and vLLM anchors are recorded and the runner comparison accounts for output
-length, not just wall-clock.
+below-floor turns. The same-shape llama.cpp `Q4_K_M` anchor is now recorded and
+passes the `256` visible-token floor, but it is slower than go-mlx on wall time
+and estimated energy and leaks one visible Gemma channel marker per turn. The
+overall interactive gate is still open until the same-shape vLLM anchor is
+recorded and the runner comparison accounts for output quality/length, not just
+wall-clock.
 
 ## Accepted go-mlx Artefacts
 
@@ -68,7 +71,7 @@ Companion notes:
 | --- | --- | --- | ---: | --- |
 | Delimited retained append turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json` | MLX 4bit, `30000` retained seed tokens from a real repo dump, `10` delimiter-separated user turns, `1024` token budget, Gemma 4 sampling defaults | `78.761s`, `77.533 tok/s` decode, `61.689 tok/s` effective turn throughput, `59146` final live tokens, `3.114 GiB` active MLX | Useful scaling evidence, not accepted; several turns naturally stopped after tiny outputs |
 | Strict floor with EOS suppression | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json` | Same input shape plus `512` visible-token floor and EOS suppression | Failed on turn 1 after `653` visible tokens by repeating `// Implementation_` for `128` lines | Rejected; EOS suppression forces volume but can turn a stop into degeneration |
-| Chat-shaped whole turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, Gemma 4 chat wrapping, `30000` retained seed tokens, `10` whole user turns, assistant-turn closure, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX | Accepted go-mlx row; external same-shape anchors still pending |
+| Chat-shaped whole turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, Gemma 4 chat wrapping, `30000` retained seed tokens, `10` whole user turns, assistant-turn closure, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX | Accepted go-mlx row; vLLM same-shape anchor still pending |
 | Folded lifecycle boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | Same model and whole-turn material, `30000` retained seed tokens, `50000` compaction threshold, `turn_min_tokens_policy=mark`, folded checkpoint plus compact state wake/continue | `76.751s` before fold, `80.213 tok/s` decode, `69.908 tok/s` effective turn throughput, checkpoint `50714`, folded `221`, wake `86.637ms`, continue `15` tokens | Accepted fold lifecycle row; proves the context boundary becomes a compact state instead of further raw appends |
 
 ## Opencode Runner Anchors
@@ -78,6 +81,7 @@ Companion notes:
 | go-mlx | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, `30000` retained seed tokens, `10` whole chat-shaped append/generate turns, `1024` max tokens, `256` visible-token floor | `107.741s` | `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `6253` visible tokens | `3.137 GiB` active MLX | `10774.150 J` | Accepted row; all `10` turns meet the real-workload floor |
 | `mlx_lm` strict floor | `docs/runtime/2026-05-21-mlx-lm-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-energy100w.json` | Same prompt files, Gemma 4 wrapping, `30000` cached seed tokens, strict `256` visible-token floor, `1024` max tokens | stopped after turn 3 | `126.998 tok/s` decode across partial run, `109.249 tok/s` effective turn throughput, `1246` visible tokens | `3.944 GB` peak MLX | partial run only | Rejected; turn 3 produced `219` visible tokens, below the accepted workload floor |
 | `mlx_lm` marked floor | `docs/runtime/2026-05-21-mlx-lm-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-mark-energy100w.json` | Same prompt files and token budget, but `turn_min_tokens_policy=mark` to complete the run after below-floor turns | `28.284s` including load and initial prefill | `122.556 tok/s` decode, `93.415 tok/s` effective turn throughput, `2256` visible tokens | `4.405 GB` peak MLX | `2828.354 J` at `100 W` | Complete anchor, not an accepted workload pass; `7/10` turns fall below `256` visible tokens |
+| llama.cpp server | `docs/runtime/2026-05-21-llamacpp-gemma4-e2b-q4-k-m-opencode-state-ramp-30k-chatwholelen-r10-g1024-nativebos-energy100w.json` | GGUF `Q4_K_M`, same prompt files, native BOS handling, `30000` seed tokens, `10` whole chat-shaped turns, `1024` max tokens, strict `256` visible-token floor | `131.202s` | `102.714 tok/s` decode, `76.012` visible tok/s wall throughput, `9973` visible tokens | `4.398 GiB` peak RSS | `13120.245 J` at `100 W` | Complete anchor; passes output floor and raw decode leads go-mlx, but wall/energy trail go-mlx and every turn leaks one visible `<channel|>` marker |
 
 ## Runner Anchors
 

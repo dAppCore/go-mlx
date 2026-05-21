@@ -224,11 +224,17 @@ def main():
         mem = process_memory(args.server_pid)
         if mem.get("rss_bytes", 0) > peak_memory.get("rss_bytes", 0):
             peak_memory = mem
-        below_min = bool(args.turn_min_tokens and predicted < args.turn_min_tokens)
+        visible_tokens = len(encode(tokenizer, visible))
+        control_marker_count = (
+            visible.count("<|channel>")
+            + visible.count("<channel|>")
+            + visible.count("<turn|>")
+        )
+        below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
         error = ""
         if below_min:
             error = (
-                f"llama.cpp opencode workflow: turn {index} produced {predicted} "
+                f"llama.cpp opencode workflow: turn {index} produced {visible_tokens} "
                 f"visible tokens, below minimum real-workload floor {args.turn_min_tokens}"
             )
             if args.turn_min_tokens_policy == "fail" and first_error is None:
@@ -244,13 +250,14 @@ def main():
                 "wall_seconds": wall,
                 "tokens_evaluated": response.get("tokens_evaluated", 0),
                 "tokens_predicted": predicted,
-                "visible_tokens": predicted,
+                "visible_tokens": visible_tokens,
                 "stop": response.get("stop", False),
                 "truncated": response.get("truncated", False),
                 "finish_reason": "stop" if response.get("stop", False) else "",
                 "timings": timings,
                 "below_min_tokens": below_min,
                 "error": error,
+                "control_marker_count": control_marker_count,
                 "content_bytes": len(content.encode("utf-8")),
                 "content_prefix": visible[:240],
                 "content_suffix": visible[-240:],
@@ -263,9 +270,11 @@ def main():
 
     total_seconds = time.perf_counter() - total_start
     generated = sum(turn["tokens_predicted"] for turn in turns)
+    visible_total = sum(turn["visible_tokens"] for turn in turns)
     prompt_seconds = sum(float(turn["timings"].get("prompt_ms", 0) or 0) for turn in turns) / 1000.0
     decode_seconds = sum(float(turn["timings"].get("predicted_ms", 0) or 0) for turn in turns) / 1000.0
     decode_tps = generated / decode_seconds if decode_seconds > 0 else 0.0
+    memory_available = bool(peak_memory)
     report = {
         "runner": "llama.cpp server",
         "model": args.model,
@@ -304,20 +313,22 @@ def main():
             "final_state_tokens": current_tokens,
             "appended_tokens": sum(turn["appended_tokens"] for turn in turns),
             "generated_tokens": generated,
-            "visible_tokens": generated,
+            "visible_tokens": visible_total,
             "total_wall_seconds": total_seconds,
             "decode_seconds_from_llamacpp_timings": decode_seconds,
             "decode_tokens_per_sec_from_llamacpp_timings": decode_tps,
-            "wall_visible_tokens_per_sec": generated / total_seconds if total_seconds > 0 else 0.0,
+            "wall_visible_tokens_per_sec": visible_total / total_seconds if total_seconds > 0 else 0.0,
             "prompt_seconds_from_llamacpp_timings": prompt_seconds,
             "peak_process_rss_bytes": peak_memory.get("rss_bytes", 0),
             "peak_process_vsz_bytes": peak_memory.get("vsz_bytes", 0),
+            "process_memory_probe_available": memory_available,
+            "control_marker_count": sum(turn["control_marker_count"] for turn in turns),
         },
         "estimated_energy": {
             "method": "estimated_wall_clock_seconds_times_average_active_watts",
             "power_watts": args.power_watts,
             "total_joules": total_seconds * args.power_watts,
-            "joules_per_visible_token": (total_seconds * args.power_watts / generated) if generated > 0 else 0.0,
+            "joules_per_visible_token": (total_seconds * args.power_watts / visible_total) if visible_total > 0 else 0.0,
         },
         "error": first_error or "",
         "runs": turns,

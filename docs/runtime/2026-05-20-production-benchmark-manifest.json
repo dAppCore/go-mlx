@@ -74,6 +74,13 @@
       "indexed": true
     },
     {
+      "id": "llamacpp-opencode-nativebos-anchor",
+      "role": "runner_anchor",
+      "path": "docs/runtime/2026-05-21-llamacpp-gemma4-e2b-q4-k-m-opencode-state-ramp-30k-chatwholelen-r10-g1024-nativebos-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-retained-workflow",
       "role": "accepted_go_mlx_workflow",
       "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-r46-g1024-paged-fp16kv-restoretyped-clearcache-r10-energy100w.json",

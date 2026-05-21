@@ -64,9 +64,13 @@ throughput, `63584` final live tokens, `3.137 GiB` active MLX memory, and
 `10774.150 J` estimated at `100 W`. This row does not close production by
 itself; the first same-shape `mlx_lm` anchor is now recorded and shows faster
 raw decode but fails the strict `256` visible-token floor on turn 3, while the
-full marked run has `7/10` below-floor turns. Same-shape llama.cpp and vLLM
-anchors are still required, and the accepted state must still be grown toward
-the `100k` stress lane. The
+full marked run has `7/10` below-floor turns. The same-shape llama.cpp
+`Q4_K_M` anchor is now recorded with native BOS handling: it completes `10/10`
+turns at `102.714 tok/s` raw decode, `76.012` visible tok/s wall throughput,
+and `13120.245 J` estimated at `100 W`, but every turn includes a visible
+Gemma channel marker, so content-shape drift is recorded separately from speed.
+The same-shape vLLM anchor remains required, and the accepted state must still
+be grown toward the `100k` stress lane. The
 state-ramp runner now treats that stress ceiling as a lifecycle boundary:
 fixed-turn ramps stop when the live state reaches the target or configured
 compaction threshold, and reports expose `context_exhausted`,
@@ -118,7 +122,10 @@ Production remains blocked until these gates are all satisfied:
       `30k`-`40k` first context, 10+ append/generate turns, realistic long
       output budgets, bounded memory, captured output, and same-shape runner
       anchors. The go-mlx side of this gate now has an accepted row; the gate
-      remains open for same-shape runner anchors.
+      remains open for the same-shape vLLM anchor. Same-shape `mlx_lm` and
+      llama.cpp anchors are recorded, but both carry content-shape caveats:
+      `mlx_lm` stops short on most marked turns, while llama.cpp emits visible
+      Gemma channel markers.
 - [ ] A warm build-up stress run starts from the accepted `30k`-`40k` state,
       appends/generates in retained state until the live context reaches about
       `100k`, and reports cumulative append cost, decode, wall time, memory,

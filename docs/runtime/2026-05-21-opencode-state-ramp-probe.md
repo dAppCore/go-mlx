@@ -206,6 +206,46 @@ content-shape evidence, not only timing evidence: early natural stops and short
 answers mean the runner/model stack is drifting away from the accepted agentic
 workload even when tok/s is higher.
 
+## llama.cpp Same-Shape Anchor
+
+Artifact:
+`docs/runtime/2026-05-21-llamacpp-gemma4-e2b-q4-k-m-opencode-state-ramp-30k-chatwholelen-r10-g1024-nativebos-energy100w.json`
+
+The anchor uses `unsloth/gemma-4-E2B-it-GGUF` `Q4_K_M`, llama.cpp server build
+`b8990-660b1b4bd`, `context=131072`, prompt cache enabled, `flash_attn=on`,
+`batch=2048`, `ubatch=512`, `32` context checkpoints, and native llama.cpp BOS
+handling. The earlier diagnostic with an explicit prompt `<bos>` was discarded
+instead of promoted because llama.cpp warned that it would create a double-BOS
+prompt.
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful turns | `10/10` |
+| Initial retained state | `30000` tokens |
+| Final live state | `67299` tokens |
+| Appended tokens | `27303` |
+| Generated/visible tokens | `9976` / `9973` |
+| Initial prefill | `2585.450 tok/s` |
+| Raw decode average | `102.714 tok/s` |
+| Wall visible throughput | `76.012 tok/s` |
+| Prompt work from llama.cpp timings | `33.429s` |
+| Decode time from llama.cpp timings | `97.124s` |
+| Total wall time | `131.202s` |
+| Peak RSS | `4.398 GiB` |
+| Estimated energy at 100 W | `13120.245 J` |
+| Visible Gemma channel markers | `10` |
+
+Verdict: llama.cpp is a useful same-shape speed anchor and passes the strict
+`256` visible-token floor, but it does not beat the accepted go-mlx row on
+wall time or estimated energy for this opencode-shaped workflow. It does beat
+go-mlx on raw decode (`102.714 tok/s` versus `76.847 tok/s`) and generates more
+visible output (`9973` versus `6253` tokens). The content-shape caveat is
+important: every captured turn includes one visible `<channel|>` marker, while
+the go-mlx accepted row has none. Treat this as runner/template drift evidence,
+not just a formatting nuisance.
+
 ## Hot-Path Benchmark Sweep
 
 The first repository-wide benchmark command did not expose useful numbers
@@ -239,10 +279,10 @@ go test -run '^$' -bench=. -benchmem ./go/cmd/mlx
 
 ## Next Action
 
-Run same-shape llama.cpp and vLLM anchors for the accepted chat-shaped workload,
-then run the warm build-up stress path from the accepted `30k`-to-`63.5k`
-workflow toward `100k`. Keep raw decode, append wall time, restore/prefill,
-wall time, memory, output length, and estimated energy separate.
+Run the same-shape vLLM anchor for the accepted chat-shaped workload, then run
+the warm build-up stress path from the accepted `30k`-to-`63.5k` workflow toward
+`100k`. Keep raw decode, append wall time, restore/prefill, wall time, memory,
+output length, content-shape markers, and estimated energy separate.
 
 The runner must treat the `100k` stress ceiling as a context lifecycle boundary.
 `state-ramp-profile` now stops fixed-turn ramps once the live state reaches the
