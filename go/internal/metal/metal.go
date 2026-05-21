@@ -163,7 +163,8 @@ import (
 	"sync"
 	"unsafe"
 
-	"dappco.re/go"
+	core "dappco.re/go"
+	"dappco.re/go/cgo"
 )
 
 var initOnce sync.Once
@@ -267,15 +268,16 @@ func Init() {
 }
 
 // lastError reads and clears the most recent MLX-C error, or nil if none.
-// The returned error message is heap-allocated by strdup in the C error handler,
-// so we free it after copying to a Go string.
+// The returned error message is heap-allocated by strdup in the C error
+// handler — cgo.AdoptCString copies it to a Go string and frees the C
+// side in a single named call. The unsafe.Pointer cast is required
+// because cgo types don't unify across Go packages (go-mlx's *C.char
+// and go-cgo's *C.char are distinct types despite same underlying).
 func lastError() error {
-	msg := C.get_and_clear_last_error()
-	if msg == nil {
+	goMsg := cgo.AdoptCString(unsafe.Pointer(C.get_and_clear_last_error()))
+	if goMsg == "" {
 		return nil
 	}
-	goMsg := C.GoString(msg)
-	C.free(unsafe.Pointer(msg))
 	return core.E("mlx.lastError", goMsg, nil)
 }
 
