@@ -35,6 +35,9 @@ const (
 	// ProductionLaneLongFormContextLength is the default chapter-profile
 	// context for retained long-form agentic generation.
 	ProductionLaneLongFormContextLength = 65536
+	// ProductionLaneHyperLongContextLength is the Gemma 4 E2B/E4B 128Ki stress
+	// ceiling used by 100k retained-state and warm build-up profiles.
+	ProductionLaneHyperLongContextLength = 131072
 	// ProductionLaneLongFormMaxTokens is the default per-turn long-form
 	// generation allowance.
 	ProductionLaneLongFormMaxTokens = 8192

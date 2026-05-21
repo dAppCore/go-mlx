@@ -82,6 +82,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "slice-smoke":
 		return runSliceSmokeCommand(ctx, args[1:], stdout, stderr)
+	case "state-ramp-profile":
+		return runStateRampProfileCommand(ctx, args[1:], stdout, stderr)
 	case "tune-plan":
 		return runTunePlanCommand(ctx, args[1:], stdout, stderr)
 	case "tune-profile":
@@ -429,6 +431,93 @@ type chapterProfileEnergy struct {
 	PowerWatts     float64 `json:"power_watts"`
 	TotalJoules    float64 `json:"total_joules,omitempty"`
 	JoulesPerToken float64 `json:"joules_per_visible_token,omitempty"`
+}
+
+type stateRampProfileOptions struct {
+	Prompt        string                    `json:"prompt,omitempty"`
+	AppendPrompt  string                    `json:"append_prompt,omitempty"`
+	StartTokens   int                       `json:"start_tokens,omitempty"`
+	TargetTokens  int                       `json:"target_tokens,omitempty"`
+	AppendTokens  int                       `json:"append_tokens,omitempty"`
+	TurnMaxTokens int                       `json:"turn_max_tokens,omitempty"`
+	Turns         int                       `json:"turns,omitempty"`
+	IncludeOutput bool                      `json:"include_output,omitempty"`
+	SafetyLimits  driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+}
+
+type stateRampProfileReport struct {
+	Version                int                       `json:"version"`
+	ModelPath              string                    `json:"model_path"`
+	LoadDuration           time.Duration             `json:"load_duration,omitempty"`
+	PromptBytes            int                       `json:"prompt_bytes"`
+	AppendPromptBytes      int                       `json:"append_prompt_bytes,omitempty"`
+	SourceTokens           int                       `json:"source_tokens,omitempty"`
+	AppendSourceTokens     int                       `json:"append_source_tokens,omitempty"`
+	StartTokens            int                       `json:"start_tokens"`
+	TargetTokens           int                       `json:"target_tokens"`
+	AppendTokens           int                       `json:"append_tokens"`
+	TurnMaxTokens          int                       `json:"turn_max_tokens"`
+	RequestedTurns         int                       `json:"requested_turns,omitempty"`
+	IncludeOutput          bool                      `json:"include_output,omitempty"`
+	SafetyLimits           driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	RuntimeGates           map[string]string         `json:"runtime_gates,omitempty"`
+	Load                   *tuneProfileLoadSettings  `json:"load,omitempty"`
+	InitialPrefillDuration time.Duration             `json:"initial_prefill_duration,omitempty"`
+	InitialPrefillTokens   int                       `json:"initial_prefill_tokens,omitempty"`
+	Turns                  []stateRampProfileTurn    `json:"turns,omitempty"`
+	Summary                stateRampProfileSummary   `json:"summary"`
+	EstimatedEnergy        *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
+	Error                  string                    `json:"error,omitempty"`
+}
+
+type stateRampProfileTurn struct {
+	Index                  int           `json:"index"`
+	TokensBeforeAppend     int           `json:"tokens_before_append,omitempty"`
+	AppendedTokens         int           `json:"appended_tokens,omitempty"`
+	TokensAfterAppend      int           `json:"tokens_after_append,omitempty"`
+	TokensAfterGenerate    int           `json:"tokens_after_generate,omitempty"`
+	AppendDuration         time.Duration `json:"append_duration,omitempty"`
+	Duration               time.Duration `json:"duration,omitempty"`
+	FirstTokenDuration     time.Duration `json:"first_token_duration,omitempty"`
+	StreamDuration         time.Duration `json:"stream_duration,omitempty"`
+	DriverOverheadDuration time.Duration `json:"driver_overhead_duration,omitempty"`
+	VisibleTokens          int           `json:"visible_tokens,omitempty"`
+	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
+	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
+	Output                 string        `json:"output,omitempty"`
+	Metrics                mlx.Metrics   `json:"metrics"`
+	Error                  string        `json:"error,omitempty"`
+}
+
+type stateRampProfileSummary struct {
+	SuccessfulTurns            int           `json:"successful_turns"`
+	FailedTurns                int           `json:"failed_turns,omitempty"`
+	InitialPrefillTokens       int           `json:"initial_prefill_tokens,omitempty"`
+	FinalStateTokens           int           `json:"final_state_tokens,omitempty"`
+	AppendedTokens             int           `json:"appended_tokens,omitempty"`
+	GeneratedTokens            int           `json:"generated_tokens,omitempty"`
+	VisibleTokens              int           `json:"visible_tokens,omitempty"`
+	TotalDuration              time.Duration `json:"total_duration,omitempty"`
+	AppendDuration             time.Duration `json:"append_duration,omitempty"`
+	AppendAvgDuration          time.Duration `json:"append_duration_average,omitempty"`
+	InitialPrefillTokensPerSec float64       `json:"initial_prefill_tokens_per_sec,omitempty"`
+	AppendTokensPerSecAverage  float64       `json:"append_tokens_per_sec_average,omitempty"`
+	DecodeTokensPerSecAverage  float64       `json:"decode_tokens_per_sec_average,omitempty"`
+	EffectiveTurnTokensPerSec  float64       `json:"effective_turn_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes            uint64        `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes          uint64        `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes           uint64        `json:"cache_memory_bytes,omitempty"`
+	ProcessVirtualMemoryBytes  uint64        `json:"process_virtual_memory_bytes,omitempty"`
+	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
+	ProcessPeakResidentBytes   uint64        `json:"process_peak_resident_bytes,omitempty"`
+}
+
+type stateRampProfileEnergy struct {
+	Method                string  `json:"method"`
+	PowerWatts            float64 `json:"power_watts"`
+	TotalJoules           float64 `json:"total_joules,omitempty"`
+	JoulesPerVisibleToken float64 `json:"joules_per_visible_token,omitempty"`
+	AppendJoules          float64 `json:"append_joules,omitempty"`
 }
 
 type driverProfileModel interface {
@@ -1895,6 +1984,643 @@ func printDriverProfileSummary(stdout io.Writer, report *driverProfileReport) {
 		report.Summary.CacheMemoryBytes/1024/1024,
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024))
+}
+
+func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet(cliCommandName("state-ramp-profile"), flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "print JSON state ramp profile")
+	reportFile := fs.String("report-file", "", "write JSON state ramp profile to a file")
+	prompt := fs.String("prompt", "Answer in one short sentence: why does retained model state matter?", "source text to repeat into the warm and appended state")
+	promptFile := fs.String("prompt-file", "", "read source text from a file")
+	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
+	appendFile := fs.String("append-file", "", "read appended turn material from a file")
+	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
+	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
+	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
+	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
+	turns := fs.Int("turns", 0, "maximum ramp turns; 0 runs until target tokens are reached")
+	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
+	contextLen := fs.Int("context", 0, "override context length")
+	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
+	cacheMode := fs.String("cache-mode", "", "override KV cache mode: fp16, q8, k-q8-v-q4, or paged")
+	device := fs.String("device", "", "execution device: gpu or cpu")
+	estimatePowerWatts := fs.Float64("estimate-power-watts", 0, "record an estimated average active power draw in watts")
+	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
+	maxActiveMemoryBytes := fs.Uint64("max-active-memory-bytes", 0, "abort a turn if MLX active memory exceeds this many bytes; 0 derives from the resolved memory limit")
+	maxProcessVirtualMemoryBytes := fs.Uint64("max-process-virtual-memory-bytes", 0, "abort a turn if process virtual memory exceeds this many bytes; 0 records process virtual memory without a hard cap")
+	maxProcessResidentMemoryBytes := fs.Uint64("max-process-resident-memory-bytes", 0, "abort a turn if process resident memory exceeds this many bytes; 0 derives from the resolved memory limit")
+	repeatedTokenLoopLimit := fs.Int("repeated-token-loop-limit", driverProfileDefaultRepeatedTokenLoopLimit, "abort when this many consecutive sampled tokens have the same token id")
+	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
+	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one output")
+	fs.Usage = func() {
+		core.WriteString(stderr, core.Sprintf("Usage: %s state-ramp-profile [flags] [model-path]\n", cliName()))
+		fs.VisitAll(func(f *flag.Flag) {
+			if f.DefValue == "" {
+				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
+				return
+			}
+			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
+		})
+	}
+	if err := fs.Parse(args); err != nil {
+		if core.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	visitedFlags := driverProfileVisitedFlags(fs)
+	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
+		for _, restore := range applyGemma4FastLaneDefaults(
+			visitedFlags,
+			contextLen,
+			cacheMode,
+			prefillChunkSize,
+			nil,
+			mlx.ProductionLaneHyperLongContextLength,
+		) {
+			defer restore()
+		}
+	}
+	if fs.NArg() != 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: expected one model path\n", cliName()))
+		fs.Usage()
+		return 2
+	}
+	if core.Trim(*promptFile) != "" {
+		read := core.ReadFile(*promptFile)
+		if !read.OK {
+			core.Print(stderr, "%s state-ramp-profile: prompt file: %v", cliName(), read.Value)
+			return 1
+		}
+		*prompt = string(read.Value.([]byte))
+	}
+	if core.Trim(*appendFile) != "" {
+		read := core.ReadFile(*appendFile)
+		if !read.OK {
+			core.Print(stderr, "%s state-ramp-profile: append file: %v", cliName(), read.Value)
+			return 1
+		}
+		*appendPrompt = string(read.Value.([]byte))
+	}
+	if *startTokens < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: start tokens must be >= 1\n", cliName()))
+		return 2
+	}
+	if *targetTokens <= *startTokens {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: target tokens must be greater than start tokens\n", cliName()))
+		return 2
+	}
+	if *appendTokens < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: append tokens must be >= 1\n", cliName()))
+		return 2
+	}
+	if *turnMaxTokens < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turn max tokens must be >= 1\n", cliName()))
+		return 2
+	}
+	if *turns < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turns must be >= 0\n", cliName()))
+		return 2
+	}
+	if *prefillChunkSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: prefill chunk size must be >= 0\n", cliName()))
+		return 2
+	}
+	if *estimatePowerWatts < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: estimated power watts must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatedTokenLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated token loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+	if *repeatedLineLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated line loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+	if *repeatedSentenceLoopLimit < 1 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated sentence loop limit must be >= 1\n", cliName()))
+		return 2
+	}
+
+	loadOptions := []mlx.LoadOption{}
+	var loadSettings *tuneProfileLoadSettings
+	if *contextLen > 0 {
+		loadOptions = append(loadOptions, mlx.WithContextLength(*contextLen))
+		loadSettings = &tuneProfileLoadSettings{ContextLength: *contextLen}
+	}
+	if *prefillChunkSize > 0 {
+		loadOptions = append(loadOptions, mlx.WithPrefillChunkSize(*prefillChunkSize))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.PrefillChunkSize = *prefillChunkSize
+	}
+	if core.Trim(*cacheMode) != "" {
+		mode := memory.KVCacheMode(core.Trim(*cacheMode))
+		switch mode {
+		case memory.KVCacheModeFP16, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4, memory.KVCacheModePaged:
+		default:
+			core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: unsupported cache mode %q\n", cliName(), string(mode)))
+			return 2
+		}
+		loadOptions = append(loadOptions, mlx.WithKVCacheMode(mode))
+		if loadSettings == nil {
+			loadSettings = &tuneProfileLoadSettings{}
+		}
+		loadSettings.CacheMode = string(mode)
+	}
+	if *device != "" {
+		loadOptions = append(loadOptions, mlx.WithDevice(*device))
+	}
+
+	report, err := runStateRampProfileGuarded(ctx, fs.Arg(0), loadOptions, stateRampProfileOptions{
+		Prompt:        *prompt,
+		AppendPrompt:  *appendPrompt,
+		StartTokens:   *startTokens,
+		TargetTokens:  *targetTokens,
+		AppendTokens:  *appendTokens,
+		TurnMaxTokens: *turnMaxTokens,
+		Turns:         *turns,
+		IncludeOutput: *includeOutput,
+		SafetyLimits: driverProfileSafetyLimits{
+			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
+			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
+			MaxProcessResidentMemoryBytes: *maxProcessResidentMemoryBytes,
+			RepeatedTokenLoopLimit:        *repeatedTokenLoopLimit,
+			RepeatedLineLoopLimit:         *repeatedLineLoopLimit,
+			RepeatedSentenceLoopLimit:     *repeatedSentenceLoopLimit,
+		},
+	})
+	if report != nil && loadSettings != nil {
+		report.Load = mergeDriverProfileLoadSettings(loadSettings, report.Load)
+	}
+	if report != nil && *estimatePowerWatts > 0 {
+		report.EstimatedEnergy = estimateStateRampProfileEnergy(report, *estimatePowerWatts)
+	}
+	reportPath := core.Trim(*reportFile)
+	if *jsonOut || reportPath != "" {
+		if report == nil {
+			report = &stateRampProfileReport{
+				Version:           1,
+				ModelPath:         fs.Arg(0),
+				PromptBytes:       len(*prompt),
+				AppendPromptBytes: len(*appendPrompt),
+				StartTokens:       *startTokens,
+				TargetTokens:      *targetTokens,
+				AppendTokens:      *appendTokens,
+				TurnMaxTokens:     *turnMaxTokens,
+				RequestedTurns:    *turns,
+				IncludeOutput:     *includeOutput,
+			}
+		}
+		if err != nil && report.Error == "" {
+			report.Error = err.Error()
+		}
+		data := core.JSONMarshalIndent(report, "", "  ")
+		if !data.OK {
+			core.Print(stderr, "%s state-ramp-profile: marshal report failed", cliName())
+			return 1
+		}
+		if reportPath != "" {
+			if writeErr := writeJSONReportFile(reportPath, data.Value.([]byte)); writeErr != nil {
+				core.Print(stderr, "%s state-ramp-profile: write report file: %v", cliName(), writeErr)
+				return 1
+			}
+		}
+		if *jsonOut {
+			core.WriteString(stdout, string(data.Value.([]byte)))
+			core.WriteString(stdout, "\n")
+		}
+		if err != nil {
+			return 1
+		}
+		if *jsonOut {
+			return 0
+		}
+	}
+	if err != nil {
+		core.Print(stderr, "%s state-ramp-profile: %v", cliName(), err)
+		return 1
+	}
+	printStateRampProfileSummary(stdout, report)
+	return 0
+}
+
+var runStateRampProfile = defaultRunStateRampProfile
+
+func runStateRampProfileGuarded(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateRampProfileOptions) (report *stateRampProfileReport, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = core.NewError(core.Sprintf("state-ramp-profile panic: %v", recovered))
+		}
+	}()
+	return runStateRampProfile(ctx, modelPath, loadOptions, opts)
+}
+
+func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateRampProfileOptions) (*stateRampProfileReport, error) {
+	opts = normalizeStateRampProfileOptions(opts)
+	report := &stateRampProfileReport{
+		Version:           1,
+		ModelPath:         modelPath,
+		PromptBytes:       len(opts.Prompt),
+		AppendPromptBytes: len(opts.AppendPrompt),
+		StartTokens:       opts.StartTokens,
+		TargetTokens:      opts.TargetTokens,
+		AppendTokens:      opts.AppendTokens,
+		TurnMaxTokens:     opts.TurnMaxTokens,
+		RequestedTurns:    opts.Turns,
+		IncludeOutput:     opts.IncludeOutput,
+		SafetyLimits:      opts.SafetyLimits,
+		RuntimeGates:      driverProfileRuntimeGates(),
+	}
+	loadStart := time.Now()
+	model, err := loadBenchModel(modelPath, loadOptions...)
+	report.LoadDuration = bench.NonZeroDuration(time.Since(loadStart))
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if model == nil {
+		err := core.NewError("mlx: state ramp profile loaded nil model")
+		report.Error = err.Error()
+		return report, err
+	}
+	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(model.Info()))
+	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
+	report.SafetyLimits = opts.SafetyLimits
+	defer model.Close()
+	if err := driverProfileMetricsSafetyError("load", model.Metrics(), opts.SafetyLimits); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	tok := model.Tokenizer()
+	if tok == nil {
+		err := core.NewError("state-ramp-profile: model tokenizer is nil")
+		report.Error = err.Error()
+		return report, err
+	}
+	sourceTokens, err := tok.Encode(opts.Prompt)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if len(sourceTokens) == 0 {
+		err := core.NewError("state-ramp-profile: source prompt produced no tokens")
+		report.Error = err.Error()
+		return report, err
+	}
+	report.SourceTokens = len(sourceTokens)
+	appendText := opts.AppendPrompt
+	if appendText == "" {
+		appendText = opts.Prompt
+		report.AppendPromptBytes = len(appendText)
+	}
+	appendSourceTokens, err := tok.Encode(appendText)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if len(appendSourceTokens) == 0 {
+		err := core.NewError("state-ramp-profile: append prompt produced no tokens")
+		report.Error = err.Error()
+		return report, err
+	}
+	report.AppendSourceTokens = len(appendSourceTokens)
+	session, err := model.NewSession()
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	defer session.Close()
+
+	seedTokens := repeatedStateRampTokens(sourceTokens, 0, opts.StartTokens)
+	prefillStart := time.Now()
+	err = session.PrefillTokens(ctx, seedTokens)
+	report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
+	report.InitialPrefillTokens = len(seedTokens)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+	if err := driverProfileMetricsSafetyError("initial prefill", model.Metrics(), opts.SafetyLimits); err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
+
+	currentTokens := len(seedTokens)
+	sourceOffset := 0
+	var firstErr error
+	for turnIndex := 1; shouldRunStateRampTurn(turnIndex, currentTokens, opts); turnIndex++ {
+		appendCount := opts.AppendTokens
+		if remaining := opts.TargetTokens - currentTokens; remaining < appendCount {
+			appendCount = remaining
+		}
+		if appendCount < 0 {
+			appendCount = 0
+		}
+		turn := stateRampProfileGenerateTurn(ctx, model, session, appendSourceTokens, sourceOffset, appendCount, currentTokens, turnIndex, opts)
+		sourceOffset += turn.AppendedTokens
+		if turn.TokensAfterGenerate > 0 {
+			currentTokens = turn.TokensAfterGenerate
+		} else {
+			currentTokens += turn.AppendedTokens
+		}
+		if turn.Error != "" && firstErr == nil {
+			firstErr = core.NewError(turn.Error)
+		}
+		report.Turns = append(report.Turns, turn)
+		mlx.ClearCache()
+		if turn.Error != "" {
+			break
+		}
+	}
+	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns)
+	if firstErr != nil {
+		report.Error = firstErr.Error()
+		return report, firstErr
+	}
+	return report, nil
+}
+
+func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampProfileOptions {
+	opts.Prompt = core.Trim(opts.Prompt)
+	opts.AppendPrompt = core.Trim(opts.AppendPrompt)
+	if opts.Prompt == "" {
+		opts.Prompt = "Answer in one short sentence: why does retained model state matter?"
+	}
+	if opts.StartTokens <= 0 {
+		opts.StartTokens = 30000
+	}
+	if opts.TargetTokens <= 0 {
+		opts.TargetTokens = 100000
+	}
+	if opts.AppendTokens <= 0 {
+		opts.AppendTokens = 8192
+	}
+	if opts.TurnMaxTokens <= 0 {
+		opts.TurnMaxTokens = 1024
+	}
+	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
+	}
+	if opts.SafetyLimits.RepeatedLineLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedLineLoopLimit = profileDefaultRepeatedLineLoopLimit
+	}
+	if opts.SafetyLimits.RepeatedSentenceLoopLimit <= 0 {
+		opts.SafetyLimits.RepeatedSentenceLoopLimit = profileDefaultRepeatedSentenceLoopLimit
+	}
+	return opts
+}
+
+func shouldRunStateRampTurn(index, currentTokens int, opts stateRampProfileOptions) bool {
+	if opts.Turns > 0 {
+		return index <= opts.Turns
+	}
+	return currentTokens < opts.TargetTokens
+}
+
+func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
+	if len(source) == 0 || count <= 0 {
+		return nil
+	}
+	out := make([]int32, count)
+	for i := range out {
+		out[i] = source[(offset+i)%len(source)]
+	}
+	return out
+}
+
+func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, sourceTokens []int32, sourceOffset, appendCount, currentTokens, index int, opts stateRampProfileOptions) stateRampProfileTurn {
+	turn := stateRampProfileTurn{
+		Index:              index,
+		TokensBeforeAppend: currentTokens,
+	}
+	if appendCount > 0 {
+		tokens := repeatedStateRampTokens(sourceTokens, sourceOffset, appendCount)
+		appendStart := time.Now()
+		err := session.AppendTokens(ctx, tokens)
+		turn.AppendDuration = bench.NonZeroDuration(time.Since(appendStart))
+		turn.AppendedTokens = len(tokens)
+		if err != nil {
+			turn.Error = err.Error()
+			return turn
+		}
+	}
+	turn.TokensAfterAppend = currentTokens + turn.AppendedTokens
+	start := time.Now()
+	firstToken := time.Duration(0)
+	builder := core.NewBuilder()
+	generateOptions := []mlx.GenerateOption{
+		mlx.WithMaxTokens(opts.TurnMaxTokens),
+		mlx.WithTemperature(0),
+	}
+	generationCtx := ctx
+	if generationCtx == nil {
+		generationCtx = context.Background()
+	}
+	generationCtx, cancelGeneration := context.WithCancel(generationCtx)
+	defer cancelGeneration()
+	var probeErr error
+	sampledTokenIDs := make([]int32, 0, 32)
+	sampledTokenTexts := make([]string, 0, 32)
+	repeatedTokenID := int32(0)
+	repeatedTokenCount := 0
+	var lineErr error
+	currentLine := ""
+	lastLine := ""
+	repeatedLineCount := 0
+	for token := range session.GenerateStream(generationCtx, generateOptions...) {
+		if firstToken == 0 {
+			firstToken = bench.NonZeroDuration(time.Since(start))
+		}
+		turn.VisibleTokens++
+		if len(sampledTokenIDs) < 32 {
+			sampledTokenIDs = append(sampledTokenIDs, token.ID)
+			sampledTokenTexts = append(sampledTokenTexts, token.Text)
+		}
+		if opts.IncludeOutput {
+			builder.WriteString(token.Text)
+		}
+		if probeErr == nil {
+			if err := driverProfileMetricsSafetyError(core.Sprintf("state-ramp-profile turn %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
+				probeErr = err
+				cancelGeneration()
+				break
+			}
+			if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
+				repeatedTokenCount = 0
+			} else if repeatedTokenCount == 0 || token.ID != repeatedTokenID {
+				repeatedTokenID = token.ID
+				repeatedTokenCount = 1
+			} else {
+				repeatedTokenCount++
+				if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
+					probeErr = core.NewError(core.Sprintf("state-ramp-profile: turn %d sampled token %d for %d consecutive tokens", index, token.ID, repeatedTokenCount))
+					cancelGeneration()
+					break
+				}
+			}
+		}
+		if lineErr == nil {
+			if line, count, ok := profileObserveRepeatedLineFragment(token.Text, &currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
+				lineErr = core.NewError(core.Sprintf("state-ramp-profile: turn %d repeated visible line %q for %d consecutive lines", index, line, count))
+				cancelGeneration()
+				break
+			}
+		}
+	}
+	if lineErr == nil {
+		if line, count, ok := profileFlushRepeatedLine(&currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
+			lineErr = core.NewError(core.Sprintf("state-ramp-profile: turn %d repeated visible line %q for %d consecutive lines", index, line, count))
+		}
+	}
+	turn.Duration = bench.NonZeroDuration(time.Since(start))
+	turn.FirstTokenDuration = firstToken
+	turn.StreamDuration = turn.Duration
+	if firstToken > 0 && turn.Duration > firstToken {
+		turn.StreamDuration = turn.Duration - firstToken
+	}
+	turn.SampledTokenIDs = sampledTokenIDs
+	turn.SampledTokenTexts = sampledTokenTexts
+	turn.Metrics = model.Metrics()
+	turn.DriverOverheadDuration = driverRunOverhead(turn.Duration, turn.Metrics)
+	turn.TokensAfterGenerate = turn.Metrics.PromptTokens + turn.Metrics.GeneratedTokens
+	if opts.IncludeOutput {
+		turn.Output = builder.String()
+	}
+	if probeErr != nil {
+		turn.Error = probeErr.Error()
+		return turn
+	}
+	if lineErr != nil {
+		turn.Error = lineErr.Error()
+		return turn
+	}
+	if err := session.Err(); err != nil {
+		turn.Error = err.Error()
+		return turn
+	}
+	if err := driverProfileMetricsSafetyError(core.Sprintf("state-ramp-profile turn %d", index), turn.Metrics, opts.SafetyLimits); err != nil {
+		turn.Error = err.Error()
+		return turn
+	}
+	if err := driverProfileRunSafetyError(index, driverProfileRun{
+		Index:             index,
+		VisibleTokens:     turn.VisibleTokens,
+		SampledTokenIDs:   turn.SampledTokenIDs,
+		SampledTokenTexts: turn.SampledTokenTexts,
+		Output:            turn.Output,
+		Metrics:           turn.Metrics,
+	}, opts.SafetyLimits); err != nil {
+		turn.Error = err.Error()
+		return turn
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			turn.Error = err.Error()
+		}
+	}
+	return turn
+}
+
+func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn) stateRampProfileSummary {
+	summary := stateRampProfileSummary{
+		InitialPrefillTokens: initialTokens,
+		FinalStateTokens:     initialTokens,
+		TotalDuration:        initialPrefill,
+	}
+	if initialPrefill > 0 && initialTokens > 0 {
+		summary.InitialPrefillTokensPerSec = float64(initialTokens) / initialPrefill.Seconds()
+	}
+	var decodeDuration time.Duration
+	var turnWallDuration time.Duration
+	for _, turn := range turns {
+		if turn.Error != "" {
+			summary.FailedTurns++
+		} else {
+			summary.SuccessfulTurns++
+		}
+		summary.AppendedTokens += turn.AppendedTokens
+		summary.GeneratedTokens += turn.Metrics.GeneratedTokens
+		summary.VisibleTokens += turn.VisibleTokens
+		summary.TotalDuration += turn.AppendDuration + turn.Duration
+		summary.AppendDuration += turn.AppendDuration
+		turnWallDuration += turn.AppendDuration + turn.Duration
+		decodeDuration += turn.Metrics.DecodeDuration
+		if turn.TokensAfterGenerate > summary.FinalStateTokens {
+			summary.FinalStateTokens = turn.TokensAfterGenerate
+		} else if turn.TokensAfterAppend > summary.FinalStateTokens {
+			summary.FinalStateTokens = turn.TokensAfterAppend
+		}
+		if turn.Metrics.PeakMemoryBytes > summary.PeakMemoryBytes {
+			summary.PeakMemoryBytes = turn.Metrics.PeakMemoryBytes
+		}
+		if turn.Metrics.ActiveMemoryBytes > summary.ActiveMemoryBytes {
+			summary.ActiveMemoryBytes = turn.Metrics.ActiveMemoryBytes
+		}
+		if turn.Metrics.CacheMemoryBytes > summary.CacheMemoryBytes {
+			summary.CacheMemoryBytes = turn.Metrics.CacheMemoryBytes
+		}
+		if turn.Metrics.ProcessVirtualMemoryBytes > summary.ProcessVirtualMemoryBytes {
+			summary.ProcessVirtualMemoryBytes = turn.Metrics.ProcessVirtualMemoryBytes
+		}
+		if turn.Metrics.ProcessResidentMemoryBytes > summary.ProcessResidentMemoryBytes {
+			summary.ProcessResidentMemoryBytes = turn.Metrics.ProcessResidentMemoryBytes
+		}
+		if turn.Metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
+			summary.ProcessPeakResidentBytes = turn.Metrics.ProcessPeakResidentBytes
+		}
+	}
+	if len(turns) > 0 {
+		summary.AppendAvgDuration = summary.AppendDuration / time.Duration(len(turns))
+	}
+	if summary.AppendDuration > 0 && summary.AppendedTokens > 0 {
+		summary.AppendTokensPerSecAverage = float64(summary.AppendedTokens) / summary.AppendDuration.Seconds()
+	}
+	if decodeDuration > 0 && summary.GeneratedTokens > 0 {
+		summary.DecodeTokensPerSecAverage = float64(summary.GeneratedTokens) / decodeDuration.Seconds()
+	}
+	if turnWallDuration > 0 && summary.GeneratedTokens > 0 {
+		summary.EffectiveTurnTokensPerSec = float64(summary.GeneratedTokens) / turnWallDuration.Seconds()
+	}
+	return summary
+}
+
+func estimateStateRampProfileEnergy(report *stateRampProfileReport, powerWatts float64) *stateRampProfileEnergy {
+	energy := &stateRampProfileEnergy{
+		Method:     "estimated_wall_clock_seconds_times_average_active_watts",
+		PowerWatts: powerWatts,
+	}
+	if report == nil || powerWatts <= 0 {
+		return energy
+	}
+	energy.TotalJoules = durationJoules(report.Summary.TotalDuration, powerWatts)
+	energy.AppendJoules = durationJoules(report.Summary.AppendDuration, powerWatts)
+	if report.Summary.VisibleTokens > 0 {
+		energy.JoulesPerVisibleToken = energy.TotalJoules / float64(report.Summary.VisibleTokens)
+	}
+	return energy
+}
+
+func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileReport) {
+	if report == nil {
+		return
+	}
+	core.WriteString(stdout, core.Sprintf("state ramp profile: %s\n", report.ModelPath))
+	core.WriteString(stdout, core.Sprintf("  seed: %d tokens in %s, final state: %d tokens\n", report.InitialPrefillTokens, report.InitialPrefillDuration, report.Summary.FinalStateTokens))
+	core.WriteString(stdout, core.Sprintf("  turns: %d ok / %d failed, appended: %d tokens at %.1f tok/s\n", report.Summary.SuccessfulTurns, report.Summary.FailedTurns, report.Summary.AppendedTokens, report.Summary.AppendTokensPerSecAverage))
+	core.WriteString(stdout, core.Sprintf("  generated: %d tokens, decode: %.1f tok/s, effective turn: %.1f tok/s, total: %s\n", report.Summary.GeneratedTokens, report.Summary.DecodeTokensPerSecAverage, report.Summary.EffectiveTurnTokensPerSec, report.Summary.TotalDuration))
+	core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, cache memory: %d MB, process virtual: %d MB, process resident: %d MB\n",
+		report.Summary.PeakMemoryBytes/1024/1024,
+		report.Summary.CacheMemoryBytes/1024/1024,
+		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
+		report.Summary.ProcessResidentMemoryBytes/1024/1024,
+	))
+	if report.EstimatedEnergy != nil {
+		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
+	}
 }
 
 func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -5035,6 +5761,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  replace-plan  plan state handling for a profile/model reload\n")
 	core.WriteString(w, "  slice   materialise a local model slice for split/reload tests\n")
 	core.WriteString(w, "  slice-smoke  materialise, reload, and benchmark a model slice\n")
+	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
 	core.WriteString(w, "  tune-plan  plan local tuning candidates for a model\n")
 	core.WriteString(w, "  tune-profile  read a saved tuning profile and print reusable load settings\n")
 	core.WriteString(w, "  tune-run  run and stream local tuning candidate measurements\n")

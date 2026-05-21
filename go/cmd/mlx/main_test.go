@@ -619,6 +619,113 @@ func TestRunCommand_DriverProfileEstimatedPowerWatts_Bad(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	var gotCfg stateRampProfileOptions
+	var gotLoad mlx.LoadConfig
+	runStateRampProfile = func(_ context.Context, modelPath string, opts []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		gotCfg = cfg
+		gotLoad = mlx.DefaultLoadConfig()
+		for _, opt := range opts {
+			opt(&gotLoad)
+		}
+		turns := []stateRampProfileTurn{
+			{
+				Index:               1,
+				TokensBeforeAppend:  30000,
+				AppendedTokens:      8192,
+				TokensAfterAppend:   38192,
+				TokensAfterGenerate: 39216,
+				AppendDuration:      2 * time.Second,
+				Duration:            10 * time.Second,
+				VisibleTokens:       1024,
+				Metrics: mlx.Metrics{
+					PromptTokens:        38192,
+					GeneratedTokens:     1024,
+					PrefillDuration:     32 * time.Second,
+					DecodeDuration:      10 * time.Second,
+					TotalDuration:       42 * time.Second,
+					PrefillTokensPerSec: 1193.5,
+					DecodeTokensPerSec:  102.4,
+					PeakMemoryBytes:     4 << 30,
+					ActiveMemoryBytes:   3 << 30,
+					CacheMemoryBytes:    6 << 30,
+				},
+			},
+		}
+		return &stateRampProfileReport{
+			Version:                1,
+			ModelPath:              modelPath,
+			PromptBytes:            len(cfg.Prompt),
+			AppendPromptBytes:      len(cfg.AppendPrompt),
+			SourceTokens:           2204,
+			AppendSourceTokens:     512,
+			StartTokens:            cfg.StartTokens,
+			TargetTokens:           cfg.TargetTokens,
+			AppendTokens:           cfg.AppendTokens,
+			TurnMaxTokens:          cfg.TurnMaxTokens,
+			RequestedTurns:         cfg.Turns,
+			InitialPrefillDuration: 30 * time.Second,
+			InitialPrefillTokens:   30000,
+			Turns:                  turns,
+			Summary:                summariseStateRampProfileTurns(30*time.Second, 30000, turns),
+		}, nil
+	}
+	appendPath := core.PathJoin(t.TempDir(), "append.txt")
+	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.AppendPrompt != "Review the changed files and explain the highest-risk performance regression." {
+		t.Fatalf("append prompt = %q, want append-file contents", gotCfg.AppendPrompt)
+	}
+	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
+		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
+	}
+	if gotLoad.ContextLength != mlx.ProductionLaneHyperLongContextLength || gotLoad.CacheMode != memory.KVCacheModePaged || gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
+		t.Fatalf("load = %+v, want hyper-long fast lane defaults", gotLoad)
+	}
+	for _, want := range []string{
+		`"model_path": "/models/demo"`,
+		`"start_tokens": 30000`,
+		`"target_tokens": 100000`,
+		`"append_tokens_per_sec_average": 4096`,
+		`"decode_tokens_per_sec_average": 102.4`,
+		`"effective_turn_tokens_per_sec_average":`,
+		`"final_state_tokens": 39216`,
+		`"total_joules": 4200`,
+		`"append_joules": 200`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_StateRampProfileValidation_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for invalid target")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-start-tokens", "30000", "-target-tokens", "30000", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "target tokens must be greater than start tokens") {
+		t.Fatalf("stderr = %q, want target validation", stderr.String())
+	}
+}
+
 func TestRunCommand_DriverProfileTraceTokenPhases_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })

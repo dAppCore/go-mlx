@@ -25,6 +25,10 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
   runner that the delta is not user-visible, but the primary production metric
   is 10+ turn wall-clock time with retained state, restore cost, prefill
   avoided, estimated energy delta, and effective throughput clearly reported.
+- Treat opencode-sized sessions as the primary interactive target: roughly
+  `30k`-`40k` tokens on first wake, followed by retained append/generate turns.
+  The `100k` lane remains a stress ceiling and degradation probe, not the normal
+  pass/fail shape for day-to-day agent work.
 
 ## Current Status: Production Path, Not Done
 
@@ -32,20 +36,23 @@ This goal is not complete. Treat the evidence table below as a research ledger:
 it records useful wins, rejected probes, and historical results, but no row is a
 production sign-off unless it also satisfies the live gates in this section.
 
-The current production candidate is the q4-first `lthn-mlx driver-profile`
-fast Gemma 4 lane with retained state, paged/fixed-cache memory management, and
-machine-readable wall-clock, decode, prefill, restore, memory, and estimated
-energy reporting. The route to production is to make that candidate hold up
-under realistic repeated agentic workloads, then lock it against external
-runner anchors and long-context degradation.
+The current production candidate is the q4-first `lthn-mlx` fast Gemma 4 lane
+with retained state, paged/fixed-cache memory management, and machine-readable
+wall-clock, decode, prefill, restore, memory, and estimated energy reporting.
+The primary acceptance shape is now an opencode-sized `30k`-`40k` first context
+with real append turns and long output budgets. The `100k` rows remain important
+because they expose hyper-long attention, cache, and memory scaling, but they
+are calibration/stress evidence rather than the default product workload.
 
-The latest same-shape `mlx_lm` anchor still beats the current go-mlx 100k
-retained workflow after the hyper-long fp16 paged-K/V improvement, so
-production remains blocked on closing that measured long-context decode gap.
-The cached llama.cpp server row is now behind go-mlx by wall time and estimated
-energy, but still slightly ahead on raw decode. Retained state is still the
-target architecture, but it is not enough while Python MLX can cache the same
-prefix and generate materially faster.
+The latest same-shape `mlx_lm` anchor still beats the current go-mlx `100k`
+retained workflow after the hyper-long fp16 paged-K/V improvement, so the
+hyper-long lane remains blocked on closing that measured decode gap. For
+production, the next required verdict is narrower and more realistic: prove the
+`30k`-`40k` retained append workflow against configured `mlx_lm`, llama.cpp, and
+vLLM anchors. The cached llama.cpp server row is now behind go-mlx by wall time
+and estimated energy on the `100k` stress lane, but still slightly ahead on raw
+decode. Retained state is still the target architecture, but it is not enough if
+a configured runner wins the same agentic workflow.
 
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
@@ -64,9 +71,25 @@ quant when no native MLX-format equivalent exists.
 
 Production remains blocked until these gates are all satisfied:
 
+- [ ] A current opencode-sized E2B q4 retained workflow completes with a
+      `30k`-`40k` first context, 10+ append/generate turns, realistic long
+      output budgets, bounded memory, captured output, and same-shape runner
+      anchors. This is the primary interactive production gate.
+- [ ] A warm build-up stress run starts from the accepted `30k`-`40k` state,
+      appends/generates in retained state until the live context reaches about
+      `100k`, and reports cumulative append cost, decode, wall time, memory,
+      estimated energy, and delta versus one-shot `100k` prefill and replaying
+      the whole prefix each turn.
+      Use real opencode-like append material for acceptance runs; synthetic
+      repeated token blocks are diagnostic only because they hide entropy and
+      cache-access patterns. Generated assistant tokens count into the live
+      state for turn `N+1`. Report effective turn throughput as generated
+      tokens divided by append-plus-decode wall time, separately from raw decode
+      tok/s.
 - [x] A current guarded 100k-token E2B q4 retained-state run completes on the
       target machine with 10+ turns, realistic generation length, bounded memory,
-      and recorded restore-versus-replay savings.
+      and recorded restore-versus-replay savings. This is now the hyper-long
+      stress/degradation gate, not the normal opencode workload.
 - [x] A guarded 10-chapter/full-book run completes with captured markdown,
       enough output budget for real continuation, no late-turn degeneration, and
       no tiny-token shortcut masquerading as workload evidence.
@@ -81,9 +104,13 @@ Production remains blocked until these gates are all satisfied:
       runner anchor rows for vLLM and llama.cpp where each runner can load a
       comparable format. Loader failures must include command, version, and
       error text rather than being silently skipped.
-- [ ] Long-context degradation is explained and improved or bounded. The 29k and
-      100k lanes must not collapse into a path that only looks good on README-
-      sized or `max_tokens=128` smoke prompts.
+- [ ] Long-context degradation is explained and improved or bounded. The
+      `30k`-`40k` interactive lane and the `100k` stress lane must not collapse
+      into paths that only look good on README-sized or `max_tokens=128` smoke
+      prompts. If the warm build-up curve bends upward around `60k`-`80k`,
+      inspect MLX graph lifetime/eval boundaries, dynamic K/V concatenation or
+      other `O(N^2)` movement, and local-layer leakage beyond the intended
+      sliding window.
 - [x] `lthn/lemer-mlx` or the chosen default small-model lane has an accepted
       prompt/template path for multi-turn story/workflow continuation, not just a
       native-load smoke pass.
@@ -110,11 +137,12 @@ real output budgets, with runner anchors and energy assumptions exposed.
 
 1. **Production runner win:** on the M3 Ultra target machine, go-mlx must beat
    configured Python/Metal alternatives such as `mlx_lm` and vLLM on a realistic
-   repeated agentic workflow, or document why an alternative could not run the
-   same workload. The required report must include model, quantisation, prompt
-   length, context, token budget, load policy, cache/restore policy, raw decode,
-   wall-clock time, setup time, estimated power/energy assumptions, and
-   effective throughput.
+   opencode-sized repeated agentic workflow, or document why an alternative
+   could not run the same workload. The required report must include model,
+   quantisation, prompt length, context, token budget, load policy,
+   cache/restore policy, raw decode, wall-clock time, setup time, estimated
+   power/energy assumptions, and effective throughput. Use `100k` as a stress
+   and degradation lane after the `30k`-`40k` workflow is healthy.
 2. **External calibration, not permanent chasing:** use llama.cpp, `mlx_lm`,
    and vLLM to calibrate the lane. A small raw decode deficit, such as roughly
    5%, does not block the goal if go-mlx wins the repeated workflow wall-clock
