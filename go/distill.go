@@ -510,10 +510,13 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			if err := logSoftmaxTemperatureInto(student[i][j], cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
+			// negProb hoists the shared -math.Exp(teacherLogProb) so the
+			// two accumulator lines don't recompute -prob. Both terms are
+			// fma-friendly (one mul + one add into a running sum).
 			for k, teacherLogProb := range teacherScratch {
-				prob := math.Exp(teacherLogProb)
-				softCE += -prob * studentScratch[k]
-				entropy += -prob * teacherLogProb
+				negProb := -math.Exp(teacherLogProb)
+				softCE += negProb * studentScratch[k]
+				entropy += negProb * teacherLogProb
 			}
 			tokens++
 		}
