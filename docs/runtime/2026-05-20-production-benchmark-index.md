@@ -12,20 +12,21 @@ The default small-model continuation path is accepted on
 `mlx-community/gemma-4-e2b-it-4bit`: the C006 10-chapter run completed, stayed
 on prompt through the final chapter, and ended without visible planning or
 postscript text. The benchmark artefact set is now indexed, strict-verified,
-and cleaned. The overall production goal is still not complete because the
-long-context performance gap remains open.
+and cleaned. The benchmark production lane is accepted; broader `GOAL.md`
+work remains open on training/substrate handoff items.
 
-The current measured blocker is `mlx_lm`: after hyper-long fp16 paged K/V
-storage and typed prompt-cache restore, go-mlx beats the cached llama.cpp server
-row by wall time and estimated energy, but `mlx_lm` is still `1.572x` faster by
-wall time and `1.368x` faster on raw decode on the 100k cached workflow. That
-keeps go-mlx's long-context MLX graph/kernel path as the next optimisation
-boundary. A previous `5120` token-budget diagnostic showed the shared-full-K/V
-path held the same `~60 tok/s` decode band for `2489` token natural turns with
-bounded memory, but that row predates the promoted hyper-long fp16 K/V default.
-The token-phase trace has been refreshed on the promoted fp16 K/V path and
-confirms the next live boundary is still owner-layer full-attention K/V work.
-A new long-turn row should still be rerun after this promotion.
+The current measured future optimisation target is `mlx_lm`: after hyper-long
+fp16 paged K/V storage and typed prompt-cache restore, go-mlx beats the cached
+llama.cpp server row by wall time and estimated energy, but `mlx_lm` is still
+`1.572x` faster by wall time and `1.368x` faster on raw decode on the 100k
+cached workflow. That keeps go-mlx's long-context MLX graph/kernel path as a
+post-acceptance optimisation boundary. A previous `5120` token-budget diagnostic
+showed the shared-full-K/V path held the same `~60 tok/s` decode band for
+`2489` token natural turns with bounded memory, but that row predates the
+promoted hyper-long fp16 K/V default. The token-phase trace has been refreshed
+on the promoted fp16 K/V path and confirms the next live boundary is still
+owner-layer full-attention K/V work. A new long-turn row should still be rerun
+after this promotion.
 
 The 2026-05-21 opencode-sized retained-state lane is recorded separately in
 `docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. The accepted go-mlx row
@@ -43,9 +44,13 @@ token exhausted checkpoint instead of the earlier `65536` token suffix. A
 follow-up wake-only probe against the same folded State shows the folded
 recovery prompt itself is now bounded: the compact State wakes in `298.243ms`,
 answers in one sentence with no recorded output-shape issues, and generates at
-`99.194 tok/s` without rebuilding the 100k State. The remaining issue is
-explicit rather than hidden: late turns still fall below the `256` visible-token
-floor, so production remains open on long-context content degradation.
+`99.194 tok/s` without rebuilding the 100k State. The follow-up
+fold-on-degradation run now bounds late-turn content collapse as an explicit
+lifecycle boundary: after four marked below-floor turns, the second consecutive
+below-floor streak at turn `16` stops the live ramp at `81400` tokens, writes an
+`81401` token checkpoint, folds a `670` token compact State, wakes it in
+`212.134ms`, and continues with a closed one-sentence recovery turn at
+`98.658 tok/s`.
 The first same-shape `mlx_lm` anchor is also recorded: raw decode is faster,
 but the strict workload floor fails on turn 3, and the full marked run has `7`
 below-floor turns. The same-shape llama.cpp `Q4_K_M` anchor is now recorded and
@@ -54,9 +59,9 @@ and estimated energy and leaks one visible Gemma channel marker per turn. The
 same-shape vLLM Metal attempt is recorded as a load failure: it reaches the
 Metal worker and chunked-prefill setup, then strict `mlx_lm` loading rejects
 `80` Gemma 4 shared/global K/V tensors. The interactive runner-anchor gate is
-now covered; production still remains open on the long-context degradation
-boundary. The earlier `65536` token checkpoint-capture cap is fixed by the
-full-timeline checkpoint rerun below.
+now covered; the long-context degradation boundary is bounded by folded-state
+handoff rather than raw appends past collapse. The earlier `65536` token
+checkpoint-capture cap is fixed by the full-timeline checkpoint rerun below.
 
 ## Accepted go-mlx Artefacts
 
@@ -72,6 +77,7 @@ full-timeline checkpoint rerun below.
 | Opencode fold lifecycle | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | `30000` token warmed State, `6` whole retained turns to a `50000` token compaction threshold, exhausted checkpoint plus summary/tail folded State, folded wake/continue turn | checkpoint `50714` tokens, folded State `221` tokens, `86.637ms` folded wake, `folded-prefill` restore, continue `15` tokens at `103.060 tok/s`, `3.283 GiB` peak MLX, `7885.064 J` including fold lifecycle at `100 W` |
 | Opencode 100k fold stress | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same `30000` token warmed State and whole-turn material, grows to `102704` live tokens, semantic summary/tail fold, `512` token folded continue | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, folded State `677` tokens across `3` blocks, wake `223.207ms`, continue `512` tokens at `101.979 tok/s`, RSS `3.426 GiB`; superseded by the full-timeline checkpoint rerun for checkpoint fidelity |
 | Opencode 100k full-timeline checkpoint | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json` | Same `30000` token warmed State and whole-turn material, grows to `101744` live tokens, writes the exhausted checkpoint from the full token timeline, semantic summary/tail fold, `512` token folded continue | checkpoint `101745` tokens across `201` blocks, `173.124s` before fold, `74.245 tok/s` decode, `56.179 tok/s` effective turn throughput, folded State `677` tokens across `3` blocks, wake `222.619ms`, continue `512` tokens at `100.577 tok/s`, RSS `3.356 GiB` |
+| Opencode 100k fold-on-degradation boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-on-degradation-energy100w.json` | Same `30000` token warmed State and whole-turn material, `256` visible-token floor with mark policy, `fold-on-degradation` after `2` consecutive below-floor turns | Stops at `81400` live tokens after turn `16`, records `4` marked below-floor turns with the terminal two consecutive, `120.261s`, `76.118 tok/s` decode, `57.027 tok/s` effective turn throughput, checkpoint `81401`, folded `670`, wake `212.134ms`, continue `24` tokens at `98.658 tok/s`, RSS `3.304 GiB` |
 | Opencode folded wake-only probe | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json` | Reopens the existing full-timeline `.mvlog`, wakes `mlx://state-ramp/fold/1779375833178783000/folded/index`, appends the tightened one-sentence continuation prompt, and generates without rebuilding the 100k State | folded State `677` tokens across `3` blocks, wake `298.243ms`, prompt append `77.407ms`, continue `24` visible tokens at `99.194 tok/s`, no `output_issues`, `38.832` effective tok/s, `61.805 J` at `100 W` |
 
 Companion notes:
@@ -92,7 +98,8 @@ Companion notes:
 | Folded lifecycle boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json` | Same model and whole-turn material, `30000` retained seed tokens, `50000` compaction threshold, `turn_min_tokens_policy=mark`, folded checkpoint plus compact state wake/continue | `76.751s` before fold, `80.213 tok/s` decode, `69.908 tok/s` effective turn throughput, checkpoint `50714`, folded `221`, wake `86.637ms`, continue `15` tokens | Accepted fold lifecycle row; proves the context boundary becomes a compact state instead of further raw appends |
 | 100k folded State token wake | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json` | Same accepted material, `100000` compaction threshold, semantic summary/tail files, folded State wakes via token-only prefix load | `183.923s` before fold, `75.368 tok/s` decode, `58.162 tok/s` effective turn throughput, live state `102704`, folded `677`, wake `223.207ms`, continue `512` at `101.979 tok/s` | Accepted for 100k lifecycle stress and the previous multi-block wake bug; checkpoint fidelity superseded by the full-timeline rerun |
 | 100k folded full-timeline checkpoint | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json` | Same accepted material, `100000` compaction threshold, full-token `RangeKVBlocks` checkpoint stream, semantic summary/tail files, folded State wakes via token-only prefix load | `173.124s` before fold, `74.245 tok/s` decode, `56.179 tok/s` effective turn throughput, live state `101744`, checkpoint `101745`, folded `677`, wake `222.619ms`, continue `512` at `100.577 tok/s` | Accepted for 100k checkpoint fidelity; not a content-floor pass because `10/23` late turns are below `256` visible tokens |
-| Folded State wake-only probe | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json` | Existing full-timeline folded State reopened by `state-wake-profile`; no 100k rebuild, tightened one-sentence continuation prompt | wake `298.243ms`, `24` visible tokens at `99.194 tok/s`, no `output_issues`, `3.200 GiB` RSS, `61.805 J` at `100 W` | Accepted as the cheap folded-State recovery probe; it bounds the earlier folded-continuation prompt drift but does not close late-turn long-context degradation |
+| 100k fold-on-degradation boundary | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-on-degradation-energy100w.json` | Same accepted material, `100000` compaction threshold, `256` visible-token floor with mark policy, degradation fold after `2` consecutive below-floor turns | `120.261s` before fold, `76.118 tok/s` decode, `57.027 tok/s` effective turn throughput, live state `81400`, checkpoint `81401`, folded `670`, wake `212.134ms`, continue `24` at `98.658 tok/s` | Accepted as the long-context degradation bound; stops appending before the degraded live context is treated as healthy |
+| Folded State wake-only probe | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json` | Existing full-timeline folded State reopened by `state-wake-profile`; no 100k rebuild, tightened one-sentence continuation prompt | wake `298.243ms`, `24` visible tokens at `99.194 tok/s`, no `output_issues`, `3.200 GiB` RSS, `61.805 J` at `100 W` | Accepted as the cheap folded-State recovery probe; it bounds the earlier folded-continuation prompt drift |
 
 ## Opencode Runner Anchors
 

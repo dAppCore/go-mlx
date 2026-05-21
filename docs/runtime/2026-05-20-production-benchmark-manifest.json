@@ -4,16 +4,14 @@
   "purpose": "Machine-readable canonical artefact set for the Gemma 4 E2B production benchmark lane.",
   "canonical_index": "docs/runtime/2026-05-20-production-benchmark-index.md",
   "verifier": "scripts/verify_production_benchmark_manifest.sh",
-  "production_status": "not_complete",
+  "production_status": "benchmark_gates_accepted_training_work_remains",
   "runtime_fragment_cleanup": {
     "status": "strict_clean",
     "quarantine_path": "docs/runtime/.quarantine/2026-05-20-noncanonical",
     "quarantined_untracked_count": 137,
     "pruned_tracked_count": 3
   },
-  "open_gates": [
-    "long_context_degradation"
-  ],
+  "open_gates": [],
   "artifacts": [
     {
       "id": "production-index",
@@ -68,6 +66,13 @@
       "id": "opencode-state-ramp-100k-fold-fulltimeline-tokenwake",
       "role": "accepted_go_mlx_100k_fold_checkpoint",
       "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-100k-fold-on-degradation",
+      "role": "accepted_go_mlx_100k_degradation_boundary",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-on-degradation-energy100w.json",
       "kind": "json",
       "indexed": true
     },
