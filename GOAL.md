@@ -1582,7 +1582,7 @@ speculative decode (`gemma4_assistant*.go`).
 
 ### Per-turn capture for the substrate-shift experiment
 
-- [ ] A 180-run capture script (Go or Python) that wraps the Runner and
+- [x] A 180-run capture script (Go or Python) that wraps the Runner and
       produces the per-run JSONL the `stats.py` analyser expects:
 
       ```
@@ -1593,6 +1593,26 @@ speculative decode (`gemma4_assistant*.go`).
 
       Format pinned in `host-uk/core/plans/rfc/research/experiments/worf/02-method.md` §6.
       Output tree at `~/Lethean/data/experiments/substrate-shift/<subject>/<probe>/<condition>/<seed>.jsonl`.
+      `scripts/substrate_shift_capture.py` now owns the default 180-run matrix,
+      reads the three subject seed corpora, emits the 11 feature keys,
+      `self_ref_count`, `terminal_count`, `timing_ms`, and `kv_norm`, and
+      delegates actual generation to a JSON stdin/stdout runner command.
+      Verification:
+
+      ```sh
+      scripts/substrate_shift_capture.py --dry-run \
+        --out-dir /private/tmp/go-mlx-substrate-capture-full-dryrun-20260521 \
+        --overwrite
+      find /private/tmp/go-mlx-substrate-capture-full-dryrun-20260521 \
+        -name '*.jsonl' | wc -l
+      python3 /Users/snider/Code/host-uk/core/plans/rfc/research/experiments/worf/scripts/stats.py \
+        --data-dir /private/tmp/go-mlx-substrate-capture-full-dryrun-20260521 \
+        --out /private/tmp/go-mlx-substrate-capture-full-dryrun-20260521-results.json
+      ```
+
+      Result: `180` JSONL files; `stats.py` loaded all `180` runs. This closes
+      the capture-script deliverable only. Actual model data capture still
+      depends on the open runner substrate-switch parity/control-condition item.
 
 ### Downstream chain (already shipped in lthn/desktop, no work here)
 
