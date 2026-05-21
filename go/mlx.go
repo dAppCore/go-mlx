@@ -570,6 +570,20 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
 	}
 
+	// Fast-path the canonical "", "gpu", "cpu" values that the default
+	// LoadConfig and almost every caller provide. core.Lower/Trim each
+	// walk the string and Trim allocates a fresh substring for any
+	// whitespace input, which dominates a 90%-clean hot path. Skip both
+	// scans when the input is already canonical and only fall through
+	// to the normalising slow path when the device string actually
+	// needs work.
+	switch cfg.Device {
+	case "gpu", "cpu":
+		return cfg, nil
+	case "":
+		cfg.Device = "gpu"
+		return cfg, nil
+	}
 	device := core.Lower(core.Trim(cfg.Device))
 	if device == "" {
 		device = "gpu"
