@@ -505,7 +505,7 @@ func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEn
 		default:
 		}
 
-		vInput := FromValues([]int32{id}, 1)
+		vInput := fromSingleInt32(id)
 		input := Reshape(vInput, 1, 1)
 		oldLogits := logits
 		nextLogits := m.model.Forward(input, caches)

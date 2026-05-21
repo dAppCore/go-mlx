@@ -206,7 +206,7 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	if bestID < 0 {
 		return nil, core.NewError("mlx: no finite unsuppressed logits available")
 	}
-	return FromValues([]int32{bestID}, 1), nil
+	return fromSingleInt32(bestID), nil
 }
 
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {

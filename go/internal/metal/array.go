@@ -153,6 +153,26 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 	return tt
 }
 
+// fromSingleInt32 fast-paths the common "wrap one int32 as a [1] array"
+// case used by token-ID emitters (sample, decode, generate). Skips the
+// FromValues generic + reflect dispatch path and writes a single-int
+// mlx array directly. Stack-allocated shape array means zero alloc
+// beyond the Array wrapper + mlx_array context.
+func fromSingleInt32(value int32) *Array {
+	Init()
+	cShape := [1]C.int{1}
+	tt := newArray("")
+	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&value), &cShape[0], C.int(1), C.mlx_dtype(DTypeInt32))
+	if tt.ctx.ctx == nil {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic("mlx: array data creation failed")
+	}
+	runtime.KeepAlive(value)
+	return tt
+}
+
 // Zeros creates a zero-filled Array with the given shape and dtype.
 func Zeros(shape []int32, dtype DType) *Array {
 	Init()

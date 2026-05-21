@@ -194,6 +194,20 @@ func BenchmarkSession_PrefillTokens(b *testing.B) {
 	}
 }
 
+func BenchmarkSession_AppendTokens(b *testing.B) {
+	native := &fakeNativeSession{}
+	session := &ModelSession{session: native}
+	tokens := make([]int32, 512)
+	for i := range tokens {
+		tokens[i] = int32(i + 1)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionBenchSinkErr = session.AppendTokens(context.Background(), tokens)
+	}
+}
+
 // --- CaptureKV ---
 // Goes through toRootKVSnapshot deep-copy of the fake KV.
 

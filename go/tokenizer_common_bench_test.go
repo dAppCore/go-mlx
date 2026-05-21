@@ -4,9 +4,8 @@
 // helpers. Per AX-11 — Encode fires on every prompt entering the
 // generation path; Decode fires on every detokenisation at the end
 // (and again for `mlx.FilterThinkingTokens`). The BOS-strip helpers
-// run on every call and re-allocate the token slice, so they show
-// up in the steady-state allocation profile of any session that
-// runs lots of short prompts.
+// run on every call, so they show up in the steady-state profile of
+// any session that runs lots of short prompts.
 //
 // Run:    go test -bench='BenchmarkTokenizerCommon' -benchtime=100ms -benchmem -run='^$' ./go
 
@@ -38,8 +37,8 @@ type benchFakeTokenizer struct {
 	idTokenStr string
 }
 
-func (f *benchFakeTokenizer) Encode(string) []int32  { return f.ids }
-func (f *benchFakeTokenizer) Decode([]int32) string  { return f.text }
+func (f *benchFakeTokenizer) Encode(string) []int32 { return f.ids }
+func (f *benchFakeTokenizer) Decode([]int32) string { return f.text }
 func (f *benchFakeTokenizer) TokenID(string) (int32, bool) {
 	return f.tokenID, f.tokenIDOK
 }
@@ -49,8 +48,8 @@ func (f *benchFakeTokenizer) IDToken(id int32) string {
 	}
 	return f.idTokenStr
 }
-func (f *benchFakeTokenizer) BOS() int32      { return f.bos }
-func (f *benchFakeTokenizer) EOS() int32      { return 2 }
+func (f *benchFakeTokenizer) BOS() int32        { return f.bos }
+func (f *benchFakeTokenizer) EOS() int32        { return 2 }
 func (f *benchFakeTokenizer) HasBOSToken() bool { return f.hasBOS }
 
 // makeTokenIDs builds a synthetic id vector. The leading id is the
@@ -66,7 +65,7 @@ func makeTokenIDs(count int, withBOS bool) []int32 {
 	return ids
 }
 
-// --- Encode wrapper — strips implicit BOS, re-allocates result ---
+// --- Encode wrapper — strips implicit BOS without cloning the result ---
 
 func BenchmarkTokenizerCommon_Encode_100Tokens(b *testing.B) {
 	ids := makeTokenIDs(100, true)
@@ -99,8 +98,7 @@ func BenchmarkTokenizerCommon_Encode_10000Tokens(b *testing.B) {
 }
 
 // Encode when the text already carries the BOS prefix — exercises
-// the early-return branch (no BOS strip needed) which still
-// re-allocates the slice.
+// the early-return branch where no BOS strip is needed.
 func BenchmarkTokenizerCommon_Encode_ExplicitBOSPrefix(b *testing.B) {
 	ids := makeTokenIDs(1000, true)
 	tok := &Tokenizer{tok: &benchFakeTokenizer{ids: ids, bos: 1, bosText: "<s>", hasBOS: true}}
@@ -112,7 +110,7 @@ func BenchmarkTokenizerCommon_Encode_ExplicitBOSPrefix(b *testing.B) {
 }
 
 // Encode against a tokenizer that doesn't carry BOS — exercises
-// the "no strip" path (still allocates the result slice).
+// the "no strip" path.
 func BenchmarkTokenizerCommon_Encode_NoBOS(b *testing.B) {
 	ids := makeTokenIDs(1000, false)
 	tok := &Tokenizer{tok: &benchFakeTokenizer{ids: ids, hasBOS: false}}

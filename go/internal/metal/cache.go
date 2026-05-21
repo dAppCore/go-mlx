@@ -14,6 +14,10 @@ const (
 
 var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"
 
+func pagedKVPreallocEnabled() bool {
+	return enablePagedKVPrealloc || pagedKVPreallocRuntimeEnabled()
+}
+
 // Cache manages key-value pairs for transformer attention layers.
 //
 //	cache := metal.NewKVCache()              // unbounded — grows with context
@@ -770,6 +774,10 @@ type PagedKVCache struct {
 	kPages, vPages                     []*Array
 	pageLens                           []int
 	materializedKeys, materializedVals *Array
+	pageShape                          pagedKVPageShape
+	borrowedKeysScratch                []*Array
+	borrowedValuesScratch              []*Array
+	borrowedOwnedScratch               []*Array
 	materializedLength                 int
 	storageDType                       DType
 	hasStorageDType                    bool
@@ -777,6 +785,16 @@ type PagedKVCache struct {
 	length                             int
 	maxSize                            int
 	pageSize                           int
+}
+
+type pagedKVPageShape struct {
+	set    bool
+	kBatch int32
+	kHeads int32
+	kDim   int32
+	vBatch int32
+	vHeads int32
+	vDim   int32
 }
 
 // PagedKVState is a view of a paged K/V cache. Keys and Values may borrow
@@ -925,6 +943,7 @@ func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) Page
 	c.kPages = []*Array{k}
 	c.vPages = []*Array{v}
 	c.pageLens = []int{seqLen}
+	c.recordPageShape(k.Shape(), v.Shape())
 	c.offset += seqLen
 	c.length += seqLen
 	return c.PageState()
@@ -959,13 +978,16 @@ func (c *PagedKVCache) BorrowedPageState() PagedKVState {
 	if len(c.kPages) == 0 || len(c.vPages) == 0 {
 		return state
 	}
-	state.Keys = make([]*Array, len(c.kPages))
-	state.Values = make([]*Array, len(c.vPages))
-	state.Owned = make([]*Array, 0, len(c.kPages)+len(c.vPages))
+	state.Keys = c.borrowedKeys(len(c.kPages))
+	state.Values = c.borrowedValues(len(c.vPages))
+	state.Owned = nil
 	for i, page := range c.kPages {
 		visible, owned := c.borrowVisiblePage(page, i)
 		state.Keys[i] = visible
 		if owned {
+			if state.Owned == nil {
+				state.Owned = c.borrowedOwned(0, len(c.kPages)+len(c.vPages))
+			}
 			state.Owned = append(state.Owned, visible)
 		}
 	}
@@ -973,6 +995,9 @@ func (c *PagedKVCache) BorrowedPageState() PagedKVState {
 		visible, owned := c.borrowVisiblePage(page, i)
 		state.Values[i] = visible
 		if owned {
+			if state.Owned == nil {
+				state.Owned = c.borrowedOwned(0, len(c.kPages)+len(c.vPages))
+			}
 			state.Owned = append(state.Owned, visible)
 		}
 	}
@@ -1009,6 +1034,10 @@ func (c *PagedKVCache) Reset() {
 	c.kPages = nil
 	c.vPages = nil
 	c.pageLens = nil
+	c.pageShape = pagedKVPageShape{}
+	c.borrowedKeysScratch = nil
+	c.borrowedValuesScratch = nil
+	c.borrowedOwnedScratch = nil
 	c.offset = 0
 	c.length = 0
 }
@@ -1032,7 +1061,7 @@ func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
 	k, v, owned := c.storageKV(k, v)
 	defer Free(owned...)
-	if enablePagedKVPrealloc {
+	if pagedKVPreallocEnabled() {
 		return c.appendPagesPrealloc(k, v, seqLen)
 	}
 	return c.appendPagesConcat(k, v, seqLen)
@@ -1081,18 +1110,27 @@ func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {
 		remaining := seqLen - start
 		if c.canAppendToLastPage(kShape, vShape) {
 			last := len(c.kPages) - 1
-			room := c.pageSize - pagedArrayLen(c.kPages[last])
+			room := c.pageSize - c.pageLen(last)
 			if room > 0 {
 				take := min(room, remaining)
-				c.appendToLastPage(k, v, start, take)
+				c.appendToLastPage(k, v, kShape, vShape, start, take)
 				start += take
 				continue
 			}
 		}
 		take := min(c.pageSize, remaining)
-		c.kPages = append(c.kPages, Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]}))
-		c.vPages = append(c.vPages, Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]}))
+		pageK, ownedK := cachePageView(k, kShape, start, take, totalLen)
+		pageV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
+		if !ownedK {
+			pageK = pageK.Clone()
+		}
+		if !ownedV {
+			pageV = pageV.Clone()
+		}
+		c.kPages = append(c.kPages, pageK)
+		c.vPages = append(c.vPages, pageV)
 		c.pageLens = append(c.pageLens, take)
+		c.recordPageShape(kShape, vShape)
 		start += take
 	}
 	return seqLen
@@ -1118,13 +1156,13 @@ func (c *PagedKVCache) appendPagesPrealloc(k, v *Array, seqLen int) int {
 			room := c.pageSize - c.pageLen(last)
 			if room > 0 {
 				take := min(room, remaining)
-				c.appendToLastPagePrealloc(k, v, start, take)
+				c.appendToLastPagePrealloc(k, v, kShape, vShape, start, take)
 				start += take
 				continue
 			}
 		}
 		take := min(c.pageSize, remaining)
-		c.appendNewPagePrealloc(k, v, start, take)
+		c.appendNewPagePrealloc(k, v, kShape, vShape, start, take)
 		start += take
 	}
 	return seqLen
@@ -1139,9 +1177,12 @@ func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
 	if c.pageLen(len(c.kPages)-1) >= c.pageSize {
 		return false
 	}
+	if c.pageShape.set {
+		return c.pageShape.matches(kShape, vShape)
+	}
 	lastKShape := lastK.Shape()
 	lastVShape := lastV.Shape()
-	return len(lastKShape) >= 4 &&
+	ok := len(lastKShape) >= 4 &&
 		len(lastVShape) >= 4 &&
 		lastKShape[0] == kShape[0] &&
 		lastKShape[1] == kShape[1] &&
@@ -1149,40 +1190,52 @@ func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
 		lastVShape[0] == vShape[0] &&
 		lastVShape[1] == vShape[1] &&
 		lastVShape[3] == vShape[3]
+	if ok {
+		c.recordPageShape(kShape, vShape)
+	}
+	return ok
 }
 
-func (c *PagedKVCache) appendToLastPage(k, v *Array, start, take int) {
-	kShape := k.Shape()
-	vShape := v.Shape()
-	pieceK := Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]})
-	pieceV := Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]})
+func (c *PagedKVCache) appendToLastPage(k, v *Array, kShape, vShape []int32, start, take int) {
+	pieceK, ownedK := cachePageView(k, kShape, start, take, int(kShape[2]))
+	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
 	last := len(c.kPages) - 1
 	oldK, oldV := c.kPages[last], c.vPages[last]
 	c.kPages[last] = Concatenate([]*Array{oldK, pieceK}, 2)
 	c.vPages[last] = Concatenate([]*Array{oldV, pieceV}, 2)
 	c.pageLens[last] += take
-	Free(oldK, oldV, pieceK, pieceV)
+	c.recordPageShape(kShape, vShape)
+	Free(oldK, oldV)
+	if ownedK {
+		Free(pieceK)
+	}
+	if ownedV {
+		Free(pieceV)
+	}
 }
 
-func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, start, take int) {
-	kShape := k.Shape()
-	vShape := v.Shape()
-	pieceK := Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]})
-	pieceV := Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]})
+func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []int32, start, take int) {
+	pieceK, ownedK := cachePageView(k, kShape, start, take, int(kShape[2]))
+	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
 	last := len(c.kPages) - 1
 	writeStart := c.pageLen(last)
 	oldK, oldV := c.kPages[last], c.vPages[last]
 	c.kPages[last] = SliceUpdateInplace(oldK, pieceK, []int32{0, 0, int32(writeStart), 0}, []int32{kShape[0], kShape[1], int32(writeStart + take), kShape[3]})
 	c.vPages[last] = SliceUpdateInplace(oldV, pieceV, []int32{0, 0, int32(writeStart), 0}, []int32{vShape[0], vShape[1], int32(writeStart + take), vShape[3]})
 	c.pageLens[last] = writeStart + take
-	Free(oldK, oldV, pieceK, pieceV)
+	c.recordPageShape(kShape, vShape)
+	Free(oldK, oldV)
+	if ownedK {
+		Free(pieceK)
+	}
+	if ownedV {
+		Free(pieceV)
+	}
 }
 
-func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, start, take int) {
-	kShape := k.Shape()
-	vShape := v.Shape()
-	pieceK := Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]})
-	pieceV := Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]})
+func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32, start, take int) {
+	pieceK, ownedK := cachePageView(k, kShape, start, take, int(kShape[2]))
+	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
 	pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, k.Dtype())
 	pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, v.Dtype())
 	updatedK := SliceUpdateInplace(pageK, pieceK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(take), kShape[3]})
@@ -1190,7 +1243,21 @@ func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, start, take int) {
 	c.kPages = append(c.kPages, updatedK)
 	c.vPages = append(c.vPages, updatedV)
 	c.pageLens = append(c.pageLens, take)
-	Free(pageK, pageV, pieceK, pieceV)
+	c.recordPageShape(kShape, vShape)
+	Free(pageK, pageV)
+	if ownedK {
+		Free(pieceK)
+	}
+	if ownedV {
+		Free(pieceV)
+	}
+}
+
+func cachePageView(a *Array, shape []int32, start, take, totalLen int) (*Array, bool) {
+	if start == 0 && take == totalLen {
+		return a, false
+	}
+	return Slice(a, []int32{0, 0, int32(start), 0}, []int32{shape[0], shape[1], int32(start + take), shape[3]}), true
 }
 
 func (c *PagedKVCache) trimToMaxSize() {
@@ -1240,7 +1307,7 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	newLen := pageLen - tokens
 	tailK := Slice(oldK, []int32{0, 0, int32(tokens), 0}, []int32{kShape[0], kShape[1], int32(pageLen), kShape[3]})
 	tailV := Slice(oldV, []int32{0, 0, int32(tokens), 0}, []int32{vShape[0], vShape[1], int32(pageLen), vShape[3]})
-	if enablePagedKVPrealloc {
+	if pagedKVPreallocEnabled() {
 		pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, oldK.Dtype())
 		pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, oldV.Dtype())
 		c.kPages[0] = SliceUpdateInplace(pageK, tailK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(newLen), kShape[3]})
@@ -1253,6 +1320,32 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	}
 	c.pageLens[0] = newLen
 	Free(oldK, oldV, tailK, tailV)
+}
+
+func (c *PagedKVCache) recordPageShape(kShape, vShape []int32) {
+	if len(kShape) < 4 || len(vShape) < 4 {
+		return
+	}
+	c.pageShape = pagedKVPageShape{
+		set:    true,
+		kBatch: kShape[0],
+		kHeads: kShape[1],
+		kDim:   kShape[3],
+		vBatch: vShape[0],
+		vHeads: vShape[1],
+		vDim:   vShape[3],
+	}
+}
+
+func (s pagedKVPageShape) matches(kShape, vShape []int32) bool {
+	return len(kShape) >= 4 &&
+		len(vShape) >= 4 &&
+		s.kBatch == kShape[0] &&
+		s.kHeads == kShape[1] &&
+		s.kDim == kShape[3] &&
+		s.vBatch == vShape[0] &&
+		s.vHeads == vShape[1] &&
+		s.vDim == vShape[3]
 }
 
 func (c *PagedKVCache) pageLen(i int) int {
@@ -1301,12 +1394,42 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 	if page == nil || !page.Valid() {
 		return nil, false
 	}
-	shape := page.Shape()
 	length := c.pageLen(i)
+	if c.pageSize > 0 && length >= c.pageSize {
+		return page, false
+	}
+	shape := page.Shape()
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page, false
 	}
 	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]}), true
+}
+
+func (c *PagedKVCache) borrowedKeys(n int) []*Array {
+	if cap(c.borrowedKeysScratch) < n {
+		c.borrowedKeysScratch = make([]*Array, n)
+	}
+	keys := c.borrowedKeysScratch[:n]
+	clear(keys)
+	return keys
+}
+
+func (c *PagedKVCache) borrowedValues(n int) []*Array {
+	if cap(c.borrowedValuesScratch) < n {
+		c.borrowedValuesScratch = make([]*Array, n)
+	}
+	values := c.borrowedValuesScratch[:n]
+	clear(values)
+	return values
+}
+
+func (c *PagedKVCache) borrowedOwned(length, capacity int) []*Array {
+	if cap(c.borrowedOwnedScratch) < capacity {
+		c.borrowedOwnedScratch = make([]*Array, length, capacity)
+	}
+	owned := c.borrowedOwnedScratch[:length]
+	clear(c.borrowedOwnedScratch[:cap(c.borrowedOwnedScratch)])
+	return owned
 }
 
 func (c *PagedKVCache) visiblePages() (kPages, vPages, owned []*Array) {

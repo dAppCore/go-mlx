@@ -49,13 +49,18 @@ func Format(messages []Message, cfg Config) string {
 
 func formatGemma(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
+	builder.Grow(chatFormatCapacity(messages, 34, 22))
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
 		switch role {
 		case "assistant":
-			builder.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
+			builder.WriteString("<start_of_turn>model\n")
+			builder.WriteString(msg.Content)
+			builder.WriteString("<end_of_turn>\n")
 		case "system", "user":
-			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
+			builder.WriteString("<start_of_turn>user\n")
+			builder.WriteString(msg.Content)
+			builder.WriteString("<end_of_turn>\n")
 		}
 	}
 	if !cfg.NoGenerationPrompt {
@@ -66,6 +71,7 @@ func formatGemma(messages []Message, cfg Config) string {
 
 func formatGemma4(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
+	builder.Grow(chatFormatCapacity(messages, 17, 37) + len("<bos>"))
 	builder.WriteString("<bos>")
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
@@ -76,7 +82,11 @@ func formatGemma4(messages []Message, cfg Config) string {
 		default:
 			continue
 		}
-		builder.WriteString("<|turn>" + role + "\n" + core.Trim(msg.Content) + "<turn|>\n")
+		builder.WriteString("<|turn>")
+		builder.WriteString(role)
+		builder.WriteString("\n")
+		builder.WriteString(core.Trim(msg.Content))
+		builder.WriteString("<turn|>\n")
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
@@ -87,12 +97,17 @@ func formatGemma4(messages []Message, cfg Config) string {
 
 func formatQwen(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
+	builder.Grow(chatFormatCapacity(messages, 24, 23))
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
 		if role == "" {
 			continue
 		}
-		builder.WriteString("<|im_start|>" + role + "\n" + msg.Content + "<|im_end|>\n")
+		builder.WriteString("<|im_start|>")
+		builder.WriteString(role)
+		builder.WriteString("\n")
+		builder.WriteString(msg.Content)
+		builder.WriteString("<|im_end|>\n")
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|im_start|>assistant\n")
@@ -102,13 +117,18 @@ func formatQwen(messages []Message, cfg Config) string {
 
 func formatLlama(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
+	builder.Grow(chatFormatCapacity(messages, 52, 43) + len("<|begin_of_text|>"))
 	builder.WriteString("<|begin_of_text|>")
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
 		if role == "" {
 			continue
 		}
-		builder.WriteString("<|start_header_id|>" + role + "<|end_header_id|>\n\n" + msg.Content + "<|eot_id|>")
+		builder.WriteString("<|start_header_id|>")
+		builder.WriteString(role)
+		builder.WriteString("<|end_header_id|>\n\n")
+		builder.WriteString(msg.Content)
+		builder.WriteString("<|eot_id|>")
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
@@ -118,16 +138,26 @@ func formatLlama(messages []Message, cfg Config) string {
 
 func formatPlain(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
+	builder.Grow(chatFormatCapacity(messages, 1, 0))
 	for _, msg := range messages {
 		if msg.Content == "" {
 			continue
 		}
-		builder.WriteString(msg.Content + "\n")
+		builder.WriteString(msg.Content)
+		builder.WriteString("\n")
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("")
 	}
 	return builder.String()
+}
+
+func chatFormatCapacity(messages []Message, perMessageOverhead, generationPromptOverhead int) int {
+	total := generationPromptOverhead
+	for _, msg := range messages {
+		total += len(msg.Content) + perMessageOverhead + len(msg.Role)
+	}
+	return total
 }
 
 // TemplateName returns the canonical template id selected by cfg. Used

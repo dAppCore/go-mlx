@@ -325,19 +325,31 @@ func BenchmarkFirstNonEmptyString_LastHit(b *testing.B) {
 	}
 }
 
-// --- ClearCache — fires on cache reset; clones blocks map ---
+// --- ClearCache — fires on cache reset; includes cheap in-memory refill ---
 
 func BenchmarkBlockCache_ClearCache_100Blocks(b *testing.B) {
 	tokens := benchTokens(100 * 128)
+	template := benchService(128)
+	if _, err := template.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens}); err != nil {
+		b.Fatal(err)
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		b.StopTimer()
 		service := benchService(128)
-		if _, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: tokens}); err != nil {
-			b.Fatal(err)
-		}
-		b.StartTimer()
+		service.blocks = cloneBenchBlockRefs(template.blocks)
+		service.misses = uint64(len(service.blocks))
 		benchSinkStats, benchSinkErr = service.ClearCache(context.Background(), nil)
 	}
+}
+
+func cloneBenchBlockRefs(src map[string]inference.CacheBlockRef) map[string]inference.CacheBlockRef {
+	if len(src) == 0 {
+		return map[string]inference.CacheBlockRef{}
+	}
+	dst := make(map[string]inference.CacheBlockRef, len(src))
+	for id, ref := range src {
+		dst[id] = ref
+	}
+	return dst
 }

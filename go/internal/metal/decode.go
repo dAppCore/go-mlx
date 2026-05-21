@@ -370,7 +370,7 @@ func suppressTokenArray(ids []int32) *Array {
 	if len(ids) == 0 {
 		return nil
 	}
-	return FromValues(append([]int32(nil), ids...), len(ids))
+	return FromValues(ids, len(ids))
 }
 
 func nativeLastTokenGreedyTokenAvailable(hidden, normWeight *Array, output *Linear, eps float32) bool {

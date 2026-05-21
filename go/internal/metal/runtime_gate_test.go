@@ -124,6 +124,23 @@ func TestRuntimeGate_KnownPagedFullKVMaterialize_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_KnownPagedKVPrealloc_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownPagedKVPrealloc"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "0")
+	t.Cleanup(restoreOff)
+	if pagedKVPreallocRuntimeEnabled() {
+		t.Fatal("pagedKVPreallocRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1")
+	t.Cleanup(restoreOn)
+	if !pagedKVPreallocRuntimeEnabled() {
+		t.Fatal("pagedKVPreallocRuntimeEnabled() = false, want true")
+	}
+}
+
 func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownFixedGemma4SlidingCacheBound"
 	if coverageTokens == "" {

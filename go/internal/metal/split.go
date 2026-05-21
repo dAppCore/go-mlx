@@ -349,7 +349,7 @@ func splitQwen3EmbedNextToken(ctx context.Context, qwen *Qwen3Model, id int32) (
 	if qwen == nil || qwen.EmbedTokens == nil {
 		return nil, nil, core.NewError("mlx: qwen split sample missing embeddings")
 	}
-	vInput := FromValues([]int32{id}, 1)
+	vInput := fromSingleInt32(id)
 	input := Reshape(vInput, 1, 1)
 	Free(vInput)
 	hidden := qwen.EmbedTokens.Forward(input)

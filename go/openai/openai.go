@@ -249,7 +249,7 @@ func writeOpenAIError(w http.ResponseWriter, status int, message, param string) 
 }
 
 func openAIResponseID() string {
-	return core.Sprintf("resp_%d", time.Now().UnixNano())
+	return "resp_" + core.FormatInt(time.Now().UnixNano(), 10)
 }
 
 func collectOpenAIResponseTokens(ctx context.Context, model inference.TextModel, requestID, modelName string, messages []inference.Message, opts ...inference.GenerateOption) ([]inference.Token, error) {
@@ -671,11 +671,11 @@ func normalizeAnthropicStopSequences(stops []string) ([]string, error) {
 }
 
 func anthropicMessageID() string {
-	return core.Sprintf("msg_%d", time.Now().UnixNano())
+	return "msg_" + core.FormatInt(time.Now().UnixNano(), 10)
 }
 
 func ollamaRequestID() string {
-	return core.Sprintf("ollama_%d", time.Now().UnixNano())
+	return "ollama_" + core.FormatInt(time.Now().UnixNano(), 10)
 }
 
 func parseOpenAIModelOutput(model inference.TextModel, tokens []inference.Token, text string) (string, string) {
@@ -714,6 +714,7 @@ func indexString(s, substr string) int {
 
 func openAITokensText(tokens []inference.Token) string {
 	builder := core.NewBuilder()
+	builder.Grow(openAITokensTextLen(tokens))
 	for _, token := range tokens {
 		builder.WriteString(token.Text)
 	}
@@ -725,8 +726,21 @@ func reasoningText(segments []inference.ReasoningSegment) string {
 		return ""
 	}
 	builder := core.NewBuilder()
+	total := 0
+	for _, segment := range segments {
+		total += len(segment.Text)
+	}
+	builder.Grow(total)
 	for _, segment := range segments {
 		builder.WriteString(segment.Text)
 	}
 	return builder.String()
+}
+
+func openAITokensTextLen(tokens []inference.Token) int {
+	total := 0
+	for _, token := range tokens {
+		total += len(token.Text)
+	}
+	return total
 }

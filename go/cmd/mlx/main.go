@@ -459,6 +459,8 @@ type stateRampProfileOptions struct {
 	TopP                      float64                   `json:"top_p,omitempty"`
 	TopK                      int                       `json:"top_k,omitempty"`
 	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
+	Seed                      uint64                    `json:"seed,omitempty"`
+	SeedSet                   bool                      `json:"seed_set,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
@@ -513,6 +515,8 @@ type stateRampProfileReport struct {
 	TopP                      float64                   `json:"top_p,omitempty"`
 	TopK                      int                       `json:"top_k,omitempty"`
 	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
+	Seed                      uint64                    `json:"seed,omitempty"`
+	SeedSet                   bool                      `json:"seed_set,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
@@ -2150,6 +2154,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	topP := fs.Float64("top-p", 0.95, "top-p sampling value for generated turns")
 	topK := fs.Int("top-k", 64, "top-k sampling value for generated turns")
 	repeatPenalty := fs.Float64("repeat-penalty", 1.0, "repeat penalty for generated turns")
+	seed := fs.Uint64("seed", 0, "seed MLX sampling for reproducible retained-state turns; omitted leaves the current RNG stream")
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold")
@@ -2395,6 +2400,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		TopP:                      *topP,
 		TopK:                      *topK,
 		RepeatPenalty:             *repeatPenalty,
+		Seed:                      *seed,
+		SeedSet:                   visitedFlags["seed"],
 		SuppressEOS:               *suppressEOS,
 		IncludeOutput:             *includeOutput,
 		FoldOnExhaustion:          *foldOnExhaustion,
@@ -2522,6 +2529,8 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		TopP:                      opts.TopP,
 		TopK:                      opts.TopK,
 		RepeatPenalty:             opts.RepeatPenalty,
+		Seed:                      opts.Seed,
+		SeedSet:                   opts.SeedSet,
 		SuppressEOS:               opts.SuppressEOS,
 		IncludeOutput:             opts.IncludeOutput,
 		FoldOnExhaustion:          opts.FoldOnExhaustion,
@@ -2901,7 +2910,9 @@ func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (
 	builder.WriteString(prompt)
 	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Do not explain what the user is asking; answer as the engineer doing the work. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
 	if floor := stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...); floor > 0 {
-		builder.WriteString(core.Sprintf(" For this measured workload, write at least %d visible tokens. If the direct answer is naturally shorter, expand with concrete evidence, the main risk, and the next validation step instead of stopping early.", floor))
+		builder.WriteString(" For this measured workload, write at least ")
+		builder.WriteString(core.Itoa(floor))
+		builder.WriteString(" visible tokens. If the direct answer is naturally shorter, expand with concrete evidence, the main risk, and the next validation step instead of stopping early.")
 	}
 }
 
@@ -3046,6 +3057,9 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		mlx.WithTopP(float32(opts.TopP)),
 		mlx.WithTopK(opts.TopK),
 		mlx.WithRepeatPenalty(float32(opts.RepeatPenalty)),
+	}
+	if opts.SeedSet {
+		generateOptions = append(generateOptions, mlx.WithSeed(opts.Seed))
 	}
 	stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(opts.ChatTemplate, model.Tokenizer())
 	if len(stopTokenIDs) > 0 {

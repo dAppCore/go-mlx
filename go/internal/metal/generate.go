@@ -844,7 +844,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				return
 			}
 
-			vNextInput := FromValues([]int32{id}, 1)
+			vNextInput := fromSingleInt32(id)
 			nextInput := Reshape(vNextInput, 1, 1)
 			Free(vNextInput)
 			if tracePhases {

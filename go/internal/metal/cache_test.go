@@ -378,6 +378,30 @@ func TestPagedKVCache_PreallocKeepsVisiblePageLength_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache PreallocRuntimeGate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1"))
+
+	c := NewPagedKVCache(0, 4)
+	k, v := makeKV(2)
+	defer Free(k, v)
+	defer c.Reset()
+
+	state := c.UpdatePages(k, v, 2)
+	defer state.Free()
+	cacheState := c.State()
+
+	if len(cacheState) != 2 || cacheState[0].Shape()[2] != 4 || cacheState[1].Shape()[2] != 4 {
+		t.Fatalf("runtime-gated backing page shape = %+v, want full preallocated K/V pages", cacheState)
+	}
+	if len(state.Keys) != 1 || state.Keys[0].Shape()[2] != 2 || len(state.Values) != 1 || state.Values[0].Shape()[2] != 2 {
+		t.Fatalf("runtime-gated visible page shape = %+v/%+v, want visible 2-token K/V pages", state.Keys, state.Values)
+	}
+}
+
 func TestPagedKVCache_HyperLongDefaultPageSize_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache HyperLongDefaultPageSize"
 	if coverageTokens == "" {

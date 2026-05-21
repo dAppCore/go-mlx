@@ -134,7 +134,7 @@ func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error 
 		return core.NewError("mlx: model session is nil")
 	}
 	if prefiller, ok := s.session.(nativeSessionTokenPrefiller); ok {
-		return prefiller.PrefillTokens(ctx, append([]int32(nil), tokens...))
+		return prefiller.PrefillTokens(ctx, tokens)
 	}
 	return core.NewError("mlx: native model session does not support token prefill")
 }
@@ -173,7 +173,7 @@ func (s *ModelSession) AppendTokens(ctx context.Context, tokens []int32) error {
 		return core.NewError("mlx: model session is nil")
 	}
 	if appender, ok := s.session.(nativeSessionTokenAppender); ok {
-		return appender.AppendTokens(ctx, append([]int32(nil), tokens...))
+		return appender.AppendTokens(ctx, tokens)
 	}
 	return core.NewError("mlx: native model session does not support token append")
 }

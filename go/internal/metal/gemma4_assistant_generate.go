@@ -386,7 +386,7 @@ func (m *Model) storeGemma4AssistantPromptCache(tokens []int32, caches []Cache, 
 }
 
 func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32, caches []Cache) (*Array, *Array, error) {
-	vInput := FromValues([]int32{token}, 1)
+	vInput := fromSingleInt32(token)
 	input := Reshape(vInput, 1, 1)
 	Free(vInput)
 	logits, hidden := pair.Target.ForwardLastTokenLogitsAndHidden(input, nil, caches)

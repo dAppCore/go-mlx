@@ -9,6 +9,7 @@ package blockcache
 
 import (
 	"context"
+	"crypto/sha256"
 	"sync"
 
 	core "dappco.re/go"
@@ -233,7 +234,7 @@ func (service *Service) ClearCache(ctx context.Context, labels map[string]string
 
 func (service *Service) requestTokens(req inference.CacheWarmRequest) ([]int32, error) {
 	if len(req.Tokens) > 0 {
-		return append([]int32(nil), req.Tokens...), nil
+		return req.Tokens, nil
 	}
 	if core.Trim(req.Prompt) == "" {
 		return nil, nil
@@ -262,9 +263,9 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 		if end > len(tokens) {
 			end = len(tokens)
 		}
-		refLabels := cloneBlockCacheLabels(labels)
-		refLabels["block_index"] = core.Sprintf("%d", len(refs))
-		refLabels["prefix_tokens"] = core.Sprintf("%d", end)
+		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
+		refLabels["block_index"] = core.Itoa(len(refs))
+		refLabels["prefix_tokens"] = core.Itoa(end)
 		ref := inference.CacheBlockRef{
 			ID:            blockCacheID(modelHash, adapterHash, tokenizerHash, req.Mode, tokens[:end]),
 			Kind:          "prefix",
@@ -284,9 +285,9 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 }
 
 func (service *Service) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
-	labels := cloneBlockCacheLabels(req.Labels)
+	labels := cloneBlockCacheLabelsExtra(req.Labels, 4)
 	labels["cache_mode"] = mode
-	labels["block_size"] = core.Sprintf("%d", service.cfg.BlockSize)
+	labels["block_size"] = core.Itoa(service.cfg.BlockSize)
 	labels["model_match"] = boolLabel(cacheIdentityMatches(service.cfg.ModelHash, firstNonEmptyString(req.Model.Hash, req.Model.ID)))
 	labels["adapter_match"] = boolLabel(cacheIdentityMatches(service.cfg.AdapterHash, req.Adapter.Hash))
 	labels["tokenizer_match"] = boolLabel(cacheIdentityMatches(service.cfg.TokenizerHash, req.Labels["tokenizer_hash"]))
@@ -301,8 +302,8 @@ func (service *Service) statsLocked() inference.CacheStats {
 		Evictions: service.evictions,
 		CacheMode: mode,
 		Labels: map[string]string{
-			"block_size": core.Sprintf("%d", service.cfg.BlockSize),
-			"cleared":    core.Sprintf("%d", service.cleared),
+			"block_size": core.Itoa(service.cfg.BlockSize),
+			"cleared":    core.FormatUint(service.cleared, 10),
 		},
 	}
 	if service.diskEnabled() {
@@ -346,7 +347,7 @@ func (service *Service) withDiskLabels(ref inference.CacheBlockRef) inference.Ca
 	if !service.diskEnabled() || ref.ID == "" {
 		return ref
 	}
-	labels := cloneBlockCacheLabels(ref.Labels)
+	labels := cloneBlockCacheLabelsExtra(ref.Labels, 2)
 	labels["disk"] = "true"
 	labels["disk_path"] = service.diskBlockPath(ref.ID)
 	ref.Labels = labels
@@ -486,7 +487,7 @@ func (service *Service) writeStateBlock(ctx context.Context, ref inference.Cache
 }
 
 func withStateLabels(ref inference.CacheBlockRef, chunk state.ChunkRef) inference.CacheBlockRef {
-	labels := cloneBlockCacheLabels(ref.Labels)
+	labels := cloneBlockCacheLabelsExtra(ref.Labels, 4)
 	labels["cold_store"] = "state"
 	labels["state_chunk_id"] = core.Itoa(chunk.ChunkID)
 	if chunk.Codec != "" {
@@ -564,20 +565,32 @@ func (service *Service) diskBlockPath(id string) string {
 }
 
 func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []int32) string {
-	payload := struct {
-		ModelHash     string  `json:"model_hash,omitempty"`
-		AdapterHash   string  `json:"adapter_hash,omitempty"`
-		TokenizerHash string  `json:"tokenizer_hash,omitempty"`
-		Mode          string  `json:"mode,omitempty"`
-		Tokens        []int32 `json:"tokens,omitempty"`
-	}{
-		ModelHash:     modelHash,
-		AdapterHash:   adapterHash,
-		TokenizerHash: tokenizerHash,
-		Mode:          firstNonEmptyString(mode, mode),
-		Tokens:        append([]int32(nil), prefix...),
+	hash := sha256.New()
+	writeBlockCacheHashString(hash, modelHash)
+	writeBlockCacheHashString(hash, adapterHash)
+	writeBlockCacheHashString(hash, tokenizerHash)
+	writeBlockCacheHashString(hash, mode)
+	var scratch [4]byte
+	for _, token := range prefix {
+		value := uint32(token)
+		scratch[0] = byte(value)
+		scratch[1] = byte(value >> 8)
+		scratch[2] = byte(value >> 16)
+		scratch[3] = byte(value >> 24)
+		hash.Write(scratch[:])
 	}
-	return core.SHA256HexString(core.JSONMarshalString(payload))
+	return core.HexEncode(hash.Sum(nil))
+}
+
+func writeBlockCacheHashString(hash interface{ Write([]byte) (int, error) }, value string) {
+	var length [4]byte
+	n := uint32(len(value))
+	length[0] = byte(n)
+	length[1] = byte(n >> 8)
+	length[2] = byte(n >> 16)
+	length[3] = byte(n >> 24)
+	hash.Write(length[:])
+	hash.Write(core.AsBytes(value))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity
@@ -635,7 +648,14 @@ func cacheContextErr(ctx context.Context) error {
 }
 
 func cloneBlockCacheLabels(input map[string]string) map[string]string {
-	out := map[string]string{}
+	return cloneBlockCacheLabelsExtra(input, 0)
+}
+
+func cloneBlockCacheLabelsExtra(input map[string]string, extra int) map[string]string {
+	if extra < 0 {
+		extra = 0
+	}
+	out := make(map[string]string, len(input)+extra)
 	for key, value := range input {
 		out[key] = value
 	}

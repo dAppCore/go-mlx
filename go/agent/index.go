@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -116,17 +117,24 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 			TokenCount: bundle.TokenCount,
 		}}
 	}
+	sortedBlocks := stateBlockRefsSortedByTokenStart(bundle.Blocks)
 	for i := range index.Entries {
 		if index.Entries[i].BundleURI == "" {
 			index.Entries[i].BundleURI = index.BundleURI
 		}
-		fillIndexEntryByteSpan(&index.Entries[i], bundle)
+		if sortedBlocks {
+			fillIndexEntryByteSpanSorted(&index.Entries[i], bundle)
+		} else {
+			fillIndexEntryByteSpan(&index.Entries[i], bundle)
+		}
 		if index.Entries[i].Hash == "" {
 			index.Entries[i].Hash = indexEntryHash(index.Entries[i])
+		} else if index.Entries[i].Hash != indexEntryHash(index.Entries[i]) {
+			return nil, core.NewError("mlx: State index entry hash mismatch")
 		}
 	}
 	index.Hash = indexHash(index)
-	if err := index.Validate(); err != nil {
+	if err := index.validate(false); err != nil {
 		return nil, err
 	}
 	return index, nil
@@ -142,6 +150,10 @@ func NewMemvidIndex(bundle *kv.MemvidBlockBundle, opts MemvidIndexOptions) (*Mem
 
 // Validate checks schema, model identity, and indexed span bounds.
 func (index *StateIndex) Validate() error {
+	return index.validate(true)
+}
+
+func (index *StateIndex) validate(checkHashes bool) error {
 	if index == nil {
 		return core.NewError("mlx: State index is nil")
 	}
@@ -157,9 +169,9 @@ func (index *StateIndex) Validate() error {
 	if len(index.Entries) == 0 {
 		return core.NewError("mlx: State index has no entries")
 	}
-	seen := map[string]bool{}
+	seen := make(map[string]bool, len(index.Entries))
 	for _, entry := range index.Entries {
-		if err := index.validateEntry(entry); err != nil {
+		if err := index.validateEntry(entry, checkHashes); err != nil {
 			return err
 		}
 		if seen[entry.URI] {
@@ -167,13 +179,13 @@ func (index *StateIndex) Validate() error {
 		}
 		seen[entry.URI] = true
 	}
-	if index.Hash != "" && index.Hash != indexHash(index) {
+	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
 		return core.NewError("mlx: State index hash mismatch")
 	}
 	return nil
 }
 
-func (index *StateIndex) validateEntry(entry StateIndexEntry) error {
+func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash bool) error {
 	if core.Trim(entry.URI) == "" {
 		return core.NewError("mlx: State index entry URI is required")
 	}
@@ -192,7 +204,7 @@ func (index *StateIndex) validateEntry(entry StateIndexEntry) error {
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
 		return core.NewError("mlx: State index entry byte span is invalid")
 	}
-	if entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
+	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
 		return core.NewError("mlx: State index entry hash mismatch")
 	}
 	return nil
@@ -418,7 +430,21 @@ func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 		QuantGroup:    info.QuantGroup,
 		ContextLength: info.ContextLength,
 	}
-	model.Hash = stateHash(core.Join("\n", model.Name, model.Path, model.Architecture, core.Sprintf("%d", model.VocabSize), core.Sprintf("%d", model.NumLayers), core.Sprintf("%d", model.QuantBits), core.Sprintf("%d", model.ContextLength)))
+	builder := core.NewBuilder()
+	builder.WriteString(model.Name)
+	builder.WriteString("\n")
+	builder.WriteString(model.Path)
+	builder.WriteString("\n")
+	builder.WriteString(model.Architecture)
+	builder.WriteString("\n")
+	builder.WriteString(core.Itoa(model.VocabSize))
+	builder.WriteString("\n")
+	builder.WriteString(core.Itoa(model.NumLayers))
+	builder.WriteString("\n")
+	builder.WriteString(core.Itoa(model.QuantBits))
+	builder.WriteString("\n")
+	builder.WriteString(core.Itoa(model.ContextLength))
+	model.Hash = stateHash(builder.String())
 	return model
 }
 
@@ -462,68 +488,174 @@ func fillIndexEntryByteSpan(entry *StateIndexEntry, bundle *kv.StateBlockBundle)
 	}
 }
 
+func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockBundle) {
+	if entry == nil || bundle == nil || len(bundle.Blocks) == 0 {
+		return
+	}
+	if entry.ByteStart != 0 || entry.ByteCount != 0 {
+		return
+	}
+	spanStart := entry.TokenStart
+	spanEnd := entry.TokenStart + entry.TokenCount
+	if spanEnd <= spanStart {
+		return
+	}
+	blocks := bundle.Blocks
+	lo, hi := 0, len(blocks)
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		ref := blocks[mid]
+		if ref.TokenStart+ref.TokenCount <= spanStart {
+			lo = mid + 1
+		} else {
+			hi = mid
+		}
+	}
+	var (
+		byteStartSet bool
+		byteStart    int64
+		byteCount    int64
+	)
+	for i := lo; i < len(blocks); i++ {
+		ref := blocks[i]
+		if ref.TokenStart >= spanEnd {
+			break
+		}
+		chunk := kv.StateBlockChunkRef(ref)
+		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
+			byteStart = int64(chunk.FrameOffset)
+			byteStartSet = true
+		}
+		if ref.PayloadByteCount > 0 {
+			byteCount += int64(ref.PayloadByteCount)
+		}
+	}
+	if entry.ByteStart == 0 && byteStartSet {
+		entry.ByteStart = byteStart
+	}
+	if entry.ByteCount == 0 && byteCount > 0 {
+		entry.ByteCount = byteCount
+	}
+}
+
+func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
+	for i := 1; i < len(blocks); i++ {
+		prev := blocks[i-1]
+		current := blocks[i]
+		if current.TokenStart < prev.TokenStart {
+			return false
+		}
+		if current.TokenStart == prev.TokenStart && current.Index < prev.Index {
+			return false
+		}
+	}
+	return true
+}
+
 func indexHash(index *StateIndex) string {
 	if index == nil {
 		return ""
 	}
-	builder := core.NewBuilder()
-	builder.WriteString(index.Kind)
-	builder.WriteString("|")
-	builder.WriteString(index.BundleURI)
-	builder.WriteString("|")
-	builder.WriteString(index.SnapshotHash)
-	builder.WriteString("|")
-	builder.WriteString(string(index.KVEncoding))
-	builder.WriteString("|")
-	builder.WriteString(core.Itoa(index.TokenCount))
-	builder.WriteString("|")
-	builder.WriteString(core.Itoa(index.BlockSize))
-	builder.WriteString("|")
-	builder.WriteString(index.Model.Hash)
-	builder.WriteString("|")
-	builder.WriteString(index.Tokenizer.Hash)
-	builder.WriteString("|")
-	builder.WriteString(index.Tokenizer.ChatTemplateHash)
+	hash := sha256.New()
+	writeIndexHashString(hash, index.Kind)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, index.BundleURI)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, index.SnapshotHash)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, string(index.KVEncoding))
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt(hash, index.TokenCount)
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt(hash, index.BlockSize)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, index.Model.Hash)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, index.Tokenizer.Hash)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, index.Tokenizer.ChatTemplateHash)
 	for _, entry := range index.Entries {
-		builder.WriteString("|")
-		builder.WriteString(indexEntryHash(entry))
+		writeIndexHashString(hash, "|")
+		entryHash := entry.Hash
+		if entryHash == "" {
+			entryHash = indexEntryHash(entry)
+		}
+		writeIndexHashString(hash, entryHash)
 	}
-	return core.SHA256HexString(builder.String())
+	return core.HexEncode(hash.Sum(nil))
 }
 
 func indexEntryHash(entry StateIndexEntry) string {
-	builder := core.NewBuilder()
-	builder.WriteString(entry.URI)
-	builder.WriteString("|")
-	builder.WriteString(entry.BundleURI)
-	builder.WriteString("|")
-	builder.WriteString(entry.Title)
-	builder.WriteString("|")
-	builder.WriteString(core.Itoa(entry.TokenStart))
-	builder.WriteString("|")
-	builder.WriteString(core.Itoa(entry.TokenCount))
-	builder.WriteString("|")
-	builder.WriteString(core.FormatInt(entry.ByteStart, 10))
-	builder.WriteString("|")
-	builder.WriteString(core.FormatInt(entry.ByteCount, 10))
+	hash := sha256.New()
+	writeIndexHashString(hash, entry.URI)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, entry.BundleURI)
+	writeIndexHashString(hash, "|")
+	writeIndexHashString(hash, entry.Title)
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt(hash, entry.TokenStart)
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt(hash, entry.TokenCount)
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt64(hash, entry.ByteStart)
+	writeIndexHashString(hash, "|")
+	writeIndexHashInt64(hash, entry.ByteCount)
 	for _, label := range entry.Labels {
-		builder.WriteString("|")
-		builder.WriteString(label)
+		writeIndexHashString(hash, "|")
+		writeIndexHashString(hash, label)
 	}
-	if len(entry.Meta) > 0 {
+	if len(entry.Meta) == 1 {
+		for key, value := range entry.Meta {
+			writeIndexHashString(hash, "|")
+			writeIndexHashString(hash, key)
+			writeIndexHashString(hash, "=")
+			writeIndexHashString(hash, value)
+		}
+	} else if len(entry.Meta) > 1 {
 		keys := make([]string, 0, len(entry.Meta))
 		for key := range entry.Meta {
 			keys = append(keys, key)
 		}
 		core.SliceSort(keys)
 		for _, key := range keys {
-			builder.WriteString("|")
-			builder.WriteString(key)
-			builder.WriteString("=")
-			builder.WriteString(entry.Meta[key])
+			writeIndexHashString(hash, "|")
+			writeIndexHashString(hash, key)
+			writeIndexHashString(hash, "=")
+			writeIndexHashString(hash, entry.Meta[key])
 		}
 	}
-	return core.SHA256HexString(builder.String())
+	return core.HexEncode(hash.Sum(nil))
+}
+
+func writeIndexHashString(hash interface{ Write([]byte) (int, error) }, value string) {
+	hash.Write(core.AsBytes(value))
+}
+
+func writeIndexHashInt(hash interface{ Write([]byte) (int, error) }, value int) {
+	writeIndexHashInt64(hash, int64(value))
+}
+
+func writeIndexHashInt64(hash interface{ Write([]byte) (int, error) }, value int64) {
+	var buf [20]byte
+	if value == 0 {
+		hash.Write([]byte{'0'})
+		return
+	}
+	negative := value < 0
+	if negative {
+		value = -value
+	}
+	i := len(buf)
+	for value > 0 {
+		i--
+		buf[i] = byte('0' + value%10)
+		value /= 10
+	}
+	if negative {
+		i--
+		buf[i] = '-'
+	}
+	hash.Write(buf[i:])
 }
 
 func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {

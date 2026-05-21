@@ -21,12 +21,12 @@ type Tokenizer struct {
 
 func stripImplicitBOS(tok tokenizerImpl, tokens []int32) []int32 {
 	if tok == nil || len(tokens) == 0 {
-		return append([]int32(nil), tokens...)
+		return tokens
 	}
 	if tok.HasBOSToken() && tokens[0] == tok.BOS() {
-		return append([]int32(nil), tokens[1:]...)
+		return tokens[1:]
 	}
-	return append([]int32(nil), tokens...)
+	return tokens
 }
 
 func hasExplicitBOSPrefix(tok tokenizerImpl, text string) bool {
@@ -39,7 +39,7 @@ func hasExplicitBOSPrefix(tok tokenizerImpl, text string) bool {
 
 func stripImplicitBOSForText(tok tokenizerImpl, text string, tokens []int32) []int32 {
 	if hasExplicitBOSPrefix(tok, text) {
-		return append([]int32(nil), tokens...)
+		return tokens
 	}
 	return stripImplicitBOS(tok, tokens)
 }

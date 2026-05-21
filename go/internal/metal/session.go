@@ -507,7 +507,7 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 		return ctx.Err()
 	default:
 	}
-	vInput := FromValues([]int32{id}, 1)
+	vInput := fromSingleInt32(id)
 	input := Reshape(vInput, 1, 1)
 	Free(vInput)
 
