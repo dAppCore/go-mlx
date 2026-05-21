@@ -1,10 +1,10 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
-// Package chaptersmoke runs chapter-sized memvid KV save/restore/generate
+// Package chaptersmoke runs chapter-sized State KV save/restore/generate
 // smoke benchmarks. Driver-neutral — callers supply a Runner with the
 // model-specific Capture/Generate callbacks.
 //
-//	runner := mlx.NewModelMemvidKVChapterRunner(model, baseGen)
+//	runner := mlx.NewModelStateKVChapterRunner(model, baseGen)
 //	report, err := chaptersmoke.Run(ctx, runner, chaptersmoke.Config{
 //	    StoreDir: "/tmp/smoke",
 //	    Chapters: []chaptersmoke.Input{{Text: chapter, Question: q}},
@@ -16,7 +16,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/blockcache"
 	"dappco.re/go/mlx/kv"
@@ -30,7 +30,7 @@ const (
 
 	// StoreFileLog selects the .mvlog filestore backend.
 	StoreFileLog = "file-log"
-	// StoreCLI selects the memvid CLI backend (.mp4 / .mv2 QR-video).
+	// StoreCLI selects the deprecated memvid CLI backend (.mp4 / .mv2 QR-video).
 	StoreCLI = "cli"
 )
 
@@ -38,10 +38,10 @@ const (
 // Both callbacks close over caller-supplied model state — chaptersmoke does
 // not import mlx and never sees its types directly.
 type Runner struct {
-	// Capture writes a chapter prompt's KV state into store as memvid blocks.
-	Capture func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error)
-	// Generate restores a memvid prefix, appends suffix, and decodes an answer.
-	Generate func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string) (Generation, error)
+	// Capture writes a chapter prompt's KV state into store as State blocks.
+	Capture func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error)
+	// Generate restores a State prefix, appends suffix, and decodes an answer.
+	Generate func(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int, suffix string) (Generation, error)
 }
 
 // Generation is one generation step's result inside the chapter-smoke flow.
@@ -52,13 +52,14 @@ type Generation struct {
 	PromptCacheRestoreDuration time.Duration `json:"prompt_cache_restore_duration,omitempty"`
 }
 
-// Config configures a small memvid-backed KV restore smoke over
+// Config configures a small State-backed KV restore smoke over
 // chapter-sized prompts.
 type Config struct {
 	StoreDir        string  `json:"store_dir,omitempty"`
 	StorePath       string  `json:"store_path,omitempty"`
 	StoreKind       string  `json:"store_kind,omitempty"`
-	MemvidBinary    string  `json:"memvid_binary,omitempty"`
+	StateBinary     string  `json:"state_binary,omitempty"`
+	MemvidBinary    string  `json:"-"`
 	BlockSize       int     `json:"block_size,omitempty"`
 	AnswerMaxTokens int     `json:"answer_max_tokens,omitempty"`
 	Temperature     float32 `json:"temperature,omitempty"`
@@ -84,7 +85,7 @@ type Report struct {
 }
 
 // ChapterReport reports one save, reopen, restore, and answer cycle from a
-// memvid store.
+// State store.
 type ChapterReport struct {
 	Name                 string        `json:"name,omitempty"`
 	Question             string        `json:"question,omitempty"`
@@ -173,15 +174,15 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		return chapterError(report, err.Error())
 	}
 	captureStart := time.Now()
-	bundle, err := runner.Capture(ctx, chapter.Text, store.Writer, kv.MemvidBlockOptions{
+	bundle, err := runner.Capture(ctx, chapter.Text, store.Writer, kv.StateBlockOptions{
 		BlockSize:  cfg.BlockSize,
 		KVEncoding: kv.EncodingNative,
-		URI:        "mlx://memvid-chapter-smoke/" + slug(index, chapter.Name),
-		Labels:     []string{"chapter-smoke", "memvid-kv"},
+		URI:        "mlx://state-chapter-smoke/" + slug(index, chapter.Name),
+		Labels:     []string{"chapter-smoke", "state-kv"},
 	})
 	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
 	if err == nil {
-		_, err = kv.SaveMemvidBlockBundle(ctx, store.Writer, bundle, report.BundleURI)
+		_, err = kv.SaveStateBlockBundle(ctx, store.Writer, bundle, report.BundleURI)
 	}
 	closeErr := store.Close()
 	report.SaveDuration = report.CaptureDuration
@@ -207,7 +208,7 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 	if err != nil {
 		return chapterError(report, err.Error())
 	}
-	loadedBundle, err := kv.LoadMemvidBlockBundle(ctx, reader.Store, report.BundleURI)
+	loadedBundle, err := kv.LoadStateBlockBundle(ctx, reader.Store, report.BundleURI)
 	if err != nil {
 		closeErr = reader.Close()
 		if closeErr != nil {
@@ -277,8 +278,8 @@ func storePaths(cfg Config) (string, string, error) {
 }
 
 type storeHandle struct {
-	Store  memvid.Store
-	Writer memvid.Writer
+	Store  state.Store
+	Writer state.Writer
 	close  func() error
 }
 
@@ -320,10 +321,14 @@ func openReadStore(ctx context.Context, cfg Config, path string) (storeHandle, e
 }
 
 func cliOptions(cfg Config) []memvidcli.Option {
-	if core.Trim(cfg.MemvidBinary) == "" {
+	binary := core.Trim(cfg.StateBinary)
+	if binary == "" {
+		binary = core.Trim(cfg.MemvidBinary)
+	}
+	if binary == "" {
 		return nil
 	}
-	return []memvidcli.Option{memvidcli.WithBinary(cfg.MemvidBinary)}
+	return []memvidcli.Option{memvidcli.WithBinary(binary)}
 }
 
 func normalizeStoreKind(kind, path string) string {
@@ -356,7 +361,7 @@ func validateStoreKind(kind string) error {
 
 func storeSource(cfg Config) string {
 	if cfg.StoreKind == StoreCLI {
-		return memvid.CodecQRVideo
+		return state.CodecQRVideo
 	}
 	return filestore.CodecFile
 }
@@ -399,13 +404,13 @@ func chapterName(index int, name string) string {
 
 func storeFileName(kind string) string {
 	if kind == StoreCLI {
-		return "memvid-kv-chapters.mp4"
+		return "state-kv-chapters.mp4"
 	}
-	return "memvid-kv-chapters.mvlog"
+	return "state-kv-chapters.mvlog"
 }
 
 func bundleURI(index int, name string) string {
-	return "mlx://memvid-chapter-smoke/" + slug(index, name) + "/bundle"
+	return "mlx://state-chapter-smoke/" + slug(index, name) + "/bundle"
 }
 
 func slug(index int, name string) string {
@@ -481,12 +486,12 @@ func resultError(result core.Result) error {
 }
 
 type countingStore struct {
-	store  memvid.Store
+	store  state.Store
 	reads  int
 	unique map[int]struct{}
 }
 
-func newCountingStore(store memvid.Store) *countingStore {
+func newCountingStore(store state.Store) *countingStore {
 	return &countingStore{store: store, unique: map[int]struct{}{}}
 }
 
@@ -495,14 +500,14 @@ func (s *countingStore) Get(ctx context.Context, chunkID int) (string, error) {
 	return s.store.Get(ctx, chunkID)
 }
 
-func (s *countingStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *countingStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
 	s.record(chunkID)
-	return memvid.Resolve(ctx, s.store, chunkID)
+	return state.Resolve(ctx, s.store, chunkID)
 }
 
-func (s *countingStore) ResolveBytes(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *countingStore) ResolveBytes(ctx context.Context, chunkID int) (state.Chunk, error) {
 	s.record(chunkID)
-	return memvid.ResolveBytes(ctx, s.store, chunkID)
+	return state.ResolveBytes(ctx, s.store, chunkID)
 }
 
 func (s *countingStore) Reads() int {

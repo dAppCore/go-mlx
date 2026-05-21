@@ -6235,10 +6235,14 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	noRestore := fs.Bool("no-restore", false, "skip KV restore latency check")
 	noBundle := fs.Bool("no-bundle", false, "skip state-bundle round trip check")
 	noProbes := fs.Bool("no-probes", false, "skip probe overhead check")
-	memvidKVWarm := fs.Bool("memvid-kv-warm", false, "include memvid KV block build, restore, and warmed generation check")
-	memvidKVBlockSize := fs.Int("memvid-kv-block-size", 0, "memvid KV block size in tokens; 0 uses the runtime default")
-	memvidKVPrefixTokens := fs.Int("memvid-kv-prefix-tokens", 0, "tokens to restore from memvid KV blocks; 0 restores the full captured prefix")
-	memvidKVStore := fs.String("memvid-kv-store", "", "path for the memvid KV block store; empty uses a temporary file")
+	stateKVWarm := fs.Bool("state-kv-warm", false, "include State KV block build, restore, and warmed generation check")
+	stateKVBlockSize := fs.Int("state-kv-block-size", 0, "State KV block size in tokens; 0 uses the runtime default")
+	stateKVPrefixTokens := fs.Int("state-kv-prefix-tokens", 0, "tokens to restore from State KV blocks; 0 restores the full captured prefix")
+	stateKVStore := fs.String("state-kv-store", "", "path for the State KV block store; empty uses a temporary file")
+	memvidKVWarm := fs.Bool("memvid-kv-warm", false, "deprecated alias for -state-kv-warm")
+	memvidKVBlockSize := fs.Int("memvid-kv-block-size", 0, "deprecated alias for -state-kv-block-size")
+	memvidKVPrefixTokens := fs.Int("memvid-kv-prefix-tokens", 0, "deprecated alias for -state-kv-prefix-tokens")
+	memvidKVStore := fs.String("memvid-kv-store", "", "deprecated alias for -state-kv-store")
 	fs.Usage = func() {
 		core.WriteString(stderr, core.Sprintf("Usage: %s bench [flags] [model-path]\n", cliName()))
 		fs.VisitAll(func(f *flag.Flag) {
@@ -6277,12 +6281,12 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("%s bench: prompt repeat must be >= 1\n", cliName()))
 		return 2
 	}
-	if *memvidKVBlockSize < 0 {
-		core.WriteString(stderr, core.Sprintf("%s bench: memvid KV block size must be >= 0\n", cliName()))
+	if *stateKVBlockSize < 0 || *memvidKVBlockSize < 0 {
+		core.WriteString(stderr, core.Sprintf("%s bench: State KV block size must be >= 0\n", cliName()))
 		return 2
 	}
-	if *memvidKVPrefixTokens < 0 {
-		core.WriteString(stderr, core.Sprintf("%s bench: memvid KV prefix tokens must be >= 0\n", cliName()))
+	if *stateKVPrefixTokens < 0 || *memvidKVPrefixTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s bench: State KV prefix tokens must be >= 0\n", cliName()))
 		return 2
 	}
 	if *prefillChunkSize < 0 {
@@ -6340,10 +6344,22 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	cfg.IncludeKVRestore = !*noRestore
 	cfg.IncludeStateBundleRoundTrip = !*noBundle
 	cfg.IncludeProbeOverhead = !*noProbes
-	cfg.IncludeMemvidKVBlockWarm = *memvidKVWarm
-	cfg.MemvidKVBlockSize = *memvidKVBlockSize
-	cfg.MemvidKVPrefixTokens = *memvidKVPrefixTokens
-	cfg.MemvidKVBlockStorePath = core.Trim(*memvidKVStore)
+	if *memvidKVWarm {
+		*stateKVWarm = true
+	}
+	if *stateKVBlockSize == 0 && *memvidKVBlockSize != 0 {
+		*stateKVBlockSize = *memvidKVBlockSize
+	}
+	if *stateKVPrefixTokens == 0 && *memvidKVPrefixTokens != 0 {
+		*stateKVPrefixTokens = *memvidKVPrefixTokens
+	}
+	if core.Trim(*stateKVStore) == "" && core.Trim(*memvidKVStore) != "" {
+		*stateKVStore = core.Trim(*memvidKVStore)
+	}
+	cfg.IncludeStateKVBlockWarm = *stateKVWarm
+	cfg.StateKVBlockSize = *stateKVBlockSize
+	cfg.StateKVPrefixTokens = *stateKVPrefixTokens
+	cfg.StateKVBlockStorePath = core.Trim(*stateKVStore)
 	if *speculativeDraftTokens < 0 {
 		core.WriteString(stderr, core.Sprintf("%s bench: speculative draft tokens must be >= 0\n", cliName()))
 		return 2

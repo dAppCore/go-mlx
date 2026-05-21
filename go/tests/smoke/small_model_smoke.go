@@ -97,8 +97,8 @@ func DefaultSmallModelSmokeConfig() SmallModelSmokeConfig {
 	fast.MaxTokens = DefaultSmallModelSmokeMaxTokens
 	fast.Prompt = "Write one short sentence about native Apple inference."
 	fast.CachePrompt = fast.Prompt
-	fast.IncludeMemvidKVBlockWarm = true
-	fast.MemvidKVBlockSize = blockcache.DefaultBlockSize
+	fast.IncludeStateKVBlockWarm = true
+	fast.StateKVBlockSize = blockcache.DefaultBlockSize
 	return SmallModelSmokeConfig{
 		MaxWeightBytes:         DefaultSmallModelSmokeMaxWeightBytes,
 		RequiredQuantization:   DefaultSmallModelSmokeQuantization,

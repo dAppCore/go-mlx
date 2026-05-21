@@ -112,7 +112,7 @@ func TestRunCommand_BenchJSON_Good(t *testing.T) {
 	}
 }
 
-func TestRunCommand_BenchPromptFileMemvidKVWarm_Good(t *testing.T) {
+func TestRunCommand_BenchPromptFileStateKVWarm_Good(t *testing.T) {
 	originalLoad := loadBenchModel
 	originalRun := runBenchReport
 	t.Cleanup(func() {
@@ -135,7 +135,7 @@ func TestRunCommand_BenchPromptFileMemvidKVWarm_Good(t *testing.T) {
 		return &bench.Report{
 			Version: bench.ReportVersion,
 			Config:  cfg,
-			MemvidKVBlockWarm: bench.MemvidKVBlockWarmReport{
+			StateKVBlockWarm: bench.StateKVBlockWarmReport{
 				Attempted: true,
 				BlockSize: 512,
 			},
@@ -149,10 +149,10 @@ func TestRunCommand_BenchPromptFileMemvidKVWarm_Good(t *testing.T) {
 		"-prompt-file", promptPath,
 		"-prompt-repeat", "2",
 		"-prompt-suffix-file", suffixPath,
-		"-memvid-kv-warm",
-		"-memvid-kv-block-size", "512",
-		"-memvid-kv-prefix-tokens", "1024",
-		"-memvid-kv-store", "/tmp/bench.mvlog",
+		"-state-kv-warm",
+		"-state-kv-block-size", "512",
+		"-state-kv-prefix-tokens", "1024",
+		"-state-kv-store", "/tmp/bench.mvlog",
 		"/models/demo",
 	}, stdout, stderr)
 	if code != 0 {
@@ -161,11 +161,11 @@ func TestRunCommand_BenchPromptFileMemvidKVWarm_Good(t *testing.T) {
 	if gotCfg.Prompt != "alpha\n\nalpha\n\nomega" {
 		t.Fatalf("bench prompt = %q, want repeated prompt plus suffix", gotCfg.Prompt)
 	}
-	if !gotCfg.IncludeMemvidKVBlockWarm || gotCfg.MemvidKVBlockSize != 512 || gotCfg.MemvidKVPrefixTokens != 1024 || gotCfg.MemvidKVBlockStorePath != "/tmp/bench.mvlog" {
-		t.Fatalf("memvid bench cfg = %+v, want explicit KV block warm settings", gotCfg)
+	if !gotCfg.IncludeStateKVBlockWarm || gotCfg.StateKVBlockSize != 512 || gotCfg.StateKVPrefixTokens != 1024 || gotCfg.StateKVBlockStorePath != "/tmp/bench.mvlog" {
+		t.Fatalf("State bench cfg = %+v, want explicit KV block warm settings", gotCfg)
 	}
-	if !core.Contains(stdout.String(), `"include_memvid_kv_block_warm": true`) || !core.Contains(stdout.String(), `"memvid_kv_block_size": 512`) {
-		t.Fatalf("stdout = %q, want memvid bench config", stdout.String())
+	if !core.Contains(stdout.String(), `"include_state_kv_block_warm": true`) || !core.Contains(stdout.String(), `"state_kv_block_size": 512`) {
+		t.Fatalf("stdout = %q, want State bench config", stdout.String())
 	}
 }
 

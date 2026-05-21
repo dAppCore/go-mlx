@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
 )
@@ -69,9 +69,9 @@ func TestNew_SaveLoad_Good(t *testing.T) {
 			Rank: 8, Alpha: 16, TargetKeys: []string{"q_proj", "v_proj"},
 		},
 		Sampler: Sampler{MaxTokens: 32, Temperature: 0.2, TopK: 4, RepeatPenalty: 1.1},
-		MemvidRefs: []memvid.ChunkRef{{
+		StateRefs: []state.ChunkRef{{
 			ChunkID: 42, FrameOffset: 7, HasFrameOffset: true,
-			Codec: memvid.CodecQRVideo, Segment: "/tmp/trace.mp4",
+			Codec: state.CodecQRVideo, Segment: "/tmp/trace.mp4",
 		}},
 		Refs: []Ref{{Kind: "kv", URI: "file:///tmp/session.kvbin", Hash: "sha256:kv"}},
 		Meta: map[string]string{"suite": "beta"},
@@ -118,7 +118,7 @@ func TestNew_SaveLoad_Good(t *testing.T) {
 	if loaded.Analysis == nil || loaded.SAMI == nil || loaded.SAMI.Architecture != "gemma4_text" {
 		t.Fatalf("loaded analysis/SAMI = %+v/%+v", loaded.Analysis, loaded.SAMI)
 	}
-	if len(loaded.Refs) != 2 || loaded.Refs[1].Kind != RefMemvid || loaded.Refs[1].Memvid.ChunkID != 42 {
+	if len(loaded.Refs) != 2 || loaded.Refs[1].Kind != RefState || loaded.Refs[1].State.ChunkID != 42 {
 		t.Fatalf("loaded refs = %+v", loaded.Refs)
 	}
 	if loaded.Meta["suite"] != "beta" {
@@ -132,12 +132,12 @@ func TestNew_NilSnapshot_Bad(t *testing.T) {
 	}
 }
 
-func TestSnapshotFromMemvid_Good(t *testing.T) {
-	store := memvid.NewInMemoryStore(nil)
+func TestSnapshotFromState_Good(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
 	snapshot := bundleTestSnapshot()
-	ref, err := snapshot.SaveMemvid(context.Background(), store, kv.MemvidOptions{})
+	ref, err := snapshot.SaveState(context.Background(), store, kv.StateOptions{})
 	if err != nil {
-		t.Fatalf("SaveMemvid() error = %v", err)
+		t.Fatalf("SaveState() error = %v", err)
 	}
 	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
@@ -145,11 +145,11 @@ func TestSnapshotFromMemvid_Good(t *testing.T) {
 	}
 	b := &Bundle{
 		Version: Version, Kind: Kind, KVHash: hash,
-		Refs: []Ref{{Kind: RefMemvid, URI: MemvidURI(ref), Memvid: ref}},
+		Refs: []Ref{{Kind: RefState, URI: StateURI(ref), State: ref}},
 	}
-	loaded, err := b.SnapshotFromMemvid(context.Background(), store)
+	loaded, err := b.SnapshotFromState(context.Background(), store)
 	if err != nil {
-		t.Fatalf("SnapshotFromMemvid() error = %v", err)
+		t.Fatalf("SnapshotFromState() error = %v", err)
 	}
 	if loaded.Architecture != snapshot.Architecture || loaded.TokenOffset != snapshot.TokenOffset {
 		t.Fatalf("loaded snapshot = %+v, want %+v", loaded, snapshot)
@@ -157,19 +157,19 @@ func TestSnapshotFromMemvid_Good(t *testing.T) {
 }
 
 func TestSnapshotFromMemvid_AllowsFrameZero_Good(t *testing.T) {
-	source := memvid.NewInMemoryStore(nil)
+	source := state.NewInMemoryStore(nil)
 	snapshot := bundleTestSnapshot()
 	ref, err := snapshot.SaveMemvid(context.Background(), source, kv.MemvidOptions{})
 	if err != nil {
 		t.Fatalf("SaveMemvid() error = %v", err)
 	}
-	chunk, err := memvid.Resolve(context.Background(), source, ref.ChunkID)
+	chunk, err := state.Resolve(context.Background(), source, ref.ChunkID)
 	if err != nil {
 		t.Fatalf("Resolve() error = %v", err)
 	}
-	store := memvid.NewInMemoryStoreWithManifest(map[int]string{0: chunk.Text}, map[int]memvid.ChunkRef{0: {
+	store := state.NewInMemoryStoreWithManifest(map[int]string{0: chunk.Text}, map[int]state.ChunkRef{0: {
 		ChunkID: 0, FrameOffset: 0, HasFrameOffset: true,
-		Codec: memvid.CodecQRVideo, Segment: "/tmp/session.mp4",
+		Codec: state.CodecQRVideo, Segment: "/tmp/session.mp4",
 	}})
 	hash, err := kv.HashSnapshot(snapshot)
 	if err != nil {
@@ -179,9 +179,9 @@ func TestSnapshotFromMemvid_AllowsFrameZero_Good(t *testing.T) {
 		Version: Version, Kind: Kind, KVHash: hash,
 		Refs: []Ref{{
 			Kind: RefMemvid, URI: "memvid:///tmp/session.mp4#chunk=0",
-			Memvid: memvid.ChunkRef{
+			Memvid: state.ChunkRef{
 				ChunkID: 0, FrameOffset: 0, HasFrameOffset: true,
-				Codec: memvid.CodecQRVideo, Segment: "/tmp/session.mp4",
+				Codec: state.CodecQRVideo, Segment: "/tmp/session.mp4",
 			},
 		}},
 	}
@@ -315,23 +315,23 @@ func TestSnapshot_NilAndMissingKV_Bad(t *testing.T) {
 	if _, err := (&Bundle{Version: Version, Kind: Kind}).Snapshot(); err == nil {
 		t.Fatal("Snapshot(no KV) error = nil")
 	}
-	if _, err := (*Bundle)(nil).SnapshotFromMemvid(context.Background(), memvid.NewInMemoryStore(nil)); err == nil {
-		t.Fatal("SnapshotFromMemvid(nil bundle) error = nil")
+	if _, err := (*Bundle)(nil).SnapshotFromState(context.Background(), state.NewInMemoryStore(nil)); err == nil {
+		t.Fatal("SnapshotFromState(nil bundle) error = nil")
 	}
-	if _, err := (&Bundle{Version: Version, Kind: Kind}).SnapshotFromMemvid(nil, memvid.NewInMemoryStore(nil)); err == nil {
-		t.Fatal("SnapshotFromMemvid(no ref) error = nil")
+	if _, err := (&Bundle{Version: Version, Kind: Kind}).SnapshotFromState(nil, state.NewInMemoryStore(nil)); err == nil {
+		t.Fatal("SnapshotFromState(no ref) error = nil")
 	}
-	store := memvid.NewInMemoryStore(nil)
-	ref, err := bundleTestSnapshot().SaveMemvid(context.Background(), store, kv.MemvidOptions{})
+	store := state.NewInMemoryStore(nil)
+	ref, err := bundleTestSnapshot().SaveState(context.Background(), store, kv.StateOptions{})
 	if err != nil {
-		t.Fatalf("SaveMemvid() error = %v", err)
+		t.Fatalf("SaveState() error = %v", err)
 	}
 	b := &Bundle{
 		Version: Version, Kind: Kind, KVHash: "bad-hash",
-		Refs: []Ref{{Kind: RefMemvid, Memvid: ref}},
+		Refs: []Ref{{Kind: RefState, State: ref}},
 	}
-	if _, err := b.SnapshotFromMemvid(context.Background(), store); err == nil {
-		t.Fatal("SnapshotFromMemvid(hash mismatch) error = nil")
+	if _, err := b.SnapshotFromState(context.Background(), store); err == nil {
+		t.Fatal("SnapshotFromState(hash mismatch) error = nil")
 	}
 }
 
@@ -414,13 +414,13 @@ func TestFileHash_MissingFile_Bad(t *testing.T) {
 	}
 }
 
-func TestMemvidURI_BothShapes_Good(t *testing.T) {
-	withSeg := MemvidURI(memvid.ChunkRef{ChunkID: 5, Segment: "/tmp/x.mp4"})
-	withoutSeg := MemvidURI(memvid.ChunkRef{ChunkID: 7})
-	if withSeg != "memvid:///tmp/x.mp4#chunk=5" {
+func TestStateURI_BothShapes_Good(t *testing.T) {
+	withSeg := StateURI(state.ChunkRef{ChunkID: 5, Segment: "/tmp/x.mp4"})
+	withoutSeg := StateURI(state.ChunkRef{ChunkID: 7})
+	if withSeg != "state:///tmp/x.mp4#chunk=5" {
 		t.Fatalf("with-segment URI = %q", withSeg)
 	}
-	if withoutSeg != "memvid://chunk/7" {
+	if withoutSeg != "state://chunk/7" {
 		t.Fatalf("without-segment URI = %q", withoutSeg)
 	}
 }

@@ -709,14 +709,14 @@
         "chunk_id": 102,
         "frame_offset": 743198811,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed.mvlog"
       },
       "index_ref": {
         "chunk_id": 103,
         "frame_offset": 743239704,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed.mvlog"
       }
     },
@@ -738,14 +738,14 @@
         "chunk_id": 105,
         "frame_offset": 753799828,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed.mvlog"
       },
       "index_ref": {
         "chunk_id": 106,
         "frame_offset": 753800771,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed.mvlog"
       }
     },

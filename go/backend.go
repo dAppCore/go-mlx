@@ -9,7 +9,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/gguf"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/kv"
@@ -758,9 +758,9 @@ func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	return restorer.RestorePromptCacheFromKV(context.Background(), toMetalKVSnapshot(snapshot))
 }
 
-// WarmPromptCacheFromMemvidBlocks loads the requested memvid KV prefix blocks and
+// WarmPromptCacheFromStateBlocks loads the requested State KV prefix blocks and
 // installs them directly as the model prompt cache.
-func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
+func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -774,7 +774,7 @@ func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvi
 		}
 		return restorer.RestorePromptCacheFromKVBlocks(ctx, source)
 	}
-	snapshot, err := kv.LoadPrefixFromMemvidBlocks(ctx, store, bundle, prefixTokens)
+	snapshot, err := kv.LoadPrefixFromStateBlocks(ctx, store, bundle, prefixTokens)
 	if err != nil {
 		return err
 	}
@@ -785,23 +785,31 @@ func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store memvi
 	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
 }
 
-func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
+// WarmPromptCacheFromMemvidBlocks loads the requested old memvid-named State
+// KV prefix blocks and installs them directly as the model prompt cache.
+//
+// Deprecated: use WarmPromptCacheFromStateBlocks.
+func (m *Model) WarmPromptCacheFromMemvidBlocks(ctx context.Context, store state.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
+	return m.WarmPromptCacheFromStateBlocks(ctx, store, bundle, prefixTokens)
+}
+
+func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int) (metal.KVSnapshotBlockSource, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid store is nil")
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: state store is nil")
 	}
-	if err := kv.ValidateMemvidBlockBundle(bundle); err != nil {
+	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
 		return metal.KVSnapshotBlockSource{}, err
 	}
 	if prefixTokens <= 0 {
 		prefixTokens = bundle.TokenCount
 	}
 	if prefixTokens > bundle.TokenCount {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid KV prefix exceeds bundle token count")
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix exceeds bundle token count")
 	}
-	refs := make([]kv.MemvidBlockRef, 0, len(bundle.Blocks))
+	refs := make([]kv.StateBlockRef, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
 		if ref.TokenStart >= prefixTokens {
 			break
@@ -812,7 +820,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 		}
 	}
 	if len(refs) == 0 {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: memvid KV prefix has no covering blocks")
+		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix has no covering blocks")
 	}
 	source := metal.KVSnapshotBlockSource{
 		TokenCount:   bundle.TokenCount,
@@ -824,28 +832,28 @@ func metalKVSnapshotBlockSource(ctx context.Context, store memvid.Store, bundle 
 			loadCtx = ctx
 		}
 		if index < 0 || index >= len(refs) {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block index is out of range")
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block index is out of range")
 		}
 		ref := refs[index]
 		loadOpts := kv.LoadOptions{}
 		if bundle.KVEncoding == kv.EncodingNative {
 			loadOpts.RawKVOnly = true
 		}
-		block, err := kv.LoadMemvidBlockWithOptions(loadCtx, store, ref, loadOpts)
+		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
 		if err != nil {
 			return metal.KVSnapshotBlock{}, err
 		}
 		if block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block metadata mismatch")
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block metadata mismatch")
 		}
 		snapshot := block.Snapshot
 		if snapshot == nil {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV block snapshot is nil")
+			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block snapshot is nil")
 		}
 		if block.TokenStart+block.TokenCount > prefixTokens {
 			trimTokens := prefixTokens - block.TokenStart
 			if trimTokens <= 0 {
-				return metal.KVSnapshotBlock{}, core.NewError("mlx: memvid KV prefix has invalid trim range")
+				return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV prefix has invalid trim range")
 			}
 			baseOffset := kv.EffectiveTokenOffset(snapshot) - kv.EffectiveSeqLen(snapshot)
 			if baseOffset < 0 {

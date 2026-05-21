@@ -10,7 +10,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/agent"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/internal/metal"
@@ -339,8 +339,9 @@ func (s *ModelSession) LoadKV(path string) error {
 	return s.RestoreKV(snapshot)
 }
 
-// SaveKVToMemvid captures and writes the current retained KV state to memvid.
-func (s *ModelSession) SaveKVToMemvid(ctx context.Context, store memvid.Writer, opts kv.MemvidOptions) (memvid.ChunkRef, error) {
+// SaveKVToState captures and writes the current retained KV state to a State
+// store.
+func (s *ModelSession) SaveKVToState(ctx context.Context, store state.Writer, opts kv.StateOptions) (state.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -350,26 +351,42 @@ func (s *ModelSession) SaveKVToMemvid(ctx context.Context, store memvid.Writer, 
 	}
 	snapshot, err := s.CaptureKVWithOptions(captureOpts)
 	if err != nil {
-		return memvid.ChunkRef{}, err
+		return state.ChunkRef{}, err
 	}
-	return snapshot.SaveMemvid(ctx, store, opts)
+	return snapshot.SaveState(ctx, store, opts)
 }
 
-// LoadKVFromMemvid restores retained session state from a memvid KV snapshot.
-func (s *ModelSession) LoadKVFromMemvid(ctx context.Context, store memvid.Store, ref memvid.ChunkRef) error {
+// SaveKVToMemvid captures and writes the current retained KV state to the old
+// memvid-named State store.
+//
+// Deprecated: use SaveKVToState.
+func (s *ModelSession) SaveKVToMemvid(ctx context.Context, store state.Writer, opts kv.MemvidOptions) (state.ChunkRef, error) {
+	return s.SaveKVToState(ctx, store, opts)
+}
+
+// LoadKVFromState restores retained session state from a State KV snapshot.
+func (s *ModelSession) LoadKVFromState(ctx context.Context, store state.Store, ref state.ChunkRef) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	snapshot, err := kv.LoadFromMemvid(ctx, store, ref)
+	snapshot, err := kv.LoadFromState(ctx, store, ref)
 	if err != nil {
 		return err
 	}
 	return s.RestoreKV(snapshot)
 }
 
+// LoadKVFromMemvid restores retained session state from an old memvid-named
+// State KV snapshot.
+//
+// Deprecated: use LoadKVFromState.
+func (s *ModelSession) LoadKVFromMemvid(ctx context.Context, store state.Store, ref state.ChunkRef) error {
+	return s.LoadKVFromState(ctx, store, ref)
+}
+
 // SaveKVBlocksToState captures retained KV state and writes per-block State
 // chunks.
-func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store memvid.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
+func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -400,13 +417,13 @@ func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store memvid.Wri
 // chunks.
 //
 // Deprecated: use SaveKVBlocksToState.
-func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+func (s *ModelSession) SaveKVBlocksToMemvid(ctx context.Context, store state.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
 	return s.SaveKVBlocksToState(ctx, store, opts)
 }
 
 // LoadKVBlocksFromState restores retained session state from per-block State
 // chunks.
-func (s *ModelSession) LoadKVBlocksFromState(ctx context.Context, store memvid.Store, bundle *kv.StateBlockBundle) error {
+func (s *ModelSession) LoadKVBlocksFromState(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle) error {
 	return s.LoadKVPrefixBlocksFromState(ctx, store, bundle, 0)
 }
 
@@ -414,14 +431,14 @@ func (s *ModelSession) LoadKVBlocksFromState(ctx context.Context, store memvid.S
 // chunks.
 //
 // Deprecated: use LoadKVBlocksFromState.
-func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle) error {
+func (s *ModelSession) LoadKVBlocksFromMemvid(ctx context.Context, store state.Store, bundle *kv.MemvidBlockBundle) error {
 	return s.LoadKVBlocksFromState(ctx, store, bundle)
 }
 
 // LoadKVPrefixBlocksFromState restores a retained session state from the
 // State KV blocks needed to cover prefixTokens. Native sessions consume the
 // blocks as a stream, avoiding a full CPU-side assembled snapshot.
-func (s *ModelSession) LoadKVPrefixBlocksFromState(ctx context.Context, store memvid.Store, bundle *kv.StateBlockBundle, prefixTokens int) error {
+func (s *ModelSession) LoadKVPrefixBlocksFromState(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -453,12 +470,12 @@ func (s *ModelSession) LoadKVPrefixBlocksFromState(ctx context.Context, store me
 	return s.RestoreKV(snapshot)
 }
 
-// LoadKVPrefixBlocksFromMemvid restores a retained session state from the
-// memvid KV blocks needed to cover prefixTokens. Native sessions consume the
+// LoadKVPrefixBlocksFromMemvid restores a retained session state from the old
+// memvid-named KV blocks needed to cover prefixTokens. Native sessions consume the
 // blocks as a stream, avoiding a full CPU-side assembled snapshot.
 //
 // Deprecated: use LoadKVPrefixBlocksFromState.
-func (s *ModelSession) LoadKVPrefixBlocksFromMemvid(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
+func (s *ModelSession) LoadKVPrefixBlocksFromMemvid(ctx context.Context, store state.Store, bundle *kv.MemvidBlockBundle, prefixTokens int) error {
 	return s.LoadKVPrefixBlocksFromState(ctx, store, bundle, prefixTokens)
 }
 
@@ -477,9 +494,9 @@ func (s *ModelSession) RestoreBundle(b *bundle.Bundle) error {
 	return s.RestoreKV(snapshot)
 }
 
-// RestoreBundleFromMemvid restores the session from a state bundle whose KV is
-// held in memvid cold storage.
-func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, b *bundle.Bundle, store memvid.Store) error {
+// RestoreBundleFromState restores the session from a state bundle whose KV is
+// held in a State store.
+func (s *ModelSession) RestoreBundleFromState(ctx context.Context, b *bundle.Bundle, store state.Store) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -489,11 +506,19 @@ func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, b *bundle.Bu
 	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
 		return err
 	}
-	snapshot, err := b.SnapshotFromMemvid(ctx, store)
+	snapshot, err := b.SnapshotFromState(ctx, store)
 	if err != nil {
 		return err
 	}
 	return s.RestoreKV(snapshot)
+}
+
+// RestoreBundleFromMemvid restores the session from a state bundle whose KV is
+// held in the old memvid-named State cold storage.
+//
+// Deprecated: use RestoreBundleFromState.
+func (s *ModelSession) RestoreBundleFromMemvid(ctx context.Context, b *bundle.Bundle, store state.Store) error {
+	return s.RestoreBundleFromState(ctx, b, store)
 }
 
 // LoadBundle reads a state bundle from path and restores it into the session.

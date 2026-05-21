@@ -169,8 +169,8 @@ func TestPlanSmallModelSmoke_GemmaQwenCoverageMatrix_Good(t *testing.T) {
 			if !plan.Load.PromptCache || plan.Load.PromptCacheMinTokens <= 0 {
 				t.Fatalf("prompt cache load = %+v, want shared state-smoke cache settings", plan.Load)
 			}
-			if !DefaultSmallModelSmokeConfig().Workload.FastEval.IncludeMemvidKVBlockWarm {
-				t.Fatal("default smoke workload should include memvid KV warmup across model families")
+			if !DefaultSmallModelSmokeConfig().Workload.FastEval.IncludeStateKVBlockWarm {
+				t.Fatal("default smoke workload should include State KV warmup across model families")
 			}
 		})
 	}
@@ -289,14 +289,14 @@ func TestPlanSmallModelSmoke_Qwen36FallbackSkipsNativeLoad_Good(t *testing.T) {
 	}
 }
 
-func TestDefaultSmallModelSmokeConfig_UsesCapturedMemvidPrefix_Good(t *testing.T) {
+func TestDefaultSmallModelSmokeConfig_UsesCapturedStatePrefix_Good(t *testing.T) {
 	cfg := DefaultSmallModelSmokeConfig()
 
-	if !cfg.Workload.FastEval.IncludeMemvidKVBlockWarm {
-		t.Fatal("IncludeMemvidKVBlockWarm = false, want memvid KV warmup covered by smoke")
+	if !cfg.Workload.FastEval.IncludeStateKVBlockWarm {
+		t.Fatal("IncludeStateKVBlockWarm = false, want State KV warmup covered by smoke")
 	}
-	if cfg.Workload.FastEval.MemvidKVPrefixTokens != 0 {
-		t.Fatalf("MemvidKVPrefixTokens = %d, want 0 so short prompts use captured token length", cfg.Workload.FastEval.MemvidKVPrefixTokens)
+	if cfg.Workload.FastEval.StateKVPrefixTokens != 0 {
+		t.Fatalf("StateKVPrefixTokens = %d, want 0 so short prompts use captured token length", cfg.Workload.FastEval.StateKVPrefixTokens)
 	}
 }
 

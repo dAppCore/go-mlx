@@ -2397,14 +2397,14 @@
         "chunk_id": 129,
         "frame_offset": 955803967,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake.mvlog"
       },
       "index_ref": {
         "chunk_id": 130,
         "frame_offset": 955858409,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake.mvlog"
       }
     },
@@ -2426,14 +2426,14 @@
         "chunk_id": 134,
         "frame_offset": 981307758,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake.mvlog"
       },
       "index_ref": {
         "chunk_id": 135,
         "frame_offset": 981309563,
         "has_frame_offset": true,
-        "codec": "memvid/file-log",
+        "codec": "state/file-log",
         "segment": "/private/tmp/go-mlx-goal/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake.mvlog"
       }
     },

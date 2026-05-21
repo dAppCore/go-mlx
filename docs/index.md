@@ -76,7 +76,7 @@ fmt.Println(text)
 - **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
 - **Restorable model state** -- capture KV, logits, token offsets, and generated-token history into reloadable sessions
-- **State bundles** -- strict JSON artifacts that bind model identity, tokenizer/chat-template metadata, prompt hash, sampler settings, LoRA identity, KV hash, SAMI/probe data, and optional memvid refs
+- **State bundles** -- strict JSON artifacts that bind model identity, tokenizer/chat-template metadata, prompt hash, sampler settings, LoRA identity, KV hash, SAMI/probe data, and optional State refs
 - **Performance metrics** -- prefill/decode tokens per second, GPU memory usage
 - **Local-runner defaults** -- GPU, 128Ki-token (`131072`) bounded context, one native slot, and exact token-prefix prompt cache enabled by default
 - **Non-HTTP sidecar** -- Violet serves native generation over a local Unix socket for harnesses that do not need an OpenAI-compatible HTTP layer

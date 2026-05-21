@@ -6,18 +6,27 @@ import (
 	"context"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 )
 
 const (
-	// MemvidIndexKind identifies a memvid-stored lookup index
+	// StateIndexKind identifies a State-stored lookup index
 	// for named spans inside one or more KV block bundles.
-	MemvidIndexKind = "go-mlx/kv-snapshot-bundle-index"
+	StateIndexKind = "go-mlx/kv-snapshot-bundle-index"
+	// KVSnapshotStateBundleIndexVersion is the bundle-index schema version.
+	KVSnapshotStateBundleIndexVersion = 1
+	// MemvidIndexKind identifies an old memvid-named lookup index for named
+	// spans inside one or more KV block bundles.
+	//
+	// Deprecated: use StateIndexKind.
+	MemvidIndexKind = StateIndexKind
 	// KVSnapshotMemvidBundleIndexVersion is the bundle-index schema version.
-	KVSnapshotMemvidBundleIndexVersion = 1
+	//
+	// Deprecated: use KVSnapshotStateBundleIndexVersion.
+	KVSnapshotMemvidBundleIndexVersion = KVSnapshotStateBundleIndexVersion
 )
 
 // StateIndexOptions configures a durable index for named State
@@ -88,8 +97,8 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 		return nil, err
 	}
 	index := &MemvidIndex{
-		Version:      KVSnapshotMemvidBundleIndexVersion,
-		Kind:         MemvidIndexKind,
+		Version:      KVSnapshotStateBundleIndexVersion,
+		Kind:         StateIndexKind,
 		BundleURI:    core.Trim(opts.BundleURI),
 		SnapshotHash: bundle.SnapshotHash,
 		KVEncoding:   bundle.KVEncoding,
@@ -137,10 +146,10 @@ func (index *MemvidIndex) Validate() error {
 	if index == nil {
 		return core.NewError("mlx: State index is nil")
 	}
-	if index.Version <= 0 || index.Version > KVSnapshotMemvidBundleIndexVersion {
+	if index.Version <= 0 || index.Version > KVSnapshotStateBundleIndexVersion {
 		return core.NewError("mlx: unsupported State index version")
 	}
-	if index.Kind != MemvidIndexKind {
+	if index.Kind != StateIndexKind {
 		return core.NewError("mlx: invalid State index kind")
 	}
 	if index.TokenCount <= 0 {
@@ -224,28 +233,28 @@ func (entry MemvidIndexEntry) PrefixTokens() int {
 
 // SaveStateIndex stores the index JSON in the same State store as its
 // referenced bundle manifests.
-func SaveStateIndex(ctx context.Context, store memvid.Writer, index *StateIndex, uri string) (memvid.ChunkRef, error) {
+func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, uri string) (state.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return memvid.ChunkRef{}, core.NewError("mlx: state store is nil")
+		return state.ChunkRef{}, core.NewError("mlx: state store is nil")
 	}
 	if core.Trim(uri) == "" {
-		return memvid.ChunkRef{}, core.NewError("mlx: State index URI is required")
+		return state.ChunkRef{}, core.NewError("mlx: State index URI is required")
 	}
 	if err := index.Validate(); err != nil {
-		return memvid.ChunkRef{}, err
+		return state.ChunkRef{}, err
 	}
-	ref, err := store.Put(ctx, core.JSONMarshalString(index), memvid.PutOptions{
+	ref, err := store.Put(ctx, core.JSONMarshalString(index), state.PutOptions{
 		URI:    uri,
 		Title:  "go-mlx State index",
-		Kind:   MemvidIndexKind,
+		Kind:   StateIndexKind,
 		Track:  "session-kv-index",
 		Labels: []string{"go-mlx", "kv-snapshot-bundle-index"},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("kv.Snapshot.SaveStateIndex", "write State index", err)
+		return state.ChunkRef{}, core.E("kv.Snapshot.SaveStateIndex", "write State index", err)
 	}
 	return ref, nil
 }
@@ -254,12 +263,12 @@ func SaveStateIndex(ctx context.Context, store memvid.Writer, index *StateIndex,
 // referenced bundle manifests.
 //
 // Deprecated: use SaveStateIndex.
-func SaveMemvidIndex(ctx context.Context, store memvid.Writer, index *MemvidIndex, uri string) (memvid.ChunkRef, error) {
+func SaveMemvidIndex(ctx context.Context, store state.Writer, index *MemvidIndex, uri string) (state.ChunkRef, error) {
 	return SaveStateIndex(ctx, store, index, uri)
 }
 
 // LoadStateIndex restores an index by URI from a State store.
-func LoadStateIndex(ctx context.Context, store memvid.Store, uri string) (*StateIndex, error) {
+func LoadStateIndex(ctx context.Context, store state.Store, uri string) (*StateIndex, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -269,7 +278,7 @@ func LoadStateIndex(ctx context.Context, store memvid.Store, uri string) (*State
 	if core.Trim(uri) == "" {
 		return nil, core.NewError("mlx: State index URI is required")
 	}
-	chunk, err := memvid.ResolveURI(ctx, store, uri)
+	chunk, err := state.ResolveURI(ctx, store, uri)
 	if err != nil {
 		return nil, core.E("LoadStateIndex", "resolve State index", err)
 	}
@@ -286,14 +295,14 @@ func LoadStateIndex(ctx context.Context, store memvid.Store, uri string) (*State
 // LoadMemvidIndex restores an index by URI from a memvid store.
 //
 // Deprecated: use LoadStateIndex.
-func LoadMemvidIndex(ctx context.Context, store memvid.Store, uri string) (*MemvidIndex, error) {
+func LoadMemvidIndex(ctx context.Context, store state.Store, uri string) (*MemvidIndex, error) {
 	return LoadStateIndex(ctx, store, uri)
 }
 
 // LoadPrefixFromStateIndex resolves entryURI through index,
 // loads its referenced block bundle, and restores only the prefix required by
 // that entry.
-func LoadPrefixFromStateIndex(ctx context.Context, store memvid.Store, index *StateIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, StateIndexEntry, error) {
+func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *StateIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, StateIndexEntry, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -330,7 +339,7 @@ func LoadPrefixFromStateIndex(ctx context.Context, store memvid.Store, index *St
 // referenced block bundle, and restores only the prefix required by that entry.
 //
 // Deprecated: use LoadPrefixFromStateIndex.
-func LoadPrefixFromMemvidIndex(ctx context.Context, store memvid.Store, index *MemvidIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, MemvidIndexEntry, error) {
+func LoadPrefixFromMemvidIndex(ctx context.Context, store state.Store, index *MemvidIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, MemvidIndexEntry, error) {
 	return LoadPrefixFromStateIndex(ctx, store, index, entryURI, opts)
 }
 

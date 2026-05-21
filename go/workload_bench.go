@@ -101,12 +101,12 @@ type WorkloadBenchSummary struct {
 	PromptTokensAvoided                  int           `json:"prompt_tokens_avoided,omitempty"`
 	PromptCacheReplayTokens              int           `json:"prompt_cache_replay_tokens,omitempty"`
 	PromptCacheExactFallbackReplayTokens int           `json:"prompt_cache_exact_fallback_replay_tokens,omitempty"`
-	MemvidKVBlockRestoreDuration         time.Duration `json:"memvid_kv_block_restore_duration,omitempty"`
-	MemvidKVBlockStorePath               string        `json:"memvid_kv_block_store_path,omitempty"`
-	MemvidKVBlockStoreBytes              int64         `json:"memvid_kv_block_store_bytes,omitempty"`
-	MemvidKVBlocksRead                   int           `json:"memvid_kv_blocks_read,omitempty"`
-	MemvidKVChunksRead                   int           `json:"memvid_kv_chunks_read,omitempty"`
-	MemvidKVPrefixTokensRestored         int           `json:"memvid_kv_prefix_tokens_restored,omitempty"`
+	StateKVBlockRestoreDuration          time.Duration `json:"state_kv_block_restore_duration,omitempty"`
+	StateKVBlockStorePath                string        `json:"state_kv_block_store_path,omitempty"`
+	StateKVBlockStoreBytes               int64         `json:"state_kv_block_store_bytes,omitempty"`
+	StateKVBlocksRead                    int           `json:"state_kv_blocks_read,omitempty"`
+	StateKVChunksRead                    int           `json:"state_kv_chunks_read,omitempty"`
+	StateKVPrefixTokensRestored          int           `json:"state_kv_prefix_tokens_restored,omitempty"`
 	KVRestoreDuration                    time.Duration `json:"kv_restore_duration,omitempty"`
 	SpeculativeAcceptanceRate            float64       `json:"speculative_acceptance_rate,omitempty"`
 	SpeculativeAcceptedTokens            int           `json:"speculative_accepted_tokens,omitempty"`
@@ -404,17 +404,17 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 		summary.PromptCacheHitTokens = report.FastEval.PromptCache.HitTokens
 		summary.PromptCacheMissTokens = report.FastEval.PromptCache.MissTokens
 		summary.PromptCacheRestoreDuration = report.FastEval.PromptCache.RestoreDuration
-		if report.FastEval.MemvidKVBlockWarm.Attempted {
-			summary.PromptCacheSource = report.FastEval.MemvidKVBlockWarm.Source
-			summary.PromptTokensAvoided = report.FastEval.MemvidKVBlockWarm.PromptTokensAvoided
-			summary.PromptCacheReplayTokens = report.FastEval.MemvidKVBlockWarm.ReplayTokens
-			summary.PromptCacheExactFallbackReplayTokens = report.FastEval.MemvidKVBlockWarm.ExactFallbackReplayTokens
-			summary.MemvidKVBlockRestoreDuration = report.FastEval.MemvidKVBlockWarm.RestoreDuration
-			summary.MemvidKVBlockStorePath = report.FastEval.MemvidKVBlockWarm.StorePath
-			summary.MemvidKVBlockStoreBytes = report.FastEval.MemvidKVBlockWarm.StoreBytes
-			summary.MemvidKVBlocksRead = report.FastEval.MemvidKVBlockWarm.BlocksRead
-			summary.MemvidKVChunksRead = report.FastEval.MemvidKVBlockWarm.ChunksRead
-			summary.MemvidKVPrefixTokensRestored = report.FastEval.MemvidKVBlockWarm.PrefixTokensRestored
+		if report.FastEval.StateKVBlockWarm.Attempted {
+			summary.PromptCacheSource = report.FastEval.StateKVBlockWarm.Source
+			summary.PromptTokensAvoided = report.FastEval.StateKVBlockWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = report.FastEval.StateKVBlockWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = report.FastEval.StateKVBlockWarm.ExactFallbackReplayTokens
+			summary.StateKVBlockRestoreDuration = report.FastEval.StateKVBlockWarm.RestoreDuration
+			summary.StateKVBlockStorePath = report.FastEval.StateKVBlockWarm.StorePath
+			summary.StateKVBlockStoreBytes = report.FastEval.StateKVBlockWarm.StoreBytes
+			summary.StateKVBlocksRead = report.FastEval.StateKVBlockWarm.BlocksRead
+			summary.StateKVChunksRead = report.FastEval.StateKVBlockWarm.ChunksRead
+			summary.StateKVPrefixTokensRestored = report.FastEval.StateKVBlockWarm.PrefixTokensRestored
 		}
 		summary.KVRestoreDuration = report.FastEval.KVRestore.Duration
 		if report.FastEval.SpeculativeDecode.Attempted && report.FastEval.SpeculativeDecode.Error == "" {

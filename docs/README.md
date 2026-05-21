@@ -35,7 +35,7 @@ Five distinct areas, each with its own doc subtree:
 | Area | Owns | Doc |
 |------|------|-----|
 | `runtime/` | Backend registration + adapter + Metal allocator | [runtime/README.md](runtime/README.md) |
-| `memory/` | KV snapshots + bundles + memvid + Wake/Sleep/Fork/Fold | [memory/README.md](memory/README.md) |
+| `memory/` | KV snapshots + State bundles + Wake/Sleep/Fork/Fold | [memory/README.md](memory/README.md) |
 | `moe/` | MiniMax M2 + JANG/JANGTQ + codebook VQ + expert residency | [moe/README.md](moe/README.md) |
 | `training/` | SFT + GRPO + distillation + LoRA + eval + merge | [training/README.md](training/README.md) |
 | `model/` | Model-pack validation + memory planning + GGUF | [model/README.md](model/README.md) |
@@ -70,7 +70,7 @@ Five distinct areas, each with its own doc subtree:
    inference/   memory/             training/       observability/
    (scheduler   (Wake/Sleep         (SFT/LoRA/      (probe events)
     cache       bundles             GRPO/distill/
-    decode-opt  memvid)              eval)
+    decode-opt  State)               eval)
     parsers
     thinking)
 
@@ -97,7 +97,7 @@ go-mlx/
 │   ├── cmd/violet/         ← Unix-socket sidecar daemon
 │   ├── cmd/mlx/            ← CLI tool (built with `-o core-mlx`; consumers rename: lthn-mlx, etc.)
 │   ├── pkg/daemon/         ← daemon implementation
-│   ├── pkg/memvid/         ← QR-video knowledge-pack codec
+│   ├── pkg/memvid/         ← deprecated State codec compatibility shim
 │   └── tests/              ← integration tests
 ├── cpp/                    C++ companion (CLion-side)
 ├── docs/                   ← YOU ARE HERE

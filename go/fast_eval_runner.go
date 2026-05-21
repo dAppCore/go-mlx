@@ -10,7 +10,7 @@ import (
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/inference/decode"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
@@ -44,7 +44,7 @@ func NewModelFastEvalRunnerWithDraft(model, draft *Model) bench.Runner {
 			return bench.Generation{Text: text, Metrics: fromMlxMetrics(model.Metrics())}, nil
 		},
 		BenchPromptCache:        modelBenchPromptCache(model),
-		BenchMemvidKVBlockWarm:  modelBenchMemvidKVBlockWarm(model),
+		BenchStateKVBlockWarm:   modelBenchStateKVBlockWarm(model),
 		BenchKVRestore:          modelBenchKVRestore(model),
 		BenchStateBundle:        modelBenchStateBundle(model),
 		BenchProbeOverhead:      modelBenchProbeOverhead(model),
@@ -125,19 +125,19 @@ func modelBenchPromptCache(model *Model) func(context.Context, bench.Config, ben
 	}
 }
 
-func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Config, bench.GenerationSummary) bench.MemvidKVBlockWarmReport {
-	return func(ctx context.Context, cfg bench.Config, baseline bench.GenerationSummary) bench.MemvidKVBlockWarmReport {
-		report := bench.MemvidKVBlockWarmReport{
+func modelBenchStateKVBlockWarm(model *Model) func(context.Context, bench.Config, bench.GenerationSummary) bench.StateKVBlockWarmReport {
+	return func(ctx context.Context, cfg bench.Config, baseline bench.GenerationSummary) bench.StateKVBlockWarmReport {
+		report := bench.StateKVBlockWarmReport{
 			Attempted: true,
 			Source:    filestore.CodecFile,
 		}
-		blockSize := cfg.MemvidKVBlockSize
+		blockSize := cfg.StateKVBlockSize
 		if blockSize <= 0 {
 			blockSize = blockcache.DefaultBlockSize
 		}
-		prefixTokens := cfg.MemvidKVPrefixTokens
+		prefixTokens := cfg.StateKVPrefixTokens
 		report.BlockSize = blockSize
-		storePath, err := benchMemvidStorePath(cfg)
+		storePath, err := benchStateStorePath(cfg)
 		if err != nil {
 			report.Error = err.Error()
 			return report
@@ -164,7 +164,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 			report.Error = err.Error()
 			return report
 		}
-		bundle, err := session.SaveKVBlocksToMemvid(ctx, store, kv.MemvidBlockOptions{
+		bundle, err := session.SaveKVBlocksToState(ctx, store, kv.StateBlockOptions{
 			BlockSize:  blockSize,
 			KVEncoding: kv.EncodingNative,
 		})
@@ -177,7 +177,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 		if bundle == nil {
 			_ = store.Close()
 			report.BuildDuration = bench.NonZeroDuration(time.Since(buildStart))
-			report.Error = "memvid KV block capture returned nil bundle"
+			report.Error = "State KV block capture returned nil bundle"
 			return report
 		}
 		if prefixTokens <= 0 {
@@ -186,7 +186,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 		if prefixTokens <= 0 {
 			_ = store.Close()
 			report.BuildDuration = bench.NonZeroDuration(time.Since(buildStart))
-			report.Error = "memvid KV block bundle has no prefix tokens"
+			report.Error = "State KV block bundle has no prefix tokens"
 			return report
 		}
 		if err := store.Close(); err != nil {
@@ -211,7 +211,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 		defer reader.Close()
 		counting := newBenchReadCountingStore(reader)
 		restoreStart := time.Now()
-		if err := model.WarmPromptCacheFromMemvidBlocks(ctx, counting, bundle, prefixTokens); err != nil {
+		if err := model.WarmPromptCacheFromStateBlocks(ctx, counting, bundle, prefixTokens); err != nil {
 			report.RestoreDuration = bench.NonZeroDuration(time.Since(restoreStart))
 			report.BlocksRead = counting.UniqueReads()
 			report.ChunksRead = counting.Reads()
@@ -236,7 +236,7 @@ func modelBenchMemvidKVBlockWarm(model *Model) func(context.Context, bench.Confi
 		if metrics.PromptTokens > 0 && prefixTokens >= metrics.PromptTokens && metrics.PromptCacheMissTokens > 0 {
 			report.ExactFallbackReplayTokens = metrics.PromptCacheMissTokens
 		}
-		bench.PopulateMemvidKVBlockWarmBench(&report, baseline)
+		bench.PopulateStateKVBlockWarmBench(&report, baseline)
 		return report
 	}
 }
@@ -494,13 +494,13 @@ func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc 
 	}
 }
 
-func benchMemvidStorePath(cfg bench.Config) (string, error) {
-	if path := core.Trim(cfg.MemvidKVBlockStorePath); path != "" {
+func benchStateStorePath(cfg bench.Config) (string, error) {
+	if path := core.Trim(cfg.StateKVBlockStorePath); path != "" {
 		return path, nil
 	}
-	dirResult := core.MkdirTemp("", "go-mlx-memvid-kv-*")
+	dirResult := core.MkdirTemp("", "go-mlx-state-kv-*")
 	if !dirResult.OK {
-		return "", core.E("mlx.benchMemvidStorePath", "create temp directory", fastEvalResultError(dirResult))
+		return "", core.E("mlx.benchStateStorePath", "create temp directory", fastEvalResultError(dirResult))
 	}
 	return core.PathJoin(dirResult.Value.(string), "blocks.mvlog"), nil
 }
@@ -514,12 +514,12 @@ func benchFileSize(path string) int64 {
 }
 
 type benchReadCountingStore struct {
-	store  memvid.Store
+	store  state.Store
 	reads  int
 	unique map[int]struct{}
 }
 
-func newBenchReadCountingStore(store memvid.Store) *benchReadCountingStore {
+func newBenchReadCountingStore(store state.Store) *benchReadCountingStore {
 	return &benchReadCountingStore{store: store, unique: map[int]struct{}{}}
 }
 
@@ -528,14 +528,14 @@ func (s *benchReadCountingStore) Get(ctx context.Context, chunkID int) (string, 
 	return s.store.Get(ctx, chunkID)
 }
 
-func (s *benchReadCountingStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *benchReadCountingStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
 	s.record(chunkID)
-	return memvid.Resolve(ctx, s.store, chunkID)
+	return state.Resolve(ctx, s.store, chunkID)
 }
 
-func (s *benchReadCountingStore) ResolveBytes(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *benchReadCountingStore) ResolveBytes(ctx context.Context, chunkID int) (state.Chunk, error) {
 	s.record(chunkID)
-	return memvid.ResolveBytes(ctx, s.store, chunkID)
+	return state.ResolveBytes(ctx, s.store, chunkID)
 }
 
 func (s *benchReadCountingStore) Reads() int {

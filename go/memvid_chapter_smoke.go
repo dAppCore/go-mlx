@@ -7,20 +7,20 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/chaptersmoke"
 	"dappco.re/go/mlx/kv"
 )
 
-// NewModelMemvidKVChapterRunner builds a chaptersmoke.Runner from a loaded
+// NewModelStateKVChapterRunner builds a chaptersmoke.Runner from a loaded
 // Model. The Capture/Generate closures own all mlx-specific behaviour;
 // chaptersmoke itself never touches mlx types.
 //
-//	runner := mlx.NewModelMemvidKVChapterRunner(model, baseGen)
+//	runner := mlx.NewModelStateKVChapterRunner(model, baseGen)
 //	report, err := chaptersmoke.Run(ctx, runner, chaptersmoke.Config{...})
-func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
+func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
 	return chaptersmoke.Runner{
-		Capture: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -32,9 +32,9 @@ func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chapter
 			if err := session.Prefill(prompt); err != nil {
 				return nil, err
 			}
-			return session.SaveKVBlocksToMemvid(ctx, store, opts)
+			return session.SaveKVBlocksToState(ctx, store, opts)
 		},
-		Generate: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string) (chaptersmoke.Generation, error) {
+		Generate: func(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int, suffix string) (chaptersmoke.Generation, error) {
 			if err := ctx.Err(); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
@@ -44,14 +44,14 @@ func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chapter
 			}
 			defer session.Close()
 			restoreStart := time.Now()
-			if err := session.LoadKVPrefixBlocksFromMemvid(ctx, store, bundle, prefixTokens); err != nil {
+			if err := session.LoadKVPrefixBlocksFromState(ctx, store, bundle, prefixTokens); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
 			restoreDuration := time.Since(restoreStart)
 			if err := session.AppendPrompt(suffix); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
-			text, err := session.Generate(memvidKVChapterGenerateOptions(baseGen)...)
+			text, err := session.Generate(stateKVChapterGenerateOptions(baseGen)...)
 			metrics := model.Metrics()
 			return chaptersmoke.Generation{
 				Text:                       text,
@@ -63,16 +63,32 @@ func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chapter
 	}
 }
 
-// RunModelMemvidKVChapterSmoke wraps chaptersmoke.Run with a Model-backed
+// NewModelMemvidKVChapterRunner builds a chaptersmoke.Runner from a loaded
+// Model using the old memvid-named API.
+//
+// Deprecated: use NewModelStateKVChapterRunner.
+func NewModelMemvidKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
+	return NewModelStateKVChapterRunner(model, baseGen)
+}
+
+// RunModelStateKVChapterSmoke wraps chaptersmoke.Run with a Model-backed
 // runner.
 //
-//	report, err := mlx.RunModelMemvidKVChapterSmoke(ctx, model, cfg)
-func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg chaptersmoke.Config) (*chaptersmoke.Report, error) {
+//	report, err := mlx.RunModelStateKVChapterSmoke(ctx, model, cfg)
+func RunModelStateKVChapterSmoke(ctx context.Context, model *Model, cfg chaptersmoke.Config) (*chaptersmoke.Report, error) {
 	if model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
 	baseGen := chapterGenerateConfig(cfg)
-	return chaptersmoke.Run(ctx, NewModelMemvidKVChapterRunner(model, baseGen), cfg)
+	return chaptersmoke.Run(ctx, NewModelStateKVChapterRunner(model, baseGen), cfg)
+}
+
+// RunModelMemvidKVChapterSmoke wraps chaptersmoke.Run with a Model-backed
+// runner using the old memvid-named API.
+//
+// Deprecated: use RunModelStateKVChapterSmoke.
+func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg chaptersmoke.Config) (*chaptersmoke.Report, error) {
+	return RunModelStateKVChapterSmoke(ctx, model, cfg)
 }
 
 func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
@@ -86,7 +102,7 @@ func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
 	return gen
 }
 
-func memvidKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
+func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 	out := []GenerateOption{
 		WithMaxTokens(cfg.MaxTokens),
 		WithTemperature(cfg.Temperature),

@@ -14,7 +14,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
 )
@@ -24,7 +24,11 @@ const (
 	Version = 1
 	// Kind identifies go-mlx state-bundle JSON payloads.
 	Kind = "go-mlx/state-bundle"
-	// RefMemvid identifies a memvid cold-storage reference.
+	// RefState identifies a State cold-storage reference.
+	RefState = "state"
+	// RefMemvid identifies an old memvid cold-storage reference.
+	//
+	// Deprecated: use RefState.
 	RefMemvid = "memvid"
 )
 
@@ -43,8 +47,10 @@ type Options struct {
 	Analysis    *kv.Analysis
 	SAMI        *SAMIResult
 	Refs        []Ref
-	MemvidRefs  []memvid.ChunkRef
-	Meta        map[string]string
+	StateRefs   []state.ChunkRef
+	// Deprecated: use StateRefs.
+	MemvidRefs []state.ChunkRef
+	Meta       map[string]string
 }
 
 // ModelInfo describes the model expected by a bundle. Mirrors the
@@ -145,14 +151,15 @@ type Sampler struct {
 	RepeatPenalty float32 `json:"repeat_penalty"`
 }
 
-// Ref links external cold-storage artifacts such as memvid chunks.
+// Ref links external cold-storage artifacts such as State chunks.
 type Ref struct {
-	Kind   string          `json:"kind"`
-	URI    string          `json:"uri"`
-	Hash   string          `json:"hash,omitempty"`
-	Title  string          `json:"title,omitempty"`
-	Track  string          `json:"track,omitempty"`
-	Memvid memvid.ChunkRef `json:"memvid,omitempty"`
+	Kind   string         `json:"kind"`
+	URI    string         `json:"uri"`
+	Hash   string         `json:"hash,omitempty"`
+	Title  string         `json:"title,omitempty"`
+	Track  string         `json:"track,omitempty"`
+	State  state.ChunkRef `json:"state,omitempty"`
+	Memvid state.ChunkRef `json:"memvid,omitempty"`
 }
 
 // New builds a portable bundle around a restorable kv.Snapshot.
@@ -205,7 +212,7 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 		KVHash:    kvHash,
 		Analysis:  analysis,
 		SAMI:      sami,
-		Refs:      buildRefs(opts.Refs, opts.MemvidRefs),
+		Refs:      buildRefs(opts.Refs, append(append([]state.ChunkRef(nil), opts.StateRefs...), opts.MemvidRefs...)),
 		Meta:      cloneMeta(opts.Meta),
 	}
 	if AdapterEmpty(b.Adapter) {
@@ -282,10 +289,10 @@ func (b *Bundle) Snapshot() (*kv.Snapshot, error) {
 	return snapshot, nil
 }
 
-// SnapshotFromMemvid resolves a memvid-backed KV snapshot.
+// SnapshotFromState resolves a State-backed KV snapshot.
 //
-//	snap, err := b.SnapshotFromMemvid(ctx, store)
-func (b *Bundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*kv.Snapshot, error) {
+//	snap, err := b.SnapshotFromState(ctx, store)
+func (b *Bundle) SnapshotFromState(ctx context.Context, store state.Store) (*kv.Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -295,11 +302,11 @@ func (b *Bundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*k
 	if b.KV != nil || b.KVPath != "" {
 		return b.Snapshot()
 	}
-	ref, ok := b.memvidRef()
+	ref, ok := b.stateRef()
 	if !ok {
-		return nil, core.NewError("bundle: state bundle has no memvid KV snapshot")
+		return nil, core.NewError("bundle: state bundle has no State KV snapshot")
 	}
-	snapshot, err := kv.LoadFromMemvid(ctx, store, ref)
+	snapshot, err := kv.LoadFromState(ctx, store, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -315,16 +322,33 @@ func (b *Bundle) SnapshotFromMemvid(ctx context.Context, store memvid.Store) (*k
 	return snapshot, nil
 }
 
-func (b *Bundle) memvidRef() (memvid.ChunkRef, bool) {
+// SnapshotFromMemvid resolves an old memvid-backed KV snapshot.
+//
+// Deprecated: use SnapshotFromState.
+func (b *Bundle) SnapshotFromMemvid(ctx context.Context, store state.Store) (*kv.Snapshot, error) {
+	return b.SnapshotFromState(ctx, store)
+}
+
+func (b *Bundle) stateRef() (state.ChunkRef, bool) {
 	if b == nil {
-		return memvid.ChunkRef{}, false
+		return state.ChunkRef{}, false
 	}
 	for _, ref := range b.Refs {
+		if ref.Kind == RefState && ref.State.ChunkID != 0 {
+			return ref.State, true
+		}
+		if ref.Kind == RefState && ref.Memvid.ChunkID != 0 {
+			return ref.Memvid, true
+		}
 		if ref.Kind == RefMemvid {
 			return ref.Memvid, true
 		}
 	}
-	return memvid.ChunkRef{}, false
+	return state.ChunkRef{}, false
+}
+
+func (b *Bundle) memvidRef() (state.ChunkRef, bool) {
+	return b.stateRef()
 }
 
 // Validate checks schema version, kind, and embedded KV hash integrity.
@@ -453,14 +477,14 @@ func HashString(value string) string {
 	return core.SHA256HexString(value)
 }
 
-// MemvidURI renders a memvid chunk reference as a memvid:// URI.
+// StateURI renders a State chunk reference as a state:// URI.
 //
-//	uri := bundle.MemvidURI(ref)
-func MemvidURI(ref memvid.ChunkRef) string {
+//	uri := bundle.StateURI(ref)
+func StateURI(ref state.ChunkRef) string {
 	if ref.Segment != "" {
-		return core.Sprintf("memvid://%s#chunk=%d", ref.Segment, ref.ChunkID)
+		return core.Sprintf("state://%s#chunk=%d", ref.Segment, ref.ChunkID)
 	}
-	return core.Sprintf("memvid://chunk/%d", ref.ChunkID)
+	return core.Sprintf("state://chunk/%d", ref.ChunkID)
 }
 
 func buildModel(snapshot *kv.Snapshot, opts Options) Model {
@@ -535,18 +559,29 @@ func checkAdapterCompatibility(active lora.AdapterInfo, expected Adapter) error 
 	return nil
 }
 
-func buildRefs(refs []Ref, memvidRefs []memvid.ChunkRef) []Ref {
-	if len(refs) == 0 && len(memvidRefs) == 0 {
+// MemvidURI renders an old memvid chunk reference as a memvid:// URI.
+//
+// Deprecated: use StateURI.
+func MemvidURI(ref state.ChunkRef) string {
+	if ref.Segment != "" {
+		return core.Sprintf("memvid://%s#chunk=%d", ref.Segment, ref.ChunkID)
+	}
+	return core.Sprintf("memvid://chunk/%d", ref.ChunkID)
+}
+
+func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
+	if len(refs) == 0 && len(stateRefs) == 0 {
 		return nil
 	}
-	out := make([]Ref, 0, len(refs)+len(memvidRefs))
+	out := make([]Ref, 0, len(refs)+len(stateRefs))
 	out = append(out, refs...)
-	for _, ref := range memvidRefs {
+	for _, ref := range stateRefs {
+		uri := StateURI(ref)
 		out = append(out, Ref{
-			Kind:   RefMemvid,
-			URI:    MemvidURI(ref),
-			Hash:   HashString(MemvidURI(ref)),
-			Memvid: ref,
+			Kind:  RefState,
+			URI:   uri,
+			Hash:  HashString(uri),
+			State: ref,
 		})
 	}
 	return out

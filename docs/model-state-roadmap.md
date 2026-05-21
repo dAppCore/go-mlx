@@ -52,7 +52,7 @@ Wrap KV data and metadata into a portable state bundle:
 - LoRA adapter identity
 - KV snapshot reference or embedded KV payload
 - SAMI/probe metrics
-- memvid refs for cold storage
+- State refs for cold storage
 
 The bundle is versioned and hash-checked. Embedded KV payloads are validated on
 load, and external KV paths are checked when `Snapshot()` resolves them.

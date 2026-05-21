@@ -8,7 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 	"dappco.re/go/mlx/blockcache"
 	"dappco.re/go/mlx/kv"
@@ -20,22 +20,22 @@ func TestRun_Good_FileBackedChapterRestart(t *testing.T) {
 	var restoredPaths []string
 	var answeredSuffixes []string
 	runner := Runner{
-		Capture: func(ctx context.Context, prompt string, store memvid.Writer, opts kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 			capturedPrompts = append(capturedPrompts, prompt)
 			streamedEncodings = append(streamedEncodings, opts.KVEncoding)
-			return testSnapshot().SaveMemvidBlocks(ctx, store, opts)
+			return testSnapshot().SaveStateBlocks(ctx, store, opts)
 		},
-		Generate: func(ctx context.Context, store memvid.Store, bundle *kv.MemvidBlockBundle, prefixTokens int, suffix string) (Generation, error) {
+		Generate: func(ctx context.Context, store state.Store, bundle *kv.StateBlockBundle, prefixTokens int, suffix string) (Generation, error) {
 			if bundle.KVEncoding != kv.EncodingNative {
 				return Generation{}, core.Errorf("bundle KVEncoding = %q, want native", bundle.KVEncoding)
 			}
-			if len(bundle.Blocks) == 0 || bundle.Blocks[0].Memvid.Codec != filestore.CodecFile {
+			if len(bundle.Blocks) == 0 || bundle.Blocks[0].State.Codec != filestore.CodecFile {
 				return Generation{}, core.Errorf("bundle refs = %+v, want file-backed refs", bundle.Blocks)
 			}
-			if _, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, kv.LoadOptions{RawKVOnly: true}); err != nil {
+			if _, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, kv.LoadOptions{RawKVOnly: true}); err != nil {
 				return Generation{}, err
 			}
-			restoredPaths = append(restoredPaths, bundle.Blocks[0].Memvid.Segment)
+			restoredPaths = append(restoredPaths, bundle.Blocks[0].State.Segment)
 			answeredSuffixes = append(answeredSuffixes, suffix)
 			answer := "Marcus identifies the chapter's pressure."
 			if core.Contains(suffix, "Chapter 2") {
@@ -93,7 +93,7 @@ func TestRun_Good_FileBackedChapterRestart(t *testing.T) {
 	}
 }
 
-func TestStoreKind_Good_SelectsCLIForMemvidFiles(t *testing.T) {
+func TestStoreKind_Good_SelectsCLIForStateFiles(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  Config
@@ -102,8 +102,8 @@ func TestStoreKind_Good_SelectsCLIForMemvidFiles(t *testing.T) {
 	}{
 		{name: "mp4 path", cfg: Config{StorePath: "/tmp/book.mp4"}, want: StoreCLI, file: "/tmp/book.mp4"},
 		{name: "mv2 path", cfg: Config{StorePath: "/tmp/book.mv2"}, want: StoreCLI, file: "/tmp/book.mv2"},
-		{name: "cli alias", cfg: Config{StoreDir: "/tmp/store", StoreKind: "mp4"}, want: StoreCLI, file: "/tmp/store/memvid-kv-chapters.mp4"},
-		{name: "file log default", cfg: Config{StoreDir: "/tmp/store"}, want: StoreFileLog, file: "/tmp/store/memvid-kv-chapters.mvlog"},
+		{name: "cli alias", cfg: Config{StoreDir: "/tmp/store", StoreKind: "mp4"}, want: StoreCLI, file: "/tmp/store/state-kv-chapters.mp4"},
+		{name: "file log default", cfg: Config{StoreDir: "/tmp/store"}, want: StoreFileLog, file: "/tmp/store/state-kv-chapters.mvlog"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -127,17 +127,17 @@ func TestRun_Bad_ValidatesInputs(t *testing.T) {
 		t.Fatal("Run(missing generator) error = nil")
 	}
 	if _, err := Run(context.Background(), Runner{
-		Generate: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string) (Generation, error) {
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
 			return Generation{}, nil
 		},
 	}, Config{Chapters: []Input{{Text: "x", Question: "q"}}}); err == nil {
 		t.Fatal("Run(missing capture) error = nil")
 	}
 	if _, err := Run(context.Background(), Runner{
-		Generate: func(context.Context, memvid.Store, *kv.MemvidBlockBundle, int, string) (Generation, error) {
+		Generate: func(context.Context, state.Store, *kv.StateBlockBundle, int, string) (Generation, error) {
 			return Generation{}, nil
 		},
-		Capture: func(context.Context, string, memvid.Writer, kv.MemvidBlockOptions) (*kv.MemvidBlockBundle, error) {
+		Capture: func(context.Context, string, state.Writer, kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 			return nil, nil
 		},
 	}, Config{}); err == nil {
