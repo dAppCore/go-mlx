@@ -61,7 +61,18 @@ type datasetPacker struct {
 }
 
 func newDatasetPacker(maxSeqLen int, builder *sftBatchBuilder) *datasetPacker {
-	return &datasetPacker{maxSeqLen: maxSeqLen, builder: builder}
+	p := &datasetPacker{maxSeqLen: maxSeqLen, builder: builder}
+	// When maxSeqLen is known, p.current can never grow past it — packer
+	// flushes the moment another row would overflow. Pre-allocate the
+	// staging buffers at maxSeqLen capacity so the per-add appends never
+	// trigger reallocation. Re-allocated to fresh maxSeqLen after each
+	// flush() so the builder owns the previous backing array.
+	if maxSeqLen > 0 {
+		p.current.inputs = make([]int, 0, maxSeqLen)
+		p.current.targets = make([]int, 0, maxSeqLen)
+		p.current.mask = make([]float32, 0, maxSeqLen)
+	}
+	return p
 }
 
 func (p *datasetPacker) add(example sftExample) {
@@ -118,5 +129,10 @@ func (p *datasetPacker) flush() {
 		targets: targets,
 		mask:    mask,
 	})
-	p.current = sftExample{}
+	// Truncate staging buffers in place — the cloned slices above are
+	// what the builder now owns, so the original backing arrays are
+	// still ours and ready for the next pack cycle without a fresh make.
+	p.current.inputs = p.current.inputs[:0]
+	p.current.targets = p.current.targets[:0]
+	p.current.mask = p.current.mask[:0]
 }
