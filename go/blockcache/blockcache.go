@@ -13,7 +13,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 )
 
 const (
@@ -39,7 +39,9 @@ type Config struct {
 	WarmPrompt    func(ctx context.Context, prompt string) error
 	ClearRuntime  func()
 	DiskPath      string
-	MemvidStore   memvid.Writer
+	StateStore    state.Writer
+	// Deprecated: use StateStore.
+	MemvidStore state.Writer
 }
 
 // Service exposes stable block-prefix refs through
@@ -59,13 +61,15 @@ type Service struct {
 }
 
 type diskRecord struct {
-	Version   int                     `json:"version"`
-	Ref       inference.CacheBlockRef `json:"ref"`
-	Tokens    []int32                 `json:"tokens,omitempty"`
-	MemvidRef *memvid.ChunkRef        `json:"memvid_ref,omitempty"`
+	Version  int                     `json:"version"`
+	Ref      inference.CacheBlockRef `json:"ref"`
+	Tokens   []int32                 `json:"tokens,omitempty"`
+	StateRef *state.ChunkRef         `json:"state_ref,omitempty"`
+	// Deprecated: retained for older disk records.
+	MemvidRef *state.ChunkRef `json:"memvid_ref,omitempty"`
 }
 
-type memvidPayload struct {
+type statePayload struct {
 	Version       int                     `json:"version"`
 	BlockID       string                  `json:"block_id"`
 	Ref           inference.CacheBlockRef `json:"ref"`
@@ -307,8 +311,8 @@ func (service *Service) statsLocked() inference.CacheStats {
 		stats.Labels["disk_blocks"] = core.Sprintf("%d", len(core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json"))))
 		stats.Labels["disk_corrupt"] = core.Sprintf("%d", service.diskCorrupt)
 	}
-	if service.memvidEnabled() {
-		stats.Labels["cold_store"] = "memvid"
+	if service.stateStoreEnabled() {
+		stats.Labels["cold_store"] = "state"
 	}
 	for _, ref := range service.blocks {
 		stats.MemoryBytes += ref.SizeBytes
@@ -324,8 +328,18 @@ func (service *Service) diskEnabled() bool {
 	return service != nil && core.Trim(service.cfg.DiskPath) != ""
 }
 
-func (service *Service) memvidEnabled() bool {
-	return service != nil && service.cfg.MemvidStore != nil
+func (service *Service) stateStoreEnabled() bool {
+	return service != nil && service.stateStore() != nil
+}
+
+func (service *Service) stateStore() state.Writer {
+	if service == nil {
+		return nil
+	}
+	if service.cfg.StateStore != nil {
+		return service.cfg.StateStore
+	}
+	return service.cfg.MemvidStore
 }
 
 func (service *Service) withDiskLabels(ref inference.CacheBlockRef) inference.CacheBlockRef {
@@ -356,8 +370,12 @@ func (service *Service) ensureDiskLoadedLocked() error {
 			continue
 		}
 		ref := service.withDiskLabels(record.Ref)
-		if record.MemvidRef != nil {
-			ref = withMemvidLabels(ref, *record.MemvidRef)
+		chunkRef := record.StateRef
+		if chunkRef == nil {
+			chunkRef = record.MemvidRef
+		}
+		if chunkRef != nil {
+			ref = withStateLabels(ref, *chunkRef)
 		}
 		service.blocks[record.Ref.ID] = ref
 	}
@@ -402,21 +420,21 @@ func (service *Service) writeDiskBlockLocked(ctx context.Context, ref inference.
 	if result := core.MkdirAll(service.cfg.DiskPath, 0o700); !result.OK {
 		return inference.CacheBlockRef{}, core.E("Service.writeDiskBlock", "create disk cache directory", resultError(result))
 	}
-	var memvidRef *memvid.ChunkRef
-	if service.memvidEnabled() {
-		written, err := service.writeMemvidBlock(ctx, ref, tokens)
+	var stateRef *state.ChunkRef
+	if service.stateStoreEnabled() {
+		written, err := service.writeStateBlock(ctx, ref, tokens)
 		if err != nil {
 			return inference.CacheBlockRef{}, err
 		}
-		memvidRef = &written
-		ref = withMemvidLabels(ref, written)
+		stateRef = &written
+		ref = withStateLabels(ref, written)
 	}
 	record := diskRecord{
-		Version:   diskVersion,
-		Ref:       service.withDiskLabels(ref),
-		MemvidRef: memvidRef,
+		Version:  diskVersion,
+		Ref:      service.withDiskLabels(ref),
+		StateRef: stateRef,
 	}
-	if memvidRef == nil {
+	if stateRef == nil {
 		record.Tokens = append([]int32(nil), tokens...)
 	}
 	data := core.JSONMarshal(record)
@@ -430,14 +448,15 @@ func (service *Service) writeDiskBlockLocked(ctx context.Context, ref inference.
 	return record.Ref, nil
 }
 
-func (service *Service) writeMemvidBlock(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (memvid.ChunkRef, error) {
+func (service *Service) writeStateBlock(ctx context.Context, ref inference.CacheBlockRef, tokens []int32) (state.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if service == nil || service.cfg.MemvidStore == nil {
-		return memvid.ChunkRef{}, core.NewError("mlx: memvid store is nil")
+	store := service.stateStore()
+	if store == nil {
+		return state.ChunkRef{}, core.NewError("mlx: state store is nil")
 	}
-	payload := memvidPayload{
+	payload := statePayload{
 		Version:       diskVersion,
 		BlockID:       ref.ID,
 		Ref:           ref,
@@ -446,7 +465,7 @@ func (service *Service) writeMemvidBlock(ctx context.Context, ref inference.Cach
 		CacheMode:     mode,
 		PayloadFormat: "token-prefix/int32-json",
 	}
-	chunk, err := service.cfg.MemvidStore.Put(ctx, core.JSONMarshalString(payload), memvid.PutOptions{
+	chunk, err := store.Put(ctx, core.JSONMarshalString(payload), state.PutOptions{
 		URI:   "mlx://cache/block/" + ref.ID,
 		Title: "go-mlx block cache " + ref.ID,
 		Kind:  "kv-block-prefix",
@@ -461,23 +480,23 @@ func (service *Service) writeMemvidBlock(ctx context.Context, ref inference.Cach
 		Labels: []string{"go-mlx", "block-cache", mode},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("Service.writeMemvidBlock", "write memvid payload", err)
+		return state.ChunkRef{}, core.E("Service.writeStateBlock", "write State payload", err)
 	}
 	return chunk, nil
 }
 
-func withMemvidLabels(ref inference.CacheBlockRef, chunk memvid.ChunkRef) inference.CacheBlockRef {
+func withStateLabels(ref inference.CacheBlockRef, chunk state.ChunkRef) inference.CacheBlockRef {
 	labels := cloneBlockCacheLabels(ref.Labels)
-	labels["cold_store"] = "memvid"
-	labels["memvid_chunk_id"] = core.Itoa(chunk.ChunkID)
+	labels["cold_store"] = "state"
+	labels["state_chunk_id"] = core.Itoa(chunk.ChunkID)
 	if chunk.Codec != "" {
-		labels["memvid_codec"] = chunk.Codec
+		labels["state_codec"] = chunk.Codec
 	}
 	if chunk.Segment != "" {
-		labels["memvid_segment"] = chunk.Segment
+		labels["state_segment"] = chunk.Segment
 	}
 	if chunk.HasFrameOffset {
-		labels["memvid_frame_offset"] = core.FormatUint(chunk.FrameOffset, 10)
+		labels["state_frame_offset"] = core.FormatUint(chunk.FrameOffset, 10)
 	}
 	ref.Labels = labels
 	return ref

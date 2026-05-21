@@ -49,7 +49,7 @@ go/                          Go module root (dappco.re/go/mlx)
   internal/metal/            All CGO code (mlx-c bindings)
   mlxlm/                     CGO-free Python subprocess backend
   pkg/daemon/                Daemon implementation
-  pkg/memvid/                Memvid storage CLI
+  pkg/memvid/                Deprecated State codec compatibility shim
   tests/                     Integration tests
 cpp/                         C++ side (CLion-side companion)
 docs/                        Markdown documentation

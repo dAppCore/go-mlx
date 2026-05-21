@@ -7,7 +7,7 @@
 
 ## What this is
 
-The **JSON-shaped envelope** that wraps a KV snapshot + its metadata into one portable artefact: model identity, tokenizer identity, sampler config, prompt hash, list of state refs (memvid / file / inline), runtime identity. Implements the encode/decode for `inference/state.Bundle`.
+The **JSON-shaped envelope** that wraps a KV snapshot + its metadata into one portable artefact: model identity, tokenizer identity, sampler config, prompt hash, list of state refs (State video / file / inline), runtime identity. Implements the encode/decode for `inference/state.Bundle`.
 
 A bundle is the unit a user thinks about (`"the Aurelius Meditations book-state"`); a snapshot is the bytes that bundle points at.
 
@@ -16,7 +16,7 @@ A bundle is the unit a user thinks about (`"the Aurelius Meditations book-state"
 ```go
 StateBundleVersion   = 1
 StateBundleKind      = "go-mlx/state-bundle"
-StateBundleRefMemvid = "memvid"
+StateBundleRefState = "State"
 ```
 
 `StateBundleKind` distinguishes our bundles from other future kinds (e.g. an LLAVA vision-context bundle would be `go-mlx/vision-bundle`). `Kind` lets a generic Store iterate all bundles and route based on type.
@@ -30,7 +30,7 @@ The `inference/state.Bundle` shape (re-exported from go-inference) carries:
 - `PromptHash`, prompt token count, generated token count
 - `KVRefs []StateRef` (where the KV blocks live)
 - `ProbeRefs []StateRef` (where probe-event traces live, if captured)
-- `MemvidRefs []StateRef` (where bundled knowledge-pack content lives)
+- `StateRefs []StateRef` (where bundled knowledge-pack content lives)
 - Labels + Metadata maps
 
 ## Encode

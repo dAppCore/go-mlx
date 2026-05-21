@@ -163,7 +163,7 @@ type StateBundle struct {
     Runtime        RuntimeIdentity
     KVRefs         []StateRef
     ProbeRefs      []StateRef
-    MemvidRefs     []StateRef
+    StateRefs     []StateRef
     Labels         map[string]string
 }
 ```

@@ -31,53 +31,47 @@ const (
 
 // StateIndexOptions configures a durable index for named State
 // spans such as chapters, sections, or checkpointed agent states.
-type StateIndexOptions = MemvidIndexOptions
-
-// MemvidIndexOptions configures a durable index for named KV
-// bundle spans such as chapters, sections, or checkpointed agent states.
-//
-// Deprecated: use StateIndexOptions.
-type MemvidIndexOptions struct {
+type StateIndexOptions struct {
 	BundleURI string
 	Title     string
 	Model     string
 	ModelPath string
 	ModelInfo memory.ModelInfo
 	Tokenizer bundle.Tokenizer
-	Entries   []MemvidIndexEntry
+	Entries   []StateIndexEntry
 }
+
+// MemvidIndexOptions configures a durable index for old memvid-named KV
+// bundle spans such as chapters, sections, or checkpointed agent states.
+//
+// Deprecated: use StateIndexOptions.
+type MemvidIndexOptions = StateIndexOptions
 
 // StateIndex records model identity and named token spans for restoring
 // partial prefixes from a larger durable State block bundle.
-type StateIndex = MemvidIndex
+type StateIndex struct {
+	Version      int               `json:"version"`
+	Kind         string            `json:"kind"`
+	BundleURI    string            `json:"bundle_uri,omitempty"`
+	SnapshotHash string            `json:"snapshot_hash,omitempty"`
+	KVEncoding   kv.Encoding       `json:"kv_encoding,omitempty"`
+	TokenCount   int               `json:"token_count,omitempty"`
+	BlockSize    int               `json:"block_size,omitempty"`
+	Model        bundle.Model      `json:"model"`
+	Tokenizer    bundle.Tokenizer  `json:"tokenizer"`
+	Entries      []StateIndexEntry `json:"entries,omitempty"`
+	Hash         string            `json:"hash,omitempty"`
+}
 
-// MemvidIndex records model identity and named token spans for
-// restoring partial prefixes from a larger memvid KV block bundle.
+// MemvidIndex records model identity and named token spans for restoring
+// partial prefixes from a larger old memvid-named KV block bundle.
 //
 // Deprecated: use StateIndex.
-type MemvidIndex struct {
-	Version      int                `json:"version"`
-	Kind         string             `json:"kind"`
-	BundleURI    string             `json:"bundle_uri,omitempty"`
-	SnapshotHash string             `json:"snapshot_hash,omitempty"`
-	KVEncoding   kv.Encoding        `json:"kv_encoding,omitempty"`
-	TokenCount   int                `json:"token_count,omitempty"`
-	BlockSize    int                `json:"block_size,omitempty"`
-	Model        bundle.Model       `json:"model"`
-	Tokenizer    bundle.Tokenizer   `json:"tokenizer"`
-	Entries      []MemvidIndexEntry `json:"entries,omitempty"`
-	Hash         string             `json:"hash,omitempty"`
-}
+type MemvidIndex = StateIndex
 
 // StateIndexEntry names one logical span in a State bundle. The current wake
 // path restores the prefix ending at TokenStart+TokenCount.
-type StateIndexEntry = MemvidIndexEntry
-
-// MemvidIndexEntry names one logical span in a KV bundle. The
-// current wake path restores the prefix ending at TokenStart+TokenCount.
-//
-// Deprecated: use StateIndexEntry.
-type MemvidIndexEntry struct {
+type StateIndexEntry struct {
 	URI        string            `json:"uri"`
 	BundleURI  string            `json:"bundle_uri,omitempty"`
 	Title      string            `json:"title,omitempty"`
@@ -90,13 +84,18 @@ type MemvidIndexEntry struct {
 	Meta       map[string]string `json:"meta,omitempty"`
 }
 
+// MemvidIndexEntry names one logical span in an old memvid-named KV bundle.
+//
+// Deprecated: use StateIndexEntry.
+type MemvidIndexEntry = StateIndexEntry
+
 // NewStateIndex builds an index around a durable State block bundle. When no
 // entries are supplied, it creates one full-bundle entry.
 func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateIndex, error) {
 	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
-	index := &MemvidIndex{
+	index := &StateIndex{
 		Version:      KVSnapshotStateBundleIndexVersion,
 		Kind:         StateIndexKind,
 		BundleURI:    core.Trim(opts.BundleURI),
@@ -109,7 +108,7 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 		Entries:      cloneIndexEntries(opts.Entries),
 	}
 	if len(index.Entries) == 0 {
-		index.Entries = []MemvidIndexEntry{{
+		index.Entries = []StateIndexEntry{{
 			URI:        firstNonEmpty(index.BundleURI, "mlx://kv/full"),
 			BundleURI:  index.BundleURI,
 			Title:      firstNonEmpty(opts.Title, "full bundle"),
@@ -133,7 +132,7 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 	return index, nil
 }
 
-// NewMemvidIndex builds an index around a memvid KV block bundle. When no
+// NewMemvidIndex builds an index around an old memvid-named KV block bundle. When no
 // entries are supplied, it creates one full-bundle entry.
 //
 // Deprecated: use NewStateIndex.
@@ -142,7 +141,7 @@ func NewMemvidIndex(bundle *kv.MemvidBlockBundle, opts MemvidIndexOptions) (*Mem
 }
 
 // Validate checks schema, model identity, and indexed span bounds.
-func (index *MemvidIndex) Validate() error {
+func (index *StateIndex) Validate() error {
 	if index == nil {
 		return core.NewError("mlx: State index is nil")
 	}
@@ -174,7 +173,7 @@ func (index *MemvidIndex) Validate() error {
 	return nil
 }
 
-func (index *MemvidIndex) validateEntry(entry MemvidIndexEntry) error {
+func (index *StateIndex) validateEntry(entry StateIndexEntry) error {
 	if core.Trim(entry.URI) == "" {
 		return core.NewError("mlx: State index entry URI is required")
 	}
@@ -200,20 +199,20 @@ func (index *MemvidIndex) validateEntry(entry MemvidIndexEntry) error {
 }
 
 // Entry returns a defensive copy of the entry with URI.
-func (index *MemvidIndex) Entry(uri string) (MemvidIndexEntry, bool) {
+func (index *StateIndex) Entry(uri string) (StateIndexEntry, bool) {
 	if index == nil {
-		return MemvidIndexEntry{}, false
+		return StateIndexEntry{}, false
 	}
 	for _, entry := range index.Entries {
 		if entry.URI == uri {
 			return cloneIndexEntry(entry), true
 		}
 	}
-	return MemvidIndexEntry{}, false
+	return StateIndexEntry{}, false
 }
 
 // RequiredContextLength reports the largest prefix length needed by any entry.
-func (index *MemvidIndex) RequiredContextLength() int {
+func (index *StateIndex) RequiredContextLength() int {
 	if index == nil {
 		return 0
 	}
@@ -227,7 +226,7 @@ func (index *MemvidIndex) RequiredContextLength() int {
 }
 
 // PrefixTokens reports the prefix length needed to restore this entry.
-func (entry MemvidIndexEntry) PrefixTokens() int {
+func (entry StateIndexEntry) PrefixTokens() int {
 	return entry.TokenStart + entry.TokenCount
 }
 
@@ -259,7 +258,7 @@ func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, 
 	return ref, nil
 }
 
-// SaveMemvidIndex stores the index JSON in the same memvid store as its
+// SaveMemvidIndex stores the index JSON in the same old memvid-named store as its
 // referenced bundle manifests.
 //
 // Deprecated: use SaveStateIndex.
@@ -282,7 +281,7 @@ func LoadStateIndex(ctx context.Context, store state.Store, uri string) (*StateI
 	if err != nil {
 		return nil, core.E("LoadStateIndex", "resolve State index", err)
 	}
-	var index MemvidIndex
+	var index StateIndex
 	if result := core.JSONUnmarshalString(chunk.Text, &index); !result.OK {
 		return nil, core.E("LoadStateIndex", "parse State index", kv.ResultError(result))
 	}
@@ -292,7 +291,7 @@ func LoadStateIndex(ctx context.Context, store state.Store, uri string) (*StateI
 	return &index, nil
 }
 
-// LoadMemvidIndex restores an index by URI from a memvid store.
+// LoadMemvidIndex restores an index by URI from an old memvid-named store.
 //
 // Deprecated: use LoadStateIndex.
 func LoadMemvidIndex(ctx context.Context, store state.Store, uri string) (*MemvidIndex, error) {
@@ -307,14 +306,14 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: state store is nil")
+		return nil, StateIndexEntry{}, core.NewError("mlx: state store is nil")
 	}
 	if err := index.Validate(); err != nil {
-		return nil, MemvidIndexEntry{}, err
+		return nil, StateIndexEntry{}, err
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: State index entry not found")
+		return nil, StateIndexEntry{}, core.NewError("mlx: State index entry not found")
 	}
 	bundleURI := entry.BundleURI
 	if bundleURI == "" {
@@ -322,15 +321,15 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 	}
 	bundle, err := kv.LoadStateBlockBundle(ctx, store, bundleURI)
 	if err != nil {
-		return nil, MemvidIndexEntry{}, err
+		return nil, StateIndexEntry{}, err
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: State index prefix is invalid")
+		return nil, StateIndexEntry{}, core.NewError("mlx: State index prefix is invalid")
 	}
 	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
 	if err != nil {
-		return nil, MemvidIndexEntry{}, err
+		return nil, StateIndexEntry{}, err
 	}
 	return snapshot, entry, nil
 }
@@ -403,7 +402,7 @@ func modelHashComparable(info memory.ModelInfo, model bundle.Model) bool {
 	return true
 }
 
-func indexModel(blk *kv.MemvidBlockBundle, opts MemvidIndexOptions) bundle.Model {
+func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 	info := opts.ModelInfo
 	if info.Architecture == "" && blk != nil {
 		info.Architecture = blk.Architecture
@@ -423,7 +422,7 @@ func indexModel(blk *kv.MemvidBlockBundle, opts MemvidIndexOptions) bundle.Model
 	return model
 }
 
-func fillIndexEntryByteSpan(entry *MemvidIndexEntry, bundle *kv.MemvidBlockBundle) {
+func fillIndexEntryByteSpan(entry *StateIndexEntry, bundle *kv.StateBlockBundle) {
 	if entry == nil || bundle == nil || len(bundle.Blocks) == 0 {
 		return
 	}
@@ -446,8 +445,9 @@ func fillIndexEntryByteSpan(entry *MemvidIndexEntry, bundle *kv.MemvidBlockBundl
 		if refEnd <= spanStart || refStart >= spanEnd {
 			continue
 		}
-		if !byteStartSet && ref.Memvid.HasFrameOffset && ref.Memvid.FrameOffset <= uint64(1<<63-1) {
-			byteStart = int64(ref.Memvid.FrameOffset)
+		chunk := kv.StateBlockChunkRef(ref)
+		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
+			byteStart = int64(chunk.FrameOffset)
 			byteStartSet = true
 		}
 		if ref.PayloadByteCount > 0 {
@@ -462,7 +462,7 @@ func fillIndexEntryByteSpan(entry *MemvidIndexEntry, bundle *kv.MemvidBlockBundl
 	}
 }
 
-func indexHash(index *MemvidIndex) string {
+func indexHash(index *StateIndex) string {
 	if index == nil {
 		return ""
 	}
@@ -491,7 +491,7 @@ func indexHash(index *MemvidIndex) string {
 	return core.SHA256HexString(builder.String())
 }
 
-func indexEntryHash(entry MemvidIndexEntry) string {
+func indexEntryHash(entry StateIndexEntry) string {
 	builder := core.NewBuilder()
 	builder.WriteString(entry.URI)
 	builder.WriteString("|")
@@ -526,18 +526,18 @@ func indexEntryHash(entry MemvidIndexEntry) string {
 	return core.SHA256HexString(builder.String())
 }
 
-func cloneIndexEntries(entries []MemvidIndexEntry) []MemvidIndexEntry {
+func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
 	if len(entries) == 0 {
 		return nil
 	}
-	out := make([]MemvidIndexEntry, len(entries))
+	out := make([]StateIndexEntry, len(entries))
 	for i, entry := range entries {
 		out[i] = cloneIndexEntry(entry)
 	}
 	return out
 }
 
-func cloneIndexEntry(entry MemvidIndexEntry) MemvidIndexEntry {
+func cloneIndexEntry(entry StateIndexEntry) StateIndexEntry {
 	entry.Labels = append([]string(nil), entry.Labels...)
 	if len(entry.Meta) > 0 {
 		meta := make(map[string]string, len(entry.Meta))

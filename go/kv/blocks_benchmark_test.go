@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 )
 
 var (
@@ -40,9 +40,9 @@ func BenchmarkLoadPrefixTokensFromStateBlocks_MixedWindowThreeBlocks(b *testing.
 	}
 }
 
-func benchmarkStateBlocksFixture(tb testing.TB) (memvid.Store, *StateBlockBundle) {
+func benchmarkStateBlocksFixture(tb testing.TB) (state.Store, *StateBlockBundle) {
 	tb.Helper()
-	store := memvid.NewInMemoryStore(nil)
+	store := state.NewInMemoryStore(nil)
 	snapshot := benchmarkStateBlocksSnapshot(1536, 512)
 	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  512,

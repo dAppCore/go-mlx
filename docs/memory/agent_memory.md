@@ -1,6 +1,6 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# session_agent.go — Wake / Sleep / Fold on top of KV snapshots + memvid
+# session_agent.go — Wake / Sleep / Fold on top of KV snapshots + State
 
 **Package**: `dappco.re/go/mlx`
 **File**: `go/session_agent.go`
@@ -11,7 +11,7 @@
 The **production Wake/Sleep/Fork/Fold** path for the Metal backend. Translates the portable `state.WakeRequest` / `state.SleepRequest` contract into:
 
 - KV-block read / write via the `kv_snapshot_*.go` family
-- Memvid `.mp4` bundle encode/decode via `pkg/memvid`
+- State video `.mp4` bundle encode/decode via State video store
 - Filestore append-only logs via `state/filestore`
 - Compatibility checking against `ModelIdentity` / `TokenizerIdentity`
 
@@ -37,9 +37,9 @@ state.WakeRequest
    ↓
 AgentMemoryWakeOptions    (translate)
    ↓
-Resolve EntryURI in KVSnapshotMemvidBundleIndex
+Resolve EntryURI in State bundle index
    ↓
-Read bundle from Store     (memvid, filestore, or in-memory)
+Read bundle from Store     (State video, filestore, or in-memory)
    ↓
 Decode KV blocks            (kv_snapshot_blocks.go)
    ↓
@@ -63,7 +63,7 @@ Capture KV from live model  (kv_snapshot.go — Q8 or native or float32)
    ↓
 Chunk to blocks             (BlockSize, ReuseParentPrefix logic)
    ↓
-Write bundle to Store        (memvid: encode QR frames; filestore: append records)
+Write bundle to Store        (State video: encode QR frames; filestore: append records)
    ↓
 Update bundle index          (kv_snapshot_index.go)
    ↓
@@ -156,14 +156,14 @@ Wake and Sleep emit probe events at every stage — bundle decode start/end, blo
 | Wake — full book (cold runner) | ~10.5GB | 55.2s |
 | Sleep — incremental (ReuseParent on) | 200-token delta | <1s |
 
-Cold load = process startup + memvid decoder warm + first-time block decode. Warm load = re-restore from already-decoded blocks (block cache hit). The "from cold runner, ever, in 55s" measurement is the AI-cognition-as-filesystem-object thesis made real — see `memory_plan_for_lethean.md` in core/plans.
+Cold load = process startup + State decoder warm + first-time block decode. Warm load = re-restore from already-decoded blocks (block cache hit). The "from cold runner, ever, in 55s" measurement is the AI-cognition-as-filesystem-object thesis made real — see `memory_plan_for_lethean.md` in core/plans.
 
 ## Related
 
 - [kv_snapshot.md](kv_snapshot.md) — capture / restore the raw KV bytes
 - [kv_snapshot_blocks.md](kv_snapshot_blocks.md) — chunk strategy
 - [kv_snapshot_index.md](kv_snapshot_index.md) — bundle index
-- [kv_snapshot_memvid.md](kv_snapshot_memvid.md) — memvid integration
+- [kv_snapshot_state.md](kv_snapshot_state.md) — State integration
 - [medium.md](medium.md) — runtime Store abstraction
 - [state_bundle.md](state_bundle.md) — Bundle encode/decode
 - `../../../go-inference/docs/state/agent_memory.md` — the portable contract this implements

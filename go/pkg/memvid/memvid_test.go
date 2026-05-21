@@ -48,13 +48,13 @@ func TestMemvid_ResolveErrors_Bad(t *testing.T) {
 	if _, err := ResolveURI(context.Background(), nil, "mlx://missing"); !core.Is(err, ErrChunkNotFound) {
 		t.Fatalf("ResolveURI(nil) error = %v, want ErrChunkNotFound", err)
 	}
-	if got := (&ChunkNotFoundError{ID: 3}).Error(); got != "memvid chunk 3 not found" {
+	if got := (&ChunkNotFoundError{ID: 3}).Error(); got != "state chunk 3 not found" {
 		t.Fatalf("ChunkNotFoundError.Error() = %q", got)
 	}
-	if got := (&URIChunkNotFoundError{}).Error(); got != "memvid chunk URI not found" {
+	if got := (&URIChunkNotFoundError{}).Error(); got != "state chunk URI not found" {
 		t.Fatalf("URIChunkNotFoundError(empty).Error() = %q", got)
 	}
-	if got := (&URIChunkNotFoundError{URI: "mlx://missing"}).Error(); got != `memvid chunk URI "mlx://missing" not found` {
+	if got := (&URIChunkNotFoundError{URI: "mlx://missing"}).Error(); got != `state chunk URI "mlx://missing" not found` {
 		t.Fatalf("URIChunkNotFoundError(uri).Error() = %q", got)
 	}
 }

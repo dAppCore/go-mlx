@@ -7,7 +7,7 @@
 
 ## What this is
 
-The **index** that lives alongside a bundle. Tells the wake side which blocks make up which entry, in what order, with what hashes. Without the index, a memvid bundle would be opaque — you couldn't enumerate entries or look up "the bundle for prompt X".
+The **index** that lives alongside a bundle. Tells the wake side which blocks make up which entry, in what order, with what hashes. Without the index, a State bundle would be opaque — you couldn't enumerate entries or look up "the bundle for prompt X".
 
 ## Conceptual shape
 
@@ -16,7 +16,7 @@ Bundle Index
 ├── version
 ├── created_at
 ├── entries[]
-│   ├── EntryURI ("memvid://aurelius/meditations/chapter-3")
+│   ├── EntryURI ("state://aurelius/meditations/chapter-3")
 │   ├── Title
 │   ├── ParentEntryURI (optional)
 │   ├── ModelIdentity + TokenizerIdentity
@@ -41,7 +41,7 @@ Two reasons:
 Two shapes ship:
 
 - **Sidecar JSON** — `bundle.idx.json` next to `bundle.mp4`. Easy to read, easy to debug.
-- **Embedded in QR frames** — first N frames of the memvid bundle are the index. Self-contained.
+- **Embedded in QR frames** — first N frames of the State bundle are the index. Self-contained.
 
 Production prefers sidecar for fast read, embedded for portable transfer.
 
@@ -49,7 +49,7 @@ Production prefers sidecar for fast read, embedded for portable transfer.
 
 ```go
 idx, err := mlx.LoadBundleIndex(ctx, store, indexURI)
-entry, ok := idx.LookupURI("memvid://aurelius/meditations/chapter-3")
+entry, ok := idx.LookupURI("state://aurelius/meditations/chapter-3")
 idx.AddEntry(entry)
 err := idx.Save(ctx, store, indexURI)
 ```
@@ -68,5 +68,5 @@ The index records `ModelIdentity.Hash` + `TokenizerIdentity.Hash` per entry. A w
 
 - [kv_snapshot.md](kv_snapshot.md) — snapshot format
 - [kv_snapshot_blocks.md](kv_snapshot_blocks.md) — what BlockRefs point at
-- [kv_snapshot_memvid.md](kv_snapshot_memvid.md) — memvid-specific framing of the index
+- [kv_snapshot_state.md](kv_snapshot_state.md) — State-specific framing of the index
 - [agent_memory.md](agent_memory.md) — Wake/Sleep that uses LoadBundleIndex / AddEntry

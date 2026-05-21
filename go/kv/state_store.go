@@ -42,7 +42,7 @@ type StateOptions struct {
 // Deprecated: use StateOptions.
 type MemvidOptions = StateOptions
 
-type kvSnapshotMemvidEnvelope struct {
+type kvSnapshotStateEnvelope struct {
 	Version          int    `json:"version"`
 	Kind             string `json:"kind"`
 	KVVersion        int    `json:"kv_version"`
@@ -83,7 +83,7 @@ func (s *Snapshot) SaveState(ctx context.Context, store state.Writer, opts State
 	if err != nil {
 		return state.ChunkRef{}, err
 	}
-	envelope := kvSnapshotMemvidEnvelope{
+	envelope := kvSnapshotStateEnvelope{
 		Version:          KVSnapshotStateVersion,
 		Kind:             KVSnapshotStateKind,
 		KVVersion:        effectiveVersion(s, encoding),
@@ -102,7 +102,7 @@ func (s *Snapshot) SaveState(ctx context.Context, store state.Writer, opts State
 		PayloadByteCount: len(data),
 		Data:             core.Base64Encode(data),
 	}
-	ref, err := store.Put(ctx, core.JSONMarshalString(envelope), kvSnapshotMemvidPutOptions(s, opts, envelope))
+	ref, err := store.Put(ctx, core.JSONMarshalString(envelope), kvSnapshotStatePutOptions(s, opts, envelope))
 	if err != nil {
 		return state.ChunkRef{}, core.E("Snapshot.SaveState", "write State chunk", err)
 	}
@@ -134,11 +134,11 @@ func LoadFromStateWithOptions(ctx context.Context, store state.Store, ref state.
 	if err != nil {
 		return nil, core.E("LoadFromState", "resolve State chunk", err)
 	}
-	var envelope kvSnapshotMemvidEnvelope
+	var envelope kvSnapshotStateEnvelope
 	if result := core.JSONUnmarshalString(chunk.Text, &envelope); !result.OK {
 		return nil, core.E("LoadFromState", "parse State envelope", ResultError(result))
 	}
-	data, err := decodeKVSnapshotMemvidEnvelope(envelope)
+	data, err := decodeKVSnapshotStateEnvelope(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func LoadFromMemvidWithOptions(ctx context.Context, store state.Store, ref state
 	return LoadFromStateWithOptions(ctx, store, ref, opts)
 }
 
-func decodeKVSnapshotMemvidEnvelope(envelope kvSnapshotMemvidEnvelope) ([]byte, error) {
+func decodeKVSnapshotStateEnvelope(envelope kvSnapshotStateEnvelope) ([]byte, error) {
 	if envelope.Version <= 0 || envelope.Version > KVSnapshotStateVersion {
 		return nil, core.NewError("mlx: unsupported State KV snapshot version")
 	}
@@ -188,7 +188,7 @@ func decodeKVSnapshotMemvidEnvelope(envelope kvSnapshotMemvidEnvelope) ([]byte, 
 	return data, nil
 }
 
-func kvSnapshotMemvidPutOptions(snapshot *Snapshot, opts StateOptions, envelope kvSnapshotMemvidEnvelope) state.PutOptions {
+func kvSnapshotStatePutOptions(snapshot *Snapshot, opts StateOptions, envelope kvSnapshotStateEnvelope) state.PutOptions {
 	kind := opts.Kind
 	if kind == "" {
 		kind = KVSnapshotStateKind
@@ -197,7 +197,7 @@ func kvSnapshotMemvidPutOptions(snapshot *Snapshot, opts StateOptions, envelope 
 	if track == "" {
 		track = "session-kv"
 	}
-	tags := cloneKVSnapshotMemvidTags(opts.Tags)
+	tags := cloneKVSnapshotStateTags(opts.Tags)
 	tags["kv_hash"] = envelope.KVHash
 	tags["kv_encoding"] = envelope.KVEncoding
 	tags["architecture"] = envelope.Architecture
@@ -215,7 +215,7 @@ func kvSnapshotMemvidPutOptions(snapshot *Snapshot, opts StateOptions, envelope 
 	}
 }
 
-func cloneKVSnapshotMemvidTags(input map[string]string) map[string]string {
+func cloneKVSnapshotStateTags(input map[string]string) map[string]string {
 	out := map[string]string{}
 	for key, value := range input {
 		out[key] = value

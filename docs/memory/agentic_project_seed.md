@@ -28,7 +28,7 @@ area. It is usually built from:
 
 The seed should be addressed by URI, not by filesystem convention alone, for
 example `state://lthn/projects/go-mlx/seed`. The store can be an append-only
-file log, memvid, object storage, or an in-memory test store.
+file log, State video, object storage, or an in-memory test store.
 
 The shared helper is `state.NewProjectSeed`:
 

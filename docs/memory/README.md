@@ -37,8 +37,8 @@ Everything that turns **live runtime state** into **durable bytes** and back. Th
                         │
                         ▼
         ┌─────────────────────────────┐
-        │ Encode + write to Store     │ kv_snapshot_memvid.go
-        │   (memvid / file / mem)     │ medium.go
+        │ Encode + write to Store     │ kv_snapshot_state.go
+        │   (State video / file / mem)     │ medium.go
         └─────────────────────────────┘
 
         ▲                            ▼
@@ -55,13 +55,13 @@ Everything that turns **live runtime state** into **durable bytes** and back. Th
 | `kv_snapshot.go` | [kv_snapshot.md](kv_snapshot.md) | Snapshot binary format (magic, version, encoding) |
 | `kv_snapshot_blocks.go` | [kv_snapshot_blocks.md](kv_snapshot_blocks.md) | Chunk strategy + block hashing |
 | `kv_snapshot_index.go` | [kv_snapshot_index.md](kv_snapshot_index.md) | Bundle index across entries + parents |
-| `kv_snapshot_memvid.go` | [kv_snapshot_memvid.md](kv_snapshot_memvid.md) | Memvid QR-video integration |
+| `kv_snapshot_state.go` | [kv_snapshot_state.md](kv_snapshot_state.md) | State video integration |
 | `state_bundle.go` | [state_bundle.md](state_bundle.md) | JSON envelope encode/decode |
 | LTHN project seed | [agentic_project_seed.md](agentic_project_seed.md) | Agentic wake/reload/compact workflow |
-| `medium.go` | [medium.md](medium.md) | Load model files via io.Medium (S3 / local / memvid / …) |
+| `medium.go` | [medium.md](medium.md) | Load model files via io.Medium (S3 / local / State video / …) |
 | `kv_analysis.go` | (planned) | KV inspection utilities — entropy, layer balance |
 | `kv_cache_bench.go` | (planned) | KV cache benchmark harness |
-| `memvid_chapter_smoke.go` | (planned) | Smoke test fixtures for memvid bundles |
+| `state_chapter_smoke.go` | (planned) | Smoke test fixtures for State bundles |
 | `small_model_smoke.go` | (planned) | Smoke test fixtures for compact bundles |
 
 ## Why this area exists at all
@@ -96,4 +96,4 @@ See [`agent_memory.md`](agent_memory.md) for context on what's being measured.
 - `../../../go-inference/docs/state/store.md` — Store / Resolver / Writer interfaces
 - [`agentic_project_seed.md`](agentic_project_seed.md) — LTHN app/CLI workflow for project context seeds
 - `cmd/violet/` — Unix-socket sidecar exposing wake/sleep over IPC
-- `pkg/memvid/` — the QR-video codec
+- `pkg/memvid/` (deprecated compatibility path) — the QR-video codec

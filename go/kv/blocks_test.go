@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	filestore "dappco.re/go/inference/state/filestore"
 )
 
@@ -194,29 +194,29 @@ func TestKVSnapshotBlocks_Bad_RejectsInvalidHeadShape(t *testing.T) {
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_SaveLoadRoundTrip(t *testing.T) {
-	store := memvid.NewInMemoryStore(nil)
+func TestKVSnapshotStateBlocks_Good_SaveLoadRoundTrip(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
 
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingQ8,
 		URI:        "mlx://session/blocks",
 		Labels:     []string{"session-kv-block"},
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+		t.Fatalf("SaveStateBlocks() error = %v", err)
 	}
-	if bundle.Kind != MemvidBlockBundleKind || len(bundle.Blocks) != 2 || bundle.BlockSize != 2 {
-		t.Fatalf("bundle = %+v, want two memvid KV blocks", bundle)
+	if bundle.Kind != StateBlockBundleKind || len(bundle.Blocks) != 2 || bundle.BlockSize != 2 {
+		t.Fatalf("bundle = %+v, want two State KV blocks", bundle)
 	}
-	if bundle.Blocks[0].Memvid.ChunkID == bundle.Blocks[1].Memvid.ChunkID {
-		t.Fatalf("block refs = %+v, want distinct memvid chunks", bundle.Blocks)
+	if bundle.Blocks[0].State.ChunkID == bundle.Blocks[1].State.ChunkID {
+		t.Fatalf("block refs = %+v, want distinct State chunks", bundle.Blocks)
 	}
-	if bundle.Blocks[0].PayloadEncoding != kvSnapshotMemvidPayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
+	if bundle.Blocks[0].PayloadEncoding != kvSnapshotStatePayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
 		t.Fatalf("block payload metadata = %+v, want raw binary payload", bundle.Blocks[0])
 	}
-	chunk, err := memvid.ResolveBytes(context.Background(), store, bundle.Blocks[0].Memvid.ChunkID)
+	chunk, err := state.ResolveBytes(context.Background(), store, bundle.Blocks[0].State.ChunkID)
 	if err != nil {
 		t.Fatalf("ResolveBytes(block chunk) error = %v", err)
 	}
@@ -224,9 +224,9 @@ func TestKVSnapshotMemvidBlocks_Good_SaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("block chunk = text %q data %d, want raw binary payload", chunk.Text, len(chunk.Data))
 	}
 
-	loaded, err := LoadFromMemvidBlocks(context.Background(), store, bundle)
+	loaded, err := LoadFromStateBlocks(context.Background(), store, bundle)
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocks() error = %v", err)
+		t.Fatalf("LoadFromStateBlocks() error = %v", err)
 	}
 	if loaded.TokenOffset != snapshot.TokenOffset || len(loaded.Tokens) != len(snapshot.Tokens) {
 		t.Fatalf("loaded metadata = %+v, want original token state", loaded)
@@ -240,39 +240,39 @@ func TestKVSnapshotMemvidBlocks_Good_SaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_TextStoreUsesEnvelopeFallback(t *testing.T) {
-	store := &textOnlyMemvidStore{store: memvid.NewInMemoryStore(nil)}
+func TestKVSnapshotStateBlocks_Good_TextStoreUsesEnvelopeFallback(t *testing.T) {
+	store := &textOnlyStateStore{store: state.NewInMemoryStore(nil)}
 	snapshot := kvSnapshotBlocksTestSnapshot()
 
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingQ8,
 		URI:        "mlx://session/text-blocks",
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(text store) error = %v", err)
+		t.Fatalf("SaveStateBlocks(text store) error = %v", err)
 	}
-	if bundle.Blocks[0].PayloadEncoding != kvSnapshotMemvidPayloadJSONBase64 {
+	if bundle.Blocks[0].PayloadEncoding != kvSnapshotStatePayloadJSONBase64 {
 		t.Fatalf("payload encoding = %q, want JSON/base64 fallback", bundle.Blocks[0].PayloadEncoding)
 	}
-	chunk, err := memvid.Resolve(context.Background(), store, bundle.Blocks[0].Memvid.ChunkID)
+	chunk, err := state.Resolve(context.Background(), store, bundle.Blocks[0].State.ChunkID)
 	if err != nil {
 		t.Fatalf("Resolve(block chunk) error = %v", err)
 	}
-	if !core.Contains(chunk.Text, `"kind":"`+KVSnapshotMemvidBlockKind+`"`) || !core.Contains(chunk.Text, `"block_index":0`) {
+	if !core.Contains(chunk.Text, `"kind":"`+KVSnapshotStateBlockKind+`"`) || !core.Contains(chunk.Text, `"block_index":0`) {
 		t.Fatalf("block chunk = %s, want block envelope", chunk.Text)
 	}
-	loaded, err := LoadFromMemvidBlocks(context.Background(), store, bundle)
+	loaded, err := LoadFromStateBlocks(context.Background(), store, bundle)
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocks(text store) error = %v", err)
+		t.Fatalf("LoadFromStateBlocks(text store) error = %v", err)
 	}
 	if loaded.TokenOffset != snapshot.TokenOffset || len(loaded.Tokens) != len(snapshot.Tokens) {
 		t.Fatalf("loaded metadata = %+v, want original token state", loaded)
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyWithoutFloat32(t *testing.T) {
-	store := memvid.NewInMemoryStore(nil)
+func TestKVSnapshotStateBlocks_Good_SaveNativeRawOnlyWithoutFloat32(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
 	head := &snapshot.Layers[0].Heads[0]
 	for _, value := range head.Key {
@@ -294,16 +294,16 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyWithoutFloat32(t *testing.
 		t.Fatalf("raw-only split blocks = %+v, want hashed streamed blocks", blocks)
 	}
 
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(native raw-only) error = %v", err)
+		t.Fatalf("SaveStateBlocks(native raw-only) error = %v", err)
 	}
-	loaded, err := LoadFromMemvidBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(raw-only) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(raw-only) error = %v", err)
 	}
 	loadedHead := loaded.Layers[0].Heads[0]
 	if len(loadedHead.Key) != 0 || len(loadedHead.Value) != 0 {
@@ -317,8 +317,8 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyWithoutFloat32(t *testing.
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_SaveNativeLayerRawOnlyWithoutHeadDuplication(t *testing.T) {
-	store := memvid.NewInMemoryStore(nil)
+func TestKVSnapshotStateBlocks_Good_SaveNativeLayerRawOnlyWithoutHeadDuplication(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
 	keyBytes := []byte{
 		1, 0, 2, 0, 3, 0, 4, 0,
 		5, 0, 6, 0, 7, 0, 8, 0,
@@ -357,16 +357,16 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeLayerRawOnlyWithoutHeadDuplicatio
 	if got := blocks[0].Snapshot.Layers[0].KeyBytes; !equalBytes(got, []byte{1, 0, 2, 0, 5, 0, 6, 0}) {
 		t.Fatalf("block[0] layer key bytes = %v, want first two tokens for both heads", got)
 	}
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(native layer raw-only) error = %v", err)
+		t.Fatalf("SaveStateBlocks(native layer raw-only) error = %v", err)
 	}
-	loaded, err := LoadFromMemvidBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(native layer raw-only) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(native layer raw-only) error = %v", err)
 	}
 	layer := loaded.Layers[0]
 	if !equalBytes(layer.KeyBytes, keyBytes) || !equalBytes(layer.ValueBytes, valueBytes) {
@@ -377,7 +377,7 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeLayerRawOnlyWithoutHeadDuplicatio
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) {
+func TestKVSnapshotStateBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) {
 	ctx := context.Background()
 	path := core.PathJoin(t.TempDir(), "kv-blocks.mvlog")
 	store, err := filestore.Create(ctx, path)
@@ -397,20 +397,20 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) 
 	head.KeyDType = "float16"
 	head.ValueDType = "bfloat16"
 
-	bundle, err := snapshot.SaveMemvidBlocks(ctx, store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(ctx, store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(file native raw-only) error = %v", err)
+		t.Fatalf("SaveStateBlocks(file native raw-only) error = %v", err)
 	}
-	if len(bundle.Blocks) != 2 || bundle.Blocks[0].Memvid.Codec != filestore.CodecFile {
+	if len(bundle.Blocks) != 2 || bundle.Blocks[0].State.Codec != filestore.CodecFile {
 		t.Fatalf("bundle refs = %+v, want file-backed block refs", bundle.Blocks)
 	}
-	if bundle.Blocks[0].PayloadEncoding != kvSnapshotMemvidPayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
+	if bundle.Blocks[0].PayloadEncoding != kvSnapshotStatePayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
 		t.Fatalf("bundle payload = %+v, want raw file-backed payload", bundle.Blocks[0])
 	}
-	rawChunk, err := memvid.ResolveBytes(ctx, store, bundle.Blocks[0].Memvid.ChunkID)
+	rawChunk, err := state.ResolveBytes(ctx, store, bundle.Blocks[0].State.ChunkID)
 	if err != nil {
 		t.Fatalf("ResolveBytes(file block) error = %v", err)
 	}
@@ -429,9 +429,9 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) 
 		t.Fatalf("filestore.Open() error = %v", err)
 	}
 	defer reopened.Close()
-	loaded, err := LoadFromMemvidBlocksWithOptions(ctx, reopened, bundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(ctx, reopened, bundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(file raw-only) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(file raw-only) error = %v", err)
 	}
 	loadedHead := loaded.Layers[0].Heads[0]
 	if len(loadedHead.Key) != 0 || len(loadedHead.Value) != 0 {
@@ -442,21 +442,21 @@ func TestKVSnapshotMemvidBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) 
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_UsesStreamingBinaryWriter(t *testing.T) {
-	store := &streamRecordingMemvidStore{store: memvid.NewInMemoryStore(nil)}
+func TestKVSnapshotStateBlocks_Good_UsesStreamingBinaryWriter(t *testing.T) {
+	store := &streamRecordingStateStore{store: state.NewInMemoryStore(nil)}
 	snapshot := kvSnapshotBlocksTestSnapshot()
 
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), store, MemvidBlockOptions{
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(streaming) error = %v", err)
+		t.Fatalf("SaveStateBlocks(streaming) error = %v", err)
 	}
 	if store.streamPuts != len(bundle.Blocks) || store.textPuts != 0 {
 		t.Fatalf("writes = stream %d text %d for %d blocks, want streaming raw block writes", store.streamPuts, store.textPuts, len(bundle.Blocks))
 	}
-	if bundle.Blocks[0].PayloadEncoding != kvSnapshotMemvidPayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
+	if bundle.Blocks[0].PayloadEncoding != kvSnapshotStatePayloadRaw || bundle.Blocks[0].PayloadByteCount == 0 {
 		t.Fatalf("block payload = %+v, want raw streamed payload", bundle.Blocks[0])
 	}
 	if len(store.streamOpts) != len(bundle.Blocks) {
@@ -465,30 +465,30 @@ func TestKVSnapshotMemvidBlocks_Good_UsesStreamingBinaryWriter(t *testing.T) {
 	if _, ok := store.streamOpts[0].Tags["kv_hash"]; ok {
 		t.Fatalf("stream metadata tags = %+v, want no blank kv_hash before payload is hashed", store.streamOpts[0].Tags)
 	}
-	if store.streamOpts[0].Tags["payload_encoding"] != kvSnapshotMemvidPayloadRaw {
+	if store.streamOpts[0].Tags["payload_encoding"] != kvSnapshotStatePayloadRaw {
 		t.Fatalf("stream metadata payload_encoding = %q, want raw", store.streamOpts[0].Tags["payload_encoding"])
 	}
-	chunk, err := memvid.ResolveBytes(context.Background(), store, bundle.Blocks[0].Memvid.ChunkID)
+	chunk, err := state.ResolveBytes(context.Background(), store, bundle.Blocks[0].State.ChunkID)
 	if err != nil {
 		t.Fatalf("ResolveBytes(streamed block) error = %v", err)
 	}
 	if len(chunk.Data) != bundle.Blocks[0].PayloadByteCount {
 		t.Fatalf("streamed payload bytes = %d, want %d", len(chunk.Data), bundle.Blocks[0].PayloadByteCount)
 	}
-	loaded, err := LoadFromMemvidBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(streaming) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(streaming) error = %v", err)
 	}
 	if len(loaded.Tokens) != len(snapshot.Tokens) || loaded.TokenOffset != snapshot.TokenOffset {
 		t.Fatalf("loaded metadata = %+v, want original token state", loaded)
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_SaveStreamInfersBundleMetadata(t *testing.T) {
-	store := &streamRecordingMemvidStore{store: memvid.NewInMemoryStore(nil)}
+func TestKVSnapshotStateBlocks_Good_SaveStreamInfersBundleMetadata(t *testing.T) {
+	store := &streamRecordingStateStore{store: state.NewInMemoryStore(nil)}
 	snapshot := kvSnapshotBlocksTestSnapshot()
 
-	bundle, err := SaveMemvidBlocksFromStream(context.Background(), store, MemvidBlockOptions{
+	bundle, err := SaveStateBlocksFromStream(context.Background(), store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 		URI:        "mlx://streamed/session",
@@ -497,7 +497,7 @@ func TestKVSnapshotMemvidBlocks_Good_SaveStreamInfersBundleMetadata(t *testing.T
 	})
 
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocksFromStream() error = %v", err)
+		t.Fatalf("SaveStateBlocksFromStream() error = %v", err)
 	}
 	if bundle.Architecture != snapshot.Architecture || bundle.TokenCount != len(snapshot.Tokens) || bundle.TokenOffset != snapshot.TokenOffset {
 		t.Fatalf("bundle metadata = %+v, want snapshot metadata", bundle)
@@ -511,26 +511,26 @@ func TestKVSnapshotMemvidBlocks_Good_SaveStreamInfersBundleMetadata(t *testing.T
 	if bundle.SnapshotHash == "" {
 		t.Fatal("bundle SnapshotHash is empty")
 	}
-	loaded, err := LoadFromMemvidBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(stream bundle) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(stream bundle) error = %v", err)
 	}
 	if len(loaded.Tokens) != len(snapshot.Tokens) || loaded.TokenOffset != snapshot.TokenOffset {
 		t.Fatalf("loaded metadata = %+v, want original token state", loaded)
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_StreamReusesPrefixBlocks(t *testing.T) {
+func TestKVSnapshotStateBlocks_Good_StreamReusesPrefixBlocks(t *testing.T) {
 	ctx := context.Background()
-	store := memvid.NewInMemoryStore(nil)
+	store := state.NewInMemoryStore(nil)
 	parent := kvSnapshotBlocksTestSnapshot()
-	parentBundle, err := parent.SaveMemvidBlocks(ctx, store, MemvidBlockOptions{
+	parentBundle, err := parent.SaveStateBlocks(ctx, store, StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: EncodingNative,
 		URI:        "mlx://parent",
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks(parent) error = %v", err)
+		t.Fatalf("SaveStateBlocks(parent) error = %v", err)
 	}
 	child := kvSnapshotBlocksTestSnapshot()
 	child.Tokens[2] = 9
@@ -545,7 +545,7 @@ func TestKVSnapshotMemvidBlocks_Good_StreamReusesPrefixBlocks(t *testing.T) {
 	child.Layers[0].Heads[0].Value[6] = 102
 	child.Layers[0].Heads[0].Value[7] = 103
 
-	childBundle, err := SaveMemvidBlocksFromStream(ctx, store, MemvidBlockOptions{
+	childBundle, err := SaveStateBlocksFromStream(ctx, store, StateBlockOptions{
 		BlockSize:         2,
 		KVEncoding:        EncodingNative,
 		URI:               "mlx://child",
@@ -555,156 +555,156 @@ func TestKVSnapshotMemvidBlocks_Good_StreamReusesPrefixBlocks(t *testing.T) {
 		return child.walkBlocks(2, false, yield)
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocksFromStream(child reuse) error = %v", err)
+		t.Fatalf("SaveStateBlocksFromStream(child reuse) error = %v", err)
 	}
 	if childBundle.ReusedBlocks != 1 {
 		t.Fatalf("child reused blocks = %d, want 1", childBundle.ReusedBlocks)
 	}
-	if childBundle.Blocks[0].Memvid.ChunkID != parentBundle.Blocks[0].Memvid.ChunkID {
+	if childBundle.Blocks[0].State.ChunkID != parentBundle.Blocks[0].State.ChunkID {
 		t.Fatalf("child first block ref = %+v, want parent first ref %+v", childBundle.Blocks[0], parentBundle.Blocks[0])
 	}
-	if childBundle.Blocks[1].Memvid.ChunkID == parentBundle.Blocks[1].Memvid.ChunkID {
+	if childBundle.Blocks[1].State.ChunkID == parentBundle.Blocks[1].State.ChunkID {
 		t.Fatalf("child second block reused parent ref %+v, want new suffix block", childBundle.Blocks[1])
 	}
-	loaded, err := LoadFromMemvidBlocksWithOptions(ctx, store, childBundle, LoadOptions{RawKVOnly: true})
+	loaded, err := LoadFromStateBlocksWithOptions(ctx, store, childBundle, LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadFromMemvidBlocksWithOptions(child reuse) error = %v", err)
+		t.Fatalf("LoadFromStateBlocksWithOptions(child reuse) error = %v", err)
 	}
 	if len(loaded.Tokens) != 4 || loaded.Tokens[0] != 1 || loaded.Tokens[2] != 9 || loaded.Tokens[3] != 10 {
 		t.Fatalf("loaded child tokens = %v, want reused prefix plus new suffix", loaded.Tokens)
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Bad_SaveStreamErrors(t *testing.T) {
+func TestKVSnapshotStateBlocks_Bad_SaveStreamErrors(t *testing.T) {
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	store := &streamRecordingMemvidStore{store: memvid.NewInMemoryStore(nil)}
-	if _, err := SaveMemvidBlocksFromStream(context.Background(), nil, MemvidBlockOptions{}, func(func(Block) (bool, error)) error {
+	store := &streamRecordingStateStore{store: state.NewInMemoryStore(nil)}
+	if _, err := SaveStateBlocksFromStream(context.Background(), nil, StateBlockOptions{}, func(func(Block) (bool, error)) error {
 		return nil
 	}); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(nil store) error = nil")
+		t.Fatal("SaveStateBlocksFromStream(nil store) error = nil")
 	}
-	if _, err := SaveMemvidBlocksFromStream(context.Background(), store, MemvidBlockOptions{}, nil); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(nil stream) error = nil")
+	if _, err := SaveStateBlocksFromStream(context.Background(), store, StateBlockOptions{}, nil); err == nil {
+		t.Fatal("SaveStateBlocksFromStream(nil stream) error = nil")
 	}
-	if _, err := SaveMemvidBlocksFromStream(context.Background(), store, MemvidBlockOptions{}, func(func(Block) (bool, error)) error {
+	if _, err := SaveStateBlocksFromStream(context.Background(), store, StateBlockOptions{}, func(func(Block) (bool, error)) error {
 		return nil
 	}); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(empty stream) error = nil")
+		t.Fatal("SaveStateBlocksFromStream(empty stream) error = nil")
 	}
-	if _, err := SaveMemvidBlocksFromStream(context.Background(), store, MemvidBlockOptions{}, func(yield func(Block) (bool, error)) error {
+	if _, err := SaveStateBlocksFromStream(context.Background(), store, StateBlockOptions{}, func(yield func(Block) (bool, error)) error {
 		_, err := yield(Block{Index: 0, TokenStart: 0, TokenCount: 1})
 		return err
 	}); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(nil block snapshot) error = nil")
+		t.Fatal("SaveStateBlocksFromStream(nil block snapshot) error = nil")
 	}
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := SaveMemvidBlocksFromStream(cancelled, store, MemvidBlockOptions{}, func(yield func(Block) (bool, error)) error {
+	if _, err := SaveStateBlocksFromStream(cancelled, store, StateBlockOptions{}, func(yield func(Block) (bool, error)) error {
 		return snapshot.walkBlocks(2, false, yield)
 	}); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(cancelled context) error = nil")
+		t.Fatal("SaveStateBlocksFromStream(cancelled context) error = nil")
 	}
 
-	writerStore := &failingStreamMemvidStore{}
-	if _, err := SaveMemvidBlocksFromStream(context.Background(), writerStore, MemvidBlockOptions{}, func(yield func(Block) (bool, error)) error {
+	writerStore := &failingStreamStateStore{}
+	if _, err := SaveStateBlocksFromStream(context.Background(), writerStore, StateBlockOptions{}, func(yield func(Block) (bool, error)) error {
 		return snapshot.walkBlocks(2, false, yield)
 	}); err == nil {
-		t.Fatal("SaveMemvidBlocksFromStream(writer failure) error = nil")
+		t.Fatal("SaveStateBlocksFromStream(writer failure) error = nil")
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Bad_ValidationAndLoadErrors(t *testing.T) {
-	if _, err := LoadFromMemvidBlocks(context.Background(), nil, &MemvidBlockBundle{}); err == nil {
-		t.Fatal("LoadFromMemvidBlocks(nil store) error = nil")
+func TestKVSnapshotStateBlocks_Bad_ValidationAndLoadErrors(t *testing.T) {
+	if _, err := LoadFromStateBlocks(context.Background(), nil, &StateBlockBundle{}); err == nil {
+		t.Fatal("LoadFromStateBlocks(nil store) error = nil")
 	}
-	if _, err := LoadFromMemvidBlocks(context.Background(), memvid.NewInMemoryStore(nil), nil); err == nil {
-		t.Fatal("LoadFromMemvidBlocks(nil bundle) error = nil")
+	if _, err := LoadFromStateBlocks(context.Background(), state.NewInMemoryStore(nil), nil); err == nil {
+		t.Fatal("LoadFromStateBlocks(nil bundle) error = nil")
 	}
-	for _, bundle := range []*MemvidBlockBundle{
-		{Version: MemvidBlockVersion + 1, Kind: MemvidBlockBundleKind, TokenCount: 1, Blocks: []MemvidBlockRef{{}}},
-		{Version: MemvidBlockVersion, Kind: "wrong", TokenCount: 1, Blocks: []MemvidBlockRef{{}}},
-		{Version: MemvidBlockVersion, Kind: MemvidBlockBundleKind, Blocks: []MemvidBlockRef{{}}},
-		{Version: MemvidBlockVersion, Kind: MemvidBlockBundleKind, TokenCount: 1},
+	for _, bundle := range []*StateBlockBundle{
+		{Version: StateBlockVersion + 1, Kind: StateBlockBundleKind, TokenCount: 1, Blocks: []StateBlockRef{{}}},
+		{Version: StateBlockVersion, Kind: "wrong", TokenCount: 1, Blocks: []StateBlockRef{{}}},
+		{Version: StateBlockVersion, Kind: StateBlockBundleKind, Blocks: []StateBlockRef{{}}},
+		{Version: StateBlockVersion, Kind: StateBlockBundleKind, TokenCount: 1},
 	} {
-		if err := ValidateMemvidBlockBundle(bundle); err == nil {
-			t.Fatalf("ValidateMemvidBlockBundle(%+v) error = nil", bundle)
+		if err := ValidateStateBlockBundle(bundle); err == nil {
+			t.Fatalf("ValidateStateBlockBundle(%+v) error = nil", bundle)
 		}
 	}
-	if err := ValidateMemvidBlockBundle(nil); err == nil {
-		t.Fatal("ValidateMemvidBlockBundle(nil) error = nil")
+	if err := ValidateStateBlockBundle(nil); err == nil {
+		t.Fatal("ValidateStateBlockBundle(nil) error = nil")
 	}
-	if _, err := LoadPrefixFromMemvidBlocks(context.Background(), nil, &MemvidBlockBundle{}, 1); err == nil {
-		t.Fatal("LoadPrefixFromMemvidBlocks(nil store) error = nil")
+	if _, err := LoadPrefixFromStateBlocks(context.Background(), nil, &StateBlockBundle{}, 1); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocks(nil store) error = nil")
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Bad_RawBlockIntegrity(t *testing.T) {
-	store := memvid.NewInMemoryStore(nil)
-	ref, err := store.PutBytes(context.Background(), []byte(kvSnapshotMagic), memvid.PutOptions{})
+func TestKVSnapshotStateBlocks_Bad_RawBlockIntegrity(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	ref, err := store.PutBytes(context.Background(), []byte(kvSnapshotMagic), state.PutOptions{})
 	if err != nil {
 		t.Fatalf("PutBytes() error = %v", err)
 	}
-	blockRef := MemvidBlockRef{
+	blockRef := StateBlockRef{
 		Index:            0,
 		TokenStart:       0,
 		TokenCount:       1,
 		KVHash:           "not-the-hash",
-		PayloadEncoding:  kvSnapshotMemvidPayloadRaw,
+		PayloadEncoding:  kvSnapshotStatePayloadRaw,
 		PayloadByteCount: len(kvSnapshotMagic),
-		Memvid:           ref,
+		State:            ref,
 	}
-	if _, err := loadRawKVSnapshotMemvidBlockWithOptions(context.Background(), store, blockRef, LoadOptions{}); err == nil {
-		t.Fatal("loadRawKVSnapshotMemvidBlockWithOptions(hash mismatch) error = nil")
+	if _, err := loadRawKVSnapshotStateBlockWithOptions(context.Background(), store, blockRef, LoadOptions{}); err == nil {
+		t.Fatal("loadRawKVSnapshotStateBlockWithOptions(hash mismatch) error = nil")
 	}
 	blockRef.KVHash = ""
 	blockRef.PayloadByteCount++
-	if _, err := loadRawKVSnapshotMemvidBlockWithOptions(context.Background(), store, blockRef, LoadOptions{}); err == nil {
-		t.Fatal("loadRawKVSnapshotMemvidBlockWithOptions(length mismatch) error = nil")
+	if _, err := loadRawKVSnapshotStateBlockWithOptions(context.Background(), store, blockRef, LoadOptions{}); err == nil {
+		t.Fatal("loadRawKVSnapshotStateBlockWithOptions(length mismatch) error = nil")
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Bad_EnvelopeIntegrity(t *testing.T) {
-	for _, envelope := range []kvSnapshotMemvidBlockEnvelope{
-		{Version: MemvidBlockVersion + 1, Kind: KVSnapshotMemvidBlockKind, BinaryEncoding: "base64"},
-		{Version: MemvidBlockVersion, Kind: "wrong", BinaryEncoding: "base64"},
-		{Version: MemvidBlockVersion, Kind: KVSnapshotMemvidBlockKind, BinaryEncoding: "hex"},
-		{Version: MemvidBlockVersion, Kind: KVSnapshotMemvidBlockKind, BinaryEncoding: "base64", Data: "not base64"},
-		{Version: MemvidBlockVersion, Kind: KVSnapshotMemvidBlockKind, BinaryEncoding: "base64", Data: core.Base64Encode([]byte("x")), PayloadByteCount: 2},
-		{Version: MemvidBlockVersion, Kind: KVSnapshotMemvidBlockKind, BinaryEncoding: "base64", Data: core.Base64Encode([]byte("x")), KVHash: "bad"},
+func TestKVSnapshotStateBlocks_Bad_EnvelopeIntegrity(t *testing.T) {
+	for _, envelope := range []kvSnapshotStateBlockEnvelope{
+		{Version: StateBlockVersion + 1, Kind: KVSnapshotStateBlockKind, BinaryEncoding: "base64"},
+		{Version: StateBlockVersion, Kind: "wrong", BinaryEncoding: "base64"},
+		{Version: StateBlockVersion, Kind: KVSnapshotStateBlockKind, BinaryEncoding: "hex"},
+		{Version: StateBlockVersion, Kind: KVSnapshotStateBlockKind, BinaryEncoding: "base64", Data: "not base64"},
+		{Version: StateBlockVersion, Kind: KVSnapshotStateBlockKind, BinaryEncoding: "base64", Data: core.Base64Encode([]byte("x")), PayloadByteCount: 2},
+		{Version: StateBlockVersion, Kind: KVSnapshotStateBlockKind, BinaryEncoding: "base64", Data: core.Base64Encode([]byte("x")), KVHash: "bad"},
 	} {
-		if _, err := decodeKVSnapshotMemvidBlockEnvelope(envelope, ""); err == nil {
-			t.Fatalf("decodeKVSnapshotMemvidBlockEnvelope(%+v) error = nil", envelope)
+		if _, err := decodeKVSnapshotStateBlockEnvelope(envelope, ""); err == nil {
+			t.Fatalf("decodeKVSnapshotStateBlockEnvelope(%+v) error = nil", envelope)
 		}
 	}
 	data := []byte("x")
-	envelope := kvSnapshotMemvidBlockEnvelope{
-		Version:        MemvidBlockVersion,
-		Kind:           KVSnapshotMemvidBlockKind,
+	envelope := kvSnapshotStateBlockEnvelope{
+		Version:        StateBlockVersion,
+		Kind:           KVSnapshotStateBlockKind,
 		BinaryEncoding: "base64",
 		Data:           core.Base64Encode(data),
 	}
-	if _, err := decodeKVSnapshotMemvidBlockEnvelope(envelope, "wrong-ref-hash"); err == nil {
-		t.Fatal("decodeKVSnapshotMemvidBlockEnvelope(ref hash mismatch) error = nil")
+	if _, err := decodeKVSnapshotStateBlockEnvelope(envelope, "wrong-ref-hash"); err == nil {
+		t.Fatal("decodeKVSnapshotStateBlockEnvelope(ref hash mismatch) error = nil")
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_LoadPrefixOnlyReadsNeededBlocks(t *testing.T) {
-	source := memvid.NewInMemoryStore(nil)
+func TestKVSnapshotStateBlocks_Good_LoadPrefixOnlyReadsNeededBlocks(t *testing.T) {
+	source := state.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, MemvidBlockOptions{BlockSize: 2})
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), source, StateBlockOptions{BlockSize: 2})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+		t.Fatalf("SaveStateBlocks() error = %v", err)
 	}
-	store := &recordingMemvidStore{store: source}
+	store := &recordingStateStore{store: source}
 
-	loaded, err := LoadPrefixFromMemvidBlocks(context.Background(), store, bundle, 2)
+	loaded, err := LoadPrefixFromStateBlocks(context.Background(), store, bundle, 2)
 	if err != nil {
-		t.Fatalf("LoadPrefixFromMemvidBlocks() error = %v", err)
+		t.Fatalf("LoadPrefixFromStateBlocks() error = %v", err)
 	}
 
-	if len(store.resolved) != 1 || store.resolved[0] != bundle.Blocks[0].Memvid.ChunkID {
-		t.Fatalf("resolved chunks = %v, want only first block chunk %d", store.resolved, bundle.Blocks[0].Memvid.ChunkID)
+	if len(store.resolved) != 1 || store.resolved[0] != bundle.Blocks[0].State.ChunkID {
+		t.Fatalf("resolved chunks = %v, want only first block chunk %d", store.resolved, bundle.Blocks[0].State.ChunkID)
 	}
 	if loaded.TokenOffset != 2 || loaded.SeqLen != 2 || len(loaded.Tokens) != 2 || loaded.Tokens[0] != 1 || loaded.Tokens[1] != 2 {
 		t.Fatalf("loaded prefix metadata = %+v, want first two tokens", loaded)
@@ -721,17 +721,17 @@ func TestKVSnapshotMemvidBlocks_Good_LoadPrefixOnlyReadsNeededBlocks(t *testing.
 	}
 }
 
-func TestKVSnapshotMemvidBlocks_Good_LoadPartialPrefixSlicesCoveringBlock(t *testing.T) {
-	source := memvid.NewInMemoryStore(nil)
+func TestKVSnapshotStateBlocks_Good_LoadPartialPrefixSlicesCoveringBlock(t *testing.T) {
+	source := state.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	bundle, err := snapshot.SaveMemvidBlocks(context.Background(), source, MemvidBlockOptions{BlockSize: 2})
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), source, StateBlockOptions{BlockSize: 2})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+		t.Fatalf("SaveStateBlocks() error = %v", err)
 	}
 
-	loaded, err := LoadPrefixFromMemvidBlocks(context.Background(), source, bundle, 3)
+	loaded, err := LoadPrefixFromStateBlocks(context.Background(), source, bundle, 3)
 	if err != nil {
-		t.Fatalf("LoadPrefixFromMemvidBlocks() error = %v", err)
+		t.Fatalf("LoadPrefixFromStateBlocks() error = %v", err)
 	}
 
 	if loaded.TokenOffset != 3 || loaded.SeqLen != 3 || len(loaded.Tokens) != 3 || loaded.Tokens[2] != 3 {
@@ -751,7 +751,7 @@ func TestKVSnapshotMemvidBlocks_Good_LoadPartialPrefixSlicesCoveringBlock(t *tes
 
 func TestKVSnapshotStateBlocks_Good_LoadPrefixTokensSkipsKVAssembly(t *testing.T) {
 	ctx := context.Background()
-	store := memvid.NewInMemoryStore(nil)
+	store := state.NewInMemoryStore(nil)
 	first := stateTokenOnlyTestSnapshot([]int32{1, 2}, 2, 2)
 	second := stateTokenOnlyTestSnapshot([]int32{3, 4}, 4, 1)
 	bundle, err := SaveStateBlocksFromStream(ctx, store, StateBlockOptions{
@@ -781,74 +781,74 @@ func TestKVSnapshotStateBlocks_Good_LoadPrefixTokensSkipsKVAssembly(t *testing.T
 	}
 }
 
-type recordingMemvidStore struct {
-	store    memvid.Store
+type recordingStateStore struct {
+	store    state.Store
 	resolved []int
 }
 
-func (s *recordingMemvidStore) Get(ctx context.Context, chunkID int) (string, error) {
+func (s *recordingStateStore) Get(ctx context.Context, chunkID int) (string, error) {
 	s.resolved = append(s.resolved, chunkID)
 	return s.store.Get(ctx, chunkID)
 }
 
-func (s *recordingMemvidStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *recordingStateStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
 	s.resolved = append(s.resolved, chunkID)
-	return memvid.Resolve(ctx, s.store, chunkID)
+	return state.Resolve(ctx, s.store, chunkID)
 }
 
-type textOnlyMemvidStore struct {
-	store *memvid.InMemoryStore
+type textOnlyStateStore struct {
+	store *state.InMemoryStore
 }
 
-func (s *textOnlyMemvidStore) Get(ctx context.Context, chunkID int) (string, error) {
+func (s *textOnlyStateStore) Get(ctx context.Context, chunkID int) (string, error) {
 	return s.store.Get(ctx, chunkID)
 }
 
-func (s *textOnlyMemvidStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *textOnlyStateStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
 	return s.store.Resolve(ctx, chunkID)
 }
 
-func (s *textOnlyMemvidStore) ResolveURI(ctx context.Context, uri string) (memvid.Chunk, error) {
+func (s *textOnlyStateStore) ResolveURI(ctx context.Context, uri string) (state.Chunk, error) {
 	return s.store.ResolveURI(ctx, uri)
 }
 
-func (s *textOnlyMemvidStore) Put(ctx context.Context, text string, opts memvid.PutOptions) (memvid.ChunkRef, error) {
+func (s *textOnlyStateStore) Put(ctx context.Context, text string, opts state.PutOptions) (state.ChunkRef, error) {
 	return s.store.Put(ctx, text, opts)
 }
 
-type streamRecordingMemvidStore struct {
-	store      *memvid.InMemoryStore
+type streamRecordingStateStore struct {
+	store      *state.InMemoryStore
 	streamPuts int
 	textPuts   int
-	streamOpts []memvid.PutOptions
+	streamOpts []state.PutOptions
 }
 
-func (s *streamRecordingMemvidStore) Get(ctx context.Context, chunkID int) (string, error) {
+func (s *streamRecordingStateStore) Get(ctx context.Context, chunkID int) (string, error) {
 	return s.store.Get(ctx, chunkID)
 }
 
-func (s *streamRecordingMemvidStore) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *streamRecordingStateStore) Resolve(ctx context.Context, chunkID int) (state.Chunk, error) {
 	return s.store.Resolve(ctx, chunkID)
 }
 
-func (s *streamRecordingMemvidStore) ResolveBytes(ctx context.Context, chunkID int) (memvid.Chunk, error) {
+func (s *streamRecordingStateStore) ResolveBytes(ctx context.Context, chunkID int) (state.Chunk, error) {
 	return s.store.ResolveBytes(ctx, chunkID)
 }
 
-func (s *streamRecordingMemvidStore) Put(ctx context.Context, text string, opts memvid.PutOptions) (memvid.ChunkRef, error) {
+func (s *streamRecordingStateStore) Put(ctx context.Context, text string, opts state.PutOptions) (state.ChunkRef, error) {
 	s.textPuts++
 	return s.store.Put(ctx, text, opts)
 }
 
-func (s *streamRecordingMemvidStore) PutBytesStream(ctx context.Context, payloadSize int, opts memvid.PutOptions, write func(stdio.Writer) error) (memvid.ChunkRef, error) {
+func (s *streamRecordingStateStore) PutBytesStream(ctx context.Context, payloadSize int, opts state.PutOptions, write func(stdio.Writer) error) (state.ChunkRef, error) {
 	s.streamPuts++
 	s.streamOpts = append(s.streamOpts, opts)
 	writer := &streamRecordingWriter{data: make([]byte, 0, payloadSize)}
 	if err := write(writer); err != nil {
-		return memvid.ChunkRef{}, err
+		return state.ChunkRef{}, err
 	}
 	if len(writer.data) != payloadSize {
-		return memvid.ChunkRef{}, core.NewError("stream payload size mismatch")
+		return state.ChunkRef{}, core.NewError("stream payload size mismatch")
 	}
 	return s.store.PutBytes(ctx, writer.data, opts)
 }
@@ -862,18 +862,18 @@ func (w *streamRecordingWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-type failingStreamMemvidStore struct{}
+type failingStreamStateStore struct{}
 
-func (s *failingStreamMemvidStore) Put(context.Context, string, memvid.PutOptions) (memvid.ChunkRef, error) {
-	return memvid.ChunkRef{}, core.NewError("unexpected text write")
+func (s *failingStreamStateStore) Put(context.Context, string, state.PutOptions) (state.ChunkRef, error) {
+	return state.ChunkRef{}, core.NewError("unexpected text write")
 }
 
-func (s *failingStreamMemvidStore) PutBytesStream(ctx context.Context, payloadSize int, opts memvid.PutOptions, write func(stdio.Writer) error) (memvid.ChunkRef, error) {
+func (s *failingStreamStateStore) PutBytesStream(ctx context.Context, payloadSize int, opts state.PutOptions, write func(stdio.Writer) error) (state.ChunkRef, error) {
 	err := write(failingStreamWriter{})
 	if err == nil {
 		err = core.NewError("expected writer failure")
 	}
-	return memvid.ChunkRef{}, err
+	return state.ChunkRef{}, err
 }
 
 type failingStreamWriter struct{}

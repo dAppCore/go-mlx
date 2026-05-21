@@ -9,7 +9,7 @@
 
 The on-disk binary format for one KV cache snapshot. Captures the K/V tensors from a live `metal.Model` into a portable byte stream that can be saved, transported, decoded later, and restored into a fresh model with the same architecture.
 
-This file owns the **format spec** (magic, version, encoding enum, save/load/capture options) and the marshal/unmarshal. Block chunking lives in `kv_snapshot_blocks.go`; bundle indexing lives in `kv_snapshot_index.go`; memvid integration lives in `kv_snapshot_memvid.go`.
+This file owns the **format spec** (magic, version, encoding enum, save/load/capture options) and the marshal/unmarshal. Block chunking lives in `kv_snapshot_blocks.go`; bundle indexing lives in `kv_snapshot_index.go`; State integration lives in `kv_snapshot_state.go`.
 
 ## Format
 
@@ -28,7 +28,7 @@ This file owns the **format spec** (magic, version, encoding enum, save/load/cap
 +-----------------------------------------------------+
 ```
 
-`KVSnapshotVersion = 4`. Version 4 can store Metal-oriented rank-4 layer K/V slabs before any legacy per-head tensors, allowing native memvid blocks to restore through pinned MLX arrays without rebuilding heads first. Older snapshots are not auto-upgraded — `LoadKVSnapshot` returns an error and the caller decides whether to re-capture.
+`KVSnapshotVersion = 4`. Version 4 can store Metal-oriented rank-4 layer K/V slabs before any legacy per-head tensors, allowing native State blocks to restore through pinned MLX arrays without rebuilding heads first. Older snapshots are not auto-upgraded — `LoadKVSnapshot` returns an error and the caller decides whether to re-capture.
 
 ## Encoding
 
@@ -58,7 +58,7 @@ type KVSnapshotCaptureOptions struct {
 }
 ```
 
-`RawKVOnly` is the "I'm forwarding this to a peer, don't decode" path used by the disaggregated inference layer (LARQL + memvid in `design_disaggregated_inference_lethean.md`).
+`RawKVOnly` is the "I'm forwarding this to a peer, don't decode" path used by the disaggregated inference layer (LARQL + State in `design_disaggregated_inference_lethean.md`).
 
 ## Public API
 
@@ -87,7 +87,7 @@ A v1/v2 snapshot encountered today produces a clear "format version too old" err
 
 - [kv_snapshot_blocks.md](kv_snapshot_blocks.md) — chunking strategy
 - [kv_snapshot_index.md](kv_snapshot_index.md) — bundle index across multiple snapshots
-- [kv_snapshot_memvid.md](kv_snapshot_memvid.md) — memvid bundle integration
+- [kv_snapshot_state.md](kv_snapshot_state.md) — State bundle integration
 - [agent_memory.md](agent_memory.md) — Wake/Sleep that uses this
 - [state_bundle.md](state_bundle.md) — the Bundle envelope wrapping snapshots
 - `../../../go-inference/docs/inference/capability.md` — `CapabilityKVSnapshot` advertises this

@@ -59,7 +59,7 @@ context_length = 16384
 
 [memory]
 bundles_dir = "/var/lib/violet/bundles"
-codec = "memvid"           # or "file"
+codec = "state"           # or "file"
 
 [scheduler]
 max_concurrent = 4

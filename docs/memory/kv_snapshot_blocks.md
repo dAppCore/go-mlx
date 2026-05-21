@@ -12,7 +12,7 @@ The strategy for **chunking a KV snapshot into fixed-size blocks** so:
 - Storage can hot-cache recent blocks while archiving cold blocks.
 - Sleep with `ReuseParentPrefix` can share blocks between a child and its parent (identical prefix tokens → identical K/V → identical block hash → no rewrite).
 - Wake can stream blocks lazily, restoring head blocks first to start generation early.
-- Memvid encoding can address each block by `(chunk_id, frame_offset)`.
+- State video encoding can address each block by `(chunk_id, frame_offset)`.
 
 ## Block size
 
@@ -79,6 +79,6 @@ This is what makes "1 base context + 100 divergent continuations" cheap: 100 bun
 
 - [kv_snapshot.md](kv_snapshot.md) — snapshot format
 - [kv_snapshot_index.md](kv_snapshot_index.md) — bundle index referencing blocks
-- [kv_snapshot_memvid.md](kv_snapshot_memvid.md) — memvid chunks one block per frame range
+- [kv_snapshot_state.md](kv_snapshot_state.md) — State chunks one block per frame range
 - [block_cache.md](../inference/block_cache.md) — hot block cache
 - [agent_memory.md](agent_memory.md) — Wake/Sleep that consumes blocks

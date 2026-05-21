@@ -6,7 +6,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
@@ -16,7 +16,7 @@ import (
 // session. EntryURI is optional when the index has exactly one natural first
 // entry.
 type WakeOptions struct {
-	Index                  *MemvidIndex
+	Index                  *StateIndex
 	IndexURI               string
 	EntryURI               string
 	Tokenizer              bundle.Tokenizer
@@ -54,39 +54,39 @@ type SleepOptions struct {
 	ModelInfo         memory.ModelInfo
 	Tokenizer         bundle.Tokenizer
 	ReuseParentPrefix bool
-	BlockOptions      kv.MemvidBlockOptions
+	BlockOptions      kv.StateBlockOptions
 	Labels            []string
 	Meta              map[string]string
 }
 
 // SleepReport describes the durable state written by Sleep.
 type SleepReport struct {
-	IndexURI        string          `json:"index_uri,omitempty"`
-	EntryURI        string          `json:"entry_uri,omitempty"`
-	BundleURI       string          `json:"bundle_uri,omitempty"`
-	ParentEntryURI  string          `json:"parent_entry_uri,omitempty"`
-	ParentBundleURI string          `json:"parent_bundle_uri,omitempty"`
-	ParentIndexURI  string          `json:"parent_index_uri,omitempty"`
-	Title           string          `json:"title,omitempty"`
-	TokenCount      int             `json:"token_count,omitempty"`
-	BlockSize       int             `json:"block_size,omitempty"`
-	BlocksWritten   int             `json:"blocks_written,omitempty"`
-	BlocksReused    int             `json:"blocks_reused,omitempty"`
-	KVEncoding      kv.Encoding     `json:"kv_encoding,omitempty"`
-	IndexHash       string          `json:"index_hash,omitempty"`
-	SnapshotHash    string          `json:"snapshot_hash,omitempty"`
-	BundleRef       memvid.ChunkRef `json:"bundle_ref,omitempty"`
-	IndexRef        memvid.ChunkRef `json:"index_ref,omitempty"`
+	IndexURI        string         `json:"index_uri,omitempty"`
+	EntryURI        string         `json:"entry_uri,omitempty"`
+	BundleURI       string         `json:"bundle_uri,omitempty"`
+	ParentEntryURI  string         `json:"parent_entry_uri,omitempty"`
+	ParentBundleURI string         `json:"parent_bundle_uri,omitempty"`
+	ParentIndexURI  string         `json:"parent_index_uri,omitempty"`
+	Title           string         `json:"title,omitempty"`
+	TokenCount      int            `json:"token_count,omitempty"`
+	BlockSize       int            `json:"block_size,omitempty"`
+	BlocksWritten   int            `json:"blocks_written,omitempty"`
+	BlocksReused    int            `json:"blocks_reused,omitempty"`
+	KVEncoding      kv.Encoding    `json:"kv_encoding,omitempty"`
+	IndexHash       string         `json:"index_hash,omitempty"`
+	SnapshotHash    string         `json:"snapshot_hash,omitempty"`
+	BundleRef       state.ChunkRef `json:"bundle_ref,omitempty"`
+	IndexRef        state.ChunkRef `json:"index_ref,omitempty"`
 }
 
 type WakePlan struct {
-	Index  *MemvidIndex
-	Entry  MemvidIndexEntry
-	Bundle *kv.MemvidBlockBundle
+	Index  *StateIndex
+	Entry  StateIndexEntry
+	Bundle *kv.StateBlockBundle
 	Report *WakeReport
 }
 
-func LoadWakeSnapshot(ctx context.Context, store memvid.Store, opts WakeOptions, info memory.ModelInfo) (*kv.Snapshot, *WakeReport, error) {
+func LoadWakeSnapshot(ctx context.Context, store state.Store, opts WakeOptions, info memory.ModelInfo) (*kv.Snapshot, *WakeReport, error) {
 	plan, err := PlanWake(ctx, store, opts, info)
 	if err != nil {
 		return nil, nil, err
@@ -98,7 +98,7 @@ func LoadWakeSnapshot(ctx context.Context, store memvid.Store, opts WakeOptions,
 	return snapshot, plan.Report, nil
 }
 
-func PlanWake(ctx context.Context, store memvid.Store, opts WakeOptions, info memory.ModelInfo) (*WakePlan, error) {
+func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info memory.ModelInfo) (*WakePlan, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -151,7 +151,7 @@ func PlanWake(ctx context.Context, store memvid.Store, opts WakeOptions, info me
 	}, nil
 }
 
-func loadIndex(ctx context.Context, store memvid.Store, opts WakeOptions) (*MemvidIndex, error) {
+func loadIndex(ctx context.Context, store state.Store, opts WakeOptions) (*StateIndex, error) {
 	if opts.Index != nil {
 		if err := opts.Index.Validate(); err != nil {
 			return nil, err
@@ -183,7 +183,7 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 	return entryURI, bundleURI, indexURI, nil
 }
 
-func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.MemvidBlockOptions {
+func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions {
 	blockOpts := opts.BlockOptions
 	if blockOpts.KVEncoding == "" {
 		blockOpts.KVEncoding = kv.EncodingNative
@@ -200,7 +200,7 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.MemvidBlockOption
 }
 
 func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*StateIndex, error) {
-	entry := MemvidIndexEntry{
+	entry := StateIndexEntry{
 		URI:        entryURI,
 		BundleURI:  bundleURI,
 		Title:      opts.Title,
@@ -219,7 +219,7 @@ func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bun
 		ModelPath: opts.ModelPath,
 		ModelInfo: opts.ModelInfo,
 		Tokenizer: opts.Tokenizer,
-		Entries:   []MemvidIndexEntry{entry},
+		Entries:   []StateIndexEntry{entry},
 	})
 }
 
@@ -246,7 +246,7 @@ func sleepEntryMeta(opts SleepOptions) map[string]string {
 	return meta
 }
 
-func NewSleepReport(index *MemvidIndex, bundle *kv.MemvidBlockBundle, opts SleepOptions, entryURI, bundleURI, indexURI string, bundleRef, indexRef memvid.ChunkRef) *SleepReport {
+func NewSleepReport(index *StateIndex, bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI, indexURI string, bundleRef, indexRef state.ChunkRef) *SleepReport {
 	return &SleepReport{
 		IndexURI:        indexURI,
 		EntryURI:        entryURI,
@@ -293,7 +293,7 @@ func CloneWakeReport(report *WakeReport) *WakeReport {
 	return &cloned
 }
 
-func blocksNeededForPrefix(bundle *kv.MemvidBlockBundle, prefixTokens int) int {
+func blocksNeededForPrefix(bundle *kv.StateBlockBundle, prefixTokens int) int {
 	if bundle == nil || prefixTokens <= 0 {
 		return 0
 	}

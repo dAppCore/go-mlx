@@ -7,7 +7,7 @@
 
 ## What this is
 
-The integration point with `dappco.re/go/io`'s **Medium** abstraction — the universal transport that lets the same model load from local disk, S3, memvid, in-memory blob, or any future backend without code changes at the call site.
+The integration point with `dappco.re/go/io`'s **Medium** abstraction — the universal transport that lets the same model load from local disk, S3, State video, in-memory blob, or any future backend without code changes at the call site.
 
 ## Public surface
 
@@ -45,7 +45,7 @@ Each file is fetched lazily via the Medium's `OpenFile(path)`. The loader doesn'
 
 Two reasons:
 
-1. **One abstraction across backends.** Local disk, S3, memvid, in-memory, future Lethean-distributed all satisfy `coreio.Medium`. The model loader doesn't branch on storage type.
+1. **One abstraction across backends.** Local disk, S3, State video, in-memory, future Lethean-distributed all satisfy `coreio.Medium`. The model loader doesn't branch on storage type.
 2. **Hot-swap.** A running session can switch its model source from one Medium to another (e.g., local → S3 fallback on disk-pressure) without restart. The Medium API is stateless enough to allow this.
 
 The full design is in [`design_medium_universal_transport.md`](../../../core/.claude/memory/design_medium_universal_transport.md).

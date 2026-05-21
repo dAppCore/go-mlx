@@ -8,7 +8,7 @@ import (
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 )
 
 func TestService_Good_StablePrefixBlocksAndStats(t *testing.T) {
@@ -217,15 +217,15 @@ func TestService_Good_DiskBackedBlocksSurviveRestart(t *testing.T) {
 	}
 }
 
-func TestService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
+func TestService_Good_StateColdStoreRecordsPayload(t *testing.T) {
 	diskPath := core.PathJoin(t.TempDir(), "blocks")
-	store := memvid.NewInMemoryStore(nil)
+	store := state.NewInMemoryStore(nil)
 	service := New(Config{
 		BlockSize:     2,
 		ModelHash:     "sha256:model",
 		TokenizerHash: "sha256:tokenizer",
 		DiskPath:      diskPath,
-		MemvidStore:   store,
+		StateStore:    store,
 	})
 
 	result, err := service.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1, 2, 3}})
@@ -233,22 +233,22 @@ func TestService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
 		t.Fatalf("WarmCache() error = %v", err)
 	}
 	if len(result.Blocks) != 2 {
-		t.Fatalf("blocks = %+v, want two memvid-backed blocks", result.Blocks)
+		t.Fatalf("blocks = %+v, want two state-backed blocks", result.Blocks)
 	}
 	ref := result.Blocks[0]
-	if ref.Labels["cold_store"] != "memvid" || ref.Labels["memvid_chunk_id"] == "" || ref.Labels["memvid_codec"] != memvid.CodecMemory {
-		t.Fatalf("block labels = %+v, want memvid cold-store labels", ref.Labels)
+	if ref.Labels["cold_store"] != "state" || ref.Labels["state_chunk_id"] == "" || ref.Labels["state_codec"] != state.CodecMemory {
+		t.Fatalf("block labels = %+v, want State cold-store labels", ref.Labels)
 	}
-	chunkIDResult := core.Atoi(ref.Labels["memvid_chunk_id"])
+	chunkIDResult := core.Atoi(ref.Labels["state_chunk_id"])
 	if !chunkIDResult.OK {
-		t.Fatalf("memvid chunk id %q did not parse: %s", ref.Labels["memvid_chunk_id"], chunkIDResult.Error())
+		t.Fatalf("State chunk id %q did not parse: %s", ref.Labels["state_chunk_id"], chunkIDResult.Error())
 	}
-	chunk, err := memvid.Resolve(context.Background(), store, chunkIDResult.Value.(int))
+	chunk, err := state.Resolve(context.Background(), store, chunkIDResult.Value.(int))
 	if err != nil {
-		t.Fatalf("Resolve(memvid chunk) error = %v", err)
+		t.Fatalf("Resolve(State chunk) error = %v", err)
 	}
 	if !core.Contains(chunk.Text, `"block_id":"`+ref.ID+`"`) || !core.Contains(chunk.Text, `"tokens":[1,2]`) {
-		t.Fatalf("memvid chunk = %s, want block payload", chunk.Text)
+		t.Fatalf("State chunk = %s, want block payload", chunk.Text)
 	}
 
 	second := New(Config{
@@ -256,14 +256,14 @@ func TestService_Good_MemvidColdStoreRecordsPayload(t *testing.T) {
 		ModelHash:     "sha256:model",
 		TokenizerHash: "sha256:tokenizer",
 		DiskPath:      diskPath,
-		MemvidStore:   store,
+		StateStore:    store,
 	})
 	stats, err := second.CacheStats(context.Background())
 	if err != nil {
 		t.Fatalf("CacheStats(second) error = %v", err)
 	}
-	if stats.Blocks != 2 || stats.Labels["cold_store"] != "memvid" {
-		t.Fatalf("second stats = %+v, want memvid-backed persisted blocks", stats)
+	if stats.Blocks != 2 || stats.Labels["cold_store"] != "state" {
+		t.Fatalf("second stats = %+v, want state-backed persisted blocks", stats)
 	}
 }
 
@@ -410,11 +410,11 @@ func TestService_Bad_InputAndContextErrors(t *testing.T) {
 		t.Fatal("WarmCache(warmer error) error = nil")
 	}
 	memvidErr := New(Config{
-		DiskPath:    core.PathJoin(t.TempDir(), "blocks"),
-		MemvidStore: failingMemvidWriter{},
+		DiskPath:   core.PathJoin(t.TempDir(), "blocks"),
+		StateStore: failingStateWriter{},
 	})
 	if _, err := memvidErr.WarmCache(context.Background(), inference.CacheWarmRequest{Tokens: []int32{1}}); err == nil {
-		t.Fatal("WarmCache(memvid write error) error = nil")
+		t.Fatal("WarmCache(State write error) error = nil")
 	}
 }
 

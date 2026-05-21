@@ -347,10 +347,6 @@ func (b *Bundle) stateRef() (state.ChunkRef, bool) {
 	return state.ChunkRef{}, false
 }
 
-func (b *Bundle) memvidRef() (state.ChunkRef, bool) {
-	return b.stateRef()
-}
-
 // Validate checks schema version, kind, and embedded KV hash integrity.
 //
 //	if err := b.Validate(); err != nil { … }
@@ -365,7 +361,7 @@ func (b *Bundle) Validate() error {
 		return core.NewError("bundle: invalid state bundle kind")
 	}
 	if b.KV == nil && b.KVPath == "" {
-		if _, ok := b.memvidRef(); !ok {
+		if _, ok := b.stateRef(); !ok {
 			return core.NewError("bundle: state bundle has no KV snapshot")
 		}
 		return nil

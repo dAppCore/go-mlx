@@ -1,19 +1,19 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# kv_snapshot_memvid.go — memvid QR-video bundle integration
+# kv_snapshot_state.go — State QR-video bundle integration
 
 **Package**: `dappco.re/go/mlx`
-**File**: `go/kv_snapshot_memvid.go`
+**File**: `go/kv_snapshot_state.go`
 
 ## What this is
 
-The glue between `kv_snapshot_*` (the KV format) and `pkg/memvid` (the QR-video codec). When the bundle store is memvid, KV blocks are packed into MP4 frames as QR codes; this file owns the framing strategy.
+The glue between `kv_snapshot_*` (the KV format) and State video store (the QR-video codec). When the bundle store is State video, KV blocks are packed into MP4 frames as QR codes; this file owns the framing strategy.
 
 The result: an AI's runtime state shipped as a portable `.mp4` that can be scanned in by camera, dropped into a USB stick, streamed over HTTP, indexed by YouTube — see `design_coursera_for_ai_packs.md`.
 
-## KVSnapshotMemvidBundleIndex
+## State bundle index
 
-The memvid-flavoured bundle index. Adds:
+The State-flavoured bundle index. Adds:
 
 - `FramesPerBlock` — how many video frames one block occupies (function of block size + QR density + error correction)
 - `VideoMetadata` — frame rate, resolution, codec hint
@@ -34,17 +34,17 @@ The block-cache layer ensures we don't actually decode 32 minutes of video on ev
 ## Read path
 
 ```go
-idx, err := LoadMemvidBundleIndex(ctx, store, indexURI)
+idx, err := LoadStateIndex(ctx, store, indexURI)
 entry, ok := idx.LookupURI(entryURI)
-blocks, err := readBlocksFromMemvid(ctx, store, entry.BlockRefs)
+blocks, err := readBlocksFromState(ctx, store, entry.BlockRefs)
 ```
 
-`readBlocksFromMemvid` resolves each BlockRef → frame range → bytes via `state.RefBinaryResolver`. The memvid `URIResolver` knows how to seek to a `frame_offset` and return the QR-decoded payload.
+`readBlocksFromState` resolves each BlockRef → frame range → bytes via `state.RefBinaryResolver`. The State video `URIResolver` knows how to seek to a `frame_offset` and return the QR-decoded payload.
 
 ## Write path
 
 ```go
-frames := encodeBlocksToMemvidFrames(blocks)
+frames := encodeBlocksToStateFrames(blocks)
 writer.PutBytesStream(ctx, totalSize, opts, func(w io.Writer) error {
     return encodeFramesToMP4(w, frames, framerate)
 })
@@ -60,7 +60,7 @@ If a frame is unrecoverable (smudge on print, screen glitch during scan), the bl
 
 ## What this doesn't own
 
-- The QR codec itself (`pkg/memvid` does).
+- The QR codec itself (State video store does).
 - Video container choices (always MP4 today; future Theora/AV1 study tracked).
 - YouTube-survival encoding (frame redundancy + error-correction tuning) — `design_coursera_for_ai_packs.md` future research.
 
@@ -69,5 +69,5 @@ If a frame is unrecoverable (smudge on print, screen glitch during scan), the bl
 - [kv_snapshot.md](kv_snapshot.md) — snapshot format
 - [kv_snapshot_blocks.md](kv_snapshot_blocks.md) — blocks the frames carry
 - [kv_snapshot_index.md](kv_snapshot_index.md) — base bundle index
-- `pkg/memvid/` — the codec
-- `cmd/violet/` — sidecar that serves memvid wakes over Unix socket
+- `pkg/memvid/` (deprecated compatibility path) — the codec
+- `cmd/violet/` — sidecar that serves State wakes over Unix socket

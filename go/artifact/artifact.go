@@ -2,7 +2,7 @@
 
 // Package artifact exports compact session-state records — KV provenance,
 // optional binary KV snapshots, and SAMI visualisation data — that can be
-// archived to memvid stores or local files.
+// archived to State stores or local files.
 //
 //	record, err := artifact.Export(ctx, snapshot, artifact.Options{
 //	    Model: "gemma3-1b",
@@ -15,7 +15,7 @@ import (
 	"context"
 
 	core "dappco.re/go"
-	memvid "dappco.re/go/inference/state"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
@@ -29,7 +29,7 @@ type Options struct {
 	Prompt   string
 	Analysis *kv.Analysis
 	KVPath   string
-	Store    memvid.Writer
+	Store    state.Writer
 	URI      string
 	Title    string
 	Kind     string
@@ -38,7 +38,7 @@ type Options struct {
 	Labels   []string
 }
 
-// Record is the compact JSON payload written into a memvid chunk.
+// Record is the compact JSON payload written into a State chunk.
 type Record struct {
 	Version       int               `json:"version"`
 	Kind          string            `json:"kind"`
@@ -50,7 +50,7 @@ type Record struct {
 	FeatureLabels []string          `json:"feature_labels"`
 	SAMI          bundle.SAMIResult `json:"sami"`
 	KVPath        string            `json:"kv_path,omitempty"`
-	ChunkRef      memvid.ChunkRef   `json:"chunk_ref,omitempty"`
+	ChunkRef      state.ChunkRef    `json:"chunk_ref,omitempty"`
 }
 
 // Snapshot is the lightweight tensor provenance stored in text chunks.
@@ -64,7 +64,7 @@ type Snapshot struct {
 	NumQueryHeads int    `json:"num_query_heads"`
 }
 
-// Export writes optional KV binary data and optional memvid JSON for the
+// Export writes optional KV binary data and optional State JSON for the
 // supplied KV snapshot.
 //
 //	record, err := artifact.Export(ctx, snapshot, artifact.Options{KVPath: "/tmp/state.kv"})
@@ -114,7 +114,7 @@ func Export(ctx context.Context, snapshot *kv.Snapshot, opts Options) (*Record, 
 		if !data.OK {
 			return nil, core.E("artifact.Export", "marshal record", resultError(data))
 		}
-		ref, err := opts.Store.Put(ctx, string(data.Value.([]byte)), memvid.PutOptions{
+		ref, err := opts.Store.Put(ctx, string(data.Value.([]byte)), state.PutOptions{
 			URI:    opts.URI,
 			Title:  opts.Title,
 			Kind:   opts.Kind,

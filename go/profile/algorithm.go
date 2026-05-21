@@ -42,7 +42,7 @@ func builtinAlgorithmProfiles() []AlgorithmProfile {
 	return []AlgorithmProfile{
 		algorithmNative(inference.CapabilityScheduler, inference.CapabilityGroupRuntime, "scheduler", "bounded request queueing, stream backpressure, cancellation IDs, and latency metrics are implemented"),
 		algorithmNative(inference.CapabilityRequestCancel, inference.CapabilityGroupRuntime, "request-cancel", "generation and scheduled requests can be cancelled through context/cancellation IDs"),
-		algorithmNative(inference.CapabilityCacheBlocks, inference.CapabilityGroupRuntime, "block-prefix-cache", "block-prefix cache identity and memvid-backed KV block warm are implemented"),
+		algorithmNative(inference.CapabilityCacheBlocks, inference.CapabilityGroupRuntime, "block-prefix-cache", "block-prefix cache identity and State-backed KV block warm are implemented"),
 		algorithmNative(inference.CapabilityCacheWarm, inference.CapabilityGroupRuntime, "cache-warm", "prompt and KV block warm paths are implemented"),
 		algorithmNative(inference.CapabilityReasoningParse, inference.CapabilityGroupModel, "reasoning-parser", "model-aware thinking/reasoning parsers are available"),
 		algorithmNative(inference.CapabilityToolParse, inference.CapabilityGroupModel, "tool-parser", "XML and OpenAI-style JSON tool-call parsing is available"),
@@ -132,7 +132,7 @@ func builtinAlgorithmProfiles() []AlgorithmProfile {
 			CapabilityStatus: inference.CapabilityStatusPlanned,
 			RuntimeStatus:    AlgorithmRuntimePlanned,
 			Algorithm:        "disk-cache",
-			Detail:           "disk-backed KV block cache is pending beyond memvid block manifests",
+			Detail:           "disk-backed KV block cache is pending beyond State block manifests",
 			Requires:         []inference.CapabilityID{inference.CapabilityCacheBlocks},
 		},
 	}

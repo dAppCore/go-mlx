@@ -9,7 +9,7 @@ import (
 )
 
 // firstNonEmpty returns the first non-empty string after trimming whitespace.
-// Shared across dataset_stream / kv_snapshot_index / memvid_chapter_smoke /
+// Shared across dataset_stream / kv_snapshot_index / state_chapter_smoke /
 // model_pack and the legacy hf_fit alias surface.
 //
 //	value := firstNonEmpty(primary, fallback)
@@ -86,7 +86,7 @@ func sampleFromGenerateConfig(cfg GenerateConfig) bundle.Sampler {
 }
 
 // renderTokensText concatenates Token.Text || Token.Value across a token
-// slice. Used by memvid_chapter_smoke when no Text was reported.
+// slice. Used by state_chapter_smoke when no Text was reported.
 //
 //	text := renderTokensText(tokens)
 func renderTokensText(tokens []Token) string {
