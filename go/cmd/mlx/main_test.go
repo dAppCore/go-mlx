@@ -659,6 +659,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 			ModelPath:              modelPath,
 			PromptBytes:            len(cfg.Prompt),
 			AppendPromptBytes:      len(cfg.AppendPrompt),
+			ChatTemplate:           cfg.ChatTemplate,
+			EnableThinking:         cfg.EnableThinking,
 			SourceTokens:           2204,
 			AppendSourceTokens:     512,
 			StartTokens:            cfg.StartTokens,
@@ -682,7 +684,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-turn-min-tokens", "512", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -692,6 +694,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	}
 	if gotCfg.AppendTurnDelimiter != "---TURN---" {
 		t.Fatalf("append delimiter = %q, want configured delimiter", gotCfg.AppendTurnDelimiter)
+	}
+	if gotCfg.ChatTemplate != "gemma4" || !gotCfg.EnableThinking {
+		t.Fatalf("chat template = %q thinking=%v, want Gemma 4 thinking prompts", gotCfg.ChatTemplate, gotCfg.EnableThinking)
 	}
 	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
 		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
@@ -709,6 +714,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"model_path": "/models/demo"`,
 		`"start_tokens": 30000`,
 		`"target_tokens": 100000`,
+		`"chat_template": "gemma4"`,
+		`"enable_thinking": true`,
 		`"turn_min_tokens": 512`,
 		`"temperature": 1`,
 		`"top_p": 0.95`,
@@ -743,6 +750,53 @@ func TestRunCommand_StateRampProfileValidation_Bad(t *testing.T) {
 	}
 	if !core.Contains(stderr.String(), "target tokens must be greater than start tokens") {
 		t.Fatalf("stderr = %q, want target validation", stderr.String())
+	}
+}
+
+func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
+	prompt := stateRampProfileTurnPrompt("gemma4", "User turn 3: Inspect the report.\n\n\treturn mem_", false)
+
+	for _, want := range []string{
+		"<|turn>user\n",
+		"reference material, not as text to continue",
+		"<turn_material>\n",
+		"User turn 3: Inspect the report.",
+		"</turn_material>",
+		"Honour any requested output length before stopping.",
+		"Do not continue or complete the reference excerpts.",
+		"<turn|>\n<|turn>model\n",
+		"<|channel>thought\n<channel|>",
+	} {
+		if !core.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, want %q", prompt, want)
+		}
+	}
+}
+
+func TestStateRampProfileVisibleOutputGemma4_Good(t *testing.T) {
+	output := stateRampProfileVisibleOutput("gemma4", "Visible before<|channel>thought\nhidden<channel|>Visible after<turn|>")
+
+	if output != "Visible beforeVisible after" {
+		t.Fatalf("output = %q, want visible Gemma 4 content only", output)
+	}
+}
+
+func TestStateRampProfileTurnAppendSourceDelimited_Good(t *testing.T) {
+	section := []int32{1, 2, 3, 4, 5}
+	source, offset, count := stateRampProfileTurnAppendSource(
+		[]int32{9, 9, 9},
+		[][]int32{section},
+		12,
+		100,
+		1,
+		stateRampProfileOptions{AppendTokens: 2, TargetTokens: 1000},
+	)
+
+	if offset != 0 || count != len(section) {
+		t.Fatalf("offset=%d count=%d, want whole delimited section", offset, count)
+	}
+	if len(source) != len(section) || source[0] != 1 || source[len(source)-1] != 5 {
+		t.Fatalf("source=%v, want selected delimited section", source)
 	}
 }
 

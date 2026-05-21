@@ -54,14 +54,16 @@ and estimated energy on the `100k` stress lane, but still slightly ahead on raw
 decode. Retained state is still the target architecture, but it is not enough if
 a configured runner wins the same agentic workflow.
 
-The first 2026-05-21 opencode-sized `state-ramp-profile` probe is recorded in
-`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. It proves bounded
-memory and useful retained-state append throughput for a `30k` seed plus `10`
-whole appended turns, but it is not an accepted production row: several turns
-ended after tiny natural outputs, and suppressing EOS to force length produced a
-repeated-code loop. The next accepted run needs chat-shaped retained turns,
-assistant-turn closure, and a visible-token floor without globally suppressing
-EOS.
+The 2026-05-21 opencode-sized `state-ramp-profile` lane is recorded in
+`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. The accepted go-mlx row
+now proves a `30000` token warmed Gemma 4 chat state plus `10` whole retained
+append/generate turns, captured output, assistant-turn closure, a `256` visible
+token floor, bounded memory, and exposed wall/decode/append/energy accounting:
+`107.741s`, `76.847 tok/s` raw decode, `64.565 tok/s` effective turn
+throughput, `63584` final live tokens, `3.137 GiB` active MLX memory, and
+`10774.150 J` estimated at `100 W`. This row does not close production by
+itself; same-shape `mlx_lm`, llama.cpp, and vLLM anchors are still required,
+and the accepted state must still be grown toward the `100k` stress lane.
 
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
@@ -83,7 +85,8 @@ Production remains blocked until these gates are all satisfied:
 - [ ] A current opencode-sized E2B q4 retained workflow completes with a
       `30k`-`40k` first context, 10+ append/generate turns, realistic long
       output budgets, bounded memory, captured output, and same-shape runner
-      anchors. This is the primary interactive production gate.
+      anchors. The go-mlx side of this gate now has an accepted row; the gate
+      remains open for same-shape runner anchors.
 - [ ] A warm build-up stress run starts from the accepted `30k`-`40k` state,
       appends/generates in retained state until the live context reaches about
       `100k`, and reports cumulative append cost, decode, wall time, memory,

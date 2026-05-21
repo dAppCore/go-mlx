@@ -27,13 +27,13 @@ The token-phase trace has been refreshed on the promoted fp16 K/V path and
 confirms the next live boundary is still owner-layer full-attention K/V work.
 A new long-turn row should still be rerun after this promotion.
 
-The 2026-05-21 opencode-sized retained-state probe is recorded separately in
-`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. It is useful evidence
-for the new 30k-to-growing-context workflow but is not an accepted production
-row yet: the delimited run completed 10 turns with bounded memory, while the
-strict visible-token-floor rerun showed that globally suppressing EOS can create
-degenerate repeated-code output. The accepted interactive gate still needs
-chat-shaped retained turns and a visible-token floor without EOS suppression.
+The 2026-05-21 opencode-sized retained-state lane is recorded separately in
+`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. The accepted go-mlx row
+now completes a `30000` token warmed Gemma 4 chat state plus `10` whole retained
+append/generate turns, captures output, keeps memory bounded, and reports
+decode, append wall time, effective turn throughput, and estimated energy. The
+overall interactive gate is still open until same-shape `mlx_lm`, llama.cpp,
+and vLLM anchors are recorded for this accepted shape.
 
 ## Accepted go-mlx Artefacts
 
@@ -45,6 +45,7 @@ chat-shaped retained turns and a visible-token floor without EOS suppression.
 | 100k retained book | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-energy100w.json` | `10` chapters, `8192` token budget, `768` visible-token floor, thinking enabled | `482.081s`, `41.442 tok/s` decode, `11425` visible tokens, `4.261 GiB` active MLX |
 | C006 accepted continuation | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json` | `10` chapters, `8192` token budget, `512` visible-token floor, thinking enabled | `105.947s`, `80.343 tok/s` decode, `8201` visible tokens, `3.396 GB` active MLX |
 | C006 markdown | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` | Captured book output | Operator-reviewed as on-prompt through the final silence |
+| Opencode-sized retained workflow | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | `30000` token warmed Gemma 4 chat state, `10` whole retained user turns, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX, `10774.150 J` at `100 W` |
 
 Companion notes:
 
@@ -60,6 +61,7 @@ Companion notes:
 | --- | --- | --- | ---: | --- |
 | Delimited retained append turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json` | MLX 4bit, `30000` retained seed tokens from a real repo dump, `10` delimiter-separated user turns, `1024` token budget, Gemma 4 sampling defaults | `78.761s`, `77.533 tok/s` decode, `61.689 tok/s` effective turn throughput, `59146` final live tokens, `3.114 GiB` active MLX | Useful scaling evidence, not accepted; several turns naturally stopped after tiny outputs |
 | Strict floor with EOS suppression | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json` | Same input shape plus `512` visible-token floor and EOS suppression | Failed on turn 1 after `653` visible tokens by repeating `// Implementation_` for `128` lines | Rejected; EOS suppression forces volume but can turn a stop into degeneration |
+| Chat-shaped whole turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json` | MLX 4bit, Gemma 4 chat wrapping, `30000` retained seed tokens, `10` whole user turns, assistant-turn closure, `1024` token budget, `256` visible-token floor, output captured | `107.741s`, `76.847 tok/s` decode, `64.565 tok/s` effective turn throughput, `63584` final live tokens, `3.137 GiB` active MLX | Accepted go-mlx row; external same-shape anchors still pending |
 
 ## Runner Anchors
 

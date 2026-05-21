@@ -12,7 +12,7 @@
     "pruned_tracked_count": 3
   },
   "open_gates": [
-    "opencode_interactive_retained_workflow",
+    "opencode_interactive_runner_anchors",
     "warm_build_up_100k_stress",
     "long_context_degradation"
   ],
@@ -42,6 +42,13 @@
       "id": "opencode-state-ramp-suppress-eos-rejected",
       "role": "rejected_interactive_probe",
       "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-chatwholelen-accepted",
+      "role": "accepted_go_mlx_interactive_workflow",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-output-energy100w.json",
       "kind": "json",
       "indexed": true
     },

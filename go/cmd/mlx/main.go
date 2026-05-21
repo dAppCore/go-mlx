@@ -437,6 +437,8 @@ type stateRampProfileOptions struct {
 	Prompt              string                    `json:"prompt,omitempty"`
 	AppendPrompt        string                    `json:"append_prompt,omitempty"`
 	AppendTurnDelimiter string                    `json:"append_turn_delimiter,omitempty"`
+	ChatTemplate        string                    `json:"chat_template,omitempty"`
+	EnableThinking      bool                      `json:"enable_thinking,omitempty"`
 	StartTokens         int                       `json:"start_tokens,omitempty"`
 	TargetTokens        int                       `json:"target_tokens,omitempty"`
 	AppendTokens        int                       `json:"append_tokens,omitempty"`
@@ -458,6 +460,8 @@ type stateRampProfileReport struct {
 	LoadDuration           time.Duration             `json:"load_duration,omitempty"`
 	PromptBytes            int                       `json:"prompt_bytes"`
 	AppendPromptBytes      int                       `json:"append_prompt_bytes,omitempty"`
+	ChatTemplate           string                    `json:"chat_template,omitempty"`
+	EnableThinking         bool                      `json:"enable_thinking,omitempty"`
 	SourceTokens           int                       `json:"source_tokens,omitempty"`
 	AppendSourceTokens     int                       `json:"append_source_tokens,omitempty"`
 	AppendTurnSections     int                       `json:"append_turn_sections,omitempty"`
@@ -490,6 +494,7 @@ type stateRampProfileTurn struct {
 	AppendedTokens         int           `json:"appended_tokens,omitempty"`
 	TokensAfterAppend      int           `json:"tokens_after_append,omitempty"`
 	TokensAfterGenerate    int           `json:"tokens_after_generate,omitempty"`
+	TurnCloseTokens        int           `json:"turn_close_tokens,omitempty"`
 	AppendDuration         time.Duration `json:"append_duration,omitempty"`
 	Duration               time.Duration `json:"duration,omitempty"`
 	FirstTokenDuration     time.Duration `json:"first_token_duration,omitempty"`
@@ -2010,6 +2015,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
 	appendFile := fs.String("append-file", "", "read appended turn material from a file")
 	appendTurnDelimiter := fs.String("append-turn-delimiter", "", "split appended material into whole turn sections using this delimiter instead of fixed token offsets")
+	chatTemplate := fs.String("chat-template", "", "chat template override for retained turns: gemma4, gemma, qwen, llama, or plain")
+	enableThinking := fs.Bool("enable-thinking", false, "enable Gemma 4 thinking control token in the retained state ramp prompts")
 	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
@@ -2180,6 +2187,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		Prompt:              *prompt,
 		AppendPrompt:        *appendPrompt,
 		AppendTurnDelimiter: *appendTurnDelimiter,
+		ChatTemplate:        *chatTemplate,
+		EnableThinking:      *enableThinking,
 		StartTokens:         *startTokens,
 		TargetTokens:        *targetTokens,
 		AppendTokens:        *appendTokens,
@@ -2216,6 +2225,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				PromptBytes:        len(*prompt),
 				AppendPromptBytes:  len(*appendPrompt),
 				AppendTurnSections: 0,
+				ChatTemplate:       *chatTemplate,
+				EnableThinking:     *enableThinking,
 				StartTokens:        *startTokens,
 				TargetTokens:       *targetTokens,
 				AppendTokens:       *appendTokens,
@@ -2281,6 +2292,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		ModelPath:         modelPath,
 		PromptBytes:       len(opts.Prompt),
 		AppendPromptBytes: len(opts.AppendPrompt),
+		EnableThinking:    opts.EnableThinking,
 		StartTokens:       opts.StartTokens,
 		TargetTokens:      opts.TargetTokens,
 		AppendTokens:      opts.AppendTokens,
@@ -2316,6 +2328,8 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		report.Error = err.Error()
 		return report, err
 	}
+	opts.ChatTemplate = chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
+	report.ChatTemplate = opts.ChatTemplate
 	tok := model.Tokenizer()
 	if tok == nil {
 		err := core.NewError("state-ramp-profile: model tokenizer is nil")
@@ -2338,7 +2352,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		appendText = opts.Prompt
 		report.AppendPromptBytes = len(appendText)
 	}
-	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter)
+	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -2352,7 +2366,11 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 	}
 	defer session.Close()
 
-	seedTokens := repeatedStateRampTokens(sourceTokens, 0, opts.StartTokens)
+	seedTokens, err := stateRampProfileSeedTokens(tok, sourceTokens, opts)
+	if err != nil {
+		report.Error = err.Error()
+		return report, err
+	}
 	prefillStart := time.Now()
 	err = session.PrefillTokens(ctx, seedTokens)
 	report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
@@ -2448,7 +2466,124 @@ func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
 	return out
 }
 
-func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter string) ([]int32, [][]int32, error) {
+func stateRampProfileSeedTokens(tok *mlx.Tokenizer, sourceTokens []int32, opts stateRampProfileOptions) ([]int32, error) {
+	if len(sourceTokens) == 0 {
+		return nil, core.NewError("state-ramp-profile: source prompt produced no tokens")
+	}
+	if stateRampProfilePlainTemplate(opts.ChatTemplate) {
+		return repeatedStateRampTokens(sourceTokens, 0, opts.StartTokens), nil
+	}
+	target := opts.StartTokens
+	if target <= 0 {
+		target = len(sourceTokens)
+	}
+	contextBudget := target
+	if contextBudget > len(sourceTokens) {
+		contextBudget = len(sourceTokens)
+	}
+	for contextBudget >= 0 {
+		contextText, err := tok.Decode(sourceTokens[:contextBudget])
+		if err != nil {
+			return nil, err
+		}
+		wrapped := stateRampProfileInitialPrompt(opts.ChatTemplate, contextText, opts.EnableThinking)
+		tokens, err := tok.Encode(wrapped)
+		if err != nil {
+			return nil, err
+		}
+		if len(tokens) <= target || contextBudget == 0 {
+			return tokens, nil
+		}
+		overage := len(tokens) - target
+		if overage < 1 {
+			overage = 1
+		}
+		contextBudget -= overage
+	}
+	return nil, core.NewError("state-ramp-profile: could not fit chat-wrapped seed prompt")
+}
+
+func stateRampProfilePlainTemplate(template string) bool {
+	template = core.Lower(core.Trim(template))
+	return template == "" || template == "plain"
+}
+
+func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinking bool) string {
+	contextPrompt = core.Trim(contextPrompt)
+	switch template {
+	case "gemma4":
+		builder := core.NewBuilder()
+		builder.WriteString("<bos><|turn>system\n")
+		if enableThinking {
+			builder.WriteString("<|think|>\n")
+		}
+		builder.WriteString("You are running an opencode-style engineering session. Use the retained codebase context as memory for later user turns.\n\n")
+		builder.WriteString(contextPrompt)
+		builder.WriteString("<turn|>\n<|turn>model\n")
+		if !enableThinking {
+			builder.WriteString("<|channel>thought\n<channel|>")
+		}
+		builder.WriteString("Ready.<turn|>\n")
+		return builder.String()
+	case "gemma":
+		return "<start_of_turn>user\n" + contextPrompt + "\n\nRetain this project context for later engineering turns.<end_of_turn>\n<start_of_turn>model\nReady.<end_of_turn>\n"
+	case "qwen":
+		return "<|im_start|>system\nRetain this project context for later engineering turns.\n\n" + contextPrompt + "<|im_end|>\n<|im_start|>assistant\nReady.<|im_end|>\n"
+	case "llama":
+		return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nRetain this project context for later engineering turns.\n\n" + contextPrompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nReady.<|eot_id|>"
+	default:
+		return contextPrompt
+	}
+}
+
+func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool) string {
+	prompt = stateRampProfileReferenceTurn(prompt)
+	switch template {
+	case "gemma4":
+		builder := core.NewBuilder()
+		builder.WriteString("<|turn>user\n")
+		builder.WriteString(prompt)
+		builder.WriteString("<turn|>\n<|turn>model\n")
+		if !enableThinking {
+			builder.WriteString("<|channel>thought\n<channel|>")
+		}
+		return builder.String()
+	case "gemma":
+		return "<start_of_turn>user\n" + prompt + "<end_of_turn>\n<start_of_turn>model\n"
+	case "qwen":
+		return "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
+	case "llama":
+		return "<|start_header_id|>user<|end_header_id|>\n\n" + prompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+	default:
+		return prompt
+	}
+}
+
+func stateRampProfileReferenceTurn(prompt string) string {
+	prompt = core.Trim(prompt)
+	if prompt == "" {
+		return prompt
+	}
+	builder := core.NewBuilder()
+	builder.WriteString("Use the retained project context and the new turn material below. Answer the user request directly. Treat any code or document excerpts as reference material, not as text to continue.\n\n")
+	builder.WriteString("<turn_material>\n")
+	builder.WriteString(prompt)
+	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts.")
+	return builder.String()
+}
+
+func stateRampProfileVisibleOutput(template, output string) string {
+	return chapterProfileVisibleText(template, output)
+}
+
+func stateRampProfileAssistantCloseSuffix(template string) string {
+	if stateRampProfilePlainTemplate(template) {
+		return ""
+	}
+	return chapterProfileAssistantHistorySuffix(template, "")
+}
+
+func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool) ([]int32, [][]int32, error) {
 	if tok == nil {
 		return nil, nil, core.NewError("state-ramp-profile: model tokenizer is nil")
 	}
@@ -2468,6 +2603,9 @@ func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter string) (
 		section := core.Trim(raw)
 		if section == "" {
 			continue
+		}
+		if !stateRampProfilePlainTemplate(template) {
+			section = stateRampProfileTurnPrompt(template, section, enableThinking)
 		}
 		tokens, err := tok.Encode(section)
 		if err != nil {
@@ -2500,9 +2638,6 @@ func stateRampProfileTurnAppendSource(source []int32, sections [][]int32, source
 	if len(sections) > 0 {
 		tokens = sections[(turnIndex-1)%len(sections)]
 		appendCount = len(tokens)
-		if opts.AppendTokens > 0 && appendCount > opts.AppendTokens {
-			appendCount = opts.AppendTokens
-		}
 		sourceOffset = 0
 	}
 	if remaining := opts.TargetTokens - currentTokens; remaining < appendCount {
@@ -2543,6 +2678,13 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		mlx.WithTopP(float32(opts.TopP)),
 		mlx.WithTopK(opts.TopK),
 		mlx.WithRepeatPenalty(float32(opts.RepeatPenalty)),
+	}
+	stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(opts.ChatTemplate, model.Tokenizer())
+	if len(stopTokenIDs) > 0 {
+		generateOptions = append(generateOptions, mlx.WithStopTokens(stopTokenIDs...))
+	}
+	if len(suppressTokenIDs) > 0 {
+		generateOptions = append(generateOptions, mlx.WithSuppressTokens(suppressTokenIDs...))
 	}
 	if opts.SuppressEOS {
 		if tok := model.Tokenizer(); tok != nil {
@@ -2623,7 +2765,7 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	turn.DriverOverheadDuration = driverRunOverhead(turn.Duration, turn.Metrics)
 	turn.TokensAfterGenerate = turn.Metrics.PromptTokens + turn.Metrics.GeneratedTokens
 	if opts.IncludeOutput {
-		turn.Output = builder.String()
+		turn.Output = stateRampProfileVisibleOutput(opts.ChatTemplate, builder.String())
 	}
 	if probeErr != nil {
 		turn.Error = probeErr.Error()
@@ -2655,6 +2797,20 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	if opts.TurnMinTokens > 0 && turn.VisibleTokens < opts.TurnMinTokens {
 		turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", index, turn.VisibleTokens, opts.TurnMinTokens)
 		return turn
+	}
+	if suffix := stateRampProfileAssistantCloseSuffix(opts.ChatTemplate); suffix != "" {
+		closeStart := time.Now()
+		if err := chapterProfileAppendPrompt(ctx, model, session, suffix); err != nil {
+			turn.Error = err.Error()
+			return turn
+		}
+		turn.AppendDuration += bench.NonZeroDuration(time.Since(closeStart))
+		if tok := model.Tokenizer(); tok != nil {
+			if tokens, err := tok.Encode(suffix); err == nil {
+				turn.TurnCloseTokens = len(tokens)
+				turn.TokensAfterGenerate += len(tokens)
+			}
+		}
 	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
