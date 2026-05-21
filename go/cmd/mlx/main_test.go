@@ -1029,9 +1029,9 @@ func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 }
 
 func TestStateRampProfileOutputIssues_Good(t *testing.T) {
-	issues := stateRampProfileOutputIssues("The user is asking me for a result.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden")
+	issues := stateRampProfileOutputIssues("The user is asking me for a result.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
 
-	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold"} {
+	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
 		if !core.SliceContains(issues, want) {
 			t.Fatalf("issues = %v, want %s", issues, want)
 		}
@@ -1130,6 +1130,30 @@ func TestStateRampProfileTurnErrorFatal_Good(t *testing.T) {
 	}
 	if !stateRampProfileTurnErrorFatal(stateRampProfileTurn{Error: "loop"}, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
 		t.Fatal("non-floor error with mark policy is non-fatal")
+	}
+}
+
+func TestStateRampProfileApplyVisibleTokenFloorPreservesClosedTurn_Good(t *testing.T) {
+	turn := stateRampProfileTurn{
+		Index:               7,
+		VisibleTokens:       12,
+		TurnCloseTokens:     2,
+		TokensAfterGenerate: 1024,
+	}
+
+	stateRampProfileApplyVisibleTokenFloor(&turn, stateRampProfileOptions{TurnMinTokens: 256, TurnMinTokensPolicy: "mark"})
+
+	if !turn.BelowMinTokens {
+		t.Fatal("below-floor turn was not marked")
+	}
+	if turn.TurnCloseTokens != 2 || turn.TokensAfterGenerate != 1024 {
+		t.Fatalf("turn close state changed: %+v", turn)
+	}
+	if !core.Contains(turn.Error, "turn 7 produced 12 visible tokens") {
+		t.Fatalf("error = %q, want below-floor detail", turn.Error)
+	}
+	if stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
+		t.Fatal("marked below-floor closed turn is fatal")
 	}
 }
 

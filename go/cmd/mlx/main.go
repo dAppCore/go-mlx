@@ -2878,6 +2878,13 @@ func stateRampProfileOutputIssues(output string) []string {
 	if core.Contains(lower, "i don't have the actual results") || core.Contains(lower, "i do not have the actual results") {
 		issues = append(issues, "visible_missing_results_admission")
 	}
+	if core.Contains(lower, "officially complete") ||
+		core.Contains(lower, "officially accepted") ||
+		core.Contains(lower, "officially validated") ||
+		core.Contains(lower, "production-ready") ||
+		core.Contains(lower, "the implementation is now officially") {
+		issues = append(issues, "visible_false_completion_claim")
+	}
 	return issues
 }
 
@@ -3101,11 +3108,6 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		turn.Error = err.Error()
 		return turn
 	}
-	if opts.TurnMinTokens > 0 && turn.VisibleTokens < opts.TurnMinTokens {
-		turn.BelowMinTokens = true
-		turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", index, turn.VisibleTokens, opts.TurnMinTokens)
-		return turn
-	}
 	if suffix := stateRampProfileAssistantCloseSuffix(opts.ChatTemplate); suffix != "" {
 		closeStart := time.Now()
 		if err := chapterProfileAppendPrompt(ctx, model, session, suffix); err != nil {
@@ -3120,12 +3122,24 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 			}
 		}
 	}
+	stateRampProfileApplyVisibleTokenFloor(&turn, opts)
+	if turn.Error != "" {
+		return turn
+	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
 			turn.Error = err.Error()
 		}
 	}
 	return turn
+}
+
+func stateRampProfileApplyVisibleTokenFloor(turn *stateRampProfileTurn, opts stateRampProfileOptions) {
+	if turn == nil || opts.TurnMinTokens <= 0 || turn.VisibleTokens >= opts.TurnMinTokens {
+		return
+	}
+	turn.BelowMinTokens = true
+	turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", turn.Index, turn.VisibleTokens, opts.TurnMinTokens)
 }
 
 func stateRampProfileTurnErrorFatal(turn stateRampProfileTurn, opts stateRampProfileOptions) bool {
