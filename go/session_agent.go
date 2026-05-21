@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"iter"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -12,6 +13,27 @@ import (
 	mlxbundle "dappco.re/go/mlx/bundle"
 	"dappco.re/go/mlx/kv"
 )
+
+// AgentMemoryFoldOptions controls how an exhausted live context is checkpointed
+// and folded into a fresh summary-plus-tail state.
+type AgentMemoryFoldOptions struct {
+	Summary           string
+	RecentTail        string
+	FoldedPrompt      string
+	PrefillChunkBytes int
+	Checkpoint        agent.SleepOptions
+	Folded            agent.SleepOptions
+}
+
+// AgentMemoryFoldReport describes the checkpointed exhausted state and the
+// fresh folded state that should be used for subsequent turns.
+type AgentMemoryFoldReport struct {
+	Checkpoint        *agent.SleepReport `json:"checkpoint,omitempty"`
+	Folded            *agent.SleepReport `json:"folded,omitempty"`
+	SummaryBytes      int                `json:"summary_bytes,omitempty"`
+	RecentTailBytes   int                `json:"recent_tail_bytes,omitempty"`
+	FoldedPromptBytes int                `json:"folded_prompt_bytes,omitempty"`
+}
 
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
 func (m *Model) WakeAgentMemory(ctx context.Context, store memvid.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
@@ -247,6 +269,151 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store me
 // GenerateAndSleep is a lifecycle alias for GenerateAndSleepAgentMemory.
 func (s *ModelSession) GenerateAndSleep(ctx context.Context, store memvid.Writer, opts agent.SleepOptions, generateOpts ...GenerateOption) (string, *agent.SleepReport, error) {
 	return s.GenerateAndSleepAgentMemory(ctx, store, opts, generateOpts...)
+}
+
+// FoldAgentMemory checkpoints an exhausted retained state, creates a fresh
+// session from summary-plus-tail text, and persists that folded state with
+// parent lineage back to the checkpoint.
+func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, store memvid.Writer, opts AgentMemoryFoldOptions) (*ModelSession, *AgentMemoryFoldReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if m == nil || m.model == nil {
+		return nil, nil, core.NewError("mlx: model is nil")
+	}
+	if exhausted == nil || exhausted.session == nil {
+		return nil, nil, core.NewError("mlx: exhausted model session is nil")
+	}
+	if store == nil {
+		return nil, nil, core.NewError("mlx: memvid store is nil")
+	}
+	prompt := agentMemoryFoldedPrompt(opts)
+	if core.Trim(prompt) == "" {
+		return nil, nil, core.NewError("mlx: folded agent memory requires summary, recent tail, or folded prompt")
+	}
+	report := &AgentMemoryFoldReport{
+		SummaryBytes:      len(opts.Summary),
+		RecentTailBytes:   len(opts.RecentTail),
+		FoldedPromptBytes: len(prompt),
+	}
+	checkpoint, err := exhausted.SleepAgentMemory(ctx, store, opts.Checkpoint)
+	if err != nil {
+		return nil, report, err
+	}
+	report.Checkpoint = checkpoint
+	folded, err := m.NewSession()
+	if err != nil {
+		return nil, report, err
+	}
+	if err := folded.PrefillChunks(ctx, agentMemoryTextChunks(prompt, opts.PrefillChunkBytes)); err != nil {
+		if closeErr := folded.Close(); closeErr != nil {
+			return nil, report, core.ErrorJoin(err, closeErr)
+		}
+		return nil, report, err
+	}
+	foldedOpts := foldedAgentMemorySleepOptions(opts.Folded, checkpoint, report)
+	foldedReport, err := folded.SleepAgentMemory(ctx, store, foldedOpts)
+	if err != nil {
+		if closeErr := folded.Close(); closeErr != nil {
+			return nil, report, core.ErrorJoin(err, closeErr)
+		}
+		return nil, report, err
+	}
+	report.Folded = foldedReport
+	return folded, report, nil
+}
+
+func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
+	if core.Trim(opts.FoldedPrompt) != "" {
+		return opts.FoldedPrompt
+	}
+	summary := core.Trim(opts.Summary)
+	tail := core.Trim(opts.RecentTail)
+	if summary == "" && tail == "" {
+		return ""
+	}
+	builder := core.NewBuilder()
+	builder.WriteString("The previous retained context window reached its live-token budget and has been compacted into this folded state.\n\n")
+	if summary != "" {
+		builder.WriteString("<summary>\n")
+		builder.WriteString(summary)
+		builder.WriteString("\n</summary>\n\n")
+	}
+	if tail != "" {
+		builder.WriteString("<recent_tail>\n")
+		builder.WriteString(tail)
+		builder.WriteString("\n</recent_tail>\n\n")
+	}
+	builder.WriteString("Use the summary as durable memory and the recent tail as the immediate continuation point. Do not assume the full exhausted context is still present.")
+	return builder.String()
+}
+
+func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.SleepReport, report *AgentMemoryFoldReport) agent.SleepOptions {
+	if opts.Title == "" {
+		opts.Title = "folded agent memory"
+	}
+	if checkpoint != nil {
+		if opts.ParentEntryURI == "" {
+			opts.ParentEntryURI = checkpoint.EntryURI
+		}
+		if opts.ParentBundleURI == "" {
+			opts.ParentBundleURI = checkpoint.BundleURI
+		}
+		if opts.ParentIndexURI == "" {
+			opts.ParentIndexURI = checkpoint.IndexURI
+		}
+	}
+	opts.Meta = cloneStringMap(opts.Meta)
+	opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_state", "true")
+	if checkpoint != nil {
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_from_entry_uri", checkpoint.EntryURI)
+	}
+	if report != nil {
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "summary_bytes", core.Sprintf("%d", report.SummaryBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", core.Sprintf("%d", report.RecentTailBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", core.Sprintf("%d", report.FoldedPromptBytes))
+	}
+	opts.Labels = append([]string(nil), opts.Labels...)
+	opts.Labels = append(opts.Labels, "folded-state")
+	return opts
+}
+
+func addAgentMemoryFoldMeta(meta map[string]string, key, value string) map[string]string {
+	if core.Trim(value) == "" {
+		return meta
+	}
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	if meta[key] == "" {
+		meta[key] = value
+	}
+	return meta
+}
+
+func agentMemoryTextChunks(text string, chunkBytes int) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		if text == "" {
+			return
+		}
+		if chunkBytes <= 0 || len(text) <= chunkBytes {
+			yield(text)
+			return
+		}
+		start := 0
+		for index := range text {
+			if index == start || index-start < chunkBytes {
+				continue
+			}
+			if !yield(text[start:index]) {
+				return
+			}
+			start = index
+		}
+		if start < len(text) {
+			yield(text[start:])
+		}
+	}
 }
 
 func agentMemoryWakeOptionsFromInference(req inference.AgentMemoryWakeRequest) agent.WakeOptions {

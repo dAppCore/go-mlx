@@ -234,6 +234,94 @@ func TestAppendAndSleepAgentMemory_NoReply_Good(t *testing.T) {
 	}
 }
 
+func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	tokenizer := mlxbundle.Tokenizer{Hash: "tok-fold", ChatTemplateHash: "chat-fold"}
+	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
+	exhaustedNative := &fakeNativeSession{kv: agentMemoryGeneratedTestMetalSnapshot()}
+	exhausted := &ModelSession{session: exhaustedNative, info: info}
+	foldedNative := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
+	model := &Model{model: &fakeNativeModel{
+		session: foldedNative,
+		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
+	}}
+
+	folded, report, err := model.FoldAgentMemory(ctx, exhausted, store, AgentMemoryFoldOptions{
+		Summary:           "The previous window found long-context degradation after 60k tokens.",
+		RecentTail:        "The operator asked to compact and continue from a folded state.",
+		PrefillChunkBytes: 32,
+		Checkpoint: agent.SleepOptions{
+			EntryURI:  "mlx://agent/exhausted",
+			Title:     "exhausted context",
+			Tokenizer: tokenizer,
+		},
+		Folded: agent.SleepOptions{
+			EntryURI:  "mlx://agent/folded",
+			Title:     "folded context",
+			Tokenizer: tokenizer,
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("FoldAgentMemory() error = %v", err)
+	}
+	if folded == nil || folded.session != foldedNative {
+		t.Fatalf("folded session = %+v, want fresh model session", folded)
+	}
+	if report == nil || report.Checkpoint == nil || report.Folded == nil {
+		t.Fatalf("fold report = %+v, want checkpoint and folded reports", report)
+	}
+	if report.Checkpoint.EntryURI != "mlx://agent/exhausted" || report.Folded.EntryURI != "mlx://agent/folded" {
+		t.Fatalf("fold URIs = %+v, want exhausted and folded entries", report)
+	}
+	if report.Folded.ParentEntryURI != report.Checkpoint.EntryURI {
+		t.Fatalf("folded parent = %q, want checkpoint %q", report.Folded.ParentEntryURI, report.Checkpoint.EntryURI)
+	}
+	prompt := promptChunksToString(func(yield func(string) bool) {
+		for _, chunk := range foldedNative.prefillChunks {
+			if !yield(chunk) {
+				return
+			}
+		}
+	})
+	for _, want := range []string{"<summary>", "long-context degradation", "<recent_tail>", "folded state", "full exhausted context"} {
+		if !core.Contains(prompt, want) {
+			t.Fatalf("folded prefill prompt = %q, want %q", prompt, want)
+		}
+	}
+	if len(foldedNative.prefillChunks) < 2 {
+		t.Fatalf("prefill chunks = %v, want chunked folded prefill", foldedNative.prefillChunks)
+	}
+	index, err := agent.LoadMemvidIndex(ctx, store, report.Folded.IndexURI)
+	if err != nil {
+		t.Fatalf("agent.LoadMemvidIndex(folded) error = %v", err)
+	}
+	entry := index.Entries[0]
+	if entry.Meta["folded_state"] != "true" || entry.Meta["folded_from_entry_uri"] != report.Checkpoint.EntryURI {
+		t.Fatalf("folded metadata = %+v, want folded lineage", entry.Meta)
+	}
+	if !stringSliceContains(entry.Labels, "folded-state") {
+		t.Fatalf("folded labels = %+v, want folded-state", entry.Labels)
+	}
+}
+
+func TestFoldAgentMemory_Bad(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	model := &Model{model: &fakeNativeModel{session: &fakeNativeSession{}}}
+	exhausted := &ModelSession{session: &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}}
+
+	folded, report, err := model.FoldAgentMemory(ctx, exhausted, store, AgentMemoryFoldOptions{})
+
+	if err == nil {
+		t.Fatal("FoldAgentMemory(empty summary) error = nil")
+	}
+	if folded != nil || report != nil {
+		t.Fatalf("FoldAgentMemory(empty summary) = %+v/%+v, want nils", folded, report)
+	}
+}
+
 func TestModelWakeAgentMemory_ClosesOnRestoreError_Bad(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)

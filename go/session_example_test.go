@@ -19,6 +19,21 @@ func ExampleModel_NewSessionFromBundle() {
 	// Output: Model_NewSessionFromBundle
 }
 
+func ExampleModel_FoldAgentMemory() {
+	core.Println("Model_FoldAgentMemory")
+	// Output: Model_FoldAgentMemory
+}
+
+func ExampleAgentMemoryFoldOptions() {
+	core.Println("AgentMemoryFoldOptions")
+	// Output: AgentMemoryFoldOptions
+}
+
+func ExampleAgentMemoryFoldReport() {
+	core.Println("AgentMemoryFoldReport")
+	// Output: AgentMemoryFoldReport
+}
+
 func ExampleModelSession() {
 	core.Println("ModelSession")
 	// Output: ModelSession

@@ -182,4 +182,7 @@ limit, and emits `context_exhausted`, `folded_state_required`,
 `compaction_threshold_tokens`, and `compaction_tail_tokens` in the summary. That
 boundary means the next production step is to checkpoint, summarise the exhausted
 window, keep a recent tail, and prefill a folded state before accepting more
-turns.
+turns. The package API for that handoff is now `Model.FoldAgentMemory`, which
+sleeps the exhausted checkpoint, prefills a fresh session from summary plus
+recent tail text, sleeps the folded state with parent lineage, and records
+folded-state metadata in the durable index.

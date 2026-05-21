@@ -1,14 +1,14 @@
 <!-- SPDX-Licence-Identifier: EUPL-1.2 -->
 
-# agent_memory.go — Wake / Sleep on top of KV snapshots + memvid
+# session_agent.go — Wake / Sleep / Fold on top of KV snapshots + memvid
 
 **Package**: `dappco.re/go/mlx`
-**File**: `go/agent_memory.go`
+**File**: `go/session_agent.go`
 **Implements**: `inference/state.Session` (Wake/Sleep) — the reference implementation
 
 ## What this is
 
-The **production Wake/Sleep/Fork** for the Metal backend. Translates the portable `state.WakeRequest` / `state.SleepRequest` contract into:
+The **production Wake/Sleep/Fork/Fold** path for the Metal backend. Translates the portable `state.WakeRequest` / `state.SleepRequest` contract into:
 
 - KV-block read / write via the `kv_snapshot_*.go` family
 - Memvid `.mp4` bundle encode/decode via `pkg/memvid`
@@ -24,6 +24,8 @@ AgentMemoryWakeOptions      // Index, IndexURI, EntryURI, Tokenizer, LoadOptions
 AgentMemoryWakeReport       // restored prefix counts + hashes for audit
 AgentMemorySleepOptions     // EntryURI, BundleURI, IndexURI, parent URIs, Title, Model+ModelInfo, etc.
 AgentMemorySleepReport      // written prefix counts + parent reuse stats
+AgentMemoryFoldOptions      // exhausted checkpoint options plus summary/tail folded-state prompt
+AgentMemoryFoldReport       // checkpoint and folded-state reports plus byte accounting
 ```
 
 These are richer than the portable `state.WakeRequest/Result` because the Metal backend has more knobs (KV encoding, tokenizer handoff, native-vs-float32). The portable shape comes back at the call boundary — `Session.WakeState` / `Session.SleepState` take/return the portable types and adapt internally.
@@ -79,6 +81,31 @@ The optimisation that makes append-mode bundles cheap. When a session sleeps wit
 3. Only the delta — new tokens generated since wake — is written.
 
 This is what makes "long-running session with periodic sleep" tractable. A 92k-token book bundle is ~10GB raw, but the next sleep after generating 200 tokens only writes those 200 tokens' KV.
+
+## Fold path
+
+When a retained session reaches its live context budget, `Model.FoldAgentMemory`
+creates the summary-plus-tail transition:
+
+```
+exhausted ModelSession
+   ↓
+SleepAgentMemory(checkpoint)       // exact exhausted KV state for audit/replay
+   ↓
+Model.NewSession()
+   ↓
+PrefillChunks(summary + recent tail)
+   ↓
+SleepAgentMemory(folded)           // fresh compacted state with parent lineage
+   ↓
+AgentMemoryFoldReport              // checkpoint + folded refs and byte counts
+```
+
+The folded index entry is labelled `folded-state` and records
+`folded_state=true`, `folded_from_entry_uri`, `summary_bytes`,
+`recent_tail_bytes`, and `folded_prompt_bytes` in metadata. The exhausted
+checkpoint remains available for exact continuation or forensics, while future
+turns wake the smaller folded state.
 
 ## Compatibility check
 
