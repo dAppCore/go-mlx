@@ -78,7 +78,7 @@ fmt.Println(text)
 - **Restorable model state** -- capture KV, logits, token offsets, and generated-token history into reloadable sessions
 - **State bundles** -- strict JSON artifacts that bind model identity, tokenizer/chat-template metadata, prompt hash, sampler settings, LoRA identity, KV hash, SAMI/probe data, and optional memvid refs
 - **Performance metrics** -- prefill/decode tokens per second, GPU memory usage
-- **Local-runner defaults** -- GPU, 131k bounded context, one native slot, and exact token-prefix prompt cache enabled by default
+- **Local-runner defaults** -- GPU, 128Ki-token (`131072`) bounded context, one native slot, and exact token-prefix prompt cache enabled by default
 - **Non-HTTP sidecar** -- Violet serves native generation over a local Unix socket for harnesses that do not need an OpenAI-compatible HTTP layer
 
 ## Supported Models
@@ -132,7 +132,7 @@ Chat generation:
 ```
 
 The native route uses the same `mlx.LoadModel` defaults as the direct API:
-GPU execution, 131k bounded context, one active native slot, and exact
+GPU execution, 128Ki-token (`131072`) bounded context, one active native slot, and exact
 token-prefix prompt caching. Models are loaded on first use and kept resident
 until the daemon exits.
 

@@ -258,7 +258,7 @@ session, err := mlx.NewSession()
 
 Options from `inference.LoadConfig` understood by the Metal backend:
 
-- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers; default 131072
+- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers; default `131072` (`128Ki` tokens)
 - `ParallelSlots` -- caps concurrent native inference calls for one loaded model before KV/cache allocation; default 1
 - `AdapterPath` -- loads a trained LoRA adapter from disk at model load time
 - `GPULayers` -- logged as a warning if set to 0 (Metal always uses full GPU offload)

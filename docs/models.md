@@ -38,7 +38,7 @@ When loading a directory, it must contain:
 
 ```go
 m, err := inference.LoadModel("/path/to/model/",
-    inference.WithContextLen(262144),         // larger Qwen-class context; default is 131072
+    inference.WithContextLen(262144),         // larger Qwen-class context; default is 131072 (128Ki)
     inference.WithParallelSlots(1),           // default: one foreground native request
     inference.WithAdapterPath("/path/to/lora/"), // load LoRA adapter at init
 )
@@ -46,7 +46,7 @@ m, err := inference.LoadModel("/path/to/model/",
 
 | Option | Effect |
 |--------|--------|
-| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)`; Metal defaults to 131072 |
+| `WithContextLen(n)` | Replaces unbounded KV caches with `RotatingKVCache(n)`; Metal defaults to `131072` (`128Ki` tokens) |
 | `WithParallelSlots(n)` | Caps concurrent native inference calls per loaded model; Metal defaults to 1 |
 | `WithAdapterPath(dir)` | Loads a trained LoRA adapter from the given directory |
 | `WithGPULayers(n)` | Ignored with a warning -- Metal always uses full GPU offload |
