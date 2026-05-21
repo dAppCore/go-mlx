@@ -585,6 +585,101 @@ func TestPromptCache_RestoreFromKVBlocksPreservesNativeDType_Good(t *testing.T) 
 	}
 }
 
+func TestPromptCache_RestorePagedCacheKeepsStorageDType_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestorePagedCacheKeepsStorageDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCacheWithDType(8, 2, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+	state := cache.UpdateBorrowedPages(k, v, 2)
+	state.Free()
+
+	snapshot, ok, err := snapshotPagedCache(cache, 2, 2)
+	if err != nil {
+		t.Fatalf("snapshotPagedCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotPagedCache() ok = false")
+	}
+	defer freeCacheSnapshot(snapshot)
+
+	restored, err := restorePromptCachesWithRequestFixedSize([]cacheSnapshot{snapshot}, 2, 0)
+	if err != nil {
+		t.Fatalf("restorePromptCachesWithRequestFixedSize() error = %v", err)
+	}
+	defer freeCaches(restored)
+	paged, ok := restored[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
+	}
+	if !paged.hasStorageDType || paged.storageDType != DTypeBFloat16 {
+		t.Fatalf("restored storage dtype = %v/%v, want bf16 enabled", paged.hasStorageDType, paged.storageDType)
+	}
+
+	kNext, vNext := makeKV(1)
+	defer Free(kNext, vNext)
+	next := paged.UpdateBorrowedPages(kNext, vNext, 1)
+	defer next.Free()
+	for i, page := range next.Keys {
+		if page.Dtype() != DTypeBFloat16 || next.Values[i].Dtype() != DTypeBFloat16 {
+			t.Fatalf("restored page %d dtypes = %v/%v, want bf16/bf16", i, page.Dtype(), next.Values[i].Dtype())
+		}
+	}
+}
+
+func TestPromptCache_RestoreFixedCacheKeepsStorageDType_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFixedCacheKeepsStorageDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewFixedKVCacheWithDType(4, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+	stateK, stateV := cache.Update(k, v, 2)
+	Free(stateK, stateV)
+
+	snapshot, ok, err := snapshotFixedCache(cache, 2)
+	if err != nil {
+		t.Fatalf("snapshotFixedCache() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("snapshotFixedCache() ok = false")
+	}
+	defer freeCacheSnapshot(snapshot)
+
+	restored, arrays, err := restoreFixedCacheSnapshot(snapshot, 2, 2, 0)
+	if err != nil {
+		t.Fatalf("restoreFixedCacheSnapshot() error = %v", err)
+	}
+	defer freeCaches([]Cache{restored})
+	if err := Eval(arrays...); err != nil {
+		t.Fatalf("Eval restored fixed cache: %v", err)
+	}
+	fixed, ok := restored.(*FixedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *FixedKVCache", restored)
+	}
+	if !fixed.hasStorageDType || fixed.storageDType != DTypeBFloat16 {
+		t.Fatalf("restored fixed storage dtype = %v/%v, want bf16 enabled", fixed.hasStorageDType, fixed.storageDType)
+	}
+
+	kNext, vNext := makeKV(1)
+	defer Free(kNext, vNext)
+	nextK, nextV := fixed.Update(kNext, vNext, 1)
+	defer Free(nextK, nextV)
+	if nextK.Dtype() != DTypeBFloat16 || nextV.Dtype() != DTypeBFloat16 {
+		t.Fatalf("restored fixed dtypes after append = %v/%v, want bf16/bf16", nextK.Dtype(), nextV.Dtype())
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksAcceptsNativeRawOnly_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksAcceptsNativeRawOnly"
 	if coverageTokens == "" {

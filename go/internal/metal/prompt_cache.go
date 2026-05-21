@@ -21,24 +21,26 @@ type promptCacheEntry struct {
 }
 
 type cacheSnapshot struct {
-	mode       KVCacheMode
-	keys       *Array
-	values     *Array
-	keyScale   *Array
-	valueScale *Array
-	keyDtype   DType
-	valueDtype DType
-	keyShape   []int32
-	valueShape []int32
-	keyBits    int
-	valueBits  int
-	kPages     []*Array
-	vPages     []*Array
-	offset     int
-	length     int
-	step       int
-	maxSize    int
-	rotating   bool
+	mode            KVCacheMode
+	keys            *Array
+	values          *Array
+	keyScale        *Array
+	valueScale      *Array
+	keyDtype        DType
+	valueDtype      DType
+	keyShape        []int32
+	valueShape      []int32
+	keyBits         int
+	valueBits       int
+	kPages          []*Array
+	vPages          []*Array
+	offset          int
+	length          int
+	step            int
+	maxSize         int
+	rotating        bool
+	storageDType    DType
+	hasStorageDType bool
 }
 
 func (snapshot cacheSnapshot) arrays() []*Array {
@@ -839,6 +841,9 @@ func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
 		if len(block.kPages) == 0 || len(block.kPages) != len(block.vPages) {
 			return core.NewError("prompt cache: invalid paged cache block")
 		}
+		if err := mergeCacheSnapshotStorageDType(dst, block); err != nil {
+			return err
+		}
 		pageSize := dst.step
 		if pageSize <= 0 {
 			pageSize = block.step
@@ -931,6 +936,18 @@ func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
 	}
 	dst.keys = mergedK
 	dst.values = mergedV
+	return nil
+}
+
+func mergeCacheSnapshotStorageDType(dst *cacheSnapshot, block cacheSnapshot) error {
+	if dst == nil || !block.hasStorageDType {
+		return nil
+	}
+	if dst.hasStorageDType && dst.storageDType != block.storageDType {
+		return core.NewError("prompt cache: paged cache block storage dtype mismatch")
+	}
+	dst.storageDType = block.storageDType
+	dst.hasStorageDType = true
 	return nil
 }
 
@@ -1217,12 +1234,14 @@ func snapshotFixedCache(cache *FixedKVCache, tokenLen int) (cacheSnapshot, bool,
 		return cacheSnapshot{}, false, err
 	}
 	return cacheSnapshot{
-		mode:    KVCacheModeFixed,
-		keys:    keys,
-		values:  values,
-		offset:  tokenLen,
-		length:  restoreLen,
-		maxSize: cache.maxSize,
+		mode:            KVCacheModeFixed,
+		keys:            keys,
+		values:          values,
+		offset:          tokenLen,
+		length:          restoreLen,
+		maxSize:         cache.maxSize,
+		storageDType:    cache.storageDType,
+		hasStorageDType: cache.hasStorageDType,
 	}, true, nil
 }
 
@@ -1336,14 +1355,16 @@ func snapshotPagedCache(cache *PagedKVCache, tokenLen, offset int) (cacheSnapsho
 		pageSize = defaultPagedKVPageSize
 	}
 	return cacheSnapshot{
-		mode:     KVCacheModePaged,
-		kPages:   kPages,
-		vPages:   vPages,
-		offset:   offset,
-		length:   tokenLen,
-		step:     pageSize,
-		maxSize:  cache.maxSize,
-		rotating: cache.maxSize > 0,
+		mode:            KVCacheModePaged,
+		kPages:          kPages,
+		vPages:          vPages,
+		offset:          offset,
+		length:          tokenLen,
+		step:            pageSize,
+		maxSize:         cache.maxSize,
+		rotating:        cache.maxSize > 0,
+		storageDType:    cache.storageDType,
+		hasStorageDType: cache.hasStorageDType,
 	}, true, nil
 }
 
@@ -1624,21 +1645,32 @@ func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, reques
 		Free(keyPrefix)
 		return nil, nil, err
 	}
-	defer Free(keyPrefix, valuePrefix)
 
 	kShape := keyPrefix.Shape()
 	vShape := valuePrefix.Shape()
 	if len(kShape) < 4 || len(vShape) < 4 {
+		Free(keyPrefix, valuePrefix)
 		return nil, nil, core.NewError("prompt cache: fixed cache restore requires rank-4 tensors")
 	}
 	if prefixLen > int(kShape[2]) || prefixLen > int(vShape[2]) {
+		Free(keyPrefix, valuePrefix)
 		return nil, nil, core.NewError("prompt cache: fixed cache prefix is shorter than requested")
 	}
 	if offset <= 0 {
 		offset = prefixLen
 	}
 
+	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot)
+	if hasStorageDType {
+		keyPrefix = castOwnedCacheArray(keyPrefix, storageDType)
+		valuePrefix = castOwnedCacheArray(valuePrefix, storageDType)
+	}
+	defer Free(keyPrefix, valuePrefix)
+
 	cache := NewFixedKVCache(maxSize)
+	if hasStorageDType {
+		cache = NewFixedKVCacheWithDType(maxSize, storageDType)
+	}
 	cache.keys = Zeros([]int32{kShape[0], kShape[1], int32(maxSize), kShape[3]}, keyPrefix.Dtype())
 	cache.values = Zeros([]int32{vShape[0], vShape[1], int32(maxSize), vShape[3]}, valuePrefix.Dtype())
 	oldK, oldV := cache.keys, cache.values
@@ -1713,17 +1745,51 @@ func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (C
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
 	}
+	storageDType, hasStorageDType := restoreCacheStorageDType(snapshot)
+	if hasStorageDType {
+		castOwnedCachePages(kPages, vPages, storageDType)
+	}
 	cache := &PagedKVCache{
-		kPages:   kPages,
-		vPages:   vPages,
-		pageLens: pagedPageLensForPages(kPages, prefixLen),
-		offset:   offset,
-		length:   prefixLen,
-		maxSize:  snapshot.maxSize,
-		pageSize: pageSize,
+		kPages:          kPages,
+		vPages:          vPages,
+		pageLens:        pagedPageLensForPages(kPages, prefixLen),
+		offset:          offset,
+		length:          prefixLen,
+		maxSize:         snapshot.maxSize,
+		pageSize:        pageSize,
+		storageDType:    storageDType,
+		hasStorageDType: hasStorageDType,
 	}
 	arrays := make([]*Array, 0, len(kPages)+len(vPages))
 	arrays = append(arrays, kPages...)
 	arrays = append(arrays, vPages...)
 	return cache, arrays, nil
+}
+
+func restoreCacheStorageDType(snapshot cacheSnapshot) (DType, bool) {
+	if dtype, ok := kvCacheStorageDType(); ok {
+		return dtype, true
+	}
+	if snapshot.hasStorageDType {
+		return snapshot.storageDType, true
+	}
+	return DTypeFloat32, false
+}
+
+func castOwnedCacheArray(array *Array, dtype DType) *Array {
+	if array == nil || !array.Valid() || DTypeByteSize(dtype) <= 0 || array.Dtype() == dtype {
+		return array
+	}
+	cast := AsType(array, dtype)
+	Free(array)
+	return cast
+}
+
+func castOwnedCachePages(kPages, vPages []*Array, dtype DType) {
+	for i := range kPages {
+		kPages[i] = castOwnedCacheArray(kPages[i], dtype)
+	}
+	for i := range vPages {
+		vPages[i] = castOwnedCacheArray(vPages[i], dtype)
+	}
 }

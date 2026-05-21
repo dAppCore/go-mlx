@@ -1197,6 +1197,8 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 		}
 		result.mode = KVCacheModeFixed
 		result.maxSize = c.maxSize
+		result.storageDType = c.storageDType
+		result.hasStorageDType = c.hasStorageDType
 	case *PagedKVCache:
 		pagesK, pagesV, adopted, err := pageCacheArrays(keyArray, valueArray, c.pageSize)
 		if err != nil {
@@ -1212,6 +1214,8 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 		result.keys = nil
 		result.values = nil
 		result.step = c.pageSize
+		result.storageDType = c.storageDType
+		result.hasStorageDType = c.hasStorageDType
 		if c.maxSize > 0 {
 			result.rotating = true
 			result.maxSize = c.maxSize

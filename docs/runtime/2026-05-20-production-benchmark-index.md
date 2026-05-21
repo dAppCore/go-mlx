@@ -15,23 +15,22 @@ postscript text. The benchmark artefact set is now indexed, strict-verified,
 and cleaned. The overall production goal is still not complete because the
 long-context performance gap remains open.
 
-The current measured blockers are still `mlx_lm` and llama.cpp: after shared
-full-K/V reuse for paged full-attention owners, `mlx_lm` is `1.928x` faster by
-wall time and estimated energy than go-mlx on the 100k cached workflow, while
-the cached llama.cpp server row is `1.079x` faster by wall time. That keeps
-go-mlx's long-context decode path as the next optimisation boundary. A
-follow-up `5120` token-budget diagnostic now shows the current go-mlx path
-holds the same `~60 tok/s` decode band for `2489` token natural turns with
-bounded memory, but that prompt shape does not force a full `5k` token output.
-A materialised-owner K/V probe also stayed flat at `59.855 tok/s` while raising
-active/cache memory, so it is recorded as a rejected diagnostic rather than a
-new default.
+The current measured blocker is `mlx_lm`: after hyper-long fp16 paged K/V
+storage and typed prompt-cache restore, go-mlx beats the cached llama.cpp server
+row by wall time and estimated energy, but `mlx_lm` is still `1.572x` faster by
+wall time and `1.368x` faster on raw decode on the 100k cached workflow. That
+keeps go-mlx's long-context MLX graph/kernel path as the next optimisation
+boundary. A previous `5120` token-budget diagnostic showed the shared-full-K/V
+path held the same `~60 tok/s` decode band for `2489` token natural turns with
+bounded memory, but that row predates the promoted hyper-long fp16 K/V default.
+A new long-turn row should be rerun after this promotion.
 
 ## Accepted go-mlx Artefacts
 
 | Purpose | Artefact | Shape | Result |
 | --- | --- | --- | --- |
-| 100k retained workflow | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, shared full-K/V reuse for full-attention layers | `231.109s`, `60.011 tok/s` decode, `1678.322 tok/s` cold prefill, `0.368ms` warm restore, `3.710 GiB` active MLX, `23110.937 J` at `100 W` |
+| 100k retained workflow | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-r46-g1024-paged-fp16kv-restoretyped-clearcache-r10-energy100w.json` | `100912` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, hyper-long fp16 K/V storage preserved through restore | `188.417s`, `76.018 tok/s` decode, `1888.005 tok/s` cold prefill, `0.384ms` warm restore, `3.451 GiB` active MLX, `18841.703 J` at `100 W` |
+| Previous 100k shared-full-K/V baseline | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x1024` generation, paged cache with `1024`-token pages, retained prefix, shared full-K/V reuse for full-attention layers | `231.109s`, `60.011 tok/s` decode, `1678.322 tok/s` cold prefill, `0.368ms` warm restore, `3.710 GiB` active MLX, `23110.937 J` at `100 W` |
 | 100k sustained long-turn diagnostic | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g5120-budget-r10-shared-fullkv-energy100w.json` | `101005` prompt tokens, `10x5120` budget, natural stop at `2489` tokens per turn, same retained prefix and shared full-K/V reuse | `475.571s`, `59.947 tok/s` decode, `59.962 tok/s` warm decode, `0.362ms` warm restore, `3.726 GiB` active MLX, `47557.087 J` at `100 W` |
 | 100k retained book | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-energy100w.json` | `10` chapters, `8192` token budget, `768` visible-token floor, thinking enabled | `482.081s`, `41.442 tok/s` decode, `11425` visible tokens, `4.261 GiB` active MLX |
 | C006 accepted continuation | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json` | `10` chapters, `8192` token budget, `512` visible-token floor, thinking enabled | `105.947s`, `80.343 tok/s` decode, `8201` visible tokens, `3.396 GB` active MLX |
@@ -48,17 +47,17 @@ Companion notes:
 
 | Runner | Artefact | Comparable shape | Wall | Decode / throughput | Prefill / restore | Memory | Energy | Verdict |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| go-mlx | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json` | MLX 4bit, `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, shared full-K/V reuse for full-attention layers | `231.109s` | `60.011 tok/s` decode | `1678.322 tok/s` cold prefill, `0.368ms` warm restore | `3.710 GiB` active MLX, `3.146 GiB` peak RSS | `23110.937 J` | Current go-mlx baseline; `1.170x` faster on decode and `1.125x` faster by wall/energy than the borrowed-page row |
-| `mlx_lm` | `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json` | Same MLX 4bit snapshot, `100935` cached prompt tokens, `10x1024` turns | `119.866s` including load+prefill | `103.971 tok/s` decode | `5465.549 tok/s` prefill | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` | Current configured winner; go-mlx is `1.928x` slower by wall/energy |
-| llama.cpp server | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json` | GGUF `Q4_K_M`, `100926` prompt tokens, `10x1024` cached-prefix turns | `214.205s` | `82.680 tok/s` decode | `1132.450 tok/s` first prefill, `45.591ms` average warm prompt work with `100921` cached tokens | `4.435 GiB` peak RSS | `21420.531 J` | Same-shape cached runner anchor; beats go-mlx by `1.079x` wall/energy |
+| go-mlx | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-r46-g1024-paged-fp16kv-restoretyped-clearcache-r10-energy100w.json` | MLX 4bit, `100912` prompt tokens, `10x1024` retained turns, paged K/V `1024`, hyper-long fp16 K/V storage preserved through restore | `188.417s` | `76.018 tok/s` decode | `1888.005 tok/s` cold prefill, `0.384ms` warm restore | `3.451 GiB` active MLX, `3.150 GiB` peak RSS | `18841.703 J` | Current go-mlx baseline; `1.227x` faster by wall/energy and `1.267x` faster on decode than the previous shared-full-K/V row |
+| `mlx_lm` | `docs/runtime/2026-05-20-mlx-lm-gemma4-e2b-4bit-100k-cached-workflow-r46-g1024-r10-energy100w.json` | Same MLX 4bit snapshot, `100935` cached prompt tokens, `10x1024` turns | `119.866s` including load+prefill | `103.971 tok/s` decode | `5465.549 tok/s` prefill | `5.473 GB` MLX peak, `3.820 GB` peak RSS | `11986.551 J` | Current configured winner; go-mlx is `1.572x` slower by wall/energy and `1.368x` slower on raw decode |
+| llama.cpp server | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-100k-cached-server-r10-g1024-energy100w.json` | GGUF `Q4_K_M`, `100926` prompt tokens, `10x1024` cached-prefix turns | `214.205s` | `82.680 tok/s` decode | `1132.450 tok/s` first prefill, `45.591ms` average warm prompt work with `100921` cached tokens | `4.435 GiB` peak RSS | `21420.531 J` | Same-shape cached runner anchor; go-mlx now wins by `1.137x` wall/energy, while llama.cpp still wins raw decode by `1.088x` |
 | llama.cpp cold | `docs/runtime/2026-05-20-llamacpp-gemma4-e2b-q4-k-m-pg101005-1024-bench.json` | GGUF `Q4_K_M`, cold `pp101005+tg1024`, one run | `94.904s` | `1075.081 tok/s` combined | Cold replay only | Not recorded in JSON | `9490.352 J` if normalised at `100 W` | Calibration only; superseded by server cached-prefix row for runner-gate evidence |
 | vLLM Metal | `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr` | Same MLX 4bit snapshot, `100935` input, `1024` output | n/a | n/a | n/a | n/a | n/a | Metal path starts, then strict MLX-LM load rejects extra Gemma 4 shared-K/V tensors |
 
 Cold llama.cpp replay over ten turns would be roughly `949.035s` at the
 measured one-run wall time, so go-mlx still beats CLI-style repeated cold
 replay. The server-side cached-prefix row is the fairer retained-workflow
-anchor and still beats go-mlx on the same repeated shape, but the gap is now
-down to `1.079x` wall/energy.
+anchor; after hyper-long fp16 K/V storage, go-mlx now wins that wall/energy
+comparison while still trailing llama.cpp raw decode.
 
 ## Rejected Long-Context Diagnostics
 
@@ -165,19 +164,20 @@ device from the runner, while the same workload with `-report-file` completed.
 
 ## Next Work
 
-1. Close the `mlx_lm` and llama.cpp cached-runner gap or isolate the specific
-   native cause. Borrowing full paged-K/V page handles removed one source of
-   per-token graph churn, and retaining the owner materialised full K/V for
-   shared full-attention layers improved the accepted 100k workflow from
-   `260.093s` / `51.293 tok/s` to `231.109s` / `60.011 tok/s`. The remaining
-   live boundary is still evaluated graph/kernel work in the long-context
-   attention path, not prompt-cache restore. The current token-phase trace shows
-   shared full-K/V reuse moved layers `19`, `24`, `29`, and `34` down to about
-   `1.03ms/token`, leaving the early full-attention owner layers `4`, `9`, and
-   `14` as the next target. The materialised-owner diagnostic rejected a pure
-   MLX `slice_update` backing tensor workaround, so the remaining path is a
-   lower-level fused/zero-copy global-attention storage shape. The current
-   diagnosis is recorded in
+1. Close the `mlx_lm` cached-runner gap or isolate the specific native cause.
+   Borrowing full paged-K/V page handles removed one source of per-token graph
+   churn, retaining owner materialised full K/V improved the 100k workflow from
+   `260.093s` / `51.293 tok/s` to `231.109s` / `60.011 tok/s`, and hyper-long
+   fp16 K/V storage preserved through restore improved it again to `188.417s` /
+   `76.018 tok/s`. The remaining live boundary is still evaluated MLX graph and
+   kernel work in the long-context attention path, not prompt-cache restore. A
+   refreshed token-phase trace should be captured on the promoted fp16 K/V lane
+   before the next kernel change. The older trace showed shared full-K/V reuse
+   moved layers `19`, `24`, `29`, and `34` down to about `1.03ms/token`, leaving
+   early full-attention owner layers `4`, `9`, and `14` as the likely next
+   target. The materialised-owner diagnostic rejected a pure MLX `slice_update`
+   backing tensor workaround, so the remaining path is a lower-level fused or
+   zero-copy global-attention storage shape. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.

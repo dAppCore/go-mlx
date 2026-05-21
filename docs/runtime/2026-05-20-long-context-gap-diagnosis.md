@@ -43,11 +43,14 @@ default, and the CLI records that choice as
 `GO_MLX_PAGED_KV_PAGE_SIZE=1024`. The next corrective change retains the
 materialised full K/V handles produced by a full-attention owner layer so later
 shared full-attention layers can reuse them instead of re-concatenating the
-same paged state.
+same paged state. The latest corrective change stores hyper-long paged K/V as
+fp16 and preserves that storage dtype through prompt-cache/session restore, so
+warm retained turns no longer append float32 K/V onto an fp16 prefix.
 
 | Runner | Shape | Warm per-turn decode | First prefill | Restore |
 | --- | --- | ---: | ---: | ---: |
-| go-mlx current | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, shared full-K/V reuse | about `17.07s` per warm `1024` tokens, `60.040 tok/s` | `60.186s`, `1678.322 tok/s` | `0.368ms` average |
+| go-mlx current | `100912` prompt tokens, `10x1024` retained turns, paged K/V `1024`, fp16 K/V storage preserved through restore | about `13.47s` per warm `1024` tokens, `~76 tok/s` | `53.568s`, `1888.005 tok/s` | `0.384ms` average |
+| go-mlx previous shared-full-K/V row | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024`, shared full-K/V reuse | about `17.07s` per warm `1024` tokens, `60.040 tok/s` | `60.186s`, `1678.322 tok/s` | `0.368ms` average |
 | go-mlx previous borrowed-page row | `101005` prompt tokens, `10x1024` retained turns, paged K/V `1024` | about `19.97s` per warm `1024` tokens, `51.310 tok/s` | `60.195s`, `1678.071 tok/s` | `0.372ms` average |
 | go-mlx previous page-size row | `101005` prompt tokens, `10x1024` retained turns | about `23.4s` per `1024` tokens, `43.617 tok/s` | `157.168s`, `642.657 tok/s` | `2.116ms` average |
 | llama.cpp server | `100926` prompt tokens, `10x1024` cached-prefix turns | about `12.5s` per `1024` tokens, `82.680 tok/s` | `89.122s`, `1132.450 tok/s` | `45.591ms` warm prompt work |
@@ -57,18 +60,22 @@ The retained-state restore is already cheap enough that it is not the active
 loss. The page-size correction improves the 100k row from `408.483s` to
 `262.995s`, a `1.553x` wall/energy improvement. Borrowing full page handles
 then improves the accepted row to `260.093s` / `51.293 tok/s`, and shared
-full-K/V reuse improves it again to `231.109s` / `60.011 tok/s`. The active
-loss is still the evaluated long-context graph and kernel path:
+full-K/V reuse improves it again to `231.109s` / `60.011 tok/s`. Hyper-long
+fp16 K/V storage plus restore-preserved storage dtype improves it again to
+`188.417s` / `76.018 tok/s`. The active loss is still the evaluated
+long-context graph and kernel path:
 
-- go-mlx cold 100k prefill is now `1.48x` faster than llama.cpp but still
-  `3.26x` slower than the configured `mlx_lm` harness.
-- go-mlx warm 100k decode remains `1.38x` slower than llama.cpp and `1.73x`
+- go-mlx cold 100k prefill is now `1.67x` faster than llama.cpp but still
+  `2.90x` slower than the configured `mlx_lm` harness.
+- go-mlx warm 100k decode is now `1.09x` slower than llama.cpp and `1.37x`
   slower than `mlx_lm`.
-- The current one-run token-phase trace records `59.957 tok/s` on the
-  shared-full-K/V path. Go-side forward graph construction is only
+- The latest token-phase trace still predates the fp16 K/V promotion. The older
+  one-run trace recorded `59.957 tok/s` on the shared-full-K/V path, with
+  Go-side forward graph construction only
   `1.251ms/token`; most of the wait still lands in `sample_eval` at
   `15.402ms/token`, which is where lazy MLX graph work synchronises in the
-  normal run.
+  normal run. Refresh this trace on the promoted fp16 K/V path before the next
+  lower-level kernel change.
 
 ## Sustained Long-Turn Check
 
@@ -77,7 +84,8 @@ prompt, `context=131072`, paged K/V `1024`, shared full-K/V reuse, and `12 GiB`
 active/RSS guards, but raised the generation budget from `1024` to `5120`.
 The prompt naturally stopped at `2489` generated/visible tokens per turn, so
 this is not a true forced `5k` row. It does test a much larger real turn than
-the accepted runner-anchor row.
+the then-accepted runner-anchor row. This row predates the promoted hyper-long
+fp16 K/V storage default and should be refreshed for the new baseline.
 
 | Metric | Value |
 | --- | ---: |
@@ -196,7 +204,8 @@ validation code where it cannot move decode.
 | `context=65537`, typed paged K/V without query alignment | fp16 and bf16 K/V storage both land around `55.9s` wall, `1873-1877 tok/s` prefill, `46.7 tok/s` decode, and `6.832 GB` peak MLX | Rejected. Storing K/V narrower while leaving the attention query in the old dtype made SDPA slower and proved dtype alignment is part of the storage contract. |
 | `context=65537`, typed paged K/V with query alignment | fp16 K/V records `44.294s` wall, `2076.372 tok/s` prefill, `75.012 tok/s` decode, `5.405 GB` peak MLX; bf16 K/V records `44.019s` wall, `2101.038 tok/s` prefill, `74.548 tok/s` decode, `5.415 GB` peak MLX | Positive cold/threshold probe. Query-aligned typed K/V beats both the paged clear-cache threshold and the `65536` fixed-cache threshold while lowering peak MLX memory. |
 | `context=131072`, typed paged K/V with query alignment, one run | fp16 K/V records `68.922s` wall, `1820.807 tok/s` prefill, `75.848 tok/s` decode, `5.471 GB` peak MLX; bf16 K/V records `68.912s` wall, `1824.374 tok/s` prefill, `75.300 tok/s` decode, `5.481 GB` peak MLX | Positive cold 100k probe. It cuts peak memory versus the current shared-full-K/V row, but a one-run row is not the retained workflow acceptance measure. |
-| `context=131072`, fp16 paged K/V with query alignment, 10 retained runs | `100912` prompt tokens, `240.453s` wall, `56.025 tok/s` average decode, first run `75.883 tok/s`, warm turns about `53.8 tok/s`, `5.471 GB` peak MLX, `3.467 GB` active MLX, `3.381 GB` RSS, and `4` bytes MLX cache | Rejected as the default retained workflow. It saves memory, but is slower than the accepted shared-full-K/V row at `231.109s` wall and `60.011 tok/s` average decode. |
+| `context=131072`, fp16 paged K/V with query alignment, 10 retained runs before restore typed-storage fix | `100912` prompt tokens, `240.453s` wall, `56.025 tok/s` average decode, first run `75.883 tok/s`, warm turns about `53.8 tok/s`, `5.471 GB` peak MLX, `3.467 GB` active MLX, `3.381 GB` RSS, and `4` bytes MLX cache | Rejected. Restored paged/fixed caches lost the typed-storage setting, so warm turns could append float32 K/V onto an fp16 restored prefix and lose the cold-path benefit. |
+| `context=131072`, fp16 paged K/V after restore typed-storage fix, 10 retained runs | `100912` prompt tokens, `188.417s` wall, `76.018 tok/s` average decode, first run `75.654 tok/s`, warm turns about `76 tok/s`, `1888.005 tok/s` cold prefill, `0.384ms` average restore, `5.471 GB` peak MLX, `3.451 GB` active MLX, `3.382 GB` RSS, and `18841.703 J` at `100 W` | Promoted for hyper-long `-fast-gemma4-lane` defaults. It beats the previous shared-full-K/V row and the llama.cpp cached wall row, while `mlx_lm` remains faster. |
 
 The zero-copy stack is therefore split into three parts:
 
@@ -217,13 +226,15 @@ memory flat during long runs and after chunked prefill, but they do not change
 the underlying paged/global attention work enough to beat the current external
 runner anchors.
 
-`GO_MLX_KV_CACHE_DTYPE` is therefore kept as an explicit opt-in R&D gate. The
-implementation is useful because it gives the cache layer a typed-storage
-contract and exposes the query/K/V dtype alignment rule. It is not promoted into
-the fast Gemma 4 defaults because the realistic retained 10-turn workflow loses
-wall time and warm decode, even though the cold rows are much faster and use
-less memory. The next production path still has to make the hot retained
-paged/global attention path streamier rather than only narrowing stored K/V.
+`GO_MLX_KV_CACHE_DTYPE=fp16` is therefore promoted into the hyper-long
+`-fast-gemma4-lane` defaults, but only above the `65536` fixed-cache boundary.
+Shorter fixed-cache lanes keep their native storage unless explicitly
+overridden. The implementation now gives the cache layer a typed-storage
+contract, preserves that contract through prompt-cache/session restore, and
+exposes the query/K/V dtype alignment rule. The next production path still has
+to make the hot retained paged/global attention path streamier, because the
+configured `mlx_lm` cached anchor is still materially faster even after this
+go-mlx row beats the local llama.cpp cached wall/energy anchor.
 
 ## Atomic-Chat Reference Notes
 

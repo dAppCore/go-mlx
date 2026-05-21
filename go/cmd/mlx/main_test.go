@@ -1966,6 +1966,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneHyperLongContextUsesPagedRetained
 		`"prompt_chunk_bytes": 4096`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"GO_MLX_PAGED_KV_PAGE_SIZE": "1024"`,
+		`"GO_MLX_KV_CACHE_DTYPE": "fp16"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)

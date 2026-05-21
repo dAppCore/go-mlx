@@ -21,8 +21,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if lane.ContextLength != 4096 || lane.MaxTokens != 128 || lane.Runs != 3 {
 		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want GOAL.md target shape", lane.ContextLength, lane.MaxTokens, lane.Runs)
 	}
-	if ProductionLaneLongContextLength != 32768 || ProductionLaneLongFormContextLength != 65536 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLaneHyperLongPagedKVPageSize != 1024 {
-		t.Fatalf("long context shape = context:%d longform:%d tokens:%d prefill:%d prompt:%d page:%d, want opencode-sized chunk defaults", ProductionLaneLongContextLength, ProductionLaneLongFormContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLaneHyperLongPagedKVPageSize)
+	if ProductionLaneLongContextLength != 32768 || ProductionLaneLongFormContextLength != 65536 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLaneHyperLongPagedKVPageSize != 1024 || ProductionLaneHyperLongKVCacheDType != "fp16" {
+		t.Fatalf("long context shape = context:%d longform:%d tokens:%d prefill:%d prompt:%d page:%d dtype:%s, want opencode-sized chunk defaults", ProductionLaneLongContextLength, ProductionLaneLongFormContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLaneHyperLongPagedKVPageSize, ProductionLaneHyperLongKVCacheDType)
 	}
 	if lane.IncludeOutput || !lane.TraceTokenPhases {
 		t.Fatalf("profile reporting = include_output:%v trace:%v, want hidden output plus token phase trace", lane.IncludeOutput, lane.TraceTokenPhases)

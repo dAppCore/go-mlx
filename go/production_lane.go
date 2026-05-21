@@ -28,6 +28,10 @@ const (
 	// ProductionLaneHyperLongPagedKVPageSize is the current fastest recorded
 	// paged K/V block size for 100k retained-state runs.
 	ProductionLaneHyperLongPagedKVPageSize = 1024
+	// ProductionLaneHyperLongKVCacheDType is the accepted K/V storage dtype for
+	// hyper-long paged retained-state runs. Shorter fixed-cache lanes keep their
+	// native dtype unless explicitly overridden.
+	ProductionLaneHyperLongKVCacheDType = "fp16"
 	// ProductionLaneLongFormContextLength is the default chapter-profile
 	// context for retained long-form agentic generation.
 	ProductionLaneLongFormContextLength = 65536

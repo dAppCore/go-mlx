@@ -25,6 +25,13 @@
     {
       "id": "gomlx-100k-retained-workflow",
       "role": "accepted_go_mlx_workflow",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-r46-g1024-paged-fp16kv-restoretyped-clearcache-r10-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "gomlx-100k-retained-shared-fullkv-baseline",
+      "role": "superseded_go_mlx_workflow",
       "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-100k-g1024-r10-shared-fullkv-energy100w.json",
       "kind": "json",
       "indexed": true

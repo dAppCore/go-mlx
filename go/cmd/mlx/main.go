@@ -922,6 +922,9 @@ func applyGemma4FastLaneDefaults(
 		if hyperLongContext && driverProfileRuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE") == "" {
 			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_PAGED_KV_PAGE_SIZE", core.Sprintf("%d", mlx.ProductionLaneHyperLongPagedKVPageSize)))
 		}
+		if hyperLongContext && driverProfileRuntimeGateValue("GO_MLX_KV_CACHE_DTYPE") == "" {
+			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneHyperLongKVCacheDType))
+		}
 	}
 	for _, gate := range mlx.Gemma4FastRuntimeGatesForContext(resolvedContext) {
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
