@@ -1226,6 +1226,12 @@ stuffing convention.
 - [x] Sleep the updated session to a new state entry when exact continuation is
   wanted. The agent-memory test verifies parent/child entry metadata after
   append-and-sleep and generate-and-sleep.
+- [x] Compact an exhausted live context into a folded state and continue from it.
+  `Model.FoldAgentMemory` checkpoints the exhausted K/V state, prefills a fresh
+  session from summary-plus-tail text, sleeps the folded state with parent
+  lineage, then `TestFoldAgentMemory_CheckpointSummaryTail_Good` wakes the
+  folded entry, appends the next turn without replaying the summary text, and
+  generates from the restored folded state.
 - [x] Reuse the current seed plus text memory when the operator does not want a
   new state file. `TestProjectSeed_PlanContinuationModes_Good` verifies
   `ProjectSeedReuseCurrent` avoids a sleep request and keeps the current seed

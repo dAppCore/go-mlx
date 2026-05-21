@@ -304,6 +304,36 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	if !stringSliceContains(entry.Labels, "folded-state") {
 		t.Fatalf("folded labels = %+v, want folded-state", entry.Labels)
 	}
+
+	continuedNative := &fakeNativeSession{
+		tokens: []metal.Token{{ID: 40, Text: "continued"}},
+	}
+	continued := &ModelSession{session: continuedNative, info: info}
+	wake, err := continued.WakeAgentMemory(ctx, store, agent.WakeOptions{
+		IndexURI:    report.Folded.IndexURI,
+		EntryURI:    report.Folded.EntryURI,
+		Tokenizer:   tokenizer,
+		LoadOptions: kv.LoadOptions{RawKVOnly: true},
+	})
+	if err != nil {
+		t.Fatalf("WakeAgentMemory(folded) error = %v", err)
+	}
+	if wake.EntryURI != report.Folded.EntryURI || wake.PrefixTokens != report.Folded.TokenCount || continuedNative.restoredKV == nil {
+		t.Fatalf("folded wake = %+v restored=%+v, want folded state restored", wake, continuedNative.restoredKV)
+	}
+	if err := continued.AppendPrompt("Next turn: continue from the folded state."); err != nil {
+		t.Fatalf("AppendPrompt(folded continuation) error = %v", err)
+	}
+	if core.Contains(continuedNative.appendPrompt, "long-context degradation") {
+		t.Fatalf("folded continuation prompt = %q, want no replayed summary text", continuedNative.appendPrompt)
+	}
+	text, err := continued.Generate(WithMaxTokens(1))
+	if err != nil {
+		t.Fatalf("Generate(folded continuation) error = %v", err)
+	}
+	if text != "continued" {
+		t.Fatalf("Generate(folded continuation) = %q, want continued", text)
+	}
 }
 
 func TestFoldAgentMemory_Bad(t *testing.T) {
