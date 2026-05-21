@@ -104,10 +104,19 @@ func (p *datasetPacker) flush() {
 	if p == nil || p.builder == nil || len(p.current.inputs) == 0 {
 		return
 	}
+	// Hand the builder a fully-sized clone — len is known so each make
+	// allocates exactly once instead of going through append grow stages.
+	n := len(p.current.inputs)
+	inputs := make([]int, n)
+	copy(inputs, p.current.inputs)
+	targets := make([]int, n)
+	copy(targets, p.current.targets)
+	mask := make([]float32, n)
+	copy(mask, p.current.mask)
 	p.builder.add(sftExample{
-		inputs:  append([]int(nil), p.current.inputs...),
-		targets: append([]int(nil), p.current.targets...),
-		mask:    append([]float32(nil), p.current.mask...),
+		inputs:  inputs,
+		targets: targets,
+		mask:    mask,
 	})
 	p.current = sftExample{}
 }
