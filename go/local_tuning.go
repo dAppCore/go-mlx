@@ -567,12 +567,17 @@ func cloneTuningLabels(labels map[string]string) map[string]string {
 }
 
 func withTuningMachineHash(labels map[string]string, machineHash string) map[string]string {
-	out := cloneTuningLabels(labels)
 	if machineHash == "" {
+		return cloneTuningLabels(labels)
+	}
+	if len(labels) == 0 {
+		out := make(map[string]string, 1)
+		out[tuningMachineHashLabel] = machineHash
 		return out
 	}
-	if out == nil {
-		out = map[string]string{}
+	out := make(map[string]string, len(labels)+1)
+	for key, value := range labels {
+		out[key] = value
 	}
 	out[tuningMachineHashLabel] = machineHash
 	return out
