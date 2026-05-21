@@ -12,6 +12,8 @@
     "pruned_tracked_count": 3
   },
   "open_gates": [
+    "opencode_interactive_retained_workflow",
+    "warm_build_up_100k_stress",
     "long_context_degradation"
   ],
   "artifacts": [
@@ -20,6 +22,27 @@
       "role": "index",
       "path": "docs/runtime/2026-05-20-production-benchmark-index.md",
       "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-probe-note",
+      "role": "incomplete_interactive_probe_note",
+      "path": "docs/runtime/2026-05-21-opencode-state-ramp-probe.md",
+      "kind": "markdown",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-delimited-weak",
+      "role": "incomplete_interactive_probe",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "opencode-state-ramp-suppress-eos-rejected",
+      "role": "rejected_interactive_probe",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json",
+      "kind": "json",
       "indexed": true
     },
     {

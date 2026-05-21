@@ -27,6 +27,14 @@ The token-phase trace has been refreshed on the promoted fp16 K/V path and
 confirms the next live boundary is still owner-layer full-attention K/V work.
 A new long-turn row should still be rerun after this promotion.
 
+The 2026-05-21 opencode-sized retained-state probe is recorded separately in
+`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. It is useful evidence
+for the new 30k-to-growing-context workflow but is not an accepted production
+row yet: the delimited run completed 10 turns with bounded memory, while the
+strict visible-token-floor rerun showed that globally suppressing EOS can create
+degenerate repeated-code output. The accepted interactive gate still needs
+chat-shaped retained turns and a visible-token floor without EOS suppression.
+
 ## Accepted go-mlx Artefacts
 
 | Purpose | Artefact | Shape | Result |
@@ -44,6 +52,14 @@ Companion notes:
 - `docs/runtime/2026-05-20-gemma4-e2b-c006-report-file-book.md`
 - `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`
 - `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-token-phase-trace-summary.md`
+- `docs/runtime/2026-05-21-opencode-state-ramp-probe.md`
+
+## Opencode-Sized Retained Probe
+
+| Probe | Artefact | Shape | Result | Verdict |
+| --- | --- | --- | ---: | --- |
+| Delimited retained append turns | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json` | MLX 4bit, `30000` retained seed tokens from a real repo dump, `10` delimiter-separated user turns, `1024` token budget, Gemma 4 sampling defaults | `78.761s`, `77.533 tok/s` decode, `61.689 tok/s` effective turn throughput, `59146` final live tokens, `3.114 GiB` active MLX | Useful scaling evidence, not accepted; several turns naturally stopped after tiny outputs |
+| Strict floor with EOS suppression | `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json` | Same input shape plus `512` visible-token floor and EOS suppression | Failed on turn 1 after `653` visible tokens by repeating `// Implementation_` for `128` lines | Rejected; EOS suppression forces volume but can turn a stop into degeneration |
 
 ## Runner Anchors
 

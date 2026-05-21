@@ -665,7 +665,13 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 			TargetTokens:           cfg.TargetTokens,
 			AppendTokens:           cfg.AppendTokens,
 			TurnMaxTokens:          cfg.TurnMaxTokens,
+			TurnMinTokens:          cfg.TurnMinTokens,
 			RequestedTurns:         cfg.Turns,
+			Temperature:            cfg.Temperature,
+			TopP:                   cfg.TopP,
+			TopK:                   cfg.TopK,
+			RepeatPenalty:          cfg.RepeatPenalty,
+			SuppressEOS:            cfg.SuppressEOS,
 			InitialPrefillDuration: 30 * time.Second,
 			InitialPrefillTokens:   30000,
 			Turns:                  turns,
@@ -676,7 +682,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-turn-min-tokens", "512", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -684,8 +690,17 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.AppendPrompt != "Review the changed files and explain the highest-risk performance regression." {
 		t.Fatalf("append prompt = %q, want append-file contents", gotCfg.AppendPrompt)
 	}
+	if gotCfg.AppendTurnDelimiter != "---TURN---" {
+		t.Fatalf("append delimiter = %q, want configured delimiter", gotCfg.AppendTurnDelimiter)
+	}
 	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
 		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
+	}
+	if gotCfg.TurnMinTokens != 512 || !gotCfg.SuppressEOS {
+		t.Fatalf("state ramp real-workload guards = min:%d suppress_eos:%v, want configured floor", gotCfg.TurnMinTokens, gotCfg.SuppressEOS)
+	}
+	if gotCfg.Temperature != 1.0 || gotCfg.TopP != 0.95 || gotCfg.TopK != 64 || gotCfg.RepeatPenalty != 1.0 {
+		t.Fatalf("state ramp sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 defaults", gotCfg.Temperature, gotCfg.TopP, gotCfg.TopK, gotCfg.RepeatPenalty)
 	}
 	if gotLoad.ContextLength != mlx.ProductionLaneHyperLongContextLength || gotLoad.CacheMode != memory.KVCacheModePaged || gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
 		t.Fatalf("load = %+v, want hyper-long fast lane defaults", gotLoad)
@@ -694,6 +709,11 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"model_path": "/models/demo"`,
 		`"start_tokens": 30000`,
 		`"target_tokens": 100000`,
+		`"turn_min_tokens": 512`,
+		`"temperature": 1`,
+		`"top_p": 0.95`,
+		`"top_k": 64`,
+		`"suppress_eos": true`,
 		`"append_tokens_per_sec_average": 4096`,
 		`"decode_tokens_per_sec_average": 102.4`,
 		`"effective_turn_tokens_per_sec_average":`,

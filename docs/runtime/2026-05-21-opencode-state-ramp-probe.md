@@ -1,0 +1,112 @@
+<!-- SPDX-Licence-Identifier: EUPL-1.2 -->
+
+# Opencode-Sized State Ramp Probe
+
+Date: 2026-05-21
+
+This probe exercises the new `state-ramp-profile` command against the primary
+GOAL.md interactive shape: an opencode-sized retained state, real appended turn
+material, generated assistant output counted into live state, and estimated
+energy reported separately from raw decode.
+
+## Inputs
+
+- Model: `mlx-community/gemma-4-e2b-it-4bit`
+- Snapshot:
+  `/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd`
+- Seed source: `/private/tmp/go-mlx-goal/opencode-seed.txt`
+  - `160546` bytes
+  - `51197` model tokens
+  - The run retains the first `30000` tokens as the warmed state.
+- Append source: `/private/tmp/go-mlx-goal/opencode-turns-delimited.txt`
+  - `94998` bytes
+  - `26433` model tokens
+  - `10` explicit user-turn sections split by `---TURN---`
+- Runtime gates: fast Gemma 4 lane, paged K/V, fp16 K/V storage,
+  `GO_MLX_PAGED_KV_PAGE_SIZE=1024`
+
+## Completed Delimited Run
+
+Artifact:
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json`
+
+Command:
+
+```sh
+env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+  /private/tmp/go-mlx-goal/lthn-mlx state-ramp-profile \
+  -report-file /Users/snider/Code/core/go-mlx/docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-energy100w.json \
+  -prompt-file /private/tmp/go-mlx-goal/opencode-seed.txt \
+  -append-file /private/tmp/go-mlx-goal/opencode-turns-delimited.txt \
+  -append-turn-delimiter '---TURN---' \
+  -start-tokens 30000 \
+  -target-tokens 70000 \
+  -append-tokens 4096 \
+  -turn-max-tokens 1024 \
+  -turns 10 \
+  -temperature 1.0 \
+  -top-p 0.95 \
+  -top-k 64 \
+  -repeat-penalty 1.0 \
+  -estimate-power-watts 100 \
+  -max-active-memory-bytes 12884901888 \
+  -max-process-resident-memory-bytes 25769803776 \
+  -repeated-line-loop-limit 128 \
+  -repeated-sentence-loop-limit 16 \
+  /Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd
+```
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful turns | `10/10` |
+| Initial retained state | `30000` tokens |
+| Final live state | `59146` tokens |
+| Appended tokens | `24953` |
+| Generated tokens | `4187` |
+| Initial prefill | `2755.434 tok/s` |
+| Append average | `1800.615 tok/s` |
+| Raw decode average | `77.533 tok/s` |
+| Effective turn throughput | `61.689 tok/s` |
+| Total wall time | `78.761s` |
+| Peak MLX memory | `3.596 GiB` |
+| Active MLX memory | `3.114 GiB` |
+| Process RSS | `3.246 GiB` |
+| Estimated energy at 100 W | `7876.058 J` |
+
+Verdict: useful retained-state scaling evidence, but **not accepted as the
+primary interactive gate**. It completed with bounded memory, whole appended
+turns, and realistic sampling defaults, but several generated turns naturally
+ended after `1` to `8` visible tokens. A long output budget is not enough by
+itself; the acceptance row needs a per-turn minimum or a stronger chat-shaped
+prompt path that does not trigger degeneration.
+
+## Strict Floor Diagnostic
+
+Artifact:
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-delimited-r10-g1024-min512-suppress-eos-energy100w.json`
+
+This rerun added `-turn-min-tokens 512` and `-suppress-eos` to prevent tiny
+natural stops. It failed on turn 1 after generating `653` visible tokens because
+the output repeated the line `// Implementation_` for `128` consecutive lines.
+
+Verdict: suppressing EOS is **not an accepted solution** for this workflow. It
+can force token volume, but it can also turn a model stop into a repeated-code
+loop. The next accepted path should use chat-template turn shaping and retained
+assistant-turn closure rather than suppressing EOS globally.
+
+## Next Action
+
+Implement or reuse a chat-shaped retained workflow for opencode-sized state
+growth:
+
+1. Warm a `30k`-`40k` codebase context with the Gemma 4 chat template intact.
+2. Append complete user turns, not arbitrary token offsets.
+3. Generate with `temperature=1.0`, `top_p=0.95`, `top_k=64`.
+4. Preserve generated assistant output in the live state.
+5. Close assistant turns correctly before the next user turn.
+6. Require a visible-token floor per turn without suppressing EOS globally.
+
+Only after that row completes should the GOAL.md primary interactive gate be
+considered for acceptance.

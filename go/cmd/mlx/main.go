@@ -434,15 +434,22 @@ type chapterProfileEnergy struct {
 }
 
 type stateRampProfileOptions struct {
-	Prompt        string                    `json:"prompt,omitempty"`
-	AppendPrompt  string                    `json:"append_prompt,omitempty"`
-	StartTokens   int                       `json:"start_tokens,omitempty"`
-	TargetTokens  int                       `json:"target_tokens,omitempty"`
-	AppendTokens  int                       `json:"append_tokens,omitempty"`
-	TurnMaxTokens int                       `json:"turn_max_tokens,omitempty"`
-	Turns         int                       `json:"turns,omitempty"`
-	IncludeOutput bool                      `json:"include_output,omitempty"`
-	SafetyLimits  driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	Prompt              string                    `json:"prompt,omitempty"`
+	AppendPrompt        string                    `json:"append_prompt,omitempty"`
+	AppendTurnDelimiter string                    `json:"append_turn_delimiter,omitempty"`
+	StartTokens         int                       `json:"start_tokens,omitempty"`
+	TargetTokens        int                       `json:"target_tokens,omitempty"`
+	AppendTokens        int                       `json:"append_tokens,omitempty"`
+	TurnMaxTokens       int                       `json:"turn_max_tokens,omitempty"`
+	TurnMinTokens       int                       `json:"turn_min_tokens,omitempty"`
+	Turns               int                       `json:"turns,omitempty"`
+	Temperature         float64                   `json:"temperature,omitempty"`
+	TopP                float64                   `json:"top_p,omitempty"`
+	TopK                int                       `json:"top_k,omitempty"`
+	RepeatPenalty       float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS         bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput       bool                      `json:"include_output,omitempty"`
+	SafetyLimits        driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateRampProfileReport struct {
@@ -453,11 +460,18 @@ type stateRampProfileReport struct {
 	AppendPromptBytes      int                       `json:"append_prompt_bytes,omitempty"`
 	SourceTokens           int                       `json:"source_tokens,omitempty"`
 	AppendSourceTokens     int                       `json:"append_source_tokens,omitempty"`
+	AppendTurnSections     int                       `json:"append_turn_sections,omitempty"`
 	StartTokens            int                       `json:"start_tokens"`
 	TargetTokens           int                       `json:"target_tokens"`
 	AppendTokens           int                       `json:"append_tokens"`
 	TurnMaxTokens          int                       `json:"turn_max_tokens"`
+	TurnMinTokens          int                       `json:"turn_min_tokens,omitempty"`
 	RequestedTurns         int                       `json:"requested_turns,omitempty"`
+	Temperature            float64                   `json:"temperature,omitempty"`
+	TopP                   float64                   `json:"top_p,omitempty"`
+	TopK                   int                       `json:"top_k,omitempty"`
+	RepeatPenalty          float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS            bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput          bool                      `json:"include_output,omitempty"`
 	SafetyLimits           driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 	RuntimeGates           map[string]string         `json:"runtime_gates,omitempty"`
@@ -1995,11 +2009,18 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	promptFile := fs.String("prompt-file", "", "read source text from a file")
 	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
 	appendFile := fs.String("append-file", "", "read appended turn material from a file")
+	appendTurnDelimiter := fs.String("append-turn-delimiter", "", "split appended material into whole turn sections using this delimiter instead of fixed token offsets")
 	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
+	turnMinTokens := fs.Int("turn-min-tokens", 0, "minimum visible tokens required for each generated turn; 0 disables the floor")
 	turns := fs.Int("turns", 0, "maximum ramp turns; 0 runs until target tokens are reached")
+	temperature := fs.Float64("temperature", 1.0, "sampling temperature for generated turns")
+	topP := fs.Float64("top-p", 0.95, "top-p sampling value for generated turns")
+	topK := fs.Int("top-k", 64, "top-k sampling value for generated turns")
+	repeatPenalty := fs.Float64("repeat-penalty", 1.0, "repeat penalty for generated turns")
+	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
@@ -2079,6 +2100,10 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turn max tokens must be >= 1\n", cliName()))
 		return 2
 	}
+	if *turnMinTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turn min tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *turns < 0 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turns must be >= 0\n", cliName()))
 		return 2
@@ -2089,6 +2114,22 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 	if *estimatePowerWatts < 0 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: estimated power watts must be >= 0\n", cliName()))
+		return 2
+	}
+	if *temperature < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: temperature must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topP < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: top-p must be >= 0\n", cliName()))
+		return 2
+	}
+	if *topK < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: top-k must be >= 0\n", cliName()))
+		return 2
+	}
+	if *repeatPenalty < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeat penalty must be >= 0\n", cliName()))
 		return 2
 	}
 	if *repeatedTokenLoopLimit < 1 {
@@ -2136,14 +2177,21 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 
 	report, err := runStateRampProfileGuarded(ctx, fs.Arg(0), loadOptions, stateRampProfileOptions{
-		Prompt:        *prompt,
-		AppendPrompt:  *appendPrompt,
-		StartTokens:   *startTokens,
-		TargetTokens:  *targetTokens,
-		AppendTokens:  *appendTokens,
-		TurnMaxTokens: *turnMaxTokens,
-		Turns:         *turns,
-		IncludeOutput: *includeOutput,
+		Prompt:              *prompt,
+		AppendPrompt:        *appendPrompt,
+		AppendTurnDelimiter: *appendTurnDelimiter,
+		StartTokens:         *startTokens,
+		TargetTokens:        *targetTokens,
+		AppendTokens:        *appendTokens,
+		TurnMaxTokens:       *turnMaxTokens,
+		TurnMinTokens:       *turnMinTokens,
+		Turns:               *turns,
+		Temperature:         *temperature,
+		TopP:                *topP,
+		TopK:                *topK,
+		RepeatPenalty:       *repeatPenalty,
+		SuppressEOS:         *suppressEOS,
+		IncludeOutput:       *includeOutput,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -2163,16 +2211,23 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &stateRampProfileReport{
-				Version:           1,
-				ModelPath:         fs.Arg(0),
-				PromptBytes:       len(*prompt),
-				AppendPromptBytes: len(*appendPrompt),
-				StartTokens:       *startTokens,
-				TargetTokens:      *targetTokens,
-				AppendTokens:      *appendTokens,
-				TurnMaxTokens:     *turnMaxTokens,
-				RequestedTurns:    *turns,
-				IncludeOutput:     *includeOutput,
+				Version:            1,
+				ModelPath:          fs.Arg(0),
+				PromptBytes:        len(*prompt),
+				AppendPromptBytes:  len(*appendPrompt),
+				AppendTurnSections: 0,
+				StartTokens:        *startTokens,
+				TargetTokens:       *targetTokens,
+				AppendTokens:       *appendTokens,
+				TurnMaxTokens:      *turnMaxTokens,
+				TurnMinTokens:      *turnMinTokens,
+				RequestedTurns:     *turns,
+				Temperature:        *temperature,
+				TopP:               *topP,
+				TopK:               *topK,
+				RepeatPenalty:      *repeatPenalty,
+				SuppressEOS:        *suppressEOS,
+				IncludeOutput:      *includeOutput,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -2230,7 +2285,13 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		TargetTokens:      opts.TargetTokens,
 		AppendTokens:      opts.AppendTokens,
 		TurnMaxTokens:     opts.TurnMaxTokens,
+		TurnMinTokens:     opts.TurnMinTokens,
 		RequestedTurns:    opts.Turns,
+		Temperature:       opts.Temperature,
+		TopP:              opts.TopP,
+		TopK:              opts.TopK,
+		RepeatPenalty:     opts.RepeatPenalty,
+		SuppressEOS:       opts.SuppressEOS,
 		IncludeOutput:     opts.IncludeOutput,
 		SafetyLimits:      opts.SafetyLimits,
 		RuntimeGates:      driverProfileRuntimeGates(),
@@ -2277,17 +2338,13 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		appendText = opts.Prompt
 		report.AppendPromptBytes = len(appendText)
 	}
-	appendSourceTokens, err := tok.Encode(appendText)
+	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
 	}
-	if len(appendSourceTokens) == 0 {
-		err := core.NewError("state-ramp-profile: append prompt produced no tokens")
-		report.Error = err.Error()
-		return report, err
-	}
-	report.AppendSourceTokens = len(appendSourceTokens)
+	report.AppendSourceTokens = countStateRampAppendSourceTokens(appendSourceTokens, appendTurnSections)
+	report.AppendTurnSections = len(appendTurnSections)
 	session, err := model.NewSession()
 	if err != nil {
 		report.Error = err.Error()
@@ -2313,15 +2370,11 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 	sourceOffset := 0
 	var firstErr error
 	for turnIndex := 1; shouldRunStateRampTurn(turnIndex, currentTokens, opts); turnIndex++ {
-		appendCount := opts.AppendTokens
-		if remaining := opts.TargetTokens - currentTokens; remaining < appendCount {
-			appendCount = remaining
+		turnSourceTokens, turnSourceOffset, appendCount := stateRampProfileTurnAppendSource(appendSourceTokens, appendTurnSections, sourceOffset, currentTokens, turnIndex, opts)
+		turn := stateRampProfileGenerateTurn(ctx, model, session, turnSourceTokens, turnSourceOffset, appendCount, currentTokens, turnIndex, opts)
+		if len(appendTurnSections) == 0 {
+			sourceOffset += turn.AppendedTokens
 		}
-		if appendCount < 0 {
-			appendCount = 0
-		}
-		turn := stateRampProfileGenerateTurn(ctx, model, session, appendSourceTokens, sourceOffset, appendCount, currentTokens, turnIndex, opts)
-		sourceOffset += turn.AppendedTokens
 		if turn.TokensAfterGenerate > 0 {
 			currentTokens = turn.TokensAfterGenerate
 		} else {
@@ -2362,6 +2415,9 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	if opts.TurnMaxTokens <= 0 {
 		opts.TurnMaxTokens = 1024
 	}
+	if opts.TurnMinTokens < 0 {
+		opts.TurnMinTokens = 0
+	}
 	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
 	}
@@ -2392,6 +2448,75 @@ func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
 	return out
 }
 
+func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter string) ([]int32, [][]int32, error) {
+	if tok == nil {
+		return nil, nil, core.NewError("state-ramp-profile: model tokenizer is nil")
+	}
+	delimiter = core.Trim(delimiter)
+	if delimiter == "" {
+		tokens, err := tok.Encode(text)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(tokens) == 0 {
+			return nil, nil, core.NewError("state-ramp-profile: append prompt produced no tokens")
+		}
+		return tokens, nil, nil
+	}
+	sections := [][]int32{}
+	for _, raw := range core.Split(text, delimiter) {
+		section := core.Trim(raw)
+		if section == "" {
+			continue
+		}
+		tokens, err := tok.Encode(section)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(tokens) > 0 {
+			sections = append(sections, tokens)
+		}
+	}
+	if len(sections) == 0 {
+		return nil, nil, core.NewError("state-ramp-profile: append turn delimiter produced no token sections")
+	}
+	return nil, sections, nil
+}
+
+func countStateRampAppendSourceTokens(tokens []int32, sections [][]int32) int {
+	if len(sections) == 0 {
+		return len(tokens)
+	}
+	total := 0
+	for _, section := range sections {
+		total += len(section)
+	}
+	return total
+}
+
+func stateRampProfileTurnAppendSource(source []int32, sections [][]int32, sourceOffset, currentTokens, turnIndex int, opts stateRampProfileOptions) ([]int32, int, int) {
+	tokens := source
+	appendCount := opts.AppendTokens
+	if len(sections) > 0 {
+		tokens = sections[(turnIndex-1)%len(sections)]
+		appendCount = len(tokens)
+		if opts.AppendTokens > 0 && appendCount > opts.AppendTokens {
+			appendCount = opts.AppendTokens
+		}
+		sourceOffset = 0
+	}
+	if remaining := opts.TargetTokens - currentTokens; remaining < appendCount {
+		appendCount = remaining
+	}
+	if appendCount < 0 {
+		appendCount = 0
+	}
+	if sourceOffset < 0 {
+		sourceOffset = 0
+	}
+	return tokens, sourceOffset, appendCount
+}
+
 func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, sourceTokens []int32, sourceOffset, appendCount, currentTokens, index int, opts stateRampProfileOptions) stateRampProfileTurn {
 	turn := stateRampProfileTurn{
 		Index:              index,
@@ -2414,7 +2539,17 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	builder := core.NewBuilder()
 	generateOptions := []mlx.GenerateOption{
 		mlx.WithMaxTokens(opts.TurnMaxTokens),
-		mlx.WithTemperature(0),
+		mlx.WithTemperature(float32(opts.Temperature)),
+		mlx.WithTopP(float32(opts.TopP)),
+		mlx.WithTopK(opts.TopK),
+		mlx.WithRepeatPenalty(float32(opts.RepeatPenalty)),
+	}
+	if opts.SuppressEOS {
+		if tok := model.Tokenizer(); tok != nil {
+			if eosID, ok := tok.TokenID("<eos>"); ok {
+				generateOptions = append(generateOptions, mlx.WithSuppressTokens(eosID))
+			}
+		}
 	}
 	generationCtx := ctx
 	if generationCtx == nil {
@@ -2515,6 +2650,10 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		Metrics:           turn.Metrics,
 	}, opts.SafetyLimits); err != nil {
 		turn.Error = err.Error()
+		return turn
+	}
+	if opts.TurnMinTokens > 0 && turn.VisibleTokens < opts.TurnMinTokens {
+		turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", index, turn.VisibleTokens, opts.TurnMinTokens)
 		return turn
 	}
 	if ctx != nil {

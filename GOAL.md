@@ -54,6 +54,15 @@ and estimated energy on the `100k` stress lane, but still slightly ahead on raw
 decode. Retained state is still the target architecture, but it is not enough if
 a configured runner wins the same agentic workflow.
 
+The first 2026-05-21 opencode-sized `state-ramp-profile` probe is recorded in
+`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. It proves bounded
+memory and useful retained-state append throughput for a `30k` seed plus `10`
+whole appended turns, but it is not an accepted production row: several turns
+ended after tiny natural outputs, and suppressing EOS to force length produced a
+repeated-code loop. The next accepted run needs chat-shaped retained turns,
+assistant-turn closure, and a visible-token floor without globally suppressing
+EOS.
+
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
 eval boundaries, Gemma 4 5:1 local/global attention, PLE handling, shared/global
