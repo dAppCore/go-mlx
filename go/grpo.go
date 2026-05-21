@@ -745,10 +745,14 @@ func (a *grpoMetricAccumulator) loss() float64 {
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 	out := make([]GRPORollout, len(rollouts))
-	for i, rollout := range rollouts {
-		out[i] = rollout
-		out[i].TokenIDs = append([]int32(nil), rollout.TokenIDs...)
-		out[i].RewardParts = append([]GRPOReward(nil), rollout.RewardParts...)
+	for i := range rollouts {
+		out[i] = rollouts[i]
+		// core.SliceClone is slices.Clone — pre-sized make+copy, one
+		// alloc per slice instead of append-grow on a nil head. Also
+		// returns nil for nil input so empty TokenIDs / RewardParts
+		// don't allocate at all.
+		out[i].TokenIDs = core.SliceClone(rollouts[i].TokenIDs)
+		out[i].RewardParts = core.SliceClone(rollouts[i].RewardParts)
 	}
 	return out
 }
