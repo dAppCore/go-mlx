@@ -69,8 +69,10 @@ full marked run has `7/10` below-floor turns. The same-shape llama.cpp
 turns at `102.714 tok/s` raw decode, `76.012` visible tok/s wall throughput,
 and `13120.245 J` estimated at `100 W`, but every turn includes a visible
 Gemma channel marker, so content-shape drift is recorded separately from speed.
-The same-shape vLLM anchor remains required, and the accepted state must still
-be grown toward the `100k` stress lane. The
+The same-shape vLLM Metal attempt is documented as a load failure: it reaches
+the Metal worker and chunked-prefill setup, then strict `mlx_lm` loading rejects
+`80` Gemma 4 shared/global K/V tensors. The accepted state must still be grown
+toward the `100k` stress lane. The
 state-ramp runner now treats that stress ceiling as a lifecycle boundary:
 fixed-turn ramps stop when the live state reaches the target or configured
 compaction threshold, and reports expose `context_exhausted`,
@@ -118,12 +120,12 @@ quant when no native MLX-format equivalent exists.
 
 Production remains blocked until these gates are all satisfied:
 
-- [ ] A current opencode-sized E2B q4 retained workflow completes with a
+- [x] A current opencode-sized E2B q4 retained workflow completes with a
       `30k`-`40k` first context, 10+ append/generate turns, realistic long
       output budgets, bounded memory, captured output, and same-shape runner
       anchors. The go-mlx side of this gate now has an accepted row; the gate
-      remains open for the same-shape vLLM anchor. Same-shape `mlx_lm` and
-      llama.cpp anchors are recorded, but both carry content-shape caveats:
+      now has same-shape `mlx_lm` and llama.cpp anchors plus a same-shape vLLM
+      Metal load-failure note. The runner anchors carry content-shape caveats:
       `mlx_lm` stops short on most marked turns, while llama.cpp emits visible
       Gemma channel markers.
 - [ ] A warm build-up stress run starts from the accepted `30k`-`40k` state,

@@ -246,6 +246,33 @@ important: every captured turn includes one visible `<channel|>` marker, while
 the go-mlx accepted row has none. Treat this as runner/template drift evidence,
 not just a formatting nuisance.
 
+## vLLM Metal Same-Shape Attempt
+
+Artifact:
+`docs/runtime/2026-05-21-vllm-metal-gemma4-e2b-4bit-opencode-load-failure.md`
+
+The vLLM Metal attempt uses the same MLX 4-bit snapshot, `max_model_len=131072`,
+`input_len=31034`, `output_len=1024`, batch size `1`, no warmup, and BF16. It
+does not reach latency measurement. The Metal plugin activates, the model is
+resolved as `Gemma4ForConditionalGeneration`, chunked prefill is enabled at
+`16384`, and the worker reaches `MLX device set to: Device(gpu, 0)`.
+
+Failure:
+
+```text
+ValueError: Received 80 parameters not in model:
+language_model.model.layers.15.self_attn.k_proj.biases,
+language_model.model.layers.15.self_attn.k_proj.scales,
+language_model.model.layers.15.self_attn.v_proj.biases,
+language_model.model.layers.15.self_attn.v_proj.scales,
+...
+language_model.model.layers.34.self_attn.v_proj.scales.
+```
+
+Verdict: vLLM Metal is documented as unable to run this same-shape E2B 4-bit
+workflow today. The blocker is strict `mlx_lm` compatibility with Gemma 4
+shared/global K/V tensors, not measured throughput.
+
 ## Hot-Path Benchmark Sweep
 
 The first repository-wide benchmark command did not expose useful numbers
@@ -279,10 +306,9 @@ go test -run '^$' -bench=. -benchmem ./go/cmd/mlx
 
 ## Next Action
 
-Run the same-shape vLLM anchor for the accepted chat-shaped workload, then run
-the warm build-up stress path from the accepted `30k`-to-`63.5k` workflow toward
-`100k`. Keep raw decode, append wall time, restore/prefill, wall time, memory,
-output length, content-shape markers, and estimated energy separate.
+Run the warm build-up stress path from the accepted `30k`-to-`63.5k` workflow
+toward `100k`. Keep raw decode, append wall time, restore/prefill, wall time,
+memory, output length, content-shape markers, and estimated energy separate.
 
 The runner must treat the `100k` stress ceiling as a context lifecycle boundary.
 `state-ramp-profile` now stops fixed-turn ramps once the live state reaches the

@@ -12,7 +12,6 @@
     "pruned_tracked_count": 3
   },
   "open_gates": [
-    "opencode_interactive_runner_anchors",
     "warm_build_up_100k_stress",
     "long_context_degradation"
   ],
@@ -78,6 +77,13 @@
       "role": "runner_anchor",
       "path": "docs/runtime/2026-05-21-llamacpp-gemma4-e2b-q4-k-m-opencode-state-ramp-30k-chatwholelen-r10-g1024-nativebos-energy100w.json",
       "kind": "json",
+      "indexed": true
+    },
+    {
+      "id": "vllm-metal-opencode-load-failure",
+      "role": "runner_failure_evidence",
+      "path": "docs/runtime/2026-05-21-vllm-metal-gemma4-e2b-4bit-opencode-load-failure.md",
+      "kind": "markdown",
       "indexed": true
     },
     {
