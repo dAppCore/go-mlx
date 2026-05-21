@@ -302,7 +302,7 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	if len(s.Architecture) > int(^uint32(0)) {
 		return nil, core.E("Snapshot.Save", "architecture string too large", nil)
 	}
-	data = appendKVBytes(data, []byte(s.Architecture))
+	data = appendKVBytes(data, core.AsBytes(s.Architecture))
 	data = appendKVU32(data, uint32(s.NumLayers))
 	data = appendKVU32(data, uint32(s.NumHeads))
 	data = appendKVU32(data, uint32(s.SeqLen))
@@ -387,9 +387,9 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 		version = 4
 	}
 	stream := kvSnapshotStreamWriter{writer: writer}
-	stream.bytes([]byte(kvSnapshotMagic))
+	stream.bytes(core.AsBytes(kvSnapshotMagic))
 	stream.u32(uint32(version))
-	stream.bytesWithLength([]byte(s.Architecture))
+	stream.bytesWithLength(core.AsBytes(s.Architecture))
 	stream.u32(uint32(s.NumLayers))
 	stream.u32(uint32(s.NumHeads))
 	stream.u32(uint32(s.SeqLen))
@@ -633,7 +633,7 @@ func appendKVEncodedTensor(dst []byte, values []float32, dtype string, raw []byt
 		} else if ok {
 			dst = appendKVU32(dst, 2)
 			dst = appendKVU32(dst, uint32(elements))
-			dst = appendKVBytes(dst, []byte(dtype))
+			dst = appendKVBytes(dst, core.AsBytes(dtype))
 			return appendKVBytes(dst, raw), nil
 		}
 	}
@@ -829,7 +829,7 @@ func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, r
 		} else if ok {
 			w.u32(2)
 			w.u32(uint32(elements))
-			w.bytesWithLength([]byte(dtype))
+			w.bytesWithLength(core.AsBytes(dtype))
 			w.bytesWithLength(raw)
 			return w.err
 		}

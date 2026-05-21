@@ -872,7 +872,10 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 		builder.WriteString("|")
 		builder.WriteString(hash)
 	}
-	return core.SHA256Hex([]byte(builder.String()))
+	// SHA256HexString uses core.AsBytes under the hood — skips the
+	// []byte copy of the Builder.String() roundtrip on every block-
+	// bundle hash computation.
+	return core.SHA256HexString(builder.String())
 }
 
 func saveOrReuseKVSnapshotStateBlock(ctx context.Context, store state.Writer, block Block, opts StateBlockOptions, encoding Encoding) (state.ChunkRef, string, string, int, bool, error) {

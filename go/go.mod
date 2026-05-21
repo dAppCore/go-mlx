@@ -7,4 +7,4 @@ require (
 	dappco.re/go/io v0.9.0
 )
 
-require dappco.re/go v0.9.0
+require dappco.re/go v0.10.0
