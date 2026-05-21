@@ -95,11 +95,13 @@ func parseQwen3Config(data []byte) (*Qwen3Config, error) {
 	cfg.ModelType = normalizeProbeModelType(cfg.ModelType)
 	cfg.Quantization = firstQwen3Quantization(wrapper.Quantization, wrapper.QuantizationConfig, cfg.Quantization)
 
-	// Compute scale
-	if cfg.HeadDim == 0 {
+	// Compute scale when the config carries enough attention metadata.
+	if cfg.HeadDim == 0 && cfg.NumAttentionHeads > 0 {
 		cfg.HeadDim = cfg.HiddenSize / cfg.NumAttentionHeads
 	}
-	cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
+	if cfg.HeadDim > 0 {
+		cfg.Scale = float32(1.0 / math.Sqrt(float64(cfg.HeadDim)))
+	}
 
 	// Defaults
 	if cfg.RopeTheta == 0 {

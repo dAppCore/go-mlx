@@ -472,7 +472,7 @@ func TestModel_ProbeModelType_QwenFamilyArchitectures_Good(t *testing.T) {
 	}{
 		{name: "moe", data: `{"architectures":["Qwen3MoeForCausalLM"]}`, want: "qwen3_moe"},
 		{name: "next", data: `{"architectures":["Qwen3NextForCausalLM"]}`, want: "qwen3_next"},
-		{name: "alias", data: `{"model_type":"qwen3_5"}`, want: "qwen3_next"},
+		{name: "alias", data: `{"model_type":"qwen3_5"}`, want: "qwen3_6"},
 		{name: "minimax", data: `{"architectures":["MiniMaxM2ForCausalLM"]}`, want: "minimax_m2"},
 	}
 	for _, tc := range cases {
