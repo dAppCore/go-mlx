@@ -289,6 +289,39 @@ func TestFast_NativePagedSingleTokenAttentionMatchesGoPaged_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestFast_NativePagedSingleTokenAttentionBroadcastsSingleKVHead_Good(t *testing.T) {
+	coverageTokens := "NativePagedSingleTokenAttention BroadcastsSingleKVHead"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 4, 1, 2)
+	k1 := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
+	k2 := FromValues([]float32{1, 1, -1, 0}, 1, 1, 2, 2)
+	v1 := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)
+	v2 := FromValues([]float32{5, 5, -2, 1}, 1, 1, 2, 2)
+	defer Free(q, k1, k2, v1, v2)
+
+	scale := float32(1.0 / math.Sqrt(2.0))
+	got, ok, err := nativePagedSingleTokenAttention(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	if err != nil {
+		t.Fatalf("nativePagedSingleTokenAttention() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativePagedSingleTokenAttention() ok = false, want true")
+	}
+	want := ScaledDotProductAttentionPaged(q, []*Array{k1, k2}, []*Array{v1, v2}, scale)
+	defer Free(got, want)
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval native/go paged grouped-query attention: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestFast_ScaledDotProductAttentionPagedBroadcastsSingleKVHead_Good(t *testing.T) {
 	coverageTokens := "ScaledDotProductAttentionPaged BroadcastsSingleKVHead"
 	if coverageTokens == "" {

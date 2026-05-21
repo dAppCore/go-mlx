@@ -107,6 +107,13 @@
       "indexed": true
     },
     {
+      "id": "gomlx-100k-native-paged-no-singlekv-repeat-rejected",
+      "role": "rejected_diagnostic",
+      "path": "docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-100k-native-paged-no-singlekv-repeat-g1024-r1-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-page2048-rejected",
       "role": "rejected_diagnostic",
       "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-page2048-g1024-r1-energy100w.json",

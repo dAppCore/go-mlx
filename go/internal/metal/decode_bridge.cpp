@@ -1108,7 +1108,7 @@ mlx::core::array paged_single_token_attention_impl(
       throw std::runtime_error("mlx: paged attention query heads must be a multiple of key heads");
     }
     const auto repeat_factor = query_heads / key_heads;
-    if (repeat_factor > 1) {
+    if (repeat_factor > 1 && key_heads != 1) {
       key = repeat_kv(key, repeat_factor);
       value = repeat_kv(value, repeat_factor);
     }
@@ -1134,7 +1134,7 @@ mlx::core::array paged_single_token_attention_impl(
     const auto query_heads = query.shape(1);
     const auto value_heads = value.shape(1);
     const auto repeat_factor = value_heads > 0 ? query_heads / value_heads : 1;
-    if (repeat_factor > 1) {
+    if (repeat_factor > 1 && value_heads != 1) {
       value = repeat_kv(value, repeat_factor);
     }
 

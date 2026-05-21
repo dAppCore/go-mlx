@@ -141,12 +141,13 @@ second MLX full-cache tensor via `slice_update`.
 
 ## Rejected 100k Branches
 
-Six same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+Seven same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |
 | Paged K/V without fast concat | `100937` prompt tokens, paged K/V `1024`, accepted fast gates except `GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT` | `106.324s` wall, `22.956 tok/s` decode, `1638.525 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Avoiding the concat makes the per-page Go/MLX attention graph much slower than the accepted paged fast-concat lane. |
 | Native C++ paged attention reduction | `100937` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s` wall, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Moving the same page-reduction graph behind one C++ call trims only a little overhead; the missing path is a fused/custom paged-attention kernel. |
+| Native C++ paged attention without single-KV-head repeat | `100912` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`; C++23 wrapper broadcasts one-head K/V pages instead of materialising repeats | `103.696s` wall, `23.828 tok/s` decode, `1665.263 tok/s` prefill, `3.613 GiB` active MLX | Rejected. The no-repeat correction is valid and slightly better, but the page-reduction graph remains far below the accepted fast-concat path. |
 | Larger `2048`-token pages | `101005` prompt tokens, paged K/V `2048`, accepted fast gates | `80.787s` wall, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected. Fewer pages do not improve the borrowed fast-concat path; cache memory rises and decode falls below the accepted `1024`-page row. |
 | Preallocated `1024`-token pages | `101005` prompt tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s` wall, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected. In-place page updates do not beat the accepted concat-backed page append path at 100k and slightly increase active memory. |
 | Materialised owner full K/V | `100932` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s` wall, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected. Keeping a full backing tensor for the owner layers removes no visible decode cost and raises active/cache memory versus the accepted shared-full-K/V row. |
