@@ -12,7 +12,9 @@ import (
 //
 //	a, err := mlx.NewMLXBackend(modelPath, inference.WithContextLen(4096))
 func NewMLXBackend(modelPath string, loadOpts ...inference.LoadOption) (*adapter.Adapter, error) {
-	opts := append(append([]inference.LoadOption(nil), loadOpts...), inference.WithBackend("metal"))
+	opts := make([]inference.LoadOption, len(loadOpts), len(loadOpts)+1)
+	copy(opts, loadOpts)
+	opts = append(opts, inference.WithBackend("metal"))
 	r := inference.LoadModel(modelPath, opts...)
 	if !r.OK {
 		if err, ok := r.Value.(error); ok {

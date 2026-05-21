@@ -267,7 +267,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 	if event.Logits != nil {
 		logits := *event.Logits
 		out.Logits = &probe.Logits{
-			Shape:      append([]int32(nil), logits.Shape...),
+			Shape:      core.SliceClone(logits.Shape),
 			VocabSize:  logits.VocabSize,
 			MaxTokenID: logits.MaxTokenID,
 			MaxLogit:   logits.MaxLogit,
@@ -275,7 +275,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 			MinLogit:   logits.MinLogit,
 			MeanLogit:  logits.MeanLogit,
 			Top:        toRootProbeLogits(logits.Top),
-			Values:     append([]float32(nil), logits.Values...),
+			Values:     core.SliceClone(logits.Values),
 			Meta:       cloneMetalProbeMeta(logits.Meta),
 		}
 	}
@@ -287,8 +287,8 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		heads := *event.SelectedHeads
 		out.SelectedHeads = &probe.HeadSelection{
 			Layer:  heads.Layer,
-			Heads:  append([]int(nil), heads.Heads...),
-			Scores: append([]float64(nil), heads.Scores...),
+			Heads:  core.SliceClone(heads.Heads),
+			Scores: core.SliceClone(heads.Scores),
 		}
 	}
 	if event.LayerCoherence != nil {
@@ -308,8 +308,8 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		out.RouterDecision = &probe.RouterDecision{
 			Layer:       router.Layer,
 			TokenID:     router.TokenID,
-			ExpertIDs:   append([]int(nil), router.ExpertIDs...),
-			Weights:     append([]float32(nil), router.Weights...),
+			ExpertIDs:   core.SliceClone(router.ExpertIDs),
+			Weights:     core.SliceClone(router.Weights),
 			Temperature: router.Temperature,
 		}
 	}
@@ -377,11 +377,7 @@ func cloneMetalProbeMeta(meta map[string]string) map[string]string {
 	if len(meta) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(meta))
-	for key, value := range meta {
-		out[key] = value
-	}
-	return out
+	return core.MapClone(meta)
 }
 
 func toRootMetrics(metrics metal.Metrics) Metrics {
@@ -462,7 +458,7 @@ func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -478,7 +474,7 @@ func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 	for i, result := range results {
 		out[i] = ClassifyResult{
 			Token:  toRootToken(result.Token),
-			Logits: append([]float32(nil), result.Logits...),
+			Logits: core.SliceClone(result.Logits),
 		}
 	}
 	return out
@@ -529,36 +525,36 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:   layer.KeyBytes,
-			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
-			ValueShape: append([]int32(nil), layer.ValueShape...),
+			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      make([]kv.HeadSnapshot, len(layer.Heads)),
 		}
 		for j, head := range layer.Heads {
 			layers[i].Heads[j] = kv.HeadSnapshot{
-				Key:        append([]float32(nil), head.Key...),
+				Key:        core.SliceClone(head.Key),
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
-				KeyBytes:   append([]byte(nil), head.KeyBytes...),
-				Value:      append([]float32(nil), head.Value...),
+				KeyBytes:   core.SliceClone(head.KeyBytes),
+				Value:      core.SliceClone(head.Value),
 				ValueDType: rootKVHeadDType(head.ValueDType, head.ValueBytes),
-				ValueBytes: append([]byte(nil), head.ValueBytes...),
+				ValueBytes: core.SliceClone(head.ValueBytes),
 			}
 		}
 	}
 	return &kv.Snapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
-		Tokens:        append([]int32(nil), result.Tokens...),
-		Generated:     append([]int32(nil), result.Generated...),
+		Tokens:        core.SliceClone(result.Tokens),
+		Generated:     core.SliceClone(result.Generated),
 		TokenOffset:   result.TokenOffset,
 		NumLayers:     result.NumLayers,
 		NumHeads:      result.NumHeads,
 		SeqLen:        result.SeqLen,
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
-		LogitShape:    append([]int32(nil), result.LogitShape...),
-		Logits:        append([]float32(nil), result.Logits...),
+		LogitShape:    core.SliceClone(result.LogitShape),
+		Logits:        core.SliceClone(result.Logits),
 		Layers:        layers,
 	}
 }
@@ -574,18 +570,18 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:   layer.KeyBytes,
-			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
-			ValueShape: append([]int32(nil), layer.ValueShape...),
+			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      make([]metal.KVHeadSnapshot, len(layer.Heads)),
 		}
 		for j, head := range layer.Heads {
 			layers[i].Heads[j] = metal.KVHeadSnapshot{
-				Key:        append([]float32(nil), head.Key...),
+				Key:        core.SliceClone(head.Key),
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   head.KeyBytes,
-				Value:      append([]float32(nil), head.Value...),
+				Value:      core.SliceClone(head.Value),
 				ValueDType: metalKVHeadDType(head.ValueDType, head.ValueBytes),
 				ValueBytes: head.ValueBytes,
 			}
@@ -594,16 +590,16 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	return &metal.KVSnapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
-		Tokens:        append([]int32(nil), result.Tokens...),
-		Generated:     append([]int32(nil), result.Generated...),
+		Tokens:        core.SliceClone(result.Tokens),
+		Generated:     core.SliceClone(result.Generated),
 		TokenOffset:   result.TokenOffset,
 		NumLayers:     result.NumLayers,
 		NumHeads:      result.NumHeads,
 		SeqLen:        result.SeqLen,
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
-		LogitShape:    append([]int32(nil), result.LogitShape...),
-		Logits:        append([]float32(nil), result.Logits...),
+		LogitShape:    core.SliceClone(result.LogitShape),
+		Logits:        core.SliceClone(result.Logits),
 		Layers:        layers,
 	}
 }
