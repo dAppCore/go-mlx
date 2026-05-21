@@ -328,15 +328,29 @@ func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
 
 func evalBatchLossMaskData(batch SFTBatch, lengths []int32, maxLen int) []float32 {
 	data := make([]float32, len(lengths)*maxLen)
-	for i := range lengths {
-		limit := int(lengths[i])
+	masks := batch.Batch.LossMask
+	for i, l := range lengths {
+		limit := int(l)
 		base := i * maxLen
-		for j := 0; j < limit; j++ {
-			value := float32(1)
-			if i < len(batch.Batch.LossMask) && j < len(batch.Batch.LossMask[i]) {
-				value = batch.Batch.LossMask[i][j]
+		// Hoist the per-row mask resolution out of the inner loop —
+		// the original checked len(masks) and len(masks[i]) on every
+		// token, which is the hot path for SFT eval batches.
+		var maskRow []float32
+		if i < len(masks) {
+			maskRow = masks[i]
+		}
+		if len(maskRow) >= limit {
+			// Full mask row available — copy from the explicit values,
+			// no per-element fallback needed.
+			copy(data[base:base+limit], maskRow[:limit])
+		} else {
+			// Partial or no mask: copy what we have, then fill the
+			// remaining limit slots with the default value of 1.
+			n := copy(data[base:base+limit], maskRow)
+			row := data[base+n : base+limit]
+			for j := range row {
+				row[j] = 1
 			}
-			data[base+j] = value
 		}
 	}
 	return data
