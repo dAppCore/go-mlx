@@ -611,11 +611,11 @@ func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, o
 	if blockSize <= 0 {
 		return core.NewError("mlx: KV snapshot block size must be > 0")
 	}
-	seqLen := kvSnapshotSeqLen(s.tokens, s.caches)
-	if seqLen <= 0 || len(s.tokens) < seqLen {
+	seqLen := len(s.tokens)
+	if seqLen <= 0 {
 		return core.NewError("mlx: KV block stream has invalid token state")
 	}
-	snapshotTokens := s.tokens[len(s.tokens)-seqLen:]
+	snapshotTokens := s.tokens
 	baseOffset := s.tokenOffset - seqLen
 	if baseOffset < 0 {
 		baseOffset = 0

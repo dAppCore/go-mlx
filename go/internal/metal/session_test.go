@@ -9,6 +9,72 @@ import (
 	"testing"
 )
 
+type lenOnlyCache struct {
+	offset int
+	length int
+}
+
+func (c lenOnlyCache) Update(k, v *Array, _ int) (*Array, *Array) { return k, v }
+func (c lenOnlyCache) Offset() int                                { return c.offset }
+func (c lenOnlyCache) Len() int                                   { return c.length }
+func (c lenOnlyCache) State() []*Array                            { return nil }
+func (c lenOnlyCache) Reset()                                     {}
+func (c lenOnlyCache) Detach()                                    {}
+
+func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
+	coverageTokens := "ModelSession RangeKVBlocks StreamsFullTokenTimeline"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	const (
+		tokenCount = 100000
+		cacheLen   = 65536
+		blockSize  = 32768
+	)
+	tokens := make([]int32, tokenCount)
+	for i := range tokens {
+		tokens[i] = int32(i)
+	}
+	session := &ModelSession{
+		model: &Model{
+			model:     &fakeModel{numLayers: 1},
+			modelType: "test",
+		},
+		caches:      []Cache{lenOnlyCache{offset: tokenCount, length: cacheLen}},
+		tokens:      tokens,
+		tokenOffset: tokenCount,
+	}
+	var (
+		gotTokens int
+		gotBlocks int
+		gotStarts []int
+	)
+	err := session.rangeKVBlocksLocked(context.Background(), blockSize, KVSnapshotCaptureOptions{}, func(block KVSnapshotBlock) (bool, error) {
+		gotBlocks++
+		gotTokens += block.TokenCount
+		gotStarts = append(gotStarts, block.TokenStart)
+		if block.Snapshot == nil {
+			t.Fatalf("block %d snapshot is nil", block.Index)
+		}
+		if block.Snapshot.TokenOffset != block.TokenStart+block.TokenCount {
+			t.Fatalf("block %d token offset = %d, want %d", block.Index, block.Snapshot.TokenOffset, block.TokenStart+block.TokenCount)
+		}
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("rangeKVBlocksLocked() error = %v", err)
+	}
+	if gotTokens != tokenCount {
+		t.Fatalf("streamed tokens = %d, want %d", gotTokens, tokenCount)
+	}
+	if gotBlocks < 4 {
+		t.Fatalf("streamed blocks = %d, want cache-window boundary plus block boundaries", gotBlocks)
+	}
+	if len(gotStarts) == 0 || gotStarts[0] != 0 {
+		t.Fatalf("first block start = %v, want 0", gotStarts)
+	}
+}
+
 func TestSessionCacheSnapshot_RestoresWrappedRotatingOffset_Good(t *testing.T) {
 	coverageTokens := "SessionCacheSnapshot RestoresWrappedRotatingOffset"
 	if coverageTokens == "" {
