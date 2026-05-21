@@ -35,7 +35,7 @@ Five distinct areas, each with its own doc subtree:
 | Area | Owns | Doc |
 |------|------|-----|
 | `runtime/` | Backend registration + adapter + Metal allocator | [runtime/README.md](runtime/README.md) |
-| `memory/` | KV snapshots + bundles + memvid + Wake/Sleep/Fork | [memory/README.md](memory/README.md) |
+| `memory/` | KV snapshots + bundles + memvid + Wake/Sleep/Fork/Fold | [memory/README.md](memory/README.md) |
 | `moe/` | MiniMax M2 + JANG/JANGTQ + codebook VQ + expert residency | [moe/README.md](moe/README.md) |
 | `training/` | SFT + GRPO + distillation + LoRA + eval + merge | [training/README.md](training/README.md) |
 | `model/` | Model-pack validation + memory planning + GGUF | [model/README.md](model/README.md) |

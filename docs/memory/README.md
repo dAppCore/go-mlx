@@ -6,7 +6,7 @@
 
 ## What this area owns
 
-Everything that turns **live runtime state** into **durable bytes** and back. This is the production implementation of the `inference/state.Session` and `state.Forker` contracts — the surface that delivers AI-cognition-as-filesystem-object.
+Everything that turns **live runtime state** into **durable bytes** and back. This is the production implementation of the `inference/state.Session` and `state.Forker` contracts plus the go-mlx folded-state handoff for exhausted windows — the surface that delivers AI-cognition-as-filesystem-object.
 
 ```
                   Live metal.Model
@@ -42,16 +42,16 @@ Everything that turns **live runtime state** into **durable bytes** and back. Th
         └─────────────────────────────┘
 
         ▲                            ▼
-        └── Wake reverses ─── Sleep returns
+        └── Wake reverses ─── Sleep/Fold return
             the same chain          Bundle
-            (agent_memory.go)
+            (session_agent.go)
 ```
 
 ## File map
 
 | File | Doc | Role |
 |------|-----|------|
-| `agent_memory.go` | [agent_memory.md](agent_memory.md) | Wake / Sleep / Fork — the lifecycle entry |
+| `session_agent.go` | [agent_memory.md](agent_memory.md) | Wake / Sleep / Fork / Fold — the lifecycle entry |
 | `kv_snapshot.go` | [kv_snapshot.md](kv_snapshot.md) | Snapshot binary format (magic, version, encoding) |
 | `kv_snapshot_blocks.go` | [kv_snapshot_blocks.md](kv_snapshot_blocks.md) | Chunk strategy + block hashing |
 | `kv_snapshot_index.go` | [kv_snapshot_index.md](kv_snapshot_index.md) | Bundle index across entries + parents |
@@ -71,6 +71,8 @@ The thesis: a model's **runtime state IS a filesystem object**. Once the KV cach
 - Sleep an agent's session, walk away for a week, wake it, continue — no re-prompt.
 - Mass-distribute a knowledge pack as a `.mp4` — phones can scan it; HTTP can stream it; YouTube can host it.
 - Fork an agent into 100 divergent continuations from one parent — no re-prefill of the shared prefix.
+- Fold an exhausted window into a fresh summary-plus-tail state while keeping
+  the exact checkpoint for audit/replay.
 - Train one base model + 50 personality bundles → users wake whichever persona fits the task.
 - Seed a project agent with operator + repository memory, then checkpoint only
   the new suffix after each task.
