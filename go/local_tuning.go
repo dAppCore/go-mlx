@@ -208,18 +208,25 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 		return runtime, ""
 	}
 	runtime.NativeRuntime = p.NativeRuntime
-	if runtime.Labels == nil {
-		runtime.Labels = map[string]string{}
-	} else {
-		runtime.Labels = cloneTuningLabels(runtime.Labels)
+	// 2 keys for native runtimes (architecture + native_runtime), 3 for
+	// fallback (+ fallback_backend). Pre-size to avoid the grow that
+	// would otherwise fire on the second/third insert.
+	extra := 2
+	if !p.NativeRuntime {
+		extra = 3
 	}
-	runtime.Labels["architecture"] = p.ID
-	runtime.Labels["native_runtime"] = boolLabel(p.NativeRuntime)
+	labels := make(map[string]string, len(runtime.Labels)+extra)
+	for key, value := range runtime.Labels {
+		labels[key] = value
+	}
+	labels["architecture"] = p.ID
+	labels["native_runtime"] = boolLabel(p.NativeRuntime)
+	runtime.Labels = labels
 	if p.NativeRuntime {
 		return runtime, ""
 	}
 	runtime.Backend = "mlx_lm"
-	runtime.Labels["fallback_backend"] = "mlx_lm"
+	labels["fallback_backend"] = "mlx_lm"
 	return runtime, "architecture " + p.ID + " is metadata-only in native go-mlx; using mlx_lm fallback for tuning candidates"
 }
 
