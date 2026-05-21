@@ -241,7 +241,10 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	info := ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}
 	exhaustedNative := &fakeNativeSession{kv: agentMemoryGeneratedTestMetalSnapshot()}
 	exhausted := &ModelSession{session: exhaustedNative, info: info}
-	foldedNative := &fakeNativeSession{kv: agentMemoryTestMetalSnapshot()}
+	foldedNative := &fakeNativeSession{kvBlocks: []metal.KVSnapshotBlock{
+		agentMemoryTestMetalBlock(0, 0, 1),
+		agentMemoryTestMetalBlock(1, 1, 2),
+	}}
 	model := &Model{model: &fakeNativeModel{
 		session: foldedNative,
 		info:    metal.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8},
@@ -260,6 +263,9 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 			EntryURI:  "mlx://agent/folded",
 			Title:     "folded context",
 			Tokenizer: tokenizer,
+			BlockOptions: kv.StateBlockOptions{
+				BlockSize: 1,
+			},
 		},
 	})
 
@@ -274,6 +280,9 @@ func TestFoldAgentMemory_CheckpointSummaryTail_Good(t *testing.T) {
 	}
 	if report.Checkpoint.EntryURI != "mlx://agent/exhausted" || report.Folded.EntryURI != "mlx://agent/folded" {
 		t.Fatalf("fold URIs = %+v, want exhausted and folded entries", report)
+	}
+	if report.Folded.BlocksWritten < 2 {
+		t.Fatalf("folded blocks written = %d, want multi-block folded State", report.Folded.BlocksWritten)
 	}
 	if report.Folded.ParentEntryURI != report.Checkpoint.EntryURI {
 		t.Fatalf("folded parent = %q, want checkpoint %q", report.Folded.ParentEntryURI, report.Checkpoint.EntryURI)
@@ -480,6 +489,34 @@ func agentMemoryGeneratedTestMetalSnapshot() *metal.KVSnapshot {
 				Value: []float32{0, 1, 1, 0, 1, 1},
 			}},
 		}},
+	}
+}
+
+func agentMemoryTestMetalBlock(index, tokenStart int, token int32) metal.KVSnapshotBlock {
+	snapshot := &metal.KVSnapshot{
+		Version:       metal.KVSnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{token},
+		TokenOffset:   tokenStart + 1,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        1,
+		HeadDim:       2,
+		NumQueryHeads: 8,
+		Layers: []metal.KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []metal.KVHeadSnapshot{{
+				Key:   []float32{float32(token), 0},
+				Value: []float32{0, float32(token)},
+			}},
+		}},
+	}
+	return metal.KVSnapshotBlock{
+		Index:      index,
+		TokenStart: tokenStart,
+		TokenCount: 1,
+		Snapshot:   snapshot,
 	}
 }
 

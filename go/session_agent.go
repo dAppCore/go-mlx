@@ -72,7 +72,7 @@ func (m *Model) ForkFromBundle(ctx context.Context, store memvid.Store, opts age
 func (m *Model) ForkState(ctx context.Context, req inference.AgentMemoryWakeRequest) (inference.AgentMemorySession, *inference.AgentMemoryWakeResult, error) {
 	store, ok := req.Store.(memvid.Store)
 	if !ok {
-		return nil, nil, core.NewError("mlx: inference agent memory fork requires memvid.Store")
+		return nil, nil, core.NewError("mlx: inference State fork requires state.Store")
 	}
 	session, report, err := m.ForkFromBundle(ctx, store, agentMemoryWakeOptionsFromInference(req))
 	if err != nil {
@@ -113,7 +113,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store memvid.Store, 
 		s.agentMemory = agent.CloneWakeReport(plan.Report)
 		return plan.Report, nil
 	}
-	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -150,21 +150,21 @@ func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store memvi
 		return core.NewError("mlx: model session is nil")
 	}
 	if plan == nil || plan.Bundle == nil {
-		return core.NewError("mlx: folded agent memory wake plan is nil")
+		return core.NewError("mlx: folded State wake plan is nil")
 	}
 	loadOpts := opts.LoadOptions
 	if plan.Bundle.KVEncoding == kv.EncodingNative {
 		loadOpts.RawKVOnly = true
 	}
-	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), loadOpts)
+	tokens, err := kv.LoadPrefixTokensFromStateBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), loadOpts)
 	if err != nil {
-		return core.E("mlx: folded agent memory prefill wake", "load tokens", err)
+		return core.E("mlx: folded State prefill wake", "load tokens", err)
 	}
-	if snapshot == nil || len(snapshot.Tokens) == 0 {
-		return core.NewError("mlx: folded agent memory prefill wake loaded no tokens")
+	if len(tokens) == 0 {
+		return core.NewError("mlx: folded State prefill wake loaded no tokens")
 	}
-	if err := s.PrefillTokens(ctx, snapshot.Tokens); err != nil {
-		return core.E("mlx: folded agent memory prefill wake", "prefill", err)
+	if err := s.PrefillTokens(ctx, tokens); err != nil {
+		return core.E("mlx: folded State prefill wake", "prefill", err)
 	}
 	return nil
 }
@@ -182,7 +182,7 @@ func (s *ModelSession) WakeState(ctx context.Context, req inference.AgentMemoryW
 	return toInferenceAgentMemoryWakeResult(report), nil
 }
 
-// SleepAgentMemory streams this session's current KV state to memvid blocks,
+// SleepAgentMemory streams this session's current KV state to State blocks,
 // then writes a bundle manifest and one-entry wake index.
 func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer, opts agent.SleepOptions) (*agent.SleepReport, error) {
 	if ctx == nil {
@@ -192,7 +192,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 		return nil, core.NewError("mlx: model session is nil")
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	entryURI, bundleURI, indexURI, err := agent.SleepURIs(opts)
 	if err != nil {
@@ -214,9 +214,9 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if opts.ReuseParentPrefix && blockOpts.ReusePrefix == nil {
 		readStore, ok := store.(memvid.Store)
 		if !ok {
-			return nil, core.NewError("mlx: agent memory parent-prefix reuse requires a readable memvid store")
+			return nil, core.NewError("mlx: State parent-prefix reuse requires a readable state store")
 		}
-		parentBundle, err := kv.LoadMemvidBlockBundle(ctx, readStore, opts.ParentBundleURI)
+		parentBundle, err := kv.LoadStateBlockBundle(ctx, readStore, opts.ParentBundleURI)
 		if err != nil {
 			return nil, err
 		}
@@ -225,11 +225,11 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 			blockOpts.ReusePrefixTokens = parentBundle.TokenCount
 		}
 	}
-	bundle, err := s.SaveKVBlocksToMemvid(ctx, store, blockOpts)
+	bundle, err := s.SaveKVBlocksToState(ctx, store, blockOpts)
 	if err != nil {
 		return nil, err
 	}
-	bundleRef, err := kv.SaveMemvidBlockBundle(ctx, store, bundle, bundleURI)
+	bundleRef, err := kv.SaveStateBlockBundle(ctx, store, bundle, bundleURI)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store memvid.Writer
 	if err != nil {
 		return nil, err
 	}
-	indexRef, err := agent.SaveMemvidIndex(ctx, store, index, indexURI)
+	indexRef, err := agent.SaveStateIndex(ctx, store, index, indexURI)
 	if err != nil {
 		return nil, err
 	}
@@ -255,7 +255,7 @@ func (s *ModelSession) Sleep(ctx context.Context, store memvid.Writer, opts agen
 func (s *ModelSession) SleepState(ctx context.Context, req inference.AgentMemorySleepRequest) (*inference.AgentMemorySleepResult, error) {
 	store, ok := req.Store.(memvid.Writer)
 	if !ok {
-		return nil, core.NewError("mlx: inference agent memory sleep requires memvid.Writer")
+		return nil, core.NewError("mlx: inference State sleep requires state.Writer")
 	}
 	report, err := s.SleepAgentMemory(ctx, store, agentMemorySleepOptionsFromInference(req))
 	if err != nil {
@@ -336,11 +336,11 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 		return nil, nil, core.NewError("mlx: exhausted model session is nil")
 	}
 	if store == nil {
-		return nil, nil, core.NewError("mlx: memvid store is nil")
+		return nil, nil, core.NewError("mlx: state store is nil")
 	}
 	prompt := agentMemoryFoldedPrompt(opts)
 	if core.Trim(prompt) == "" {
-		return nil, nil, core.NewError("mlx: folded agent memory requires summary, recent tail, or folded prompt")
+		return nil, nil, core.NewError("mlx: folded State requires summary, recent tail, or folded prompt")
 	}
 	report := &AgentMemoryFoldReport{
 		SummaryBytes:      len(opts.Summary),
@@ -401,7 +401,7 @@ func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
 
 func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.SleepReport, report *AgentMemoryFoldReport) agent.SleepOptions {
 	if opts.Title == "" {
-		opts.Title = "folded agent memory"
+		opts.Title = "folded State"
 	}
 	if checkpoint != nil {
 		if opts.ParentEntryURI == "" {

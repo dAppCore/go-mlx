@@ -321,7 +321,7 @@ turns.
 
 The package API for that handoff is `Model.FoldAgentMemory`, which sleeps the
 exhausted checkpoint, prefills a fresh session from summary plus recent tail
-text, sleeps the folded state with parent lineage, and records folded-state
+text, sleeps the folded State with parent lineage, and records folded-state
 metadata in the durable index. The benchmark harness can now execute the same
 handoff with `-fold-on-exhaustion -fold-store <path>` plus optional
 `-fold-summary-file` and `-fold-tail-file`: when the lifecycle boundary is hit,
@@ -365,8 +365,36 @@ Result:
 | Estimated total including fold lifecycle | `7885.064 J` |
 
 Verdict: the engine now recognises the live context boundary, writes an exact
-exhausted checkpoint, folds semantic summary/tail into a compact state, wakes
-that folded state without replaying the exhausted prefix, and continues without
-the prior non-finite-logits failure. The folded state wakes via
-`restore_strategy=folded-prefill` because the compact state is deliberately
-small; large non-folded checkpoints remain on the raw K/V block restore path.
+exhausted checkpoint, folds semantic summary/tail into a compact State, wakes
+that folded State without replaying the exhausted prefix, and continues without
+the prior non-finite-logits failure. The folded State wakes via
+`restore_strategy=folded-prefill` because the compact State is deliberately
+small; large non-folded checkpoints remain on the raw State K/V block restore
+path.
+
+## AX Hot-Path Benchmark Pass
+
+The State wake path now has a Go benchmark contract. The folded wake path uses
+`kv.LoadPrefixTokensFromStateBlocksWithOptions`, which parses only token IDs
+from the State block payload and avoids assembling K/V tensors for compact
+folded prefill.
+
+Command:
+
+```sh
+GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/go-mlx-goal/gocache go test -bench=. -benchmem ./go/...
+```
+
+Key rows:
+
+| Benchmark | ns/op | B/op | allocs/op |
+| --- | ---: | ---: | ---: |
+| `BenchmarkLoadPrefixFromStateBlocks_MixedWindowThreeBlocks` | `18968` | `80258` | `49` |
+| `BenchmarkLoadPrefixTokensFromStateBlocks_MixedWindowThreeBlocks` | `13891` | `36993` | `14` |
+| `BenchmarkStateRampProfileTurnPrompt_Gemma4WholeTurn` | `229.4` | `1056` | `2` |
+| `BenchmarkRepeatedStateRampTokens_Append4096Contiguous` | `0.4691` | `0` | `0` |
+
+The State token loader also has a regression test that intentionally builds
+multi-block State data whose full K/V assembly path fails on shape mismatch;
+the folded token prefill path still loads `[1 2 3 4]` because K/V tensors are
+not needed for compact wake.

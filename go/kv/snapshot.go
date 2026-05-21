@@ -560,6 +560,37 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	return snapshot, nil
 }
 
+func parseKVSnapshotTokens(data []byte) ([]int32, error) {
+	reader := kvSnapshotReader{data: data}
+	if magic := string(reader.read(len(kvSnapshotMagic))); magic != kvSnapshotMagic {
+		return nil, core.E("Load", "invalid KV snapshot magic", nil)
+	}
+	version := int(reader.u32())
+	if version <= 0 || version > SnapshotVersion {
+		return nil, core.E("Load", "unsupported KV snapshot version", nil)
+	}
+	architectureLength := int(reader.u32())
+	reader.read(architectureLength)
+	for range 5 {
+		reader.u32()
+	}
+	if version >= 2 {
+		reader.u32()
+	}
+	tokenCount := int(reader.u32())
+	if tokenCount < 0 || tokenCount > (len(reader.data)-reader.offset)/4 {
+		return nil, core.NewError("mlx: State token block token count is invalid")
+	}
+	tokens := make([]int32, tokenCount)
+	for i := range tokens {
+		tokens[i] = reader.i32()
+	}
+	if reader.err != nil {
+		return nil, core.E("Load", "parse State tokens", reader.err)
+	}
+	return tokens, nil
+}
+
 func appendKVBytes(dst, src []byte) []byte {
 	dst = appendKVU32(dst, uint32(len(src)))
 	return append(dst, src...)

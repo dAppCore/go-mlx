@@ -91,7 +91,7 @@ func LoadWakeSnapshot(ctx context.Context, store memvid.Store, opts WakeOptions,
 	if err != nil {
 		return nil, nil, err
 	}
-	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -103,14 +103,14 @@ func PlanWake(ctx context.Context, store memvid.Store, opts WakeOptions, info me
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	index, err := loadIndex(ctx, store, opts)
 	if err != nil {
 		return nil, err
 	}
 	if !opts.SkipCompatibilityCheck {
-		if err := CheckMemvidIndexCompatibility(info, opts.Tokenizer, index); err != nil {
+		if err := CheckStateIndexCompatibility(info, opts.Tokenizer, index); err != nil {
 			return nil, err
 		}
 	}
@@ -120,16 +120,16 @@ func PlanWake(ctx context.Context, store memvid.Store, opts WakeOptions, info me
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, core.NewError("mlx: memvid KV bundle index entry not found")
+		return nil, core.NewError("mlx: State index entry not found")
 	}
 	bundleURI := firstNonEmptyString(entry.BundleURI, index.BundleURI)
-	bundle, err := kv.LoadMemvidBlockBundle(ctx, store, bundleURI)
+	bundle, err := kv.LoadStateBlockBundle(ctx, store, bundleURI)
 	if err != nil {
 		return nil, err
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, core.NewError("mlx: memvid KV bundle index prefix is invalid")
+		return nil, core.NewError("mlx: State index prefix is invalid")
 	}
 	report := &WakeReport{
 		IndexURI:     opts.IndexURI,
@@ -159,9 +159,9 @@ func loadIndex(ctx context.Context, store memvid.Store, opts WakeOptions) (*Memv
 		return opts.Index, nil
 	}
 	if core.Trim(opts.IndexURI) == "" {
-		return nil, core.NewError("mlx: agent memory index URI is required")
+		return nil, core.NewError("mlx: State index URI is required")
 	}
-	return LoadMemvidIndex(ctx, store, opts.IndexURI)
+	return LoadStateIndex(ctx, store, opts.IndexURI)
 }
 
 func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err error) {
@@ -169,7 +169,7 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 	bundleURI = core.Trim(opts.BundleURI)
 	indexURI = core.Trim(opts.IndexURI)
 	if entryURI == "" {
-		entryURI = firstNonEmptyString(bundleURI, indexURI, "mlx://agent-memory/latest")
+		entryURI = firstNonEmptyString(bundleURI, indexURI, "mlx://state/latest")
 	}
 	if bundleURI == "" {
 		bundleURI = entryURI + "/bundle"
@@ -178,7 +178,7 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 		indexURI = entryURI + "/index"
 	}
 	if entryURI == "" || bundleURI == "" || indexURI == "" {
-		return "", "", "", core.NewError("mlx: agent memory URI is required")
+		return "", "", "", core.NewError("mlx: State URI is required")
 	}
 	return entryURI, bundleURI, indexURI, nil
 }
@@ -192,14 +192,14 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.MemvidBlockOption
 		blockOpts.URI = bundleURI + "/blocks"
 	}
 	if blockOpts.Title == "" {
-		blockOpts.Title = firstNonEmptyString(opts.Title, "go-mlx agent memory")
+		blockOpts.Title = firstNonEmptyString(opts.Title, "go-mlx State")
 	}
 	blockOpts.Labels = append([]string(nil), blockOpts.Labels...)
-	blockOpts.Labels = append(blockOpts.Labels, "agent-memory")
+	blockOpts.Labels = append(blockOpts.Labels, "state")
 	return blockOpts
 }
 
-func NewSleepIndex(bundle *kv.MemvidBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*MemvidIndex, error) {
+func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*StateIndex, error) {
 	entry := MemvidIndexEntry{
 		URI:        entryURI,
 		BundleURI:  bundleURI,
@@ -210,9 +210,9 @@ func NewSleepIndex(bundle *kv.MemvidBlockBundle, opts SleepOptions, entryURI, bu
 		Meta:       sleepEntryMeta(opts),
 	}
 	if entry.Title == "" {
-		entry.Title = "agent memory"
+		entry.Title = "State"
 	}
-	return NewMemvidIndex(bundle, MemvidIndexOptions{
+	return NewStateIndex(bundle, StateIndexOptions{
 		BundleURI: bundleURI,
 		Title:     opts.Title,
 		Model:     opts.Model,

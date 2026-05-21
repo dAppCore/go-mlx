@@ -20,8 +20,14 @@ const (
 	KVSnapshotMemvidBundleIndexVersion = 1
 )
 
+// StateIndexOptions configures a durable index for named State
+// spans such as chapters, sections, or checkpointed agent states.
+type StateIndexOptions = MemvidIndexOptions
+
 // MemvidIndexOptions configures a durable index for named KV
 // bundle spans such as chapters, sections, or checkpointed agent states.
+//
+// Deprecated: use StateIndexOptions.
 type MemvidIndexOptions struct {
 	BundleURI string
 	Title     string
@@ -32,8 +38,14 @@ type MemvidIndexOptions struct {
 	Entries   []MemvidIndexEntry
 }
 
+// StateIndex records model identity and named token spans for restoring
+// partial prefixes from a larger durable State block bundle.
+type StateIndex = MemvidIndex
+
 // MemvidIndex records model identity and named token spans for
 // restoring partial prefixes from a larger memvid KV block bundle.
+//
+// Deprecated: use StateIndex.
 type MemvidIndex struct {
 	Version      int                `json:"version"`
 	Kind         string             `json:"kind"`
@@ -48,8 +60,14 @@ type MemvidIndex struct {
 	Hash         string             `json:"hash,omitempty"`
 }
 
+// StateIndexEntry names one logical span in a State bundle. The current wake
+// path restores the prefix ending at TokenStart+TokenCount.
+type StateIndexEntry = MemvidIndexEntry
+
 // MemvidIndexEntry names one logical span in a KV bundle. The
 // current wake path restores the prefix ending at TokenStart+TokenCount.
+//
+// Deprecated: use StateIndexEntry.
 type MemvidIndexEntry struct {
 	URI        string            `json:"uri"`
 	BundleURI  string            `json:"bundle_uri,omitempty"`
@@ -63,10 +81,10 @@ type MemvidIndexEntry struct {
 	Meta       map[string]string `json:"meta,omitempty"`
 }
 
-// NewMemvidIndex builds an index around a memvid KV block
-// bundle. When no entries are supplied, it creates one full-bundle entry.
-func NewMemvidIndex(bundle *kv.MemvidBlockBundle, opts MemvidIndexOptions) (*MemvidIndex, error) {
-	if err := kv.ValidateMemvidBlockBundle(bundle); err != nil {
+// NewStateIndex builds an index around a durable State block bundle. When no
+// entries are supplied, it creates one full-bundle entry.
+func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateIndex, error) {
+	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
 	index := &MemvidIndex{
@@ -106,22 +124,30 @@ func NewMemvidIndex(bundle *kv.MemvidBlockBundle, opts MemvidIndexOptions) (*Mem
 	return index, nil
 }
 
+// NewMemvidIndex builds an index around a memvid KV block bundle. When no
+// entries are supplied, it creates one full-bundle entry.
+//
+// Deprecated: use NewStateIndex.
+func NewMemvidIndex(bundle *kv.MemvidBlockBundle, opts MemvidIndexOptions) (*MemvidIndex, error) {
+	return NewStateIndex(bundle, opts)
+}
+
 // Validate checks schema, model identity, and indexed span bounds.
 func (index *MemvidIndex) Validate() error {
 	if index == nil {
-		return core.NewError("mlx: memvid KV bundle index is nil")
+		return core.NewError("mlx: State index is nil")
 	}
 	if index.Version <= 0 || index.Version > KVSnapshotMemvidBundleIndexVersion {
-		return core.NewError("mlx: unsupported memvid KV bundle index version")
+		return core.NewError("mlx: unsupported State index version")
 	}
 	if index.Kind != MemvidIndexKind {
-		return core.NewError("mlx: invalid memvid KV bundle index kind")
+		return core.NewError("mlx: invalid State index kind")
 	}
 	if index.TokenCount <= 0 {
-		return core.NewError("mlx: memvid KV bundle index token count is empty")
+		return core.NewError("mlx: State index token count is empty")
 	}
 	if len(index.Entries) == 0 {
-		return core.NewError("mlx: memvid KV bundle index has no entries")
+		return core.NewError("mlx: State index has no entries")
 	}
 	seen := map[string]bool{}
 	for _, entry := range index.Entries {
@@ -129,37 +155,37 @@ func (index *MemvidIndex) Validate() error {
 			return err
 		}
 		if seen[entry.URI] {
-			return core.NewError("mlx: duplicate memvid KV bundle index URI")
+			return core.NewError("mlx: duplicate State index URI")
 		}
 		seen[entry.URI] = true
 	}
 	if index.Hash != "" && index.Hash != indexHash(index) {
-		return core.NewError("mlx: memvid KV bundle index hash mismatch")
+		return core.NewError("mlx: State index hash mismatch")
 	}
 	return nil
 }
 
 func (index *MemvidIndex) validateEntry(entry MemvidIndexEntry) error {
 	if core.Trim(entry.URI) == "" {
-		return core.NewError("mlx: memvid KV bundle index entry URI is required")
+		return core.NewError("mlx: State index entry URI is required")
 	}
 	if core.Trim(entry.BundleURI) == "" && core.Trim(index.BundleURI) == "" {
-		return core.NewError("mlx: memvid KV bundle index entry bundle URI is required")
+		return core.NewError("mlx: State index entry bundle URI is required")
 	}
 	if entry.TokenStart < 0 {
-		return core.NewError("mlx: memvid KV bundle index entry token start is invalid")
+		return core.NewError("mlx: State index entry token start is invalid")
 	}
 	if entry.TokenCount <= 0 {
-		return core.NewError("mlx: memvid KV bundle index entry token count is empty")
+		return core.NewError("mlx: State index entry token count is empty")
 	}
 	if entry.TokenStart+entry.TokenCount > index.TokenCount {
-		return core.NewError("mlx: memvid KV bundle index entry exceeds bundle token count")
+		return core.NewError("mlx: State index entry exceeds bundle token count")
 	}
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
-		return core.NewError("mlx: memvid KV bundle index entry byte span is invalid")
+		return core.NewError("mlx: State index entry byte span is invalid")
 	}
 	if entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
-		return core.NewError("mlx: memvid KV bundle index entry hash mismatch")
+		return core.NewError("mlx: State index entry hash mismatch")
 	}
 	return nil
 }
@@ -196,52 +222,60 @@ func (entry MemvidIndexEntry) PrefixTokens() int {
 	return entry.TokenStart + entry.TokenCount
 }
 
-// SaveMemvidIndex stores the index JSON in the same memvid
-// store as its referenced bundle manifests.
-func SaveMemvidIndex(ctx context.Context, store memvid.Writer, index *MemvidIndex, uri string) (memvid.ChunkRef, error) {
+// SaveStateIndex stores the index JSON in the same State store as its
+// referenced bundle manifests.
+func SaveStateIndex(ctx context.Context, store memvid.Writer, index *StateIndex, uri string) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return memvid.ChunkRef{}, core.NewError("mlx: memvid store is nil")
+		return memvid.ChunkRef{}, core.NewError("mlx: state store is nil")
 	}
 	if core.Trim(uri) == "" {
-		return memvid.ChunkRef{}, core.NewError("mlx: memvid KV bundle index URI is required")
+		return memvid.ChunkRef{}, core.NewError("mlx: State index URI is required")
 	}
 	if err := index.Validate(); err != nil {
 		return memvid.ChunkRef{}, err
 	}
 	ref, err := store.Put(ctx, core.JSONMarshalString(index), memvid.PutOptions{
 		URI:    uri,
-		Title:  "go-mlx KV bundle index",
+		Title:  "go-mlx State index",
 		Kind:   MemvidIndexKind,
 		Track:  "session-kv-index",
 		Labels: []string{"go-mlx", "kv-snapshot-bundle-index"},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("kv.Snapshot.SaveMemvidBundleIndex", "write memvid bundle index", err)
+		return memvid.ChunkRef{}, core.E("kv.Snapshot.SaveStateIndex", "write State index", err)
 	}
 	return ref, nil
 }
 
-// LoadMemvidIndex restores an index by URI from a memvid store.
-func LoadMemvidIndex(ctx context.Context, store memvid.Store, uri string) (*MemvidIndex, error) {
+// SaveMemvidIndex stores the index JSON in the same memvid store as its
+// referenced bundle manifests.
+//
+// Deprecated: use SaveStateIndex.
+func SaveMemvidIndex(ctx context.Context, store memvid.Writer, index *MemvidIndex, uri string) (memvid.ChunkRef, error) {
+	return SaveStateIndex(ctx, store, index, uri)
+}
+
+// LoadStateIndex restores an index by URI from a State store.
+func LoadStateIndex(ctx context.Context, store memvid.Store, uri string) (*StateIndex, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	if core.Trim(uri) == "" {
-		return nil, core.NewError("mlx: memvid KV bundle index URI is required")
+		return nil, core.NewError("mlx: State index URI is required")
 	}
 	chunk, err := memvid.ResolveURI(ctx, store, uri)
 	if err != nil {
-		return nil, core.E("LoadMemvidIndex", "resolve memvid bundle index", err)
+		return nil, core.E("LoadStateIndex", "resolve State index", err)
 	}
 	var index MemvidIndex
 	if result := core.JSONUnmarshalString(chunk.Text, &index); !result.OK {
-		return nil, core.E("LoadMemvidIndex", "parse bundle index", kv.ResultError(result))
+		return nil, core.E("LoadStateIndex", "parse State index", kv.ResultError(result))
 	}
 	if err := index.Validate(); err != nil {
 		return nil, err
@@ -249,73 +283,96 @@ func LoadMemvidIndex(ctx context.Context, store memvid.Store, uri string) (*Memv
 	return &index, nil
 }
 
-// LoadPrefixFromMemvidIndex resolves entryURI through index,
+// LoadMemvidIndex restores an index by URI from a memvid store.
+//
+// Deprecated: use LoadStateIndex.
+func LoadMemvidIndex(ctx context.Context, store memvid.Store, uri string) (*MemvidIndex, error) {
+	return LoadStateIndex(ctx, store, uri)
+}
+
+// LoadPrefixFromStateIndex resolves entryURI through index,
 // loads its referenced block bundle, and restores only the prefix required by
 // that entry.
-func LoadPrefixFromMemvidIndex(ctx context.Context, store memvid.Store, index *MemvidIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, MemvidIndexEntry, error) {
+func LoadPrefixFromStateIndex(ctx context.Context, store memvid.Store, index *StateIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, StateIndexEntry, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: memvid store is nil")
+		return nil, MemvidIndexEntry{}, core.NewError("mlx: state store is nil")
 	}
 	if err := index.Validate(); err != nil {
 		return nil, MemvidIndexEntry{}, err
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: memvid KV bundle index entry not found")
+		return nil, MemvidIndexEntry{}, core.NewError("mlx: State index entry not found")
 	}
 	bundleURI := entry.BundleURI
 	if bundleURI == "" {
 		bundleURI = index.BundleURI
 	}
-	bundle, err := kv.LoadMemvidBlockBundle(ctx, store, bundleURI)
+	bundle, err := kv.LoadStateBlockBundle(ctx, store, bundleURI)
 	if err != nil {
 		return nil, MemvidIndexEntry{}, err
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, MemvidIndexEntry{}, core.NewError("mlx: memvid KV bundle index prefix is invalid")
+		return nil, MemvidIndexEntry{}, core.NewError("mlx: State index prefix is invalid")
 	}
-	snapshot, err := kv.LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
+	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
 	if err != nil {
 		return nil, MemvidIndexEntry{}, err
 	}
 	return snapshot, entry, nil
 }
 
-// CheckMemvidIndexCompatibility verifies model and tokenizer
-// identity before restoring indexed KV state into a loaded model.
-func CheckMemvidIndexCompatibility(info memory.ModelInfo, tokenizer bundle.Tokenizer, index *MemvidIndex) error {
+// LoadPrefixFromMemvidIndex resolves entryURI through index, loads its
+// referenced block bundle, and restores only the prefix required by that entry.
+//
+// Deprecated: use LoadPrefixFromStateIndex.
+func LoadPrefixFromMemvidIndex(ctx context.Context, store memvid.Store, index *MemvidIndex, entryURI string, opts kv.LoadOptions) (*kv.Snapshot, MemvidIndexEntry, error) {
+	return LoadPrefixFromStateIndex(ctx, store, index, entryURI, opts)
+}
+
+// CheckStateIndexCompatibility verifies model and tokenizer identity before
+// restoring indexed State into a loaded model.
+func CheckStateIndexCompatibility(info memory.ModelInfo, tokenizer bundle.Tokenizer, index *StateIndex) error {
 	if err := index.Validate(); err != nil {
 		return err
 	}
 	if index.Model.Architecture != "" && info.Architecture != "" && index.Model.Architecture != info.Architecture {
-		return core.NewError("mlx: memvid KV bundle index model architecture mismatch")
+		return core.NewError("mlx: State index model architecture mismatch")
 	}
 	if index.Model.NumLayers > 0 && info.NumLayers > 0 && index.Model.NumLayers != info.NumLayers {
-		return core.NewError("mlx: memvid KV bundle index model layer mismatch")
+		return core.NewError("mlx: State index model layer mismatch")
 	}
 	if index.Model.QuantBits > 0 && info.QuantBits > 0 && index.Model.QuantBits != info.QuantBits {
-		return core.NewError("mlx: memvid KV bundle index model quantization mismatch")
+		return core.NewError("mlx: State index model quantization mismatch")
 	}
 	if index.Model.Hash != "" && index.Model.Name == "" && index.Model.Path == "" && modelHashComparable(info, index.Model) {
-		active := indexModel(nil, MemvidIndexOptions{ModelInfo: info})
+		active := indexModel(nil, StateIndexOptions{ModelInfo: info})
 		if active.Hash != "" && active.Hash != index.Model.Hash {
-			return core.NewError("mlx: memvid KV bundle index model hash mismatch")
+			return core.NewError("mlx: State index model hash mismatch")
 		}
 	}
 	if info.ContextLength > 0 && index.RequiredContextLength() > info.ContextLength {
-		return core.NewError("mlx: memvid KV bundle index exceeds model context length")
+		return core.NewError("mlx: State index exceeds model context length")
 	}
 	if index.Tokenizer.Hash != "" && tokenizer.Hash != "" && index.Tokenizer.Hash != tokenizer.Hash {
-		return core.NewError("mlx: memvid KV bundle index tokenizer hash mismatch")
+		return core.NewError("mlx: State index tokenizer hash mismatch")
 	}
 	if index.Tokenizer.ChatTemplateHash != "" && tokenizer.ChatTemplateHash != "" && index.Tokenizer.ChatTemplateHash != tokenizer.ChatTemplateHash {
-		return core.NewError("mlx: memvid KV bundle index chat template hash mismatch")
+		return core.NewError("mlx: State index chat template hash mismatch")
 	}
 	return nil
+}
+
+// CheckMemvidIndexCompatibility verifies model and tokenizer
+// identity before restoring indexed KV state into a loaded model.
+//
+// Deprecated: use CheckStateIndexCompatibility.
+func CheckMemvidIndexCompatibility(info memory.ModelInfo, tokenizer bundle.Tokenizer, index *MemvidIndex) error {
+	return CheckStateIndexCompatibility(info, tokenizer, index)
 }
 
 func modelHashComparable(info memory.ModelInfo, model bundle.Model) bool {

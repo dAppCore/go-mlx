@@ -749,6 +749,38 @@ func TestKVSnapshotMemvidBlocks_Good_LoadPartialPrefixSlicesCoveringBlock(t *tes
 	}
 }
 
+func TestKVSnapshotStateBlocks_Good_LoadPrefixTokensSkipsKVAssembly(t *testing.T) {
+	ctx := context.Background()
+	store := memvid.NewInMemoryStore(nil)
+	first := stateTokenOnlyTestSnapshot([]int32{1, 2}, 2, 2)
+	second := stateTokenOnlyTestSnapshot([]int32{3, 4}, 4, 1)
+	bundle, err := SaveStateBlocksFromStream(ctx, store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingNative,
+	}, func(yield func(Block) (bool, error)) error {
+		ok, err := yield(Block{Index: 0, TokenStart: 0, TokenCount: 2, Snapshot: first})
+		if err != nil || !ok {
+			return err
+		}
+		_, err = yield(Block{Index: 1, TokenStart: 2, TokenCount: 2, Snapshot: second})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocksFromStream() error = %v", err)
+	}
+
+	if _, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, 4, LoadOptions{RawKVOnly: true}); err == nil {
+		t.Fatal("LoadPrefixFromStateBlocksWithOptions(mismatched shapes) error = nil")
+	}
+	tokens, err := LoadPrefixTokensFromStateBlocksWithOptions(ctx, store, bundle, 4, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadPrefixTokensFromStateBlocksWithOptions() error = %v", err)
+	}
+	if len(tokens) != 4 || tokens[0] != 1 || tokens[3] != 4 {
+		t.Fatalf("tokens = %v, want [1 2 3 4]", tokens)
+	}
+}
+
 type recordingMemvidStore struct {
 	store    memvid.Store
 	resolved []int
@@ -870,6 +902,34 @@ func kvSnapshotBlocksTestSnapshot() *Snapshot {
 			Heads: []HeadSnapshot{{
 				Key:   []float32{10, 11, 12, 13, 14, 15, 16, 17},
 				Value: []float32{20, 21, 22, 23, 24, 25, 26, 27},
+			}},
+		}},
+	}
+}
+
+func stateTokenOnlyTestSnapshot(tokens []int32, tokenOffset, headDim int) *Snapshot {
+	key := make([]float32, len(tokens)*headDim)
+	value := make([]float32, len(tokens)*headDim)
+	for i := range key {
+		key[i] = float32(i + tokenOffset)
+		value[i] = float32(i + tokenOffset + 100)
+	}
+	return &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        append([]int32(nil), tokens...),
+		TokenOffset:   tokenOffset,
+		NumLayers:     1,
+		NumHeads:      1,
+		SeqLen:        len(tokens),
+		HeadDim:       headDim,
+		NumQueryHeads: 1,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []HeadSnapshot{{
+				Key:   key,
+				Value: value,
 			}},
 		}},
 	}

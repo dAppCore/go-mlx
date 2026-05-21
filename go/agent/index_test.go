@@ -13,21 +13,21 @@ import (
 	"dappco.re/go/mlx/memory"
 )
 
-func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing.T) {
+func TestKVSnapshotStateIndex_Good_PartialPrefixFromFullBundle(t *testing.T) {
 	ctx := context.Background()
 	store := memvid.NewInMemoryStore(nil)
 	snapshot := kvSnapshotBlocksTestSnapshot()
-	blk, err := snapshot.SaveMemvidBlocks(ctx, store, kv.MemvidBlockOptions{
+	blk, err := snapshot.SaveStateBlocks(ctx, store, kv.StateBlockOptions{
 		BlockSize:  2,
 		KVEncoding: kv.EncodingNative,
 	})
 	if err != nil {
-		t.Fatalf("SaveMemvidBlocks() error = %v", err)
+		t.Fatalf("SaveStateBlocks() error = %v", err)
 	}
-	if _, err := kv.SaveMemvidBlockBundle(ctx, store, blk, "mlx://book/full/bundle"); err != nil {
-		t.Fatalf("kv.SaveMemvidBlockBundle() error = %v", err)
+	if _, err := kv.SaveStateBlockBundle(ctx, store, blk, "mlx://book/full/bundle"); err != nil {
+		t.Fatalf("kv.SaveStateBlockBundle() error = %v", err)
 	}
-	index, err := NewMemvidIndex(blk, MemvidIndexOptions{
+	index, err := NewStateIndex(blk, StateIndexOptions{
 		BundleURI: "mlx://book/full/bundle",
 		Title:     "full book",
 		Model:     "demo",
@@ -38,7 +38,7 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 			ContextLength: 8,
 		},
 		Tokenizer: pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"},
-		Entries: []MemvidIndexEntry{
+		Entries: []StateIndexEntry{
 			{
 				URI:        "mlx://book/chapter-1",
 				Title:      "Chapter 1",
@@ -62,20 +62,20 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 		},
 	})
 	if err != nil {
-		t.Fatalf("NewMemvidIndex() error = %v", err)
+		t.Fatalf("NewStateIndex() error = %v", err)
 	}
 	if index.Hash == "" || index.RequiredContextLength() != 4 {
 		t.Fatalf("index hash/required = %q/%d, want hash and full required context", index.Hash, index.RequiredContextLength())
 	}
-	if err := CheckMemvidIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}, pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}, index); err != nil {
-		t.Fatalf("CheckMemvidIndexCompatibility() error = %v", err)
+	if err := CheckStateIndexCompatibility(memory.ModelInfo{Architecture: "gemma4_text", NumLayers: 1, QuantBits: 4, ContextLength: 8}, pkgbundle.Tokenizer{Hash: "tok-a", ChatTemplateHash: "chat-a"}, index); err != nil {
+		t.Fatalf("CheckStateIndexCompatibility() error = %v", err)
 	}
-	if _, err := SaveMemvidIndex(ctx, store, index, "mlx://book/index"); err != nil {
-		t.Fatalf("SaveMemvidIndex() error = %v", err)
+	if _, err := SaveStateIndex(ctx, store, index, "mlx://book/index"); err != nil {
+		t.Fatalf("SaveStateIndex() error = %v", err)
 	}
-	loadedIndex, err := LoadMemvidIndex(ctx, store, "mlx://book/index")
+	loadedIndex, err := LoadStateIndex(ctx, store, "mlx://book/index")
 	if err != nil {
-		t.Fatalf("LoadMemvidIndex() error = %v", err)
+		t.Fatalf("LoadStateIndex() error = %v", err)
 	}
 	loadedIndex.Entries[0].Labels[0] = "mutated"
 	entry, ok := index.Entry("mlx://book/chapter-1")
@@ -87,9 +87,9 @@ func TestKVSnapshotMemvidBundleIndex_Good_PartialPrefixFromFullBundle(t *testing
 	}
 
 	recording := &indexRecordingMemvidStore{store: store}
-	prefix, loadedEntry, err := LoadPrefixFromMemvidIndex(ctx, recording, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
+	prefix, loadedEntry, err := LoadPrefixFromStateIndex(ctx, recording, index, "mlx://book/chapter-1", kv.LoadOptions{RawKVOnly: true})
 	if err != nil {
-		t.Fatalf("LoadPrefixFromMemvidIndex() error = %v", err)
+		t.Fatalf("LoadPrefixFromStateIndex() error = %v", err)
 	}
 	if loadedEntry.URI != "mlx://book/chapter-1" || loadedEntry.PrefixTokens() != 2 {
 		t.Fatalf("loaded entry = %+v, want chapter-1 two-token prefix", loadedEntry)

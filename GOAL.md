@@ -81,11 +81,16 @@ compaction threshold, and reports expose `context_exhausted`,
 prefill a folded state rather than append blindly. The package API now exposes
 that transition through `Model.FoldAgentMemory`: it sleeps the exhausted
 checkpoint, prefills a fresh session from summary-plus-tail text, sleeps the
-folded state with parent lineage, and records folded-state metadata for later
+folded State with parent lineage, and records folded-state metadata for later
 wake/replay. Folded entries now wake with `restore_strategy=folded-prefill`:
-the engine reads the compact folded token prefix from the state file and
-prefills that small new window, while the exact exhausted checkpoint remains
-available on the raw K/V block path.
+the engine reads only the compact folded token prefix from the State file and
+prefills that small new window, avoiding multi-block K/V assembly while the
+exact exhausted checkpoint remains available on the raw State K/V block path.
+The AX hot-path benchmark pass now records this contract:
+`BenchmarkLoadPrefixFromStateBlocks_MixedWindowThreeBlocks` is
+`18968 ns/op`, `80258 B/op`, `49 allocs/op`, while
+`BenchmarkLoadPrefixTokensFromStateBlocks_MixedWindowThreeBlocks` is
+`13891 ns/op`, `36993 B/op`, `14 allocs/op`.
 
 The first folded lifecycle probe on the same E2B q4 lane is recorded in the
 runtime note and manifest as
@@ -1235,7 +1240,7 @@ stuffing convention.
   streams session KV blocks, writes a bundle/index, and records model/tokenizer
   metadata in `TestAgentMemoryWakeSleep_Good`.
 - [x] Wake the seed into a live session without replaying the whole seed text.
-  `WakeAgentMemory` restores memvid KV blocks directly and the test generates
+  `WakeAgentMemory` restores State KV blocks directly and the test generates
   from restored state without refeeding the seed prompt. The prompt-cache wake
   path also restores fixed-cache Gemma 4 generation buffers now, so the current
   production fixed-cache decode lane can reuse durable KV state instead of
@@ -1261,12 +1266,15 @@ stuffing convention.
   append-and-sleep and generate-and-sleep.
 - [x] Compact an exhausted live context into a folded state and continue from it.
   `Model.FoldAgentMemory` checkpoints the exhausted K/V state, prefills a fresh
-  session from summary-plus-tail text, sleeps the folded state with parent
+  session from summary-plus-tail text, sleeps the folded State with parent
   lineage, then `TestFoldAgentMemory_CheckpointSummaryTail_Good` wakes the
   folded entry, appends the next turn without replaying the summary text, and
-  generates from the restored folded state. `state-ramp-profile` now exposes the
-  same production handoff through `-fold-on-exhaustion`: it writes the exhausted
-  checkpoint and folded state to an explicit store, wakes the folded state with
+  generates from the restored folded State. The test now forces a multi-block
+  folded State wake, and `kv.LoadPrefixTokensFromStateBlocksWithOptions` loads
+  only token IDs for folded prefill so mixed block shapes cannot fail K/V
+  assembly during compaction wake. `state-ramp-profile` exposes the same
+  production handoff through `-fold-on-exhaustion`: it writes the exhausted
+  checkpoint and folded State to an explicit store, wakes the folded State with
   `restore_strategy=folded-prefill`, and records the optional folded
   wake/continue turn in the benchmark report.
 - [x] Reuse the current seed plus text memory when the operator does not want a

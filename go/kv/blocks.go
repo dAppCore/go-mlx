@@ -33,7 +33,22 @@ type Block struct {
 	Snapshot   *Snapshot
 }
 
+// StateTokenBlock is the token-only view of one durable State KV block.
+type StateTokenBlock struct {
+	Index      int
+	TokenStart int
+	TokenCount int
+	Hash       string
+	Tokens     []int32
+}
+
+// StateBlockOptions controls durable State-backed KV block storage.
+type StateBlockOptions = MemvidBlockOptions
+
 // MemvidBlockOptions controls memvid-backed KV block storage.
+//
+// Deprecated: use StateBlockOptions. The persisted format is now described as
+// State; older memvid names remain as compatibility wrappers.
 type MemvidBlockOptions struct {
 	BlockSize         int
 	KVEncoding        Encoding
@@ -47,7 +62,13 @@ type MemvidBlockOptions struct {
 	ReusePrefixTokens int
 }
 
+// StateBlockBundle is a portable manifest for durable State KV blocks.
+type StateBlockBundle = MemvidBlockBundle
+
 // MemvidBlockBundle is a portable manifest for memvid KV blocks.
+//
+// Deprecated: use StateBlockBundle. The persisted format is now described as
+// State; older memvid names remain as compatibility wrappers.
 type MemvidBlockBundle struct {
 	Version      int              `json:"version"`
 	Kind         string           `json:"kind"`
@@ -65,7 +86,13 @@ type MemvidBlockBundle struct {
 	Blocks       []MemvidBlockRef `json:"blocks,omitempty"`
 }
 
+// StateBlockRef links one logical KV block to a durable State chunk.
+type StateBlockRef = MemvidBlockRef
+
 // MemvidBlockRef links one logical KV block to a memvid chunk.
+//
+// Deprecated: use StateBlockRef. The persisted format is now described as
+// State; older memvid names remain as compatibility wrappers.
 type MemvidBlockRef struct {
 	Index            int             `json:"index"`
 	TokenStart       int             `json:"token_start"`
@@ -637,8 +664,9 @@ func appendKVSnapshotRawBlock(dstDType *string, dstBytes *[]byte, dtype string, 
 	return nil
 }
 
-// SaveMemvidBlocks stores each KV block as a separate memvid chunk and returns a manifest.
-func (s *Snapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions) (*MemvidBlockBundle, error) {
+// SaveStateBlocks stores each KV block as a separate State chunk and returns a
+// manifest.
+func (s *Snapshot) SaveStateBlocks(ctx context.Context, store memvid.Writer, opts StateBlockOptions) (*StateBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -646,7 +674,7 @@ func (s *Snapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, op
 		return nil, core.NewError("mlx: KV snapshot is nil")
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
@@ -698,15 +726,25 @@ func (s *Snapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, op
 	return bundle, nil
 }
 
-func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions, stream func(func(Block) (bool, error)) error) (*MemvidBlockBundle, error) {
+// SaveMemvidBlocks stores each KV block as a separate memvid chunk and returns
+// a manifest.
+//
+// Deprecated: use SaveStateBlocks.
+func (s *Snapshot) SaveMemvidBlocks(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions) (*MemvidBlockBundle, error) {
+	return s.SaveStateBlocks(ctx, store, opts)
+}
+
+// SaveStateBlocksFromStream stores streamed KV blocks into a durable State
+// bundle without retaining all sliced blocks in memory.
+func SaveStateBlocksFromStream(ctx context.Context, store memvid.Writer, opts StateBlockOptions, stream func(func(Block) (bool, error)) error) (*StateBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	if stream == nil {
-		return nil, core.NewError("mlx: memvid KV block stream is nil")
+		return nil, core.NewError("mlx: State KV block stream is nil")
 	}
 	blockSize := opts.BlockSize
 	if blockSize <= 0 {
@@ -754,11 +792,19 @@ func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts M
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
 	bundle.SnapshotHash = kvSnapshotMemvidBlockBundleHash(bundle, blockHashes)
 	return bundle, nil
+}
+
+// SaveMemvidBlocksFromStream stores streamed KV blocks in a memvid-backed
+// bundle without retaining all sliced blocks in memory.
+//
+// Deprecated: use SaveStateBlocksFromStream.
+func SaveMemvidBlocksFromStream(ctx context.Context, store memvid.Writer, opts MemvidBlockOptions, stream func(func(Block) (bool, error)) error) (*MemvidBlockBundle, error) {
+	return SaveStateBlocksFromStream(ctx, store, opts, stream)
 }
 
 func applyKVSnapshotMemvidBundleBlock(bundle *MemvidBlockBundle, block Block) {
@@ -913,32 +959,40 @@ func saveKVSnapshotMemvidBlock(ctx context.Context, store memvid.Writer, block B
 	return ref, hash, kvSnapshotMemvidPayloadJSONBase64, len(data), nil
 }
 
-// SaveMemvidBlockBundle stores the KV block manifest in the same
-// memvid store as its referenced blocks.
-func SaveMemvidBlockBundle(ctx context.Context, store memvid.Writer, bundle *MemvidBlockBundle, uri string) (memvid.ChunkRef, error) {
+// SaveStateBlockBundle stores the KV block manifest in the same
+// State store as its referenced blocks.
+func SaveStateBlockBundle(ctx context.Context, store memvid.Writer, bundle *StateBlockBundle, uri string) (memvid.ChunkRef, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return memvid.ChunkRef{}, core.NewError("mlx: memvid store is nil")
+		return memvid.ChunkRef{}, core.NewError("mlx: state store is nil")
 	}
 	if core.Trim(uri) == "" {
-		return memvid.ChunkRef{}, core.NewError("mlx: memvid KV block bundle URI is required")
+		return memvid.ChunkRef{}, core.NewError("mlx: State KV block bundle URI is required")
 	}
-	if err := ValidateMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateStateBlockBundle(bundle); err != nil {
 		return memvid.ChunkRef{}, err
 	}
 	ref, err := store.Put(ctx, core.JSONMarshalString(bundle), memvid.PutOptions{
 		URI:    uri,
-		Title:  "go-mlx KV block bundle",
+		Title:  "go-mlx State block bundle",
 		Kind:   MemvidBlockBundleKind,
 		Track:  "session-kv-blocks",
 		Labels: []string{"go-mlx", "kv-snapshot-block-bundle"},
 	})
 	if err != nil {
-		return memvid.ChunkRef{}, core.E("Snapshot.SaveMemvidBlockBundle", "write memvid bundle", err)
+		return memvid.ChunkRef{}, core.E("Snapshot.SaveStateBlockBundle", "write State bundle", err)
 	}
 	return ref, nil
+}
+
+// SaveMemvidBlockBundle stores the KV block manifest in the same
+// memvid store as its referenced blocks.
+//
+// Deprecated: use SaveStateBlockBundle.
+func SaveMemvidBlockBundle(ctx context.Context, store memvid.Writer, bundle *MemvidBlockBundle, uri string) (memvid.ChunkRef, error) {
+	return SaveStateBlockBundle(ctx, store, bundle, uri)
 }
 
 func kvSnapshotMemvidBlockPutOptions(block Block, opts MemvidBlockOptions, hash, kvEncoding, payloadEncoding string) memvid.PutOptions {
@@ -972,58 +1026,73 @@ func kvSnapshotMemvidBlockPutOptions(block Block, opts MemvidBlockOptions, hash,
 	}
 }
 
-// LoadFromMemvidBlocks restores a full KV snapshot from a memvid block manifest.
-func LoadFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle) (*Snapshot, error) {
-	return LoadFromMemvidBlocksWithOptions(ctx, store, bundle, LoadOptions{})
+// LoadFromStateBlocks restores a full KV snapshot from a State block manifest.
+func LoadFromStateBlocks(ctx context.Context, store memvid.Store, bundle *StateBlockBundle) (*Snapshot, error) {
+	return LoadFromStateBlocksWithOptions(ctx, store, bundle, LoadOptions{})
 }
 
-// LoadMemvidBlockBundle restores a KV block manifest by URI from the
-// same memvid store as its referenced blocks.
-func LoadMemvidBlockBundle(ctx context.Context, store memvid.Store, uri string) (*MemvidBlockBundle, error) {
+// LoadFromMemvidBlocks restores a full KV snapshot from a memvid block manifest.
+//
+// Deprecated: use LoadFromStateBlocks.
+func LoadFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle) (*Snapshot, error) {
+	return LoadFromStateBlocks(ctx, store, bundle)
+}
+
+// LoadStateBlockBundle restores a KV block manifest by URI from the
+// same State store as its referenced blocks.
+func LoadStateBlockBundle(ctx context.Context, store memvid.Store, uri string) (*StateBlockBundle, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	if core.Trim(uri) == "" {
-		return nil, core.NewError("mlx: memvid KV block bundle URI is required")
+		return nil, core.NewError("mlx: State KV block bundle URI is required")
 	}
 	chunk, err := memvid.ResolveURI(ctx, store, uri)
 	if err != nil {
-		return nil, core.E("LoadMemvidBlockBundle", "resolve memvid bundle", err)
+		return nil, core.E("LoadStateBlockBundle", "resolve State bundle", err)
 	}
 	var bundle MemvidBlockBundle
 	if result := core.JSONUnmarshalString(chunk.Text, &bundle); !result.OK {
-		return nil, core.E("LoadMemvidBlockBundle", "parse bundle", ResultError(result))
+		return nil, core.E("LoadStateBlockBundle", "parse bundle", ResultError(result))
 	}
-	if err := ValidateMemvidBlockBundle(&bundle); err != nil {
+	if err := ValidateStateBlockBundle(&bundle); err != nil {
 		return nil, err
 	}
 	return &bundle, nil
 }
 
-// LoadFromMemvidBlocksWithOptions restores a full KV snapshot from a
-// memvid block manifest with explicit decode options.
-func LoadFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, opts LoadOptions) (*Snapshot, error) {
+// LoadMemvidBlockBundle restores a KV block manifest by URI from the
+// same memvid store as its referenced blocks.
+//
+// Deprecated: use LoadStateBlockBundle.
+func LoadMemvidBlockBundle(ctx context.Context, store memvid.Store, uri string) (*MemvidBlockBundle, error) {
+	return LoadStateBlockBundle(ctx, store, uri)
+}
+
+// LoadFromStateBlocksWithOptions restores a full KV snapshot from a
+// State block manifest with explicit decode options.
+func LoadFromStateBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *StateBlockBundle, opts LoadOptions) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
 	if bundle == nil {
-		return nil, core.NewError("mlx: memvid KV block bundle is nil")
+		return nil, core.NewError("mlx: State KV block bundle is nil")
 	}
 	if bundle.Version <= 0 || bundle.Version > MemvidBlockVersion {
-		return nil, core.NewError("mlx: unsupported memvid KV block bundle version")
+		return nil, core.NewError("mlx: unsupported State KV block bundle version")
 	}
 	if bundle.Kind != MemvidBlockBundleKind {
-		return nil, core.NewError("mlx: invalid memvid KV block bundle kind")
+		return nil, core.NewError("mlx: invalid State KV block bundle kind")
 	}
 	blocks := make([]Block, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
-		block, err := LoadMemvidBlockWithOptions(ctx, store, ref, opts)
+		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -1034,52 +1103,60 @@ func LoadFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bu
 		return nil, err
 	}
 	if bundle.TokenOffset > 0 && snapshot.TokenOffset != bundle.TokenOffset {
-		return nil, core.NewError("mlx: memvid KV block token offset mismatch")
+		return nil, core.NewError("mlx: State KV block token offset mismatch")
 	}
 	return snapshot, nil
+}
+
+// LoadFromMemvidBlocksWithOptions restores a full KV snapshot from a
+// memvid block manifest with explicit decode options.
+//
+// Deprecated: use LoadFromStateBlocksWithOptions.
+func LoadFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, opts LoadOptions) (*Snapshot, error) {
+	return LoadFromStateBlocksWithOptions(ctx, store, bundle, opts)
+}
+
+// LoadPrefixFromStateBlocks restores only the State KV blocks needed
+// to cover prefixTokens. The returned snapshot is suitable for prompt-cache
+// warmup; non-final prefixes intentionally omit logits.
+func LoadPrefixFromStateBlocks(ctx context.Context, store memvid.Store, bundle *StateBlockBundle, prefixTokens int) (*Snapshot, error) {
+	return LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, LoadOptions{})
 }
 
 // LoadPrefixFromMemvidBlocks restores only the memvid KV blocks needed
 // to cover prefixTokens. The returned snapshot is suitable for prompt-cache
 // warmup; non-final prefixes intentionally omit logits.
+//
+// Deprecated: use LoadPrefixFromStateBlocks.
 func LoadPrefixFromMemvidBlocks(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, prefixTokens int) (*Snapshot, error) {
-	return LoadPrefixFromMemvidBlocksWithOptions(ctx, store, bundle, prefixTokens, LoadOptions{})
+	return LoadPrefixFromStateBlocks(ctx, store, bundle, prefixTokens)
 }
 
-// LoadPrefixFromMemvidBlocksWithOptions restores only the memvid KV
+// LoadPrefixFromStateBlocksWithOptions restores only the State KV
 // blocks needed to cover prefixTokens with explicit decode options.
-func LoadPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, prefixTokens int, opts LoadOptions) (*Snapshot, error) {
+func LoadPrefixFromStateBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *StateBlockBundle, prefixTokens int, opts LoadOptions) (*Snapshot, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: memvid store is nil")
+		return nil, core.NewError("mlx: state store is nil")
 	}
-	if err := ValidateMemvidBlockBundle(bundle); err != nil {
+	if err := ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
 	if prefixTokens <= 0 || prefixTokens == bundle.TokenCount {
-		return LoadFromMemvidBlocksWithOptions(ctx, store, bundle, opts)
+		return LoadFromStateBlocksWithOptions(ctx, store, bundle, opts)
 	}
 	if prefixTokens > bundle.TokenCount {
-		return nil, core.NewError("mlx: memvid KV prefix exceeds bundle token count")
+		return nil, core.NewError("mlx: State KV prefix exceeds bundle token count")
 	}
-	refs := make([]MemvidBlockRef, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
-			break
-		}
-		refs = append(refs, ref)
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
-			break
-		}
-	}
+	refs := stateBlockRefsForPrefix(bundle, prefixTokens)
 	if len(refs) == 0 {
-		return nil, core.NewError("mlx: memvid KV prefix has no covering blocks")
+		return nil, core.NewError("mlx: State KV prefix has no covering blocks")
 	}
 	blocks := make([]Block, 0, len(refs))
 	for _, ref := range refs {
-		block, err := LoadMemvidBlockWithOptions(ctx, store, ref, opts)
+		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -1096,7 +1173,7 @@ func LoadPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Sto
 		return snapshot, nil
 	}
 	if len(snapshot.Tokens) < prefixTokens {
-		return nil, core.NewError("mlx: memvid KV prefix blocks do not cover requested tokens")
+		return nil, core.NewError("mlx: State KV prefix blocks do not cover requested tokens")
 	}
 	baseOffset := EffectiveTokenOffset(snapshot) - EffectiveSeqLen(snapshot)
 	if baseOffset < 0 {
@@ -1109,23 +1186,109 @@ func LoadPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Sto
 	return trimmed, nil
 }
 
-func ValidateMemvidBlockBundle(bundle *MemvidBlockBundle) error {
+// LoadPrefixFromMemvidBlocksWithOptions restores only the memvid KV
+// blocks needed to cover prefixTokens with explicit decode options.
+//
+// Deprecated: use LoadPrefixFromStateBlocksWithOptions.
+func LoadPrefixFromMemvidBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *MemvidBlockBundle, prefixTokens int, opts LoadOptions) (*Snapshot, error) {
+	return LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
+}
+
+// LoadPrefixTokensFromStateBlocks restores only token IDs from a State block
+// manifest. It intentionally avoids K/V assembly, which is the correct wake
+// path for folded State because the compact prompt will be prefetched again.
+func LoadPrefixTokensFromStateBlocks(ctx context.Context, store memvid.Store, bundle *StateBlockBundle, prefixTokens int) ([]int32, error) {
+	return LoadPrefixTokensFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, LoadOptions{})
+}
+
+// LoadPrefixTokensFromStateBlocksWithOptions restores only token IDs from the
+// blocks needed to cover prefixTokens with explicit decode options.
+func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store memvid.Store, bundle *StateBlockBundle, prefixTokens int, opts LoadOptions) ([]int32, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if store == nil {
+		return nil, core.NewError("mlx: state store is nil")
+	}
+	if err := ValidateStateBlockBundle(bundle); err != nil {
+		return nil, err
+	}
+	if prefixTokens <= 0 {
+		prefixTokens = bundle.TokenCount
+	}
+	if prefixTokens > bundle.TokenCount {
+		return nil, core.NewError("mlx: State token prefix exceeds bundle token count")
+	}
+	refs := stateBlockRefsForPrefix(bundle, prefixTokens)
+	if len(refs) == 0 {
+		return nil, core.NewError("mlx: State token prefix has no covering blocks")
+	}
+	tokens := make([]int32, 0, prefixTokens)
+	nextStart := 0
+	for expectedIndex, ref := range refs {
+		if ref.Index != expectedIndex || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
+			return nil, core.NewError("mlx: State token blocks are not contiguous")
+		}
+		block, err := LoadStateBlockTokensWithOptions(ctx, store, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+		if len(block.Tokens) != block.TokenCount {
+			return nil, core.NewError("mlx: State token block token count mismatch")
+		}
+		if block.Index != ref.Index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+			return nil, core.NewError("mlx: State token block metadata mismatch")
+		}
+		tokens = append(tokens, block.Tokens...)
+		nextStart += ref.TokenCount
+		if len(tokens) >= prefixTokens {
+			break
+		}
+	}
+	if len(tokens) < prefixTokens {
+		return nil, core.NewError("mlx: State token prefix blocks do not cover requested tokens")
+	}
+	return tokens[:prefixTokens], nil
+}
+
+func stateBlockRefsForPrefix(bundle *StateBlockBundle, prefixTokens int) []StateBlockRef {
+	refs := make([]StateBlockRef, 0, len(bundle.Blocks))
+	for _, ref := range bundle.Blocks {
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
+		refs = append(refs, ref)
+		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+			break
+		}
+	}
+	return refs
+}
+
+func ValidateStateBlockBundle(bundle *StateBlockBundle) error {
 	if bundle == nil {
-		return core.NewError("mlx: memvid KV block bundle is nil")
+		return core.NewError("mlx: State KV block bundle is nil")
 	}
 	if bundle.Version <= 0 || bundle.Version > MemvidBlockVersion {
-		return core.NewError("mlx: unsupported memvid KV block bundle version")
+		return core.NewError("mlx: unsupported State KV block bundle version")
 	}
 	if bundle.Kind != MemvidBlockBundleKind {
-		return core.NewError("mlx: invalid memvid KV block bundle kind")
+		return core.NewError("mlx: invalid State KV block bundle kind")
 	}
 	if bundle.TokenCount <= 0 {
-		return core.NewError("mlx: memvid KV block bundle token count is empty")
+		return core.NewError("mlx: State KV block bundle token count is empty")
 	}
 	if len(bundle.Blocks) == 0 {
-		return core.NewError("mlx: memvid KV block bundle has no blocks")
+		return core.NewError("mlx: State KV block bundle has no blocks")
 	}
 	return nil
+}
+
+// ValidateMemvidBlockBundle checks a memvid KV block bundle.
+//
+// Deprecated: use ValidateStateBlockBundle.
+func ValidateMemvidBlockBundle(bundle *MemvidBlockBundle) error {
+	return ValidateStateBlockBundle(bundle)
 }
 
 func ClearTerminalState(snapshot *Snapshot) {
@@ -1138,20 +1301,22 @@ func ClearTerminalState(snapshot *Snapshot) {
 }
 
 func loadKVSnapshotMemvidBlock(ctx context.Context, store memvid.Store, ref MemvidBlockRef) (Block, error) {
-	return LoadMemvidBlockWithOptions(ctx, store, ref, LoadOptions{})
+	return LoadStateBlockWithOptions(ctx, store, ref, LoadOptions{})
 }
 
-func LoadMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
+// LoadStateBlockWithOptions loads one durable State KV block with explicit
+// decode options.
+func LoadStateBlockWithOptions(ctx context.Context, store memvid.Store, ref StateBlockRef, opts LoadOptions) (Block, error) {
 	if ref.PayloadEncoding == kvSnapshotMemvidPayloadRaw {
 		return loadRawKVSnapshotMemvidBlockWithOptions(ctx, store, ref, opts)
 	}
 	chunk, err := memvid.Resolve(ctx, store, ref.Memvid.ChunkID)
 	if err != nil {
-		return Block{}, core.E("LoadFromMemvidBlocks", "resolve memvid block", err)
+		return Block{}, core.E("LoadFromStateBlocks", "resolve State block", err)
 	}
 	var envelope kvSnapshotMemvidBlockEnvelope
 	if result := core.JSONUnmarshalString(chunk.Text, &envelope); !result.OK {
-		return Block{}, core.E("LoadFromMemvidBlocks", "parse block envelope", ResultError(result))
+		return Block{}, core.E("LoadFromStateBlocks", "parse block envelope", ResultError(result))
 	}
 	data, err := decodeKVSnapshotMemvidBlockEnvelope(envelope, ref.KVHash)
 	if err != nil {
@@ -1170,21 +1335,69 @@ func LoadMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref Mem
 	}, nil
 }
 
-func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
-	chunk, err := memvid.ResolveRefBytes(ctx, store, ref.Memvid)
+// LoadMemvidBlockWithOptions loads one memvid KV block with explicit decode
+// options.
+//
+// Deprecated: use LoadStateBlockWithOptions.
+func LoadMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
+	return LoadStateBlockWithOptions(ctx, store, ref, opts)
+}
+
+// LoadStateBlockTokens loads only token IDs from one durable State KV block.
+func LoadStateBlockTokens(ctx context.Context, store memvid.Store, ref StateBlockRef) (StateTokenBlock, error) {
+	return LoadStateBlockTokensWithOptions(ctx, store, ref, LoadOptions{})
+}
+
+// LoadStateBlockTokensWithOptions loads only token IDs from one durable State
+// KV block. Decode options are accepted for symmetry with full block loading;
+// tensor payloads are skipped rather than decoded.
+func LoadStateBlockTokensWithOptions(ctx context.Context, store memvid.Store, ref StateBlockRef, _ LoadOptions) (StateTokenBlock, error) {
+	if ref.PayloadEncoding == kvSnapshotMemvidPayloadRaw {
+		data, err := loadRawStateBlockPayload(ctx, store, ref)
+		if err != nil {
+			return StateTokenBlock{}, err
+		}
+		tokens, err := parseKVSnapshotTokens(data)
+		if err != nil {
+			return StateTokenBlock{}, err
+		}
+		return StateTokenBlock{
+			Index:      ref.Index,
+			TokenStart: ref.TokenStart,
+			TokenCount: ref.TokenCount,
+			Hash:       ref.KVHash,
+			Tokens:     tokens,
+		}, nil
+	}
+	chunk, err := memvid.Resolve(ctx, store, ref.Memvid.ChunkID)
 	if err != nil {
-		return Block{}, core.E("LoadFromMemvidBlocks", "resolve raw memvid block", err)
+		return StateTokenBlock{}, core.E("LoadFromStateBlocks", "resolve State token block", err)
 	}
-	data := chunk.Data
-	if len(data) == 0 && chunk.Text != "" {
-		data = []byte(chunk.Text)
+	var envelope kvSnapshotMemvidBlockEnvelope
+	if result := core.JSONUnmarshalString(chunk.Text, &envelope); !result.OK {
+		return StateTokenBlock{}, core.E("LoadFromStateBlocks", "parse token block envelope", ResultError(result))
 	}
-	if ref.PayloadByteCount > 0 && len(data) != ref.PayloadByteCount {
-		return Block{}, core.NewError("mlx: memvid raw KV block payload length mismatch")
+	data, err := decodeKVSnapshotMemvidBlockEnvelope(envelope, ref.KVHash)
+	if err != nil {
+		return StateTokenBlock{}, err
 	}
-	hash := core.SHA256Hex(data)
-	if ref.KVHash != "" && hash != ref.KVHash {
-		return Block{}, core.NewError("mlx: memvid raw KV block hash mismatch")
+	tokens, err := parseKVSnapshotTokens(data)
+	if err != nil {
+		return StateTokenBlock{}, err
+	}
+	return StateTokenBlock{
+		Index:      envelope.BlockIndex,
+		TokenStart: envelope.TokenStart,
+		TokenCount: envelope.TokenCount,
+		Hash:       envelope.KVHash,
+		Tokens:     tokens,
+	}, nil
+}
+
+func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.Store, ref MemvidBlockRef, opts LoadOptions) (Block, error) {
+	data, err := loadRawStateBlockPayload(ctx, store, ref)
+	if err != nil {
+		return Block{}, err
 	}
 	snapshot, err := parseKVSnapshotWithOptions(data, opts)
 	if err != nil {
@@ -1197,6 +1410,25 @@ func loadRawKVSnapshotMemvidBlockWithOptions(ctx context.Context, store memvid.S
 		Hash:       ref.KVHash,
 		Snapshot:   snapshot,
 	}, nil
+}
+
+func loadRawStateBlockPayload(ctx context.Context, store memvid.Store, ref StateBlockRef) ([]byte, error) {
+	chunk, err := memvid.ResolveRefBytes(ctx, store, ref.Memvid)
+	if err != nil {
+		return nil, core.E("LoadFromStateBlocks", "resolve raw State block", err)
+	}
+	data := chunk.Data
+	if len(data) == 0 && chunk.Text != "" {
+		data = []byte(chunk.Text)
+	}
+	if ref.PayloadByteCount > 0 && len(data) != ref.PayloadByteCount {
+		return nil, core.NewError("mlx: State raw KV block payload length mismatch")
+	}
+	hash := core.SHA256Hex(data)
+	if ref.KVHash != "" && hash != ref.KVHash {
+		return nil, core.NewError("mlx: State raw KV block hash mismatch")
+	}
+	return data, nil
 }
 
 func decodeKVSnapshotMemvidBlockEnvelope(envelope kvSnapshotMemvidBlockEnvelope, expectedHash string) ([]byte, error) {
