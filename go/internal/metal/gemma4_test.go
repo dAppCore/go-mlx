@@ -2800,6 +2800,74 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	}
 }
 
+func TestGemma4_AttentionPagedMaterializedFullKVForOwnerReuse_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention PagedMaterializedFullKVForOwnerReuse"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE", "1"))
+
+	identity := func() *Array {
+		return FromValues([]float32{
+			1, 0,
+			0, 1,
+		}, 2, 2)
+	}
+	ones := func() *Array { return FromValues([]float32{1, 1}, 2) }
+	attention := &Gemma4Attention{
+		QProj:          NewLinear(identity(), nil),
+		KProj:          NewLinear(identity(), nil),
+		VProj:          NewLinear(identity(), nil),
+		OProj:          NewLinear(identity(), nil),
+		QNormScaled:    ones(),
+		KNormScaled:    ones(),
+		HeadDim:        2,
+		NKVHeads:       1,
+		Scale:          1,
+		RopeBase:       10000,
+		RopeRotatedDim: 2,
+	}
+	defer closeGemma4(&Gemma4Model{Layers: []*Gemma4DecoderLayer{{Attention: attention}}})
+
+	cfg := &Gemma4TextConfig{
+		HiddenSize:        2,
+		NumAttentionHeads: 1,
+		NumKeyValueHeads:  1,
+		RMSNormEps:        1e-6,
+	}
+	cache := NewPagedKVCache(8, 1)
+	defer cache.Reset()
+
+	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	if err := Eval(out1); err != nil {
+		t.Fatalf("Eval(out1): %v", err)
+	}
+	Free(x1, out1)
+	kv1.free()
+
+	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	defer kv2.free()
+	if err := Eval(out2); err != nil {
+		t.Fatalf("Eval(out2): %v", err)
+	}
+	Free(x2, out2)
+	if !kv2.hasPages() {
+		t.Fatal("owner paged attention did not keep page state")
+	}
+	if !gemma4ValidKV(kv2.Keys, kv2.Values) {
+		t.Fatal("owner paged attention did not return materialized K/V views")
+	}
+	if cache.materializedKeys == nil || cache.materializedVals == nil {
+		t.Fatal("owner paged cache did not retain materialized backing K/V")
+	}
+	if kv2.Keys.Shape()[2] != 2 || cache.materializedKeys.Shape()[2] != 8 {
+		t.Fatalf("materialized visible/backing lengths = %d/%d, want 2/8", kv2.Keys.Shape()[2], cache.materializedKeys.Shape()[2])
+	}
+}
+
 func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *testing.T) {
 	coverageTokens := "Gemma4Attention CacheUpdateNilFallback"
 	if coverageTokens == "" {

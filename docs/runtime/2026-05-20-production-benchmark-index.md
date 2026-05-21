@@ -23,6 +23,9 @@ go-mlx's long-context decode path as the next optimisation boundary. A
 follow-up `5120` token-budget diagnostic now shows the current go-mlx path
 holds the same `~60 tok/s` decode band for `2489` token natural turns with
 bounded memory, but that prompt shape does not force a full `5k` token output.
+A materialised-owner K/V probe also stayed flat at `59.855 tok/s` while raising
+active/cache memory, so it is recorded as a rejected diagnostic rather than a
+new default.
 
 ## Accepted go-mlx Artefacts
 
@@ -68,6 +71,7 @@ they are not accepted production paths.
 | Native C++ paged attention | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-native-paged-attention-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s`, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected; one C++ call trims little overhead and does not replace a fused paged-attention kernel |
 | Larger paged K/V blocks | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-page2048-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `2048`, accepted fast gates | `80.787s`, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected; bigger pages reduce page count but lose decode speed and increase cache memory versus `1024` pages |
 | Preallocated paged K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-paged-prealloc-g1024-r1-energy100w.json` | MLX 4bit, `101005` prompt tokens, `1024` generated tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s`, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected; in-place page updates do not improve the 100k decode path and slightly increase active memory |
+| Materialised owner K/V | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-materialized-owner-g1024-r1-energy100w.json` | MLX 4bit, `100932` prompt tokens, `1024` generated tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s`, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected; full backing tensors for owner layers do not improve decode and increase active/cache memory |
 | Hyper-long fixed cache | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-g1024-r1-energy100w.json` | MLX 4bit, `100937` prompt tokens, fixed Gemma 4 cache, shared fixed mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13748980782` bytes | Rejected; fixed full-capacity global K/V is over the production memory guard |
 | Right-sized fixed cache | `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-rightsized102400-g1024-r1-energy100w.json` | MLX 4bit, README repeat `46`, fixed Gemma 4 cache forced to `102400`, shared fixed mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens when active memory hit `13682988726` bytes | Rejected; reducing fixed cache capacity below `131072` still exceeds the production memory guard |
 
@@ -168,7 +172,10 @@ device from the runner, while the same workload with `-report-file` completed.
    attention path, not prompt-cache restore. The current token-phase trace shows
    shared full-K/V reuse moved layers `19`, `24`, `29`, and `34` down to about
    `1.03ms/token`, leaving the early full-attention owner layers `4`, `9`, and
-   `14` as the next owner-K/V target. The current diagnosis is recorded in
+   `14` as the next target. The materialised-owner diagnostic rejected a pure
+   MLX `slice_update` backing tensor workaround, so the remaining path is a
+   lower-level fused/zero-copy global-attention storage shape. The current
+   diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.

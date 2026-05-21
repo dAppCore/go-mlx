@@ -726,12 +726,14 @@ func (c *QuantizedKVCache) dequantizedState() (*Array, *Array) {
 // PagedKVCache stores K/V tensors in block arrays to avoid repeatedly growing
 // one large allocation. Attention receives a concatenated view for each step.
 type PagedKVCache struct {
-	kPages, vPages []*Array
-	pageLens       []int
-	offset         int
-	length         int
-	maxSize        int
-	pageSize       int
+	kPages, vPages                     []*Array
+	pageLens                           []int
+	materializedKeys, materializedVals *Array
+	materializedLength                 int
+	offset                             int
+	length                             int
+	maxSize                            int
+	pageSize                           int
 }
 
 // PagedKVState is a view of a paged K/V cache. Keys and Values may borrow
@@ -845,9 +847,31 @@ func (c *PagedKVCache) UpdateBorrowedPages(k, v *Array, seqLen int) PagedKVState
 	return c.BorrowedPageState()
 }
 
+func (c *PagedKVCache) UpdateBorrowedPagesMaterialized(k, v *Array, seqLen int) (PagedKVState, *Array, *Array) {
+	added := c.appendPages(k, v, seqLen)
+	c.offset += added
+	c.length += added
+	c.trimToMaxSize()
+	state := c.BorrowedPageState()
+	if added <= 0 || c.maxSize <= 0 {
+		return state, nil, nil
+	}
+	if c.materializedLength == c.length-added && c.appendMaterialized(k, v, added) {
+		keys, values := c.materializedVisibleState()
+		return state, keys, values
+	}
+	c.resetMaterialized()
+	if c.initMaterializedFromPages(state) {
+		keys, values := c.materializedVisibleState()
+		return state, keys, values
+	}
+	return state, nil, nil
+}
+
 func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) PagedKVState {
 	Free(c.kPages...)
 	Free(c.vPages...)
+	c.resetMaterialized()
 	c.kPages = []*Array{k}
 	c.vPages = []*Array{v}
 	c.pageLens = []int{seqLen}
@@ -931,6 +955,7 @@ func (c *PagedKVCache) Len() int    { return c.length }
 func (c *PagedKVCache) Reset() {
 	Free(c.kPages...)
 	Free(c.vPages...)
+	c.resetMaterialized()
 	c.kPages = nil
 	c.vPages = nil
 	c.pageLens = nil
@@ -943,6 +968,9 @@ func (c *PagedKVCache) Detach() {
 	// page views are not captured by the final logits eval; detaching them can
 	// turn the next decode step into an unevaluable graph. Snapshot paths use
 	// contiguous caches until native page-state snapshots land.
+	if c.materializedKeys != nil || c.materializedVals != nil {
+		Detach(c.materializedKeys, c.materializedVals)
+	}
 }
 
 func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
@@ -1094,6 +1122,7 @@ func (c *PagedKVCache) trimToMaxSize() {
 	if c.maxSize <= 0 || c.length <= c.maxSize {
 		return
 	}
+	c.resetMaterialized()
 	excess := c.length - c.maxSize
 	for excess > 0 && len(c.kPages) > 0 && len(c.vPages) > 0 {
 		pageLen := c.pageLen(0)
@@ -1239,6 +1268,103 @@ func concatenatePagedState(kPages, vPages []*Array) (*Array, *Array) {
 		return kPages[0].Clone(), vPages[0].Clone()
 	}
 	return Concatenate(kPages, 2), Concatenate(vPages, 2)
+}
+
+func (c *PagedKVCache) resetMaterialized() {
+	Free(c.materializedKeys, c.materializedVals)
+	c.materializedKeys = nil
+	c.materializedVals = nil
+	c.materializedLength = 0
+}
+
+func (c *PagedKVCache) appendMaterialized(k, v *Array, seqLen int) bool {
+	if c.materializedKeys == nil || c.materializedVals == nil || seqLen <= 0 || c.maxSize <= 0 {
+		return false
+	}
+	kShape := k.Shape()
+	vShape := v.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 || c.materializedLength+seqLen > c.maxSize {
+		return false
+	}
+	if !c.materializedShapesMatch(kShape, vShape) {
+		return false
+	}
+	writeK, writeV := k, v
+	totalLen := int(kShape[2])
+	if totalLen <= 0 {
+		return false
+	}
+	if seqLen > totalLen {
+		seqLen = totalLen
+	}
+	if totalLen != seqLen {
+		start := totalLen - seqLen
+		writeK = Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(totalLen), kShape[3]})
+		writeV = Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(totalLen), vShape[3]})
+		defer Free(writeK, writeV)
+	}
+	start := c.materializedLength
+	oldK, oldV := c.materializedKeys, c.materializedVals
+	c.materializedKeys = SliceUpdateInplace(c.materializedKeys, writeK, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + seqLen), kShape[3]})
+	c.materializedVals = SliceUpdateInplace(c.materializedVals, writeV, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + seqLen), vShape[3]})
+	Free(oldK, oldV)
+	c.materializedLength += seqLen
+	return c.materializedLength == c.length
+}
+
+func (c *PagedKVCache) initMaterializedFromPages(state PagedKVState) bool {
+	if c.maxSize <= 0 || state.Length <= 0 || len(state.Keys) == 0 || len(state.Keys) != len(state.Values) {
+		return false
+	}
+	fullK, fullV := concatenatePagedState(state.Keys, state.Values)
+	if fullK == nil || fullV == nil || !fullK.Valid() || !fullV.Valid() {
+		Free(fullK, fullV)
+		return false
+	}
+	kShape := fullK.Shape()
+	vShape := fullV.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 || state.Length > c.maxSize {
+		Free(fullK, fullV)
+		return false
+	}
+	c.materializedKeys = Zeros([]int32{kShape[0], kShape[1], int32(c.maxSize), kShape[3]}, fullK.Dtype())
+	c.materializedVals = Zeros([]int32{vShape[0], vShape[1], int32(c.maxSize), vShape[3]}, fullV.Dtype())
+	oldK, oldV := c.materializedKeys, c.materializedVals
+	c.materializedKeys = SliceUpdateInplace(c.materializedKeys, fullK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(state.Length), kShape[3]})
+	c.materializedVals = SliceUpdateInplace(c.materializedVals, fullV, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(state.Length), vShape[3]})
+	Free(oldK, oldV, fullK, fullV)
+	c.materializedLength = state.Length
+	return true
+}
+
+func (c *PagedKVCache) materializedVisibleState() (*Array, *Array) {
+	if c.materializedKeys == nil || c.materializedVals == nil || c.materializedLength <= 0 {
+		return nil, nil
+	}
+	kShape := c.materializedKeys.Shape()
+	vShape := c.materializedVals.Shape()
+	if len(kShape) < 4 || len(vShape) < 4 {
+		return nil, nil
+	}
+	return Slice(c.materializedKeys, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(c.materializedLength), kShape[3]}),
+		Slice(c.materializedVals, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(c.materializedLength), vShape[3]})
+}
+
+func (c *PagedKVCache) materializedShapesMatch(kShape, vShape []int32) bool {
+	if c.materializedKeys == nil || c.materializedVals == nil {
+		return false
+	}
+	mkShape := c.materializedKeys.Shape()
+	mvShape := c.materializedVals.Shape()
+	return len(mkShape) >= 4 && len(mvShape) >= 4 &&
+		mkShape[0] == kShape[0] &&
+		mkShape[1] == kShape[1] &&
+		mkShape[2] == int32(c.maxSize) &&
+		mkShape[3] == kShape[3] &&
+		mvShape[0] == vShape[0] &&
+		mvShape[1] == vShape[1] &&
+		mvShape[2] == int32(c.maxSize) &&
+		mvShape[3] == vShape[3]
 }
 
 func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {

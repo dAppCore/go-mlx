@@ -2596,12 +2596,19 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			}
 			if out == nil {
 				if paged, ok := c.(*PagedKVCache); ok && L == 1 && mask == nil {
-					pages := paged.UpdateBorrowedPages(k, v, int(L))
-					pagedKV := sharedKV{Pages: pages, Offset: offset}
+					var pages PagedKVState
+					var materializedK, materializedV *Array
+					if window == 0 && pagedFullKVMaterializeEnabled() {
+						pages, materializedK, materializedV = paged.UpdateBorrowedPagesMaterialized(k, v, int(L))
+					} else {
+						pages = paged.UpdateBorrowedPages(k, v, int(L))
+					}
+					pagedKV := sharedKV{Keys: materializedK, Values: materializedV, Pages: pages, Offset: offset}
 					if pagedKV.hasPages() {
 						Free(oldK, oldV)
 						kv = pagedKV
 					} else {
+						Free(materializedK, materializedV)
 						pages.Free()
 						kv = sharedKV{Keys: oldK, Values: oldV, Offset: offset}
 					}

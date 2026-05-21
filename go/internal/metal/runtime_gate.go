@@ -22,6 +22,7 @@ var (
 	runtimeGateExpertIDUnrolledQ4                   atomic.Bool
 	runtimeGateSortedExpertPrefill                  atomic.Bool
 	runtimeGatePagedDecodeFastConcat                atomic.Bool
+	runtimeGatePagedFullKVMaterialize               atomic.Bool
 	runtimeGateNativePagedAttention                 atomic.Bool
 	runtimeGateNativeMLPMatVec                      atomic.Bool
 	runtimeGateNativeLinearMatVec                   atomic.Bool
@@ -107,6 +108,7 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_EXPERT_ID_UNROLLED_Q4",
 		"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL",
 		"GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT",
+		"GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE",
 		"GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_MLP_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
@@ -144,6 +146,8 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateSortedExpertPrefill.Store(enabled)
 	case "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT":
 		runtimeGatePagedDecodeFastConcat.Store(enabled)
+	case "GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE":
+		runtimeGatePagedFullKVMaterialize.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION":
 		runtimeGateNativePagedAttention.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_MLP_MATVEC":
@@ -194,6 +198,8 @@ func expertIDUnrolledQ4RuntimeEnabled() bool { return runtimeGateExpertIDUnrolle
 func sortedExpertPrefillEnabled() bool { return runtimeGateSortedExpertPrefill.Load() }
 
 func pagedDecodeFastConcatEnabled() bool { return runtimeGatePagedDecodeFastConcat.Load() }
+
+func pagedFullKVMaterializeEnabled() bool { return runtimeGatePagedFullKVMaterialize.Load() }
 
 func nativePagedAttentionEnabled() bool { return runtimeGateNativePagedAttention.Load() }
 

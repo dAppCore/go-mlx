@@ -136,11 +136,12 @@ full-attention layers `19`, `24`, `29`, and `34` down to about `1.03ms/token`.
 Early owner layers `4`, `9`, and `14` remain near `1.96-1.98ms/token`, while
 local sliding-attention layers sit near the `0.29-0.37ms` band. The next
 implementation target should therefore stay focused on owner-layer
-full-attention K/V work in the paged/global path.
+full-attention K/V work in the paged/global path, but not by simply retaining a
+second MLX full-cache tensor via `slice_update`.
 
 ## Rejected 100k Branches
 
-Five same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+Six same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |
@@ -148,6 +149,7 @@ Five same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 | Native C++ paged attention reduction | `100937` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION`, no fast concat | `104.572s` wall, `23.448 tok/s` decode, `1660.523 tok/s` prefill, `3.640 GiB` active MLX | Rejected. Moving the same page-reduction graph behind one C++ call trims only a little overhead; the missing path is a fused/custom paged-attention kernel. |
 | Larger `2048`-token pages | `101005` prompt tokens, paged K/V `2048`, accepted fast gates | `80.787s` wall, `49.984 tok/s` decode, `1678.261 tok/s` prefill, `3.710 GiB` active MLX | Rejected. Fewer pages do not improve the borrowed fast-concat path; cache memory rises and decode falls below the accepted `1024`-page row. |
 | Preallocated `1024`-token pages | `101005` prompt tokens, paged K/V `1024`, `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`, accepted fast gates | `80.459s` wall, `50.743 tok/s` decode, `1679.677 tok/s` prefill, `3.747 GiB` active MLX | Rejected. In-place page updates do not beat the accepted concat-backed page append path at 100k and slightly increase active memory. |
+| Materialised owner full K/V | `100932` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s` wall, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected. Keeping a full backing tensor for the owner layers removes no visible decode cost and raises active/cache memory versus the accepted shared-full-K/V row. |
 | Fixed cache with sliding layers bounded | `100937` prompt tokens, fixed Gemma 4 cache, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13748980782` bytes over the `12884901888` byte guard | Rejected. Hyper-long fixed cache is not the default path until a narrower global-only/native attention storage plan exists. |
 | Right-sized fixed cache with sliding layers bounded | README repeat `46`, fixed cache size forced to `102400`, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13682988726` bytes over the `12884901888` byte guard | Rejected. Right-sizing below the full `131072` context does not bring active memory under the production guard. |
 
@@ -157,7 +159,10 @@ avoids both unnecessary full K/V rematerialisation and the active-memory
 footprint of a full fixed cache. A C++ wrapper around the existing
 page-reduction graph is not enough, larger page geometry does not help,
 preallocated pages do not help, and a right-sized fixed cache is still too
-memory-heavy on the guarded 100k lane.
+memory-heavy on the guarded 100k lane. The materialised-owner probe also
+rejects a pure MLX `slice_update` full-backing workaround; the next viable path
+needs the lower-level zero-copy/fused global-attention storage shape described
+in `IDEAS.md`, not another Go-orchestrated full-cache view.
 
 ## Model-Native Cache Diagnostic
 

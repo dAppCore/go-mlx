@@ -121,6 +121,13 @@
       "indexed": true
     },
     {
+      "id": "gomlx-100k-materialized-owner-rejected",
+      "role": "rejected_diagnostic",
+      "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-materialized-owner-g1024-r1-energy100w.json",
+      "kind": "json",
+      "indexed": true
+    },
+    {
       "id": "gomlx-100k-fixed-sliding-rejected",
       "role": "rejected_diagnostic",
       "path": "docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-100k-fixed-sliding-g1024-r1-energy100w.json",
