@@ -349,6 +349,8 @@ func (c *RotatingKVCache) Detach() {
 type FixedKVCache struct {
 	keys, values              *Array
 	slidingIndices, lastIndex *Array
+	storageDType              DType
+	hasStorageDType           bool
 	offset                    int
 	length                    int
 	maxSize                   int
@@ -372,10 +374,19 @@ func NewFixedKVCache(maxSize int) *FixedKVCache {
 	return &FixedKVCache{maxSize: maxSize}
 }
 
+func NewFixedKVCacheWithDType(maxSize int, dtype DType) *FixedKVCache {
+	cache := NewFixedKVCache(maxSize)
+	cache.storageDType = dtype
+	cache.hasStorageDType = true
+	return cache
+}
+
 func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return nil, nil
 	}
+	k, v, owned := c.storageKV(k, v)
+	defer Free(owned...)
 	kShape := k.Shape()
 	vShape := v.Shape()
 	if len(kShape) < 4 || len(vShape) < 4 || c.maxSize <= 0 {
@@ -511,6 +522,8 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return
 	}
+	k, v, owned := c.storageKV(k, v)
+	defer Free(owned...)
 	kShape := k.Shape()
 	vShape := v.Shape()
 	if len(kShape) < 4 || len(vShape) < 4 {
@@ -616,6 +629,13 @@ func (c *FixedKVCache) Detach() {
 		return
 	}
 	Detach(c.keys, c.values)
+}
+
+func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
+	if c == nil || !c.hasStorageDType {
+		return k, v, nil
+	}
+	return cacheStorageKV(k, v, c.storageDType)
 }
 
 // QuantizedKVCache stores cache tensors in int8 lanes and dequantizes them
@@ -751,6 +771,8 @@ type PagedKVCache struct {
 	pageLens                           []int
 	materializedKeys, materializedVals *Array
 	materializedLength                 int
+	storageDType                       DType
+	hasStorageDType                    bool
 	offset                             int
 	length                             int
 	maxSize                            int
@@ -810,6 +832,13 @@ func pagedStateNeedsMaterializedRepeat(state PagedKVState, factor int32) bool {
 func NewPagedKVCache(maxSize, pageSize int) *PagedKVCache {
 	pageSize = resolvePagedKVPageSize(maxSize, pageSize)
 	return &PagedKVCache{maxSize: maxSize, pageSize: pageSize}
+}
+
+func NewPagedKVCacheWithDType(maxSize, pageSize int, dtype DType) *PagedKVCache {
+	cache := NewPagedKVCache(maxSize, pageSize)
+	cache.storageDType = dtype
+	cache.hasStorageDType = true
+	return cache
 }
 
 func resolvePagedKVPageSize(maxSize, requested int) int {
@@ -1001,10 +1030,35 @@ func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 }
 
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
+	k, v, owned := c.storageKV(k, v)
+	defer Free(owned...)
 	if enablePagedKVPrealloc {
 		return c.appendPagesPrealloc(k, v, seqLen)
 	}
 	return c.appendPagesConcat(k, v, seqLen)
+}
+
+func (c *PagedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
+	if c == nil || !c.hasStorageDType {
+		return k, v, nil
+	}
+	return cacheStorageKV(k, v, c.storageDType)
+}
+
+func cacheStorageKV(k, v *Array, dtype DType) (*Array, *Array, []*Array) {
+	if DTypeByteSize(dtype) <= 0 {
+		return k, v, nil
+	}
+	owned := make([]*Array, 0, 2)
+	if k != nil && k.Valid() && k.Dtype() != dtype {
+		k = AsType(k, dtype)
+		owned = append(owned, k)
+	}
+	if v != nil && v.Valid() && v.Dtype() != dtype {
+		v = AsType(v, dtype)
+		owned = append(owned, v)
+	}
+	return k, v, owned
 }
 
 func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {

@@ -1254,6 +1254,7 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 		if m.cachePolicy != "full" && m.contextLen > 0 {
 			maxSize = m.contextLen
 		}
+		storageDType, hasStorageDType := kvCacheStorageDType()
 		for i := range caches {
 			layerMaxSize := replacementCacheMaxSize(caches[i], maxSize)
 			switch mode {
@@ -1267,15 +1268,37 @@ func (m *Model) newCachesWithRequestFixedSize(requestFixedSize int) []Cache {
 					if fixedGemma4SlidingCacheBoundEnabled() && layerMaxSize > 0 {
 						fixedSize = min(fixedSize, layerMaxSize)
 					}
-					caches[i] = NewFixedKVCache(fixedSize)
+					if hasStorageDType {
+						caches[i] = NewFixedKVCacheWithDType(fixedSize, storageDType)
+					} else {
+						caches[i] = NewFixedKVCache(fixedSize)
+					}
 				} else {
-					caches[i] = NewPagedKVCache(layerMaxSize, 0)
+					if hasStorageDType {
+						caches[i] = NewPagedKVCacheWithDType(layerMaxSize, 0, storageDType)
+					} else {
+						caches[i] = NewPagedKVCache(layerMaxSize, 0)
+					}
 				}
 			}
 		}
 		return caches
 	}
 	return m.applyContextCachePolicy(caches)
+}
+
+func kvCacheStorageDType() (DType, bool) {
+	value := core.Lower(core.Trim(RuntimeGateValue("GO_MLX_KV_CACHE_DTYPE")))
+	switch value {
+	case "", "native", "default":
+		return DTypeFloat32, false
+	case "fp16", "float16", "f16":
+		return DTypeFloat16, true
+	case "bf16", "bfloat16":
+		return DTypeBFloat16, true
+	default:
+		return DTypeFloat32, false
+	}
 }
 
 func (m *Model) generationFixedGemma4CacheSize(promptTokens, maxTokens int) int {

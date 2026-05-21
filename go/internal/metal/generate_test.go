@@ -557,6 +557,78 @@ func TestModel_NewCaches_PagedPageSizeEnvOverride_Good(t *testing.T) {
 	}
 }
 
+func TestModel_NewCaches_PagedStorageDTypeRuntimeValue_Good(t *testing.T) {
+	coverageTokens := "NewCaches PagedStorageDTypeRuntimeValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(512),
+			},
+		},
+		contextLen: 131072,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newCaches()
+	full, ok := caches[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *PagedKVCache", caches[0])
+	}
+	if !full.hasStorageDType || full.storageDType != DTypeBFloat16 {
+		t.Fatalf("full storage dtype = %v/%v, want bf16 enabled", full.hasStorageDType, full.storageDType)
+	}
+	sliding, ok := caches[1].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *PagedKVCache", caches[1])
+	}
+	if !sliding.hasStorageDType || sliding.storageDType != DTypeBFloat16 {
+		t.Fatalf("sliding storage dtype = %v/%v, want bf16 enabled", sliding.hasStorageDType, sliding.storageDType)
+	}
+}
+
+func TestModel_NewCaches_FixedPagedStorageDTypeRuntimeValue_Good(t *testing.T) {
+	coverageTokens := "NewCaches FixedPagedStorageDTypeRuntimeValue"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_KV_CACHE_DTYPE", "bf16"))
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+	model := &Model{
+		model: &fakeRotatingModel{
+			caches: []Cache{
+				NewKVCache(),
+				NewRotatingKVCache(512),
+			},
+		},
+		modelType:  "gemma4",
+		contextLen: 32768,
+		cacheMode:  string(KVCacheModePaged),
+	}
+
+	caches := model.newCaches()
+	full, ok := caches[0].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[0] = %T, want *FixedKVCache", caches[0])
+	}
+	if !full.hasStorageDType || full.storageDType != DTypeBFloat16 {
+		t.Fatalf("full fixed storage dtype = %v/%v, want bf16 enabled", full.hasStorageDType, full.storageDType)
+	}
+	sliding, ok := caches[1].(*FixedKVCache)
+	if !ok {
+		t.Fatalf("cache[1] = %T, want *FixedKVCache", caches[1])
+	}
+	if sliding.maxSize != 512 || !sliding.hasStorageDType || sliding.storageDType != DTypeBFloat16 {
+		t.Fatalf("sliding fixed max/storage = %d/%v/%v, want 512 bf16", sliding.maxSize, sliding.hasStorageDType, sliding.storageDType)
+	}
+}
+
 func TestPagedKVCache_PageSizeEnvOverrideCapsToMax_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache PageSizeEnvOverrideCapsToMax"
 	if coverageTokens == "" {

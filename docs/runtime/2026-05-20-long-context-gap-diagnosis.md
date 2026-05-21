@@ -193,6 +193,10 @@ validation code where it cannot move decode.
 | `context=65537`, native paged attention | `74.078s` wall, `1970.895 tok/s` prefill, `24.555 tok/s` decode, `6.651 GB` MLX cache | Rejected. The current native page-list reduction is much slower than fast-concat. |
 | `context=65537`, paged fast-concat plus clear-cache | `52.127s` wall, `1899.350 tok/s` prefill, `55.233 tok/s` decode, `4` bytes MLX cache, `3.369 GB` RSS | Memory hygiene only. It clears allocator cache without closing decode. |
 | `context=131072`, paged fast-concat plus clear-cache | `100912` prompt tokens, `80.551s` wall, `1593.668 tok/s` prefill, `59.919 tok/s` decode, `63.463s` first token, `7.151 GB` peak MLX, `3.879 GB` active MLX, `4` bytes MLX cache, `3.368 GB` RSS | Stable memory at 128Ki, but speed remains in the current 100k band. |
+| `context=65537`, typed paged K/V without query alignment | fp16 and bf16 K/V storage both land around `55.9s` wall, `1873-1877 tok/s` prefill, `46.7 tok/s` decode, and `6.832 GB` peak MLX | Rejected. Storing K/V narrower while leaving the attention query in the old dtype made SDPA slower and proved dtype alignment is part of the storage contract. |
+| `context=65537`, typed paged K/V with query alignment | fp16 K/V records `44.294s` wall, `2076.372 tok/s` prefill, `75.012 tok/s` decode, `5.405 GB` peak MLX; bf16 K/V records `44.019s` wall, `2101.038 tok/s` prefill, `74.548 tok/s` decode, `5.415 GB` peak MLX | Positive cold/threshold probe. Query-aligned typed K/V beats both the paged clear-cache threshold and the `65536` fixed-cache threshold while lowering peak MLX memory. |
+| `context=131072`, typed paged K/V with query alignment, one run | fp16 K/V records `68.922s` wall, `1820.807 tok/s` prefill, `75.848 tok/s` decode, `5.471 GB` peak MLX; bf16 K/V records `68.912s` wall, `1824.374 tok/s` prefill, `75.300 tok/s` decode, `5.481 GB` peak MLX | Positive cold 100k probe. It cuts peak memory versus the current shared-full-K/V row, but a one-run row is not the retained workflow acceptance measure. |
+| `context=131072`, fp16 paged K/V with query alignment, 10 retained runs | `100912` prompt tokens, `240.453s` wall, `56.025 tok/s` average decode, first run `75.883 tok/s`, warm turns about `53.8 tok/s`, `5.471 GB` peak MLX, `3.467 GB` active MLX, `3.381 GB` RSS, and `4` bytes MLX cache | Rejected as the default retained workflow. It saves memory, but is slower than the accepted shared-full-K/V row at `231.109s` wall and `60.011 tok/s` average decode. |
 
 The zero-copy stack is therefore split into three parts:
 
@@ -212,6 +216,14 @@ read as allocator discipline, not throughput evidence. They keep MLX cache
 memory flat during long runs and after chunked prefill, but they do not change
 the underlying paged/global attention work enough to beat the current external
 runner anchors.
+
+`GO_MLX_KV_CACHE_DTYPE` is therefore kept as an explicit opt-in R&D gate. The
+implementation is useful because it gives the cache layer a typed-storage
+contract and exposes the query/K/V dtype alignment rule. It is not promoted into
+the fast Gemma 4 defaults because the realistic retained 10-turn workflow loses
+wall time and warm decode, even though the cold rows are much faster and use
+less memory. The next production path still has to make the hot retained
+paged/global attention path streamier rather than only narrowing stored K/V.
 
 ## Atomic-Chat Reference Notes
 

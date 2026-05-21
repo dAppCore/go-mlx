@@ -2495,6 +2495,23 @@ func (a *Gemma4Attention) applyRoPE(x *Array, offset int) *Array {
 	return RoPE(x, int(a.RopeRotatedDim), false, a.RopeBase, 1.0, offset)
 }
 
+func attentionQueryForKV(query, key *Array) (*Array, *Array) {
+	if query == nil || key == nil || !query.Valid() || !key.Valid() {
+		return query, nil
+	}
+	dtype := key.Dtype()
+	if query.Dtype() == dtype {
+		return query, nil
+	}
+	switch dtype {
+	case DTypeFloat16, DTypeBFloat16:
+		cast := AsType(query, dtype)
+		return cast, cast
+	default:
+		return query, nil
+	}
+}
+
 func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache) (*Array, sharedKV) {
 	if nativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.hasState() && L == 1 && mask == nil {
 		if fixed, ok := c.(*FixedKVCache); ok {
@@ -2634,13 +2651,20 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			Free(q)
 			q = qRoPE
 			qRoPEApplied = true
+			attentionQ := q
+			var ownedAttentionQ *Array
+			if len(kv.Pages.Keys) > 0 {
+				attentionQ, ownedAttentionQ = attentionQueryForKV(q, kv.Pages.Keys[0])
+			} else if kv.Keys != nil {
+				attentionQ, ownedAttentionQ = attentionQueryForKV(q, kv.Keys)
+			}
 			if gemma4ValidKV(kv.Keys, kv.Values) {
-				out = ScaledDotProductAttention(q, kv.Keys, kv.Values, a.Scale, false)
+				out = ScaledDotProductAttention(attentionQ, kv.Keys, kv.Values, a.Scale, false)
 			}
 			if out == nil && nativePagedAttentionEnabled() && len(kv.Pages.Keys) > 1 {
 				var ok bool
 				var err error
-				out, ok, err = nativePagedSingleTokenAttention(q, kv.Pages.Keys, kv.Pages.Values, a.Scale)
+				out, ok, err = nativePagedSingleTokenAttention(attentionQ, kv.Pages.Keys, kv.Pages.Values, a.Scale)
 				if !ok || err != nil {
 					if err != nil {
 						core.Error("mlx: native paged attention failed; falling back to Go graph", "error", err)
@@ -2650,7 +2674,13 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			}
 			if out == nil && pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
 				kBase, vBase := concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
-				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, false)
+				concatQ := attentionQ
+				var ownedConcatQ *Array
+				if ownedAttentionQ == nil {
+					concatQ, ownedConcatQ = attentionQueryForKV(q, kBase)
+				}
+				out = ScaledDotProductAttention(concatQ, kBase, vBase, a.Scale, false)
+				Free(ownedConcatQ)
 				if window == 0 {
 					kv.Keys = kBase
 					kv.Values = vBase
@@ -2664,9 +2694,10 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				if len(kPages) > 1 && pagedStateNeedsMaterializedRepeat(kv.Pages, repeatFactor) {
 					kPages, vPages, repeatedPages = repeatPagedState(kv.Pages, repeatFactor)
 				}
-				out = ScaledDotProductAttentionPaged(q, kPages, vPages, a.Scale)
+				out = ScaledDotProductAttentionPaged(attentionQ, kPages, vPages, a.Scale)
 				Free(repeatedPages...)
 			}
+			Free(ownedAttentionQ)
 		} else {
 			kBase, vBase := kv.Keys, kv.Values
 			var ownedContiguous []*Array
@@ -2724,13 +2755,15 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				q = qRoPE
 				qRoPEApplied = true
 			}
+			attentionQ, ownedAttentionQ := attentionQueryForKV(q, kBase)
 			if mask != nil {
-				out = ScaledDotProductAttentionWithMask(q, kBase, vBase, mask, a.Scale)
+				out = ScaledDotProductAttentionWithMask(attentionQ, kBase, vBase, mask, a.Scale)
 			} else if useCausalAttention {
-				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, true)
+				out = ScaledDotProductAttention(attentionQ, kBase, vBase, a.Scale, true)
 			} else {
-				out = ScaledDotProductAttention(q, kBase, vBase, a.Scale, L > 1)
+				out = ScaledDotProductAttention(attentionQ, kBase, vBase, a.Scale, L > 1)
 			}
+			Free(ownedAttentionQ)
 			if cachedMaskOwned {
 				Free(cachedMask)
 			}

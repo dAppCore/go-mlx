@@ -400,6 +400,53 @@ func TestPagedKVCache_HyperLongDefaultPageSize_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache StoresRequestedDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCacheWithDType(8, 2, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	state := cache.UpdateBorrowedPages(k, v, 2)
+	defer state.Free()
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("page count = %d/%d, want one K/V page", len(state.Keys), len(state.Values))
+	}
+	if state.Keys[0].Dtype() != DTypeBFloat16 || state.Values[0].Dtype() != DTypeBFloat16 {
+		t.Fatalf("page dtypes = %v/%v, want bfloat16/bfloat16", state.Keys[0].Dtype(), state.Values[0].Dtype())
+	}
+	if err := Eval(state.Keys[0], state.Values[0]); err != nil {
+		t.Fatalf("Eval typed paged state: %v", err)
+	}
+}
+
+func TestFixedKVCache_StoresRequestedDType_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache StoresRequestedDType"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewFixedKVCacheWithDType(4, DTypeBFloat16)
+	defer cache.Reset()
+	k, v := makeKV(2)
+	defer Free(k, v)
+
+	stateK, stateV := cache.Update(k, v, 2)
+	defer Free(stateK, stateV)
+	if stateK.Dtype() != DTypeBFloat16 || stateV.Dtype() != DTypeBFloat16 {
+		t.Fatalf("fixed state dtypes = %v/%v, want bfloat16/bfloat16", stateK.Dtype(), stateV.Dtype())
+	}
+	if err := Eval(stateK, stateV); err != nil {
+		t.Fatalf("Eval typed fixed state: %v", err)
+	}
+}
+
 func TestPagedKVCache_ReplaceSinglePageFromNative_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache ReplaceSinglePageFromNative"
 	if coverageTokens == "" {
