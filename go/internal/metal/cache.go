@@ -551,6 +551,18 @@ func (c *FixedKVCache) FixedState() FixedKVState {
 	return state
 }
 
+// BorrowedFixedState returns cache-owned full-capacity K/V handles for hot
+// native decode paths. Callers must not free the returned state.
+func (c *FixedKVCache) BorrowedFixedState() FixedKVState {
+	state := FixedKVState{Length: c.length}
+	if c.keys == nil || c.values == nil {
+		return state
+	}
+	state.Keys = c.keys
+	state.Values = c.values
+	return state
+}
+
 func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVState {
 	Free(c.keys, c.values)
 	c.keys = k
@@ -558,6 +570,15 @@ func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVSt
 	c.offset += seqLen
 	c.length = min(c.offset, c.maxSize)
 	return c.FixedState()
+}
+
+func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) FixedKVState {
+	Free(c.keys, c.values)
+	c.keys = k
+	c.values = v
+	c.offset += seqLen
+	c.length = min(c.offset, c.maxSize)
+	return c.BorrowedFixedState()
 }
 
 func (c *FixedKVCache) State() []*Array {

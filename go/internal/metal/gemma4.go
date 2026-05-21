@@ -2557,7 +2557,7 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				kShape := k.Shape()
 				vShape := v.Shape()
 				fixed.ensureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
-				state := fixed.FixedState()
+				state := fixed.BorrowedFixedState()
 				if state.Keys != nil && state.Values != nil {
 					qRoPE := a.applyRoPE(q, offset)
 					Free(q)
@@ -2575,9 +2575,8 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 						shiftIndices, lastIndex := fixed.slidingUpdateInputs()
 						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSlidingSingleTokenAttention(q, state.Keys, state.Values, k, v, shiftIndices, lastIndex, a.Scale)
 					}
-					state.Free()
 					if ok {
-						fixedState := fixed.ReplaceFixedFromNative(nativeKeys, nativeValues, int(L))
+						fixedState := fixed.ReplaceFixedFromNativeBorrowed(nativeKeys, nativeValues, int(L))
 						if gemma4ValidKV(fixedState.Keys, fixedState.Values) && nativeOut != nil && nativeOut.Valid() {
 							kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}
 							out = nativeOut
@@ -2590,8 +2589,6 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 					} else if err != nil {
 						core.Error("mlx: native fixed owner attention failed; falling back to Go graph", "error", err)
 					}
-				} else {
-					state.Free()
 				}
 			}
 			if out == nil {

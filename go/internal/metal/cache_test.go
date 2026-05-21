@@ -601,6 +601,52 @@ func TestFixedKVCache_ReplaceFixedFromNative_Good(t *testing.T) {
 	c.Reset()
 }
 
+func TestFixedKVCache_BorrowedFixedState_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache BorrowedFixedState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	c.keys = keys
+	c.values = values
+	c.length = 2
+	defer c.Reset()
+
+	state := c.BorrowedFixedState()
+	state.Free()
+	if state.Keys != keys || state.Values != values || state.Length != 2 {
+		t.Fatalf("state = %+v, want borrowed cache-owned handles", state)
+	}
+	if c.keys != keys || c.values != values {
+		t.Fatal("BorrowedFixedState().Free released cache-owned handles")
+	}
+}
+
+func TestFixedKVCache_ReplaceFixedFromNativeBorrowed_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache ReplaceFixedFromNativeBorrowed"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+
+	state := c.ReplaceFixedFromNativeBorrowed(keys, values, 1)
+	defer c.Reset()
+	if state.Keys != keys || state.Values != values || state.Length != 1 {
+		t.Fatalf("state = %+v, want borrowed full-capacity state with length 1", state)
+	}
+	state.Free()
+	if c.keys != keys || c.values != values {
+		t.Fatal("borrowed native replacement state freed cache-owned handles")
+	}
+	if c.Offset() != 1 || c.Len() != 1 {
+		t.Fatalf("cache offset/len = %d/%d, want 1/1", c.Offset(), c.Len())
+	}
+}
+
 func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)

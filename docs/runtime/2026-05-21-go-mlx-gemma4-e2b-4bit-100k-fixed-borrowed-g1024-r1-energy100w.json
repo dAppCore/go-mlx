@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "model_path": "/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd",
+  "load_duration": 1348961875,
+  "prompt_bytes": 325309,
+  "prompt_chunk_bytes": 4096,
+  "prompt_repeat": 46,
+  "max_tokens": 1024,
+  "requested_runs": 1,
+  "chat": true,
+  "safety_limits": {
+    "max_active_memory_bytes": 12884901888,
+    "max_process_resident_memory_bytes": 12884901888,
+    "repeated_token_loop_limit": 256,
+    "repeated_line_loop_limit": 24,
+    "repeated_sentence_loop_limit": 4
+  },
+  "stop_token_ids": [
+    106
+  ],
+  "suppress_token_ids": [
+    0,
+    2,
+    3,
+    4,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    98,
+    100,
+    101,
+    105,
+    255999,
+    256000,
+    258880,
+    258881,
+    258882,
+    258883,
+    258884
+  ],
+  "runtime_gates": {
+    "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1",
+    "GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION": "1",
+    "GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1",
+    "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1",
+    "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1",
+    "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1",
+    "GO_MLX_ENABLE_GENERATION_STREAM": "1",
+    "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC": "1",
+    "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1",
+    "GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1",
+    "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT": "1",
+    "GO_MLX_ENABLE_SORTED_EXPERT_PREFILL": "1",
+    "GO_MLX_PAGED_KV_PAGE_SIZE": "1024"
+  },
+  "load": {
+    "context_length": 131072,
+    "parallel_slots": 1,
+    "prompt_cache": true,
+    "prompt_cache_min_tokens": 2048,
+    "cache_policy": "rotating",
+    "cache_mode": "paged",
+    "batch_size": 2,
+    "prefill_chunk_size": 512,
+    "expected_quantization": 4,
+    "memory_limit_bytes": 70970048512,
+    "cache_limit_bytes": 6679533977,
+    "wired_limit_bytes": 62620631040
+  },
+  "runs": [
+    {
+      "index": 1,
+      "duration": 60080307583,
+      "first_token_duration": 59737444917,
+      "stream_duration": 342862666,
+      "visible_tokens": 13,
+      "sampled_token_ids": [
+        818,
+        2430,
+        815,
+        3847,
+        496,
+        1401,
+        1440,
+        3355,
+        529,
+        3764,
+        3393,
+        236764,
+        837
+      ],
+      "sampled_token_texts": [
+        "The",
+        " user",
+        " has",
+        " provided",
+        " a",
+        " very",
+        " long",
+        " block",
+        " of",
+        " Go",
+        " code",
+        ",",
+        " which"
+      ],
+      "metrics": {
+        "prompt_tokens": 0,
+        "generated_tokens": 0,
+        "prefill_duration": 0,
+        "decode_duration": 0,
+        "total_duration": 0,
+        "prefill_tokens_per_sec": 0,
+        "decode_tokens_per_sec": 0,
+        "peak_memory_bytes": 0,
+        "active_memory_bytes": 0,
+        "cache_memory_bytes": 0,
+        "process_virtual_memory_bytes": 0,
+        "process_resident_memory_bytes": 0,
+        "process_peak_resident_bytes": 0,
+        "adapter": {}
+      },
+      "error": "driver-profile: run 1 stream exceeded active memory safety limit: 13660804802 \u003e 12884901888 bytes"
+    }
+  ],
+  "summary": {
+    "successful_runs": 0,
+    "failed_runs": 1
+  },
+  "estimated_energy": {
+    "method": "estimated_wall_clock_seconds_times_average_active_watts",
+    "power_watts": 100
+  },
+  "error": "driver-profile: run 1 stream exceeded active memory safety limit: 13660804802 \u003e 12884901888 bytes"
+}

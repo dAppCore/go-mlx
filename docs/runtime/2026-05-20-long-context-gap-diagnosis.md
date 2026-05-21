@@ -141,7 +141,7 @@ second MLX full-cache tensor via `slice_update`.
 
 ## Rejected 100k Branches
 
-Seven same-shape `100k` / `1024` one-run probes now bound the obvious branches:
+Nine same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 
 | Probe | Shape | Result | Verdict |
 | --- | --- | ---: | --- |
@@ -153,6 +153,7 @@ Seven same-shape `100k` / `1024` one-run probes now bound the obvious branches:
 | Materialised owner full K/V | `100932` prompt tokens, paged K/V `1024`, accepted fast gates plus `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE=1` | `77.200s` wall, `59.855 tok/s` decode, `1682.696 tok/s` prefill, `4.385 GiB` active MLX | Rejected. Keeping a full backing tensor for the owner layers removes no visible decode cost and raises active/cache memory versus the accepted shared-full-K/V row. |
 | Fixed cache with sliding layers bounded | `100937` prompt tokens, fixed Gemma 4 cache, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13748980782` bytes over the `12884901888` byte guard | Rejected. Hyper-long fixed cache is not the default path until a narrower global-only/native attention storage plan exists. |
 | Right-sized fixed cache with sliding layers bounded | README repeat `46`, fixed cache size forced to `102400`, shared mask, sliding cache bound, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13682988726` bytes over the `12884901888` byte guard | Rejected. Right-sizing below the full `131072` context does not bring active memory under the production guard. |
+| Borrowed fixed-cache native state | README repeat `46`, fixed Gemma 4 cache, shared mask, sliding cache bound, borrowed full-capacity K/V handles for native fixed-attention paths, `12 GiB` active/RSS guards | Failed after `13` visible tokens; stream active memory hit `13660804802` bytes over the `12884901888` byte guard | Rejected. Avoiding fixed-state clones trims the obvious handle duplication but does not change the full fixed-cache attention graph footprint enough to make the branch viable. |
 
 The current boundary is therefore narrower than "turn off concat" or "restore
 fixed cache": go-mlx needs a fused native paged/global-attention path that
@@ -160,7 +161,9 @@ avoids both unnecessary full K/V rematerialisation and the active-memory
 footprint of a full fixed cache. A C++ wrapper around the existing
 page-reduction graph is not enough, larger page geometry does not help,
 preallocated pages do not help, and a right-sized fixed cache is still too
-memory-heavy on the guarded 100k lane. The materialised-owner probe also
+memory-heavy on the guarded 100k lane. Borrowed fixed-state handles remove an
+obvious clone path but leave the same active-memory cliff. The
+materialised-owner probe also
 rejects a pure MLX `slice_update` full-backing workaround; the next viable path
 needs the lower-level zero-copy/fused global-attention storage shape described
 in `IDEAS.md`, not another Go-orchestrated full-cache view.

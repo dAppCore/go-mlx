@@ -518,8 +518,7 @@ func nativeGemma4FixedOwnerAttentionBlock(x *Array, fixed *FixedKVCache, fixedMa
 		return nil, sharedKV{}, false, nil
 	}
 	fixed.ensureShape(int32(x.Dim(0)), attn.NKVHeads, attn.HeadDim, attn.HeadDim, x.Dtype(), x.Dtype())
-	state := fixed.FixedState()
-	defer state.Free()
+	state := fixed.BorrowedFixedState()
 	if state.Keys == nil || state.Values == nil {
 		return nil, sharedKV{}, false, nil
 	}
@@ -544,7 +543,7 @@ func nativeGemma4FixedOwnerAttentionBlock(x *Array, fixed *FixedKVCache, fixedMa
 		Free(out, newKeys, newValues)
 		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", "native wrapper returned invalid outputs", nil)
 	}
-	fixedState := fixed.ReplaceFixedFromNative(newKeys, newValues, 1)
+	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
 	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}, true, nil
 }
 
@@ -553,8 +552,7 @@ func nativeGemma4FixedOwnerAttentionResidualBlock(residual, x *Array, fixed *Fix
 		return nil, sharedKV{}, false, nil
 	}
 	fixed.ensureShape(int32(x.Dim(0)), attn.NKVHeads, attn.HeadDim, attn.HeadDim, x.Dtype(), x.Dtype())
-	state := fixed.FixedState()
-	defer state.Free()
+	state := fixed.BorrowedFixedState()
 	if state.Keys == nil || state.Values == nil {
 		return nil, sharedKV{}, false, nil
 	}
@@ -579,7 +577,7 @@ func nativeGemma4FixedOwnerAttentionResidualBlock(residual, x *Array, fixed *Fix
 		Free(out, newKeys, newValues)
 		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", "native wrapper returned invalid outputs", nil)
 	}
-	fixedState := fixed.ReplaceFixedFromNative(newKeys, newValues, 1)
+	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
 	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}, true, nil
 }
 
@@ -853,15 +851,13 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 			defer pageState.Free()
 		case *FixedKVCache:
 			offset = cache.Offset()
-			fixedState = cache.FixedState()
+			fixedState = cache.BorrowedFixedState()
 			if fixedState.Keys == nil || fixedState.Values == nil {
-				fixedState.Free()
 				return nil, sharedKV{}, false, nil
 			}
 			prevKeys = fixedState.Keys
 			prevValues = fixedState.Values
 			fixedKV = true
-			defer fixedState.Free()
 		default:
 			return nil, sharedKV{}, false, nil
 		}
@@ -893,7 +889,7 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 	if ownsKV {
 		if fixedKV {
 			fixed, _ := c.(*FixedKVCache)
-			state := fixed.ReplaceFixedFromNative(newK, newV, int(L))
+			state := fixed.ReplaceFixedFromNativeBorrowed(newK, newV, int(L))
 			return out, sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true}, true, nil
 		}
 		paged, _ := c.(*PagedKVCache)
@@ -960,9 +956,8 @@ func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Ca
 			cacheIdx := int(model.CacheIndexByLayer[i])
 			fixed = caches[cacheIdx].(*FixedKVCache)
 			fixed.ensureShape(B, layer.Attention.NKVHeads, layer.Attention.HeadDim, layer.Attention.HeadDim, h.Dtype(), h.Dtype())
-			state := fixed.FixedState()
+			state := fixed.BorrowedFixedState()
 			if state.Keys == nil || state.Values == nil {
-				state.Free()
 				return nil, false, nil
 			}
 			states[i] = state
@@ -1151,15 +1146,13 @@ func compiledGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLa
 			defer pageState.Free()
 		case *FixedKVCache:
 			offset = cache.Offset()
-			fixedState = cache.FixedState()
+			fixedState = cache.BorrowedFixedState()
 			if fixedState.Keys == nil || fixedState.Values == nil {
-				fixedState.Free()
 				return nil, sharedKV{}, false, nil
 			}
 			prevKeys = fixedState.Keys
 			prevValues = fixedState.Values
 			fixedKV = true
-			defer fixedState.Free()
 		default:
 			return nil, sharedKV{}, false, nil
 		}
@@ -1241,7 +1234,7 @@ func compiledGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLa
 		}
 		if fixedKV {
 			fixed, _ := c.(*FixedKVCache)
-			state := fixed.ReplaceFixedFromNative(outs[1], outs[2], int(L))
+			state := fixed.ReplaceFixedFromNativeBorrowed(outs[1], outs[2], int(L))
 			return outs[0], sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true}, true, nil
 		}
 		paged, _ := c.(*PagedKVCache)
