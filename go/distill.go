@@ -282,6 +282,32 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 		copy(grown, result.Losses)
 		result.Losses = grown
 	}
+	// Pre-grow checkpoint slices when we know the rate — predictable
+	// shape per epoch ((len(batches)+rate-1)/rate checkpoints), so size
+	// is cheap to compute and skips repeated grows when many checkpoints
+	// fire per epoch.
+	if cfg.CheckpointDir != "" && cfg.CheckpointEvery > 0 {
+		expected := (len(batches) + cfg.CheckpointEvery - 1) / cfg.CheckpointEvery
+		if cap(result.Checkpoints)-len(result.Checkpoints) < expected {
+			grown := make([]string, len(result.Checkpoints), len(result.Checkpoints)+expected)
+			copy(grown, result.Checkpoints)
+			result.Checkpoints = grown
+		}
+		if cap(result.CheckpointMetadata)-len(result.CheckpointMetadata) < expected {
+			grown := make([]DistillCheckpointMetadata, len(result.CheckpointMetadata), len(result.CheckpointMetadata)+expected)
+			copy(grown, result.CheckpointMetadata)
+			result.CheckpointMetadata = grown
+		}
+	}
+	// Same shape for evaluations.
+	if cfg.EvalEvery > 0 {
+		expected := (len(batches) + cfg.EvalEvery - 1) / cfg.EvalEvery
+		if cap(result.Evaluations)-len(result.Evaluations) < expected {
+			grown := make([]DistillEvalResult, len(result.Evaluations), len(result.Evaluations)+expected)
+			copy(grown, result.Evaluations)
+			result.Evaluations = grown
+		}
+	}
 	for _, sftBatch := range batches {
 		if err := ctx.Err(); err != nil {
 			return err
