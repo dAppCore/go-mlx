@@ -1287,10 +1287,10 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 }
 
 func promptChunksToString(chunks iter.Seq[string]) string {
-	builder := core.NewBuilder()
 	if chunks == nil {
 		return ""
 	}
+	builder := core.NewBuilder()
 	for chunk := range chunks {
 		builder.WriteString(chunk)
 	}
