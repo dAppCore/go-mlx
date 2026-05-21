@@ -89,6 +89,14 @@ folded a `50714` token exhausted checkpoint into a `221` token compact state,
 woke it in `86.637ms`, and continued without replaying the exhausted prefix or
 hitting the prior non-finite-logits failure.
 
+The retained-turn CLI path now has non-Metal `go test -benchmem` coverage for
+the hot state-ramp prompt/append/report functions. That benchmark pass found
+and fixed two avoidable costs: Gemma 4 whole-turn prompt wrapping dropped from
+`579.5 ns/op`, `4752 B/op`, `7 allocs/op` to `132.1 ns/op`, `1056 B/op`,
+`2 allocs/op`, and contiguous accepted append sections now reuse the existing
+token slice instead of copying `4096` tokens (`0 B/op`, `0 allocs/op` on the
+contiguous benchmark).
+
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
 eval boundaries, Gemma 4 5:1 local/global attention, PLE handling, shared/global

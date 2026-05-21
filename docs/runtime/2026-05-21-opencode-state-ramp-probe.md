@@ -201,7 +201,41 @@ Result:
 Verdict: `mlx_lm` is faster on raw decode and wall time, but it does not pass
 the accepted real-workload output floor on this prompt shape. The completed
 marked row is a useful runner anchor, not an accepted production replacement,
-because `7/10` turns fall below `256` visible tokens.
+because `7/10` turns fall below `256` visible tokens. This is now treated as
+content-shape evidence, not only timing evidence: early natural stops and short
+answers mean the runner/model stack is drifting away from the accepted agentic
+workload even when tok/s is higher.
+
+## Hot-Path Benchmark Sweep
+
+The first repository-wide benchmark command did not expose useful numbers
+because the only existing benchmarks were Metal-only and `go test` could not
+see a usable Metal device in this lane:
+
+```sh
+GOWORK=/Users/snider/Code/core/go-mlx/go.work \
+GOCACHE=/private/tmp/go-mlx-goal/gocache \
+go test -run '^$' -bench=. -benchmem ./go/...
+```
+
+That surfaced a benchmark coverage gap for non-Metal retained-turn glue, so the
+state-ramp prompt/append/report path now has cheap `go test` benchmarks. The
+first run found two local wins:
+
+| Benchmark | Before | After | Notes |
+| --- | ---: | ---: | --- |
+| `BenchmarkStateRampProfileTurnPrompt_Gemma4WholeTurn` | `579.5 ns/op`, `4752 B/op`, `7 allocs/op` | `132.1 ns/op`, `1056 B/op`, `2 allocs/op` | removed the nested reference-wrapper string build and pre-sized the builder |
+| `BenchmarkRepeatedStateRampTokens_Append4096Contiguous` | contiguous appends used the same copy path as wrapped diagnostic appends | `0.4620 ns/op`, `0 B/op`, `0 allocs/op` | accepted whole-turn append sections now reuse the source slice instead of copying `4096` tokens |
+| `BenchmarkRepeatedStateRampTokens_Append4096Wrapped` | n/a | `3363 ns/op`, `16384 B/op`, `1 alloc/op` | wrapped/repeated diagnostic prompts still allocate because they must materialise a cyclic span |
+| `BenchmarkSummariseStateRampProfileTurns_TenTurns` | n/a | `98.65 ns/op`, `0 B/op`, `0 allocs/op` | summary accounting is not the retained-turn bottleneck |
+
+Verification command:
+
+```sh
+GOWORK=/Users/snider/Code/core/go-mlx/go.work \
+GOCACHE=/private/tmp/go-mlx-goal/gocache \
+go test -run '^$' -bench=. -benchmem ./go/cmd/mlx
+```
 
 ## Next Action
 

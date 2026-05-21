@@ -2644,6 +2644,13 @@ func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
 	if len(source) == 0 || count <= 0 {
 		return nil
 	}
+	offset %= len(source)
+	if offset < 0 {
+		offset += len(source)
+	}
+	if count <= len(source)-offset {
+		return source[offset : offset+count]
+	}
 	out := make([]int32, count)
 	for i := range out {
 		out[i] = source[(offset+i)%len(source)]
@@ -2722,25 +2729,41 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 }
 
 func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool) string {
-	prompt = stateRampProfileReferenceTurn(prompt)
+	prompt = core.Trim(prompt)
 	switch template {
 	case "gemma4":
 		builder := core.NewBuilder()
+		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|turn>user\n")
-		builder.WriteString(prompt)
+		writeStateRampProfileReferenceTurn(builder, prompt)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		if !enableThinking {
 			builder.WriteString("<|channel>thought\n<channel|>")
 		}
 		return builder.String()
 	case "gemma":
-		return "<start_of_turn>user\n" + prompt + "<end_of_turn>\n<start_of_turn>model\n"
+		builder := core.NewBuilder()
+		builder.Grow(len(prompt) + 512)
+		builder.WriteString("<start_of_turn>user\n")
+		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
+		return builder.String()
 	case "qwen":
-		return "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
+		builder := core.NewBuilder()
+		builder.Grow(len(prompt) + 512)
+		builder.WriteString("<|im_start|>user\n")
+		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString("<|im_end|>\n<|im_start|>assistant\n")
+		return builder.String()
 	case "llama":
-		return "<|start_header_id|>user<|end_header_id|>\n\n" + prompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+		builder := core.NewBuilder()
+		builder.Grow(len(prompt) + 512)
+		builder.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
+		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
+		return builder.String()
 	default:
-		return prompt
+		return stateRampProfileReferenceTurn(prompt)
 	}
 }
 
@@ -2750,11 +2773,20 @@ func stateRampProfileReferenceTurn(prompt string) string {
 		return prompt
 	}
 	builder := core.NewBuilder()
+	builder.Grow(len(prompt) + 512)
+	writeStateRampProfileReferenceTurn(builder, prompt)
+	return builder.String()
+}
+
+func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (int, error) }, prompt string) {
+	prompt = core.Trim(prompt)
+	if prompt == "" {
+		return
+	}
 	builder.WriteString("Use the retained project context and the new turn material below. Answer the user request directly. Treat any code or document excerpts as reference material, not as text to continue.\n\n")
 	builder.WriteString("<turn_material>\n")
 	builder.WriteString(prompt)
 	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts.")
-	return builder.String()
 }
 
 func stateRampProfileVisibleOutput(template, output string) string {
