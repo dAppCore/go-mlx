@@ -165,9 +165,10 @@ device from the runner, while the same workload with `-report-file` completed.
    shared full-attention layers improved the accepted 100k workflow from
    `260.093s` / `51.293 tok/s` to `231.109s` / `60.011 tok/s`. The remaining
    live boundary is still evaluated graph/kernel work in the long-context
-   attention path, not prompt-cache restore. The current token-phase trace
-   isolates the worst attention buckets to the full-attention owners, layers
-   `4`, `9`, `14`, `19`, `24`, `29`, and `34`. The current diagnosis is recorded in
+   attention path, not prompt-cache restore. The current token-phase trace shows
+   shared full-K/V reuse moved layers `19`, `24`, `29`, and `34` down to about
+   `1.03ms/token`, leaving the early full-attention owner layers `4`, `9`, and
+   `14` as the next owner-K/V target. The current diagnosis is recorded in
    `docs/runtime/2026-05-20-long-context-gap-diagnosis.md`.
 2. Keep the strict manifest gate green whenever new canonical runtime evidence
    is added.
