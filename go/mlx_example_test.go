@@ -10,6 +10,11 @@ func ExampleGC() {
 	// Output: GC
 }
 
+func ExampleSeedRandom() {
+	core.Println("SeedRandom")
+	// Output: SeedRandom
+}
+
 func ExampleAttentionSnapshot_HasQueries() {
 	core.Println("AttentionSnapshot_HasQueries")
 	// Output: AttentionSnapshot_HasQueries
@@ -43,6 +48,11 @@ func ExampleWithTopP() {
 func ExampleWithMinP() {
 	core.Println("WithMinP")
 	// Output: WithMinP
+}
+
+func ExampleWithSeed() {
+	core.Println("WithSeed")
+	// Output: WithSeed
 }
 
 func ExampleWithLogits() {

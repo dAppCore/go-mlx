@@ -370,6 +370,10 @@ func (s *ModelSession) Generate(ctx context.Context, cfg GenerateConfig) iter.Se
 		defer release()
 
 		if deviceErr := s.model.withDevice(func() {
+			if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+				s.err = seedErr
+				return
+			}
 			s.generateLocked(ctx, cfg, yield)
 		}); deviceErr != nil {
 			s.err = deviceErr

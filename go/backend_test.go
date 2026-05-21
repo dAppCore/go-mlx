@@ -1613,6 +1613,7 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 		WithTopK(11),
 		WithTopP(0.8),
 		WithMinP(0.05),
+		WithSeed(123),
 		WithStopTokens(4, 5),
 		WithRepeatPenalty(1.2),
 	) {
@@ -1633,6 +1634,9 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 	}
 	if cfg.MinP != 0.05 {
 		t.Fatalf("MinP = %f, want 0.05", cfg.MinP)
+	}
+	if !cfg.SeedSet || cfg.Seed != 123 {
+		t.Fatalf("Seed = %d/%v, want 123/true", cfg.Seed, cfg.SeedSet)
 	}
 	if cfg.RepeatPenalty != 1.2 {
 		t.Fatalf("RepeatPenalty = %f, want 1.2", cfg.RepeatPenalty)
@@ -2432,7 +2436,7 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 		}, nil
 	}
 
-	model, err := LoadModel("/does/not/matter", WithQuantization(4))
+	model, err := LoadModel("/does/not/matter", WithQuantization(4), WithAutoMemoryPlan(false))
 	if err != nil {
 		t.Fatalf("LoadModel() error = %v", err)
 	}
@@ -2459,7 +2463,7 @@ func TestLoadModel_GGUFMetadataBackfillsInfoAndQuantValidation_Good(t *testing.T
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	_, err = LoadModel("/does/not/matter", WithQuantization(8))
+	_, err = LoadModel("/does/not/matter", WithQuantization(8), WithAutoMemoryPlan(false))
 	if err == nil {
 		t.Fatal("expected quantization mismatch error from GGUF metadata")
 	}

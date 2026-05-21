@@ -188,6 +188,10 @@ func (m *Model) BatchGenerate(ctx context.Context, prompts []string, cfg Generat
 	}
 	defer release()
 	if deviceErr := m.withDevice(func() {
+		if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+			err = seedErr
+			return
+		}
 		results, err = m.batchGeneratePlanned(ctx, prompts, cfg)
 	}); deviceErr != nil {
 		return nil, deviceErr

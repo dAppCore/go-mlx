@@ -40,6 +40,8 @@ type GenerateConfig struct {
 	TopK             int
 	TopP             float32
 	MinP             float32
+	Seed             uint64
+	SeedSet          bool
 	StopTokens       []int32
 	SuppressTokens   []int32
 	RepeatPenalty    float32
@@ -428,6 +430,10 @@ func (m *Model) Generate(ctx context.Context, prompt string, cfg GenerateConfig)
 		defer releasePromptCache()
 		if err := m.withDevice(func() {
 			if streamErr := m.withGenerationStream(func() {
+				if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+					m.lastErr = seedErr
+					return
+				}
 				m.generate(ctx, prompt, cfg)(yield)
 			}); streamErr != nil {
 				m.lastErr = streamErr
@@ -462,6 +468,10 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], cfg
 		defer releasePromptCache()
 		if err := m.withDevice(func() {
 			if streamErr := m.withGenerationStream(func() {
+				if seedErr := applyGenerationSeed(cfg); seedErr != nil {
+					m.lastErr = seedErr
+					return
+				}
 				tokens, encodeErr := m.encodePromptChunks(chunks)
 				if encodeErr != nil {
 					m.lastErr = encodeErr
@@ -475,6 +485,13 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], cfg
 			m.lastErr = err
 		}
 	}
+}
+
+func applyGenerationSeed(cfg GenerateConfig) error {
+	if !cfg.SeedSet {
+		return nil
+	}
+	return SeedRandom(cfg.Seed)
 }
 
 func generationStreamEnabled() bool {

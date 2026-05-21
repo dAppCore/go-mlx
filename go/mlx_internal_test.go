@@ -174,6 +174,39 @@ func TestApiCommon_DefaultGenerateConfig_Ugly(t *testing.T) {
 	}
 }
 
+func TestApiCommon_SeedRandom_Good(t *testing.T) {
+	target := "SeedRandom"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_SeedRandom_Bad(t *testing.T) {
+	target := "SeedRandom"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_SeedRandom_Ugly(t *testing.T) {
+	target := "SeedRandom"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
 func TestApiCommon_WithMaxTokens_Good(t *testing.T) {
 	target := "WithMaxTokens"
 	variant := "Good"
@@ -330,6 +363,39 @@ func TestApiCommon_WithMinP_Bad(t *testing.T) {
 
 func TestApiCommon_WithMinP_Ugly(t *testing.T) {
 	target := "WithMinP"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithSeed_Good(t *testing.T) {
+	target := "WithSeed"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithSeed_Bad(t *testing.T) {
+	target := "WithSeed"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithSeed_Ugly(t *testing.T) {
+	target := "WithSeed"
 	variant := "Ugly"
 	if target == "" {
 		t.Fatalf("missing compliance target for %s", t.Name())
@@ -934,6 +1000,7 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithTopK(20),
 		WithTopP(0.9),
 		WithMinP(0.05),
+		WithSeed(42),
 		WithLogits(),
 		WithReturnLogits(),
 		WithStopTokens(1, 2),
@@ -942,6 +1009,9 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 	})
 	if cfg.MaxTokens != 64 || cfg.Temperature != 0.7 || cfg.TopK != 20 || cfg.TopP != 0.9 || cfg.MinP != 0.05 {
 		t.Fatalf("unexpected generate config: %+v", cfg)
+	}
+	if !cfg.SeedSet || cfg.Seed != 42 {
+		t.Fatalf("seed config = %d/%v, want 42/true", cfg.Seed, cfg.SeedSet)
 	}
 	if !cfg.ReturnLogits {
 		t.Fatal("ReturnLogits = false, want true")

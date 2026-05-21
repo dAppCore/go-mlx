@@ -1572,6 +1572,14 @@ speculative decode (`gemma4_assistant*.go`).
       the two control conditions from `02-method.md` (`TRAD-no-replay` and
       `CONT-with-gap`).
 
+      Seed-control progress: go-mlx now exposes `SeedRandom(seed)` for
+      run-level MLX RNG seeding plus `WithSeed(seed)` for single-call
+      generation. The option forwards through the root API into the native
+      `metal.GenerateConfig`, and native generation/session/batch paths call
+      `mlx_random_seed` before sampling when it is set. Guard coverage:
+      `TestRandom_SeedRandom_Good`, `TestModelGenerateStream_ForwardsOptions_Good`,
+      and `TestAPIGenerateOptions_Good`.
+
 ### Per-turn capture for the substrate-shift experiment
 
 - [ ] A 180-run capture script (Go or Python) that wraps the Runner and

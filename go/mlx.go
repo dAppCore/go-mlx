@@ -124,6 +124,9 @@ import (
 // reclaimed promptly, without importing runtime at call sites.
 func GC() { metal.RuntimeGC() }
 
+// SeedRandom resets MLX's default random sequence for subsequent sampling.
+func SeedRandom(seed uint64) error { return metal.SeedRandom(seed) }
+
 const (
 	// DefaultLocalContextLength bounds KV growth for local workstation runs.
 	DefaultLocalContextLength = 131072
@@ -256,6 +259,8 @@ type GenerateConfig struct {
 	TopK             int
 	TopP             float32
 	MinP             float32
+	Seed             uint64
+	SeedSet          bool
 	ReturnLogits     bool
 	StopTokens       []int32
 	SuppressTokens   []int32
@@ -300,6 +305,14 @@ func WithTopP(p float32) GenerateOption {
 // WithMinP sets minimum-probability sampling relative to the best token.
 func WithMinP(p float32) GenerateOption {
 	return func(c *GenerateConfig) { c.MinP = p }
+}
+
+// WithSeed resets MLX's default RNG before this generation call.
+func WithSeed(seed uint64) GenerateOption {
+	return func(c *GenerateConfig) {
+		c.Seed = seed
+		c.SeedSet = true
+	}
 }
 
 // WithLogits requests classification logits when the called API supports them.

@@ -7,6 +7,11 @@ package metal
 import core "dappco.re/go"
 
 // Generated runnable examples for file-aware public API coverage.
+func ExampleSeedRandom() {
+	core.Println("SeedRandom")
+	// Output: SeedRandom
+}
+
 func ExampleRandomCategorical() {
 	core.Println("RandomCategorical")
 	// Output: RandomCategorical

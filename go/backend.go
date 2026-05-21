@@ -229,6 +229,8 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 		TopK:             cfg.TopK,
 		TopP:             cfg.TopP,
 		MinP:             cfg.MinP,
+		Seed:             cfg.Seed,
+		SeedSet:          cfg.SeedSet,
 		StopTokens:       cfg.StopTokens,
 		SuppressTokens:   cfg.SuppressTokens,
 		RepeatPenalty:    cfg.RepeatPenalty,

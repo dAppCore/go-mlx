@@ -9,6 +9,20 @@ package metal
 */
 import "C"
 
+import core "dappco.re/go"
+
+// SeedRandom resets MLX's default random key sequence.
+func SeedRandom(seed uint64) error {
+	Init()
+	if rc := C.mlx_random_seed(C.uint64_t(seed)); rc != 0 {
+		if err := lastError(); err != nil {
+			return err
+		}
+		return core.E("mlx.random.seed", core.Sprintf("seed failed (rc=%d)", rc), nil)
+	}
+	return nil
+}
+
 // RandomCategorical samples from a categorical distribution defined by logprobs.
 // Returns indices sampled according to the log-probability distribution along the last axis.
 //
