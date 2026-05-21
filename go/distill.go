@@ -6,6 +6,7 @@ import (
 	"context"
 	"dappco.re/go/mlx/dataset"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -272,6 +273,15 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 	if len(batches) == 0 {
 		return core.NewError("mlx: distillation dataset produced no tokenized batches")
 	}
+	// Pre-grow result.Losses for this epoch's worth of appends to skip
+	// the per-append capacity-grow cascade. On the first epoch the slice
+	// is nil; on later epochs len/cap may already cover this epoch's
+	// batches and the make is skipped by the cap check.
+	if cap(result.Losses)-len(result.Losses) < len(batches) {
+		grown := make([]DistillLoss, len(result.Losses), len(result.Losses)+len(batches))
+		copy(grown, result.Losses)
+		result.Losses = grown
+	}
 	for _, sftBatch := range batches {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -390,7 +400,7 @@ func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg D
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
-	path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Metrics.Steps))
+	path := core.PathJoin(cfg.CheckpointDir, formatDistillStepDir(result.Metrics.Steps))
 	meta := NewDistillCheckpointMetadata(path, cfg, result, loss, batch.Epoch)
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, DistillCheckpointContext{
@@ -441,19 +451,19 @@ func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss DistillLoss
 	if cfg.ProbeSink == nil {
 		return
 	}
+	meta := make(map[string]string, 7)
+	meta["distillation"] = "true"
+	meta["loss_kind"] = string(loss.Kind)
+	meta["temperature"] = strconv.FormatFloat(loss.Temperature, 'f', 6, 64)
+	meta["tokens"] = core.Itoa(loss.Tokens)
+	meta["teacher_cache"] = cacheStatus
+	meta["checkpoint_count"] = core.Itoa(len(result.Checkpoints))
+	meta["evaluation_count"] = core.Itoa(len(result.Evaluations))
 	cfg.ProbeSink.EmitProbe(probe.Event{
 		Kind:  probe.KindTraining,
 		Phase: probe.PhaseTraining,
 		Step:  result.Metrics.Steps,
-		Meta: map[string]string{
-			"distillation":     "true",
-			"loss_kind":        string(loss.Kind),
-			"temperature":      core.Sprintf("%.6f", loss.Temperature),
-			"tokens":           core.Sprintf("%d", loss.Tokens),
-			"teacher_cache":    cacheStatus,
-			"checkpoint_count": core.Sprintf("%d", len(result.Checkpoints)),
-			"evaluation_count": core.Sprintf("%d", len(result.Evaluations)),
-		},
+		Meta:  meta,
 		Training: &probe.Training{
 			Step:         result.Metrics.Steps,
 			Epoch:        epoch,
@@ -775,9 +785,13 @@ func cloneDistillLogits(logits DistillLogits) DistillLogits {
 	}
 	out := make(DistillLogits, len(logits))
 	for i := range logits {
-		out[i] = make([][]float32, len(logits[i]))
-		for j := range logits[i] {
-			out[i][j] = append([]float32(nil), logits[i][j]...)
+		row := logits[i]
+		out[i] = make([][]float32, len(row))
+		for j := range row {
+			src := row[j]
+			dst := make([]float32, len(src))
+			copy(dst, src)
+			out[i][j] = dst
 		}
 	}
 	return out
@@ -795,6 +809,9 @@ func distillResultError(result core.Result) error {
 
 func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples int) ([]dataset.Sample, error) {
 	var samples []dataset.Sample
+	if maxSamples > 0 {
+		samples = make([]dataset.Sample, 0, maxSamples)
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -812,4 +829,20 @@ func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples i
 		samples = append(samples, dataset.CloneSample(sample))
 	}
 	return samples, nil
+}
+
+// formatDistillStepDir builds the "step-NNNNNN" checkpoint dirname using
+// strconv.AppendInt with explicit zero padding, avoiding fmt's reflection
+// path on the per-checkpoint hot loop.
+func formatDistillStepDir(step int) string {
+	const prefix = "step-"
+	const width = 6
+	buf := make([]byte, 0, len(prefix)+width)
+	buf = append(buf, prefix...)
+	digits := strconv.AppendInt(nil, int64(step), 10)
+	for pad := width - len(digits); pad > 0; pad-- {
+		buf = append(buf, '0')
+	}
+	buf = append(buf, digits...)
+	return string(buf)
 }
