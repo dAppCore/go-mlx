@@ -62,8 +62,11 @@ token floor, bounded memory, and exposed wall/decode/append/energy accounting:
 `107.741s`, `76.847 tok/s` raw decode, `64.565 tok/s` effective turn
 throughput, `63584` final live tokens, `3.137 GiB` active MLX memory, and
 `10774.150 J` estimated at `100 W`. This row does not close production by
-itself; same-shape `mlx_lm`, llama.cpp, and vLLM anchors are still required,
-and the accepted state must still be grown toward the `100k` stress lane. The
+itself; the first same-shape `mlx_lm` anchor is now recorded and shows faster
+raw decode but fails the strict `256` visible-token floor on turn 3, while the
+full marked run has `7/10` below-floor turns. Same-shape llama.cpp and vLLM
+anchors are still required, and the accepted state must still be grown toward
+the `100k` stress lane. The
 state-ramp runner now treats that stress ceiling as a lifecycle boundary:
 fixed-turn ramps stop when the live state reaches the target or configured
 compaction threshold, and reports expose `context_exhausted`,

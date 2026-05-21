@@ -164,16 +164,51 @@ Result:
 | Estimated joules per visible token | `1.723 J` |
 
 Verdict: accepted as the current go-mlx opencode-sized retained workflow row.
-It does **not** close the overall production gate yet because same-shape
-`mlx_lm`, llama.cpp, and vLLM anchors still need to be run for this accepted
-shape, and the warm build-up from this state toward `100k` remains open.
+It does **not** close the overall production gate yet. The same-shape `mlx_lm`
+anchor is now recorded below, but llama.cpp and vLLM anchors still need to be
+run for this accepted shape, and the warm build-up from this state toward
+`100k` remains open.
+
+## mlx_lm Same-Shape Anchor
+
+Artifacts:
+
+- `docs/runtime/2026-05-21-mlx-lm-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-energy100w.json`
+- `docs/runtime/2026-05-21-mlx-lm-gemma4-e2b-4bit-opencode-state-ramp-30k-chatwholelen-r10-g1024-min256-mark-energy100w.json`
+
+The anchor uses the same seed file, append file, Gemma 4 turn wrapping, `30000`
+seed tokens, `10` whole turns, `1024` token budget, and sampling values. It runs
+in an isolated `/private/tmp` Python environment with `mlx==0.31.2` and
+`mlx_lm==0.31.3`; the system Homebrew Python was not used because it had drifted
+to an incompatible `mlx_lm 0.31.2` / `mlx 0.30.6` pairing.
+
+Result:
+
+| Metric | Strict floor | Marked full run |
+| --- | ---: | ---: |
+| Completed turns | `2 ok / 1 failed` | `3 ok / 7 below-floor` |
+| Initial retained state | `30000` tokens | `30000` tokens |
+| Final live state | `39239` tokens | `59579` tokens |
+| Appended tokens | `7987` | `27303` |
+| Generated/visible tokens | `1246` | `2256` |
+| Initial prefill | `9673.402 tok/s` | `9752.856 tok/s` |
+| Raw decode average | `126.998 tok/s` | `122.556 tok/s` |
+| Effective turn throughput | `109.249 tok/s` | `93.415 tok/s` |
+| Total wall time | stopped on turn 3 | `28.284s` including load and prefill |
+| Peak MLX memory | `3.944 GB` | `4.405 GB` |
+| Estimated energy at 100 W | partial run only | `2828.354 J` |
+
+Verdict: `mlx_lm` is faster on raw decode and wall time, but it does not pass
+the accepted real-workload output floor on this prompt shape. The completed
+marked row is a useful runner anchor, not an accepted production replacement,
+because `7/10` turns fall below `256` visible tokens.
 
 ## Next Action
 
-Run same-shape external anchors for the accepted chat-shaped workload, then run
-the warm build-up stress path from the accepted `30k`-to-`63.5k` workflow
-toward `100k`. Keep raw decode, append wall time, restore/prefill, wall time,
-memory, and estimated energy separate.
+Run same-shape llama.cpp and vLLM anchors for the accepted chat-shaped workload,
+then run the warm build-up stress path from the accepted `30k`-to-`63.5k`
+workflow toward `100k`. Keep raw decode, append wall time, restore/prefill,
+wall time, memory, output length, and estimated energy separate.
 
 The runner must treat the `100k` stress ceiling as a context lifecycle boundary.
 `state-ramp-profile` now stops fixed-turn ramps once the live state reaches the
