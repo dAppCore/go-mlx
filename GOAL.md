@@ -1580,6 +1580,15 @@ speculative decode (`gemma4_assistant*.go`).
       `TestRandom_SeedRandom_Good`, `TestModelGenerateStream_ForwardsOptions_Good`,
       and `TestAPIGenerateOptions_Good`.
 
+      Condition-contract progress: `go/substrate` now defines the four
+      pre-registered method conditions (`TRAD`, `CONT`, `TRAD-no-replay`,
+      `CONT-with-gap`) plus canonical transition semantics for replay,
+      retained-state use, artificial prefill gaps, and T_prefill measurement.
+      Guard coverage: `TestCondition_Normalize_Good`,
+      `TestCondition_TransitionSemantics_Good`, and AX-11 benchmarks
+      `BenchmarkNormalize_ConditionAlias` (`12.63 ns/op`, `0 allocs`) and
+      `BenchmarkConditionTransition_FourConditions` (`7.933 ns/op`, `0 allocs`).
+
 ### Per-turn capture for the substrate-shift experiment
 
 - [x] A 180-run capture script (Go or Python) that wraps the Runner and
