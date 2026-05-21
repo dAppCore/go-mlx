@@ -707,6 +707,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.CompactionThresholdTokens != 100000 || gotCfg.CompactionTailTokens != 8192 {
 		t.Fatalf("state ramp compaction cfg = threshold:%d tail:%d, want target-backed folded-state defaults", gotCfg.CompactionThresholdTokens, gotCfg.CompactionTailTokens)
 	}
+	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "final form only") {
+		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
+	}
 	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
 		t.Fatalf("state ramp real-workload guards = min:%d policy:%q suppress_eos:%v, want configured floor", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
 	}

@@ -435,6 +435,9 @@ type chapterProfileEnergy struct {
 	JoulesPerToken float64 `json:"joules_per_visible_token,omitempty"`
 }
 
+const defaultStateRampFoldContinuePrompt = "Answer in final form only. In one concise paragraph, confirm that the compacted State is live and name the next engineering action. " +
+	"Do not describe this instruction, your reasoning, or future report structure."
+
 type stateRampProfileOptions struct {
 	Prompt                    string                    `json:"prompt,omitempty"`
 	AppendPrompt              string                    `json:"append_prompt,omitempty"`
@@ -2088,7 +2091,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	foldRecentTail := fs.String("fold-tail", "", "recent tail text to seed the folded state")
 	foldRecentTailFile := fs.String("fold-tail-file", "", "read folded-state recent tail text from a file")
 	foldPrefillChunkBytes := fs.Int("fold-prefill-chunk-bytes", 0, "byte chunk size for folded-state prefill; 0 uses the session default")
-	foldContinuePrompt := fs.String("fold-continue-prompt", "Confirm that the compacted retained state is live and name the next engineering action.", "prompt appended after waking the folded state")
+	foldContinuePrompt := fs.String("fold-continue-prompt", defaultStateRampFoldContinuePrompt, "prompt appended after waking the folded state")
 	foldContinueMaxTokens := fs.Int("fold-continue-max-tokens", 512, "generated tokens for the folded-state wake/continue check; 0 skips the check")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
@@ -2612,7 +2615,7 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 		opts.FoldContinueMaxTokens = 0
 	}
 	if opts.FoldContinuePrompt == "" {
-		opts.FoldContinuePrompt = "Confirm that the compacted retained state is live and name the next engineering action."
+		opts.FoldContinuePrompt = defaultStateRampFoldContinuePrompt
 	}
 	return opts
 }
