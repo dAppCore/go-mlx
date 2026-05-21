@@ -76,9 +76,18 @@ func (p *datasetPacker) add(example sftExample) {
 	}
 	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
 		start := len(example.inputs) - p.maxSeqLen
-		example.inputs = append([]int(nil), example.inputs[start:]...)
-		example.targets = append([]int(nil), example.targets[start:]...)
-		example.mask = append([]float32(nil), example.mask[start:]...)
+		// Pre-sized clones avoid the append-grow cascade — each tail is
+		// exactly maxSeqLen long.
+		tailLen := p.maxSeqLen
+		inputs := make([]int, tailLen)
+		copy(inputs, example.inputs[start:])
+		targets := make([]int, tailLen)
+		copy(targets, example.targets[start:])
+		mask := make([]float32, tailLen)
+		copy(mask, example.mask[start:])
+		example.inputs = inputs
+		example.targets = targets
+		example.mask = mask
 	}
 	p.current.inputs = append(p.current.inputs, example.inputs...)
 	p.current.targets = append(p.current.targets, example.targets...)
