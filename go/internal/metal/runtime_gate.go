@@ -42,6 +42,8 @@ var (
 	runtimeGateNativeGemma4AttentionOMatVec         atomic.Bool
 	runtimeGateNativeGemma4ResidualNorm             atomic.Bool
 	runtimeGateGenerationStream                     atomic.Bool
+	runtimeGateGenerationClearCache                 atomic.Bool
+	runtimeGateZeroCopyPagedRestore                 atomic.Bool
 )
 
 func init() {
@@ -128,6 +130,8 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
+		"GO_MLX_ENABLE_GENERATION_CLEAR_CACHE",
+		"GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE",
 	} {
 		refreshKnownRuntimeGate(name)
 	}
@@ -186,6 +190,10 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateNativeGemma4ResidualNorm.Store(enabled)
 	case "GO_MLX_ENABLE_GENERATION_STREAM":
 		runtimeGateGenerationStream.Store(enabled)
+	case "GO_MLX_ENABLE_GENERATION_CLEAR_CACHE":
+		runtimeGateGenerationClearCache.Store(enabled)
+	case "GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE":
+		runtimeGateZeroCopyPagedRestore.Store(enabled)
 	}
 }
 
@@ -246,3 +254,11 @@ func nativeGemma4AttentionOMatVecRuntimeEnabled() bool {
 func nativeGemma4ResidualNormRuntimeEnabled() bool { return runtimeGateNativeGemma4ResidualNorm.Load() }
 
 func generationStreamRuntimeEnabled() bool { return runtimeGateGenerationStream.Load() }
+
+func generationClearCacheRuntimeEnabled() bool {
+	return runtimeGateGenerationClearCache.Load()
+}
+
+func zeroCopyPagedRestoreRuntimeEnabled() bool {
+	return runtimeGateZeroCopyPagedRestore.Load()
+}

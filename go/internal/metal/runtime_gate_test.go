@@ -56,6 +56,40 @@ func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_KnownGenerationClearCache_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownGenerationClearCache"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "0")
+	t.Cleanup(restoreOff)
+	if generationClearCacheRuntimeEnabled() {
+		t.Fatal("generationClearCacheRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "1")
+	t.Cleanup(restoreOn)
+	if !generationClearCacheRuntimeEnabled() {
+		t.Fatal("generationClearCacheRuntimeEnabled() = false, want true")
+	}
+}
+
+func TestRuntimeGate_KnownZeroCopyPagedRestore_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownZeroCopyPagedRestore"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0")
+	t.Cleanup(restoreOff)
+	if zeroCopyPagedRestoreRuntimeEnabled() {
+		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "1")
+	t.Cleanup(restoreOn)
+	if !zeroCopyPagedRestoreRuntimeEnabled() {
+		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() = false, want true")
+	}
+}
+
 func TestRuntimeGate_KnownNativePagedAttention_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownNativePagedAttention"
 	if coverageTokens == "" {

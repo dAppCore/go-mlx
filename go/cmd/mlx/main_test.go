@@ -1695,6 +1695,33 @@ func TestRunCommand_DriverProfileNativePagedAttentionFlag_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_DriverProfileGenerationClearCacheFlag_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		return &driverProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			PromptBytes:  len(cfg.Prompt),
+			MaxTokens:    cfg.MaxTokens,
+			RuntimeGates: driverProfileRuntimeGates(),
+			Summary: driverProfileSummary{
+				SuccessfulRuns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"driver-profile", "-json", "-generation-clear-cache", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !core.Contains(stdout.String(), `"GO_MLX_ENABLE_GENERATION_CLEAR_CACHE": "1"`) {
+		t.Fatalf("stdout = %q, want generation clear-cache runtime gate", stdout.String())
+	}
+}
+
 func TestRunCommand_DriverProfileNativeGemma4RouterMatVecFlag_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })

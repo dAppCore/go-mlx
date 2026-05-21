@@ -743,6 +743,61 @@ func TestPromptCache_RestoreFromKVBlocksCoalescesPagedPages_Good(t *testing.T) {
 	}
 }
 
+func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksZeroCopyPagedRestore"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "1"))
+
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: 4},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+	}
+	source := KVSnapshotBlockSource{
+		TokenCount:   4,
+		PrefixTokens: 4,
+		BlockCount:   2,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			if index < 0 || index > 1 {
+				return KVSnapshotBlock{}, core.NewError("unexpected block")
+			}
+			tokens := []int32{int32(index*2 + 1), int32(index*2 + 2)}
+			snapshot := kvSnapshotBlockTestSnapshot(index*2, tokens)
+			return KVSnapshotBlock{Index: index, TokenStart: index * 2, TokenCount: 2, Snapshot: snapshot}, nil
+		},
+	}
+
+	if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+		t.Fatalf("RestorePromptCacheFromKVBlocks() error = %v", err)
+	}
+	defer model.ClearPromptCache()
+	cache := model.promptCache.caches[0]
+	if cache.mode != KVCacheModePaged || len(cache.kPages) != 2 {
+		t.Fatalf("restored cache mode/pages = %q/%d, want zero-copy paged block pages", cache.mode, len(cache.kPages))
+	}
+	if got := pagedArrayLen(cache.kPages[0]); got != 2 {
+		t.Fatalf("first restored page length = %d, want block length 2", got)
+	}
+	keys, values, err := cacheSnapshotFloatArrays(cache)
+	if err != nil {
+		t.Fatalf("cacheSnapshotFloatArrays() error = %v", err)
+	}
+	defer Free(keys, values)
+	if err := Eval(keys, values); err != nil {
+		t.Fatalf("Eval zero-copy paged cache: %v", err)
+	}
+	if got := keys.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("zero-copy keys = %v, want [1 2 3 4]", got)
+	}
+	if got := values.Floats(); !reflect.DeepEqual(got, []float32{1, 2, 3, 4}) {
+		t.Fatalf("zero-copy values = %v, want [1 2 3 4]", got)
+	}
+}
+
 func TestPromptCache_RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock_Good(t *testing.T) {
 	coverageTokens := "PromptCache RestoreFromKVBlocksSkipsDuplicateCacheIndexPerBlock"
 	if coverageTokens == "" {

@@ -23,7 +23,7 @@ Multiple model paths can be loaded; clients select by name in each request.
 violet --config violet.toml --socket /tmp/violet.sock
 ```
 
-Models are loaded lazily on first use and kept resident until the daemon exits. The `runtime` block sets the same defaults as `mlx.LoadModel` (GPU device, 131k bounded context, one active native slot, exact-token-prefix prompt cache enabled).
+Models are loaded lazily on first use and kept resident until the daemon exits. The `runtime` block sets the same defaults as `mlx.LoadModel` (GPU device, 128Ki-token (`131072`) bounded context, one active native slot, exact-token-prefix prompt cache enabled).
 
 ## Talking To It
 

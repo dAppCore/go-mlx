@@ -31,6 +31,8 @@ var (
 	enableGenerationStream    = core.Env("GO_MLX_ENABLE_GENERATION_STREAM") == "1"
 )
 
+const defaultGenerationClearCacheInterval = 256
+
 // GenerateConfig holds generation parameters.
 type GenerateConfig struct {
 	MaxTokens        int
@@ -479,6 +481,25 @@ func generationStreamEnabled() bool {
 	return enableGenerationStream || generationStreamRuntimeEnabled()
 }
 
+func generationClearCacheEnabled() bool {
+	return generationClearCacheRuntimeEnabled()
+}
+
+func generationClearCacheInterval() int {
+	if parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL")), 10, 64); parsed.OK {
+		if value := int(parsed.Value.(int64)); value > 0 {
+			return value
+		}
+	}
+	return defaultGenerationClearCacheInterval
+}
+
+func maybeClearGenerationCache() {
+	if generationClearCacheEnabled() {
+		ClearCache()
+	}
+}
+
 func (m *Model) withGenerationStream(fn func()) error {
 	if !generationStreamEnabled() {
 		fn()
@@ -729,6 +750,11 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			// Eval(next) also materialises the lazy decode forward that produced
 			// logits for this token, so detach caches at this boundary.
 			detachCaches(caches)
+			if generationClearCacheEnabled() {
+				if interval := generationClearCacheInterval(); interval > 0 && (i+1)%interval == 0 {
+					ClearCache()
+				}
+			}
 			if tracePhases {
 				phase.DetachDuration = time.Since(phaseLast)
 				phaseLast = time.Now()

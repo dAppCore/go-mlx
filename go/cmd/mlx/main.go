@@ -561,6 +561,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	fixedGemma4SharedMask := fs.Bool("fixed-gemma4-shared-mask", false, "enable the opt-in shared fixed-cache Gemma 4 decode mask")
 	directGreedyToken := fs.Bool("direct-greedy-token", false, "enable the opt-in direct greedy token decode path")
 	generationStream := fs.Bool("generation-stream", false, "enable the opt-in dedicated MLX stream for generation")
+	generationClearCache := fs.Bool("generation-clear-cache", false, "clear the MLX allocator cache after prefill chunks and periodically during decode")
 	maxActiveMemoryBytes := fs.Uint64("max-active-memory-bytes", 0, "abort a run if MLX active memory exceeds this many bytes; 0 derives from the resolved memory limit")
 	maxProcessVirtualMemoryBytes := fs.Uint64("max-process-virtual-memory-bytes", 0, "abort a run if process virtual memory exceeds this many bytes; 0 records process virtual memory without a hard cap")
 	maxProcessResidentMemoryBytes := fs.Uint64("max-process-resident-memory-bytes", 0, "abort a run if process resident memory exceeds this many bytes; 0 derives from the resolved memory limit")
@@ -693,6 +694,9 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	}
 	if *generationStream {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_GENERATION_STREAM", "1")()
+	}
+	if *generationClearCache {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_GENERATION_CLEAR_CACHE", "1")()
 	}
 
 	modelPath := ""
@@ -1071,6 +1075,9 @@ func driverProfileRuntimeGateNames() []string {
 		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
 		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
 		"GO_MLX_ENABLE_GENERATION_STREAM",
+		"GO_MLX_ENABLE_GENERATION_CLEAR_CACHE",
+		"GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL",
+		"GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE",
 		"GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH",
 		"GO_MLX_ENABLE_PAGED_KV_PREALLOC",
 		"GO_MLX_PAGED_KV_PAGE_SIZE",

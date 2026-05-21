@@ -1228,6 +1228,32 @@ func TestModel_Generate_GenerationStream_Bad(t *testing.T) {
 	}
 }
 
+func TestModel_Generate_GenerationClearCacheInterval_Good(t *testing.T) {
+	coverageTokens := "Generate GenerationClearCacheInterval"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "64")
+	t.Cleanup(restore)
+
+	if got := generationClearCacheInterval(); got != 64 {
+		t.Fatalf("generationClearCacheInterval() = %d, want 64", got)
+	}
+}
+
+func TestModel_Generate_GenerationClearCacheInterval_Bad(t *testing.T) {
+	coverageTokens := "Generate GenerationClearCacheInterval"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restore := SetRuntimeGate("GO_MLX_GENERATION_CLEAR_CACHE_INTERVAL", "0")
+	t.Cleanup(restore)
+
+	if got := generationClearCacheInterval(); got != defaultGenerationClearCacheInterval {
+		t.Fatalf("generationClearCacheInterval() = %d, want default %d", got, defaultGenerationClearCacheInterval)
+	}
+}
+
 func TestModel_Generate_UsesDirectGreedyToken_Good(t *testing.T) {
 	coverageTokens := "Generate UsesDirectGreedyToken"
 	if coverageTokens == "" {

@@ -285,6 +285,7 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 					Free(logits)
 					return nil, core.E("Model.Generate", core.Sprintf("prefill chunk %d:%d", start, end), err)
 				}
+				maybeClearGenerationCache()
 				continue
 			}
 			nextLogits, err := m.prefillTokenBlockOnce(ctx, tokens[start:end], caches)
@@ -294,10 +295,15 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 			}
 			Free(logits)
 			logits = nextLogits
+			maybeClearGenerationCache()
 		}
 		return logits, nil
 	}
-	return m.prefillTokenBlockOnce(ctx, tokens, caches)
+	logits, err := m.prefillTokenBlockOnce(ctx, tokens, caches)
+	if err == nil {
+		maybeClearGenerationCache()
+	}
+	return logits, err
 }
 
 func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, caches []Cache) error {
@@ -950,6 +956,11 @@ func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array,
 		if err := validateCacheSnapshotConcat(dst.vPages[last], valuePage); err != nil {
 			return false, err
 		}
+	}
+	if zeroCopyPagedRestoreRuntimeEnabled() {
+		dst.kPages = append(dst.kPages, keyPage)
+		dst.vPages = append(dst.vPages, valuePage)
+		return true, nil
 	}
 
 	start := 0
