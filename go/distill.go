@@ -414,10 +414,14 @@ func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumu
 		result.Metrics.TeacherCacheMisses++
 	}
 	accumulator.add(loss)
-	result.Metrics.Loss = accumulator.loss()
-	result.Metrics.KL = accumulator.kl()
-	result.Metrics.SoftCrossEntropy = accumulator.softCrossEntropy()
-	result.Metrics.TeacherEntropy = accumulator.teacherEntropy()
+	// snapshot returns all four metric averages in a single nil/zero
+	// guard with one float division — replacing four separate method
+	// calls each with their own guard + divide.
+	avg := accumulator.snapshot()
+	result.Metrics.Loss = avg.loss
+	result.Metrics.KL = avg.kl
+	result.Metrics.SoftCrossEntropy = avg.softCE
+	result.Metrics.TeacherEntropy = avg.entropy
 	result.Metrics.CheckpointCount = len(result.Checkpoints)
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
@@ -810,32 +814,27 @@ func (a *distillMetricAccumulator) add(loss DistillLoss) {
 	a.entropySum += loss.TeacherEntropy * weight
 }
 
-func (a *distillMetricAccumulator) loss() float64 {
-	if a == nil || a.tokens == 0 {
-		return 0
-	}
-	return a.lossSum / float64(a.tokens)
+// distillMetricsSnapshot is the all-in-one return shape for snapshot —
+// every field is the per-token average of the corresponding accumulator
+// sum, or 0 when the accumulator has no tokens yet.
+type distillMetricsSnapshot struct {
+	loss, kl, softCE, entropy float64
 }
 
-func (a *distillMetricAccumulator) kl() float64 {
+// snapshot returns the per-token averages for all four metrics in a
+// single nil/zero guard with one float division — replaces four
+// separate accessor calls in updateDistillResult.
+func (a *distillMetricAccumulator) snapshot() distillMetricsSnapshot {
 	if a == nil || a.tokens == 0 {
-		return 0
+		return distillMetricsSnapshot{}
 	}
-	return a.klSum / float64(a.tokens)
-}
-
-func (a *distillMetricAccumulator) softCrossEntropy() float64 {
-	if a == nil || a.tokens == 0 {
-		return 0
+	invTokens := 1.0 / float64(a.tokens)
+	return distillMetricsSnapshot{
+		loss:    a.lossSum * invTokens,
+		kl:      a.klSum * invTokens,
+		softCE:  a.softCE * invTokens,
+		entropy: a.entropySum * invTokens,
 	}
-	return a.softCE / float64(a.tokens)
-}
-
-func (a *distillMetricAccumulator) teacherEntropy() float64 {
-	if a == nil || a.tokens == 0 {
-		return 0
-	}
-	return a.entropySum / float64(a.tokens)
 }
 
 func cloneDistillLogits(logits DistillLogits) DistillLogits {
