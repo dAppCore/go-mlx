@@ -85,9 +85,11 @@ folded State with parent lineage, and records folded-state metadata for later
 wake/replay. Folded entries now wake with `restore_strategy=folded-prefill`:
 the engine reads only the compact folded token prefix from the State file and
 prefills that small new window, avoiding multi-block K/V assembly. The 100k
-stress rerun proves the three-block folded State wake is fixed, but it also
-shows the raw exhausted checkpoint still captures `65536` tokens while the live
-State was over `100k`; exact checkpoint fidelity past `64k` remains open.
+stress rerun proves the three-block folded State wake is fixed. A follow-up
+full-timeline checkpoint rerun fixes the old `65536` token exhausted-checkpoint
+cap: `RangeKVBlocks` now streams the full session token timeline, and the real
+100k State report records a `101745` token checkpoint across `201` blocks while
+the live State is `101744` tokens.
 The AX hot-path benchmark pass now records this contract:
 `BenchmarkLoadPrefixFromStateBlocks_MixedWindowThreeBlocks` is
 `18968 ns/op`, `80258 B/op`, `49 allocs/op`, while
@@ -106,10 +108,15 @@ The 100k folded State token-wake rerun is now recorded as
 `docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json`:
 it grows the same `30000` token warmed State to `102704` live tokens, folds a
 `677` token compact State across `3` blocks, wakes it in `223.207ms`, and
-continues for `512` tokens at `101.979 tok/s`. This closes the warm build-up
-`100k` stress gate. The remaining production blockers are now the late-turn
-content degradation (`6/23` turns below the `256` visible-token floor) and the
-`65536` token exhausted-checkpoint capture cap.
+continues for `512` tokens at `101.979 tok/s`. The full-timeline checkpoint
+rerun is recorded as
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json`:
+it grows to `101744` live tokens, writes a `101745` token exhausted checkpoint,
+folds the same `677` token compact State, wakes it in `222.619ms`, and
+continues for `512` tokens at `100.577 tok/s`. This closes the warm build-up
+`100k` stress gate and the checkpoint capture-cap blocker. The remaining
+production blocker is late-turn content degradation (`10/23` turns below the
+`256` visible-token floor on the current full-timeline rerun).
 
 The retained-turn CLI path now has non-Metal `go test -benchmem` coverage for
 the hot state-ramp prompt/append/report functions. That benchmark pass found

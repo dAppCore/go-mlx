@@ -411,11 +411,56 @@ model path. The folded State has three blocks and wakes via token-only prefill
 instead of K/V assembly, then completes the configured `512` token continuation.
 This closes the warm build-up `100k` stress gate.
 
-Two caveats remain open. First, long-context content degradation is visible:
-turns `17`, `19`, `20`, `21`, `22`, and `23` fall below the `256` visible-token
-floor. Second, the exhausted checkpoint still reports `65536` captured tokens
-while the live State was `102704` tokens, so exact checkpoint fidelity past
-`64k` is not yet proven even though the compact folded continuation works.
+Two caveats remained open after this run. First, long-context content
+degradation is visible: turns `17`, `19`, `20`, `21`, `22`, and `23` fall below
+the `256` visible-token floor. Second, the exhausted checkpoint reported only
+`65536` captured tokens while the live State was `102704` tokens, so exact
+checkpoint fidelity past `64k` still needed a direct fix.
+
+## 100k Folded State Full-Timeline Checkpoint Rerun
+
+`RangeKVBlocks` now streams the full session token timeline instead of using the
+retained physical cache length as the block stream length. Blocks outside the
+retained K/V window remain token-only; overlapping suffix blocks still carry the
+available native K/V bytes. The same 100k fold workload was rerun from the
+rebuilt CLI to verify the real State file, not just the unit path.
+
+Report:
+`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json`
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Successful turns before fold | `13/23` |
+| Below-floor marked turns | `10/23` |
+| Initial retained State | `30000` tokens |
+| Final live State before fold | `101744` tokens |
+| Exhausted checkpoint | `101745` tokens across `201` blocks |
+| Appended tokens | `62593` |
+| Generated/visible tokens | `9104` / `9098` |
+| Initial prefill | `2709.758 tok/s` |
+| Append average | `1588.183 tok/s` |
+| Raw decode average | `74.245 tok/s` |
+| Effective turn throughput | `56.179 tok/s` |
+| Total wall time before fold | `173.124s` |
+| Fold checkpoint + compact prefill | `2.437s` |
+| Folded compact State | `677` tokens across `3` blocks |
+| Folded wake latency | `222.619ms` |
+| Folded wake strategy | `folded-prefill` |
+| Folded continue | `512` tokens at `100.577 tok/s` |
+| Peak MLX memory | `3.661 GiB` |
+| Active MLX memory | `3.156 GiB` |
+| Process RSS | `3.356 GiB` |
+| Estimated energy at 100 W | `17312.446 J` |
+
+Verdict: the exhausted-checkpoint `65536` token cap is fixed. The checkpoint now
+records the whole 100k-class timeline rather than the retained cache suffix,
+while the folded State still wakes quickly through compact prefill and continues
+above `100 tok/s`. The remaining open blocker from this lane is quality/content
+degradation at long context: the rerun still has late turns below the `256`
+visible-token floor and the folded continuation visibly self-describes planning
+instead of answering cleanly.
 
 ## AX Hot-Path Benchmark Pass
 
