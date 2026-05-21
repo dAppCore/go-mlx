@@ -89,24 +89,23 @@ func (p *datasetPacker) add(example sftExample) {
 	if p.maxSeqLen > 0 && len(p.current.inputs) > 0 && len(p.current.inputs)+len(example.inputs) > p.maxSeqLen {
 		p.flush()
 	}
-	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
-		start := len(example.inputs) - p.maxSeqLen
-		// Pre-sized clones avoid the append-grow cascade — each tail is
-		// exactly maxSeqLen long.
-		tailLen := p.maxSeqLen
-		inputs := make([]int, tailLen)
-		copy(inputs, example.inputs[start:])
-		targets := make([]int, tailLen)
-		copy(targets, example.targets[start:])
-		mask := make([]float32, tailLen)
-		copy(mask, example.mask[start:])
-		example.inputs = inputs
-		example.targets = targets
-		example.mask = mask
+	// Source slices for the per-add append. When truncating an oversized
+	// example we just narrow the source range — the previous code copied
+	// the tail into fresh slices first, but the subsequent appends into
+	// p.current already do that copy, so the intermediate make+copy was
+	// wasted work.
+	srcInputs := example.inputs
+	srcTargets := example.targets
+	srcMask := example.mask
+	if p.maxSeqLen > 0 && len(srcInputs) > p.maxSeqLen {
+		start := len(srcInputs) - p.maxSeqLen
+		srcInputs = srcInputs[start:]
+		srcTargets = srcTargets[start:]
+		srcMask = srcMask[start:]
 	}
-	p.current.inputs = append(p.current.inputs, example.inputs...)
-	p.current.targets = append(p.current.targets, example.targets...)
-	p.current.mask = append(p.current.mask, example.mask...)
+	p.current.inputs = append(p.current.inputs, srcInputs...)
+	p.current.targets = append(p.current.targets, srcTargets...)
+	p.current.mask = append(p.current.mask, srcMask...)
 }
 
 func (p *datasetPacker) finish() {
