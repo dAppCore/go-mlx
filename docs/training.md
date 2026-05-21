@@ -97,6 +97,9 @@ The adapter directory must contain:
 
 The loader parses weight names like `layers.0.self_attn.q_proj.lora_a` to inject each A/B pair into the correct model layer. This is compatible with adapters trained by `mlx-lm`.
 
+For append-only training rollback and optimiser resume semantics, see
+[`docs/training/lora_state_timeline.md`](training/lora_state_timeline.md).
+
 ### Fusing an Adapter Into the Base Model
 
 Once a LoRA adapter is trained, you can bake it into the base model as a fresh, standalone safetensors pack. This eliminates the runtime cost of the adapter projections at the price of losing modularity (you can no longer swap adapters on the same base).

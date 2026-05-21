@@ -30,12 +30,12 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
   The `100k` lane remains a stress ceiling and degradation probe, not the normal
   pass/fail shape for day-to-day agent work.
 
-## Current Status: Production Benchmark Path Accepted; Training Work Remains
+## Current Status: Production Benchmark Path Accepted; Training State Design Ready
 
 The Gemma 4 E2B q4 production benchmark lane is accepted. The broader goal is
-not complete because the training/substrate handoff items in Workstream 8 still
-have open boxes. Treat the evidence table below as a research ledger: it records
-useful wins, rejected probes, and historical results, but no row is a production
+now narrowed to the current production path plus the training-state handoff
+design. Treat the evidence table below as a research ledger: it records useful
+wins, rejected probes, and historical results, but no row is a production
 sign-off unless it also satisfies the live gates in this section.
 
 The current production candidate is the q4-first `lthn-mlx` fast Gemma 4 lane
@@ -1478,14 +1478,33 @@ speculative decode (`gemma4_assistant*.go`).
       `TestOptim_AdamW_PackedStateCanBeDisabled_Bad`,
       `TestOptim_AdamW_PackedStateFallsBackForMixedDTypes_Ugly`, and
       `TestSFTAdamWConfig_UsesExplicitOptimizer_Bad`.
-- [ ] Design the LoRA delta `.mp4` timeline after one real native LoRA runner
-      step works end-to-end.
+- [x] Design the LoRA State timeline after one real native LoRA runner step
+      works end-to-end.
       The latest `IDEAS.md` addendum turns this into the next training-state
-      design target, not an immediate bridge rewrite: capture LoRA A/B delta
-      tracks as timeline state only after a real native runner step can produce
-      an inspectable adapter update.
-- [ ] Revisit MTP drafter co-training only after target-model SFT is stable;
-      current native MTP is still an inference R&D lane, not a training lane.
+      design target, not an immediate bridge rewrite. The real-step proof now
+      lives in `TestSFTNativeSmoke_OneLoRAStep_Good`, which loads the local
+      `mlx-community/gemma-4-e2b-it-4bit` snapshot, runs one rank-2 `q_proj`
+      LoRA SFT step, and verifies one finite-loss adapter update. Verified with:
+
+      ```sh
+      env GO_MLX_SFT_SMOKE_MODEL=/Users/snider/.cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd \
+        MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+        GOCACHE=/private/tmp/go-mlx-gocache \
+        go test ./go -run TestSFTNativeSmoke_OneLoRAStep_Good -count=1 -v -timeout=10m
+      ```
+
+      Result: `ok dappco.re/go/mlx`, `PASS`,
+      `TestSFTNativeSmoke_OneLoRAStep_Good` in `1.72s`. The resulting design is
+      documented in `docs/training/lora_state_timeline.md`: append-only State
+      manifest plus full post-step frames for LoRA A/B and AdamW m/v, with PLE
+      kept static and rollback done by moving the active step pointer.
+- [x] Defer MTP drafter co-training until target-model SFT is stable.
+      This is not implemented in the production training path. MTP remains a
+      valid decode-boost lane: llama.cpp already shows the upside, while the
+      current native go-mlx assistant loop is still slower than target-only on
+      the same short prompt. Keep MTP optimisation alive for decode, but do not
+      co-train a drafter until target-model SFT is stable enough that the
+      drafter has the right behaviour to imitate.
 
 ### Training types export
 
