@@ -65,29 +65,33 @@ func NewModelFastEvalRunnerWithSpeculativePair(pair *SpeculativePair) bench.Runn
 }
 
 func toModelGenerateOptions(opts bench.GenerateOptions) []GenerateOption {
-	out := []GenerateOption{
-		WithMaxTokens(opts.MaxTokens),
-		WithTemperature(opts.Temperature),
-	}
-	if opts.TopK > 0 {
-		out = append(out, WithTopK(opts.TopK))
-	}
-	if opts.TopP > 0 {
-		out = append(out, WithTopP(opts.TopP))
-	}
-	if opts.MinP > 0 {
-		out = append(out, WithMinP(opts.MinP))
-	}
-	if len(opts.StopTokens) > 0 {
-		out = append(out, WithStopTokens(opts.StopTokens...))
-	}
-	if opts.RepeatPenalty > 0 {
-		out = append(out, WithRepeatPenalty(opts.RepeatPenalty))
-	}
-	if sink, ok := opts.ProbeSink.(probe.Sink); ok && sink != nil {
-		out = append(out, WithProbeSink(sink))
-	}
-	return out
+	// A single closure capturing opts replaces the per-knob With* allocs.
+	// applyGenerateOptions only ever folds the slice into a GenerateConfig,
+	// so we can collapse the eight branches into one functional step and
+	// still feed the same shape downstream.
+	sink, _ := opts.ProbeSink.(probe.Sink)
+	return []GenerateOption{func(c *GenerateConfig) {
+		c.MaxTokens = opts.MaxTokens
+		c.Temperature = opts.Temperature
+		if opts.TopK > 0 {
+			c.TopK = opts.TopK
+		}
+		if opts.TopP > 0 {
+			c.TopP = opts.TopP
+		}
+		if opts.MinP > 0 {
+			c.MinP = opts.MinP
+		}
+		if len(opts.StopTokens) > 0 {
+			c.StopTokens = opts.StopTokens
+		}
+		if opts.RepeatPenalty > 0 {
+			c.RepeatPenalty = opts.RepeatPenalty
+		}
+		if sink != nil {
+			c.ProbeSink = sink
+		}
+	}}
 }
 
 func modelBenchPromptCache(model *Model) func(context.Context, bench.Config, bench.GenerationSummary) bench.PromptCacheReport {
