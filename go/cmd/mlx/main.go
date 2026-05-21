@@ -434,58 +434,64 @@ type chapterProfileEnergy struct {
 }
 
 type stateRampProfileOptions struct {
-	Prompt              string                    `json:"prompt,omitempty"`
-	AppendPrompt        string                    `json:"append_prompt,omitempty"`
-	AppendTurnDelimiter string                    `json:"append_turn_delimiter,omitempty"`
-	ChatTemplate        string                    `json:"chat_template,omitempty"`
-	EnableThinking      bool                      `json:"enable_thinking,omitempty"`
-	StartTokens         int                       `json:"start_tokens,omitempty"`
-	TargetTokens        int                       `json:"target_tokens,omitempty"`
-	AppendTokens        int                       `json:"append_tokens,omitempty"`
-	TurnMaxTokens       int                       `json:"turn_max_tokens,omitempty"`
-	TurnMinTokens       int                       `json:"turn_min_tokens,omitempty"`
-	Turns               int                       `json:"turns,omitempty"`
-	Temperature         float64                   `json:"temperature,omitempty"`
-	TopP                float64                   `json:"top_p,omitempty"`
-	TopK                int                       `json:"top_k,omitempty"`
-	RepeatPenalty       float64                   `json:"repeat_penalty,omitempty"`
-	SuppressEOS         bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput       bool                      `json:"include_output,omitempty"`
-	SafetyLimits        driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	Prompt                    string                    `json:"prompt,omitempty"`
+	AppendPrompt              string                    `json:"append_prompt,omitempty"`
+	AppendTurnDelimiter       string                    `json:"append_turn_delimiter,omitempty"`
+	ChatTemplate              string                    `json:"chat_template,omitempty"`
+	EnableThinking            bool                      `json:"enable_thinking,omitempty"`
+	StartTokens               int                       `json:"start_tokens,omitempty"`
+	TargetTokens              int                       `json:"target_tokens,omitempty"`
+	CompactionThresholdTokens int                       `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens      int                       `json:"compaction_tail_tokens,omitempty"`
+	AppendTokens              int                       `json:"append_tokens,omitempty"`
+	TurnMaxTokens             int                       `json:"turn_max_tokens,omitempty"`
+	TurnMinTokens             int                       `json:"turn_min_tokens,omitempty"`
+	TurnMinTokensPolicy       string                    `json:"turn_min_tokens_policy,omitempty"`
+	Turns                     int                       `json:"turns,omitempty"`
+	Temperature               float64                   `json:"temperature,omitempty"`
+	TopP                      float64                   `json:"top_p,omitempty"`
+	TopK                      int                       `json:"top_k,omitempty"`
+	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateRampProfileReport struct {
-	Version                int                       `json:"version"`
-	ModelPath              string                    `json:"model_path"`
-	LoadDuration           time.Duration             `json:"load_duration,omitempty"`
-	PromptBytes            int                       `json:"prompt_bytes"`
-	AppendPromptBytes      int                       `json:"append_prompt_bytes,omitempty"`
-	ChatTemplate           string                    `json:"chat_template,omitempty"`
-	EnableThinking         bool                      `json:"enable_thinking,omitempty"`
-	SourceTokens           int                       `json:"source_tokens,omitempty"`
-	AppendSourceTokens     int                       `json:"append_source_tokens,omitempty"`
-	AppendTurnSections     int                       `json:"append_turn_sections,omitempty"`
-	StartTokens            int                       `json:"start_tokens"`
-	TargetTokens           int                       `json:"target_tokens"`
-	AppendTokens           int                       `json:"append_tokens"`
-	TurnMaxTokens          int                       `json:"turn_max_tokens"`
-	TurnMinTokens          int                       `json:"turn_min_tokens,omitempty"`
-	RequestedTurns         int                       `json:"requested_turns,omitempty"`
-	Temperature            float64                   `json:"temperature,omitempty"`
-	TopP                   float64                   `json:"top_p,omitempty"`
-	TopK                   int                       `json:"top_k,omitempty"`
-	RepeatPenalty          float64                   `json:"repeat_penalty,omitempty"`
-	SuppressEOS            bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput          bool                      `json:"include_output,omitempty"`
-	SafetyLimits           driverProfileSafetyLimits `json:"safety_limits,omitempty"`
-	RuntimeGates           map[string]string         `json:"runtime_gates,omitempty"`
-	Load                   *tuneProfileLoadSettings  `json:"load,omitempty"`
-	InitialPrefillDuration time.Duration             `json:"initial_prefill_duration,omitempty"`
-	InitialPrefillTokens   int                       `json:"initial_prefill_tokens,omitempty"`
-	Turns                  []stateRampProfileTurn    `json:"turns,omitempty"`
-	Summary                stateRampProfileSummary   `json:"summary"`
-	EstimatedEnergy        *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
-	Error                  string                    `json:"error,omitempty"`
+	Version                   int                       `json:"version"`
+	ModelPath                 string                    `json:"model_path"`
+	LoadDuration              time.Duration             `json:"load_duration,omitempty"`
+	PromptBytes               int                       `json:"prompt_bytes"`
+	AppendPromptBytes         int                       `json:"append_prompt_bytes,omitempty"`
+	ChatTemplate              string                    `json:"chat_template,omitempty"`
+	EnableThinking            bool                      `json:"enable_thinking,omitempty"`
+	SourceTokens              int                       `json:"source_tokens,omitempty"`
+	AppendSourceTokens        int                       `json:"append_source_tokens,omitempty"`
+	AppendTurnSections        int                       `json:"append_turn_sections,omitempty"`
+	StartTokens               int                       `json:"start_tokens"`
+	TargetTokens              int                       `json:"target_tokens"`
+	CompactionThresholdTokens int                       `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens      int                       `json:"compaction_tail_tokens,omitempty"`
+	AppendTokens              int                       `json:"append_tokens"`
+	TurnMaxTokens             int                       `json:"turn_max_tokens"`
+	TurnMinTokens             int                       `json:"turn_min_tokens,omitempty"`
+	TurnMinTokensPolicy       string                    `json:"turn_min_tokens_policy,omitempty"`
+	RequestedTurns            int                       `json:"requested_turns,omitempty"`
+	Temperature               float64                   `json:"temperature,omitempty"`
+	TopP                      float64                   `json:"top_p,omitempty"`
+	TopK                      int                       `json:"top_k,omitempty"`
+	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	RuntimeGates              map[string]string         `json:"runtime_gates,omitempty"`
+	Load                      *tuneProfileLoadSettings  `json:"load,omitempty"`
+	InitialPrefillDuration    time.Duration             `json:"initial_prefill_duration,omitempty"`
+	InitialPrefillTokens      int                       `json:"initial_prefill_tokens,omitempty"`
+	Turns                     []stateRampProfileTurn    `json:"turns,omitempty"`
+	Summary                   stateRampProfileSummary   `json:"summary"`
+	EstimatedEnergy           *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
+	Error                     string                    `json:"error,omitempty"`
 }
 
 type stateRampProfileTurn struct {
@@ -501,6 +507,7 @@ type stateRampProfileTurn struct {
 	StreamDuration         time.Duration `json:"stream_duration,omitempty"`
 	DriverOverheadDuration time.Duration `json:"driver_overhead_duration,omitempty"`
 	VisibleTokens          int           `json:"visible_tokens,omitempty"`
+	BelowMinTokens         bool          `json:"below_min_tokens,omitempty"`
 	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
 	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
 	Output                 string        `json:"output,omitempty"`
@@ -529,6 +536,11 @@ type stateRampProfileSummary struct {
 	ProcessVirtualMemoryBytes  uint64        `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64        `json:"process_peak_resident_bytes,omitempty"`
+	ContextExhausted           bool          `json:"context_exhausted,omitempty"`
+	FoldedStateRequired        bool          `json:"folded_state_required,omitempty"`
+	CompactionThresholdTokens  int           `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens       int           `json:"compaction_tail_tokens,omitempty"`
+	CompactionReason           string        `json:"compaction_reason,omitempty"`
 }
 
 type stateRampProfileEnergy struct {
@@ -2019,9 +2031,12 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	enableThinking := fs.Bool("enable-thinking", false, "enable Gemma 4 thinking control token in the retained state ramp prompts")
 	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
+	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses target tokens")
+	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
 	turnMinTokens := fs.Int("turn-min-tokens", 0, "minimum visible tokens required for each generated turn; 0 disables the floor")
+	turnMinTokensPolicy := fs.String("turn-min-tokens-policy", "fail", "handling for turns below the visible-token floor: fail or mark")
 	turns := fs.Int("turns", 0, "maximum ramp turns; 0 runs until target tokens are reached")
 	temperature := fs.Float64("temperature", 1.0, "sampling temperature for generated turns")
 	topP := fs.Float64("top-p", 0.95, "top-p sampling value for generated turns")
@@ -2099,6 +2114,17 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: target tokens must be greater than start tokens\n", cliName()))
 		return 2
 	}
+	if *compactionThresholdTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction threshold tokens must be >= 0\n", cliName()))
+		return 2
+	}
+	if *compactionThresholdTokens == 0 {
+		*compactionThresholdTokens = *targetTokens
+	}
+	if *compactionTailTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction tail tokens must be >= 0\n", cliName()))
+		return 2
+	}
 	if *appendTokens < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: append tokens must be >= 1\n", cliName()))
 		return 2
@@ -2109,6 +2135,14 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 	if *turnMinTokens < 0 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turn min tokens must be >= 0\n", cliName()))
+		return 2
+	}
+	*turnMinTokensPolicy = core.Lower(core.Trim(*turnMinTokensPolicy))
+	if *turnMinTokensPolicy == "" {
+		*turnMinTokensPolicy = "fail"
+	}
+	if *turnMinTokensPolicy != "fail" && *turnMinTokensPolicy != "mark" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: turn min tokens policy must be fail or mark\n", cliName()))
 		return 2
 	}
 	if *turns < 0 {
@@ -2184,23 +2218,26 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 
 	report, err := runStateRampProfileGuarded(ctx, fs.Arg(0), loadOptions, stateRampProfileOptions{
-		Prompt:              *prompt,
-		AppendPrompt:        *appendPrompt,
-		AppendTurnDelimiter: *appendTurnDelimiter,
-		ChatTemplate:        *chatTemplate,
-		EnableThinking:      *enableThinking,
-		StartTokens:         *startTokens,
-		TargetTokens:        *targetTokens,
-		AppendTokens:        *appendTokens,
-		TurnMaxTokens:       *turnMaxTokens,
-		TurnMinTokens:       *turnMinTokens,
-		Turns:               *turns,
-		Temperature:         *temperature,
-		TopP:                *topP,
-		TopK:                *topK,
-		RepeatPenalty:       *repeatPenalty,
-		SuppressEOS:         *suppressEOS,
-		IncludeOutput:       *includeOutput,
+		Prompt:                    *prompt,
+		AppendPrompt:              *appendPrompt,
+		AppendTurnDelimiter:       *appendTurnDelimiter,
+		ChatTemplate:              *chatTemplate,
+		EnableThinking:            *enableThinking,
+		StartTokens:               *startTokens,
+		TargetTokens:              *targetTokens,
+		CompactionThresholdTokens: *compactionThresholdTokens,
+		CompactionTailTokens:      *compactionTailTokens,
+		AppendTokens:              *appendTokens,
+		TurnMaxTokens:             *turnMaxTokens,
+		TurnMinTokens:             *turnMinTokens,
+		TurnMinTokensPolicy:       *turnMinTokensPolicy,
+		Turns:                     *turns,
+		Temperature:               *temperature,
+		TopP:                      *topP,
+		TopK:                      *topK,
+		RepeatPenalty:             *repeatPenalty,
+		SuppressEOS:               *suppressEOS,
+		IncludeOutput:             *includeOutput,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -2220,25 +2257,28 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &stateRampProfileReport{
-				Version:            1,
-				ModelPath:          fs.Arg(0),
-				PromptBytes:        len(*prompt),
-				AppendPromptBytes:  len(*appendPrompt),
-				AppendTurnSections: 0,
-				ChatTemplate:       *chatTemplate,
-				EnableThinking:     *enableThinking,
-				StartTokens:        *startTokens,
-				TargetTokens:       *targetTokens,
-				AppendTokens:       *appendTokens,
-				TurnMaxTokens:      *turnMaxTokens,
-				TurnMinTokens:      *turnMinTokens,
-				RequestedTurns:     *turns,
-				Temperature:        *temperature,
-				TopP:               *topP,
-				TopK:               *topK,
-				RepeatPenalty:      *repeatPenalty,
-				SuppressEOS:        *suppressEOS,
-				IncludeOutput:      *includeOutput,
+				Version:                   1,
+				ModelPath:                 fs.Arg(0),
+				PromptBytes:               len(*prompt),
+				AppendPromptBytes:         len(*appendPrompt),
+				AppendTurnSections:        0,
+				ChatTemplate:              *chatTemplate,
+				EnableThinking:            *enableThinking,
+				StartTokens:               *startTokens,
+				TargetTokens:              *targetTokens,
+				CompactionThresholdTokens: *compactionThresholdTokens,
+				CompactionTailTokens:      *compactionTailTokens,
+				AppendTokens:              *appendTokens,
+				TurnMaxTokens:             *turnMaxTokens,
+				TurnMinTokens:             *turnMinTokens,
+				TurnMinTokensPolicy:       *turnMinTokensPolicy,
+				RequestedTurns:            *turns,
+				Temperature:               *temperature,
+				TopP:                      *topP,
+				TopK:                      *topK,
+				RepeatPenalty:             *repeatPenalty,
+				SuppressEOS:               *suppressEOS,
+				IncludeOutput:             *includeOutput,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -2288,25 +2328,28 @@ func runStateRampProfileGuarded(ctx context.Context, modelPath string, loadOptio
 func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateRampProfileOptions) (*stateRampProfileReport, error) {
 	opts = normalizeStateRampProfileOptions(opts)
 	report := &stateRampProfileReport{
-		Version:           1,
-		ModelPath:         modelPath,
-		PromptBytes:       len(opts.Prompt),
-		AppendPromptBytes: len(opts.AppendPrompt),
-		EnableThinking:    opts.EnableThinking,
-		StartTokens:       opts.StartTokens,
-		TargetTokens:      opts.TargetTokens,
-		AppendTokens:      opts.AppendTokens,
-		TurnMaxTokens:     opts.TurnMaxTokens,
-		TurnMinTokens:     opts.TurnMinTokens,
-		RequestedTurns:    opts.Turns,
-		Temperature:       opts.Temperature,
-		TopP:              opts.TopP,
-		TopK:              opts.TopK,
-		RepeatPenalty:     opts.RepeatPenalty,
-		SuppressEOS:       opts.SuppressEOS,
-		IncludeOutput:     opts.IncludeOutput,
-		SafetyLimits:      opts.SafetyLimits,
-		RuntimeGates:      driverProfileRuntimeGates(),
+		Version:                   1,
+		ModelPath:                 modelPath,
+		PromptBytes:               len(opts.Prompt),
+		AppendPromptBytes:         len(opts.AppendPrompt),
+		EnableThinking:            opts.EnableThinking,
+		StartTokens:               opts.StartTokens,
+		TargetTokens:              opts.TargetTokens,
+		CompactionThresholdTokens: opts.CompactionThresholdTokens,
+		CompactionTailTokens:      opts.CompactionTailTokens,
+		AppendTokens:              opts.AppendTokens,
+		TurnMaxTokens:             opts.TurnMaxTokens,
+		TurnMinTokens:             opts.TurnMinTokens,
+		TurnMinTokensPolicy:       opts.TurnMinTokensPolicy,
+		RequestedTurns:            opts.Turns,
+		Temperature:               opts.Temperature,
+		TopP:                      opts.TopP,
+		TopK:                      opts.TopK,
+		RepeatPenalty:             opts.RepeatPenalty,
+		SuppressEOS:               opts.SuppressEOS,
+		IncludeOutput:             opts.IncludeOutput,
+		SafetyLimits:              opts.SafetyLimits,
+		RuntimeGates:              driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -2399,15 +2442,17 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 			currentTokens += turn.AppendedTokens
 		}
 		if turn.Error != "" && firstErr == nil {
-			firstErr = core.NewError(turn.Error)
+			if stateRampProfileTurnErrorFatal(turn, opts) {
+				firstErr = core.NewError(turn.Error)
+			}
 		}
 		report.Turns = append(report.Turns, turn)
 		mlx.ClearCache()
-		if turn.Error != "" {
+		if turn.Error != "" && stateRampProfileTurnErrorFatal(turn, opts) {
 			break
 		}
 	}
-	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns)
+	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns, opts)
 	if firstErr != nil {
 		report.Error = firstErr.Error()
 		return report, firstErr
@@ -2427,6 +2472,12 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	if opts.TargetTokens <= 0 {
 		opts.TargetTokens = 100000
 	}
+	if opts.CompactionThresholdTokens <= 0 {
+		opts.CompactionThresholdTokens = opts.TargetTokens
+	}
+	if opts.CompactionTailTokens < 0 {
+		opts.CompactionTailTokens = 0
+	}
 	if opts.AppendTokens <= 0 {
 		opts.AppendTokens = 8192
 	}
@@ -2435,6 +2486,13 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	if opts.TurnMinTokens < 0 {
 		opts.TurnMinTokens = 0
+	}
+	opts.TurnMinTokensPolicy = core.Lower(core.Trim(opts.TurnMinTokensPolicy))
+	if opts.TurnMinTokensPolicy == "" {
+		opts.TurnMinTokensPolicy = "fail"
+	}
+	if opts.TurnMinTokensPolicy != "mark" {
+		opts.TurnMinTokensPolicy = "fail"
 	}
 	if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 		opts.SafetyLimits.RepeatedTokenLoopLimit = driverProfileDefaultRepeatedTokenLoopLimit
@@ -2449,10 +2507,26 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 }
 
 func shouldRunStateRampTurn(index, currentTokens int, opts stateRampProfileOptions) bool {
+	if stateRampProfileLiveTokenLimitReached(currentTokens, opts) {
+		return false
+	}
 	if opts.Turns > 0 {
 		return index <= opts.Turns
 	}
 	return currentTokens < opts.TargetTokens
+}
+
+func stateRampProfileLiveTokenLimitReached(currentTokens int, opts stateRampProfileOptions) bool {
+	limit := stateRampProfileLiveTokenLimit(opts)
+	return limit > 0 && currentTokens >= limit
+}
+
+func stateRampProfileLiveTokenLimit(opts stateRampProfileOptions) int {
+	limit := opts.TargetTokens
+	if opts.CompactionThresholdTokens > 0 && (limit <= 0 || opts.CompactionThresholdTokens < limit) {
+		limit = opts.CompactionThresholdTokens
+	}
+	return limit
 }
 
 func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
@@ -2639,9 +2713,10 @@ func stateRampProfileTurnAppendSource(source []int32, sections [][]int32, source
 		tokens = sections[(turnIndex-1)%len(sections)]
 		appendCount = len(tokens)
 		sourceOffset = 0
-	}
-	if remaining := opts.TargetTokens - currentTokens; remaining < appendCount {
-		appendCount = remaining
+	} else if limit := stateRampProfileLiveTokenLimit(opts); limit > 0 {
+		if remaining := limit - currentTokens; remaining < appendCount {
+			appendCount = remaining
+		}
 	}
 	if appendCount < 0 {
 		appendCount = 0
@@ -2795,6 +2870,7 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		return turn
 	}
 	if opts.TurnMinTokens > 0 && turn.VisibleTokens < opts.TurnMinTokens {
+		turn.BelowMinTokens = true
 		turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", index, turn.VisibleTokens, opts.TurnMinTokens)
 		return turn
 	}
@@ -2820,7 +2896,14 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	return turn
 }
 
-func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn) stateRampProfileSummary {
+func stateRampProfileTurnErrorFatal(turn stateRampProfileTurn, opts stateRampProfileOptions) bool {
+	if turn.Error == "" {
+		return false
+	}
+	return !(turn.BelowMinTokens && opts.TurnMinTokensPolicy == "mark")
+}
+
+func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn, opts stateRampProfileOptions) stateRampProfileSummary {
 	summary := stateRampProfileSummary{
 		InitialPrefillTokens: initialTokens,
 		FinalStateTokens:     initialTokens,
@@ -2880,7 +2963,29 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	if turnWallDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.EffectiveTurnTokensPerSec = float64(summary.GeneratedTokens) / turnWallDuration.Seconds()
 	}
+	annotateStateRampProfileContextLifecycle(&summary, opts)
 	return summary
+}
+
+func annotateStateRampProfileContextLifecycle(summary *stateRampProfileSummary, opts stateRampProfileOptions) {
+	if summary == nil {
+		return
+	}
+	threshold := opts.CompactionThresholdTokens
+	if threshold <= 0 {
+		threshold = opts.TargetTokens
+	}
+	if threshold <= 0 {
+		return
+	}
+	summary.CompactionThresholdTokens = threshold
+	summary.CompactionTailTokens = opts.CompactionTailTokens
+	if summary.FinalStateTokens < threshold {
+		return
+	}
+	summary.ContextExhausted = true
+	summary.FoldedStateRequired = true
+	summary.CompactionReason = "live state reached the compaction threshold; checkpoint, summarise, and prefill a folded state from durable summary plus recent tail before appending more turns"
 }
 
 func estimateStateRampProfileEnergy(report *stateRampProfileReport, powerWatts float64) *stateRampProfileEnergy {
@@ -2915,6 +3020,9 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 	))
 	if report.EstimatedEnergy != nil {
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
+	}
+	if report.Summary.FoldedStateRequired {
+		core.WriteString(stdout, core.Sprintf("  context exhausted: folded state required at %d tokens (tail hint: %d tokens)\n", report.Summary.CompactionThresholdTokens, report.Summary.CompactionTailTokens))
 	}
 }
 

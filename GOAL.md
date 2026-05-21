@@ -63,7 +63,13 @@ token floor, bounded memory, and exposed wall/decode/append/energy accounting:
 throughput, `63584` final live tokens, `3.137 GiB` active MLX memory, and
 `10774.150 J` estimated at `100 W`. This row does not close production by
 itself; same-shape `mlx_lm`, llama.cpp, and vLLM anchors are still required,
-and the accepted state must still be grown toward the `100k` stress lane.
+and the accepted state must still be grown toward the `100k` stress lane. The
+state-ramp runner now treats that stress ceiling as a lifecycle boundary:
+fixed-turn ramps stop when the live state reaches the target or configured
+compaction threshold, and reports expose `context_exhausted`,
+`folded_state_required`, `compaction_threshold_tokens`, and
+`compaction_tail_tokens` so the next engine step is checkpoint, summarise, and
+prefill a folded state rather than append blindly.
 
 Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
 Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
@@ -97,7 +103,9 @@ Production remains blocked until these gates are all satisfied:
       cache-access patterns. Generated assistant tokens count into the live
       state for turn `N+1`. Report effective turn throughput as generated
       tokens divided by append-plus-decode wall time, separately from raw decode
-      tok/s.
+      tok/s. When this run reaches the live context budget, the accepted outcome
+      is a reported `folded_state_required` boundary with a summary-plus-tail
+      folded-state handoff, not further raw appends into an exhausted window.
 - [x] A current guarded 100k-token E2B q4 retained-state run completes on the
       target machine with 10+ turns, realistic generation length, bounded memory,
       and recorded restore-versus-replay savings. This is now the hyper-long

@@ -655,36 +655,39 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 			},
 		}
 		return &stateRampProfileReport{
-			Version:                1,
-			ModelPath:              modelPath,
-			PromptBytes:            len(cfg.Prompt),
-			AppendPromptBytes:      len(cfg.AppendPrompt),
-			ChatTemplate:           cfg.ChatTemplate,
-			EnableThinking:         cfg.EnableThinking,
-			SourceTokens:           2204,
-			AppendSourceTokens:     512,
-			StartTokens:            cfg.StartTokens,
-			TargetTokens:           cfg.TargetTokens,
-			AppendTokens:           cfg.AppendTokens,
-			TurnMaxTokens:          cfg.TurnMaxTokens,
-			TurnMinTokens:          cfg.TurnMinTokens,
-			RequestedTurns:         cfg.Turns,
-			Temperature:            cfg.Temperature,
-			TopP:                   cfg.TopP,
-			TopK:                   cfg.TopK,
-			RepeatPenalty:          cfg.RepeatPenalty,
-			SuppressEOS:            cfg.SuppressEOS,
-			InitialPrefillDuration: 30 * time.Second,
-			InitialPrefillTokens:   30000,
-			Turns:                  turns,
-			Summary:                summariseStateRampProfileTurns(30*time.Second, 30000, turns),
+			Version:                   1,
+			ModelPath:                 modelPath,
+			PromptBytes:               len(cfg.Prompt),
+			AppendPromptBytes:         len(cfg.AppendPrompt),
+			ChatTemplate:              cfg.ChatTemplate,
+			EnableThinking:            cfg.EnableThinking,
+			SourceTokens:              2204,
+			AppendSourceTokens:        512,
+			StartTokens:               cfg.StartTokens,
+			TargetTokens:              cfg.TargetTokens,
+			CompactionThresholdTokens: cfg.CompactionThresholdTokens,
+			CompactionTailTokens:      cfg.CompactionTailTokens,
+			AppendTokens:              cfg.AppendTokens,
+			TurnMaxTokens:             cfg.TurnMaxTokens,
+			TurnMinTokens:             cfg.TurnMinTokens,
+			TurnMinTokensPolicy:       cfg.TurnMinTokensPolicy,
+			RequestedTurns:            cfg.Turns,
+			Temperature:               cfg.Temperature,
+			TopP:                      cfg.TopP,
+			TopK:                      cfg.TopK,
+			RepeatPenalty:             cfg.RepeatPenalty,
+			SuppressEOS:               cfg.SuppressEOS,
+			InitialPrefillDuration:    30 * time.Second,
+			InitialPrefillTokens:      30000,
+			Turns:                     turns,
+			Summary:                   summariseStateRampProfileTurns(30*time.Second, 30000, turns, cfg),
 		}, nil
 	}
 	appendPath := core.PathJoin(t.TempDir(), "append.txt")
 	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-turn-min-tokens-policy", "mark", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -701,8 +704,11 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
 		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
 	}
-	if gotCfg.TurnMinTokens != 512 || !gotCfg.SuppressEOS {
-		t.Fatalf("state ramp real-workload guards = min:%d suppress_eos:%v, want configured floor", gotCfg.TurnMinTokens, gotCfg.SuppressEOS)
+	if gotCfg.CompactionThresholdTokens != 100000 || gotCfg.CompactionTailTokens != 8192 {
+		t.Fatalf("state ramp compaction cfg = threshold:%d tail:%d, want target-backed folded-state defaults", gotCfg.CompactionThresholdTokens, gotCfg.CompactionTailTokens)
+	}
+	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
+		t.Fatalf("state ramp real-workload guards = min:%d policy:%q suppress_eos:%v, want configured floor", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
 	}
 	if gotCfg.Temperature != 1.0 || gotCfg.TopP != 0.95 || gotCfg.TopK != 64 || gotCfg.RepeatPenalty != 1.0 {
 		t.Fatalf("state ramp sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 defaults", gotCfg.Temperature, gotCfg.TopP, gotCfg.TopK, gotCfg.RepeatPenalty)
@@ -714,9 +720,12 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"model_path": "/models/demo"`,
 		`"start_tokens": 30000`,
 		`"target_tokens": 100000`,
+		`"compaction_threshold_tokens": 100000`,
+		`"compaction_tail_tokens": 8192`,
 		`"chat_template": "gemma4"`,
 		`"enable_thinking": true`,
 		`"turn_min_tokens": 512`,
+		`"turn_min_tokens_policy": "mark"`,
 		`"temperature": 1`,
 		`"top_p": 0.95`,
 		`"top_k": 64`,
@@ -750,6 +759,44 @@ func TestRunCommand_StateRampProfileValidation_Bad(t *testing.T) {
 	}
 	if !core.Contains(stderr.String(), "target tokens must be greater than start tokens") {
 		t.Fatalf("stderr = %q, want target validation", stderr.String())
+	}
+}
+
+func TestRunCommand_StateRampProfileMinPolicyValidation_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for invalid min-token policy")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-turn-min-tokens-policy", "continue", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "turn min tokens policy must be fail or mark") {
+		t.Fatalf("stderr = %q, want min-token policy validation", stderr.String())
+	}
+}
+
+func TestRunCommand_StateRampProfileCompactionValidation_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for invalid compaction options")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-compaction-threshold-tokens", "-1", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "compaction threshold tokens must be >= 0") {
+		t.Fatalf("stderr = %q, want compaction threshold validation", stderr.String())
 	}
 }
 
@@ -797,6 +844,91 @@ func TestStateRampProfileTurnAppendSourceDelimited_Good(t *testing.T) {
 	}
 	if len(source) != len(section) || source[0] != 1 || source[len(source)-1] != 5 {
 		t.Fatalf("source=%v, want selected delimited section", source)
+	}
+}
+
+func TestStateRampProfileTurnAppendSourceDelimitedNearTarget_Good(t *testing.T) {
+	section := []int32{1, 2, 3, 4, 5}
+	_, _, count := stateRampProfileTurnAppendSource(
+		[]int32{9, 9, 9},
+		[][]int32{section},
+		0,
+		998,
+		1,
+		stateRampProfileOptions{AppendTokens: 2, TargetTokens: 1000},
+	)
+
+	if count != len(section) {
+		t.Fatalf("count=%d, want whole delimited section even near target", count)
+	}
+}
+
+func TestStateRampProfileTurnAppendSourceFixedCompactionThreshold_Good(t *testing.T) {
+	_, _, count := stateRampProfileTurnAppendSource(
+		[]int32{1, 2, 3, 4, 5},
+		nil,
+		0,
+		950,
+		1,
+		stateRampProfileOptions{
+			AppendTokens:              200,
+			TargetTokens:              2000,
+			CompactionThresholdTokens: 1000,
+		},
+	)
+
+	if count != 50 {
+		t.Fatalf("count=%d, want fixed append capped at compaction threshold", count)
+	}
+}
+
+func TestStateRampProfileTurnErrorFatal_Good(t *testing.T) {
+	turn := stateRampProfileTurn{Error: "short turn", BelowMinTokens: true}
+	if stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
+		t.Fatal("below-floor turn with mark policy is fatal")
+	}
+	if !stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "fail"}) {
+		t.Fatal("below-floor turn with fail policy is non-fatal")
+	}
+	if !stateRampProfileTurnErrorFatal(stateRampProfileTurn{Error: "loop"}, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
+		t.Fatal("non-floor error with mark policy is non-fatal")
+	}
+}
+
+func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
+	opts := stateRampProfileOptions{
+		TargetTokens:              2000,
+		CompactionThresholdTokens: 1000,
+		CompactionTailTokens:      128,
+		Turns:                     10,
+	}
+	if !shouldRunStateRampTurn(1, 999, opts) {
+		t.Fatal("turn before compaction threshold does not run")
+	}
+	if shouldRunStateRampTurn(2, 1000, opts) {
+		t.Fatal("turn at compaction threshold still runs")
+	}
+
+	summary := summariseStateRampProfileTurns(time.Second, 900, []stateRampProfileTurn{
+		{
+			Index:               1,
+			TokensAfterGenerate: 1000,
+			VisibleTokens:       100,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 100,
+				DecodeDuration:  time.Second,
+			},
+		},
+	}, opts)
+
+	if !summary.ContextExhausted || !summary.FoldedStateRequired {
+		t.Fatalf("summary lifecycle = exhausted:%v folded:%v, want folded-state boundary", summary.ContextExhausted, summary.FoldedStateRequired)
+	}
+	if summary.CompactionThresholdTokens != 1000 || summary.CompactionTailTokens != 128 {
+		t.Fatalf("summary compaction = threshold:%d tail:%d, want configured values", summary.CompactionThresholdTokens, summary.CompactionTailTokens)
+	}
+	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
+		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
 	}
 }
 

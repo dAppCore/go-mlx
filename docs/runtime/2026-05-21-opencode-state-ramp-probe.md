@@ -139,7 +139,7 @@ Fixes made before this accepted row:
 - Generated assistant turns are closed before the next retained user turn.
 - Gemma 4 stop/suppress token controls are reused from `chapter-profile`.
 - Delimited append mode preserves whole user-turn sections instead of clipping
-  them with `-append-tokens`; the target context cap is still enforced.
+  them with `-append-tokens`.
 - The wrapper closes reference material and repeats the output-length
   instruction immediately before generation, avoiding raw code continuation.
 
@@ -174,3 +174,12 @@ Run same-shape external anchors for the accepted chat-shaped workload, then run
 the warm build-up stress path from the accepted `30k`-to-`63.5k` workflow
 toward `100k`. Keep raw decode, append wall time, restore/prefill, wall time,
 memory, and estimated energy separate.
+
+The runner must treat the `100k` stress ceiling as a context lifecycle boundary.
+`state-ramp-profile` now stops fixed-turn ramps once the live state reaches the
+target or configured compaction threshold, caps fixed-token appends at that
+limit, and emits `context_exhausted`, `folded_state_required`,
+`compaction_threshold_tokens`, and `compaction_tail_tokens` in the summary. That
+boundary means the next production step is to checkpoint, summarise the exhausted
+window, keep a recent tail, and prefill a folded state before accepting more
+turns.
