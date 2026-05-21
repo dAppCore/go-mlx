@@ -225,7 +225,10 @@ type AttentionSnapshot struct {
 
 // HasQueries reports whether query tensors are present in the snapshot.
 func (s *AttentionSnapshot) HasQueries() bool {
-	return s != nil && s.Queries != nil && len(s.Queries) > 0
+	// len(nil) == 0 — the explicit s.Queries != nil check is redundant,
+	// and dropping it lets the inliner fold the single bounds load into
+	// a fused nil-check + length compare instead of a three-step chain.
+	return s != nil && len(s.Queries) > 0
 }
 
 // ModelInfo describes a loaded model.
