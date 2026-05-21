@@ -1568,9 +1568,12 @@ speculative decode (`gemma4_assistant*.go`).
         go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
       ```
 
-      Remaining before this box closes: seeded CONT-vs-TRAD output parity and
-      the two control conditions from `02-method.md` (`TRAD-no-replay` and
-      `CONT-with-gap`).
+      Remaining before this box closes: real-model seeded CONT-vs-TRAD output
+      parity. The two control conditions from `02-method.md`
+      (`TRAD-no-replay` and `CONT-with-gap`) are now represented in the
+      go-mlx condition contract and wired into the downstream `gomlxrunner`
+      adapter, but the output-equivalence claim still needs model-backed
+      evidence rather than config-level tests.
 
       Seed-control progress: go-mlx now exposes `SeedRandom(seed)` for
       run-level MLX RNG seeding plus `WithSeed(seed)` for single-call
@@ -1588,6 +1591,24 @@ speculative decode (`gemma4_assistant*.go`).
       `TestCondition_TransitionSemantics_Good`, and AX-11 benchmarks
       `BenchmarkNormalize_ConditionAlias` (`12.63 ns/op`, `0 allocs`) and
       `BenchmarkConditionTransition_FourConditions` (`7.933 ns/op`, `0 allocs`).
+
+      Downstream adapter progress: `lthn/desktop` `external/mlx` now
+      fast-forwards to go-mlx `23c431a` and `external/inference` to
+      `6cb95d7`. `go/pkg/gomlxrunner` imports `dappco.re/go/mlx/substrate`,
+      exposes all four canonical labels, forwards `Config{Seed, SeedSet}` to
+      `mlx.WithSeed`, keeps TRAD as the only prompt-cache replay condition, and
+      uses `Config.PrefillGap` for artificial-gap controls. Verified with:
+
+      ```sh
+      env GOWORK=/Users/snider/Code/lthn/desktop/go.work \
+        GOCACHE=/private/tmp/codex-lthn-desktop-cache \
+        MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib \
+        CGO_CPPFLAGS=-I/Users/snider/Code/core/go-mlx/dist/include/metal_cpp \
+        go test ./go/pkg/gomlxrunner ./go/pkg/training -count=1
+      ```
+
+      Result: `ok dappco.re/lthn/desktop/pkg/gomlxrunner` and
+      `ok dappco.re/lthn/desktop/pkg/training`.
 
 ### Per-turn capture for the substrate-shift experiment
 
