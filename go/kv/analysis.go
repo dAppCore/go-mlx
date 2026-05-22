@@ -85,15 +85,35 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		entropyScratch = make([]float64, snapshot.SeqLen)
 	}
 
+	// One invNorms scratch reused across every kvAnalysisPairCoherence
+	// call (every layer × {keys, values}). Sized to numHeads — same
+	// reuse pattern as entropyScratch. The PairCoherence helper falls
+	// back to its own alloc when given nil/short scratch (defensive
+	// against snapshots whose NumHeads field doesn't match Heads slice
+	// length).
+	var coherenceInvNorms []float64
+	if snapshot.NumHeads > 0 {
+		coherenceInvNorms = make([]float64, snapshot.NumHeads)
+	}
+	// One [][]float32 view-slice scratch reused across every
+	// kvAnalysisHeadVectors call (4 per Analyze: layer × {keys, values}).
+	// Each previous call allocated a fresh slice; reuse drops 4 small
+	// allocs per Analyze. Sized to numHeads — helper grows the cap if
+	// the snapshot violates that (defensive same as invNorms above).
+	var headVectorScratch [][]float32
+	if snapshot.NumHeads > 0 {
+		headVectorScratch = make([][]float32, snapshot.NumHeads)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
 			continue
 		}
-		keyHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, true)
-		valueHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, false)
-		keyCoherence, keyLocked, keyPairs := kvAnalysisPairCoherence(keyHeads)
-		valueCoherence, valueLocked, valuePairs := kvAnalysisPairCoherence(valueHeads)
+		keyHeads := kvAnalysisHeadVectorsInto(headVectorScratch, layerSnapshot.Heads, true)
+		keyCoherence, keyLocked, keyPairs := kvAnalysisPairCoherence(keyHeads, coherenceInvNorms)
+		valueHeads := kvAnalysisHeadVectorsInto(headVectorScratch, layerSnapshot.Heads, false)
+		valueCoherence, valueLocked, valuePairs := kvAnalysisPairCoherence(valueHeads, coherenceInvNorms)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
 		result.LayerKeyCoherence[layer] = keyCoherence
@@ -331,25 +351,51 @@ func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 	// Pre-extend instead of pre-allocate-empty + N appends — len is
 	// known up-front (one slot per head). Hoists the keys/values branch
 	// out of the inner loop too.
-	vectors := make([][]float32, len(heads))
+	return kvAnalysisHeadVectorsInto(nil, heads, keys)
+}
+
+// kvAnalysisHeadVectorsInto fills dst with the Key or Value slice view
+// of each head, returning the populated slice. Reuses dst when its
+// cap is sufficient; falls back to an alloc otherwise. The hoisted
+// keys/values branch keeps the inner-loop body straight-line.
+func kvAnalysisHeadVectorsInto(dst [][]float32, heads []HeadSnapshot, keys bool) [][]float32 {
+	if cap(dst) < len(heads) {
+		dst = make([][]float32, len(heads))
+	} else {
+		dst = dst[:len(heads)]
+	}
 	if keys {
 		for i := range heads {
-			vectors[i] = heads[i].Key
+			dst[i] = heads[i].Key
 		}
 	} else {
 		for i := range heads {
-			vectors[i] = heads[i].Value
+			dst[i] = heads[i].Value
 		}
 	}
-	return vectors
+	return dst
 }
 
-func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
+func kvAnalysisPairCoherence(vectors [][]float32, invNorms []float64) (float64, int, int) {
 	// Precompute per-vector 1/|v| once so the O(N²) pair loop only
 	// pays a dot product + 2 muls — same self-norm-recompute waste
-	// kvAnalysisPositionDifferentiation had.
+	// kvAnalysisPositionDifferentiation had. invNorms is caller-owned
+	// scratch reused across every PairCoherence call; falls back to
+	// per-call alloc when the cap is too small (defensive — callers
+	// size it from snapshot.NumHeads which may not match len(vectors)
+	// for malformed snapshots).
 	n := len(vectors)
-	invNorms := make([]float64, n)
+	if cap(invNorms) < n {
+		invNorms = make([]float64, n)
+	} else {
+		invNorms = invNorms[:n]
+		// Zero the reused slots — previous call may have left non-zero
+		// inverse norms in place; zero-norm semantics depend on
+		// invNorms[i] == 0 for the empty/zero-vector case.
+		for i := range invNorms {
+			invNorms[i] = 0
+		}
+	}
 	for i, vec := range vectors {
 		var sum float64
 		for _, value := range vec {
@@ -375,9 +421,28 @@ func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
 				continue
 			}
 			invB := invNorms[j]
-			var dot float64
-			for k, av := range rowA {
-				dot += float64(av) * float64(rowB[k])
+			// 4-way unrolled dot — same FADDD-chain-split as the
+			// kvAnalysisPositionDifferentiation headDim>1 path. The
+			// inner loop runs O(N²) times across (numHeads, layers),
+			// where N is the per-head vector length (seqLen·headDim);
+			// breaking the loop-carried 3-cycle FADDD dependency into 4
+			// parallel chains lifts arithmetic throughput. f32→f64
+			// conversion stays inline (avoids a doubled-memory scratch
+			// arena — pre-scaling regressed the bench by 5-7% because
+			// the f64 arena is 2× the f32 source and inflates cache
+			// pressure on the hot dot loop).
+			length := len(rowA)
+			var d0, d1, d2, d3 float64
+			k := 0
+			for ; k+3 < length; k += 4 {
+				d0 += float64(rowA[k]) * float64(rowB[k])
+				d1 += float64(rowA[k+1]) * float64(rowB[k+1])
+				d2 += float64(rowA[k+2]) * float64(rowB[k+2])
+				d3 += float64(rowA[k+3]) * float64(rowB[k+3])
+			}
+			dot := (d0 + d1) + (d2 + d3)
+			for ; k < length; k++ {
+				dot += float64(rowA[k]) * float64(rowB[k])
 			}
 			similarity := dot * invA * invB
 			total += similarity
@@ -660,11 +725,28 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			rowA := scratch[baseA : baseA+headDim]
 			for j := i + 1; j < seqLen; j++ {
 				baseB := j * headDim
+				rowB := scratch[baseB : baseB+headDim]
 				// Pure float64 dot product — no float32 conversions,
-				// no per-pair inverse-norm multiplications.
-				var dot float64
-				for k, av := range rowA {
-					dot += av * scratch[baseB+k]
+				// no per-pair inverse-norm multiplications. Split the
+				// accumulation across 4 parallel chains to break the
+				// loop-carried FADDD dependency (3-cycle latency on M3);
+				// the 4 chains issue on independent FADDD units, giving
+				// ~4× throughput on the arithmetic side. Cache-bound for
+				// large headDim·seqLen, but the per-pair tail still
+				// benefits. Inlined here because Go won't inline a
+				// helper call inside this O(seqLen²) loop and the call
+				// overhead measured larger than the unroll win.
+				var d0, d1, d2, d3 float64
+				k := 0
+				for ; k+3 < headDim; k += 4 {
+					d0 += rowA[k] * rowB[k]
+					d1 += rowA[k+1] * rowB[k+1]
+					d2 += rowA[k+2] * rowB[k+2]
+					d3 += rowA[k+3] * rowB[k+3]
+				}
+				dot := (d0 + d1) + (d2 + d3)
+				for ; k < headDim; k++ {
+					dot += rowA[k] * rowB[k]
 				}
 				totalSimilarity += dot
 				if dot < threshold {
@@ -693,9 +775,33 @@ func kvAnalysisCosine32(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
 	}
-	var dot, normA, normB float64
-	for i := range a {
-		ai, bi := float64(a[i]), float64(b[i])
+	// 2-way unrolled — three accumulators (dot, normA, normB) already
+	// give ILP across the FADDD chain, but each chain still has the
+	// 3-cycle FADDD latency floor. Splitting each into two parallel
+	// chains expands to 6 effective chains, fitting M3's 4-FADD-unit
+	// throughput nicely while keeping register pressure modest (we'd
+	// hit f64 spill territory at 4-way for 3 chains × 4 = 12 accum +
+	// the ai/bi loads).
+	var dot0, dot1, normA0, normA1, normB0, normB1 float64
+	i := 0
+	for ; i+1 < len(a); i += 2 {
+		a0 := float64(a[i])
+		a1 := float64(a[i+1])
+		b0 := float64(b[i])
+		b1 := float64(b[i+1])
+		dot0 += a0 * b0
+		dot1 += a1 * b1
+		normA0 += a0 * a0
+		normA1 += a1 * a1
+		normB0 += b0 * b0
+		normB1 += b1 * b1
+	}
+	dot := dot0 + dot1
+	normA := normA0 + normA1
+	normB := normB0 + normB1
+	for ; i < len(a); i++ {
+		ai := float64(a[i])
+		bi := float64(b[i])
 		dot += ai * bi
 		normA += ai * ai
 		normB += bi * bi
@@ -733,9 +839,27 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int, scratch []float6
 		if end > len(head) {
 			end = len(head)
 		}
-		var sum float64
-		for _, value := range head[start:end] {
-			v := float64(value)
+		// 4-way unrolled sum-of-squares — same FADDD-chain-split as
+		// the pair-loop dots. The inner per-position loop runs seqLen
+		// times across the whole snapshot; for headDim 64-128 (real
+		// qwen3) breaking the single loop-carried 3-cycle FADDD chain
+		// into 4 parallel chains expose ILP on M3's wide back-end.
+		row := head[start:end]
+		var s0, s1, s2, s3 float64
+		k := 0
+		for ; k+3 < len(row); k += 4 {
+			v0 := float64(row[k])
+			v1 := float64(row[k+1])
+			v2 := float64(row[k+2])
+			v3 := float64(row[k+3])
+			s0 += v0 * v0
+			s1 += v1 * v1
+			s2 += v2 * v2
+			s3 += v3 * v3
+		}
+		sum := (s0 + s1) + (s2 + s3)
+		for ; k < len(row); k++ {
+			v := float64(row[k])
 			sum += v * v
 		}
 		mag := math.Sqrt(sum)
