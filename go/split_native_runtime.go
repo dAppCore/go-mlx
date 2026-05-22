@@ -42,7 +42,12 @@ func LoadNativeSplitLocalRuntime(ctx context.Context, slicePath string, cfg Load
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if core.Trim(slicePath) == "" {
+	// Trim once at construction so the stored slicePath is in the
+	// final canonical form. Every downstream readiness check then
+	// reduces to a len() against the receiver field instead of a
+	// per-call Trim that walked the same string repeatedly.
+	slicePath = core.Trim(slicePath)
+	if slicePath == "" {
 		return nil, core.NewError("mlx: native split local runtime requires a slice path")
 	}
 	normalised, err := normalizeLoadConfig(cfg)
@@ -79,7 +84,7 @@ func (runtime *NativeSplitLocalRuntime) Prefill(ctx context.Context, req SplitPr
 		return SplitPrefillResult{}, err
 	}
 	if state == nil {
-		return SplitPrefillResult{}, core.NewError("mlx: native split local runtime prefill returned nil state")
+		return SplitPrefillResult{}, errNativeSplitPrefillNilState
 	}
 	runtime.state = state
 	return SplitPrefillResult{
@@ -99,7 +104,7 @@ func (runtime *NativeSplitLocalRuntime) ForwardAttention(ctx context.Context, re
 		return SplitAttentionResult{}, err
 	}
 	if runtime.state == nil {
-		return SplitAttentionResult{}, core.NewError("mlx: native split local runtime requires prefill before attention")
+		return SplitAttentionResult{}, errNativeSplitNoPrefillAttn
 	}
 	result, err := model.SplitForwardAttention(ctx, runtime.state, metal.SplitAttentionRequest{
 		Layer:       req.Layer,
@@ -122,7 +127,7 @@ func (runtime *NativeSplitLocalRuntime) Sample(ctx context.Context, req SplitSam
 		return SplitSampleResult{}, err
 	}
 	if runtime.state == nil {
-		return SplitSampleResult{}, core.NewError("mlx: native split local runtime requires prefill before sample")
+		return SplitSampleResult{}, errNativeSplitNoPrefillSample
 	}
 	result, err := model.SplitSample(ctx, runtime.state, metal.SplitSampleRequest{
 		Tokens:      append([]int32(nil), req.Tokens...),
@@ -145,10 +150,23 @@ func (runtime *NativeSplitLocalRuntime) DecodeToken(ctx context.Context, id int3
 		return "", err
 	}
 	if runtime.tokenizer == nil {
-		return "", core.NewError("mlx: native split local runtime tokenizer is nil")
+		return "", errNativeSplitTokenizerNil
 	}
 	return runtime.tokenizer.DecodeToken(id), nil
 }
+
+// Sentinel errors reused across native split runtime guards. Built once
+// at package init so the runtime-readiness check never allocates a new
+// error wrapper when a guard fires, and the steady-state ready path has
+// no allocations at all.
+var (
+	errNativeSplitRuntimeNil       = core.NewError("mlx: native split local runtime is nil")
+	errNativeSplitRuntimeNoPath    = core.NewError("mlx: native split local runtime has no slice path")
+	errNativeSplitPrefillNilState  = core.NewError("mlx: native split local runtime prefill returned nil state")
+	errNativeSplitNoPrefillAttn    = core.NewError("mlx: native split local runtime requires prefill before attention")
+	errNativeSplitNoPrefillSample  = core.NewError("mlx: native split local runtime requires prefill before sample")
+	errNativeSplitTokenizerNil     = core.NewError("mlx: native split local runtime tokenizer is nil")
+)
 
 func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocalRuntime) error {
 	if ctx == nil {
@@ -158,10 +176,16 @@ func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocal
 		return err
 	}
 	if runtime == nil {
-		return core.NewError("mlx: native split local runtime is nil")
+		return errNativeSplitRuntimeNil
 	}
-	if core.Trim(runtime.slicePath) == "" {
-		return core.NewError("mlx: native split local runtime has no slice path")
+	// LoadNativeSplitLocalRuntime already trimmed the slice path and
+	// rejected an empty value before the runtime exists. Re-running
+	// core.Trim on every call (Prefill/ForwardAttention/Sample/Decode
+	// each go through this helper) walked the slice path string for a
+	// guarantee the constructor had already proven; cheaper to assert
+	// non-empty via len() on the stored, already-trimmed value.
+	if len(runtime.slicePath) == 0 {
+		return errNativeSplitRuntimeNoPath
 	}
 	return nil
 }
