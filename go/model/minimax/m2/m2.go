@@ -688,6 +688,26 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 	// threshold where range-by-value bites under hot per-token fan-out.
 	events := make([]probe.Event, len(decisions))
 	tokenIDLen := len(tokenIDs)
+	// Two-pass arena: sum the ExpertIDs + Weights footprint up front
+	// then allocate one []int + one []float32 backing the per-event
+	// clones. Was 2 × len(decisions) small allocs; now 2 allocs total
+	// for the clones plus one bulk RouterDecision struct alloc (see
+	// below). Sums are taken independently so a decision with
+	// mismatched ExpertIDs / Weights lengths still clones each
+	// faithfully (the existing per-event SliceClone path made no
+	// length-match assumption either).
+	totalIDs, totalWeights := 0, 0
+	for d := range decisions {
+		totalIDs += len(decisions[d].ExpertIDs)
+		totalWeights += len(decisions[d].Weights)
+	}
+	idArena := make([]int, totalIDs)
+	weightArena := make([]float32, totalWeights)
+	// Bulk-allocate the per-event probe.RouterDecision payloads so the
+	// per-event &probe.RouterDecision{} doesn't trigger one heap alloc
+	// per event. Each event still gets a unique pointer via index alias.
+	payloads := make([]probe.RouterDecision, len(decisions))
+	idCursor, weightCursor := 0, 0
 	for d := range decisions {
 		decision := &decisions[d]
 		tokenIndex := decision.TokenIndex
@@ -695,16 +715,36 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 		if tokenIndex >= 0 && tokenIndex < tokenIDLen {
 			tokenID = tokenIDs[tokenIndex]
 		}
+		// Preserve nil-vs-empty distinction from core.SliceClone: nil
+		// input → nil output, empty-non-nil input → empty-non-nil arena
+		// slice. Recorders/exporters can rely on the same shape.
+		var ids []int
+		if decision.ExpertIDs != nil {
+			nID := len(decision.ExpertIDs)
+			idEnd := idCursor + nID
+			ids = idArena[idCursor:idEnd:idEnd]
+			copy(ids, decision.ExpertIDs)
+			idCursor = idEnd
+		}
+		var weights []float32
+		if decision.Weights != nil {
+			nW := len(decision.Weights)
+			wEnd := weightCursor + nW
+			weights = weightArena[weightCursor:wEnd:wEnd]
+			copy(weights, decision.Weights)
+			weightCursor = wEnd
+		}
+		payloads[d] = probe.RouterDecision{
+			Layer:     layer,
+			TokenID:   tokenID,
+			ExpertIDs: ids,
+			Weights:   weights,
+		}
 		events[d] = probe.Event{
-			Kind: probe.KindRouterDecision,
-			Step: tokenIndex,
-			RouterDecision: &probe.RouterDecision{
-				Layer:     layer,
-				TokenID:   tokenID,
-				ExpertIDs: core.SliceClone(decision.ExpertIDs),
-				Weights:   core.SliceClone(decision.Weights),
-			},
-			Meta: metaMinimaxM2,
+			Kind:           probe.KindRouterDecision,
+			Step:           tokenIndex,
+			RouterDecision: &payloads[d],
+			Meta:           metaMinimaxM2,
 		}
 	}
 	return events
