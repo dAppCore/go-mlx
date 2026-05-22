@@ -92,11 +92,23 @@ func ReadIndex(path string) (Index, error) {
 		Names:   make([]string, 0, len(header)),
 	}
 	dataStart := int64(8 + headerLen)
+	// Pre-scan to size a single uint64 slab covering every per-tensor
+	// Shape slice. Replaces N small allocs (one per tensor) with one,
+	// matching the writeSubset slab pattern. RefFromHeader stays a
+	// public allocator for callers outside the index path.
+	totalDims := 0
 	for name, entry := range header {
 		if name == "__metadata__" {
 			continue
 		}
-		ref, err := RefFromHeader(path, name, entry, dataStart)
+		totalDims += len(entry.Shape)
+	}
+	shapeSlab := make([]uint64, 0, totalDims)
+	for name, entry := range header {
+		if name == "__metadata__" {
+			continue
+		}
+		ref, err := refFromHeaderSlab(path, name, entry, dataStart, &shapeSlab)
 		if err != nil {
 			return Index{}, err
 		}
@@ -105,6 +117,41 @@ func ReadIndex(path string) (Index, error) {
 	}
 	core.SliceSort(index.Names)
 	return index, nil
+}
+
+// refFromHeaderSlab is the index-local variant of RefFromHeader that
+// carves each tensor's Shape slice out of a shared uint64 slab. Callers
+// guarantee the slab has enough capacity (sized by the prior header
+// scan). Public RefFromHeader retains its standalone allocation form.
+func refFromHeaderSlab(path, name string, entry HeaderEntry, dataStart int64, slab *[]uint64) (TensorRef, error) {
+	if len(entry.DataOffsets) != 2 {
+		return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid data_offsets: " + name)
+	}
+	begin := entry.DataOffsets[0]
+	end := entry.DataOffsets[1]
+	if begin < 0 || end < begin {
+		return TensorRef{}, core.NewError("mlx: safetensors tensor offsets are invalid: " + name)
+	}
+	start := len(*slab)
+	*slab = (*slab)[: start+len(entry.Shape) : cap(*slab)]
+	shape := (*slab)[start : start+len(entry.Shape) : start+len(entry.Shape)]
+	elements := 1
+	for i, dim := range entry.Shape {
+		if dim <= 0 {
+			return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
+		}
+		shape[i] = uint64(dim)
+		elements *= int(dim)
+	}
+	return TensorRef{
+		Name:      name,
+		Path:      path,
+		DType:     core.Upper(entry.DType),
+		Shape:     shape,
+		Elements:  elements,
+		DataStart: dataStart + begin,
+		ByteLen:   end - begin,
+	}, nil
 }
 
 func RefFromHeader(path, name string, entry HeaderEntry, dataStart int64) (TensorRef, error) {
