@@ -734,7 +734,7 @@ func stringSliceOption(opts core.Options, key string) ([]string, error) {
 	if !ok {
 		return nil, core.E("mlxlm.process", key+" must be []string", nil)
 	}
-	return append([]string(nil), args...), nil
+	return args, nil
 }
 
 func startMLXLMProcess(ctx context.Context, command string, args ...string) (*mlxlmprocess, error) {
