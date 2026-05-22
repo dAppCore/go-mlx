@@ -605,10 +605,13 @@ func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 		ContextLength:     plan.ContextLength,
 		BatchSize:         plan.BatchSize,
 		CacheMode:         string(plan.CacheMode),
-		Quantization:      core.Sprintf("%d-bit", plan.PreferredQuantization),
-		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
-		TrainingFeasible:  plan.MachineClass != memory.ClassApple16GB,
-		Notes:             append([]string(nil), plan.Notes...),
+		// Plain strconv + concat — skip the fmt format-parser path that
+		// boxes the int + walks the format string for one int and one
+		// literal suffix. strconv.Itoa hits the digit-emit loop direct.
+		Quantization:     strconv.Itoa(plan.PreferredQuantization) + "-bit",
+		KVCacheBytes:     plan.EstimatedKVCacheModeBytes,
+		TrainingFeasible: plan.MachineClass != memory.ClassApple16GB,
+		Notes:            append([]string(nil), plan.Notes...),
 	}
 }
 
