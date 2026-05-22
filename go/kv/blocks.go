@@ -787,8 +787,7 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 	if dtype == "" || bytesPerValue <= 0 || len(shape) != 4 {
 		return core.NewError("mlx: unsupported KV snapshot layer raw tensor")
 	}
-	blockShape := core.SliceClone(shape)
-	B, H, L, D := int(blockShape[0]), int(blockShape[1]), int(blockShape[2]), int(blockShape[3])
+	B, H, L, D := int(shape[0]), int(shape[1]), int(shape[2]), int(shape[3])
 	if B <= 0 || H <= 0 || L <= 0 || D <= 0 || len(raw) != B*H*L*D*bytesPerValue {
 		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
 	}
@@ -798,15 +797,20 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 		return core.NewError("mlx: KV snapshot layer raw tensor dtype mismatch")
 	}
 	if len(*dstBytes) == 0 {
+		// First-arrival path is the only owner of the new shape — clone
+		// happens here, not unconditionally on every call. Subsequent
+		// calls rewrite dstShape[2] in-place after validating B/H/D.
 		*dstBytes = append((*dstBytes)[:0], raw...)
-		*dstShape = blockShape
+		*dstShape = core.SliceClone(shape)
 		return nil
 	}
 	if len(*dstShape) != 4 || int((*dstShape)[0]) != B || int((*dstShape)[1]) != H || int((*dstShape)[3]) != D {
 		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
 	}
-	oldShape := core.SliceClone(*dstShape)
-	oldLen := int(oldShape[2])
+	// oldShape was previously cloned + read for oldLen — direct read
+	// from dstShape eliminates the clone alloc; we only need shape[2]
+	// (the sequence-length dim) and shape is rewritten in-place below.
+	oldLen := int((*dstShape)[2])
 	if oldLen <= 0 || len(*dstBytes) != B*H*oldLen*D*bytesPerValue {
 		return core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
 	}
