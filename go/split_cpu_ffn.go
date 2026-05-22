@@ -167,7 +167,11 @@ func (report *CPUSplitFFNMemoryReport) addProjection(dense []float32, packed *cp
 	report.DenseEquivalentBytes += bytes
 }
 
-func (report *CPUSplitFFNMemoryReport) addReport(other CPUSplitFFNMemoryReport) {
+// addReport folds other's byte counters into report. Pointer arg avoids
+// the ~100B struct copy at the call site — addReport is only invoked from
+// the cache-resident scan in EstimateMemoryReport, which can pass &slice[i]
+// directly.
+func (report *CPUSplitFFNMemoryReport) addReport(other *CPUSplitFFNMemoryReport) {
 	report.DenseProjections += other.DenseProjections
 	report.PackedProjections += other.PackedProjections
 	report.LayerNormBytes += other.LayerNormBytes
@@ -455,10 +459,14 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 
 	max := executor.cacheCfg.MaxCachedLayers
 	report.LayerLoads = len(layerReports)
+	// CPUSplitFFNMemoryReport carries 14 fields (bools, ints, int64s, a
+	// float64, and JSON tags around them) — every range-form copy moves
+	// ~100B into the loop var. Index iteration keeps the reads at the slice
+	// header in the scan/append loops below.
 	if max < 0 {
-		for _, layerReport := range layerReports {
-			if layerReport.ResidentBytes > report.PeakResidentBytes {
-				report.PeakResidentBytes = layerReport.ResidentBytes
+		for i := range layerReports {
+			if layerReports[i].ResidentBytes > report.PeakResidentBytes {
+				report.PeakResidentBytes = layerReports[i].ResidentBytes
 			}
 		}
 		report.finalise()
@@ -471,9 +479,9 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 	}
 	resident := make([]CPUSplitFFNMemoryReport, 0, residentCap)
 	var currentBytes int64
-	for _, layerReport := range layerReports {
-		resident = append(resident, layerReport)
-		currentBytes += layerReport.ResidentBytes
+	for i := range layerReports {
+		resident = append(resident, layerReports[i])
+		currentBytes += layerReports[i].ResidentBytes
 		if max > 0 && len(resident) > max {
 			currentBytes -= resident[0].ResidentBytes
 			resident = resident[1:]
@@ -484,8 +492,8 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		}
 	}
 	report.LoadedLayers = len(resident)
-	for _, layerReport := range resident {
-		report.addReport(layerReport)
+	for i := range resident {
+		report.addReport(&resident[i])
 	}
 	report.finalise()
 	return report, nil
