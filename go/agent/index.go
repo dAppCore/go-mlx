@@ -706,40 +706,14 @@ func indexEntryHash(entry *StateIndexEntry) string {
 	return core.HexEncode(sum[:])
 }
 
-// writeIndexHashString / writeIndexHashInt / writeIndexHashInt64
-// are retained for backward compatibility with any external caller
-// (the test file may call them); kept as thin shims over the same
-// interface dispatch they always had.
+// writeIndexHashString is the only remaining hash.Hash helper —
+// used inside indexHash's per-entry tail to stream pipe + hex
+// separator/value pairs. The Int / Int64 helpers were removed when
+// indexHash moved its integer fields into the header Builder
+// (strconv.AppendInt into a concrete *bytes.Buffer avoids the
+// hash.Hash-interface escape they used to incur).
 func writeIndexHashString(h hash.Hash, value string) {
 	h.Write(core.AsBytes(value))
-}
-
-func writeIndexHashInt(h hash.Hash, value int) {
-	writeIndexHashInt64(h, int64(value))
-}
-
-func writeIndexHashInt64(h hash.Hash, value int64) {
-	var buf [20]byte
-	if value == 0 {
-		buf[0] = '0'
-		h.Write(buf[:1])
-		return
-	}
-	negative := value < 0
-	if negative {
-		value = -value
-	}
-	i := len(buf)
-	for value > 0 {
-		i--
-		buf[i] = byte('0' + value%10)
-		value /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	h.Write(buf[i:])
 }
 
 func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
