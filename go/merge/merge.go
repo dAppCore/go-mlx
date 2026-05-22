@@ -286,7 +286,6 @@ func validateTensorIndexes(indexes []safetensors.Index, allowMismatch bool) erro
 	for i := 1; i < len(indexes); i++ {
 		index := indexes[i]
 		for _, name := range base.Names {
-			baseRef := base.Tensors[name]
 			ref, ok := index.Tensors[name]
 			if !ok {
 				if allowMismatch {
@@ -294,6 +293,10 @@ func validateTensorIndexes(indexes []safetensors.Index, allowMismatch bool) erro
 				}
 				return core.NewError("mlx: model merge tensor missing from source: " + name)
 			}
+			// baseRef is only needed when we actually compare shapes — lift
+			// the lookup inside the if-ok branch. Saves one map probe per
+			// matched-name iteration (the dominant path).
+			baseRef := base.Tensors[name]
 			if !sameUint64Slice(baseRef.Shape, ref.Shape) {
 				if allowMismatch {
 					continue
