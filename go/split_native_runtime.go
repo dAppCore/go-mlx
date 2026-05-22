@@ -199,12 +199,12 @@ func (runtime *NativeSplitLocalRuntime) DecodeToken(ctx context.Context, id int3
 // error wrapper when a guard fires, and the steady-state ready path has
 // no allocations at all.
 var (
-	errNativeSplitRuntimeNil       = core.NewError("mlx: native split local runtime is nil")
-	errNativeSplitRuntimeNoPath    = core.NewError("mlx: native split local runtime has no slice path")
-	errNativeSplitPrefillNilState  = core.NewError("mlx: native split local runtime prefill returned nil state")
-	errNativeSplitNoPrefillAttn    = core.NewError("mlx: native split local runtime requires prefill before attention")
-	errNativeSplitNoPrefillSample  = core.NewError("mlx: native split local runtime requires prefill before sample")
-	errNativeSplitTokenizerNil     = core.NewError("mlx: native split local runtime tokenizer is nil")
+	errNativeSplitRuntimeNil      = core.NewError("mlx: native split local runtime is nil")
+	errNativeSplitRuntimeNoPath   = core.NewError("mlx: native split local runtime has no slice path")
+	errNativeSplitPrefillNilState = core.NewError("mlx: native split local runtime prefill returned nil state")
+	errNativeSplitNoPrefillAttn   = core.NewError("mlx: native split local runtime requires prefill before attention")
+	errNativeSplitNoPrefillSample = core.NewError("mlx: native split local runtime requires prefill before sample")
+	errNativeSplitTokenizerNil    = core.NewError("mlx: native split local runtime tokenizer is nil")
 )
 
 func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocalRuntime) error {

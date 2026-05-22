@@ -49,9 +49,9 @@ type RemoteSplitFFNExecutor struct {
 // excludes the core.NewError allocation triplet (errors.New + struct +
 // interface header) for each guard the call cannot avoid checking.
 var (
-	errRemoteSplitFFNExecutorNil   = core.NewError("mlx: remote split FFN executor is nil")
-	errRemoteSplitFFNBodyShape     = core.NewError("mlx: remote split FFN response body shape is invalid")
-	errRemoteSplitFFNEmptyHidden   = core.NewError("mlx: remote split FFN endpoint returned empty hidden state")
+	errRemoteSplitFFNExecutorNil = core.NewError("mlx: remote split FFN executor is nil")
+	errRemoteSplitFFNBodyShape   = core.NewError("mlx: remote split FFN response body shape is invalid")
+	errRemoteSplitFFNEmptyHidden = core.NewError("mlx: remote split FFN endpoint returned empty hidden state")
 )
 
 // NewRemoteSplitFFNExecutor creates a network-backed SplitFFNExecutor.
