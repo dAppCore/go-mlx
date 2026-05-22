@@ -997,12 +997,28 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	biases := matrix.biases
 	groupSize := matrix.groupSize
 	bits := matrix.bits
+	// Hoist scale/bias per group rather than re-indexing scales[idx/groupSize]
+	// each iteration. The group boundary changes once every groupSize
+	// elements; the inner loop runs `groupSize` elements with two constants.
+	// This trades one integer division + two slice reads per element for one
+	// integer division + two slice reads per group. With groupSize=64
+	// (JANGTQ default), that is a 64x reduction in division work.
 	var sum float32
-	for col := 0; col < cols; col++ {
+	col := 0
+	for col < cols {
 		idx := offset + col
 		group := idx / groupSize
-		q := cpuSplitUnpackPackedValue(packed, idx, bits)
-		sum += in[col] * (float32(q)*scales[group] + biases[group])
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			q := cpuSplitUnpackPackedValue(packed, offset+col, bits)
+			sum += in[col] * (float32(q)*scale + bias)
+		}
 	}
 	return sum
 }
