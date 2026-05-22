@@ -320,10 +320,15 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 			result.Evaluations = grown
 		}
 	}
-	for _, sftBatch := range batches {
+	// Index iteration — range over []SFTBatch copies the whole struct
+	// per iteration (Batch's three slice headers + Targets' header =
+	// 96 B). Indexing keeps the body to direct field reads and the
+	// single assignment into batch.SFT.
+	for i := range batches {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		sftBatch := &batches[i]
 		step := result.Metrics.Steps + 1
 		// Only compute CacheKey when there's a teacher cache to look it
 		// up in — the key is a JSON-marshal + SHA256 over the entire
@@ -333,12 +338,12 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 		// gets thrown away inside teacherLogitsForDistillBatch.
 		var cacheKey string
 		if runner.TeacherCache != nil {
-			cacheKey = DistillBatchCacheKey(sftBatch)
+			cacheKey = DistillBatchCacheKey(*sftBatch)
 		}
 		batch := DistillBatch{
 			Step:        step,
 			Epoch:       epoch,
-			SFT:         sftBatch,
+			SFT:         *sftBatch,
 			Temperature: cfg.Temperature,
 			CacheKey:    cacheKey,
 		}
