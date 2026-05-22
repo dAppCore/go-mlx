@@ -547,6 +547,12 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		if err != nil {
 			return sftExample{}, false, err
 		}
+		// Pre-size for ids + optional EOS so no growth occurs.
+		extra := 0
+		if !cfg.NoEOS {
+			extra = 1
+		}
+		seq = make([]int32, 0, len(ids)+extra)
 		seq = append(seq, ids...)
 	} else {
 		promptIDs, err := tok.Encode(sample.Prompt)
@@ -558,6 +564,11 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 			return sftExample{}, false, err
 		}
 		promptLen = len(promptIDs)
+		extra := 0
+		if !cfg.NoEOS {
+			extra = 1
+		}
+		seq = make([]int32, 0, len(promptIDs)+len(responseIDs)+extra)
 		seq = append(seq, promptIDs...)
 		seq = append(seq, responseIDs...)
 	}
@@ -576,18 +587,25 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 			mask[i] = 1
 		}
 	} else {
-		for i := range mask {
-			if i+1 >= promptLen {
-				mask[i] = 1
+		// mask is zero-initialised by make — only write the trailing 1s
+		// starting where the response begins (i+1 >= promptLen).
+		start := promptLen - 1
+		if start < 0 {
+			start = 0
+		}
+		if start < len(mask) {
+			tail := mask[start:]
+			for i := range tail {
+				tail[i] = 1
 			}
 		}
 	}
 
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
-		inputs = append([]int(nil), inputs[start:]...)
-		targets = append([]int(nil), targets[start:]...)
-		mask = append([]float32(nil), mask[start:]...)
+		inputs = core.SliceClone(inputs[start:])
+		targets = core.SliceClone(targets[start:])
+		mask = core.SliceClone(mask[start:])
 	}
 	if !hasTrainingTarget(mask) {
 		return sftExample{}, false, nil

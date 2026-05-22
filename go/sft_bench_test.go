@@ -15,6 +15,8 @@ package mlx
 import (
 	"strconv"
 	"testing"
+
+	"dappco.re/go/mlx/dataset"
 )
 
 var (
@@ -141,6 +143,25 @@ func BenchmarkSFT_HasTrainingTarget_AllZero(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = hasTrainingTarget(mask)
+	}
+}
+
+// BenchmarkSFT_BuildExample exercises buildSFTExample end-to-end with
+// a fake tokenizer — the per-sample hot path of every SFT run.
+func BenchmarkSFT_BuildExample(b *testing.B) {
+	tok := &Tokenizer{tok: fakeSFTTokenizer{
+		encoded: map[string][]int32{
+			"prompt":   {10, 11, 12, 13},
+			"response": {20, 21, 22, 23, 24, 25, 26, 27},
+		},
+		eos: 2,
+	}}
+	sample := dataset.Sample{Prompt: "prompt", Response: "response"}
+	cfg := SFTConfig{BatchSize: 1}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkExample, _, _ = buildSFTExample(tok, sample, cfg)
 	}
 }
 
