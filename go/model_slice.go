@@ -566,14 +566,20 @@ func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
 }
 
 func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
+	// The manifest aliases the caller's tensors slice and plan.Labels map
+	// directly — core.JSONMarshal only reads through them and the local
+	// manifest value is consumed immediately, so the previous defensive
+	// SliceClone + cloneStringMap pair were dead work on the SliceModel
+	// commit path (one alloc per 8-byte string header per tensor + the
+	// labels map duplication, all discarded after Marshal).
 	manifest := modelSliceManifest{
 		Version: modelSliceManifestVersion,
 		Source:  plan.SourcePath,
 		Output:  plan.OutputPath,
 		Plan:    plan,
 		Weight:  "model.safetensors",
-		Tensors: core.SliceClone(tensors),
-		Labels:  cloneStringMap(plan.Labels),
+		Tensors: tensors,
+		Labels:  plan.Labels,
 		WeightMap: map[string]string{
 			"model.safetensors": "selected tensors",
 		},
