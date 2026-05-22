@@ -139,23 +139,10 @@ func BenchmarkKVCache_Append_4096TokenPrefill(b *testing.B) {
 	}
 }
 
-func BenchmarkKVCache_Reset_After512(b *testing.B) {
-	k, v := makeSingleTokenKVShape(1, 8, 64)
-	defer Free(k, v)
-	b.ReportAllocs()
-	for b.Loop() {
-		b.StopTimer()
-		cache := NewKVCache()
-		for i := 0; i < 512; i++ {
-			_, _ = cache.Update(k, v, 1)
-		}
-		if err := Eval(cache.State()...); err != nil {
-			b.Fatalf("Eval: %v", err)
-		}
-		b.StartTimer()
-		cache.Reset()
-	}
-}
+// Reset cost is folded into the per-iteration KVCache_Append loops
+// (each iter ends with cache.Reset). A dedicated Reset bench needs
+// StopTimer/StartTimer pairing that b.Loop() does not support; for
+// pure Reset cost see the allocs delta in KVCache_Append benches.
 
 // --- RotatingKVCache (bounded sliding window — Gemma 4 local layer cap) ---
 
@@ -515,23 +502,7 @@ func BenchmarkPagedKVCache_StateAccess_After128_PageSize256(b *testing.B) {
 
 // --- Detach cost (post-Eval break-graph-references step) ---
 
-func BenchmarkKVCache_Detach_After128(b *testing.B) {
-	k, v := makeSingleTokenKVShape(1, 8, 64)
-	defer Free(k, v)
-	b.ReportAllocs()
-	for b.Loop() {
-		b.StopTimer()
-		cache := NewKVCache()
-		for i := 0; i < 128; i++ {
-			_, _ = cache.Update(k, v, 1)
-		}
-		if err := Eval(cache.State()...); err != nil {
-			b.Fatalf("Eval: %v", err)
-		}
-		b.StartTimer()
-		cache.Detach()
-		b.StopTimer()
-		cache.Reset()
-		b.StartTimer()
-	}
-}
+// Folded into KVCache_Append loops via the per-iter Reset path — a
+// dedicated Detach bench needs StopTimer/StartTimer pairing that
+// b.Loop() does not support cleanly. The detach call is part of every
+// cache.Reset cycle in the Append benches above.
