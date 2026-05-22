@@ -852,13 +852,25 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	// Previously each tag + file Concat allocated a fresh string and Lower
 	// allocated again — 4+ allocs per tag/file. Now: one buf, lowercase
 	// inline, zero-copy return.
+	//
+	// We over-estimate the size by an upper-bound (use the longer of Name
+	// and RFilename per file) so we can do a single pass without resolving
+	// filename() twice per file. The buf will grow at most by 0-X bytes
+	// of slack, which is fine; the underlying array is heap-allocated
+	// either way.
 	id := firstNonEmpty(meta.ID, meta.ModelID)
 	size := len(id)
 	for _, tag := range meta.Tags {
 		size += 1 + len(tag)
 	}
 	for _, file := range meta.Files {
-		size += 1 + len(file.filename())
+		// Upper bound — max(Name, RFilename). Avoids the firstNonEmpty
+		// scan here while still preventing growslice in the append loop.
+		nameLen := len(file.Name)
+		if len(file.RFilename) > nameLen {
+			nameLen = len(file.RFilename)
+		}
+		size += 1 + nameLen
 	}
 	buf := make([]byte, 0, size)
 	buf = appendLowerASCII(buf, id)
