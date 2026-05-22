@@ -1003,13 +1003,50 @@ func toInferenceRootAdapterIdentity(info lora.AdapterInfo) inference.AdapterIden
 	}
 }
 
+// stateRefsURIScheme is the URI scheme prefix for file-backed StateRefs.
+// Hoisted to package init so the literal isn't re-interned per call —
+// also serves as the documented prefix for the single-buffer URI build
+// path in stateRefsFromPaths.
+const stateRefsURIScheme = "file://"
+
 func stateRefsFromPaths(kind string, paths []string) []inference.StateRef {
-	out := make([]inference.StateRef, 0, len(paths))
+	// Two-pass: count non-empty paths + total URI byte length so we can
+	// pre-size the output slice exactly AND allocate one shared backing
+	// buffer for every "file://"+path string. Each StateRef.URI is a
+	// substring of that single allocation — drops N per-call concat
+	// allocs (one per non-empty path) down to ONE allocation regardless
+	// of path count.
+	nonEmpty := 0
+	totalBytes := 0
 	for _, path := range paths {
 		if path == "" {
 			continue
 		}
-		out = append(out, inference.StateRef{Kind: kind, URI: "file://" + path})
+		nonEmpty++
+		totalBytes += len(stateRefsURIScheme) + len(path)
+	}
+	if nonEmpty == 0 {
+		return []inference.StateRef{}
+	}
+	buf := make([]byte, 0, totalBytes)
+	out := make([]inference.StateRef, 0, nonEmpty)
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		start := len(buf)
+		buf = append(buf, stateRefsURIScheme...)
+		buf = append(buf, path...)
+		// Use [start:end] not [start:] so the substring length is captured
+		// at write time. buf was pre-sized to totalBytes so append never
+		// grows the backing array, which keeps prior substring pointers
+		// valid through the rest of the loop. core.AsString is zero-copy
+		// + buf is fresh-built and never re-handed-out, so the safety
+		// contract holds.
+		out = append(out, inference.StateRef{
+			Kind: kind,
+			URI:  core.AsString(buf[start:len(buf)]),
+		})
 	}
 	return out
 }
