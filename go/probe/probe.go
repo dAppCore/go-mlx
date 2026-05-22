@@ -246,6 +246,18 @@ func (b *Bus) EmitProbe(event Event) {
 		return
 	}
 	b.mu.RLock()
+	// Fast-path for the common one-sink bus — the snapshot only
+	// needs to defend against concurrent Bus.Add, and one sink
+	// fits in a single interface slot without allocating a
+	// freshly-copied slice header.
+	if len(b.sinks) == 1 {
+		sink := b.sinks[0]
+		b.mu.RUnlock()
+		if sink != nil {
+			sink.EmitProbe(CloneEvent(event))
+		}
+		return
+	}
 	sinks := core.SliceClone(b.sinks)
 	b.mu.RUnlock()
 	for _, sink := range sinks {
