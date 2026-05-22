@@ -11,6 +11,7 @@ import "C"
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"dappco.re/go"
 )
@@ -25,7 +26,62 @@ const (
 
 var defaultDeviceMu sync.Mutex
 
+// cachedDefaultDevice memoises the result of currentDefaultDevice across
+// the hot MLX op path (Slice, SliceUpdate, AsType, Zeros, etc.) to avoid
+// the cgo round-trip and defer record for C.mlx_device_free on every call.
+//
+// Lifetime contract:
+//   - DefaultStream() resolves the default device on every MLX op; without
+//     this cache each resolution allocates a defer record and pays two cgo
+//     calls (mlx_get_default_device + mlx_device_get_type).
+//   - The default device is mutated only via setDefaultDevice, which is
+//     called exclusively from withDefaultDevice under defaultDeviceMu.
+//     setDefaultDevice updates the cache after a successful C-side swap so
+//     subsequent reads return the post-swap value.
+//   - The cache stores *DeviceType so a nil pointer is the "not yet loaded"
+//     sentinel; the first successful read populates it under a one-shot
+//     mutex to coalesce the racing initial cgo round-trips.
+var (
+	cachedDefaultDevice atomic.Pointer[DeviceType]
+	cachedDefaultLoadMu sync.Mutex
+)
+
+// resetDefaultDeviceCache clears the memoised currentDefaultDevice value.
+// Test-only — production callers rely on setDefaultDevice keeping the
+// cache in sync with the C-side state.
+func resetDefaultDeviceCache() {
+	cachedDefaultDevice.Store(nil)
+}
+
 func currentDefaultDevice() (DeviceType, error) {
+	if cached := cachedDefaultDevice.Load(); cached != nil {
+		return *cached, nil
+	}
+	return loadDefaultDevice()
+}
+
+// loadDefaultDevice is the slow path — it issues the cgo calls to discover
+// the current MLX default device and populates the package-private cache.
+// Subsequent currentDefaultDevice calls return the cached value without
+// touching cgo until setDefaultDevice or resetDefaultDeviceCache invalidates.
+func loadDefaultDevice() (DeviceType, error) {
+	cachedDefaultLoadMu.Lock()
+	defer cachedDefaultLoadMu.Unlock()
+	if cached := cachedDefaultDevice.Load(); cached != nil {
+		return *cached, nil
+	}
+	device, err := readDefaultDeviceFromC()
+	if err != nil {
+		return "", err
+	}
+	cachedDefaultDevice.Store(&device)
+	return device, nil
+}
+
+// readDefaultDeviceFromC fetches the current default device type via the
+// MLX C-API. Used by the cache-fill slow path and after setDefaultDevice
+// to refresh the cache.
+func readDefaultDeviceFromC() (DeviceType, error) {
 	Init()
 	var dev C.mlx_device
 	defer C.mlx_device_free(dev)
@@ -69,6 +125,10 @@ func setDefaultDevice(device DeviceType) error {
 		}
 		return core.E("metal.setDefaultDevice", "set default device", nil)
 	}
+	// Keep the memoised default device aligned with the post-swap C-side
+	// state — withDefaultDevice toggles this twice per nested call.
+	stored := device
+	cachedDefaultDevice.Store(&stored)
 	return nil
 }
 
