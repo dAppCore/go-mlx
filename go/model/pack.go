@@ -64,7 +64,7 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	// stages already expect anyway.
 	inspectModelPackArchitecture(&pack)
 	inspectModelPackChatTemplate(&pack, root, cfg, &dir)
-	inspectModelPackTaskProfiles(&pack, root)
+	inspectModelPackTaskProfiles(&pack, root, &dir)
 	inspectModelPackMiniMaxM2(&pack)
 	inspectModelPackPolicy(&pack, cfg)
 	finalizeModelPack(&pack)
@@ -578,7 +578,7 @@ func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitecturePro
 	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
 }
 
-func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string) {
+func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
 	if pack == nil {
 		return
 	}
@@ -593,17 +593,17 @@ func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string) {
 		return
 	}
 	if arch.Embeddings {
-		embedding := inspectModelPackEmbeddingProfile(pack, root)
+		embedding := inspectModelPackEmbeddingProfile(pack, root, dir)
 		pack.Embedding = &embedding
 	}
 	if arch.Rerank {
-		rerank := inspectModelPackRerankProfile(pack, root)
+		rerank := inspectModelPackRerankProfile(pack, root, dir)
 		pack.Rerank = &rerank
 	}
 	pack.Capabilities = modelPackCapabilities(pack)
 }
 
-func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelEmbeddingProfile {
+func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string, dir *modelPackDirIndex) mp.ModelEmbeddingProfile {
 	profile := mp.ModelEmbeddingProfile{
 		Dimension:         pack.HiddenSize,
 		Pooling:           "cls",
@@ -613,7 +613,7 @@ func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelE
 	if root == "" {
 		return profile
 	}
-	if maxSeq, ok := readSentenceBertMaxSequence(root); ok {
+	if maxSeq, ok := readSentenceBertMaxSequence(root, dir); ok {
 		profile.MaxSequenceLength = firstPositive(maxSeq, profile.MaxSequenceLength)
 		profile.Source = "sentence-transformers"
 	}
@@ -621,21 +621,21 @@ func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelE
 		profile.Pooling = pooling
 		profile.Source = "sentence-transformers"
 	}
-	if normalize, ok := readSentenceTransformerNormalize(root); ok {
+	if normalize, ok := readSentenceTransformerNormalize(root, dir); ok {
 		profile.Normalize = normalize
 		profile.Source = "sentence-transformers"
 	}
 	return profile
 }
 
-func inspectModelPackRerankProfile(pack *mp.ModelPack, root string) mp.ModelRerankProfile {
+func inspectModelPackRerankProfile(pack *mp.ModelPack, root string, dir *modelPackDirIndex) mp.ModelRerankProfile {
 	profile := mp.ModelRerankProfile{
 		Method:            "cross-encoder",
 		MaxSequenceLength: pack.ContextLength,
 		Source:            "transformers",
 	}
 	if root != "" {
-		if maxSeq, ok := readSentenceBertMaxSequence(root); ok {
+		if maxSeq, ok := readSentenceBertMaxSequence(root, dir); ok {
 			profile.MaxSequenceLength = firstPositive(maxSeq, profile.MaxSequenceLength)
 			profile.Source = "sentence-transformers"
 		}
@@ -643,7 +643,10 @@ func inspectModelPackRerankProfile(pack *mp.ModelPack, root string) mp.ModelRera
 	return profile
 }
 
-func readSentenceBertMaxSequence(root string) (int, bool) {
+func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool) {
+	if !dir.has("sentence_bert_config.json") {
+		return 0, false
+	}
 	read := core.ReadFile(core.PathJoin(root, "sentence_bert_config.json"))
 	if !read.OK {
 		return 0, false
@@ -688,7 +691,10 @@ func readSentenceTransformerPooling(root string) (string, bool) {
 	return "", false
 }
 
-func readSentenceTransformerNormalize(root string) (bool, bool) {
+func readSentenceTransformerNormalize(root string, dir *modelPackDirIndex) (bool, bool) {
+	if !dir.has("modules.json") {
+		return false, false
+	}
 	read := core.ReadFile(core.PathJoin(root, "modules.json"))
 	if !read.OK {
 		return false, false
