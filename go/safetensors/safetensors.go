@@ -117,13 +117,13 @@ func RefFromHeader(path, name string, entry HeaderEntry, dataStart int64) (Tenso
 	if begin < 0 || end < begin {
 		return TensorRef{}, core.NewError("mlx: safetensors tensor offsets are invalid: " + name)
 	}
-	shape := make([]uint64, 0, len(entry.Shape))
+	shape := make([]uint64, len(entry.Shape))
 	elements := 1
-	for _, dim := range entry.Shape {
+	for i, dim := range entry.Shape {
 		if dim <= 0 {
 			return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
 		}
-		shape = append(shape, uint64(dim))
+		shape[i] = uint64(dim)
 		elements *= int(dim)
 	}
 	return TensorRef{
