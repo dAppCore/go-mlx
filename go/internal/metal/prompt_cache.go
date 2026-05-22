@@ -730,6 +730,11 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 		caches:          make([]cacheSnapshot, len(templates)),
 	}
 	populated := make([]bool, len(templates))
+	// Hoist populatedInBlock outside the block loop and zero per iteration.
+	// Previously this was a per-block make([]bool, len(templates)); on a
+	// 26-cache model with N blocks that's N+1 small slice allocs per
+	// restore.
+	populatedInBlock := make([]bool, len(templates))
 	nextStart := 0
 	var logitSnapshot *KVSnapshot
 
@@ -767,7 +772,7 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 			return nil, err
 		}
 
-		populatedInBlock := make([]bool, len(templates))
+		clear(populatedInBlock)
 		entry.tokens = append(entry.tokens, block.Snapshot.Tokens...)
 		for _, layer := range block.Snapshot.Layers {
 			if !kvLayerSnapshotHasState(layer) || layer.CacheIndex < 0 {
