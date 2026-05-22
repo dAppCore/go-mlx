@@ -664,26 +664,26 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 	if groupSize <= 0 {
 		return meta, core.NewError("mlx: quantized expert id matvec group size must be positive")
 	}
-	inputShape := input.Shape()
-	weightShape := weight.Shape()
-	scaleShape := scales.Shape()
-	biasShape := biases.Shape()
-	if len(inputShape) != 2 {
-		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec input shape %v, expected [routes, in]", inputShape))
+	// Read dimensions via direct Dim(i) cgo to avoid Shape()'s per-call
+	// []int32 heap allocation on the MoE-decode hot path. Error paths
+	// still call Shape() to format the diagnostic — those only fire on
+	// misuse and do not allocate on the happy path. W9-K, Wave 9.
+	if input.NumDims() != 2 {
+		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec input shape %v, expected [routes, in]", input.Shape()))
 	}
-	if len(weightShape) != 3 {
-		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec weight shape %v, expected [experts, out, packed_in]", weightShape))
+	if weight.NumDims() != 3 {
+		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec weight shape %v, expected [experts, out, packed_in]", weight.Shape()))
 	}
-	if len(scaleShape) != 3 || len(biasShape) != 3 {
+	if scales.NumDims() != 3 || biases.NumDims() != 3 {
 		return meta, core.NewError("mlx: quantized expert id matvec scales and biases must be [experts, out, groups]")
 	}
 
-	meta.inputRows = int(inputShape[0])
+	meta.inputRows = input.Dim(0)
 	meta.routes = expertIDs.Size()
-	meta.inDim = int(inputShape[1])
-	meta.experts = int(weightShape[0])
-	meta.outDim = int(weightShape[1])
-	meta.packedIn = int(weightShape[2])
+	meta.inDim = input.Dim(1)
+	meta.experts = weight.Dim(0)
+	meta.outDim = weight.Dim(1)
+	meta.packedIn = weight.Dim(2)
 	meta.packFactor = 32 / bits
 	meta.groups = meta.inDim / groupSize
 	meta.sharedInput = meta.inputRows == 1 && meta.routes > 1
@@ -699,9 +699,9 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 	if meta.packedIn*meta.packFactor != meta.inDim {
 		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec packed input dim %d expands to %d, expected %d", meta.packedIn, meta.packedIn*meta.packFactor, meta.inDim))
 	}
-	wantScaleShape := []int32{int32(meta.experts), int32(meta.outDim), int32(meta.groups)}
-	if !sameInt32Shape(scaleShape, wantScaleShape) || !sameInt32Shape(biasShape, wantScaleShape) {
-		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec scale/bias shape = %v/%v, expected %v", scaleShape, biasShape, wantScaleShape))
+	if scales.Dim(0) != meta.experts || scales.Dim(1) != meta.outDim || scales.Dim(2) != meta.groups ||
+		biases.Dim(0) != meta.experts || biases.Dim(1) != meta.outDim || biases.Dim(2) != meta.groups {
+		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec scale/bias shape = %v/%v, expected [%d %d %d]", scales.Shape(), biases.Shape(), meta.experts, meta.outDim, meta.groups))
 	}
 	return meta, nil
 }
@@ -713,14 +713,3 @@ func quantizedExpertIDMatVecInputBase(meta quantizedExpertIDMatVecMeta) string {
 	return core.Sprintf("route * uint(%d)", meta.inDim)
 }
 
-func sameInt32Shape(a, b []int32) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
