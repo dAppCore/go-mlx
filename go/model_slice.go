@@ -140,9 +140,24 @@ func InspectModelSlice(path string) (ModelSliceInspection, error) {
 		inspection.RetainedTensorRatio = float64(localBytes) / float64(sourceBytes)
 	}
 	if inspection.RequiresSplitPlacement {
-		inspection.Notes = append(inspection.Notes, "slice is not a standalone model; reload requires split placement for omitted runtime components")
+		// Hoisted to the singleton — append to nil allocates a 1-cap
+		// slice every InspectModelSlice call on the split-placement path
+		// even though every emission shares the same one-element message.
+		// Production callers (backend.LoadModel, split_executor) read
+		// Standalone / RequiresSplitPlacement / MissingRuntimeComponents
+		// without touching Notes, so sharing the read-only slice is
+		// safe across concurrent InspectModelSlice calls.
+		inspection.Notes = modelSliceNotesRequiresSplitPlacement
 	}
 	return inspection, nil
+}
+
+// modelSliceNotesRequiresSplitPlacement is the read-only message added to
+// ModelSliceInspection.Notes whenever the inspected manifest cannot be
+// reloaded as a standalone model. See InspectModelSlice for the
+// share-safety reasoning.
+var modelSliceNotesRequiresSplitPlacement = []string{
+	"slice is not a standalone model; reload requires split placement for omitted runtime components",
 }
 
 func inspectModelSliceIfPresent(path string) (ModelSliceInspection, bool, error) {
