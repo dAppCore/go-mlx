@@ -1226,8 +1226,20 @@ func (m *Model) Info() ModelInfo {
 		MemoryLimitBytes:     m.cfg.MemoryLimitBytes,
 		CacheLimitBytes:      m.cfg.CacheLimitBytes,
 		WiredLimitBytes:      m.cfg.WiredLimitBytes,
-		Adapter:              m.Adapter(),
+		// Reuse the info we already pulled from the native model — calling
+		// m.Adapter() here would re-enter m.model.Info() when adapterInfo
+		// is empty, doubling the native-side fetch.
+		Adapter: m.adapterFromNativeInfo(info),
 	}
+}
+
+// adapterFromNativeInfo mirrors m.Adapter() but reuses an already-loaded
+// metal.ModelInfo, sparing the second m.model.Info() round-trip.
+func (m *Model) adapterFromNativeInfo(info metal.ModelInfo) lora.AdapterInfo {
+	if !m.adapterInfo.IsEmpty() {
+		return m.adapterInfo
+	}
+	return toRootAdapterInfo(info.Adapter)
 }
 
 // Adapter returns the active LoRA inference adapter identity.
