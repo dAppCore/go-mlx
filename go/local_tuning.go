@@ -227,10 +227,45 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 // options. This is the fast path a UI uses after selecting or persisting a
 // tuning profile.
 func TuningCandidateLoadOptions(candidate inference.TuningCandidate) []LoadOption {
-	opts := []LoadOption{
-		WithAutoMemoryPlan(false),
-		WithPromptCache(candidate.PromptCache),
+	// Pre-count optional emissions so the slice is sized in a single
+	// allocation regardless of how many branches fire. The check is
+	// cheaper than the ~2,4,8,16 grow-doubling sequence the previous
+	// shape produced on populated candidates while leaving sparse
+	// candidates at their minimum footprint.
+	n := 2
+	if candidate.ContextLength > 0 {
+		n++
 	}
+	if candidate.ParallelSlots > 0 {
+		n++
+	}
+	if candidate.PromptCacheMinTokens > 0 {
+		n++
+	}
+	if candidate.CachePolicy != "" {
+		n++
+	}
+	if candidate.CacheMode != "" {
+		n++
+	}
+	if candidate.BatchSize > 0 {
+		n++
+	}
+	if candidate.PrefillChunkSize > 0 {
+		n++
+	}
+	if candidate.ExpectedQuantization > 0 {
+		n++
+	}
+	if candidate.MemoryLimitBytes > 0 || candidate.CacheLimitBytes > 0 || candidate.WiredLimitBytes > 0 {
+		n++
+	}
+	if candidate.Adapter.Path != "" {
+		n++
+	}
+	opts := make([]LoadOption, 2, n)
+	opts[0] = WithAutoMemoryPlan(false)
+	opts[1] = WithPromptCache(candidate.PromptCache)
 	if candidate.ContextLength > 0 {
 		opts = append(opts, WithContextLength(candidate.ContextLength))
 	}
@@ -403,6 +438,17 @@ func emitTuningEvent(emit func(inference.TuningEvent) bool, event inference.Tuni
 }
 
 func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity inference.ModelIdentity, adapter inference.AdapterIdentity, runtime inference.RuntimeIdentity, plan memory.Plan) inference.TuningCandidate {
+	// Reasons start as a copy of plan.Notes with one extra slot reserved
+	// for the workload-specific reason appended below — pre-sizing avoids
+	// the grow-by-2x reallocation when the workload switch hits any of
+	// the four reason-emitting branches.
+	reasons := make([]string, len(plan.Notes), len(plan.Notes)+1)
+	copy(reasons, plan.Notes)
+	// Labels carry a baseline machine_class plus an optional state_restore
+	// hint for the agent-state workload — pre-size to 2 to skip the
+	// implicit map-grow rehash on that one branch.
+	labels := make(map[string]string, 2)
+	labels["machine_class"] = string(plan.MachineClass)
 	candidate := inference.TuningCandidate{
 		Workload:             workload,
 		Model:                modelIdentity,
@@ -420,8 +466,8 @@ func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,
-		Reasons:              append([]string(nil), plan.Notes...),
-		Labels:               map[string]string{"machine_class": string(plan.MachineClass)},
+		Reasons:              reasons,
+		Labels:               labels,
 	}
 	switch workload {
 	case inference.TuningWorkloadLowLatency:

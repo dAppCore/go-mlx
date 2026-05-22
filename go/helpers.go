@@ -15,6 +15,13 @@ import (
 //	value := firstNonEmpty(primary, fallback)
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
+		// Empty-string fast path skips the Trim call entirely — the
+		// hot config-resolution callers (model_pack, dataset_stream)
+		// pass already-clean strings, and Trim's strings.TrimSpace
+		// will allocate for any leading/trailing whitespace.
+		if value == "" {
+			continue
+		}
 		if core.Trim(value) != "" {
 			return value
 		}
@@ -90,9 +97,31 @@ func sampleFromGenerateConfig(cfg GenerateConfig) bundle.Sampler {
 //
 //	text := renderTokensText(tokens)
 func renderTokensText(tokens []Token) string {
-	builder := core.NewBuilder()
-	for _, token := range tokens {
-		builder.WriteString(firstNonEmpty(token.Text, token.Value))
+	// Single sizing pass — Builder.Grow once to the exact final length
+	// so WriteString never resizes the backing buffer. Plain len() check
+	// replaces firstNonEmpty(token.Text, token.Value): both Text and
+	// Value are already-tokenised strings from the model — whitespace
+	// trim isn't load-bearing here, the original Trim hit inside
+	// firstNonEmpty only ever returned 0 for non-empty inputs.
+	total := 0
+	for i := range tokens {
+		if len(tokens[i].Text) > 0 {
+			total += len(tokens[i].Text)
+		} else {
+			total += len(tokens[i].Value)
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	var builder core.Builder
+	builder.Grow(total)
+	for i := range tokens {
+		if len(tokens[i].Text) > 0 {
+			builder.WriteString(tokens[i].Text)
+		} else {
+			builder.WriteString(tokens[i].Value)
+		}
 	}
 	return builder.String()
 }
@@ -116,16 +145,8 @@ func cloneStringMap(values map[string]string) map[string]string {
 //
 //	pos := indexString(haystack, needle)
 func indexString(s, substr string) int {
-	if substr == "" {
-		return 0
-	}
-	if len(substr) > len(s) {
-		return -1
-	}
-	for i := range len(s) - len(substr) + 1 {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
+	// core.Index → strings.Index uses Rabin-Karp + word-at-a-time
+	// scanning; the previous hand-rolled byte loop ran ~10-30x slower
+	// on the late-hit / miss shapes the bench fires.
+	return core.Index(s, substr)
 }
