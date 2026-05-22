@@ -396,19 +396,47 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if len(heads) == 0 {
 		return nil
 	}
-	// At most one state slot per head — pre-size to skip the
-	// geometric-grow append cycle.
-	states := make([][]float32, 0, len(heads))
+	// Find the first contributor head — its (Key+Value) length is the
+	// shared mean-vector size; heads that don't match that exact shape
+	// are skipped (matches the original kvAnalysisMeanVector behaviour).
+	var size int
 	for _, head := range heads {
-		if len(head.Key) == 0 && len(head.Value) == 0 {
+		if l := len(head.Key) + len(head.Value); l > 0 {
+			size = l
+			break
+		}
+	}
+	if size == 0 {
+		return nil
+	}
+	// Sum-into-place + multiply-by-inverse: skip the per-head combined
+	// alloc + the intermediate [][]float32 by aggregating directly into
+	// the mean buffer. The original allocated len(heads) backing slices
+	// + len(heads) combined buffers for every layer Analyze touched.
+	mean := make([]float32, size)
+	var count int
+	for _, head := range heads {
+		keyLen := len(head.Key)
+		valLen := len(head.Value)
+		if keyLen+valLen != size {
 			continue
 		}
-		combined := make([]float32, 0, len(head.Key)+len(head.Value))
-		combined = append(combined, head.Key...)
-		combined = append(combined, head.Value...)
-		states = append(states, combined)
+		for i, v := range head.Key {
+			mean[i] += v
+		}
+		for j, v := range head.Value {
+			mean[keyLen+j] += v
+		}
+		count++
 	}
-	return kvAnalysisMeanVector(states)
+	if count == 0 {
+		return nil
+	}
+	invScale := float32(1) / float32(count)
+	for i := range mean {
+		mean[i] *= invScale
+	}
+	return mean
 }
 
 func kvAnalysisMeanVector(vectors [][]float32) []float32 {
