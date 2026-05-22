@@ -298,7 +298,11 @@ func (s *Store) Search(ctx context.Context, query string, topK int) ([]SearchHit
 		return nil, core.E("memvid.Store.Search", "parse memvid find JSON", resultError(r))
 	}
 	hits := make([]SearchHit, 0, len(found.Hits))
-	for _, hit := range found.Hits {
+	// Index iteration avoids the per-iter struct copy of the response
+	// hit (6 fields, 56 bytes) — load-bearing when topK is large and
+	// Search is on the per-query hot path.
+	for i := range found.Hits {
+		hit := &found.Hits[i]
 		chunk, err := s.Resolve(ctx, int(hit.FrameID))
 		if err != nil {
 			return nil, err
@@ -318,11 +322,15 @@ func (s *Store) Search(ctx context.Context, query string, topK int) ([]SearchHit
 }
 
 func (s *Store) putFrameID(ctx context.Context, put putResponse) (int, error) {
-	for _, report := range put.Reports {
-		if report.URI == "" {
+	// Index iteration; report struct is small but the pattern matches
+	// the rest of this package and avoids an unnecessary 16-byte copy
+	// each iteration.
+	for i := range put.Reports {
+		uri := put.Reports[i].URI
+		if uri == "" {
 			continue
 		}
-		view, err := s.viewURI(ctx, report.URI)
+		view, err := s.viewURI(ctx, uri)
 		if err == nil {
 			return int(view.Frame.ID), nil
 		}
