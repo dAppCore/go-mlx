@@ -393,6 +393,12 @@ func defaultRunner(ctx context.Context, input []byte, bin string, args ...string
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
+	// stdoutText is only consumed by the error path (limitOutput). Skip
+	// the stdout.String() copy on success — callers use stdout.Bytes()
+	// for the payload, and the textual form is never read.
+	if err == nil {
+		return stdout.Bytes(), "", stderr.String(), nil
+	}
 	return stdout.Bytes(), stdout.String(), stderr.String(), err
 }
 
