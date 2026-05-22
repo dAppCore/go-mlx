@@ -800,10 +800,49 @@ func alignPadding(offset, alignment uint64) uint64 {
 	return (alignment - (offset % alignment)) % alignment
 }
 
+// maxAbsFloat32 returns max(|v|) over values. The inner loop avoids
+// math.Abs (which round-trips float32→float64→float32 per element); a
+// direct bit-clear of the float32 sign bit lowers to ARM64 FABS in one
+// instruction. The 4-way unroll (W8-A2 lever) lets the M-series pipeline
+// keep four FABS+FCMP chains independent so per-iteration latency hides
+// behind instruction-level parallelism. Block-sized inputs (32 / 256
+// elements) hit the unrolled path; the scalar tail handles the
+// remainder.
 func maxAbsFloat32(values []float32) float32 {
-	var maxAbs float32
-	for _, value := range values {
-		abs := float32(math.Abs(float64(value)))
+	const mask = 0x7fffffff
+	var m0, m1, m2, m3 float32
+	i := 0
+	n := len(values)
+	for ; i+4 <= n; i += 4 {
+		a0 := math.Float32frombits(math.Float32bits(values[i]) & mask)
+		a1 := math.Float32frombits(math.Float32bits(values[i+1]) & mask)
+		a2 := math.Float32frombits(math.Float32bits(values[i+2]) & mask)
+		a3 := math.Float32frombits(math.Float32bits(values[i+3]) & mask)
+		if a0 > m0 {
+			m0 = a0
+		}
+		if a1 > m1 {
+			m1 = a1
+		}
+		if a2 > m2 {
+			m2 = a2
+		}
+		if a3 > m3 {
+			m3 = a3
+		}
+	}
+	maxAbs := m0
+	if m1 > maxAbs {
+		maxAbs = m1
+	}
+	if m2 > maxAbs {
+		maxAbs = m2
+	}
+	if m3 > maxAbs {
+		maxAbs = m3
+	}
+	for ; i < n; i++ {
+		abs := math.Float32frombits(math.Float32bits(values[i]) & mask)
 		if abs > maxAbs {
 			maxAbs = abs
 		}
