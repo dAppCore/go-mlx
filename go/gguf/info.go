@@ -419,6 +419,12 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	}
 
 	tensors := make([]ggufTensorInfo, tensorCount)
+	// Shape arena — bump-allocate per-tensor shapes from a single slab
+	// instead of one `make([]uint64, ndim)` per tensor. Real GGUF tensors
+	// run 1-4 dims (rank-2 weights dominate); 4 is a safe initial budget.
+	// Overflow falls back to per-tensor make so the arena never reallocates
+	// (which would invalidate already-handed-out slice headers).
+	shapeArena := make([]uint64, 0, int(tensorCount)*4)
 	for i := uint64(0); i < tensorCount; i++ {
 		name, err := readGGUFString(reader, scratch[:])
 		if err != nil {
@@ -428,7 +434,18 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
 		ndim := binary.LittleEndian.Uint32(scratch[:4])
-		shape := make([]uint64, ndim)
+		var shape []uint64
+		if remaining := cap(shapeArena) - len(shapeArena); int(ndim) <= remaining {
+			start := len(shapeArena)
+			end := start + int(ndim)
+			shapeArena = shapeArena[:end]
+			// Three-index slice caps the per-tensor view at exactly `ndim`
+			// elements so any future append on this Shape can't bleed into
+			// the next tensor's region of the arena.
+			shape = shapeArena[start:end:end]
+		} else {
+			shape = make([]uint64, ndim)
+		}
 		for d := uint32(0); d < ndim; d++ {
 			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
