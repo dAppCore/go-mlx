@@ -19,6 +19,13 @@ import (
 //	runner := mlx.NewModelStateKVChapterRunner(model, baseGen)
 //	report, err := chaptersmoke.Run(ctx, runner, chaptersmoke.Config{...})
 func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
+	// baseGen is captured by the Generate closure and never mutated
+	// during chapter-smoke iteration. Pre-build the GenerateOption
+	// slice once at runner-construction time so every chapter Generate
+	// call reuses the same slice instead of allocating + populating
+	// it fresh each iteration (one chapter ≈ one session ≈ one
+	// allocation triplet — slice header + closure captures × N).
+	genOpts := stateKVChapterGenerateOptions(baseGen)
 	return chaptersmoke.Runner{
 		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 			if err := ctx.Err(); err != nil {
@@ -51,7 +58,7 @@ func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chapters
 			if err := session.AppendPrompt(suffix); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
-			text, err := session.Generate(stateKVChapterGenerateOptions(baseGen)...)
+			text, err := session.Generate(genOpts...)
 			metrics := model.Metrics()
 			return chaptersmoke.Generation{
 				Text:                       text,
