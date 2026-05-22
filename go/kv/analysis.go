@@ -660,11 +660,28 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			rowA := scratch[baseA : baseA+headDim]
 			for j := i + 1; j < seqLen; j++ {
 				baseB := j * headDim
+				rowB := scratch[baseB : baseB+headDim]
 				// Pure float64 dot product — no float32 conversions,
-				// no per-pair inverse-norm multiplications.
-				var dot float64
-				for k, av := range rowA {
-					dot += av * scratch[baseB+k]
+				// no per-pair inverse-norm multiplications. Split the
+				// accumulation across 4 parallel chains to break the
+				// loop-carried FADDD dependency (3-cycle latency on M3);
+				// the 4 chains issue on independent FADDD units, giving
+				// ~4× throughput on the arithmetic side. Cache-bound for
+				// large headDim·seqLen, but the per-pair tail still
+				// benefits. Inlined here because Go won't inline a
+				// helper call inside this O(seqLen²) loop and the call
+				// overhead measured larger than the unroll win.
+				var d0, d1, d2, d3 float64
+				k := 0
+				for ; k+3 < headDim; k += 4 {
+					d0 += rowA[k] * rowB[k]
+					d1 += rowA[k+1] * rowB[k+1]
+					d2 += rowA[k+2] * rowB[k+2]
+					d3 += rowA[k+3] * rowB[k+3]
+				}
+				dot := (d0 + d1) + (d2 + d3)
+				for ; k < headDim; k++ {
+					dot += rowA[k] * rowB[k]
 				}
 				totalSimilarity += dot
 				if dot < threshold {
