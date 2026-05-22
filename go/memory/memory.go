@@ -618,6 +618,13 @@ func applyQuantizationHints(plan *Plan) {
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
 }
 
+// genericMoENotes is the static Notes slice for the generic MoE
+// residency plan — every MoE pack lands here so the same slice is
+// safe to share. The Notes field is read-only after the plan is
+// returned (the ExpertResidencyPlan is value-copied into Plan, so
+// callers cannot mutate this slice without first copying it).
+var genericMoENotes = []string{"MoE model uses lazy expert residency until backend-specific expert byte estimates are available"}
+
 func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profile.ModelArchitectureProfile) {
 	if plan == nil {
 		return
@@ -634,7 +641,7 @@ func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profi
 		PageInBatchSize:         1,
 		EvictionPolicy:          ExpertEvictionLRU,
 		FirstUseLatencyExpected: true,
-		Notes:                   []string{"MoE model uses lazy expert residency until backend-specific expert byte estimates are available"},
+		Notes:                   genericMoENotes,
 	}
 	plan.Notes = append(plan.Notes, "lazy expert residency enabled for MoE architecture")
 }
