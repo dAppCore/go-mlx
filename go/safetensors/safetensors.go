@@ -208,21 +208,29 @@ func WriteRefFloat32Chunks(ctx context.Context, file *core.OSFile, ref TensorRef
 		return err
 	}
 	defer reader.Close()
-	// Reuse a single byte scratch across chunk writes — every chunk
-	// needs at most chunkElements*4 bytes, so a one-shot allocation
-	// covers them all (subsequent calls reslice in-place). For tensors
-	// big enough to span multiple chunks this drops per-chunk alloc.
-	var scratch []byte
+	// Reuse three scratch buffers across chunked writes:
+	//   raw       — the byte payload read from the source file
+	//   values    — the decoded float32 slice
+	//   writeBuf  — the re-encoded bytes the writer flushes
+	// Each chunk previously allocated all three; now they grow once
+	// to chunkElements (or chunkElements*bytesPerElement / 4) and are
+	// reused for every subsequent chunk on the same tensor.
+	var (
+		rawScratch    []byte
+		valuesScratch []float32
+		writeScratch  []byte
+	)
 	for offset := 0; offset < ref.Elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		count := min(chunkElements, ref.Elements-offset)
-		values, err := reader.ReadFloat32Chunk(offset, count)
+		var values []float32
+		rawScratch, valuesScratch, values, err = reader.readFloat32ChunkInto(offset, count, rawScratch, valuesScratch)
 		if err != nil {
 			return err
 		}
-		scratch, err = writeFloat32ValuesScratch(file, values, scratch)
+		writeScratch, err = writeFloat32ValuesScratch(file, values, writeScratch)
 		if err != nil {
 			return err
 		}
@@ -294,6 +302,39 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 		return nil, core.NewError("mlx: safetensors tensor chunk is truncated")
 	}
 	return DecodeFloatData(r.ref.DType, raw, count)
+}
+
+// readFloat32ChunkInto is the scratch-aware variant of ReadFloat32Chunk.
+// It accepts (and returns) byte + float32 scratch buffers so a caller
+// in a chunked loop (WriteRefFloat32Chunks) can avoid allocating fresh
+// buffers per chunk. The returned values slice always equals the
+// (possibly grown) valuesScratch sliced to count.
+func (r TensorReader) readFloat32ChunkInto(offset, count int, rawScratch []byte, valuesScratch []float32) ([]byte, []float32, []float32, error) {
+	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
+		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+	}
+	rawNeed := count * r.bytesPerElement
+	if cap(rawScratch) < rawNeed {
+		rawScratch = make([]byte, rawNeed)
+	} else {
+		rawScratch = rawScratch[:rawNeed]
+	}
+	start := r.ref.DataStart + int64(offset*r.bytesPerElement)
+	n, err := r.file.ReadAt(rawScratch, start)
+	if err != nil && !(err == stdio.EOF && n == len(rawScratch)) {
+		return rawScratch, valuesScratch, nil, err
+	}
+	if n != len(rawScratch) {
+		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk is truncated")
+	}
+	values, err := decodeFloatDataInto(r.ref.DType, rawScratch, count, valuesScratch)
+	if err != nil {
+		return rawScratch, valuesScratch, nil, err
+	}
+	if cap(values) > cap(valuesScratch) {
+		valuesScratch = values
+	}
+	return rawScratch, valuesScratch, values, nil
 }
 
 func DTypeByteSize(dtype string) (int, error) {
@@ -392,7 +433,19 @@ func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []by
 }
 
 func DecodeFloatData(dtype string, raw []byte, elements int) ([]float32, error) {
-	values := make([]float32, elements)
+	return decodeFloatDataInto(dtype, raw, elements, nil)
+}
+
+// decodeFloatDataInto is the scratch-aware variant of DecodeFloatData.
+// Callers that decode in a loop (WriteRefFloat32Chunks) can hand back
+// the prior chunk's slice to avoid re-allocating.
+func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float32) ([]float32, error) {
+	var values []float32
+	if cap(scratch) < elements {
+		values = make([]float32, elements)
+	} else {
+		values = scratch[:elements]
+	}
 	switch dtype {
 	case "F32":
 		if len(raw) != elements*4 {
