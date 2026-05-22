@@ -175,10 +175,13 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		return chapterError(report, err.Error())
 	}
 	captureStart := time.Now()
+	// report.BundleURI is "<captureURI>/bundle" — strip the suffix instead
+	// of re-running slug() + the same concat. slug() is the costliest part
+	// of bundle URI formation (Lower/Trim + byte-walk + alloc).
 	bundle, err := runner.Capture(ctx, chapter.Text, store.Writer, kv.StateBlockOptions{
 		BlockSize:  cfg.BlockSize,
 		KVEncoding: kv.EncodingNative,
-		URI:        "mlx://state-chapter-smoke/" + slug(index, chapter.Name),
+		URI:        core.TrimSuffix(report.BundleURI, "/bundle"),
 		Labels:     []string{"chapter-smoke", "state-kv"},
 	})
 	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
@@ -420,11 +423,9 @@ func chapterName(index int, name string) string {
 	if core.Trim(name) != "" {
 		return name
 	}
-	// Hand-built "chapter-N" — avoids Sprintf("%d") interface boxing.
-	buf := make([]byte, 0, 8+20)
-	buf = append(buf, "chapter-"...)
-	buf = strconv.AppendInt(buf, int64(index+1), 10)
-	return core.AsString(buf)
+	// Body matches defaultChapterSlug — defer to one source of truth so
+	// the future shape change (e.g. zero-pad) lands once.
+	return defaultChapterSlug(index)
 }
 
 func storeFileName(kind string) string {
@@ -443,31 +444,37 @@ func slug(index int, name string) string {
 	if name == "" {
 		name = defaultChapterSlug(index)
 	}
-	builder := core.NewBuilder()
-	// Pre-grow to the input rune count's upper bound (UTF-8 bytes) so
-	// the builder skips its grow-and-copy ladder for typical chapter
-	// names. Worst-case overestimate is fine — Builder.String() trims to
-	// the actually-written length.
-	builder.Grow(len(name))
+	// Build the slug body into a local []byte instead of a heap-allocated
+	// strings.Builder. Kept set is ASCII-only ([a-z0-9]); anything else
+	// folds to a single '-' (matches the original rune-loop semantics
+	// since UTF-8 continuation bytes are 0x80-0xBF, above 'z'). Track
+	// first/last kept positions inline so trimming dashes is a slice op
+	// rather than two TrimLeft/TrimRight passes.
+	body := make([]byte, 0, len(name))
+	firstKept := -1
+	lastKept := -1
 	lastDash := false
-	for _, r := range name {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
-			builder.WriteRune(r)
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			body = append(body, c)
+			if firstKept < 0 {
+				firstKept = len(body) - 1
+			}
+			lastKept = len(body) - 1
 			lastDash = false
 			continue
 		}
 		if !lastDash {
-			builder.WriteRune('-')
+			body = append(body, '-')
 			lastDash = true
 		}
 	}
-	// Trim leading/trailing dashes in a single pass each — replaces two
-	// HasPrefix/HasSuffix loops that each scanned the prefix on every
-	// iteration. TrimLeft/TrimRight are single linear sweeps.
-	out := core.TrimLeft(core.TrimRight(builder.String(), "-"), "-")
-	if out == "" {
+	var out string
+	if firstKept < 0 {
 		out = defaultChapterSlug(index)
+	} else {
+		out = core.AsString(body[firstKept : lastKept+1])
 	}
 	// Hand-built "%02d-out" — avoids Sprintf parsing + interface boxing.
 	idx := index + 1

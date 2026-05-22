@@ -54,23 +54,60 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	meanCross := clampUnit(analysis.MeanCrossAlignment)
 	// Hoist analysis-field slices + fallback scalars out of the per-layer
 	// loop. Without this, each iteration re-dereferences analysis three
-	// times and re-reads the same fallback floats.
+	// times and re-reads the same fallback floats. Pre-clamp the fallback
+	// scalars so the per-layer fallback path skips clampUnit entirely.
 	layerKey := analysis.LayerKeyCoherence
 	layerValue := analysis.LayerValueCoherence
 	layerAlign := analysis.LayerCrossAlignment
-	fallbackKey := analysis.MeanKeyCoherence
-	fallbackValue := analysis.MeanValueCoherence
-	fallbackAlign := analysis.MeanCrossAlignment
+	clampedFallbackKey := clampUnit(analysis.MeanKeyCoherence)
+	clampedFallbackValue := clampUnit(analysis.MeanValueCoherence)
+	clampedFallbackAlign := clampUnit(analysis.MeanCrossAlignment)
+	keyLen := len(layerKey)
+	valueLen := len(layerValue)
+	alignLen := len(layerAlign)
 	layerCoherence := make([]float64, numLayers)
 	layerCross := make([]float64, numLayers)
-	for layer := range numLayers {
-		// layerMetric guarantees [0,1] (NaN/Inf → 0 via clampRange), so the
-		// average of two clamped values is also in [0,1] — no outer clamp
-		// needed. Skipping it strips one branch + function-call per layer.
-		k := layerMetric(layerKey, layer, fallbackKey)
-		v := layerMetric(layerValue, layer, fallbackValue)
+	// Split into hot in-bounds prefix and fallback tail. The common case
+	// is keyLen == valueLen == alignLen == numLayers — in that case the
+	// tail loop runs zero iterations and the prefix loop has no per-
+	// iteration bounds-check branches against the analysis slices.
+	inBounds := numLayers
+	if keyLen < inBounds {
+		inBounds = keyLen
+	}
+	if valueLen < inBounds {
+		inBounds = valueLen
+	}
+	if alignLen < inBounds {
+		inBounds = alignLen
+	}
+	for layer := range inBounds {
+		k := clampUnit(layerKey[layer])
+		v := clampUnit(layerValue[layer])
+		a := clampUnit(layerAlign[layer])
+		// (k + v) / 2 stays in [0,1] when both operands do — no outer clamp.
 		layerCoherence[layer] = (k + v) / 2.0
-		layerCross[layer] = layerMetric(layerAlign, layer, fallbackAlign)
+		layerCross[layer] = a
+	}
+	for layer := inBounds; layer < numLayers; layer++ {
+		var k, v, a float64
+		if layer < keyLen {
+			k = clampUnit(layerKey[layer])
+		} else {
+			k = clampedFallbackKey
+		}
+		if layer < valueLen {
+			v = clampUnit(layerValue[layer])
+		} else {
+			v = clampedFallbackValue
+		}
+		if layer < alignLen {
+			a = clampUnit(layerAlign[layer])
+		} else {
+			a = clampedFallbackAlign
+		}
+		layerCoherence[layer] = (k + v) / 2.0
+		layerCross[layer] = a
 	}
 	jointCollapseCount := analysis.JointCollapseCount
 	if jointCollapseCount < 0 {
