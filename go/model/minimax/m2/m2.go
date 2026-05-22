@@ -1032,18 +1032,10 @@ func dTypeBytes(dtype string) int {
 	}
 }
 
-func score(value float32, scoringFunc string) float32 {
-	return scoringFuncFor(scoringFunc)(value)
-}
-
 // scoringFunc returns the per-value scoring closure selected once for a
-// router pass, hoisting the core.Lower(scoringFunc) string transform out of
-// the per-token inner loop.
+// router pass, hoisting the core.Lower(name) string transform out of the
+// per-token inner loop.
 func scoringFunc(name string) func(float32) float32 {
-	return scoringFuncFor(name)
-}
-
-func scoringFuncFor(name string) func(float32) float32 {
 	switch core.Lower(name) {
 	case "", "sigmoid":
 		return sigmoidScore
