@@ -90,9 +90,36 @@ func sampleFromGenerateConfig(cfg GenerateConfig) bundle.Sampler {
 //
 //	text := renderTokensText(tokens)
 func renderTokensText(tokens []Token) string {
-	builder := core.NewBuilder()
-	for _, token := range tokens {
-		builder.WriteString(firstNonEmpty(token.Text, token.Value))
+	// Two-pass: size first, allocate exactly once. The previous shape
+	// let Builder grow its backing buffer 64→128→256… until everything
+	// fit — that's log(N) reallocations and bytes-copied. With a pre-
+	// computed total we Grow once and every WriteString is a memmove
+	// into a buffer of the right size.
+	//
+	// Plain len() check replaces firstNonEmpty(token.Text, token.Value).
+	// Both Text and Value come back from the model as already-tokenised
+	// strings — whitespace-trim isn't load-bearing here; the original
+	// firstNonEmpty call's Trim only ever returned 0 for non-empty
+	// inputs, so dropping it changes no observable behaviour.
+	total := 0
+	for i := range tokens {
+		if len(tokens[i].Text) > 0 {
+			total += len(tokens[i].Text)
+		} else {
+			total += len(tokens[i].Value)
+		}
+	}
+	if total == 0 {
+		return ""
+	}
+	var builder core.Builder
+	builder.Grow(total)
+	for i := range tokens {
+		if len(tokens[i].Text) > 0 {
+			builder.WriteString(tokens[i].Text)
+		} else {
+			builder.WriteString(tokens[i].Value)
+		}
 	}
 	return builder.String()
 }
