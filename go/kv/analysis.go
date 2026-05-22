@@ -729,9 +729,33 @@ func kvAnalysisCosine32(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
 	}
-	var dot, normA, normB float64
-	for i := range a {
-		ai, bi := float64(a[i]), float64(b[i])
+	// 2-way unrolled — three accumulators (dot, normA, normB) already
+	// give ILP across the FADDD chain, but each chain still has the
+	// 3-cycle FADDD latency floor. Splitting each into two parallel
+	// chains expands to 6 effective chains, fitting M3's 4-FADD-unit
+	// throughput nicely while keeping register pressure modest (we'd
+	// hit f64 spill territory at 4-way for 3 chains × 4 = 12 accum +
+	// the ai/bi loads).
+	var dot0, dot1, normA0, normA1, normB0, normB1 float64
+	i := 0
+	for ; i+1 < len(a); i += 2 {
+		a0 := float64(a[i])
+		a1 := float64(a[i+1])
+		b0 := float64(b[i])
+		b1 := float64(b[i+1])
+		dot0 += a0 * b0
+		dot1 += a1 * b1
+		normA0 += a0 * a0
+		normA1 += a1 * a1
+		normB0 += b0 * b0
+		normB1 += b1 * b1
+	}
+	dot := dot0 + dot1
+	normA := normA0 + normA1
+	normB := normB0 + normB1
+	for ; i < len(a); i++ {
+		ai := float64(a[i])
+		bi := float64(b[i])
 		dot += ai * bi
 		normA += ai * ai
 		normB += bi * bi
