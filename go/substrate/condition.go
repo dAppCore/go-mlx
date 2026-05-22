@@ -88,39 +88,14 @@ func lookupCondition(value string) (Condition, bool) {
 	}
 }
 
-// foldAliases is the case-folded alias table used by matchConditionFold.
-// Each entry pairs a canonical lowercase alias with its Condition. The
-// table mirrors lookupCondition's switch but in an iterable form so the
-// fold walk can early-return on the first length+byte match without
-// allocating a lowercased input copy. Package-init merged so the slice
-// itself costs one allocation total (Pattern 10) rather than per-call.
-var foldAliases = [...]struct {
-	alias string
-	cond  Condition
-}{
-	{"", CONT},
-	{"cont", CONT},
-	{"continuous", CONT},
-	{"continuous-stream", CONT},
-	{"trad", TRAD},
-	{"traditional", TRAD},
-	{"traditional-runner", TRAD},
-	{"trad-no-replay", TRADNoReplay},
-	{"trad_no_replay", TRADNoReplay},
-	{"traditional-no-replay", TRADNoReplay},
-	{"cont-with-gap", CONTWithGap},
-	{"cont_with_gap", CONTWithGap},
-	{"continuous-with-gap", CONTWithGap},
-}
-
 // matchConditionFold performs the same lookup as lookupCondition but
 // against a whitespace-trimmed, case-folded view of value — without
 // allocating the trimmed/lowered copy. Walks input once to find the
 // trim window, tries the zero-alloc canonical switch on the trimmed
 // substring (covers the all-lowercase-with-whitespace path), then
-// falls back to a byte-fold sweep over the alias table. Bails fast
-// on length mismatch, so the per-call cost is dominated by the
-// matching alias's length, not the full table sweep.
+// dispatches on length to compare against the small set of aliases
+// of that exact length under ASCII case fold (Pattern 8 — length
+// bucket instead of full-table sweep).
 func matchConditionFold(value string) (Condition, bool) {
 	lo, hi := 0, len(value)
 	for lo < hi && isASCIISpace(value[lo]) {
@@ -136,13 +111,56 @@ func matchConditionFold(value string) (Condition, bool) {
 	if c, ok := lookupCondition(trimmed); ok {
 		return c, true
 	}
-	trimmedLen := len(trimmed)
-	for _, e := range foldAliases {
-		if len(e.alias) != trimmedLen {
-			continue
+	// Length-bucket dispatch: each canonical alias has a fixed length,
+	// so a switch on len(trimmed) narrows the candidate set to at most
+	// two per length without any iteration. Within a bucket, fall
+	// through to equalASCIIFold byte-walks against the short candidate
+	// list. The compiler turns the outer switch into a jump table.
+	switch len(trimmed) {
+	case 4:
+		if equalASCIIFold(trimmed, "cont") {
+			return CONT, true
 		}
-		if equalASCIIFold(trimmed, e.alias) {
-			return e.cond, true
+		if equalASCIIFold(trimmed, "trad") {
+			return TRAD, true
+		}
+	case 10:
+		if equalASCIIFold(trimmed, "continuous") {
+			return CONT, true
+		}
+	case 11:
+		if equalASCIIFold(trimmed, "traditional") {
+			return TRAD, true
+		}
+	case 13:
+		if equalASCIIFold(trimmed, "cont-with-gap") {
+			return CONTWithGap, true
+		}
+		if equalASCIIFold(trimmed, "cont_with_gap") {
+			return CONTWithGap, true
+		}
+	case 14:
+		if equalASCIIFold(trimmed, "trad-no-replay") {
+			return TRADNoReplay, true
+		}
+		if equalASCIIFold(trimmed, "trad_no_replay") {
+			return TRADNoReplay, true
+		}
+	case 17:
+		if equalASCIIFold(trimmed, "continuous-stream") {
+			return CONT, true
+		}
+	case 18:
+		if equalASCIIFold(trimmed, "traditional-runner") {
+			return TRAD, true
+		}
+	case 19:
+		if equalASCIIFold(trimmed, "continuous-with-gap") {
+			return CONTWithGap, true
+		}
+	case 21:
+		if equalASCIIFold(trimmed, "traditional-no-replay") {
+			return TRADNoReplay, true
 		}
 	}
 	return "", false
