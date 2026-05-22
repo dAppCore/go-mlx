@@ -2,8 +2,6 @@
 
 package mlx
 
-import core "dappco.re/go"
-
 const (
 	rootMinInt32 = -1 << 31
 	rootMaxInt32 = 1<<31 - 1
@@ -66,7 +64,14 @@ func normalizeRootShapeArgs(shape []any) []int32 {
 			}
 			return out
 		case []int32:
-			return core.SliceClone(dims)
+			// Skip the defensive clone — the sole caller (Reshape) spreads
+			// the result via `...` into metal.Reshape, which copies the
+			// values into a C buffer and never retains the slice header.
+			// Eliding the clone saves the only allocation in this path and
+			// converts it from O(n) memcpy + alloc to O(1) pointer return.
+			// Behavioural contract: callers may not mutate the input slice
+			// expecting isolation from the returned slice.
+			return dims
 		case []int64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
