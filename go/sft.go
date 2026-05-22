@@ -546,13 +546,19 @@ func (b *sftBatchBuilder) flush() {
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
 	n := len(examples)
+	// Share one [][]int backing across Tokens + Targets — both are the
+	// same type and same length, so a single 2n-wide allocation lets us
+	// carve two n-wide 3-index views into it instead of paying two
+	// separate makes. Length stays [n]int and LossMask stays [n][]float32
+	// (different types — distinct backings required).
+	intRows := make([][]int, 2*n)
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   make([][]int, n),
+			Tokens:   intRows[:n:n],
 			Length:   make([]int, n),
 			LossMask: make([][]float32, n),
 		},
-		Targets: make([][]int, n),
+		Targets: intRows[n : 2*n : 2*n],
 	}
 	// Transfer ownership of each example's slices into the batch — the
 	// callers (sftBatchBuilder.flush and runSFTDatasetEpoch.flushCurrent)
