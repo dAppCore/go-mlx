@@ -494,7 +494,8 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 	if len(blocks) == 0 {
 		return nil, core.NewError("mlx: KV snapshot blocks are empty")
 	}
-	if err := validateKVSnapshotBlockOrder(blocks); err != nil {
+	totalTokens, err := validateKVSnapshotBlockOrder(blocks)
+	if err != nil {
 		return nil, err
 	}
 	first := blocks[0].Snapshot
@@ -509,6 +510,9 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		HeadDim:       first.HeadDim,
 		NumQueryHeads: first.NumQueryHeads,
 		Layers:        emptyKVSnapshotLayers(first.Layers),
+		// Pre-size Tokens against the validated total — append-block
+		// accumulates a known count, so geometric grow is pure waste.
+		Tokens: make([]int32, 0, totalTokens),
 	}
 	for _, block := range blocks {
 		if block.Snapshot == nil {
@@ -529,21 +533,21 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 	return assembled, nil
 }
 
-func validateKVSnapshotBlockOrder(blocks []Block) error {
+func validateKVSnapshotBlockOrder(blocks []Block) (int, error) {
 	nextStart := 0
 	for index, block := range blocks {
 		if block.Index != index {
-			return core.NewError("mlx: KV snapshot blocks are not ordered by index")
+			return 0, core.NewError("mlx: KV snapshot blocks are not ordered by index")
 		}
 		if block.TokenStart != nextStart || block.TokenCount <= 0 {
-			return core.NewError("mlx: KV snapshot blocks are not contiguous")
+			return 0, core.NewError("mlx: KV snapshot blocks are not contiguous")
 		}
 		if block.Snapshot == nil || len(block.Snapshot.Tokens) != block.TokenCount {
-			return core.NewError("mlx: KV snapshot block token count mismatch")
+			return 0, core.NewError("mlx: KV snapshot block token count mismatch")
 		}
 		nextStart += block.TokenCount
 	}
-	return nil
+	return nextStart, nil
 }
 
 func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
