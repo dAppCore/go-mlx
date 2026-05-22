@@ -861,9 +861,15 @@ func (r *kvSnapshotReader) i32s() []int32 {
 	if size <= 0 {
 		return nil
 	}
+	// Single bounds check + direct decode amortises the per-element
+	// read+slice overhead the per-call r.u32() loop incurred.
+	chunk := r.read(size * 4)
+	if chunk == nil {
+		return nil
+	}
 	values := make([]int32, size)
 	for i := range values {
-		values[i] = r.i32()
+		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
 	}
 	return values
 }
@@ -879,9 +885,18 @@ func (r *kvSnapshotReader) bytes() []byte {
 
 func (r *kvSnapshotReader) f32s() []float32 {
 	size := int(r.u32())
+	if size <= 0 {
+		return nil
+	}
+	// Single bounds check + direct decode amortises the per-element
+	// read+slice overhead the per-call r.u32() loop incurred.
+	chunk := r.read(size * 4)
+	if chunk == nil {
+		return nil
+	}
 	values := make([]float32, size)
 	for i := range values {
-		values[i] = math.Float32frombits(r.u32())
+		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
 	}
 	return values
 }
@@ -901,9 +916,17 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 	size := int(r.u32())
 	switch encoding {
 	case 0:
+		if size <= 0 {
+			return kvSnapshotEncodedTensor{Values: []float32{}}
+		}
+		// Single bounds check via batched read avoids per-element bounds work.
+		chunk := r.read(size * 4)
+		if chunk == nil {
+			return kvSnapshotEncodedTensor{}
+		}
 		values := make([]float32, size)
 		for i := range values {
-			values[i] = math.Float32frombits(r.u32())
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
 		}
 		return kvSnapshotEncodedTensor{Values: values}
 	case 1:
