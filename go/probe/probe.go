@@ -13,6 +13,7 @@ package probe
 
 import (
 	"sync"
+	"sync/atomic"
 
 	core "dappco.re/go"
 )
@@ -212,9 +213,15 @@ func (f SinkFunc) EmitProbe(event Event) {
 }
 
 // Bus fans probe events out to one or more sinks.
+//
+// The sinks slice is published through an atomic.Pointer so EmitProbe
+// reads the snapshot lock-free — the prior RWMutex paid for every
+// emit, even on empty buses, dominating the no-sink hot loop. Add
+// installs a fresh slice under a writer mutex so a concurrent Add
+// remains race-free; readers always observe a complete snapshot.
 type Bus struct {
-	mu    sync.RWMutex
-	sinks []Sink
+	addMu sync.Mutex
+	sinks atomic.Pointer[[]Sink]
 }
 
 // NewBus creates a fanout sink.
@@ -229,12 +236,13 @@ func NewBus(sinks ...Sink) *Bus {
 	// per call, so building N sinks via Add was N lock/unlock pairs
 	// before any caller could observe the bus. The constructor owns
 	// the only reference so the slice growth is safe lock-free.
-	bus.sinks = make([]Sink, 0, len(sinks))
+	initial := make([]Sink, 0, len(sinks))
 	for _, sink := range sinks {
 		if sink != nil {
-			bus.sinks = append(bus.sinks, sink)
+			initial = append(initial, sink)
 		}
 	}
+	bus.sinks.Store(&initial)
 	return bus
 }
 
@@ -245,9 +253,21 @@ func (b *Bus) Add(sink Sink) {
 	if b == nil || sink == nil {
 		return
 	}
-	b.mu.Lock()
-	b.sinks = append(b.sinks, sink)
-	b.mu.Unlock()
+	// Publish-once semantics: build the new slice, then atomic-store
+	// the pointer so EmitProbe readers see the existing slice through
+	// the previous pointer until the swap commits. The addMu only
+	// serialises concurrent Add callers so they don't lose each
+	// other's appends.
+	b.addMu.Lock()
+	defer b.addMu.Unlock()
+	var current []Sink
+	if cur := b.sinks.Load(); cur != nil {
+		current = *cur
+	}
+	next := make([]Sink, len(current)+1)
+	copy(next, current)
+	next[len(current)] = sink
+	b.sinks.Store(&next)
 }
 
 // EmitProbe emits an event to every sink.
@@ -257,16 +277,20 @@ func (b *Bus) EmitProbe(event Event) {
 	if b == nil {
 		return
 	}
-	b.mu.RLock()
-	// Fast-path for the common one-sink bus — the snapshot only
-	// needs to defend against concurrent Bus.Add, and one sink
-	// fits in a single interface slot without allocating a
-	// freshly-copied slice header. Inlining the owned-sink dispatch
-	// here lets the compiler hoist the type-assertion check past the
-	// nil-sink early-return and keeps the OneSink path branch-light.
-	if len(b.sinks) == 1 {
-		sink := b.sinks[0]
-		b.mu.RUnlock()
+	// Atomic snapshot — concurrent Add publishes through Store, so
+	// the slice header we read is stable for the duration of the
+	// fanout (the backing array is never mutated in place; Add
+	// installs a fresh slice).
+	snap := b.sinks.Load()
+	if snap == nil {
+		return
+	}
+	sinks := *snap
+	// Fast-path for the common one-sink bus — keeps the OneSink
+	// path branch-light and avoids the range-loop overhead the
+	// multi-sink path pays.
+	if len(sinks) == 1 {
+		sink := sinks[0]
 		if sink == nil {
 			return
 		}
@@ -277,8 +301,6 @@ func (b *Bus) EmitProbe(event Event) {
 		sink.EmitProbe(CloneEvent(event))
 		return
 	}
-	sinks := core.SliceClone(b.sinks)
-	b.mu.RUnlock()
 	for _, sink := range sinks {
 		if sink == nil {
 			continue
