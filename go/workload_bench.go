@@ -489,7 +489,13 @@ func workloadAdapterInfo(path string, adapter *LoRAAdapter) WorkloadAdapterInfo 
 	if adapter != nil {
 		info.Rank = adapter.Config.Rank
 		info.Alpha = adapter.Config.Alpha
-		info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
+		// Adapters built without an explicit TargetKeys override carry
+		// a nil slice — match cloneWorkloadAdapterInfo by guarding the
+		// SliceClone behind a len>0 check so the no-targets branch
+		// pays only a nil-check instead of the slices.Clone shape.
+		if len(adapter.Config.TargetKeys) > 0 {
+			info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
+		}
 	}
 	return info
 }
