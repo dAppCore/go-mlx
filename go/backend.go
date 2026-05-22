@@ -810,6 +810,12 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 	builder := core.NewBuilder()
+	// Pre-grow for the expected output footprint — MaxTokens caps the
+	// emitted token stream and 4 bytes/token is a conservative average
+	// across ASCII + short BPE pieces, matching the FilterThinkingTokens
+	// sizing heuristic in thinking.go. Grow(0) is a no-op when MaxTokens
+	// is unset.
+	builder.Grow(cfg.MaxTokens * 4)
 	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
 	}
@@ -832,6 +838,9 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
 	}
 	builder := core.NewBuilder()
+	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
+	// FilterThinkingTokens decoder and Model.Generate above.
+	builder.Grow(cfg.MaxTokens * 4)
 	for tok := range m.model.Chat(context.Background(), metalMessages, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
 	}
@@ -856,6 +865,10 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		builder := core.NewBuilder()
+		// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
+		// chunked path on the same allocation budget as the giant-string
+		// path it falls back to.
+		builder.Grow(cfg.MaxTokens * 4)
 		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 			builder.WriteString(filter.Process(tok.Text))
 		}
