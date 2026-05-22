@@ -313,10 +313,13 @@ func CloneEvent(event Event) Event {
 	}
 	if event.Logits != nil {
 		logits := *event.Logits
-		logits.Shape = core.SliceClone(event.Logits.Shape)
-		logits.Top = core.SliceClone(event.Logits.Top)
-		logits.Values = core.SliceClone(event.Logits.Values)
-		logits.Meta = cloneMeta(event.Logits.Meta)
+		// logits is a value copy of *event.Logits, so its slice headers
+		// alias the same backing arrays; cloning through the local copy
+		// avoids re-dereferencing event.Logits four times.
+		logits.Shape = core.SliceClone(logits.Shape)
+		logits.Top = core.SliceClone(logits.Top)
+		logits.Values = core.SliceClone(logits.Values)
+		logits.Meta = cloneMeta(logits.Meta)
 		out.Logits = &logits
 	}
 	if event.Entropy != nil {
@@ -325,8 +328,8 @@ func CloneEvent(event Event) Event {
 	}
 	if event.SelectedHeads != nil {
 		heads := *event.SelectedHeads
-		heads.Heads = core.SliceClone(event.SelectedHeads.Heads)
-		heads.Scores = core.SliceClone(event.SelectedHeads.Scores)
+		heads.Heads = core.SliceClone(heads.Heads)
+		heads.Scores = core.SliceClone(heads.Scores)
 		out.SelectedHeads = &heads
 	}
 	if event.LayerCoherence != nil {
@@ -335,13 +338,13 @@ func CloneEvent(event Event) Event {
 	}
 	if event.RouterDecision != nil {
 		router := *event.RouterDecision
-		router.ExpertIDs = core.SliceClone(event.RouterDecision.ExpertIDs)
-		router.Weights = core.SliceClone(event.RouterDecision.Weights)
+		router.ExpertIDs = core.SliceClone(router.ExpertIDs)
+		router.Weights = core.SliceClone(router.Weights)
 		out.RouterDecision = &router
 	}
 	if event.ExpertResidency != nil {
 		residency := *event.ExpertResidency
-		residency.ExpertIDs = core.SliceClone(event.ExpertResidency.ExpertIDs)
+		residency.ExpertIDs = core.SliceClone(residency.ExpertIDs)
 		out.ExpertResidency = &residency
 	}
 	if event.Residual != nil {
