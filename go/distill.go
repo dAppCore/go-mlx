@@ -367,7 +367,7 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 		updateDistillResult(result, accumulator, len(sftBatch.Batch.Tokens), loss, cacheStatus)
 		result.Losses = append(result.Losses, loss)
 
-		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, batch, loss); err != nil {
+		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, &batch, loss); err != nil {
 			return err
 		}
 		if err := maybeRunDistillEval(ctx, runner, cfg, result, epoch); err != nil {
@@ -454,7 +454,7 @@ func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumu
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
 
-func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch DistillBatch, loss DistillLoss) error {
+func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch *DistillBatch, loss DistillLoss) error {
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
@@ -463,7 +463,7 @@ func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg D
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, DistillCheckpointContext{
 			Path:     path,
-			Batch:    batch,
+			Batch:    *batch,
 			Loss:     loss,
 			Metadata: meta,
 		}); err != nil {
