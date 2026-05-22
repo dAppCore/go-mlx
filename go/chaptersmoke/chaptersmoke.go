@@ -437,13 +437,10 @@ func slug(index int, name string) string {
 			lastDash = true
 		}
 	}
-	out := builder.String()
-	for core.HasPrefix(out, "-") {
-		out = core.TrimPrefix(out, "-")
-	}
-	for core.HasSuffix(out, "-") {
-		out = core.TrimSuffix(out, "-")
-	}
+	// Trim leading/trailing dashes in a single pass each — replaces two
+	// HasPrefix/HasSuffix loops that each scanned the prefix on every
+	// iteration. TrimLeft/TrimRight are single linear sweeps.
+	out := core.TrimLeft(core.TrimRight(builder.String(), "-"), "-")
 	if out == "" {
 		out = defaultChapterSlug(index)
 	}
