@@ -533,10 +533,13 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	var entropy float64
 	var tokens int
 	// Scratch buffers reused across every masked token — vocab size is
-	// constant (shape-checked above), so two pre-allocated float64 slices
+	// constant (shape-checked above), so three pre-allocated float64 slices
 	// replace the per-call make inside logSoftmaxTemperature. For a 32k
 	// vocab and 1000 tokens this skips ~2000 256KB allocations per call.
-	var teacherScratch, studentScratch []float64
+	// teacherProbScratch holds prob(x) = exp(log_prob(x)) computed once
+	// inside the log-softmax loop — the inner accumulator below would
+	// otherwise call math.Exp per element to recover it.
+	var teacherScratch, teacherProbScratch, studentScratch []float64
 	// Hoist mask-empty once — distillMaskIncludes treats an empty mask as
 	// "all tokens included", so per-cell calls were wasted when the mask
 	// is absent or zero-length. maskRows is non-nil only when we need
@@ -569,23 +572,26 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			vocab := len(tCell)
 			if cap(teacherScratch) < vocab {
 				teacherScratch = make([]float64, vocab)
+				teacherProbScratch = make([]float64, vocab)
 				studentScratch = make([]float64, vocab)
 			}
 			teacherScratch = teacherScratch[:vocab]
+			teacherProbScratch = teacherProbScratch[:vocab]
 			studentScratch = studentScratch[:vocab]
-			if err := logSoftmaxTemperatureInto(tCell, cfg.Temperature, teacherScratch); err != nil {
+			if err := logSoftmaxAndProbTemperatureInto(tCell, cfg.Temperature, teacherScratch, teacherProbScratch); err != nil {
 				return DistillLoss{}, err
 			}
 			if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			// negProb hoists the shared -math.Exp(teacherLogProb) so the
-			// two accumulator lines don't recompute -prob. Both terms are
-			// fma-friendly (one mul + one add into a running sum).
-			for k, teacherLogProb := range teacherScratch {
-				negProb := -math.Exp(teacherLogProb)
+			// Teacher probabilities are already in teacherProbScratch —
+			// the inner loop skips the per-element math.Exp the original
+			// form paid to recover prob from log-prob. For 32k vocab this
+			// saves ~32k math.Exp calls per masked token.
+			for k, teacherProb := range teacherProbScratch {
+				negProb := -teacherProb
 				softCE += negProb * studentScratch[k]
-				entropy += negProb * teacherLogProb
+				entropy += negProb * teacherScratch[k]
 			}
 			tokens++
 		}
@@ -791,6 +797,54 @@ func logSoftmaxTemperature(logits []float32, temperature float64) ([]float64, er
 		return nil, err
 	}
 	return scaled, nil
+}
+
+// logSoftmaxAndProbTemperatureInto writes both log_prob and prob for
+// each logit. logOut[i] = log(softmax(logits/temp))[i] and
+// probOut[i] = exp(logOut[i]). The DistillationBatchLoss inner loop
+// needs both teacher log-probs (for the entropy term) and teacher
+// probs (as the weight on the softCE / entropy accumulators). The
+// previous form called math.Exp inside the inner accumulator loop to
+// recover prob from log_prob; capturing prob during the renormalize
+// pass here skips that per-element math.Exp entirely.
+func logSoftmaxAndProbTemperatureInto(logits []float32, temperature float64, logOut, probOut []float64) error {
+	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
+		return core.NewError("mlx: distillation temperature must be finite and positive")
+	}
+	if len(logits) == 0 {
+		return core.NewError("mlx: distillation logits are empty")
+	}
+	if len(logOut) != len(logits) || len(probOut) != len(logits) {
+		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
+	}
+	invTemp := 1.0 / temperature
+	maxLogit := math.Inf(-1)
+	for i, logit := range logits {
+		value := float64(logit) * invTemp
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return core.NewError("mlx: distillation logit is not finite")
+		}
+		logOut[i] = value
+		if value > maxLogit {
+			maxLogit = value
+		}
+	}
+	// Compute exp(value - maxLogit) and accumulate the partition fn.
+	// Store the unnormalised exp in probOut so we don't need to
+	// recompute math.Exp during the normalise pass below.
+	var sumExp float64
+	for i, value := range logOut {
+		e := math.Exp(value - maxLogit)
+		probOut[i] = e
+		sumExp += e
+	}
+	logDenom := maxLogit + math.Log(sumExp)
+	invSum := 1.0 / sumExp
+	for i, value := range logOut {
+		logOut[i] = value - logDenom
+		probOut[i] *= invSum
+	}
+	return nil
 }
 
 // logSoftmaxTemperatureInto writes len(logits) log-softmax values into out.
