@@ -1164,87 +1164,62 @@ func quantizationGroupFromTensorTypes(summaries []TensorTypeSummary) int {
 	return group
 }
 
+// ggufFileTypeQuantizationTable — direct lookup table by GGUF file_type.
+// Replaces the case-by-case switch; lives in .rodata. Index 5, 6 unused
+// in the spec — those slots hold zero values (matching the prior default
+// arm "", 0).
+type ggufFileTypeEntry struct {
+	Name string
+	Bits int
+}
+
+var ggufFileTypeQuantizationTable = [40]ggufFileTypeEntry{
+	0:  {"f32", 32},
+	1:  {"f16", 16},
+	2:  {"q4_0", 4},
+	3:  {"q4_1", 4},
+	4:  {"q4_1_some_f16", 4},
+	7:  {"q8_0", 8},
+	8:  {"q5_0", 5},
+	9:  {"q5_1", 5},
+	10: {"q2_k", 2},
+	11: {"q3_k_s", 3},
+	12: {"q3_k_m", 3},
+	13: {"q3_k_l", 3},
+	14: {"q4_k_s", 4},
+	15: {"q4_k_m", 4},
+	16: {"q5_k_s", 5},
+	17: {"q5_k_m", 5},
+	18: {"q6_k", 6},
+	19: {"iq2_xxs", 2},
+	20: {"iq2_xs", 2},
+	21: {"q2_k_s", 2},
+	22: {"iq3_xs", 3},
+	23: {"iq3_xxs", 3},
+	24: {"iq1_s", 1},
+	25: {"iq4_nl", 4},
+	26: {"iq3_s", 3},
+	27: {"iq3_m", 3},
+	28: {"iq2_s", 2},
+	29: {"iq2_m", 2},
+	30: {"iq4_xs", 4},
+	31: {"iq1_m", 1},
+	32: {"bf16", 16},
+	33: {"q4_0_4_4", 4},
+	34: {"q4_0_4_8", 4},
+	35: {"q4_0_8_8", 4},
+	36: {"tq1_0", 1},
+	37: {"tq2_0", 2},
+	38: {"mxfp4", 4},
+	39: {"nvfp4", 4},
+}
+
 func ggufFileTypeQuantization(fileType int) (string, int) {
-	switch fileType {
-	case 0:
-		return "f32", 32
-	case 1:
-		return "f16", 16
-	case 2:
-		return "q4_0", 4
-	case 3:
-		return "q4_1", 4
-	case 4:
-		return "q4_1_some_f16", 4
-	case 7:
-		return "q8_0", 8
-	case 8:
-		return "q5_0", 5
-	case 9:
-		return "q5_1", 5
-	case 10:
-		return "q2_k", 2
-	case 11:
-		return "q3_k_s", 3
-	case 12:
-		return "q3_k_m", 3
-	case 13:
-		return "q3_k_l", 3
-	case 14:
-		return "q4_k_s", 4
-	case 15:
-		return "q4_k_m", 4
-	case 16:
-		return "q5_k_s", 5
-	case 17:
-		return "q5_k_m", 5
-	case 18:
-		return "q6_k", 6
-	case 19:
-		return "iq2_xxs", 2
-	case 20:
-		return "iq2_xs", 2
-	case 21:
-		return "q2_k_s", 2
-	case 22:
-		return "iq3_xs", 3
-	case 23:
-		return "iq3_xxs", 3
-	case 24:
-		return "iq1_s", 1
-	case 25:
-		return "iq4_nl", 4
-	case 26:
-		return "iq3_s", 3
-	case 27:
-		return "iq3_m", 3
-	case 28:
-		return "iq2_s", 2
-	case 29:
-		return "iq2_m", 2
-	case 30:
-		return "iq4_xs", 4
-	case 31:
-		return "iq1_m", 1
-	case 32:
-		return "bf16", 16
-	case 33:
-		return "q4_0_4_4", 4
-	case 34:
-		return "q4_0_4_8", 4
-	case 35:
-		return "q4_0_8_8", 4
-	case 36:
-		return "tq1_0", 1
-	case 37:
-		return "tq2_0", 2
-	case 38:
-		return "mxfp4", 4
-	case 39:
-		return "nvfp4", 4
-	default:
-		return "", 0
+	if fileType >= 0 && fileType < len(ggufFileTypeQuantizationTable) {
+		e := ggufFileTypeQuantizationTable[fileType]
+		return e.Name, e.Bits
 	}
+	return "", 0
 }
 
 func NormalizeQuantType(value string) string {
