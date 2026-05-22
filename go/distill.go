@@ -589,8 +589,47 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 				upper = len(maskRow)
 			}
 		}
+		// Split mask-present vs mask-absent paths — the per-j `if maskRow
+		// != nil && maskRow[j] <= 0` check fires every iteration even when
+		// the entire batch was called without a mask, which is the common
+		// pre-tokenized teacher-forcing path. Mask-absent branch drops the
+		// per-token branch + bounds-check entirely.
+		if maskRow == nil {
+			for j := 0; j < upper; j++ {
+				tCell := tRow[j]
+				sCell := sRow[j]
+				vocab := len(tCell)
+				if cap(teacherScratch) < vocab {
+					teacherScratch = make([]float64, vocab)
+					teacherProbScratch = make([]float64, vocab)
+					studentScratch = make([]float64, vocab)
+				}
+				teacherScratch = teacherScratch[:vocab]
+				teacherProbScratch = teacherProbScratch[:vocab]
+				studentScratch = studentScratch[:vocab]
+				if err := logSoftmaxAndProbTemperatureInto(tCell, cfg.Temperature, teacherScratch, teacherProbScratch); err != nil {
+					return DistillLoss{}, err
+				}
+				if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
+					return DistillLoss{}, err
+				}
+				// Teacher probabilities are already in teacherProbScratch —
+				// the inner loop skips the per-element math.Exp the original
+				// form paid to recover prob from log-prob. For 32k vocab this
+				// saves ~32k math.Exp calls per masked token. Subtracting
+				// directly (softCE -= prob*X) folds the negation into the
+				// accumulator update so no per-iteration temporary is
+				// needed.
+				for k, teacherProb := range teacherProbScratch {
+					softCE -= teacherProb * studentScratch[k]
+					entropy -= teacherProb * teacherScratch[k]
+				}
+				tokens++
+			}
+			continue
+		}
 		for j := 0; j < upper; j++ {
-			if maskRow != nil && maskRow[j] <= 0 {
+			if maskRow[j] <= 0 {
 				continue
 			}
 			tCell := tRow[j]
@@ -610,13 +649,6 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			// Teacher probabilities are already in teacherProbScratch —
-			// the inner loop skips the per-element math.Exp the original
-			// form paid to recover prob from log-prob. For 32k vocab this
-			// saves ~32k math.Exp calls per masked token. Subtracting
-			// directly (softCE -= prob*X) folds the negation into the
-			// accumulator update so no per-iteration temporary is
-			// needed.
 			for k, teacherProb := range teacherProbScratch {
 				softCE -= teacherProb * studentScratch[k]
 				entropy -= teacherProb * teacherScratch[k]
