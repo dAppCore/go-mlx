@@ -102,14 +102,58 @@ func adapterConfigPath(path string) string {
 	return adapterConfigPathPrecomputed(path, core.HasSuffix(path, ".safetensors"))
 }
 
+// adapterConfigSuffix carries the leading separator inline so the
+// concat-path can drop it cheaply when the input already ends in '/'
+// (matching filepath.Join's separator-collapse semantics).
+const adapterConfigSuffix = "/adapter_config.json"
+
+// joinDirChildPattern concatenates a directory path with a relative
+// child segment, collapsing the duplicate separator when dir already
+// ends in '/'. Skips the filepath.Clean trip core.PathJoin takes; the
+// adapter / pack directory paths we feed in are already canonical
+// (PathAbs + MkdirAll output, or caller-supplied non-empty roots
+// validated upstream), so the only normalisation needed is the
+// trailing-slash collapse rule. An empty dir falls back to a bare
+// child segment to preserve PathJoin's "empty root = relative result"
+// semantics.
+//
+// Lives in adapter.go (universal build) so both the cross-platform
+// hashAdapter path and the darwin/arm64-only fuse path can route
+// through it without duplication.
+func joinDirChildPattern(dir, child string) string {
+	if dir == "" {
+		return child
+	}
+	if dir[len(dir)-1] == '/' {
+		return dir + child
+	}
+	return dir + "/" + child
+}
+
 // adapterConfigPathPrecomputed is the precomputed-suffix variant of
 // adapterConfigPath; the Inspect hot path computes the .safetensors
 // suffix check once and threads the result through this helper.
+//
+// Builds the joined path with a direct concat instead of routing through
+// core.PathJoin (filepath.Join → filepath.Clean): filepath.Clean always
+// allocates an internal lazybuf even when the inputs are already canonical,
+// roughly doubling the cost of producing the result string. Both Inspect
+// callers feed an already-cleaned adapter path, so the only normalisation
+// we need is the "collapse a duplicate '/'" rule that filepath.Join uses
+// when joining a path that already ends in '/'.
 func adapterConfigPathPrecomputed(path string, isSafetensors bool) string {
+	base := path
 	if isSafetensors {
-		return core.PathJoin(core.PathDir(path), "adapter_config.json")
+		// PathDir returns a substring of path (no alloc); strip the
+		// trailing weight-file segment so the join targets the parent dir.
+		base = core.PathDir(path)
 	}
-	return core.PathJoin(path, "adapter_config.json")
+	// Trailing-slash collapse: when base ends in '/', skip the leading
+	// '/' from adapterConfigSuffix to avoid producing "//adapter_config".
+	if len(base) > 0 && base[len(base)-1] == '/' {
+		return base + adapterConfigSuffix[1:]
+	}
+	return base + adapterConfigSuffix
 }
 
 func hashAdapter(path string, config []byte) string {
@@ -129,7 +173,13 @@ func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) stri
 	if isSafetensors {
 		paths = []string{path}
 	} else {
-		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
+		// joinDirChildPattern skips the filepath.Clean trip core.PathJoin
+		// would take — filepath.Glob handles trailing-slash / double-slash
+		// patterns identically, so the only normalisation needed is the
+		// "empty root = relative result" guard joinDirChildPattern already
+		// provides. Shaves the lazybuf alloc filepath.Clean unconditionally
+		// makes from the pattern build.
+		paths = core.PathGlob(joinDirChildPattern(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
 	// Hash each input on the stack ([32]byte from core.SHA256), then

@@ -8,6 +8,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/pack"
 	"slices"
+	"strings"
 )
 
 const (
@@ -163,10 +164,15 @@ func ensureEmptyFuseWeightDestination(output string) error {
 	// the concat alloc even when the first run already proved the
 	// destination is dirty. Real fuse paths fire this once per call;
 	// shaving the second glob's Readdir trip is the win.
-	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
+	//
+	// Build the glob pattern with a direct concat instead of core.PathJoin
+	// (filepath.Join → filepath.Clean), which always allocates an internal
+	// lazybuf even when the inputs are already canonical. output came from
+	// PathAbs + MkdirAll so it's clean by construction.
+	if len(core.PathGlob(joinDirChildPattern(output, "*.safetensors"))) > 0 {
 		return errFuseOutputContainsWeight
 	}
-	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
+	if len(core.PathGlob(joinDirChildPattern(output, "*.gguf"))) > 0 {
 		return errFuseOutputContainsWeight
 	}
 	return nil
@@ -245,7 +251,13 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 	// per-call slice-header alloc.
 	seen := make(map[string]struct{}, 12)
 	for _, pattern := range patterns {
-		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
+		// joinDirChildPattern skips the filepath.Clean trip core.PathJoin
+		// would take — sourceRoot and outputRoot are already-canonical
+		// directory paths (PathAbs + MkdirAll output), so the only
+		// normalisation needed is the trailing-slash collapse rule.
+		// Per-pattern + per-file path joins were ~30% of the metadata-
+		// copy alloc count for a typical 8-file qwen3 metadata set.
+		for _, sourcePath := range core.PathGlob(joinDirChildPattern(sourceRoot, pattern)) {
 			name := core.PathBase(sourcePath)
 			if _, ok := seen[name]; ok {
 				continue
@@ -254,7 +266,7 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 			if isModelWeightMetadataCopySkip(name) {
 				continue
 			}
-			if err := copyLocalFile(sourcePath, core.PathJoin(outputRoot, name)); err != nil {
+			if err := copyLocalFile(sourcePath, joinDirChildPattern(outputRoot, name)); err != nil {
 				return err
 			}
 		}
@@ -268,10 +280,52 @@ func isModelWeightMetadataCopySkip(name string) bool {
 	// previous HasSuffix terms were dead under the OR — drop them and let the
 	// Contains checks carry both the suffix and the .safetensors.index.json
 	// case the copy filter is meant to skip.
-	lower := core.Lower(name)
-	return lower == FuseProvenanceFile ||
-		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf")
+	//
+	// Use case-fold-in-place compares (containsAsciiLowerFold +
+	// strings.EqualFold) to avoid the core.Lower copy that fires whenever
+	// the input contains uppercase ASCII (e.g. MODEL.GGUF). core.Lower
+	// drops to strings.ToLower for uppercase input, which allocates a fresh
+	// string per call — wasted on the dominant lowercase tokenizer/config
+	// files we copy because we only need to compare, not normalise.
+	if strings.EqualFold(name, FuseProvenanceFile) {
+		return true
+	}
+	if containsAsciiLowerFold(name, ".safetensors") {
+		return true
+	}
+	if containsAsciiLowerFold(name, ".gguf") {
+		return true
+	}
+	return false
+}
+
+// containsAsciiLowerFold reports whether s contains sub, comparing
+// ASCII A-Z in s case-insensitively against the all-lowercase sub.
+// The caller MUST pass sub already in lowercase ASCII — this keeps the
+// per-byte fold to one branch (s only) and skips the alloc strings.Lower
+// would make for uppercase input.
+func containsAsciiLowerFold(s, sub string) bool {
+	n := len(s) - len(sub)
+	if n < 0 {
+		return false
+	}
+	for i := 0; i <= n; i++ {
+		match := true
+		for j := 0; j < len(sub); j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != sub[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 func copyLocalFile(sourcePath, destinationPath string) error {
@@ -296,7 +350,11 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 	if hasSafetensorsSuffixFold(path) {
 		return []string{path}, nil
 	}
-	matches := core.PathGlob(core.PathJoin(path, "*.safetensors"))
+	// joinDirChildPattern (direct concat) skips the filepath.Clean trip
+	// core.PathJoin would take — path is the adapter directory the caller
+	// passed in, treated as already-canonical (Inspect feeds the same
+	// path through the directory branch without normalisation).
+	matches := core.PathGlob(joinDirChildPattern(path, "*.safetensors"))
 	slices.Sort(matches)
 	if len(matches) == 0 {
 		return nil, errFuseNoAdapterSafetensors
@@ -447,7 +505,9 @@ func FuseIntoPack(ctx context.Context, opts FuseOptions) (*FuseResult, error) {
 		return nil, err
 	}
 
-	provenancePath := core.PathJoin(prepared.Output, FuseProvenanceFile)
+	// prepared.Output is canonical (PathAbs + MkdirAll); skip the
+	// filepath.Clean trip core.PathJoin would take and concat directly.
+	provenancePath := joinDirChildPattern(prepared.Output, FuseProvenanceFile)
 	// outputWeightFileNames maps PathBase across every weight shard; the
 	// first basename is also written into the provenance OutputWeight
 	// scalar. Build the slice once and reuse its first entry instead of
@@ -565,7 +625,9 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 		if multiShard {
 			outputName = core.PathBase(sourceFile)
 		}
-		weightPath := core.PathJoin(outputRoot, outputName)
+		// outputRoot is canonical (PathAbs + MkdirAll); skip the
+		// filepath.Clean trip and concat directly.
+		weightPath := joinDirChildPattern(outputRoot, outputName)
 		if err := metal.SaveSafetensors(weightPath, baseWeights); err != nil {
 			freeMetalMap(baseWeights)
 			return nil, nil, core.E("lora.FuseIntoPack", "save fused safetensors", err)
