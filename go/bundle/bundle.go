@@ -174,8 +174,9 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 	if snap.Version == 0 {
 		snap.Version = kv.SnapshotVersion
 	}
+	tokenCount := len(snap.Tokens)
 	if snap.TokenOffset == 0 {
-		snap.TokenOffset = len(snap.Tokens)
+		snap.TokenOffset = tokenCount
 	}
 	kvHash, err := kv.HashSnapshot(snap)
 	if err != nil {
@@ -201,7 +202,7 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 		Prompt: Prompt{
 			Text:        opts.Prompt,
 			Hash:        HashString(opts.Prompt),
-			TokenCount:  len(snap.Tokens),
+			TokenCount:  tokenCount,
 			TokenOffset: snap.TokenOffset,
 		},
 		Tokenizer: tokenizer,
