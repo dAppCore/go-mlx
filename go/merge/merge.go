@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sort"
+	"unsafe"
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
@@ -800,8 +801,16 @@ func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []by
 	} else {
 		scratch = scratch[:needed]
 	}
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(scratch[i*4:], math.Float32bits(value))
+	if needed > 0 {
+		// Reinterpret-cast the source []float32 as bytes — float32 storage
+		// is little-endian on both Go-supported architectures (arm64 and
+		// amd64), so the byte view of a []float32 already matches what
+		// binary.LittleEndian.PutUint32(buf, math.Float32bits(v)) writes
+		// element-by-element. One memcpy vs N×(PutUint32 + Float32bits).
+		// Pattern is established in go/kv/snapshot.go f32sRaw (~4.3× on
+		// 2048-element runs) and go/internal/metal/io_custom.go.
+		src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), needed)
+		copy(scratch, src)
 	}
 	_, err := file.Write(scratch)
 	return scratch, err
