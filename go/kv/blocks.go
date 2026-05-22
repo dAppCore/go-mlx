@@ -558,9 +558,9 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   layer.KeyDType,
-			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: layer.ValueDType,
-			ValueShape: append([]int32(nil), layer.ValueShape...),
+			ValueShape: core.SliceClone(layer.ValueShape),
 		}
 		if len(layer.Heads) > 0 {
 			out[i].Heads = make([]HeadSnapshot, len(layer.Heads))
