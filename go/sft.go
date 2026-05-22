@@ -631,10 +631,16 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
 	// shifted by one. Building both in a single index walk lets the loop
 	// amortise bounds-check elision across the two writes instead of
-	// paying for two separate range loops + int widenings.
+	// paying for two separate range loops + int widenings. The backing
+	// is shared via a 2n-wide carve so the two []int slices come from one
+	// allocation — sftBatchFromExamples already transfers ownership of
+	// both fields into the batch (different slots, same root backing is
+	// safe — Tokens[i] and Targets[i] are independent slice headers, GC
+	// only frees when neither references the backing).
 	n := len(seq) - 1
-	inputs := make([]int, n)
-	targets := make([]int, n)
+	intBacking := make([]int, 2*n)
+	inputs := intBacking[:n:n]
+	targets := intBacking[n : 2*n : 2*n]
 	for i := 0; i < n; i++ {
 		inputs[i] = int(seq[i])
 		targets[i] = int(seq[i+1])
