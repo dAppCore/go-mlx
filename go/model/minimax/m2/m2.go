@@ -671,15 +671,20 @@ func BuildLayerForwardSkeleton(plan TensorPlan, weightFiles []string, layer int)
 
 // RouterProbeEvents converts router decisions into typed probe events.
 func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) []probe.Event {
-	events := make([]probe.Event, 0, len(decisions))
-	for _, decision := range decisions {
+	// Index iteration: RouterDecision is 56 B, above the value-copy
+	// threshold where range-by-value bites under hot per-token fan-out.
+	events := make([]probe.Event, len(decisions))
+	tokenIDLen := len(tokenIDs)
+	for d := range decisions {
+		decision := &decisions[d]
+		tokenIndex := decision.TokenIndex
 		tokenID := int32(0)
-		if decision.TokenIndex >= 0 && decision.TokenIndex < len(tokenIDs) {
-			tokenID = tokenIDs[decision.TokenIndex]
+		if tokenIndex >= 0 && tokenIndex < tokenIDLen {
+			tokenID = tokenIDs[tokenIndex]
 		}
-		events = append(events, probe.Event{
+		events[d] = probe.Event{
 			Kind: probe.KindRouterDecision,
-			Step: decision.TokenIndex,
+			Step: tokenIndex,
 			RouterDecision: &probe.RouterDecision{
 				Layer:     layer,
 				TokenID:   tokenID,
@@ -687,7 +692,7 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 				Weights:   core.SliceClone(decision.Weights),
 			},
 			Meta: metaMinimaxM2,
-		})
+		}
 	}
 	return events
 }
