@@ -31,6 +31,7 @@ var hashBufPool = sync.Pool{
 	},
 }
 
+
 const (
 	// StateIndexKind identifies a State-stored lookup index
 	// for named spans inside one or more KV block bundles.
@@ -643,18 +644,21 @@ func indexHash(index *StateIndex) string {
 	header.WriteString(index.Tokenizer.Hash)
 	header.WriteByte('|')
 	header.WriteString(index.Tokenizer.ChatTemplateHash)
-	hash := sha256.New()
-	hash.Write(header.Bytes())
+	h := sha256.New()
+	h.Write(header.Bytes())
 	hashBufPool.Put(header)
 	for i := range index.Entries {
-		writeIndexHashString(hash, "|")
+		writeIndexHashString(h, "|")
 		entryHash := index.Entries[i].Hash
 		if entryHash == "" {
 			entryHash = indexEntryHash(&index.Entries[i])
 		}
-		writeIndexHashString(hash, entryHash)
+		writeIndexHashString(h, entryHash)
 	}
-	return core.HexEncode(hash.Sum(nil))
+	// Sum into a stack-allocated [32]byte rather than passing nil
+	// (which heap-allocates the digest slice).
+	var sumBuf [sha256.Size]byte
+	return core.HexEncode(h.Sum(sumBuf[:0]))
 }
 
 func indexEntryHash(entry *StateIndexEntry) string {
