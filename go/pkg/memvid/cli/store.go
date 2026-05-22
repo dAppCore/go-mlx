@@ -389,8 +389,13 @@ func commandLooksNotFound(err error) bool {
 	if !core.As(err, &cmdErr) {
 		return false
 	}
-	text := core.Lower(cmdErr.Stdout + "\n" + cmdErr.Stderr)
-	return core.Contains(text, "not found") || core.Contains(text, "was not found")
+	// "was not found" contains "not found" — one needle is enough.
+	// Lower each stream independently to skip the joined "stdout\nstderr"
+	// allocation, and short-circuit the second Lower when stdout matches.
+	if core.Contains(core.Lower(cmdErr.Stdout), "not found") {
+		return true
+	}
+	return core.Contains(core.Lower(cmdErr.Stderr), "not found")
 }
 
 func isChunkNotFound(err error) bool {
