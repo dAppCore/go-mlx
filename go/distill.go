@@ -359,7 +359,7 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 				return err
 			}
 		}
-		updateDistillResult(result, accumulator, sftBatch, loss, cacheStatus)
+		updateDistillResult(result, accumulator, len(sftBatch.Batch.Tokens), loss, cacheStatus)
 		result.Losses = append(result.Losses, loss)
 
 		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, batch, loss); err != nil {
@@ -423,8 +423,7 @@ func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, bat
 	return logits, "miss", nil
 }
 
-func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, batch SFTBatch, loss DistillLoss, cacheStatus string) {
-	samples := len(batch.Batch.Tokens)
+func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, samples int, loss DistillLoss, cacheStatus string) {
 	result.Metrics.Steps++
 	result.Metrics.Batches++
 	result.Metrics.Samples += samples
