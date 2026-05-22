@@ -13,6 +13,14 @@ import (
 
 const envBinary = "MEMVID_CLI_BIN"
 
+var (
+	errNilStore       = core.NewError("memvid cli store is nil")
+	errPathRequired   = core.NewError("memvid cli store path is required")
+	errBinaryRequired = core.NewError("memvid cli binary is required")
+	errNoFrameID      = core.NewError("memvid put did not report a frame id")
+	errResultFailed   = core.NewError("core result failed")
+)
+
 type Store struct {
 	path      string
 	bin       string
@@ -90,7 +98,7 @@ func LookPath() (string, error) {
 
 func Open(path string, opts ...Option) (*Store, error) {
 	if core.Trim(path) == "" {
-		return nil, core.NewError("memvid cli store path is required")
+		return nil, errPathRequired
 	}
 	store := &Store{
 		path:      path,
@@ -297,7 +305,7 @@ func (s *Store) putFrameID(ctx context.Context, put putResponse) (int, error) {
 	if put.Memory.FrameCount > 0 {
 		return int(put.Memory.FrameCount - 1), nil
 	}
-	return 0, core.NewError("memvid put did not report a frame id")
+	return 0, errNoFrameID
 }
 
 func (s *Store) viewFrame(ctx context.Context, chunkID int) (viewResponse, error) {
@@ -357,13 +365,13 @@ func (s *Store) runInput(ctx context.Context, input []byte, args ...string) ([]b
 
 func (s *Store) ready() error {
 	if s == nil {
-		return core.NewError("memvid cli store is nil")
+		return errNilStore
 	}
 	if core.Trim(s.path) == "" {
-		return core.NewError("memvid cli store path is required")
+		return errPathRequired
 	}
 	if core.Trim(s.bin) == "" {
-		return core.NewError("memvid cli binary is required")
+		return errBinaryRequired
 	}
 	if s.runner == nil {
 		s.runner = defaultRunner
@@ -418,7 +426,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errResultFailed
 }
 
 type putResponse struct {
