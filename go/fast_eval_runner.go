@@ -349,12 +349,19 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 		// growth on every probe-overhead bench iteration.
 		report.KindCounts = make(map[string]int, 8)
 		report.Events = make([]any, len(events))
-		// Index iteration avoids the per-step copy of the 120-byte
-		// probe.Event (14 fields, mostly pointers) into a loop variable
-		// before we re-store it into Events[i] anyway.
+		// Index iteration + pointer-to-slot avoids the per-step
+		// boxing of the ~120 B probe.Event into an `any` interface
+		// header. Boxing a value copies the struct onto the heap (1
+		// alloc/event) before storing the pointer in the interface
+		// payload; storing &events[i] reuses the heap-resident slot
+		// the recorder already allocated via make([]Event, …) +
+		// CloneEvent. Encoding/JSON marshals *probe.Event identically
+		// to probe.Event (encoder dereferences), and the only consumer
+		// of ProbeReport.Events is bench-driven JSON output (no
+		// reflection-based type assertion in the codebase).
 		for i := range events {
 			report.KindCounts[string(events[i].Kind)]++
-			report.Events[i] = events[i]
+			report.Events[i] = &events[i]
 		}
 		report.Metrics = metrics
 		if metrics.TotalDuration > 0 {
