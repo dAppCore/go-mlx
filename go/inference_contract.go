@@ -9,6 +9,7 @@ import (
 	"dappco.re/go/mlx/memory"
 	"strconv"
 	"sync"
+	"sync/atomic"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -332,45 +333,69 @@ var metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
 
 // metalDeviceLabel cache — the device probe returns the same
 // (MemorySize, MaxRecommendedWorkingSetSize) tuple for the whole process
-// lifetime (host RAM doesn't grow between calls). A single-slot LRU
+// lifetime (host RAM doesn't grow between calls). A single-slot lookup
 // matches the singleton-device pattern; tests that swap the
 // metalCapabilityDeviceInfo hook with synthetic device shapes still
 // re-format on the first call with the new tuple.
+//
+// The cache stores an immutable *metalDeviceLabelEntry behind an
+// atomic.Pointer so the hot read path is lock-free. Cache misses (new
+// device or first call) take the rare-path mutex to populate; misses
+// during test hook swaps are bounded by the number of distinct device
+// shapes exercised in a single run.
+type metalDeviceLabelEntry struct {
+	memorySize     uint64
+	workingSetSize uint64
+	memoryStr      string
+	workingSetStr  string
+}
+
 var (
-	metalDeviceLabelMu             sync.Mutex
-	metalDeviceLabelMemorySize     uint64
-	metalDeviceLabelWorkingSetSize uint64
-	metalDeviceLabelMemoryStr      string
-	metalDeviceLabelWorkingSetStr  string
+	metalDeviceLabelCache atomic.Pointer[metalDeviceLabelEntry]
+	metalDeviceLabelMu    sync.Mutex
 )
 
 // metalDeviceLabelStrings returns the strconv.FormatUint outputs for
-// (memorySize, workingSetSize). The single-slot cache hits on every
-// subsequent call with the same tuple — dropping two per-call string
-// allocations into one shared lookup on the steady-state path. Returns
-// "" for any zero-size input (so callers can branch on the empty
-// string instead of duplicating the > 0 check).
+// (memorySize, workingSetSize). The atomic single-slot cache hits on
+// every subsequent call with the same tuple — lock-free read path,
+// rare-path mutex only on miss. Returns "" for any zero-size input
+// (so callers can branch on the empty string instead of duplicating
+// the > 0 check).
 func metalDeviceLabelStrings(memorySize, workingSetSize uint64) (string, string) {
 	if memorySize == 0 && workingSetSize == 0 {
 		return "", ""
 	}
+	if entry := metalDeviceLabelCache.Load(); entry != nil &&
+		entry.memorySize == memorySize && entry.workingSetSize == workingSetSize {
+		return entry.memoryStr, entry.workingSetStr
+	}
+	return metalDeviceLabelStringsSlow(memorySize, workingSetSize)
+}
+
+// metalDeviceLabelStringsSlow is the cache-miss path — populates the
+// shared cache under the mutex. Split out so the fast atomic load path
+// stays inlineable.
+func metalDeviceLabelStringsSlow(memorySize, workingSetSize uint64) (string, string) {
 	metalDeviceLabelMu.Lock()
 	defer metalDeviceLabelMu.Unlock()
-	if memorySize != metalDeviceLabelMemorySize || workingSetSize != metalDeviceLabelWorkingSetSize {
-		metalDeviceLabelMemorySize = memorySize
-		metalDeviceLabelWorkingSetSize = workingSetSize
-		if memorySize > 0 {
-			metalDeviceLabelMemoryStr = strconv.FormatUint(memorySize, 10)
-		} else {
-			metalDeviceLabelMemoryStr = ""
-		}
-		if workingSetSize > 0 {
-			metalDeviceLabelWorkingSetStr = strconv.FormatUint(workingSetSize, 10)
-		} else {
-			metalDeviceLabelWorkingSetStr = ""
-		}
+	// Double-check under the lock — another goroutine may have populated
+	// the cache while we were waiting.
+	if entry := metalDeviceLabelCache.Load(); entry != nil &&
+		entry.memorySize == memorySize && entry.workingSetSize == workingSetSize {
+		return entry.memoryStr, entry.workingSetStr
 	}
-	return metalDeviceLabelMemoryStr, metalDeviceLabelWorkingSetStr
+	entry := &metalDeviceLabelEntry{
+		memorySize:     memorySize,
+		workingSetSize: workingSetSize,
+	}
+	if memorySize > 0 {
+		entry.memoryStr = strconv.FormatUint(memorySize, 10)
+	}
+	if workingSetSize > 0 {
+		entry.workingSetStr = strconv.FormatUint(workingSetSize, 10)
+	}
+	metalDeviceLabelCache.Store(entry)
+	return entry.memoryStr, entry.workingSetStr
 }
 
 func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
