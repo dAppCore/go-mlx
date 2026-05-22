@@ -655,6 +655,10 @@ func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 // hoist the per-call FromValue scalars (constant for the cache's lifetime)
 // onto the struct so quantizeCacheArray reuses one MLX scalar handle across
 // all Updates rather than allocating + freeing four scalars per call.
+//
+// packOffsetI8 / packShiftU8 hoist the bit-pack constants used by packQ4
+// (int8 8, uint8 4) so the Q4 storage path doesn't re-allocate them on
+// every Update either.
 type QuantizedKVCache struct {
 	keys, values       *Array
 	keyScale           *Array
@@ -665,6 +669,8 @@ type QuantizedKVCache struct {
 	valueMaxBound      *Array
 	valueMinValue      *Array
 	quantizeEps        *Array
+	packOffsetI8       *Array
+	packShiftU8        *Array
 	keyDtype           DType
 	valueDtype         DType
 	keyShape           []int32
@@ -785,7 +791,8 @@ func (c *QuantizedKVCache) Len() int {
 
 func (c *QuantizedKVCache) Reset() {
 	Free(c.keys, c.values, c.keyScale, c.valueScale, c.floatK, c.floatV,
-		c.keyMaxBound, c.keyMinValue, c.valueMaxBound, c.valueMinValue, c.quantizeEps)
+		c.keyMaxBound, c.keyMinValue, c.valueMaxBound, c.valueMinValue, c.quantizeEps,
+		c.packOffsetI8, c.packShiftU8)
 	c.keys = nil
 	c.values = nil
 	c.keyScale = nil
@@ -797,6 +804,8 @@ func (c *QuantizedKVCache) Reset() {
 	c.valueMaxBound = nil
 	c.valueMinValue = nil
 	c.quantizeEps = nil
+	c.packOffsetI8 = nil
+	c.packShiftU8 = nil
 	c.offset = 0
 }
 
@@ -811,9 +820,10 @@ func (c *QuantizedKVCache) storeQuantized(k, v *Array) {
 	c.keyDtype = k.Dtype()
 	c.valueDtype = v.Dtype()
 	keyMax, keyMin, eps := c.ensureKeyScalars()
-	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps)
+	packOff, packSh := c.ensurePackScalars(c.keyBits, c.valueBits)
+	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps, packOff, packSh)
 	valueMax, valueMin, _ := c.ensureValueScalars()
-	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps)
+	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps, packOff, packSh)
 	Free(oldK, oldV, oldKS, oldVS)
 }
 
@@ -848,6 +858,24 @@ func (c *QuantizedKVCache) ensureValueScalars() (*Array, *Array, *Array) {
 		c.quantizeEps = FromValue(float32(1e-6))
 	}
 	return c.valueMaxBound, c.valueMinValue, c.quantizeEps
+}
+
+// ensurePackScalars lazily allocates the bit-pack constants used by packQ4
+// (int8 8 sign-shift offset, uint8 4 shift count) when either K or V is
+// stored at Q4. Returns (nil, nil) when neither branch needs them so the
+// pure-Q8 path doesn't pay any setup cost.
+func (c *QuantizedKVCache) ensurePackScalars(keyBits, valueBits int) (*Array, *Array) {
+	if keyBits != 4 && valueBits != 4 {
+		return nil, nil
+	}
+	if c.packOffsetI8 == nil {
+		offTmp := FromValue(8)
+		c.packOffsetI8 = AsType(offTmp, DTypeInt8)
+		shTmp := FromValue(4)
+		c.packShiftU8 = AsType(shTmp, DTypeUint8)
+		Free(offTmp, shTmp)
+	}
+	return c.packOffsetI8, c.packShiftU8
 }
 
 func (c *QuantizedKVCache) dequantizedState() (*Array, *Array) {
@@ -1675,14 +1703,16 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 	maxBound := FromValue(maxValue)
 	minValue := FromValue(-maxValue)
 	defer Free(eps, maxBound, minValue)
-	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps)
+	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps, nil, nil)
 }
 
 // quantizeCacheArrayCached is quantizeCacheArray with the bits-derived
 // scalars supplied by the caller — letting the QuantizedKVCache reuse one
 // scalar set across every Update rather than allocating fresh MLX scalars
-// in the hot path. The caller owns eps/maxBound/minValue lifetime.
-func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps *Array) (*Array, *Array, []int32) {
+// in the hot path. The caller owns eps/maxBound/minValue lifetime; pass
+// nil for packOffsetI8/packShiftU8 to fall back to allocating them inside
+// packQ4 (used by the non-cached entry point above).
+func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps, packOffsetI8, packShiftU8 *Array) (*Array, *Array, []int32) {
 	shape := append([]int32(nil), a.Shape()...)
 	abs := Abs(a)
 	maxAbs := maxAll(abs)
@@ -1694,7 +1724,7 @@ func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps *Array
 	q := AsType(clipped, DTypeInt8)
 	Free(abs, maxAbs, clampedAbs, normalized, rounded, clipped)
 	if bits == 4 {
-		packed := packQ4(q)
+		packed := packQ4Cached(q, packOffsetI8, packShiftU8)
 		Free(q)
 		return packed, scale, shape
 	}
@@ -1739,13 +1769,28 @@ func dequantizeCacheArray(q, scale *Array, dtype DType, shape []int32, bits int)
 // and odd halves can be sliced as views — no Gather index arrays, no host-side
 // int32 index allocations.
 func packQ4(q *Array) *Array {
+	return packQ4Cached(q, nil, nil)
+}
+
+// packQ4Cached is packQ4 with the bit-pack constants (int8 8 offset, uint8 4
+// shift) supplied by the caller — letting the QuantizedKVCache reuse one
+// pair across every Q4 Update rather than allocating fresh MLX scalars per
+// call. Pass nil for both to fall back to per-call allocation.
+func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	shape := q.Shape()
 	n := cacheElementCount(shape)
 	flat := Reshape(q, int32(n))
-	offset := AsType(FromValue(8), DTypeInt8)
+	ownOffset := offsetI8 == nil
+	offset := offsetI8
+	if ownOffset {
+		offset = AsType(FromValue(8), DTypeInt8)
+	}
 	shifted := Add(flat, offset)
 	shiftedU := AsType(shifted, DTypeUint8)
-	Free(flat, offset, shifted)
+	Free(flat, shifted)
+	if ownOffset {
+		Free(offset)
+	}
 
 	padded := shiftedU
 	nP := n
@@ -1762,11 +1807,18 @@ func packQ4(q *Array) *Array {
 	low := SliceAxis(paired, 1, 0, 1)
 	high := SliceAxis(paired, 1, 1, 2)
 	Free(paired)
-	shift := AsType(FromValue(4), DTypeUint8)
+	ownShift := shiftU8 == nil
+	shift := shiftU8
+	if ownShift {
+		shift = AsType(FromValue(4), DTypeUint8)
+	}
 	highShifted := LeftShift(high, shift)
 	packed2D := BitwiseOr(low, highShifted)
 	packed := Reshape(packed2D, int32(pairs))
-	Free(low, high, shift, highShifted, packed2D)
+	Free(low, high, highShifted, packed2D)
+	if ownShift {
+		Free(shift)
+	}
 	return packed
 }
 
