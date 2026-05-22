@@ -219,12 +219,12 @@ func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*
 }
 
 func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4AssistantGenerateResult) decode.Result {
-	tokens := make([]decode.Token, len(result.Tokens))
+	emitted := len(result.Tokens)
+	tokens := make([]decode.Token, emitted)
 	for i, token := range result.Tokens {
 		tokens[i] = decode.Token{ID: token.ID, Text: token.Text}
 	}
-	emitted := len(tokens)
-	acceptanceRate := 0.0
+	var acceptanceRate float64
 	if result.DraftTokens > 0 {
 		acceptanceRate = float64(result.AcceptedTokens) / float64(result.DraftTokens)
 	}
