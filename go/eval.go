@@ -16,8 +16,15 @@ import (
 // call (one per Eval/Run iteration), so hoisting these to package level
 // drops a per-call core.NewError alloc on the validation path.
 var (
-	errMLXEvalBatchUnaligned = core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
-	errMLXEvalBatchEmptySeq  = core.NewError("mlx: eval batch contains an empty sequence")
+	errMLXEvalBatchUnaligned        = core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	errMLXEvalBatchEmptySeq         = core.NewError("mlx: eval batch contains an empty sequence")
+	errMLXEvalTokenizerNil          = core.NewError("mlx: model tokenizer is nil")
+	errMLXEvalBatchNotSFTBatch      = core.NewError("mlx: eval batch is not an SFTBatch")
+	errMLXEvalNoForward             = core.NewError("mlx: native model does not expose eval forward")
+	errMLXEvalForwardNilLogits      = core.NewError("mlx: eval forward returned nil logits")
+	errMLXEvalLossNil               = core.NewError("mlx: eval loss returned nil")
+	errMLXEvalLossNonFinite         = core.NewError("mlx: eval loss is not finite")
+	errMLXEvalDatasetSampleNotKnown = core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
 )
 
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
@@ -25,7 +32,7 @@ var (
 // opaque types and forwards to eval.RunDataset.
 func RunModelEval(ctx context.Context, model *Model, ds dataset.Dataset, cfg eval.Config) (*eval.Report, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	// Pre-size for len+1 so the second append doesn't trigger a regrow —
 	// the original cloned via append([]T(nil), ...) then appended the
@@ -176,7 +183,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 				return eval.AdapterInfo{}, err
 			}
 			if model == nil {
-				return eval.AdapterInfo{}, core.NewError("mlx: model is nil")
+				return eval.AdapterInfo{}, errMLXModelNil
 			}
 			if _, err := model.LoadLoRA(path); err != nil {
 				return eval.AdapterInfo{}, err
@@ -185,7 +192,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 		},
 		BuildBatches: func(ctx context.Context, ds eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
 			if model == nil {
-				return nil, core.NewError("mlx: model is nil")
+				return nil, errMLXModelNil
 			}
 			batchCfg, ok := cfg.(dataset.BatchConfig)
 			if !ok {
@@ -193,7 +200,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 			}
 			tok := model.Tokenizer()
 			if tok == nil {
-				return nil, core.NewError("mlx: model tokenizer is nil")
+				return nil, errMLXEvalTokenizerNil
 			}
 			sftDataset := evalDatasetToSFT(ds)
 			sftBatches, err := BuildDatasetBatches(tok, sftDataset, batchCfg)
@@ -208,11 +215,11 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 		},
 		EvaluateBatch: func(ctx context.Context, batch eval.Batch) (eval.BatchMetrics, error) {
 			if model == nil {
-				return eval.BatchMetrics{}, core.NewError("mlx: model is nil")
+				return eval.BatchMetrics{}, errMLXModelNil
 			}
 			sftBatch, ok := batch.(SFTBatch)
 			if !ok {
-				return eval.BatchMetrics{}, core.NewError("mlx: eval batch is not an SFTBatch")
+				return eval.BatchMetrics{}, errMLXEvalBatchNotSFTBatch
 			}
 			m, err := model.evaluateDatasetBatch(ctx, sftBatch)
 			if err != nil {
@@ -237,7 +244,7 @@ func (a *evalDatasetSFTAdapter) Next() (dataset.Sample, bool, error) {
 	if s, ok := sample.(dataset.Sample); ok {
 		return s, true, nil
 	}
-	return dataset.Sample{}, false, core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
+	return dataset.Sample{}, false, errMLXEvalDatasetSampleNotKnown
 }
 
 func evalDatasetToSFT(d eval.Dataset) dataset.Dataset {
@@ -256,7 +263,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 		return evalBatchMetricsDarwin{}, err
 	}
 	if m == nil || m.model == nil {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: model is nil")
+		return evalBatchMetricsDarwin{}, errMLXModelNil
 	}
 
 	lengths, maxLen, err := evalBatchLengths(batch)
@@ -271,7 +278,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 
 	native, ok := m.model.(nativeEvalInternalModel)
 	if !ok {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: native model does not expose eval forward")
+		return evalBatchMetricsDarwin{}, errMLXEvalNoForward
 	}
 	internal := native.Internal()
 	caches := internal.NewCache()
@@ -279,18 +286,18 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 
 	logits := internal.ForwardMasked(inputs, attnMask, caches)
 	if logits == nil {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval forward returned nil logits")
+		return evalBatchMetricsDarwin{}, errMLXEvalForwardNilLogits
 	}
 	loss := MaskedCrossEntropyLoss(logits, targets, lossMask)
 	if loss == nil {
 		Free(logits)
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss returned nil")
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNil
 	}
 	Materialize(loss)
 	lossValue := loss.Float()
 	Free(logits, loss)
 	if math.IsNaN(lossValue) || math.IsInf(lossValue, 0) {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss is not finite")
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNonFinite
 	}
 	return evalBatchMetricsDarwin{
 		Samples: len(lengths),
