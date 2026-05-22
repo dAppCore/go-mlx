@@ -87,6 +87,7 @@ func New(cfg Config) *Service {
 	if cfg.BlockSize <= 0 {
 		cfg.BlockSize = DefaultBlockSize
 	}
+	cfg.DiskPath = core.Trim(cfg.DiskPath)
 	return &Service{
 		cfg:    cfg,
 		blocks: map[string]inference.CacheBlockRef{},
@@ -326,7 +327,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 }
 
 func (service *Service) diskEnabled() bool {
-	return service != nil && core.Trim(service.cfg.DiskPath) != ""
+	return service != nil && service.cfg.DiskPath != ""
 }
 
 func (service *Service) stateStoreEnabled() bool {
