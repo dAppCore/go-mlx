@@ -19,6 +19,12 @@ const (
 	maxFrameBytes                = 16 * 1024 * 1024
 )
 
+var (
+	errSocketPathRequired = core.NewError("socket path is required")
+	errXDGRuntimeDirUnset = core.NewError("XDG_RUNTIME_DIR is not set")
+	errDaemonOperation    = core.NewError("daemon operation failed")
+)
+
 type ServerConfig struct {
 	SocketPath string
 	Registry   *Registry
@@ -234,14 +240,14 @@ func DefaultSocketPath() (string, error) {
 
 	runtimeDir := core.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
-		return "", core.NewError("XDG_RUNTIME_DIR is not set")
+		return "", errXDGRuntimeDirUnset
 	}
 	return core.PathJoin(runtimeDir, "ofm", "violet.sock"), nil
 }
 
 func prepareSocketPath(socketPath string) error {
 	if socketPath == "" {
-		return core.NewError("socket path is required")
+		return errSocketPathRequired
 	}
 	if r := core.MkdirAll(core.PathDir(socketPath), socketDirMode); !r.OK {
 		return core.Errorf("create socket directory: %w", daemonResultError(r))
@@ -290,5 +296,5 @@ func daemonResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("daemon operation failed")
+	return errDaemonOperation
 }
