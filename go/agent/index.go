@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"hash"
+	"strconv"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -439,18 +440,19 @@ func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 	}
 	builder := core.NewBuilder()
 	builder.WriteString(model.Name)
-	builder.WriteString("\n")
+	builder.WriteByte('\n')
 	builder.WriteString(model.Path)
-	builder.WriteString("\n")
+	builder.WriteByte('\n')
 	builder.WriteString(model.Architecture)
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.VocabSize))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.NumLayers))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.QuantBits))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.ContextLength))
+	builder.WriteByte('\n')
+	var intBuf [20]byte
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
 	model.Hash = stateHash(builder.String())
 	return model
 }
