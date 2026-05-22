@@ -96,10 +96,10 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 		return nil, core.E("ComparePacks", "index fine-tuned weights", err)
 	}
 
-	// Pre-size both the result.Tensors slice and the tunedSeen tracker:
-	// they each grow to at most len(baseIndex.Names) entries (every base
-	// tensor either appears in tuned or not). Growing through the default
-	// nil/zero-cap path costs N growslice/maphint walks for large N.
+	// Pre-size result.Tensors: it grows to at most len(baseIndex.Names)
+	// entries (every base tensor either appears in tuned or not). Growing
+	// through the default nil/zero-cap path costs N growslice walks for
+	// large N.
 	expectedTensors := len(baseIndex.Names)
 	if opts.MaxTensorReports > 0 && opts.MaxTensorReports < expectedTensors {
 		expectedTensors = opts.MaxTensorReports
@@ -110,7 +110,6 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 		Labels:    cloneCompareLabels(opts.Labels),
 		Tensors:   make([]TensorDelta, 0, expectedTensors),
 	}
-	tunedSeen := make(map[string]struct{}, len(baseIndex.Names))
 	acc := compareAccumulator{}
 	for _, name := range baseIndex.Names {
 		if err := ctx.Err(); err != nil {
@@ -129,15 +128,19 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 			})
 			continue
 		}
-		tunedSeen[name] = struct{}{}
 		delta, err := compareTensorRefs(ctx, baseRef, tunedRef, modelMergeTensorChunkElements)
 		if err != nil {
 			return nil, core.E("ComparePacks", "compare tensor "+name, err)
 		}
 		recordTensorDelta(result, &acc, opts, delta)
 	}
+	// Walk tunedIndex.Names once and consult baseIndex.Tensors to detect
+	// extras — previously a separate tunedSeen map was built up during
+	// the base loop just to filter this pass. baseIndex.Tensors is the
+	// authoritative "name was present in base" lookup; using it directly
+	// drops the tunedSeen map allocation + the per-base-match map insert.
 	for _, name := range tunedIndex.Names {
-		if _, ok := tunedSeen[name]; ok {
+		if _, ok := baseIndex.Tensors[name]; ok {
 			continue
 		}
 		tunedRef := tunedIndex.Tensors[name]
