@@ -154,12 +154,39 @@ func (c *KVCache) Detach() {
 }
 
 // RotatingKVCache implements a bounded sliding window cache.
+//
+// Storage is held in temporal order in a single buffer of shape
+// `[B, H, idx, D]` where `idx` is the count of valid tokens (capped at
+// maxSize). Below cap the buffer grows in `c.step` (=256) slots at a time
+// via [Concatenate]; each single-token Update writes the new token at slot
+// `idx` via [SliceUpdateInplace] and bumps `idx`. Past cap the buffer stays
+// pinned at maxSize: each append drops the oldest slot via a metadata-only
+// [Slice] and concatenates the freshly written token at the tail.
+//
+// The legacy ring layout (write at `idx mod maxSize` and rebuild a
+// temporally-ordered view via Slice+Slice+Concat on every return) triggered
+// IDEAS.md §1 dynamic KV concatenation. The pre-existing in-place
+// [SliceUpdateInplace] write IS being hit on the past-cap path; the cost
+// surfaced by W7-E's bench data comes from `rotatingCacheWindow` allocating
+// a fresh O(maxSize) ordered buffer per Update on top of the in-place write.
+// Holding the buffer in temporal order folds the return path into a direct
+// reference (`return c.keys, c.values`) and replaces the two write-side
+// graph nodes per token (SliceUpdate + ordered-view Concat) with one
+// (Concat that performs the drop+append in a single graph op), halving the
+// per-token Metal data movement past cap without inflating the per-Update
+// buffer size that the long-chain bench is sensitive to.
 type RotatingKVCache struct {
+	// keys, values hold the temporally-ordered window. Below cap the L
+	// dimension equals the legacy growth state (idx slots, pre-allocated up
+	// to c.step ahead); at/past cap it equals exactly maxSize.
 	keys, values *Array
 	offset       int
 	maxSize      int
 	step         int
-	idx          int
+	// idx is the temporal length of valid content in keys/values
+	// (0..maxSize). Once idx reaches maxSize it stays there, and each
+	// single-token Update past cap performs a drop+append via Slice+Concat.
+	idx int
 }
 
 // NewRotatingKVCache creates a cache bounded to maxSize tokens.
@@ -186,12 +213,35 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	// Past-cap fast path: temporally drop-and-append.
+	//
+	// The previous ring layout did SliceUpdateInplace at idx (write step) then
+	// Slice+Slice+Concat in [rotatingCacheWindow] (ordered-view step) — two
+	// graph nodes whose outputs are both shape [B,H,maxSize,D] and both
+	// trigger a fresh O(maxSize) Metal buffer at Eval. The drop+append below
+	// achieves the same temporally-ordered window via a single Concat — one
+	// fresh buffer per K/V per token instead of two.
+	if c.keys != nil && c.idx >= c.maxSize {
+		oldK, oldV := c.keys, c.values
+		prefixK := Slice(oldK, []int32{0, 0, 1, 0}, []int32{B, H, int32(c.maxSize), Dk})
+		prefixV := Slice(oldV, []int32{0, 0, 1, 0}, []int32{B, H, int32(c.maxSize), Dv})
+		c.keys = Concatenate([]*Array{prefixK, k}, 2)
+		c.values = Concatenate([]*Array{prefixV, v}, 2)
+		Free(oldK, oldV, prefixK, prefixV)
+		c.offset++
+		// idx stays at maxSize — buffer is now full and temporally ordered.
+		// Return Slice views so caller Free() does not invalidate c.keys.
+		return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.maxSize), Dk}),
+			Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.maxSize), Dv})
+	}
+
+	// Below cap: grow + write at temporal tail (same as legacy growth path).
 	if c.keys == nil || (c.idx >= int(c.keys.Shape()[2]) && int(c.keys.Shape()[2]) < c.maxSize) {
-		var cap int
+		cur := 0
 		if c.keys != nil {
-			cap = int(c.keys.Shape()[2])
+			cur = int(c.keys.Shape()[2])
 		}
-		newSize := min(c.step, c.maxSize-cap)
+		newSize := min(c.step, c.maxSize-cur)
 		newK := Zeros([]int32{B, H, int32(newSize), Dk}, k.Dtype())
 		newV := Zeros([]int32{B, H, int32(newSize), Dv}, v.Dtype())
 		if c.keys != nil {
@@ -204,10 +254,9 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 		}
 	}
 
-	if c.idx >= c.maxSize {
-		c.idx = 0
-	}
-
+	// Write at the temporal tail. Below cap this is a single in-place
+	// SliceUpdate (the IDEAS.md "good shape" pre-allocated buffer with
+	// offset indexing).
 	oldK, oldV := c.keys, c.values
 	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dk})
 	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dv})
@@ -216,15 +265,11 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	c.offset++
 	c.idx++
 
-	validLen := int32(min(c.offset, c.maxSize))
-	start := 0
-	if c.offset > c.maxSize {
-		start = c.idx
-		if start >= c.maxSize {
-			start = 0
-		}
-	}
-	return rotatingCacheWindow(c.keys, start, validLen), rotatingCacheWindow(c.values, start, validLen)
+	// Below cap the storage may extend past idx (pre-allocated headroom);
+	// return a view bounded to the valid window.
+	window := min(c.offset, c.maxSize)
+	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(window), Dk}),
+		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(window), Dv})
 }
 
 func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array) {
@@ -240,75 +285,70 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	// Compose the current temporally-ordered prefix (slots [0, idx)) with the
+	// incoming multi-token segment.
+	var prevK, prevV *Array
+	if c.keys != nil && c.keys.Valid() && c.idx > 0 {
+		prevK = Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk})
+		prevV = Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
+	}
+
 	var fullK, fullV *Array
-	if c.keys == nil {
+	if prevK == nil {
 		fullK, fullV = k.Clone(), v.Clone()
 	} else {
-		oldK, oldV := c.keys, c.values
-		fullK = Concatenate([]*Array{oldK, k}, 2)
-		fullV = Concatenate([]*Array{oldV, v}, 2)
-		Free(oldK, oldV)
+		fullK = Concatenate([]*Array{prevK, k}, 2)
+		fullV = Concatenate([]*Array{prevV, v}, 2)
+		Free(prevK, prevV)
+	}
+	if c.keys != nil {
+		Free(c.keys, c.values)
+		c.keys, c.values = nil, nil
 	}
 	c.offset += seqLen
 
-	cap := int(fullK.Shape()[2])
-	if trim := cap - c.maxSize; trim > 0 {
+	full := int(fullK.Shape()[2])
+	if trim := full - c.maxSize; trim > 0 {
 		// Preserve the full multi-token prompt for the current attention pass,
 		// while storing only the bounded sliding window for future decode steps.
-		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dk})
-		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(cap), Dv})
+		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(full), Dk})
+		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(full), Dv})
 		c.idx = int(c.keys.Shape()[2])
-		return Slice(fullK, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dk}),
-			Slice(fullV, []int32{0, 0, 0, 0}, []int32{B, H, int32(cap), Dv})
+		return Slice(fullK, []int32{0, 0, 0, 0}, []int32{B, H, int32(full), Dk}),
+			Slice(fullV, []int32{0, 0, 0, 0}, []int32{B, H, int32(full), Dv})
 	}
 
 	c.keys, c.values = fullK, fullV
-	c.idx = int(c.keys.Shape()[2])
+	c.idx = full
 	// Return Slice views so callers can Free them without destroying the cache.
-	// (updateInPlace and KVCache.Update already return Slice views.)
 	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk}),
 		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
-}
-
-func rotatingCacheWindow(buffer *Array, start int, validLen int32) *Array {
-	if buffer == nil || !buffer.Valid() {
-		return nil
-	}
-	shape := buffer.Shape()
-	if validLen <= 0 {
-		starts := make([]int32, len(shape))
-		ends := make([]int32, len(shape))
-		return Slice(buffer, starts, ends)
-	}
-	if len(shape) < 4 {
-		return buffer.Clone()
-	}
-	if start <= 0 || int32(start) >= validLen {
-		return Slice(buffer, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], validLen, shape[3]})
-	}
-
-	tail := Slice(buffer, []int32{0, 0, int32(start), 0}, []int32{shape[0], shape[1], validLen, shape[3]})
-	head := Slice(buffer, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(start), shape[3]})
-	ordered := Concatenate([]*Array{tail, head}, 2)
-	Free(tail, head)
-	return ordered
 }
 
 func (c *RotatingKVCache) orderedState() []*Array {
 	if c.keys == nil || c.values == nil {
 		return nil
 	}
-	start := 0
-	if c.offset > c.maxSize {
-		start = c.idx
-		if start >= c.maxSize {
-			start = 0
-		}
+	shape := c.keys.Shape()
+	if len(shape) < 4 {
+		return []*Array{c.keys.Clone(), c.values.Clone()}
 	}
-	validLen := int32(c.Len())
+	// Storage is always temporally ordered (the past-cap drop+append keeps
+	// it that way), so the ordered view is just a leading Slice — no
+	// Slice+Slice+Concat reorder.
+	window := c.Len()
+	if window <= 0 || window > int(shape[2]) {
+		window = int(shape[2])
+	}
+	if window <= 0 {
+		starts := []int32{0, 0, 0, 0}
+		ends := []int32{shape[0], shape[1], 0, shape[3]}
+		return []*Array{Slice(c.keys, starts, ends), Slice(c.values, starts, ends)}
+	}
+	dv := c.values.Shape()[3]
 	return []*Array{
-		rotatingCacheWindow(c.keys, start, validLen),
-		rotatingCacheWindow(c.values, start, validLen),
+		Slice(c.keys, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(window), shape[3]}),
+		Slice(c.values, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(window), dv}),
 	}
 }
 
@@ -316,6 +356,10 @@ func (c *RotatingKVCache) State() []*Array {
 	if c.keys == nil {
 		return nil
 	}
+	// Buffer storage is always temporally ordered and shape[2] is either the
+	// growth-step length (below cap) or exactly maxSize (at/past cap), so the
+	// raw arrays are the canonical reference. Returning them directly keeps
+	// the legacy contract that Reset/Free invalidates State() callers' handles.
 	return []*Array{c.keys, c.values}
 }
 
@@ -324,6 +368,12 @@ func (c *RotatingKVCache) Len() int {
 	length := min(c.offset, c.maxSize)
 	if c.keys == nil || !c.keys.Valid() {
 		return length
+	}
+	// c.idx is the temporal count of valid tokens (bounded by maxSize). If
+	// the storage was restored from a smaller snapshot, fall back to its L
+	// dimension.
+	if c.idx < length {
+		length = c.idx
 	}
 	shape := c.keys.Shape()
 	if len(shape) >= 3 && int(shape[2]) < length {

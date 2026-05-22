@@ -1039,17 +1039,17 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 			if maxSize <= 0 {
 				maxSize = length
 			}
-			idx := length
-			if idx >= maxSize {
-				idx = idx % maxSize
-			}
+			// idx is the temporal length of valid content (0..maxSize). The
+			// rotating cache now keeps storage in temporal order, so the
+			// restored content lives at slots [0, length) without further
+			// rehydration.
 			caches[i] = &RotatingKVCache{
 				keys:    keys,
 				values:  values,
 				offset:  snapshot.offset,
 				maxSize: maxSize,
 				step:    snapshot.step,
-				idx:     idx,
+				idx:     length,
 			}
 			continue
 		}
