@@ -3,11 +3,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"hash"
 	"strconv"
-	"strings"
+	"sync"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -15,6 +16,20 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 )
+
+// hashBufPool reuses bytes.Buffer instances used while assembling the
+// canonical input for indexEntryHash. The Buffer backing slice never
+// escapes (we hash-and-discard before Reset), so pooling is safe and
+// collapses ~1000 per-Validate Builder allocs into 1 reused buffer.
+var hashBufPool = sync.Pool{
+	New: func() any {
+		// 384 covers the typical rich-entry input (~250 bytes) with
+		// headroom for long URIs / extra labels; smaller starting
+		// caps would force a grow on the common path.
+		buf := make([]byte, 0, 384)
+		return bytes.NewBuffer(buf)
+	},
+}
 
 const (
 	// StateIndexKind identifies a State-stored lookup index
@@ -641,36 +656,32 @@ func indexHash(index *StateIndex) string {
 }
 
 func indexEntryHash(entry *StateIndexEntry) string {
-	b := core.NewBuilder()
-	// Pre-grow to a typical entry-hash input size to amortise the
-	// 64→128→256→… backing slice growth chain. A representative
-	// entry (rich, sorted meta) lands around 250 bytes; 320 leaves
-	// headroom for the long-tail labels without overshooting.
-	b.Grow(320)
+	b := hashBufPool.Get().(*bytes.Buffer)
+	b.Reset()
 	var intBuf [20]byte
-	appendHashString(b, entry.URI)
-	appendHashSep(b)
-	appendHashString(b, entry.BundleURI)
-	appendHashSep(b)
-	appendHashString(b, entry.Title)
-	appendHashSep(b)
-	appendHashInt(b, intBuf[:], int64(entry.TokenStart))
-	appendHashSep(b)
-	appendHashInt(b, intBuf[:], int64(entry.TokenCount))
-	appendHashSep(b)
-	appendHashInt(b, intBuf[:], entry.ByteStart)
-	appendHashSep(b)
-	appendHashInt(b, intBuf[:], entry.ByteCount)
+	b.WriteString(entry.URI)
+	b.WriteByte('|')
+	b.WriteString(entry.BundleURI)
+	b.WriteByte('|')
+	b.WriteString(entry.Title)
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], int64(entry.TokenStart), 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], int64(entry.TokenCount), 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], entry.ByteStart, 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], entry.ByteCount, 10))
 	for _, label := range entry.Labels {
-		appendHashSep(b)
-		appendHashString(b, label)
+		b.WriteByte('|')
+		b.WriteString(label)
 	}
 	if len(entry.Meta) == 1 {
 		for key, value := range entry.Meta {
-			appendHashSep(b)
-			appendHashString(b, key)
+			b.WriteByte('|')
+			b.WriteString(key)
 			b.WriteByte('=')
-			appendHashString(b, value)
+			b.WriteString(value)
 		}
 	} else if len(entry.Meta) > 1 {
 		keys := make([]string, 0, len(entry.Meta))
@@ -679,30 +690,15 @@ func indexEntryHash(entry *StateIndexEntry) string {
 		}
 		core.SliceSort(keys)
 		for _, key := range keys {
-			appendHashSep(b)
-			appendHashString(b, key)
+			b.WriteByte('|')
+			b.WriteString(key)
 			b.WriteByte('=')
-			appendHashString(b, entry.Meta[key])
+			b.WriteString(entry.Meta[key])
 		}
 	}
-	sum := sha256.Sum256(core.AsBytes(b.String()))
+	sum := sha256.Sum256(b.Bytes())
+	hashBufPool.Put(b)
 	return core.HexEncode(sum[:])
-}
-
-func appendHashString(b *strings.Builder, value string) {
-	b.WriteString(value)
-}
-
-func appendHashSep(b *strings.Builder) {
-	b.WriteByte('|')
-}
-
-// appendHashInt formats value as decimal into scratch and writes the
-// resulting bytes to b. scratch is caller-owned; the slice doesn't
-// escape because *strings.Builder.Write is a concrete-receiver call
-// (no interface dispatch).
-func appendHashInt(b *strings.Builder, scratch []byte, value int64) {
-	b.Write(strconv.AppendInt(scratch[:0], value, 10))
 }
 
 // writeIndexHashString / writeIndexHashInt / writeIndexHashInt64
