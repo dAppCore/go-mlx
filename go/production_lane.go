@@ -123,12 +123,16 @@ func DefaultGemma4FastRuntimeGates() []string {
 // requested context length. Contexts beyond the long-form chapter lane use
 // paged retained state instead of fixed full-capacity KV buffers.
 func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
-	gates := DefaultGemma4FastRuntimeGates()
 	if contextLength <= ProductionLaneLongFormContextLength {
-		return gates
+		return DefaultGemma4FastRuntimeGates()
 	}
-	out := make([]string, 0, len(gates))
-	for _, gate := range gates {
+	// Hyper-long path: drop 2 fixed-cache gates (Cache + SharedMask — Sliding
+	// is not in the default set), then append paged-decode. Final length =
+	// len(default)-2+1. Pre-size exactly so the trailing append doesn't grow
+	// the backing array. Iterate the private global directly — no need to
+	// clone first.
+	out := make([]string, 0, len(defaultGemma4FastRuntimeGates)-1)
+	for _, gate := range defaultGemma4FastRuntimeGates {
 		switch gate {
 		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
 			continue
