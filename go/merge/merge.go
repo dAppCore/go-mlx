@@ -628,9 +628,14 @@ func linearMerge(values [][]float32, weights []float64) ([]float32, error) {
 		if len(source) != len(out) {
 			return nil, core.NewError("mlx: tensor length mismatch during linear merge")
 		}
-		weight := weights[sourceIndex]
+		// Cast the weight to float32 once outside the inner loop —
+		// previously every element did a float32->float64->mul->float32
+		// round-trip. Linear merge weights are normalised in [0,1] so
+		// float32 precision is sufficient (matches the source tensor
+		// dtype anyway).
+		weight32 := float32(weights[sourceIndex])
 		for i, value := range source {
-			out[i] += float32(float64(value) * weight)
+			out[i] += value * weight32
 		}
 	}
 	return out, nil
