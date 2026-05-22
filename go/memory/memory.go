@@ -413,9 +413,14 @@ func modelHints(input Input) (contextLength, quantization int, quantType, quantF
 }
 
 func applyArchitectureHints(plan *Plan, architecture string) {
-	normalized := normalizeKnownArchitecture(architecture)
+	// Profile registry is authoritative when it matches — skip the
+	// normalize allocation entirely in that case. Only fall through
+	// to normalize for architectures the registry does not know.
+	var normalized string
 	if p, ok := profile.LookupArchitectureProfile(architecture); ok {
 		normalized = p.ID
+	} else {
+		normalized = normalizeKnownArchitecture(architecture)
 	}
 	switch normalized {
 	case "qwen2":
