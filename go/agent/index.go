@@ -228,7 +228,8 @@ func (index *StateIndex) validate(checkHashes bool) error {
 	}
 	seen := make(map[string]bool, len(index.Entries))
 	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
-	for _, entry := range index.Entries {
+	for i := range index.Entries {
+		entry := &index.Entries[i]
 		if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
 			return err
 		}
@@ -243,7 +244,7 @@ func (index *StateIndex) validate(checkHashes bool) error {
 	return nil
 }
 
-func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash, indexBundleURIEmpty bool) error {
+func (index *StateIndex) validateEntry(entry *StateIndexEntry, checkHash, indexBundleURIEmpty bool) error {
 	if core.Trim(entry.URI) == "" {
 		return errStateIndexEntryURIRequired
 	}
@@ -262,7 +263,7 @@ func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash, indexBu
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
 		return errStateIndexEntryByteSpan
 	}
-	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(&entry) {
+	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
 		return errStateIndexEntryHashMismatch
 	}
 	return nil
