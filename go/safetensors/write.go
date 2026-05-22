@@ -11,6 +11,17 @@ import (
 
 const defaultRawChunkBytes = 4 << 20
 
+// Sentinel errors hoisted to package vars (see W9-Y + W10-R lifts).
+// These fire on validation paths inside WriteSubset / writeAll; static
+// message text means they're safe to share by pointer across callers
+// and avoid the per-fire core.NewError alloc.
+var (
+	errSubsetPathEmpty       = core.NewError("mlx: safetensors subset path is empty")
+	errSubsetNoTensors       = core.NewError("mlx: safetensors subset requires at least one tensor")
+	errSubsetTensorNameEmpty = core.NewError("mlx: safetensors subset tensor name is empty")
+	errWriteNoProgress       = core.NewError("mlx: safetensors write made no progress")
+)
+
 // WriteSubset writes a safetensors file containing refs without loading all
 // selected tensors into memory. Tensor payloads are copied directly from the
 // indexed source files in bounded chunks.
@@ -22,10 +33,10 @@ func WriteSubset(ctx context.Context, path string, refs []TensorRef) error {
 		return err
 	}
 	if core.Trim(path) == "" {
-		return core.NewError("mlx: safetensors subset path is empty")
+		return errSubsetPathEmpty
 	}
 	if len(refs) == 0 {
-		return core.NewError("mlx: safetensors subset requires at least one tensor")
+		return errSubsetNoTensors
 	}
 
 	ordered, headerBytes, err := subsetHeaderEncoded(refs)
@@ -90,7 +101,7 @@ func subsetHeaderEncoded(refs []TensorRef) ([]TensorRef, []byte, error) {
 	names := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		if core.Trim(ref.Name) == "" {
-			return nil, nil, core.NewError("mlx: safetensors subset tensor name is empty")
+			return nil, nil, errSubsetTensorNameEmpty
 		}
 		if ref.ByteLen < 0 {
 			return nil, nil, core.NewError("mlx: safetensors subset tensor byte length is invalid: " + ref.Name)
@@ -288,7 +299,7 @@ func writeAll(file *core.OSFile, data []byte) error {
 			return err
 		}
 		if n == 0 {
-			return core.NewError("mlx: safetensors write made no progress")
+			return errWriteNoProgress
 		}
 		data = data[n:]
 	}

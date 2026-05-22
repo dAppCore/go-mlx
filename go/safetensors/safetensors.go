@@ -12,6 +12,22 @@ import (
 	core "dappco.re/go"
 )
 
+// Sentinel errors hoisted to package vars — see W9-Y in header_parse.go
+// for context. These are static-message errors fired on validation
+// failure paths inside the read/decode hot paths. Lifting them avoids
+// the per-fire core.NewError alloc and lets errors.Is comparison work
+// against typed sentinels (e.g. callers wanting to distinguish "chunk
+// truncated" from "chunk out of bounds" without text-matching).
+var (
+	errChunkOutOfBounds   = core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+	errChunkTruncated     = core.NewError("mlx: safetensors tensor chunk is truncated")
+	errF32PayloadMismatch = core.NewError("F32 payload length does not match tensor shape")
+	errF16PayloadMismatch = core.NewError("F16 payload length does not match tensor shape")
+	errBF16PayloadMatch   = core.NewError("BF16 payload length does not match tensor shape")
+	errF64PayloadMismatch = core.NewError("F64 payload length does not match tensor shape")
+	errCoreResultFailed   = core.NewError("core result failed")
+)
+
 // HeaderEntry is one tensor entry in the safetensors JSON header.
 type HeaderEntry struct {
 	DType       string  `json:"dtype"`
@@ -329,7 +345,7 @@ func (r TensorReader) Close() {
 
 func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
-		return nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+		return nil, errChunkOutOfBounds
 	}
 	raw := make([]byte, count*r.bytesPerElement)
 	start := r.ref.DataStart + int64(offset*r.bytesPerElement)
@@ -338,7 +354,7 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 		return nil, err
 	}
 	if n != len(raw) {
-		return nil, core.NewError("mlx: safetensors tensor chunk is truncated")
+		return nil, errChunkTruncated
 	}
 	return DecodeFloatData(r.ref.DType, raw, count)
 }
@@ -350,7 +366,7 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 // (possibly grown) valuesScratch sliced to count.
 func (r TensorReader) readFloat32ChunkInto(offset, count int, rawScratch []byte, valuesScratch []float32) ([]byte, []float32, []float32, error) {
 	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
-		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+		return rawScratch, valuesScratch, nil, errChunkOutOfBounds
 	}
 	rawNeed := count * r.bytesPerElement
 	if cap(rawScratch) < rawNeed {
@@ -364,7 +380,7 @@ func (r TensorReader) readFloat32ChunkInto(offset, count int, rawScratch []byte,
 		return rawScratch, valuesScratch, nil, err
 	}
 	if n != len(rawScratch) {
-		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk is truncated")
+		return rawScratch, valuesScratch, nil, errChunkTruncated
 	}
 	values, err := decodeFloatDataInto(r.ref.DType, rawScratch, count, valuesScratch)
 	if err != nil {
@@ -444,7 +460,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
 
 const defaultChunkElements = 1 << 20
@@ -488,7 +504,7 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 	switch dtype {
 	case "F32":
 		if len(raw) != elements*4 {
-			return nil, core.NewError("F32 payload length does not match tensor shape")
+			return nil, errF32PayloadMismatch
 		}
 		// Reinterpret-cast: float32 storage is little-endian on both
 		// Go-supported architectures (arm64 + amd64), so the safetensors
@@ -500,7 +516,7 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		copy(dst, raw)
 	case "F16":
 		if len(raw) != elements*2 {
-			return nil, core.NewError("F16 payload length does not match tensor shape")
+			return nil, errF16PayloadMismatch
 		}
 		// Hoist a fixed-cap subslice and read by direct byte pair so
 		// the compiler can elide the per-iter bound-check on raw[i*2:]
@@ -513,7 +529,7 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		}
 	case "BF16":
 		if len(raw) != elements*2 {
-			return nil, core.NewError("BF16 payload length does not match tensor shape")
+			return nil, errBF16PayloadMatch
 		}
 		// Same byte-pair hoist as F16. The body is a straight bit shift
 		// into the float32 high half — no function call, so the saving
@@ -525,7 +541,7 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		}
 	case "F64":
 		if len(raw) != elements*8 {
-			return nil, core.NewError("F64 payload length does not match tensor shape")
+			return nil, errF64PayloadMismatch
 		}
 		// Reinterpret-cast raw to []float64 in place, then downcast each
 		// element to float32. float64 storage is little-endian on both
