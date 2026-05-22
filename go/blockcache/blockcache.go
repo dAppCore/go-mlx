@@ -54,6 +54,7 @@ type Service struct {
 	mu          sync.Mutex
 	cfg         Config
 	blocks      map[string]inference.CacheBlockRef
+	memoryBytes uint64
 	hits        uint64
 	misses      uint64
 	cleared     uint64
@@ -188,6 +189,7 @@ func (service *Service) WarmCache(ctx context.Context, req inference.CacheWarmRe
 		}
 		refs[i] = storedRef
 		service.blocks[ref.ID] = storedRef
+		service.memoryBytes += storedRef.SizeBytes
 	}
 	return inference.CacheWarmResult{
 		Blocks: refs,
@@ -211,6 +213,7 @@ func (service *Service) ClearCache(ctx context.Context, labels map[string]string
 	}
 	if len(labels) == 0 {
 		service.blocks = map[string]inference.CacheBlockRef{}
+		service.memoryBytes = 0
 		service.hits = 0
 		service.misses = 0
 		service.cleared++
@@ -228,6 +231,7 @@ func (service *Service) ClearCache(ctx context.Context, labels map[string]string
 				return inference.CacheStats{}, err
 			}
 			delete(service.blocks, id)
+			service.memoryBytes -= ref.SizeBytes
 			service.cleared++
 		}
 	}
@@ -317,9 +321,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 	if service.stateStoreEnabled() {
 		stats.Labels["cold_store"] = "state"
 	}
-	for _, ref := range service.blocks {
-		stats.MemoryBytes += ref.SizeBytes
-	}
+	stats.MemoryBytes = service.memoryBytes
 	total := service.hits + service.misses
 	if total > 0 {
 		stats.HitRate = float64(service.hits) / float64(total)
@@ -381,6 +383,7 @@ func (service *Service) ensureDiskLoadedLocked() error {
 			ref = withStateLabels(ref, *chunkRef)
 		}
 		service.blocks[record.Ref.ID] = ref
+		service.memoryBytes += ref.SizeBytes
 	}
 	service.diskLoaded = true
 	return nil
