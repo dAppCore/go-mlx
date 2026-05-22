@@ -653,7 +653,54 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 }
 
 func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map[string]string {
-	meta := cloneStringMap(req.Metadata)
+	// Pre-size the destination map. The 9 optional adapter/runtime fields
+	// dominate the entry count — counting empties first lets us hand
+	// runtime.makemap_small the exact capacity, replacing the addAgent
+	// loop's incremental zero-cap growth.
+	extras := 0
+	if req.Adapter.Hash != "" {
+		extras++
+	}
+	if req.Adapter.Path != "" {
+		extras++
+	}
+	if req.Adapter.Format != "" {
+		extras++
+	}
+	if req.Adapter.Rank != 0 {
+		extras++
+	}
+	if req.Adapter.Alpha != 0 {
+		extras++
+	}
+	if req.Runtime.Backend != "" {
+		extras++
+	}
+	if req.Runtime.Device != "" {
+		extras++
+	}
+	if req.Runtime.CacheMode != "" {
+		extras++
+	}
+	if req.Runtime.Version != "" {
+		extras++
+	}
+	if extras == 0 {
+		// Nothing to fold in — defer to the existing clone, which
+		// returns nil if req.Metadata is also empty (the common
+		// idle-keepalive request shape).
+		return cloneStringMap(req.Metadata)
+	}
+	meta := req.Metadata
+	if meta == nil {
+		meta = make(map[string]string, extras)
+	} else {
+		dst := make(map[string]string, len(req.Metadata)+extras)
+		for k, v := range req.Metadata {
+			dst[k] = v
+		}
+		meta = dst
+	}
 	meta = addAgentMemoryMetadata(meta, "adapter_hash", req.Adapter.Hash)
 	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
 	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
