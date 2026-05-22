@@ -125,7 +125,12 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	}
 	sort.Strings(safetensors)
 	sort.Strings(ggufs)
-	for _, path := range append(append([]string(nil), safetensors...), ggufs...) {
+	for _, path := range safetensors {
+		if info := core.Stat(path); info.OK {
+			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
+		}
+	}
+	for _, path := range ggufs {
 		if info := core.Stat(path); info.OK {
 			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
 		}
@@ -134,17 +139,20 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	switch {
 	case len(safetensors) > 0 && len(ggufs) > 0:
 		pack.Format = mp.ModelPackFormatMixed
-		pack.WeightFiles = append(append([]string(nil), safetensors...), ggufs...)
+		merged := make([]string, 0, len(safetensors)+len(ggufs))
+		merged = append(merged, safetensors...)
+		merged = append(merged, ggufs...)
+		pack.WeightFiles = merged
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
 	case len(safetensors) > 0:
 		pack.Format = mp.ModelPackFormatSafetensors
-		pack.WeightFiles = append([]string(nil), safetensors...)
+		pack.WeightFiles = core.SliceClone(safetensors)
 	case len(ggufs) == 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = append([]string(nil), ggufs...)
+		pack.WeightFiles = core.SliceClone(ggufs)
 	case len(ggufs) > 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = append([]string(nil), ggufs...)
+		pack.WeightFiles = core.SliceClone(ggufs)
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
 	default:
 		pack.Format = mp.ModelPackFormatMissing
