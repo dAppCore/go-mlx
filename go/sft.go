@@ -618,13 +618,13 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		if err != nil {
 			return sftExample{}, false, err
 		}
-		// Pre-size for ids + optional EOS so no growth occurs.
-		extra := 0
-		if !cfg.NoEOS {
-			extra = 1
-		}
-		seq = make([]int32, 0, len(ids)+extra)
-		seq = append(seq, ids...)
+		// Reuse ids directly — Tokenizer.Encode allocates a fresh slice
+		// per call (internal tokenizer.Encode + stripImplicitBOS), so we
+		// own it exclusively. The downstream EOS append usually fits
+		// the existing cap (inner Encode over-allocates len(text)+1);
+		// if not, append falls back to a single re-alloc — strictly no
+		// worse than the previous unconditional make+copy.
+		seq = ids
 	} else {
 		promptIDs, err := tok.Encode(sample.Prompt)
 		if err != nil {
