@@ -98,10 +98,13 @@ func NewRegistry(name, version string) *Registry {
 		version = DefaultVersion
 	}
 
+	// Four handlers are registered immediately below; pre-sizing the
+	// map and the order slice avoids the initial map/slice grow steps.
 	r := &Registry{
 		name:     name,
 		version:  version,
-		handlers: make(map[string]Handler),
+		handlers: make(map[string]Handler, 4),
+		order:    make([]string, 0, 4),
 	}
 
 	if err := r.Register("embed", stubHandler("embed")); err != nil {

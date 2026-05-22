@@ -188,6 +188,14 @@ func (n *noopGenerateModel) Metrics() mlx.Metrics         { return mlx.Metrics{}
 func (n *noopGenerateModel) Err() error                   { return nil }
 func (n *noopGenerateModel) Close() error                 { return nil }
 
+func BenchmarkNewRegistry(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = NewRegistry("violet", "test")
+	}
+}
+
 func BenchmarkRegistryActions(b *testing.B) {
 	r := NewRegistry("violet", "test")
 	b.ReportAllocs()
