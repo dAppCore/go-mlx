@@ -118,24 +118,29 @@ func maxPositive(a, b int) int {
 var memoryPlannerDeviceInfo = safeRuntimeDeviceInfo
 
 func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
-	var plan memory.Plan
+	// Caller-supplied plan path is the typical inference re-entry: the
+	// model was loaded once, the plan was persisted, and every later
+	// call reuses it. Read directly through the pointer instead of
+	// dereferencing into a stack value (memory.Plan is ~300B with
+	// embedded ExpertResidencyPlan, so the value-copy was a measurable
+	// per-call overhead on the LoadModel hot path).
+	var plan *memory.Plan
 	switch {
 	case cfg.MemoryPlan != nil:
-		// Already pointing at a caller-supplied plan — no copy needed;
-		// the field-derivation reads below treat the value identically.
-		plan = *cfg.MemoryPlan
+		plan = cfg.MemoryPlan
 	case cfg.AutoMemoryPlan:
 		var pack *mp.ModelPack
 		if inspected, err := model.Inspect(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
 		}
-		plan = PlanMemory(MemoryPlanInput{
+		built := PlanMemory(MemoryPlanInput{
 			Device: memoryPlannerDeviceInfo(),
 			Pack:   pack,
 		})
 		// Only when WE built the plan does cfg.MemoryPlan need an
 		// updated pointer; the caller-supplied case already has it.
-		cfg.MemoryPlan = &plan
+		cfg.MemoryPlan = &built
+		plan = &built
 	default:
 		return cfg
 	}
