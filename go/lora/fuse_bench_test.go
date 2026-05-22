@@ -148,6 +148,19 @@ func BenchmarkFuse_IsModelWeightMetadataCopySkip_SkipSafetensorsIndex(b *testing
 	}
 }
 
+// Uppercase input exercises the case-fold path. Pre-Wave10AC this fired
+// strings.ToLower internally and allocated a fresh lowered copy per call;
+// the case-fold-in-place containsAsciiLowerFold variant keeps the path
+// alloc-free.
+func BenchmarkFuse_IsModelWeightMetadataCopySkip_SkipUppercaseGGUF(b *testing.B) {
+	name := "MODEL.GGUF"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		fuseBenchSinkBool = isModelWeightMetadataCopySkip(name)
+	}
+}
+
 // --- samePath — invariant check fired once per fuse but uses the
 // PathAbs OS round-trip both sides; keep an eye on alloc churn.
 

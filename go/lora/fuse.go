@@ -8,6 +8,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/pack"
 	"slices"
+	"strings"
 )
 
 const (
@@ -279,10 +280,52 @@ func isModelWeightMetadataCopySkip(name string) bool {
 	// previous HasSuffix terms were dead under the OR — drop them and let the
 	// Contains checks carry both the suffix and the .safetensors.index.json
 	// case the copy filter is meant to skip.
-	lower := core.Lower(name)
-	return lower == FuseProvenanceFile ||
-		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf")
+	//
+	// Use case-fold-in-place compares (containsAsciiLowerFold +
+	// strings.EqualFold) to avoid the core.Lower copy that fires whenever
+	// the input contains uppercase ASCII (e.g. MODEL.GGUF). core.Lower
+	// drops to strings.ToLower for uppercase input, which allocates a fresh
+	// string per call — wasted on the dominant lowercase tokenizer/config
+	// files we copy because we only need to compare, not normalise.
+	if strings.EqualFold(name, FuseProvenanceFile) {
+		return true
+	}
+	if containsAsciiLowerFold(name, ".safetensors") {
+		return true
+	}
+	if containsAsciiLowerFold(name, ".gguf") {
+		return true
+	}
+	return false
+}
+
+// containsAsciiLowerFold reports whether s contains sub, comparing
+// ASCII A-Z in s case-insensitively against the all-lowercase sub.
+// The caller MUST pass sub already in lowercase ASCII — this keeps the
+// per-byte fold to one branch (s only) and skips the alloc strings.Lower
+// would make for uppercase input.
+func containsAsciiLowerFold(s, sub string) bool {
+	n := len(s) - len(sub)
+	if n < 0 {
+		return false
+	}
+	for i := 0; i <= n; i++ {
+		match := true
+		for j := 0; j < len(sub); j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != sub[j] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true
+		}
+	}
+	return false
 }
 
 func copyLocalFile(sourcePath, destinationPath string) error {
