@@ -237,8 +237,8 @@ func (index *StateIndex) RequiredContextLength() int {
 		return 0
 	}
 	required := 0
-	for _, entry := range index.Entries {
-		if end := entry.PrefixTokens(); end > required {
+	for i := range index.Entries {
+		if end := index.Entries[i].PrefixTokens(); end > required {
 			required = end
 		}
 	}
@@ -474,19 +474,20 @@ func fillIndexEntryByteSpan(entry *StateIndexEntry, bundle *kv.StateBlockBundle)
 		byteStart    int64
 		byteCount    int64
 	)
-	for _, ref := range bundle.Blocks {
-		refStart := ref.TokenStart
-		refEnd := ref.TokenStart + ref.TokenCount
+	blocks := bundle.Blocks
+	for i := range blocks {
+		refStart := blocks[i].TokenStart
+		refEnd := refStart + blocks[i].TokenCount
 		if refEnd <= spanStart || refStart >= spanEnd {
 			continue
 		}
-		chunk := kv.StateBlockChunkRef(ref)
+		chunk := kv.StateBlockChunkRef(blocks[i])
 		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
 			byteStart = int64(chunk.FrameOffset)
 			byteStartSet = true
 		}
-		if ref.PayloadByteCount > 0 {
-			byteCount += int64(ref.PayloadByteCount)
+		if blocks[i].PayloadByteCount > 0 {
+			byteCount += int64(blocks[i].PayloadByteCount)
 		}
 	}
 	if entry.ByteStart == 0 && byteStartSet {
@@ -513,8 +514,7 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 	lo, hi := 0, len(blocks)
 	for lo < hi {
 		mid := lo + (hi-lo)/2
-		ref := blocks[mid]
-		if ref.TokenStart+ref.TokenCount <= spanStart {
+		if blocks[mid].TokenStart+blocks[mid].TokenCount <= spanStart {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -526,17 +526,16 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 		byteCount    int64
 	)
 	for i := lo; i < len(blocks); i++ {
-		ref := blocks[i]
-		if ref.TokenStart >= spanEnd {
+		if blocks[i].TokenStart >= spanEnd {
 			break
 		}
-		chunk := kv.StateBlockChunkRef(ref)
+		chunk := kv.StateBlockChunkRef(blocks[i])
 		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
 			byteStart = int64(chunk.FrameOffset)
 			byteStartSet = true
 		}
-		if ref.PayloadByteCount > 0 {
-			byteCount += int64(ref.PayloadByteCount)
+		if blocks[i].PayloadByteCount > 0 {
+			byteCount += int64(blocks[i].PayloadByteCount)
 		}
 	}
 	if entry.ByteStart == 0 && byteStartSet {
@@ -549,12 +548,12 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 
 func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
 	for i := 1; i < len(blocks); i++ {
-		prev := blocks[i-1]
-		current := blocks[i]
-		if current.TokenStart < prev.TokenStart {
+		prevStart := blocks[i-1].TokenStart
+		curStart := blocks[i].TokenStart
+		if curStart < prevStart {
 			return false
 		}
-		if current.TokenStart == prev.TokenStart && current.Index < prev.Index {
+		if curStart == prevStart && blocks[i].Index < blocks[i-1].Index {
 			return false
 		}
 	}
@@ -583,11 +582,11 @@ func indexHash(index *StateIndex) string {
 	writeIndexHashString(hash, index.Tokenizer.Hash)
 	writeIndexHashString(hash, "|")
 	writeIndexHashString(hash, index.Tokenizer.ChatTemplateHash)
-	for _, entry := range index.Entries {
+	for i := range index.Entries {
 		writeIndexHashString(hash, "|")
-		entryHash := entry.Hash
+		entryHash := index.Entries[i].Hash
 		if entryHash == "" {
-			entryHash = indexEntryHash(entry)
+			entryHash = indexEntryHash(index.Entries[i])
 		}
 		writeIndexHashString(hash, entryHash)
 	}

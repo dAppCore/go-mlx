@@ -313,12 +313,14 @@ func blocksNeededForPrefix(bundle *kv.StateBlockBundle, prefixTokens int) int {
 		return 0
 	}
 	count := 0
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
+	blocks := bundle.Blocks
+	for i := range blocks {
+		tokenStart := blocks[i].TokenStart
+		if tokenStart >= prefixTokens {
 			break
 		}
 		count++
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+		if tokenStart+blocks[i].TokenCount >= prefixTokens {
 			break
 		}
 	}
