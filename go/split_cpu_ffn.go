@@ -829,30 +829,39 @@ func (executor *CPUSplitFFNExecutor) tensorRef(candidates []string) (safetensors
 }
 
 func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32, normed, activated []float32) {
+	// Cache loop bounds + bias-presence checks before the inner loops. The
+	// intermediate loop typically runs ~14336 iterations per token; re-doing
+	// the len(layer.*Bias) > 0 check each pass shows up under perf.
+	hiddenLen := layer.hidden
+	intermediateLen := layer.intermediate
+	hasGateBias := len(layer.gateBias) > 0
+	hasUpBias := len(layer.upBias) > 0
+	hasDownBias := len(layer.downBias) > 0
+
 	var squares float64
 	for _, value := range hidden {
 		squares += float64(value * value)
 	}
-	scale := float32(1 / math.Sqrt(squares/float64(layer.hidden)+float64(eps)))
-	for i := 0; i < layer.hidden; i++ {
+	scale := float32(1 / math.Sqrt(squares/float64(hiddenLen)+float64(eps)))
+	for i := 0; i < hiddenLen; i++ {
 		normed[i] = hidden[i] * scale * layer.norm[i]
 	}
 
-	for row := 0; row < layer.intermediate; row++ {
-		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, layer.hidden)
-		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, layer.hidden)
-		if len(layer.gateBias) > 0 {
+	for row := 0; row < intermediateLen; row++ {
+		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, hiddenLen)
+		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, hiddenLen)
+		if hasGateBias {
 			gate += layer.gateBias[row]
 		}
-		if len(layer.upBias) > 0 {
+		if hasUpBias {
 			up += layer.upBias[row]
 		}
 		activated[row] = cpuSplitSiLU(gate) * up
 	}
 
-	for row := 0; row < layer.hidden; row++ {
-		mlp := cpuSplitProjectRow(activated, layer.down, layer.downPacked, row, layer.intermediate)
-		if len(layer.downBias) > 0 {
+	for row := 0; row < hiddenLen; row++ {
+		mlp := cpuSplitProjectRow(activated, layer.down, layer.downPacked, row, intermediateLen)
+		if hasDownBias {
 			mlp += layer.downBias[row]
 		}
 		out[row] = hidden[row] + mlp
