@@ -97,7 +97,11 @@ func (plan TensorPlan) EstimatedPackedExpertBytes() uint64 {
 		return 0
 	}
 	total := uint64(0)
-	for _, spec := range specs {
+	// Index iteration: TensorSpec is 120 B, well above the value-copy
+	// threshold. Pointer alias lets the switch + specDenseBytes share the
+	// stack-allocated spec instead of doing a fresh 120 B copy per call.
+	for i := range specs {
+		spec := &specs[i]
 		switch spec.Role {
 		case TensorRoleExpertGate, TensorRoleExpertUp, TensorRoleExpertDown:
 			if spec.Packed != nil && spec.Packed.PackedBytes > 0 {
@@ -162,7 +166,7 @@ func (manager *ResidencyManager) EnsureExperts(ctx context.Context, expertIDs []
 		if _, ok := manager.resident[expertID]; ok {
 			manager.touch(expertID)
 			manager.stats.Hits++
-			manager.emitExpertResidencyProbe(probe.ExpertResidencyActionHit, []int{expertID}, 0, 0, 0)
+			manager.emitExpertResidencyProbe(probe.ExpertResidencyActionHit, expertID, 0, 0, 0)
 			continue
 		}
 		if err := manager.ensureCapacityFor(expertID, requested); err != nil {
@@ -224,7 +228,7 @@ func (manager *ResidencyManager) loadExpert(ctx context.Context, expertID int, a
 		manager.stats.ColdLoads++
 	}
 	manager.updateResidentStats()
-	manager.emitExpertResidencyProbe(action, []int{expertID}, loadedBytes, 0, duration)
+	manager.emitExpertResidencyProbe(action, expertID, loadedBytes, 0, duration)
 	return nil
 }
 
@@ -276,7 +280,7 @@ func (manager *ResidencyManager) evictExpert(expertID int) {
 	manager.stats.PageOuts++
 	manager.stats.EvictedBytes += evictedBytes
 	manager.updateResidentStats()
-	manager.emitExpertResidencyProbe(probe.ExpertResidencyActionEvict, []int{expertID}, 0, evictedBytes, 0)
+	manager.emitExpertResidencyProbe(probe.ExpertResidencyActionEvict, expertID, 0, evictedBytes, 0)
 }
 
 func (manager *ResidencyManager) touch(expertID int) {
@@ -297,7 +301,11 @@ func (manager *ResidencyManager) snapshotStats() memory.ExpertResidencyStats {
 	return stats
 }
 
-func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertResidencyAction, expertIDs []int, loadedBytes, evictedBytes uint64, duration time.Duration) {
+// emitExpertResidencyProbe publishes one residency probe for a single expert.
+// All callers pass exactly one expert ID so the int parameter lets the
+// allocator skip the []int{id} singleton slice and a redundant SliceClone
+// on the hot residency-hit path.
+func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertResidencyAction, expertID int, loadedBytes, evictedBytes uint64, duration time.Duration) {
 	if manager.probeSink == nil {
 		return
 	}
@@ -308,14 +316,14 @@ func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertRes
 		ExpertResidency: &probe.ExpertResidency{
 			Action:             action,
 			Layer:              manager.layer,
-			ExpertIDs:          core.SliceClone(expertIDs),
+			ExpertIDs:          []int{expertID},
 			ResidentExperts:    len(manager.resident),
 			MaxResidentExperts: manager.policy.MaxResidentExperts,
 			LoadedBytes:        loadedBytes,
 			EvictedBytes:       evictedBytes,
 			Duration:           int64(duration),
 		},
-		Meta: map[string]string{"architecture": "minimax_m2"},
+		Meta: metaMinimaxM2,
 	})
 }
 
@@ -406,7 +414,7 @@ func defaultHotExpertIDs(total, count int) []int {
 	return ids
 }
 
-func specDenseBytes(spec TensorSpec) uint64 {
+func specDenseBytes(spec *TensorSpec) uint64 {
 	if len(spec.Shape) == 0 {
 		return 0
 	}
