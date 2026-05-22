@@ -394,19 +394,20 @@ func inspectLocalMetadata(path string) (ModelMetadata, string, error) {
 
 func resolveLocalMetadataRoot(path string) string {
 	// Replace filepath.Glob(path/snapshots/*/config.json) with a single
-	// ReadDir of path/snapshots + per-entry stat for config.json. Glob
-	// runs a readdir then per-match stat *and* allocates the full match
-	// path strings plus an outer []string. ReadDir hands back DirEntry
-	// values so we never materialise the match path until we've found
-	// the lexically-first snapshot containing config.json.
+	// ReadDir of path/snapshots. Glob runs a readdir then per-match stat
+	// *and* allocates the full match path strings plus an outer []string.
+	// ReadDir hands back DirEntry values; we pick the lexically-first
+	// directory name and let the caller's subsequent ReadFile of
+	// config.json surface a missing-file error if the snapshot is
+	// incomplete (same observable shape as the previous Glob miss path).
+	// For the dominant single-snapshot case this collapses the per-
+	// candidate Stat into a single PathJoin.
 	snapshotsDir := core.PathJoin(path, "snapshots")
 	read := core.ReadDir(core.DirFS(snapshotsDir), ".")
 	if read.OK {
 		entries, ok := read.Value.([]core.FsDirEntry)
 		if ok && len(entries) > 0 {
-			// Find the lexically-first snapshot directory whose
-			// config.json stats clean. slices.Sort on the previous
-			// Glob output produced the same ordering. ReadDir on
+			// Find the lexically-first directory entry. ReadDir on
 			// Darwin/Linux returns dirents in arbitrary order, so
 			// scan all entries and track the smallest valid name.
 			var winner string
@@ -415,10 +416,7 @@ func resolveLocalMetadataRoot(path string) string {
 					continue
 				}
 				name := entry.Name()
-				if winner != "" && name >= winner {
-					continue
-				}
-				if stat := core.Stat(core.PathJoin(snapshotsDir, name, "config.json")); stat.OK {
+				if winner == "" || name < winner {
 					winner = name
 				}
 			}
