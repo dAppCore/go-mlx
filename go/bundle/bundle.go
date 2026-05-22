@@ -478,10 +478,20 @@ func HashString(value string) string {
 //
 //	uri := bundle.StateURI(ref)
 func StateURI(ref state.ChunkRef) string {
+	// Hand-built — avoids Sprintf's interface boxing of segment and chunk
+	// ID. Two branches, both single-allocation.
 	if ref.Segment != "" {
-		return core.Sprintf("state://%s#chunk=%d", ref.Segment, ref.ChunkID)
+		buf := make([]byte, 0, 8+len(ref.Segment)+7+20)
+		buf = append(buf, "state://"...)
+		buf = append(buf, ref.Segment...)
+		buf = append(buf, "#chunk="...)
+		buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+		return core.AsString(buf)
 	}
-	return core.Sprintf("state://chunk/%d", ref.ChunkID)
+	buf := make([]byte, 0, 14+20)
+	buf = append(buf, "state://chunk/"...)
+	buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+	return core.AsString(buf)
 }
 
 func buildModel(snapshot *kv.Snapshot, opts Options) Model {
@@ -605,10 +615,19 @@ func checkAdapterCompatibility(active lora.AdapterInfo, expected Adapter) error 
 //
 // Deprecated: use StateURI.
 func MemvidURI(ref state.ChunkRef) string {
+	// Hand-built — same pattern as StateURI; no Sprintf boxing.
 	if ref.Segment != "" {
-		return core.Sprintf("memvid://%s#chunk=%d", ref.Segment, ref.ChunkID)
+		buf := make([]byte, 0, 9+len(ref.Segment)+7+20)
+		buf = append(buf, "memvid://"...)
+		buf = append(buf, ref.Segment...)
+		buf = append(buf, "#chunk="...)
+		buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+		return core.AsString(buf)
 	}
-	return core.Sprintf("memvid://chunk/%d", ref.ChunkID)
+	buf := make([]byte, 0, 15+20)
+	buf = append(buf, "memvid://chunk/"...)
+	buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+	return core.AsString(buf)
 }
 
 func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
