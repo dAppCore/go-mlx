@@ -245,6 +245,14 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 }
 
 func DTypeByteSize(dtype string) (int, error) {
+	switch dtype {
+	case "F16", "BF16":
+		return 2, nil
+	case "F32":
+		return 4, nil
+	case "F64":
+		return 8, nil
+	}
 	switch core.Upper(dtype) {
 	case "F16", "BF16":
 		return 2, nil
