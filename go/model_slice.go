@@ -213,7 +213,12 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	plan.OutputPath = req.OutputPath
 	plan.SourcePath = req.Model.Path
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size to the six label keys SliceModel writes (the optional
+		// retained_tensor_ratio brings the worst case to six). make-with-
+		// hint lets the runtime size the bucket array correctly on first
+		// allocation instead of growing the map 1->2->4->8 across the
+		// five guaranteed assignments below.
+		plan.Labels = make(map[string]string, 6)
 	}
 	selectedBytes := tensorRefsByteLen(refs)
 	sourceTensorBytes := indexTensorByteLen(index)
