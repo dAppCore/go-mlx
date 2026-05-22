@@ -626,7 +626,7 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 	if dtype == "" || bytesPerValue <= 0 || len(shape) != 4 {
 		return core.NewError("mlx: unsupported KV snapshot layer raw tensor")
 	}
-	blockShape := append([]int32(nil), shape...)
+	blockShape := core.SliceClone(shape)
 	B, H, L, D := int(blockShape[0]), int(blockShape[1]), int(blockShape[2]), int(blockShape[3])
 	if B <= 0 || H <= 0 || L <= 0 || D <= 0 || len(raw) != B*H*L*D*bytesPerValue {
 		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
@@ -644,7 +644,7 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 	if len(*dstShape) != 4 || int((*dstShape)[0]) != B || int((*dstShape)[1]) != H || int((*dstShape)[3]) != D {
 		return core.NewError("mlx: KV snapshot layer raw tensor shape mismatch")
 	}
-	oldShape := append([]int32(nil), (*dstShape)...)
+	oldShape := core.SliceClone(*dstShape)
 	oldLen := int(oldShape[2])
 	if oldLen <= 0 || len(*dstBytes) != B*H*oldLen*D*bytesPerValue {
 		return core.NewError("mlx: KV snapshot layer raw tensor byte length mismatch")
