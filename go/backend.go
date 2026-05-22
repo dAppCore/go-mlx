@@ -436,11 +436,15 @@ func toRootProbeLogits(logits []metal.ProbeLogit) []probe.Logit {
 		return nil
 	}
 	out := make([]probe.Logit, len(logits))
-	for i, logit := range logits {
+	// Index iteration — ProbeLogit is 3 fields (int32 + 2 float32 = 12 B).
+	// Marginal per-entry, but probe.Logits.Top can hold the full Top-K
+	// (commonly 50-100 entries per probe event), and probe events are
+	// emitted per-token when ProbeSink is enabled.
+	for i := range logits {
 		out[i] = probe.Logit{
-			TokenID:     logit.TokenID,
-			Logit:       logit.Logit,
-			Probability: logit.Probability,
+			TokenID:     logits[i].TokenID,
+			Logit:       logits[i].Logit,
+			Probability: logits[i].Probability,
 		}
 	}
 	return out
@@ -498,12 +502,21 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	if totalNative > 0 {
 		nativeSlab = make([]NativePhaseTrace, totalNative)
 	}
-	for i, phase := range phases {
+	// Index iteration — metal.TokenPhaseTrace is ~144 B (16 duration
+	// + Step int + FinalToken bool + NativeEvents slice header).
+	// metal.NativePhaseTrace is ~48 B (string + duration + string).
+	// TraceTokenPhases emits ONE phase trace per decoded token, so for
+	// long generations the range form was copying many KB of struct
+	// data into loop variables before re-emitting it via field rebuild.
+	for i := range phases {
+		phase := &phases[i]
+		nativeSrc := phase.NativeEvents
 		var phaseNative []NativePhaseTrace
-		if n := len(phase.NativeEvents); n > 0 {
+		if n := len(nativeSrc); n > 0 {
 			end := nativeOffset + n
 			phaseNative = nativeSlab[nativeOffset:end:end]
-			for j, event := range phase.NativeEvents {
+			for j := range nativeSrc {
+				event := &nativeSrc[j]
 				phaseNative[j] = NativePhaseTrace{
 					Name:     event.Name,
 					Duration: event.Duration,
@@ -540,7 +553,11 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 		return nil
 	}
 	out := make([]NativePhaseTrace, len(events))
-	for i, event := range events {
+	// Index iteration — see toRootTokenPhaseTraces; NativePhaseTrace is
+	// ~48 B and the range form copied each event into the loop variable
+	// before re-emitting via field rebuild.
+	for i := range events {
+		event := &events[i]
 		out[i] = NativePhaseTrace{
 			Name:     event.Name,
 			Duration: event.Duration,
@@ -586,7 +603,10 @@ func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 	if totalLogits > 0 {
 		logitsSlab = make([]float32, totalLogits)
 	}
-	for i, result := range results {
+	// Index iteration — metal.ClassifyResult carries a Token (3 fields)
+	// + Logits slice header. Skip the per-iter struct copy.
+	for i := range results {
+		result := &results[i]
 		var resultLogits []float32
 		switch {
 		case result.Logits == nil:
@@ -620,11 +640,17 @@ func toRootBatchResults(results []metal.BatchResult) []BatchResult {
 	}
 	tokensSlab := make([]Token, totalTokens)
 	tokensOffset := 0
-	for i, result := range results {
-		tokensEnd := tokensOffset + len(result.Tokens)
+	// Index iteration — metal.BatchResult is a Tokens slice header +
+	// error interface. metal.Token is a small (ID int32 + Text string)
+	// 24 B struct, but for long-generation batches the outer slice can
+	// be hundreds long and the inner Tokens slices can be thousands.
+	for i := range results {
+		result := &results[i]
+		tokensSrc := result.Tokens
+		tokensEnd := tokensOffset + len(tokensSrc)
 		resultTokens := tokensSlab[tokensOffset:tokensEnd:tokensEnd]
-		for j, token := range result.Tokens {
-			resultTokens[j] = toRootToken(token)
+		for j := range tokensSrc {
+			resultTokens[j] = toRootToken(tokensSrc[j])
 		}
 		out[i] = BatchResult{
 			Tokens: resultTokens,
