@@ -103,7 +103,15 @@ var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel,
 // already-Close()d *Model. Sharing one *Err avoids an allocation per
 // call on what is almost always a hot path during test fixtures and
 // during defensive checks in adapter / sidecar code.
-var errMLXModelNil = core.NewError("mlx: model is nil")
+var (
+	errMLXModelNil               = core.NewError("mlx: model is nil")
+	errMLXKVPromptRestoreUnsupp  = core.NewError("mlx: native model does not support KV prompt cache restore")
+	errMLXKVCaptureUnsupp        = core.NewError("mlx: native model does not support KV capture")
+	errMLXPromptCacheWarmUnsupp  = core.NewError("mlx: native model does not support prompt cache warming")
+	errMLXPromptCacheClearUnsupp = core.NewError("mlx: native model does not support prompt cache clearing")
+	errMLXLoRALoadUnsupp         = core.NewError("mlx: native model does not support LoRA loading")
+	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
+)
 
 // parserHintFromModel builds the parser.Hint without going through the
 // full m.Info() fan-out. The Hint only needs Architecture + Adapter name,
@@ -778,7 +786,7 @@ func (m *Model) WarmPromptCache(prompt string) error {
 	}
 	warmer, ok := m.model.(nativePromptCacheWarmer)
 	if !ok {
-		return core.NewError("mlx: native model does not support prompt cache warming")
+		return errMLXPromptCacheWarmUnsupp
 	}
 	return warmer.WarmPromptCache(context.Background(), prompt)
 }
@@ -807,7 +815,7 @@ func (m *Model) ClearPromptCache() error {
 	}
 	clearer, ok := m.model.(nativePromptCacheClearer)
 	if !ok {
-		return core.NewError("mlx: native model does not support prompt cache clearing")
+		return errMLXPromptCacheClearUnsupp
 	}
 	clearer.ClearPromptCache()
 	return nil
@@ -820,7 +828,7 @@ func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	}
 	restorer, ok := m.model.(nativePromptCacheKVRestorer)
 	if !ok {
-		return core.NewError("mlx: native model does not support KV prompt cache restore")
+		return errMLXKVPromptRestoreUnsupp
 	}
 	return restorer.RestorePromptCacheFromKV(context.Background(), toMetalKVSnapshot(snapshot))
 }
@@ -847,7 +855,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 	}
 	restorer, ok := m.model.(nativePromptCacheKVRestorer)
 	if !ok {
-		return core.NewError("mlx: native model does not support KV prompt cache restore")
+		return errMLXKVPromptRestoreUnsupp
 	}
 	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
 }
@@ -1310,7 +1318,7 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv
 	}
 	snapshotter, ok := m.model.(nativeKVSnapshotter)
 	if !ok {
-		return nil, core.NewError("mlx: native model does not support KV capture")
+		return nil, errMLXKVCaptureUnsupp
 	}
 	result, err := snapshotter.CaptureKV(context.Background(), prompt)
 	if err != nil {
@@ -1426,7 +1434,7 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	}
 	loader, ok := m.model.(nativeLoRALoader)
 	if !ok {
-		return nil, core.NewError("mlx: native model does not support LoRA loading")
+		return nil, errMLXLoRALoadUnsupp
 	}
 	adapter, err := loader.LoadLoRA(path)
 	if err != nil {
@@ -1447,7 +1455,7 @@ func (m *Model) UnloadLoRA() error {
 	}
 	unloader, ok := m.model.(nativeLoRAUnloader)
 	if !ok {
-		return core.NewError("mlx: native model does not support LoRA unloading")
+		return errMLXLoRAUnloadUnsupp
 	}
 	if err := unloader.UnloadLoRA(); err != nil {
 		return err
