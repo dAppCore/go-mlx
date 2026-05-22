@@ -575,15 +575,25 @@ func toInferenceAdapterIdentity(info metal.AdapterInfo) inference.AdapterIdentit
 }
 
 func adapterIdentityLabels(name string, scale float32) map[string]string {
-	labels := map[string]string{}
+	// Cheap pre-check — return nil before allocating the map when both
+	// fields are zero. adapterIdentityLabels is called per
+	// toInferenceAdapterIdentity / toInferenceRootAdapterIdentity which
+	// fire on every CapabilityReport / TrainSFT / BenchReport call, and
+	// the zero-name + zero-scale shape is the dominant "no adapter
+	// loaded" case.
+	if name == "" && scale == 0 {
+		return nil
+	}
+	// Pre-size for the two possible keys. strconv.FormatFloat with 'g'
+	// matches Sprintf("%g") semantics — shortest representation that
+	// round-trips — but skips the fmt format-parser + interface-boxing.
+	// Bitsize 32 matches the float32 input precision.
+	labels := make(map[string]string, 2)
 	if name != "" {
 		labels["name"] = name
 	}
 	if scale != 0 {
-		labels["scale"] = core.Sprintf("%g", scale)
-	}
-	if len(labels) == 0 {
-		return nil
+		labels["scale"] = strconv.FormatFloat(float64(scale), 'g', -1, 32)
 	}
 	return labels
 }
