@@ -556,7 +556,12 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 	if adapter.Path == "" {
 		adapter.Path = adapterPath
 	}
-	if adapter.Hash == "" {
+	// Fast-skip the hash computation when the adapter is fully empty —
+	// the final all-zero check at the end would clear the freshly-built
+	// hash anyway, so building it is wasted SHA + alloc on every
+	// adapter-less bundle.New.
+	allEmpty := adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0
+	if adapter.Hash == "" && !allEmpty {
 		// Hand-built hash payload — avoids Sprintf("%d") + 2× Sprintf("%f")
 		// boxing and a 6-arg Join intermediate. Float formatting matches
 		// fmt's default %f precision (6 decimals).
