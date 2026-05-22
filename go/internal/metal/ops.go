@@ -71,6 +71,18 @@ static inline int mlx_squeeze_axes_inline(
     return mlx_squeeze_axes(res, a, axes_buf, axes_num, s);
 }
 
+// mlx_transpose_axes_inline_4 is the rank-4 scalar-pass form — eliminates the
+// Go-side `[]int` materialisation of the variadic axes parameter. Used by
+// the attention paths (Transpose(k, 0,1,3,2) appears in SDPAPaged and the
+// model attention kernels). 4 axes register-passed; C stack-materialises.
+static inline int mlx_transpose_axes_inline_4(
+    mlx_array* res, mlx_array a,
+    int a0, int a1, int a2, int a3,
+    mlx_stream s) {
+    int axes_buf[4] = {a0, a1, a2, a3};
+    return mlx_transpose_axes(res, a, axes_buf, 4, s);
+}
+
 // mlx_*_single_axis_inline materialise the single-element axis array on the
 // C stack so the per-call Go side stops allocating a 1-int slice.  Sum /
 // Mean each take a single int axis from the Go API; Softmax pins axis = -1
@@ -492,6 +504,21 @@ func Transpose(a *Array, axes ...int) *Array {
 		axesPtr := (*C.longlong)(unsafe.Pointer(&axes[0]))
 		C.mlx_transpose_axes_inline(&out.ctx, a.ctx, axesPtr, C.size_t(len(axes)), DefaultStream().ctx)
 	}
+	return out
+}
+
+// Transpose4 is the rank-4 scalar-pass form of Transpose — eliminates the
+// `[]int` allocation that the variadic axes parameter forces on cgo (escape
+// analysis: -gcflags='-m' shows `... argument escapes to heap` on every
+// rank-4 transpose call). Used by attention kernels' Transpose(k, 0,1,3,2)
+// pattern across SDPAPaged + per-page transposes (Gemma 3/4, Qwen 3, etc.).
+//
+//	keyT := metal.Transpose4(key, 0, 1, 3, 2)
+func Transpose4(a *Array, a0, a1, a2, a3 int) *Array {
+	out := newArray("TRANSPOSE", a)
+	C.mlx_transpose_axes_inline_4(&out.ctx, a.ctx,
+		C.int(a0), C.int(a1), C.int(a2), C.int(a3),
+		DefaultStream().ctx)
 	return out
 }
 

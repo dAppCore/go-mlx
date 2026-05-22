@@ -163,7 +163,7 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 	scorePages := make([]*Array, 0, len(keyPages))
 	var globalMax *Array
 	for _, key := range keyPages {
-		keyT := Transpose(key, 0, 1, 3, 2)
+		keyT := Transpose4(key, 0, 1, 3, 2)
 		score := Matmul(query, keyT)
 		Free(keyT)
 		if scale != 1 {

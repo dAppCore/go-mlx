@@ -42,6 +42,34 @@ static inline int mlx_slice_update_inline(
     }
     return mlx_slice_update(res, a, upd, starts_buf, n, ends_buf, n, strides_buf, n, s);
 }
+
+// mlx_slice_inline_4 / mlx_slice_update_inline_4 are the rank-4 scalar-pass
+// form — KV cache hot paths construct []int32{0,0,prev,0} per call which
+// escape to heap (4 sites in KVCache.Update alone, 22 sites in cache.go).
+// Passing the eight register-passed scalars eliminates the slice literal
+// entirely. W10-J pattern applied to slice rank-4 (the KV cache canonical
+// rank). strides are implicitly 1.
+static inline int mlx_slice_inline_4(
+    mlx_array* res, mlx_array a,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+    int32_t e0, int32_t e1, int32_t e2, int32_t e3,
+    mlx_stream s) {
+    int starts_buf[4] = {(int)s0, (int)s1, (int)s2, (int)s3};
+    int ends_buf[4]   = {(int)e0, (int)e1, (int)e2, (int)e3};
+    int strides_buf[4] = {1, 1, 1, 1};
+    return mlx_slice(res, a, starts_buf, 4, ends_buf, 4, strides_buf, 4, s);
+}
+
+static inline int mlx_slice_update_inline_4(
+    mlx_array* res, mlx_array a, mlx_array upd,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+    int32_t e0, int32_t e1, int32_t e2, int32_t e3,
+    mlx_stream s) {
+    int starts_buf[4] = {(int)s0, (int)s1, (int)s2, (int)s3};
+    int ends_buf[4]   = {(int)e0, (int)e1, (int)e2, (int)e3};
+    int strides_buf[4] = {1, 1, 1, 1};
+    return mlx_slice_update(res, a, upd, starts_buf, 4, ends_buf, 4, strides_buf, 4, s);
+}
 */
 import "C"
 
@@ -109,5 +137,36 @@ func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
 	startsPtr := (*C.int32_t)(unsafe.Pointer(&starts[0]))
 	endsPtr := (*C.int32_t)(unsafe.Pointer(&ends[0]))
 	C.mlx_slice_update_inline(&out.ctx, a.ctx, update.ctx, startsPtr, endsPtr, C.size_t(len(starts)), DefaultStream().ctx)
+	return out
+}
+
+// Slice4 is the rank-4 scalar-pass form of Slice — eliminates the
+// []int32{...} literal allocation by passing the 8 indices as scalars.
+// Routes through mlx_slice_inline_4 which materialises the C stack buffers
+// directly from register-passed scalars. Used by KV cache update paths
+// where `[]int32{0,0,prev,0}, []int32{B,H,offset,D}` previously paid two
+// heap allocs per call site (and most cache.go sites have 2-4 such pairs).
+//
+//	kFull := metal.Slice4(kCache, 0,0,0,0, B,H,int32(offset),D)
+func Slice4(a *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32) *Array {
+	out := newArray("SLICE", a)
+	C.mlx_slice_inline_4(&out.ctx, a.ctx,
+		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
+		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
+		DefaultStream().ctx)
+	return out
+}
+
+// SliceUpdateInplace4 is the rank-4 scalar-pass form of SliceUpdateInplace.
+// See Slice4 for the rationale — KV cache append paths construct
+// []int32{0,0,prev,0}, []int32{B,H,offset,D} on every Update call.
+//
+//	kBuf := metal.SliceUpdateInplace4(kBuf, k, 0,0,int32(prev),0, B,H,int32(offset),D)
+func SliceUpdateInplace4(a, update *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32) *Array {
+	out := newArray("SLICE_UPDATE", a, update)
+	C.mlx_slice_update_inline_4(&out.ctx, a.ctx, update.ctx,
+		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
+		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
+		DefaultStream().ctx)
 	return out
 }

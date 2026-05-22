@@ -344,16 +344,13 @@ func prefillCacheStateArrays(caches []Cache) []*Array {
 	// only realloc-grows when capacity is exceeded; over-capacity is cheap and
 	// the hint matters most on Gemma 4 26-cache fan-outs where the unsized
 	// nil-slice growth chain (0→1→2→4→8→16→32→64) dominated allocs.
+	//
+	// AppendState bypasses the per-cache `[]*Array{k,v}` slice literal that
+	// State() returns — on a 26-cache Gemma 4 fan-out that was 27 allocs
+	// (one per State()) plus the outer slice; now it's just the outer slice.
 	arrays := make([]*Array, 0, len(caches)*2)
 	for _, cache := range caches {
-		if cache == nil {
-			continue
-		}
-		for _, state := range cache.State() {
-			if state != nil && state.Valid() {
-				arrays = append(arrays, state)
-			}
-		}
+		arrays = appendCacheState(arrays, cache)
 	}
 	return arrays
 }
@@ -413,11 +410,7 @@ func cacheStateArraysForDetach(caches []Cache) []*Array {
 		if _, paged := cache.(*PagedKVCache); paged {
 			continue
 		}
-		for _, state := range cache.State() {
-			if state != nil && state.Valid() {
-				arrays = append(arrays, state)
-			}
-		}
+		arrays = appendCacheState(arrays, cache)
 	}
 	return arrays
 }

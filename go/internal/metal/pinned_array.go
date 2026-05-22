@@ -60,6 +60,25 @@ var (
 	pinnedRawArrayNextID  atomic.Uintptr
 )
 
+// pinnedShapeScratchInt / pinnedShapeScratchInt64 pool the per-call cgo
+// shape/stride buffers (rank-8 sized — MLX cap). fromPinnedRawBytesStrided
+// fires on every KV-cache state restore (3 cgo arrays per call); the rank-4
+// KV case used to pay 4 make([]C.int|C.int64_t, 4) + 1 make([]int64, 4) per
+// invocation. Pool drops the floor to 0 cgo allocs on the strides path and
+// 1 alloc on the shape path (the strides one comes via contiguousStrides
+// which is pool-routed in its own helper below).
+var (
+	pinnedShapeScratchInt = sync.Pool{
+		New: func() any { s := make([]C.int, maxTensorRank); return &s },
+	}
+	pinnedShapeScratchInt64 = sync.Pool{
+		New: func() any { s := make([]C.int64_t, maxTensorRank); return &s },
+	}
+	pinnedStrideScratchInt64 = sync.Pool{
+		New: func() any { s := make([]int64, maxTensorRank); return &s },
+	}
+)
+
 func registerPinnedRawArray(raw []byte) (uintptr, unsafe.Pointer, error) {
 	if len(raw) == 0 {
 		return 0, nil, core.NewError("mlx: pinned array data is empty")
@@ -92,7 +111,13 @@ func goPinnedRawArrayRelease(payload unsafe.Pointer) {
 }
 
 func fromPinnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
-	return fromPinnedRawBytesStrided(raw, shape, shape, contiguousStrides(shape), 0, dtype)
+	// Borrow stride scratch from the pool to avoid a per-call `make([]int64,
+	// rank)` for the canonical contiguous case (KV restore hot path).
+	stridesPtr := pinnedStrideScratchInt64.Get().(*[]int64)
+	defer pinnedStrideScratchInt64.Put(stridesPtr)
+	strides := (*stridesPtr)[:len(shape):cap(*stridesPtr)]
+	contiguousStridesInto(strides, shape)
+	return fromPinnedRawBytesStrided(raw, shape, shape, strides, 0, dtype)
 }
 
 func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewStrides []int64, viewOffset int, dtype DType) (*Array, error) {
@@ -109,21 +134,29 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 		return nil, core.NewError("mlx: pinned array byte length does not match shape")
 	}
 
-	cStorageShape := make([]C.int, len(storageShape))
+	// Reuse pooled rank-8 cgo scratch buffers. Validates dims inline so the
+	// pool slot is returned even on the error path.
+	storagePtr := pinnedShapeScratchInt.Get().(*[]C.int)
+	defer pinnedShapeScratchInt.Put(storagePtr)
+	cStorageShape := (*storagePtr)[:len(storageShape):cap(*storagePtr)]
 	for i, dim := range storageShape {
 		if dim <= 0 {
 			return nil, core.NewError("mlx: pinned array storage shape is invalid")
 		}
 		cStorageShape[i] = C.int(dim)
 	}
-	cViewShape := make([]C.int, len(viewShape))
+	viewShapePtr := pinnedShapeScratchInt.Get().(*[]C.int)
+	defer pinnedShapeScratchInt.Put(viewShapePtr)
+	cViewShape := (*viewShapePtr)[:len(viewShape):cap(*viewShapePtr)]
 	for i, dim := range viewShape {
 		if dim <= 0 {
 			return nil, core.NewError("mlx: pinned array view shape is invalid")
 		}
 		cViewShape[i] = C.int(dim)
 	}
-	cViewStrides := make([]C.int64_t, len(viewStrides))
+	viewStridesPtr := pinnedShapeScratchInt64.Get().(*[]C.int64_t)
+	defer pinnedShapeScratchInt64.Put(viewStridesPtr)
+	cViewStrides := (*viewStridesPtr)[:len(viewStrides):cap(*viewStridesPtr)]
 	for i, stride := range viewStrides {
 		if stride < 0 {
 			return nil, core.NewError("mlx: pinned array view stride is invalid")
@@ -167,12 +200,19 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 
 func contiguousStrides(shape []int) []int64 {
 	strides := make([]int64, len(shape))
+	contiguousStridesInto(strides, shape)
+	return strides
+}
+
+// contiguousStridesInto writes contiguous strides for shape into dst — used
+// by the pooled-buffer hot path so contiguous-stride computation is
+// alloc-free even for the common KV restore case.
+func contiguousStridesInto(dst []int64, shape []int) {
 	stride := int64(1)
 	for i := len(shape) - 1; i >= 0; i-- {
-		strides[i] = stride
+		dst[i] = stride
 		stride *= int64(shape[i])
 	}
-	return strides
 }
 
 func shapeElementCount(shape []int) (int, bool) {
