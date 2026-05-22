@@ -50,9 +50,18 @@ func (probe *modelConfigProbe) architecture() string {
 	if probe == nil {
 		return ""
 	}
+	// Resolve architectures[] once: bert_rerank takes priority over
+	// ModelType (cross-encoders carry it in the class name); remember
+	// the first non-empty result for the fallback path so we never
+	// re-classify the same string twice.
+	var firstResolved string
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType == "bert_rerank" {
+		modelType := architectureFromTransformersName(architecture)
+		if modelType == "bert_rerank" {
 			return modelType
+		}
+		if modelType != "" && firstResolved == "" {
+			firstResolved = modelType
 		}
 	}
 	if probe.ModelType != "" {
@@ -61,12 +70,7 @@ func (probe *modelConfigProbe) architecture() string {
 	if probe.TextConfig.ModelType != "" {
 		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
 	}
-	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType != "" {
-			return modelType
-		}
-	}
-	return ""
+	return firstResolved
 }
 
 func (probe *modelConfigProbe) numLayers() int {
