@@ -420,11 +420,9 @@ func chapterName(index int, name string) string {
 	if core.Trim(name) != "" {
 		return name
 	}
-	// Hand-built "chapter-N" — avoids Sprintf("%d") interface boxing.
-	buf := make([]byte, 0, 8+20)
-	buf = append(buf, "chapter-"...)
-	buf = strconv.AppendInt(buf, int64(index+1), 10)
-	return core.AsString(buf)
+	// Body matches defaultChapterSlug — defer to one source of truth so
+	// the future shape change (e.g. zero-pad) lands once.
+	return defaultChapterSlug(index)
 }
 
 func storeFileName(kind string) string {
