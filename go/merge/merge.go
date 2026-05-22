@@ -238,6 +238,13 @@ func ensureEmptyDestination(output string) error {
 
 func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 	base := packs[0]
+	// Hash the base tokenizer once up front, lazily — only if we actually
+	// need it (any non-AllowTokenizerMismatch source). Previously the
+	// inner loop re-read + re-hashed the base file once per source pack,
+	// turning an O(1) check into O(N) IO + crypto for the N-source case.
+	var baseHash string
+	var baseHashErr error
+	baseHashLoaded := opts.AllowTokenizerMismatch
 	for i := 1; i < len(packs); i++ {
 		pack := packs[i]
 		if !opts.AllowArchitectureMismatch && pack.Architecture != base.Architecture {
@@ -254,9 +261,12 @@ func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 		if opts.AllowTokenizerMismatch {
 			continue
 		}
-		baseHash, err := hashFile(base.TokenizerPath)
-		if err != nil {
-			return core.E("Packs", "hash base tokenizer", err)
+		if !baseHashLoaded {
+			baseHash, baseHashErr = hashFile(base.TokenizerPath)
+			baseHashLoaded = true
+		}
+		if baseHashErr != nil {
+			return core.E("Packs", "hash base tokenizer", baseHashErr)
 		}
 		hash, err := hashFile(pack.TokenizerPath)
 		if err != nil {
