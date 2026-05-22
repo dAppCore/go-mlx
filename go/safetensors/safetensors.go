@@ -521,14 +521,13 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		// Reinterpret-cast raw as []uint16. fp16 storage is little-endian
 		// on both supported architectures, so bytes-on-disk match the
 		// uint16 layout exactly. This eliminates the per-iter byte pair
-		// combine + raw[i*2:] re-slice — the compiler emits LDR.H +
-		// Float16ToFloat32 per element. Float16ToFloat32 still dominates
-		// the per-elem cost (it's a non-trivial bit-twiddle), so this is
-		// pure load-path simplification.
+		// combine + raw[i*2:] re-slice. On darwin/arm64 the conversion is
+		// then vectorised via a NEON FCVTL V.4S, V.4H inner loop (cgo) —
+		// see float16_neon_darwin_arm64.go. All other platforms fall
+		// through to the scalar Float16ToFloat32 path via
+		// float16_scalar.go. Output is bit-identical across builds.
 		src16 := unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
-		for i, v := range src16 {
-			values[i] = Float16ToFloat32(v)
-		}
+		float16SliceToFloat32(src16, values, elements)
 	case "BF16":
 		if len(raw) != elements*2 {
 			return nil, errBF16PayloadMatch
