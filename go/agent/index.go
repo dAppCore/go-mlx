@@ -713,7 +713,12 @@ func indexEntryHash(entry *StateIndexEntry) string {
 			b.WriteString(value)
 		}
 	} else if len(entry.Meta) > 1 {
-		keys := make([]string, 0, len(entry.Meta))
+		// Stack-rooted small-buffer for the common 2-8 meta-key case
+		// (sleepEntryMeta produces 0-3 parent_* keys + caller-supplied
+		// session id / agent name). For larger Meta append spills to
+		// heap on the second grow — accepted floor for the rare path.
+		var stackKeys [8]string
+		keys := stackKeys[:0]
 		for key := range entry.Meta {
 			keys = append(keys, key)
 		}
