@@ -375,7 +375,10 @@ func (m *GemmaModel) Forward(tokens *Array, caches []Cache) *Array {
 }
 
 func (m *GemmaModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *Array {
-	shape := tokens.Shape()
+	// Stack-allocated shape scratch — per-forward-pass hot path. Avoids
+	// the per-call []int32 heap alloc from tokens.Shape().
+	var shapeBuf [maxTensorRank]int32
+	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
@@ -489,7 +492,9 @@ func (a *Attention) forward(x *Array, c Cache, B, L int32, isSliding bool, mask 
 	}
 	Free(q)
 
-	transposed := Transpose(out, 0, 2, 1, 3)
+	// Rank-4 attention output transpose [B,H,L,D] → [B,L,H,D] — use the
+	// scalar-pass Transpose4 form (eliminates the []int axes heap alloc).
+	transposed := Transpose4(out, 0, 2, 1, 3)
 	Free(out)
 	reshaped := Reshape(transposed, B, L, cfg.NumAttentionHeads*cfg.HeadDim)
 	Free(transposed)
