@@ -963,14 +963,10 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func architectureFromTransformersName(architecture string) string {
-	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
+	// Case-sensitive fast path first — the canonical HF transformers class
+	// names are PascalCase ("Qwen3ForCausalLM"). Avoids the Lower+Replace
+	// allocs for the common path.
 	switch {
-	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-		return "bert_rerank"
-	case core.Contains(compact, "qwen3moe"):
-		return "qwen3_moe"
-	case core.Contains(compact, "qwen3next"):
-		return "qwen3_next"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):
@@ -978,6 +974,12 @@ func architectureFromTransformersName(architecture string) string {
 	case core.Contains(architecture, "Gemma2"):
 		return "gemma2"
 	case core.Contains(architecture, "Qwen3"):
+		// Qwen3 hits — disambiguate MoE / Next via compact form only here.
+		if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
+			return "qwen3_moe"
+		} else if core.Contains(compact, "qwen3next") {
+			return "qwen3_next"
+		}
 		return "qwen3"
 	case core.Contains(architecture, "Qwen2"):
 		return "qwen2"
@@ -995,11 +997,53 @@ func architectureFromTransformersName(architecture string) string {
 		return "deepseek"
 	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
 		return "gpt_oss"
-	case core.Contains(architecture, "Bert"):
-		return "bert"
+	case core.Contains(architecture, "Bert") || core.Contains(architecture, "Roberta") || core.Contains(architecture, "Deberta"):
+		// Bert / Roberta / Deberta family — disambiguate rerank via compact.
+		compact := lowerNoSep(architecture)
+		if core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification") {
+			return "bert_rerank"
+		}
+		if core.Contains(architecture, "Bert") {
+			return "bert"
+		}
+		return ""
 	default:
+		// Unknown PascalCase shape — fall back to compact lower form so a
+		// few stragglers like "qwen3_moe" or "bert_for_sequence_classification"
+		// still classify when callers feed snake_case identifiers.
+		compact := lowerNoSep(architecture)
+		switch {
+		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+			return "bert_rerank"
+		case core.Contains(compact, "qwen3moe"):
+			return "qwen3_moe"
+		case core.Contains(compact, "qwen3next"):
+			return "qwen3_next"
+		}
 		return ""
 	}
+}
+
+// lowerNoSep returns architecture lowercased with "_" and "-" removed.
+// Pure helper used by the slow paths of architectureFromTransformersName —
+// kept out of line so the fast PascalCase path costs zero allocations.
+func lowerNoSep(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Single pass over bytes: skip "_"/"-" and lowercase ASCII inline.
+	buf := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' || c == '-' {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf = append(buf, c)
+	}
+	return core.AsString(buf)
 }
 
 func indexString(s, substr string) int {
