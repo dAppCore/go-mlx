@@ -88,6 +88,12 @@ type Registry struct {
 	version  string
 	handlers map[string]Handler
 	order    []string
+	// infoResponse caches the rendered info Response so the steady
+	// state Dispatch("info") path allocates nothing. Built lazily on
+	// first read after creation or any Register that invalidates it.
+	// Like handlers/order, accessed without a mutex — Register is not
+	// safe to call concurrently with Dispatch (existing convention).
+	infoResponse Response
 }
 
 func NewRegistry(name, version string) *Registry {
@@ -117,14 +123,20 @@ func NewRegistry(name, version string) *Registry {
 		panic(err)
 	}
 	if err := r.Register("info", func(context.Context, Request) (Response, error) {
+		// JSON-marshalling reads the cached map; built once when the
+		// cache is empty, invalidated by Register. Steady state is
+		// zero-alloc — the JSON marshal walks the same map every call.
 		// JSON-marshalling a []string just iterates; no retention,
 		// so the internal r.order can be returned as-is and skip the
 		// defensive copy that Actions() does for external callers.
-		return Response{
-			"name":    r.name,
-			"version": r.version,
-			"actions": r.order,
-		}, nil
+		if r.infoResponse == nil {
+			r.infoResponse = Response{
+				"name":    r.name,
+				"version": r.version,
+				"actions": r.order,
+			}
+		}
+		return r.infoResponse, nil
 	}); err != nil {
 		panic(err)
 	}
@@ -149,6 +161,12 @@ func (r *Registry) Register(action string, handler Handler) error {
 	}
 	if _, exists := r.handlers[action]; !exists {
 		r.order = append(r.order, action)
+		// New action in the order list invalidates the cached info
+		// response. The next info dispatch rebuilds with the fresh
+		// order slice. (Replacement-only registers — e.g. swapping
+		// the generate stub for a real backend — leave order untouched
+		// and don't need to invalidate.)
+		r.infoResponse = nil
 	}
 	r.handlers[action] = handler
 	return nil
