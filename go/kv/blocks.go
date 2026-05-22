@@ -1043,7 +1043,10 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	tags["block_index"] = core.Itoa(block.Index)
 	tags["token_start"] = core.Itoa(block.TokenStart)
 	tags["token_count"] = core.Itoa(block.TokenCount)
-	labels := append([]string(nil), opts.Labels...)
+	// Pre-size for the deterministic 2 appended labels — avoids the
+	// geometric-grow path on every per-block State save.
+	labels := make([]string, len(opts.Labels), len(opts.Labels)+2)
+	copy(labels, opts.Labels)
 	labels = append(labels, "go-mlx", "kv-snapshot-block")
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	// Direct string concatenation skips the fmt.Sprintf parse + format
