@@ -6,6 +6,31 @@ import (
 	core "dappco.re/go"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. The hand-rolled JSON parser fires these from a tight
+// byte-walk; sharing instances also makes errors.Is comparable for
+// callers wanting to distinguish "header truncated" from "missing
+// colon" without parsing message text.
+var (
+	errUnterminatedString      = core.NewError("mlx: safetensors unterminated string")
+	errUnknownLiteral          = core.NewError("mlx: safetensors unknown literal")
+	errSkipValueToken          = core.NewError("mlx: safetensors unexpected token in skipValue")
+	errTruncatedEscape         = core.NewError("mlx: safetensors truncated escape")
+	errTensorExpectCommaBrace  = core.NewError("mlx: safetensors tensor expected ',' or '}'")
+	errHeaderTruncated         = core.NewError("mlx: safetensors header truncated")
+	errHeaderMissingColon      = core.NewError("mlx: safetensors header missing ':' after key")
+	errHeaderKeyNotString      = core.NewError("mlx: safetensors header key is not a string")
+	errHeaderNotJSONObject     = core.NewError("mlx: safetensors header is not a JSON object")
+	errHeaderExpectCommaBrace  = core.NewError("mlx: safetensors header expected ',' or '}'")
+	errExpectString            = core.NewError("mlx: safetensors expected string")
+	errExpectBrace             = core.NewError("mlx: safetensors expected '{'")
+	errExpectBracket           = core.NewError("mlx: safetensors expected '['")
+	errExpectColon             = core.NewError("mlx: safetensors expected ':' inside object")
+	errExpectCommaBraceObject  = core.NewError("mlx: safetensors expected ',' or '}' inside object")
+	errExpectCommaBracketArray = core.NewError("mlx: safetensors expected ',' or ']' inside array")
+)
+
 // parseHeaderInto walks a safetensors JSON header bytes blob and emits
 // one TensorRef per non-metadata tensor into idx. Every Shape slice is
 // carved out of shapeSlab (pre-sized by the caller via a first-pass
@@ -36,7 +61,7 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 	p := jsonParser{data: data}
 	p.skipWS()
 	if !p.expect('{') {
-		return core.NewError("mlx: safetensors header is not a JSON object")
+		return errHeaderNotJSONObject
 	}
 	p.skipWS()
 	if p.peek() == '}' {
@@ -52,12 +77,12 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 		// allocs.
 		start, end, hasEsc, ok := p.peekStringSpan()
 		if !ok {
-			return core.NewError("mlx: safetensors header key is not a string")
+			return errHeaderKeyNotString
 		}
 		isMetadata := !hasEsc && end-start == 12 && bytesEqual(data[start:end], _metadataKey)
 		p.skipWS()
 		if !p.expect(':') {
-			return core.NewError("mlx: safetensors header missing ':' after key")
+			return errHeaderMissingColon
 		}
 		p.skipWS()
 		if isMetadata {
@@ -84,7 +109,7 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 			p.pos++
 			return nil
 		default:
-			return core.NewError("mlx: safetensors header expected ',' or '}'")
+			return errHeaderExpectCommaBrace
 		}
 	}
 }
@@ -443,7 +468,7 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 				ByteLen:   offsetEnd - offsetBegin,
 			}, nil
 		default:
-			return TensorRef{}, core.NewError("mlx: safetensors tensor expected ',' or '}'")
+			return TensorRef{}, errTensorExpectCommaBrace
 		}
 	}
 }
@@ -696,7 +721,7 @@ func (p *jsonParser) parseDataOffsets(tensorName string) (int64, int64, error) {
 func (p *jsonParser) skipValue() error {
 	p.skipWS()
 	if p.pos >= len(p.data) {
-		return core.NewError("mlx: safetensors header truncated")
+		return errHeaderTruncated
 	}
 	c := p.data[p.pos]
 	switch {
@@ -722,14 +747,14 @@ func (p *jsonParser) skipValue() error {
 		}
 		return nil
 	}
-	return core.NewError("mlx: safetensors unexpected token in skipValue")
+	return errSkipValueToken
 }
 
 // skipObject consumes a balanced object {...} including all nested
 // objects/arrays/strings.
 func (p *jsonParser) skipObject() error {
 	if !p.expect('{') {
-		return core.NewError("mlx: safetensors expected '{'")
+		return errExpectBrace
 	}
 	p.skipWS()
 	if p.peek() == '}' {
@@ -743,7 +768,7 @@ func (p *jsonParser) skipObject() error {
 		}
 		p.skipWS()
 		if !p.expect(':') {
-			return core.NewError("mlx: safetensors expected ':' inside object")
+			return errExpectColon
 		}
 		if err := p.skipValue(); err != nil {
 			return err
@@ -756,7 +781,7 @@ func (p *jsonParser) skipObject() error {
 			p.pos++
 			return nil
 		default:
-			return core.NewError("mlx: safetensors expected ',' or '}' inside object")
+			return errExpectCommaBraceObject
 		}
 	}
 }
@@ -765,7 +790,7 @@ func (p *jsonParser) skipObject() error {
 // elements.
 func (p *jsonParser) skipArray() error {
 	if !p.expect('[') {
-		return core.NewError("mlx: safetensors expected '['")
+		return errExpectBracket
 	}
 	p.skipWS()
 	if p.peek() == ']' {
@@ -784,7 +809,7 @@ func (p *jsonParser) skipArray() error {
 			p.pos++
 			return nil
 		default:
-			return core.NewError("mlx: safetensors expected ',' or ']' inside array")
+			return errExpectCommaBracketArray
 		}
 	}
 }
@@ -794,7 +819,7 @@ func (p *jsonParser) skipArray() error {
 // values).
 func (p *jsonParser) skipString() error {
 	if !p.expect('"') {
-		return core.NewError("mlx: safetensors expected string")
+		return errExpectString
 	}
 	for p.pos < len(p.data) {
 		c := p.data[p.pos]
@@ -806,7 +831,7 @@ func (p *jsonParser) skipString() error {
 			// Skip the escape sequence. \uXXXX is 6 bytes (the \u plus
 			// 4 hex digits); the others are 2 bytes.
 			if p.pos+1 >= len(p.data) {
-				return core.NewError("mlx: safetensors truncated escape")
+				return errTruncatedEscape
 			}
 			if p.data[p.pos+1] == 'u' {
 				p.pos += 6
@@ -817,7 +842,7 @@ func (p *jsonParser) skipString() error {
 		}
 		p.pos++
 	}
-	return core.NewError("mlx: safetensors unterminated string")
+	return errUnterminatedString
 }
 
 // skipLiteral consumes a true/false/null literal.
@@ -839,7 +864,7 @@ func (p *jsonParser) skipLiteral() error {
 			return nil
 		}
 	}
-	return core.NewError("mlx: safetensors unknown literal")
+	return errUnknownLiteral
 }
 
 // countTensorsAndDims is the cheap first pass over the header bytes.
