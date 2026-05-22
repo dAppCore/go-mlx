@@ -57,11 +57,19 @@ func WriteSubset(ctx context.Context, path string, refs []TensorRef) error {
 	if err := writeAll(file, headerBytes); err != nil {
 		return err
 	}
+	// Reuse a single byte buffer across every per-ref chunked copy.
+	// writeRefRawChunks previously allocated its own buffer per call,
+	// so a subset of N tensors meant N small-or-large allocations.
+	// Each ref's payload size is capped by chunkBytes anyway, so
+	// reuse is safe — the buffer is grown on demand by passing
+	// through writeRefRawChunksScratch.
+	var scratch []byte
 	for _, ref := range ordered {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := writeRefRawChunks(ctx, file, ref, defaultRawChunkBytes); err != nil {
+		scratch, err = writeRefRawChunksScratch(ctx, file, ref, defaultRawChunkBytes, scratch)
+		if err != nil {
 			return err
 		}
 	}
@@ -124,38 +132,52 @@ func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error)
 }
 
 func writeRefRawChunks(ctx context.Context, out *core.OSFile, ref TensorRef, chunkBytes int64) error {
+	_, err := writeRefRawChunksScratch(ctx, out, ref, chunkBytes, nil)
+	return err
+}
+
+// writeRefRawChunksScratch streams one tensor's raw payload through a
+// caller-supplied byte buffer, returning the (possibly grown) buffer
+// for the next call to reuse. Hoisting the buffer up to WriteSubset
+// collapses what was N small allocs into one.
+func writeRefRawChunksScratch(ctx context.Context, out *core.OSFile, ref TensorRef, chunkBytes int64, scratch []byte) ([]byte, error) {
 	if chunkBytes <= 0 {
 		chunkBytes = defaultRawChunkBytes
 	}
 	opened := core.Open(ref.Path)
 	if !opened.OK {
-		return resultError(opened)
+		return scratch, resultError(opened)
 	}
 	in := opened.Value.(*core.OSFile)
 	defer in.Close()
 
-	buffer := make([]byte, minInt64(chunkBytes, ref.ByteLen))
+	need := minInt64(chunkBytes, ref.ByteLen)
+	if int64(cap(scratch)) < need {
+		scratch = make([]byte, need)
+	} else {
+		scratch = scratch[:need]
+	}
 	remaining := ref.ByteLen
 	offset := ref.DataStart
 	for remaining > 0 {
 		if err := ctx.Err(); err != nil {
-			return err
+			return scratch, err
 		}
-		want := minInt64(int64(len(buffer)), remaining)
-		n, err := in.ReadAt(buffer[:want], offset)
+		want := minInt64(int64(len(scratch)), remaining)
+		n, err := in.ReadAt(scratch[:want], offset)
 		if err != nil && !(err == core.EOF && int64(n) == want) {
-			return err
+			return scratch, err
 		}
 		if int64(n) != want {
-			return core.NewError("mlx: safetensors tensor payload is truncated: " + ref.Name)
+			return scratch, core.NewError("mlx: safetensors tensor payload is truncated: " + ref.Name)
 		}
-		if err := writeAll(out, buffer[:want]); err != nil {
-			return err
+		if err := writeAll(out, scratch[:want]); err != nil {
+			return scratch, err
 		}
 		offset += want
 		remaining -= want
 	}
-	return nil
+	return scratch, nil
 }
 
 func writeAll(file *core.OSFile, data []byte) error {
