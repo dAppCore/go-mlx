@@ -1344,13 +1344,19 @@ func ggufQuantizationIsMixed(quantType string, summaries []TensorTypeSummary) bo
 	if core.HasSuffix(quantType, "_m") || core.Contains(quantType, "some_f16") {
 		return true
 	}
-	seen := map[string]bool{}
-	for _, summary := range summaries {
-		if summary.Quantized && summary.Name != "" {
-			seen[summary.Name] = true
+	// summaries is the output of summarizeGGUFTensorTypes, which already
+	// deduplicates by (Type, TypeName). Just count the quantised entries
+	// directly — no need for a map.
+	quantisedCount := 0
+	for i := range summaries {
+		if summaries[i].Quantized && summaries[i].Name != "" {
+			quantisedCount++
+			if quantisedCount > 1 {
+				return true
+			}
 		}
 	}
-	return len(seen) > 1
+	return false
 }
 
 func indexString(s, substr string) int {
