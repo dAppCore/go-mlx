@@ -329,13 +329,42 @@ func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 }
 
 func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
+	// Precompute per-vector 1/|v| once so the O(N²) pair loop only
+	// pays a dot product + 2 muls — same self-norm-recompute waste
+	// kvAnalysisPositionDifferentiation had.
+	n := len(vectors)
+	invNorms := make([]float64, n)
+	for i, vec := range vectors {
+		var sum float64
+		for _, value := range vec {
+			v := float64(value)
+			sum += v * v
+		}
+		if sum > 0 {
+			invNorms[i] = 1.0 / math.Sqrt(sum)
+		}
+	}
 	var total float64
 	var locked, pairs int
-	for i := 0; i < len(vectors); i++ {
-		for j := i + 1; j < len(vectors); j++ {
-			similarity := kvAnalysisCosine32(vectors[i], vectors[j])
-			total += similarity
+	for i := 0; i < n; i++ {
+		invA := invNorms[i]
+		rowA := vectors[i]
+		for j := i + 1; j < n; j++ {
+			rowB := vectors[j]
+			// Match the original kvAnalysisCosine32 semantics: count
+			// the pair, with similarity = 0 when lengths mismatch or
+			// either norm is zero.
 			pairs++
+			if len(rowA) != len(rowB) || len(rowA) == 0 || invA == 0 || invNorms[j] == 0 {
+				continue
+			}
+			invB := invNorms[j]
+			var dot float64
+			for k, av := range rowA {
+				dot += float64(av) * float64(rowB[k])
+			}
+			similarity := dot * invA * invB
+			total += similarity
 			if similarity >= kvCoherenceThreshold {
 				locked++
 			}
@@ -454,22 +483,17 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			}
 		}
 		// Pass 2: pairwise dot products only — divide once with
-		// precomputed inverse norms, no per-pair sqrt.
+		// precomputed inverse norms, no per-pair sqrt. The original
+		// kvAnalysisCosine32 returns 0 when either norm is zero, which
+		// with threshold=0.3 contributes 0 similarity + locked++.
 		for i := 0; i < seqLen; i++ {
 			invA := invNorms[i]
 			if invA == 0 {
-				// Pairs with the zero-norm row still increment counters
-				// (matches the original kvAnalysisCosine32 behaviour of
-				// returning 0 similarity on degenerate inputs).
-				for j := i + 1; j < seqLen; j++ {
-					if invNorms[j] == 0 {
-						continue
-					}
-					pairs++
-					if threshold > 0 {
-						locked++
-					}
-				}
+				// All (i,j) pairs degenerate to similarity 0 → count
+				// pairs + locked (since 0 < threshold).
+				remaining := seqLen - i - 1
+				pairs += remaining
+				locked += remaining
 				continue
 			}
 			rowA := flat[i*headDim : (i+1)*headDim]
@@ -477,9 +501,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				invB := invNorms[j]
 				if invB == 0 {
 					pairs++
-					if threshold > 0 {
-						locked++
-					}
+					locked++
 					continue
 				}
 				rowB := flat[j*headDim : (j+1)*headDim]
