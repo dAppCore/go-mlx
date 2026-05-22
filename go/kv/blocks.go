@@ -220,10 +220,17 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 }
 
 func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
-	seen := map[int]bool{0: true, seqLen: true}
+	// Build directly into a sorted, dedup'd slice — boundary count is
+	// O(seqLen/blockSize) + O(layers), typically <10. Mapping was the
+	// 4th-largest alloc source on SaveStateBlocks.
+	expected := 2 + (seqLen / blockSize) + len(s.Layers)
+	boundaries := make([]int, 0, expected)
+	// Deterministic boundaries are pre-sorted: 0, blockSize, 2*blockSize, ..., seqLen.
+	boundaries = append(boundaries, 0)
 	for next := blockSize; next < seqLen; next += blockSize {
-		seen[next] = true
+		boundaries = append(boundaries, next)
 	}
+	boundaries = append(boundaries, seqLen)
 	for _, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
@@ -232,14 +239,27 @@ func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
 		if windowLen <= 0 || windowLen >= seqLen {
 			continue
 		}
-		seen[seqLen-windowLen] = true
+		boundaries = kvBoundaryInsert(boundaries, seqLen-windowLen)
 	}
-	boundaries := make([]int, 0, len(seen))
-	for boundary := range seen {
-		boundaries = append(boundaries, boundary)
-	}
-	core.SliceSort(boundaries)
 	return boundaries, nil
+}
+
+// kvBoundaryInsert keeps boundaries sorted + deduped while inserting v.
+// boundaries is small (≤ seqLen/blockSize + few layer-window slots)
+// so linear scan beats map ops or a binary search + memmove.
+func kvBoundaryInsert(boundaries []int, v int) []int {
+	for i, b := range boundaries {
+		if b == v {
+			return boundaries
+		}
+		if b > v {
+			boundaries = append(boundaries, 0)
+			copy(boundaries[i+1:], boundaries[i:])
+			boundaries[i] = v
+			return boundaries
+		}
+	}
+	return append(boundaries, v)
 }
 
 func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
@@ -328,8 +348,11 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 }
 
 func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, error) {
+	// Inline the per-length collect+iterate to skip a [2]int + [4]int
+	// slice literal alloc per layer + per head (SaveStateBlocks fires
+	// once per checkpointed block, with O(layers × heads) alloc count).
 	windowLen := 0
-	for _, length := range []int{
+	for _, length := range [2]int{
 		kvSnapshotLayerRawWindowLen(layer.KeyBytes, layer.KeyDType, layer.KeyShape, seqLen),
 		kvSnapshotLayerRawWindowLen(layer.ValueBytes, layer.ValueDType, layer.ValueShape, seqLen),
 	} {
@@ -348,7 +371,7 @@ func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, er
 		}
 	}
 	for _, head := range layer.Heads {
-		for _, length := range []int{
+		for _, length := range [4]int{
 			kvSnapshotTensorWindowLen(len(head.Key), seqLen, headDim),
 			kvSnapshotTensorWindowLen(len(head.Value), seqLen, headDim),
 			kvSnapshotRawTensorWindowLen(head.KeyBytes, head.KeyDType, seqLen, headDim),
@@ -1065,7 +1088,11 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	}
 	tags["kv_encoding"] = kvEncoding
 	tags["payload_encoding"] = payloadEncoding
-	tags["block_index"] = core.Itoa(block.Index)
+	// Compute the index string once and reuse — block.Index is used in
+	// tags, URI, and the default Title. The previous code minted three
+	// separate copies via core.Itoa.
+	indexStr := core.Itoa(block.Index)
+	tags["block_index"] = indexStr
 	tags["token_start"] = core.Itoa(block.TokenStart)
 	tags["token_count"] = core.Itoa(block.TokenCount)
 	// Pre-size for the deterministic 2 appended labels — avoids the
@@ -1076,11 +1103,16 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	// Direct string concatenation skips the fmt.Sprintf parse + format
 	// state machinery on every per-block save (~SaveStateBlocks fires once
-	// per checkpointed block during prefill).
-	indexStr := core.Itoa(block.Index)
+	// per checkpointed block during prefill). Avoid materialising the
+	// default title when opts.Title is non-empty — the previous code
+	// concatenated "go-mlx KV block " + indexStr unconditionally.
+	title := opts.Title
+	if title == "" {
+		title = "go-mlx KV block " + indexStr
+	}
 	return state.PutOptions{
 		URI:    baseURI + "/block/" + indexStr,
-		Title:  firstNonEmpty(opts.Title, "go-mlx KV block "+indexStr),
+		Title:  title,
 		Kind:   kind,
 		Track:  track,
 		Tags:   tags,

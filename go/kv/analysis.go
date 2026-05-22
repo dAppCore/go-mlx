@@ -78,6 +78,13 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 	var layerCount, entropyCount, couplingCount int
 	var lockedPairs, totalPairs int
 
+	// One magnitudes scratch reused across every kvAnalysisHeadEntropy
+	// call (every layer × head × side). Was per-call alloc before.
+	var entropyScratch []float64
+	if snapshot.SeqLen > 0 {
+		entropyScratch = make([]float64, snapshot.SeqLen)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
@@ -105,11 +112,11 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		}
 		for _, head := range layerSnapshot.Heads {
 			if len(head.Key) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, entropyScratch)
 				entropyCount++
 			}
 			if len(head.Value) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, entropyScratch)
 				entropyCount++
 			}
 		}
@@ -164,13 +171,21 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 	var layerCount, entropyCount, couplingCount int
 	var lockedPairs, totalPairs int
 
+	// One invNorms scratch per Analyze — reused across all layer
+	// keys+values calls to avoid per-layer/per-side allocations
+	// (snapshot.SeqLen × 8 bytes × layers × 2 sides).
+	var invNorms []float64
+	if snapshot.SeqLen > 0 {
+		invNorms = make([]float64, snapshot.SeqLen)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
 			continue
 		}
-		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true)
-		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false)
+		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true, invNorms)
+		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false, invNorms)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
 		result.LayerKeyCoherence[layer] = keyDiff
@@ -187,11 +202,14 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 		}
 		for _, head := range layerSnapshot.Heads {
 			if len(head.Key) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim)
+				// invNorms double-duty: reuse as the entropy
+				// magnitudes scratch since the position-differentiation
+				// pair loop has finished consuming it for this layer.
+				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, invNorms)
 				entropyCount++
 			}
 			if len(head.Value) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, invNorms)
 				entropyCount++
 			}
 		}
@@ -321,13 +339,42 @@ func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 }
 
 func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
+	// Precompute per-vector 1/|v| once so the O(N²) pair loop only
+	// pays a dot product + 2 muls — same self-norm-recompute waste
+	// kvAnalysisPositionDifferentiation had.
+	n := len(vectors)
+	invNorms := make([]float64, n)
+	for i, vec := range vectors {
+		var sum float64
+		for _, value := range vec {
+			v := float64(value)
+			sum += v * v
+		}
+		if sum > 0 {
+			invNorms[i] = 1.0 / math.Sqrt(sum)
+		}
+	}
 	var total float64
 	var locked, pairs int
-	for i := 0; i < len(vectors); i++ {
-		for j := i + 1; j < len(vectors); j++ {
-			similarity := kvAnalysisCosine32(vectors[i], vectors[j])
-			total += similarity
+	for i := 0; i < n; i++ {
+		invA := invNorms[i]
+		rowA := vectors[i]
+		for j := i + 1; j < n; j++ {
+			rowB := vectors[j]
+			// Match the original kvAnalysisCosine32 semantics: count
+			// the pair, with similarity = 0 when lengths mismatch or
+			// either norm is zero.
 			pairs++
+			if len(rowA) != len(rowB) || len(rowA) == 0 || invA == 0 || invNorms[j] == 0 {
+				continue
+			}
+			invB := invNorms[j]
+			var dot float64
+			for k, av := range rowA {
+				dot += float64(av) * float64(rowB[k])
+			}
+			similarity := dot * invA * invB
+			total += similarity
 			if similarity >= kvCoherenceThreshold {
 				locked++
 			}
@@ -359,19 +406,47 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if len(heads) == 0 {
 		return nil
 	}
-	// At most one state slot per head — pre-size to skip the
-	// geometric-grow append cycle.
-	states := make([][]float32, 0, len(heads))
+	// Find the first contributor head — its (Key+Value) length is the
+	// shared mean-vector size; heads that don't match that exact shape
+	// are skipped (matches the original kvAnalysisMeanVector behaviour).
+	var size int
 	for _, head := range heads {
-		if len(head.Key) == 0 && len(head.Value) == 0 {
+		if l := len(head.Key) + len(head.Value); l > 0 {
+			size = l
+			break
+		}
+	}
+	if size == 0 {
+		return nil
+	}
+	// Sum-into-place + multiply-by-inverse: skip the per-head combined
+	// alloc + the intermediate [][]float32 by aggregating directly into
+	// the mean buffer. The original allocated len(heads) backing slices
+	// + len(heads) combined buffers for every layer Analyze touched.
+	mean := make([]float32, size)
+	var count int
+	for _, head := range heads {
+		keyLen := len(head.Key)
+		valLen := len(head.Value)
+		if keyLen+valLen != size {
 			continue
 		}
-		combined := make([]float32, 0, len(head.Key)+len(head.Value))
-		combined = append(combined, head.Key...)
-		combined = append(combined, head.Value...)
-		states = append(states, combined)
+		for i, v := range head.Key {
+			mean[i] += v
+		}
+		for j, v := range head.Value {
+			mean[keyLen+j] += v
+		}
+		count++
 	}
-	return kvAnalysisMeanVector(states)
+	if count == 0 {
+		return nil
+	}
+	invScale := float32(1) / float32(count)
+	for i := range mean {
+		mean[i] *= invScale
+	}
+	return mean
 }
 
 func kvAnalysisMeanVector(vectors [][]float32) []float32 {
@@ -403,10 +478,23 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	return mean
 }
 
-func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool) (float64, int, int) {
+func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool, invNorms []float64) (float64, int, int) {
 	if seqLen < 2 || headDim <= 0 {
 		return 0, 0, 0
 	}
+	// Precompute per-position inverse norms once (O(seqLen)) so the
+	// O(seqLen²) pair loop only pays a dot product + 2 muls. Previously
+	// each pair recomputed normA + normB inside kvAnalysisCosine32,
+	// giving O(seqLen²·headDim) self-norm work — pure waste because
+	// normA only depends on position i. Drops Analyze_2048Tokens from
+	// ~28ms to a fraction. invNorms is caller-owned scratch reused
+	// across keys+values+layers.
+	if cap(invNorms) < seqLen {
+		invNorms = make([]float64, seqLen)
+	} else {
+		invNorms = invNorms[:seqLen]
+	}
+	threshold := 1.0 - kvCoherenceThreshold
 	var totalSimilarity float64
 	var locked, pairs int
 	for _, head := range heads {
@@ -414,20 +502,60 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		if keys {
 			flat = head.Key
 		}
+		if len(flat) < seqLen*headDim {
+			continue
+		}
+		// Pass 1: per-position |v| as 1/|v| (or 0 for zero positions).
+		for pos := 0; pos < seqLen; pos++ {
+			start := pos * headDim
+			row := flat[start : start+headDim]
+			var sum float64
+			for _, value := range row {
+				v := float64(value)
+				sum += v * v
+			}
+			if sum == 0 {
+				invNorms[pos] = 0
+			} else {
+				invNorms[pos] = 1.0 / math.Sqrt(sum)
+			}
+		}
+		// Pass 2: pairwise dot products only — divide once with
+		// precomputed inverse norms, no per-pair sqrt. The original
+		// kvAnalysisCosine32 returns 0 when either norm is zero, which
+		// with threshold=0.3 contributes 0 similarity + locked++.
 		for i := 0; i < seqLen; i++ {
-			first := kvAnalysisPositionVector(flat, i, headDim)
-			if first == nil {
+			invA := invNorms[i]
+			if invA == 0 {
+				// All (i,j) pairs degenerate to similarity 0 → count
+				// pairs + locked (since 0 < threshold).
+				remaining := seqLen - i - 1
+				pairs += remaining
+				locked += remaining
 				continue
 			}
+			baseA := i * headDim
+			rowA := flat[baseA : baseA+headDim]
 			for j := i + 1; j < seqLen; j++ {
-				second := kvAnalysisPositionVector(flat, j, headDim)
-				if second == nil {
+				invB := invNorms[j]
+				if invB == 0 {
+					pairs++
+					locked++
 					continue
 				}
-				similarity := kvAnalysisCosine32(first, second)
+				// Index directly into flat — drops the rowB := slice
+				// header creation and lets the compiler prove the
+				// j*headDim+k addressing is in bounds via the
+				// outer len(flat) check.
+				baseB := j * headDim
+				var dot float64
+				for k, av := range rowA {
+					dot += float64(av) * float64(flat[baseB+k])
+				}
+				similarity := dot * invA * invB
 				totalSimilarity += similarity
 				pairs++
-				if similarity < 1.0-kvCoherenceThreshold {
+				if similarity < threshold {
 					locked++
 				}
 			}
@@ -466,31 +594,41 @@ func kvAnalysisCosine32(a, b []float32) float64 {
 	return dot / denom
 }
 
-func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
+func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int, scratch []float64) float64 {
 	if seqLen <= 1 || headDim <= 0 {
 		return 0
 	}
-	// Two-pass without retaining magnitudes — first pass accumulates
-	// sqrt(sum-of-squares) per position into the running total; second
-	// pass recomputes the same magnitudes for entropy. This drops the
-	// per-head []float64{seqLen} allocation (16KB at seqLen=2048) which
-	// dominated Analyze's per-call alloc footprint.
+	// Single-pass via caller-owned scratch slice. The prior
+	// implementation paid 2× sqrt + 2× inner FMA loop to avoid the
+	// per-head allocation, but with analyzeKVGQA passing in a shared
+	// buffer (reused across all heads + layers + sides) the alloc
+	// cost falls to zero. scratch is cap-checked so over-eager callers
+	// don't have to size it perfectly.
+	if cap(scratch) < seqLen {
+		scratch = make([]float64, seqLen)
+	} else {
+		scratch = scratch[:seqLen]
+	}
 	var total float64
+	n := 0
 	for pos := 0; pos < seqLen; pos++ {
 		start := pos * headDim
 		if start >= len(head) {
 			break
 		}
-		var sum float64
 		end := start + headDim
 		if end > len(head) {
 			end = len(head)
 		}
+		var sum float64
 		for _, value := range head[start:end] {
 			v := float64(value)
 			sum += v * v
 		}
-		total += math.Sqrt(sum)
+		mag := math.Sqrt(sum)
+		scratch[n] = mag
+		total += mag
+		n++
 	}
 	if total == 0 {
 		return 0
@@ -501,21 +639,7 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 	}
 	invTotal := 1 / total
 	var entropy float64
-	for pos := 0; pos < seqLen; pos++ {
-		start := pos * headDim
-		if start >= len(head) {
-			break
-		}
-		var sum float64
-		end := start + headDim
-		if end > len(head) {
-			end = len(head)
-		}
-		for _, value := range head[start:end] {
-			v := float64(value)
-			sum += v * v
-		}
-		magnitude := math.Sqrt(sum)
+	for _, magnitude := range scratch[:n] {
 		p := magnitude * invTotal
 		if p > 0 {
 			entropy -= p * math.Log2(p)

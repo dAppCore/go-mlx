@@ -163,7 +163,7 @@ func TestKVAnalysisCosine32_Bad(t *testing.T) {
 }
 
 func TestKVAnalysisHeadEntropy_Ugly(t *testing.T) {
-	got := kvAnalysisHeadEntropy([]float32{1, 0, 1, 0}, 2, 2)
+	got := kvAnalysisHeadEntropy([]float32{1, 0, 1, 0}, 2, 2, nil)
 
 	if math.Abs(got-1) > 1e-6 {
 		t.Fatalf("kvAnalysisHeadEntropy = %f, want 1 for balanced magnitudes", got)

@@ -208,8 +208,15 @@ func kvSnapshotStatePutOptions(snapshot *Snapshot, opts StateOptions, envelope k
 	labels := make([]string, len(opts.Labels), len(opts.Labels)+2)
 	copy(labels, opts.Labels)
 	labels = append(labels, "go-mlx", "kv-snapshot")
+	// Skip the "mlx://kv-snapshot/" + KVHash concat when opts.URI is
+	// already set — the previous firstNonEmpty call materialised it
+	// unconditionally.
+	uri := opts.URI
+	if uri == "" {
+		uri = "mlx://kv-snapshot/" + envelope.KVHash
+	}
 	return state.PutOptions{
-		URI:    firstNonEmpty(opts.URI, "mlx://kv-snapshot/"+envelope.KVHash),
+		URI:    uri,
 		Title:  firstNonEmpty(opts.Title, "go-mlx KV snapshot"),
 		Kind:   kind,
 		Track:  track,

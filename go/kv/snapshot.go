@@ -3,7 +3,9 @@
 package kv
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	stdio "io"
 	"math"
 
@@ -455,7 +457,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		if chunk != nil {
 			snapshot.Tokens = make([]int32, tokenCount)
 			for i := range snapshot.Tokens {
-				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 			}
 		}
 	}
@@ -466,7 +468,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			if chunk != nil {
 				snapshot.Generated = make([]int32, generatedCount)
 				for i := range snapshot.Generated {
-					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 				}
 			}
 		}
@@ -516,7 +518,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			if chunk != nil {
 				snapshot.LogitShape = make([]int32, shapeCount)
 				for i := range snapshot.LogitShape {
-					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 				}
 			}
 		}
@@ -559,7 +561,7 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
 			for i := range tokens {
-				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 			}
 		}
 	}
@@ -614,7 +616,7 @@ func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 	}
 	out := dst[start:]
 	for i := range out {
-		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	if reader.err != nil {
 		return dst, core.E("Load", "parse State tokens", reader.err)
@@ -628,9 +630,7 @@ func appendKVBytes(dst, src []byte) []byte {
 }
 
 func appendKVU32(dst []byte, value uint32) []byte {
-	var buf [4]byte
-	binary.LittleEndian.PutUint32(buf[:], value)
-	return append(dst, buf[:]...)
+	return binary.LittleEndian.AppendUint32(dst, value)
 }
 
 func appendKVI32(dst []byte, value int32) []byte {
@@ -665,13 +665,28 @@ func appendKVF32Raw(dst []byte, values []float32) []byte {
 
 func appendKVEncodedTensor(dst []byte, values []float32, dtype string, raw []byte, encoding Encoding) ([]byte, error) {
 	if encoding == EncodingNative {
-		if raw, dtype, elements, ok, err := normalizeKVSnapshotNativeTensor(values, dtype, raw); err != nil {
-			return nil, err
-		} else if ok {
+		// Fast path when raw is already present — append directly with
+		// no intermediate alloc.
+		if len(raw) > 0 {
+			rawDType, rawElements, _, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				dst = appendKVU32(dst, 2)
+				dst = appendKVU32(dst, uint32(rawElements))
+				dst = appendKVBytes(dst, core.AsBytes(rawDType))
+				return appendKVBytes(dst, raw), nil
+			}
+		} else if len(values) > 0 {
+			// Stream float32 values directly into dst — skips the
+			// normalizeKVSnapshotNativeTensor intermediate alloc + the
+			// follow-on appendKVBytes copy.
 			dst = appendKVU32(dst, 2)
-			dst = appendKVU32(dst, uint32(elements))
-			dst = appendKVBytes(dst, core.AsBytes(dtype))
-			return appendKVBytes(dst, raw), nil
+			dst = appendKVU32(dst, uint32(len(values)))
+			dst = appendKVBytes(dst, core.AsBytes("float32"))
+			dst = appendKVU32(dst, uint32(len(values)*4))
+			return appendKVF32Raw(dst, values), nil
 		}
 	}
 	if len(values) == 0 && len(raw) > 0 {
@@ -731,7 +746,7 @@ func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte)
 	// per-element [4]byte stack buffer + 4-byte append cycle.
 	raw = make([]byte, rawBytes)
 	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
+		binary.LittleEndian.PutUint32(raw[i*4:i*4+4], math.Float32bits(value))
 	}
 	return raw, "float32", len(values), true, nil
 }
@@ -812,9 +827,20 @@ type kvSnapshotReader struct {
 }
 
 type kvSnapshotStreamWriter struct {
-	writer stdio.Writer
-	err    error
-	buf    [4]byte
+	writer  stdio.Writer
+	err     error
+	buf     [4]byte
+	scratch []byte
+}
+
+// scratchFor returns a scratch buffer of length n, reusing the
+// previously-allocated scratch slice when it fits.
+func (w *kvSnapshotStreamWriter) scratchFor(n int) []byte {
+	if cap(w.scratch) < n {
+		w.scratch = make([]byte, n)
+		return w.scratch
+	}
+	return w.scratch[:n]
 }
 
 func (w *kvSnapshotStreamWriter) bytes(data []byte) {
@@ -853,27 +879,64 @@ func (w *kvSnapshotStreamWriter) i32s(values []int32) {
 // i32sRaw writes int32 values without a length prefix. Used by
 // writeWithOptions when the length has already been written.
 func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
-	for _, value := range values {
-		w.u32(uint32(value))
+	if w.err != nil || len(values) == 0 {
+		return
 	}
+	// Stage the whole block into the writer's reused scratch buffer
+	// then issue one writer.Write — saves N calls into writer.Write
+	// per value (sha256 + PutBytesStream both pay per-call overhead).
+	buf := w.scratchFor(len(values) * 4)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:i*4+4], uint32(value))
+	}
+	w.bytes(buf)
 }
 
 func (w *kvSnapshotStreamWriter) f32s(values []float32) {
 	w.u32(uint32(len(values)))
-	for _, value := range values {
-		w.u32(math.Float32bits(value))
+	w.f32sRaw(values)
+}
+
+// f32sRaw writes float32 values without a length prefix.
+func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
+	if w.err != nil || len(values) == 0 {
+		return
 	}
+	// Stage the whole block into the writer's reused scratch buffer
+	// then issue one writer.Write — saves N calls into writer.Write
+	// per value (sha256 + PutBytesStream both pay per-call overhead).
+	buf := w.scratchFor(len(values) * 4)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:i*4+4], math.Float32bits(value))
+	}
+	w.bytes(buf)
 }
 
 func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, raw []byte, encoding Encoding) error {
 	if encoding == EncodingNative {
-		if raw, dtype, elements, ok, err := normalizeKVSnapshotNativeTensor(values, dtype, raw); err != nil {
-			return err
-		} else if ok {
+		// Fast path when raw is already present — write directly with
+		// no intermediate alloc.
+		if len(raw) > 0 {
+			rawDType, rawElements, _, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
+			if err != nil {
+				return err
+			}
+			if ok {
+				w.u32(2)
+				w.u32(uint32(rawElements))
+				w.bytesWithLength(core.AsBytes(rawDType))
+				w.bytesWithLength(raw)
+				return w.err
+			}
+		} else if len(values) > 0 {
+			// Stream float32 values directly — skips the intermediate
+			// normalizeKVSnapshotNativeTensor alloc that the
+			// pre-bytesWithOptions sibling path already eliminated.
 			w.u32(2)
-			w.u32(uint32(elements))
-			w.bytesWithLength(core.AsBytes(dtype))
-			w.bytesWithLength(raw)
+			w.u32(uint32(len(values)))
+			w.bytesWithLength(core.AsBytes("float32"))
+			w.u32(uint32(len(values) * 4))
+			w.f32sRaw(values)
 			return w.err
 		}
 	}
@@ -890,9 +953,7 @@ func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, r
 	}
 	w.u32(0)
 	w.u32(uint32(len(values)))
-	for _, value := range values {
-		w.u32(math.Float32bits(value))
-	}
+	w.f32sRaw(values)
 	return w.err
 }
 
@@ -939,7 +1000,7 @@ func (r *kvSnapshotReader) i32s() []int32 {
 	}
 	values := make([]int32, size)
 	for i := range values {
-		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	return values
 }
@@ -966,7 +1027,7 @@ func (r *kvSnapshotReader) f32s() []float32 {
 	}
 	values := make([]float32, size)
 	for i := range values {
-		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
+		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	return values
 }
@@ -996,7 +1057,7 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 		}
 		values := make([]float32, size)
 		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 		}
 		return kvSnapshotEncodedTensor{Values: values}
 	case 1:
@@ -1057,15 +1118,15 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 	switch dtype {
 	case "float32":
 		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4 : i*4+4]))
 		}
 	case "float16":
 		for i := range values {
-			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2:]))
+			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
 		}
 	case "bfloat16":
 		for i := range values {
-			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:])) << 16)
+			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:i*2+2])) << 16)
 		}
 	default:
 		return nil, core.NewError("mlx: unsupported KV native tensor dtype")
@@ -1212,17 +1273,17 @@ func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if snapshot == nil {
 		return "", core.NewError("mlx: KV snapshot is nil")
 	}
-	// bytesWithOptions is read-only — version derivation and token-offset
-	// defaulting are applied inline during encoding, so the defensive clone
-	// + normalize round-trip is pure waste. Direct encode is hash-stable
-	// because the writer always emits len(Tokens) when TokenOffset is zero.
+	// Stream the encoded bytes straight into sha256 — skips the
+	// bytesWithOptions intermediate []byte alloc (~50KB for 2048-token
+	// snapshots). bytesWithOptions is read-only over the snapshot, so
+	// the stream-encoder produces identical bytes.
 	opts := SaveOptions{}
 	if requiresNativeEncoding(snapshot) {
 		opts.KVEncoding = EncodingNative
 	}
-	data, err := snapshot.bytesWithOptions(opts)
-	if err != nil {
+	hash := sha256.New()
+	if err := snapshot.writeWithOptions(hash, opts); err != nil {
 		return "", err
 	}
-	return core.SHA256Hex(data), nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
