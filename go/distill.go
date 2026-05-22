@@ -548,27 +548,35 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	for i := range teacher {
 		// Per-row mask access — fetch maskRow once, then per-column the
 		// check is a single len + element compare with no extra branches.
+		// Hoist tRow + sRow once per i: the inner loop previously paid for
+		// three teacher[i] / two student[i] slice-header loads per token
+		// the compiler can't fold because mask/teacher/student aliasing
+		// can't be proven away through the function call boundary.
 		var maskRow []float32
 		if maskRows != nil && i < len(maskRows) {
 			maskRow = maskRows[i]
 		}
-		for j := range teacher[i] {
+		tRow := teacher[i]
+		sRow := student[i]
+		for j := range tRow {
 			if maskRows != nil {
 				if maskRow == nil || j >= len(maskRow) || maskRow[j] <= 0 {
 					continue
 				}
 			}
-			vocab := len(teacher[i][j])
+			tCell := tRow[j]
+			sCell := sRow[j]
+			vocab := len(tCell)
 			if cap(teacherScratch) < vocab {
 				teacherScratch = make([]float64, vocab)
 				studentScratch = make([]float64, vocab)
 			}
 			teacherScratch = teacherScratch[:vocab]
 			studentScratch = studentScratch[:vocab]
-			if err := logSoftmaxTemperatureInto(teacher[i][j], cfg.Temperature, teacherScratch); err != nil {
+			if err := logSoftmaxTemperatureInto(tCell, cfg.Temperature, teacherScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			if err := logSoftmaxTemperatureInto(student[i][j], cfg.Temperature, studentScratch); err != nil {
+			if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
 			// negProb hoists the shared -math.Exp(teacherLogProb) so the
