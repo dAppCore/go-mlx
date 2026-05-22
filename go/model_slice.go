@@ -245,11 +245,22 @@ func modelSliceLabelInt64(labels map[string]string, key string) int64 {
 	if len(labels) == 0 {
 		return 0
 	}
-	parsed := core.ParseInt(labels[key], 10, 64)
-	if !parsed.OK {
+	// Empty value short-circuit — strconv.ParseInt("") allocates a
+	// strconv.NumError on the failure path that always escapes to
+	// the heap, so explicitly skipping that branch keeps the
+	// miss-key case alloc-free.
+	value := labels[key]
+	if value == "" {
 		return 0
 	}
-	return parsed.Value.(int64)
+	// strconv.ParseInt avoids the core.Result interface-boxing trip
+	// (Value any + type-assertion on the hot path). The semantics are
+	// identical — both return 0 on parse failure.
+	v, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func tensorRefsByteLen(refs []safetensors.TensorRef) int64 {
