@@ -270,7 +270,10 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, read.Value.(error).Error(), tokenizerPath)
 		return
 	}
-	var probe map[string]any
+	// We only need to confirm tokenizer.json parses; the contents
+	// aren't read here. Unmarshalling into an empty struct skips
+	// allocating a map[string]any tree for a multi-MB tokenizer.
+	var probe struct{}
 	if result := core.JSONUnmarshal(read.Value.([]byte), &probe); !result.OK {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, result.Value.(error).Error(), tokenizerPath)
 		return
