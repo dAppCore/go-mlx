@@ -67,10 +67,29 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	alignLen := len(layerAlign)
 	layerCoherence := make([]float64, numLayers)
 	layerCross := make([]float64, numLayers)
-	for layer := range numLayers {
-		// Inlined layerMetric — the `layer >= 0` branch is dead (range
-		// numLayers starts at 0), and pre-resolved len() lets the compiler
-		// fold the slice-bound check into a single compare.
+	// Split into hot in-bounds prefix and fallback tail. The common case
+	// is keyLen == valueLen == alignLen == numLayers — in that case the
+	// tail loop runs zero iterations and the prefix loop has no per-
+	// iteration bounds-check branches against the analysis slices.
+	inBounds := numLayers
+	if keyLen < inBounds {
+		inBounds = keyLen
+	}
+	if valueLen < inBounds {
+		inBounds = valueLen
+	}
+	if alignLen < inBounds {
+		inBounds = alignLen
+	}
+	for layer := range inBounds {
+		k := clampUnit(layerKey[layer])
+		v := clampUnit(layerValue[layer])
+		a := clampUnit(layerAlign[layer])
+		// (k + v) / 2 stays in [0,1] when both operands do — no outer clamp.
+		layerCoherence[layer] = (k + v) / 2.0
+		layerCross[layer] = a
+	}
+	for layer := inBounds; layer < numLayers; layer++ {
 		var k, v, a float64
 		if layer < keyLen {
 			k = clampUnit(layerKey[layer])
@@ -87,7 +106,6 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 		} else {
 			a = clampedFallbackAlign
 		}
-		// (k + v) / 2 stays in [0,1] when both operands do — no outer clamp.
 		layerCoherence[layer] = (k + v) / 2.0
 		layerCross[layer] = a
 	}
