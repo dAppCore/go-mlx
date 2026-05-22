@@ -573,25 +573,30 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 
 // ProjectRouterScores computes hidden @ router.weight.T.
 func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32, error) {
-	if router.NumExperts <= 0 || router.HiddenSize <= 0 {
+	numExperts := router.NumExperts
+	hiddenSize := router.HiddenSize
+	if numExperts <= 0 || hiddenSize <= 0 {
 		return nil, core.NewError("mlx: MiniMax M2 router requires expert and hidden sizes")
 	}
-	if len(router.Weight) != router.NumExperts*router.HiddenSize {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router weight length %d, expected %d", len(router.Weight), router.NumExperts*router.HiddenSize))
+	weight := router.Weight
+	if len(weight) != numExperts*hiddenSize {
+		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router weight length %d, expected %d", len(weight), numExperts*hiddenSize))
 	}
 	out := make([][]float32, len(hidden))
 	for tokenIndex, row := range hidden {
-		if len(row) != router.HiddenSize {
-			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), router.HiddenSize))
+		if len(row) != hiddenSize {
+			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), hiddenSize))
 		}
-		scores := make([]float32, router.NumExperts)
-		for expertID := 0; expertID < router.NumExperts; expertID++ {
-			base := expertID * router.HiddenSize
+		scores := make([]float32, numExperts)
+		base := 0
+		for expertID := 0; expertID < numExperts; expertID++ {
+			expertWeights := weight[base : base+hiddenSize]
 			sum := float32(0)
-			for hiddenIndex, value := range row {
-				sum += value * router.Weight[base+hiddenIndex]
+			for i, w := range expertWeights {
+				sum += row[i] * w
 			}
 			scores[expertID] = sum
+			base += hiddenSize
 		}
 		out[tokenIndex] = scores
 	}
