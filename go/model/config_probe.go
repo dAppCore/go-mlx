@@ -224,8 +224,17 @@ func architectureFromTransformersName(architecture string) string {
 }
 
 func compactArchitectureName(value string) string {
-	compact := core.Lower(value)
-	compact = core.Replace(compact, "_", "")
-	compact = core.Replace(compact, "-", "")
-	return core.Replace(compact, ".", "")
+	buf := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch c {
+		case '_', '-', '.':
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf = append(buf, c)
+	}
+	return core.AsString(buf)
 }
