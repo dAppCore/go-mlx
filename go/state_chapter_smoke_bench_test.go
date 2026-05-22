@@ -25,8 +25,9 @@ var chapterSmokeConfigSnapshot = chaptersmoke.Config{
 
 // Sinks defeat compiler DCE.
 var (
-	stateChapterSmokeBenchSinkOpts []GenerateOption
-	stateChapterSmokeBenchSinkCfg  GenerateConfig
+	stateChapterSmokeBenchSinkOpts   []GenerateOption
+	stateChapterSmokeBenchSinkCfg    GenerateConfig
+	stateChapterSmokeBenchSinkRunner chaptersmoke.Runner
 )
 
 type stateChapterSmokeStubSink struct{}
@@ -111,5 +112,19 @@ func BenchmarkStateChapterSmoke_ChapterGenerateConfig(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		stateChapterSmokeBenchSinkCfg = chapterGenerateConfig(chapterSmokeConfigSnapshot)
+	}
+}
+
+// --- NewModelStateKVChapterRunner: per-smoke-session runner construction ---
+
+func BenchmarkStateChapterSmoke_NewRunner(b *testing.B) {
+	// Use a nil Model — none of the closures dereference it during
+	// runner construction. The benchmark exercises the wrapper alloc
+	// shape (closures + option slice), not the model-side path.
+	baseGen := GenerateConfig{MaxTokens: 256, Temperature: 0.7}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stateChapterSmokeBenchSinkRunner = NewModelStateKVChapterRunner(nil, baseGen)
 	}
 }
