@@ -517,14 +517,18 @@ func cloneSplitTokenIDs(in []int32) []int32 {
 	if len(in) == 0 {
 		return nil
 	}
-	return append([]int32(nil), in...)
+	out := make([]int32, len(in))
+	copy(out, in)
+	return out
 }
 
 func cloneSplitHidden(in []float32) []float32 {
 	if len(in) == 0 {
 		return nil
 	}
-	return append([]float32(nil), in...)
+	out := make([]float32, len(in))
+	copy(out, in)
+	return out
 }
 
 type splitPowerRecorder struct {
