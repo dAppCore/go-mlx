@@ -490,33 +490,67 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 }
 
 func weightFormatAndBytes(files []ModelFile) (string, uint64) {
+	if len(files) == 0 {
+		return "", 0
+	}
+	// Cache the format strings — pulling string(mp.ModelPackFormat...) out
+	// of the loop avoids the implicit conversion per iteration and lets
+	// the per-format pointer compare instead of a fresh string each time.
+	const (
+		fmtBin = "bin"
+	)
+	safetensors := string(mp.ModelPackFormatSafetensors)
+	gguf := string(mp.ModelPackFormatGGUF)
+	mixed := string(mp.ModelPackFormatMixed)
+
 	var format string
 	var total uint64
 	for _, file := range files {
-		name := core.Lower(file.filename())
+		// hasSuffixFold avoids the per-file Lower alloc — model weight
+		// filenames are ASCII so case-folding the suffix is sufficient.
+		name := file.filename()
 		switch {
-		case core.HasSuffix(name, ".safetensors"):
+		case hasSuffixFold(name, ".safetensors"):
 			if format == "" {
-				format = string(mp.ModelPackFormatSafetensors)
-			} else if format != string(mp.ModelPackFormatSafetensors) {
-				format = string(mp.ModelPackFormatMixed)
+				format = safetensors
+			} else if format != safetensors {
+				format = mixed
 			}
 			total += file.byteSize()
-		case core.HasSuffix(name, ".gguf"):
+		case hasSuffixFold(name, ".gguf"):
 			if format == "" {
-				format = string(mp.ModelPackFormatGGUF)
-			} else if format != string(mp.ModelPackFormatGGUF) {
-				format = string(mp.ModelPackFormatMixed)
+				format = gguf
+			} else if format != gguf {
+				format = mixed
 			}
 			total += file.byteSize()
-		case core.HasSuffix(name, ".bin"):
+		case hasSuffixFold(name, ".bin"):
 			if format == "" {
-				format = "bin"
+				format = fmtBin
 			}
 			total += file.byteSize()
 		}
 	}
 	return format, total
+}
+
+// hasSuffixFold reports whether s ends with suffix using ASCII case-folding.
+// Suffix is required to be lowercase. Pure scan, no allocations.
+func hasSuffixFold(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	off := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		c := s[off+i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func inferQuantBits(files []ModelFile) int {
