@@ -909,11 +909,12 @@ func routerGateCandidates(spec TensorSpec) []string {
 }
 
 func routerBiasCandidates(spec TensorSpec, layer int) []string {
+	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
 	names := []string{
 		spec.Name,
-		core.Sprintf("model.layers.%d.block_sparse_moe.e_score_correction_bias", layer),
-		core.Sprintf("model.layers.%d.mlp.e_score_correction_bias", layer),
-		core.Sprintf("model.layers.%d.block_sparse_moe.gate.e_score_correction_bias", layer),
+		core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
+		core.Concat(layerPrefix, "mlp.e_score_correction_bias"),
+		core.Concat(layerPrefix, "block_sparse_moe.gate.e_score_correction_bias"),
 	}
 	names = append(names, spec.Aliases...)
 	out := make([]string, 0, len(names))

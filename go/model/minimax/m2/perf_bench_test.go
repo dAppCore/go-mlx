@@ -125,7 +125,34 @@ func BenchmarkDispatchExperts(b *testing.B) {
 	}
 }
 
-// BenchmarkForwardLazyExpertLoadMetalClone exercises only the clone-into-result
+// BenchmarkRouterBiasCandidates covers the per-call layer/prefix string
+// build path used when resolving the routing correction bias tensor.
+func BenchmarkRouterBiasCandidates(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.e_score_correction_bias",
+		Aliases: []string{"model.layers.0.mlp.e_score_correction_bias"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = routerBiasCandidates(spec, 17)
+	}
+}
+
+// BenchmarkSidecarCandidates covers the per-spec sidecar name fan-out used
+// when resolving safetensors scales/biases for one packed projection.
+func BenchmarkSidecarCandidates(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = sidecarCandidates(spec, weightName, "scales")
+	}
+}
+
+// BenchmarkRouterDecisionsCloneShape exercises only the clone-into-result
 // path of ForwardLazyExpertLoadMetal — it isolates the per-call clone cost
 // without invoking the (real) Metal kernels, by sending a tiny load with
 // zero-element experts and asserting the host-side bookkeeping path.
