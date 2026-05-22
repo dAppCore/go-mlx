@@ -105,7 +105,9 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	if store == nil {
 		return nil, core.NewError("mlx: state store is nil")
 	}
-	index, err := loadIndex(ctx, store, opts)
+	// When compat check is enabled it runs its own Validate; skip the
+	// duplicate loadIndex-side validation in that case.
+	index, err := loadIndex(ctx, store, opts, opts.SkipCompatibilityCheck)
 	if err != nil {
 		return nil, err
 	}
@@ -151,16 +153,21 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}, nil
 }
 
-func loadIndex(ctx context.Context, store state.Store, opts WakeOptions) (*StateIndex, error) {
+func loadIndex(ctx context.Context, store state.Store, opts WakeOptions, mustValidate bool) (*StateIndex, error) {
 	if opts.Index != nil {
-		if err := opts.Index.Validate(); err != nil {
-			return nil, err
+		if mustValidate {
+			if err := opts.Index.Validate(); err != nil {
+				return nil, err
+			}
 		}
 		return opts.Index, nil
 	}
 	if core.Trim(opts.IndexURI) == "" {
 		return nil, core.NewError("mlx: State index URI is required")
 	}
+	// LoadStateIndex always validates the loaded payload before returning,
+	// so the mustValidate signal only matters for the in-memory opts.Index
+	// branch above.
 	return LoadStateIndex(ctx, store, opts.IndexURI)
 }
 
