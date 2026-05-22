@@ -12,6 +12,14 @@ import (
 	"math"
 )
 
+// Per-batch sentinels — evalBatchLengths is called once per evaluate-batch
+// call (one per Eval/Run iteration), so hoisting these to package level
+// drops a per-call core.NewError alloc on the validation path.
+var (
+	errMLXEvalBatchUnaligned = core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	errMLXEvalBatchEmptySeq  = core.NewError("mlx: eval batch contains an empty sequence")
+)
+
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
 // The mlx-root wrapper adapts dataset.Dataset/dataset.Sample/SFTBatch to eval's
 // opaque types and forwards to eval.RunDataset.
@@ -292,24 +300,30 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 }
 
 func evalBatchLengths(batch SFTBatch) ([]int32, int, error) {
-	if len(batch.Batch.Tokens) == 0 || len(batch.Batch.Tokens) != len(batch.Targets) {
-		return nil, 0, core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	tokens := batch.Batch.Tokens
+	targets := batch.Targets
+	if len(tokens) == 0 || len(tokens) != len(targets) {
+		return nil, 0, errMLXEvalBatchUnaligned
 	}
-	lengths := make([]int32, len(batch.Batch.Tokens))
+	// Local slice references avoid the per-row batch.Batch.Length/.LossMask
+	// re-resolve through the SFTBatch indirection on every iteration.
+	rowLengths := batch.Batch.Length
+	lossMasks := batch.Batch.LossMask
+	lengths := make([]int32, len(tokens))
 	maxLen := 0
-	for i := range batch.Batch.Tokens {
-		n := len(batch.Batch.Tokens[i])
-		if len(batch.Targets[i]) < n {
-			n = len(batch.Targets[i])
+	for i := range tokens {
+		n := len(tokens[i])
+		if len(targets[i]) < n {
+			n = len(targets[i])
 		}
-		if i < len(batch.Batch.Length) && batch.Batch.Length[i] > 0 && batch.Batch.Length[i] < n {
-			n = batch.Batch.Length[i]
+		if i < len(rowLengths) && rowLengths[i] > 0 && rowLengths[i] < n {
+			n = rowLengths[i]
 		}
-		if i < len(batch.Batch.LossMask) && len(batch.Batch.LossMask[i]) < n {
-			n = len(batch.Batch.LossMask[i])
+		if i < len(lossMasks) && len(lossMasks[i]) < n {
+			n = len(lossMasks[i])
 		}
 		if n <= 0 {
-			return nil, 0, core.NewError("mlx: eval batch contains an empty sequence")
+			return nil, 0, errMLXEvalBatchEmptySeq
 		}
 		lengths[i] = int32(n)
 		if n > maxLen {
