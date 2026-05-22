@@ -40,6 +40,7 @@ type RemoteSource struct {
 	baseURL   string
 	token     string
 	userAgent string
+	authValue string // pre-built "Bearer <token>"; empty when no token
 	client    *core.HTTPClient
 }
 
@@ -53,10 +54,19 @@ func NewRemoteSource(cfg RemoteConfig) *RemoteSource {
 	if client == nil {
 		client = &core.HTTPClient{}
 	}
+	// Pre-build the Authorization header value once at constructor time.
+	// Every getJSON call previously paid for core.Concat("Bearer ", token)
+	// — an allocation per request. The token is immutable after
+	// construction, so the formatted value is too.
+	var authValue string
+	if cfg.Token != "" {
+		authValue = core.Concat("Bearer ", cfg.Token)
+	}
 	return &RemoteSource{
 		baseURL:   baseURL,
 		token:     cfg.Token,
 		userAgent: firstNonEmpty(cfg.UserAgent, "go-mlx"),
+		authValue: authValue,
 		client:    client,
 	}
 }
@@ -108,8 +118,10 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 	if s.userAgent != "" {
 		req.Header.Set("User-Agent", s.userAgent)
 	}
-	if s.token != "" {
-		req.Header.Set("Authorization", core.Concat("Bearer ", s.token))
+	if s.authValue != "" {
+		// authValue is pre-built at constructor time; skips the per-call
+		// core.Concat("Bearer ", s.token) allocation.
+		req.Header.Set("Authorization", s.authValue)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
