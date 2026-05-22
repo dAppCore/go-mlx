@@ -233,7 +233,8 @@ func (manager *ResidencyManager) ensureCapacityFor(incoming int, requested []int
 	if limit <= 0 {
 		return nil
 	}
-	protected := map[int]bool{incoming: true}
+	protected := make(map[int]bool, 1+len(requested))
+	protected[incoming] = true
 	for _, expertID := range requested {
 		if _, ok := manager.resident[expertID]; ok {
 			protected[expertID] = true
