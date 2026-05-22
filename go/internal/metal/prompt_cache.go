@@ -44,7 +44,14 @@ type cacheSnapshot struct {
 }
 
 func (snapshot cacheSnapshot) arrays() []*Array {
-	out := make([]*Array, 0, 4+len(snapshot.kPages)+len(snapshot.vPages))
+	return snapshot.appendArrays(nil)
+}
+
+// appendArrays appends the snapshot's owned arrays onto out without
+// allocating a new slice when out has enough capacity. Used by the
+// restore hot path to build a single pre-sized eval slice across N
+// snapshots.
+func (snapshot cacheSnapshot) appendArrays(out []*Array) []*Array {
 	if snapshot.keys != nil {
 		out = append(out, snapshot.keys)
 	}
@@ -62,16 +69,24 @@ func (snapshot cacheSnapshot) arrays() []*Array {
 	return out
 }
 
-func cacheSnapshotEvalArrays(index int, snapshot cacheSnapshot) []promptCacheEvalArray {
-	arrays := snapshot.arrays()
-	out := make([]promptCacheEvalArray, 0, len(arrays))
-	for i, array := range arrays {
-		out = append(out, promptCacheEvalArray{
-			label: core.Sprintf("cache[%d].state[%d]", index, i),
-			array: array,
-		})
+// snapshotArrayCount returns the maximum number of arrays the snapshot
+// will yield via appendArrays — used to pre-size the eval slice on
+// hot-restore paths without speculative growth.
+func (snapshot cacheSnapshot) arrayCount() int {
+	n := 0
+	if snapshot.keys != nil {
+		n++
 	}
-	return out
+	if snapshot.values != nil {
+		n++
+	}
+	if snapshot.keyScale != nil {
+		n++
+	}
+	if snapshot.valueScale != nil {
+		n++
+	}
+	return n + len(snapshot.kPages) + len(snapshot.vPages)
 }
 
 func freeCacheSnapshot(snapshot cacheSnapshot) {
@@ -80,36 +95,24 @@ func freeCacheSnapshot(snapshot cacheSnapshot) {
 	Free(snapshot.vPages...)
 }
 
-type promptCacheEvalArray struct {
-	label string
-	array *Array
-}
-
-func evalPromptCacheArrays(scope string, arrays []promptCacheEvalArray) error {
-	raw := make([]*Array, 0, len(arrays))
-	for _, item := range arrays {
-		raw = append(raw, item.array)
-	}
-	if err := Eval(raw...); err != nil {
-		for _, item := range arrays {
-			if item.array == nil || !item.array.Valid() {
+// evalPromptCacheArrays runs Eval on arrays. On failure it re-evals each
+// array individually to pinpoint the bad one, using labelAt(i) to render
+// the per-item context. labelAt is only invoked on the failure path, so
+// the happy path pays zero label-string alloc cost — important on
+// Gemma 4 hot-restore where ~100 arrays are eval'd per call.
+func evalPromptCacheArrays(scope string, arrays []*Array, labelAt func(i int) string) error {
+	if err := Eval(arrays...); err != nil {
+		for i, array := range arrays {
+			if array == nil || !array.Valid() {
 				continue
 			}
-			if itemErr := Eval(item.array); itemErr != nil {
-				return core.E("prompt cache", scope+" "+item.label, itemErr)
+			if itemErr := Eval(array); itemErr != nil {
+				return core.E("prompt cache", scope+" "+labelAt(i), itemErr)
 			}
 		}
 		return core.E("prompt cache", scope, err)
 	}
 	return nil
-}
-
-func detachPromptCacheArrays(arrays []promptCacheEvalArray) {
-	raw := make([]*Array, 0, len(arrays))
-	for _, item := range arrays {
-		raw = append(raw, item.array)
-	}
-	Detach(raw...)
 }
 
 func longestTokenPrefix(a, b []int32) int {
@@ -670,9 +673,13 @@ func (m *Model) newPromptCacheEntryFromKVSnapshot(snapshot *KVSnapshot) (*prompt
 			return nil, core.E("Model.RestorePromptCacheFromKV", core.Sprintf("missing cache %d", i), nil)
 		}
 	}
-	var evalArrays []*Array
+	totalArrays := 0
 	for _, snapshot := range entry.caches {
-		evalArrays = append(evalArrays, snapshot.arrays()...)
+		totalArrays += snapshot.arrayCount()
+	}
+	evalArrays := make([]*Array, 0, totalArrays)
+	for _, snapshot := range entry.caches {
+		evalArrays = snapshot.appendArrays(evalArrays)
 	}
 	if len(snapshot.Logits) > 0 || len(snapshot.LogitShape) > 0 {
 		logits, err := restoreSnapshotLogits(snapshot)
@@ -815,18 +822,41 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 		entry.logits = logits
 	}
 
-	var evalArrays []promptCacheEvalArray
-	for i, snapshot := range entry.caches {
-		evalArrays = append(evalArrays, cacheSnapshotEvalArrays(i, snapshot)...)
+	// Sum exact array count to size in one allocation. Hot path —
+	// Gemma 4 26-cache block-source restore yields ~100 arrays; the
+	// nil-slice realloc chain was load-bearing alloc cost.
+	totalArrays := 0
+	for _, snapshot := range entry.caches {
+		totalArrays += snapshot.arrayCount()
 	}
 	if entry.logits != nil {
-		evalArrays = append(evalArrays, promptCacheEvalArray{label: "logits", array: entry.logits})
+		totalArrays++
 	}
-	if err := evalPromptCacheArrays("restore KV blocks", evalArrays); err != nil {
+	evalArrays := make([]*Array, 0, totalArrays)
+	snapshotOffsets := make([]int, 0, len(entry.caches))
+	for _, snapshot := range entry.caches {
+		snapshotOffsets = append(snapshotOffsets, len(evalArrays))
+		evalArrays = snapshot.appendArrays(evalArrays)
+	}
+	logitsIdx := -1
+	if entry.logits != nil {
+		logitsIdx = len(evalArrays)
+		evalArrays = append(evalArrays, entry.logits)
+	}
+	if err := evalPromptCacheArrays("restore KV blocks", evalArrays, func(i int) string {
+		if i == logitsIdx {
+			return "logits"
+		}
+		ci := 0
+		for ci+1 < len(snapshotOffsets) && snapshotOffsets[ci+1] <= i {
+			ci++
+		}
+		return core.Sprintf("cache[%d].state[%d]", ci, i-snapshotOffsets[ci])
+	}); err != nil {
 		entry.free()
 		return nil, err
 	}
-	detachPromptCacheArrays(evalArrays)
+	Detach(evalArrays...)
 	return entry, nil
 }
 
@@ -1124,7 +1154,13 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 		cacheableTokens: len(tokens),
 		caches:          make([]cacheSnapshot, len(caches)),
 	}
-	var evalArrays []promptCacheEvalArray
+	// Per-snapshot array offsets — used only on the failure path of
+	// evalPromptCacheArrays to map array-index back to (cache, state).
+	// Pre-size based on snapshotCache yielding up to ~4 arrays per cache
+	// plus the 2 trailing logits/hidden entries; the closure stays cheap
+	// on the happy path because labelAt is never invoked.
+	evalArrays := make([]*Array, 0, len(caches)*4+2)
+	snapshotOffsets := make([]int, 0, len(caches))
 	for i, cache := range caches {
 		snapshot, ok, err := snapshotCache(cache, len(tokens))
 		if err != nil {
@@ -1137,20 +1173,37 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 		}
 		entry.caches[i] = snapshot
 		entry.cacheableTokens = min(entry.cacheableTokens, snapshot.offset)
-		evalArrays = append(evalArrays, cacheSnapshotEvalArrays(i, snapshot)...)
+		snapshotOffsets = append(snapshotOffsets, len(evalArrays))
+		evalArrays = snapshot.appendArrays(evalArrays)
 	}
 
 	entry.logits = Copy(logits)
-	evalArrays = append(evalArrays, promptCacheEvalArray{label: "logits", array: entry.logits})
+	logitsIdx := len(evalArrays)
+	evalArrays = append(evalArrays, entry.logits)
+	hiddenIdx := -1
 	if hidden != nil && hidden.Valid() {
 		entry.hidden = Copy(hidden)
-		evalArrays = append(evalArrays, promptCacheEvalArray{label: "hidden", array: entry.hidden})
+		hiddenIdx = len(evalArrays)
+		evalArrays = append(evalArrays, entry.hidden)
 	}
-	if err := evalPromptCacheArrays("snapshot", evalArrays); err != nil {
+	if err := evalPromptCacheArrays("snapshot", evalArrays, func(i int) string {
+		if i == logitsIdx {
+			return "logits"
+		}
+		if i == hiddenIdx {
+			return "hidden"
+		}
+		// Find the cache index by largest offset <= i.
+		ci := 0
+		for ci+1 < len(snapshotOffsets) && snapshotOffsets[ci+1] <= i {
+			ci++
+		}
+		return core.Sprintf("cache[%d].state[%d]", ci, i-snapshotOffsets[ci])
+	}); err != nil {
 		entry.free()
 		return nil, err
 	}
-	detachPromptCacheArrays(evalArrays)
+	Detach(evalArrays...)
 	return entry, nil
 }
 
@@ -1540,7 +1593,12 @@ func restorePromptCaches(snapshots []cacheSnapshot, prefixLen int) ([]Cache, err
 
 func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLen, requestFixedSize int) ([]Cache, error) {
 	caches := make([]Cache, len(snapshots))
-	var evalArrays []*Array
+	// Pre-size to len(snapshots)*2 — common KV case (keys + values per
+	// snapshot). Quantized snapshots contribute up to 4 (keys, values,
+	// keyScale, valueScale); paged snapshots vary. The hint defeats the
+	// nil-slice realloc chain on Gemma 4 26-snapshot hot-restores —
+	// load-bearing for Virgil's hot-load substrate.
+	evalArrays := make([]*Array, 0, len(snapshots)*2)
 	for i, snapshot := range snapshots {
 		restoreLen := snapshotCacheLength(snapshot)
 		if restoreLen > prefixLen {
