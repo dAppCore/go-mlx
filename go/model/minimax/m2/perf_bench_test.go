@@ -172,6 +172,33 @@ func BenchmarkLayerTensorSpecs(b *testing.B) {
 	}
 }
 
+// BenchmarkProjectionBiasCandidates covers the per-spec projection-bias name
+// fan-out + the (now hoisted) trimWeightSuffix call.
+func BenchmarkProjectionBiasCandidates(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = projectionBiasCandidates(spec, weightName)
+	}
+}
+
+// BenchmarkPackedWeightCandidates covers the per-spec weight-name fan-out
+// for the packed projection (canonical + .packed + .qweight variants).
+func BenchmarkPackedWeightCandidates(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = packedWeightCandidates(spec)
+	}
+}
+
 // BenchmarkRouterBiasCandidates covers the per-call layer/prefix string
 // build path used when resolving the routing correction bias tensor.
 func BenchmarkRouterBiasCandidates(b *testing.B) {

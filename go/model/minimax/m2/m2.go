@@ -899,7 +899,9 @@ func uniqueExpertIDs(ids []int) []int {
 }
 
 func packedWeightCandidates(spec TensorSpec) []string {
-	bases := append([]string{spec.Name}, spec.Aliases...)
+	bases := make([]string, 0, 1+len(spec.Aliases))
+	bases = append(bases, spec.Name)
+	bases = append(bases, spec.Aliases...)
 	out := make([]string, 0, len(bases)*4)
 	for _, base := range bases {
 		out = append(out, base, base+".packed", base+".qweight", trimWeightSuffix(base)+".qweight")
@@ -908,8 +910,15 @@ func packedWeightCandidates(spec TensorSpec) []string {
 }
 
 func routerGateCandidates(spec TensorSpec) []string {
-	out := append([]string{spec.Name}, spec.Aliases...)
-	if spec.Name != "" {
+	hasName := spec.Name != ""
+	extra := 0
+	if hasName {
+		extra = 1
+	}
+	out := make([]string, 0, 1+len(spec.Aliases)+extra)
+	out = append(out, spec.Name)
+	out = append(out, spec.Aliases...)
+	if hasName {
 		out = append(out, trimWeightSuffix(spec.Name)+".gate")
 	}
 	return out
@@ -951,11 +960,13 @@ func sidecarCandidates(spec TensorSpec, weightName, sidecar string) []string {
 }
 
 func projectionBiasCandidates(spec TensorSpec, weightName string) []string {
-	names := []string{weightName, spec.Name}
+	names := make([]string, 0, 2+len(spec.Aliases))
+	names = append(names, weightName, spec.Name)
 	names = append(names, spec.Aliases...)
 	out := make([]string, 0, len(names)*3)
 	for _, name := range names {
-		out = append(out, trimWeightSuffix(name)+".bias", name+".proj_bias", trimWeightSuffix(name)+".proj_bias")
+		trimmed := trimWeightSuffix(name)
+		out = append(out, trimmed+".bias", name+".proj_bias", trimmed+".proj_bias")
 	}
 	return out
 }
