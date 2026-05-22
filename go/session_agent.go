@@ -40,10 +40,19 @@ const foldedAgentMemoryPrefillWakeMaxTokens = 16 * 1024
 
 // Hoisted sentinel errors. Each of these is returned multiple times from
 // the agent-memory lifecycle entry points; promoting them to package vars
-// removes per-call allocation in the validation hot path.
+// removes per-call allocation in the validation hot path. errMLXModelNil
+// is shared with backend.go (same error message across many call sites).
 var (
-	errAgentMemorySessionNil = core.NewError("mlx: model session is nil")
-	errAgentMemoryStoreNil   = core.NewError("mlx: state store is nil")
+	errAgentMemorySessionNil       = core.NewError("mlx: model session is nil")
+	errAgentMemoryStoreNil         = core.NewError("mlx: state store is nil")
+	errAgentMemoryExhaustedNil     = core.NewError("mlx: exhausted model session is nil")
+	errAgentMemoryFoldEmpty        = core.NewError("mlx: folded State requires summary, recent tail, or folded prompt")
+	errAgentMemoryFoldPlanNil      = core.NewError("mlx: folded State wake plan is nil")
+	errAgentMemoryFoldNoTokens     = core.NewError("mlx: folded State prefill wake loaded no tokens")
+	errAgentMemoryForkNeedsStore   = core.NewError("mlx: inference State fork requires state.Store")
+	errAgentMemoryWakeNeedsStore   = core.NewError("mlx: inference agent memory wake requires state.Store")
+	errAgentMemorySleepNeedsStore  = core.NewError("mlx: inference State sleep requires state.Writer")
+	errAgentMemoryReuseNeedsReader = core.NewError("mlx: State parent-prefix reuse requires a readable state store")
 )
 
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
@@ -81,7 +90,7 @@ func (m *Model) ForkFromBundle(ctx context.Context, store state.Store, opts agen
 func (m *Model) ForkState(ctx context.Context, req inference.AgentMemoryWakeRequest) (inference.AgentMemorySession, *inference.AgentMemoryWakeResult, error) {
 	store, ok := req.Store.(state.Store)
 	if !ok {
-		return nil, nil, core.NewError("mlx: inference State fork requires state.Store")
+		return nil, nil, errAgentMemoryForkNeedsStore
 	}
 	session, report, err := m.ForkFromBundle(ctx, store, agentMemoryWakeOptionsFromInference(req))
 	if err != nil {
@@ -148,14 +157,21 @@ func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
 	if prefix <= 0 || prefix > foldedAgentMemoryPrefillWakeMaxTokens {
 		return false
 	}
-	if meta := entry.Meta["folded_state"]; meta != "" && core.Lower(core.Trim(meta)) == "true" {
-		return true
+	if meta := entry.Meta["folded_state"]; meta != "" {
+		// Canonical-form fast path. foldedAgentMemorySleepOptions writes
+		// "true" verbatim — the round-trip producer / consumer pairing
+		// hits the byte-equal branch and skips Lower + Trim work.
+		if meta == "true" || core.Lower(core.Trim(meta)) == "true" {
+			return true
+		}
 	}
 	for _, label := range entry.Labels {
 		if label == "" {
 			continue
 		}
-		if core.Lower(core.Trim(label)) == "folded-state" {
+		// Canonical-form fast path. foldedAgentMemorySleepOptions appends
+		// "folded-state" verbatim — same round-trip pairing argument.
+		if label == "folded-state" || core.Lower(core.Trim(label)) == "folded-state" {
 			return true
 		}
 	}
@@ -167,7 +183,7 @@ func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store state
 		return errAgentMemorySessionNil
 	}
 	if plan == nil || plan.Bundle == nil {
-		return core.NewError("mlx: folded State wake plan is nil")
+		return errAgentMemoryFoldPlanNil
 	}
 	loadOpts := opts.LoadOptions
 	if plan.Bundle.KVEncoding == kv.EncodingNative {
@@ -178,7 +194,7 @@ func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store state
 		return core.E("mlx: folded State prefill wake", "load tokens", err)
 	}
 	if len(tokens) == 0 {
-		return core.NewError("mlx: folded State prefill wake loaded no tokens")
+		return errAgentMemoryFoldNoTokens
 	}
 	if err := s.PrefillTokens(ctx, tokens); err != nil {
 		return core.E("mlx: folded State prefill wake", "prefill", err)
@@ -190,7 +206,7 @@ func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store state
 func (s *ModelSession) WakeState(ctx context.Context, req inference.AgentMemoryWakeRequest) (*inference.AgentMemoryWakeResult, error) {
 	store, ok := req.Store.(state.Store)
 	if !ok {
-		return nil, core.NewError("mlx: inference agent memory wake requires state.Store")
+		return nil, errAgentMemoryWakeNeedsStore
 	}
 	report, err := s.WakeAgentMemory(ctx, store, agentMemoryWakeOptionsFromInference(req))
 	if err != nil {
@@ -236,7 +252,7 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 	if opts.ReuseParentPrefix && blockOpts.ReusePrefix == nil {
 		readStore, ok := store.(state.Store)
 		if !ok {
-			return nil, core.NewError("mlx: State parent-prefix reuse requires a readable state store")
+			return nil, errAgentMemoryReuseNeedsReader
 		}
 		parentBundle, err := kv.LoadStateBlockBundle(ctx, readStore, opts.ParentBundleURI)
 		if err != nil {
@@ -277,7 +293,7 @@ func (s *ModelSession) Sleep(ctx context.Context, store state.Writer, opts agent
 func (s *ModelSession) SleepState(ctx context.Context, req inference.AgentMemorySleepRequest) (*inference.AgentMemorySleepResult, error) {
 	store, ok := req.Store.(state.Writer)
 	if !ok {
-		return nil, core.NewError("mlx: inference State sleep requires state.Writer")
+		return nil, errAgentMemorySleepNeedsStore
 	}
 	report, err := s.SleepAgentMemory(ctx, store, agentMemorySleepOptionsFromInference(req))
 	if err != nil {
@@ -356,10 +372,10 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return nil, nil, core.NewError("mlx: model is nil")
+		return nil, nil, errMLXModelNil
 	}
 	if exhausted == nil || exhausted.session == nil {
-		return nil, nil, core.NewError("mlx: exhausted model session is nil")
+		return nil, nil, errAgentMemoryExhaustedNil
 	}
 	if store == nil {
 		return nil, nil, errAgentMemoryStoreNil
@@ -369,7 +385,7 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 	// none of summary/tail/FoldedPrompt are supplied; only a user-passed
 	// whitespace-only FoldedPrompt reaches the slow Trim path.
 	if prompt == "" || core.Trim(prompt) == "" {
-		return nil, nil, core.NewError("mlx: folded State requires summary, recent tail, or folded prompt")
+		return nil, nil, errAgentMemoryFoldEmpty
 	}
 	report := &AgentMemoryFoldReport{
 		SummaryBytes:      len(opts.Summary),
@@ -410,6 +426,13 @@ func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
 	// almost always hits this branch.
 	if opts.FoldedPrompt != "" && core.Trim(opts.FoldedPrompt) != "" {
 		return opts.FoldedPrompt
+	}
+	// Skip Trim on already-empty Summary / RecentTail — the dominant case
+	// in callers that rebuild the fold prompt with no checkpoint summary
+	// yet (e.g. the bare error-path FoldAgentMemory call). Same outcome,
+	// no function-call cost.
+	if opts.Summary == "" && opts.RecentTail == "" {
+		return ""
 	}
 	summary := core.Trim(opts.Summary)
 	tail := core.Trim(opts.RecentTail)
@@ -501,18 +524,28 @@ func agentMemoryTextChunks(text string, chunkBytes int) iter.Seq[string] {
 			yield(text)
 			return
 		}
+		// Byte-level scan with rune-boundary alignment. The previous
+		// implementation drove a `range text` loop which paid for full
+		// UTF-8 decoding on every rune — N decodes per chunk to find
+		// the boundary one rune past chunkBytes. Here we jump directly
+		// to start+chunkBytes and only advance past UTF-8 continuation
+		// bytes (top two bits 10xxxxxx) until we hit a rune-start byte.
+		// Identical chunk boundaries, but O(text_bytes) byte compares
+		// instead of O(text_bytes) full rune decodes.
 		start := 0
-		for index := range text {
-			if index == start || index-start < chunkBytes {
-				continue
-			}
-			if !yield(text[start:index]) {
+		for start < len(text) {
+			end := start + chunkBytes
+			if end >= len(text) {
+				yield(text[start:])
 				return
 			}
-			start = index
-		}
-		if start < len(text) {
-			yield(text[start:])
+			for end < len(text) && text[end]&0xC0 == 0x80 {
+				end++
+			}
+			if !yield(text[start:end]) {
+				return
+			}
+			start = end
 		}
 	}
 }
@@ -653,7 +686,54 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 }
 
 func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map[string]string {
-	meta := cloneStringMap(req.Metadata)
+	// Pre-size the destination map. The 9 optional adapter/runtime fields
+	// dominate the entry count — counting empties first lets us hand
+	// runtime.makemap_small the exact capacity, replacing the addAgent
+	// loop's incremental zero-cap growth.
+	extras := 0
+	if req.Adapter.Hash != "" {
+		extras++
+	}
+	if req.Adapter.Path != "" {
+		extras++
+	}
+	if req.Adapter.Format != "" {
+		extras++
+	}
+	if req.Adapter.Rank != 0 {
+		extras++
+	}
+	if req.Adapter.Alpha != 0 {
+		extras++
+	}
+	if req.Runtime.Backend != "" {
+		extras++
+	}
+	if req.Runtime.Device != "" {
+		extras++
+	}
+	if req.Runtime.CacheMode != "" {
+		extras++
+	}
+	if req.Runtime.Version != "" {
+		extras++
+	}
+	if extras == 0 {
+		// Nothing to fold in — defer to the existing clone, which
+		// returns nil if req.Metadata is also empty (the common
+		// idle-keepalive request shape).
+		return cloneStringMap(req.Metadata)
+	}
+	meta := req.Metadata
+	if meta == nil {
+		meta = make(map[string]string, extras)
+	} else {
+		dst := make(map[string]string, len(req.Metadata)+extras)
+		for k, v := range req.Metadata {
+			dst[k] = v
+		}
+		meta = dst
+	}
 	meta = addAgentMemoryMetadata(meta, "adapter_hash", req.Adapter.Hash)
 	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
 	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
