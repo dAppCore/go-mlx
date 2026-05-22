@@ -13,9 +13,8 @@
 package mlx
 
 import (
+	"strconv"
 	"testing"
-
-	core "dappco.re/go"
 )
 
 var (
@@ -44,24 +43,23 @@ func BenchmarkSFT_RunProbeMeta(b *testing.B) {
 // emission so the bench tracks the same alloc shape as the production
 // path without spinning up an entire SFT run.
 func sftBenchBuildProbeMeta(cfg SFTConfig, optimizerSteps int) map[string]string {
-	return map[string]string{
-		"batch_size":                  sftBenchFormatInt(cfg.BatchSize),
-		"effective_batch_size":        sftBenchFormatInt(SFTEffectiveBatchSize(cfg)),
-		"gradient_accumulation_steps": sftBenchFormatInt(cfg.GradientAccumulationSteps),
-		"sequence_packing":            sftBenchFormatBool(cfg.SequencePacking),
-		"optimizer_step":              sftBenchFormatInt(optimizerSteps),
-		"sft_checkpoint_metadata_ver": sftBenchFormatInt(SFTCheckpointMetadataVersion),
-	}
+	meta := make(map[string]string, 6)
+	meta["batch_size"] = sftBenchFormatInt(cfg.BatchSize)
+	meta["effective_batch_size"] = sftBenchFormatInt(SFTEffectiveBatchSize(cfg))
+	meta["gradient_accumulation_steps"] = sftBenchFormatInt(cfg.GradientAccumulationSteps)
+	meta["sequence_packing"] = sftBenchFormatBool(cfg.SequencePacking)
+	meta["optimizer_step"] = sftBenchFormatInt(optimizerSteps)
+	meta["sft_checkpoint_metadata_ver"] = sftBenchFormatInt(SFTCheckpointMetadataVersion)
+	return meta
 }
 
 func sftBenchFormatInt(i int) string {
-	// Hands off to the production path under test. Replaced together
-	// with the implementation when a new formatter lands.
-	return core.Sprintf("%d", i)
+	// Mirrors the production formatter at the bench-call site.
+	return strconv.Itoa(i)
 }
 
 func sftBenchFormatBool(v bool) string {
-	return core.Sprintf("%t", v)
+	return strconv.FormatBool(v)
 }
 
 // BenchmarkSFT_LoRAMetadata measures the per-checkpoint clone of

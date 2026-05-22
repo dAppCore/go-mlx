@@ -4,6 +4,8 @@ package mlx
 
 import (
 	"context"
+	"strconv"
+
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/probe"
@@ -810,18 +812,18 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 	}
 
 	if sink := sftProbeSink(cfg); sink != nil {
+		meta := make(map[string]string, 6)
+		meta["batch_size"] = strconv.Itoa(cfg.BatchSize)
+		meta["effective_batch_size"] = strconv.Itoa(SFTEffectiveBatchSize(cfg))
+		meta["gradient_accumulation_steps"] = strconv.Itoa(cfg.GradientAccumulationSteps)
+		meta["sequence_packing"] = strconv.FormatBool(cfg.SequencePacking)
+		meta["optimizer_step"] = strconv.Itoa(result.OptimizerSteps)
+		meta["sft_checkpoint_metadata_ver"] = strconv.Itoa(SFTCheckpointMetadataVersion)
 		sink.EmitProbe(probe.Event{
 			Kind:  probe.KindTraining,
 			Phase: probe.PhaseTraining,
 			Step:  result.Steps,
-			Meta: map[string]string{
-				"batch_size":                  core.Sprintf("%d", cfg.BatchSize),
-				"effective_batch_size":        core.Sprintf("%d", SFTEffectiveBatchSize(cfg)),
-				"gradient_accumulation_steps": core.Sprintf("%d", cfg.GradientAccumulationSteps),
-				"sequence_packing":            core.Sprintf("%t", cfg.SequencePacking),
-				"optimizer_step":              core.Sprintf("%d", result.OptimizerSteps),
-				"sft_checkpoint_metadata_ver": core.Sprintf("%d", SFTCheckpointMetadataVersion),
-			},
+			Meta:  meta,
 			Training: &probe.Training{
 				Step:         result.Steps,
 				Epoch:        epoch,
