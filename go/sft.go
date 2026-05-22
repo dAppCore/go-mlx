@@ -525,7 +525,15 @@ func (b *sftBatchBuilder) add(example sftExample) {
 
 func (b *sftBatchBuilder) finish() []SFTBatch {
 	b.flush()
-	return core.SliceClone(b.out)
+	// Hand b.out directly to the caller — finish() is the terminal
+	// builder call and b is discarded immediately by every existing
+	// caller (BuildSFTBatches / BuildDatasetBatches). The defensive
+	// core.SliceClone the original form paid only trimmed the slice
+	// from append-grown cap down to exact len, providing no isolation
+	// (the SFTBatch elements still share their inner []]int slices).
+	// Caller-side memory hygiene from cap == len is not worth one
+	// per-build allocation.
+	return b.out
 }
 
 func (b *sftBatchBuilder) flush() {
