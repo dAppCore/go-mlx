@@ -208,16 +208,7 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	if version <= 0 || version > SnapshotVersion {
 		return 0, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -285,16 +276,7 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	}
 	data := make([]byte, 0, size)
 	data = append(data, kvSnapshotMagic...)
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	if version <= 0 || version > SnapshotVersion {
 		return nil, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -376,16 +358,7 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	if _, err := s.encodedSizeWithOptions(opts); err != nil {
 		return err
 	}
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	stream := kvSnapshotStreamWriter{writer: writer}
 	stream.bytes(core.AsBytes(kvSnapshotMagic))
 	stream.u32(uint32(version))
