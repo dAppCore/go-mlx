@@ -48,8 +48,12 @@ type SplitExecutorPlacement struct {
 
 // Requires reports whether placement still needs component supplied externally.
 func (plan SplitExecutorPlacement) Requires(component inference.ModelComponent) bool {
-	for _, placement := range plan.RequiredPlacements {
-		if placement.Component == component {
+	// Index iteration — SplitComponentPlacement carries Component, Role,
+	// Bytes, two bools, and a Note string (~56B); range form would copy each
+	// element into the loop var even though we only need the discriminator.
+	placements := plan.RequiredPlacements
+	for i := range placements {
+		if placements[i].Component == component {
 			return true
 		}
 	}
@@ -229,6 +233,18 @@ var loadNativeSplitLocalRuntime = func(ctx context.Context, slicePath string, cf
 	return LoadNativeSplitLocalRuntime(ctx, slicePath, cfg)
 }
 
+// Per-call error sentinels — hoisted to package level so the precondition
+// branches in LoadSplitExecutor / SplitExecutor.Generate drop the
+// core.NewError allocation on every miss.
+var (
+	errMLXSplitExecutorSlicePathRequired    = core.NewError("mlx: split executor requires a slice path")
+	errMLXSplitExecutorNil                  = core.NewError("mlx: split executor is nil")
+	errMLXSplitExecutorFFNRequired          = core.NewError("mlx: split executor requires an FFN executor for omitted feed-forward weights")
+	errMLXSplitExecutorLocalNotWired        = core.NewError("mlx: split executor local attention execution is not wired yet")
+	errMLXSplitExecutorPrefillNoLayers      = core.NewError("mlx: split executor prefill returned no layers")
+	errMLXSplitExecutorPrefillEmptyHidden   = core.NewError("mlx: split executor prefill returned empty hidden state")
+)
+
 // SplitExecutor is a manifest-backed split runtime skeleton. It validates
 // placement and owns the future local-attention/remote-FFN boundary.
 type SplitExecutor struct {
@@ -249,7 +265,7 @@ func LoadSplitExecutor(ctx context.Context, slicePath string, opts ...SplitExecu
 		return nil, err
 	}
 	if core.Trim(slicePath) == "" {
-		return nil, core.NewError("mlx: split executor requires a slice path")
+		return nil, errMLXSplitExecutorSlicePathRequired
 	}
 	cfg := splitExecutorConfig{}
 	for _, opt := range opts {
@@ -339,13 +355,13 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		return "", err
 	}
 	if executor == nil {
-		return "", core.NewError("mlx: split executor is nil")
+		return "", errMLXSplitExecutorNil
 	}
 	if executor.placement.Requires(inference.ModelComponentFFN) && executor.ffn == nil {
-		return "", core.NewError("mlx: split executor requires an FFN executor for omitted feed-forward weights")
+		return "", errMLXSplitExecutorFFNRequired
 	}
 	if executor.local == nil {
-		return "", core.NewError("mlx: split executor local attention execution is not wired yet")
+		return "", errMLXSplitExecutorLocalNotWired
 	}
 	if cfg.MaxTokens <= 0 {
 		cfg.MaxTokens = DefaultGenerateConfig().MaxTokens
@@ -366,10 +382,10 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 	prefillDuration := bench.NonZeroDuration(time.Since(prefillStart))
 	power.sample(ctx, "prefill")
 	if state.Layers <= 0 {
-		return "", core.NewError("mlx: split executor prefill returned no layers")
+		return "", errMLXSplitExecutorPrefillNoLayers
 	}
 	if len(state.Hidden) == 0 {
-		return "", core.NewError("mlx: split executor prefill returned empty hidden state")
+		return "", errMLXSplitExecutorPrefillEmptyHidden
 	}
 
 	tokens := make([]int32, len(state.Tokens), len(state.Tokens)+cfg.MaxTokens)
@@ -380,11 +396,14 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 	generatedTokens := 0
 	var firstTokenDuration time.Duration
 	requiresFFN := executor.placement.Requires(inference.ModelComponentFFN)
+	// Hoist state.Layers — the inner layer loop reads it state.Layers times
+	// per step, and state is no longer mutated past prefill.
+	numLayers := state.Layers
 	for step := 0; step < cfg.MaxTokens; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		for layer := 0; layer < state.Layers; layer++ {
+		for layer := 0; layer < numLayers; layer++ {
 			attention, err := executor.local.ForwardAttention(ctx, SplitAttentionRequest{
 				Step:   step,
 				Layer:  layer,
@@ -514,8 +533,8 @@ func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNEx
 }
 
 func splitExecutorPlacementsReady(placements []SplitComponentPlacement) bool {
-	for _, placement := range placements {
-		if placement.Required && !placement.Ready {
+	for i := range placements {
+		if placements[i].Required && !placements[i].Ready {
 			return false
 		}
 	}

@@ -118,6 +118,12 @@ type cpuSplitPackedMatrix struct {
 	biases []float32
 	rows   int
 	cols   int
+	// Hot-path mirrors of desc fields. The per-element value() lookup ran
+	// hundreds of millions of times per layer; reading them off the struct
+	// directly avoids the chase through desc.GroupSize / desc.Bits each call.
+	groupSize int
+	bits      int
+	elements  uint64
 }
 
 const cpuSplitFloat32Bytes = int64(4)
@@ -161,7 +167,11 @@ func (report *CPUSplitFFNMemoryReport) addProjection(dense []float32, packed *cp
 	report.DenseEquivalentBytes += bytes
 }
 
-func (report *CPUSplitFFNMemoryReport) addReport(other CPUSplitFFNMemoryReport) {
+// addReport folds other's byte counters into report. Pointer arg avoids
+// the ~100B struct copy at the call site — addReport is only invoked from
+// the cache-resident scan in EstimateMemoryReport, which can pass &slice[i]
+// directly.
+func (report *CPUSplitFFNMemoryReport) addReport(other *CPUSplitFFNMemoryReport) {
 	report.DenseProjections += other.DenseProjections
 	report.PackedProjections += other.PackedProjections
 	report.LayerNormBytes += other.LayerNormBytes
@@ -209,6 +219,15 @@ func EstimateCPUSplitFFNMemory(ctx context.Context, sourcePath string, opts ...C
 	}
 	return executor.EstimateMemoryReport(ctx)
 }
+
+// Per-call error sentinels — ForwardFFN runs hot (per layer per token),
+// EstimateMemoryReport runs per estimate. Hoisting the constant-string
+// errors keeps the allocation off the hot path for the executor-nil and
+// hidden-size-mismatch guard branches.
+var (
+	errMLXCPUSplitFFNExecutorNil       = core.NewError("mlx: CPU split FFN executor is nil")
+	errMLXCPUSplitFFNHiddenMismatch    = core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
+)
 
 func loadCPUSplitFFNExecutor(ctx context.Context, sourcePath string, cfg CPUSplitFFNConfig) (*CPUSplitFFNExecutor, error) {
 	if ctx == nil {
@@ -359,28 +378,35 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 		return SplitFFNResult{}, err
 	}
 	if executor == nil {
-		return SplitFFNResult{}, core.NewError("mlx: CPU split FFN executor is nil")
+		return SplitFFNResult{}, errMLXCPUSplitFFNExecutorNil
 	}
 	if req.Layer < 0 || req.Layer >= executor.cfg.NumHiddenLayers {
 		return SplitFFNResult{}, core.Errorf("mlx: CPU split FFN layer %d out of range", req.Layer)
 	}
 	if len(req.Hidden) == 0 || len(req.Hidden)%executor.cfg.HiddenSize != 0 {
-		return SplitFFNResult{}, core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
+		return SplitFFNResult{}, errMLXCPUSplitFFNHiddenMismatch
 	}
 	layer, err := executor.layer(ctx, req.Layer)
 	if err != nil {
 		return SplitFFNResult{}, err
 	}
-	out := make([]float32, len(req.Hidden))
-	rows := len(req.Hidden) / executor.cfg.HiddenSize
+	// Hoist hidden size + eps out of the row loop — the original code reread
+	// executor.cfg.HiddenSize three times per row and executor.cfg.RMSNormEps
+	// once per row by chasing the struct fields through the call site.
+	hiddenSize := executor.cfg.HiddenSize
+	eps := executor.cfg.RMSNormEps
+	hidden := req.Hidden
+	out := make([]float32, len(hidden))
+	rows := len(hidden) / hiddenSize
 	normed := make([]float32, layer.hidden)
 	activated := make([]float32, layer.intermediate)
 	for row := 0; row < rows; row++ {
 		if err := ctx.Err(); err != nil {
 			return SplitFFNResult{}, err
 		}
-		start := row * executor.cfg.HiddenSize
-		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps, normed, activated)
+		start := row * hiddenSize
+		end := start + hiddenSize
+		cpuSplitForwardDenseRow(hidden[start:end], out[start:end], layer, eps, normed, activated)
 	}
 	return SplitFFNResult{Hidden: out}, nil
 }
@@ -420,7 +446,7 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		return CPUSplitFFNMemoryReport{}, err
 	}
 	if executor == nil {
-		return CPUSplitFFNMemoryReport{}, core.NewError("mlx: CPU split FFN executor is nil")
+		return CPUSplitFFNMemoryReport{}, errMLXCPUSplitFFNExecutorNil
 	}
 	report := CPUSplitFFNMemoryReport{
 		Estimated:     true,
@@ -442,10 +468,14 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 
 	max := executor.cacheCfg.MaxCachedLayers
 	report.LayerLoads = len(layerReports)
+	// CPUSplitFFNMemoryReport carries 14 fields (bools, ints, int64s, a
+	// float64, and JSON tags around them) — every range-form copy moves
+	// ~100B into the loop var. Index iteration keeps the reads at the slice
+	// header in the scan/append loops below.
 	if max < 0 {
-		for _, layerReport := range layerReports {
-			if layerReport.ResidentBytes > report.PeakResidentBytes {
-				report.PeakResidentBytes = layerReport.ResidentBytes
+		for i := range layerReports {
+			if layerReports[i].ResidentBytes > report.PeakResidentBytes {
+				report.PeakResidentBytes = layerReports[i].ResidentBytes
 			}
 		}
 		report.finalise()
@@ -458,9 +488,9 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 	}
 	resident := make([]CPUSplitFFNMemoryReport, 0, residentCap)
 	var currentBytes int64
-	for _, layerReport := range layerReports {
-		resident = append(resident, layerReport)
-		currentBytes += layerReport.ResidentBytes
+	for i := range layerReports {
+		resident = append(resident, layerReports[i])
+		currentBytes += layerReports[i].ResidentBytes
 		if max > 0 && len(resident) > max {
 			currentBytes -= resident[0].ResidentBytes
 			resident = resident[1:]
@@ -471,8 +501,8 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		}
 	}
 	report.LoadedLayers = len(resident)
-	for _, layerReport := range resident {
-		report.addReport(layerReport)
+	for i := range resident {
+		report.addReport(&resident[i])
 	}
 	report.finalise()
 	return report, nil
@@ -795,12 +825,15 @@ func (executor *CPUSplitFFNExecutor) loadPackedMatrix(primaryName, foundName str
 		return nil, nil, err
 	}
 	return nil, &cpuSplitPackedMatrix{
-		desc:   desc,
-		packed: packed,
-		scales: scales,
-		biases: biases,
-		rows:   rows,
-		cols:   cols,
+		desc:      desc,
+		packed:    packed,
+		scales:    scales,
+		biases:    biases,
+		rows:      rows,
+		cols:      cols,
+		groupSize: desc.GroupSize,
+		bits:      desc.Bits,
+		elements:  desc.Elements,
 	}, nil
 }
 
@@ -829,39 +862,96 @@ func (executor *CPUSplitFFNExecutor) tensorRef(candidates []string) (safetensors
 }
 
 func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32, normed, activated []float32) {
+	// Cache loop bounds + bias-presence checks before the inner loops. The
+	// intermediate loop typically runs ~14336 iterations per token; re-doing
+	// the len(layer.*Bias) > 0 check each pass shows up under perf.
+	hiddenLen := layer.hidden
+	intermediateLen := layer.intermediate
+	hasGateBias := len(layer.gateBias) > 0
+	hasUpBias := len(layer.upBias) > 0
+	hasDownBias := len(layer.downBias) > 0
+
 	var squares float64
 	for _, value := range hidden {
 		squares += float64(value * value)
 	}
-	scale := float32(1 / math.Sqrt(squares/float64(layer.hidden)+float64(eps)))
-	for i := 0; i < layer.hidden; i++ {
-		normed[i] = hidden[i] * scale * layer.norm[i]
+	scale := float32(1 / math.Sqrt(squares/float64(hiddenLen)+float64(eps)))
+	// Re-slice all three views to hiddenLen up-front so the per-element
+	// indexing has its bounds proved at the slice header — the compiler
+	// can then drop the bounds checks on normed/hidden/layer.norm reads
+	// in the inner loop.
+	normedView := normed[:hiddenLen]
+	hiddenView := hidden[:hiddenLen]
+	normView := layer.norm[:hiddenLen]
+	for i := 0; i < hiddenLen; i++ {
+		normedView[i] = hiddenView[i] * scale * normView[i]
 	}
 
-	for row := 0; row < layer.intermediate; row++ {
-		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, layer.hidden)
-		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, layer.hidden)
-		if len(layer.gateBias) > 0 {
-			gate += layer.gateBias[row]
+	// Hoist the projection-weight slice headers + packed-matrix pointers
+	// into locals before the row walks. The row loop ran ~intermediate
+	// passes per token and each pass re-loaded gate/up/down slice headers
+	// (and their packed-matrix counterparts) off the cpuSplitFFNLayer
+	// struct in argument position; pulling them to registers up-front lets
+	// the per-row call use a local instead.
+	gateDense := layer.gate
+	upDense := layer.up
+	downDense := layer.down
+	gatePacked := layer.gatePacked
+	upPacked := layer.upPacked
+	downPacked := layer.downPacked
+
+	// Re-slice bias arrays + activated buffer to the loop bounds so the
+	// per-row indexing in the projection-and-bias-fold loops compiles
+	// without per-iter bounds checks. Loader keeps these matched to
+	// intermediate/hidden sizes already, so the slice is exactly correct.
+	activatedView := activated[:intermediateLen]
+	var gateBiasView, upBiasView []float32
+	if hasGateBias {
+		gateBiasView = layer.gateBias[:intermediateLen]
+	}
+	if hasUpBias {
+		upBiasView = layer.upBias[:intermediateLen]
+	}
+	for row := 0; row < intermediateLen; row++ {
+		gate := cpuSplitProjectRow(normed, gateDense, gatePacked, row, hiddenLen)
+		up := cpuSplitProjectRow(normed, upDense, upPacked, row, hiddenLen)
+		if hasGateBias {
+			gate += gateBiasView[row]
 		}
-		if len(layer.upBias) > 0 {
-			up += layer.upBias[row]
+		if hasUpBias {
+			up += upBiasView[row]
 		}
-		activated[row] = cpuSplitSiLU(gate) * up
+		activatedView[row] = cpuSplitSiLU(gate) * up
 	}
 
-	for row := 0; row < layer.hidden; row++ {
-		mlp := cpuSplitProjectRow(activated, layer.down, layer.downPacked, row, layer.intermediate)
-		if len(layer.downBias) > 0 {
-			mlp += layer.downBias[row]
+	outView := out[:hiddenLen]
+	hiddenViewRes := hidden[:hiddenLen]
+	var downBiasView []float32
+	if hasDownBias {
+		downBiasView = layer.downBias[:hiddenLen]
+	}
+	for row := 0; row < hiddenLen; row++ {
+		mlp := cpuSplitProjectRow(activated, downDense, downPacked, row, intermediateLen)
+		if hasDownBias {
+			mlp += downBiasView[row]
 		}
-		out[row] = hidden[row] + mlp
+		outView[row] = hiddenViewRes[row] + mlp
 	}
 }
 
 func cpuSplitDot(a, b []float32) float32 {
+	// Re-slice b to len(a) so the compiler can prove every b[i] is in
+	// bounds when walking the indexed loop. Without the hint, each b[i]
+	// triggers a per-iteration bounds check that dominates the inner dot
+	// when len(a) is in the thousands (the projection row size).
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	a = a[:n]
+	b = b[:n]
 	var sum float32
-	for i := range a {
+	for i := 0; i < n; i++ {
 		sum += a[i] * b[i]
 	}
 	return sum
@@ -879,24 +969,68 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	if matrix == nil || row < 0 || row >= matrix.rows {
 		return 0
 	}
+	// Hoist the loop bound: the original double-condition (col < matrix.cols
+	// && col < len(input)) re-read both sources every iteration. min() once,
+	// then a single-bound loop lets the compiler elide bounds checks on the
+	// input slice when col stays under len(input).
+	cols := matrix.cols
+	if n := len(input); n < cols {
+		cols = n
+	}
 	offset := row * matrix.cols
+	in := input[:cols]
+	// Hoist hot fields from matrix once — the per-element value() call
+	// would chase each of these through the struct (and through the desc
+	// for groupSize/bits/elements) on every element of every projection
+	// row. With ~hidden_size elements per row and ~intermediate rows per
+	// token, that ran into the billions per layer.
+	//
+	// matrix.elements equals matrix.rows * matrix.cols by construction
+	// (PackedTensorDescriptor.Elements is the product of shape dims set in
+	// NewPackedTensorDescriptor from []uint64{rows, cols}). With the row
+	// bound check at the top of the function and col < cols <= matrix.cols
+	// inside the loop, every idx is provably under elements, so the per-
+	// element guard from the original (*cpuSplitPackedMatrix).value path
+	// drops out entirely.
+	packed := matrix.packed
+	scales := matrix.scales
+	biases := matrix.biases
+	groupSize := matrix.groupSize
+	bits := matrix.bits
 	var sum float32
-	for col := 0; col < matrix.cols && col < len(input); col++ {
-		sum += input[col] * matrix.value(offset+col)
+	for col := 0; col < cols; col++ {
+		idx := offset + col
+		group := idx / groupSize
+		q := cpuSplitUnpackPackedValue(packed, idx, bits)
+		sum += in[col] * (float32(q)*scales[group] + biases[group])
 	}
 	return sum
 }
 
 func (matrix *cpuSplitPackedMatrix) value(index int) float32 {
-	if matrix == nil || index < 0 || uint64(index) >= matrix.desc.Elements {
+	if matrix == nil || index < 0 || uint64(index) >= matrix.elements {
 		return 0
 	}
-	group := index / matrix.desc.GroupSize
-	q := cpuSplitUnpackPackedValue(matrix.packed, index, matrix.desc.Bits)
+	group := index / matrix.groupSize
+	q := cpuSplitUnpackPackedValue(matrix.packed, index, matrix.bits)
 	return float32(q)*matrix.scales[group] + matrix.biases[group]
 }
 
 func cpuSplitUnpackPackedValue(packed []byte, index, bits int) uint8 {
+	// Fast paths for the byte-aligned bit widths actually emitted by the
+	// JANG packers (8-bit dense, 4-bit nibble-packed). These cover the
+	// overwhelmingly common cases and skip the per-bit walk loop, which is
+	// hit hundreds of millions of times per layer otherwise.
+	switch bits {
+	case 8:
+		return packed[index]
+	case 4:
+		b := packed[index>>1]
+		if index&1 == 0 {
+			return b & 0x0F
+		}
+		return b >> 4
+	}
 	bitOffset := index * bits
 	remaining := bits
 	shiftOut := 0
@@ -988,12 +1122,17 @@ func cpuSplitProjectionBiasCandidates(weightName string) []string {
 }
 
 func cpuSplitSidecarCandidates(primaryName, foundName, sidecar string) []string {
-	names := []string{foundName}
+	// Pre-size names — foundName + optional trimmed-packed-suffix + primaryName
+	// + the weight-candidate fan-out (up to 6 entries). Saves a couple of
+	// underlying-array reallocs per packed-tensor load.
+	base := cpuSplitWeightCandidates(primaryName)
+	names := make([]string, 0, 2+1+len(base))
+	names = append(names, foundName)
 	if trimmed := cpuSplitTrimPackedSuffix(foundName); trimmed != foundName {
 		names = append(names, trimmed)
 	}
 	names = append(names, primaryName)
-	names = append(names, cpuSplitWeightCandidates(primaryName)...)
+	names = append(names, base...)
 	candidates := make([]string, 0, len(names)*3)
 	for _, name := range names {
 		trimmed := cpuSplitTrimWeightSuffix(name)
