@@ -4,6 +4,7 @@ package dataset
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 
 	core "dappco.re/go"
@@ -86,12 +87,17 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
-		line := core.Trim(scanner.Text())
-		if line == "" {
+		// scanner.Bytes() aliases the scanner's internal buffer (no
+		// allocation), bytes.TrimSpace returns a sub-slice, and
+		// core.JSONUnmarshal eats []byte directly. The prior
+		// scanner.Text() path allocated a fresh string per row —
+		// shaving 1 alloc/row over 100k-row corpora is load-bearing.
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
 			continue
 		}
 		var record jsonRecord
-		if result := core.JSONUnmarshalString(line, &record); !result.OK {
+		if result := core.JSONUnmarshal(line, &record); !result.OK {
 			return nil, core.Errorf("dataset: parse JSONL line %d: %w", lineNo, resultError(result))
 		}
 		sample, ok, err := record.toSample(cfg)
