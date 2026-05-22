@@ -1065,13 +1065,21 @@ type PagedKVCache struct {
 	borrowedKeysScratch                []*Array
 	borrowedValuesScratch              []*Array
 	borrowedOwnedScratch               []*Array
-	materializedLength                 int
-	storageDType                       DType
-	hasStorageDType                    bool
-	offset                             int
-	length                             int
-	maxSize                            int
-	pageSize                           int
+	// Scratch buffers for visiblePages — reused across Update calls so the
+	// per-token concatenatedState() path doesn't allocate three []*Array
+	// slices each time.  The slices are consumed within concatenatedState
+	// (kPages/vPages feed Concatenate, owned is Free'd) so they're safe to
+	// reuse on the next call.
+	visibleKScratch     []*Array
+	visibleVScratch     []*Array
+	visibleOwnedScratch []*Array
+	materializedLength  int
+	storageDType        DType
+	hasStorageDType     bool
+	offset              int
+	length              int
+	maxSize             int
+	pageSize            int
 	// preallocStorage is true when pages have storage = c.pageSize (prealloc
 	// path); false when storage equals the actual fill length (concat path).
 	// Set lazily on first page append; cleared on Reset.  Used by visiblePage
@@ -1331,6 +1339,9 @@ func (c *PagedKVCache) Reset() {
 	c.borrowedKeysScratch = nil
 	c.borrowedValuesScratch = nil
 	c.borrowedOwnedScratch = nil
+	c.visibleKScratch = nil
+	c.visibleVScratch = nil
+	c.visibleOwnedScratch = nil
 	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
@@ -1788,17 +1799,37 @@ func (c *PagedKVCache) borrowedOwned(length, capacity int) []*Array {
 }
 
 func (c *PagedKVCache) visiblePages() (kPages, vPages, owned []*Array) {
-	if len(c.kPages) == 0 || len(c.vPages) == 0 || len(c.kPages) != len(c.vPages) {
+	n := len(c.kPages)
+	if n == 0 || len(c.vPages) == 0 || n != len(c.vPages) {
 		return nil, nil, nil
 	}
-	kPages = make([]*Array, len(c.kPages))
-	vPages = make([]*Array, len(c.vPages))
-	owned = make([]*Array, 0, len(c.kPages)+len(c.vPages))
+	// Reuse scratch buffers across Update calls — concatenatedState consumes
+	// these slices within the same call (kPages/vPages flow into Concatenate,
+	// owned is Free'd via defer), so reuse is safe.  Saves 3 allocs per Update.
+	if cap(c.visibleKScratch) < n {
+		c.visibleKScratch = make([]*Array, n)
+	} else {
+		c.visibleKScratch = c.visibleKScratch[:n]
+	}
+	if cap(c.visibleVScratch) < n {
+		c.visibleVScratch = make([]*Array, n)
+	} else {
+		c.visibleVScratch = c.visibleVScratch[:n]
+	}
+	if cap(c.visibleOwnedScratch) < 2*n {
+		c.visibleOwnedScratch = make([]*Array, 0, 2*n)
+	} else {
+		c.visibleOwnedScratch = c.visibleOwnedScratch[:0]
+	}
+	kPages = c.visibleKScratch
+	vPages = c.visibleVScratch
+	owned = c.visibleOwnedScratch
 	for i := range c.kPages {
 		kPages[i] = c.visiblePage(c.kPages[i], i)
 		vPages[i] = c.visiblePage(c.vPages[i], i)
 		owned = append(owned, kPages[i], vPages[i])
 	}
+	c.visibleOwnedScratch = owned
 	return kPages, vPages, owned
 }
 
