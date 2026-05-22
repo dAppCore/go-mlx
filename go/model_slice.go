@@ -348,7 +348,9 @@ func modelSliceTensorIsEmbedding(name string) bool {
 }
 
 func modelSliceTensorIsNorm(name string) bool {
-	return core.Contains(name, "norm") || core.Contains(name, "layernorm")
+	// "layernorm" already contains "norm", so the first check subsumes
+	// it — the redundant second core.Contains scan was dead.
+	return core.Contains(name, "norm")
 }
 
 func modelSliceTensorIsAttention(name string) bool {
