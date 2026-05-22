@@ -616,10 +616,14 @@ func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 
 func inspectModelPackPolicy(pack *mp.ModelPack, cfg mp.ModelPackConfig) {
 	if cfg.ExpectedQuantBits > 0 && pack.QuantBits != cfg.ExpectedQuantBits {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueQuantizationMismatch, core.Sprintf("quantization is %d-bit, expected %d-bit", pack.QuantBits, cfg.ExpectedQuantBits), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueQuantizationMismatch,
+			core.Concat("quantization is ", core.Itoa(pack.QuantBits), "-bit, expected ", core.Itoa(cfg.ExpectedQuantBits), "-bit"),
+			pack.Root)
 	}
 	if cfg.MaxContextLength > 0 && pack.ContextLength > cfg.MaxContextLength {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueContextTooLarge, core.Sprintf("context length %d exceeds limit %d", pack.ContextLength, cfg.MaxContextLength), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueContextTooLarge,
+			core.Concat("context length ", core.Itoa(pack.ContextLength), " exceeds limit ", core.Itoa(cfg.MaxContextLength)),
+			pack.Root)
 	}
 }
 
