@@ -403,36 +403,36 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// the read syscalls collapse to a handful for typical GGUF headers.
 	reader := core.NewBufReader(file)
 
-	// Single 20-byte read covers magic(4) + version(4) + tensorCount(8) + metadataCount(8).
-	// Reflect-free scratch — eliminates 4 binary.Read calls (+4 reflect allocs each).
-	var header [24]byte
-	if _, err := io.ReadFull(reader, header[:24]); err != nil {
+	// Shared scratch buffer used for the file header, every fixed-width
+	// metadata/tensor read, and short string reads (interned-key fast
+	// path). 64 B covers all known GGUF metadata keys + the bounded
+	// architecture-name vocabulary; longer strings fall through to per-
+	// call make. Declaring it once at the top of parseGGUF means
+	// io.ReadFull's interface-typed buf parameter forces a single per-
+	// call heap escape rather than one per read site (header + trailer
+	// each used to allocate their own [N]byte locals).
+	var scratch [64]byte
+
+	// First 24 bytes: magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// Reflect-free read — eliminates 4 binary.Read calls (+4 reflect allocs each).
+	if _, err := io.ReadFull(reader, scratch[:24]); err != nil {
 		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
-	if core.AsString(header[:4]) != "GGUF" {
+	if core.AsString(scratch[:4]) != "GGUF" {
 		return nil, nil, core.NewError("mlx: invalid gguf magic")
 	}
-	version := binary.LittleEndian.Uint32(header[4:8])
+	version := binary.LittleEndian.Uint32(scratch[4:8])
 	if version < 2 {
 		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
-	tensorCount := binary.LittleEndian.Uint64(header[8:16])
-	metadataCount := binary.LittleEndian.Uint64(header[16:24])
+	tensorCount := binary.LittleEndian.Uint64(scratch[8:16])
+	metadataCount := binary.LittleEndian.Uint64(scratch[16:24])
 	if tensorCount > maxGGUFCollectionEntries {
 		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
 	if metadataCount > maxGGUFCollectionEntries {
 		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
-
-	// Shared scratch buffer for all subsequent fixed-width reads + short-
-	// string reads. 64 B covers all known GGUF metadata keys + the bounded
-	// architecture-name vocabulary; longer strings fall through to per-
-	// call make. The buffer is already escaped to heap (it's passed by
-	// slice into io.Reader.Read implementations), so reusing it for short
-	// string reads avoids the per-string heap alloc when the read content
-	// matches an entry in ggufInternedStrings.
-	var scratch [64]byte
 
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
