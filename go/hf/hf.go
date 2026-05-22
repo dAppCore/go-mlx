@@ -936,8 +936,68 @@ func (probe *modelConfigProbe) quantGroup() int {
 }
 
 func normalizeKnownArchitecture(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
+	// Skip Trim+Lower+Replace when the input is already in canonical form
+	// (no leading/trailing whitespace, no uppercase, no '-'). Most callers
+	// (ModelConfig.architecture for HF model_type, repeat lookups) hit this.
+	if !needsNormalisation(value) {
+		return matchKnownArchitecture(value)
+	}
+	return matchKnownArchitecture(normaliseArchString(value))
+}
+
+// normaliseArchString trims surrounding whitespace, lowercases ASCII, and
+// rewrites '-' to '_' in a single pass. Replaces the old
+// Lower(Trim(...))+Replace(...) chain that allocated twice and walked the
+// string three times.
+func normaliseArchString(s string) string {
+	// Find trim bounds.
+	start, end := 0, len(s)
+	for start < end {
+		c := s[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := s[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	if start == end {
+		return ""
+	}
+	buf := make([]byte, end-start)
+	for i := start; i < end; i++ {
+		c := s[i]
+		if c == '-' {
+			c = '_'
+		} else if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i-start] = c
+	}
+	return core.AsString(buf)
+}
+
+// needsNormalisation reports whether normalizeKnownArchitecture has any
+// transformation work to do — true if value contains whitespace, '-', or
+// ASCII uppercase. Pure scan, no allocations.
+func needsNormalisation(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || (c >= 'A' && c <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+// matchKnownArchitecture is the bare switch table — pulled out so both the
+// fast and slow paths share it without duplication.
+func matchKnownArchitecture(value string) string {
 	switch value {
 	case "qwen3_5":
 		return "qwen3_next"
