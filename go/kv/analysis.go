@@ -171,12 +171,16 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 	var layerCount, entropyCount, couplingCount int
 	var lockedPairs, totalPairs int
 
-	// One invNorms scratch per Analyze — reused across all layer
-	// keys+values calls to avoid per-layer/per-side allocations
-	// (snapshot.SeqLen × 8 bytes × layers × 2 sides).
-	var invNorms []float64
-	if snapshot.SeqLen > 0 {
-		invNorms = make([]float64, snapshot.SeqLen)
+	// One scaled-vector scratch per Analyze — reused across all layer
+	// keys+values calls to avoid per-layer/per-side allocations.
+	// Sized to seqLen × headDim (the pair-loop pre-scaled rows); the
+	// entropy helper reuses the same buffer (it only needs seqLen
+	// float64s for magnitudes — fits trivially).
+	var scratch []float64
+	if snapshot.SeqLen > 0 && snapshot.HeadDim > 0 {
+		scratch = make([]float64, snapshot.SeqLen*snapshot.HeadDim)
+	} else if snapshot.SeqLen > 0 {
+		scratch = make([]float64, snapshot.SeqLen)
 	}
 
 	for layer := range numLayers {
@@ -184,8 +188,8 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 		if !ok || len(layerSnapshot.Heads) == 0 {
 			continue
 		}
-		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true, invNorms)
-		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false, invNorms)
+		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true, scratch)
+		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false, scratch)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
 		result.LayerKeyCoherence[layer] = keyDiff
@@ -202,14 +206,16 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 		}
 		for _, head := range layerSnapshot.Heads {
 			if len(head.Key) > 0 {
-				// invNorms double-duty: reuse as the entropy
-				// magnitudes scratch since the position-differentiation
-				// pair loop has finished consuming it for this layer.
-				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, invNorms)
+				// scratch double-duty: reuse as the entropy magnitudes
+				// scratch since the position-differentiation pair loop
+				// has finished consuming it for this layer. cap(scratch)
+				// ≥ seqLen·headDim ≥ seqLen, so head-entropy's
+				// seqLen-sized request always fits.
+				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, scratch)
 				entropyCount++
 			}
 			if len(head.Value) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, invNorms)
+				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, scratch)
 				entropyCount++
 			}
 		}
@@ -478,21 +484,26 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	return mean
 }
 
-func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool, invNorms []float64) (float64, int, int) {
+func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool, scratch []float64) (float64, int, int) {
 	if seqLen < 2 || headDim <= 0 {
 		return 0, 0, 0
 	}
-	// Precompute per-position inverse norms once (O(seqLen)) so the
-	// O(seqLen²) pair loop only pays a dot product + 2 muls. Previously
-	// each pair recomputed normA + normB inside kvAnalysisCosine32,
-	// giving O(seqLen²·headDim) self-norm work — pure waste because
-	// normA only depends on position i. Drops Analyze_2048Tokens from
-	// ~28ms to a fraction. invNorms is caller-owned scratch reused
-	// across keys+values+layers.
-	if cap(invNorms) < seqLen {
-		invNorms = make([]float64, seqLen)
+	// Pre-scale each position into float64 with `scaled[i][k] = v[i][k]/|v[i]|`
+	// stored in a flat seqLen·headDim slice. The pair loop then computes
+	// the cosine via a pure float64 dot product — no per-pair invA·invB
+	// muls, no per-pair float32→float64 conversions (which previously
+	// cost O(seqLen²·headDim) conversions vs O(seqLen·headDim) now), and
+	// no per-pair invNorms[i]/invNorms[j] loads. Zero-norm positions are
+	// left as all-zero rows in scratch — their dot product is 0 which is
+	// below threshold=0.3, contributing locked++ + 0 similarity (matches
+	// the original kvAnalysisCosine32 semantics). caller-owned `scratch`
+	// is reused across all keys+values+layers; sized seqLen×headDim
+	// float64s.
+	scaledSize := seqLen * headDim
+	if cap(scratch) < scaledSize {
+		scratch = make([]float64, scaledSize)
 	} else {
-		invNorms = invNorms[:seqLen]
+		scratch = scratch[:scaledSize]
 	}
 	threshold := 1.0 - kvCoherenceThreshold
 	var totalSimilarity float64
@@ -502,64 +513,77 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		if keys {
 			flat = head.Key
 		}
-		if len(flat) < seqLen*headDim {
+		if len(flat) < scaledSize {
 			continue
 		}
-		// Pass 1: per-position |v| as 1/|v| (or 0 for zero positions).
+		// Pass 1: convert + scale each position into float64 land. We
+		// fold the 1/|v| scaling directly into the stored vector so the
+		// pair loop is a plain dot product. Zero-norm positions get an
+		// all-zero scratch row (dot product will be 0 → < threshold →
+		// locked++), matching the original cosine-of-zero-vector
+		// semantics.
 		for pos := 0; pos < seqLen; pos++ {
 			start := pos * headDim
 			row := flat[start : start+headDim]
+			out := scratch[start : start+headDim]
 			var sum float64
-			for _, value := range row {
+			for k, value := range row {
 				v := float64(value)
+				out[k] = v
 				sum += v * v
 			}
 			if sum == 0 {
-				invNorms[pos] = 0
-			} else {
-				invNorms[pos] = 1.0 / math.Sqrt(sum)
-			}
-		}
-		// Pass 2: pairwise dot products only — divide once with
-		// precomputed inverse norms, no per-pair sqrt. The original
-		// kvAnalysisCosine32 returns 0 when either norm is zero, which
-		// with threshold=0.3 contributes 0 similarity + locked++.
-		for i := 0; i < seqLen; i++ {
-			invA := invNorms[i]
-			if invA == 0 {
-				// All (i,j) pairs degenerate to similarity 0 → count
-				// pairs + locked (since 0 < threshold).
-				remaining := seqLen - i - 1
-				pairs += remaining
-				locked += remaining
+				// Zero the row — covers both the genuine zero-norm
+				// case and any prior layer/head leftover.
+				for k := range out {
+					out[k] = 0
+				}
 				continue
 			}
-			baseA := i * headDim
-			rowA := flat[baseA : baseA+headDim]
-			for j := i + 1; j < seqLen; j++ {
-				invB := invNorms[j]
-				if invB == 0 {
-					pairs++
-					locked++
-					continue
+			inv := 1.0 / math.Sqrt(sum)
+			for k := range out {
+				out[k] *= inv
+			}
+		}
+		// Pass 2: pure float64 dot product. The cosine is the dot of
+		// the pre-scaled rows directly — no per-pair multiplies needed.
+		// Specialise headDim=1 — the inner k loop overhead is the
+		// dominant cost when the loop only runs once.
+		if headDim == 1 {
+			for i := 0; i < seqLen; i++ {
+				ai := scratch[i]
+				for j := i + 1; j < seqLen; j++ {
+					dot := ai * scratch[j]
+					totalSimilarity += dot
+					if dot < threshold {
+						locked++
+					}
 				}
-				// Index directly into flat — drops the rowB := slice
-				// header creation and lets the compiler prove the
-				// j*headDim+k addressing is in bounds via the
-				// outer len(flat) check.
+			}
+			// Pair count is the same for all-positions (no zero-norm
+			// short-circuit needed — zeroed rows are already handled
+			// by the all-zero scratch contents).
+			pairs += seqLen * (seqLen - 1) / 2
+			continue
+		}
+		for i := 0; i < seqLen; i++ {
+			baseA := i * headDim
+			rowA := scratch[baseA : baseA+headDim]
+			for j := i + 1; j < seqLen; j++ {
 				baseB := j * headDim
+				// Pure float64 dot product — no float32 conversions,
+				// no per-pair inverse-norm multiplications.
 				var dot float64
 				for k, av := range rowA {
-					dot += float64(av) * float64(flat[baseB+k])
+					dot += av * scratch[baseB+k]
 				}
-				similarity := dot * invA * invB
-				totalSimilarity += similarity
-				pairs++
-				if similarity < threshold {
+				totalSimilarity += dot
+				if dot < threshold {
 					locked++
 				}
 			}
 		}
+		pairs += seqLen * (seqLen - 1) / 2
 	}
 	if pairs == 0 {
 		return 0, locked, pairs
