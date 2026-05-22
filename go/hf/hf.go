@@ -430,33 +430,37 @@ func localModelID(inputPath, root string) string {
 	return core.PathBase(root)
 }
 
-// localModelFiles patterns: precomputed so the make([]string,...) literal
-// is not re-built per call. The path glob payload is the dominant cost
-// (one Path call + one glob syscall per pattern) so this is presentation
-// rather than a perf hot spot, but it keeps the call site allocation-free
-// for the iteration list itself.
-var localModelFilePatterns = []string{
-	"*.safetensors",
-	"*.gguf",
-	"*.bin",
-	"tokenizer.json",
-	"tokenizer_config.json",
-}
-
 func localModelFiles(root string) []ModelFile {
 	// Pre-size: a typical pack has 1-4 safetensors shards + tokenizer.json
 	// + tokenizer_config.json. 8 is a comfortable initial capacity that
 	// avoids growslice for almost every real model.
 	files := make([]ModelFile, 0, 8)
-	for _, pattern := range localModelFilePatterns {
-		for _, path := range core.PathGlob(core.PathJoin(root, pattern)) {
-			info := core.Stat(path)
-			var size uint64
-			if info.OK {
-				size = uint64(info.Value.(core.FsFileInfo).Size())
-			}
-			files = append(files, ModelFile{Name: core.PathBase(path), Size: size})
+	// One ReadDir against the snapshot directory beats five filepath.Glob
+	// passes (one per pattern). filepath.Glob does its own readdir per
+	// pattern + per-entry filepath.Match alloc; a single ReadDir + inline
+	// suffix/name match on the entries collapses the 5x readdir + 5x
+	// match slice into a single syscall and a tight per-entry branch.
+	read := core.ReadDir(core.DirFS(root), ".")
+	if !read.OK {
+		return files
+	}
+	entries, ok := read.Value.([]core.FsDirEntry)
+	if !ok {
+		return files
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
+		name := entry.Name()
+		if !isLocalModelFileName(name) {
+			continue
+		}
+		var size uint64
+		if info, err := entry.Info(); err == nil {
+			size = uint64(info.Size())
+		}
+		files = append(files, ModelFile{Name: name, Size: size})
 	}
 	// localModelFiles only ever sets ModelFile.Name (RFilename is empty).
 	// Compare directly on Name to skip the filename() firstNonEmpty hop
@@ -473,6 +477,22 @@ func localModelFiles(root string) []ModelFile {
 		}
 	})
 	return files
+}
+
+// isLocalModelFileName reports whether name is one of the weight or
+// tokenizer file shapes localModelFiles surfaces. The previous form ran
+// five filepath.Glob passes; this inlined predicate replaces them with a
+// single suffix/equality check per ReadDir entry.
+func isLocalModelFileName(name string) bool {
+	switch name {
+	case "tokenizer.json", "tokenizer_config.json":
+		return true
+	}
+	// Suffix tests on the weight extensions. The most common shape is
+	// "*.safetensors" so put that first.
+	return hasSuffixFold(name, ".safetensors") ||
+		hasSuffixFold(name, ".gguf") ||
+		hasSuffixFold(name, ".bin")
 }
 
 func planFit(entry fitEntry, cfg FitConfig) FitPlan {
