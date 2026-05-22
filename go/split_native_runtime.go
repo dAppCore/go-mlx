@@ -114,7 +114,13 @@ func (runtime *NativeSplitLocalRuntime) ForwardAttention(ctx context.Context, re
 	if err != nil {
 		return SplitAttentionResult{}, err
 	}
-	return SplitAttentionResult{Hidden: append([]float32(nil), result.Hidden...)}, nil
+	// metal.Model.SplitForwardAttention already allocates a fresh
+	// result.Hidden via out.Floats() and stores an independent state
+	// copy separately, so the slice handed back to us is exclusively
+	// owned. The previous append([]float32(nil), result.Hidden...) was
+	// a redundant second clone over the freshly-allocated data —
+	// transferring ownership directly saves the per-call copy.
+	return SplitAttentionResult{Hidden: result.Hidden}, nil
 }
 
 // Sample projects local logits and samples one token.
@@ -138,9 +144,14 @@ func (runtime *NativeSplitLocalRuntime) Sample(ctx context.Context, req SplitSam
 	if err != nil {
 		return SplitSampleResult{}, err
 	}
+	// metal.Model.SplitSample returns result.Hidden as the freshly
+	// allocated embedding slice and stores an independent
+	// state.Hidden = append([]float32(nil), nextHidden...) for itself.
+	// The slice handed to us has a single owner, so re-cloning it
+	// here was redundant — alias the result.Hidden directly.
 	return SplitSampleResult{
 		TokenID: result.TokenID,
-		Hidden:  append([]float32(nil), result.Hidden...),
+		Hidden:  result.Hidden,
 	}, nil
 }
 
