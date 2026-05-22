@@ -13,6 +13,14 @@ import (
 
 const envBinary = "MEMVID_CLI_BIN"
 
+var (
+	errNilStore       = core.NewError("memvid cli store is nil")
+	errPathRequired   = core.NewError("memvid cli store path is required")
+	errBinaryRequired = core.NewError("memvid cli binary is required")
+	errNoFrameID      = core.NewError("memvid put did not report a frame id")
+	errResultFailed   = core.NewError("core result failed")
+)
+
 type Store struct {
 	path      string
 	bin       string
@@ -70,7 +78,31 @@ func (e *CommandError) Error() string {
 	if detail == "" {
 		detail = "unknown error"
 	}
-	return core.Sprintf("memvid-cli %s failed: %s", core.Join(" ", e.Args...), detail)
+	// Single-Builder build: avoids the intermediate Join allocation
+	// that the previous Concat(prefix, Join, suffix, detail) form
+	// produced. Pre-size to the exact final length so the underlying
+	// buffer never grows. 2 allocs → 1 alloc on the hot error path.
+	const prefix = "memvid-cli "
+	const suffix = " failed: "
+	n := len(prefix) + len(suffix) + len(detail)
+	if argc := len(e.Args); argc > 0 {
+		n += argc - 1
+		for _, a := range e.Args {
+			n += len(a)
+		}
+	}
+	b := core.NewBuilder()
+	b.Grow(n)
+	b.WriteString(prefix)
+	for i, a := range e.Args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(a)
+	}
+	b.WriteString(suffix)
+	b.WriteString(detail)
+	return b.String()
 }
 
 func (e *CommandError) Unwrap() error {
@@ -90,7 +122,7 @@ func LookPath() (string, error) {
 
 func Open(path string, opts ...Option) (*Store, error) {
 	if core.Trim(path) == "" {
-		return nil, core.NewError("memvid cli store path is required")
+		return nil, errPathRequired
 	}
 	store := &Store{
 		path:      path,
@@ -136,11 +168,14 @@ func (s *Store) Binary() string {
 }
 
 func (s *Store) Get(ctx context.Context, chunkID int) (string, error) {
-	chunk, err := s.Resolve(ctx, chunkID)
+	// Resolve builds a full Chunk just so we can read .Text; viewFrame
+	// returns the underlying viewResponse directly. Skip the Chunk +
+	// ChunkRef construction entirely on the Get path.
+	view, err := s.viewFrame(ctx, chunkID)
 	if err != nil {
 		return "", err
 	}
-	return chunk.Text, nil
+	return view.text(), nil
 }
 
 func (s *Store) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
@@ -188,7 +223,11 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if err := s.ready(); err != nil {
 		return memvid.ChunkRef{}, err
 	}
-	args := []string{"put", s.path, "--json", "--no-embedding", "--no-enrich"}
+	// 5 fixed flags + worst-case option flags (1 raw + 2 per uri/title/
+	// kind/track + 2 per tag + 2 per label). Pre-sized so subsequent
+	// appends never grow the backing array.
+	args := make([]string, 0, 14+2*(len(opts.Tags)+len(opts.Labels)))
+	args = append(args, "put", s.path, "--json", "--no-embedding", "--no-enrich")
 	if s.rawWrites {
 		args = append(args, "--raw")
 	}
@@ -218,7 +257,11 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 		args = append(args, "--label", label)
 	}
 
-	out, err := s.runInput(ctx, []byte(text), args...)
+	// Zero-copy view of text — runInput passes the bytes through
+	// core.NewBuffer into cmd.Stdin which only reads from them. text
+	// outlives the synchronous cmd.Run inside defaultRunner, and the
+	// caller's payload is never mutated, so the view is safe.
+	out, err := s.runInput(ctx, core.AsBytes(text), args...)
 	if err != nil {
 		return memvid.ChunkRef{}, err
 	}
@@ -262,7 +305,11 @@ func (s *Store) Search(ctx context.Context, query string, topK int) ([]SearchHit
 		return nil, core.E("memvid.Store.Search", "parse memvid find JSON", resultError(r))
 	}
 	hits := make([]SearchHit, 0, len(found.Hits))
-	for _, hit := range found.Hits {
+	// Index iteration avoids the per-iter struct copy of the response
+	// hit (6 fields, 56 bytes) — load-bearing when topK is large and
+	// Search is on the per-query hot path.
+	for i := range found.Hits {
+		hit := &found.Hits[i]
 		chunk, err := s.Resolve(ctx, int(hit.FrameID))
 		if err != nil {
 			return nil, err
@@ -282,11 +329,15 @@ func (s *Store) Search(ctx context.Context, query string, topK int) ([]SearchHit
 }
 
 func (s *Store) putFrameID(ctx context.Context, put putResponse) (int, error) {
-	for _, report := range put.Reports {
-		if report.URI == "" {
+	// Index iteration; report struct is small but the pattern matches
+	// the rest of this package and avoids an unnecessary 16-byte copy
+	// each iteration.
+	for i := range put.Reports {
+		uri := put.Reports[i].URI
+		if uri == "" {
 			continue
 		}
-		view, err := s.viewURI(ctx, report.URI)
+		view, err := s.viewURI(ctx, uri)
 		if err == nil {
 			return int(view.Frame.ID), nil
 		}
@@ -297,7 +348,7 @@ func (s *Store) putFrameID(ctx context.Context, put putResponse) (int, error) {
 	if put.Memory.FrameCount > 0 {
 		return int(put.Memory.FrameCount - 1), nil
 	}
-	return 0, core.NewError("memvid put did not report a frame id")
+	return 0, errNoFrameID
 }
 
 func (s *Store) viewFrame(ctx context.Context, chunkID int) (viewResponse, error) {
@@ -346,7 +397,7 @@ func (s *Store) runInput(ctx context.Context, input []byte, args ...string) ([]b
 	}
 	if err != nil {
 		return nil, &CommandError{
-			Args:   append([]string(nil), args...),
+			Args:   core.SliceClone(args),
 			Stdout: limitOutput(stdoutText),
 			Stderr: limitOutput(stderr),
 			Err:    err,
@@ -357,13 +408,13 @@ func (s *Store) runInput(ctx context.Context, input []byte, args ...string) ([]b
 
 func (s *Store) ready() error {
 	if s == nil {
-		return core.NewError("memvid cli store is nil")
+		return errNilStore
 	}
 	if core.Trim(s.path) == "" {
-		return core.NewError("memvid cli store path is required")
+		return errPathRequired
 	}
 	if core.Trim(s.bin) == "" {
-		return core.NewError("memvid cli binary is required")
+		return errBinaryRequired
 	}
 	if s.runner == nil {
 		s.runner = defaultRunner
@@ -381,16 +432,32 @@ func defaultRunner(ctx context.Context, input []byte, bin string, args ...string
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	err := cmd.Run()
+	// stdoutText is only consumed by the error path (limitOutput). Skip
+	// the stdout.String() copy on success — callers use stdout.Bytes()
+	// for the payload, and the textual form is never read.
+	if err == nil {
+		return stdout.Bytes(), "", stderr.String(), nil
+	}
 	return stdout.Bytes(), stdout.String(), stderr.String(), err
 }
 
 func commandLooksNotFound(err error) bool {
-	var cmdErr *CommandError
-	if !core.As(err, &cmdErr) {
+	// Direct type assertion: this helper is only ever called with the
+	// error returned by Store.run/runInput — that's either *CommandError
+	// (unwrapped, freshly constructed) or a context error. errors.As
+	// walks the unwrap chain reflectively and boxes the type pointer,
+	// which costs an alloc per call; the type assertion is free.
+	cmdErr, ok := err.(*CommandError)
+	if !ok {
 		return false
 	}
-	text := core.Lower(cmdErr.Stdout + "\n" + cmdErr.Stderr)
-	return core.Contains(text, "not found") || core.Contains(text, "was not found")
+	// "was not found" contains "not found" — one needle is enough.
+	// Lower each stream independently to skip the joined "stdout\nstderr"
+	// allocation, and short-circuit the second Lower when stdout matches.
+	if core.Contains(core.Lower(cmdErr.Stdout), "not found") {
+		return true
+	}
+	return core.Contains(core.Lower(cmdErr.Stderr), "not found")
 }
 
 func isChunkNotFound(err error) bool {
@@ -413,7 +480,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errResultFailed
 }
 
 type putResponse struct {
@@ -439,7 +506,11 @@ type viewResponse struct {
 	Content string `json:"content"`
 }
 
-func (v viewResponse) text() string {
+// text resolves the chunk payload from the view response, falling
+// back through Content → Caption → SearchText. Pointer receiver
+// avoids copying the 96-byte viewResponse struct on every Search hit
+// (Search calls Resolve N times per query, each call ends in text()).
+func (v *viewResponse) text() string {
 	if v.Content != "" {
 		return v.Content
 	}
