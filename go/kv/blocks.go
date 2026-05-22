@@ -1451,13 +1451,21 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 	if prefixTokens > bundle.TokenCount {
 		return nil, core.NewError("mlx: State token prefix exceeds bundle token count")
 	}
-	refs := stateBlockRefsForPrefix(bundle, prefixTokens)
-	if len(refs) == 0 {
+	// Inline iteration over bundle.Blocks skips the intermediate
+	// stateBlockRefsForPrefix slice allocation — we already break when the
+	// running token count covers prefixTokens, the same condition
+	// stateBlockRefsForPrefix uses to truncate.
+	if len(bundle.Blocks) == 0 {
 		return nil, core.NewError("mlx: State token prefix has no covering blocks")
 	}
 	tokens := make([]int32, 0, prefixTokens)
 	nextStart := 0
-	for expectedIndex, ref := range refs {
+	expectedIndex := 0
+	covered := false
+	for _, ref := range bundle.Blocks {
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
 		if ref.Index != expectedIndex || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
 			return nil, core.NewError("mlx: State token blocks are not contiguous")
 		}
@@ -1494,9 +1502,14 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 			return nil, core.NewError("mlx: State token block token count mismatch")
 		}
 		nextStart += ref.TokenCount
+		expectedIndex++
+		covered = true
 		if len(tokens) >= prefixTokens {
 			break
 		}
+	}
+	if !covered {
+		return nil, core.NewError("mlx: State token prefix has no covering blocks")
 	}
 	if len(tokens) < prefixTokens {
 		return nil, core.NewError("mlx: State token prefix blocks do not cover requested tokens")
