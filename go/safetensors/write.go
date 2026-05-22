@@ -88,20 +88,34 @@ func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error)
 
 	ordered := make([]TensorRef, 0, len(names))
 	header := make(map[string]HeaderEntry, len(names))
+	// Single int64 slab covering all per-tensor Shape + DataOffsets slices —
+	// every header entry needs len(Shape)+2 int64s, so we count once then
+	// hand each entry a sub-slice. Replaces 2*N small allocs with one.
+	totalDims := 0
+	for _, name := range names {
+		totalDims += len(byName[name].Shape)
+	}
+	slab := make([]int64, totalDims+2*len(names))
+	cursor := 0
 	var offset int64
 	for _, name := range names {
 		ref := byName[name]
-		shape := make([]int64, len(ref.Shape))
+		shape := slab[cursor : cursor+len(ref.Shape) : cursor+len(ref.Shape)]
+		cursor += len(ref.Shape)
 		for i, dim := range ref.Shape {
 			if dim > uint64(maxInt64Value()) {
 				return nil, nil, core.NewError("mlx: safetensors subset tensor shape is too large: " + ref.Name)
 			}
 			shape[i] = int64(dim)
 		}
+		offsets := slab[cursor : cursor+2 : cursor+2]
+		cursor += 2
+		offsets[0] = offset
+		offsets[1] = offset + ref.ByteLen
 		header[name] = HeaderEntry{
 			DType:       core.Upper(ref.DType),
 			Shape:       shape,
-			DataOffsets: []int64{offset, offset + ref.ByteLen},
+			DataOffsets: offsets,
 		}
 		offset += ref.ByteLen
 		ordered = append(ordered, ref)
