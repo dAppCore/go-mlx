@@ -226,9 +226,14 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 		ctx = context.Background()
 	}
 	cfg = normalizeWorkloadBenchConfig(cfg)
+	// normalizeWorkloadBenchConfig already produced a fresh clone of the
+	// caller's QuantizationProfile and bound it to cfg — cfg is a local
+	// value the caller never sees, so the report can take ownership of
+	// the same clone instead of paying a second jang.ClonePackedProfile
+	// (full struct copy + RoleBits clone) on every dispatch.
 	report := &WorkloadBenchReport{
 		Version:             WorkloadBenchReportVersion,
-		QuantizationProfile: jang.ClonePackedProfile(cfg.QuantizationProfile),
+		QuantizationProfile: cfg.QuantizationProfile,
 	}
 
 	fastEval, err := RunFastEval(ctx, runner.FastEval, cfg.FastEval)
