@@ -340,7 +340,12 @@ func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, 
 }
 
 func prefillCacheStateArrays(caches []Cache) []*Array {
-	var arrays []*Array
+	// Pre-size to len(caches)*2 — the common KV case (keys + values per cache).
+	// Quantized/paged caches contribute additional state arrays but Go's append
+	// only realloc-grows when capacity is exceeded; over-capacity is cheap and
+	// the hint matters most on Gemma 4 26-cache fan-outs where the unsized
+	// nil-slice growth chain (0→1→2→4→8→16→32→64) dominated allocs.
+	arrays := make([]*Array, 0, len(caches)*2)
 	for _, cache := range caches {
 		if cache == nil {
 			continue
@@ -401,7 +406,7 @@ func evalCachesBeforeDetach(caches []Cache) error {
 }
 
 func cacheStateArraysForDetach(caches []Cache) []*Array {
-	arrays := make([]*Array, 0)
+	arrays := make([]*Array, 0, len(caches)*2)
 	for _, cache := range caches {
 		if cache == nil {
 			continue
