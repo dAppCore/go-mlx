@@ -889,8 +889,13 @@ func (a *grpoMetricAccumulator) snapshot() grpoMetricsSnapshot {
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 	out := make([]GRPORollout, len(rollouts))
+	// Bulk copy the struct slice first — copy() lowers to memmove for
+	// contiguous element memory, replacing the per-iteration struct
+	// copy (GRPORollout is ~10 fields wide so each per-iter copy is
+	// a non-trivial pile of moves). Inner slice fields are then
+	// re-cloned so out's TokenIDs/RewardParts don't alias rollouts'.
+	copy(out, rollouts)
 	for i := range rollouts {
-		out[i] = rollouts[i]
 		// core.SliceClone is slices.Clone — pre-sized make+copy, one
 		// alloc per slice instead of append-grow on a nil head. Also
 		// returns nil for nil input so empty TokenIDs / RewardParts
