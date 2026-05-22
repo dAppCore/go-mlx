@@ -213,7 +213,7 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 		KVHash:    kvHash,
 		Analysis:  analysis,
 		SAMI:      sami,
-		Refs:      buildRefs(opts.Refs, append(append([]state.ChunkRef(nil), opts.StateRefs...), opts.MemvidRefs...)),
+		Refs:      buildRefs(opts.Refs, joinChunkRefs(opts.StateRefs, opts.MemvidRefs)),
 		Meta:      cloneMeta(opts.Meta),
 	}
 	if AdapterEmpty(b.Adapter) {
@@ -445,7 +445,7 @@ func AdapterFromInfo(info lora.AdapterInfo) Adapter {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -460,7 +460,7 @@ func AdapterToInfo(adapter Adapter) lora.AdapterInfo {
 		Rank:       adapter.Rank,
 		Alpha:      adapter.Alpha,
 		Scale:      adapter.Scale,
-		TargetKeys: append([]string(nil), adapter.TargetKeys...),
+		TargetKeys: core.SliceClone(adapter.TargetKeys),
 	}
 }
 
@@ -584,7 +584,7 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 	if adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0 {
 		adapter.Hash = ""
 	}
-	adapter.TargetKeys = append([]string(nil), adapter.TargetKeys...)
+	adapter.TargetKeys = core.SliceClone(adapter.TargetKeys)
 	return adapter
 }
 
@@ -628,6 +628,19 @@ func MemvidURI(ref state.ChunkRef) string {
 	buf = append(buf, "memvid://chunk/"...)
 	buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
 	return core.AsString(buf)
+}
+
+// joinChunkRefs returns a single allocation containing primary first
+// then fallback. Replaces the `append(append(nil, A...), B...)` pattern
+// which allocates twice and grows on the second append.
+func joinChunkRefs(primary, fallback []state.ChunkRef) []state.ChunkRef {
+	if len(primary) == 0 && len(fallback) == 0 {
+		return nil
+	}
+	out := make([]state.ChunkRef, 0, len(primary)+len(fallback))
+	out = append(out, primary...)
+	out = append(out, fallback...)
+	return out
 }
 
 func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
