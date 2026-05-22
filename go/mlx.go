@@ -101,7 +101,6 @@
 package mlx
 
 import (
-	"slices"
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
@@ -319,14 +318,27 @@ func WithSeed(seed uint64) GenerateOption {
 	}
 }
 
+// withLogitsOption / withTokenPhaseTraceOption are the package-init
+// singleton closures returned by every WithLogits / WithReturnLogits /
+// WithTokenPhaseTrace call. The no-argument option builders captured
+// nothing, so the prior `return func(...){...}` form heap-allocated a
+// fresh closure on every call — measurable in the option-stack bench
+// because every Generate call site that asks for logits walks through
+// this builder. Hoisting the closure once at package init makes the
+// builder a pure pointer return, dropping the alloc to zero.
+var (
+	withLogitsOption          GenerateOption = func(c *GenerateConfig) { c.ReturnLogits = true }
+	withTokenPhaseTraceOption GenerateOption = func(c *GenerateConfig) { c.TraceTokenPhases = true }
+)
+
 // WithLogits requests classification logits when the called API supports them.
 func WithLogits() GenerateOption {
-	return func(c *GenerateConfig) { c.ReturnLogits = true }
+	return withLogitsOption
 }
 
 // WithReturnLogits is an alias for WithLogits.
 func WithReturnLogits() GenerateOption {
-	return WithLogits()
+	return withLogitsOption
 }
 
 // WithStopTokens sets token IDs that stop generation.
@@ -346,7 +358,7 @@ func WithRepeatPenalty(p float32) GenerateOption {
 
 // WithTokenPhaseTrace records per-token decode-loop timings in Metrics.
 func WithTokenPhaseTrace() GenerateOption {
-	return func(c *GenerateConfig) { c.TraceTokenPhases = true }
+	return withTokenPhaseTraceOption
 }
 
 // WithProbeSink streams typed probe events during generation.
@@ -528,33 +540,49 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 	return cfg
 }
 
+// normalizeLoadConfig validation errors hoisted to package vars — the
+// failure paths are rare in callers but each core.NewError() allocates
+// a fresh error value; reusing a single instance per message keeps the
+// rare path alloc-free and preserves errors.Is comparability.
+var (
+	errMlxContextLengthNegative      = core.NewError("mlx: context length must be >= 0")
+	errMlxGemma4SlidingWindowNeg     = core.NewError("mlx: Gemma 4 sliding window must be >= 0")
+	errMlxParallelSlotsNegative      = core.NewError("mlx: parallel slots must be >= 0")
+	errMlxPromptCacheMinTokensNeg    = core.NewError("mlx: prompt cache minimum tokens must be >= 0")
+	errMlxQuantizationNegative       = core.NewError("mlx: quantization bits must be >= 0")
+	errMlxBatchSizeNegative          = core.NewError("mlx: batch size must be >= 0")
+	errMlxPrefillChunkSizeNegative   = core.NewError("mlx: prefill chunk size must be >= 0")
+	errMlxExpectedQuantizationNeg    = core.NewError("mlx: expected quantization bits must be >= 0")
+	errMlxSplitInferenceRemotePlan   = core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+)
+
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ContextLength < 0 {
-		return LoadConfig{}, core.NewError("mlx: context length must be >= 0")
+		return LoadConfig{}, errMlxContextLengthNegative
 	}
 	if cfg.Gemma4SlidingWindow < 0 {
-		return LoadConfig{}, core.NewError("mlx: Gemma 4 sliding window must be >= 0")
+		return LoadConfig{}, errMlxGemma4SlidingWindowNeg
 	}
 	if cfg.ParallelSlots < 0 {
-		return LoadConfig{}, core.NewError("mlx: parallel slots must be >= 0")
+		return LoadConfig{}, errMlxParallelSlotsNegative
 	}
 	if cfg.PromptCacheMinTokens < 0 {
-		return LoadConfig{}, core.NewError("mlx: prompt cache minimum tokens must be >= 0")
+		return LoadConfig{}, errMlxPromptCacheMinTokensNeg
 	}
 	if cfg.PromptCache && cfg.PromptCacheMinTokens == 0 {
 		cfg.PromptCacheMinTokens = DefaultPromptCacheMinTokens
 	}
 	if cfg.Quantization < 0 {
-		return LoadConfig{}, core.NewError("mlx: quantization bits must be >= 0")
+		return LoadConfig{}, errMlxQuantizationNegative
 	}
 	if cfg.BatchSize < 0 {
-		return LoadConfig{}, core.NewError("mlx: batch size must be >= 0")
+		return LoadConfig{}, errMlxBatchSizeNegative
 	}
 	if cfg.PrefillChunkSize < 0 {
-		return LoadConfig{}, core.NewError("mlx: prefill chunk size must be >= 0")
+		return LoadConfig{}, errMlxPrefillChunkSizeNegative
 	}
 	if cfg.ExpectedQuantization < 0 {
-		return LoadConfig{}, core.NewError("mlx: expected quantization bits must be >= 0")
+		return LoadConfig{}, errMlxExpectedQuantizationNeg
 	}
 	if cfg.SplitInference != nil {
 		if err := inference.ValidateSplitInferencePlan(*cfg.SplitInference); err != nil {
@@ -565,7 +593,7 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 			mode = inference.SplitInferenceModeLocal
 		}
 		if mode != inference.SplitInferenceModeLocal {
-			return LoadConfig{}, core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+			return LoadConfig{}, errMlxSplitInferenceRemotePlan
 		}
 	}
 	switch cfg.CacheMode {
@@ -603,12 +631,12 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 
 func cloneSplitInferencePlan(plan inference.SplitInferencePlan) *inference.SplitInferencePlan {
 	cloned := plan
-	// slices.Clone short-circuits to nil for nil-input slices without
+	// core.SliceClone short-circuits to nil for nil-input slices without
 	// calling runtime.makeslice / typedslicecopy — the prior append([]T(nil),
 	// nil...) form still emitted both calls. For Components and Notes, the
 	// vast majority of plans have one or the other empty.
-	cloned.LocalSlice.Components = slices.Clone(plan.LocalSlice.Components)
-	cloned.LocalSlice.Notes = slices.Clone(plan.LocalSlice.Notes)
+	cloned.LocalSlice.Components = core.SliceClone(plan.LocalSlice.Components)
+	cloned.LocalSlice.Notes = core.SliceClone(plan.LocalSlice.Notes)
 	cloned.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
 	cloned.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
 	cloned.Labels = cloneInferenceLabels(plan.Labels)

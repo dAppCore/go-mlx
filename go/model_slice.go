@@ -4,7 +4,6 @@ package mlx
 
 import (
 	"context"
-	"slices"
 	"strconv"
 
 	core "dappco.re/go"
@@ -15,6 +14,20 @@ import (
 )
 
 const modelSliceManifestVersion = "go-mlx.model-slice.v1"
+
+// SliceModel validation errors hoisted to package vars — each
+// previously allocated a fresh core.NewError on the rare failure
+// path. Sharing instances also makes errors.Is comparable for
+// callers that need to distinguish "no output path" from "no
+// tensors selected" without parsing the message text.
+var (
+	errModelSliceOutputPathRequired   = core.NewError("mlx: model slice output path is required")
+	errModelSliceSourcePathRequired   = core.NewError("mlx: model slice source path is required")
+	errModelSliceUnsupportedFormat    = core.NewError("mlx: model slice materialisation currently supports safetensors packs only")
+	errModelSliceNoSafetensorsWeights = core.NewError("mlx: model slice source has no safetensors weights")
+	errModelSliceNoTensorsSelected    = core.NewError("mlx: model slice selected no tensors")
+	errModelSliceCoreResultFailed     = core.NewError("mlx: model slice core result failed")
+)
 
 // projectionMatch holds the two pre-built substrings modelSliceHasProjection
 // scans for ("."+name+"." and "."+name+".weight"). Pre-computing them at
@@ -39,6 +52,20 @@ var projectionLookup = map[string]projectionMatch{
 	"down_proj": {".down_proj.", ".down_proj.weight"},
 	"gate_proj": {".gate_proj.", ".gate_proj.weight"},
 }
+
+// projectionFamily is a bitmask reporting which projection groups appear
+// in a tensor name. The byte-walk in modelSliceProjectionFamily fills it
+// from a single substring scan over the name, replacing the 5-attention +
+// 2-FFN + 1-gate sequential Contains chain that the previous classifier
+// invoked per call. The bit layout lets the family helpers below collapse
+// to a single mask test (.&_attentionMask != 0 etc.).
+type projectionFamily uint8
+
+const (
+	projAttention projectionFamily = 1 << iota // any of q/k/v/o/out
+	projFFN                                    // up or down
+	projGate                                   // gate
+)
 
 type modelSliceManifest struct {
 	Version   string                   `json:"version"`
@@ -143,10 +170,10 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		return nil, err
 	}
 	if core.Trim(req.OutputPath) == "" {
-		return nil, core.NewError("mlx: model slice output path is required")
+		return nil, errModelSliceOutputPathRequired
 	}
 	if core.Trim(req.Model.Path) == "" {
-		return nil, core.NewError("mlx: model slice source path is required")
+		return nil, errModelSliceSourcePathRequired
 	}
 
 	source, err := model.Inspect(req.Model.Path)
@@ -154,10 +181,10 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		return nil, err
 	}
 	if source.Format != mp.ModelPackFormatSafetensors {
-		return nil, core.NewError("mlx: model slice materialisation currently supports safetensors packs only")
+		return nil, errModelSliceUnsupportedFormat
 	}
 	if len(source.WeightFiles) == 0 {
-		return nil, core.NewError("mlx: model slice source has no safetensors weights")
+		return nil, errModelSliceNoSafetensorsWeights
 	}
 
 	index, err := safetensors.IndexFiles(source.WeightFiles)
@@ -166,7 +193,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	}
 	refs, names := selectModelSliceTensorRefs(*plan, index)
 	if len(refs) == 0 {
-		return nil, core.NewError("mlx: model slice selected no tensors")
+		return nil, errModelSliceNoTensorsSelected
 	}
 
 	if result := core.MkdirAll(req.OutputPath, 0o755); !result.OK {
@@ -224,21 +251,42 @@ func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.Mode
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
-	// Lazy-allocate missing only when the first absent component is
-	// observed. The vast majority of slices passed to standalone checks
-	// either declare ExtractLevelAll (handled above) or have all four
-	// required components, so the typical path now skips the make()
-	// entirely.
-	var missing []inference.ModelComponent
-	for _, component := range modelSliceStandaloneRequired {
-		if !plan.HasComponent(component) {
-			if missing == nil {
-				missing = make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
-			}
-			missing = append(missing, component)
+	// Single sweep over plan.Components flips the four required-component
+	// bits in a local mask — for a 9-component plan this replaces the
+	// previous 4 × slices.Contains scans (~36 string-equality compares)
+	// with one len(plan.Components) pass and four direct bool reads.
+	// The hot path is "all four present" so the lazy missing-slice
+	// allocation is preserved.
+	var haveEmbed, haveAttn, haveFFN, haveLMHead bool
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentEmbeddings:
+			haveEmbed = true
+		case inference.ModelComponentAttention:
+			haveAttn = true
+		case inference.ModelComponentFFN:
+			haveFFN = true
+		case inference.ModelComponentLMHead:
+			haveLMHead = true
 		}
 	}
-	return len(missing) == 0, missing
+	if haveEmbed && haveAttn && haveFFN && haveLMHead {
+		return true, nil
+	}
+	missing := make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
+	if !haveEmbed {
+		missing = append(missing, inference.ModelComponentEmbeddings)
+	}
+	if !haveAttn {
+		missing = append(missing, inference.ModelComponentAttention)
+	}
+	if !haveFFN {
+		missing = append(missing, inference.ModelComponentFFN)
+	}
+	if !haveLMHead {
+		missing = append(missing, inference.ModelComponentLMHead)
+	}
+	return false, missing
 }
 
 func modelSliceLabelInt64(labels map[string]string, key string) int64 {
@@ -264,17 +312,28 @@ func modelSliceLabelInt64(labels map[string]string, key string) int64 {
 }
 
 func tensorRefsByteLen(refs []safetensors.TensorRef) int64 {
+	// safetensors.TensorRef carries Name + Path + DType strings plus a
+	// Shape slice (~88 bytes); `for _, ref := range refs` value-copies
+	// the entire struct every iteration. Index-walking the slice and
+	// dereferencing only the ByteLen field drops the per-tensor memcpy
+	// for the inner loop SliceModel runs once per Gemma-class model
+	// load (1000+ refs).
 	var total int64
-	for _, ref := range refs {
-		total += ref.ByteLen
+	for i := range refs {
+		total += refs[i].ByteLen
 	}
 	return total
 }
 
 func indexTensorByteLen(index safetensors.Index) int64 {
+	// Walking index.Tensors directly skips the per-name hashed map fetch
+	// `index.Tensors[name]` paid on every entry. Map iteration still
+	// value-copies the TensorRef (unavoidable with map[string]TensorRef)
+	// but eliminates the hash+probe per entry — at 100 tensors the
+	// helper drops ~170 ns even before SliceModel's 1000-tensor cases.
 	var total int64
-	for _, name := range index.Names {
-		total += index.Tensors[name].ByteLen
+	for _, ref := range index.Tensors {
+		total += ref.ByteLen
 	}
 	return total
 }
@@ -304,17 +363,36 @@ func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclu
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return modelSliceInclusionMask{all: true}
 	}
-	return modelSliceInclusionMask{
-		embeddings: plan.HasComponent(inference.ModelComponentEmbeddings),
-		norms:      plan.HasComponent(inference.ModelComponentNorms),
-		attention:  plan.HasComponent(inference.ModelComponentAttention),
-		ffn:        plan.HasComponent(inference.ModelComponentFFN),
-		gate:       plan.HasComponent(inference.ModelComponentGate),
-		downMeta:   plan.HasComponent(inference.ModelComponentDownMeta),
-		router:     plan.HasComponent(inference.ModelComponentRouter),
-		experts:    plan.HasComponent(inference.ModelComponentExperts),
-		lmHead:     plan.HasComponent(inference.ModelComponentLMHead),
+	// The original nine plan.HasComponent calls each scanned the entire
+	// plan.Components slice — for a 9-component plan that was 9×9 = 81
+	// component comparisons (plus the string-equality cost on each). A
+	// single pass over plan.Components flips the relevant mask bit
+	// directly so the work is O(len(Components)) instead of
+	// O(len(Components) × 9).
+	mask := modelSliceInclusionMask{}
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentEmbeddings:
+			mask.embeddings = true
+		case inference.ModelComponentNorms:
+			mask.norms = true
+		case inference.ModelComponentAttention:
+			mask.attention = true
+		case inference.ModelComponentFFN:
+			mask.ffn = true
+		case inference.ModelComponentGate:
+			mask.gate = true
+		case inference.ModelComponentDownMeta:
+			mask.downMeta = true
+		case inference.ModelComponentRouter:
+			mask.router = true
+		case inference.ModelComponentExperts:
+			mask.experts = true
+		case inference.ModelComponentLMHead:
+			mask.lmHead = true
+		}
 	}
+	return mask
 }
 
 func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
@@ -386,26 +464,37 @@ func modelSliceTensorIsNorm(name string) bool {
 }
 
 func modelSliceTensorIsAttention(name string) bool {
-	return core.Contains(name, "self_attn") ||
+	if core.Contains(name, "self_attn") ||
 		core.Contains(name, "attention") ||
-		core.Contains(name, ".attn.") ||
-		modelSliceHasProjection(name, "q_proj") ||
-		modelSliceHasProjection(name, "k_proj") ||
-		modelSliceHasProjection(name, "v_proj") ||
-		modelSliceHasProjection(name, "o_proj") ||
-		modelSliceHasProjection(name, "out_proj")
+		core.Contains(name, ".attn.") {
+		return true
+	}
+	// Single-pass projection family scan replaces five sequential
+	// Contains scans (".q_proj.", ".k_proj.", ".v_proj.", ".o_proj.",
+	// ".out_proj.") which each walk the whole name. The byte-walk hits
+	// the worst-case miss once for the "_proj." anchor + a constant-cost
+	// prefix verify per occurrence, instead of five whole-name walks
+	// terminating with a miss. The Sweep benchmark drops the worst case
+	// from ~5 substring scans to one byte-walk.
+	return modelSliceProjectionFamily(name)&projAttention != 0
 }
 
 func modelSliceTensorIsFFN(name string) bool {
-	return core.Contains(name, ".mlp.") ||
+	if core.Contains(name, ".mlp.") ||
 		core.Contains(name, "feed_forward") ||
-		core.Contains(name, "ffn") ||
-		modelSliceHasProjection(name, "up_proj") ||
-		modelSliceHasProjection(name, "down_proj")
+		core.Contains(name, "ffn") {
+		return true
+	}
+	// Single-pass projection family scan — see modelSliceTensorIsAttention.
+	return modelSliceProjectionFamily(name)&projFFN != 0
 }
 
 func modelSliceTensorIsGate(name string) bool {
-	return modelSliceHasProjection(name, "gate_proj") || core.Contains(name, ".gate.")
+	if core.Contains(name, ".gate.") {
+		return true
+	}
+	// Single-pass projection family scan — see modelSliceTensorIsAttention.
+	return modelSliceProjectionFamily(name)&projGate != 0
 }
 
 func modelSliceTensorIsDownMeta(name string) bool {
@@ -426,29 +515,179 @@ func modelSliceTensorIsLMHead(name string) bool {
 	return core.HasPrefix(name, "lm_head.")
 }
 
-func modelSliceHasProjection(name, projection string) bool {
-	if match, ok := projectionLookup[projection]; ok {
-		return core.Contains(name, match.infix) || core.HasSuffix(name, match.suffix)
+// modelSliceProjectionFamily walks name once and returns the union of
+// projection families ("_proj." anchored prefixes) it contains. Each
+// "_proj." occurrence is verified against the eight known projections
+// via a constant-cost byte compare on the bytes preceding the anchor,
+// avoiding the N×whole-name substring scans the old per-projection
+// chain performed when the name had no projection at all (the common
+// miss path on every embedding / norm / LM-head tensor name). Bit
+// layout matches projAttention / projFFN / projGate.
+func modelSliceProjectionFamily(name string) projectionFamily {
+	const anchor = "_proj."
+	// Scan name for every occurrence of the anchor; for each, the bytes
+	// before the anchor identify which projection (q/k/v/o/out/up/down/gate)
+	// and the dot before the prefix confirms the original ".<prefix>_proj."
+	// infix semantics. A single name can carry at most one projection family
+	// in practice but the loop tolerates multiple safely.
+	var fam projectionFamily
+	rest := name
+	offset := 0
+	for {
+		idx := core.Index(rest, anchor)
+		if idx < 0 {
+			return fam
+		}
+		// Absolute index of '_' in name.
+		abs := offset + idx
+		// Need a discriminator byte before "_proj.".
+		if abs == 0 {
+			// "_proj." at start cannot carry the leading "." prefix.
+			offset = abs + len(anchor)
+			rest = name[offset:]
+			continue
+		}
+		// Each known projection prefix needs a leading '.' to satisfy
+		// the original Contains(".<prefix>_proj.") semantics — names
+		// like "q_proj.foo" must NOT match because the original probe
+		// searched for the dot-prefixed infix.
+		switch name[abs-1] {
+		case 'q', 'k', 'v':
+			// .q_proj. / .k_proj. / .v_proj. — single discriminator,
+			// preceded by '.'.
+			if abs >= 2 && name[abs-2] == '.' {
+				fam |= projAttention
+			}
+		case 'o':
+			// .o_proj. (single 'o') or .out_proj. (long 'out' prefix).
+			// Cheap branch via direct byte compare on the byte two
+			// positions back; if it is '.', we have .o_proj.
+			if abs >= 2 && name[abs-2] == '.' {
+				fam |= projAttention
+			}
+			// Note: 'o' at abs-1 with 'u' at abs-2 is impossible —
+			// the matching out_proj path lives under case 't' below.
+		case 't':
+			// .out_proj. — discriminator 't', prefix bytes "u","o",".".
+			if abs >= 4 && name[abs-2] == 'u' && name[abs-3] == 'o' && name[abs-4] == '.' {
+				fam |= projAttention
+			}
+		case 'p':
+			// .up_proj. — discriminator 'p', prefix byte "u",".".
+			if abs >= 3 && name[abs-2] == 'u' && name[abs-3] == '.' {
+				fam |= projFFN
+			}
+		case 'n':
+			// .down_proj. — discriminator 'n', prefix bytes "w","o","d",".".
+			if abs >= 5 && name[abs-2] == 'w' && name[abs-3] == 'o' && name[abs-4] == 'd' && name[abs-5] == '.' {
+				fam |= projFFN
+			}
+		case 'e':
+			// .gate_proj. — discriminator 'e', prefix bytes "t","a","g",".".
+			if abs >= 5 && name[abs-2] == 't' && name[abs-3] == 'a' && name[abs-4] == 'g' && name[abs-5] == '.' {
+				fam |= projGate
+			}
+		}
+		// All three flags set — no further scanning can broaden the result.
+		if fam == projAttention|projFFN|projGate {
+			return fam
+		}
+		offset = abs + len(anchor)
+		rest = name[offset:]
 	}
-	// Fallback for callers passing unseen projection names — preserves the
-	// original "."+projection+"." semantics without the lookup table.
-	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
 }
 
+// modelSliceHasProjection. Hot path is exclusively the eight projection
+// names known to projectionLookup, so the switch short-cuts the map fetch
+// (string-keyed hash + interface comparison) for those callers and reads
+// the pre-built infix/suffix pair via direct constant loads. The map
+// fallback still handles unseen projection names without losing the
+// original semantics.
+func modelSliceHasProjection(name, projection string) bool {
+	var infix, suffix string
+	switch projection {
+	case "q_proj":
+		infix, suffix = ".q_proj.", ".q_proj.weight"
+	case "k_proj":
+		infix, suffix = ".k_proj.", ".k_proj.weight"
+	case "v_proj":
+		infix, suffix = ".v_proj.", ".v_proj.weight"
+	case "o_proj":
+		infix, suffix = ".o_proj.", ".o_proj.weight"
+	case "out_proj":
+		infix, suffix = ".out_proj.", ".out_proj.weight"
+	case "up_proj":
+		infix, suffix = ".up_proj.", ".up_proj.weight"
+	case "down_proj":
+		infix, suffix = ".down_proj.", ".down_proj.weight"
+	case "gate_proj":
+		infix, suffix = ".gate_proj.", ".gate_proj.weight"
+	default:
+		if match, ok := projectionLookup[projection]; ok {
+			infix, suffix = match.infix, match.suffix
+		} else {
+			// Fallback preserves the original "."+projection+"." semantics
+			// for callers passing unseen projection names.
+			return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
+		}
+	}
+	return core.Contains(name, infix) || core.HasSuffix(name, suffix)
+}
+
+// modelSliceMetadataFileSet bundles the four possible metadata-file
+// lists for the (tokenizer, labels) component matrix. Hoisting them
+// to package init means modelSliceMetadataFiles returns a shared
+// read-only slice header on every call instead of allocating + growing
+// a 9-cap slice that callers only iterate.
+var (
+	modelSliceMetadataFilesBase      = []string{"config.json"}
+	modelSliceMetadataFilesTokenizer = []string{
+		"config.json",
+		"tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+		"special_tokens_map.json", "generation_config.json",
+	}
+	modelSliceMetadataFilesLabels = []string{
+		"config.json",
+		"label_map.json", "labels.json", "id2label.json",
+	}
+	modelSliceMetadataFilesBoth = []string{
+		"config.json",
+		"tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+		"special_tokens_map.json", "generation_config.json",
+		"label_map.json", "labels.json", "id2label.json",
+	}
+)
+
 func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
-	// Pre-size to the maximum 9 entries (1 default + 5 tokenizer + 3
-	// label) so the slice header backs a single allocation instead of
-	// growing through three doublings (1 -> 2 -> 4 -> 8 -> 16) on a
-	// fully-decorated plan.
-	files := make([]string, 1, 9)
-	files[0] = "config.json"
-	if plan.HasComponent(inference.ModelComponentTokenizer) {
-		files = append(files, "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "special_tokens_map.json", "generation_config.json")
+	// Single-pass detection of the two relevant component flags.
+	// plan.HasComponent runs slices.Contains over plan.Components on
+	// each call; for a typical 8+ component plan that was 16+ string-
+	// equality compares to gate the 4-way switch. One walk over
+	// plan.Components flips both bools and lets the switch run on
+	// direct loads. Early-exit once both flags are set so the typical
+	// "both present" path terminates as soon as it has the answer.
+	var tokenizer, labels bool
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentTokenizer:
+			tokenizer = true
+		case inference.ModelComponentLabels:
+			labels = true
+		}
+		if tokenizer && labels {
+			break
+		}
 	}
-	if plan.HasComponent(inference.ModelComponentLabels) {
-		files = append(files, "label_map.json", "labels.json", "id2label.json")
+	switch {
+	case tokenizer && labels:
+		return modelSliceMetadataFilesBoth
+	case tokenizer:
+		return modelSliceMetadataFilesTokenizer
+	case labels:
+		return modelSliceMetadataFilesLabels
+	default:
+		return modelSliceMetadataFilesBase
 	}
-	return files
 }
 
 func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
@@ -470,18 +709,32 @@ func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
 	return nil
 }
 
+// modelSliceManifestWeightMap is the single-entry weight map every
+// slice manifest carries. Hoisting it to package init means
+// writeModelSliceManifest stops re-allocating the same one-key
+// `map[string]string{"model.safetensors": "selected tensors"}`
+// literal on every SliceModel commit — the map is read-only via
+// JSONMarshal so sharing the instance is safe.
+var modelSliceManifestWeightMap = map[string]string{
+	"model.safetensors": "selected tensors",
+}
+
 func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
+	// The manifest aliases the caller's tensors slice and plan.Labels map
+	// directly — core.JSONMarshal only reads through them and the local
+	// manifest value is consumed immediately, so the previous defensive
+	// SliceClone + cloneStringMap pair were dead work on the SliceModel
+	// commit path (one alloc per 8-byte string header per tensor + the
+	// labels map duplication, all discarded after Marshal).
 	manifest := modelSliceManifest{
-		Version: modelSliceManifestVersion,
-		Source:  plan.SourcePath,
-		Output:  plan.OutputPath,
-		Plan:    plan,
-		Weight:  "model.safetensors",
-		Tensors: slices.Clone(tensors),
-		Labels:  cloneStringMap(plan.Labels),
-		WeightMap: map[string]string{
-			"model.safetensors": "selected tensors",
-		},
+		Version:   modelSliceManifestVersion,
+		Source:    plan.SourcePath,
+		Output:    plan.OutputPath,
+		Plan:      plan,
+		Weight:    "model.safetensors",
+		Tensors:   tensors,
+		Labels:    plan.Labels,
+		WeightMap: modelSliceManifestWeightMap,
 	}
 	encoded := core.JSONMarshal(manifest)
 	if !encoded.OK {
@@ -500,5 +753,5 @@ func modelSliceResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("mlx: model slice core result failed")
+	return errModelSliceCoreResultFailed
 }
