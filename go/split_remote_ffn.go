@@ -44,6 +44,16 @@ type RemoteSplitFFNExecutor struct {
 	client   *core.HTTPClient
 }
 
+// Sentinel errors for the remote FFN executor hot paths. Built once at
+// package init instead of per-call so the steady-state ForwardFFN cost
+// excludes the core.NewError allocation triplet (errors.New + struct +
+// interface header) for each guard the call cannot avoid checking.
+var (
+	errRemoteSplitFFNExecutorNil   = core.NewError("mlx: remote split FFN executor is nil")
+	errRemoteSplitFFNBodyShape     = core.NewError("mlx: remote split FFN response body shape is invalid")
+	errRemoteSplitFFNEmptyHidden   = core.NewError("mlx: remote split FFN endpoint returned empty hidden state")
+)
+
 // NewRemoteSplitFFNExecutor creates a network-backed SplitFFNExecutor.
 func NewRemoteSplitFFNExecutor(cfg RemoteSplitFFNConfig) (*RemoteSplitFFNExecutor, error) {
 	url := core.Trim(firstNonEmpty(cfg.URL, cfg.Endpoint.URL))
@@ -74,7 +84,7 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 		return SplitFFNResult{}, err
 	}
 	if executor == nil {
-		return SplitFFNResult{}, core.NewError("mlx: remote split FFN executor is nil")
+		return SplitFFNResult{}, errRemoteSplitFFNExecutorNil
 	}
 	// NewRemoteSplitFFNExecutor already trims + validates the URL and
 	// stores the trimmed form on the receiver. Re-running core.Trim on
@@ -115,7 +125,7 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	}
 	body, ok := read.Value.(string)
 	if !ok {
-		return SplitFFNResult{}, core.NewError("mlx: remote split FFN response body shape is invalid")
+		return SplitFFNResult{}, errRemoteSplitFFNBodyShape
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		// core.Sprintf("%d: %s", ...) routed through fmt's reflection-driven
@@ -137,7 +147,7 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 		return SplitFFNResult{}, core.NewError("mlx: remote split FFN endpoint error: " + remote.Error)
 	}
 	if len(remote.Hidden) == 0 {
-		return SplitFFNResult{}, core.NewError("mlx: remote split FFN endpoint returned empty hidden state")
+		return SplitFFNResult{}, errRemoteSplitFFNEmptyHidden
 	}
 	return SplitFFNResult{Hidden: cloneSplitHidden(remote.Hidden)}, nil
 }
