@@ -272,12 +272,16 @@ func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error)
 		return nil, core.NewError(core.Concat("mlx: MiniMax M2 expert ", core.Itoa(expert), " out of range"))
 	}
 	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
-	specs := []TensorSpec{
+	// Pre-size to 9 (8 always + 1 optional routing bias). The previous
+	// 8-element literal followed by append-when-UseRoutingBias forced
+	// a grow + copy of 8×TensorSpec (8×120 B = 960 B copied per call).
+	specs := make([]TensorSpec, 0, 9)
+	specs = append(specs,
 		plan.attentionSpec(layer, "q_proj", TensorRoleAttentionQ),
 		plan.attentionSpec(layer, "k_proj", TensorRoleAttentionK),
 		plan.attentionSpec(layer, "v_proj", TensorRoleAttentionV),
 		plan.attentionSpec(layer, "o_proj", TensorRoleAttentionO),
-		{
+		TensorSpec{
 			Name:  core.Concat(layerPrefix, "block_sparse_moe.gate.weight"),
 			Role:  TensorRoleRouterGate,
 			Layer: layer,
@@ -287,7 +291,7 @@ func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error)
 		plan.expertSpec(layer, expert, "gate_proj", TensorRoleExpertGate),
 		plan.expertSpec(layer, expert, "up_proj", TensorRoleExpertUp),
 		plan.expertSpec(layer, expert, "down_proj", TensorRoleExpertDown),
-	}
+	)
 	if plan.Config.UseRoutingBias {
 		specs = append(specs, TensorSpec{
 			Name:  core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
