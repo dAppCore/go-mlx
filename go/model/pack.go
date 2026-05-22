@@ -102,7 +102,9 @@ func Validate(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error
 
 func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe, error) {
 	configPath := core.PathJoin(root, "config.json")
-	config, err := readModelConfig(root)
+	// Pass the joined path in directly — readModelConfig would rebuild
+	// the same string via filepath.Join, so reuse what we just minted.
+	config, err := readModelConfigAt(configPath)
 	if err != nil {
 		code := mp.ModelPackIssueMissingConfig
 		message := "config.json is required for native go-mlx loading"

@@ -35,7 +35,14 @@ type modelConfigProbe struct {
 //
 //	probe, err := readModelConfig(modelDir)
 func readModelConfig(dir string) (*modelConfigProbe, error) {
-	read := core.ReadFile(core.PathJoin(dir, "config.json"))
+	return readModelConfigAt(core.PathJoin(dir, "config.json"))
+}
+
+// readModelConfigAt reads + decodes config.json from a pre-built path.
+// Used by inspectModelPackConfig to reuse the path it already builds
+// for issue reporting — avoids redoing filepath.Join.
+func readModelConfigAt(path string) (*modelConfigProbe, error) {
+	read := core.ReadFile(path)
 	if !read.OK {
 		return nil, read.Value.(error)
 	}
