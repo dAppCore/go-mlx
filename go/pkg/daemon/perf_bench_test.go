@@ -295,3 +295,31 @@ func BenchmarkWriteJSONLine_TypicalResp(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkRegistryDispatch_Generate measures the end-to-end backend
+// dispatch path — every per-call alloc the daemon does for a generate
+// request that hits the registered backend (no live model).
+func BenchmarkRegistryDispatch_Generate(b *testing.B) {
+	backend := &fakeBenchBackend{
+		result: GenerateResult{Text: "pong", Model: "main"},
+	}
+	r := NewRegistry(DaemonName, "test")
+	if err := r.RegisterGenerateBackend(backend); err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	req := Request{Action: "generate", Prompt: "ping", Model: "main"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = r.Dispatch(ctx, req)
+	}
+}
+
+type fakeBenchBackend struct {
+	result GenerateResult
+}
+
+func (b *fakeBenchBackend) Generate(context.Context, GenerateRequest) (GenerateResult, error) {
+	return b.result, nil
+}
