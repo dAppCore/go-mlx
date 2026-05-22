@@ -97,7 +97,11 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 	if opts.OutputPath == "" {
 		return fusePrepared{}, errFuseOutputPathRequired
 	}
-	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
+	// core.Lower allocates a fresh string only when uppercase chars are
+	// present; the previous code called it twice on the same input so
+	// any uppercase path paid for the allocation + scan twice. Hoist.
+	lowerOutputPath := core.Lower(opts.OutputPath)
+	if core.HasSuffix(lowerOutputPath, ".safetensors") || core.HasSuffix(lowerOutputPath, ".gguf") {
 		return fusePrepared{}, errFuseOutputNotPackDir
 	}
 	if opts.SourcePack.Format != pack.ModelPackFormatSafetensors {
