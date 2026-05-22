@@ -466,10 +466,11 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		// Batch the i32 block read so bounds check is paid once.
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
+			// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+			// f32s() reader. Single copy vs N×Uint32 + int32 cast.
 			snapshot.Tokens = make([]int32, tokenCount)
-			for i := range snapshot.Tokens {
-				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-			}
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.Tokens))), tokenCount*4)
+			copy(dst, chunk)
 		}
 	}
 	if snapshot.Version >= 2 {
@@ -478,9 +479,8 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			chunk := reader.read(generatedCount * 4)
 			if chunk != nil {
 				snapshot.Generated = make([]int32, generatedCount)
-				for i := range snapshot.Generated {
-					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-				}
+				dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.Generated))), generatedCount*4)
+				copy(dst, chunk)
 			}
 		}
 	}
@@ -541,10 +541,11 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		if shapeCount > 0 {
 			chunk := reader.read(shapeCount * 4)
 			if chunk != nil {
+				// Reinterpret-cast bytes → int32 via memcpy; same pattern
+				// as f32s() reader. Single copy vs N×Uint32 + int32 cast.
 				snapshot.LogitShape = make([]int32, shapeCount)
-				for i := range snapshot.LogitShape {
-					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-				}
+				dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.LogitShape))), shapeCount*4)
+				copy(dst, chunk)
 			}
 		}
 		snapshot.Logits = reader.f32s()
@@ -585,9 +586,10 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		// regardless of token count.
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
-			for i := range tokens {
-				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-			}
+			// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+			// f32s() reader. Single copy vs N×Uint32 + int32 cast.
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(tokens))), tokenCount*4)
+			copy(dst, chunk)
 		}
 	}
 	if reader.err != nil {
@@ -639,10 +641,11 @@ func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 		copy(grown, dst)
 		dst = grown
 	}
+	// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+	// f32s() reader. Single copy vs N×Uint32 + int32 cast.
 	out := dst[start:]
-	for i := range out {
-		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-	}
+	outBytes := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(out))), tokenCount*4)
+	copy(outBytes, chunk)
 	if reader.err != nil {
 		return dst, core.E("Load", "parse State tokens", reader.err)
 	}
