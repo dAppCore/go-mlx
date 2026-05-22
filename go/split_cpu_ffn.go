@@ -451,16 +451,22 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		return report, nil
 	}
 
-	resident := []CPUSplitFFNMemoryReport{}
+	residentCap := len(layerReports)
+	if max > 0 && max < residentCap {
+		residentCap = max
+	}
+	resident := make([]CPUSplitFFNMemoryReport, 0, residentCap)
+	var currentBytes int64
 	for _, layerReport := range layerReports {
 		resident = append(resident, layerReport)
+		currentBytes += layerReport.ResidentBytes
 		if max > 0 && len(resident) > max {
+			currentBytes -= resident[0].ResidentBytes
 			resident = resident[1:]
 			report.EvictedLayers++
 		}
-		current := cpuSplitSumLayerReportsResidentBytes(resident)
-		if current > report.PeakResidentBytes {
-			report.PeakResidentBytes = current
+		if currentBytes > report.PeakResidentBytes {
+			report.PeakResidentBytes = currentBytes
 		}
 	}
 	report.LoadedLayers = len(resident)
@@ -537,14 +543,6 @@ func cpuSplitFFNLayerResidentBytes(layer cpuSplitFFNLayer) int64 {
 	var report CPUSplitFFNMemoryReport
 	report.addLayer(layer)
 	return report.ResidentBytes
-}
-
-func cpuSplitSumLayerReportsResidentBytes(reports []CPUSplitFFNMemoryReport) int64 {
-	var bytes int64
-	for _, report := range reports {
-		bytes += report.ResidentBytes
-	}
-	return bytes
 }
 
 func (executor *CPUSplitFFNExecutor) estimateLayerMemory(layer int) (CPUSplitFFNMemoryReport, error) {
