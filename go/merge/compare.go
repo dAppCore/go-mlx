@@ -96,12 +96,21 @@ func ComparePacks(ctx context.Context, opts CompareOptions) (*CompareResult, err
 		return nil, core.E("ComparePacks", "index fine-tuned weights", err)
 	}
 
+	// Pre-size both the result.Tensors slice and the tunedSeen tracker:
+	// they each grow to at most len(baseIndex.Names) entries (every base
+	// tensor either appears in tuned or not). Growing through the default
+	// nil/zero-cap path costs N growslice/maphint walks for large N.
+	expectedTensors := len(baseIndex.Names)
+	if opts.MaxTensorReports > 0 && opts.MaxTensorReports < expectedTensors {
+		expectedTensors = opts.MaxTensorReports
+	}
 	result := &CompareResult{
 		Base:      opts.Base,
 		FineTuned: opts.FineTuned,
 		Labels:    cloneCompareLabels(opts.Labels),
+		Tensors:   make([]TensorDelta, 0, expectedTensors),
 	}
-	tunedSeen := map[string]struct{}{}
+	tunedSeen := make(map[string]struct{}, len(baseIndex.Names))
 	acc := compareAccumulator{}
 	for _, name := range baseIndex.Names {
 		if err := ctx.Err(); err != nil {
