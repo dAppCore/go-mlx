@@ -1003,6 +1003,21 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	// This trades one integer division + two slice reads per element for one
 	// integer division + two slice reads per group. With groupSize=64
 	// (JANGTQ default), that is a 64x reduction in division work.
+	//
+	// Dispatch by bit-width once outside the loop so the inner unpack
+	// becomes a single shift+mask the Go compiler can keep in registers,
+	// instead of paying the un-inlinable cpuSplitUnpackPackedValue call
+	// (cost 161 > inline budget 80) every element.
+	switch bits {
+	case 8:
+		return cpuSplitPackedDot8(in, packed, scales, biases, offset, cols, groupSize)
+	case 4:
+		return cpuSplitPackedDot4(in, packed, scales, biases, offset, cols, groupSize)
+	case 2:
+		return cpuSplitPackedDot2(in, packed, scales, biases, offset, cols, groupSize)
+	case 1:
+		return cpuSplitPackedDot1(in, packed, scales, biases, offset, cols, groupSize)
+	}
 	var sum float32
 	col := 0
 	for col < cols {
@@ -1017,6 +1032,107 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 		bias := biases[group]
 		for ; col < end; col++ {
 			q := cpuSplitUnpackPackedValue(packed, offset+col, bits)
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot8 walks the 8-bit-aligned packed weight path with the
+// unpack inlined. One byte per element, no shift required.
+func cpuSplitPackedDot8(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			sum += in[col] * (float32(packed[offset+col])*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot4 walks the 4-bit-nibble-packed weight path with the
+// unpack inlined. Two values per byte; low nibble for even indices, high
+// nibble for odd indices.
+func cpuSplitPackedDot4(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			b := packed[(offset+col)>>1]
+			var q uint8
+			if (offset+col)&1 == 0 {
+				q = b & 0x0F
+			} else {
+				q = b >> 4
+			}
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot2 walks the 2-bit-packed weight path with the unpack
+// inlined. Four values per byte; the shift is `((index)&3)<<1`. This is
+// the dominant MiniMax M2 routed-expert weight path.
+func cpuSplitPackedDot2(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			i := offset + col
+			q := (packed[i>>2] >> uint((i&3)<<1)) & 0x03
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot1 walks the 1-bit-packed weight path with the unpack
+// inlined. Eight values per byte; mask + shift only.
+func cpuSplitPackedDot1(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			i := offset + col
+			q := (packed[i>>3] >> uint(i&7)) & 0x01
 			sum += in[col] * (float32(q)*scale + bias)
 		}
 	}
