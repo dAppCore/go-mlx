@@ -302,7 +302,7 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 	block := &Snapshot{
 		Version:       effectiveVersion(s, KVSnapshotEncodingFloat32),
 		Architecture:  s.Architecture,
-		Tokens:        append([]int32(nil), s.Tokens[start:end]...),
+		Tokens:        core.SliceClone(s.Tokens[start:end]),
 		TokenOffset:   baseOffset + end,
 		NumLayers:     s.NumLayers,
 		NumHeads:      s.NumHeads,
@@ -312,9 +312,9 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		Layers:        layers,
 	}
 	if final {
-		block.Generated = append([]int32(nil), s.Generated...)
-		block.LogitShape = append([]int32(nil), s.LogitShape...)
-		block.Logits = append([]float32(nil), s.Logits...)
+		block.Generated = core.SliceClone(s.Generated)
+		block.LogitShape = core.SliceClone(s.LogitShape)
+		block.Logits = core.SliceClone(s.Logits)
 	}
 	return block, nil
 }
