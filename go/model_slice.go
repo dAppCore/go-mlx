@@ -434,20 +434,43 @@ func modelSliceHasProjection(name, projection string) bool {
 	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
 }
 
+// modelSliceMetadataFileSet bundles the four possible metadata-file
+// lists for the (tokenizer, labels) component matrix. Hoisting them
+// to package init means modelSliceMetadataFiles returns a shared
+// read-only slice header on every call instead of allocating + growing
+// a 9-cap slice that callers only iterate.
+var (
+	modelSliceMetadataFilesBase      = []string{"config.json"}
+	modelSliceMetadataFilesTokenizer = []string{
+		"config.json",
+		"tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+		"special_tokens_map.json", "generation_config.json",
+	}
+	modelSliceMetadataFilesLabels = []string{
+		"config.json",
+		"label_map.json", "labels.json", "id2label.json",
+	}
+	modelSliceMetadataFilesBoth = []string{
+		"config.json",
+		"tokenizer.json", "tokenizer_config.json", "chat_template.jinja",
+		"special_tokens_map.json", "generation_config.json",
+		"label_map.json", "labels.json", "id2label.json",
+	}
+)
+
 func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
-	// Pre-size to the maximum 9 entries (1 default + 5 tokenizer + 3
-	// label) so the slice header backs a single allocation instead of
-	// growing through three doublings (1 -> 2 -> 4 -> 8 -> 16) on a
-	// fully-decorated plan.
-	files := make([]string, 1, 9)
-	files[0] = "config.json"
-	if plan.HasComponent(inference.ModelComponentTokenizer) {
-		files = append(files, "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "special_tokens_map.json", "generation_config.json")
+	tokenizer := plan.HasComponent(inference.ModelComponentTokenizer)
+	labels := plan.HasComponent(inference.ModelComponentLabels)
+	switch {
+	case tokenizer && labels:
+		return modelSliceMetadataFilesBoth
+	case tokenizer:
+		return modelSliceMetadataFilesTokenizer
+	case labels:
+		return modelSliceMetadataFilesLabels
+	default:
+		return modelSliceMetadataFilesBase
 	}
-	if plan.HasComponent(inference.ModelComponentLabels) {
-		files = append(files, "label_map.json", "labels.json", "id2label.json")
-	}
-	return files
 }
 
 func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
