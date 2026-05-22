@@ -589,9 +589,19 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		return sftExample{}, false, nil
 	}
 
-	inputs := int32ToIntSlice(seq[:len(seq)-1])
-	targets := int32ToIntSlice(seq[1:])
-	mask := make([]float32, len(inputs))
+	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
+	// shifted by one. Building both in a single index walk lets the loop
+	// amortise bounds-check elision across the two writes instead of
+	// paying once per int32ToIntSlice call (each of which performs its
+	// own range loop + int widening).
+	n := len(seq) - 1
+	inputs := make([]int, n)
+	targets := make([]int, n)
+	for i := 0; i < n; i++ {
+		inputs[i] = int(seq[i])
+		targets[i] = int(seq[i+1])
+	}
+	mask := make([]float32, n)
 	if trainWholeText {
 		for i := range mask {
 			mask[i] = 1
