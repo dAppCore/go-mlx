@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sort"
+	"strconv"
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
@@ -535,19 +536,14 @@ func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufM
 }
 
 func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor) error {
-	write := func(value any) error {
-		return binary.Write(file, binary.LittleEndian, value)
-	}
-	if _, err := file.Write([]byte("GGUF")); err != nil {
-		return err
-	}
-	if err := write(uint32(3)); err != nil {
-		return err
-	}
-	if err := write(uint64(len(tensors))); err != nil {
-		return err
-	}
-	if err := write(uint64(len(metadata))); err != nil {
+	// Single 24-byte header: magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// One write call replaces 4 reflect.Write calls.
+	var header [24]byte
+	copy(header[:4], "GGUF")
+	binary.LittleEndian.PutUint32(header[4:8], 3)
+	binary.LittleEndian.PutUint64(header[8:16], uint64(len(tensors)))
+	binary.LittleEndian.PutUint64(header[16:24], uint64(len(metadata)))
+	if _, err := file.Write(header[:]); err != nil {
 		return err
 	}
 	for _, entry := range metadata {
@@ -629,7 +625,10 @@ func writeGGUFMetadataEntry(file *core.OSFile, entry ggufMetadataEntry) error {
 	if err := writeGGUFStringValue(file, entry.Key); err != nil {
 		return err
 	}
-	if err := binary.Write(file, binary.LittleEndian, entry.ValueType); err != nil {
+	// valueType(4) — direct LE encoding skips reflect dispatch.
+	var typeBuf [4]byte
+	binary.LittleEndian.PutUint32(typeBuf[:], entry.ValueType)
+	if _, err := file.Write(typeBuf[:]); err != nil {
 		return err
 	}
 	return writeGGUFMetadataValue(file, entry.ValueType, entry.Value)
@@ -644,16 +643,21 @@ func writeGGUFMetadataValue(file *core.OSFile, valueType uint32, value any) erro
 		}
 		return writeGGUFStringValue(file, stringValue)
 	case ValueTypeUint32:
+		var v uint32
 		switch concrete := value.(type) {
 		case uint32:
-			return binary.Write(file, binary.LittleEndian, concrete)
+			v = concrete
 		case int:
-			return binary.Write(file, binary.LittleEndian, uint32(concrete))
+			v = uint32(concrete)
 		default:
 			return core.NewError("mlx: GGUF metadata value is not uint32")
 		}
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], v)
+		_, err := file.Write(buf[:])
+		return err
 	default:
-		return core.NewError(core.Sprintf("mlx: unsupported GGUF metadata write type %d", valueType))
+		return core.NewError("mlx: unsupported GGUF metadata write type " + strconv.FormatUint(uint64(valueType), 10))
 	}
 }
 
@@ -661,25 +665,51 @@ func writeGGUFTensorInfo(file *core.OSFile, tensor ggufQuantizedTensor) error {
 	if err := writeGGUFStringValue(file, tensor.Name); err != nil {
 		return err
 	}
-	if err := binary.Write(file, binary.LittleEndian, uint32(len(tensor.Shape))); err != nil {
-		return err
+	// Pack ndim(4) + all dim(8 each) + tensorType(4) + offset(8) into
+	// one batched write — avoids one binary.Write reflect call per
+	// dimension (typically 2-4 per tensor).
+	dims := tensor.Shape
+	bufLen := 4 + len(dims)*8 + 4 + 8
+	// Small scratch on stack for the common 2-4 dim case; fall back to
+	// heap for higher rank tensors (rare in real GGUF files).
+	var stack [64]byte
+	var buf []byte
+	if bufLen <= len(stack) {
+		buf = stack[:bufLen]
+	} else {
+		buf = make([]byte, bufLen)
 	}
-	for _, dim := range tensor.Shape {
-		if err := binary.Write(file, binary.LittleEndian, dim); err != nil {
-			return err
-		}
+	binary.LittleEndian.PutUint32(buf[:4], uint32(len(dims)))
+	pos := 4
+	for _, dim := range dims {
+		binary.LittleEndian.PutUint64(buf[pos:pos+8], dim)
+		pos += 8
 	}
-	if err := binary.Write(file, binary.LittleEndian, tensor.Type); err != nil {
-		return err
-	}
-	return binary.Write(file, binary.LittleEndian, tensor.Offset)
+	binary.LittleEndian.PutUint32(buf[pos:pos+4], tensor.Type)
+	pos += 4
+	binary.LittleEndian.PutUint64(buf[pos:pos+8], tensor.Offset)
+	_, err := file.Write(buf)
+	return err
 }
 
 func writeGGUFStringValue(file *core.OSFile, value string) error {
-	if err := binary.Write(file, binary.LittleEndian, uint64(len(value))); err != nil {
+	// Length-prefix in one batched write with the value bytes when the
+	// value is small enough to fit on stack. For the common metadata-
+	// key case (32-200 bytes) this skips one syscall + one Write call.
+	var stack [256]byte
+	if len(value)+8 <= len(stack) {
+		buf := stack[:8+len(value)]
+		binary.LittleEndian.PutUint64(buf[:8], uint64(len(value)))
+		copy(buf[8:], value)
+		_, err := file.Write(buf)
 		return err
 	}
-	_, err := file.Write([]byte(value))
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(value)))
+	if _, err := file.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	_, err := file.Write(core.AsBytes(value))
 	return err
 }
 
