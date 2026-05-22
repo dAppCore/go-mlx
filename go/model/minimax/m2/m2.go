@@ -516,7 +516,7 @@ func DequantizeJANGPackedProjection(tensor JANGPackedProjectionTensor) (DensePro
 	return DenseProjectionTensor{
 		Descriptor: tensor.Descriptor,
 		Weight:     weight,
-		Bias:       append([]float32(nil), tensor.Bias...),
+		Bias:       core.SliceClone(tensor.Bias),
 	}, nil
 }
 
