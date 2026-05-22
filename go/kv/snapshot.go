@@ -370,14 +370,10 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 		stream.u32(uint32(tokenOffset))
 	}
 	stream.u32(uint32(len(s.Tokens)))
-	for _, token := range s.Tokens {
-		stream.i32(token)
-	}
+	stream.i32sRaw(s.Tokens)
 	if version >= 2 {
 		stream.u32(uint32(len(s.Generated)))
-		for _, token := range s.Generated {
-			stream.i32(token)
-		}
+		stream.i32sRaw(s.Generated)
 	}
 	stream.u32(uint32(len(s.Layers)))
 	for _, layer := range s.Layers {
@@ -410,9 +406,7 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	}
 	if version >= 2 {
 		stream.u32(uint32(len(s.LogitShape)))
-		for _, dim := range s.LogitShape {
-			stream.i32(dim)
-		}
+		stream.i32sRaw(s.LogitShape)
 		stream.f32s(s.Logits)
 	}
 	return stream.err
@@ -853,8 +847,14 @@ func (w *kvSnapshotStreamWriter) i32(value int32) {
 
 func (w *kvSnapshotStreamWriter) i32s(values []int32) {
 	w.u32(uint32(len(values)))
+	w.i32sRaw(values)
+}
+
+// i32sRaw writes int32 values without a length prefix. Used by
+// writeWithOptions when the length has already been written.
+func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	for _, value := range values {
-		w.i32(value)
+		w.u32(uint32(value))
 	}
 }
 
