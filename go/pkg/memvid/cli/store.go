@@ -346,7 +346,7 @@ func (s *Store) runInput(ctx context.Context, input []byte, args ...string) ([]b
 	}
 	if err != nil {
 		return nil, &CommandError{
-			Args:   append([]string(nil), args...),
+			Args:   core.SliceClone(args),
 			Stdout: limitOutput(stdoutText),
 			Stderr: limitOutput(stderr),
 			Err:    err,
