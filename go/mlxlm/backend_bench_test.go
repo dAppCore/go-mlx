@@ -186,6 +186,45 @@ func BenchmarkBackend_ReadLine_Long(b *testing.B) {
 	}
 }
 
+// --- reshapeFloat32 — InspectAttention reads per-layer KV/Q binary
+// blobs and reshapes them to [numHeads][stride]float32. For Gemma-3B
+// that's 28 layers × ~32 heads × 5 seq × 128 head_dim per inspect
+// call — every alloc matters.
+
+func makeFloatBytes(n int) []byte {
+	out := make([]byte, n*4)
+	for i := 0; i < n; i++ {
+		// fill with i (low bits), reinterpreted as float32 bits later
+		out[i*4] = byte(i)
+		out[i*4+1] = byte(i >> 8)
+		out[i*4+2] = byte(i >> 16)
+		out[i*4+3] = byte(i >> 24)
+	}
+	return out
+}
+
+func BenchmarkBackend_ReshapeFloat32_Small(b *testing.B) {
+	const numHeads = 8
+	const stride = 320 // 5 seq × 64 head_dim
+	data := makeFloatBytes(numHeads * stride)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	for i := 0; i < b.N; i++ {
+		_ = reshapeFloat32(data, numHeads, stride)
+	}
+}
+
+func BenchmarkBackend_ReshapeFloat32_Large(b *testing.B) {
+	const numHeads = 32
+	const stride = 5 * 128 // typical Gemma-3B layer: 5 seq × 128 head_dim
+	data := makeFloatBytes(numHeads * stride)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+	for i := 0; i < b.N; i++ {
+		_ = reshapeFloat32(data, numHeads, stride)
+	}
+}
+
 // Silence unused-var lints when only a subset of benches is run.
 var _ = backendBenchSinkOpts
 var _ = backendBenchSinkResult

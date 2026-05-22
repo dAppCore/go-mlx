@@ -570,22 +570,20 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 //	// 8 heads, seqLen=5, headDim=64 → stride=320 floats per head
 //	heads := reshapeFloat32(rawBytes, 8, 5*64)
 func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
-	total := len(data) / 4
-	flat := make([]float32, total)
-	for i := range flat {
-		bits := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
-		flat[i] = math.Float32frombits(bits)
-	}
-
+	totalFloats := len(data) / 4
 	heads := make([][]float32, numHeads)
 	for h := range numHeads {
 		start := h * stride
 		end := start + stride
-		if end > len(flat) {
+		if end > totalFloats {
 			break
 		}
 		head := make([]float32, stride)
-		copy(head, flat[start:end])
+		base := start * 4
+		for i := 0; i < stride; i++ {
+			bits := binary.LittleEndian.Uint32(data[base+i*4 : base+i*4+4])
+			head[i] = math.Float32frombits(bits)
+		}
 		heads[h] = head
 	}
 	return heads
