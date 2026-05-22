@@ -102,14 +102,35 @@ func adapterConfigPath(path string) string {
 	return adapterConfigPathPrecomputed(path, core.HasSuffix(path, ".safetensors"))
 }
 
+// adapterConfigSuffix carries the leading separator inline so the
+// concat-path can drop it cheaply when the input already ends in '/'
+// (matching filepath.Join's separator-collapse semantics).
+const adapterConfigSuffix = "/adapter_config.json"
+
 // adapterConfigPathPrecomputed is the precomputed-suffix variant of
 // adapterConfigPath; the Inspect hot path computes the .safetensors
 // suffix check once and threads the result through this helper.
+//
+// Builds the joined path with a direct concat instead of routing through
+// core.PathJoin (filepath.Join → filepath.Clean): filepath.Clean always
+// allocates an internal lazybuf even when the inputs are already canonical,
+// roughly doubling the cost of producing the result string. Both Inspect
+// callers feed an already-cleaned adapter path, so the only normalisation
+// we need is the "collapse a duplicate '/'" rule that filepath.Join uses
+// when joining a path that already ends in '/'.
 func adapterConfigPathPrecomputed(path string, isSafetensors bool) string {
+	base := path
 	if isSafetensors {
-		return core.PathJoin(core.PathDir(path), "adapter_config.json")
+		// PathDir returns a substring of path (no alloc); strip the
+		// trailing weight-file segment so the join targets the parent dir.
+		base = core.PathDir(path)
 	}
-	return core.PathJoin(path, "adapter_config.json")
+	// Trailing-slash collapse: when base ends in '/', skip the leading
+	// '/' from adapterConfigSuffix to avoid producing "//adapter_config".
+	if len(base) > 0 && base[len(base)-1] == '/' {
+		return base + adapterConfigSuffix[1:]
+	}
+	return base + adapterConfigSuffix
 }
 
 func hashAdapter(path string, config []byte) string {
