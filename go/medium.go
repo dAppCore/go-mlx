@@ -121,10 +121,18 @@ func walkMedium(medium coreio.Medium, root string, visit func(string, fs.DirEntr
 	if err != nil {
 		return core.E("mlx.walkMedium", "list "+root, err)
 	}
+	// Hoist the root-empty check out of the per-entry loop so we don't
+	// re-compare the (loop-invariant) root on every directory entry.
+	// The old shape evaluated `entry.Name()` first then optionally
+	// discarded the result via the PathJoin assignment; computing the
+	// final entryPath in one branch per loop avoids that dead store.
+	hasRoot := root != ""
 	for _, entry := range entries {
-		entryPath := entry.Name()
-		if root != "" {
+		var entryPath string
+		if hasRoot {
 			entryPath = core.PathJoin(root, entry.Name())
+		} else {
+			entryPath = entry.Name()
 		}
 		if err := visit(entryPath, entry); err != nil {
 			return err
