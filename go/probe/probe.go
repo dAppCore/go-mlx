@@ -234,8 +234,8 @@ func (b *Bus) Add(sink Sink) {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.sinks = append(b.sinks, sink)
+	b.mu.Unlock()
 }
 
 // EmitProbe emits an event to every sink.
