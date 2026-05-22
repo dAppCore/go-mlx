@@ -212,11 +212,27 @@ func NewPlan(input Input) Plan {
 	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
 	}
-	applyArchitectureHints(&plan, modelArchitecture)
+	// Resolve the canonical architecture once and look up the
+	// profile registry exactly once for the whole NewPlan call.
+	// usesGenerationKVCache, applyArchitectureHints, and
+	// applyGenericMoEResidency all need the same profile lookup; the
+	// profile package clones the entry on every Lookup so caching
+	// here saves two clones (plus their child-slice allocations) per
+	// plan.
+	resolvedArch := modelArchitecture
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		resolvedArch = input.Pack.Architecture
+	}
+	resolvedProfile, profileFound := profile.LookupArchitectureProfile(resolvedArch)
+	var profilePtr *profile.ModelArchitectureProfile
+	if profileFound {
+		profilePtr = &resolvedProfile
+	}
+	applyArchitectureHints(&plan, modelArchitecture, profilePtr)
 	applyQuantizationHints(&plan)
-	applyGenericMoEResidency(&plan, input.Pack, modelArchitecture)
-	plan.EstimatedKVCacheBytes = estimateKVCacheBytes(plan, input, KVCacheModeFP16)
-	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytes(plan, input, plan.CacheMode)
+	applyGenericMoEResidency(&plan, input.Pack, profilePtr)
+	plan.EstimatedKVCacheBytes = estimateKVCacheBytesWithProfile(plan, input, KVCacheModeFP16, profilePtr)
+	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytesWithProfile(plan, input, plan.CacheMode, profilePtr)
 	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
 		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
 	}
@@ -340,7 +356,11 @@ func baseClassPlan(class Class) Plan {
 }
 
 func estimateKVCacheBytes(plan Plan, input Input, mode KVCacheMode) uint64 {
-	if !usesGenerationKVCache(input) {
+	return estimateKVCacheBytesWithProfile(plan, input, mode, nil)
+}
+
+func estimateKVCacheBytesWithProfile(plan Plan, input Input, mode KVCacheMode, profileHint *profile.ModelArchitectureProfile) uint64 {
+	if !usesGenerationKVCacheWithProfile(input, profileHint) {
 		return 0
 	}
 	if plan.ContextLength <= 0 {
@@ -412,15 +432,20 @@ func modelHints(input Input) (contextLength, quantization int, quantType, quantF
 	return contextLength, quantization, quantType, quantFamily, architecture, weightBytes
 }
 
-func applyArchitectureHints(plan *Plan, architecture string) {
+func applyArchitectureHints(plan *Plan, architecture string, profileHint *profile.ModelArchitectureProfile) {
 	// Profile registry is authoritative when it matches — skip the
 	// normalize allocation entirely in that case. Only fall through
 	// to normalize for architectures the registry does not know.
 	var normalized string
-	if p, ok := profile.LookupArchitectureProfile(architecture); ok {
-		normalized = p.ID
-	} else {
-		normalized = normalizeKnownArchitecture(architecture)
+	switch {
+	case profileHint != nil:
+		normalized = profileHint.ID
+	default:
+		if p, ok := profile.LookupArchitectureProfile(architecture); ok {
+			normalized = p.ID
+		} else {
+			normalized = normalizeKnownArchitecture(architecture)
+		}
 	}
 	switch normalized {
 	case "qwen2":
@@ -506,6 +531,10 @@ func applyEncoderHints(plan *Plan, label string) {
 }
 
 func usesGenerationKVCache(input Input) bool {
+	return usesGenerationKVCacheWithProfile(input, nil)
+}
+
+func usesGenerationKVCacheWithProfile(input Input, profileHint *profile.ModelArchitectureProfile) bool {
 	// Cheapest checks first — Pack-resident flags short-circuit
 	// without touching the architecture string or the profile
 	// registry. Most callers that pass Embedding/Rerank packs return
@@ -518,8 +547,15 @@ func usesGenerationKVCache(input Input) bool {
 			return false
 		}
 	}
-	// Architecture string only needed for the registry lookup branch
-	// — derive lazily.
+	// Caller may have already done the registry lookup — use the
+	// cached profile instead of touching the registry again.
+	if profileHint != nil {
+		if profileHint.Embeddings || profileHint.Rerank {
+			return false
+		}
+		return true
+	}
+	// Fall through to the legacy single-call path.
 	architecture := ""
 	if input.Pack != nil && input.Pack.Architecture != "" {
 		architecture = input.Pack.Architecture
@@ -539,17 +575,14 @@ func applyQuantizationHints(plan *Plan) {
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
 }
 
-func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, architecture string) {
+func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profile.ModelArchitectureProfile) {
 	if plan == nil {
 		return
 	}
-	if pack != nil && pack.Architecture != "" {
-		architecture = pack.Architecture
-	}
-	p, ok := profile.LookupArchitectureProfile(architecture)
-	if !ok || !p.MoE {
+	if profileHint == nil || !profileHint.MoE {
 		return
 	}
+	p := *profileHint
 	plan.ExpertResidency = ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    ExpertResidencyModeLazy,
