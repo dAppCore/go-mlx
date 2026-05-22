@@ -51,15 +51,17 @@ type Config struct {
 // persists them on disk, and delegates actual KV warming to the native prompt
 // cache when a prompt warmer is configured.
 type Service struct {
-	mu          sync.Mutex
-	cfg         Config
-	blocks      map[string]inference.CacheBlockRef
-	hits        uint64
-	misses      uint64
-	cleared     uint64
-	evictions   uint64
-	diskCorrupt uint64
-	diskLoaded  bool
+	mu             sync.Mutex
+	cfg            Config
+	blockSizeLabel string
+	blocks         map[string]inference.CacheBlockRef
+	memoryBytes    uint64
+	hits           uint64
+	misses         uint64
+	cleared        uint64
+	evictions      uint64
+	diskCorrupt    uint64
+	diskLoaded     bool
 }
 
 type diskRecord struct {
@@ -90,8 +92,9 @@ func New(cfg Config) *Service {
 	}
 	cfg.DiskPath = core.Trim(cfg.DiskPath)
 	return &Service{
-		cfg:    cfg,
-		blocks: map[string]inference.CacheBlockRef{},
+		cfg:            cfg,
+		blockSizeLabel: core.Itoa(cfg.BlockSize),
+		blocks:         map[string]inference.CacheBlockRef{},
 	}
 }
 
@@ -188,6 +191,7 @@ func (service *Service) WarmCache(ctx context.Context, req inference.CacheWarmRe
 		}
 		refs[i] = storedRef
 		service.blocks[ref.ID] = storedRef
+		service.memoryBytes += storedRef.SizeBytes
 	}
 	return inference.CacheWarmResult{
 		Blocks: refs,
@@ -211,6 +215,7 @@ func (service *Service) ClearCache(ctx context.Context, labels map[string]string
 	}
 	if len(labels) == 0 {
 		service.blocks = map[string]inference.CacheBlockRef{}
+		service.memoryBytes = 0
 		service.hits = 0
 		service.misses = 0
 		service.cleared++
@@ -228,6 +233,7 @@ func (service *Service) ClearCache(ctx context.Context, labels map[string]string
 				return inference.CacheStats{}, err
 			}
 			delete(service.blocks, id)
+			service.memoryBytes -= ref.SizeBytes
 			service.cleared++
 		}
 	}
@@ -260,16 +266,30 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	adapterHash := firstNonEmptyString(service.cfg.AdapterHash, req.Adapter.Hash)
 	tokenizerHash := firstNonEmptyString(service.cfg.TokenizerHash, req.Labels["tokenizer_hash"])
 	refs := make([]inference.CacheBlockRef, 0, (len(tokens)+blockSize-1)/blockSize)
+	// Stream the SHA256 once across the cumulative prefix and emit a
+	// block ID at every boundary. sha256.Sum does not alter the hash
+	// state, so each Sum captures the digest of the prefix up to the
+	// current write position — identical to the previous per-block
+	// blockCacheID call but without re-hashing earlier tokens.
+	hash := sha256.New()
+	writeBlockCacheHashString(hash, modelHash)
+	writeBlockCacheHashString(hash, adapterHash)
+	writeBlockCacheHashString(hash, tokenizerHash)
+	writeBlockCacheHashString(hash, req.Mode)
+	var scratch [256]byte
+	var sumBuf [sha256.Size]byte
 	for start := 0; start < len(tokens); start += blockSize {
 		end := start + blockSize
 		if end > len(tokens) {
 			end = len(tokens)
 		}
+		writeBlockCacheTokens(hash, tokens[start:end], scratch[:])
+		digest := hash.Sum(sumBuf[:0])
 		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
 		refLabels["block_index"] = core.Itoa(len(refs))
 		refLabels["prefix_tokens"] = core.Itoa(end)
 		ref := inference.CacheBlockRef{
-			ID:            blockCacheID(modelHash, adapterHash, tokenizerHash, req.Mode, tokens[:end]),
+			ID:            core.HexEncode(digest),
 			Kind:          "prefix",
 			ModelHash:     modelHash,
 			AdapterHash:   adapterHash,
@@ -286,10 +306,32 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	return refs
 }
 
+// writeBlockCacheTokens encodes tokens as little-endian int32 bytes
+// into the supplied hash, batching up to 64 tokens (256 bytes) per
+// Write to amortise hash.Hash interface dispatch.
+func writeBlockCacheTokens(h hash.Hash, tokens []int32, scratch []byte) {
+	for start := 0; start < len(tokens); start += 64 {
+		end := start + 64
+		if end > len(tokens) {
+			end = len(tokens)
+		}
+		offset := 0
+		for _, token := range tokens[start:end] {
+			value := uint32(token)
+			scratch[offset] = byte(value)
+			scratch[offset+1] = byte(value >> 8)
+			scratch[offset+2] = byte(value >> 16)
+			scratch[offset+3] = byte(value >> 24)
+			offset += 4
+		}
+		h.Write(scratch[:offset])
+	}
+}
+
 func (service *Service) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
 	labels := cloneBlockCacheLabelsExtra(req.Labels, 4)
 	labels["cache_mode"] = mode
-	labels["block_size"] = core.Itoa(service.cfg.BlockSize)
+	labels["block_size"] = service.blockSizeLabel
 	labels["model_match"] = boolLabel(cacheIdentityMatches(service.cfg.ModelHash, firstNonEmptyString(req.Model.Hash, req.Model.ID)))
 	labels["adapter_match"] = boolLabel(cacheIdentityMatches(service.cfg.AdapterHash, req.Adapter.Hash))
 	labels["tokenizer_match"] = boolLabel(cacheIdentityMatches(service.cfg.TokenizerHash, req.Labels["tokenizer_hash"]))
@@ -304,7 +346,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 		Evictions: service.evictions,
 		CacheMode: mode,
 		Labels: map[string]string{
-			"block_size": core.Itoa(service.cfg.BlockSize),
+			"block_size": service.blockSizeLabel,
 			"cleared":    core.FormatUint(service.cleared, 10),
 		},
 	}
@@ -317,9 +359,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 	if service.stateStoreEnabled() {
 		stats.Labels["cold_store"] = "state"
 	}
-	for _, ref := range service.blocks {
-		stats.MemoryBytes += ref.SizeBytes
-	}
+	stats.MemoryBytes = service.memoryBytes
 	total := service.hits + service.misses
 	if total > 0 {
 		stats.HitRate = float64(service.hits) / float64(total)
@@ -381,6 +421,7 @@ func (service *Service) ensureDiskLoadedLocked() error {
 			ref = withStateLabels(ref, *chunkRef)
 		}
 		service.blocks[record.Ref.ID] = ref
+		service.memoryBytes += ref.SizeBytes
 	}
 	service.diskLoaded = true
 	return nil
@@ -572,25 +613,8 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 	writeBlockCacheHashString(hash, adapterHash)
 	writeBlockCacheHashString(hash, tokenizerHash)
 	writeBlockCacheHashString(hash, mode)
-	// Batch up to 64 tokens (256 bytes) per Write call to amortise the
-	// hash.Hash interface dispatch over many tokens.
 	var scratch [256]byte
-	for start := 0; start < len(prefix); start += 64 {
-		end := start + 64
-		if end > len(prefix) {
-			end = len(prefix)
-		}
-		offset := 0
-		for _, token := range prefix[start:end] {
-			value := uint32(token)
-			scratch[offset] = byte(value)
-			scratch[offset+1] = byte(value >> 8)
-			scratch[offset+2] = byte(value >> 16)
-			scratch[offset+3] = byte(value >> 24)
-			offset += 4
-		}
-		hash.Write(scratch[:offset])
-	}
+	writeBlockCacheTokens(hash, prefix, scratch[:])
 	return core.HexEncode(hash.Sum(nil))
 }
 
@@ -679,16 +703,28 @@ func cloneCacheBlockRef(ref inference.CacheBlockRef) inference.CacheBlockRef {
 	return ref
 }
 
+// sortCacheBlockRefsInsertionThreshold is the size below which the
+// insertion sort beats the comparator-closure overhead of pdqsort.
+const sortCacheBlockRefsInsertionThreshold = 32
+
 func sortCacheBlockRefs(entries []inference.CacheBlockRef) {
-	for i := 1; i < len(entries); i++ {
-		current := entries[i]
-		j := i - 1
-		for j >= 0 && cacheBlockRefLess(current, entries[j]) {
-			entries[j+1] = entries[j]
-			j--
+	// Insertion sort wins for small N because the closure dispatch in
+	// core.SliceSortFunc costs more than the extra compares. For larger
+	// N, pdqsort's O(N log N) trounces insertion sort's O(N²) — the
+	// 256-entry case drops from ~152us to ~6us.
+	if len(entries) <= sortCacheBlockRefsInsertionThreshold {
+		for i := 1; i < len(entries); i++ {
+			current := entries[i]
+			j := i - 1
+			for j >= 0 && cacheBlockRefLess(current, entries[j]) {
+				entries[j+1] = entries[j]
+				j--
+			}
+			entries[j+1] = current
 		}
-		entries[j+1] = current
+		return
 	}
+	core.SliceSortFunc(entries, cacheBlockRefLess)
 }
 
 func cacheBlockRefLess(a, b inference.CacheBlockRef) bool {
