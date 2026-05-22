@@ -325,7 +325,16 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 			return err
 		}
 		step := result.Metrics.Steps + 1
-		cacheKey := DistillBatchCacheKey(sftBatch)
+		// Only compute CacheKey when there's a teacher cache to look it
+		// up in — the key is a JSON-marshal + SHA256 over the entire
+		// SFTBatch (tokens + targets + mask), which can be several KB of
+		// JSON encode per batch. Runners without TeacherCache attached
+		// would otherwise pay this scan on every step for a value that
+		// gets thrown away inside teacherLogitsForDistillBatch.
+		var cacheKey string
+		if runner.TeacherCache != nil {
+			cacheKey = DistillBatchCacheKey(sftBatch)
+		}
 		batch := DistillBatch{
 			Step:        step,
 			Epoch:       epoch,
