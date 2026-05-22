@@ -559,10 +559,37 @@ func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 		return nil
 	}
 	out := make([]ClassifyResult, len(results))
+	// Single arena allocation for all per-result Logits slices. Classify
+	// is called over multiple prompts at once and each result has a
+	// vocab-sized logits vector — collapsing the per-result clone into
+	// one slab cuts N allocs to 1 on the return path. Per-result nil vs
+	// non-nil empty is preserved (matches the prior core.SliceClone
+	// nil-in / empty-in semantics).
+	totalLogits := 0
+	for i := range results {
+		totalLogits += len(results[i].Logits)
+	}
+	var logitsSlab []float32
+	logitsOffset := 0
+	if totalLogits > 0 {
+		logitsSlab = make([]float32, totalLogits)
+	}
 	for i, result := range results {
+		var resultLogits []float32
+		switch {
+		case result.Logits == nil:
+			// nil in -> nil out (matches slices.Clone(nil)).
+		case len(result.Logits) == 0:
+			resultLogits = []float32{}
+		default:
+			end := logitsOffset + len(result.Logits)
+			resultLogits = logitsSlab[logitsOffset:end:end]
+			copy(resultLogits, result.Logits)
+			logitsOffset = end
+		}
 		out[i] = ClassifyResult{
 			Token:  toRootToken(result.Token),
-			Logits: core.SliceClone(result.Logits),
+			Logits: resultLogits,
 		}
 	}
 	return out
