@@ -594,8 +594,10 @@ func cloneSplitExecutorMetrics(metrics SplitExecutorMetrics) SplitExecutorMetric
 		report := *metrics.CPUFFNMemory
 		metrics.CPUFFNMemory = &report
 	}
-	if len(metrics.Power.Samples) > 0 {
-		metrics.Power.Samples = append([]SplitPowerSample(nil), metrics.Power.Samples...)
+	if n := len(metrics.Power.Samples); n > 0 {
+		samples := make([]SplitPowerSample, n)
+		copy(samples, metrics.Power.Samples)
+		metrics.Power.Samples = samples
 	}
 	return metrics
 }
