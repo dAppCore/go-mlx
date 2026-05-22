@@ -51,7 +51,7 @@ func toBenchGenerateOptions(opts bench.GenerateOptions) GenerateConfig {
 		TopK:          opts.TopK,
 		TopP:          opts.TopP,
 		MinP:          opts.MinP,
-		StopTokens:    append([]int32(nil), opts.StopTokens...),
+		StopTokens:    core.SliceClone(opts.StopTokens),
 		RepeatPenalty: opts.RepeatPenalty,
 	}
 	if sink, ok := opts.ProbeSink.(probe.Sink); ok {
@@ -117,7 +117,7 @@ func loraToBenchAdapter(info lora.AdapterInfo) bench.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -129,7 +129,7 @@ func benchAdapterToLora(info bench.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 

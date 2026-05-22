@@ -71,7 +71,7 @@ func (backend *metalbackend) PlanModelFit(ctx context.Context, ident inference.M
 		MemoryPlan:     toInferenceMemoryPlan(plan),
 		ArchitectureOK: architectureOK,
 		QuantizationOK: quantizationOK,
-		Notes:          append([]string(nil), plan.Notes...),
+		Notes:          core.SliceClone(plan.Notes),
 	}, nil
 }
 
@@ -394,9 +394,9 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 		Model:         model,
 		Adapter:       adapter,
 		Available:     available,
-		Architectures: append([]string(nil), metalCapabilityArchitectures...),
-		Quantizations: append([]string(nil), metalCapabilityQuantizations...),
-		CacheModes:    append([]string(nil), metalCapabilityCacheModes...),
+		Architectures: core.SliceClone(metalCapabilityArchitectures),
+		Quantizations: core.SliceClone(metalCapabilityQuantizations),
+		CacheModes:    core.SliceClone(metalCapabilityCacheModes),
 		Capabilities:  capabilities,
 		Labels:        map[string]string{"library": "go-mlx"},
 	}
@@ -516,7 +516,7 @@ func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
 		out.Entropy = &inference.ProbeEntropy{Value: event.Entropy.Value, Unit: event.Entropy.Unit}
 	}
 	if event.SelectedHeads != nil {
-		out.SelectedHeads = &inference.ProbeHeadSelection{Layer: event.SelectedHeads.Layer, Heads: append([]int(nil), event.SelectedHeads.Heads...)}
+		out.SelectedHeads = &inference.ProbeHeadSelection{Layer: event.SelectedHeads.Layer, Heads: core.SliceClone(event.SelectedHeads.Heads)}
 	}
 	if event.LayerCoherence != nil {
 		out.LayerCoherence = &inference.ProbeLayerCoherence{
@@ -530,8 +530,8 @@ func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
 	if event.RouterDecision != nil {
 		out.RouterDecision = &inference.ProbeRouterDecision{
 			Layer:       event.RouterDecision.Layer,
-			ExpertIDs:   append([]int(nil), event.RouterDecision.ExpertIDs...),
-			ExpertProbs: append([]float32(nil), event.RouterDecision.Weights...),
+			ExpertIDs:   core.SliceClone(event.RouterDecision.ExpertIDs),
+			ExpertProbs: core.SliceClone(event.RouterDecision.Weights),
 		}
 	}
 	if event.Residual != nil {
@@ -594,7 +594,7 @@ func toInferenceAdapterIdentity(info metal.AdapterInfo) inference.AdapterIdentit
 		Format:     "lora",
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 		Labels:     adapterIdentityLabels(info.Name, info.Scale),
 	}
 }
@@ -636,7 +636,7 @@ func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 		Quantization:     strconv.Itoa(plan.PreferredQuantization) + "-bit",
 		KVCacheBytes:     plan.EstimatedKVCacheModeBytes,
 		TrainingFeasible: plan.MachineClass != memory.ClassApple16GB,
-		Notes:            append([]string(nil), plan.Notes...),
+		Notes:            core.SliceClone(plan.Notes),
 	}
 }
 
@@ -715,7 +715,7 @@ func toSFTConfig(cfg inference.TrainingConfig, sink inference.ProbeSink) SFTConf
 		LoRA: LoRAConfig{
 			Rank:       cfg.LoRA.Rank,
 			Alpha:      cfg.LoRA.Alpha,
-			TargetKeys: append([]string(nil), cfg.LoRA.TargetKeys...),
+			TargetKeys: core.SliceClone(cfg.LoRA.TargetKeys),
 			DType:      sftDType(cfg.LoRA.BFloat16),
 			ProbeSink:  inferenceProbeSink{sink: sink},
 		},
@@ -800,7 +800,7 @@ func toInferenceRootAdapterIdentity(info lora.AdapterInfo) inference.AdapterIden
 		Format:     "lora",
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 		Labels:     adapterIdentityLabels(info.Name, info.Scale),
 	}
 }

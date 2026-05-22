@@ -19,8 +19,13 @@ func RunModelEval(ctx context.Context, model *Model, ds dataset.Dataset, cfg eva
 	if model == nil {
 		return nil, core.NewError("mlx: model is nil")
 	}
-	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
-	cfg.QualityProbes = append(cfg.QualityProbes, eval.ResponseCoverageProbe())
+	// Pre-size for len+1 so the second append doesn't trigger a regrow —
+	// the original cloned via append([]T(nil), ...) then appended the
+	// ResponseCoverageProbe, paying the grow twice. One make + two
+	// appends fits the final size in a single allocation.
+	probes := make([]eval.QualityProbe, len(cfg.QualityProbes), len(cfg.QualityProbes)+1)
+	copy(probes, cfg.QualityProbes)
+	cfg.QualityProbes = append(probes, eval.ResponseCoverageProbe())
 	return eval.RunDataset(ctx, NewModelEvalRunner(model), wrapSFTDataset(ds), cfg)
 }
 
@@ -110,7 +115,7 @@ func loraToEvalAdapter(info lora.AdapterInfo) eval.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -124,7 +129,7 @@ func evalAdapterToLora(info eval.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
