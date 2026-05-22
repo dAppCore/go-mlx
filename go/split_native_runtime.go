@@ -106,10 +106,18 @@ func (runtime *NativeSplitLocalRuntime) ForwardAttention(ctx context.Context, re
 	if runtime.state == nil {
 		return SplitAttentionResult{}, errNativeSplitNoPrefillAttn
 	}
+	// metal.SplitForwardAttention copies the request hidden / shape
+	// slices into Metal arrays via FromValues, which performs a
+	// binary.Encode into a fresh []byte buffer before handing the
+	// pointer to mlx_array_new_data. Neither slice is retained past
+	// the call, so the previous append([]T(nil), src...) defensive
+	// clones served no contract — aliasing the caller's slice and
+	// the receiver's HiddenShape saves two allocations + two N-element
+	// copies per layer attention call.
 	result, err := model.SplitForwardAttention(ctx, runtime.state, metal.SplitAttentionRequest{
 		Layer:       req.Layer,
-		Hidden:      append([]float32(nil), req.Hidden...),
-		HiddenShape: append([]int32(nil), runtime.state.HiddenShape...),
+		Hidden:      req.Hidden,
+		HiddenShape: runtime.state.HiddenShape,
 	})
 	if err != nil {
 		return SplitAttentionResult{}, err
@@ -135,10 +143,17 @@ func (runtime *NativeSplitLocalRuntime) Sample(ctx context.Context, req SplitSam
 	if runtime.state == nil {
 		return SplitSampleResult{}, errNativeSplitNoPrefillSample
 	}
+	// metal.SplitSample iterates req.Tokens (for repeat-penalty), then
+	// FromValues-copies req.Hidden and req.HiddenShape into Metal byte
+	// buffers; no slice is retained past the call. The previous
+	// append([]T(nil), src...) defensive clones each pre-allocated a
+	// duplicate Go-side buffer of the same data the Metal binding was
+	// about to copy anyway — drop them to save three allocations +
+	// three N-element copies per sample.
 	result, err := model.SplitSample(ctx, runtime.state, metal.SplitSampleRequest{
-		Tokens:      append([]int32(nil), req.Tokens...),
-		Hidden:      append([]float32(nil), req.Hidden...),
-		HiddenShape: append([]int32(nil), runtime.state.HiddenShape...),
+		Tokens:      req.Tokens,
+		Hidden:      req.Hidden,
+		HiddenShape: runtime.state.HiddenShape,
 		Config:      toMetalGenerateConfig(req.Config),
 	})
 	if err != nil {
