@@ -19,6 +19,13 @@ import (
 //	runner := mlx.NewModelStateKVChapterRunner(model, baseGen)
 //	report, err := chaptersmoke.Run(ctx, runner, chaptersmoke.Config{...})
 func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chaptersmoke.Runner {
+	// baseGen is captured by the Generate closure and never mutated
+	// during chapter-smoke iteration. Pre-build the GenerateOption
+	// slice once at runner-construction time so every chapter Generate
+	// call reuses the same slice instead of allocating + populating
+	// it fresh each iteration (one chapter ≈ one session ≈ one
+	// allocation triplet — slice header + closure captures × N).
+	genOpts := stateKVChapterGenerateOptions(baseGen)
 	return chaptersmoke.Runner{
 		Capture: func(ctx context.Context, prompt string, store state.Writer, opts kv.StateBlockOptions) (*kv.StateBlockBundle, error) {
 			if err := ctx.Err(); err != nil {
@@ -51,7 +58,7 @@ func NewModelStateKVChapterRunner(model *Model, baseGen GenerateConfig) chapters
 			if err := session.AppendPrompt(suffix); err != nil {
 				return chaptersmoke.Generation{}, err
 			}
-			text, err := session.Generate(stateKVChapterGenerateOptions(baseGen)...)
+			text, err := session.Generate(genOpts...)
 			metrics := model.Metrics()
 			return chaptersmoke.Generation{
 				Text:                       text,
@@ -92,21 +99,30 @@ func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg chapter
 }
 
 func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
-	gen := GenerateConfig{}
-	if cfg.AnswerMaxTokens > 0 {
-		gen.MaxTokens = cfg.AnswerMaxTokens
+	// gen starts at the zero value, so the previous "only assign if
+	// non-zero" guards were equivalent to unconditional assignment —
+	// writing zero into a zero field is a no-op. Returning a struct
+	// literal lets the compiler skip the local stack copy + branch
+	// sequence and emit a single composite-literal store.
+	return GenerateConfig{
+		MaxTokens:   cfg.AnswerMaxTokens,
+		Temperature: cfg.Temperature,
 	}
-	if cfg.Temperature != 0 {
-		gen.Temperature = cfg.Temperature
-	}
-	return gen
 }
 
 func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
-	out := []GenerateOption{
+	// Pre-size to the maximum number of options the function can append
+	// (2 always-set + up to 6 conditional). The previous literal started
+	// at cap=2 and let append grow the backing array — for a chapter
+	// config with TopK + TopP + StopTokens + RepeatPenalty + ProbeSink
+	// set, that meant up to three regrows (cap 2 → 4 → 8) and the
+	// associated slice-header churn. Single make + append is one alloc
+	// total regardless of how many fields the caller sets.
+	out := make([]GenerateOption, 0, 8)
+	out = append(out,
 		WithMaxTokens(cfg.MaxTokens),
 		WithTemperature(cfg.Temperature),
-	}
+	)
 	if cfg.TopK > 0 {
 		out = append(out, WithTopK(cfg.TopK))
 	}

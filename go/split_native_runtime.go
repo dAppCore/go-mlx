@@ -42,7 +42,12 @@ func LoadNativeSplitLocalRuntime(ctx context.Context, slicePath string, cfg Load
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if core.Trim(slicePath) == "" {
+	// Trim once at construction so the stored slicePath is in the
+	// final canonical form. Every downstream readiness check then
+	// reduces to a len() against the receiver field instead of a
+	// per-call Trim that walked the same string repeatedly.
+	slicePath = core.Trim(slicePath)
+	if slicePath == "" {
 		return nil, core.NewError("mlx: native split local runtime requires a slice path")
 	}
 	normalised, err := normalizeLoadConfig(cfg)
@@ -79,12 +84,25 @@ func (runtime *NativeSplitLocalRuntime) Prefill(ctx context.Context, req SplitPr
 		return SplitPrefillResult{}, err
 	}
 	if state == nil {
-		return SplitPrefillResult{}, core.NewError("mlx: native split local runtime prefill returned nil state")
+		return SplitPrefillResult{}, errNativeSplitPrefillNilState
 	}
 	runtime.state = state
 	return SplitPrefillResult{
+		// Tokens stays as a defensive copy: subsequent Sample calls
+		// mutate runtime.state.Tokens in place via
+		//   state.Tokens = append(state.Tokens, id)
+		// which can grow the existing backing array if capacity
+		// allows — aliasing here would let the caller observe new
+		// IDs appearing in their slice view.
 		Tokens: append([]int32(nil), state.Tokens...),
-		Hidden: append([]float32(nil), state.Hidden...),
+		// Hidden can alias safely. Sample replaces runtime.state.Hidden
+		// with a freshly-allocated slice
+		//   state.Hidden = append([]float32(nil), nextHidden...)
+		// rather than mutating the existing backing array, so the
+		// prefill-time backing stays pinned and unchanged for the life
+		// of the caller's slice header. The previous defensive clone
+		// duplicated the float32 buffer for no behaviour gain.
+		Hidden: state.Hidden,
 		Layers: state.Layers,
 	}, nil
 }
@@ -99,17 +117,31 @@ func (runtime *NativeSplitLocalRuntime) ForwardAttention(ctx context.Context, re
 		return SplitAttentionResult{}, err
 	}
 	if runtime.state == nil {
-		return SplitAttentionResult{}, core.NewError("mlx: native split local runtime requires prefill before attention")
+		return SplitAttentionResult{}, errNativeSplitNoPrefillAttn
 	}
+	// metal.SplitForwardAttention copies the request hidden / shape
+	// slices into Metal arrays via FromValues, which performs a
+	// binary.Encode into a fresh []byte buffer before handing the
+	// pointer to mlx_array_new_data. Neither slice is retained past
+	// the call, so the previous append([]T(nil), src...) defensive
+	// clones served no contract — aliasing the caller's slice and
+	// the receiver's HiddenShape saves two allocations + two N-element
+	// copies per layer attention call.
 	result, err := model.SplitForwardAttention(ctx, runtime.state, metal.SplitAttentionRequest{
 		Layer:       req.Layer,
-		Hidden:      append([]float32(nil), req.Hidden...),
-		HiddenShape: append([]int32(nil), runtime.state.HiddenShape...),
+		Hidden:      req.Hidden,
+		HiddenShape: runtime.state.HiddenShape,
 	})
 	if err != nil {
 		return SplitAttentionResult{}, err
 	}
-	return SplitAttentionResult{Hidden: append([]float32(nil), result.Hidden...)}, nil
+	// metal.Model.SplitForwardAttention already allocates a fresh
+	// result.Hidden via out.Floats() and stores an independent state
+	// copy separately, so the slice handed back to us is exclusively
+	// owned. The previous append([]float32(nil), result.Hidden...) was
+	// a redundant second clone over the freshly-allocated data —
+	// transferring ownership directly saves the per-call copy.
+	return SplitAttentionResult{Hidden: result.Hidden}, nil
 }
 
 // Sample projects local logits and samples one token.
@@ -122,20 +154,32 @@ func (runtime *NativeSplitLocalRuntime) Sample(ctx context.Context, req SplitSam
 		return SplitSampleResult{}, err
 	}
 	if runtime.state == nil {
-		return SplitSampleResult{}, core.NewError("mlx: native split local runtime requires prefill before sample")
+		return SplitSampleResult{}, errNativeSplitNoPrefillSample
 	}
+	// metal.SplitSample iterates req.Tokens (for repeat-penalty), then
+	// FromValues-copies req.Hidden and req.HiddenShape into Metal byte
+	// buffers; no slice is retained past the call. The previous
+	// append([]T(nil), src...) defensive clones each pre-allocated a
+	// duplicate Go-side buffer of the same data the Metal binding was
+	// about to copy anyway — drop them to save three allocations +
+	// three N-element copies per sample.
 	result, err := model.SplitSample(ctx, runtime.state, metal.SplitSampleRequest{
-		Tokens:      append([]int32(nil), req.Tokens...),
-		Hidden:      append([]float32(nil), req.Hidden...),
-		HiddenShape: append([]int32(nil), runtime.state.HiddenShape...),
+		Tokens:      req.Tokens,
+		Hidden:      req.Hidden,
+		HiddenShape: runtime.state.HiddenShape,
 		Config:      toMetalGenerateConfig(req.Config),
 	})
 	if err != nil {
 		return SplitSampleResult{}, err
 	}
+	// metal.Model.SplitSample returns result.Hidden as the freshly
+	// allocated embedding slice and stores an independent
+	// state.Hidden = append([]float32(nil), nextHidden...) for itself.
+	// The slice handed to us has a single owner, so re-cloning it
+	// here was redundant — alias the result.Hidden directly.
 	return SplitSampleResult{
 		TokenID: result.TokenID,
-		Hidden:  append([]float32(nil), result.Hidden...),
+		Hidden:  result.Hidden,
 	}, nil
 }
 
@@ -145,10 +189,23 @@ func (runtime *NativeSplitLocalRuntime) DecodeToken(ctx context.Context, id int3
 		return "", err
 	}
 	if runtime.tokenizer == nil {
-		return "", core.NewError("mlx: native split local runtime tokenizer is nil")
+		return "", errNativeSplitTokenizerNil
 	}
 	return runtime.tokenizer.DecodeToken(id), nil
 }
+
+// Sentinel errors reused across native split runtime guards. Built once
+// at package init so the runtime-readiness check never allocates a new
+// error wrapper when a guard fires, and the steady-state ready path has
+// no allocations at all.
+var (
+	errNativeSplitRuntimeNil      = core.NewError("mlx: native split local runtime is nil")
+	errNativeSplitRuntimeNoPath   = core.NewError("mlx: native split local runtime has no slice path")
+	errNativeSplitPrefillNilState = core.NewError("mlx: native split local runtime prefill returned nil state")
+	errNativeSplitNoPrefillAttn   = core.NewError("mlx: native split local runtime requires prefill before attention")
+	errNativeSplitNoPrefillSample = core.NewError("mlx: native split local runtime requires prefill before sample")
+	errNativeSplitTokenizerNil    = core.NewError("mlx: native split local runtime tokenizer is nil")
+)
 
 func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocalRuntime) error {
 	if ctx == nil {
@@ -158,20 +215,31 @@ func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocal
 		return err
 	}
 	if runtime == nil {
-		return core.NewError("mlx: native split local runtime is nil")
+		return errNativeSplitRuntimeNil
 	}
-	if core.Trim(runtime.slicePath) == "" {
-		return core.NewError("mlx: native split local runtime has no slice path")
+	// LoadNativeSplitLocalRuntime already trimmed the slice path and
+	// rejected an empty value before the runtime exists. Re-running
+	// core.Trim on every call (Prefill/ForwardAttention/Sample/Decode
+	// each go through this helper) walked the slice path string for a
+	// guarantee the constructor had already proven; cheaper to assert
+	// non-empty via len() on the stored, already-trimmed value.
+	if len(runtime.slicePath) == 0 {
+		return errNativeSplitRuntimeNoPath
 	}
 	return nil
 }
 
 func (runtime *NativeSplitLocalRuntime) nativeModel(ctx context.Context) (nativeSplitModel, error) {
-	if err := nativeSplitLocalRuntimeReady(ctx, runtime); err != nil {
-		return nil, err
-	}
+	// Every public method (Prefill / ForwardAttention / Sample /
+	// DecodeToken) already gated on nativeSplitLocalRuntimeReady before
+	// calling nativeModel — re-running ctx.Err + nil + path checks here
+	// repeated the same ctx-channel cas + receiver deref on every call.
+	// Fast-path the cached model and skip the duplicate readiness work.
 	if runtime.model != nil {
 		return runtime.model, nil
+	}
+	if err := nativeSplitLocalRuntimeReady(ctx, runtime); err != nil {
+		return nil, err
 	}
 	model, err := loadNativeSplitModel(runtime.slicePath, toMetalSplitLoadConfig(runtime.cfg))
 	if err != nil {
