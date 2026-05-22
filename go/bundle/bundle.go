@@ -647,10 +647,17 @@ func MemvidURI(ref state.ChunkRef) string {
 
 // joinChunkRefs returns a single allocation containing primary first
 // then fallback. Replaces the `append(append(nil, A...), B...)` pattern
-// which allocates twice and grows on the second append.
+// which allocates twice and grows on the second append. When only one
+// input has entries we alias it — the sole caller (buildRefs) only
+// reads the result, so the read-only aliasing is safe.
 func joinChunkRefs(primary, fallback []state.ChunkRef) []state.ChunkRef {
-	if len(primary) == 0 && len(fallback) == 0 {
+	switch {
+	case len(primary) == 0 && len(fallback) == 0:
 		return nil
+	case len(fallback) == 0:
+		return primary
+	case len(primary) == 0:
+		return fallback
 	}
 	out := make([]state.ChunkRef, 0, len(primary)+len(fallback))
 	out = append(out, primary...)
