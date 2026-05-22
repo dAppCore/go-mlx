@@ -606,10 +606,10 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
 	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
 	if req.Adapter.Rank != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_rank", core.Sprintf("%d", req.Adapter.Rank))
+		meta = addAgentMemoryMetadata(meta, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
 	}
 	if req.Adapter.Alpha != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_alpha", core.Sprintf("%g", req.Adapter.Alpha))
+		meta = addAgentMemoryMetadata(meta, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
 	}
 	meta = addAgentMemoryMetadata(meta, "runtime_backend", req.Runtime.Backend)
 	meta = addAgentMemoryMetadata(meta, "runtime_device", req.Runtime.Device)
