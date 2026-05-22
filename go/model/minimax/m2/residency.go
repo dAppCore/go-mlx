@@ -303,7 +303,7 @@ func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertRes
 		ExpertResidency: &probe.ExpertResidency{
 			Action:             action,
 			Layer:              manager.layer,
-			ExpertIDs:          append([]int(nil), expertIDs...),
+			ExpertIDs:          core.SliceClone(expertIDs),
 			ResidentExperts:    len(manager.resident),
 			MaxResidentExperts: manager.policy.MaxResidentExperts,
 			LoadedBytes:        loadedBytes,
