@@ -88,8 +88,21 @@ func (runtime *NativeSplitLocalRuntime) Prefill(ctx context.Context, req SplitPr
 	}
 	runtime.state = state
 	return SplitPrefillResult{
+		// Tokens stays as a defensive copy: subsequent Sample calls
+		// mutate runtime.state.Tokens in place via
+		//   state.Tokens = append(state.Tokens, id)
+		// which can grow the existing backing array if capacity
+		// allows — aliasing here would let the caller observe new
+		// IDs appearing in their slice view.
 		Tokens: append([]int32(nil), state.Tokens...),
-		Hidden: append([]float32(nil), state.Hidden...),
+		// Hidden can alias safely. Sample replaces runtime.state.Hidden
+		// with a freshly-allocated slice
+		//   state.Hidden = append([]float32(nil), nextHidden...)
+		// rather than mutating the existing backing array, so the
+		// prefill-time backing stays pinned and unchanged for the life
+		// of the caller's slice header. The previous defensive clone
+		// duplicated the float32 buffer for no behaviour gain.
+		Hidden: state.Hidden,
 		Layers: state.Layers,
 	}, nil
 }
