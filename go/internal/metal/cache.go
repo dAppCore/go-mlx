@@ -1715,19 +1715,21 @@ func cacheElementCount(shape []int32) int {
 	return total
 }
 
+// maxAll returns a scalar Array equal to the max-abs of all elements of a.
+// The implementation flattens to 1-D (zero-copy reshape) then reduces in a
+// single MaxAxis call, replacing the prior N-axis iterative reduction which
+// materialised one intermediate per dimension.
 func maxAll(a *Array) *Array {
-	current := a
-	owned := false
-	for len(current.Shape()) > 0 {
-		next := MaxAxis(current, 0, false)
-		if owned {
-			Free(current)
-		}
-		current = next
-		owned = true
+	shape := a.Shape()
+	if len(shape) == 0 {
+		return a.Clone()
 	}
-	if !owned {
-		return current.Clone()
+	n := cacheElementCount(shape)
+	if n == 0 {
+		return a.Clone()
 	}
-	return current
+	flat := Reshape(a, int32(n))
+	reduced := MaxAxis(flat, 0, false)
+	Free(flat)
+	return reduced
 }
