@@ -463,20 +463,28 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
 	summary.AdapterFuseDuration = report.Adapter.Fuse.Duration
-	if report.ExpertResidency.Attempted && report.ExpertResidency.Error == "" {
-		summary.ExpertResidencyResidentExperts = report.ExpertResidency.Stats.ResidentExperts
-		summary.ExpertResidencyPeakResidentExperts = report.ExpertResidency.Stats.PeakResidentExperts
-		summary.ExpertResidencyPageIns = report.ExpertResidency.Stats.PageIns
-		summary.ExpertResidencyPageOuts = report.ExpertResidency.Stats.PageOuts
-		summary.ExpertResidencyLoadedBytes = report.ExpertResidency.Stats.LoadedBytes
-		summary.ExpertResidencyEvictedBytes = report.ExpertResidency.Stats.EvictedBytes
-		summary.ExpertResidencyFirstUseLatency = report.ExpertResidency.Stats.FirstUseLatency
-		summary.ExpertResidencyTotalLoadDuration = report.ExpertResidency.Stats.TotalLoadDuration
+	// Cache the residency sub-report pointer when reading the Stats
+	// block so we don't pay the chained field-offset compute on every
+	// summary field — eight stats reads collapse to one cached pointer
+	// plus eight fixed-offset loads.
+	if er := &report.ExpertResidency; er.Attempted && er.Error == "" {
+		stats := &er.Stats
+		summary.ExpertResidencyResidentExperts = stats.ResidentExperts
+		summary.ExpertResidencyPeakResidentExperts = stats.PeakResidentExperts
+		summary.ExpertResidencyPageIns = stats.PageIns
+		summary.ExpertResidencyPageOuts = stats.PageOuts
+		summary.ExpertResidencyLoadedBytes = stats.LoadedBytes
+		summary.ExpertResidencyEvictedBytes = stats.EvictedBytes
+		summary.ExpertResidencyFirstUseLatency = stats.FirstUseLatency
+		summary.ExpertResidencyTotalLoadDuration = stats.TotalLoadDuration
 	}
-	summary.EvalSamples = report.Evaluation.Metrics.Samples
-	summary.EvalTokens = report.Evaluation.Metrics.Tokens
-	summary.EvalLoss = report.Evaluation.Metrics.Loss
-	summary.Perplexity = report.Evaluation.Metrics.Perplexity
+	// Eval metrics are read four times — cache the sub-block pointer to
+	// match the residency pattern.
+	em := &report.Evaluation.Metrics
+	summary.EvalSamples = em.Samples
+	summary.EvalTokens = em.Tokens
+	summary.EvalLoss = em.Loss
+	summary.Perplexity = em.Perplexity
 	return summary
 }
 
