@@ -186,6 +186,26 @@ func BenchmarkBackend_ReadLine_Long(b *testing.B) {
 	}
 }
 
+// --- Classify / BatchGenerate are dead-code stubs that return a
+// fixed unsupported-error. Hoisting the error to a package var
+// avoids the per-call core.E allocation.
+
+func BenchmarkBackend_Classify_Unsupported(b *testing.B) {
+	model := &mlxlmmodel{}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, backendBenchSinkErr = model.Classify(nil, nil)
+	}
+}
+
+func BenchmarkBackend_BatchGenerate_Unsupported(b *testing.B) {
+	model := &mlxlmmodel{}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, backendBenchSinkErr = model.BatchGenerate(nil, nil)
+	}
+}
+
 // --- zero-padded 2-digit layer index — InspectAttention builds
 // keys_NN.bin / queries_NN.bin paths per layer. Sprintf "%02d" is
 // the canonical-but-slow way; manual format via layerSuffix wins by

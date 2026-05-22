@@ -51,6 +51,9 @@ var (
 	bridgeScriptReady bool
 	bridgeScriptPath  string // extracted bridge.py temp path (created once per process)
 	bridgeScriptError error
+
+	errClassifyUnsupported      = core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
+	errBatchGenerateUnsupported = core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 )
 
 // extractScript writes the embedded bridge.py to a temp file and returns its path.
@@ -409,13 +412,13 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 // Classify is not supported by the subprocess backend.
 // Use the native Metal backend for classification.
 func (model *mlxlmmodel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
+	return nil, errClassifyUnsupported
 }
 
 // BatchGenerate is not supported by the subprocess backend.
 // Use the native Metal backend for batch generation.
 func (model *mlxlmmodel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
+	return nil, errBatchGenerateUnsupported
 }
 
 // ModelType returns the architecture identifier reported by the subprocess.
