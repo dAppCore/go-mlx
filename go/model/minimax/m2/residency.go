@@ -65,14 +65,14 @@ func PlanResidency(plan TensorPlan, memPlan memory.Plan, hotExpertIDs []int) mem
 		mode = memory.ExpertResidencyModePinned
 		hot = defaultHotExpertIDs(total, minPositive(hotLimit, total))
 	}
-	startup := append([]int(nil), hot...)
+	startup := core.SliceClone(hot)
 	return memory.ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    mode,
 		Architecture:            "minimax_m2",
 		TotalExperts:            total,
 		ExpertsPerToken:         perToken,
-		HotExpertIDs:            append([]int(nil), hot...),
+		HotExpertIDs:            core.SliceClone(hot),
 		StartupExpertIDs:        startup,
 		HotExperts:              hotLimit,
 		MaxResidentExperts:      residentLimit,
