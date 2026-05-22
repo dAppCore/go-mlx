@@ -121,7 +121,7 @@ func InspectModelSlice(path string) (ModelSliceInspection, error) {
 	if offloadBytes < 0 {
 		offloadBytes = 0
 	}
-	standalone, missing := modelSliceStandalone(manifest.Plan)
+	standalone, missing := modelSliceStandalone(&manifest.Plan)
 	inspection := ModelSliceInspection{
 		Path:                     path,
 		ManifestPath:             manifestPath,
@@ -140,9 +140,24 @@ func InspectModelSlice(path string) (ModelSliceInspection, error) {
 		inspection.RetainedTensorRatio = float64(localBytes) / float64(sourceBytes)
 	}
 	if inspection.RequiresSplitPlacement {
-		inspection.Notes = append(inspection.Notes, "slice is not a standalone model; reload requires split placement for omitted runtime components")
+		// Hoisted to the singleton — append to nil allocates a 1-cap
+		// slice every InspectModelSlice call on the split-placement path
+		// even though every emission shares the same one-element message.
+		// Production callers (backend.LoadModel, split_executor) read
+		// Standalone / RequiresSplitPlacement / MissingRuntimeComponents
+		// without touching Notes, so sharing the read-only slice is
+		// safe across concurrent InspectModelSlice calls.
+		inspection.Notes = modelSliceNotesRequiresSplitPlacement
 	}
 	return inspection, nil
+}
+
+// modelSliceNotesRequiresSplitPlacement is the read-only message added to
+// ModelSliceInspection.Notes whenever the inspected manifest cannot be
+// reloaded as a standalone model. See InspectModelSlice for the
+// share-safety reasoning.
+var modelSliceNotesRequiresSplitPlacement = []string{
+	"slice is not a standalone model; reload requires split placement for omitted runtime components",
 }
 
 func inspectModelSliceIfPresent(path string) (ModelSliceInspection, bool, error) {
@@ -191,7 +206,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	if err != nil {
 		return nil, err
 	}
-	refs, names := selectModelSliceTensorRefs(*plan, index)
+	refs, names := selectModelSliceTensorRefs(plan, index)
 	if len(refs) == 0 {
 		return nil, errModelSliceNoTensorsSelected
 	}
@@ -199,7 +214,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	if result := core.MkdirAll(req.OutputPath, 0o755); !result.OK {
 		return nil, modelSliceResultError(result)
 	}
-	for _, name := range modelSliceMetadataFiles(*plan) {
+	for _, name := range modelSliceMetadataFiles(plan) {
 		if err := copyModelSliceFile(source.Root, req.OutputPath, name); err != nil {
 			return nil, err
 		}
@@ -213,7 +228,12 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	plan.OutputPath = req.OutputPath
 	plan.SourcePath = req.Model.Path
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size to the six label keys SliceModel writes (the optional
+		// retained_tensor_ratio brings the worst case to six). make-with-
+		// hint lets the runtime size the bucket array correctly on first
+		// allocation instead of growing the map 1->2->4->8 across the
+		// five guaranteed assignments below.
+		plan.Labels = make(map[string]string, 6)
 	}
 	selectedBytes := tensorRefsByteLen(refs)
 	sourceTensorBytes := indexTensorByteLen(index)
@@ -230,7 +250,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		plan.Labels["retained_tensor_ratio"] = strconv.FormatFloat(float64(selectedBytes)/float64(sourceTensorBytes), 'f', 4, 64)
 	}
 
-	if err := writeModelSliceManifest(req.OutputPath, *plan, names); err != nil {
+	if err := writeModelSliceManifest(req.OutputPath, plan, names); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -247,7 +267,7 @@ var modelSliceStandaloneRequired = [...]inference.ModelComponent{
 	inference.ModelComponentLMHead,
 }
 
-func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
+func modelSliceStandalone(plan *inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
@@ -358,8 +378,11 @@ type modelSliceInclusionMask struct {
 
 // buildModelSliceInclusionMask materialises the inclusion mask once for a
 // given plan so the per-tensor classifier can read it via direct field
-// loads on the hot path.
-func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclusionMask {
+// loads on the hot path. Takes plan by pointer — the function only reads
+// ExtractLevel + Components, so a pointer avoids the ~200-byte value-copy
+// the by-value form forced on every call from selectModelSliceTensorRefs
+// and modelSliceIncludesTensor.
+func buildModelSliceInclusionMask(plan *inference.ModelSlicePlan) modelSliceInclusionMask {
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return modelSliceInclusionMask{all: true}
 	}
@@ -395,7 +418,19 @@ func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclu
 	return mask
 }
 
-func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
+func selectModelSliceTensorRefs(plan *inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
+	// ExtractLevelAll selects every tensor regardless of name, so the
+	// per-tensor mask-classifier walk (core.Lower + substring scans)
+	// is pure overhead — short-cut to a direct copy of every ref. The
+	// names slice aliases the source via SliceClone for the same
+	// safety guarantees the masked branch provides.
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		refs := make([]safetensors.TensorRef, len(index.Names))
+		for i, name := range index.Names {
+			refs[i] = index.Tensors[name]
+		}
+		return refs, core.SliceClone(index.Names)
+	}
 	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	names := make([]string, 0, len(index.Names))
 	mask := buildModelSliceInclusionMask(plan)
@@ -416,20 +451,63 @@ func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors
 // dominate a per-layer sweep, so checking them first lets the common
 // per-layer tensors short-circuit before the embeddings / norms /
 // LM-head substring scans that won't match.
+//
+// projectionFamily memoisation: IsAttention / IsFFN / IsGate each fall
+// back to a modelSliceProjectionFamily byte-walk over `lower` when their
+// substring fast-paths miss. When mask has multiple of those bits set —
+// the typical full-attention + FFN slice — a non-matching tensor (norm,
+// embedding, LM-head) walks `_proj.` two or three times. Inlining the
+// substring fast-paths here and computing the family lazily via the
+// `famDone` sentinel keeps each tensor name to at most one byte-walk.
 func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) bool {
 	if mask.all {
 		return true
 	}
 	lower := core.Lower(name)
+	var fam projectionFamily
+	var famDone bool
+	if mask.attention {
+		if core.Contains(lower, "self_attn") ||
+			core.Contains(lower, "attention") ||
+			core.Contains(lower, ".attn.") {
+			return true
+		}
+		fam = modelSliceProjectionFamily(lower)
+		famDone = true
+		if fam&projAttention != 0 {
+			return true
+		}
+	}
+	if mask.ffn {
+		if core.Contains(lower, ".mlp.") ||
+			core.Contains(lower, "feed_forward") ||
+			core.Contains(lower, "ffn") {
+			return true
+		}
+		if !famDone {
+			fam = modelSliceProjectionFamily(lower)
+			famDone = true
+		}
+		if fam&projFFN != 0 {
+			return true
+		}
+	}
+	if mask.norms && modelSliceTensorIsNorm(lower) {
+		return true
+	}
+	if mask.gate {
+		if core.Contains(lower, ".gate.") {
+			return true
+		}
+		if !famDone {
+			fam = modelSliceProjectionFamily(lower)
+			famDone = true
+		}
+		if fam&projGate != 0 {
+			return true
+		}
+	}
 	switch {
-	case mask.attention && modelSliceTensorIsAttention(lower):
-		return true
-	case mask.ffn && modelSliceTensorIsFFN(lower):
-		return true
-	case mask.norms && modelSliceTensorIsNorm(lower):
-		return true
-	case mask.gate && modelSliceTensorIsGate(lower):
-		return true
 	case mask.experts && modelSliceTensorIsExpert(lower):
 		return true
 	case mask.router && modelSliceTensorIsRouter(lower):
@@ -440,13 +518,12 @@ func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) boo
 		return true
 	case mask.lmHead && modelSliceTensorIsLMHead(lower):
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
-	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(plan), name)
+	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(&plan), name)
 }
 
 func modelSliceTensorIsEmbedding(name string) bool {
@@ -658,7 +735,7 @@ var (
 	}
 )
 
-func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
+func modelSliceMetadataFiles(plan *inference.ModelSlicePlan) []string {
 	// Single-pass detection of the two relevant component flags.
 	// plan.HasComponent runs slices.Contains over plan.Components on
 	// each call; for a typical 8+ component plan that was 16+ string-
@@ -719,7 +796,7 @@ var modelSliceManifestWeightMap = map[string]string{
 	"model.safetensors": "selected tensors",
 }
 
-func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
+func writeModelSliceManifest(outputRoot string, plan *inference.ModelSlicePlan, tensors []string) error {
 	// The manifest aliases the caller's tensors slice and plan.Labels map
 	// directly — core.JSONMarshal only reads through them and the local
 	// manifest value is consumed immediately, so the previous defensive
@@ -730,7 +807,7 @@ func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, t
 		Version:   modelSliceManifestVersion,
 		Source:    plan.SourcePath,
 		Output:    plan.OutputPath,
-		Plan:      plan,
+		Plan:      *plan,
 		Weight:    "model.safetensors",
 		Tensors:   tensors,
 		Labels:    plan.Labels,

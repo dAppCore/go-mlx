@@ -4,40 +4,38 @@ package mlx
 
 import (
 	"reflect"
-	"sync"
 
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 )
 
-// inferenceMinPProbe caches the structural offset of the MinP field on the
-// linked inference.GenerateConfig so the forward-compatibility lookup walks
-// the struct fields once per program lifetime instead of once per Generate
-// call. reflect.Type.FieldByName performs a linear scan with no internal
-// cache in Go 1.21-1.26, so amortising it lifts the per-call cost from
-// ~25ns to a single atomic load.
-var inferenceMinPProbe struct {
-	once  sync.Once
-	index []int // nil → field absent
-	isFP  bool  // true when the field is a float kind we can read
-}
+// inferenceMinPFieldIndex / inferenceMinPFieldPresent cache the structural
+// offset of the MinP field on the linked inference.GenerateConfig so the
+// forward-compatibility lookup walks the struct fields once at package
+// init rather than once per Generate / Chat / Classify call.
+//
+// reflect.Type.FieldByName performs a linear scan with no internal cache
+// in Go 1.21-1.26. Resolving the probe in init() instead of the prior
+// sync.Once-guarded helper drops the per-call cost from "atomic load +
+// function call + branch + return tuple" to a single package-var read on
+// the hot path — when MinP is absent (the current shape of
+// inference.GenerateConfig), the predicate short-circuits before any
+// reflect.ValueOf work runs at all.
+var (
+	inferenceMinPFieldIndex   []int
+	inferenceMinPFieldPresent bool
+)
 
-// loadInferenceMinPProbe returns the cached MinP field index plus a flag
-// reporting whether the field exists and is a float on the linked
-// inference.GenerateConfig type. Safe for concurrent callers.
-func loadInferenceMinPProbe() ([]int, bool) {
-	inferenceMinPProbe.once.Do(func() {
-		field, ok := reflect.TypeOf(inference.GenerateConfig{}).FieldByName("MinP")
-		if !ok {
-			return
-		}
-		switch field.Type.Kind() {
-		case reflect.Float32, reflect.Float64:
-			inferenceMinPProbe.index = field.Index
-			inferenceMinPProbe.isFP = true
-		}
-	})
-	return inferenceMinPProbe.index, inferenceMinPProbe.isFP
+func init() {
+	field, ok := reflect.TypeOf(inference.GenerateConfig{}).FieldByName("MinP")
+	if !ok {
+		return
+	}
+	switch field.Type.Kind() {
+	case reflect.Float32, reflect.Float64:
+		inferenceMinPFieldIndex = field.Index
+		inferenceMinPFieldPresent = true
+	}
 }
 
 func inferenceGenerateConfigToMetal(cfg inference.GenerateConfig) metal.GenerateConfig {
@@ -51,11 +49,11 @@ func inferenceGenerateConfigToMetal(cfg inference.GenerateConfig) metal.Generate
 	}
 	// Keep go-mlx forward-compatible with inference.GenerateConfig versions
 	// that expose MinP without requiring a synchronized dependency update
-	// here. The reflect FieldByName scan is amortised through
-	// inferenceMinPProbe so we pay it once per process instead of once
-	// per Generate/Chat/Classify request.
-	if index, isFP := loadInferenceMinPProbe(); isFP {
-		out.MinP = float32(reflect.ValueOf(cfg).FieldByIndex(index).Float())
+	// here. The reflect FieldByName scan is amortised through the package-
+	// init probe so we pay it once per process and the per-call cost is a
+	// single bool load on the absent-field hot path.
+	if inferenceMinPFieldPresent {
+		out.MinP = float32(reflect.ValueOf(cfg).FieldByIndex(inferenceMinPFieldIndex).Float())
 	}
 	return out
 }
