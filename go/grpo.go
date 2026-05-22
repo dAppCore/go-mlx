@@ -263,7 +263,10 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cf
 			break
 		}
 		sample := GRPOSampleFromSFT(raw)
-		if core.Trim(sample.Prompt) == "" {
+		// sample.Prompt is already trimmed by GRPOSampleFromSFT — the
+		// previous core.Trim re-scan was wasted work on every dataset
+		// row in every epoch.
+		if sample.Prompt == "" {
 			continue
 		}
 		samples++
