@@ -439,13 +439,41 @@ func modelSliceTensorIsLMHead(name string) bool {
 	return core.HasPrefix(name, "lm_head.")
 }
 
+// modelSliceHasProjection. Hot path is exclusively the eight projection
+// names known to projectionLookup, so the switch short-cuts the map fetch
+// (string-keyed hash + interface comparison) for those callers and reads
+// the pre-built infix/suffix pair via direct constant loads. The map
+// fallback still handles unseen projection names without losing the
+// original semantics.
 func modelSliceHasProjection(name, projection string) bool {
-	if match, ok := projectionLookup[projection]; ok {
-		return core.Contains(name, match.infix) || core.HasSuffix(name, match.suffix)
+	var infix, suffix string
+	switch projection {
+	case "q_proj":
+		infix, suffix = ".q_proj.", ".q_proj.weight"
+	case "k_proj":
+		infix, suffix = ".k_proj.", ".k_proj.weight"
+	case "v_proj":
+		infix, suffix = ".v_proj.", ".v_proj.weight"
+	case "o_proj":
+		infix, suffix = ".o_proj.", ".o_proj.weight"
+	case "out_proj":
+		infix, suffix = ".out_proj.", ".out_proj.weight"
+	case "up_proj":
+		infix, suffix = ".up_proj.", ".up_proj.weight"
+	case "down_proj":
+		infix, suffix = ".down_proj.", ".down_proj.weight"
+	case "gate_proj":
+		infix, suffix = ".gate_proj.", ".gate_proj.weight"
+	default:
+		if match, ok := projectionLookup[projection]; ok {
+			infix, suffix = match.infix, match.suffix
+		} else {
+			// Fallback preserves the original "."+projection+"." semantics
+			// for callers passing unseen projection names.
+			return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
+		}
 	}
-	// Fallback for callers passing unseen projection names — preserves the
-	// original "."+projection+"." semantics without the lookup table.
-	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
+	return core.Contains(name, infix) || core.HasSuffix(name, suffix)
 }
 
 // modelSliceMetadataFileSet bundles the four possible metadata-file
