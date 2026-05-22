@@ -409,10 +409,15 @@ func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, up
 	result.Metrics.LastLoss = update.Loss
 	result.Metrics.KLCoefficient = update.KLCoefficient
 	accumulator.add(update)
-	result.Metrics.RewardMean = accumulator.rewardMean()
-	result.Metrics.RewardStd = accumulator.rewardStd()
-	result.Metrics.KLMean = accumulator.klMean()
-	result.Metrics.Loss = accumulator.loss()
+	// snapshot returns all four metric averages in a single nil/zero
+	// guard with one float division — replacing four separate method
+	// calls each with their own guard + divide. Mirrors the same
+	// pattern adopted for the distill metric accumulator.
+	avg := accumulator.snapshot()
+	result.Metrics.RewardMean = avg.rewardMean
+	result.Metrics.RewardStd = avg.rewardStd
+	result.Metrics.KLMean = avg.klMean
+	result.Metrics.Loss = avg.loss
 	result.Metrics.CheckpointCount = len(result.Checkpoints)
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
@@ -846,32 +851,28 @@ func (a *grpoMetricAccumulator) add(update GRPOUpdate) {
 	a.lossSum += update.Loss
 }
 
-func (a *grpoMetricAccumulator) rewardMean() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
-	}
-	return a.rewardSum / float64(a.groups)
+// grpoMetricsSnapshot is the all-in-one return shape for snapshot —
+// every field is the per-group average of the corresponding
+// accumulator sum, or 0 when the accumulator has no groups yet.
+type grpoMetricsSnapshot struct {
+	rewardMean, rewardStd, klMean, loss float64
 }
 
-func (a *grpoMetricAccumulator) rewardStd() float64 {
+// snapshot returns the per-group averages for all four metrics in a
+// single nil/zero guard with one float division — replaces the four
+// individual accessor methods (rewardMean, rewardStd, klMean, loss),
+// each of which paid its own nil-guard + divide.
+func (a *grpoMetricAccumulator) snapshot() grpoMetricsSnapshot {
 	if a == nil || a.groups == 0 {
-		return 0
+		return grpoMetricsSnapshot{}
 	}
-	return a.stdSum / float64(a.groups)
-}
-
-func (a *grpoMetricAccumulator) klMean() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
+	invGroups := 1.0 / float64(a.groups)
+	return grpoMetricsSnapshot{
+		rewardMean: a.rewardSum * invGroups,
+		rewardStd:  a.stdSum * invGroups,
+		klMean:     a.klSum * invGroups,
+		loss:       a.lossSum * invGroups,
 	}
-	return a.klSum / float64(a.groups)
-}
-
-func (a *grpoMetricAccumulator) loss() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
-	}
-	return a.lossSum / float64(a.groups)
 }
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
