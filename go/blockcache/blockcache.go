@@ -51,16 +51,17 @@ type Config struct {
 // persists them on disk, and delegates actual KV warming to the native prompt
 // cache when a prompt warmer is configured.
 type Service struct {
-	mu          sync.Mutex
-	cfg         Config
-	blocks      map[string]inference.CacheBlockRef
-	memoryBytes uint64
-	hits        uint64
-	misses      uint64
-	cleared     uint64
-	evictions   uint64
-	diskCorrupt uint64
-	diskLoaded  bool
+	mu             sync.Mutex
+	cfg            Config
+	blockSizeLabel string
+	blocks         map[string]inference.CacheBlockRef
+	memoryBytes    uint64
+	hits           uint64
+	misses         uint64
+	cleared        uint64
+	evictions      uint64
+	diskCorrupt    uint64
+	diskLoaded     bool
 }
 
 type diskRecord struct {
@@ -91,8 +92,9 @@ func New(cfg Config) *Service {
 	}
 	cfg.DiskPath = core.Trim(cfg.DiskPath)
 	return &Service{
-		cfg:    cfg,
-		blocks: map[string]inference.CacheBlockRef{},
+		cfg:            cfg,
+		blockSizeLabel: core.Itoa(cfg.BlockSize),
+		blocks:         map[string]inference.CacheBlockRef{},
 	}
 }
 
@@ -293,7 +295,7 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 func (service *Service) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
 	labels := cloneBlockCacheLabelsExtra(req.Labels, 4)
 	labels["cache_mode"] = mode
-	labels["block_size"] = core.Itoa(service.cfg.BlockSize)
+	labels["block_size"] = service.blockSizeLabel
 	labels["model_match"] = boolLabel(cacheIdentityMatches(service.cfg.ModelHash, firstNonEmptyString(req.Model.Hash, req.Model.ID)))
 	labels["adapter_match"] = boolLabel(cacheIdentityMatches(service.cfg.AdapterHash, req.Adapter.Hash))
 	labels["tokenizer_match"] = boolLabel(cacheIdentityMatches(service.cfg.TokenizerHash, req.Labels["tokenizer_hash"]))
@@ -308,7 +310,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 		Evictions: service.evictions,
 		CacheMode: mode,
 		Labels: map[string]string{
-			"block_size": core.Itoa(service.cfg.BlockSize),
+			"block_size": service.blockSizeLabel,
 			"cleared":    core.FormatUint(service.cleared, 10),
 		},
 	}
