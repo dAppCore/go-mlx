@@ -988,8 +988,10 @@ func trimWeightSuffix(name string) string {
 	return name
 }
 
+var packedSuffixes = [...]string{".packed", ".qweight"}
+
 func trimPackedSuffix(name string) string {
-	for _, suffix := range []string{".packed", ".qweight"} {
+	for _, suffix := range packedSuffixes {
 		if core.HasSuffix(name, suffix) {
 			return name[:len(name)-len(suffix)]
 		}
