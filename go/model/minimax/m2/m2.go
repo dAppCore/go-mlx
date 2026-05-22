@@ -311,8 +311,11 @@ func (plan TensorPlan) ValidateTensorNames(names map[string]bool) error {
 	if err != nil {
 		return err
 	}
-	missing := []string{}
-	for _, spec := range specs {
+	// Index iteration: TensorSpec is 120 B (well above the value-copy
+	// threshold), so range-by-value would copy 120 B per spec.
+	var missing []string
+	for i := range specs {
+		spec := &specs[i]
 		if specMatchesName(spec, names) {
 			continue
 		}
@@ -879,7 +882,7 @@ func cloneJANGQuantizationInfo(info *jang.Info) *jang.Info {
 	return &cloned
 }
 
-func specMatchesName(spec TensorSpec, names map[string]bool) bool {
+func specMatchesName(spec *TensorSpec, names map[string]bool) bool {
 	if names[spec.Name] {
 		return true
 	}
@@ -891,10 +894,13 @@ func specMatchesName(spec TensorSpec, names map[string]bool) bool {
 	return false
 }
 
+// findTensorSpec returns the spec for the requested role, or the zero
+// value. Index iteration + pointer return avoids copying the 120 B
+// TensorSpec value-by-value on each step of the scan.
 func findTensorSpec(specs []TensorSpec, role TensorRole) TensorSpec {
-	for _, spec := range specs {
-		if spec.Role == role {
-			return spec
+	for i := range specs {
+		if specs[i].Role == role {
+			return specs[i]
 		}
 	}
 	return TensorSpec{}
