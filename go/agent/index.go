@@ -3,8 +3,12 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"hash"
+	"strconv"
+	"sync"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -12,6 +16,20 @@ import (
 	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/memory"
 )
+
+// hashBufPool reuses bytes.Buffer instances used while assembling the
+// canonical input for indexEntryHash. The Buffer backing slice never
+// escapes (we hash-and-discard before Reset), so pooling is safe and
+// collapses ~1000 per-Validate Builder allocs into 1 reused buffer.
+var hashBufPool = sync.Pool{
+	New: func() any {
+		// 384 covers the typical rich-entry input (~250 bytes) with
+		// headroom for long URIs / extra labels; smaller starting
+		// caps would force a grow on the common path.
+		buf := make([]byte, 0, 384)
+		return bytes.NewBuffer(buf)
+	},
+}
 
 const (
 	// StateIndexKind identifies a State-stored lookup index
@@ -28,6 +46,45 @@ const (
 	//
 	// Deprecated: use KVSnapshotStateBundleIndexVersion.
 	KVSnapshotMemvidBundleIndexVersion = KVSnapshotStateBundleIndexVersion
+)
+
+// stateIndexPutLabels is the canonical label set attached to every
+// SaveStateIndex Put call. Package-scoped so each call shares one backing
+// array instead of allocating a fresh slice literal per save.
+var stateIndexPutLabels = []string{"go-mlx", "kv-snapshot-bundle-index"}
+
+// Sentinel validation errors hoisted to package scope. Each previously
+// triggered a fresh core.NewError allocation per error-path hit; the
+// hot Validate path returns one of these on every bad entry, and
+// keeping them as singletons collapses N allocs → 0 on the failure
+// branches and also lets callers errors.Is them.
+var (
+	errStateIndexNil                  = core.NewError("mlx: State index is nil")
+	errStateIndexUnsupportedVersion   = core.NewError("mlx: unsupported State index version")
+	errStateIndexInvalidKind          = core.NewError("mlx: invalid State index kind")
+	errStateIndexEmptyTokenCount      = core.NewError("mlx: State index token count is empty")
+	errStateIndexNoEntries            = core.NewError("mlx: State index has no entries")
+	errStateIndexDuplicateURI         = core.NewError("mlx: duplicate State index URI")
+	errStateIndexHashMismatch         = core.NewError("mlx: State index hash mismatch")
+	errStateIndexEntryURIRequired     = core.NewError("mlx: State index entry URI is required")
+	errStateIndexEntryBundleRequired  = core.NewError("mlx: State index entry bundle URI is required")
+	errStateIndexEntryTokenStart      = core.NewError("mlx: State index entry token start is invalid")
+	errStateIndexEntryTokenCount      = core.NewError("mlx: State index entry token count is empty")
+	errStateIndexEntryExceedsBundle   = core.NewError("mlx: State index entry exceeds bundle token count")
+	errStateIndexEntryByteSpan        = core.NewError("mlx: State index entry byte span is invalid")
+	errStateIndexEntryHashMismatch    = core.NewError("mlx: State index entry hash mismatch")
+	errStateIndexEntryNotFound        = core.NewError("mlx: State index entry not found")
+	errStateIndexPrefixInvalid        = core.NewError("mlx: State index prefix is invalid")
+	errStateStoreNil                  = core.NewError("mlx: state store is nil")
+	errStateIndexURIRequired          = core.NewError("mlx: State index URI is required")
+	errStateIndexArchitectureMismatch = core.NewError("mlx: State index model architecture mismatch")
+	errStateIndexLayerMismatch        = core.NewError("mlx: State index model layer mismatch")
+	errStateIndexQuantMismatch        = core.NewError("mlx: State index model quantization mismatch")
+	errStateIndexModelHashMismatch    = core.NewError("mlx: State index model hash mismatch")
+	errStateIndexExceedsContext       = core.NewError("mlx: State index exceeds model context length")
+	errStateIndexTokenizerMismatch    = core.NewError("mlx: State index tokenizer hash mismatch")
+	errStateIndexChatTemplateMismatch = core.NewError("mlx: State index chat template hash mismatch")
+	errStateURIRequired               = core.NewError("mlx: State URI is required")
 )
 
 // StateIndexOptions configures a durable index for named State
@@ -128,9 +185,9 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 			fillIndexEntryByteSpan(&index.Entries[i], bundle)
 		}
 		if index.Entries[i].Hash == "" {
-			index.Entries[i].Hash = indexEntryHash(index.Entries[i])
-		} else if index.Entries[i].Hash != indexEntryHash(index.Entries[i]) {
-			return nil, core.NewError("mlx: State index entry hash mismatch")
+			index.Entries[i].Hash = indexEntryHash(&index.Entries[i])
+		} else if index.Entries[i].Hash != indexEntryHash(&index.Entries[i]) {
+			return nil, errStateIndexEntryHashMismatch
 		}
 	}
 	index.Hash = indexHash(index)
@@ -155,57 +212,59 @@ func (index *StateIndex) Validate() error {
 
 func (index *StateIndex) validate(checkHashes bool) error {
 	if index == nil {
-		return core.NewError("mlx: State index is nil")
+		return errStateIndexNil
 	}
 	if index.Version <= 0 || index.Version > KVSnapshotStateBundleIndexVersion {
-		return core.NewError("mlx: unsupported State index version")
+		return errStateIndexUnsupportedVersion
 	}
 	if index.Kind != StateIndexKind {
-		return core.NewError("mlx: invalid State index kind")
+		return errStateIndexInvalidKind
 	}
 	if index.TokenCount <= 0 {
-		return core.NewError("mlx: State index token count is empty")
+		return errStateIndexEmptyTokenCount
 	}
 	if len(index.Entries) == 0 {
-		return core.NewError("mlx: State index has no entries")
+		return errStateIndexNoEntries
 	}
 	seen := make(map[string]bool, len(index.Entries))
-	for _, entry := range index.Entries {
-		if err := index.validateEntry(entry, checkHashes); err != nil {
+	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
+	for i := range index.Entries {
+		entry := &index.Entries[i]
+		if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
 			return err
 		}
 		if seen[entry.URI] {
-			return core.NewError("mlx: duplicate State index URI")
+			return errStateIndexDuplicateURI
 		}
 		seen[entry.URI] = true
 	}
 	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
-		return core.NewError("mlx: State index hash mismatch")
+		return errStateIndexHashMismatch
 	}
 	return nil
 }
 
-func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash bool) error {
+func (index *StateIndex) validateEntry(entry *StateIndexEntry, checkHash, indexBundleURIEmpty bool) error {
 	if core.Trim(entry.URI) == "" {
-		return core.NewError("mlx: State index entry URI is required")
+		return errStateIndexEntryURIRequired
 	}
-	if core.Trim(entry.BundleURI) == "" && core.Trim(index.BundleURI) == "" {
-		return core.NewError("mlx: State index entry bundle URI is required")
+	if indexBundleURIEmpty && core.Trim(entry.BundleURI) == "" {
+		return errStateIndexEntryBundleRequired
 	}
 	if entry.TokenStart < 0 {
-		return core.NewError("mlx: State index entry token start is invalid")
+		return errStateIndexEntryTokenStart
 	}
 	if entry.TokenCount <= 0 {
-		return core.NewError("mlx: State index entry token count is empty")
+		return errStateIndexEntryTokenCount
 	}
 	if entry.TokenStart+entry.TokenCount > index.TokenCount {
-		return core.NewError("mlx: State index entry exceeds bundle token count")
+		return errStateIndexEntryExceedsBundle
 	}
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
-		return core.NewError("mlx: State index entry byte span is invalid")
+		return errStateIndexEntryByteSpan
 	}
 	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
-		return core.NewError("mlx: State index entry hash mismatch")
+		return errStateIndexEntryHashMismatch
 	}
 	return nil
 }
@@ -215,9 +274,9 @@ func (index *StateIndex) Entry(uri string) (StateIndexEntry, bool) {
 	if index == nil {
 		return StateIndexEntry{}, false
 	}
-	for _, entry := range index.Entries {
-		if entry.URI == uri {
-			return cloneIndexEntry(entry), true
+	for i := range index.Entries {
+		if index.Entries[i].URI == uri {
+			return cloneIndexEntry(index.Entries[i]), true
 		}
 	}
 	return StateIndexEntry{}, false
@@ -229,8 +288,8 @@ func (index *StateIndex) RequiredContextLength() int {
 		return 0
 	}
 	required := 0
-	for _, entry := range index.Entries {
-		if end := entry.PrefixTokens(); end > required {
+	for i := range index.Entries {
+		if end := index.Entries[i].PrefixTokens(); end > required {
 			required = end
 		}
 	}
@@ -249,10 +308,10 @@ func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, 
 		ctx = context.Background()
 	}
 	if store == nil {
-		return state.ChunkRef{}, core.NewError("mlx: state store is nil")
+		return state.ChunkRef{}, errStateStoreNil
 	}
 	if core.Trim(uri) == "" {
-		return state.ChunkRef{}, core.NewError("mlx: State index URI is required")
+		return state.ChunkRef{}, errStateIndexURIRequired
 	}
 	if err := index.Validate(); err != nil {
 		return state.ChunkRef{}, err
@@ -262,7 +321,7 @@ func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, 
 		Title:  "go-mlx State index",
 		Kind:   StateIndexKind,
 		Track:  "session-kv-index",
-		Labels: []string{"go-mlx", "kv-snapshot-bundle-index"},
+		Labels: stateIndexPutLabels,
 	})
 	if err != nil {
 		return state.ChunkRef{}, core.E("kv.Snapshot.SaveStateIndex", "write State index", err)
@@ -284,10 +343,10 @@ func LoadStateIndex(ctx context.Context, store state.Store, uri string) (*StateI
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errStateStoreNil
 	}
 	if core.Trim(uri) == "" {
-		return nil, core.NewError("mlx: State index URI is required")
+		return nil, errStateIndexURIRequired
 	}
 	chunk, err := state.ResolveURI(ctx, store, uri)
 	if err != nil {
@@ -318,14 +377,14 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, StateIndexEntry{}, core.NewError("mlx: state store is nil")
+		return nil, StateIndexEntry{}, errStateStoreNil
 	}
 	if err := index.Validate(); err != nil {
 		return nil, StateIndexEntry{}, err
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, StateIndexEntry{}, core.NewError("mlx: State index entry not found")
+		return nil, StateIndexEntry{}, errStateIndexEntryNotFound
 	}
 	bundleURI := entry.BundleURI
 	if bundleURI == "" {
@@ -337,7 +396,7 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, StateIndexEntry{}, core.NewError("mlx: State index prefix is invalid")
+		return nil, StateIndexEntry{}, errStateIndexPrefixInvalid
 	}
 	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
 	if err != nil {
@@ -361,28 +420,28 @@ func CheckStateIndexCompatibility(info memory.ModelInfo, tokenizer bundle.Tokeni
 		return err
 	}
 	if index.Model.Architecture != "" && info.Architecture != "" && index.Model.Architecture != info.Architecture {
-		return core.NewError("mlx: State index model architecture mismatch")
+		return errStateIndexArchitectureMismatch
 	}
 	if index.Model.NumLayers > 0 && info.NumLayers > 0 && index.Model.NumLayers != info.NumLayers {
-		return core.NewError("mlx: State index model layer mismatch")
+		return errStateIndexLayerMismatch
 	}
 	if index.Model.QuantBits > 0 && info.QuantBits > 0 && index.Model.QuantBits != info.QuantBits {
-		return core.NewError("mlx: State index model quantization mismatch")
+		return errStateIndexQuantMismatch
 	}
 	if index.Model.Hash != "" && index.Model.Name == "" && index.Model.Path == "" && modelHashComparable(info, index.Model) {
 		active := indexModel(nil, StateIndexOptions{ModelInfo: info})
 		if active.Hash != "" && active.Hash != index.Model.Hash {
-			return core.NewError("mlx: State index model hash mismatch")
+			return errStateIndexModelHashMismatch
 		}
 	}
 	if info.ContextLength > 0 && index.RequiredContextLength() > info.ContextLength {
-		return core.NewError("mlx: State index exceeds model context length")
+		return errStateIndexExceedsContext
 	}
 	if index.Tokenizer.Hash != "" && tokenizer.Hash != "" && index.Tokenizer.Hash != tokenizer.Hash {
-		return core.NewError("mlx: State index tokenizer hash mismatch")
+		return errStateIndexTokenizerMismatch
 	}
 	if index.Tokenizer.ChatTemplateHash != "" && tokenizer.ChatTemplateHash != "" && index.Tokenizer.ChatTemplateHash != tokenizer.ChatTemplateHash {
-		return core.NewError("mlx: State index chat template hash mismatch")
+		return errStateIndexChatTemplateMismatch
 	}
 	return nil
 }
@@ -432,18 +491,19 @@ func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 	}
 	builder := core.NewBuilder()
 	builder.WriteString(model.Name)
-	builder.WriteString("\n")
+	builder.WriteByte('\n')
 	builder.WriteString(model.Path)
-	builder.WriteString("\n")
+	builder.WriteByte('\n')
 	builder.WriteString(model.Architecture)
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.VocabSize))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.NumLayers))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.QuantBits))
-	builder.WriteString("\n")
-	builder.WriteString(core.Itoa(model.ContextLength))
+	builder.WriteByte('\n')
+	var intBuf [20]byte
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
+	builder.WriteByte('\n')
+	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
 	model.Hash = stateHash(builder.String())
 	return model
 }
@@ -465,19 +525,20 @@ func fillIndexEntryByteSpan(entry *StateIndexEntry, bundle *kv.StateBlockBundle)
 		byteStart    int64
 		byteCount    int64
 	)
-	for _, ref := range bundle.Blocks {
-		refStart := ref.TokenStart
-		refEnd := ref.TokenStart + ref.TokenCount
+	blocks := bundle.Blocks
+	for i := range blocks {
+		refStart := blocks[i].TokenStart
+		refEnd := refStart + blocks[i].TokenCount
 		if refEnd <= spanStart || refStart >= spanEnd {
 			continue
 		}
-		chunk := kv.StateBlockChunkRef(ref)
+		chunk := kv.StateBlockChunkRef(blocks[i])
 		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
 			byteStart = int64(chunk.FrameOffset)
 			byteStartSet = true
 		}
-		if ref.PayloadByteCount > 0 {
-			byteCount += int64(ref.PayloadByteCount)
+		if blocks[i].PayloadByteCount > 0 {
+			byteCount += int64(blocks[i].PayloadByteCount)
 		}
 	}
 	if entry.ByteStart == 0 && byteStartSet {
@@ -504,8 +565,7 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 	lo, hi := 0, len(blocks)
 	for lo < hi {
 		mid := lo + (hi-lo)/2
-		ref := blocks[mid]
-		if ref.TokenStart+ref.TokenCount <= spanStart {
+		if blocks[mid].TokenStart+blocks[mid].TokenCount <= spanStart {
 			lo = mid + 1
 		} else {
 			hi = mid
@@ -517,17 +577,16 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 		byteCount    int64
 	)
 	for i := lo; i < len(blocks); i++ {
-		ref := blocks[i]
-		if ref.TokenStart >= spanEnd {
+		if blocks[i].TokenStart >= spanEnd {
 			break
 		}
-		chunk := kv.StateBlockChunkRef(ref)
+		chunk := kv.StateBlockChunkRef(blocks[i])
 		if !byteStartSet && chunk.HasFrameOffset && chunk.FrameOffset <= uint64(1<<63-1) {
 			byteStart = int64(chunk.FrameOffset)
 			byteStartSet = true
 		}
-		if ref.PayloadByteCount > 0 {
-			byteCount += int64(ref.PayloadByteCount)
+		if blocks[i].PayloadByteCount > 0 {
+			byteCount += int64(blocks[i].PayloadByteCount)
 		}
 	}
 	if entry.ByteStart == 0 && byteStartSet {
@@ -540,76 +599,94 @@ func fillIndexEntryByteSpanSorted(entry *StateIndexEntry, bundle *kv.StateBlockB
 
 func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
 	for i := 1; i < len(blocks); i++ {
-		prev := blocks[i-1]
-		current := blocks[i]
-		if current.TokenStart < prev.TokenStart {
+		prevStart := blocks[i-1].TokenStart
+		curStart := blocks[i].TokenStart
+		if curStart < prevStart {
 			return false
 		}
-		if current.TokenStart == prev.TokenStart && current.Index < prev.Index {
+		if curStart == prevStart && blocks[i].Index < blocks[i-1].Index {
 			return false
 		}
 	}
 	return true
 }
 
+// indexHash streams the canonical input into a sha256 hasher.
+// The bounded header (Kind|BundleURI|...|ChatTemplateHash) is
+// pre-built in a Builder so the two int writes don't escape their
+// digit buffer to the heap through hash.Hash's interface dispatch;
+// the per-entry tail then streams pipe+entry-hash pairs straight
+// to sha256 because Builder-batching the entry tail loses at scale
+// — the doubling backing slice grows into hundreds of KB on a
+// 1000-entry index (measured 25 µs streaming vs 57 µs full-builder).
 func indexHash(index *StateIndex) string {
 	if index == nil {
 		return ""
 	}
-	hash := sha256.New()
-	writeIndexHashString(hash, index.Kind)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.BundleURI)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.SnapshotHash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, string(index.KVEncoding))
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, index.TokenCount)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, index.BlockSize)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Model.Hash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Tokenizer.Hash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Tokenizer.ChatTemplateHash)
-	for _, entry := range index.Entries {
-		writeIndexHashString(hash, "|")
-		entryHash := entry.Hash
+	header := hashBufPool.Get().(*bytes.Buffer)
+	header.Reset()
+	var intBuf [20]byte
+	header.WriteString(index.Kind)
+	header.WriteByte('|')
+	header.WriteString(index.BundleURI)
+	header.WriteByte('|')
+	header.WriteString(index.SnapshotHash)
+	header.WriteByte('|')
+	header.WriteString(string(index.KVEncoding))
+	header.WriteByte('|')
+	header.Write(strconv.AppendInt(intBuf[:0], int64(index.TokenCount), 10))
+	header.WriteByte('|')
+	header.Write(strconv.AppendInt(intBuf[:0], int64(index.BlockSize), 10))
+	header.WriteByte('|')
+	header.WriteString(index.Model.Hash)
+	header.WriteByte('|')
+	header.WriteString(index.Tokenizer.Hash)
+	header.WriteByte('|')
+	header.WriteString(index.Tokenizer.ChatTemplateHash)
+	h := sha256.New()
+	h.Write(header.Bytes())
+	hashBufPool.Put(header)
+	for i := range index.Entries {
+		writeIndexHashString(h, "|")
+		entryHash := index.Entries[i].Hash
 		if entryHash == "" {
-			entryHash = indexEntryHash(entry)
+			entryHash = indexEntryHash(&index.Entries[i])
 		}
-		writeIndexHashString(hash, entryHash)
+		writeIndexHashString(h, entryHash)
 	}
-	return core.HexEncode(hash.Sum(nil))
+	// Sum into a stack-allocated [32]byte rather than passing nil
+	// (which heap-allocates the digest slice).
+	var sumBuf [sha256.Size]byte
+	return core.HexEncode(h.Sum(sumBuf[:0]))
 }
 
-func indexEntryHash(entry StateIndexEntry) string {
-	hash := sha256.New()
-	writeIndexHashString(hash, entry.URI)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, entry.BundleURI)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, entry.Title)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, entry.TokenStart)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, entry.TokenCount)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt64(hash, entry.ByteStart)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt64(hash, entry.ByteCount)
+func indexEntryHash(entry *StateIndexEntry) string {
+	b := hashBufPool.Get().(*bytes.Buffer)
+	b.Reset()
+	var intBuf [20]byte
+	b.WriteString(entry.URI)
+	b.WriteByte('|')
+	b.WriteString(entry.BundleURI)
+	b.WriteByte('|')
+	b.WriteString(entry.Title)
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], int64(entry.TokenStart), 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], int64(entry.TokenCount), 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], entry.ByteStart, 10))
+	b.WriteByte('|')
+	b.Write(strconv.AppendInt(intBuf[:0], entry.ByteCount, 10))
 	for _, label := range entry.Labels {
-		writeIndexHashString(hash, "|")
-		writeIndexHashString(hash, label)
+		b.WriteByte('|')
+		b.WriteString(label)
 	}
 	if len(entry.Meta) == 1 {
 		for key, value := range entry.Meta {
-			writeIndexHashString(hash, "|")
-			writeIndexHashString(hash, key)
-			writeIndexHashString(hash, "=")
-			writeIndexHashString(hash, value)
+			b.WriteByte('|')
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(value)
 		}
 	} else if len(entry.Meta) > 1 {
 		keys := make([]string, 0, len(entry.Meta))
@@ -618,44 +695,25 @@ func indexEntryHash(entry StateIndexEntry) string {
 		}
 		core.SliceSort(keys)
 		for _, key := range keys {
-			writeIndexHashString(hash, "|")
-			writeIndexHashString(hash, key)
-			writeIndexHashString(hash, "=")
-			writeIndexHashString(hash, entry.Meta[key])
+			b.WriteByte('|')
+			b.WriteString(key)
+			b.WriteByte('=')
+			b.WriteString(entry.Meta[key])
 		}
 	}
-	return core.HexEncode(hash.Sum(nil))
+	sum := sha256.Sum256(b.Bytes())
+	hashBufPool.Put(b)
+	return core.HexEncode(sum[:])
 }
 
-func writeIndexHashString(hash interface{ Write([]byte) (int, error) }, value string) {
-	hash.Write(core.AsBytes(value))
-}
-
-func writeIndexHashInt(hash interface{ Write([]byte) (int, error) }, value int) {
-	writeIndexHashInt64(hash, int64(value))
-}
-
-func writeIndexHashInt64(hash interface{ Write([]byte) (int, error) }, value int64) {
-	var buf [20]byte
-	if value == 0 {
-		hash.Write([]byte{'0'})
-		return
-	}
-	negative := value < 0
-	if negative {
-		value = -value
-	}
-	i := len(buf)
-	for value > 0 {
-		i--
-		buf[i] = byte('0' + value%10)
-		value /= 10
-	}
-	if negative {
-		i--
-		buf[i] = '-'
-	}
-	hash.Write(buf[i:])
+// writeIndexHashString is the only remaining hash.Hash helper —
+// used inside indexHash's per-entry tail to stream pipe + hex
+// separator/value pairs. The Int / Int64 helpers were removed when
+// indexHash moved its integer fields into the header Builder
+// (strconv.AppendInt into a concrete *bytes.Buffer avoids the
+// hash.Hash-interface escape they used to incur).
+func writeIndexHashString(h hash.Hash, value string) {
+	h.Write(core.AsBytes(value))
 }
 
 func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
@@ -670,13 +728,7 @@ func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
 }
 
 func cloneIndexEntry(entry StateIndexEntry) StateIndexEntry {
-	entry.Labels = append([]string(nil), entry.Labels...)
-	if len(entry.Meta) > 0 {
-		meta := make(map[string]string, len(entry.Meta))
-		for key, value := range entry.Meta {
-			meta[key] = value
-		}
-		entry.Meta = meta
-	}
+	entry.Labels = core.SliceClone(entry.Labels)
+	entry.Meta = core.MapClone(entry.Meta)
 	return entry
 }

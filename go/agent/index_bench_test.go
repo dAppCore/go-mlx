@@ -255,7 +255,7 @@ func BenchmarkIndex_IndexEntryHash_RichEntry(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		indexBenchSinkString = indexEntryHash(entry)
+		indexBenchSinkString = indexEntryHash(&entry)
 	}
 }
 

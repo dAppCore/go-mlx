@@ -103,9 +103,11 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errStateStoreNil
 	}
-	index, err := loadIndex(ctx, store, opts)
+	// When compat check is enabled it runs its own Validate; skip the
+	// duplicate loadIndex-side validation in that case.
+	index, err := loadIndex(ctx, store, opts, opts.SkipCompatibilityCheck)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +122,7 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, core.NewError("mlx: State index entry not found")
+		return nil, errStateIndexEntryNotFound
 	}
 	bundleURI := firstNonEmptyString(entry.BundleURI, index.BundleURI)
 	bundle, err := kv.LoadStateBlockBundle(ctx, store, bundleURI)
@@ -129,7 +131,7 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, core.NewError("mlx: State index prefix is invalid")
+		return nil, errStateIndexPrefixInvalid
 	}
 	report := &WakeReport{
 		IndexURI:     opts.IndexURI,
@@ -151,16 +153,21 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}, nil
 }
 
-func loadIndex(ctx context.Context, store state.Store, opts WakeOptions) (*StateIndex, error) {
+func loadIndex(ctx context.Context, store state.Store, opts WakeOptions, mustValidate bool) (*StateIndex, error) {
 	if opts.Index != nil {
-		if err := opts.Index.Validate(); err != nil {
-			return nil, err
+		if mustValidate {
+			if err := opts.Index.Validate(); err != nil {
+				return nil, err
+			}
 		}
 		return opts.Index, nil
 	}
 	if core.Trim(opts.IndexURI) == "" {
-		return nil, core.NewError("mlx: State index URI is required")
+		return nil, errStateIndexURIRequired
 	}
+	// LoadStateIndex always validates the loaded payload before returning,
+	// so the mustValidate signal only matters for the in-memory opts.Index
+	// branch above.
 	return LoadStateIndex(ctx, store, opts.IndexURI)
 }
 
@@ -169,7 +176,14 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 	bundleURI = core.Trim(opts.BundleURI)
 	indexURI = core.Trim(opts.IndexURI)
 	if entryURI == "" {
-		entryURI = firstNonEmptyString(bundleURI, indexURI, "mlx://state/latest")
+		switch {
+		case bundleURI != "":
+			entryURI = bundleURI
+		case indexURI != "":
+			entryURI = indexURI
+		default:
+			entryURI = "mlx://state/latest"
+		}
 	}
 	if bundleURI == "" {
 		bundleURI = entryURI + "/bundle"
@@ -178,7 +192,7 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 		indexURI = entryURI + "/index"
 	}
 	if entryURI == "" || bundleURI == "" || indexURI == "" {
-		return "", "", "", core.NewError("mlx: State URI is required")
+		return "", "", "", errStateURIRequired
 	}
 	return entryURI, bundleURI, indexURI, nil
 }
@@ -194,19 +208,28 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions
 	if blockOpts.Title == "" {
 		blockOpts.Title = firstNonEmptyString(opts.Title, "go-mlx State")
 	}
-	blockOpts.Labels = append([]string(nil), blockOpts.Labels...)
-	blockOpts.Labels = append(blockOpts.Labels, "state")
+	labels := make([]string, len(blockOpts.Labels), len(blockOpts.Labels)+1)
+	copy(labels, blockOpts.Labels)
+	blockOpts.Labels = append(labels, "state")
 	return blockOpts
 }
 
 func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*StateIndex, error) {
+	// Labels + Meta: NewStateIndex below will deep-clone the entry via
+	// cloneIndexEntries → cloneIndexEntry (SliceClone + MapClone), so a
+	// defensive clone here would just double the allocation. Pass
+	// opts.Labels straight in and let downstream own the cloning.
+	// sleepEntryMeta already returns a fresh map so it's safe to pass
+	// in directly — downstream's MapClone is a wasted copy but the
+	// extra clone is unavoidable without an opt-out flag on
+	// StateIndexOptions, and saving the SliceClone is the cheaper win.
 	entry := StateIndexEntry{
 		URI:        entryURI,
 		BundleURI:  bundleURI,
 		Title:      opts.Title,
 		TokenStart: 0,
 		TokenCount: bundle.TokenCount,
-		Labels:     append([]string(nil), opts.Labels...),
+		Labels:     opts.Labels,
 		Meta:       sleepEntryMeta(opts),
 	}
 	if entry.Title == "" {
@@ -298,12 +321,14 @@ func blocksNeededForPrefix(bundle *kv.StateBlockBundle, prefixTokens int) int {
 		return 0
 	}
 	count := 0
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
+	blocks := bundle.Blocks
+	for i := range blocks {
+		tokenStart := blocks[i].TokenStart
+		if tokenStart >= prefixTokens {
 			break
 		}
 		count++
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+		if tokenStart+blocks[i].TokenCount >= prefixTokens {
 			break
 		}
 	}

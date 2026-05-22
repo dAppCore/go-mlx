@@ -205,7 +205,7 @@ func TestKVSnapshotMemvidBundleIndex_Bad_ValidationAndCompatibility(t *testing.T
 			bad := *index
 			bad.Entries = cloneIndexEntries(index.Entries)
 			bad.Entries[0].TokenCount = 99
-			bad.Entries[0].Hash = indexEntryHash(bad.Entries[0])
+			bad.Entries[0].Hash = indexEntryHash(&bad.Entries[0])
 			bad.Hash = indexHash(&bad)
 			return bad
 		}()},

@@ -12,6 +12,9 @@ import (
 //	value := firstNonEmpty(primary, fallback)
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
+		if value == "" {
+			continue
+		}
 		if core.Trim(value) != "" {
 			return value
 		}
@@ -51,9 +54,5 @@ func cloneStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(src))
-	for k, v := range src {
-		out[k] = v
-	}
-	return out
+	return core.MapClone(src)
 }
