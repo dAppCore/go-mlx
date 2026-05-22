@@ -156,14 +156,14 @@ func (adapter *metaladapter) Capabilities() inference.CapabilityReport {
 
 func (adapter *metaladapter) ApplyChatTemplate(messages []inference.Message) (string, error) {
 	if adapter == nil || adapter.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	return chat.Format(messages, chat.Config{Architecture: adapter.model.ModelType()}), nil
 }
 
 func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity, error) {
 	if adapter == nil || adapter.model == nil {
-		return inference.AdapterIdentity{}, core.NewError("mlx: model is nil")
+		return inference.AdapterIdentity{}, errMLXModelNil
 	}
 	if _, err := adapter.model.LoadLoRA(path); err != nil {
 		return inference.AdapterIdentity{}, err
@@ -173,7 +173,7 @@ func (adapter *metaladapter) LoadAdapter(path string) (inference.AdapterIdentity
 
 func (adapter *metaladapter) UnloadAdapter() error {
 	if adapter == nil || adapter.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	return adapter.model.UnloadLoRA()
 }
@@ -200,7 +200,7 @@ func (adapter *metaladapter) SetProbeSink(sink inference.ProbeSink) {
 
 func (adapter *metaladapter) Benchmark(ctx context.Context, cfg inference.BenchConfig) (*inference.BenchReport, error) {
 	if adapter == nil || adapter.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	report, err := RunFastEval(ctx, adapter.fastEvalRunner(), toFastEvalConfig(cfg))
 	if err != nil {
@@ -211,7 +211,7 @@ func (adapter *metaladapter) Benchmark(ctx context.Context, cfg inference.BenchC
 
 func (adapter *metaladapter) Evaluate(ctx context.Context, dataset inference.DatasetStream, cfg inference.EvalConfig) (*inference.EvalReport, error) {
 	if adapter == nil || adapter.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	report, err := eval.RunDataset(ctx, adapter.evalRunner(), wrapSFTDataset(inferenceDataset{stream: dataset}), toEvalConfig(cfg))
 	if err != nil {
@@ -222,7 +222,7 @@ func (adapter *metaladapter) Evaluate(ctx context.Context, dataset inference.Dat
 
 func (adapter *metaladapter) TrainSFT(ctx context.Context, dataset inference.DatasetStream, cfg inference.TrainingConfig) (*inference.TrainingResult, error) {
 	if adapter == nil || adapter.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	model := adapter.rootModel()
 	result, err := model.TrainSFT(ctx, inferenceDataset{stream: dataset}, toSFTConfig(cfg, adapter.probeSink))
@@ -265,9 +265,17 @@ type inferenceDataset struct {
 	stream inference.DatasetStream
 }
 
+// Per-sample / per-reset sentinels — inferenceDataset.Next fires for
+// every row in Evaluate/TrainSFT and was paying a per-call core.NewError
+// alloc on the nil-stream guard.
+var (
+	errMLXInferenceDatasetNil          = core.NewError("mlx: inference dataset stream is nil")
+	errMLXInferenceDatasetNotResetter  = core.NewError("mlx: inference dataset stream is not resettable")
+)
+
 func (d inferenceDataset) Next() (dataset.Sample, bool, error) {
 	if d.stream == nil {
-		return dataset.Sample{}, false, core.NewError("mlx: inference dataset stream is nil")
+		return dataset.Sample{}, false, errMLXInferenceDatasetNil
 	}
 	sample, ok, err := d.stream.Next()
 	if err != nil || !ok {
@@ -283,11 +291,11 @@ func (d inferenceDataset) Next() (dataset.Sample, bool, error) {
 
 func (d inferenceDataset) Reset() error {
 	if d.stream == nil {
-		return core.NewError("mlx: inference dataset stream is nil")
+		return errMLXInferenceDatasetNil
 	}
 	resetter, ok := d.stream.(inference.DatasetResetter)
 	if !ok {
-		return core.NewError("mlx: inference dataset stream is not resettable")
+		return errMLXInferenceDatasetNotResetter
 	}
 	return resetter.Reset()
 }
