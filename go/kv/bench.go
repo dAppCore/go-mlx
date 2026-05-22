@@ -46,6 +46,9 @@ func CompareModes(cfg BenchConfig) BenchReport {
 	report := BenchReport{
 		Version: BenchReportVersion,
 		Config:  cfg,
+		// Pre-size against the mode list — Modes is appended exactly
+		// len(cfg.Modes) times.
+		Modes: make([]ModeBench, 0, len(cfg.Modes)),
 	}
 	fpBytes := modeStorageBytes(cfg, memory.KVCacheModeFP16)
 	for _, mode := range cfg.Modes {
