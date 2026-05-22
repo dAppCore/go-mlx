@@ -6,6 +6,16 @@ package dataset
 
 import core "dappco.re/go"
 
+// Sentinel errors hoisted from the nil-guard call sites so they
+// allocate exactly once at package init instead of one *Err per
+// nil-receiver call. These are cold paths (only fire when a caller
+// has passed a nil receiver) but the package contract is the same
+// either way.
+var (
+	errFuncDatasetNil  = core.NewError("dataset: dataset func is nil")
+	errSliceDatasetNil = core.NewError("dataset: slice dataset is nil")
+)
+
 // Sample is one supervised fine-tuning record.
 type Sample struct {
 	Prompt   string
@@ -32,7 +42,7 @@ type Func func() (Sample, bool, error)
 //	dataset := dataset.Func(func() (dataset.Sample, bool, error) { ... })
 func (fn Func) Next() (Sample, bool, error) {
 	if fn == nil {
-		return Sample{}, false, core.NewError("dataset: dataset func is nil")
+		return Sample{}, false, errFuncDatasetNil
 	}
 	return fn()
 }
@@ -53,7 +63,7 @@ func NewSliceDataset(samples []Sample) *SliceDataset {
 // Next returns the next sample.
 func (d *SliceDataset) Next() (Sample, bool, error) {
 	if d == nil {
-		return Sample{}, false, core.NewError("dataset: slice dataset is nil")
+		return Sample{}, false, errSliceDatasetNil
 	}
 	if d.index >= len(d.samples) {
 		return Sample{}, false, nil
@@ -66,7 +76,7 @@ func (d *SliceDataset) Next() (Sample, bool, error) {
 // Reset rewinds the dataset.
 func (d *SliceDataset) Reset() error {
 	if d == nil {
-		return core.NewError("dataset: slice dataset is nil")
+		return errSliceDatasetNil
 	}
 	d.index = 0
 	return nil
