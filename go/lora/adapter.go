@@ -8,6 +8,15 @@ import (
 	core "dappco.re/go"
 )
 
+// errAdapterPathRequired is the sentinel returned by Inspect when the
+// caller passes an empty adapter path. Hoisted to a package var so the
+// guard does not allocate on every Inspect call.
+var errAdapterPathRequired = core.NewError("mlx: LoRA adapter path is required")
+
+// errResultFailed is the fallback sentinel returned by resultError when
+// a core.Result reports !OK but its Value is not an error.
+var errResultFailed = core.NewError("core result failed")
+
 // AdapterInfo is the reproducible identity for an active inference adapter.
 type AdapterInfo struct {
 	Name       string   `json:"name,omitempty"`
@@ -49,7 +58,7 @@ func InspectAdapter(path string) (AdapterInfo, error) {
 //	info, err := lora.Inspect(stagedPath, originalPath)
 func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if path == "" {
-		return AdapterInfo{}, core.NewError("mlx: LoRA adapter path is required")
+		return AdapterInfo{}, errAdapterPathRequired
 	}
 	configPath := adapterConfigPath(path)
 	read := core.ReadFile(configPath)
@@ -135,5 +144,5 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errResultFailed
 }
