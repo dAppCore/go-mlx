@@ -997,12 +997,167 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	biases := matrix.biases
 	groupSize := matrix.groupSize
 	bits := matrix.bits
+	// Hoist scale/bias per group rather than re-indexing scales[idx/groupSize]
+	// each iteration. The group boundary changes once every groupSize
+	// elements; the inner loop runs `groupSize` elements with two constants.
+	// This trades one integer division + two slice reads per element for one
+	// integer division + two slice reads per group. With groupSize=64
+	// (JANGTQ default), that is a 64x reduction in division work.
+	//
+	// Dispatch by bit-width once outside the loop so the inner unpack
+	// becomes a single shift+mask the Go compiler can keep in registers,
+	// instead of paying the un-inlinable cpuSplitUnpackPackedValue call
+	// (cost 161 > inline budget 80) every element.
+	switch bits {
+	case 8:
+		return cpuSplitPackedDot8(in, packed, scales, biases, offset, cols, groupSize)
+	case 4:
+		return cpuSplitPackedDot4(in, packed, scales, biases, offset, cols, groupSize)
+	case 2:
+		return cpuSplitPackedDot2(in, packed, scales, biases, offset, cols, groupSize)
+	case 1:
+		return cpuSplitPackedDot1(in, packed, scales, biases, offset, cols, groupSize)
+	}
 	var sum float32
-	for col := 0; col < cols; col++ {
+	col := 0
+	for col < cols {
 		idx := offset + col
 		group := idx / groupSize
-		q := cpuSplitUnpackPackedValue(packed, idx, bits)
-		sum += in[col] * (float32(q)*scales[group] + biases[group])
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			q := cpuSplitUnpackPackedValue(packed, offset+col, bits)
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot8 walks the 8-bit-aligned packed weight path with the
+// unpack inlined. One byte per element, no shift required.
+func cpuSplitPackedDot8(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			sum += in[col] * (float32(packed[offset+col])*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot4 walks the 4-bit-nibble-packed weight path with the
+// unpack inlined. Two values per byte; low nibble for even indices, high
+// nibble for odd indices.
+func cpuSplitPackedDot4(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			b := packed[(offset+col)>>1]
+			var q uint8
+			if (offset+col)&1 == 0 {
+				q = b & 0x0F
+			} else {
+				q = b >> 4
+			}
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot2 walks the 2-bit-packed weight path with the unpack
+// inlined. Four values per byte; the shift is `((index)&3)<<1`. This is
+// the dominant MiniMax M2 routed-expert weight path.
+//
+// When the per-group walk lands on a byte boundary we batch 4 elements
+// per byte read — amortises the packed-slice load across the four 2-bit
+// lanes. JANGTQ's groupSize=64 (== 16 bytes at 2-bit) lands on a byte
+// boundary at every group start, so the fast path covers the full group
+// body. The single-element tail handles the (rare) case where the row's
+// start offset is mid-byte or the group runs short at the row tail.
+func cpuSplitPackedDot2(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		// Drain prefix elements until (offset+col) is byte-aligned.
+		for ; col < end && ((offset+col)&3) != 0; col++ {
+			i := offset + col
+			q := (packed[i>>2] >> uint((i&3)<<1)) & 0x03
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+		// Walk 4-at-a-time on byte-aligned boundaries.
+		for col+4 <= end {
+			b := packed[(offset+col)>>2]
+			sum += in[col] * (float32(b&0x03)*scale + bias)
+			sum += in[col+1] * (float32((b>>2)&0x03)*scale + bias)
+			sum += in[col+2] * (float32((b>>4)&0x03)*scale + bias)
+			sum += in[col+3] * (float32((b>>6)&0x03)*scale + bias)
+			col += 4
+		}
+		// Drain suffix.
+		for ; col < end; col++ {
+			i := offset + col
+			q := (packed[i>>2] >> uint((i&3)<<1)) & 0x03
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+	}
+	return sum
+}
+
+// cpuSplitPackedDot1 walks the 1-bit-packed weight path with the unpack
+// inlined. Eight values per byte; mask + shift only.
+func cpuSplitPackedDot1(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
+	var sum float32
+	col := 0
+	for col < cols {
+		idx := offset + col
+		group := idx / groupSize
+		groupEnd := (group + 1) * groupSize
+		end := groupEnd - offset
+		if end > cols {
+			end = cols
+		}
+		scale := scales[group]
+		bias := biases[group]
+		for ; col < end; col++ {
+			i := offset + col
+			q := (packed[i>>3] >> uint(i&7)) & 0x01
+			sum += in[col] * (float32(q)*scale + bias)
+		}
 	}
 	return sum
 }
@@ -1018,9 +1173,10 @@ func (matrix *cpuSplitPackedMatrix) value(index int) float32 {
 
 func cpuSplitUnpackPackedValue(packed []byte, index, bits int) uint8 {
 	// Fast paths for the byte-aligned bit widths actually emitted by the
-	// JANG packers (8-bit dense, 4-bit nibble-packed). These cover the
-	// overwhelmingly common cases and skip the per-bit walk loop, which is
-	// hit hundreds of millions of times per layer otherwise.
+	// JANG packers (8-bit dense, 4-bit nibble-packed, 2-bit MiniMax M2
+	// routed-expert, 1-bit binary). These cover the overwhelmingly common
+	// cases and skip the per-bit walk loop, which is hit hundreds of
+	// millions of times per layer otherwise.
 	switch bits {
 	case 8:
 		return packed[index]
@@ -1030,6 +1186,10 @@ func cpuSplitUnpackPackedValue(packed []byte, index, bits int) uint8 {
 			return b & 0x0F
 		}
 		return b >> 4
+	case 2:
+		return (packed[index>>2] >> uint(((index)&3)<<1)) & 0x03
+	case 1:
+		return (packed[index>>3] >> uint(index&7)) & 0x01
 	}
 	bitOffset := index * bits
 	remaining := bits
