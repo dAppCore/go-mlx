@@ -645,10 +645,16 @@ func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 // QuantizedKVCache stores cache tensors in int8 lanes and dequantizes them
 // only for the attention call. keyBits/valueBits control the logical quantizer
 // range; q4 values currently use int8 storage until packed q4 kernels land.
+//
+// floatK / floatV cache the last dequantised K/V state so the next Update can
+// skip the full unpack/upcast/multiply round-trip. They are populated lazily
+// after Update and freed on Reset; snapshot/restore and ReadState() continue
+// to operate on the quantised state, so save/load paths are unchanged.
 type QuantizedKVCache struct {
 	keys, values       *Array
 	keyScale           *Array
 	valueScale         *Array
+	floatK, floatV     *Array
 	keyDtype           DType
 	valueDtype         DType
 	keyShape           []int32
@@ -676,11 +682,15 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		fullK := k.Clone()
 		fullV := v.Clone()
 		c.storeQuantized(fullK, fullV)
+		c.cacheFloat(fullK, fullV)
 		c.offset += seqLen
 		return fullK, fullV
 	}
 
-	prevK, prevV := c.dequantizedState()
+	prevK, prevV := c.takeFloat()
+	if prevK == nil {
+		prevK, prevV = c.dequantizedState()
+	}
 	var fullK, fullV *Array
 	if prevK == nil {
 		fullK = k.Clone()
@@ -697,10 +707,37 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		storeK, storeV = cacheTail(fullK, fullV, c.maxSize)
 	}
 	c.storeQuantized(storeK, storeV)
+	c.cacheFloat(storeK, storeV)
 	if storeK != fullK {
 		Free(storeK, storeV)
 	}
 	return fullK, fullV
+}
+
+// takeFloat returns the cached float K/V if present and clears the cache slots,
+// transferring ownership to the caller. Returns (nil, nil) on miss.
+func (c *QuantizedKVCache) takeFloat() (*Array, *Array) {
+	k, v := c.floatK, c.floatV
+	c.floatK = nil
+	c.floatV = nil
+	return k, v
+}
+
+// cacheFloat stores clones of k/v as the float-form cache for the next Update.
+// Any previously-cached float arrays are released.
+func (c *QuantizedKVCache) cacheFloat(k, v *Array) {
+	old1, old2 := c.floatK, c.floatV
+	if k != nil {
+		c.floatK = k.Clone()
+	} else {
+		c.floatK = nil
+	}
+	if v != nil {
+		c.floatV = v.Clone()
+	} else {
+		c.floatV = nil
+	}
+	Free(old1, old2)
 }
 
 func (c *QuantizedKVCache) State() []*Array {
@@ -737,11 +774,13 @@ func (c *QuantizedKVCache) Len() int {
 }
 
 func (c *QuantizedKVCache) Reset() {
-	Free(c.keys, c.values, c.keyScale, c.valueScale)
+	Free(c.keys, c.values, c.keyScale, c.valueScale, c.floatK, c.floatV)
 	c.keys = nil
 	c.values = nil
 	c.keyScale = nil
 	c.valueScale = nil
+	c.floatK = nil
+	c.floatV = nil
 	c.offset = 0
 }
 
