@@ -318,14 +318,27 @@ func WithSeed(seed uint64) GenerateOption {
 	}
 }
 
+// withLogitsOption / withTokenPhaseTraceOption are the package-init
+// singleton closures returned by every WithLogits / WithReturnLogits /
+// WithTokenPhaseTrace call. The no-argument option builders captured
+// nothing, so the prior `return func(...){...}` form heap-allocated a
+// fresh closure on every call — measurable in the option-stack bench
+// because every Generate call site that asks for logits walks through
+// this builder. Hoisting the closure once at package init makes the
+// builder a pure pointer return, dropping the alloc to zero.
+var (
+	withLogitsOption          GenerateOption = func(c *GenerateConfig) { c.ReturnLogits = true }
+	withTokenPhaseTraceOption GenerateOption = func(c *GenerateConfig) { c.TraceTokenPhases = true }
+)
+
 // WithLogits requests classification logits when the called API supports them.
 func WithLogits() GenerateOption {
-	return func(c *GenerateConfig) { c.ReturnLogits = true }
+	return withLogitsOption
 }
 
 // WithReturnLogits is an alias for WithLogits.
 func WithReturnLogits() GenerateOption {
-	return WithLogits()
+	return withLogitsOption
 }
 
 // WithStopTokens sets token IDs that stop generation.
@@ -345,7 +358,7 @@ func WithRepeatPenalty(p float32) GenerateOption {
 
 // WithTokenPhaseTrace records per-token decode-loop timings in Metrics.
 func WithTokenPhaseTrace() GenerateOption {
-	return func(c *GenerateConfig) { c.TraceTokenPhases = true }
+	return withTokenPhaseTraceOption
 }
 
 // WithProbeSink streams typed probe events during generation.

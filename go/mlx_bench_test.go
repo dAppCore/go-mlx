@@ -96,6 +96,24 @@ func BenchmarkMlxRoot_WithProbeCallback_NonNil(b *testing.B) {
 	}
 }
 
+// No-argument option builders should return a package-init singleton
+// closure — measured here so future regressions surface immediately.
+func BenchmarkMlxRoot_WithLogits(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mlxBenchSinkGenOption = WithLogits()
+	}
+}
+
+func BenchmarkMlxRoot_WithTokenPhaseTrace(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mlxBenchSinkGenOption = WithTokenPhaseTrace()
+	}
+}
+
 // --- applyGenerateOptions — full option stack walk, the hot path ---
 
 // Typical caller: a few options (temp + max_tokens + maybe top_p).
