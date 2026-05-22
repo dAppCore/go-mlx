@@ -208,8 +208,14 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 				return nil, err
 			}
 			batches := make([]eval.Batch, len(sftBatches))
-			for i, b := range sftBatches {
-				batches[i] = b
+			// Index iteration — SFTBatch is ~96 B (Batch struct with 3
+			// slice headers + the Targets [][]int header). Range copied
+			// each into the loop variable before we boxed it into the
+			// eval.Batch interface. For large eval runs (hundreds of
+			// batches) this is meaningful pure-stack waste; index reads
+			// straight from source into the interface slot.
+			for i := range sftBatches {
+				batches[i] = sftBatches[i]
 			}
 			return batches, nil
 		},
