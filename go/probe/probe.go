@@ -236,7 +236,7 @@ func (b *Bus) EmitProbe(event Event) {
 		return
 	}
 	b.mu.RLock()
-	sinks := append([]Sink(nil), b.sinks...)
+	sinks := core.SliceClone(b.sinks)
 	b.mu.RUnlock()
 	for _, sink := range sinks {
 		if sink != nil {
@@ -281,8 +281,8 @@ func (r *Recorder) Events() []Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Event, len(r.events))
-	for i, event := range r.events {
-		out[i] = CloneEvent(event)
+	for i := range r.events {
+		out[i] = CloneEvent(r.events[i])
 	}
 	return out
 }
