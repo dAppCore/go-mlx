@@ -180,7 +180,10 @@ func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateM
 }
 
 func (runner *NativeGenerateRunner) generateOptions(req GenerateRequest) []mlx.GenerateOption {
-	var opts []mlx.GenerateOption
+	// At most two options are ever pushed; pre-sizing avoids the
+	// nil-slice -> 8-cap re-alloc that the first append would
+	// otherwise trigger on the per-generate hot path.
+	opts := make([]mlx.GenerateOption, 0, 2)
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = runner.defaultMaxToken

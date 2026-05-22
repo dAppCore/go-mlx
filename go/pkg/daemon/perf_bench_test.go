@@ -70,6 +70,16 @@ func BenchmarkRegistryDispatch_Stub(b *testing.B) {
 	}
 }
 
+func BenchmarkGenerateOptions(b *testing.B) {
+	runner := &NativeGenerateRunner{defaultMaxToken: 256}
+	req := GenerateRequest{MaxTokens: 128, Temperature: 0.7}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = runner.generateOptions(req)
+	}
+}
+
 func BenchmarkNewNativeGenerateRunner(b *testing.B) {
 	cfg := NativeGenerateConfig{
 		ModelPaths: map[string]string{
