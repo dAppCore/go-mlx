@@ -384,7 +384,17 @@ func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
 	if summary == "" && tail == "" {
 		return ""
 	}
+	// Static headers (~315 chars) + per-section wrappers (~30 each)
+	// + content. Pre-sizing avoids 2-3 internal slice growths.
+	size := 315
+	if summary != "" {
+		size += 24 + len(summary)
+	}
+	if tail != "" {
+		size += 28 + len(tail)
+	}
 	builder := core.NewBuilder()
+	builder.Grow(size)
 	builder.WriteString("The previous retained context window reached its live-token budget and has been compacted into this folded state.\n\n")
 	if summary != "" {
 		builder.WriteString("<summary>\n")
