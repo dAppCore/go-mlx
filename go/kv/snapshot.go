@@ -773,26 +773,6 @@ func kvSnapshotEncodedTensorSize(values []float32, dtype string, raw []byte, enc
 	return 8 + len(values)*4, nil
 }
 
-func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte) ([]byte, string, int, bool, error) {
-	dtype, elements, rawBytes, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
-	if err != nil {
-		return nil, "", 0, false, err
-	}
-	if len(raw) > 0 {
-		return raw, dtype, elements, true, nil
-	}
-	if !ok {
-		return nil, "", 0, false, nil
-	}
-	// Pre-sized exact alloc + in-place PutUint32 — drops the
-	// per-element [4]byte stack buffer + 4-byte append cycle.
-	raw = make([]byte, rawBytes)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:i*4+4], math.Float32bits(value))
-	}
-	return raw, "float32", len(values), true, nil
-}
-
 func kvSnapshotNativeTensorInfo(values []float32, dtype string, raw []byte) (string, int, int, bool, error) {
 	if len(raw) > 0 {
 		dtype, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
