@@ -546,12 +546,19 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 			NativeRuntime: true,
 			Labels:        runtimeLabels,
 		},
-		Model:         model,
-		Adapter:       adapter,
-		Available:     available,
-		Architectures: core.SliceClone(metalCapabilityArchitectures),
-		Quantizations: core.SliceClone(metalCapabilityQuantizations),
-		CacheModes:    core.SliceClone(metalCapabilityCacheModes),
+		Model:     model,
+		Adapter:   adapter,
+		Available: available,
+		// Architectures / Quantizations / CacheModes share the package-init
+		// singletons directly. The consumer surface is read-only — the only
+		// callers that ever stored these into another struct (local_tuning
+		// MachineDiscoveryReport, go-ml/go-ai display paths) clone defensively
+		// at their own boundary, and no code in go-ml / go-ai / lem / cmd
+		// mutates a CapabilityReport.{Architectures,Quantizations,CacheModes}
+		// slice. Drops 3 clone allocs (~256 B) per CapabilityReport call.
+		Architectures: metalCapabilityArchitectures,
+		Quantizations: metalCapabilityQuantizations,
+		CacheModes:    metalCapabilityCacheModes,
 		Capabilities:  capabilities,
 		// Single shared singleton — the value is the same constant on every
 		// call ({"library": "go-mlx"}) and consumers treat report.Labels as
