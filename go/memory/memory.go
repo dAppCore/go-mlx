@@ -647,8 +647,17 @@ func lowerASCII(s string) string {
 }
 
 func trimSpace(s string) string {
-	start := 0
 	end := len(s)
+	if end == 0 {
+		return s
+	}
+	// Fast path — most canonicalised architecture strings have no
+	// leading or trailing whitespace. One bounds check per end and we
+	// return the input slice header unchanged.
+	if !isSpaceASCII(s[0]) && !isSpaceASCII(s[end-1]) {
+		return s
+	}
+	start := 0
 	for start < end && isSpaceASCII(s[start]) {
 		start++
 	}
