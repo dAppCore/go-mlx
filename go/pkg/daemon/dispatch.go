@@ -13,6 +13,11 @@ const (
 	DefaultVersion = "dev"
 )
 
+var (
+	errRegistryNil    = core.NewError("registry is nil")
+	errActionRequired = core.NewError("action is required")
+)
+
 // Request is one JSON-line frame from a local Violet client.
 type Request struct {
 	Action      string    `json:"action"`
@@ -128,7 +133,7 @@ func DefaultRegistryForDaemon() *Registry {
 func (r *Registry) Register(action string, handler Handler) error {
 	action = normalizeAction(action)
 	if action == "" {
-		return core.NewError("action is required")
+		return errActionRequired
 	}
 	if handler == nil {
 		return core.Errorf("handler for action %q is nil", action)
@@ -159,12 +164,12 @@ func (r *Registry) RegisterGenerateBackend(backend GenerateBackend) error {
 
 func (r *Registry) Dispatch(ctx context.Context, req Request) (Response, error) {
 	if r == nil {
-		return nil, core.NewError("registry is nil")
+		return nil, errRegistryNil
 	}
 
 	action := normalizeAction(req.Action)
 	if action == "" {
-		return nil, core.NewError("action is required")
+		return nil, errActionRequired
 	}
 
 	handler, ok := r.handlers[action]
