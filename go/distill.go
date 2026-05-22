@@ -185,9 +185,16 @@ func (c *MemoryDistillLogitCache) GetTeacherLogits(_ context.Context, key string
 		return nil, false, nil
 	}
 	c.mu.RLock()
-	defer c.mu.RUnlock()
 	logits, ok := c.logits[key]
-	return cloneDistillLogits(logits), ok, nil
+	c.mu.RUnlock()
+	// Skip the clone on miss — defer + clone overhead is wasted when
+	// there's nothing to copy. Releasing the read lock manually also
+	// shrinks the critical section: the clone now runs lock-free, which
+	// matters when teacher logits are large (B*S*V float32).
+	if !ok {
+		return nil, false, nil
+	}
+	return cloneDistillLogits(logits), true, nil
 }
 
 // PutTeacherLogits stores teacher logits for key.
