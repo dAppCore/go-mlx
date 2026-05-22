@@ -95,12 +95,12 @@ func CloneSamples(samples []Sample) []Sample {
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
+	// core.MapClone wraps maps.Clone which uses runtime internals to
+	// pre-size the destination and bulk-copy entries, skipping the
+	// per-key hash/insert ceremony of a range-copy loop. Returns nil
+	// for an empty input (matching the prior nil-fast-path).
 	if len(values) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
+	return core.MapClone(values)
 }
