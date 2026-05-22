@@ -170,23 +170,38 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 	// Trim each candidate once per row — these used to be called 4-6
 	// times each because firstNonEmpty pre-trimmed for the check then
 	// returned an untrimmed value the caller trimmed again, and the
-	// outer guard re-trimmed for the empty check.
-	if prompt := core.Trim(r.Prompt); prompt != "" || firstNonEmpty(r.Response, r.Completion) != "" {
+	// outer guard re-trimmed for the empty check. The prompt-response
+	// and reasoning branches additionally recomputed firstNonEmpty
+	// inside the labelled Sample literal — split into prompt-present
+	// and response-only sub-cases so each call site touches its inputs
+	// exactly once. Branch order matches frequency: prompt-response,
+	// alpaca, reasoning.
+	if prompt := core.Trim(r.Prompt); prompt != "" {
 		return labelled(Sample{
 			Prompt:   prompt,
 			Response: firstNonEmpty(r.Response, r.Completion),
 		}, "prompt_response"), true, nil
 	}
-	if core.Trim(r.Instruction) != "" || core.Trim(r.Output) != "" {
+	if response := firstNonEmpty(r.Response, r.Completion); response != "" {
+		return labelled(Sample{
+			Response: response,
+		}, "prompt_response"), true, nil
+	}
+	if output := core.Trim(r.Output); core.Trim(r.Instruction) != "" || output != "" {
 		return labelled(Sample{
 			Prompt:   formatInstructionPrompt(r.Instruction, r.Input),
-			Response: core.Trim(r.Output),
+			Response: output,
 		}, "alpaca"), true, nil
 	}
-	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" || firstNonEmpty(r.Solution, r.Answer) != "" {
+	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" {
 		return labelled(Sample{
 			Prompt:   problem,
 			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), firstNonEmpty(r.Solution, r.Answer)),
+		}, "reasoning"), true, nil
+	}
+	if solution := firstNonEmpty(r.Solution, r.Answer); solution != "" {
+		return labelled(Sample{
+			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), solution),
 		}, "reasoning"), true, nil
 	}
 	return Sample{}, false, nil
