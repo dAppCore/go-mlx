@@ -1093,6 +1093,13 @@ func cpuSplitPackedDot4(in []float32, packed []byte, scales, biases []float32, o
 // cpuSplitPackedDot2 walks the 2-bit-packed weight path with the unpack
 // inlined. Four values per byte; the shift is `((index)&3)<<1`. This is
 // the dominant MiniMax M2 routed-expert weight path.
+//
+// When the per-group walk lands on a byte boundary we batch 4 elements
+// per byte read — amortises the packed-slice load across the four 2-bit
+// lanes. JANGTQ's groupSize=64 (== 16 bytes at 2-bit) lands on a byte
+// boundary at every group start, so the fast path covers the full group
+// body. The single-element tail handles the (rare) case where the row's
+// start offset is mid-byte or the group runs short at the row tail.
 func cpuSplitPackedDot2(in []float32, packed []byte, scales, biases []float32, offset, cols, groupSize int) float32 {
 	var sum float32
 	col := 0
@@ -1106,6 +1113,22 @@ func cpuSplitPackedDot2(in []float32, packed []byte, scales, biases []float32, o
 		}
 		scale := scales[group]
 		bias := biases[group]
+		// Drain prefix elements until (offset+col) is byte-aligned.
+		for ; col < end && ((offset+col)&3) != 0; col++ {
+			i := offset + col
+			q := (packed[i>>2] >> uint((i&3)<<1)) & 0x03
+			sum += in[col] * (float32(q)*scale + bias)
+		}
+		// Walk 4-at-a-time on byte-aligned boundaries.
+		for col+4 <= end {
+			b := packed[(offset+col)>>2]
+			sum += in[col] * (float32(b&0x03)*scale + bias)
+			sum += in[col+1] * (float32((b>>2)&0x03)*scale + bias)
+			sum += in[col+2] * (float32((b>>4)&0x03)*scale + bias)
+			sum += in[col+3] * (float32((b>>6)&0x03)*scale + bias)
+			col += 4
+		}
+		// Drain suffix.
 		for ; col < end; col++ {
 			i := offset + col
 			q := (packed[i>>2] >> uint((i&3)<<1)) & 0x03
