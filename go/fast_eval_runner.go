@@ -43,7 +43,7 @@ func NewModelFastEvalRunnerWithDraft(model, draft *Model) bench.Runner {
 			if err := ctx.Err(); err != nil || model == nil {
 				return bench.Generation{}, err
 			}
-			text, err := model.Generate(prompt, toModelGenerateOptions(opts)...)
+			text, err := model.Generate(prompt, toModelGenerateOption(opts))
 			if err != nil {
 				return bench.Generation{}, err
 			}
@@ -70,13 +70,19 @@ func NewModelFastEvalRunnerWithSpeculativePair(pair *SpeculativePair) bench.Runn
 	return runner
 }
 
-func toModelGenerateOptions(opts bench.GenerateOptions) []GenerateOption {
-	// A single closure capturing opts replaces the per-knob With* allocs.
-	// applyGenerateOptions only ever folds the slice into a GenerateConfig,
-	// so we can collapse the eight branches into one functional step and
-	// still feed the same shape downstream.
+// toModelGenerateOption returns the single closure that folds a
+// bench.GenerateOptions into a *GenerateConfig. Returning the option
+// directly (rather than wrapping it in a []GenerateOption) sheds the
+// per-call slice-header alloc on the boundary — every call site uses
+// the result via model.Generate(prompt, toModelGenerateOption(opts)),
+// where Go's variadic call builds the one-element slice on the call
+// side (the slice is non-escaping there, no heap alloc for the slice
+// header). The closure itself still heap-allocates because it captures
+// opts (80 B) + sink (16 B) and is stored in the variadic slot — that
+// cost is unavoidable while the GenerateOption API stays func-shaped.
+func toModelGenerateOption(opts bench.GenerateOptions) GenerateOption {
 	sink, _ := opts.ProbeSink.(probe.Sink)
-	return []GenerateOption{func(c *GenerateConfig) {
+	return func(c *GenerateConfig) {
 		c.MaxTokens = opts.MaxTokens
 		c.Temperature = opts.Temperature
 		if opts.TopK > 0 {
@@ -97,7 +103,7 @@ func toModelGenerateOptions(opts bench.GenerateOptions) []GenerateOption {
 		if sink != nil {
 			c.ProbeSink = sink
 		}
-	}}
+	}
 }
 
 func modelBenchPromptCache(model *Model) func(context.Context, bench.Config, bench.GenerationSummary) bench.PromptCacheReport {
@@ -110,7 +116,7 @@ func modelBenchPromptCache(model *Model) func(context.Context, bench.Config, ben
 			return report
 		}
 		report.WarmDuration = time.Since(start)
-		if _, err := model.Generate(cfg.CachePrompt, toModelGenerateOptions(cfg.GenerateOptions(nil))...); err != nil {
+		if _, err := model.Generate(cfg.CachePrompt, toModelGenerateOption(cfg.GenerateOptions(nil))); err != nil {
 			report.Error = err.Error()
 			return report
 		}
@@ -233,7 +239,7 @@ func modelBenchStateKVBlockWarm(model *Model) func(context.Context, bench.Config
 		report.ChunksRead = counting.Reads()
 
 		generateStart := time.Now()
-		if _, err := model.Generate(cfg.CachePrompt, toModelGenerateOptions(cfg.GenerateOptions(nil))...); err != nil {
+		if _, err := model.Generate(cfg.CachePrompt, toModelGenerateOption(cfg.GenerateOptions(nil))); err != nil {
 			report.GenerateDuration = bench.NonZeroDuration(time.Since(generateStart))
 			report.Error = err.Error()
 			return report
@@ -336,7 +342,7 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 		recorder := probe.NewRecorder()
 		opts := cfg.GenerateOptions(recorder)
 		start := time.Now()
-		if _, err := model.Generate(cfg.Prompt, toModelGenerateOptions(opts)...); err != nil {
+		if _, err := model.Generate(cfg.Prompt, toModelGenerateOption(opts)); err != nil {
 			report.Error = err.Error()
 			return report
 		}

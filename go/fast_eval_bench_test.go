@@ -36,7 +36,7 @@ var (
 	fastEvalBenchModelInfo   ModelInfo
 	fastEvalBenchBenchAdapt  bench.AdapterInfo
 	fastEvalBenchLoraAdapt   lora.AdapterInfo
-	fastEvalBenchModelOpts   []GenerateOption
+	fastEvalBenchModelOpt    GenerateOption
 	fastEvalBenchDecodeRes   bench.DecodeOptimisationResult
 	fastEvalBenchFloat       float64
 	fastEvalBenchErr         error
@@ -228,23 +228,23 @@ func BenchmarkFastEval_BenchAdapterToLora(b *testing.B) {
 	}
 }
 
-// --- toModelGenerateOptions (fast_eval_runner.go) ---
+// --- toModelGenerateOption (fast_eval_runner.go) ---
 
-func BenchmarkFastEval_ToModelGenerateOptions_Minimal(b *testing.B) {
+func BenchmarkFastEval_ToModelGenerateOption_Minimal(b *testing.B) {
 	opts := bench.GenerateOptions{MaxTokens: 64, Temperature: 0.0}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		fastEvalBenchModelOpts = toModelGenerateOptions(opts)
+		fastEvalBenchModelOpt = toModelGenerateOption(opts)
 	}
 }
 
-func BenchmarkFastEval_ToModelGenerateOptions_FullKnobs(b *testing.B) {
+func BenchmarkFastEval_ToModelGenerateOption_FullKnobs(b *testing.B) {
 	opts := fastEvalBenchOpts(false)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		fastEvalBenchModelOpts = toModelGenerateOptions(opts)
+		fastEvalBenchModelOpt = toModelGenerateOption(opts)
 	}
 }
 
