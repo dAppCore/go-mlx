@@ -769,9 +769,27 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int, scratch []float6
 		if end > len(head) {
 			end = len(head)
 		}
-		var sum float64
-		for _, value := range head[start:end] {
-			v := float64(value)
+		// 4-way unrolled sum-of-squares — same FADDD-chain-split as
+		// the pair-loop dots. The inner per-position loop runs seqLen
+		// times across the whole snapshot; for headDim 64-128 (real
+		// qwen3) breaking the single loop-carried 3-cycle FADDD chain
+		// into 4 parallel chains expose ILP on M3's wide back-end.
+		row := head[start:end]
+		var s0, s1, s2, s3 float64
+		k := 0
+		for ; k+3 < len(row); k += 4 {
+			v0 := float64(row[k])
+			v1 := float64(row[k+1])
+			v2 := float64(row[k+2])
+			v3 := float64(row[k+3])
+			s0 += v0 * v0
+			s1 += v1 * v1
+			s2 += v2 * v2
+			s3 += v3 * v3
+		}
+		sum := (s0 + s1) + (s2 + s3)
+		for ; k < len(row); k++ {
+			v := float64(row[k])
 			sum += v * v
 		}
 		mag := math.Sqrt(sum)
