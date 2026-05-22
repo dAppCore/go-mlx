@@ -65,8 +65,14 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if !read.OK {
 		return AdapterInfo{}, core.E("lora.Inspect", "read adapter_config.json", resultError(read))
 	}
+	// Cache the type assertion: read.Value is consumed once by the JSON
+	// unmarshal and once by hashAdapter — both expect []byte. The
+	// compiler treats each .([]byte) as an independent type-assert call,
+	// so caching saves the second assertion and its associated iface-table
+	// probe on every successful Inspect.
+	configBytes := read.Value.([]byte)
 	var cfg adapterConfigJSON
-	if result := core.JSONUnmarshal(read.Value.([]byte), &cfg); !result.OK {
+	if result := core.JSONUnmarshal(configBytes, &cfg); !result.OK {
 		return AdapterInfo{}, core.E("lora.Inspect", "parse adapter_config.json", resultError(result))
 	}
 	info := AdapterInfo{
@@ -83,7 +89,7 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if info.Alpha == 0 && info.Scale != 0 && info.Rank > 0 {
 		info.Alpha = info.Scale * float32(info.Rank)
 	}
-	info.Hash = hashAdapter(path, read.Value.([]byte))
+	info.Hash = hashAdapter(path, configBytes)
 	return info, nil
 }
 
