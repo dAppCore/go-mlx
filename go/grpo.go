@@ -497,13 +497,20 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	if prompt == "" {
 		prompt = core.Trim(sample.Text)
 	}
+	// Trim Response once and feed the trimmed string back into the
+	// (by-value) sample copy so the inner ExtractGRPOExpectedAnswer +
+	// extractGRPOReasoningWithAnswer both see a pre-trimmed Response.
+	// strings.TrimSpace is a no-op on already-trimmed input so the
+	// inner re-trims become free; we save the two extra whitespace
+	// scans the original form paid on every reasoning sample.
+	sample.Response = core.Trim(sample.Response)
 	// Extract the answer once and forward it to the reasoning step —
 	// extractGRPOReasoning would otherwise re-run the full meta-key
 	// sweep + line scan to recover the same value.
 	expected := ExtractGRPOExpectedAnswer(sample)
 	return GRPOSample{
 		Prompt:          prompt,
-		ReferenceAnswer: core.Trim(sample.Response),
+		ReferenceAnswer: sample.Response,
 		ExpectedAnswer:  expected,
 		Reasoning:       extractGRPOReasoningWithAnswer(sample, expected),
 		Meta:            cloneStringMap(sample.Meta),
