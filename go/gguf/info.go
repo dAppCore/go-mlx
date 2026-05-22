@@ -412,7 +412,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		metadata[key] = value
 	}
 
-	tensors := make([]ggufTensorInfo, 0, int(tensorCount))
+	tensors := make([]ggufTensorInfo, tensorCount)
 	for i := uint64(0); i < tensorCount; i++ {
 		name, err := readGGUFString(file, scratch[:])
 		if err != nil {
@@ -434,9 +434,12 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		if _, err := io.ReadFull(file, trailer[:]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
-		tensorType := binary.LittleEndian.Uint32(trailer[:4])
-		offset := binary.LittleEndian.Uint64(trailer[4:12])
-		tensors = append(tensors, ggufTensorInfo{Name: name, Type: tensorType, Shape: shape, Offset: offset})
+		tensors[i] = ggufTensorInfo{
+			Name:   name,
+			Type:   binary.LittleEndian.Uint32(trailer[:4]),
+			Shape:  shape,
+			Offset: binary.LittleEndian.Uint64(trailer[4:12]),
+		}
 	}
 
 	return metadata, tensors, nil
