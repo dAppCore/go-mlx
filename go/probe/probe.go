@@ -267,9 +267,10 @@ func (b *Bus) Add(sink Sink) {
 	// the pointer so EmitProbe readers see the existing slice through
 	// the previous pointer until the swap commits. The addMu only
 	// serialises concurrent Add callers so they don't lose each
-	// other's appends.
+	// other's appends. Manual Unlock (no defer) keeps the path
+	// branch-light — there's no panic surface inside the critical
+	// section.
 	b.addMu.Lock()
-	defer b.addMu.Unlock()
 	var current []Sink
 	if cur := b.sinks.Load(); cur != nil {
 		current = *cur
@@ -278,6 +279,7 @@ func (b *Bus) Add(sink Sink) {
 	copy(next, current)
 	next[len(current)] = sink
 	b.sinks.Store(&next)
+	b.addMu.Unlock()
 }
 
 // EmitProbe emits an event to every sink.
