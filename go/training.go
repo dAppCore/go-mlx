@@ -95,30 +95,48 @@ func ValueAndGrad(lossFunction func([]*Array) []*Array, argumentIndices ...int) 
 func NewAdamW(config any) *AdamW { return metal.NewAdamW(config) }
 
 func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
-	return metal.LoRAConfig{
+	// Build the metal-side struct without the SliceClone calls inline —
+	// callers commonly leave TargetKeys/TargetLayers nil so the empty
+	// branch skips the slices.Clone generic dispatch and only the
+	// populated path pays the defensive copy.
+	out := metal.LoRAConfig{
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
-		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      metal.DType(cfg.DType),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
 		ProbeSink:                  toMetalProbeSink(cfg.ProbeSink),
 	}
+	if len(cfg.TargetKeys) > 0 {
+		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
+	}
+	if len(cfg.TargetLayers) > 0 {
+		out.TargetLayers = core.SliceClone(cfg.TargetLayers)
+	}
+	return out
 }
 
 func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
-	return LoRAConfig{
+	// Mirror toMetalLoRAConfig: guard each SliceClone behind a len>0
+	// check so the no-overrides branch (the typical adapter shape)
+	// pays only a nil-comparison instead of slices.Clone's generic
+	// dispatch.
+	out := LoRAConfig{
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
-		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      DType(cfg.DType),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
 	}
+	if len(cfg.TargetKeys) > 0 {
+		out.TargetKeys = core.SliceClone(cfg.TargetKeys)
+	}
+	if len(cfg.TargetLayers) > 0 {
+		out.TargetLayers = core.SliceClone(cfg.TargetLayers)
+	}
+	return out
 }
 
 // CrossEntropyLoss computes cross-entropy loss between logits and integer targets.
