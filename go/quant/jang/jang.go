@@ -71,7 +71,7 @@ func projectPackedTensor(desc infjang.PackedTensorDescriptor, packed []byte, sca
 	if inputShape[len(inputShape)-1] != weightShape[1] {
 		return PackedProjectionResult{}, core.NewError(core.Sprintf("jang: packed projection input last dimension %d, expected %d", inputShape[len(inputShape)-1], weightShape[1]))
 	}
-	outputShape := append([]int32(nil), inputShape...)
+	outputShape := core.SliceClone(inputShape)
 	outputShape[len(outputShape)-1] = weightShape[0]
 	if len(bias) > 0 && len(bias) != int(weightShape[0]) {
 		return PackedProjectionResult{}, core.NewError(core.Sprintf("jang: packed projection bias length %d, expected %d", len(bias), weightShape[0]))
