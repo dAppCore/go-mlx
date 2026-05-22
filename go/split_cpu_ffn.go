@@ -124,9 +124,10 @@ const cpuSplitFloat32Bytes = int64(4)
 
 func (report *CPUSplitFFNMemoryReport) addLayer(layer cpuSplitFFNLayer) {
 	report.addDenseVectorBytes(int64(len(layer.norm)) * cpuSplitFloat32Bytes)
-	report.ProjectionBiasBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
-	report.ResidentBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
-	report.DenseEquivalentBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	biasBytes := int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	report.ProjectionBiasBytes += biasBytes
+	report.ResidentBytes += biasBytes
+	report.DenseEquivalentBytes += biasBytes
 	report.addProjection(layer.gate, layer.gatePacked)
 	report.addProjection(layer.up, layer.upPacked)
 	report.addProjection(layer.down, layer.downPacked)
