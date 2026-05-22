@@ -462,17 +462,24 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	}
 	tokenCount := int(reader.u32())
 	if tokenCount > 0 {
-		snapshot.Tokens = make([]int32, tokenCount)
-		for i := range snapshot.Tokens {
-			snapshot.Tokens[i] = reader.i32()
+		// Batch the i32 block read so bounds check is paid once.
+		chunk := reader.read(tokenCount * 4)
+		if chunk != nil {
+			snapshot.Tokens = make([]int32, tokenCount)
+			for i := range snapshot.Tokens {
+				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+			}
 		}
 	}
 	if snapshot.Version >= 2 {
 		generatedCount := int(reader.u32())
 		if generatedCount > 0 {
-			snapshot.Generated = make([]int32, generatedCount)
-			for i := range snapshot.Generated {
-				snapshot.Generated[i] = reader.i32()
+			chunk := reader.read(generatedCount * 4)
+			if chunk != nil {
+				snapshot.Generated = make([]int32, generatedCount)
+				for i := range snapshot.Generated {
+					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				}
 			}
 		}
 	}
@@ -517,9 +524,12 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	if snapshot.Version >= 2 {
 		shapeCount := int(reader.u32())
 		if shapeCount > 0 {
-			snapshot.LogitShape = make([]int32, shapeCount)
-			for i := range snapshot.LogitShape {
-				snapshot.LogitShape[i] = reader.i32()
+			chunk := reader.read(shapeCount * 4)
+			if chunk != nil {
+				snapshot.LogitShape = make([]int32, shapeCount)
+				for i := range snapshot.LogitShape {
+					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				}
 			}
 		}
 		snapshot.Logits = reader.f32s()
@@ -555,8 +565,15 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		return nil, core.NewError("mlx: State token block token count is invalid")
 	}
 	tokens := make([]int32, tokenCount)
-	for i := range tokens {
-		tokens[i] = reader.i32()
+	if tokenCount > 0 {
+		// Batch the token block read so bounds check is paid once
+		// regardless of token count.
+		chunk := reader.read(tokenCount * 4)
+		if chunk != nil {
+			for i := range tokens {
+				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+			}
+		}
 	}
 	if reader.err != nil {
 		return nil, core.E("Load", "parse State tokens", reader.err)
