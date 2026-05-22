@@ -56,11 +56,13 @@ func normalizeRootIntArg(kind string, value any) int {
 
 func normalizeRootShapeArgs(shape []any) []int32 {
 	if len(shape) == 1 {
+		// Typed-slice fast paths skip per-element interface boxing through
+		// normalizeRootInt32Arg, which would re-wrap each value in `any`.
 		switch dims := shape[0].(type) {
 		case []int:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootInt64ToInt32("shape", int64(dim))
 			}
 			return out
 		case []int32:
@@ -68,25 +70,25 @@ func normalizeRootShapeArgs(shape []any) []int32 {
 		case []int64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootInt64ToInt32("shape", dim)
 			}
 			return out
 		case []uint:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", uint64(dim))
 			}
 			return out
 		case []uint32:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", uint64(dim))
 			}
 			return out
 		case []uint64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", dim)
 			}
 			return out
 		}
