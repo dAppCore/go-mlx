@@ -1068,7 +1068,11 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	}
 	tags["kv_encoding"] = kvEncoding
 	tags["payload_encoding"] = payloadEncoding
-	tags["block_index"] = core.Itoa(block.Index)
+	// Compute the index string once and reuse — block.Index is used in
+	// tags, URI, and the default Title. The previous code minted three
+	// separate copies via core.Itoa.
+	indexStr := core.Itoa(block.Index)
+	tags["block_index"] = indexStr
 	tags["token_start"] = core.Itoa(block.TokenStart)
 	tags["token_count"] = core.Itoa(block.TokenCount)
 	// Pre-size for the deterministic 2 appended labels — avoids the
@@ -1080,7 +1084,6 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	// Direct string concatenation skips the fmt.Sprintf parse + format
 	// state machinery on every per-block save (~SaveStateBlocks fires once
 	// per checkpointed block during prefill).
-	indexStr := core.Itoa(block.Index)
 	return state.PutOptions{
 		URI:    baseURI + "/block/" + indexStr,
 		Title:  firstNonEmpty(opts.Title, "go-mlx KV block "+indexStr),
