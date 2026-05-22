@@ -795,11 +795,12 @@ func cloneInferenceLabels(labels map[string]string) map[string]string {
 	if len(labels) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(labels))
-	for key, value := range labels {
-		out[key] = value
-	}
-	return out
+	// core.MapClone → maps.Clone uses runtime.mapclone for bulk-bucket
+	// hash-table copy rather than the user-space range+assign loop.
+	// Same alloc shape (2 allocs / 336 bytes for a 4-entry string map),
+	// iteration moves into compiled runtime code. Matches the helpers.go
+	// cloneStringMap adoption (6dd0c53).
+	return core.MapClone(labels)
 }
 
 func cloneInferenceSplitEndpoints(endpoints []inference.SplitEndpoint) []inference.SplitEndpoint {
