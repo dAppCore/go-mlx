@@ -523,6 +523,14 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
+	return writeLinearChunksUsing(ctx, file, readers, elements, weights, chunkElements)
+}
+
+// writeLinearChunksUsing is the readers-already-open variant of
+// writeLinearChunks. Pulled out so writeSLERPChunks can share the
+// readers it opened for the SLERP weight scan instead of paying for a
+// second OpenReaders / per-chunk-per-reader file read pass.
+func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []safetensors.TensorReader, elements int, weights []float64, chunkElements int) error {
 	// Reuse the out + scratch buffers across chunks — both are the same
 	// size every iteration so the previous make-per-chunk pattern paid
 	// for two allocations per chunk that we never needed to grow.
@@ -533,12 +541,7 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 			return err
 		}
 		count := min(chunkElements, elements-offset)
-		// Reset out for this chunk — zero only the slice prefix we will
-		// actually accumulate into.
 		out = out[:count]
-		for i := range out {
-			out[i] = 0
-		}
 		for sourceIndex, reader := range readers {
 			values, err := reader.ReadFloat32Chunk(offset, count)
 			if err != nil {
@@ -548,8 +551,16 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 			// loop — same precision argument as linearMerge (the inputs
 			// are float32, the weights are normalised in [0,1]).
 			weight32 := float32(weights[sourceIndex])
-			for i, value := range values {
-				out[i] += value * weight32
+			if sourceIndex == 0 {
+				// Initialise out from the first source — saves the
+				// zero-loop the previous form did before accumulating.
+				for i, value := range values {
+					out[i] = value * weight32
+				}
+			} else {
+				for i, value := range values {
+					out[i] += value * weight32
+				}
 			}
 		}
 		var err error
@@ -562,11 +573,30 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 }
 
 func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, t float64, chunkElements int) error {
-	weights, err := slerpChunkedWeights(ctx, refs, t, chunkElements)
+	if len(refs) != 2 {
+		return core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
+	}
+	if refs[0].Elements != refs[1].Elements {
+		return core.NewError("mlx: tensor length mismatch during SLERP merge")
+	}
+	if chunkElements <= 0 {
+		chunkElements = modelMergeTensorChunkElements
+	}
+	// Open readers ONCE — previously the SLERP write path opened readers
+	// twice (here for the dot/norm scan, then again inside
+	// writeLinearChunks for the merge write). Sharing readers across the
+	// two passes drops len(refs)*2 OpenReader allocs + 2x per-chunk
+	// ReadFloat32Chunk file I/O.
+	readers, err := safetensors.OpenReaders(refs)
 	if err != nil {
 		return err
 	}
-	return writeLinearChunks(ctx, file, refs, weights, chunkElements)
+	defer safetensors.CloseReaders(readers)
+	weights, err := slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+	if err != nil {
+		return err
+	}
+	return writeLinearChunksUsing(ctx, file, readers, refs[0].Elements, weights, chunkElements)
 }
 
 func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t float64, chunkElements int) ([]float64, error) {
@@ -584,15 +614,27 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 		return nil, err
 	}
 	defer safetensors.CloseReaders(readers)
+	return slerpChunkedWeightsFromReaders(ctx, readers, refs[0].Elements, t, chunkElements)
+}
 
+// slerpChunkedWeightsFromReaders is the readers-already-open variant
+// for the SLERP dot/norm scan. Lets writeSLERPChunks share readers
+// across the SLERP weight scan and the writeLinearChunks pass.
+func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int) ([]float64, error) {
+	if len(readers) != 2 {
+		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two readers")
+	}
+	if chunkElements <= 0 {
+		chunkElements = modelMergeTensorChunkElements
+	}
 	var dot float64
 	var normA float64
 	var normB float64
-	for offset := 0; offset < refs[0].Elements; offset += chunkElements {
+	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		count := min(chunkElements, refs[0].Elements-offset)
+		count := min(chunkElements, elements-offset)
 		a, err := readers[0].ReadFloat32Chunk(offset, count)
 		if err != nil {
 			return nil, err
