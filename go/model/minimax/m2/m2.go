@@ -353,6 +353,13 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 	// which dominated RouteTokens at 256 experts × 32 tokens (~128 KiB churn
 	// per call). Buffer is call-local so no concurrency risk.
 	scored := make(expertScoreSlice, cfg.NumLocalExperts)
+	// Single arena slab for all per-token ExpertIDs + Weights slices. Was
+	// make([]int, topK) + make([]float32, topK) per token = 2N allocs;
+	// now 2 allocs total. Third-index cap = topK keeps any future append
+	// from running into the next token's slot (we don't append today, but
+	// the bound is the cheap insurance that lets us share the backing).
+	expertIDArena := make([]int, len(scores)*topK)
+	weightArena := make([]float32, len(scores)*topK)
 	for tokenIndex, row := range scores {
 		if len(row) != cfg.NumLocalExperts {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 routing row %d has %d scores, expected %d", tokenIndex, len(row), cfg.NumLocalExperts))
@@ -370,23 +377,26 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 		// + closure allocation. The less function gives a total order via
 		// the ID tie-break so stability is intrinsic — Sort suffices.
 		sort.Sort(scored)
-		decision := RouterDecision{
-			TokenIndex: tokenIndex,
-			ExpertIDs:  make([]int, topK),
-			Weights:    make([]float32, topK),
-		}
+		start := tokenIndex * topK
+		end := start + topK
+		expertIDs := expertIDArena[start:end:end]
+		weights := weightArena[start:end:end]
 		total := float32(0)
 		for i := 0; i < topK; i++ {
-			decision.ExpertIDs[i] = scored[i].ID
-			decision.Weights[i] = scored[i].Score
+			expertIDs[i] = scored[i].ID
+			weights[i] = scored[i].Score
 			total += scored[i].Score
 		}
 		if total > 0 {
-			for i := range decision.Weights {
-				decision.Weights[i] /= total
+			for i := range weights {
+				weights[i] /= total
 			}
 		}
-		decisions = append(decisions, decision)
+		decisions = append(decisions, RouterDecision{
+			TokenIndex: tokenIndex,
+			ExpertIDs:  expertIDs,
+			Weights:    weights,
+		})
 	}
 	return decisions, nil
 }
