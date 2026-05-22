@@ -8,6 +8,7 @@ import (
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
 	"strconv"
+	"sync"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -329,6 +330,49 @@ var metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
 	return safeRuntimeDeviceInfo()
 }
 
+// metalDeviceLabel cache — the device probe returns the same
+// (MemorySize, MaxRecommendedWorkingSetSize) tuple for the whole process
+// lifetime (host RAM doesn't grow between calls). A single-slot LRU
+// matches the singleton-device pattern; tests that swap the
+// metalCapabilityDeviceInfo hook with synthetic device shapes still
+// re-format on the first call with the new tuple.
+var (
+	metalDeviceLabelMu             sync.Mutex
+	metalDeviceLabelMemorySize     uint64
+	metalDeviceLabelWorkingSetSize uint64
+	metalDeviceLabelMemoryStr      string
+	metalDeviceLabelWorkingSetStr  string
+)
+
+// metalDeviceLabelStrings returns the strconv.FormatUint outputs for
+// (memorySize, workingSetSize). The single-slot cache hits on every
+// subsequent call with the same tuple — dropping two per-call string
+// allocations into one shared lookup on the steady-state path. Returns
+// "" for any zero-size input (so callers can branch on the empty
+// string instead of duplicating the > 0 check).
+func metalDeviceLabelStrings(memorySize, workingSetSize uint64) (string, string) {
+	if memorySize == 0 && workingSetSize == 0 {
+		return "", ""
+	}
+	metalDeviceLabelMu.Lock()
+	defer metalDeviceLabelMu.Unlock()
+	if memorySize != metalDeviceLabelMemorySize || workingSetSize != metalDeviceLabelWorkingSetSize {
+		metalDeviceLabelMemorySize = memorySize
+		metalDeviceLabelWorkingSetSize = workingSetSize
+		if memorySize > 0 {
+			metalDeviceLabelMemoryStr = strconv.FormatUint(memorySize, 10)
+		} else {
+			metalDeviceLabelMemoryStr = ""
+		}
+		if workingSetSize > 0 {
+			metalDeviceLabelWorkingSetStr = strconv.FormatUint(workingSetSize, 10)
+		} else {
+			metalDeviceLabelWorkingSetStr = ""
+		}
+	}
+	return metalDeviceLabelMemoryStr, metalDeviceLabelWorkingSetStr
+}
+
 func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
 	return metalCapabilityReportWithLoadReady(model, adapter, available, available)
 }
@@ -342,12 +386,20 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	//
 	// The original len()==0 guard that nil'd the map was dead code —
 	// load_available is always set, so len ≥ 1 every call.
+	//
+	// Cache the per-DeviceInfo formatted strings — the device probe
+	// returns the same (MemorySize, WorkingSet) tuple for the whole
+	// process lifetime (the host doesn't grow RAM between calls). The
+	// shared cache hits on every subsequent call and reuses the
+	// previously formatted strings, dropping 2 strconv allocs per
+	// CapabilityReport invocation when the cache hits.
+	memoryBytesStr, workingSetBytesStr := metalDeviceLabelStrings(device.MemorySize, device.MaxRecommendedWorkingSetSize)
 	runtimeLabels := make(map[string]string, 3)
-	if device.MemorySize > 0 {
-		runtimeLabels["memory_bytes"] = strconv.FormatUint(device.MemorySize, 10)
+	if memoryBytesStr != "" {
+		runtimeLabels["memory_bytes"] = memoryBytesStr
 	}
-	if device.MaxRecommendedWorkingSetSize > 0 {
-		runtimeLabels["working_set_bytes"] = strconv.FormatUint(device.MaxRecommendedWorkingSetSize, 10)
+	if workingSetBytesStr != "" {
+		runtimeLabels["working_set_bytes"] = workingSetBytesStr
 	}
 	runtimeLabels["load_available"] = boolLabel(loadReady)
 	// Pre-built static tails — see metalCapabilityFixedTail (loadReady=true)
