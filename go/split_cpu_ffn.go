@@ -1046,12 +1046,17 @@ func cpuSplitProjectionBiasCandidates(weightName string) []string {
 }
 
 func cpuSplitSidecarCandidates(primaryName, foundName, sidecar string) []string {
-	names := []string{foundName}
+	// Pre-size names — foundName + optional trimmed-packed-suffix + primaryName
+	// + the weight-candidate fan-out (up to 6 entries). Saves a couple of
+	// underlying-array reallocs per packed-tensor load.
+	base := cpuSplitWeightCandidates(primaryName)
+	names := make([]string, 0, 2+1+len(base))
+	names = append(names, foundName)
 	if trimmed := cpuSplitTrimPackedSuffix(foundName); trimmed != foundName {
 		names = append(names, trimmed)
 	}
 	names = append(names, primaryName)
-	names = append(names, cpuSplitWeightCandidates(primaryName)...)
+	names = append(names, base...)
 	candidates := make([]string, 0, len(names)*3)
 	for _, name := range names {
 		trimmed := cpuSplitTrimWeightSuffix(name)
