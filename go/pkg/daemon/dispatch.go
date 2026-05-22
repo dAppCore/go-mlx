@@ -117,10 +117,13 @@ func NewRegistry(name, version string) *Registry {
 		panic(err)
 	}
 	if err := r.Register("info", func(context.Context, Request) (Response, error) {
+		// JSON-marshalling a []string just iterates; no retention,
+		// so the internal r.order can be returned as-is and skip the
+		// defensive copy that Actions() does for external callers.
 		return Response{
 			"name":    r.name,
 			"version": r.version,
-			"actions": r.Actions(),
+			"actions": r.order,
 		}, nil
 	}); err != nil {
 		panic(err)
