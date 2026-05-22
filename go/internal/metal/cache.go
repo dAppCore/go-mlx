@@ -1628,6 +1628,10 @@ func dequantizeCacheArray(q, scale *Array, dtype DType, shape []int32, bits int)
 	return out
 }
 
+// packQ4 packs an int8 array's low-4-bit nibbles into a uint8 array half the
+// length. The implementation reshapes the flat input to [pairs, 2] so the even
+// and odd halves can be sliced as views — no Gather index arrays, no host-side
+// int32 index allocations.
 func packQ4(q *Array) *Array {
 	shape := q.Shape()
 	n := cacheElementCount(shape)
@@ -1638,24 +1642,32 @@ func packQ4(q *Array) *Array {
 	Free(flat, offset, shifted)
 
 	padded := shiftedU
+	nP := n
 	if n%2 != 0 {
 		zero := Zeros([]int32{1}, DTypeUint8)
 		padded = Concatenate([]*Array{shiftedU, zero}, 0)
 		Free(shiftedU, zero)
+		nP = n + 1
 	}
 
-	evenIdx, oddIdx := q4PairIndices(n)
-	evenIndexArray := FromValues(evenIdx, len(evenIdx))
-	oddIndexArray := FromValues(oddIdx, len(oddIdx))
-	even := Take(padded, evenIndexArray, 0)
-	odd := Take(padded, oddIndexArray, 0)
+	pairs := nP / 2
+	paired := Reshape(padded, int32(pairs), int32(2))
+	Free(padded)
+	low := SliceAxis(paired, 1, 0, 1)
+	high := SliceAxis(paired, 1, 1, 2)
+	Free(paired)
 	shift := AsType(FromValue(4), DTypeUint8)
-	high := LeftShift(odd, shift)
-	packed := BitwiseOr(even, high)
-	Free(padded, evenIndexArray, oddIndexArray, even, odd, shift, high)
+	highShifted := LeftShift(high, shift)
+	packed2D := BitwiseOr(low, highShifted)
+	packed := Reshape(packed2D, int32(pairs))
+	Free(low, high, shift, highShifted, packed2D)
 	return packed
 }
 
+// unpackQ4 expands a uint8 array of packed Q4 nibbles back into a signed int8
+// array of the original shape. The implementation reshapes pair-wise after
+// extracting the low/high nibbles, replacing the previous PutAlongAxis +
+// gather indices with structural ops only.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -1667,58 +1679,29 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	high := RightShift(packed, shift)
 	Free(mask, shift)
 
-	evenIdx, oddIdx := q4OutputIndices(n)
-	evenIndexArray := FromValues(evenIdx, len(evenIdx))
-	out := Zeros([]int32{int32(n)}, DTypeUint8)
-	outEven := PutAlongAxis(out, evenIndexArray, low, 0)
-	Free(out, evenIndexArray, low)
+	pairs := int(low.Shape()[0])
+	lowE := ExpandDims(low, 1)
+	highE := ExpandDims(high, 1)
+	Free(low, high)
+	stacked := Concatenate([]*Array{lowE, highE}, 1)
+	Free(lowE, highE)
 
-	outPacked := outEven
-	if len(oddIdx) > 0 {
-		oddIndexArray := FromValues(oddIdx, len(oddIdx))
-		highVals := high
-		if len(oddIdx) < int(high.Shape()[0]) {
-			highVals = Slice(high, []int32{0}, []int32{int32(len(oddIdx))})
-		}
-		outPacked = PutAlongAxis(outEven, oddIndexArray, highVals, 0)
-		Free(outEven, oddIndexArray)
-		if highVals != high {
-			Free(highVals)
-		}
+	flatLen := pairs * 2
+	flat := Reshape(stacked, int32(flatLen))
+	Free(stacked)
+
+	outU := flat
+	if flatLen > n {
+		outU = Slice(flat, []int32{0}, []int32{int32(n)})
+		Free(flat)
 	}
-	Free(high)
 
-	outInt := AsType(outPacked, DTypeInt8)
+	outInt := AsType(outU, DTypeInt8)
 	offset := AsType(FromValue(8), DTypeInt8)
 	signed := Subtract(outInt, offset)
 	reshaped := Reshape(signed, shape...)
-	Free(outPacked, outInt, offset, signed)
+	Free(outU, outInt, offset, signed)
 	return reshaped
-}
-
-func q4PairIndices(n int) ([]int32, []int32) {
-	pairs := (n + 1) / 2
-	even := make([]int32, pairs)
-	odd := make([]int32, pairs)
-	for i := range pairs {
-		even[i] = int32(i * 2)
-		odd[i] = int32(i*2 + 1)
-	}
-	return even, odd
-}
-
-func q4OutputIndices(n int) ([]int32, []int32) {
-	evenCount := (n + 1) / 2
-	oddCount := n / 2
-	even := make([]int32, evenCount)
-	odd := make([]int32, oddCount)
-	for i := range evenCount {
-		even[i] = int32(i * 2)
-	}
-	for i := range oddCount {
-		odd[i] = int32(i*2 + 1)
-	}
-	return even, odd
 }
 
 func cacheElementCount(shape []int32) int {
