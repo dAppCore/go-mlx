@@ -725,8 +725,8 @@ func resolveSkeletonTensor(index safetensors.Index, spec TensorSpec, candidates 
 		Role:         spec.Role,
 		Layer:        spec.Layer,
 		DType:        ref.DType,
-		Shape:        append([]uint64(nil), ref.Shape...),
-		LogicalShape: append([]uint64(nil), spec.Shape...),
+		Shape:        core.SliceClone(ref.Shape),
+		LogicalShape: core.SliceClone(spec.Shape),
 	}
 	if spec.Packed != nil {
 		if !packedDType(ref.DType) {
