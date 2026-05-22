@@ -652,8 +652,16 @@ func int32ToIntSlice(values []int32) []int {
 }
 
 func hasTrainingTarget(mask []float32) bool {
-	for _, value := range mask {
-		if value != 0 {
+	// Scan backward — the SFT response mask is zero across the prompt
+	// region and one across the response region, with the response
+	// region at the tail. A backward scan finds the first 1 in O(1)
+	// for typical inputs; the original forward scan walked the entire
+	// prompt prefix every time. For trainWholeText the mask is all
+	// ones so direction doesn't matter (O(1) either way). The
+	// no-training-target case still costs O(N) but that's the rare
+	// path filtered out by the caller.
+	for i := len(mask) - 1; i >= 0; i-- {
+		if mask[i] != 0 {
 			return true
 		}
 	}
