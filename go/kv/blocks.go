@@ -136,7 +136,15 @@ type kvSnapshotStateBlockEnvelope struct {
 
 // SplitBlocks splits a KV snapshot into contiguous token-range blocks.
 func (s *Snapshot) SplitBlocks(blockSize int) ([]Block, error) {
-	blocks := []Block{}
+	// walkBlocks emits one block per blockSize-aligned range; mirror the
+	// SaveStateBlocks estimate so growth-loop reallocs vanish for typical
+	// snapshots. A layer-window adjustment may add one extra boundary —
+	// the +1 absorbs it without overshoot.
+	expectedBlocks := 1
+	if blockSize > 0 && s != nil && len(s.Tokens) > 0 {
+		expectedBlocks = (len(s.Tokens)+blockSize-1)/blockSize + 1
+	}
+	blocks := make([]Block, 0, expectedBlocks)
 	err := s.walkBlocks(blockSize, true, func(block Block) (bool, error) {
 		blocks = append(blocks, block)
 		return true, nil
