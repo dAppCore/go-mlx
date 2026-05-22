@@ -132,13 +132,17 @@ func (s *ModelSession) Wake(ctx context.Context, store state.Store, opts agent.W
 }
 
 func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
-	if entry.PrefixTokens() <= 0 || entry.PrefixTokens() > foldedAgentMemoryPrefillWakeMaxTokens {
+	prefix := entry.PrefixTokens()
+	if prefix <= 0 || prefix > foldedAgentMemoryPrefillWakeMaxTokens {
 		return false
 	}
-	if core.Lower(core.Trim(entry.Meta["folded_state"])) == "true" {
+	if meta := entry.Meta["folded_state"]; meta != "" && core.Lower(core.Trim(meta)) == "true" {
 		return true
 	}
 	for _, label := range entry.Labels {
+		if label == "" {
+			continue
+		}
 		if core.Lower(core.Trim(label)) == "folded-state" {
 			return true
 		}
