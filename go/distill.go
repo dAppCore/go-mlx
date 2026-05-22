@@ -959,40 +959,53 @@ func cloneDistillLogits(logits DistillLogits) DistillLogits {
 	if len(logits) == 0 {
 		return nil
 	}
-	// Two-pass clone — first sum the total float32 cell count across
-	// the batch, then allocate ONE flat backing buffer + slice the
-	// per-cell []float32 views into it. Replaces B*S inner make calls
-	// (one per token) with a single allocation, plus the per-batch
-	// middle [][]float32 outer (one alloc per batch element).
+	// Three-flat-buffer clone — first count rows + cells across the
+	// batch, then allocate THREE flat buffers (the outer DistillLogits,
+	// one shared [][]float32 for the middle row-slice-headers, one
+	// shared []float32 for all cell data). Each per-batch middle slice
+	// + per-cell []float32 are carved as 3-index slice views into the
+	// shared backings instead of paying their own malloc.
 	//
-	// For a 4×128×32000 teacher tensor that's 513 allocs → 5 allocs,
-	// while keeping the float32 backing identical so DistillationBatchLoss
-	// + StudentLogits readers see the same shape. The flat buffer also
-	// gives the resulting clone better cache locality on the inner
-	// loop (sequential float32 stride) versus the per-cell-alloc form
-	// where each row could land on a distinct page.
-	var totalCells int
+	// For a 4×128×32000 teacher tensor:
+	//   pre:   513 allocs (1 outer + 4 middle + 4×128 inner)
+	//   2-pass:  6 allocs (1 outer + 4 middle + 1 flat cell buffer)
+	//   3-pass:  3 allocs (1 outer + 1 flat middle + 1 flat cell)
+	//
+	// The flat-backing form also gives the resulting clone better cache
+	// locality (sequential float32 + sequential slice-header stride)
+	// versus the per-cell-alloc form where each row could land on a
+	// distinct page.
+	var totalRows, totalCells int
 	for i := range logits {
 		row := logits[i]
+		totalRows += len(row)
 		for j := range row {
 			totalCells += len(row[j])
 		}
 	}
-	flat := make([]float32, totalCells)
 	out := make(DistillLogits, len(logits))
-	cursor := 0
+	if totalRows == 0 {
+		return out
+	}
+	rowBacking := make([][]float32, totalRows)
+	flat := make([]float32, totalCells)
+	rowCursor := 0
+	cellCursor := 0
 	for i := range logits {
 		row := logits[i]
-		outRow := make([][]float32, len(row))
+		rowsHere := len(row)
+		rowEnd := rowCursor + rowsHere
+		outRow := rowBacking[rowCursor:rowEnd:rowEnd]
 		for j := range row {
 			src := row[j]
-			next := cursor + len(src)
-			dst := flat[cursor:next:next]
+			next := cellCursor + len(src)
+			dst := flat[cellCursor:next:next]
 			copy(dst, src)
 			outRow[j] = dst
-			cursor = next
+			cellCursor = next
 		}
 		out[i] = outRow
+		rowCursor = rowEnd
 	}
 	return out
 }
