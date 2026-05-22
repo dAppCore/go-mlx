@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	stdio "io"
+	"strconv"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -883,11 +884,15 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 	builder.WriteString("|")
 	builder.WriteString(string(bundle.KVEncoding))
 	builder.WriteString("|")
-	builder.WriteString(core.Itoa(bundle.TokenCount))
+	// strconv.AppendInt writes directly into the builder's growing
+	// internal buffer; skips the three intermediate strings core.Itoa
+	// would mint per call.
+	var scratch [20]byte
+	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.TokenCount), 10))
 	builder.WriteString("|")
-	builder.WriteString(core.Itoa(bundle.TokenOffset))
+	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.TokenOffset), 10))
 	builder.WriteString("|")
-	builder.WriteString(core.Itoa(bundle.BlockSize))
+	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.BlockSize), 10))
 	for _, hash := range blockHashes {
 		builder.WriteString("|")
 		builder.WriteString(hash)
