@@ -441,9 +441,13 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 }
 
 func decodeResultToBench(result decode.Result) bench.DecodeOptimisationResult {
-	tokenIDs := make([]int32, len(result.Tokens))
-	for i, tok := range result.Tokens {
-		tokenIDs[i] = tok.ID
+	tokens := result.Tokens
+	tokenIDs := make([]int32, len(tokens))
+	// Index iteration avoids the per-step copy of the decode.Token (ID
+	// + Text + any future fields) into the loop variable that
+	// range-and-copy makes; only the int32 ID actually escapes.
+	for i := range tokens {
+		tokenIDs[i] = tokens[i].ID
 	}
 	return bench.DecodeOptimisationResult{
 		Mode:   result.Mode,
