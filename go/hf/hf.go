@@ -40,6 +40,7 @@ type RemoteSource struct {
 	baseURL   string
 	token     string
 	userAgent string
+	authValue string // pre-built "Bearer <token>"; empty when no token
 	client    *core.HTTPClient
 }
 
@@ -53,10 +54,19 @@ func NewRemoteSource(cfg RemoteConfig) *RemoteSource {
 	if client == nil {
 		client = &core.HTTPClient{}
 	}
+	// Pre-build the Authorization header value once at constructor time.
+	// Every getJSON call previously paid for core.Concat("Bearer ", token)
+	// — an allocation per request. The token is immutable after
+	// construction, so the formatted value is too.
+	var authValue string
+	if cfg.Token != "" {
+		authValue = core.Concat("Bearer ", cfg.Token)
+	}
 	return &RemoteSource{
 		baseURL:   baseURL,
 		token:     cfg.Token,
 		userAgent: firstNonEmpty(cfg.UserAgent, "go-mlx"),
+		authValue: authValue,
 		client:    client,
 	}
 }
@@ -69,13 +79,19 @@ func (s *RemoteSource) SearchModels(ctx context.Context, query string, limit int
 	if limit <= 0 {
 		limit = 10
 	}
-	values := core.URLValues{
-		"search": []string{query},
-		"limit":  []string{core.Itoa(limit)},
-		"full":   []string{"true"},
-	}
+	// Build the query string directly via Concat — the previous form
+	// allocated a URLValues map plus three []string{...} entries, then
+	// url.Values.Encode() did a sorted string build. The HF /api/models
+	// endpoint doesn't care about parameter order, so a direct Concat is
+	// equivalent on the wire and saves four small allocations.
 	var models []ModelMetadata
-	target := core.Concat(s.baseURL, "/api/models?", values.Encode())
+	target := core.Concat(
+		s.baseURL,
+		"/api/models?full=true&limit=",
+		strconv.Itoa(limit),
+		"&search=",
+		core.URLEncode(query),
+	)
 	if err := s.getJSON(ctx, target, &models); err != nil {
 		return nil, err
 	}
@@ -108,8 +124,10 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 	if s.userAgent != "" {
 		req.Header.Set("User-Agent", s.userAgent)
 	}
-	if s.token != "" {
-		req.Header.Set("Authorization", core.Concat("Bearer ", s.token))
+	if s.authValue != "" {
+		// authValue is pre-built at constructor time; skips the per-call
+		// core.Concat("Bearer ", s.token) allocation.
+		req.Header.Set("Authorization", s.authValue)
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -134,7 +152,11 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 			core.Trim(body),
 		))
 	}
-	if result := core.JSONUnmarshal([]byte(body), out); !result.OK {
+	// JSONUnmarshalString takes a string and zero-copies it to []byte via
+	// AsBytes — json.Unmarshal treats the buffer as read-only and copies
+	// strings into the target via SetString. Saves the []byte(body) copy
+	// that allocated a duplicate of the entire response body on every call.
+	if result := core.JSONUnmarshalString(body, out); !result.OK {
 		return core.E("RemoteSource", "parse response", fitResultError(result))
 	}
 	return nil
@@ -436,14 +458,19 @@ func localModelFiles(root string) []ModelFile {
 			files = append(files, ModelFile{Name: core.PathBase(path), Size: size})
 		}
 	}
+	// localModelFiles only ever sets ModelFile.Name (RFilename is empty).
+	// Compare directly on Name to skip the filename() firstNonEmpty hop
+	// inside the per-comparison lambda — sort.Less fires O(n log n) per
+	// call on a typical pack with 4-8 file entries.
 	slices.SortFunc(files, func(a, b ModelFile) int {
-		if a.filename() < b.filename() {
+		switch {
+		case a.Name < b.Name:
 			return -1
-		}
-		if a.filename() > b.filename() {
+		case a.Name > b.Name:
 			return 1
+		default:
+			return 0
 		}
-		return 0
 	})
 	return files
 }
@@ -488,9 +515,19 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		quantBits = inferQuantBits(meta.Files)
 	}
 
+	// Hoist the architecture profile lookup: previously planFit hit
+	// profile.LookupArchitectureProfile up to 5 times per call
+	// (archSupported x2, resolveArchitectureProfile, archNativeRuntime,
+	// usesGenerationKVCache), and each lookup clones the profile (deep
+	// slice clones — dominant alloc per profile in the bench was 71%).
+	// One lookup, used everywhere downstream.
+	archProfile, archProfileOK := profile.LookupArchitectureProfile(arch)
+	supportedArch := archProfileOK
+	nativeRuntime := archProfileOK && archProfile.NativeRuntime
+
 	pack := mp.ModelPack{
 		Architecture:          arch,
-		SupportedArchitecture: archSupported(arch),
+		SupportedArchitecture: supportedArch,
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
 		QuantType:             quantType,
@@ -498,13 +535,18 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		ContextLength:         contextLimit,
 		WeightBytes:           weightBytes,
 	}
-	resolveArchitectureProfile(&pack)
+	// Share the already-cloned profile rather than have
+	// resolveArchitectureProfile do a second lookup-and-clone.
+	if archProfileOK {
+		clone := archProfile
+		pack.ArchitectureProfile = &clone
+	}
 	memoryPlan := memory.NewPlan(memory.Input{Device: cfg.Device, Pack: &pack})
 	if cfg.ContextHint > 0 && cfg.ContextHint < memoryPlan.ContextLength {
 		memoryPlan.ContextLength = cfg.ContextHint
 	}
 	kvBytes := uint64(0)
-	if usesGenerationKVCache(&pack, arch) {
+	if packUsesKVCache(&pack, archProfileOK, archProfile) {
 		kvBytes = estimateModelKVBytes(config, memoryPlan.ContextLength, memoryPlan.BatchSize, cfg.KVBytes)
 	}
 	runtimeBytes := estimateRuntimeOverheadBytes(weightBytes)
@@ -522,7 +564,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		LocalPath:             entry.localPath,
 		Source:                entry.source,
 		Architecture:          arch,
-		SupportedArchitecture: archSupported(arch),
+		SupportedArchitecture: supportedArch,
 		WeightFormat:          format,
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
@@ -538,12 +580,28 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		Embeddings:            pack.Embedding != nil,
 		Rerank:                pack.Rerank != nil,
 	}
-	plan.NativeLoadable = plan.SupportedArchitecture && archNativeRuntime(arch) && format != ""
+	plan.NativeLoadable = supportedArch && nativeRuntime && format != ""
 	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
 	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateTrainingFit(config, plan, limit, cfg.LoRARank)
-	plan.Notes = fitNotes(plan, limit)
+	plan.Notes = fitNotes(plan, limit, nativeRuntime)
 	return plan
+}
+
+// packUsesKVCache is the planFit-local variant of usesGenerationKVCache.
+// Skips the per-call profile.LookupArchitectureProfile inside the public
+// helper (the planFit caller already has the lookup result) and the
+// pack.ArchitectureProfile probe (we set it from the same lookup).
+func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile profile.ModelArchitectureProfile) bool {
+	if pack != nil {
+		if pack.Embedding != nil || pack.Rerank != nil {
+			return false
+		}
+	}
+	if archProfileOK && (archProfile.Embeddings || archProfile.Rerank) {
+		return false
+	}
+	return true
 }
 
 func weightFormatAndBytes(files []ModelFile) (string, uint64) {
@@ -743,24 +801,60 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	return fit
 }
 
-func fitNotes(plan FitPlan, memoryLimit uint64) []string {
-	var notes []string
-	if !plan.SupportedArchitecture {
+func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
+	// Caller already has the archNativeRuntime result from the hoisted
+	// LookupArchitectureProfile in planFit — pass it through so fitNotes
+	// doesn't repeat the full lookup-and-clone.
+	//
+	// Pre-count the notes so the result slice is allocated exactly once
+	// at the right capacity. The previous append-from-nil pattern paid
+	// 2-3 growslice allocs when 2+ notes fired (cap 1 → 2 → 4). For the
+	// zero-note case we return nil so the FitPlan.Notes field stays nil.
+	unsupported := !plan.SupportedArchitecture
+	notNative := plan.SupportedArchitecture && !nativeRuntime
+	unknownBytes := plan.WeightBytes == 0
+	overBudget := memoryLimit > 0 && plan.ExpectedTotalBytes > memoryLimit
+	contextCapped := plan.ContextLimit > 0 && plan.ContextRecommendation < plan.ContextLimit
+	quantBelowPref := plan.QuantBits > 0 && plan.MemoryPlan.PreferredQuantization > 0 && plan.QuantBits < plan.MemoryPlan.PreferredQuantization
+	count := 0
+	if unsupported {
+		count++
+	}
+	if notNative {
+		count++
+	}
+	if unknownBytes {
+		count++
+	}
+	if overBudget {
+		count++
+	}
+	if contextCapped {
+		count++
+	}
+	if quantBelowPref {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	notes := make([]string, 0, count)
+	if unsupported {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
-	if plan.SupportedArchitecture && !archNativeRuntime(plan.Architecture) {
+	if notNative {
 		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
 	}
-	if plan.WeightBytes == 0 {
+	if unknownBytes {
 		notes = append(notes, "weight byte size is unknown")
 	}
-	if memoryLimit > 0 && plan.ExpectedTotalBytes > memoryLimit {
+	if overBudget {
 		notes = append(notes, "estimated model+KV memory exceeds local working-set budget")
 	}
-	if plan.ContextLimit > 0 && plan.ContextRecommendation < plan.ContextLimit {
+	if contextCapped {
 		notes = append(notes, "context recommendation is capped by local machine class")
 	}
-	if plan.QuantBits > 0 && plan.MemoryPlan.PreferredQuantization > 0 && plan.QuantBits < plan.MemoryPlan.PreferredQuantization {
+	if quantBelowPref {
 		notes = append(notes, "model quantization is below machine-class preference")
 	}
 	return notes
@@ -880,6 +974,15 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	// of slack, which is fine; the underlying array is heap-allocated
 	// either way.
 	id := firstNonEmpty(meta.ID, meta.ModelID)
+	// Fast path: scan each component case-insensitively for "jang". The
+	// vast majority of HF models have nothing JANG-related anywhere in
+	// id / tags / filenames — and the lowercase needle buffer is the
+	// only allocation in this function for the miss path. By scanning
+	// the original strings (no copy) first, the miss path returns nil
+	// in zero allocs.
+	if !inferJANGNeedlePresent(id, meta.Tags, meta.Files) {
+		return nil
+	}
 	size := len(id)
 	for _, tag := range meta.Tags {
 		size += 1 + len(tag)
@@ -929,6 +1032,69 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	default:
 		return nil
 	}
+}
+
+// inferJANGNeedlePresent reports whether any of the id / tags /
+// filenames contains the case-insensitive token "jang". Pure scan, no
+// allocations — used to gate the lowercase-buffer build inside
+// InferJANG. The miss path (the dominant case across HF metadata)
+// returns false and avoids the only allocation in the function.
+func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) bool {
+	if containsJANGFold(id) {
+		return true
+	}
+	for _, tag := range tags {
+		if containsJANGFold(tag) {
+			return true
+		}
+	}
+	for _, file := range files {
+		if containsJANGFold(file.Name) || containsJANGFold(file.RFilename) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsJANGFold reports whether s contains the case-insensitive
+// 4-byte token "jang". Specialised for this token so the inner walk is
+// a tight 4-byte compare with ASCII folding inlined.
+func containsJANGFold(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	last := len(s) - 4
+	for i := 0; i <= last; i++ {
+		c0 := s[i]
+		if c0 >= 'A' && c0 <= 'Z' {
+			c0 += 'a' - 'A'
+		}
+		if c0 != 'j' {
+			continue
+		}
+		c1 := s[i+1]
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 'a' - 'A'
+		}
+		if c1 != 'a' {
+			continue
+		}
+		c2 := s[i+2]
+		if c2 >= 'A' && c2 <= 'Z' {
+			c2 += 'a' - 'A'
+		}
+		if c2 != 'n' {
+			continue
+		}
+		c3 := s[i+3]
+		if c3 >= 'A' && c3 <= 'Z' {
+			c3 += 'a' - 'A'
+		}
+		if c3 == 'g' {
+			return true
+		}
+	}
+	return false
 }
 
 // appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
@@ -1267,9 +1433,17 @@ func architectureFromTransformersName(architecture string) string {
 		}
 		return ""
 	default:
-		// Unknown PascalCase shape — fall back to compact lower form so a
-		// few stragglers like "qwen3_moe" or "bert_for_sequence_classification"
-		// still classify when callers feed snake_case identifiers.
+		// Unknown PascalCase shape — the only patterns the compact form
+		// matches all start with 'b' (bert/roberta/xlmroberta/debertav2)
+		// or 'q' (qwen3moe/qwen3next). If the input has neither (case-
+		// insensitively), the compact form can't match anything — return
+		// "" without paying for lowerNoSep's allocation.
+		if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
+			return ""
+		}
+		// Fall back to compact lower form so a few stragglers like
+		// "qwen3_moe" or "bert_for_sequence_classification" still
+		// classify when callers feed snake_case identifiers.
 		compact := lowerNoSep(architecture)
 		switch {
 		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
@@ -1281,6 +1455,19 @@ func architectureFromTransformersName(architecture string) string {
 		}
 		return ""
 	}
+}
+
+// hasASCIIByteFold reports whether s contains b or B (where b is the
+// lowercase form). Pure byte scan, no allocations.
+func hasASCIIByteFold(s string, lower byte) bool {
+	upper := lower &^ 0x20 // upper-case form
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == lower || c == upper {
+			return true
+		}
+	}
+	return false
 }
 
 // lowerNoSep returns architecture lowercased with "_" and "-" removed.
