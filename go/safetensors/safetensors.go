@@ -112,8 +112,24 @@ func ReadIndex(path string) (Index, error) {
 	if _, err := stdio.ReadFull(file, headerBytes); err != nil {
 		return Index{}, err
 	}
-	dataStart := int64(8 + headerLen)
+	return ParseHeaderRefs(path, headerBytes, int64(8+headerLen))
+}
 
+// ParseHeaderRefs walks an already-read safetensors header bytes blob
+// and emits one TensorRef per non-metadata tensor into a returned
+// Index. dataStart is the absolute byte offset in the source file
+// where tensor payloads begin (typically 8 + len(headerBytes), the
+// position right after the 8-byte little-endian header length).
+//
+// Callers that have already validated the header length (e.g.
+// internal/metal/minimax_m2 which enforces a per-pack size cap before
+// reading) can use this to share the hand-rolled walker — see Wave 8
+// W8-K — without re-opening the file. The walker is the same one
+// ReadIndex drives internally: zero-alloc string spans into the
+// header arena, interned canonical dtype strings, one shared shape
+// slab per Index. Per-tensor cost lands at ~1 alloc once the arena
+// is in scope.
+func ParseHeaderRefs(path string, headerBytes []byte, dataStart int64) (Index, error) {
 	// First pass — count tensors + total shape dims so the map, Names
 	// slice and shape slab each take one sized allocation. The walker
 	// then runs a hand-rolled JSON parse over the header bytes,
