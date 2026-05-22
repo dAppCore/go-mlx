@@ -810,9 +810,20 @@ type kvSnapshotReader struct {
 }
 
 type kvSnapshotStreamWriter struct {
-	writer stdio.Writer
-	err    error
-	buf    [4]byte
+	writer  stdio.Writer
+	err     error
+	buf     [4]byte
+	scratch []byte
+}
+
+// scratchFor returns a scratch buffer of length n, reusing the
+// previously-allocated scratch slice when it fits.
+func (w *kvSnapshotStreamWriter) scratchFor(n int) []byte {
+	if cap(w.scratch) < n {
+		w.scratch = make([]byte, n)
+		return w.scratch
+	}
+	return w.scratch[:n]
 }
 
 func (w *kvSnapshotStreamWriter) bytes(data []byte) {
@@ -851,16 +862,37 @@ func (w *kvSnapshotStreamWriter) i32s(values []int32) {
 // i32sRaw writes int32 values without a length prefix. Used by
 // writeWithOptions when the length has already been written.
 func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
-	for _, value := range values {
-		w.u32(uint32(value))
+	if w.err != nil || len(values) == 0 {
+		return
 	}
+	// Stage the whole block into the writer's reused scratch buffer
+	// then issue one writer.Write — saves N calls into writer.Write
+	// per value (sha256 + PutBytesStream both pay per-call overhead).
+	buf := w.scratchFor(len(values) * 4)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:], uint32(value))
+	}
+	w.bytes(buf)
 }
 
 func (w *kvSnapshotStreamWriter) f32s(values []float32) {
 	w.u32(uint32(len(values)))
-	for _, value := range values {
-		w.u32(math.Float32bits(value))
+	w.f32sRaw(values)
+}
+
+// f32sRaw writes float32 values without a length prefix.
+func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
+	if w.err != nil || len(values) == 0 {
+		return
 	}
+	// Stage the whole block into the writer's reused scratch buffer
+	// then issue one writer.Write — saves N calls into writer.Write
+	// per value (sha256 + PutBytesStream both pay per-call overhead).
+	buf := w.scratchFor(len(values) * 4)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(value))
+	}
+	w.bytes(buf)
 }
 
 func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, raw []byte, encoding Encoding) error {
@@ -888,9 +920,7 @@ func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, r
 	}
 	w.u32(0)
 	w.u32(uint32(len(values)))
-	for _, value := range values {
-		w.u32(math.Float32bits(value))
-	}
+	w.f32sRaw(values)
 	return w.err
 }
 
