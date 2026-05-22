@@ -588,13 +588,25 @@ func layerSuffix(layerIndex int) string {
 func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 	totalFloats := len(data) / 4
 	heads := make([][]float32, numHeads)
-	for h := range numHeads {
+	if stride <= 0 || numHeads <= 0 {
+		return heads
+	}
+	// Determine how many full heads fit, then allocate one backing
+	// buffer for all of them and slice it into capped per-head views.
+	// Drops N+1 allocations (one per head plus the outer slice) to two
+	// — outer slice header + backing buffer — for a typical Gemma-3B
+	// inspection with 32 heads × 640-float stride.
+	fullHeads := totalFloats / stride
+	if fullHeads > numHeads {
+		fullHeads = numHeads
+	}
+	if fullHeads == 0 {
+		return heads
+	}
+	backing := make([]float32, fullHeads*stride)
+	for h := 0; h < fullHeads; h++ {
 		start := h * stride
-		end := start + stride
-		if end > totalFloats {
-			break
-		}
-		head := make([]float32, stride)
+		head := backing[start : start+stride : start+stride]
 		base := start * 4
 		for i := 0; i < stride; i++ {
 			bits := binary.LittleEndian.Uint32(data[base+i*4 : base+i*4+4])
