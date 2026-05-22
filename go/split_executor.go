@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -371,12 +372,14 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		return "", core.NewError("mlx: split executor prefill returned empty hidden state")
 	}
 
-	tokens := cloneSplitTokenIDs(state.Tokens)
+	tokens := make([]int32, len(state.Tokens), len(state.Tokens)+cfg.MaxTokens)
+	copy(tokens, state.Tokens)
 	hidden := cloneSplitHidden(state.Hidden)
 	builder := core.NewBuilder()
 	decodeStart := time.Now()
 	generatedTokens := 0
 	var firstTokenDuration time.Duration
+	requiresFFN := executor.placement.Requires(inference.ModelComponentFFN)
 	for step := 0; step < cfg.MaxTokens; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -390,19 +393,19 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 				Config: cfg,
 			})
 			if err != nil {
-				return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("attention layer %d step %d", layer, step), err)
+				return "", core.E("mlx.SplitExecutor.Generate", splitExecutorLayerStepLabel("attention layer ", layer, step), err)
 			}
 			if len(attention.Hidden) == 0 {
 				return "", core.Errorf("mlx: split executor attention layer %d step %d returned empty hidden state", layer, step)
 			}
 			hidden = cloneSplitHidden(attention.Hidden)
-			if executor.placement.Requires(inference.ModelComponentFFN) {
+			if requiresFFN {
 				ffn, err := executor.ffn.ForwardFFN(ctx, SplitFFNRequest{
 					Layer:  layer,
 					Hidden: cloneSplitHidden(hidden),
 				})
 				if err != nil {
-					return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("ffn layer %d step %d", layer, step), err)
+					return "", core.E("mlx.SplitExecutor.Generate", splitExecutorLayerStepLabel("ffn layer ", layer, step), err)
 				}
 				if len(ffn.Hidden) == 0 {
 					return "", core.Errorf("mlx: split executor ffn layer %d step %d returned empty hidden state", layer, step)
@@ -418,7 +421,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 			Config: cfg,
 		})
 		if err != nil {
-			return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("sample step %d", step), err)
+			return "", core.E("mlx.SplitExecutor.Generate", splitExecutorStepLabel("sample step ", step), err)
 		}
 		tokens = append(tokens, sample.TokenID)
 		if len(sample.Hidden) > 0 {
@@ -429,7 +432,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		}
 		text, err := executor.local.DecodeToken(ctx, sample.TokenID)
 		if err != nil {
-			return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("decode token step %d", step), err)
+			return "", core.E("mlx.SplitExecutor.Generate", splitExecutorStepLabel("decode token step ", step), err)
 		}
 		generatedTokens++
 		if firstTokenDuration == 0 {
@@ -464,6 +467,10 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 }
 
 func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNExecutor) SplitExecutorPlacement {
+	componentCount := len(inspection.Plan.Components)
+	missingCount := len(inspection.MissingRuntimeComponents)
+	localComponents := make([]inference.ModelComponent, len(inspection.Plan.Components))
+	copy(localComponents, inspection.Plan.Components)
 	plan := SplitExecutorPlacement{
 		SlicePath:              inspection.Path,
 		SourcePath:             inspection.SourcePath,
@@ -473,7 +480,9 @@ func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNEx
 		LocalTensorBytes:       inspection.LocalTensorBytes,
 		OffloadTensorBytes:     inspection.OffloadTensorBytes,
 		RetainedTensorRatio:    inspection.RetainedTensorRatio,
-		LocalComponents:        append([]inference.ModelComponent(nil), inspection.Plan.Components...),
+		LocalComponents:        localComponents,
+		AllPlacements:          make([]SplitComponentPlacement, 0, componentCount+missingCount),
+		RequiredPlacements:     make([]SplitComponentPlacement, 0, missingCount),
 	}
 	for _, component := range inspection.Plan.Components {
 		plan.AllPlacements = append(plan.AllPlacements, SplitComponentPlacement{
@@ -517,14 +526,18 @@ func cloneSplitTokenIDs(in []int32) []int32 {
 	if len(in) == 0 {
 		return nil
 	}
-	return append([]int32(nil), in...)
+	out := make([]int32, len(in))
+	copy(out, in)
+	return out
 }
 
 func cloneSplitHidden(in []float32) []float32 {
 	if len(in) == 0 {
 		return nil
 	}
-	return append([]float32(nil), in...)
+	out := make([]float32, len(in))
+	copy(out, in)
+	return out
 }
 
 type splitPowerRecorder struct {
@@ -533,12 +546,17 @@ type splitPowerRecorder struct {
 	total       float64
 }
 
+// splitPowerExpectedSamples covers the standard recorder phases:
+// start, prefill, first_token, complete.
+const splitPowerExpectedSamples = 4
+
 func newSplitPowerRecorder(ctx context.Context, meter SplitPowerMeter) *splitPowerRecorder {
 	recorder := &splitPowerRecorder{meter: meter}
 	if meter == nil {
 		recorder.powerReport.Source = "not_configured"
 		return recorder
 	}
+	recorder.powerReport.Samples = make([]SplitPowerSample, 0, splitPowerExpectedSamples)
 	recorder.sample(ctx, "start")
 	return recorder
 }
@@ -584,8 +602,10 @@ func cloneSplitExecutorMetrics(metrics SplitExecutorMetrics) SplitExecutorMetric
 		report := *metrics.CPUFFNMemory
 		metrics.CPUFFNMemory = &report
 	}
-	if len(metrics.Power.Samples) > 0 {
-		metrics.Power.Samples = append([]SplitPowerSample(nil), metrics.Power.Samples...)
+	if n := len(metrics.Power.Samples); n > 0 {
+		samples := make([]SplitPowerSample, n)
+		copy(samples, metrics.Power.Samples)
+		metrics.Power.Samples = samples
 	}
 	return metrics
 }
@@ -597,4 +617,20 @@ func splitExecutorStopToken(stopTokens []int32, id int32) bool {
 		}
 	}
 	return false
+}
+
+func splitExecutorLayerStepLabel(prefix string, layer, step int) string {
+	buf := make([]byte, 0, len(prefix)+24)
+	buf = append(buf, prefix...)
+	buf = strconv.AppendInt(buf, int64(layer), 10)
+	buf = append(buf, " step "...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
+}
+
+func splitExecutorStepLabel(prefix string, step int) string {
+	buf := make([]byte, 0, len(prefix)+12)
+	buf = append(buf, prefix...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
 }

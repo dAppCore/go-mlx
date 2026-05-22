@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"slices"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/decode"
@@ -218,12 +219,12 @@ func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*
 }
 
 func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4AssistantGenerateResult) decode.Result {
-	tokens := make([]decode.Token, len(result.Tokens))
+	emitted := len(result.Tokens)
+	tokens := make([]decode.Token, emitted)
 	for i, token := range result.Tokens {
 		tokens[i] = decode.Token{ID: token.ID, Text: token.Text}
 	}
-	emitted := len(tokens)
-	acceptanceRate := 0.0
+	var acceptanceRate float64
 	if result.DraftTokens > 0 {
 		acceptanceRate = float64(result.AcceptedTokens) / float64(result.DraftTokens)
 	}
@@ -353,21 +354,11 @@ func speculativeTokenizerProbes(probes []string) []string {
 	if len(probes) == 0 {
 		return []string{"hello", "The quick brown fox", "Answer in one short sentence."}
 	}
-	out := make([]string, 0, len(probes))
-	for _, probe := range probes {
-		out = append(out, probe)
-	}
+	out := make([]string, len(probes))
+	copy(out, probes)
 	return out
 }
 
 func int32SlicesEqual(a, b []int32) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a, b)
 }

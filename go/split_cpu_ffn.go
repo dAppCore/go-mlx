@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"math"
+	"strconv"
 	"sync"
 
 	core "dappco.re/go"
@@ -123,9 +124,10 @@ const cpuSplitFloat32Bytes = int64(4)
 
 func (report *CPUSplitFFNMemoryReport) addLayer(layer cpuSplitFFNLayer) {
 	report.addDenseVectorBytes(int64(len(layer.norm)) * cpuSplitFloat32Bytes)
-	report.ProjectionBiasBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
-	report.ResidentBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
-	report.DenseEquivalentBytes += int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	biasBytes := int64(len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	report.ProjectionBiasBytes += biasBytes
+	report.ResidentBytes += biasBytes
+	report.DenseEquivalentBytes += biasBytes
 	report.addProjection(layer.gate, layer.gatePacked)
 	report.addProjection(layer.up, layer.upPacked)
 	report.addProjection(layer.down, layer.downPacked)
@@ -241,14 +243,18 @@ func loadCPUSplitFFNExecutor(ctx context.Context, sourcePath string, cfg CPUSpli
 	if err != nil {
 		return nil, err
 	}
+	cacheHint := cfg.MaxCachedLayers
+	if cacheHint <= 0 {
+		// Unbounded cache: hint against layer count to avoid map regrows.
+		cacheHint = qwenCfg.NumHiddenLayers
+	}
 	return &CPUSplitFFNExecutor{
 		sourcePath: sourcePath,
 		index:      index,
 		cfg:        qwenCfg,
 		cacheCfg:   cfg,
-		layerCache: map[int]cpuSplitFFNLayer{},
-		cacheOrder: []int{},
-		stats:      cpuSplitFFNMemoryStats{},
+		layerCache: make(map[int]cpuSplitFFNLayer, cacheHint),
+		cacheOrder: make([]int, 0, cacheHint),
 	}, nil
 }
 
@@ -367,12 +373,14 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 	}
 	out := make([]float32, len(req.Hidden))
 	rows := len(req.Hidden) / executor.cfg.HiddenSize
+	normed := make([]float32, layer.hidden)
+	activated := make([]float32, layer.intermediate)
 	for row := 0; row < rows; row++ {
 		if err := ctx.Err(); err != nil {
 			return SplitFFNResult{}, err
 		}
 		start := row * executor.cfg.HiddenSize
-		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps)
+		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps, normed, activated)
 	}
 	return SplitFFNResult{Hidden: out}, nil
 }
@@ -444,16 +452,22 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		return report, nil
 	}
 
-	resident := []CPUSplitFFNMemoryReport{}
+	residentCap := len(layerReports)
+	if max > 0 && max < residentCap {
+		residentCap = max
+	}
+	resident := make([]CPUSplitFFNMemoryReport, 0, residentCap)
+	var currentBytes int64
 	for _, layerReport := range layerReports {
 		resident = append(resident, layerReport)
+		currentBytes += layerReport.ResidentBytes
 		if max > 0 && len(resident) > max {
+			currentBytes -= resident[0].ResidentBytes
 			resident = resident[1:]
 			report.EvictedLayers++
 		}
-		current := cpuSplitSumLayerReportsResidentBytes(resident)
-		if current > report.PeakResidentBytes {
-			report.PeakResidentBytes = current
+		if currentBytes > report.PeakResidentBytes {
+			report.PeakResidentBytes = currentBytes
 		}
 	}
 	report.LoadedLayers = len(resident)
@@ -527,24 +541,25 @@ func (executor *CPUSplitFFNExecutor) updatePeakResidentBytesLocked(bytes int64) 
 }
 
 func cpuSplitFFNLayerResidentBytes(layer cpuSplitFFNLayer) int64 {
-	var report CPUSplitFFNMemoryReport
-	report.addLayer(layer)
-	return report.ResidentBytes
+	bytes := int64(len(layer.norm)+len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	bytes += cpuSplitProjectionResidentBytes(layer.gate, layer.gatePacked)
+	bytes += cpuSplitProjectionResidentBytes(layer.up, layer.upPacked)
+	bytes += cpuSplitProjectionResidentBytes(layer.down, layer.downPacked)
+	return bytes
 }
 
-func cpuSplitSumLayerReportsResidentBytes(reports []CPUSplitFFNMemoryReport) int64 {
-	var bytes int64
-	for _, report := range reports {
-		bytes += report.ResidentBytes
+func cpuSplitProjectionResidentBytes(dense []float32, packed *cpuSplitPackedMatrix) int64 {
+	if packed != nil {
+		return int64(len(packed.packed)) + int64(len(packed.scales)+len(packed.biases))*cpuSplitFloat32Bytes
 	}
-	return bytes
+	return int64(len(dense)) * cpuSplitFloat32Bytes
 }
 
 func (executor *CPUSplitFFNExecutor) estimateLayerMemory(layer int) (CPUSplitFFNMemoryReport, error) {
 	if layer < 0 || layer >= executor.cfg.NumHiddenLayers {
 		return CPUSplitFFNMemoryReport{}, core.Errorf("mlx: CPU split FFN layer %d out of range", layer)
 	}
-	prefix := core.Sprintf("model.layers.%d", layer)
+	prefix := "model.layers." + strconv.Itoa(layer)
 	var report CPUSplitFFNMemoryReport
 	if err := executor.estimateVectorMemory(&report, cpuSplitWeightCandidates(prefix+".post_attention_layernorm.weight"), prefix+".post_attention_layernorm.weight", executor.cfg.HiddenSize, true); err != nil {
 		return CPUSplitFFNMemoryReport{}, err
@@ -655,7 +670,7 @@ func (executor *CPUSplitFFNExecutor) loadLayer(ctx context.Context, layer int) (
 	if err := ctx.Err(); err != nil {
 		return cpuSplitFFNLayer{}, err
 	}
-	prefix := core.Sprintf("model.layers.%d", layer)
+	prefix := "model.layers." + strconv.Itoa(layer)
 	norm, err := executor.loadVector(prefix+".post_attention_layernorm.weight", executor.cfg.HiddenSize)
 	if err != nil {
 		return cpuSplitFFNLayer{}, err
@@ -813,8 +828,7 @@ func (executor *CPUSplitFFNExecutor) tensorRef(candidates []string) (safetensors
 	return safetensors.TensorRef{}, "", false
 }
 
-func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32) {
-	normed := make([]float32, layer.hidden)
+func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32, normed, activated []float32) {
 	var squares float64
 	for _, value := range hidden {
 		squares += float64(value * value)
@@ -824,7 +838,6 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		normed[i] = hidden[i] * scale * layer.norm[i]
 	}
 
-	activated := make([]float32, layer.intermediate)
 	for row := 0; row < layer.intermediate; row++ {
 		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, layer.hidden)
 		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, layer.hidden)
@@ -932,17 +945,20 @@ func cpuSplitPackedDType(dtype string) bool {
 }
 
 func cpuSplitWeightCandidates(name string) []string {
-	candidates := []string{name}
 	if core.HasPrefix(name, "model.") {
 		suffix := core.TrimPrefix(name, "model.")
+		candidates := make([]string, 0, 5)
 		return append(candidates,
+			name,
 			"language_model."+name,
 			"language_model.model."+suffix,
 			"model.language_model."+suffix,
 			"model.language_model.model."+suffix,
 		)
 	}
+	candidates := make([]string, 0, 6)
 	return append(candidates,
+		name,
 		"model."+name,
 		"language_model."+name,
 		"language_model.model."+name,
@@ -1003,13 +1019,16 @@ func cpuSplitTrimPackedSuffix(name string) string {
 }
 
 func cpuSplitUniqueStrings(values []string) []string {
-	seen := map[string]bool{}
+	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if value == "" || seen[value] {
+		if value == "" {
 			continue
 		}
-		seen[value] = true
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
 		out = append(out, value)
 	}
 	return out
