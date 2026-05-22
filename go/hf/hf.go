@@ -5,6 +5,7 @@ package hf
 import (
 	"context"
 	"slices"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
@@ -123,7 +124,15 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 		return core.E("RemoteSource", "read response", core.NewError("unexpected response body shape"))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return core.NewError(core.Sprintf("mlx: HF metadata request failed: %d %s", resp.StatusCode, core.Trim(body)))
+		// Avoid core.Sprintf — its fmt machinery is hot-path heavy for
+		// what is just an int + string assembly. strconv.Itoa+Concat is
+		// roughly 4x cheaper for this error message shape.
+		return core.NewError(core.Concat(
+			"mlx: HF metadata request failed: ",
+			strconv.Itoa(resp.StatusCode),
+			" ",
+			core.Trim(body),
+		))
 	}
 	if result := core.JSONUnmarshal([]byte(body), out); !result.OK {
 		return core.E("RemoteSource", "parse response", fitResultError(result))
@@ -367,7 +376,10 @@ func resolveLocalMetadataRoot(path string) string {
 	if len(snapshots) > 0 {
 		return core.PathDir(snapshots[0])
 	}
-	if core.HasSuffix(core.Lower(path), "config.json") {
+	// hasSuffixFold avoids allocating a lowered copy of the full path
+	// (paths can be long: ~/.cache/huggingface/hub/...) just to test a
+	// 12-byte suffix.
+	if hasSuffixFold(path, "config.json") {
 		return core.PathDir(path)
 	}
 	return path
