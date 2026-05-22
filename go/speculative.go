@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"slices"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/decode"
@@ -359,13 +360,5 @@ func speculativeTokenizerProbes(probes []string) []string {
 }
 
 func int32SlicesEqual(a, b []int32) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return slices.Equal(a, b)
 }
