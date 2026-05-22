@@ -361,10 +361,20 @@ func WithTokenPhaseTrace() GenerateOption {
 	return withTokenPhaseTraceOption
 }
 
+// withNoopGenerateOption is the no-op closure returned by WithProbeSink and
+// WithProbeCallback when the caller passes a nil sink/callback. Sharing one
+// package-init function value eliminates the per-call empty-closure alloc
+// the prior `return func(*GenerateConfig) {}` form re-emitted, matching the
+// withLogitsOption / withTokenPhaseTraceOption pattern above.
+var withNoopGenerateOption GenerateOption = func(*GenerateConfig) {}
+
 // WithProbeSink streams typed probe events during generation.
 //
 //	model.Generate(prompt, mlx.WithProbeSink(sink))
 func WithProbeSink(sink probe.Sink) GenerateOption {
+	if sink == nil {
+		return withNoopGenerateOption
+	}
 	return func(c *GenerateConfig) { c.ProbeSink = sink }
 }
 
@@ -373,7 +383,7 @@ func WithProbeSink(sink probe.Sink) GenerateOption {
 //	model.Generate(prompt, mlx.WithProbeCallback(func(e probe.Event) { … }))
 func WithProbeCallback(callback func(probe.Event)) GenerateOption {
 	if callback == nil {
-		return func(*GenerateConfig) {}
+		return withNoopGenerateOption
 	}
 	return WithProbeSink(probe.SinkFunc(callback))
 }
