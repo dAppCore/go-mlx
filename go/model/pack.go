@@ -41,15 +41,20 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	}
 
 	config, configErr := inspectModelPackConfig(&pack, root)
-	inspectModelPackWeights(&pack, resolvedPath, root)
+	// The dir index is opportunistic — populated by inspectModelPackWeights
+	// from its single glob, then consumed by downstream NotExist probes
+	// to avoid spurious open()/Result allocations. Stays empty (and
+	// therefore inert) when the caller hands us a single-file path.
+	var dir modelPackDirIndex
+	inspectModelPackWeights(&pack, resolvedPath, root, &dir)
 	if pack.Format == mp.ModelPackFormatGGUF && len(pack.WeightFiles) == 1 {
 		inspectModelPackGGUF(&pack, pack.WeightFiles[0])
 	}
 	if configErr == nil && config != nil {
 		applyModelPackConfigMetadata(&pack, config)
 	}
-	inspectModelPackJANG(&pack, root)
-	inspectModelPackCodebook(&pack, root)
+	inspectModelPackJANG(&pack, root, &dir)
+	inspectModelPackCodebook(&pack, root, &dir)
 	inspectModelPackTokenizer(&pack, root)
 	// Architecture resolution happens BEFORE chat-template inspection so
 	// the latter can read pack.ArchitectureProfile directly instead of
@@ -58,7 +63,7 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	// canonical ID written into pack.Architecture is what subsequent
 	// stages already expect anyway.
 	inspectModelPackArchitecture(&pack)
-	inspectModelPackChatTemplate(&pack, root, cfg)
+	inspectModelPackChatTemplate(&pack, root, cfg, &dir)
 	inspectModelPackTaskProfiles(&pack, root)
 	inspectModelPackMiniMaxM2(&pack)
 	inspectModelPackPolicy(&pack, cfg)
@@ -119,7 +124,28 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 	return config, nil
 }
 
-func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
+// modelPackDirIndex caches presence of top-level filenames in the model
+// directory so downstream inspect steps can skip ReadFile for files
+// that aren't there. Built from the same single PathGlob the weight
+// inspector already runs, so this is opportunistic — no extra syscalls.
+type modelPackDirIndex struct {
+	root  string
+	files map[string]struct{}
+}
+
+// has reports whether the named direct child of root is present in the
+// pre-fetched listing. Returns true if the index is nil (no listing
+// available) so callers fall through to the existing ReadFile probe —
+// the precise root-stat is preserved in that path.
+func (d *modelPackDirIndex) has(name string) bool {
+	if d == nil || d.files == nil {
+		return true
+	}
+	_, ok := d.files[name]
+	return ok
+}
+
+func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir *modelPackDirIndex) {
 	var safetensors []string
 	var ggufs []string
 	switch {
@@ -133,9 +159,23 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		// the directory and readdirs every entry regardless of pattern,
 		// so calling it twice doubled the syscall/alloc surface for a
 		// directory that typically holds 5-10 files. The single `*`
-		// pattern lets us bucket in one pass.
+		// pattern lets us bucket in one pass — and the basenames of
+		// non-weight entries become a presence index for the four
+		// optional-config probes downstream (jang_config.json,
+		// codebook_config.json, tokenizer_config.json,
+		// chat_template.jinja). Those four ReadFile calls cost two
+		// allocs each for NotExist on the common safetensors model
+		// pack; the dir index lets us skip the syscall when the file
+		// can't be there.
 		entries := core.PathGlob(core.PathJoin(root, "*"))
+		if dir != nil {
+			dir.root = root
+			dir.files = make(map[string]struct{}, len(entries))
+		}
 		for _, path := range entries {
+			if dir != nil {
+				dir.files[core.PathBase(path)] = struct{}{}
+			}
 			switch {
 			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
 				safetensors = append(safetensors, path)
@@ -276,7 +316,10 @@ func applyModelPackConfigMetadata(pack *mp.ModelPack, config *modelConfigProbe) 
 	pack.VocabSize = firstPositive(pack.VocabSize, config.vocabSize())
 }
 
-func inspectModelPackJANG(pack *mp.ModelPack, root string) {
+func inspectModelPackJANG(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
+	if !dir.has("jang_config.json") {
+		return
+	}
 	info, err := jang.ReadConfig(root)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueQuantizationMismatch, "jang_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "jang_config.json"))
@@ -309,7 +352,10 @@ func inspectModelPackJANG(pack *mp.ModelPack, root string) {
 	}
 }
 
-func inspectModelPackCodebook(pack *mp.ModelPack, root string) {
+func inspectModelPackCodebook(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
+	if !dir.has("codebook_config.json") {
+		return
+	}
 	profile, err := codebook.ReadProfile(root)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedCodebook, "codebook_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "codebook_config.json"))
@@ -368,27 +414,31 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	pack.HasTokenizer = true
 }
 
-func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelPackConfig) {
-	tokenizerConfigPath := core.PathJoin(root, "tokenizer_config.json")
-	if template, ok, err := readTokenizerChatTemplate(tokenizerConfigPath); ok {
-		pack.TokenizerConfigPath = tokenizerConfigPath
-		pack.ChatTemplate = template
-		pack.ChatTemplateSource = mp.ModelPackChatTemplateFile
-		pack.HasChatTemplate = true
-		return
-	} else if err != nil {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
+func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelPackConfig, dir *modelPackDirIndex) {
+	if dir.has("tokenizer_config.json") {
+		tokenizerConfigPath := core.PathJoin(root, "tokenizer_config.json")
+		if template, ok, err := readTokenizerChatTemplate(tokenizerConfigPath); ok {
+			pack.TokenizerConfigPath = tokenizerConfigPath
+			pack.ChatTemplate = template
+			pack.ChatTemplateSource = mp.ModelPackChatTemplateFile
+			pack.HasChatTemplate = true
+			return
+		} else if err != nil {
+			pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
+		}
 	}
 
-	jinjaPath := core.PathJoin(root, "chat_template.jinja")
-	if template, ok, err := readJinjaChatTemplate(jinjaPath); ok {
-		pack.TokenizerConfigPath = jinjaPath
-		pack.ChatTemplate = template
-		pack.ChatTemplateSource = mp.ModelPackChatTemplateJinja
-		pack.HasChatTemplate = true
-		return
-	} else if err != nil {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
+	if dir.has("chat_template.jinja") {
+		jinjaPath := core.PathJoin(root, "chat_template.jinja")
+		if template, ok, err := readJinjaChatTemplate(jinjaPath); ok {
+			pack.TokenizerConfigPath = jinjaPath
+			pack.ChatTemplate = template
+			pack.ChatTemplateSource = mp.ModelPackChatTemplateJinja
+			pack.HasChatTemplate = true
+			return
+		} else if err != nil {
+			pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
+		}
 	}
 
 	// inspectModelPackArchitecture has already resolved
