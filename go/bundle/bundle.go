@@ -541,7 +541,35 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 		adapter.Path = adapterPath
 	}
 	if adapter.Hash == "" {
-		adapter.Hash = HashString(core.Join("\n", adapter.Name, adapter.Path, core.Sprintf("%d", adapter.Rank), core.Sprintf("%f", adapter.Alpha), core.Sprintf("%f", adapter.Scale), core.Join(",", adapter.TargetKeys...)))
+		// Hand-built hash payload — avoids Sprintf("%d") + 2× Sprintf("%f")
+		// boxing and a 6-arg Join intermediate. Float formatting matches
+		// fmt's default %f precision (6 decimals).
+		keyCommas := 0
+		if n := len(adapter.TargetKeys); n > 1 {
+			keyCommas = n - 1
+		}
+		keyBytes := 0
+		for _, key := range adapter.TargetKeys {
+			keyBytes += len(key)
+		}
+		buf := make([]byte, 0, len(adapter.Name)+len(adapter.Path)+keyBytes+keyCommas+48)
+		buf = append(buf, adapter.Name...)
+		buf = append(buf, '\n')
+		buf = append(buf, adapter.Path...)
+		buf = append(buf, '\n')
+		buf = strconv.AppendInt(buf, int64(adapter.Rank), 10)
+		buf = append(buf, '\n')
+		buf = strconv.AppendFloat(buf, float64(adapter.Alpha), 'f', 6, 32)
+		buf = append(buf, '\n')
+		buf = strconv.AppendFloat(buf, float64(adapter.Scale), 'f', 6, 32)
+		buf = append(buf, '\n')
+		for i, key := range adapter.TargetKeys {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, key...)
+		}
+		adapter.Hash = HashString(core.AsString(buf))
 	}
 	if adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0 {
 		adapter.Hash = ""
