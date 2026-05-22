@@ -455,7 +455,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		if chunk != nil {
 			snapshot.Tokens = make([]int32, tokenCount)
 			for i := range snapshot.Tokens {
-				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 			}
 		}
 	}
@@ -466,7 +466,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			if chunk != nil {
 				snapshot.Generated = make([]int32, generatedCount)
 				for i := range snapshot.Generated {
-					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 				}
 			}
 		}
@@ -516,7 +516,7 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			if chunk != nil {
 				snapshot.LogitShape = make([]int32, shapeCount)
 				for i := range snapshot.LogitShape {
-					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 				}
 			}
 		}
@@ -559,7 +559,7 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
 			for i := range tokens {
-				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 			}
 		}
 	}
@@ -614,7 +614,7 @@ func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 	}
 	out := dst[start:]
 	for i := range out {
-		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	if reader.err != nil {
 		return dst, core.E("Load", "parse State tokens", reader.err)
@@ -744,7 +744,7 @@ func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte)
 	// per-element [4]byte stack buffer + 4-byte append cycle.
 	raw = make([]byte, rawBytes)
 	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
+		binary.LittleEndian.PutUint32(raw[i*4:i*4+4], math.Float32bits(value))
 	}
 	return raw, "float32", len(values), true, nil
 }
@@ -885,7 +885,7 @@ func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	// per value (sha256 + PutBytesStream both pay per-call overhead).
 	buf := w.scratchFor(len(values) * 4)
 	for i, value := range values {
-		binary.LittleEndian.PutUint32(buf[i*4:], uint32(value))
+		binary.LittleEndian.PutUint32(buf[i*4:i*4+4], uint32(value))
 	}
 	w.bytes(buf)
 }
@@ -905,7 +905,7 @@ func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
 	// per value (sha256 + PutBytesStream both pay per-call overhead).
 	buf := w.scratchFor(len(values) * 4)
 	for i, value := range values {
-		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(value))
+		binary.LittleEndian.PutUint32(buf[i*4:i*4+4], math.Float32bits(value))
 	}
 	w.bytes(buf)
 }
@@ -998,7 +998,7 @@ func (r *kvSnapshotReader) i32s() []int32 {
 	}
 	values := make([]int32, size)
 	for i := range values {
-		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	return values
 }
@@ -1025,7 +1025,7 @@ func (r *kvSnapshotReader) f32s() []float32 {
 	}
 	values := make([]float32, size)
 	for i := range values {
-		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
+		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 	}
 	return values
 }
@@ -1055,7 +1055,7 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 		}
 		values := make([]float32, size)
 		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
 		}
 		return kvSnapshotEncodedTensor{Values: values}
 	case 1:
@@ -1116,15 +1116,15 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 	switch dtype {
 	case "float32":
 		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4 : i*4+4]))
 		}
 	case "float16":
 		for i := range values {
-			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2:]))
+			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
 		}
 	case "bfloat16":
 		for i := range values {
-			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:])) << 16)
+			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:i*2+2])) << 16)
 		}
 	default:
 		return nil, core.NewError("mlx: unsupported KV native tensor dtype")
