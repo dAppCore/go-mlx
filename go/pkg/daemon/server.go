@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"net"
 	"runtime"
@@ -182,10 +183,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 			return nil
 		}
 
-		line := core.Trim(string(scanner.Bytes()))
-		if line == "" {
+		trimmed := bytes.TrimSpace(scanner.Bytes())
+		if len(trimmed) == 0 {
 			continue
 		}
+		line := core.AsString(trimmed)
 
 		var req Request
 		if result := core.JSONUnmarshalString(line, &req); !result.OK {
