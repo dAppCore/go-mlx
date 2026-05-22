@@ -171,8 +171,9 @@ func (index *StateIndex) validate(checkHashes bool) error {
 		return core.NewError("mlx: State index has no entries")
 	}
 	seen := make(map[string]bool, len(index.Entries))
+	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
 	for _, entry := range index.Entries {
-		if err := index.validateEntry(entry, checkHashes); err != nil {
+		if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
 			return err
 		}
 		if seen[entry.URI] {
@@ -186,11 +187,11 @@ func (index *StateIndex) validate(checkHashes bool) error {
 	return nil
 }
 
-func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash bool) error {
+func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash, indexBundleURIEmpty bool) error {
 	if core.Trim(entry.URI) == "" {
 		return core.NewError("mlx: State index entry URI is required")
 	}
-	if core.Trim(entry.BundleURI) == "" && core.Trim(index.BundleURI) == "" {
+	if indexBundleURIEmpty && core.Trim(entry.BundleURI) == "" {
 		return core.NewError("mlx: State index entry bundle URI is required")
 	}
 	if entry.TokenStart < 0 {
