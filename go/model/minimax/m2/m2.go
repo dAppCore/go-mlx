@@ -385,27 +385,37 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 // DispatchExperts applies fake expert functions and weighted routing.
 func DispatchExperts(hidden [][]float32, decisions []RouterDecision, experts map[int]ExpertFunc) ([][]float32, error) {
 	out := make([][]float32, len(hidden))
-	for _, decision := range decisions {
-		if decision.TokenIndex < 0 || decision.TokenIndex >= len(hidden) {
-			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch token index %d out of range", decision.TokenIndex))
+	// Index iteration: RouterDecision is 56 B, exceeding the value-copy
+	// threshold where range-by-value bites under hot fan-out.
+	for d := range decisions {
+		decision := &decisions[d]
+		tokenIndex := decision.TokenIndex
+		if tokenIndex < 0 || tokenIndex >= len(hidden) {
+			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch token index %d out of range", tokenIndex))
 		}
-		if len(decision.ExpertIDs) != len(decision.Weights) {
+		expertIDs := decision.ExpertIDs
+		weights := decision.Weights
+		if len(expertIDs) != len(weights) {
 			return nil, core.NewError("mlx: MiniMax M2 dispatch expert/weight length mismatch")
 		}
-		for i, expertID := range decision.ExpertIDs {
+		hiddenRow := hidden[tokenIndex]
+		for i, expertID := range expertIDs {
 			expert := experts[expertID]
 			if expert == nil {
 				return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch missing expert %d", expertID))
 			}
-			result := expert(core.SliceClone(hidden[decision.TokenIndex]))
-			if out[decision.TokenIndex] == nil {
-				out[decision.TokenIndex] = make([]float32, len(result))
+			result := expert(core.SliceClone(hiddenRow))
+			outRow := out[tokenIndex]
+			if outRow == nil {
+				outRow = make([]float32, len(result))
+				out[tokenIndex] = outRow
 			}
-			if len(result) != len(out[decision.TokenIndex]) {
+			if len(result) != len(outRow) {
 				return nil, core.NewError("mlx: MiniMax M2 dispatch expert output shape mismatch")
 			}
+			weight := weights[i]
 			for j, value := range result {
-				out[decision.TokenIndex][j] += decision.Weights[i] * value
+				outRow[j] += weight * value
 			}
 		}
 	}
