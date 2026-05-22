@@ -305,14 +305,22 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	if len(rewardFuncs) == 0 {
 		rewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
 	}
-	for i := range rollouts {
+	// Hoist invariants out of the rollout loop — the KL branch flag and
+	// the cfg-side values never change across rollouts. The compiler
+	// can't prove that for an interface-method field (runner.Reference-
+	// LogProb), so it re-checks both per iteration unless we lift them.
+	computeKL := cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil
+	klCoef := cfg.KLCoefficient
+	advEps := cfg.AdvantageEpsilon
+	n := len(rollouts)
+	for i := 0; i < n; i++ {
 		parts, total, err := scoreGRPORollout(GRPORewardContext{Sample: request.Sample, Rollout: rollouts[i], Index: i}, rewardFuncs)
 		if err != nil {
 			return GRPOUpdate{}, err
 		}
 		rollouts[i].RewardParts = parts
 		rollouts[i].Reward = total
-		if cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil {
+		if computeKL {
 			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
 			if err != nil {
 				return GRPOUpdate{}, err
@@ -322,20 +330,29 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 		}
 	}
 	rewardMean, rewardStd := grpoRewardStats(rollouts)
+	// Reciprocal mul, single division, single std-vs-eps branch outside
+	// the inner loop — when rewardStd ≤ advEps every rollout's advantage
+	// is zero so the (reward-mean)/std arithmetic can be skipped entirely.
+	invStd := 0.0
+	useStd := rewardStd > advEps
+	if useStd {
+		invStd = 1.0 / rewardStd
+	}
 	var loss float64
 	var klSum float64
-	for i := range rollouts {
-		if rewardStd <= cfg.AdvantageEpsilon {
-			rollouts[i].Advantage = 0
+	for i := 0; i < n; i++ {
+		if useStd {
+			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) * invStd
 		} else {
-			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) / rewardStd
+			rollouts[i].Advantage = 0
 		}
-		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + cfg.KLCoefficient*rollouts[i].KL
+		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + klCoef*rollouts[i].KL
 		loss += rollouts[i].LossContribution
 		klSum += rollouts[i].KL
 	}
-	loss /= float64(len(rollouts))
-	klMean := klSum / float64(len(rollouts))
+	invN := 1.0 / float64(n)
+	loss *= invN
+	klMean := klSum * invN
 	if math.IsNaN(loss) || math.IsInf(loss, 0) {
 		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO loss is not finite")
 	}
