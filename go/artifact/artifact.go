@@ -124,7 +124,12 @@ func Export(ctx context.Context, snapshot *kv.Snapshot, opts Options) (*Record, 
 		if !data.OK {
 			return nil, core.E("artifact.Export", "marshal record", resultError(data))
 		}
-		ref, err := opts.Store.Put(ctx, string(data.Value.([]byte)), state.PutOptions{
+		// JSONMarshalIndent returns a fresh buffer that nothing else
+		// references; AsString aliases it into the string Put requires
+		// without the extra copy a `string(...)` cast emits. The buffer
+		// stays alive via the alias because Put retains the string.
+		marshalled := data.Value.([]byte)
+		ref, err := opts.Store.Put(ctx, core.AsString(marshalled), state.PutOptions{
 			URI:    opts.URI,
 			Title:  opts.Title,
 			Kind:   opts.Kind,
