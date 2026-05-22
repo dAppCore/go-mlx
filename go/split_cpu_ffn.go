@@ -377,16 +377,23 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 	if err != nil {
 		return SplitFFNResult{}, err
 	}
-	out := make([]float32, len(req.Hidden))
-	rows := len(req.Hidden) / executor.cfg.HiddenSize
+	// Hoist hidden size + eps out of the row loop — the original code reread
+	// executor.cfg.HiddenSize three times per row and executor.cfg.RMSNormEps
+	// once per row by chasing the struct fields through the call site.
+	hiddenSize := executor.cfg.HiddenSize
+	eps := executor.cfg.RMSNormEps
+	hidden := req.Hidden
+	out := make([]float32, len(hidden))
+	rows := len(hidden) / hiddenSize
 	normed := make([]float32, layer.hidden)
 	activated := make([]float32, layer.intermediate)
 	for row := 0; row < rows; row++ {
 		if err := ctx.Err(); err != nil {
 			return SplitFFNResult{}, err
 		}
-		start := row * executor.cfg.HiddenSize
-		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps, normed, activated)
+		start := row * hiddenSize
+		end := start + hiddenSize
+		cpuSplitForwardDenseRow(hidden[start:end], out[start:end], layer, eps, normed, activated)
 	}
 	return SplitFFNResult{Hidden: out}, nil
 }
