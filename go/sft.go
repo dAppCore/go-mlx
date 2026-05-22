@@ -554,11 +554,22 @@ func sftBatchFromExamples(examples []sftExample) SFTBatch {
 		},
 		Targets: make([][]int, n),
 	}
-	for i, example := range examples {
-		batch.Batch.Tokens[i] = core.SliceClone(example.inputs)
+	// Transfer ownership of each example's slices into the batch — the
+	// callers (sftBatchBuilder.flush and runSFTDatasetEpoch.flushCurrent)
+	// truncate the examples slice immediately after this call, dropping
+	// their last live reference to the struct values. Every sftExample
+	// originates from buildSFTExample which always returns fresh
+	// allocations (no aliasing), or from sftStreamingPacker.flush which
+	// already transferred ownership exclusively to the example. The
+	// previous per-element SliceClone trio was three pointless
+	// allocations per example per batch — gone now that the batch is the
+	// sole owner.
+	for i := range examples {
+		example := &examples[i]
+		batch.Batch.Tokens[i] = example.inputs
 		batch.Batch.Length[i] = len(example.inputs)
-		batch.Batch.LossMask[i] = core.SliceClone(example.mask)
-		batch.Targets[i] = core.SliceClone(example.targets)
+		batch.Batch.LossMask[i] = example.mask
+		batch.Targets[i] = example.targets
 	}
 	return batch
 }
