@@ -337,17 +337,21 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 		return nil, core.NewError("mlx: MiniMax M2 routing bias length does not match expert count")
 	}
 	decisions := make([]RouterDecision, 0, len(scores))
+	hasBias := len(bias) > 0
+	scoreFn := scoringFunc(cfg.ScoringFunc)
 	for tokenIndex, row := range scores {
 		if len(row) != cfg.NumLocalExperts {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 routing row %d has %d scores, expected %d", tokenIndex, len(row), cfg.NumLocalExperts))
 		}
 		scored := make([]expertScore, 0, len(row))
-		for expertID, raw := range row {
-			value := raw
-			if len(bias) > 0 {
-				value += bias[expertID]
+		if hasBias {
+			for expertID, raw := range row {
+				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw + bias[expertID])})
 			}
-			scored = append(scored, expertScore{ID: expertID, Score: score(value, cfg.ScoringFunc)})
+		} else {
+			for expertID, raw := range row {
+				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw)})
+			}
 		}
 		sort.SliceStable(scored, func(i, j int) bool {
 			if scored[i].Score == scored[j].Score {
@@ -1000,12 +1004,31 @@ func dTypeBytes(dtype string) int {
 }
 
 func score(value float32, scoringFunc string) float32 {
-	switch core.Lower(scoringFunc) {
+	return scoringFuncFor(scoringFunc)(value)
+}
+
+// scoringFunc returns the per-value scoring closure selected once for a
+// router pass, hoisting the core.Lower(scoringFunc) string transform out of
+// the per-token inner loop.
+func scoringFunc(name string) func(float32) float32 {
+	return scoringFuncFor(name)
+}
+
+func scoringFuncFor(name string) func(float32) float32 {
+	switch core.Lower(name) {
 	case "", "sigmoid":
-		return float32(1 / (1 + math.Exp(float64(-value))))
+		return sigmoidScore
 	default:
-		return value
+		return identityScore
 	}
+}
+
+func sigmoidScore(value float32) float32 {
+	return float32(1 / (1 + math.Exp(float64(-value))))
+}
+
+func identityScore(value float32) float32 {
+	return value
 }
 
 func sameUint64Slice(a, b []uint64) bool {
