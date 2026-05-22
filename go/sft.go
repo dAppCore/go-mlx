@@ -960,11 +960,18 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 			return err
 		}
 	}
-	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
-		start := len(example.inputs) - p.maxSeqLen
-		example.inputs = core.SliceClone(example.inputs[start:])
-		example.targets = core.SliceClone(example.targets[start:])
-		example.mask = core.SliceClone(example.mask[start:])
+	// Truncate by narrowing the source range — the subsequent appends
+	// already copy into p.current, so the prior SliceClone trio was
+	// wasted intermediate allocation. Mirrors the same pattern adopted
+	// in datasetPacker.add.
+	srcInputs := example.inputs
+	srcTargets := example.targets
+	srcMask := example.mask
+	if p.maxSeqLen > 0 && len(srcInputs) > p.maxSeqLen {
+		start := len(srcInputs) - p.maxSeqLen
+		srcInputs = srcInputs[start:]
+		srcTargets = srcTargets[start:]
+		srcMask = srcMask[start:]
 	}
 	// First add into an empty accumulator: pre-size to maxSeqLen (when
 	// known) so the doubling cascade across subsequent appends collapses
@@ -974,9 +981,9 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 		p.current.targets = make([]int, 0, p.maxSeqLen)
 		p.current.mask = make([]float32, 0, p.maxSeqLen)
 	}
-	p.current.inputs = append(p.current.inputs, example.inputs...)
-	p.current.targets = append(p.current.targets, example.targets...)
-	p.current.mask = append(p.current.mask, example.mask...)
+	p.current.inputs = append(p.current.inputs, srcInputs...)
+	p.current.targets = append(p.current.targets, srcTargets...)
+	p.current.mask = append(p.current.mask, srcMask...)
 	return nil
 }
 
