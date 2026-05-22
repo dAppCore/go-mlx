@@ -387,7 +387,10 @@ func distillBatches(ctx context.Context, runner DistillRunner, ds dataset.Datase
 }
 
 func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, batch DistillBatch) (DistillLogits, string, error) {
-	if runner.TeacherCache != nil && batch.CacheKey != "" {
+	// Evaluate cache eligibility once — both the Get and the Put paths
+	// share the same gate (cache present and a non-empty key).
+	cacheable := runner.TeacherCache != nil && batch.CacheKey != ""
+	if cacheable {
 		logits, ok, err := runner.TeacherCache.GetTeacherLogits(ctx, batch.CacheKey)
 		if err != nil {
 			return nil, "", err
@@ -403,7 +406,7 @@ func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, bat
 	if err != nil {
 		return nil, "", err
 	}
-	if runner.TeacherCache != nil && batch.CacheKey != "" {
+	if cacheable {
 		if err := runner.TeacherCache.PutTeacherLogits(ctx, batch.CacheKey, logits); err != nil {
 			return nil, "", err
 		}
