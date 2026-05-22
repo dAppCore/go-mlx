@@ -841,10 +841,17 @@ func samePathResolved(a, absB string) bool {
 	return absA == absB
 }
 
+// modelPackMetadataPatterns is the canonical pattern list — hoisted out
+// of copyModelPackMetadata so the slice literal isn't rebuilt per call.
+var modelPackMetadataPatterns = [...]string{"*.json", "*.model", "*.txt"}
+
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	patterns := []string{"*.json", "*.model", "*.txt"}
-	seen := map[string]struct{}{}
-	for _, pattern := range patterns {
+	// Typical metadata footprint: config.json, tokenizer.json,
+	// tokenizer_config.json, special_tokens_map.json, generation_config.json
+	// — ~5-8 entries. Pre-size the seen map to skip the initial maphint
+	// rebalances.
+	seen := make(map[string]struct{}, 8)
+	for _, pattern := range modelPackMetadataPatterns {
 		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
 			name := core.PathBase(sourcePath)
 			if _, ok := seen[name]; ok {
