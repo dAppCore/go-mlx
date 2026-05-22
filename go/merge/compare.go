@@ -181,18 +181,19 @@ func validateComparePack(label string, pack mp.ModelPack) error {
 }
 
 func compareTensorRefs(ctx context.Context, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
-	// Pre-check shape equality before cloning anything — when the shapes
-	// match (the common case), we clone once into baseShapeClone and
-	// share it for both BaseShape and Shape. When they differ we hit the
-	// early-return path with the tuned-shape clone too.
+	// Single arena for the base + tuned shape clones — replaces the two
+	// cloneUint64s allocations with one when both shapes are non-empty.
+	// TensorDelta carries the BaseShape and FineTunedShape fields as
+	// independent sub-slices sharing the arena's backing array; consumers
+	// never mutate either, so aliasing is safe.
 	shapeMatch := sameUint64Slice(base.Shape, tuned.Shape) && base.Elements == tuned.Elements
-	baseShapeClone := cloneUint64s(base.Shape)
+	baseShapeClone, tunedShapeClone := dualShapeClone(base.Shape, tuned.Shape)
 	delta := TensorDelta{
 		Name:           base.Name,
 		BaseDType:      base.DType,
 		FineTunedDType: tuned.DType,
 		BaseShape:      baseShapeClone,
-		FineTunedShape: cloneUint64s(tuned.Shape),
+		FineTunedShape: tunedShapeClone,
 		Elements:       base.Elements,
 	}
 	if !shapeMatch {
@@ -332,4 +333,27 @@ func cloneUint64s(values []uint64) []uint64 {
 	}
 	// core.SliceClone — exact-cap clone, no growslice over-allocation.
 	return core.SliceClone(values)
+}
+
+// dualShapeClone allocates one arena for both base and tuned shape
+// clones, returning two sub-slices that share the backing array. Both
+// slices have cap == len so any caller-side append would re-alloc;
+// since TensorDelta's shape fields are read-only after construction
+// this is safe. Saves one alloc per compareTensorRefs call vs two
+// separate cloneUint64s.
+func dualShapeClone(base, tuned []uint64) ([]uint64, []uint64) {
+	bn, tn := len(base), len(tuned)
+	if bn == 0 && tn == 0 {
+		return nil, nil
+	}
+	if bn == 0 {
+		return nil, core.SliceClone(tuned)
+	}
+	if tn == 0 {
+		return core.SliceClone(base), nil
+	}
+	arena := make([]uint64, bn+tn)
+	copy(arena[:bn], base)
+	copy(arena[bn:], tuned)
+	return arena[:bn:bn], arena[bn : bn+tn : bn+tn]
 }
