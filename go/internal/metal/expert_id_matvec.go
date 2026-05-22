@@ -646,16 +646,22 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 	if weight.Dtype() != DTypeUint32 {
 		return meta, core.NewError("mlx: quantized expert id matvec weight must be uint32")
 	}
-	if scales.Dtype() != biases.Dtype() {
-		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec scales and biases dtype mismatch: %v/%v", scales.Dtype(), biases.Dtype()))
+	// Resolve dtypes once per validation — Array.Dtype() is a cgo call,
+	// and the old code re-resolved scales/expertIDs dtypes up to 4 times.
+	// W9-K stream-resolve-once-per-call analogue for the MoE hot path.
+	scalesDtype := scales.Dtype()
+	biasesDtype := biases.Dtype()
+	if scalesDtype != biasesDtype {
+		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec scales and biases dtype mismatch: %v/%v", scalesDtype, biasesDtype))
 	}
-	switch scales.Dtype() {
+	switch scalesDtype {
 	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
-		meta.sidecarDType = scales.Dtype()
+		meta.sidecarDType = scalesDtype
 	default:
 		return meta, core.NewError("mlx: quantized expert id matvec scales and biases must be float32, float16, or bfloat16")
 	}
-	if expertIDs.Dtype() != DTypeInt32 && expertIDs.Dtype() != DTypeUint32 {
+	expertIDsDtype := expertIDs.Dtype()
+	if expertIDsDtype != DTypeInt32 && expertIDsDtype != DTypeUint32 {
 		return meta, core.NewError("mlx: quantized expert id matvec expert ids must be int32 or uint32")
 	}
 	if bits != 2 && bits != 4 && bits != 8 {
