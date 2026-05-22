@@ -457,7 +457,11 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 	if seqLen <= 1 || headDim <= 0 {
 		return 0
 	}
-	magnitudes := make([]float64, seqLen)
+	// Two-pass without retaining magnitudes — first pass accumulates
+	// sqrt(sum-of-squares) per position into the running total; second
+	// pass recomputes the same magnitudes for entropy. This drops the
+	// per-head []float64{seqLen} allocation (16KB at seqLen=2048) which
+	// dominated Analyze's per-call alloc footprint.
 	var total float64
 	for pos := 0; pos < seqLen; pos++ {
 		start := pos * headDim
@@ -465,26 +469,44 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 			break
 		}
 		var sum float64
-		for dim := 0; dim < headDim && start+dim < len(head); dim++ {
-			value := float64(head[start+dim])
-			sum += value * value
+		end := start + headDim
+		if end > len(head) {
+			end = len(head)
 		}
-		magnitudes[pos] = math.Sqrt(sum)
-		total += magnitudes[pos]
+		for _, value := range head[start:end] {
+			v := float64(value)
+			sum += v * v
+		}
+		total += math.Sqrt(sum)
 	}
 	if total == 0 {
 		return 0
 	}
-	var entropy float64
-	for _, magnitude := range magnitudes {
-		p := magnitude / total
-		if p > 0 {
-			entropy -= p * math.Log2(p)
-		}
-	}
 	maxEntropy := math.Log2(float64(seqLen))
 	if maxEntropy == 0 {
 		return 0
+	}
+	invTotal := 1 / total
+	var entropy float64
+	for pos := 0; pos < seqLen; pos++ {
+		start := pos * headDim
+		if start >= len(head) {
+			break
+		}
+		var sum float64
+		end := start + headDim
+		if end > len(head) {
+			end = len(head)
+		}
+		for _, value := range head[start:end] {
+			v := float64(value)
+			sum += v * v
+		}
+		magnitude := math.Sqrt(sum)
+		p := magnitude * invTotal
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
 	}
 	return entropy / maxEntropy
 }
