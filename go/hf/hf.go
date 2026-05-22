@@ -573,7 +573,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
 	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateTrainingFit(config, plan, limit, cfg.LoRARank)
-	plan.Notes = fitNotes(plan, limit)
+	plan.Notes = fitNotes(plan, limit, nativeRuntime)
 	return plan
 }
 
@@ -790,12 +790,15 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	return fit
 }
 
-func fitNotes(plan FitPlan, memoryLimit uint64) []string {
+func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
+	// Caller already has the archNativeRuntime result from the hoisted
+	// LookupArchitectureProfile in planFit — pass it through so fitNotes
+	// doesn't repeat the full lookup-and-clone.
 	var notes []string
 	if !plan.SupportedArchitecture {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
-	if plan.SupportedArchitecture && !archNativeRuntime(plan.Architecture) {
+	if plan.SupportedArchitecture && !nativeRuntime {
 		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
 	}
 	if plan.WeightBytes == 0 {
