@@ -654,8 +654,8 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 			RouterDecision: &probe.RouterDecision{
 				Layer:     layer,
 				TokenID:   tokenID,
-				ExpertIDs: append([]int(nil), decision.ExpertIDs...),
-				Weights:   append([]float32(nil), decision.Weights...),
+				ExpertIDs: core.SliceClone(decision.ExpertIDs),
+				Weights:   core.SliceClone(decision.Weights),
 			},
 			Meta: map[string]string{"architecture": "minimax_m2"},
 		})
