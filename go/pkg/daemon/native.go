@@ -14,6 +14,13 @@ import (
 
 const defaultNativeModelName = "default"
 
+var (
+	errRunnerNil            = core.NewError("native generate runner is nil")
+	errPromptRequired       = core.NewError("generate prompt is required")
+	errNoModelsConfigured   = core.NewError("no native models configured")
+	errGenerateModelMissing = core.NewError("generate model is required")
+)
+
 type nativeGenerateModel interface {
 	GenerateStream(context.Context, string, ...mlx.GenerateOption) <-chan mlx.Token
 	ChatStream(context.Context, []inference.Message, ...mlx.GenerateOption) <-chan mlx.Token
@@ -63,7 +70,7 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 // Generate runs a prompt or chat request through a cached native go-mlx model.
 func (runner *NativeGenerateRunner) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
 	if runner == nil {
-		return GenerateResult{}, core.NewError("native generate runner is nil")
+		return GenerateResult{}, errRunnerNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -86,7 +93,7 @@ func (runner *NativeGenerateRunner) Generate(ctx context.Context, req GenerateRe
 		}
 	} else {
 		if core.Trim(req.Prompt) == "" {
-			return GenerateResult{}, core.NewError("generate prompt is required")
+			return GenerateResult{}, errPromptRequired
 		}
 		for token := range model.GenerateStream(ctx, req.Prompt, opts...) {
 			builder.WriteString(token.Text)
@@ -125,7 +132,7 @@ func (runner *NativeGenerateRunner) Close() error {
 
 func (runner *NativeGenerateRunner) resolveModel(requested string) (string, string, error) {
 	if len(runner.modelPaths) == 0 {
-		return "", "", core.NewError("no native models configured")
+		return "", "", errNoModelsConfigured
 	}
 	modelName := core.Trim(requested)
 	if modelName != "" {
@@ -148,7 +155,7 @@ func (runner *NativeGenerateRunner) resolveModel(requested string) (string, stri
 			return name, path, nil
 		}
 	}
-	return "", "", core.NewError("generate model is required")
+	return "", "", errGenerateModelMissing
 }
 
 func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateModel, error) {
