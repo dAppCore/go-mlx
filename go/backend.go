@@ -508,15 +508,25 @@ func toRootBatchResults(results []metal.BatchResult) []BatchResult {
 		return nil
 	}
 	out := make([]BatchResult, len(results))
+	// Single arena allocation for all per-result Tokens slices. Avoids
+	// len(results) small allocations on BatchGenerate's return path.
+	totalTokens := 0
+	for i := range results {
+		totalTokens += len(results[i].Tokens)
+	}
+	tokensSlab := make([]Token, totalTokens)
+	tokensOffset := 0
 	for i, result := range results {
-		tokens := make([]Token, len(result.Tokens))
+		tokensEnd := tokensOffset + len(result.Tokens)
+		resultTokens := tokensSlab[tokensOffset:tokensEnd:tokensEnd]
 		for j, token := range result.Tokens {
-			tokens[j] = toRootToken(token)
+			resultTokens[j] = toRootToken(token)
 		}
 		out[i] = BatchResult{
-			Tokens: tokens,
+			Tokens: resultTokens,
 			Err:    result.Err,
 		}
+		tokensOffset = tokensEnd
 	}
 	return out
 }
