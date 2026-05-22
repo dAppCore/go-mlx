@@ -503,10 +503,19 @@ func cloneWorkloadEvalSamples(samples []WorkloadEvalSample) []WorkloadEvalSample
 	if len(samples) == 0 {
 		return nil
 	}
+	// Bulk-copy the sample headers in one shot — the previous loop
+	// re-copied the WorkloadEvalSample struct (string headers + map
+	// pointer) twice per iteration via `range sample, out[i] = sample`.
+	// `copy` is a memmove and lets us index `samples[i].Meta` directly
+	// without taking a fresh per-iteration sample copy. The Meta clone
+	// is skipped for nil maps so the API/internal "no metadata" path
+	// pays only the slice alloc.
 	out := make([]WorkloadEvalSample, len(samples))
-	for i, sample := range samples {
-		out[i] = sample
-		out[i].Meta = core.MapClone(sample.Meta)
+	copy(out, samples)
+	for i := range samples {
+		if meta := samples[i].Meta; meta != nil {
+			out[i].Meta = core.MapClone(meta)
+		}
 	}
 	return out
 }
