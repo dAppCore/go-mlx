@@ -747,14 +747,20 @@ func validateDistillLogitShapes(teacher, student DistillLogits) error {
 		return core.NewError("mlx: distillation logit shape mismatch: batch")
 	}
 	for i := range teacher {
-		if len(teacher[i]) != len(student[i]) {
+		// Hoist the per-row [][]float32 slice headers once so the inner
+		// loop re-indexing pays one pointer load instead of two double-
+		// indexes per token.
+		tRow := teacher[i]
+		sRow := student[i]
+		if len(tRow) != len(sRow) {
 			return core.NewError("mlx: distillation logit shape mismatch: sequence")
 		}
-		for j := range teacher[i] {
-			if len(teacher[i][j]) == 0 {
+		for j := range tRow {
+			tVocab := len(tRow[j])
+			if tVocab == 0 {
 				return core.NewError("mlx: distillation logit shape mismatch: empty vocabulary")
 			}
-			if len(teacher[i][j]) != len(student[i][j]) {
+			if tVocab != len(sRow[j]) {
 				return core.NewError("mlx: distillation logit shape mismatch: vocabulary")
 			}
 		}
