@@ -963,13 +963,15 @@ func findTensorSpec(specs []TensorSpec, role TensorRole) TensorSpec {
 }
 
 func decisionExpertIDs(decisions []RouterDecision) []int {
+	// Index iteration: RouterDecision is 56 B, range-by-value would
+	// copy each decision per step.
 	total := 0
-	for _, decision := range decisions {
-		total += len(decision.ExpertIDs)
+	for d := range decisions {
+		total += len(decisions[d].ExpertIDs)
 	}
 	ids := make([]int, 0, total)
-	for _, decision := range decisions {
-		ids = append(ids, decision.ExpertIDs...)
+	for d := range decisions {
+		ids = append(ids, decisions[d].ExpertIDs...)
 	}
 	return ids
 }
