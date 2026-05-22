@@ -386,9 +386,12 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	if count == 0 {
 		return nil
 	}
-	scale := float32(count)
+	// Multiply-by-inverse avoids the per-element float divide; for the
+	// multi-head non-GQA analysis path this loop runs through every
+	// flat-state element of every layer.
+	invScale := float32(1) / float32(count)
 	for i := range mean {
-		mean[i] /= scale
+		mean[i] *= invScale
 	}
 	return mean
 }
