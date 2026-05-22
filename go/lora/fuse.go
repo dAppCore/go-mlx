@@ -16,6 +16,26 @@ const (
 	fuseOutputWeights  = "model.safetensors"
 )
 
+// Sentinel errors returned by fuse validation and orchestration paths.
+// Hoisted to package vars so each guard returns the shared instance
+// instead of allocating a fresh *core.Err per call — relevant both for
+// the always-fired validation guards in prepareFuse and the per-fuse
+// integrity checks downstream.
+var (
+	errFuseSourceRootRequired   = core.NewError("mlx: source pack root is required")
+	errFuseAdapterPathRequired  = core.NewError("mlx: LoRA adapter path is required")
+	errFuseOutputPathRequired   = core.NewError("mlx: fused model output path is required")
+	errFuseOutputNotPackDir     = core.NewError("mlx: fused output path must be a model-pack directory")
+	errFuseRequiresSafetensors  = core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
+	errFuseRankRequired         = core.NewError("mlx: LoRA adapter rank is required for fusion")
+	errFuseScaleRequired        = core.NewError("mlx: LoRA adapter scale is required for fusion")
+	errFuseOutputSameAsSource   = core.NewError("mlx: fused output path must differ from source model path")
+	errFuseOutputContainsWeight = core.NewError("mlx: fused output path already contains model weights")
+	errFuseNoAdapterSafetensors = core.NewError("mlx: no adapter safetensors found")
+	errFuseNoLoRATensorPairs    = core.NewError("mlx: no LoRA tensor pairs found")
+	errFuseNoBaseWeightFiles    = core.NewError("mlx: no base weight files available for LoRA fusion")
+)
+
 // FuseOptions configures pack-level LoRA fusion.
 //
 // SourcePack must be a validated, safetensors-format model pack; callers
@@ -69,19 +89,19 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		return fusePrepared{}, err
 	}
 	if opts.SourcePack.Root == "" {
-		return fusePrepared{}, core.NewError("mlx: source pack root is required")
+		return fusePrepared{}, errFuseSourceRootRequired
 	}
 	if opts.AdapterPath == "" {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter path is required")
+		return fusePrepared{}, errFuseAdapterPathRequired
 	}
 	if opts.OutputPath == "" {
-		return fusePrepared{}, core.NewError("mlx: fused model output path is required")
+		return fusePrepared{}, errFuseOutputPathRequired
 	}
 	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
-		return fusePrepared{}, core.NewError("mlx: fused output path must be a model-pack directory")
+		return fusePrepared{}, errFuseOutputNotPackDir
 	}
 	if opts.SourcePack.Format != pack.ModelPackFormatSafetensors {
-		return fusePrepared{}, core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
+		return fusePrepared{}, errFuseRequiresSafetensors
 	}
 
 	adapter, err := Inspect(opts.AdapterPath, opts.AdapterPath)
@@ -89,14 +109,14 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		return fusePrepared{}, core.E("lora.FuseIntoPack", "inspect LoRA adapter", err)
 	}
 	if adapter.Rank <= 0 {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter rank is required for fusion")
+		return fusePrepared{}, errFuseRankRequired
 	}
 	if adapter.Scale == 0 && adapter.Alpha == 0 {
 		adapter.Alpha = float32(adapter.Rank) * 2
 		adapter.Scale = adapter.Alpha / float32(adapter.Rank)
 	}
 	if adapter.Scale == 0 {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter scale is required for fusion")
+		return fusePrepared{}, errFuseScaleRequired
 	}
 
 	output := opts.OutputPath
@@ -104,7 +124,7 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		output = abs.Value.(string)
 	}
 	if samePath(opts.SourcePack.Root, output) {
-		return fusePrepared{}, core.NewError("mlx: fused output path must differ from source model path")
+		return fusePrepared{}, errFuseOutputSameAsSource
 	}
 	if err := ensureEmptyFuseWeightDestination(output); err != nil {
 		return fusePrepared{}, err
@@ -132,7 +152,7 @@ func ensureEmptyFuseWeightDestination(output string) error {
 	}
 	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
 	if len(weights) > 0 {
-		return core.NewError("mlx: fused output path already contains model weights")
+		return errFuseOutputContainsWeight
 	}
 	return nil
 }
@@ -197,7 +217,7 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 	matches := core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	slices.Sort(matches)
 	if len(matches) == 0 {
-		return nil, core.NewError("mlx: no adapter safetensors found")
+		return nil, errFuseNoAdapterSafetensors
 	}
 	return matches, nil
 }
@@ -340,7 +360,7 @@ func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error
 		pairs[pairName] = pair
 	}
 	if len(pairs) == 0 {
-		return nil, core.NewError("mlx: no LoRA tensor pairs found")
+		return nil, errFuseNoLoRATensorPairs
 	}
 	for name, pair := range pairs {
 		if pair.MatrixA == nil || pair.MatrixB == nil {
@@ -352,7 +372,7 @@ func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error
 
 func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]fusePair, scale float32) ([]string, []string, error) {
 	if len(sourceFiles) == 0 {
-		return nil, nil, core.NewError("mlx: no base weight files available for LoRA fusion")
+		return nil, nil, errFuseNoBaseWeightFiles
 	}
 
 	fusedPairs := map[string]struct{}{}
