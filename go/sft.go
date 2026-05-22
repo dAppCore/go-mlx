@@ -508,7 +508,7 @@ func (b *sftBatchBuilder) add(example sftExample) {
 
 func (b *sftBatchBuilder) finish() []SFTBatch {
 	b.flush()
-	return append([]SFTBatch(nil), b.out...)
+	return core.SliceClone(b.out)
 }
 
 func (b *sftBatchBuilder) flush() {
@@ -903,9 +903,9 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 	}
 	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
 		start := len(example.inputs) - p.maxSeqLen
-		example.inputs = append([]int(nil), example.inputs[start:]...)
-		example.targets = append([]int(nil), example.targets[start:]...)
-		example.mask = append([]float32(nil), example.mask[start:]...)
+		example.inputs = core.SliceClone(example.inputs[start:])
+		example.targets = core.SliceClone(example.targets[start:])
+		example.mask = core.SliceClone(example.mask[start:])
 	}
 	p.current.inputs = append(p.current.inputs, example.inputs...)
 	p.current.targets = append(p.current.targets, example.targets...)
@@ -925,9 +925,9 @@ func (p *sftStreamingPacker) flush() error {
 		return nil
 	}
 	example := sftExample{
-		inputs:  append([]int(nil), p.current.inputs...),
-		targets: append([]int(nil), p.current.targets...),
-		mask:    append([]float32(nil), p.current.mask...),
+		inputs:  core.SliceClone(p.current.inputs),
+		targets: core.SliceClone(p.current.targets),
+		mask:    core.SliceClone(p.current.mask),
 	}
 	p.current = sftExample{}
 	return p.emit(example)
