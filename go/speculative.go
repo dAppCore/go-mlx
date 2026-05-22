@@ -353,10 +353,8 @@ func speculativeTokenizerProbes(probes []string) []string {
 	if len(probes) == 0 {
 		return []string{"hello", "The quick brown fox", "Answer in one short sentence."}
 	}
-	out := make([]string, 0, len(probes))
-	for _, probe := range probes {
-		out = append(out, probe)
-	}
+	out := make([]string, len(probes))
+	copy(out, probes)
 	return out
 }
 
