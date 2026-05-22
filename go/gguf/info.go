@@ -450,6 +450,12 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// each. Bump-allocating into a per-call slab amortises the miss cost.
 	// Sized at 48 B/entry — long-tail tokenizer.* keys peak around 40 B.
 	keyArena := make([]byte, 0, int(metadataCount)*48)
+	// Value-string arena — string-typed metadata values land here.
+	// Sized at 56 B/entry; real-world values (tokenizer names, version
+	// strings, descriptions) cluster under 48 B. Lifetime is tied to
+	// the metadata map / Info via Go's GC: any string-view that escapes
+	// into Info keeps the arena live until that Info is dropped.
+	valueArena := make([]byte, 0, int(metadataCount)*56)
 	for i := uint64(0); i < metadataCount; i++ {
 		key, err := readStringIntoArena(reader, scratch[:], &keyArena)
 		if err != nil {
@@ -459,7 +465,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
 		valueType := binary.LittleEndian.Uint32(scratch[:4])
-		value, err := readGGUFValue(reader, valueType, scratch[:])
+		value, err := readGGUFValue(reader, valueType, scratch[:], &valueArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
@@ -682,7 +688,7 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	return core.AsString(buffer), nil
 }
 
-func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, error) {
+func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena *[]byte) (any, error) {
 	switch valueType {
 	case ggufValueTypeUint8:
 		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
@@ -725,6 +731,9 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, err
 		}
 		return scratch[0] != 0, nil
 	case ValueTypeString:
+		if strArena != nil {
+			return readStringIntoArena(reader, scratch, strArena)
+		}
 		return readGGUFString(reader, scratch)
 	case ggufValueTypeArray:
 		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
@@ -740,7 +749,7 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, err
 		}
 		values := make([]any, length)
 		for i := uint64(0); i < length; i++ {
-			value, err := readGGUFValue(reader, elementType, scratch)
+			value, err := readGGUFValue(reader, elementType, scratch, strArena)
 			if err != nil {
 				return nil, err
 			}
