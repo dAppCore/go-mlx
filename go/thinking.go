@@ -12,11 +12,20 @@ func WithThinkingMode(mode parser.Mode) GenerateOption {
 	return func(c *GenerateConfig) { c.Thinking.Mode = mode }
 }
 
+// Pre-allocated closures for the constant-mode Show/Hide shortcuts —
+// the previous WithShowThinking / WithHideThinking helpers built a
+// fresh capturing closure on every call (24 B/op, 1 alloc). With
+// mode fixed, share a single GenerateOption value across all calls.
+var (
+	withShowThinkingFn = func(c *GenerateConfig) { c.Thinking.Mode = parser.Show }
+	withHideThinkingFn = func(c *GenerateConfig) { c.Thinking.Mode = parser.Hide }
+)
+
 // c.Generate(ctx, prompt, mlx.WithShowThinking())
-func WithShowThinking() GenerateOption { return WithThinkingMode(parser.Show) }
+func WithShowThinking() GenerateOption { return withShowThinkingFn }
 
 // c.Generate(ctx, prompt, mlx.WithHideThinking())
-func WithHideThinking() GenerateOption { return WithThinkingMode(parser.Hide) }
+func WithHideThinking() GenerateOption { return withHideThinkingFn }
 
 // c.Generate(ctx, prompt, mlx.WithCaptureThinking(func(c parser.Chunk) { ... }))
 func WithCaptureThinking(capture func(parser.Chunk)) GenerateOption {
