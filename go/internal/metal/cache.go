@@ -645,10 +645,16 @@ func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 // QuantizedKVCache stores cache tensors in int8 lanes and dequantizes them
 // only for the attention call. keyBits/valueBits control the logical quantizer
 // range; q4 values currently use int8 storage until packed q4 kernels land.
+//
+// floatK / floatV cache the last dequantised K/V state so the next Update can
+// skip the full unpack/upcast/multiply round-trip. They are populated lazily
+// after Update and freed on Reset; snapshot/restore and ReadState() continue
+// to operate on the quantised state, so save/load paths are unchanged.
 type QuantizedKVCache struct {
 	keys, values       *Array
 	keyScale           *Array
 	valueScale         *Array
+	floatK, floatV     *Array
 	keyDtype           DType
 	valueDtype         DType
 	keyShape           []int32
@@ -676,11 +682,15 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		fullK := k.Clone()
 		fullV := v.Clone()
 		c.storeQuantized(fullK, fullV)
+		c.cacheFloat(fullK, fullV)
 		c.offset += seqLen
 		return fullK, fullV
 	}
 
-	prevK, prevV := c.dequantizedState()
+	prevK, prevV := c.takeFloat()
+	if prevK == nil {
+		prevK, prevV = c.dequantizedState()
+	}
 	var fullK, fullV *Array
 	if prevK == nil {
 		fullK = k.Clone()
@@ -697,10 +707,37 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		storeK, storeV = cacheTail(fullK, fullV, c.maxSize)
 	}
 	c.storeQuantized(storeK, storeV)
+	c.cacheFloat(storeK, storeV)
 	if storeK != fullK {
 		Free(storeK, storeV)
 	}
 	return fullK, fullV
+}
+
+// takeFloat returns the cached float K/V if present and clears the cache slots,
+// transferring ownership to the caller. Returns (nil, nil) on miss.
+func (c *QuantizedKVCache) takeFloat() (*Array, *Array) {
+	k, v := c.floatK, c.floatV
+	c.floatK = nil
+	c.floatV = nil
+	return k, v
+}
+
+// cacheFloat stores clones of k/v as the float-form cache for the next Update.
+// Any previously-cached float arrays are released.
+func (c *QuantizedKVCache) cacheFloat(k, v *Array) {
+	old1, old2 := c.floatK, c.floatV
+	if k != nil {
+		c.floatK = k.Clone()
+	} else {
+		c.floatK = nil
+	}
+	if v != nil {
+		c.floatV = v.Clone()
+	} else {
+		c.floatV = nil
+	}
+	Free(old1, old2)
 }
 
 func (c *QuantizedKVCache) State() []*Array {
@@ -737,11 +774,13 @@ func (c *QuantizedKVCache) Len() int {
 }
 
 func (c *QuantizedKVCache) Reset() {
-	Free(c.keys, c.values, c.keyScale, c.valueScale)
+	Free(c.keys, c.values, c.keyScale, c.valueScale, c.floatK, c.floatV)
 	c.keys = nil
 	c.values = nil
 	c.keyScale = nil
 	c.valueScale = nil
+	c.floatK = nil
+	c.floatV = nil
 	c.offset = 0
 }
 
@@ -1593,15 +1632,14 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 	maxAbs := maxAll(abs)
 	eps := FromValue(float32(1e-6))
 	clampedAbs := Maximum(maxAbs, eps)
-	denom := FromValue(maxValue)
-	scale := Divide(clampedAbs, denom)
+	maxBound := FromValue(maxValue)
+	scale := Divide(clampedAbs, maxBound)
 	normalized := Divide(a, scale)
 	rounded := Round(normalized)
 	minValue := FromValue(-maxValue)
-	maxBound := FromValue(maxValue)
 	clipped := Clip(rounded, minValue, maxBound)
 	q := AsType(clipped, DTypeInt8)
-	Free(abs, maxAbs, eps, clampedAbs, denom, normalized, rounded, minValue, maxBound, clipped)
+	Free(abs, maxAbs, eps, clampedAbs, normalized, rounded, minValue, maxBound, clipped)
 	if bits == 4 {
 		packed := packQ4(q)
 		Free(q)
@@ -1628,6 +1666,10 @@ func dequantizeCacheArray(q, scale *Array, dtype DType, shape []int32, bits int)
 	return out
 }
 
+// packQ4 packs an int8 array's low-4-bit nibbles into a uint8 array half the
+// length. The implementation reshapes the flat input to [pairs, 2] so the even
+// and odd halves can be sliced as views — no Gather index arrays, no host-side
+// int32 index allocations.
 func packQ4(q *Array) *Array {
 	shape := q.Shape()
 	n := cacheElementCount(shape)
@@ -1638,24 +1680,32 @@ func packQ4(q *Array) *Array {
 	Free(flat, offset, shifted)
 
 	padded := shiftedU
+	nP := n
 	if n%2 != 0 {
 		zero := Zeros([]int32{1}, DTypeUint8)
 		padded = Concatenate([]*Array{shiftedU, zero}, 0)
 		Free(shiftedU, zero)
+		nP = n + 1
 	}
 
-	evenIdx, oddIdx := q4PairIndices(n)
-	evenIndexArray := FromValues(evenIdx, len(evenIdx))
-	oddIndexArray := FromValues(oddIdx, len(oddIdx))
-	even := Take(padded, evenIndexArray, 0)
-	odd := Take(padded, oddIndexArray, 0)
+	pairs := nP / 2
+	paired := Reshape(padded, int32(pairs), int32(2))
+	Free(padded)
+	low := SliceAxis(paired, 1, 0, 1)
+	high := SliceAxis(paired, 1, 1, 2)
+	Free(paired)
 	shift := AsType(FromValue(4), DTypeUint8)
-	high := LeftShift(odd, shift)
-	packed := BitwiseOr(even, high)
-	Free(padded, evenIndexArray, oddIndexArray, even, odd, shift, high)
+	highShifted := LeftShift(high, shift)
+	packed2D := BitwiseOr(low, highShifted)
+	packed := Reshape(packed2D, int32(pairs))
+	Free(low, high, shift, highShifted, packed2D)
 	return packed
 }
 
+// unpackQ4 expands a uint8 array of packed Q4 nibbles back into a signed int8
+// array of the original shape. The implementation reshapes pair-wise after
+// extracting the low/high nibbles, replacing the previous PutAlongAxis +
+// gather indices with structural ops only.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -1667,58 +1717,29 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	high := RightShift(packed, shift)
 	Free(mask, shift)
 
-	evenIdx, oddIdx := q4OutputIndices(n)
-	evenIndexArray := FromValues(evenIdx, len(evenIdx))
-	out := Zeros([]int32{int32(n)}, DTypeUint8)
-	outEven := PutAlongAxis(out, evenIndexArray, low, 0)
-	Free(out, evenIndexArray, low)
+	pairs := int(low.Shape()[0])
+	lowE := ExpandDims(low, 1)
+	highE := ExpandDims(high, 1)
+	Free(low, high)
+	stacked := Concatenate([]*Array{lowE, highE}, 1)
+	Free(lowE, highE)
 
-	outPacked := outEven
-	if len(oddIdx) > 0 {
-		oddIndexArray := FromValues(oddIdx, len(oddIdx))
-		highVals := high
-		if len(oddIdx) < int(high.Shape()[0]) {
-			highVals = Slice(high, []int32{0}, []int32{int32(len(oddIdx))})
-		}
-		outPacked = PutAlongAxis(outEven, oddIndexArray, highVals, 0)
-		Free(outEven, oddIndexArray)
-		if highVals != high {
-			Free(highVals)
-		}
+	flatLen := pairs * 2
+	flat := Reshape(stacked, int32(flatLen))
+	Free(stacked)
+
+	outU := flat
+	if flatLen > n {
+		outU = Slice(flat, []int32{0}, []int32{int32(n)})
+		Free(flat)
 	}
-	Free(high)
 
-	outInt := AsType(outPacked, DTypeInt8)
+	outInt := AsType(outU, DTypeInt8)
 	offset := AsType(FromValue(8), DTypeInt8)
 	signed := Subtract(outInt, offset)
 	reshaped := Reshape(signed, shape...)
-	Free(outPacked, outInt, offset, signed)
+	Free(outU, outInt, offset, signed)
 	return reshaped
-}
-
-func q4PairIndices(n int) ([]int32, []int32) {
-	pairs := (n + 1) / 2
-	even := make([]int32, pairs)
-	odd := make([]int32, pairs)
-	for i := range pairs {
-		even[i] = int32(i * 2)
-		odd[i] = int32(i*2 + 1)
-	}
-	return even, odd
-}
-
-func q4OutputIndices(n int) ([]int32, []int32) {
-	evenCount := (n + 1) / 2
-	oddCount := n / 2
-	even := make([]int32, evenCount)
-	odd := make([]int32, oddCount)
-	for i := range evenCount {
-		even[i] = int32(i * 2)
-	}
-	for i := range oddCount {
-		odd[i] = int32(i*2 + 1)
-	}
-	return even, odd
 }
 
 func cacheElementCount(shape []int32) int {
@@ -1732,19 +1753,21 @@ func cacheElementCount(shape []int32) int {
 	return total
 }
 
+// maxAll returns a scalar Array equal to the max-abs of all elements of a.
+// The implementation flattens to 1-D (zero-copy reshape) then reduces in a
+// single MaxAxis call, replacing the prior N-axis iterative reduction which
+// materialised one intermediate per dimension.
 func maxAll(a *Array) *Array {
-	current := a
-	owned := false
-	for len(current.Shape()) > 0 {
-		next := MaxAxis(current, 0, false)
-		if owned {
-			Free(current)
-		}
-		current = next
-		owned = true
+	shape := a.Shape()
+	if len(shape) == 0 {
+		return a.Clone()
 	}
-	if !owned {
-		return current.Clone()
+	n := cacheElementCount(shape)
+	if n == 0 {
+		return a.Clone()
 	}
-	return current
+	flat := Reshape(a, int32(n))
+	reduced := MaxAxis(flat, 0, false)
+	Free(flat)
+	return reduced
 }
