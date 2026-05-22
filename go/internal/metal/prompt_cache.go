@@ -43,10 +43,6 @@ type cacheSnapshot struct {
 	hasStorageDType bool
 }
 
-func (snapshot cacheSnapshot) arrays() []*Array {
-	return snapshot.appendArrays(nil)
-}
-
 // appendArrays appends the snapshot's owned arrays onto out without
 // allocating a new slice when out has enough capacity. Used by the
 // restore hot path to build a single pre-sized eval slice across N
