@@ -148,14 +148,21 @@ func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
 	if prefix <= 0 || prefix > foldedAgentMemoryPrefillWakeMaxTokens {
 		return false
 	}
-	if meta := entry.Meta["folded_state"]; meta != "" && core.Lower(core.Trim(meta)) == "true" {
-		return true
+	if meta := entry.Meta["folded_state"]; meta != "" {
+		// Canonical-form fast path. foldedAgentMemorySleepOptions writes
+		// "true" verbatim — the round-trip producer / consumer pairing
+		// hits the byte-equal branch and skips Lower + Trim work.
+		if meta == "true" || core.Lower(core.Trim(meta)) == "true" {
+			return true
+		}
 	}
 	for _, label := range entry.Labels {
 		if label == "" {
 			continue
 		}
-		if core.Lower(core.Trim(label)) == "folded-state" {
+		// Canonical-form fast path. foldedAgentMemorySleepOptions appends
+		// "folded-state" verbatim — same round-trip pairing argument.
+		if label == "folded-state" || core.Lower(core.Trim(label)) == "folded-state" {
 			return true
 		}
 	}

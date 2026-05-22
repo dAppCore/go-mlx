@@ -89,14 +89,14 @@ func BenchmarkSessionAgent_AddFoldMeta_Build(b *testing.B) {
 
 // --- shouldPrefillFoldedAgentMemory ---
 
-// No folded marker — the dominant case.
+// No folded marker — the dominant case. Token count makes PrefixTokens
+// positive so we actually exercise the meta + label scans.
 func BenchmarkSessionAgent_ShouldPrefill_NoMarker(b *testing.B) {
 	entry := agent.StateIndexEntry{
-		Meta: map[string]string{"adapter_hash": "abc"},
+		TokenCount: 4096,
+		Meta:       map[string]string{"adapter_hash": "abc"},
+		Labels:     []string{"env=prod", "agent=cladius"},
 	}
-	// Force prefix-tokens via reflection-free helper? Use the public
-	// PrefixTokens via constructor — fall back to direct stub.
-	_ = entry
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -104,10 +104,24 @@ func BenchmarkSessionAgent_ShouldPrefill_NoMarker(b *testing.B) {
 	}
 }
 
-// Has folded_state=true marker — branch taken.
+// Has folded_state=true marker — meta branch taken via canonical fast path.
 func BenchmarkSessionAgent_ShouldPrefill_MetaTrue(b *testing.B) {
 	entry := agent.StateIndexEntry{
-		Meta: map[string]string{"folded_state": "true"},
+		TokenCount: 4096,
+		Meta:       map[string]string{"folded_state": "true"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionAgentBenchSinkBool = shouldPrefillFoldedAgentMemory(entry)
+	}
+}
+
+// Has folded-state label only — exercises the labels-loop fast path.
+func BenchmarkSessionAgent_ShouldPrefill_LabelHit(b *testing.B) {
+	entry := agent.StateIndexEntry{
+		TokenCount: 4096,
+		Labels:     []string{"env=prod", "folded-state"},
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
