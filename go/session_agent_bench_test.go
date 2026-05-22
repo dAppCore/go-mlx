@@ -339,6 +339,23 @@ func BenchmarkSessionAgent_SleepOptsFromInf(b *testing.B) {
 	}
 }
 
+// --- agentMemoryWakeOptionsFromInference ---
+
+// Per-wake req-to-opts conversion. Mostly struct assembly + the
+// NormaliseTokenizer call inside stateBundleTokenizerFromInference.
+func BenchmarkSessionAgent_WakeOptsFromInf(b *testing.B) {
+	req := inference.AgentMemoryWakeRequest{
+		IndexURI:  "state://index",
+		EntryURI:  "state://entry",
+		Tokenizer: inference.TokenizerIdentity{Kind: "sentencepiece", Path: "/tokenizer.json"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionAgentBenchSinkWakeOpts = agentMemoryWakeOptionsFromInference(req)
+	}
+}
+
 // --- toInferenceAgentMemorySleepResult ---
 
 // Hot-path result formatter — Sleep returns this on every call.
