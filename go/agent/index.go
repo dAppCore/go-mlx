@@ -263,7 +263,7 @@ func (index *StateIndex) validate(checkHashes bool) error {
 			seen[entry.URI] = struct{}{}
 		}
 	}
-	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
+	if checkHashes && index.Hash != "" && !indexHashEquals(index, index.Hash) {
 		return errStateIndexHashMismatch
 	}
 	return nil
@@ -645,17 +645,22 @@ func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
 	return true
 }
 
-// indexHash streams the canonical input into a sha256 hasher.
-// The bounded header (Kind|BundleURI|...|ChatTemplateHash) is
-// pre-built in a Builder so the two int writes don't escape their
-// digit buffer to the heap through hash.Hash's interface dispatch;
-// the per-entry tail then streams pipe+entry-hash pairs straight
-// to sha256 because Builder-batching the entry tail loses at scale
-// — the doubling backing slice grows into hundreds of KB on a
-// 1000-entry index (measured 25 µs streaming vs 57 µs full-builder).
-func indexHash(index *StateIndex) string {
+// indexHashBytes streams the canonical input into a sha256 hasher and
+// returns the binary digest in a stack-allocated array. The bounded
+// header (Kind|BundleURI|...|ChatTemplateHash) is pre-built in a
+// pooled bytes.Buffer so the two int writes don't escape their digit
+// buffer to the heap through hash.Hash's interface dispatch; the
+// per-entry tail then streams pipe+entry-hash pairs straight to
+// sha256 because Builder-batching the entry tail loses at scale —
+// the doubling backing slice grows into hundreds of KB on a 1000-
+// entry index (measured 25 µs streaming vs 57 µs full-builder).
+//
+// Returns the zero array when index is nil so the hex wrapper can
+// emit "" without an extra branch.
+func indexHashBytes(index *StateIndex) [sha256.Size]byte {
+	var zero [sha256.Size]byte
 	if index == nil {
-		return ""
+		return zero
 	}
 	header := hashBufPool.Get().(*bytes.Buffer)
 	header.Reset()
@@ -691,7 +696,35 @@ func indexHash(index *StateIndex) string {
 	// Sum into a stack-allocated [32]byte rather than passing nil
 	// (which heap-allocates the digest slice).
 	var sumBuf [sha256.Size]byte
-	return core.HexEncode(h.Sum(sumBuf[:0]))
+	digest := h.Sum(sumBuf[:0])
+	var out [sha256.Size]byte
+	copy(out[:], digest)
+	return out
+}
+
+func indexHash(index *StateIndex) string {
+	if index == nil {
+		return ""
+	}
+	sum := indexHashBytes(index)
+	return core.HexEncode(sum[:])
+}
+
+// indexHashEquals reports whether expectedHex matches the
+// freshly-computed canonical hash of index. Avoids the HexEncode
+// alloc by decoding expectedHex into a stack [32]byte and comparing
+// arrays. Used by Validate's tail check so the index-hash recompute
+// path adds zero allocs.
+func indexHashEquals(index *StateIndex, expectedHex string) bool {
+	if len(expectedHex) != sha256.Size*2 {
+		return false
+	}
+	sum := indexHashBytes(index)
+	var expected [sha256.Size]byte
+	if _, err := hex.Decode(expected[:], core.AsBytes(expectedHex)); err != nil {
+		return false
+	}
+	return sum == expected
 }
 
 // indexEntryHashBytes writes the canonical entry input into the shared
