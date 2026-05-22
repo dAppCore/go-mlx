@@ -112,14 +112,14 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 }
 
 func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
-	lowerPath := core.Lower(resolvedPath)
 	var safetensors []string
 	var ggufs []string
-	if core.HasSuffix(lowerPath, ".safetensors") {
+	switch {
+	case hasASCIIInsensitiveSuffix(resolvedPath, ".safetensors"):
 		safetensors = []string{resolvedPath}
-	} else if core.HasSuffix(lowerPath, ".gguf") {
+	case hasASCIIInsensitiveSuffix(resolvedPath, ".gguf"):
 		ggufs = []string{resolvedPath}
-	} else {
+	default:
 		safetensors = core.PathGlob(core.PathJoin(root, "*.safetensors"))
 		ggufs = core.PathGlob(core.PathJoin(root, "*.gguf"))
 	}
@@ -158,6 +158,29 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		pack.Format = mp.ModelPackFormatMissing
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingWeights, "no .safetensors or .gguf weights found", root)
 	}
+}
+
+// hasASCIIInsensitiveSuffix reports whether s ends with suffix, treating
+// A-Z and a-z as equal. Avoids allocating a lowered copy of s when the
+// only thing we need is a 4-12 byte extension match.
+func hasASCIIInsensitiveSuffix(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	tail := s[len(s)-len(suffix):]
+	for i := 0; i < len(suffix); i++ {
+		a, b := tail[i], suffix[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func inspectModelPackGGUF(pack *mp.ModelPack, path string) {
