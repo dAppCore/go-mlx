@@ -930,16 +930,23 @@ func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples i
 
 // formatDistillStepDir builds the "step-NNNNNN" checkpoint dirname using
 // strconv.AppendInt with explicit zero padding, avoiding fmt's reflection
-// path on the per-checkpoint hot loop.
+// path on the per-checkpoint hot loop. Digit count is computed in place
+// instead of via a throwaway strconv.AppendInt(nil, ...) so the function
+// allocates exactly once — the returned string itself.
 func formatDistillStepDir(step int) string {
 	const prefix = "step-"
-	const width = 6
-	buf := make([]byte, 0, len(prefix)+width)
+	const padTo = 6
+	buf := make([]byte, 0, len(prefix)+20)
 	buf = append(buf, prefix...)
-	digits := strconv.AppendInt(nil, int64(step), 10)
-	for pad := width - len(digits); pad > 0; pad-- {
-		buf = append(buf, '0')
+	if step >= 0 && step < 100000 {
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
 	}
-	buf = append(buf, digits...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
 	return string(buf)
 }
