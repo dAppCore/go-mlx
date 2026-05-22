@@ -350,6 +350,12 @@ func (c *RotatingKVCache) Detach() {
 // FixedKVCache keeps K/V storage at one stable capacity for single-token
 // decode. It is an experimental cache used by compiled Gemma 4 decode probes;
 // normal callers should prefer the public paged or rotating cache modes.
+//
+// Once ensureShape has materialised c.keys / c.values, the per-axis dims
+// (batch, heads, keyDim, valueDim) are stable for the rest of the cache's
+// lifetime — Reset() is the only path that invalidates them. The cached
+// shape lets the steady-state single-token Update path avoid calling
+// Array.Shape(), which allocates a fresh []int32 on every call.
 type FixedKVCache struct {
 	keys, values              *Array
 	slidingIndices, lastIndex *Array
@@ -358,6 +364,14 @@ type FixedKVCache struct {
 	offset                    int
 	length                    int
 	maxSize                   int
+
+	// shapeCached is true once batch/heads/keyDim/valueDim hold the
+	// dims of the currently-materialised c.keys / c.values buffers.
+	shapeCached bool
+	batch       int32
+	heads       int32
+	keyDim      int32
+	valueDim    int32
 }
 
 // FixedKVState is a caller-owned view of a fixed-capacity K/V cache.
@@ -391,9 +405,11 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	}
 	k, v, owned := c.storageKV(k, v)
 	defer Free(owned...)
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 || c.maxSize <= 0 {
+	// Use Dim accessors (single cgo call, no slice alloc) instead of
+	// Shape() — the steady-state single-token decode loop hits this path
+	// hundreds of times per generation, and every fresh []int32 escapes
+	// to the heap.
+	if k.NumDims() < 4 || v.NumDims() < 4 || c.maxSize <= 0 {
 		if c.keys == nil {
 			c.keys, c.values = k.Clone(), v.Clone()
 		}
@@ -401,11 +417,15 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		c.length = min(c.offset, c.maxSize)
 		return c.keys.Clone(), c.values.Clone()
 	}
-	totalLen := int(kShape[2])
+	kBatch := int32(k.Dim(0))
+	kHeads := int32(k.Dim(1))
+	totalLen := k.Dim(2)
+	kKeyDim := int32(k.Dim(3))
+	vValueDim := int32(v.Dim(3))
 	if seqLen <= 0 || seqLen > totalLen {
 		seqLen = totalLen
 	}
-	c.ensureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
+	c.ensureShape(kBatch, kHeads, kKeyDim, vValueDim, k.Dtype(), v.Dtype())
 	if c.offset+seqLen > c.maxSize {
 		return c.updateOverflow(k, v, seqLen)
 	}
@@ -413,8 +433,8 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	writeLen := seqLen
 	if writeLen > c.maxSize {
 		start := writeLen - c.maxSize
-		writeK = Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(writeLen), kShape[3]})
-		writeV = Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(writeLen), vShape[3]})
+		writeK = Slice(k, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(writeLen), kKeyDim})
+		writeV = Slice(v, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(writeLen), vValueDim})
 		defer Free(writeK, writeV)
 		writeLen = c.maxSize
 	}
@@ -422,8 +442,8 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	start := c.offset
 
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, writeK, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + writeLen), kShape[3]})
-	c.values = SliceUpdateInplace(c.values, writeV, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + writeLen), vShape[3]})
+	c.keys = SliceUpdateInplace(c.keys, writeK, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(start + writeLen), kKeyDim})
+	c.values = SliceUpdateInplace(c.values, writeV, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(start + writeLen), vValueDim})
 	Free(oldK, oldV)
 
 	c.offset += seqLen
@@ -483,12 +503,23 @@ func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *A
 }
 
 func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType) {
+	// Steady-state fast path: trust the cached dims rather than allocating
+	// fresh []int32 via Array.Shape() on every Update.
+	if c.shapeCached && c.keys != nil && c.values != nil &&
+		c.batch == batch && c.heads == heads &&
+		c.keyDim == keyDim && c.valueDim == valueDim {
+		return
+	}
 	if c.keys != nil && c.values != nil {
-		kShape := c.keys.Shape()
-		vShape := c.values.Shape()
-		if len(kShape) >= 4 && len(vShape) >= 4 &&
-			kShape[0] == batch && kShape[1] == heads && kShape[2] == int32(c.maxSize) && kShape[3] == keyDim &&
-			vShape[0] == batch && vShape[1] == heads && vShape[2] == int32(c.maxSize) && vShape[3] == valueDim {
+		// First call after a shape change — fall back to the Dim accessor
+		// (cgo call, no slice alloc) to validate the existing buffers.
+		if c.keys.NumDims() >= 4 && c.values.NumDims() >= 4 &&
+			int32(c.keys.Dim(0)) == batch && int32(c.keys.Dim(1)) == heads &&
+			int32(c.keys.Dim(2)) == int32(c.maxSize) && int32(c.keys.Dim(3)) == keyDim &&
+			int32(c.values.Dim(0)) == batch && int32(c.values.Dim(1)) == heads &&
+			int32(c.values.Dim(2)) == int32(c.maxSize) && int32(c.values.Dim(3)) == valueDim {
+			c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
+			c.shapeCached = true
 			return
 		}
 	}
@@ -499,6 +530,8 @@ func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType
 	c.lastIndex = nil
 	c.offset = 0
 	c.length = 0
+	c.batch, c.heads, c.keyDim, c.valueDim = batch, heads, keyDim, valueDim
+	c.shapeCached = true
 }
 
 func (c *FixedKVCache) slidingUpdateInputs() (*Array, *Array) {
@@ -528,32 +561,42 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	}
 	k, v, owned := c.storageKV(k, v)
 	defer Free(owned...)
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 {
+	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return
 	}
+	kBatch := int32(k.Dim(0))
+	kHeads := int32(k.Dim(1))
+	kSeq := k.Dim(2)
+	kKeyDim := int32(k.Dim(3))
+	vValueDim := int32(v.Dim(3))
 	Free(c.keys, c.values)
-	c.keys = Zeros([]int32{kShape[0], kShape[1], int32(c.maxSize), kShape[3]}, k.Dtype())
-	c.values = Zeros([]int32{vShape[0], vShape[1], int32(c.maxSize), vShape[3]}, v.Dtype())
-	tailLen := min(int(kShape[2]), c.maxSize)
+	c.keys = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), kKeyDim}, k.Dtype())
+	c.values = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), vValueDim}, v.Dtype())
+	tailLen := min(kSeq, c.maxSize)
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(tailLen), kShape[3]})
-	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(tailLen), vShape[3]})
+	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, 0, 0}, []int32{kBatch, kHeads, int32(tailLen), kKeyDim})
+	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, 0, 0}, []int32{kBatch, kHeads, int32(tailLen), vValueDim})
 	Free(oldK, oldV)
+	c.batch, c.heads, c.keyDim, c.valueDim = kBatch, kHeads, kKeyDim, vValueDim
+	c.shapeCached = true
 }
 
 func (c *FixedKVCache) validState() (*Array, *Array) {
-	if c.keys == nil || c.values == nil {
+	if c.keys == nil || c.values == nil || c.length <= 0 {
 		return nil, nil
 	}
-	kShape := c.keys.Shape()
-	vShape := c.values.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 || c.length <= 0 {
+	// Cached dims are stable for the lifetime of c.keys / c.values — skip
+	// the per-call Array.Shape() allocations and read from the cache.
+	if c.shapeCached {
+		return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{c.batch, c.heads, int32(c.length), c.keyDim}),
+			Slice(c.values, []int32{0, 0, 0, 0}, []int32{c.batch, c.heads, int32(c.length), c.valueDim})
+	}
+	// Fallback for paths that bypass ensureShape (legacy / pre-cache state).
+	if c.keys.NumDims() < 4 || c.values.NumDims() < 4 {
 		return nil, nil
 	}
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(c.length), kShape[3]}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(c.length), vShape[3]})
+	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{int32(c.keys.Dim(0)), int32(c.keys.Dim(1)), int32(c.length), int32(c.keys.Dim(3))}),
+		Slice(c.values, []int32{0, 0, 0, 0}, []int32{int32(c.values.Dim(0)), int32(c.values.Dim(1)), int32(c.length), int32(c.values.Dim(3))})
 }
 
 // FixedState returns cloned full-capacity K/V handles for compiled decode.
@@ -586,6 +629,9 @@ func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVSt
 	c.values = v
 	c.offset += seqLen
 	c.length = min(c.offset, c.maxSize)
+	// Caller-supplied buffers — shape cache is no longer valid until
+	// validState's fallback or the next ensureShape re-establishes it.
+	c.shapeCached = false
 	return c.FixedState()
 }
 
@@ -595,6 +641,7 @@ func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) F
 	c.values = v
 	c.offset += seqLen
 	c.length = min(c.offset, c.maxSize)
+	c.shapeCached = false
 	return c.BorrowedFixedState()
 }
 
@@ -626,6 +673,7 @@ func (c *FixedKVCache) Reset() {
 	c.lastIndex = nil
 	c.offset = 0
 	c.length = 0
+	c.shapeCached = false
 }
 
 func (c *FixedKVCache) Detach() {
