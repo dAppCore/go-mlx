@@ -88,7 +88,11 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	if !encoded.OK {
 		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "marshal request", modelSliceResultError(encoded))
 	}
-	httpReqResult := core.NewHTTPRequestContext(ctx, "POST", executor.url, core.NewReader(string(encoded.Value.([]byte))))
+	// core.NewBufferReader → bytes.Reader directly over the JSON bytes
+	// avoids the []byte → string copy the prior core.NewReader path forced.
+	// JSONMarshal already owns a fresh []byte, so handing it straight to
+	// the request body costs one fewer allocation per ForwardFFN call.
+	httpReqResult := core.NewHTTPRequestContext(ctx, "POST", executor.url, core.NewBufferReader(encoded.Value.([]byte)))
 	if !httpReqResult.OK {
 		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "build request", modelSliceResultError(httpReqResult))
 	}
