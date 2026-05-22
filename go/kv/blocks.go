@@ -220,10 +220,17 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 }
 
 func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
-	seen := map[int]bool{0: true, seqLen: true}
+	// Build directly into a sorted, dedup'd slice — boundary count is
+	// O(seqLen/blockSize) + O(layers), typically <10. Mapping was the
+	// 4th-largest alloc source on SaveStateBlocks.
+	expected := 2 + (seqLen / blockSize) + len(s.Layers)
+	boundaries := make([]int, 0, expected)
+	// Deterministic boundaries are pre-sorted: 0, blockSize, 2*blockSize, ..., seqLen.
+	boundaries = append(boundaries, 0)
 	for next := blockSize; next < seqLen; next += blockSize {
-		seen[next] = true
+		boundaries = append(boundaries, next)
 	}
+	boundaries = append(boundaries, seqLen)
 	for _, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
@@ -232,14 +239,27 @@ func (s *Snapshot) blockBoundaries(blockSize, seqLen int) ([]int, error) {
 		if windowLen <= 0 || windowLen >= seqLen {
 			continue
 		}
-		seen[seqLen-windowLen] = true
+		boundaries = kvBoundaryInsert(boundaries, seqLen-windowLen)
 	}
-	boundaries := make([]int, 0, len(seen))
-	for boundary := range seen {
-		boundaries = append(boundaries, boundary)
-	}
-	core.SliceSort(boundaries)
 	return boundaries, nil
+}
+
+// kvBoundaryInsert keeps boundaries sorted + deduped while inserting v.
+// boundaries is small (≤ seqLen/blockSize + few layer-window slots)
+// so linear scan beats map ops or a binary search + memmove.
+func kvBoundaryInsert(boundaries []int, v int) []int {
+	for i, b := range boundaries {
+		if b == v {
+			return boundaries
+		}
+		if b > v {
+			boundaries = append(boundaries, 0)
+			copy(boundaries[i+1:], boundaries[i:])
+			boundaries[i] = v
+			return boundaries
+		}
+	}
+	return append(boundaries, v)
 }
 
 func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
