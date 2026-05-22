@@ -490,12 +490,22 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
+	// Reuse the out + scratch buffers across chunks — both are the same
+	// size every iteration so the previous make-per-chunk pattern paid
+	// for two allocations per chunk that we never needed to grow.
+	out := make([]float32, chunkElements)
+	var scratch []byte
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		count := min(chunkElements, elements-offset)
-		out := make([]float32, count)
+		// Reset out for this chunk — zero only the slice prefix we will
+		// actually accumulate into.
+		out = out[:count]
+		for i := range out {
+			out[i] = 0
+		}
 		for sourceIndex, reader := range readers {
 			values, err := reader.ReadFloat32Chunk(offset, count)
 			if err != nil {
@@ -506,7 +516,9 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 				out[i] += float32(float64(value) * weight)
 			}
 		}
-		if err := writeFloat32Values(file, out); err != nil {
+		var err error
+		scratch, err = writeFloat32ValuesScratch(file, out, scratch)
+		if err != nil {
 			return err
 		}
 	}
@@ -670,12 +682,28 @@ func normalizedWeights(sources []Source) ([]float64, error) {
 }
 
 func writeFloat32Values(file *core.OSFile, values []float32) error {
-	raw := make([]byte, len(values)*4)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
-	}
-	_, err := file.Write(raw)
+	_, err := writeFloat32ValuesScratch(file, values, nil)
 	return err
+}
+
+// writeFloat32ValuesScratch is the byte-buffer-reusing variant for the
+// chunked write paths. The caller owns scratch so the same backing array
+// is reused across chunks instead of one make per chunk. The returned
+// slice (possibly the same as scratch) carries forward the now-grown
+// capacity for the caller's next call. Pass nil for scratch on a single
+// call site.
+func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []byte) ([]byte, error) {
+	needed := len(values) * 4
+	if cap(scratch) < needed {
+		scratch = make([]byte, needed)
+	} else {
+		scratch = scratch[:needed]
+	}
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(scratch[i*4:], math.Float32bits(value))
+	}
+	_, err := file.Write(scratch)
+	return scratch, err
 }
 
 func writeProvenance(path string, provenance Provenance) error {
