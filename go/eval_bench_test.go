@@ -316,6 +316,24 @@ func BenchmarkEval_EvalNeedsExplicitAttentionMask_Ragged(b *testing.B) {
 // The pure fast-path predicate (evalNeedsExplicitAttentionMask) above
 // already covers the early-exit branch evalOptionalBatchAttentionMask
 // checks before allocating.
+//
+// AttnMaskBufPool_AcquireRelease benches the dedicated attention-mask
+// buffer pool's hot path — paired acquire+release at the per-batch shape
+// (batch × maxLen²) the ragged eval branch hands to FromValues. Validates
+// the pool stays at zero allocs on a warm cycle.
+func BenchmarkEval_AttnMaskBufPool_AcquireRelease_Batch4_Seq2048(b *testing.B) {
+	const n = 4 * 2048 * 2048
+	// Warm pool with one acquire+release so the first iter isn't a fresh make.
+	bufPtr := acquireEvalBatchAttnMaskBuf(n)
+	releaseEvalBatchAttnMaskBuf(bufPtr)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bufPtr := acquireEvalBatchAttnMaskBuf(n)
+		evalBenchSinkMask = *bufPtr
+		releaseEvalBatchAttnMaskBuf(bufPtr)
+	}
+}
 
 // --- modelInfoToEval / evalInfoToModel — converter pair ---
 

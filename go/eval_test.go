@@ -72,9 +72,12 @@ func TestRunModelEval_RealModelLoRASkip_Ugly(t *testing.T) {
 }
 
 func TestEvalOptionalBatchAttentionMask_SkipsDenseMaskForUnpaddedBatch_Good(t *testing.T) {
-	mask := evalOptionalBatchAttentionMask([]int32{4, 4}, 4)
+	mask, bufPtr := evalOptionalBatchAttentionMask([]int32{4, 4}, 4)
 	if mask != nil {
 		t.Fatalf("evalOptionalBatchAttentionMask returned dense mask for unpadded batch")
+	}
+	if bufPtr != nil {
+		t.Fatalf("evalOptionalBatchAttentionMask returned non-nil bufPtr on fast path")
 	}
 }
 
@@ -82,9 +85,12 @@ func TestEvalOptionalBatchAttentionMask_KeepsMaskForPaddedBatch_Good(t *testing.
 	if !MetalAvailable() {
 		t.Skip("Metal runtime unavailable")
 	}
-	mask := evalOptionalBatchAttentionMask([]int32{4, 3}, 4)
+	mask, bufPtr := evalOptionalBatchAttentionMask([]int32{4, 3}, 4)
 	if mask == nil {
 		t.Fatalf("evalOptionalBatchAttentionMask returned nil for padded batch")
+	}
+	if bufPtr != nil {
+		releaseEvalBatchAttnMaskBuf(bufPtr)
 	}
 	defer Free(mask)
 
