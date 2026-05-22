@@ -1072,6 +1072,12 @@ type PagedKVCache struct {
 	length                             int
 	maxSize                            int
 	pageSize                           int
+	// preallocStorage is true when pages have storage = c.pageSize (prealloc
+	// path); false when storage equals the actual fill length (concat path).
+	// Set lazily on first page append; cleared on Reset.  Used by visiblePage
+	// to skip page.Shape() allocations — the cached pageShape + this flag
+	// fully describe the slice/clone branch without a per-call cgo Shape().
+	preallocStorage bool
 }
 
 type pagedKVPageShape struct {
@@ -1325,6 +1331,7 @@ func (c *PagedKVCache) Reset() {
 	c.borrowedKeysScratch = nil
 	c.borrowedValuesScratch = nil
 	c.borrowedOwnedScratch = nil
+	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
 }
@@ -1531,6 +1538,7 @@ func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32
 	c.vPages = append(c.vPages, updatedV)
 	c.pageLens = append(c.pageLens, take)
 	c.recordPageShape(kShape, vShape)
+	c.preallocStorage = true
 	Free(pageK, pageV)
 	if ownedK {
 		Free(pieceK)
@@ -1669,8 +1677,31 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 	if page == nil || !page.Valid() {
 		return nil
 	}
-	shape := page.Shape()
 	length := c.pageLen(i)
+	// Fast path: when the cached pageShape is set we know batch/heads/dim for
+	// the K and V sides, and the storage seq-length is c.pageSize for prealloc
+	// pages or pageLens[i] for concat pages.  This lets us skip the per-call
+	// page.Shape() allocation and decide Slice vs Clone using cached info.
+	if c.pageShape.set && length > 0 {
+		if isK, ok := c.identifyPage(page, i); ok {
+			storage := length
+			if c.preallocStorage {
+				storage = c.pageSize
+			}
+			if length >= storage {
+				return page.Clone()
+			}
+			if isK {
+				return Slice(page,
+					[]int32{0, 0, 0, 0},
+					[]int32{c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim})
+			}
+			return Slice(page,
+				[]int32{0, 0, 0, 0},
+				[]int32{c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim})
+		}
+	}
+	shape := page.Shape()
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page.Clone()
 	}
@@ -1685,11 +1716,48 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 	if c.pageSize > 0 && length >= c.pageSize {
 		return page, false
 	}
+	// Fast path: avoid page.Shape() when the cached pageShape is set.  Storage
+	// is c.pageSize for prealloc pages; for concat pages the page is fully
+	// filled (length == pageLens[i] == shape[2]) so borrow returns the page
+	// directly without slicing.
+	if c.pageShape.set && length > 0 {
+		if isK, ok := c.identifyPage(page, i); ok {
+			storage := length
+			if c.preallocStorage {
+				storage = c.pageSize
+			}
+			if length >= storage {
+				return page, false
+			}
+			if isK {
+				return Slice(page,
+					[]int32{0, 0, 0, 0},
+					[]int32{c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim}), true
+			}
+			return Slice(page,
+				[]int32{0, 0, 0, 0},
+				[]int32{c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim}), true
+		}
+	}
 	shape := page.Shape()
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page, false
 	}
 	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]}), true
+}
+
+// identifyPage returns (isK, ok) — isK is true when the page is the i-th K
+// page, false when it is the i-th V page.  ok is false when the page doesn't
+// match either, which can happen when the caller has cloned pages out of the
+// cache.  Falls through to the legacy page.Shape() path in that case.
+func (c *PagedKVCache) identifyPage(page *Array, i int) (bool, bool) {
+	if i >= 0 && i < len(c.kPages) && c.kPages[i] == page {
+		return true, true
+	}
+	if i >= 0 && i < len(c.vPages) && c.vPages[i] == page {
+		return false, true
+	}
+	return false, false
 }
 
 func (c *PagedKVCache) borrowedKeys(n int) []*Array {
