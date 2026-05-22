@@ -936,83 +936,54 @@ type ggufTensorTypeDetailsInfo struct {
 	Known     bool
 }
 
+// ggufTensorTypeDetailsTable — direct lookup by tensorType id, replaces the
+// 35-case switch in the per-tensor hot path. IDs are bounded 0..39 with
+// gaps (4, 5, 36, 37 unused in current GGML); unused entries default to
+// the zero ggufTensorTypeDetailsInfo (Known=false, treated as unknown).
+var ggufTensorTypeDetailsTable = [40]ggufTensorTypeDetailsInfo{
+	ggufTensorTypeF32:      {Name: "f32", DType: "float32", Bits: 32, Known: true},
+	ggufTensorTypeF16:      {Name: "f16", DType: "float16", Bits: 16, Known: true},
+	TensorTypeQ4_0:         {Name: "q4_0", DType: "ggml_q4_0", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_1:     {Name: "q4_1", DType: "ggml_q4_1", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ5_0:     {Name: "q5_0", DType: "ggml_q5_0", Bits: 5, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ5_1:     {Name: "q5_1", DType: "ggml_q5_1", Bits: 5, BlockSize: 32, Quantized: true, Known: true},
+	TensorTypeQ8_0:         {Name: "q8_0", DType: "ggml_q8_0", Bits: 8, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ8_1:     {Name: "q8_1", DType: "ggml_q8_1", Bits: 8, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ2K:      {Name: "q2_k", DType: "ggml_q2_k", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ3K:      {Name: "q3_k", DType: "ggml_q3_k", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ4K:      {Name: "q4_k", DType: "ggml_q4_k", Bits: 4, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ5K:      {Name: "q5_k", DType: "ggml_q5_k", Bits: 5, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ6K:      {Name: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ8K:      {Name: "q8_k", DType: "ggml_q8_k", Bits: 8, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2XXS:   {Name: "iq2_xxs", DType: "ggml_iq2_xxs", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2XS:    {Name: "iq2_xs", DType: "ggml_iq2_xs", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ3XXS:   {Name: "iq3_xxs", DType: "ggml_iq3_xxs", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ1S:     {Name: "iq1_s", DType: "ggml_iq1_s", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ4NL:    {Name: "iq4_nl", DType: "ggml_iq4_nl", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeIQ3S:     {Name: "iq3_s", DType: "ggml_iq3_s", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2S:     {Name: "iq2_s", DType: "ggml_iq2_s", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ4XS:    {Name: "iq4_xs", DType: "ggml_iq4_xs", Bits: 4, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeI8:       {Name: "i8", DType: "int8", Bits: 8, Known: true},
+	ggufTensorTypeI16:      {Name: "i16", DType: "int16", Bits: 16, Known: true},
+	ggufTensorTypeI32:      {Name: "i32", DType: "int32", Bits: 32, Known: true},
+	ggufTensorTypeI64:      {Name: "i64", DType: "int64", Bits: 64, Known: true},
+	ggufTensorTypeF64:      {Name: "f64", DType: "float64", Bits: 64, Known: true},
+	ggufTensorTypeIQ1M:     {Name: "iq1_m", DType: "ggml_iq1_m", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeBF16:     {Name: "bf16", DType: "bfloat16", Bits: 16, Known: true},
+	ggufTensorTypeQ4_0_4_4: {Name: "q4_0_4_4", DType: "ggml_q4_0_4_4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_0_4_8: {Name: "q4_0_4_8", DType: "ggml_q4_0_4_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_0_8_8: {Name: "q4_0_8_8", DType: "ggml_q4_0_8_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeTQ1_0:    {Name: "tq1_0", DType: "ggml_tq1_0", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeTQ2_0:    {Name: "tq2_0", DType: "ggml_tq2_0", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeMXFP4:    {Name: "mxfp4", DType: "ggml_mxfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeNVFP4:    {Name: "nvfp4", DType: "ggml_nvfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+}
+
 func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
-	switch tensorType {
-	case ggufTensorTypeF32:
-		return ggufTensorTypeDetailsInfo{Name: "f32", DType: "float32", Bits: 32, Known: true}
-	case ggufTensorTypeF16:
-		return ggufTensorTypeDetailsInfo{Name: "f16", DType: "float16", Bits: 16, Known: true}
-	case TensorTypeQ4_0:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0", DType: "ggml_q4_0", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_1:
-		return ggufTensorTypeDetailsInfo{Name: "q4_1", DType: "ggml_q4_1", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ5_0:
-		return ggufTensorTypeDetailsInfo{Name: "q5_0", DType: "ggml_q5_0", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ5_1:
-		return ggufTensorTypeDetailsInfo{Name: "q5_1", DType: "ggml_q5_1", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
-	case TensorTypeQ8_0:
-		return ggufTensorTypeDetailsInfo{Name: "q8_0", DType: "ggml_q8_0", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ8_1:
-		return ggufTensorTypeDetailsInfo{Name: "q8_1", DType: "ggml_q8_1", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ2K:
-		return ggufTensorTypeDetailsInfo{Name: "q2_k", DType: "ggml_q2_k", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ3K:
-		return ggufTensorTypeDetailsInfo{Name: "q3_k", DType: "ggml_q3_k", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ4K:
-		return ggufTensorTypeDetailsInfo{Name: "q4_k", DType: "ggml_q4_k", Bits: 4, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ5K:
-		return ggufTensorTypeDetailsInfo{Name: "q5_k", DType: "ggml_q5_k", Bits: 5, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ6K:
-		return ggufTensorTypeDetailsInfo{Name: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ8K:
-		return ggufTensorTypeDetailsInfo{Name: "q8_k", DType: "ggml_q8_k", Bits: 8, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2XXS:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_xxs", DType: "ggml_iq2_xxs", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2XS:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_xs", DType: "ggml_iq2_xs", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ3XXS:
-		return ggufTensorTypeDetailsInfo{Name: "iq3_xxs", DType: "ggml_iq3_xxs", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ1S:
-		return ggufTensorTypeDetailsInfo{Name: "iq1_s", DType: "ggml_iq1_s", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ4NL:
-		return ggufTensorTypeDetailsInfo{Name: "iq4_nl", DType: "ggml_iq4_nl", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeIQ3S:
-		return ggufTensorTypeDetailsInfo{Name: "iq3_s", DType: "ggml_iq3_s", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2S:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_s", DType: "ggml_iq2_s", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ4XS:
-		return ggufTensorTypeDetailsInfo{Name: "iq4_xs", DType: "ggml_iq4_xs", Bits: 4, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeI8:
-		return ggufTensorTypeDetailsInfo{Name: "i8", DType: "int8", Bits: 8, Known: true}
-	case ggufTensorTypeI16:
-		return ggufTensorTypeDetailsInfo{Name: "i16", DType: "int16", Bits: 16, Known: true}
-	case ggufTensorTypeI32:
-		return ggufTensorTypeDetailsInfo{Name: "i32", DType: "int32", Bits: 32, Known: true}
-	case ggufTensorTypeI64:
-		return ggufTensorTypeDetailsInfo{Name: "i64", DType: "int64", Bits: 64, Known: true}
-	case ggufTensorTypeF64:
-		return ggufTensorTypeDetailsInfo{Name: "f64", DType: "float64", Bits: 64, Known: true}
-	case ggufTensorTypeIQ1M:
-		return ggufTensorTypeDetailsInfo{Name: "iq1_m", DType: "ggml_iq1_m", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeBF16:
-		return ggufTensorTypeDetailsInfo{Name: "bf16", DType: "bfloat16", Bits: 16, Known: true}
-	case ggufTensorTypeQ4_0_4_4:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_4_4", DType: "ggml_q4_0_4_4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_0_4_8:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_4_8", DType: "ggml_q4_0_4_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_0_8_8:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_8_8", DType: "ggml_q4_0_8_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeTQ1_0:
-		return ggufTensorTypeDetailsInfo{Name: "tq1_0", DType: "ggml_tq1_0", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeTQ2_0:
-		return ggufTensorTypeDetailsInfo{Name: "tq2_0", DType: "ggml_tq2_0", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeMXFP4:
-		return ggufTensorTypeDetailsInfo{Name: "mxfp4", DType: "ggml_mxfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeNVFP4:
-		return ggufTensorTypeDetailsInfo{Name: "nvfp4", DType: "ggml_nvfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	default:
-		return ggufTensorTypeDetailsInfo{}
+	if tensorType < uint32(len(ggufTensorTypeDetailsTable)) {
+		return ggufTensorTypeDetailsTable[tensorType]
 	}
+	return ggufTensorTypeDetailsInfo{}
 }
 
 func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationIssue) {
