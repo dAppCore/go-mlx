@@ -12,6 +12,7 @@ package bundle
 
 import (
 	"context"
+	"strconv"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -504,7 +505,24 @@ func buildModel(snapshot *kv.Snapshot, opts Options) Model {
 		QuantGroup:    src.QuantGroup,
 		ContextLength: src.ContextLength,
 	}
-	model.Hash = HashString(core.Join("\n", model.Name, model.Path, model.Architecture, core.Sprintf("%d", model.VocabSize), core.Sprintf("%d", model.NumLayers), core.Sprintf("%d", model.QuantBits), core.Sprintf("%d", model.ContextLength)))
+	// Hand-built hash payload — avoids 4× Sprintf("%d") boxing and a
+	// 7-arg Join intermediate slice. Capacity sized for typical
+	// model.Path + Architecture strings plus 4 small integer fields.
+	buf := make([]byte, 0, len(model.Name)+len(model.Path)+len(model.Architecture)+48)
+	buf = append(buf, model.Name...)
+	buf = append(buf, '\n')
+	buf = append(buf, model.Path...)
+	buf = append(buf, '\n')
+	buf = append(buf, model.Architecture...)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.VocabSize), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.NumLayers), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.QuantBits), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.ContextLength), 10)
+	model.Hash = HashString(core.AsString(buf))
 	return model
 }
 
