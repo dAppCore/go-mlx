@@ -215,13 +215,21 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions
 }
 
 func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bundleURI string) (*StateIndex, error) {
+	// Labels + Meta: NewStateIndex below will deep-clone the entry via
+	// cloneIndexEntries → cloneIndexEntry (SliceClone + MapClone), so a
+	// defensive clone here would just double the allocation. Pass
+	// opts.Labels straight in and let downstream own the cloning.
+	// sleepEntryMeta already returns a fresh map so it's safe to pass
+	// in directly — downstream's MapClone is a wasted copy but the
+	// extra clone is unavoidable without an opt-out flag on
+	// StateIndexOptions, and saving the SliceClone is the cheaper win.
 	entry := StateIndexEntry{
 		URI:        entryURI,
 		BundleURI:  bundleURI,
 		Title:      opts.Title,
 		TokenStart: 0,
 		TokenCount: bundle.TokenCount,
-		Labels:     core.SliceClone(opts.Labels),
+		Labels:     opts.Labels,
 		Meta:       sleepEntryMeta(opts),
 	}
 	if entry.Title == "" {
