@@ -6,33 +6,52 @@ package metal
 
 /*
 #include "mlx/c/mlx.h"
+
+// mlx_slice_fixed4_scalar / mlx_slice_update_fixed4_scalar narrow the
+// FixedKVCache rank-4 slice geometry from individual scalar arguments
+// into stack-local int starts[4] / ends[4] / strides[4] buffers, then
+// invoke mlx_slice / mlx_slice_update.  The fixed-rank specialisation
+// (starts = {0, 0, seqStart, 0}, ends = {batch, heads, seqEnd, dim},
+// strides = {1, 1, 1, 1}) is the only slice geometry FixedKVCache uses,
+// so the scalar-passing form eliminates the per-call Go heap alloc for
+// the cgo int buffer entirely — there is no Go-side starts / ends array
+// at all, since the scalars cross the cgo boundary directly in registers.
+//
+// This sidesteps the W10-A finding (re-confirmed in W10-J escape analysis)
+// that even Go-native [4]int32 arrays passed via unsafe.Pointer escape to
+// heap when the cgo wrapper closure captures &arr[0].  The W10-F sync.Pool
+// avoided escape but cost ~1024 sync.Pool Get/Put roundtrips on a 256-token
+// decode; the scalar form has no buffer at all.
+static inline int mlx_slice_fixed4_scalar(
+    mlx_array* res, mlx_array a,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+    int32_t e0, int32_t e1, int32_t e2, int32_t e3,
+    mlx_stream s) {
+    int starts_buf[4] = {(int)s0, (int)s1, (int)s2, (int)s3};
+    int ends_buf[4]   = {(int)e0, (int)e1, (int)e2, (int)e3};
+    int strides_buf[4] = {1, 1, 1, 1};
+    return mlx_slice(res, a, starts_buf, 4, ends_buf, 4, strides_buf, 4, s);
+}
+
+static inline int mlx_slice_update_fixed4_scalar(
+    mlx_array* res, mlx_array a, mlx_array upd,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+    int32_t e0, int32_t e1, int32_t e2, int32_t e3,
+    mlx_stream s) {
+    int starts_buf[4] = {(int)s0, (int)s1, (int)s2, (int)s3};
+    int ends_buf[4]   = {(int)e0, (int)e1, (int)e2, (int)e3};
+    int strides_buf[4] = {1, 1, 1, 1};
+    return mlx_slice_update(res, a, upd, starts_buf, 4, ends_buf, 4, strides_buf, 4, s);
+}
 */
 import "C"
 
-import "sync"
-
-// fixedSliceCgoIntPool reuses the 12-slot cgo-int buffer used by
-// fixedKVCacheSlice4D and fixedKVCacheSliceUpdate4D.  Each call borrows the
-// buffer, fills starts / ends / strides, hands the three sub-slices to the
-// mlx op, then returns the buffer to the pool — mlx_slice / mlx_slice_update
-// copy the values into the op graph before returning, so the buffer is safe
-// to recycle immediately.  This replaces the earlier `var [4]C.int` "stack
-// arrays" which escape-analysis showed were moved to heap by the cgo pointer
-// checker (3 heap allocs per helper × 2 helpers × 2 calls per Update on the
-// FP16 storage path).
-var fixedSliceCgoIntPool = sync.Pool{
-	New: func() any {
-		buf := make([]C.int, 12)
-		return &buf
-	},
-}
-
 // fixedKVCacheSlice4D performs a 4D Slice with starts[0,0,seqStart,0] and
 // ends[batch,heads,seqEnd,dim], with all strides = 1.  It is the FixedKVCache
-// equivalent of metal.Slice using a pooled cgo-int buffer, avoiding three
-// [4]C.int heap allocations per call.  The single-token decode loop on
-// FixedKVCache calls this twice per Update (in validState), so the saved
-// allocations compound with sequence length.
+// equivalent of metal.Slice routed through mlx_slice_fixed4_scalar — the
+// per-call cgo int buffer is materialised on the C stack from scalar
+// arguments rather than a Go-side []C.int / [4]int32 buffer, removing the
+// per-call Go heap alloc entirely.
 //
 // The stream argument lets callers pass a pre-resolved stream so the
 // steady-state path can avoid the per-call DefaultStream() lookup, which
@@ -42,20 +61,13 @@ var fixedSliceCgoIntPool = sync.Pool{
 //	k := fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim, c.stream())
 func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
 	out := newArray("SLICE", a)
-	bufPtr := fixedSliceCgoIntPool.Get().(*[]C.int)
-	buf := *bufPtr
-	buf[0], buf[1], buf[2], buf[3] = 0, 0, C.int(seqStart), 0
-	buf[4], buf[5], buf[6], buf[7] = C.int(batch), C.int(heads), C.int(seqEnd), C.int(dim)
-	buf[8], buf[9], buf[10], buf[11] = 1, 1, 1, 1
-	C.mlx_slice(
+	C.mlx_slice_fixed4_scalar(
 		&out.ctx,
 		a.ctx,
-		&buf[0], 4,
-		&buf[4], 4,
-		&buf[8], 4,
+		C.int32_t(0), C.int32_t(0), C.int32_t(seqStart), C.int32_t(0),
+		C.int32_t(batch), C.int32_t(heads), C.int32_t(seqEnd), C.int32_t(dim),
 		stream.ctx,
 	)
-	fixedSliceCgoIntPool.Put(bufPtr)
 	return out
 }
 
@@ -73,26 +85,21 @@ func fixedKVCacheAsType(a *Array, dtype DType, stream *Stream) *Array {
 
 // fixedKVCacheSliceUpdate4D performs a 4D SliceUpdateInplace with
 // starts[0,0,seqStart,0] and ends[batch,heads,seqEnd,dim], strides = 1.  The
-// FixedKVCache equivalent of metal.SliceUpdateInplace using a pooled cgo-int
-// buffer.  Called twice per Update on the steady-state single-token path
-// (once for keys, once for values).
+// FixedKVCache equivalent of metal.SliceUpdateInplace routed through
+// mlx_slice_update_fixed4_scalar — see fixedKVCacheSlice4D for the
+// scalar-passing rationale (no Go-side buffer at all).  Called twice per
+// Update on the steady-state single-token path (once for keys, once for
+// values).
 //
 //	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, c.batch, c.heads, int32(start), int32(start+writeLen), c.keyDim, c.stream())
 func fixedKVCacheSliceUpdate4D(a, update *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
 	out := newArray("SLICE_UPDATE", a, update)
-	bufPtr := fixedSliceCgoIntPool.Get().(*[]C.int)
-	buf := *bufPtr
-	buf[0], buf[1], buf[2], buf[3] = 0, 0, C.int(seqStart), 0
-	buf[4], buf[5], buf[6], buf[7] = C.int(batch), C.int(heads), C.int(seqEnd), C.int(dim)
-	buf[8], buf[9], buf[10], buf[11] = 1, 1, 1, 1
-	C.mlx_slice_update(
+	C.mlx_slice_update_fixed4_scalar(
 		&out.ctx,
 		a.ctx, update.ctx,
-		&buf[0], 4,
-		&buf[4], 4,
-		&buf[8], 4,
+		C.int32_t(0), C.int32_t(0), C.int32_t(seqStart), C.int32_t(0),
+		C.int32_t(batch), C.int32_t(heads), C.int32_t(seqEnd), C.int32_t(dim),
 		stream.ctx,
 	)
-	fixedSliceCgoIntPool.Put(bufPtr)
 	return out
 }
