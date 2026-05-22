@@ -82,7 +82,11 @@ func ReadIndex(path string) (Index, error) {
 		return Index{}, resultError(result)
 	}
 
-	index := Index{Path: path, Tensors: map[string]TensorRef{}}
+	index := Index{
+		Path:    path,
+		Tensors: make(map[string]TensorRef, len(header)),
+		Names:   make([]string, 0, len(header)),
+	}
 	dataStart := int64(8 + headerLen)
 	for name, entry := range header {
 		if name == "__metadata__" {
