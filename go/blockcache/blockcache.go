@@ -246,7 +246,7 @@ func (service *Service) requestTokens(req inference.CacheWarmRequest) ([]int32, 
 	if err != nil {
 		return nil, err
 	}
-	return append([]int32(nil), tokens...), nil
+	return core.SliceClone(tokens), nil
 }
 
 func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32, labels map[string]string) []inference.CacheBlockRef {
@@ -436,7 +436,7 @@ func (service *Service) writeDiskBlockLocked(ctx context.Context, ref inference.
 		StateRef: stateRef,
 	}
 	if stateRef == nil {
-		record.Tokens = append([]int32(nil), tokens...)
+		record.Tokens = core.SliceClone(tokens)
 	}
 	data := core.JSONMarshal(record)
 	if !data.OK {
@@ -461,7 +461,7 @@ func (service *Service) writeStateBlock(ctx context.Context, ref inference.Cache
 		Version:       diskVersion,
 		BlockID:       ref.ID,
 		Ref:           ref,
-		Tokens:        append([]int32(nil), tokens...),
+		Tokens:        core.SliceClone(tokens),
 		Encoding:      ref.Encoding,
 		CacheMode:     mode,
 		PayloadFormat: "token-prefix/int32-json",
