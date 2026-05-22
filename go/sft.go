@@ -350,7 +350,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
 		MaxSeqLen:                 cfg.MaxSeqLen,
 		SequencePacking:           cfg.SequencePacking,
-		EvalPrompts:               append([]string(nil), cfg.EvalPrompts...),
+		EvalPrompts:               core.SliceClone(cfg.EvalPrompts),
 		LoRA:                      sftLoRAMetadata(cfg.LoRA),
 		AdamW:                     sftAdamWMetadata(sftAdamWConfig(cfg)),
 	}
@@ -362,8 +362,8 @@ func sftLoRAMetadata(cfg LoRAConfig) SFTLoRAMetadata {
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
-		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
+		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      cfg.DType.String(),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
@@ -423,13 +423,13 @@ func normalizeSFTLoRAConfig(cfg LoRAConfig) LoRAConfig {
 		cfg.Scale = cfg.Alpha / float32(cfg.Rank)
 	}
 	if len(cfg.TargetKeys) == 0 && len(cfg.TargetLayers) > 0 {
-		cfg.TargetKeys = append([]string(nil), cfg.TargetLayers...)
+		cfg.TargetKeys = core.SliceClone(cfg.TargetLayers)
 	}
 	if len(cfg.TargetKeys) == 0 {
 		cfg.TargetKeys = []string{"q_proj", "v_proj"}
 	}
 	if len(cfg.TargetLayers) == 0 {
-		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
+		cfg.TargetLayers = core.SliceClone(cfg.TargetKeys)
 	}
 	if cfg.DType == 0 {
 		cfg.DType = DTypeFloat32
