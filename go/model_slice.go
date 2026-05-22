@@ -328,17 +328,36 @@ func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclu
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return modelSliceInclusionMask{all: true}
 	}
-	return modelSliceInclusionMask{
-		embeddings: plan.HasComponent(inference.ModelComponentEmbeddings),
-		norms:      plan.HasComponent(inference.ModelComponentNorms),
-		attention:  plan.HasComponent(inference.ModelComponentAttention),
-		ffn:        plan.HasComponent(inference.ModelComponentFFN),
-		gate:       plan.HasComponent(inference.ModelComponentGate),
-		downMeta:   plan.HasComponent(inference.ModelComponentDownMeta),
-		router:     plan.HasComponent(inference.ModelComponentRouter),
-		experts:    plan.HasComponent(inference.ModelComponentExperts),
-		lmHead:     plan.HasComponent(inference.ModelComponentLMHead),
+	// The original nine plan.HasComponent calls each scanned the entire
+	// plan.Components slice — for a 9-component plan that was 9×9 = 81
+	// component comparisons (plus the string-equality cost on each). A
+	// single pass over plan.Components flips the relevant mask bit
+	// directly so the work is O(len(Components)) instead of
+	// O(len(Components) × 9).
+	mask := modelSliceInclusionMask{}
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentEmbeddings:
+			mask.embeddings = true
+		case inference.ModelComponentNorms:
+			mask.norms = true
+		case inference.ModelComponentAttention:
+			mask.attention = true
+		case inference.ModelComponentFFN:
+			mask.ffn = true
+		case inference.ModelComponentGate:
+			mask.gate = true
+		case inference.ModelComponentDownMeta:
+			mask.downMeta = true
+		case inference.ModelComponentRouter:
+			mask.router = true
+		case inference.ModelComponentExperts:
+			mask.experts = true
+		case inference.ModelComponentLMHead:
+			mask.lmHead = true
+		}
 	}
+	return mask
 }
 
 func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
