@@ -194,8 +194,9 @@ func SleepBlockOptions(opts SleepOptions, bundleURI string) kv.StateBlockOptions
 	if blockOpts.Title == "" {
 		blockOpts.Title = firstNonEmptyString(opts.Title, "go-mlx State")
 	}
-	blockOpts.Labels = append([]string(nil), blockOpts.Labels...)
-	blockOpts.Labels = append(blockOpts.Labels, "state")
+	labels := make([]string, len(blockOpts.Labels), len(blockOpts.Labels)+1)
+	copy(labels, blockOpts.Labels)
+	blockOpts.Labels = append(labels, "state")
 	return blockOpts
 }
 
