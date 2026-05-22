@@ -239,6 +239,30 @@ func BenchmarkSessionAgent_MetadataFromInf_Full(b *testing.B) {
 	}
 }
 
+// Caller-supplied Metadata (3 custom keys) plus 7 standard fields —
+// exercises the metadata-merge path which combines req.Metadata into
+// the pre-sized destination map.
+func BenchmarkSessionAgent_MetadataFromInf_WithMetadata(b *testing.B) {
+	req := inference.AgentMemorySleepRequest{
+		Adapter: inference.AdapterIdentity{
+			Hash: "abc", Format: "safetensors", Rank: 16, Alpha: 32.0,
+		},
+		Runtime: inference.RuntimeIdentity{
+			Backend: "metal", Device: "Apple M3 Ultra", Version: "0.42",
+		},
+		Metadata: map[string]string{
+			"custom_a": "value-a",
+			"custom_b": "value-b",
+			"custom_c": "value-c",
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionAgentBenchSinkInfMeta = agentMemoryMetadataFromInference(req)
+	}
+}
+
 // Typical req — most fields set, but CacheMode commonly empty (e.g. the
 // metal backend uses its single default). 8 entries fit in the swissmap
 // 2-alloc compact layout.
