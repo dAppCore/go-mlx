@@ -2837,7 +2837,9 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 	}
 	Free(q)
 
-	transposed := Transpose(out, 0, 2, 1, 3)
+	// Rank-4 attention output transpose [B,H,L,D] → [B,L,H,D] — scalar-pass
+	// Transpose4 form (eliminates the []int axes heap alloc).
+	transposed := Transpose4(out, 0, 2, 1, 3)
 	Free(out)
 	reshaped := Reshape(transposed, B, L, cfg.NumAttentionHeads*a.HeadDim)
 	Free(transposed)
