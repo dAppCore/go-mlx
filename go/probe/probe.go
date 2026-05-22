@@ -305,10 +305,17 @@ func (r *Recorder) Events() []Event {
 		return nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]Event, len(r.events))
-	for i := range r.events {
-		out[i] = CloneEvent(r.events[i])
+	// Snapshot the slice header — append-only growth means the
+	// existing backing array is stable for snapshot[i] reads until
+	// the recorder is garbage-collected, so the deep clone can
+	// happen outside the lock. Holding the mutex through 128
+	// CloneEvent calls otherwise serialised every concurrent
+	// EmitProbe against the read.
+	snapshot := r.events
+	r.mu.Unlock()
+	out := make([]Event, len(snapshot))
+	for i := range snapshot {
+		out[i] = CloneEvent(snapshot[i])
 	}
 	return out
 }
