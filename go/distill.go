@@ -807,9 +807,14 @@ func logSoftmaxTemperatureInto(logits []float32, temperature float64, out []floa
 	if len(out) != len(logits) {
 		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
 	}
+	// Reciprocal multiply — Go's `value / temperature` per element is a
+	// vocab-sized stream of float divisions. Multiplying by 1/temp is the
+	// standard substitution and matches the numerical accuracy used by
+	// every other softmax-with-temperature implementation in the stack.
+	invTemp := 1.0 / temperature
 	maxLogit := math.Inf(-1)
 	for i, logit := range logits {
-		value := float64(logit) / temperature
+		value := float64(logit) * invTemp
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return core.NewError("mlx: distillation logit is not finite")
 		}
