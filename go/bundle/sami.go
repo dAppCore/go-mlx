@@ -64,10 +64,11 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	layerCoherence := make([]float64, numLayers)
 	layerCross := make([]float64, numLayers)
 	for layer := range numLayers {
-		layerCoherence[layer] = meanUnit(
-			layerMetric(layerKey, layer, fallbackKey),
-			layerMetric(layerValue, layer, fallbackValue),
-		)
+		// layerMetric already clamps to [0,1]; bypass meanUnit's redundant
+		// per-input clamp and just average + clamp the result for NaN guard.
+		k := layerMetric(layerKey, layer, fallbackKey)
+		v := layerMetric(layerValue, layer, fallbackValue)
+		layerCoherence[layer] = clampUnit((k + v) / 2.0)
 		layerCross[layer] = layerMetric(layerAlign, layer, fallbackAlign)
 	}
 	jointCollapseCount := analysis.JointCollapseCount
