@@ -792,11 +792,29 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	fit.LoRAFeasible = plan.InferenceFits && (memoryLimit == 0 || totalWithLoRA <= memoryLimit)
 	fullTuneBytes := plan.WeightBytes*6 + plan.ExpectedKVBytes + plan.ExpectedRuntimeBytes
 	fit.FullFineTuneFeasible = plan.NativeLoadable && plan.QuantBits >= 16 && (memoryLimit == 0 || fullTuneBytes <= memoryLimit)
-	if !fit.LoRAFeasible {
-		fit.Notes = append(fit.Notes, "LoRA training estimate exceeds local working-set budget")
+	// Pre-count the notes so the result slice is allocated exactly once
+	// at the right capacity. The previous append-from-nil pattern paid a
+	// cap-1 alloc plus a cap-1→2 growslice when both notes fired. nil for
+	// the zero-note path keeps TrainingFit.Notes ungrown for the common
+	// case (CPU/MPS-clean models).
+	loraBudgetOver := !fit.LoRAFeasible
+	quantBelowDense := plan.QuantBits > 0 && plan.QuantBits < 16
+	count := 0
+	if loraBudgetOver {
+		count++
 	}
-	if plan.QuantBits > 0 && plan.QuantBits < 16 {
-		fit.Notes = append(fit.Notes, "full fine-tune requires dense trainable weights; quantized pack is LoRA-only")
+	if quantBelowDense {
+		count++
+	}
+	if count > 0 {
+		notes := make([]string, 0, count)
+		if loraBudgetOver {
+			notes = append(notes, "LoRA training estimate exceeds local working-set budget")
+		}
+		if quantBelowDense {
+			notes = append(notes, "full fine-tune requires dense trainable weights; quantized pack is LoRA-only")
+		}
+		fit.Notes = notes
 	}
 	return fit
 }
