@@ -223,9 +223,14 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 		})
 		return labelled(Sample{Text: text}, format), true, nil
 	}
-	promptMessages := cloneMessages(messages[:assistantIdx])
+	// chat.Format only reads from its slice argument (verified: all
+	// per-template formatters iterate with `for _, msg := range
+	// messages` without retaining), and the resulting Prompt is an
+	// immutable string baked into the returned Sample. The defensive
+	// cloneMessages copy was protecting nothing — drop it and pass
+	// the sub-slice directly.
 	response := core.Trim(messages[assistantIdx].Content)
-	prompt := chat.Format(promptMessages, cfg)
+	prompt := chat.Format(messages[:assistantIdx], cfg)
 	return labelled(Sample{Prompt: prompt, Response: response}, format), true, nil
 }
 
@@ -265,15 +270,6 @@ func formatReasoningResponse(thinking, solution string) string {
 		return thinking
 	}
 	return thinking + "\n\n" + solution
-}
-
-func cloneMessages(messages []inference.Message) []inference.Message {
-	if len(messages) == 0 {
-		return nil
-	}
-	out := make([]inference.Message, len(messages))
-	copy(out, messages)
-	return out
 }
 
 // firstNonEmpty returns the first value with a non-empty trimmed form,
