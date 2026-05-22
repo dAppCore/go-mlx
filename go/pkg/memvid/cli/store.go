@@ -70,7 +70,7 @@ func (e *CommandError) Error() string {
 	if detail == "" {
 		detail = "unknown error"
 	}
-	return core.Sprintf("memvid-cli %s failed: %s", core.Join(" ", e.Args...), detail)
+	return core.Concat("memvid-cli ", core.Join(" ", e.Args...), " failed: ", detail)
 }
 
 func (e *CommandError) Unwrap() error {
