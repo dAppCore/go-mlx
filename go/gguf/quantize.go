@@ -374,7 +374,16 @@ func quantizeQ8_0(values []float32) []byte {
 			if invScale != 0 {
 				// Multiply by 1/scale instead of dividing — single FMUL
 				// vs FDIV per element (32x per block, millions per tensor).
-				q = int(math.Round(float64(value * invScale)))
+				// Round-half-away-from-zero in float32 directly; skips the
+				// float32→float64→math.Round→int round-trip and the call
+				// overhead of math.Round (which handles edge cases
+				// irrelevant to a clamped-to-127 quantiser).
+				scaled := value * invScale
+				if scaled >= 0 {
+					q = int(scaled + 0.5)
+				} else {
+					q = int(scaled - 0.5)
+				}
 			}
 			q = clampInt(q, -127, 127)
 			out = append(out, byte(int8(q)))
@@ -403,7 +412,16 @@ func quantizeQ4_0(values []float32) []byte {
 		for i, value := range block {
 			var q int
 			if invScale != 0 {
-				q = int(math.Round(float64(value*invScale))) + 8
+				// Round-half-away-from-zero in float32 — same optimisation
+				// as quantizeQ8_0. The +8 bias re-centres the signed
+				// quantised range into the [0,15] unsigned range Q4_0
+				// stores.
+				scaled := value * invScale
+				if scaled >= 0 {
+					q = int(scaled+0.5) + 8
+				} else {
+					q = int(scaled-0.5) + 8
+				}
 			}
 			q = clampInt(q, 0, 15)
 			if i < 16 {
