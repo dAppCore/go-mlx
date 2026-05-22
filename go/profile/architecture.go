@@ -3,9 +3,17 @@
 package profile
 
 import (
+	"unsafe"
+
 	core "dappco.re/go"
 	"dappco.re/go/inference/parser"
 )
+
+// maxArchitectureNameBytes bounds the stack buffer used by
+// compactArchitectureNameInto. The longest known architecture alias is
+// XLMRobertaForSequenceClassification (35 chars) — 64 leaves ample
+// headroom for any plausible new entry and keeps the buffer cheap.
+const maxArchitectureNameBytes = 64
 
 // ArchitectureRuntimeStatus describes how far a model family is implemented.
 type ArchitectureRuntimeStatus string
@@ -95,7 +103,8 @@ func ArchitectureID(value string) string {
 	if normalized == "bert_rerank" {
 		return normalized
 	}
-	compact := compactArchitectureName(normalized)
+	var buf [maxArchitectureNameBytes]byte
+	compact := compactArchitectureNameInto(buf[:], normalized)
 	switch {
 	case core.Contains(compact, "qwen35moe") || core.Contains(compact, "qwen36moe"):
 		return "qwen3_6_moe"
@@ -345,7 +354,8 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func architectureFromTransformersName(architecture string) string {
-	compact := compactArchitectureName(architecture)
+	var buf [maxArchitectureNameBytes]byte
+	compact := compactArchitectureNameInto(buf[:], architecture)
 	switch {
 	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
 		return "bert_rerank"
@@ -390,7 +400,49 @@ func architectureFromTransformersName(architecture string) string {
 	}
 }
 
-func compactArchitectureName(value string) string {
+// compactArchitectureNameInto writes the compact form of value into
+// buf (ASCII lowercased, with '_' '-' '.' stripped) and returns a
+// string view backed by buf. buf MUST outlive the returned string —
+// the result is unsafe-aliased to the underlying bytes to keep the
+// hot architecture-resolution path zero-alloc.
+//
+// Inputs longer than len(buf) or containing non-ASCII fall back to
+// the old core.Lower+core.Replace path (one alloc, heap-stable
+// string). All real architecture names are ASCII and ≤ 35 chars,
+// so the fallback never fires for built-in resolution.
+//
+//	var buf [maxArchitectureNameBytes]byte
+//	compact := compactArchitectureNameInto(buf[:], "Qwen3ForCausalLM")
+//	// compact == "qwen3forcausallm" — aliased to buf[:16]
+func compactArchitectureNameInto(buf []byte, value string) string {
+	n := 0
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c >= 0x80 {
+			return compactArchitectureNameFallback(value)
+		}
+		if c == '_' || c == '-' || c == '.' {
+			continue
+		}
+		if n == len(buf) {
+			return compactArchitectureNameFallback(value)
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[n] = c
+		n++
+	}
+	if n == 0 {
+		return ""
+	}
+	return unsafe.String(&buf[0], n)
+}
+
+// compactArchitectureNameFallback handles the rare non-ASCII /
+// over-length input. Heap-stable single-alloc result, identical to
+// the pre-W11E semantics.
+func compactArchitectureNameFallback(value string) string {
 	compact := core.Lower(value)
 	compact = core.Replace(compact, "_", "")
 	compact = core.Replace(compact, "-", "")
