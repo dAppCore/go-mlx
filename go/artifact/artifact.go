@@ -33,6 +33,15 @@ var errSnapshotNil = core.NewError("artifact: KV snapshot is nil")
 // package var to avoid allocating on this rare-but-hot helper path.
 var errResultFailed = core.NewError("core result failed")
 
+// cachedFeatureLabels is the package-once-cached result of kv.FeatureLabels.
+// kv.FeatureLabels allocates a fresh slice every call (currently 7 strings);
+// Export embeds the slice once per Record so the labels alloc fires on
+// every Export call. The label list is invariant — kv exposes it as the
+// stable order matching Features — so it is safe to compute once at
+// package init and share across all Exports. Callers must NOT mutate the
+// slice (none currently do; Records that travel to JSON only ever read).
+var cachedFeatureLabels = kv.FeatureLabels()
+
 // Options controls local model-state artifact export.
 type Options struct {
 	Model    string
@@ -115,7 +124,7 @@ func Export(ctx context.Context, snapshot *kv.Snapshot, opts Options) (*Record, 
 		},
 		Analysis:      analysis,
 		Features:      kv.Features(analysis),
-		FeatureLabels: kv.FeatureLabels(),
+		FeatureLabels: cachedFeatureLabels,
 		SAMI:          bundle.SAMIFromKV(snapshot, analysis, bundle.SAMIOptions{Model: opts.Model, Prompt: opts.Prompt}),
 		KVPath:        opts.KVPath,
 	}
