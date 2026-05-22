@@ -103,7 +103,7 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errStateStoreNil
 	}
 	// When compat check is enabled it runs its own Validate; skip the
 	// duplicate loadIndex-side validation in that case.
@@ -122,7 +122,7 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, core.NewError("mlx: State index entry not found")
+		return nil, errStateIndexEntryNotFound
 	}
 	bundleURI := firstNonEmptyString(entry.BundleURI, index.BundleURI)
 	bundle, err := kv.LoadStateBlockBundle(ctx, store, bundleURI)
@@ -131,7 +131,7 @@ func PlanWake(ctx context.Context, store state.Store, opts WakeOptions, info mem
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, core.NewError("mlx: State index prefix is invalid")
+		return nil, errStateIndexPrefixInvalid
 	}
 	report := &WakeReport{
 		IndexURI:     opts.IndexURI,
@@ -163,7 +163,7 @@ func loadIndex(ctx context.Context, store state.Store, opts WakeOptions, mustVal
 		return opts.Index, nil
 	}
 	if core.Trim(opts.IndexURI) == "" {
-		return nil, core.NewError("mlx: State index URI is required")
+		return nil, errStateIndexURIRequired
 	}
 	// LoadStateIndex always validates the loaded payload before returning,
 	// so the mustValidate signal only matters for the in-memory opts.Index
@@ -192,7 +192,7 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 		indexURI = entryURI + "/index"
 	}
 	if entryURI == "" || bundleURI == "" || indexURI == "" {
-		return "", "", "", core.NewError("mlx: State URI is required")
+		return "", "", "", errStateURIRequired
 	}
 	return entryURI, bundleURI, indexURI, nil
 }

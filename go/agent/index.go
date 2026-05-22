@@ -37,6 +37,40 @@ const (
 // array instead of allocating a fresh slice literal per save.
 var stateIndexPutLabels = []string{"go-mlx", "kv-snapshot-bundle-index"}
 
+// Sentinel validation errors hoisted to package scope. Each previously
+// triggered a fresh core.NewError allocation per error-path hit; the
+// hot Validate path returns one of these on every bad entry, and
+// keeping them as singletons collapses N allocs → 0 on the failure
+// branches and also lets callers errors.Is them.
+var (
+	errStateIndexNil                  = core.NewError("mlx: State index is nil")
+	errStateIndexUnsupportedVersion   = core.NewError("mlx: unsupported State index version")
+	errStateIndexInvalidKind          = core.NewError("mlx: invalid State index kind")
+	errStateIndexEmptyTokenCount      = core.NewError("mlx: State index token count is empty")
+	errStateIndexNoEntries            = core.NewError("mlx: State index has no entries")
+	errStateIndexDuplicateURI         = core.NewError("mlx: duplicate State index URI")
+	errStateIndexHashMismatch         = core.NewError("mlx: State index hash mismatch")
+	errStateIndexEntryURIRequired     = core.NewError("mlx: State index entry URI is required")
+	errStateIndexEntryBundleRequired  = core.NewError("mlx: State index entry bundle URI is required")
+	errStateIndexEntryTokenStart      = core.NewError("mlx: State index entry token start is invalid")
+	errStateIndexEntryTokenCount      = core.NewError("mlx: State index entry token count is empty")
+	errStateIndexEntryExceedsBundle   = core.NewError("mlx: State index entry exceeds bundle token count")
+	errStateIndexEntryByteSpan        = core.NewError("mlx: State index entry byte span is invalid")
+	errStateIndexEntryHashMismatch    = core.NewError("mlx: State index entry hash mismatch")
+	errStateIndexEntryNotFound        = core.NewError("mlx: State index entry not found")
+	errStateIndexPrefixInvalid        = core.NewError("mlx: State index prefix is invalid")
+	errStateStoreNil                  = core.NewError("mlx: state store is nil")
+	errStateIndexURIRequired          = core.NewError("mlx: State index URI is required")
+	errStateIndexArchitectureMismatch = core.NewError("mlx: State index model architecture mismatch")
+	errStateIndexLayerMismatch        = core.NewError("mlx: State index model layer mismatch")
+	errStateIndexQuantMismatch        = core.NewError("mlx: State index model quantization mismatch")
+	errStateIndexModelHashMismatch    = core.NewError("mlx: State index model hash mismatch")
+	errStateIndexExceedsContext       = core.NewError("mlx: State index exceeds model context length")
+	errStateIndexTokenizerMismatch    = core.NewError("mlx: State index tokenizer hash mismatch")
+	errStateIndexChatTemplateMismatch = core.NewError("mlx: State index chat template hash mismatch")
+	errStateURIRequired               = core.NewError("mlx: State URI is required")
+)
+
 // StateIndexOptions configures a durable index for named State
 // spans such as chapters, sections, or checkpointed agent states.
 type StateIndexOptions struct {
@@ -137,7 +171,7 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 		if index.Entries[i].Hash == "" {
 			index.Entries[i].Hash = indexEntryHash(index.Entries[i])
 		} else if index.Entries[i].Hash != indexEntryHash(index.Entries[i]) {
-			return nil, core.NewError("mlx: State index entry hash mismatch")
+			return nil, errStateIndexEntryHashMismatch
 		}
 	}
 	index.Hash = indexHash(index)
@@ -162,19 +196,19 @@ func (index *StateIndex) Validate() error {
 
 func (index *StateIndex) validate(checkHashes bool) error {
 	if index == nil {
-		return core.NewError("mlx: State index is nil")
+		return errStateIndexNil
 	}
 	if index.Version <= 0 || index.Version > KVSnapshotStateBundleIndexVersion {
-		return core.NewError("mlx: unsupported State index version")
+		return errStateIndexUnsupportedVersion
 	}
 	if index.Kind != StateIndexKind {
-		return core.NewError("mlx: invalid State index kind")
+		return errStateIndexInvalidKind
 	}
 	if index.TokenCount <= 0 {
-		return core.NewError("mlx: State index token count is empty")
+		return errStateIndexEmptyTokenCount
 	}
 	if len(index.Entries) == 0 {
-		return core.NewError("mlx: State index has no entries")
+		return errStateIndexNoEntries
 	}
 	seen := make(map[string]bool, len(index.Entries))
 	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
@@ -183,37 +217,37 @@ func (index *StateIndex) validate(checkHashes bool) error {
 			return err
 		}
 		if seen[entry.URI] {
-			return core.NewError("mlx: duplicate State index URI")
+			return errStateIndexDuplicateURI
 		}
 		seen[entry.URI] = true
 	}
 	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
-		return core.NewError("mlx: State index hash mismatch")
+		return errStateIndexHashMismatch
 	}
 	return nil
 }
 
 func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash, indexBundleURIEmpty bool) error {
 	if core.Trim(entry.URI) == "" {
-		return core.NewError("mlx: State index entry URI is required")
+		return errStateIndexEntryURIRequired
 	}
 	if indexBundleURIEmpty && core.Trim(entry.BundleURI) == "" {
-		return core.NewError("mlx: State index entry bundle URI is required")
+		return errStateIndexEntryBundleRequired
 	}
 	if entry.TokenStart < 0 {
-		return core.NewError("mlx: State index entry token start is invalid")
+		return errStateIndexEntryTokenStart
 	}
 	if entry.TokenCount <= 0 {
-		return core.NewError("mlx: State index entry token count is empty")
+		return errStateIndexEntryTokenCount
 	}
 	if entry.TokenStart+entry.TokenCount > index.TokenCount {
-		return core.NewError("mlx: State index entry exceeds bundle token count")
+		return errStateIndexEntryExceedsBundle
 	}
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
-		return core.NewError("mlx: State index entry byte span is invalid")
+		return errStateIndexEntryByteSpan
 	}
 	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
-		return core.NewError("mlx: State index entry hash mismatch")
+		return errStateIndexEntryHashMismatch
 	}
 	return nil
 }
@@ -257,10 +291,10 @@ func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, 
 		ctx = context.Background()
 	}
 	if store == nil {
-		return state.ChunkRef{}, core.NewError("mlx: state store is nil")
+		return state.ChunkRef{}, errStateStoreNil
 	}
 	if core.Trim(uri) == "" {
-		return state.ChunkRef{}, core.NewError("mlx: State index URI is required")
+		return state.ChunkRef{}, errStateIndexURIRequired
 	}
 	if err := index.Validate(); err != nil {
 		return state.ChunkRef{}, err
@@ -292,10 +326,10 @@ func LoadStateIndex(ctx context.Context, store state.Store, uri string) (*StateI
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errStateStoreNil
 	}
 	if core.Trim(uri) == "" {
-		return nil, core.NewError("mlx: State index URI is required")
+		return nil, errStateIndexURIRequired
 	}
 	chunk, err := state.ResolveURI(ctx, store, uri)
 	if err != nil {
@@ -326,14 +360,14 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, StateIndexEntry{}, core.NewError("mlx: state store is nil")
+		return nil, StateIndexEntry{}, errStateStoreNil
 	}
 	if err := index.Validate(); err != nil {
 		return nil, StateIndexEntry{}, err
 	}
 	entry, ok := index.Entry(entryURI)
 	if !ok {
-		return nil, StateIndexEntry{}, core.NewError("mlx: State index entry not found")
+		return nil, StateIndexEntry{}, errStateIndexEntryNotFound
 	}
 	bundleURI := entry.BundleURI
 	if bundleURI == "" {
@@ -345,7 +379,7 @@ func LoadPrefixFromStateIndex(ctx context.Context, store state.Store, index *Sta
 	}
 	prefixTokens := entry.PrefixTokens()
 	if prefixTokens <= 0 || prefixTokens > bundle.TokenCount {
-		return nil, StateIndexEntry{}, core.NewError("mlx: State index prefix is invalid")
+		return nil, StateIndexEntry{}, errStateIndexPrefixInvalid
 	}
 	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, opts)
 	if err != nil {
@@ -369,28 +403,28 @@ func CheckStateIndexCompatibility(info memory.ModelInfo, tokenizer bundle.Tokeni
 		return err
 	}
 	if index.Model.Architecture != "" && info.Architecture != "" && index.Model.Architecture != info.Architecture {
-		return core.NewError("mlx: State index model architecture mismatch")
+		return errStateIndexArchitectureMismatch
 	}
 	if index.Model.NumLayers > 0 && info.NumLayers > 0 && index.Model.NumLayers != info.NumLayers {
-		return core.NewError("mlx: State index model layer mismatch")
+		return errStateIndexLayerMismatch
 	}
 	if index.Model.QuantBits > 0 && info.QuantBits > 0 && index.Model.QuantBits != info.QuantBits {
-		return core.NewError("mlx: State index model quantization mismatch")
+		return errStateIndexQuantMismatch
 	}
 	if index.Model.Hash != "" && index.Model.Name == "" && index.Model.Path == "" && modelHashComparable(info, index.Model) {
 		active := indexModel(nil, StateIndexOptions{ModelInfo: info})
 		if active.Hash != "" && active.Hash != index.Model.Hash {
-			return core.NewError("mlx: State index model hash mismatch")
+			return errStateIndexModelHashMismatch
 		}
 	}
 	if info.ContextLength > 0 && index.RequiredContextLength() > info.ContextLength {
-		return core.NewError("mlx: State index exceeds model context length")
+		return errStateIndexExceedsContext
 	}
 	if index.Tokenizer.Hash != "" && tokenizer.Hash != "" && index.Tokenizer.Hash != tokenizer.Hash {
-		return core.NewError("mlx: State index tokenizer hash mismatch")
+		return errStateIndexTokenizerMismatch
 	}
 	if index.Tokenizer.ChatTemplateHash != "" && tokenizer.ChatTemplateHash != "" && index.Tokenizer.ChatTemplateHash != tokenizer.ChatTemplateHash {
-		return core.NewError("mlx: State index chat template hash mismatch")
+		return errStateIndexChatTemplateMismatch
 	}
 	return nil
 }
