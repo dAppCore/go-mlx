@@ -136,6 +136,10 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		}
 	}
 
+	// safetensors / ggufs are freshly minted: PathGlob returns a new
+	// filepath.Glob slice, and the single-path cases assign a fresh
+	// []string{resolvedPath} above. No prior reference exists, so we
+	// hand the slice straight to pack.WeightFiles without cloning.
 	switch {
 	case len(safetensors) > 0 && len(ggufs) > 0:
 		pack.Format = mp.ModelPackFormatMixed
@@ -146,13 +150,13 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
 	case len(safetensors) > 0:
 		pack.Format = mp.ModelPackFormatSafetensors
-		pack.WeightFiles = core.SliceClone(safetensors)
+		pack.WeightFiles = safetensors
 	case len(ggufs) == 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = core.SliceClone(ggufs)
+		pack.WeightFiles = ggufs
 	case len(ggufs) > 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = core.SliceClone(ggufs)
+		pack.WeightFiles = ggufs
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
 	default:
 		pack.Format = mp.ModelPackFormatMissing
