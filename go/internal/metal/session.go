@@ -14,6 +14,56 @@ import (
 	core "dappco.re/go"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. Sharing instances also makes errors.Is comparable for
+// callers without parsing message text.
+var (
+	errByteLenShape                 = core.NewError("byte length does not match shape")
+	errInvalidShape                 = core.NewError("invalid shape")
+	errMissingNativeSlab            = core.NewError("missing native slab")
+	errKVStreamInvalidTokenState    = core.NewError("mlx: KV block stream has invalid token state")
+	errKVStreamNoBoundaries         = core.NewError("mlx: KV block stream has no block boundaries")
+	errKVBlockYieldNil              = core.NewError("mlx: KV block yield is nil")
+	errSnapshotArchMismatch         = core.NewError("mlx: KV snapshot architecture does not match model")
+	errSnapshotBlockSize            = core.NewError("mlx: KV snapshot block size must be > 0")
+	errSnapshotCacheIndex           = core.NewError("mlx: KV snapshot cache index exceeds model cache count")
+	errSnapshotExceedsFixedCap      = core.NewError("mlx: KV snapshot exceeds fixed cache capacity")
+	errSnapshotInvalidHeadDims      = core.NewError("mlx: KV snapshot has invalid head dimensions")
+	errSnapshotInvalidTensorDims    = core.NewError("mlx: KV snapshot has invalid tensor dimensions")
+	errSnapshotNoLayers             = core.NewError("mlx: KV snapshot has no layers")
+	errSnapshotNoRestorableLogits   = core.NewError("mlx: KV snapshot has no restorable logits")
+	errSnapshotNoSeqLen             = core.NewError("mlx: KV snapshot has no sequence length")
+	errSnapshotNil                  = core.NewError("mlx: KV snapshot is nil")
+	errSnapshotKeyTensorSize        = core.NewError("mlx: KV snapshot key tensor has unexpected size")
+	errSnapshotKVLenDiffer          = core.NewError("mlx: KV snapshot key/value cache lengths differ")
+	errSnapshotLayerNoHeads         = core.NewError("mlx: KV snapshot layer has no heads")
+	errSnapshotLogitShape           = core.NewError("mlx: KV snapshot logit shape is invalid")
+	errSnapshotLogitsShapeMismatch  = core.NewError("mlx: KV snapshot logits do not match shape")
+	errSnapshotMixedTensorHeads     = core.NewError("mlx: KV snapshot mixes native and float32 tensor heads")
+	errSnapshotNativeKeySize        = core.NewError("mlx: KV snapshot native key tensor has unexpected size")
+	errSnapshotNativeKVShapesDiffer = core.NewError("mlx: KV snapshot native layer key/value shapes differ")
+	errSnapshotNativeByteLen        = core.NewError("mlx: KV snapshot native tensor byte length mismatch")
+	errSnapshotNativeDtypeMismatch  = core.NewError("mlx: KV snapshot native tensor dtype mismatch")
+	errSnapshotNativeValueSize      = core.NewError("mlx: KV snapshot native value tensor has unexpected size")
+	errSnapshotValueTensorSize      = core.NewError("mlx: KV snapshot value tensor has unexpected size")
+	errModelNoKVCaches              = core.NewError("mlx: model has no KV caches")
+	errSessionNoPrefill             = core.NewError("mlx: model session has no prefilled state")
+	errSessionNoRestorableLogits    = core.NewError("mlx: model session has no restorable logits")
+	errSessionClosed                = core.NewError("mlx: model session is closed")
+	errSessionNil                   = core.NewError("mlx: model session is nil")
+	errUnsupportedKVCacheType       = core.NewError("mlx: unsupported KV cache type")
+	errUnsupportedNativeDtype       = core.NewError("mlx: unsupported KV snapshot native tensor dtype")
+	errUnsupportedSnapshotVersion   = core.NewError("mlx: unsupported KV snapshot version")
+	errForwardNilLogits             = core.NewError("model forward returned nil logits")
+	errAppendPromptEmpty            = core.NewError("ModelSession.AppendPrompt: empty prompt after tokenisation")
+	errAppendTokensEmpty            = core.NewError("ModelSession.AppendTokens: empty prompt tokens")
+	errForkCacheNotSnapshotable     = core.NewError("ModelSession.Fork: cache is not snapshotable")
+	errPrefillPromptEmpty           = core.NewError("ModelSession.Prefill: empty prompt after tokenisation")
+	errPrefillTokensEmpty           = core.NewError("ModelSession.PrefillTokens: empty prompt tokens")
+	errUnsupportedDtype             = core.NewError("unsupported dtype")
+)
+
 // SessionHandle is the native model-state session interface.
 type SessionHandle interface {
 	Prefill(context.Context, string) error
@@ -71,7 +121,7 @@ func (s *ModelSession) Prefill(ctx context.Context, prompt string) error {
 	if deviceErr := s.model.withDevice(func() {
 		tokens := s.model.tokenizer.Encode(prompt)
 		if len(tokens) == 0 {
-			prefillErr = core.NewError("ModelSession.Prefill: empty prompt after tokenisation")
+			prefillErr = errPrefillPromptEmpty
 			return
 		}
 		caches := s.model.newCaches()
@@ -171,7 +221,7 @@ func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error 
 	if deviceErr := s.model.withDevice(func() {
 		promptTokens := append([]int32(nil), tokens...)
 		if len(promptTokens) == 0 {
-			prefillErr = core.NewError("ModelSession.PrefillTokens: empty prompt tokens")
+			prefillErr = errPrefillTokensEmpty
 			return
 		}
 		caches := s.model.newCaches()
@@ -226,7 +276,7 @@ func (s *ModelSession) AppendPrompt(ctx context.Context, prompt string) error {
 			tokens = stripImplicitChunkBOS(s.model.tokenizer, tokens)
 		}
 		if len(tokens) == 0 {
-			appendErr = core.NewError("ModelSession.AppendPrompt: empty prompt after tokenisation")
+			appendErr = errAppendPromptEmpty
 			return
 		}
 		logits, err := s.model.prefillTokenBlock(ctx, tokens, s.caches)
@@ -279,7 +329,7 @@ func (s *ModelSession) AppendTokens(ctx context.Context, tokens []int32) error {
 			promptTokens = stripImplicitChunkBOS(s.model.tokenizer, promptTokens)
 		}
 		if len(promptTokens) == 0 {
-			appendErr = core.NewError("ModelSession.AppendTokens: empty prompt tokens")
+			appendErr = errAppendTokensEmpty
 			return
 		}
 		logits, err := s.model.prefillTokenBlock(ctx, promptTokens, s.caches)
@@ -517,7 +567,7 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 		if err := lastError(); err != nil {
 			return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), err)
 		}
-		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), core.NewError("model forward returned nil logits"))
+		return core.E("ModelSession.Generate", core.Sprintf("decode step %d", step), errForwardNilLogits)
 	}
 	oldLogits := s.logits
 	s.logits = nextLogits
@@ -582,7 +632,7 @@ func (s *ModelSession) RangeKVBlocks(ctx context.Context, blockSize int, opts KV
 		ctx = context.Background()
 	}
 	if yield == nil {
-		return core.NewError("mlx: KV block yield is nil")
+		return errKVBlockYieldNil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -613,11 +663,11 @@ func (s *ModelSession) RangeKVBlocks(ctx context.Context, blockSize int, opts KV
 
 func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, opts KVSnapshotCaptureOptions, yield func(KVSnapshotBlock) (bool, error)) error {
 	if blockSize <= 0 {
-		return core.NewError("mlx: KV snapshot block size must be > 0")
+		return errSnapshotBlockSize
 	}
 	seqLen := len(s.tokens)
 	if seqLen <= 0 {
-		return core.NewError("mlx: KV block stream has invalid token state")
+		return errKVStreamInvalidTokenState
 	}
 	snapshotTokens := s.tokens
 	baseOffset := s.tokenOffset - seqLen
@@ -626,7 +676,7 @@ func (s *ModelSession) rangeKVBlocksLocked(ctx context.Context, blockSize int, o
 	}
 	boundaries := s.model.kvBlockBoundaries(blockSize, seqLen, s.caches)
 	if len(boundaries) < 2 {
-		return core.NewError("mlx: KV block stream has no block boundaries")
+		return errKVStreamNoBoundaries
 	}
 	for i := 0; i < len(boundaries)-1; i++ {
 		select {
@@ -669,7 +719,7 @@ func (s *ModelSession) RestoreKV(ctx context.Context, snapshot *KVSnapshot) erro
 		return err
 	}
 	if snapshot == nil {
-		err := core.NewError("mlx: KV snapshot is nil")
+		err := errSnapshotNil
 		s.err = err
 		return err
 	}
@@ -826,7 +876,7 @@ func (s *ModelSession) forkLocked() (*ModelSession, error) {
 			return nil, core.E("ModelSession.Fork", "snapshot cache", err)
 		}
 		if !ok {
-			return nil, core.NewError("ModelSession.Fork: cache is not snapshotable")
+			return nil, errForkCacheNotSnapshotable
 		}
 		snapshots[i] = snapshot
 	}
@@ -891,10 +941,10 @@ func (s *ModelSession) Err() error {
 
 func (s *ModelSession) readyForMutation() error {
 	if s == nil || s.model == nil || s.model.model == nil || s.model.tokenizer == nil {
-		return core.NewError("mlx: model session is nil")
+		return errSessionNil
 	}
 	if s.closed {
-		return core.NewError("mlx: model session is closed")
+		return errSessionClosed
 	}
 	return nil
 }
@@ -904,7 +954,7 @@ func (s *ModelSession) readyForGeneration() error {
 		return err
 	}
 	if s.logits == nil || !s.logits.Valid() {
-		return core.NewError("mlx: model session has no restorable logits")
+		return errSessionNoRestorableLogits
 	}
 	return nil
 }
@@ -914,7 +964,7 @@ func (s *ModelSession) readyForAppend() error {
 		return err
 	}
 	if len(s.caches) == 0 {
-		return core.NewError("mlx: model session has no prefilled state")
+		return errSessionNoPrefill
 	}
 	return nil
 }
@@ -1089,20 +1139,20 @@ func freeCacheSnapshots(snapshots []cacheSnapshot) {
 
 func (m *Model) validateKVSnapshot(snapshot *KVSnapshot) error {
 	if snapshot == nil {
-		return core.NewError("mlx: KV snapshot is nil")
+		return errSnapshotNil
 	}
 	if snapshot.Version <= 0 || snapshot.Version > KVSnapshotVersion {
-		return core.NewError("mlx: unsupported KV snapshot version")
+		return errUnsupportedSnapshotVersion
 	}
 	info := m.Info()
 	if snapshot.Architecture != "" && info.Architecture != "" && snapshot.Architecture != info.Architecture {
-		return core.NewError("mlx: KV snapshot architecture does not match model")
+		return errSnapshotArchMismatch
 	}
 	if snapshot.SeqLen <= 0 || snapshot.HeadDim <= 0 {
-		return core.NewError("mlx: KV snapshot has invalid tensor dimensions")
+		return errSnapshotInvalidTensorDims
 	}
 	if len(snapshot.Layers) == 0 {
-		return core.NewError("mlx: KV snapshot has no layers")
+		return errSnapshotNoLayers
 	}
 	return nil
 }
@@ -1111,7 +1161,7 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 	templates := m.newCaches()
 	defer freeCaches(templates)
 	if len(templates) == 0 {
-		return nil, core.NewError("mlx: model has no KV caches")
+		return nil, errModelNoKVCaches
 	}
 	snapshots := make([]cacheSnapshot, len(templates))
 	populated := make([]bool, len(templates))
@@ -1121,7 +1171,7 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 		}
 		if layer.CacheIndex >= len(templates) {
 			freeCacheSnapshots(snapshots)
-			return nil, core.NewError("mlx: KV snapshot cache index exceeds model cache count")
+			return nil, errSnapshotCacheIndex
 		}
 		if populated[layer.CacheIndex] {
 			continue
@@ -1147,14 +1197,14 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 
 func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, template Cache) (cacheSnapshot, error) {
 	if snapshot == nil {
-		return cacheSnapshot{}, core.NewError("mlx: KV snapshot is nil")
+		return cacheSnapshot{}, errSnapshotNil
 	}
 	globalSeqLen := snapshot.SeqLen
 	if globalSeqLen <= 0 {
 		globalSeqLen = len(snapshot.Tokens)
 	}
 	if globalSeqLen <= 0 {
-		return cacheSnapshot{}, core.NewError("mlx: KV snapshot has no sequence length")
+		return cacheSnapshot{}, errSnapshotNoSeqLen
 	}
 	keyArray, valueArray, seqLen, err := kvLayerArrays(snapshot, layer, globalSeqLen)
 	if err != nil {
@@ -1197,7 +1247,7 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	case *FixedKVCache:
 		if c.maxSize > 0 && seqLen > c.maxSize {
 			Free(keyArray, valueArray)
-			return cacheSnapshot{}, core.NewError("mlx: KV snapshot exceeds fixed cache capacity")
+			return cacheSnapshot{}, errSnapshotExceedsFixedCap
 		}
 		result.mode = KVCacheModeFixed
 		result.maxSize = c.maxSize
@@ -1227,7 +1277,7 @@ func cacheSnapshotFromKVLayer(snapshot *KVSnapshot, layer KVLayerSnapshot, templ
 	case nil:
 	default:
 		Free(keyArray, valueArray)
-		return cacheSnapshot{}, core.NewError("mlx: unsupported KV cache type")
+		return cacheSnapshot{}, errUnsupportedKVCacheType
 	}
 	return result, nil
 }
@@ -1247,7 +1297,7 @@ func kvLayerArrays(snapshot *KVSnapshot, layer KVLayerSnapshot, globalSeqLen int
 
 	numHeads := len(layer.Heads)
 	if numHeads <= 0 {
-		return nil, nil, 0, core.NewError("mlx: KV snapshot layer has no heads")
+		return nil, nil, 0, errSnapshotLayerNoHeads
 	}
 	seqLen, keyDim, valueDim, err := inferSnapshotLayerCacheShape(layer.Heads, globalSeqLen, snapshot.HeadDim)
 	if err != nil {
@@ -1299,7 +1349,7 @@ func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error)
 		return nil, nil, 0, core.E("mlx: KV snapshot native layer value", "validate", err)
 	}
 	if keySeqLen != valueSeqLen || keyShape[0] != valueShape[0] || keyShape[1] != valueShape[1] {
-		return nil, nil, 0, core.NewError("mlx: KV snapshot native layer key/value shapes differ")
+		return nil, nil, 0, errSnapshotNativeKVShapesDiffer
 	}
 	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToInts(keyShape), layer.KeyDType)
 	if err != nil {
@@ -1315,23 +1365,23 @@ func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error)
 
 func validateKVLayerNativeSlab(raw []byte, dtype DType, shape []int32) ([]int32, int, error) {
 	if len(raw) == 0 || len(shape) != 4 {
-		return nil, 0, core.NewError("missing native slab")
+		return nil, 0, errMissingNativeSlab
 	}
 	byteSize := DTypeByteSize(dtype)
 	if byteSize <= 0 {
-		return nil, 0, core.NewError("unsupported dtype")
+		return nil, 0, errUnsupportedDtype
 	}
 	count := 1
 	out := make([]int32, len(shape))
 	for i, dim := range shape {
 		if dim <= 0 {
-			return nil, 0, core.NewError("invalid shape")
+			return nil, 0, errInvalidShape
 		}
 		out[i] = dim
 		count *= int(dim)
 	}
 	if count*byteSize != len(raw) {
-		return nil, 0, core.NewError("byte length does not match shape")
+		return nil, 0, errByteLenShape
 	}
 	return out, int(out[2]), nil
 }
@@ -1346,15 +1396,15 @@ func int32ShapeToInts(shape []int32) []int {
 
 func inferSnapshotLayerCacheShape(heads []KVHeadSnapshot, globalSeqLen, fallbackHeadDim int) (int, int, int, error) {
 	if len(heads) == 0 {
-		return 0, 0, 0, core.NewError("mlx: KV snapshot layer has no heads")
+		return 0, 0, 0, errSnapshotLayerNoHeads
 	}
 	keyLen, keyDim := inferSnapshotHeadTensorCacheShape(heads[0], globalSeqLen, fallbackHeadDim, true)
 	valueLen, valueDim := inferSnapshotHeadTensorCacheShape(heads[0], globalSeqLen, fallbackHeadDim, false)
 	if keyLen <= 0 || keyDim <= 0 || valueLen <= 0 || valueDim <= 0 {
-		return 0, 0, 0, core.NewError("mlx: KV snapshot has invalid head dimensions")
+		return 0, 0, 0, errSnapshotInvalidHeadDims
 	}
 	if keyLen != valueLen {
-		return 0, 0, 0, core.NewError("mlx: KV snapshot key/value cache lengths differ")
+		return 0, 0, 0, errSnapshotKVLenDiffer
 	}
 	return keyLen, keyDim, valueDim, nil
 }
@@ -1397,7 +1447,7 @@ func inferSnapshotTensorElementCacheShape(elements, globalSeqLen, fallbackHeadDi
 
 func validateSnapshotHeadTensorCacheShape(head KVHeadSnapshot, seqLen, dim int, key bool) error {
 	if seqLen <= 0 || dim <= 0 {
-		return core.NewError("mlx: KV snapshot has invalid head dimensions")
+		return errSnapshotInvalidHeadDims
 	}
 	values := head.Value
 	if key {
@@ -1405,26 +1455,26 @@ func validateSnapshotHeadTensorCacheShape(head KVHeadSnapshot, seqLen, dim int, 
 	}
 	if len(values) > 0 && len(values) != seqLen*dim {
 		if key {
-			return core.NewError("mlx: KV snapshot key tensor has unexpected size")
+			return errSnapshotKeyTensorSize
 		}
-		return core.NewError("mlx: KV snapshot value tensor has unexpected size")
+		return errSnapshotValueTensorSize
 	}
 	raw, dtype := kvHeadRawTensor(head, key)
 	if len(raw) == 0 {
 		if len(values) == 0 {
 			if key {
-				return core.NewError("mlx: KV snapshot key tensor has unexpected size")
+				return errSnapshotKeyTensorSize
 			}
-			return core.NewError("mlx: KV snapshot value tensor has unexpected size")
+			return errSnapshotValueTensorSize
 		}
 		return nil
 	}
 	bytesPerValue := DTypeByteSize(dtype)
 	if bytesPerValue <= 0 || len(raw) != seqLen*dim*bytesPerValue {
 		if key {
-			return core.NewError("mlx: KV snapshot native key tensor has unexpected size")
+			return errSnapshotNativeKeySize
 		}
-		return core.NewError("mlx: KV snapshot native value tensor has unexpected size")
+		return errSnapshotNativeValueSize
 	}
 	return nil
 }
@@ -1450,19 +1500,19 @@ func kvLayerRawTensor(heads []KVHeadSnapshot, seqLen, headDim int, key bool) ([]
 		for _, head := range heads[1:] {
 			raw, _ := kvHeadRawTensor(head, key)
 			if len(raw) > 0 {
-				return nil, 0, false, core.NewError("mlx: KV snapshot mixes native and float32 tensor heads")
+				return nil, 0, false, errSnapshotMixedTensorHeads
 			}
 		}
 		return nil, 0, false, nil
 	}
 	bytesPerValue := DTypeByteSize(firstDType)
 	if bytesPerValue <= 0 {
-		return nil, 0, false, core.NewError("mlx: unsupported KV snapshot native tensor dtype")
+		return nil, 0, false, errUnsupportedNativeDtype
 	}
 	expectedBytes := seqLen * headDim * bytesPerValue
 	if len(heads) == 1 {
 		if len(firstRaw) != expectedBytes {
-			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor byte length mismatch")
+			return nil, 0, false, errSnapshotNativeByteLen
 		}
 		return firstRaw, firstDType, true, nil
 	}
@@ -1470,13 +1520,13 @@ func kvLayerRawTensor(heads []KVHeadSnapshot, seqLen, headDim int, key bool) ([]
 	for _, head := range heads {
 		headRaw, headDType := kvHeadRawTensor(head, key)
 		if len(headRaw) == 0 {
-			return nil, 0, false, core.NewError("mlx: KV snapshot mixes native and float32 tensor heads")
+			return nil, 0, false, errSnapshotMixedTensorHeads
 		}
 		if headDType != firstDType {
-			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor dtype mismatch")
+			return nil, 0, false, errSnapshotNativeDtypeMismatch
 		}
 		if len(headRaw) != expectedBytes {
-			return nil, 0, false, core.NewError("mlx: KV snapshot native tensor byte length mismatch")
+			return nil, 0, false, errSnapshotNativeByteLen
 		}
 		raw = append(raw, headRaw...)
 	}
@@ -1499,22 +1549,22 @@ func inferSnapshotHeadDim(values []float32, seqLen int) int {
 
 func restoreSnapshotLogits(snapshot *KVSnapshot) (*Array, error) {
 	if snapshot == nil {
-		return nil, core.NewError("mlx: KV snapshot is nil")
+		return nil, errSnapshotNil
 	}
 	if len(snapshot.Logits) == 0 || len(snapshot.LogitShape) == 0 {
-		return nil, core.NewError("mlx: KV snapshot has no restorable logits")
+		return nil, errSnapshotNoRestorableLogits
 	}
 	shape := make([]int, len(snapshot.LogitShape))
 	count := 1
 	for i, dim := range snapshot.LogitShape {
 		if dim <= 0 {
-			return nil, core.NewError("mlx: KV snapshot logit shape is invalid")
+			return nil, errSnapshotLogitShape
 		}
 		shape[i] = int(dim)
 		count *= int(dim)
 	}
 	if count != len(snapshot.Logits) {
-		return nil, core.NewError("mlx: KV snapshot logits do not match shape")
+		return nil, errSnapshotLogitsShapeMismatch
 	}
 	logits := FromValues(snapshot.Logits, shape...)
 	if err := Eval(logits); err != nil {

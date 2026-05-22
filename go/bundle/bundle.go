@@ -33,6 +33,28 @@ const (
 	RefMemvid = "memvid"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. errBundleNil fires 4×, errBundleKVHash 3×,
+// errBundleNoSnapshot 2× from validation/load/restore guards.
+var (
+	errBundleNil                = core.NewError("bundle: state bundle is nil")
+	errBundleKVHash             = core.NewError("bundle: state bundle KV hash mismatch")
+	errBundleNoSnapshot         = core.NewError("bundle: state bundle has no KV snapshot")
+	errCoreResultFailed         = core.NewError("core result failed")
+	errBundleUnsupportedVersion = core.NewError("bundle: unsupported state bundle version")
+	errBundleNeedsLoRA          = core.NewError("bundle: state bundle requires a LoRA adapter but model has none")
+	errBundleLayerMismatch      = core.NewError("bundle: state bundle model layer mismatch")
+	errBundleArchMismatch       = core.NewError("bundle: state bundle model architecture mismatch")
+	errBundleLoRARank           = core.NewError("bundle: state bundle LoRA adapter rank mismatch")
+	errBundleLoRAPath           = core.NewError("bundle: state bundle LoRA adapter path mismatch")
+	errBundleLoRAHash           = core.NewError("bundle: state bundle LoRA adapter hash mismatch")
+	errBundleLoRAAlpha          = core.NewError("bundle: state bundle LoRA adapter alpha mismatch")
+	errBundleNoStateKVSnapshot  = core.NewError("bundle: state bundle has no State KV snapshot")
+	errBundleKVSnapshotNil      = core.NewError("bundle: KV snapshot is nil")
+	errBundleInvalidKind        = core.NewError("bundle: invalid state bundle kind")
+)
+
 // Options labels a bundle with caller-owned provenance.
 type Options struct {
 	Model       string
@@ -168,7 +190,7 @@ type Ref struct {
 //	b, err := bundle.New(snapshot, bundle.Options{Model: "gemma4-e4b"})
 func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 	if snapshot == nil {
-		return nil, core.NewError("bundle: KV snapshot is nil")
+		return nil, errBundleKVSnapshotNil
 	}
 	snap := snapshot.Clone()
 	if snap.Version == 0 {
@@ -267,13 +289,13 @@ func Load(path string) (*Bundle, error) {
 //	snap, err := b.Snapshot()
 func (b *Bundle) Snapshot() (*kv.Snapshot, error) {
 	if b == nil {
-		return nil, core.NewError("bundle: state bundle is nil")
+		return nil, errBundleNil
 	}
 	if b.KV != nil {
 		return b.KV.Clone(), nil
 	}
 	if b.KVPath == "" {
-		return nil, core.NewError("bundle: state bundle has no KV snapshot")
+		return nil, errBundleNoSnapshot
 	}
 	snapshot, err := kv.Load(b.KVPath)
 	if err != nil {
@@ -285,7 +307,7 @@ func (b *Bundle) Snapshot() (*kv.Snapshot, error) {
 			return nil, hashErr
 		}
 		if got != b.KVHash {
-			return nil, core.NewError("bundle: state bundle KV hash mismatch")
+			return nil, errBundleKVHash
 		}
 	}
 	return snapshot, nil
@@ -299,14 +321,14 @@ func (b *Bundle) SnapshotFromState(ctx context.Context, store state.Store) (*kv.
 		ctx = context.Background()
 	}
 	if b == nil {
-		return nil, core.NewError("bundle: state bundle is nil")
+		return nil, errBundleNil
 	}
 	if b.KV != nil || b.KVPath != "" {
 		return b.Snapshot()
 	}
 	ref, ok := b.stateRef()
 	if !ok {
-		return nil, core.NewError("bundle: state bundle has no State KV snapshot")
+		return nil, errBundleNoStateKVSnapshot
 	}
 	snapshot, err := kv.LoadFromState(ctx, store, ref)
 	if err != nil {
@@ -318,7 +340,7 @@ func (b *Bundle) SnapshotFromState(ctx context.Context, store state.Store) (*kv.
 			return nil, hashErr
 		}
 		if got != b.KVHash {
-			return nil, core.NewError("bundle: state bundle KV hash mismatch")
+			return nil, errBundleKVHash
 		}
 	}
 	return snapshot, nil
@@ -360,17 +382,17 @@ func (b *Bundle) stateRef() (state.ChunkRef, bool) {
 //	if err := b.Validate(); err != nil { … }
 func (b *Bundle) Validate() error {
 	if b == nil {
-		return core.NewError("bundle: state bundle is nil")
+		return errBundleNil
 	}
 	if b.Version <= 0 || b.Version > Version {
-		return core.NewError("bundle: unsupported state bundle version")
+		return errBundleUnsupportedVersion
 	}
 	if b.Kind != Kind {
-		return core.NewError("bundle: invalid state bundle kind")
+		return errBundleInvalidKind
 	}
 	if b.KV == nil && b.KVPath == "" {
 		if _, ok := b.stateRef(); !ok {
-			return core.NewError("bundle: state bundle has no KV snapshot")
+			return errBundleNoSnapshot
 		}
 		return nil
 	}
@@ -380,7 +402,7 @@ func (b *Bundle) Validate() error {
 			return err
 		}
 		if got != b.KVHash {
-			return core.NewError("bundle: state bundle KV hash mismatch")
+			return errBundleKVHash
 		}
 	}
 	return nil
@@ -391,16 +413,16 @@ func (b *Bundle) Validate() error {
 //	if err := bundle.CheckCompatibility(modelInfo, b); err != nil { … }
 func CheckCompatibility(info ModelInfo, b *Bundle) error {
 	if b == nil {
-		return core.NewError("bundle: state bundle is nil")
+		return errBundleNil
 	}
 	if err := b.Validate(); err != nil {
 		return err
 	}
 	if b.Model.Architecture != "" && info.Architecture != "" && b.Model.Architecture != info.Architecture {
-		return core.NewError("bundle: state bundle model architecture mismatch")
+		return errBundleArchMismatch
 	}
 	if b.Model.NumLayers > 0 && info.NumLayers > 0 && b.Model.NumLayers != info.NumLayers {
-		return core.NewError("bundle: state bundle model layer mismatch")
+		return errBundleLayerMismatch
 	}
 	return checkAdapterCompatibility(info.Adapter, b.Adapter)
 }
@@ -608,20 +630,20 @@ func checkAdapterCompatibility(active lora.AdapterInfo, expected Adapter) error 
 		return nil
 	}
 	if active.IsEmpty() {
-		return core.NewError("bundle: state bundle requires a LoRA adapter but model has none")
+		return errBundleNeedsLoRA
 	}
 	want := AdapterToInfo(expected)
 	if want.Hash != "" && active.Hash != "" && want.Hash != active.Hash {
-		return core.NewError("bundle: state bundle LoRA adapter hash mismatch")
+		return errBundleLoRAHash
 	}
 	if want.Path != "" && active.Path != "" && want.Path != active.Path && (want.Hash == "" || active.Hash == "") {
-		return core.NewError("bundle: state bundle LoRA adapter path mismatch")
+		return errBundleLoRAPath
 	}
 	if want.Rank > 0 && active.Rank > 0 && want.Rank != active.Rank {
-		return core.NewError("bundle: state bundle LoRA adapter rank mismatch")
+		return errBundleLoRARank
 	}
 	if want.Alpha != 0 && active.Alpha != 0 && want.Alpha != active.Alpha {
-		return core.NewError("bundle: state bundle LoRA adapter alpha mismatch")
+		return errBundleLoRAAlpha
 	}
 	return nil
 }
@@ -704,5 +726,5 @@ func resultError(result core.Result) error {
 	if text, ok := result.Value.(string); ok {
 		return core.NewError(text)
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }

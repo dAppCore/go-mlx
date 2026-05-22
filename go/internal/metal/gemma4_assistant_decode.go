@@ -8,6 +8,38 @@ import (
 	core "dappco.re/go"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. Speculative-decoding validation fires per-draft-step
+// (MTP draft block + verify) which runs many times per generation.
+var (
+	errTargetPagedNoVisible          = core.NewError("target paged cache has no visible pages")
+	errTargetCacheTooShort           = core.NewError("target cache state shorter than visible length")
+	errTargetCacheStateEmpty         = core.NewError("target cache state is empty")
+	errTargetCacheLenEmpty           = core.NewError("target cache length is empty")
+	errTargetCacheNil                = core.NewError("target cache is nil")
+	errTargetCacheEmpty              = core.NewError("target cache is empty")
+	errRotatingCacheEmpty            = core.NewError("rotating cache state is empty")
+	errKVCacheStateEmpty             = core.NewError("KV cache state is empty")
+	errAsstVerifyNeedTargetLogits    = core.NewError("gemma4.assistant verify requires target logits")
+	errAsstVerifyNeedTargetCaches    = core.NewError("gemma4.assistant verify requires target caches")
+	errAsstVerifyNeedDraftTokens     = core.NewError("gemma4.assistant verify requires draft tokens")
+	errAsstVerifyNeedTargetModel     = core.NewError("gemma4.assistant verify requires a target model")
+	errAsstVerifyNoTargetToken       = core.NewError("gemma4.assistant verify produced no target token")
+	errAsstOrderedEmbedNotImpl       = core.NewError("gemma4.assistant ordered embedding logits are not implemented yet")
+	errAsstDraftStepTokenInvalid     = core.NewError("gemma4.assistant draft step token is invalid")
+	errAsstDraftStepNeedTargetCaches = core.NewError("gemma4.assistant draft step requires populated target caches")
+	errAsstDraftStepNeedPair         = core.NewError("gemma4.assistant draft step requires a validated pair")
+	errAsstDraftStepHiddenInvalid    = core.NewError("gemma4.assistant draft step previous hidden is invalid")
+	errAsstDraftStepLayerIncomplete  = core.NewError("gemma4.assistant draft step layer is incomplete")
+	errAsstDraftBlockNoToken         = core.NewError("gemma4.assistant draft block produced no token")
+	errAsstDraftBlockMaxZero         = core.NewError("gemma4.assistant draft block maxDraftTokens must be > 0")
+	errAsstCloneInvalid              = core.NewError("gemma4.assistant cannot clone invalid array")
+	errAsstAttnMissingKV             = core.NewError("gemma4.assistant attention missing target K/V")
+	errAsstAttnIncomplete            = core.NewError("gemma4.assistant attention is incomplete")
+	errCacheStateEmpty               = core.NewError("cache state is empty")
+)
+
 // Gemma4AssistantDraftStepResult is the caller-owned output of one MTP draft
 // step. Hidden is projected back to the target backbone hidden size so it can
 // seed the next assistant step.
@@ -90,19 +122,19 @@ func (targetKV gemma4AssistantTargetKV) free() {
 // existing K/V cache streams and the previous target-backbone hidden state.
 func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Array, targetCaches []Cache) (*Gemma4AssistantDraftStepResult, error) {
 	if pair == nil || pair.Target == nil || pair.Assistant == nil {
-		return nil, core.NewError("gemma4.assistant draft step requires a validated pair")
+		return nil, errAsstDraftStepNeedPair
 	}
 	if lastToken < 0 {
-		return nil, core.NewError("gemma4.assistant draft step token is invalid")
+		return nil, errAsstDraftStepTokenInvalid
 	}
 	if previousHidden == nil || !previousHidden.Valid() {
-		return nil, core.NewError("gemma4.assistant draft step previous hidden is invalid")
+		return nil, errAsstDraftStepHiddenInvalid
 	}
 	if len(targetCaches) == 0 {
-		return nil, core.NewError("gemma4.assistant draft step requires populated target caches")
+		return nil, errAsstDraftStepNeedTargetCaches
 	}
 	if pair.Assistant.UseOrderedEmbeddings {
-		return nil, core.NewError("gemma4.assistant ordered embedding logits are not implemented yet")
+		return nil, errAsstOrderedEmbedNotImpl
 	}
 	if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
 		return nil, err
@@ -169,7 +201,7 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 // block. Verification still belongs to the target-side accept/reject path.
 func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Array, targetCaches []Cache, maxDraftTokens int) (*Gemma4AssistantDraftBlockResult, error) {
 	if maxDraftTokens <= 0 {
-		return nil, core.NewError("gemma4.assistant draft block maxDraftTokens must be > 0")
+		return nil, errAsstDraftBlockMaxZero
 	}
 	tokens := make([]int32, 0, maxDraftTokens)
 	currentToken := lastToken
@@ -192,7 +224,7 @@ func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Arr
 		values := step.Token.DataInt32()
 		if len(values) == 0 {
 			step.Close()
-			return nil, core.NewError("gemma4.assistant draft block produced no token")
+			return nil, errAsstDraftBlockNoToken
 		}
 		currentToken = values[0]
 		tokens = append(tokens, currentToken)
@@ -209,16 +241,16 @@ func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Arr
 // rejected draft tokens never pollute the live generation cache.
 func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftTokens []int32, targetCaches []Cache) (*Gemma4AssistantVerifyResult, error) {
 	if pair == nil || pair.Target == nil {
-		return nil, core.NewError("gemma4.assistant verify requires a target model")
+		return nil, errAsstVerifyNeedTargetModel
 	}
 	if targetLogits == nil || !targetLogits.Valid() {
-		return nil, core.NewError("gemma4.assistant verify requires target logits")
+		return nil, errAsstVerifyNeedTargetLogits
 	}
 	if len(draftTokens) == 0 {
-		return nil, core.NewError("gemma4.assistant verify requires draft tokens")
+		return nil, errAsstVerifyNeedDraftTokens
 	}
 	if len(targetCaches) == 0 {
-		return nil, core.NewError("gemma4.assistant verify requires target caches")
+		return nil, errAsstVerifyNeedTargetCaches
 	}
 	verifyCaches, err := cloneGemma4AssistantVerifyCaches(targetCaches)
 	if err != nil {
@@ -370,13 +402,13 @@ func (pair *Gemma4AssistantPair) targetKVByLayerType(caches []Cache) (map[string
 
 func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
 	if cache == nil || cache.Len() <= 0 {
-		return gemma4AssistantTargetKV{}, core.NewError("target cache is empty")
+		return gemma4AssistantTargetKV{}, errTargetCacheEmpty
 	}
 	if paged, ok := cache.(*PagedKVCache); ok {
 		pages := paged.PageState()
 		if pages.Length <= 0 || len(pages.Keys) == 0 || len(pages.Keys) != len(pages.Values) {
 			pages.Free()
-			return gemma4AssistantTargetKV{}, core.NewError("target paged cache has no visible pages")
+			return gemma4AssistantTargetKV{}, errTargetPagedNoVisible
 		}
 		return gemma4AssistantTargetKV{
 			kv:    sharedKV{Pages: pages, Offset: cache.Offset()},
@@ -387,20 +419,20 @@ func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
 	state, owned := cacheReadState(cache)
 	if len(state) < 2 || state[0] == nil || state[1] == nil || !state[0].Valid() || !state[1].Valid() {
 		Free(owned...)
-		return gemma4AssistantTargetKV{}, core.NewError("target cache state is empty")
+		return gemma4AssistantTargetKV{}, errTargetCacheStateEmpty
 	}
 	keys, values := state[0], state[1]
 	visible := int32(cache.Len())
 	if visible <= 0 {
 		Free(owned...)
-		return gemma4AssistantTargetKV{}, core.NewError("target cache length is empty")
+		return gemma4AssistantTargetKV{}, errTargetCacheLenEmpty
 	}
 	kShape := keys.Shape()
 	vShape := values.Shape()
 	if len(kShape) >= 4 && len(vShape) >= 4 {
 		if kShape[2] < visible || vShape[2] < visible {
 			Free(owned...)
-			return gemma4AssistantTargetKV{}, core.NewError("target cache state shorter than visible length")
+			return gemma4AssistantTargetKV{}, errTargetCacheTooShort
 		}
 		if kShape[2] != visible {
 			keys = Slice(keys, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], visible, kShape[3]})
@@ -432,7 +464,7 @@ func cloneGemma4AssistantVerifyCaches(caches []Cache) ([]Cache, error) {
 
 func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 	if cache == nil {
-		return nil, core.NewError("target cache is nil")
+		return nil, errTargetCacheNil
 	}
 	if cache.Len() <= 0 {
 		switch c := cache.(type) {
@@ -453,7 +485,7 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		state, owned := cacheReadState(c)
 		defer Free(owned...)
 		if len(state) < 2 {
-			return nil, core.NewError("KV cache state is empty")
+			return nil, errKVCacheStateEmpty
 		}
 		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], c.Len())
 		if err != nil {
@@ -464,7 +496,7 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		state, owned := cacheReadState(c)
 		defer Free(owned...)
 		if len(state) < 2 {
-			return nil, core.NewError("rotating cache state is empty")
+			return nil, errRotatingCacheEmpty
 		}
 		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], c.Len())
 		if err != nil {
@@ -506,7 +538,7 @@ func cloneGemma4AssistantVerifyCache(cache Cache) (Cache, error) {
 		state, owned := cacheReadState(cache)
 		defer Free(owned...)
 		if len(state) < 2 {
-			return nil, core.NewError("cache state is empty")
+			return nil, errCacheStateEmpty
 		}
 		keys, values, err := cloneGemma4AssistantCacheState(state[0], state[1], cache.Len())
 		if err != nil {
@@ -537,14 +569,14 @@ func gemma4AssistantGreedyToken(logits *Array) (int32, error) {
 	}
 	values := token.DataInt32()
 	if len(values) == 0 {
-		return 0, core.NewError("gemma4.assistant verify produced no target token")
+		return 0, errAsstVerifyNoTargetToken
 	}
 	return values[0], nil
 }
 
 func cloneGemma4AssistantArray(array *Array) (*Array, error) {
 	if array == nil || !array.Valid() {
-		return nil, core.NewError("gemma4.assistant cannot clone invalid array")
+		return nil, errAsstCloneInvalid
 	}
 	cloned := Copy(array)
 	if err := Eval(cloned); err != nil {
@@ -571,7 +603,7 @@ func gemma4AssistantBackboneHidden(hidden *Array, backboneHidden int32) (*Array,
 
 func (layer *Gemma4AssistantLayer) forwardDraftStep(x *Array, targetKV sharedKV, cfg *Gemma4TextConfig) (*Array, error) {
 	if layer == nil || layer.Attention == nil || layer.MLP == nil {
-		return nil, core.NewError("gemma4.assistant draft step layer is incomplete")
+		return nil, errAsstDraftStepLayerIncomplete
 	}
 	shape := x.Shape()
 	if len(shape) != 3 {
@@ -611,10 +643,10 @@ func (layer *Gemma4AssistantLayer) forwardDraftStep(x *Array, targetKV sharedKV,
 
 func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *Array, targetKV sharedKV, B, L int32, cfg *Gemma4TextConfig) (*Array, error) {
 	if attn == nil || attn.QProj == nil || attn.OProj == nil || attn.QNorm == nil {
-		return nil, core.NewError("gemma4.assistant attention is incomplete")
+		return nil, errAsstAttnIncomplete
 	}
 	if !targetKV.hasState() {
-		return nil, core.NewError("gemma4.assistant attention missing target K/V")
+		return nil, errAsstAttnMissingKV
 	}
 
 	qProj := attn.QProj.Forward(x)

@@ -25,6 +25,17 @@ const (
 	KVSnapshotMemvidVersion = KVSnapshotStateVersion
 )
 
+// Constant validation errors hoisted to package vars.
+// errStateStoreNil and errSnapshotNil are defined in blocks.go (same package).
+var (
+	errUnsupportedStateKVSnapshotVersion  = core.NewError("mlx: unsupported State KV snapshot version")
+	errUnsupportedStateKVSnapshotEncoding = core.NewError("mlx: unsupported State KV snapshot binary encoding")
+	errStateKVSnapshotHash                = core.NewError("mlx: State KV snapshot hash mismatch")
+	errStateKVPayloadLen                  = core.NewError("mlx: State KV payload length mismatch")
+	errStateKVPayloadNonByte              = core.NewError("mlx: State KV payload decoded to non-byte data")
+	errStateKVSnapshotKind                = core.NewError("mlx: invalid State KV snapshot kind")
+)
+
 // StateOptions controls how KV snapshots are stored in State.
 type StateOptions struct {
 	KVEncoding Encoding
@@ -70,10 +81,10 @@ func (s *Snapshot) SaveState(ctx context.Context, store state.Writer, opts State
 		ctx = context.Background()
 	}
 	if s == nil {
-		return state.ChunkRef{}, core.NewError("mlx: KV snapshot is nil")
+		return state.ChunkRef{}, errSnapshotNil
 	}
 	if store == nil {
-		return state.ChunkRef{}, core.NewError("mlx: state store is nil")
+		return state.ChunkRef{}, errStateStoreNil
 	}
 	encoding, err := normalizeKVSnapshotEncoding(opts.KVEncoding)
 	if err != nil {
@@ -128,7 +139,7 @@ func LoadFromStateWithOptions(ctx context.Context, store state.Store, ref state.
 		ctx = context.Background()
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errStateStoreNil
 	}
 	chunk, err := state.Resolve(ctx, store, ref.ChunkID)
 	if err != nil {
@@ -163,13 +174,13 @@ func LoadFromMemvidWithOptions(ctx context.Context, store state.Store, ref state
 
 func decodeKVSnapshotStateEnvelope(envelope kvSnapshotStateEnvelope) ([]byte, error) {
 	if envelope.Version <= 0 || envelope.Version > KVSnapshotStateVersion {
-		return nil, core.NewError("mlx: unsupported State KV snapshot version")
+		return nil, errUnsupportedStateKVSnapshotVersion
 	}
 	if envelope.Kind != KVSnapshotStateKind {
-		return nil, core.NewError("mlx: invalid State KV snapshot kind")
+		return nil, errStateKVSnapshotKind
 	}
 	if envelope.BinaryEncoding != "base64" {
-		return nil, core.NewError("mlx: unsupported State KV snapshot binary encoding")
+		return nil, errUnsupportedStateKVSnapshotEncoding
 	}
 	decoded := core.Base64Decode(envelope.Data)
 	if !decoded.OK {
@@ -177,13 +188,13 @@ func decodeKVSnapshotStateEnvelope(envelope kvSnapshotStateEnvelope) ([]byte, er
 	}
 	data, ok := decoded.Value.([]byte)
 	if !ok {
-		return nil, core.NewError("mlx: State KV payload decoded to non-byte data")
+		return nil, errStateKVPayloadNonByte
 	}
 	if envelope.PayloadByteCount > 0 && len(data) != envelope.PayloadByteCount {
-		return nil, core.NewError("mlx: State KV payload length mismatch")
+		return nil, errStateKVPayloadLen
 	}
 	if envelope.KVHash != "" && core.SHA256Hex(data) != envelope.KVHash {
-		return nil, core.NewError("mlx: State KV snapshot hash mismatch")
+		return nil, errStateKVSnapshotHash
 	}
 	return data, nil
 }

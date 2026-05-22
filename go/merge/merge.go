@@ -28,6 +28,35 @@ const (
 	modelMergeTensorChunkElements = 1 << 20
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. Sharing instances also makes errors.Is comparable for
+// callers distinguishing "no tensors" from "len mismatch" without
+// parsing message text.
+var (
+	errSLERPLenMismatch        = core.NewError("mlx: tensor length mismatch during SLERP merge")
+	errSLERPNeedTwoTensors     = core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
+	errLinearLenMismatch       = core.NewError("mlx: tensor length mismatch during linear merge")
+	errNoTensors               = core.NewError("mlx: no tensors to merge")
+	errOutputHasWeights        = core.NewError("mlx: merged output path already contains model weights")
+	errPackMetadataCopy        = core.NewError("model pack metadata copy failed")
+	errWeightsSourceCount      = core.NewError("mlx: tensor merge weights do not match source count")
+	errSLERPNeedTwoReaders     = core.NewError("mlx: SLERP tensor merge requires exactly two readers")
+	errSLERPNeedTwoSources     = core.NewError("mlx: SLERP model merge requires exactly two sources")
+	errTokenizerMismatch       = core.NewError("mlx: model merge tokenizer mismatch")
+	errMergeTOutOfRange        = core.NewError("mlx: model merge t must be between 0 and 1")
+	errMergeWeightsSumZero     = core.NewError("mlx: model merge source weights sum to zero")
+	errMergeWeightNotFinite    = core.NewError("mlx: model merge source weight must be finite")
+	errMergeSourcePackRequired = core.NewError("mlx: model merge source pack is required")
+	errMergeNeedTwoSources     = core.NewError("mlx: model merge requires at least two sources")
+	errMergeNeedsSafetensors   = core.NewError("mlx: model merge currently requires safetensors source weights")
+	errOutputSameAsSource      = core.NewError("mlx: merged output path must differ from source model path")
+	errOutputNotPackDir        = core.NewError("mlx: merged output path must be a model-pack directory")
+	errOutputPathRequired      = core.NewError("mlx: merged model output path is required")
+	errReadNonByteData         = core.NewError("merge: read file returned non-byte data")
+	errCoreResultFailed        = core.NewError("core result failed")
+)
+
 // Source identifies a pre-validated model pack participating in a merge.
 // Callers run mlx.ValidateModelPack on each source before invoking merge.Packs.
 type Source struct {
@@ -144,16 +173,16 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 		return prepared{}, err
 	}
 	if len(opts.Sources) < 2 {
-		return prepared{}, core.NewError("mlx: model merge requires at least two sources")
+		return prepared{}, errMergeNeedTwoSources
 	}
 	if opts.OutputPath == "" {
-		return prepared{}, core.NewError("mlx: merged model output path is required")
+		return prepared{}, errOutputPathRequired
 	}
 	// hasSuffixFold replaces core.Lower(opts.OutputPath) which allocated a
 	// full copy of the (potentially long) output path string just to test
 	// two short suffixes.
 	if hasSuffixFold(opts.OutputPath, ".safetensors") || hasSuffixFold(opts.OutputPath, ".gguf") {
-		return prepared{}, core.NewError("mlx: merged output path must be a model-pack directory")
+		return prepared{}, errOutputNotPackDir
 	}
 
 	method := opts.Method
@@ -168,10 +197,10 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 		return prepared{}, core.NewError("mlx: unsupported model merge method: " + string(method))
 	}
 	if method == MethodSLERP && len(opts.Sources) != 2 {
-		return prepared{}, core.NewError("mlx: SLERP model merge requires exactly two sources")
+		return prepared{}, errSLERPNeedTwoSources
 	}
 	if opts.T < 0 || opts.T > 1 {
-		return prepared{}, core.NewError("mlx: model merge t must be between 0 and 1")
+		return prepared{}, errMergeTOutOfRange
 	}
 
 	output := opts.OutputPath
@@ -187,13 +216,13 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 	for _, source := range opts.Sources {
 		pack := source.Pack
 		if pack.Root == "" {
-			return prepared{}, core.NewError("mlx: model merge source pack is required")
+			return prepared{}, errMergeSourcePackRequired
 		}
 		if pack.Format != mp.ModelPackFormatSafetensors {
-			return prepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
+			return prepared{}, errMergeNeedsSafetensors
 		}
 		if samePathResolved(pack.Root, output) {
-			return prepared{}, core.NewError("mlx: merged output path must differ from source model path")
+			return prepared{}, errOutputSameAsSource
 		}
 		packs = append(packs, pack)
 		normalizedSources = append(normalizedSources, source)
@@ -229,10 +258,10 @@ func ensureEmptyDestination(output string) error {
 	// always allocated a combined slice even when the first pattern was
 	// already non-empty. Short-circuit on the first non-empty pattern.
 	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
-		return core.NewError("mlx: merged output path already contains model weights")
+		return errOutputHasWeights
 	}
 	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
-		return core.NewError("mlx: merged output path already contains model weights")
+		return errOutputHasWeights
 	}
 	return nil
 }
@@ -274,7 +303,7 @@ func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 			return core.E("Packs", "hash tokenizer", err)
 		}
 		if hash != baseHash {
-			return core.NewError("mlx: model merge tokenizer mismatch")
+			return errTokenizerMismatch
 		}
 	}
 	return nil
@@ -523,10 +552,10 @@ func readTensorValues(indexes []safetensors.Index, name string) ([][]float32, bo
 
 func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, weights []float64, chunkElements int) error {
 	if len(refs) == 0 {
-		return core.NewError("mlx: no tensors to merge")
+		return errNoTensors
 	}
 	if len(refs) != len(weights) {
-		return core.NewError("mlx: tensor merge weights do not match source count")
+		return errWeightsSourceCount
 	}
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
@@ -534,7 +563,7 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 	elements := refs[0].Elements
 	for _, ref := range refs {
 		if ref.Elements != elements {
-			return core.NewError("mlx: tensor length mismatch during linear merge")
+			return errLinearLenMismatch
 		}
 	}
 	readers, err := safetensors.OpenReaders(refs)
@@ -593,10 +622,10 @@ func writeLinearChunksUsing(ctx context.Context, file *core.OSFile, readers []sa
 
 func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors.TensorRef, t float64, chunkElements int) error {
 	if len(refs) != 2 {
-		return core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
+		return errSLERPNeedTwoTensors
 	}
 	if refs[0].Elements != refs[1].Elements {
-		return core.NewError("mlx: tensor length mismatch during SLERP merge")
+		return errSLERPLenMismatch
 	}
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
@@ -620,10 +649,10 @@ func writeSLERPChunks(ctx context.Context, file *core.OSFile, refs []safetensors
 
 func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t float64, chunkElements int) ([]float64, error) {
 	if len(refs) != 2 {
-		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
+		return nil, errSLERPNeedTwoTensors
 	}
 	if refs[0].Elements != refs[1].Elements {
-		return nil, core.NewError("mlx: tensor length mismatch during SLERP merge")
+		return nil, errSLERPLenMismatch
 	}
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
@@ -641,7 +670,7 @@ func slerpChunkedWeights(ctx context.Context, refs []safetensors.TensorRef, t fl
 // across the SLERP weight scan and the writeLinearChunks pass.
 func slerpChunkedWeightsFromReaders(ctx context.Context, readers []safetensors.TensorReader, elements int, t float64, chunkElements int) ([]float64, error) {
 	if len(readers) != 2 {
-		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two readers")
+		return nil, errSLERPNeedTwoReaders
 	}
 	if chunkElements <= 0 {
 		chunkElements = modelMergeTensorChunkElements
@@ -699,12 +728,12 @@ func mergeTensorValues(values [][]float32, method Method, t float64, weights []f
 
 func linearMerge(values [][]float32, weights []float64) ([]float32, error) {
 	if len(values) == 0 {
-		return nil, core.NewError("mlx: no tensors to merge")
+		return nil, errNoTensors
 	}
 	out := make([]float32, len(values[0]))
 	for sourceIndex, source := range values {
 		if len(source) != len(out) {
-			return nil, core.NewError("mlx: tensor length mismatch during linear merge")
+			return nil, errLinearLenMismatch
 		}
 		// Cast the weight to float32 once outside the inner loop —
 		// previously every element did a float32->float64->mul->float32
@@ -721,12 +750,12 @@ func linearMerge(values [][]float32, weights []float64) ([]float32, error) {
 
 func slerpMerge(values [][]float32, t float64) ([]float32, error) {
 	if len(values) != 2 {
-		return nil, core.NewError("mlx: SLERP tensor merge requires exactly two tensors")
+		return nil, errSLERPNeedTwoTensors
 	}
 	a := values[0]
 	b := values[1]
 	if len(a) != len(b) {
-		return nil, core.NewError("mlx: tensor length mismatch during SLERP merge")
+		return nil, errSLERPLenMismatch
 	}
 	var dot float64
 	var normA float64
@@ -759,7 +788,7 @@ func normalizedWeights(sources []Source) ([]float64, error) {
 	var explicit bool
 	for i, source := range sources {
 		if math.IsNaN(source.Weight) || math.IsInf(source.Weight, 0) {
-			return nil, core.NewError("mlx: model merge source weight must be finite")
+			return nil, errMergeWeightNotFinite
 		}
 		if source.Weight != 0 {
 			explicit = true
@@ -775,7 +804,7 @@ func normalizedWeights(sources []Source) ([]float64, error) {
 		return weights, nil
 	}
 	if total == 0 {
-		return nil, core.NewError("mlx: model merge source weights sum to zero")
+		return nil, errMergeWeightsSumZero
 	}
 	for i := range weights {
 		weights[i] /= total
@@ -884,7 +913,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
 
 func samePath(a, b string) bool {
@@ -1020,7 +1049,7 @@ func modelPackCopyResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("model pack metadata copy failed")
+	return errPackMetadataCopy
 }
 
 func hashFile(path string) (string, error) {
@@ -1030,7 +1059,7 @@ func hashFile(path string) (string, error) {
 	}
 	data, ok := read.Value.([]byte)
 	if !ok {
-		return "", core.NewError("merge: read file returned non-byte data")
+		return "", errReadNonByteData
 	}
 	return core.SHA256Hex(data), nil
 }
