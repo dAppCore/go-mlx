@@ -10,6 +10,7 @@ import (
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
 	"math"
+	"sync"
 )
 
 // Per-batch sentinels — evalBatchLengths is called once per evaluate-batch
@@ -26,6 +27,103 @@ var (
 	errMLXEvalLossNonFinite         = core.NewError("mlx: eval loss is not finite")
 	errMLXEvalDatasetSampleNotKnown = core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
 )
+
+// evalBatchInt32BufPool / evalBatchFloat32BufPool recycle the per-batch token
+// + loss-mask scratch buffers handed to FromValues. FromValues copies the
+// slice contents into its own C-side byte buffer (binary.Encode on a fresh
+// []byte) before returning, so the caller's slice is observationally dead
+// once FromValues returns — the perfect sync.Pool lifecycle. Per-batch the
+// token buffer is len(lengths)*maxLen int32s (Batch4_Seq2048 ≈ 32 KiB) and
+// the loss-mask buffer is the same shape in float32. A training eval pass
+// that walks ~hundreds of batches per epoch sheds N × 64 KiB of fresh-make
+// + zero-fill cost across the pool's warm window.
+//
+// evalBatchAttnMaskBufPool is kept distinct from evalBatchFloat32BufPool
+// because the attention-mask shape is O(batch × maxLen²) — orders of
+// magnitude larger than the per-token loss-mask. Sharing the pool would
+// bloat the per-batch loss-mask Get path with a 64 MiB scratch that's
+// only needed when the optional attention-mask path fires (ragged batches).
+//
+// Pools store *[]T rather than []T so Put doesn't box a slice header into a
+// fresh interface{} (24 B alloc per release) — the same pattern as the kv
+// snapshot stream writer pool. The pool's New func returns a pre-allocated
+// empty slice pointer so callers never hit a Get-nil branch on a warm pool.
+var (
+	evalBatchInt32BufPool = sync.Pool{
+		New: func() any {
+			buf := make([]int32, 0)
+			return &buf
+		},
+	}
+	evalBatchFloat32BufPool = sync.Pool{
+		New: func() any {
+			buf := make([]float32, 0)
+			return &buf
+		},
+	}
+	evalBatchAttnMaskBufPool = sync.Pool{
+		New: func() any {
+			buf := make([]float32, 0)
+			return &buf
+		},
+	}
+)
+
+// acquireEvalBatchInt32Buf returns a *[]int32 wrapping a slice of exactly `n`
+// length, growing the pooled backing array if needed. Returning the pointer
+// (rather than the slice header) keeps the pool's Put path off the escape
+// path — the *[]int32 lives in the pool's interface{} slot for free, where
+// releasing a []int32 would force `&buf` to take a heap copy of the slice
+// header on every call. Caller MUST call releaseEvalBatchInt32Buf once the
+// slice contents have been copied out (FromValues binary-encodes its
+// argument before returning).
+func acquireEvalBatchInt32Buf(n int) *[]int32 {
+	bufPtr := evalBatchInt32BufPool.Get().(*[]int32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]int32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
+}
+
+func releaseEvalBatchInt32Buf(bufPtr *[]int32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchInt32BufPool.Put(bufPtr)
+}
+
+func acquireEvalBatchFloat32Buf(n int) *[]float32 {
+	bufPtr := evalBatchFloat32BufPool.Get().(*[]float32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]float32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
+}
+
+func releaseEvalBatchFloat32Buf(bufPtr *[]float32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchFloat32BufPool.Put(bufPtr)
+}
+
+// acquireEvalBatchAttnMaskBuf returns a *[]float32 sized for the per-batch
+// attention-mask shape (batch × maxLen²). Kept on a dedicated pool so the
+// per-batch loss-mask pool's warm allocations stay token-sized.
+func acquireEvalBatchAttnMaskBuf(n int) *[]float32 {
+	bufPtr := evalBatchAttnMaskBufPool.Get().(*[]float32)
+	if cap(*bufPtr) < n {
+		*bufPtr = make([]float32, n)
+	} else {
+		*bufPtr = (*bufPtr)[:n]
+	}
+	return bufPtr
+}
+
+func releaseEvalBatchAttnMaskBuf(bufPtr *[]float32) {
+	*bufPtr = (*bufPtr)[:0]
+	evalBatchAttnMaskBufPool.Put(bufPtr)
+}
 
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
 // The mlx-root wrapper adapts dataset.Dataset/dataset.Sample/SFTBatch to eval's
@@ -276,10 +374,25 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 	if err != nil {
 		return evalBatchMetricsDarwin{}, err
 	}
-	inputs := FromValues(evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen), len(lengths), maxLen)
-	targets := FromValues(evalBatchTokenData(batch.Targets, lengths, maxLen), len(lengths), maxLen)
-	lossMask := FromValues(evalBatchLossMaskData(batch, lengths, maxLen), len(lengths), maxLen)
-	attnMask := evalOptionalBatchAttentionMask(lengths, maxLen)
+	// FromValues binary-encodes the slice into its own C-side byte buffer
+	// before returning — once FromValues completes, the scratch slice is
+	// observationally dead and can return to the pool. evalBatchTokenData
+	// + evalBatchLossMaskData return the wrapping *[]T so the slice header
+	// stays out of the pool's interface{} boxing path (saving the 24 B
+	// per-release alloc the slice-of-T variant would pay).
+	inputDataPtr := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+	inputs := FromValues(*inputDataPtr, len(lengths), maxLen)
+	releaseEvalBatchInt32Buf(inputDataPtr)
+	targetDataPtr := evalBatchTokenData(batch.Targets, lengths, maxLen)
+	targets := FromValues(*targetDataPtr, len(lengths), maxLen)
+	releaseEvalBatchInt32Buf(targetDataPtr)
+	lossMaskDataPtr := evalBatchLossMaskData(batch, lengths, maxLen)
+	lossMask := FromValues(*lossMaskDataPtr, len(lengths), maxLen)
+	releaseEvalBatchFloat32Buf(lossMaskDataPtr)
+	attnMask, attnMaskBufPtr := evalOptionalBatchAttentionMask(lengths, maxLen)
+	if attnMaskBufPtr != nil {
+		releaseEvalBatchAttnMaskBuf(attnMaskBufPtr)
+	}
 	defer Free(inputs, targets, lossMask, attnMask)
 
 	native, ok := m.model.(nativeEvalInternalModel)
@@ -346,8 +459,20 @@ func evalBatchLengths(batch SFTBatch) ([]int32, int, error) {
 	return lengths, maxLen, nil
 }
 
-func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
-	data := make([]int32, len(seqs)*maxLen)
+// evalBatchTokenData populates a pooled int32 scratch slice (acquired via
+// acquireEvalBatchInt32Buf) with len(seqs)*maxLen int32s laid out row-major
+// per sequence. Returns the wrapping *[]int32 so the caller releases the
+// pooled slice back without re-boxing the slice header through an interface.
+func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) *[]int32 {
+	n := len(seqs) * maxLen
+	bufPtr := acquireEvalBatchInt32Buf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale ints from a previous batch —
+	// re-zero before the per-row writes so the unused tail (past the row
+	// limit) stays at 0, matching the make([]int32, …) baseline. clear
+	// expands to a single runtime.memclr; one bulk write beats N+1 row-tail
+	// fills.
+	clear(data)
 	for i, seq := range seqs {
 		limit := int(lengths[i])
 		base := i * maxLen
@@ -361,11 +486,20 @@ func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
 			dst[j] = int32(src[j])
 		}
 	}
-	return data
+	return bufPtr
 }
 
-func evalBatchLossMaskData(batch SFTBatch, lengths []int32, maxLen int) []float32 {
-	data := make([]float32, len(lengths)*maxLen)
+// evalBatchLossMaskData populates a pooled float32 scratch slice with the
+// per-row loss masks (defaulting absent rows + masked tails to 1). Returns
+// the wrapping *[]float32 for caller-driven release.
+func evalBatchLossMaskData(batch SFTBatch, lengths []int32, maxLen int) *[]float32 {
+	n := len(lengths) * maxLen
+	bufPtr := acquireEvalBatchFloat32Buf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale floats — re-zero so the
+	// non-copied tail (past base+limit) stays 0. Cheaper than per-row
+	// post-copy zero-fill because clear() is a single memclr.
+	clear(data)
 	masks := batch.Batch.LossMask
 	for i, l := range lengths {
 		limit := int(l)
@@ -391,13 +525,25 @@ func evalBatchLossMaskData(batch SFTBatch, lengths []int32, maxLen int) []float3
 			}
 		}
 	}
-	return data
+	return bufPtr
 }
 
-func evalBatchAttentionMask(lengths []int32, maxLen int) *Array {
+// evalBatchAttentionMask builds the causal+padding attention mask into a
+// pooled float32 scratch slice and wraps it in an Array via FromValues. The
+// returned bufPtr is the slice the caller must release once FromValues has
+// taken its copy (binary-encoded into a fresh C-side byte buffer). Per-batch
+// mask shape is O(batch × maxLen²) — for ragged Batch4_Seq2048 this is 64
+// MiB of float32 data, the dominant per-call alloc on the optional-mask path.
+func evalBatchAttentionMask(lengths []int32, maxLen int) (*Array, *[]float32) {
 	negInf := float32(math.Inf(-1))
 	batchSize := len(lengths)
-	data := make([]float32, batchSize*maxLen*maxLen)
+	n := batchSize * maxLen * maxLen
+	bufPtr := acquireEvalBatchAttnMaskBuf(n)
+	data := *bufPtr
+	// Pool may hand back a slice with stale values from a previous mask —
+	// zero before the row-tail writes so the unmasked region matches the
+	// make([]float32, …) baseline.
+	clear(data)
 	// data is zero-initialised — only need to set negInf positions.
 	// Causal+padding mask: for each (i,j), unmask iff j <= i && j < length.
 	// Walk the masked region by row, writing the negInf tail in two
@@ -425,12 +571,16 @@ func evalBatchAttentionMask(lengths []int32, maxLen int) *Array {
 			}
 		}
 	}
-	return FromValues(data, batchSize, 1, maxLen, maxLen)
+	return FromValues(data, batchSize, 1, maxLen, maxLen), bufPtr
 }
 
-func evalOptionalBatchAttentionMask(lengths []int32, maxLen int) *Array {
+// evalOptionalBatchAttentionMask returns (nil, nil) on the fast path
+// (uniform-length batches) and (mask, bufPtr) on the ragged path. The
+// bufPtr is the pooled scratch slice — caller must release after FromValues
+// has copied its contents.
+func evalOptionalBatchAttentionMask(lengths []int32, maxLen int) (*Array, *[]float32) {
 	if !evalNeedsExplicitAttentionMask(lengths, maxLen) {
-		return nil
+		return nil, nil
 	}
 	return evalBatchAttentionMask(lengths, maxLen)
 }

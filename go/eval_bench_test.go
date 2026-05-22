@@ -141,6 +141,12 @@ func BenchmarkEval_EvalBatchLengths_Batch4_Seq2048(b *testing.B) {
 }
 
 // --- evalBatchTokenData — per-batch token tensor flatten + cast ---
+//
+// These benches deliberately drop the bufPtr without releasing — they
+// document the cold-path cost a non-pooled allocation would have paid,
+// and let regression-checks catch growth in the per-call work irrespective
+// of pool warmth. The Pooled_* benches below pair the release call to
+// exercise the warm-pool path the production eval loop runs.
 
 func BenchmarkEval_EvalBatchTokenData_Batch1_Seq512(b *testing.B) {
 	batch := evalBenchBatch(1, 512)
@@ -151,7 +157,7 @@ func BenchmarkEval_EvalBatchTokenData_Batch1_Seq512(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evalBenchSinkTokens = evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+		evalBenchSinkTokens = *evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
 	}
 }
 
@@ -164,7 +170,30 @@ func BenchmarkEval_EvalBatchTokenData_Batch4_Seq2048(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evalBenchSinkTokens = evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+		evalBenchSinkTokens = *evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+	}
+}
+
+// --- evalBatchTokenData_Pooled — paired acquire+release, mirrors production ---
+
+// The standalone evalBatchTokenData benches above leak the result into the
+// sink, so the sync.Pool back-fill the production call site uses never gets
+// a slice to recycle. The Pooled variant pairs the call with the matching
+// releaseEvalBatchInt32Buf — this is the shape the eval pipeline actually
+// exercises during a training run (FromValues binary-encodes the slice, then
+// the slice is released).
+func BenchmarkEval_EvalBatchTokenData_Pooled_Batch4_Seq2048(b *testing.B) {
+	batch := evalBenchBatch(4, 2048)
+	lengths, maxLen, err := evalBatchLengths(batch)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bufPtr := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+		evalBenchSinkTokens = *bufPtr
+		releaseEvalBatchInt32Buf(bufPtr)
 	}
 }
 
@@ -179,7 +208,7 @@ func BenchmarkEval_EvalBatchLossMaskData_Batch1_Seq512(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evalBenchSinkMask = evalBatchLossMaskData(batch, lengths, maxLen)
+		evalBenchSinkMask = *evalBatchLossMaskData(batch, lengths, maxLen)
 	}
 }
 
@@ -192,7 +221,24 @@ func BenchmarkEval_EvalBatchLossMaskData_Batch4_Seq2048(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		evalBenchSinkMask = evalBatchLossMaskData(batch, lengths, maxLen)
+		evalBenchSinkMask = *evalBatchLossMaskData(batch, lengths, maxLen)
+	}
+}
+
+// --- evalBatchLossMaskData_Pooled — paired acquire+release, mirrors production ---
+
+func BenchmarkEval_EvalBatchLossMaskData_Pooled_Batch4_Seq2048(b *testing.B) {
+	batch := evalBenchBatch(4, 2048)
+	lengths, maxLen, err := evalBatchLengths(batch)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bufPtr := evalBatchLossMaskData(batch, lengths, maxLen)
+		evalBenchSinkMask = *bufPtr
+		releaseEvalBatchFloat32Buf(bufPtr)
 	}
 }
 
@@ -270,6 +316,24 @@ func BenchmarkEval_EvalNeedsExplicitAttentionMask_Ragged(b *testing.B) {
 // The pure fast-path predicate (evalNeedsExplicitAttentionMask) above
 // already covers the early-exit branch evalOptionalBatchAttentionMask
 // checks before allocating.
+//
+// AttnMaskBufPool_AcquireRelease benches the dedicated attention-mask
+// buffer pool's hot path — paired acquire+release at the per-batch shape
+// (batch × maxLen²) the ragged eval branch hands to FromValues. Validates
+// the pool stays at zero allocs on a warm cycle.
+func BenchmarkEval_AttnMaskBufPool_AcquireRelease_Batch4_Seq2048(b *testing.B) {
+	const n = 4 * 2048 * 2048
+	// Warm pool with one acquire+release so the first iter isn't a fresh make.
+	bufPtr := acquireEvalBatchAttnMaskBuf(n)
+	releaseEvalBatchAttnMaskBuf(bufPtr)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bufPtr := acquireEvalBatchAttnMaskBuf(n)
+		evalBenchSinkMask = *bufPtr
+		releaseEvalBatchAttnMaskBuf(bufPtr)
+	}
+}
 
 // --- modelInfoToEval / evalInfoToModel — converter pair ---
 
