@@ -663,13 +663,28 @@ func appendKVF32Raw(dst []byte, values []float32) []byte {
 
 func appendKVEncodedTensor(dst []byte, values []float32, dtype string, raw []byte, encoding Encoding) ([]byte, error) {
 	if encoding == EncodingNative {
-		if raw, dtype, elements, ok, err := normalizeKVSnapshotNativeTensor(values, dtype, raw); err != nil {
-			return nil, err
-		} else if ok {
+		// Fast path when raw is already present — append directly with
+		// no intermediate alloc.
+		if len(raw) > 0 {
+			rawDType, rawElements, _, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				dst = appendKVU32(dst, 2)
+				dst = appendKVU32(dst, uint32(rawElements))
+				dst = appendKVBytes(dst, core.AsBytes(rawDType))
+				return appendKVBytes(dst, raw), nil
+			}
+		} else if len(values) > 0 {
+			// Stream float32 values directly into dst — skips the
+			// normalizeKVSnapshotNativeTensor intermediate alloc + the
+			// follow-on appendKVBytes copy.
 			dst = appendKVU32(dst, 2)
-			dst = appendKVU32(dst, uint32(elements))
-			dst = appendKVBytes(dst, core.AsBytes(dtype))
-			return appendKVBytes(dst, raw), nil
+			dst = appendKVU32(dst, uint32(len(values)))
+			dst = appendKVBytes(dst, core.AsBytes("float32"))
+			dst = appendKVU32(dst, uint32(len(values)*4))
+			return appendKVF32Raw(dst, values), nil
 		}
 	}
 	if len(values) == 0 && len(raw) > 0 {
@@ -897,13 +912,29 @@ func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
 
 func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, raw []byte, encoding Encoding) error {
 	if encoding == EncodingNative {
-		if raw, dtype, elements, ok, err := normalizeKVSnapshotNativeTensor(values, dtype, raw); err != nil {
-			return err
-		} else if ok {
+		// Fast path when raw is already present — write directly with
+		// no intermediate alloc.
+		if len(raw) > 0 {
+			rawDType, rawElements, _, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
+			if err != nil {
+				return err
+			}
+			if ok {
+				w.u32(2)
+				w.u32(uint32(rawElements))
+				w.bytesWithLength(core.AsBytes(rawDType))
+				w.bytesWithLength(raw)
+				return w.err
+			}
+		} else if len(values) > 0 {
+			// Stream float32 values directly — skips the intermediate
+			// normalizeKVSnapshotNativeTensor alloc that the
+			// pre-bytesWithOptions sibling path already eliminated.
 			w.u32(2)
-			w.u32(uint32(elements))
-			w.bytesWithLength(core.AsBytes(dtype))
-			w.bytesWithLength(raw)
+			w.u32(uint32(len(values)))
+			w.bytesWithLength(core.AsBytes("float32"))
+			w.u32(uint32(len(values) * 4))
+			w.f32sRaw(values)
 			return w.err
 		}
 	}
