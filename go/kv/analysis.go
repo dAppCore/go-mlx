@@ -375,9 +375,28 @@ func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
 				continue
 			}
 			invB := invNorms[j]
-			var dot float64
-			for k, av := range rowA {
-				dot += float64(av) * float64(rowB[k])
+			// 4-way unrolled dot — same FADDD-chain-split as the
+			// kvAnalysisPositionDifferentiation headDim>1 path. The
+			// inner loop runs O(N²) times across (numHeads, layers),
+			// where N is the per-head vector length (seqLen·headDim);
+			// breaking the loop-carried 3-cycle FADDD dependency into 4
+			// parallel chains lifts arithmetic throughput. f32→f64
+			// conversion stays inline (avoids a doubled-memory scratch
+			// arena — pre-scaling regressed the bench by 5-7% because
+			// the f64 arena is 2× the f32 source and inflates cache
+			// pressure on the hot dot loop).
+			length := len(rowA)
+			var d0, d1, d2, d3 float64
+			k := 0
+			for ; k+3 < length; k += 4 {
+				d0 += float64(rowA[k]) * float64(rowB[k])
+				d1 += float64(rowA[k+1]) * float64(rowB[k+1])
+				d2 += float64(rowA[k+2]) * float64(rowB[k+2])
+				d3 += float64(rowA[k+3]) * float64(rowB[k+3])
+			}
+			dot := (d0 + d1) + (d2 + d3)
+			for ; k < length; k++ {
+				dot += float64(rowA[k]) * float64(rowB[k])
 			}
 			similarity := dot * invA * invB
 			total += similarity
