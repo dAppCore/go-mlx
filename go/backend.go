@@ -312,13 +312,31 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	}
 }
 
+// metalProbeSinkAdapter forwards metal.ProbeEvent into a probe.Sink
+// after the metal→root event conversion. Replaces the per-call closure
+// allocation in toMetalProbeSink — the closure form below captured
+// `sink` into a fresh func per Generate/Chat/Classify call (24 B + GC
+// pressure on the per-call hot path even when ProbeSink was non-nil but
+// emitted few events). The struct form is heap-allocated once per call
+// but is two pointer-sized words and qualifies for stack allocation
+// when the metal config doesn't escape.
+type metalProbeSinkAdapter struct {
+	sink probe.Sink
+}
+
+// EmitProbe converts metal.ProbeEvent to probe.Event and forwards to the
+// wrapped root sink. Called per token during generation when the caller
+// supplies a ProbeSink — the conversion still allocates per event but
+// the dispatch site no longer allocates a closure per Generate call.
+func (a metalProbeSinkAdapter) EmitProbe(event metal.ProbeEvent) {
+	a.sink.EmitProbe(toRootProbeEvent(event))
+}
+
 func toMetalProbeSink(sink probe.Sink) metal.ProbeSink {
 	if sink == nil {
 		return nil
 	}
-	return metal.ProbeSinkFunc(func(event metal.ProbeEvent) {
-		sink.EmitProbe(toRootProbeEvent(event))
-	})
+	return metalProbeSinkAdapter{sink: sink}
 }
 
 func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
