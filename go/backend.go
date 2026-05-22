@@ -472,7 +472,34 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 		return nil
 	}
 	out := make([]TokenPhaseTrace, len(phases))
+	// Single arena allocation for the per-phase NativeEvents slices.
+	// TraceTokenPhases-enabled metrics emit one TokenPhaseTrace per
+	// decoded token, each with a NativeEvents fanout — collapsing the
+	// per-phase make into one slab avoids len(phases) small allocs on
+	// every Metrics() read with phase tracing enabled.
+	totalNative := 0
+	for i := range phases {
+		totalNative += len(phases[i].NativeEvents)
+	}
+	var nativeSlab []NativePhaseTrace
+	nativeOffset := 0
+	if totalNative > 0 {
+		nativeSlab = make([]NativePhaseTrace, totalNative)
+	}
 	for i, phase := range phases {
+		var phaseNative []NativePhaseTrace
+		if n := len(phase.NativeEvents); n > 0 {
+			end := nativeOffset + n
+			phaseNative = nativeSlab[nativeOffset:end:end]
+			for j, event := range phase.NativeEvents {
+				phaseNative[j] = NativePhaseTrace{
+					Name:     event.Name,
+					Duration: event.Duration,
+					Error:    event.Error,
+				}
+			}
+			nativeOffset = end
+		}
 		out[i] = TokenPhaseTrace{
 			Step:                phase.Step,
 			FinalToken:          phase.FinalToken,
@@ -490,7 +517,7 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 			DetachDuration:      phase.DetachDuration,
 			CacheProbeDuration:  phase.CacheProbeDuration,
 			OtherDuration:       phase.OtherDuration,
-			NativeEvents:        toRootNativePhaseTraces(phase.NativeEvents),
+			NativeEvents:        phaseNative,
 		}
 	}
 	return out
