@@ -530,9 +530,12 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 			if err != nil {
 				return err
 			}
-			weight := weights[sourceIndex]
+			// Cast weight to float32 once outside the inner accumulator
+			// loop — same precision argument as linearMerge (the inputs
+			// are float32, the weights are normalised in [0,1]).
+			weight32 := float32(weights[sourceIndex])
 			for i, value := range values {
-				out[i] += float32(float64(value) * weight)
+				out[i] += value * weight32
 			}
 		}
 		var err error
