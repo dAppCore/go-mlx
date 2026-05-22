@@ -593,7 +593,10 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 		}
 		adapter.Hash = HashString(core.AsString(buf))
 	}
-	if adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0 {
+	// `allEmpty` is the byte-for-byte same predicate as the final clear
+	// check below, so reuse it instead of re-walking the seven field
+	// compares + the TargetKeys-len recheck.
+	if allEmpty {
 		adapter.Hash = ""
 	}
 	adapter.TargetKeys = core.SliceClone(adapter.TargetKeys)
