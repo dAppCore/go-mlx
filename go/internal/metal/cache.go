@@ -1073,6 +1073,13 @@ type PagedKVCache struct {
 	visibleKScratch     []*Array
 	visibleVScratch     []*Array
 	visibleOwnedScratch []*Array
+	// Scratch buffers for K/V shape readouts — Dim() into these from inside
+	// appendPagesPrealloc/Concat instead of calling Shape() which allocates a
+	// new []int32 every time.  The slices are passed down to helpers within
+	// the same call frame (canAppendToLastPage, append* helpers, cachePageView)
+	// and never retained beyond the Update.
+	kShapeScratch []int32
+	vShapeScratch []int32
 	materializedLength  int
 	storageDType        DType
 	hasStorageDType     bool
@@ -1342,6 +1349,8 @@ func (c *PagedKVCache) Reset() {
 	c.visibleKScratch = nil
 	c.visibleVScratch = nil
 	c.visibleOwnedScratch = nil
+	c.kShapeScratch = nil
+	c.vShapeScratch = nil
 	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
@@ -1399,9 +1408,8 @@ func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return 0
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 {
+	kShape, vShape, ok := c.populateShapeScratch(k, v)
+	if !ok {
 		c.kPages = append(c.kPages, k.Clone())
 		c.vPages = append(c.vPages, v.Clone())
 		c.pageLens = append(c.pageLens, seqLen)
@@ -1445,9 +1453,12 @@ func (c *PagedKVCache) appendPagesPrealloc(k, v *Array, seqLen int) int {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return 0
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 {
+	// Use scratch slices populated via Dim() instead of k.Shape()/v.Shape() —
+	// each Shape() call allocates a fresh []int32 on every token-Update, while
+	// Dim is a single cgo read.  The scratch is only read within this call
+	// frame; helpers receive []int32 views and don't retain them.
+	kShape, vShape, ok := c.populateShapeScratch(k, v)
+	if !ok {
 		return c.appendPagesConcat(k, v, seqLen)
 	}
 	totalLen := int(kShape[2])
@@ -1471,6 +1482,38 @@ func (c *PagedKVCache) appendPagesPrealloc(k, v *Array, seqLen int) int {
 		start += take
 	}
 	return seqLen
+}
+
+// populateShapeScratch fills the cache's K/V shape scratch slices from the
+// arrays' Dim() values and returns views over them.  Saves two Shape() heap
+// allocations per appendPages*  call.  The returned slices are only valid
+// until the next populateShapeScratch / Reset.
+func (c *PagedKVCache) populateShapeScratch(k, v *Array) (kShape, vShape []int32, ok bool) {
+	if k == nil || v == nil || !k.Valid() || !v.Valid() {
+		return nil, nil, false
+	}
+	if k.NumDims() < 4 || v.NumDims() < 4 {
+		return nil, nil, false
+	}
+	if cap(c.kShapeScratch) < 4 {
+		c.kShapeScratch = make([]int32, 4)
+	} else {
+		c.kShapeScratch = c.kShapeScratch[:4]
+	}
+	if cap(c.vShapeScratch) < 4 {
+		c.vShapeScratch = make([]int32, 4)
+	} else {
+		c.vShapeScratch = c.vShapeScratch[:4]
+	}
+	c.kShapeScratch[0] = int32(k.Dim(0))
+	c.kShapeScratch[1] = int32(k.Dim(1))
+	c.kShapeScratch[2] = int32(k.Dim(2))
+	c.kShapeScratch[3] = int32(k.Dim(3))
+	c.vShapeScratch[0] = int32(v.Dim(0))
+	c.vShapeScratch[1] = int32(v.Dim(1))
+	c.vShapeScratch[2] = int32(v.Dim(2))
+	c.vShapeScratch[3] = int32(v.Dim(3))
+	return c.kShapeScratch, c.vShapeScratch, true
 }
 
 func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
