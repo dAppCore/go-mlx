@@ -177,8 +177,13 @@ func samePath(a, b string) bool {
 }
 
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	patterns := []string{"*.json", "*.model", "*.txt"}
-	seen := map[string]struct{}{}
+	patterns := [...]string{"*.json", "*.model", "*.txt"}
+	// Real qwen3 packs ship 6-8 metadata files, gemma4 closer to 10;
+	// presize the dedup set so the dominant first-pattern fill avoids
+	// the runtime map-growth cycle. Switch the patterns slice literal to
+	// a fixed-size array so the loop iterates without the throwaway
+	// per-call slice-header alloc.
+	seen := make(map[string]struct{}, 12)
 	for _, pattern := range patterns {
 		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
 			name := core.PathBase(sourcePath)
