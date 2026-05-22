@@ -150,6 +150,60 @@ func BenchmarkAnalyze_2048Tokens(b *testing.B) {
 	}
 }
 
+// benchGQAHeadDimSnapshot builds a GQA (numHeads≤4) snapshot with
+// headDim > 1 so the analyzeKVGQA → kvAnalysisPositionDifferentiation
+// general path (not the headDim=1 specialisation) gets exercised.
+// Real qwen3 GQA layers carry headDim 64-128; the headDim=1 fixture
+// the suite ships with skips the inner-k-loop entirely. seqLen is
+// kept modest because the path is O(seqLen²·headDim).
+func benchGQAHeadDimSnapshot(seqLen, headDim int) *Snapshot {
+	tokens := make([]int32, seqLen)
+	key := make([]float32, seqLen*headDim)
+	value := make([]float32, seqLen*headDim)
+	for pos := range seqLen {
+		tokens[pos] = int32(pos + 1)
+		for k := range headDim {
+			// Vary across both position and dim so the inner dot is
+			// non-trivial (not orthogonal, not identical).
+			key[pos*headDim+k] = float32(pos+1) * float32(k+1) * 0.01
+			value[pos*headDim+k] = float32(pos+2) * float32(k+1) * 0.01
+		}
+	}
+	return &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "qwen3",
+		Tokens:        tokens,
+		TokenOffset:   seqLen,
+		NumLayers:     2,
+		NumHeads:      1,
+		SeqLen:        seqLen,
+		HeadDim:       headDim,
+		NumQueryHeads: 8,
+		Layers: []LayerSnapshot{
+			{Layer: 0, CacheIndex: 0, Heads: []HeadSnapshot{{Key: key, Value: value}}},
+			{Layer: 1, CacheIndex: 1, Heads: []HeadSnapshot{{Key: key, Value: value}}},
+		},
+	}
+}
+
+func BenchmarkAnalyze_GQA_256Tokens_64HeadDim(b *testing.B) {
+	snap := benchGQAHeadDimSnapshot(256, 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkAnalysis = Analyze(snap)
+	}
+}
+
+func BenchmarkAnalyze_GQA_512Tokens_64HeadDim(b *testing.B) {
+	snap := benchGQAHeadDimSnapshot(512, 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkAnalysis = Analyze(snap)
+	}
+}
+
 // benchMultiHeadSnapshot builds a numHeads>4 snapshot so Analyze
 // routes through analyzeKVMultiHead → kvAnalysisPairCoherence instead
 // of the GQA path. Shape mirrors a qwen3-class layer slice with 8
