@@ -17,6 +17,31 @@ import (
 
 const DistillCheckpointMetadataVersion = 1
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. errDistillLogitNotFinite fires twice (per-batch finite
+// guard); errDistillCheckpointPath twice (Save/Resume paths).
+var (
+	errDistillLogitNotFinite     = core.NewError("mlx: distillation logit is not finite")
+	errDistillCheckpointPath     = core.NewError("mlx: distillation checkpoint metadata path is required")
+	errTeacherLogitsEmpty        = core.NewError("mlx: teacher logits are empty")
+	errDistillTempInvalid        = core.NewError("mlx: distillation temperature must be finite and positive")
+	errDistillNeedTokenizer      = core.NewError("mlx: distillation runner requires Tokenizer or BuildBatches")
+	errDistillNeedTeacherLogits  = core.NewError("mlx: distillation runner requires TeacherLogits on teacher cache miss")
+	errDistillNeedStudentLogits  = core.NewError("mlx: distillation runner requires StudentLogits")
+	errDistillNoMaskedTokens     = core.NewError("mlx: distillation loss has no masked tokens")
+	errDistillLogitVocab         = core.NewError("mlx: distillation logit shape mismatch: vocabulary")
+	errDistillLogitSeq           = core.NewError("mlx: distillation logit shape mismatch: sequence")
+	errDistillLogitEmptyVocab    = core.NewError("mlx: distillation logit shape mismatch: empty vocabulary")
+	errDistillLogitBatch         = core.NewError("mlx: distillation logit shape mismatch: batch")
+	errDistillKLNotFinite        = core.NewError("mlx: distillation KL loss is not finite")
+	errDistillNoTrainableBatches = core.NewError("mlx: distillation dataset produced no trainable batches")
+	errDistillNoTokenizedBatches = core.NewError("mlx: distillation dataset produced no tokenized batches")
+	errDistillDatasetNeedsReset  = core.NewError("mlx: distillation dataset must implement Reset for multiple epochs")
+	errDistillDatasetNil         = core.NewError("mlx: distillation dataset is nil")
+	errDistillCoreResultFailed   = core.NewError("core result failed")
+)
+
 // DistillLossKind selects the scalar used to train the student.
 type DistillLossKind string
 
@@ -230,10 +255,10 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, ds data
 		return nil, err
 	}
 	if ds == nil {
-		return nil, core.NewError("mlx: distillation dataset is nil")
+		return nil, errDistillDatasetNil
 	}
 	if runner.StudentLogits == nil {
-		return nil, core.NewError("mlx: distillation runner requires StudentLogits")
+		return nil, errDistillNeedStudentLogits
 	}
 	cfg = normalizeDistillConfig(cfg)
 
@@ -259,7 +284,7 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, ds data
 		if epoch > 1 {
 			resetter, ok := ds.(dataset.Resetter)
 			if !ok {
-				return result, core.NewError("mlx: distillation dataset must implement Reset for multiple epochs")
+				return result, errDistillDatasetNeedsReset
 			}
 			if err := resetter.Reset(); err != nil {
 				return result, err
@@ -271,7 +296,7 @@ func RunKnowledgeDistillation(ctx context.Context, runner DistillRunner, ds data
 		result.Metrics.Epochs = epoch
 	}
 	if result.Metrics.Steps == 0 {
-		return result, core.NewError("mlx: distillation dataset produced no trainable batches")
+		return result, errDistillNoTrainableBatches
 	}
 	result.Duration = nonZeroDuration(time.Since(start))
 	return result, nil
@@ -283,7 +308,7 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 		return err
 	}
 	if len(batches) == 0 {
-		return core.NewError("mlx: distillation dataset produced no tokenized batches")
+		return errDistillNoTokenizedBatches
 	}
 	// Pre-grow result.Losses for this epoch's worth of appends to skip
 	// the per-append capacity-grow cascade. On the first epoch the slice
@@ -394,7 +419,7 @@ func distillBatches(ctx context.Context, runner DistillRunner, ds dataset.Datase
 		return runner.BuildBatches(ctx, source, cfg.Batch)
 	}
 	if runner.Tokenizer == nil {
-		return nil, core.NewError("mlx: distillation runner requires Tokenizer or BuildBatches")
+		return nil, errDistillNeedTokenizer
 	}
 	tok := runner.Tokenizer(ctx)
 	return BuildDatasetBatches(tok, source, cfg.Batch)
@@ -414,7 +439,7 @@ func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, bat
 		}
 	}
 	if runner.TeacherLogits == nil {
-		return nil, "", core.NewError("mlx: distillation runner requires TeacherLogits on teacher cache miss")
+		return nil, "", errDistillNeedTeacherLogits
 	}
 	logits, err := runner.TeacherLogits(ctx, batch)
 	if err != nil {
@@ -549,7 +574,7 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	// so the helpers skip both the per-call validation and the per-call
 	// reciprocal division.
 	if cfg.Temperature <= 0 || math.IsNaN(cfg.Temperature) || math.IsInf(cfg.Temperature, 0) {
-		return DistillLoss{}, core.NewError("mlx: distillation temperature must be finite and positive")
+		return DistillLoss{}, errDistillTempInvalid
 	}
 	invTemp := 1.0 / cfg.Temperature
 	var softCE float64
@@ -666,7 +691,7 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 		}
 	}
 	if tokens == 0 {
-		return DistillLoss{}, core.NewError("mlx: distillation loss has no masked tokens")
+		return DistillLoss{}, errDistillNoMaskedTokens
 	}
 	softCE /= float64(tokens)
 	entropy /= float64(tokens)
@@ -675,7 +700,7 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 		kl = 0
 	}
 	if kl < 0 || math.IsNaN(kl) || math.IsInf(kl, 0) {
-		return DistillLoss{}, core.NewError("mlx: distillation KL loss is not finite")
+		return DistillLoss{}, errDistillKLNotFinite
 	}
 	lossValue := kl
 	if cfg.Loss == DistillLossSoftCrossEntropy {
@@ -741,7 +766,7 @@ func NewDistillCheckpointMetadata(path string, cfg DistillConfig, result *Distil
 // SaveDistillCheckpointMetadata writes checkpoint metadata beside student artifacts.
 func SaveDistillCheckpointMetadata(path string, meta DistillCheckpointMetadata) error {
 	if path == "" {
-		return core.NewError("mlx: distillation checkpoint metadata path is required")
+		return errDistillCheckpointPath
 	}
 	if meta.Version == 0 {
 		meta.Version = DistillCheckpointMetadataVersion
@@ -769,7 +794,7 @@ func SaveDistillCheckpointMetadata(path string, meta DistillCheckpointMetadata) 
 // LoadDistillCheckpointMetadata reads checkpoint metadata written by SaveDistillCheckpointMetadata.
 func LoadDistillCheckpointMetadata(path string) (*DistillCheckpointMetadata, error) {
 	if path == "" {
-		return nil, core.NewError("mlx: distillation checkpoint metadata path is required")
+		return nil, errDistillCheckpointPath
 	}
 	read := core.ReadFile(distillCheckpointMetadataPath(path))
 	if !read.OK {
@@ -827,10 +852,10 @@ func normalizeDistillConfig(cfg DistillConfig) DistillConfig {
 
 func validateDistillLogitShapes(teacher, student DistillLogits) error {
 	if len(teacher) == 0 {
-		return core.NewError("mlx: teacher logits are empty")
+		return errTeacherLogitsEmpty
 	}
 	if len(teacher) != len(student) {
-		return core.NewError("mlx: distillation logit shape mismatch: batch")
+		return errDistillLogitBatch
 	}
 	for i := range teacher {
 		// Hoist the per-row [][]float32 slice headers once so the inner
@@ -839,15 +864,15 @@ func validateDistillLogitShapes(teacher, student DistillLogits) error {
 		tRow := teacher[i]
 		sRow := student[i]
 		if len(tRow) != len(sRow) {
-			return core.NewError("mlx: distillation logit shape mismatch: sequence")
+			return errDistillLogitSeq
 		}
 		for j := range tRow {
 			tVocab := len(tRow[j])
 			if tVocab == 0 {
-				return core.NewError("mlx: distillation logit shape mismatch: empty vocabulary")
+				return errDistillLogitEmptyVocab
 			}
 			if tVocab != len(sRow[j]) {
-				return core.NewError("mlx: distillation logit shape mismatch: vocabulary")
+				return errDistillLogitVocab
 			}
 		}
 	}
@@ -870,7 +895,7 @@ func logSoftmaxAndProbInvTempInto(logits []float32, invTemp float64, logOut, pro
 	for i, logit := range logits {
 		value := float64(logit) * invTemp
 		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return core.NewError("mlx: distillation logit is not finite")
+			return errDistillLogitNotFinite
 		}
 		logOut[i] = value
 		if value > maxLogit {
@@ -907,7 +932,7 @@ func logSoftmaxInvTempInto(logits []float32, invTemp float64, out []float64) err
 	for i, logit := range logits {
 		value := float64(logit) * invTemp
 		if math.IsNaN(value) || math.IsInf(value, 0) {
-			return core.NewError("mlx: distillation logit is not finite")
+			return errDistillLogitNotFinite
 		}
 		out[i] = value
 		if value > maxLogit {
@@ -1030,7 +1055,7 @@ func distillResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errDistillCoreResultFailed
 }
 
 func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples int) ([]dataset.Sample, error) {
