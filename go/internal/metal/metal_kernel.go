@@ -12,6 +12,7 @@ import "C"
 
 import (
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"dappco.re/go"
@@ -115,6 +116,22 @@ func (k *MetalKernel) Free() {
 	}
 }
 
+// metalKernelOutputVecHolder pins a mlx_vector_array struct so its address
+// can be passed to cgo without forcing a fresh heap allocation each call.
+// The holder is recycled via metalKernelOutputVecPool; the inner C handle
+// is freed between uses so the holder always returns to the pool with a
+// nil ctx, ready for the next caller's mlx_fast_metal_kernel_apply to
+// either reuse or allocate the underlying std::vector.
+type metalKernelOutputVecHolder struct {
+	vec C.mlx_vector_array
+}
+
+var metalKernelOutputVecPool = sync.Pool{
+	New: func() any {
+		return &metalKernelOutputVecHolder{}
+	},
+}
+
 // Apply executes the kernel with the given configuration and input arrays.
 // Returns the output arrays produced by the kernel.
 //
@@ -140,10 +157,19 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		C.mlx_vector_array_append_value(inputVec, a.ctx)
 	}
 
-	outputVec := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(outputVec)
+	// Pooled holder pins the outputVec struct so taking its address for the
+	// mlx_fast_metal_kernel_apply out-parameter does not allocate a fresh
+	// 16-byte Go cell each call. mlx_fast_metal_kernel_apply lazily
+	// allocates the underlying std::vector when ctx is nil, and reuses it
+	// otherwise — both safe with a recycled holder.
+	holder := metalKernelOutputVecPool.Get().(*metalKernelOutputVecHolder)
+	defer func() {
+		C.mlx_vector_array_free(holder.vec)
+		holder.vec.ctx = nil
+		metalKernelOutputVecPool.Put(holder)
+	}()
 
-	rc := C.mlx_fast_metal_kernel_apply(&outputVec, k.ctx, inputVec, config.ctx, DefaultStream().ctx)
+	rc := C.mlx_fast_metal_kernel_apply(&holder.vec, k.ctx, inputVec, config.ctx, DefaultStream().ctx)
 	if rc != 0 {
 		if err := lastError(); err != nil {
 			return nil, err
@@ -151,12 +177,12 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		return nil, core.E("mlx.MetalKernel.Apply", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)
 	}
 
-	n := C.mlx_vector_array_size(outputVec)
+	n := C.mlx_vector_array_size(holder.vec)
 
 	results := make([]*Array, int(n))
 	for i := range results {
 		out := newArray("METAL_KERNEL")
-		C.mlx_vector_array_get(&out.ctx, outputVec, C.size_t(i))
+		C.mlx_vector_array_get(&out.ctx, holder.vec, C.size_t(i))
 		results[i] = out
 	}
 	return results, nil
@@ -249,20 +275,54 @@ func (c *MetalKernelConfig) AddTemplateBool(name string, value bool) {
 	C.mlx_fast_metal_kernel_config_add_template_arg_bool(c.ctx, cName, C._Bool(value))
 }
 
+// metalKernelOutputArgScratchRank caps the pooled scratch buffer reused in
+// AddOutputArg. Every current caller in this package emits a shape of rank
+// 1, 2, or 3; arbitrary callers may pass an *Array's full shape, but MLX
+// itself caps tensor rank well below this bound. Shapes that exceed the
+// cap fall back to a heap-allocated buffer.
+const metalKernelOutputArgScratchRank = 8
+
+// metalKernelOutputArgScratch is a sync.Pool of fixed-rank C.int buffers used
+// by AddOutputArg as a shape-conversion scratch. The cgo trampoline forces
+// any Go pointer passed across the boundary to escape, so a stack array does
+// not actually stay on the stack; pooling lets us amortise the allocation
+// across calls and keep the per-call alloc count at zero on the fast path.
+var metalKernelOutputArgScratch = sync.Pool{
+	New: func() any {
+		buf := make([]C.int, metalKernelOutputArgScratchRank)
+		return &buf
+	},
+}
+
 // AddOutputArg declares an output array with the given shape and dtype.
 // Call once per output in the order matching outputNames from NewMetalKernel.
 //
 //	cfg.AddOutputArg([]int32{4, 16}, metal.DTypeFloat32)
 func (c *MetalKernelConfig) AddOutputArg(shape []int32, dtype DType) {
-	cShape := make([]C.int, len(shape))
+	n := len(shape)
+	if n == 0 {
+		C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, nil, 0, C.mlx_dtype(dtype))
+		return
+	}
+	if n <= metalKernelOutputArgScratchRank {
+		// Pooled scratch fast path: the C callee copies the shape buffer
+		// synchronously, so the same buffer can be returned to the pool
+		// once the cgo call returns. This eliminates the per-call
+		// make([]C.int, len(shape)) allocation on MoE-heavy hot paths.
+		bufPtr := metalKernelOutputArgScratch.Get().(*[]C.int)
+		buf := (*bufPtr)[:n]
+		for i, s := range shape[:n] {
+			buf[i] = C.int(s)
+		}
+		C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, &buf[0], C.size_t(n), C.mlx_dtype(dtype))
+		metalKernelOutputArgScratch.Put(bufPtr)
+		return
+	}
+	cShape := make([]C.int, n)
 	for i, s := range shape {
 		cShape[i] = C.int(s)
 	}
-	var shapePtr *C.int
-	if len(cShape) > 0 {
-		shapePtr = &cShape[0]
-	}
-	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, shapePtr, C.size_t(len(cShape)), C.mlx_dtype(dtype))
+	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, &cShape[0], C.size_t(n), C.mlx_dtype(dtype))
 }
 
 // SetInitValue sets the initial value for output buffers before kernel dispatch.
