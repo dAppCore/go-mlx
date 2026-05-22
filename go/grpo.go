@@ -898,15 +898,47 @@ func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 	// contiguous element memory, replacing the per-iteration struct
 	// copy (GRPORollout is ~10 fields wide so each per-iter copy is
 	// a non-trivial pile of moves). Inner slice fields are then
-	// re-cloned so out's TokenIDs/RewardParts don't alias rollouts'.
+	// re-sliced into per-field flat backings so out's TokenIDs /
+	// RewardParts don't alias rollouts' but only allocate two big
+	// buffers instead of 2*N (one per rollout per field).
 	copy(out, rollouts)
+	// Two-pass clone for the inner slice fields — sum once for sizing,
+	// then carve per-rollout views out of two shared backing buffers.
+	// For a default group of 4 rollouts with 128 tokens + 1 reward each
+	// this collapses 8 inner allocs down to 2 (one per shared backing).
+	var totalTokens, totalRewards int
 	for i := range rollouts {
-		// core.SliceClone is slices.Clone — pre-sized make+copy, one
-		// alloc per slice instead of append-grow on a nil head. Also
-		// returns nil for nil input so empty TokenIDs / RewardParts
-		// don't allocate at all.
-		out[i].TokenIDs = core.SliceClone(rollouts[i].TokenIDs)
-		out[i].RewardParts = core.SliceClone(rollouts[i].RewardParts)
+		totalTokens += len(rollouts[i].TokenIDs)
+		totalRewards += len(rollouts[i].RewardParts)
+	}
+	var tokenBacking []int32
+	if totalTokens > 0 {
+		tokenBacking = make([]int32, totalTokens)
+	}
+	var rewardBacking []GRPOReward
+	if totalRewards > 0 {
+		rewardBacking = make([]GRPOReward, totalRewards)
+	}
+	var tokenCursor, rewardCursor int
+	for i := range rollouts {
+		if src := rollouts[i].TokenIDs; len(src) > 0 {
+			next := tokenCursor + len(src)
+			dst := tokenBacking[tokenCursor:next:next]
+			copy(dst, src)
+			out[i].TokenIDs = dst
+			tokenCursor = next
+		} else {
+			out[i].TokenIDs = nil
+		}
+		if src := rollouts[i].RewardParts; len(src) > 0 {
+			next := rewardCursor + len(src)
+			dst := rewardBacking[rewardCursor:next:next]
+			copy(dst, src)
+			out[i].RewardParts = dst
+			rewardCursor = next
+		} else {
+			out[i].RewardParts = nil
+		}
 	}
 	return out
 }
