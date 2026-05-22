@@ -178,6 +178,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxFrameBytes)
 
+	// req is hoisted across loop iterations. Each frame zeroes it
+	// before json.Unmarshal so per-frame heap-allocation of the
+	// Request struct turns into a single per-connection allocation.
+	// Backend handlers do not retain req past Dispatch's return
+	// (see generateRequestFromRequest), so reuse is safe.
+	var req Request
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return nil
@@ -189,7 +195,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 		}
 		line := core.AsString(trimmed)
 
-		var req Request
+		req = Request{}
 		if result := core.JSONUnmarshalString(line, &req); !result.OK {
 			if encodeErr := writeJSONLine(conn, errorResponse{
 				Status:  "error",

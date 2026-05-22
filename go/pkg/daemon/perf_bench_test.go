@@ -109,6 +109,26 @@ func BenchmarkFrameTrimAndParse(b *testing.B) {
 	}
 }
 
+// BenchmarkFrameTrimAndParse_Hoisted mirrors the handleConn shape
+// where req is declared outside the loop and re-zeroed per frame.
+func BenchmarkFrameTrimAndParse_Hoisted(b *testing.B) {
+	raw := []byte(`  {"action":"generate","prompt":"ping","model":"main","max_tokens":64,"temperature":0.7}  `)
+	var req Request
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 {
+			continue
+		}
+		line := core.AsString(trimmed)
+		req = Request{}
+		if result := core.JSONUnmarshalString(line, &req); !result.OK {
+			b.Fatal(result.Value)
+		}
+	}
+}
+
 // BenchmarkNativeRunner_ModelForCached drives the modelFor read path
 // concurrently to exercise the RWMutex read fast-path on a populated
 // runner cache. The model is pre-loaded once.
@@ -151,5 +171,29 @@ func BenchmarkRegistryActions(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = r.Actions()
+	}
+}
+
+// discardWriter implements core.Writer with zero-cost Write.
+type discardWriter struct{}
+
+func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+// BenchmarkWriteJSONLine_TypicalResp measures the per-response
+// marshal-and-emit path used by handleConn.
+func BenchmarkWriteJSONLine_TypicalResp(b *testing.B) {
+	resp := Response{
+		"status": "ok",
+		"action": "generate",
+		"text":   "the quick brown fox jumps over the lazy dog",
+		"model":  "main",
+	}
+	w := discardWriter{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := writeJSONLine(w, resp); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
