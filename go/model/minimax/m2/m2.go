@@ -10,6 +10,7 @@ import (
 	mlxjang "dappco.re/go/mlx/quant/jang"
 	"dappco.re/go/mlx/safetensors"
 	"math"
+	"slices"
 	"sort"
 )
 
@@ -373,10 +374,13 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 				scored[expertID] = expertScore{ID: expertID, Score: scoreFn(raw)}
 			}
 		}
-		// sort.Sort + typed sort.Interface avoids sort.SliceStable's reflect
-		// + closure allocation. The less function gives a total order via
-		// the ID tie-break so stability is intrinsic — Sort suffices.
-		sort.Sort(scored)
+		// slices.SortFunc with a top-level cmp avoids the interface
+		// boxing of sort.Sort(sort.Interface(expertScoreSlice)) which
+		// (per pprof) charged one alloc per call to the interface
+		// conversion. compareExpertScoresDesc is a package-level
+		// function so no closure is created. Ordering matches the
+		// sort.Interface impl: Score descending, ID tie-break.
+		slices.SortFunc(scored, compareExpertScoresDesc)
 		start := tokenIndex * topK
 		end := start + topK
 		expertIDs := expertIDArena[start:end:end]
@@ -845,23 +849,34 @@ type expertScore struct {
 	Score float32
 }
 
-// expertScoreSlice is a typed sort.Interface adapter for []expertScore,
-// kept in place of sort.SliceStable in RouteTokens. The reflect/closure
-// path of sort.SliceStable allocates a 64-byte sort helper per call; the
-// typed adapter is allocation-free. Less orders by Score descending with
-// a stable ID tie-break, giving a total order over unique expert IDs.
-//
-//	sort.Sort(scored)
+// expertScoreSlice is a typed []expertScore used by RouteTokens as the
+// per-call scoring buffer; the sort happens via slices.SortFunc + the
+// package-level compareExpertScoresDesc comparator below to avoid the
+// per-call sort.Interface boxing of sort.Sort.
 type expertScoreSlice []expertScore
 
-func (s expertScoreSlice) Len() int { return len(s) }
-func (s expertScoreSlice) Less(i, j int) bool {
-	if s[i].Score == s[j].Score {
-		return s[i].ID < s[j].ID
+// compareExpertScoresDesc orders expertScore values by Score descending
+// with an ID-ascending tie-break. The ID tie-break gives a total order
+// over unique expert IDs so the sort is intrinsically stable. Lifted to
+// package level so slices.SortFunc can use a direct func pointer instead
+// of a per-call closure.
+//
+//	slices.SortFunc(scored, compareExpertScoresDesc)
+func compareExpertScoresDesc(a, b expertScore) int {
+	if a.Score > b.Score {
+		return -1
 	}
-	return s[i].Score > s[j].Score
+	if a.Score < b.Score {
+		return 1
+	}
+	if a.ID < b.ID {
+		return -1
+	}
+	if a.ID > b.ID {
+		return 1
+	}
+	return 0
 }
-func (s expertScoreSlice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRole) TensorSpec {
 	name := core.Concat("model.layers.", core.Itoa(layer), ".self_attn.", projection, ".weight")
