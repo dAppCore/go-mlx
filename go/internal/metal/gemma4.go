@@ -1765,14 +1765,18 @@ func gemma4NormalizePerLayerTensor(x *Array, batchSize, seqLen, numLayers, hidde
 		return x
 	}
 
-	shape := x.Shape()
+	// Stack-allocated shape scratch — per-layer tensor reshape is in the
+	// per-token decode path. Avoids the per-call []int32 heap alloc from
+	// x.Shape() (24 B/op × NumHiddenLayers × tokens).
+	var shapeBuf [maxTensorRank]int32
+	shape := x.ShapeInto(shapeBuf[:0])
 	switch len(shape) {
 	case 4:
 		if shape[2] == numLayers && shape[3] == hiddenSize {
 			return x
 		}
 		if shape[2] == hiddenSize && shape[3] == numLayers {
-			return Transpose(x, 0, 1, 3, 2)
+			return Transpose4(x, 0, 1, 3, 2)
 		}
 	case 3:
 		if shape[2] == numLayers*hiddenSize {
@@ -1790,7 +1794,11 @@ func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 	if m.EmbedTokensPerLayer == nil || m.PerLayerModelProj == nil || m.PerLayerProjNorm == nil || m.PerLayerProjNormScaled == nil {
 		return nil
 	}
-	B, L := tokens.Shape()[0], tokens.Shape()[1]
+	// Stack-allocated shape scratch — per-token decode hot path. Calling
+	// tokens.Shape() twice paid two []int32 heap allocs (24 B/op each).
+	var tokShapeBuf [maxTensorRank]int32
+	tokShape := tokens.ShapeInto(tokShapeBuf[:0])
+	B, L := tokShape[0], tokShape[1]
 	if combined, ok := m.compiledPerLayerInputTensor(tokens, hidden); ok {
 		return m.splitPerLayerInputTensor(combined)
 	}
@@ -2214,7 +2222,10 @@ func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, 
 		return nil, false, nil
 	}
 	m.ensureCacheLayout()
-	shape := tokens.Shape()
+	// Stack-allocated shape scratch — native fixed greedy single-token decode
+	// hot path. Avoids the per-call []int32 heap alloc.
+	var shapeBuf [maxTensorRank]int32
+	shape := tokens.ShapeInto(shapeBuf[:0])
 	if len(shape) != 2 || shape[0] <= 0 || shape[1] != 1 {
 		return nil, false, nil
 	}
@@ -2290,7 +2301,10 @@ func gemma4ContiguousHidden(h *Array) *Array {
 func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) (*Array, int32, int32) {
 	m.ensureCacheLayout()
 
-	shape := tokens.Shape()
+	// Stack-allocated shape scratch — per-forward-pass hot path. Avoids
+	// the per-call []int32 heap alloc from tokens.Shape().
+	var shapeBuf [maxTensorRank]int32
+	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
@@ -2612,8 +2626,12 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 		if c != nil {
 			oldK, oldV := k, v
 			if fixed, ok := c.(*FixedKVCache); ok && L == 1 && mask == nil && fixed.maxSize > 0 {
-				kShape := k.Shape()
-				vShape := v.Shape()
+				// Stack-allocated shape scratch — per-token per-layer hot path.
+				// K/V are always rank-4 ([B,H,L,D]); avoids 2 × []int32 heap
+				// allocs per layer per token (× NumHiddenLayers).
+				var kShapeBuf, vShapeBuf [maxTensorRank]int32
+				kShape := k.ShapeInto(kShapeBuf[:0])
+				vShape := v.ShapeInto(vShapeBuf[:0])
 				fixed.ensureShape(kShape[0], kShape[1], kShape[3], vShape[3], k.Dtype(), v.Dtype())
 				state := fixed.BorrowedFixedState()
 				if state.Keys != nil && state.Values != nil {
@@ -2955,8 +2973,12 @@ func (e *Gemma4Experts) forwardSortedExpertPrefill(x, topKIndices, topKWeights *
 	if x == nil || topKIndices == nil || topKWeights == nil || !x.Valid() || !topKIndices.Valid() || !topKWeights.Valid() {
 		return nil, false
 	}
-	xShape := x.Shape()
-	indicesShape := topKIndices.Shape()
+	// Stack-allocated shape scratch — sorted-expert prefill is called
+	// per MoE block (× NumHiddenLayers) per prefill batch. Avoids 2-3
+	// per-call []int32 heap allocs from x/topKIndices/DownProj.Weight Shape().
+	var xShapeBuf, indicesShapeBuf, weightShapeBuf [maxTensorRank]int32
+	xShape := x.ShapeInto(xShapeBuf[:0])
+	indicesShape := topKIndices.ShapeInto(indicesShapeBuf[:0])
 	if len(xShape) != 3 || len(indicesShape) != 3 || indicesShape[0] != xShape[0] || indicesShape[1] != xShape[1] {
 		return nil, false
 	}
@@ -2971,7 +2993,7 @@ func (e *Gemma4Experts) forwardSortedExpertPrefill(x, topKIndices, topKWeights *
 	if batch <= 0 || seqLen <= 1 || hidden <= 0 || topK <= 0 || routes != batch*seqLen*topK || topKWeights.Size() != routes {
 		return nil, false
 	}
-	numExperts := int(e.DownProj.Weight.Shape()[0])
+	numExperts := int(e.DownProj.Weight.ShapeInto(weightShapeBuf[:0])[0])
 	if routes < 16 || numExperts <= 0 || routes/numExperts < 4 {
 		return nil, false
 	}
@@ -3060,8 +3082,11 @@ func (e *Gemma4Experts) forwardExpertIDMatVec(x, topKIndices, topKWeights *Array
 	if x == nil || topKIndices == nil || topKWeights == nil || !x.Valid() || !topKIndices.Valid() || !topKWeights.Valid() {
 		return nil, false
 	}
-	xShape := x.Shape()
-	indicesShape := topKIndices.Shape()
+	// Stack-allocated shape scratch — per-token decode MoE hot path.
+	// Called once per MoE block × NumHiddenLayers per generated token.
+	var xShapeBuf, indicesShapeBuf [maxTensorRank]int32
+	xShape := x.ShapeInto(xShapeBuf[:0])
+	indicesShape := topKIndices.ShapeInto(indicesShapeBuf[:0])
 	if len(xShape) != 3 || xShape[0] != 1 || xShape[1] != 1 || len(indicesShape) != 3 || indicesShape[0] != 1 || indicesShape[1] != 1 {
 		return nil, false
 	}
@@ -3162,15 +3187,19 @@ func gemma4UseFusedExpertGateUp(x *Array) bool {
 	if x == nil || !x.Valid() {
 		return false
 	}
-	shape := x.Shape()
-	return len(shape) >= 2 && shape[1] == 1
+	// Branch on the row dim only — Shape() would heap-allocate a fresh
+	// []int32 per MoE block per layer per token. Dim() is one C call.
+	return x.NumDims() >= 2 && x.Dim(1) == 1
 }
 
 func splitLastDimArray(a *Array) (*Array, *Array, bool) {
 	if a == nil || !a.Valid() {
 		return nil, nil, false
 	}
-	shape := a.Shape()
+	// Stack-allocated shape scratch — called per MoE block on the
+	// fused-gate-up split path. Avoids per-call []int32 heap alloc.
+	var shapeBuf [maxTensorRank]int32
+	shape := a.ShapeInto(shapeBuf[:0])
 	if len(shape) == 0 {
 		return nil, nil, false
 	}
