@@ -214,26 +214,23 @@ func (a *Adapter) InspectAttention(ctx context.Context, prompt string, opts ...i
 }
 
 func genOptsToInference(opts GenOpts) []inference.GenerateOption {
-	// Count first so the slice is allocated at its exact final length —
-	// the alternative (nil-start + append) takes the growslice path on
-	// the second append, and the (0, 2) presize wastes a slot in the
-	// common single-field case.
-	want := 0
-	if opts.MaxTokens > 0 {
-		want++
-	}
-	if opts.Temp > 0 {
-		want++
-	}
-	if want == 0 {
+	// Switch on the 2x2 truth table so the slice is constructed in a
+	// single literal expression — no count phase, no make + append +
+	// append round-trip. The compiler emits each branch as a direct
+	// slice-literal initialisation at its exact final length.
+	hasMax := opts.MaxTokens > 0
+	hasTemp := opts.Temp > 0
+	switch {
+	case hasMax && hasTemp:
+		return []inference.GenerateOption{
+			inference.WithMaxTokens(opts.MaxTokens),
+			inference.WithTemperature(float32(opts.Temp)),
+		}
+	case hasMax:
+		return []inference.GenerateOption{inference.WithMaxTokens(opts.MaxTokens)}
+	case hasTemp:
+		return []inference.GenerateOption{inference.WithTemperature(float32(opts.Temp))}
+	default:
 		return nil
 	}
-	generateOpts := make([]inference.GenerateOption, 0, want)
-	if opts.MaxTokens > 0 {
-		generateOpts = append(generateOpts, inference.WithMaxTokens(opts.MaxTokens))
-	}
-	if opts.Temp > 0 {
-		generateOpts = append(generateOpts, inference.WithTemperature(float32(opts.Temp)))
-	}
-	return generateOpts
 }
