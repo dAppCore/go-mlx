@@ -162,6 +162,16 @@ func appendCleanup(cleanup *func() error, next func() error) {
 	}
 }
 
+// runCleanup invokes the optional cleanup closure, returning nil if cleanup
+// itself is nil. Lets LoadModel keep a nil cleanup on the common no-Medium
+// path without a no-op closure allocation.
+func runCleanup(cleanup func() error) error {
+	if cleanup == nil {
+		return nil
+	}
+	return cleanup()
+}
+
 // LoadModel loads a model directly through go-mlx without going through go-inference.
 func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
@@ -172,7 +182,10 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	resolvedPath := modelPath
 	resolvedAdapterPath := cfg.AdapterPath
 	var adapterInfo lora.AdapterInfo
-	cleanup := func() error { return nil }
+	// cleanup stays nil on the common no-Medium path. runCleanup +
+	// Close already short on nil, sparing a no-op closure allocation
+	// per LoadModel call.
+	var cleanup func() error
 	if cfg.Medium != nil {
 		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
 		if err != nil {
@@ -182,7 +195,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			var adapterCleanup func() error
 			resolvedAdapterPath, adapterCleanup, err = stagePathFromMedium(cfg.Medium, cfg.AdapterPath)
 			if err != nil {
-				if cleanupErr := cleanup(); cleanupErr != nil {
+				if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 					return nil, core.ErrorJoin(err, cleanupErr)
 				}
 				return nil, err
@@ -191,13 +204,13 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		}
 	}
 	if slice, ok, sliceErr := inspectModelSliceIfPresent(resolvedPath); sliceErr != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(sliceErr, cleanupErr)
 		}
 		return nil, sliceErr
 	} else if ok && slice.RequiresSplitPlacement {
 		err := core.NewError("mlx: model slice requires split placement; use LoadSplitExecutor or lthn-mlx slice-smoke -split")
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(err, cleanupErr)
 		}
 		return nil, err
@@ -206,7 +219,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	if resolvedAdapterPath != "" {
 		adapterInfo, err = lora.Inspect(resolvedAdapterPath, cfg.AdapterPath)
 		if err != nil {
-			if cleanupErr := cleanup(); cleanupErr != nil {
+			if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 				return nil, core.ErrorJoin(err, cleanupErr)
 			}
 			return nil, err
@@ -231,7 +244,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		WiredLimitBytes:      cfg.WiredLimitBytes,
 	})
 	if err != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(err, cleanupErr)
 		}
 		return nil, err
@@ -254,7 +267,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		if closeErr := native.Close(); closeErr != nil {
 			quantErr = core.ErrorJoin(quantErr, closeErr)
 		}
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			quantErr = core.ErrorJoin(quantErr, cleanupErr)
 		}
 		return nil, quantErr
