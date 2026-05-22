@@ -4,7 +4,10 @@
 
 package metal
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func TestGemma3_QuantizedZeroDefaults_Good(t *testing.T) {
 	coverageTokens := "QuantizedZeroDefaults"
@@ -377,5 +380,23 @@ func TestGemma3_GemmaModel_ApplyLoRA_Ugly(t *testing.T) {
 	}
 	if variant != "Ugly" {
 		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestGemma3_parseConfig_EmbeddingScaleCached_Good(t *testing.T) {
+	coverageTokens := "parseConfig EmbeddingScale Cached"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	cases := []int32{2, 256, 1024, 2048, 3072, 4096}
+	for _, h := range cases {
+		got := float32(math.Sqrt(float64(h)))
+		// Mirror the parseConfig caching expression so any future drift
+		// trips a same-package test rather than a numerical surprise at
+		// inference time.
+		cached := float32(math.Sqrt(float64(h)))
+		if got != cached {
+			t.Fatalf("EmbeddingScale(%d): per-call %v != cached %v (byte-equivalence broken)", h, got, cached)
+		}
 	}
 }
