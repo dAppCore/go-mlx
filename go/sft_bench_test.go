@@ -1,0 +1,154 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+// Benchmarks for sft.go — supervised LoRA fine-tuning pipeline.
+// Per AX-11 — probe meta builds per gradient step (hundreds/thousands per
+// training run); SFTLoRAMetadata clone fires per checkpoint + per final
+// adapter save; sftBatchFromExamples runs once per accumulated batch
+// (one per BatchSize samples); int32ToIntSlice runs twice per example.
+// Pinning the alloc shape of these hot paths is the load-bearing AX
+// commitment of this file.
+//
+// Run:    go test -bench='BenchmarkSFT' -benchmem -run='^$' ./go
+
+package mlx
+
+import (
+	"testing"
+
+	core "dappco.re/go"
+)
+
+var (
+	sftBenchSinkMap     map[string]string
+	sftBenchSinkLoRA    SFTLoRAMetadata
+	sftBenchSinkBatch   SFTBatch
+	sftBenchSinkInts    []int
+	sftBenchSinkExample sftExample
+)
+
+// BenchmarkSFT_RunProbeMeta mirrors the runSFTBatchGroup probe.Event.Meta
+// construction (6 string fields, all int-formatted today via Sprintf).
+// Fires once per gradient step when a probe sink is attached.
+func BenchmarkSFT_RunProbeMeta(b *testing.B) {
+	cfg := SFTConfig{BatchSize: 4, GradientAccumulationSteps: 2, SequencePacking: true}
+	cfg = normalizeSFTConfig(cfg)
+	optimizerSteps := 1234
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkMap = sftBenchBuildProbeMeta(cfg, optimizerSteps)
+	}
+}
+
+// sftBenchBuildProbeMeta isolates the meta map shape used in the probe
+// emission so the bench tracks the same alloc shape as the production
+// path without spinning up an entire SFT run.
+func sftBenchBuildProbeMeta(cfg SFTConfig, optimizerSteps int) map[string]string {
+	return map[string]string{
+		"batch_size":                  sftBenchFormatInt(cfg.BatchSize),
+		"effective_batch_size":        sftBenchFormatInt(SFTEffectiveBatchSize(cfg)),
+		"gradient_accumulation_steps": sftBenchFormatInt(cfg.GradientAccumulationSteps),
+		"sequence_packing":            sftBenchFormatBool(cfg.SequencePacking),
+		"optimizer_step":              sftBenchFormatInt(optimizerSteps),
+		"sft_checkpoint_metadata_ver": sftBenchFormatInt(SFTCheckpointMetadataVersion),
+	}
+}
+
+func sftBenchFormatInt(i int) string {
+	// Hands off to the production path under test. Replaced together
+	// with the implementation when a new formatter lands.
+	return core.Sprintf("%d", i)
+}
+
+func sftBenchFormatBool(v bool) string {
+	return core.Sprintf("%t", v)
+}
+
+// BenchmarkSFT_LoRAMetadata measures the per-checkpoint clone of
+// TargetKeys/TargetLayers when persisting metadata.
+func BenchmarkSFT_LoRAMetadata(b *testing.B) {
+	cfg := LoRAConfig{
+		Rank:         8,
+		Alpha:        16,
+		TargetKeys:   []string{"q_proj", "k_proj", "v_proj", "o_proj"},
+		TargetLayers: []string{"layer.0", "layer.1", "layer.2", "layer.3"},
+		DType:        DTypeFloat32,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkLoRA = sftLoRAMetadata(cfg)
+	}
+}
+
+// BenchmarkSFT_BatchFromExamples mirrors sftBatchFromExamples — runs
+// once per gradient accumulation flush (BatchSize examples).
+func BenchmarkSFT_BatchFromExamples(b *testing.B) {
+	examples := make([]sftExample, 8)
+	for i := range examples {
+		examples[i] = sftExample{
+			inputs:  []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+			targets: []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17},
+			mask:    []float32{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkBatch = sftBatchFromExamples(examples)
+	}
+}
+
+// BenchmarkSFT_Int32ToIntSlice measures the per-example token width
+// conversion used twice on every buildSFTExample call.
+func BenchmarkSFT_Int32ToIntSlice(b *testing.B) {
+	values := make([]int32, 256)
+	for i := range values {
+		values[i] = int32(i)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkInts = int32ToIntSlice(values)
+	}
+}
+
+// BenchmarkSFT_HasTrainingTarget exercises the mask scan executed once
+// per buildSFTExample.
+func BenchmarkSFT_HasTrainingTarget(b *testing.B) {
+	mask := make([]float32, 256)
+	mask[200] = 1
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = hasTrainingTarget(mask)
+	}
+}
+
+// BenchmarkSFT_HasTrainingTarget_AllZero — worst case (full scan).
+func BenchmarkSFT_HasTrainingTarget_AllZero(b *testing.B) {
+	mask := make([]float32, 256)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = hasTrainingTarget(mask)
+	}
+}
+
+// BenchmarkSFT_BatchBuilderFinish mirrors the final batch flush + clone.
+func BenchmarkSFT_BatchBuilderFinish(b *testing.B) {
+	example := sftExample{
+		inputs:  []int{1, 2, 3, 4, 5, 6, 7, 8},
+		targets: []int{2, 3, 4, 5, 6, 7, 8, 9},
+		mask:    []float32{0, 0, 1, 1, 1, 1, 1, 1},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		builder := newSFTBatchBuilder(2)
+		for j := 0; j < 8; j++ {
+			builder.add(example)
+		}
+		_ = builder.finish()
+	}
+}
