@@ -235,7 +235,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		plan.Labels["retained_tensor_ratio"] = strconv.FormatFloat(float64(selectedBytes)/float64(sourceTensorBytes), 'f', 4, 64)
 	}
 
-	if err := writeModelSliceManifest(req.OutputPath, *plan, names); err != nil {
+	if err := writeModelSliceManifest(req.OutputPath, plan, names); err != nil {
 		return nil, err
 	}
 	return plan, nil
@@ -781,7 +781,7 @@ var modelSliceManifestWeightMap = map[string]string{
 	"model.safetensors": "selected tensors",
 }
 
-func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
+func writeModelSliceManifest(outputRoot string, plan *inference.ModelSlicePlan, tensors []string) error {
 	// The manifest aliases the caller's tensors slice and plan.Labels map
 	// directly — core.JSONMarshal only reads through them and the local
 	// manifest value is consumed immediately, so the previous defensive
@@ -792,7 +792,7 @@ func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, t
 		Version:   modelSliceManifestVersion,
 		Source:    plan.SourcePath,
 		Output:    plan.OutputPath,
-		Plan:      plan,
+		Plan:      *plan,
 		Weight:    "model.safetensors",
 		Tensors:   tensors,
 		Labels:    plan.Labels,
