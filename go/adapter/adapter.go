@@ -97,15 +97,19 @@ func (a *Adapter) Generate(ctx context.Context, prompt string, opts GenOpts) (Re
 		ctx = context.Background()
 	}
 
+	// Cache the model pointer locally so the streaming loop, the Err
+	// check, and the Metrics fetch all skip the interface-table reload
+	// the compiler emits for repeated a.model accesses.
+	model := a.model
 	builder := core.NewBuilder()
-	for token := range a.model.Generate(ctx, prompt, genOptsToInference(opts)...) {
+	for token := range model.Generate(ctx, prompt, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := a.model.Err(); err != nil {
+	if err := model.Err(); err != nil {
 		return Result{Text: builder.String()}, err
 	}
 
-	metrics := a.model.Metrics()
+	metrics := model.Metrics()
 	return Result{Text: builder.String(), Metrics: &metrics}, nil
 }
 
@@ -123,8 +127,9 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	model := a.model
 	var callbackErr error
-	tokens := a.model.Generate(ctx, prompt, genOptsToInference(opts)...)
+	tokens := model.Generate(ctx, prompt, genOptsToInference(opts)...)
 	for token := range tokens {
 		if callbackErr != nil {
 			continue
@@ -137,7 +142,7 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return a.model.Err()
+	return model.Err()
 }
 
 // Chat collects a streamed chat response into a single string.
@@ -151,15 +156,16 @@ func (a *Adapter) Chat(ctx context.Context, messages []inference.Message, opts G
 		ctx = context.Background()
 	}
 
+	model := a.model
 	builder := core.NewBuilder()
-	for token := range a.model.Chat(ctx, messages, genOptsToInference(opts)...) {
+	for token := range model.Chat(ctx, messages, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := a.model.Err(); err != nil {
+	if err := model.Err(); err != nil {
 		return Result{Text: builder.String()}, err
 	}
 
-	metrics := a.model.Metrics()
+	metrics := model.Metrics()
 	return Result{Text: builder.String(), Metrics: &metrics}, nil
 }
 
@@ -177,8 +183,9 @@ func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	model := a.model
 	var callbackErr error
-	tokens := a.model.Chat(ctx, messages, genOptsToInference(opts)...)
+	tokens := model.Chat(ctx, messages, genOptsToInference(opts)...)
 	for token := range tokens {
 		if callbackErr != nil {
 			continue
@@ -191,7 +198,7 @@ func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, 
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return a.model.Err()
+	return model.Err()
 }
 
 // InspectAttention delegates to the underlying model when supported.
