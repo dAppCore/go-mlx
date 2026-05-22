@@ -399,6 +399,12 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 	fusedPairs := make(map[string]struct{}, len(pairs))
 	weightFiles := make([]string, 0, len(sourceFiles))
 	fusedKeys := make([]string, 0, len(pairs))
+	// Hoist the sharded-mode decision out of the loop — len(sourceFiles)
+	// is loop-invariant, so the per-iter outputName branch was reading
+	// it on every shard. Single-shard fuses keep the canonical
+	// fuseOutputWeights basename; multi-shard fuses preserve the
+	// source-file basename for round-tripping.
+	multiShard := len(sourceFiles) > 1
 	for _, sourceFile := range sourceFiles {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -416,7 +422,7 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 		fusedKeys = append(fusedKeys, shardFusedKeys...)
 
 		outputName := fuseOutputWeights
-		if len(sourceFiles) > 1 {
+		if multiShard {
 			outputName = core.PathBase(sourceFile)
 		}
 		weightPath := core.PathJoin(outputRoot, outputName)
