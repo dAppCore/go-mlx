@@ -333,28 +333,32 @@ func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors
 
 // modelSliceIncludesTensorMask is the mask-driven hot-path classifier used
 // by selectModelSliceTensorRefs. Direct bool-field loads replace
-// plan.HasComponent's per-call linear scan over plan.Components.
+// plan.HasComponent's per-call linear scan over plan.Components. Branch
+// order is tuned for typical transformer weights — attention then FFN
+// dominate a per-layer sweep, so checking them first lets the common
+// per-layer tensors short-circuit before the embeddings / norms /
+// LM-head substring scans that won't match.
 func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) bool {
 	if mask.all {
 		return true
 	}
 	lower := core.Lower(name)
 	switch {
-	case mask.embeddings && modelSliceTensorIsEmbedding(lower):
-		return true
-	case mask.norms && modelSliceTensorIsNorm(lower):
-		return true
 	case mask.attention && modelSliceTensorIsAttention(lower):
 		return true
 	case mask.ffn && modelSliceTensorIsFFN(lower):
 		return true
+	case mask.norms && modelSliceTensorIsNorm(lower):
+		return true
 	case mask.gate && modelSliceTensorIsGate(lower):
 		return true
-	case mask.downMeta && modelSliceTensorIsDownMeta(lower):
+	case mask.experts && modelSliceTensorIsExpert(lower):
 		return true
 	case mask.router && modelSliceTensorIsRouter(lower):
 		return true
-	case mask.experts && modelSliceTensorIsExpert(lower):
+	case mask.downMeta && modelSliceTensorIsDownMeta(lower):
+		return true
+	case mask.embeddings && modelSliceTensorIsEmbedding(lower):
 		return true
 	case mask.lmHead && modelSliceTensorIsLMHead(lower):
 		return true
