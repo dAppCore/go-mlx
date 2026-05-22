@@ -47,8 +47,8 @@ const tuningMachineHashLabel = "machine_hash"
 
 func (backend *metalbackend) DiscoverMachine(ctx context.Context, req inference.MachineDiscoveryRequest) (*inference.MachineDiscoveryReport, error) {
 	report, err := DiscoverLocalRuntime(ctx, LocalDiscoveryConfig{
-		ModelDirs:         append([]string(nil), req.ModelDirs...),
-		Workloads:         append([]inference.TuningWorkload(nil), req.Workloads...),
+		ModelDirs:         core.SliceClone(req.ModelDirs),
+		Workloads:         core.SliceClone(req.Workloads),
 		MaxModels:         req.MaxModels,
 		IncludeModels:     req.IncludeModels,
 		IncludeCandidates: req.IncludeCandidates,
@@ -91,8 +91,8 @@ func DiscoverLocalRuntime(ctx context.Context, cfg LocalDiscoveryConfig) (infere
 		Runtime:      caps.Runtime,
 		Device:       deviceInfo,
 		Available:    caps.Available,
-		Capabilities: append([]inference.Capability(nil), caps.Capabilities...),
-		CacheModes:   append([]string(nil), caps.CacheModes...),
+		Capabilities: core.SliceClone(caps.Capabilities),
+		CacheModes:   core.SliceClone(caps.CacheModes),
 		Workloads:    workloads,
 		Labels:       withTuningMachineHash(cfg.Labels, machineHash),
 	}
@@ -208,18 +208,25 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 		return runtime, ""
 	}
 	runtime.NativeRuntime = p.NativeRuntime
-	if runtime.Labels == nil {
-		runtime.Labels = map[string]string{}
-	} else {
-		runtime.Labels = cloneTuningLabels(runtime.Labels)
+	// 2 keys for native runtimes (architecture + native_runtime), 3 for
+	// fallback (+ fallback_backend). Pre-size to avoid the grow that
+	// would otherwise fire on the second/third insert.
+	extra := 2
+	if !p.NativeRuntime {
+		extra = 3
 	}
-	runtime.Labels["architecture"] = p.ID
-	runtime.Labels["native_runtime"] = boolLabel(p.NativeRuntime)
+	labels := make(map[string]string, len(runtime.Labels)+extra)
+	for key, value := range runtime.Labels {
+		labels[key] = value
+	}
+	labels["architecture"] = p.ID
+	labels["native_runtime"] = boolLabel(p.NativeRuntime)
+	runtime.Labels = labels
 	if p.NativeRuntime {
 		return runtime, ""
 	}
 	runtime.Backend = "mlx_lm"
-	runtime.Labels["fallback_backend"] = "mlx_lm"
+	labels["fallback_backend"] = "mlx_lm"
 	return runtime, "architecture " + p.ID + " is metadata-only in native go-mlx; using mlx_lm fallback for tuning candidates"
 }
 
@@ -227,43 +234,11 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 // options. This is the fast path a UI uses after selecting or persisting a
 // tuning profile.
 func TuningCandidateLoadOptions(candidate inference.TuningCandidate) []LoadOption {
-	// Pre-count optional emissions so the slice is sized in a single
-	// allocation regardless of how many branches fire. The check is
-	// cheaper than the ~2,4,8,16 grow-doubling sequence the previous
-	// shape produced on populated candidates while leaving sparse
-	// candidates at their minimum footprint.
-	n := 2
-	if candidate.ContextLength > 0 {
-		n++
-	}
-	if candidate.ParallelSlots > 0 {
-		n++
-	}
-	if candidate.PromptCacheMinTokens > 0 {
-		n++
-	}
-	if candidate.CachePolicy != "" {
-		n++
-	}
-	if candidate.CacheMode != "" {
-		n++
-	}
-	if candidate.BatchSize > 0 {
-		n++
-	}
-	if candidate.PrefillChunkSize > 0 {
-		n++
-	}
-	if candidate.ExpectedQuantization > 0 {
-		n++
-	}
-	if candidate.MemoryLimitBytes > 0 || candidate.CacheLimitBytes > 0 || candidate.WiredLimitBytes > 0 {
-		n++
-	}
-	if candidate.Adapter.Path != "" {
-		n++
-	}
-	opts := make([]LoadOption, 2, n)
+	// Two always-on options + up to 10 conditional options (one per
+	// non-zero field below). Pre-size at 12 so the conditional
+	// appends never trigger a grow-copy on a populated candidate
+	// (cap-4 -> cap-8 -> cap-16 in the literal-then-append shape).
+	opts := make([]LoadOption, 2, 12)
 	opts[0] = WithAutoMemoryPlan(false)
 	opts[1] = WithPromptCache(candidate.PromptCache)
 	if candidate.ContextLength > 0 {
@@ -438,16 +413,36 @@ func emitTuningEvent(emit func(inference.TuningEvent) bool, event inference.Tuni
 }
 
 func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity inference.ModelIdentity, adapter inference.AdapterIdentity, runtime inference.RuntimeIdentity, plan memory.Plan) inference.TuningCandidate {
-	// Reasons start as a copy of plan.Notes with one extra slot reserved
-	// for the workload-specific reason appended below — pre-sizing avoids
-	// the grow-by-2x reallocation when the workload switch hits any of
-	// the four reason-emitting branches.
-	reasons := make([]string, len(plan.Notes), len(plan.Notes)+1)
-	copy(reasons, plan.Notes)
-	// Labels carry a baseline machine_class plus an optional state_restore
-	// hint for the agent-state workload — pre-size to 2 to skip the
-	// implicit map-grow rehash on that one branch.
-	labels := make(map[string]string, 2)
+	// Pre-size Reasons + Labels with knowledge of which workload branch
+	// will fire below. Original code paid:
+	//   - Reasons: SliceClone(plan.Notes) sized at len, then append grows
+	//     on every workload-with-reason switch case (4 of 5+ shapes).
+	//   - Labels: `map{"machine_class": ...}` literal sized at 1, then
+	//     AgentState inserts a second key triggering grow.
+	// Pre-sizing both removes the grow-copy on the hot path.
+	addsReason := false
+	switch workload {
+	case inference.TuningWorkloadLowLatency,
+		inference.TuningWorkloadThroughput,
+		inference.TuningWorkloadLongContext,
+		inference.TuningWorkloadAgentState:
+		addsReason = true
+	}
+	var reasons []string
+	n := len(plan.Notes)
+	extra := 0
+	if addsReason {
+		extra = 1
+	}
+	if n+extra > 0 {
+		reasons = make([]string, n, n+extra)
+		copy(reasons, plan.Notes)
+	}
+	labelHint := 1
+	if workload == inference.TuningWorkloadAgentState {
+		labelHint = 2
+	}
+	labels := make(map[string]string, labelHint)
 	labels["machine_class"] = string(plan.MachineClass)
 	candidate := inference.TuningCandidate{
 		Workload:             workload,
@@ -598,7 +593,7 @@ func tuningWorkloadsOrDefault(workloads []inference.TuningWorkload) []inference.
 	if len(workloads) == 0 {
 		return inference.DefaultTuningWorkloads()
 	}
-	return append([]inference.TuningWorkload(nil), workloads...)
+	return core.SliceClone(workloads)
 }
 
 func cloneTuningLabels(labels map[string]string) map[string]string {
@@ -613,12 +608,17 @@ func cloneTuningLabels(labels map[string]string) map[string]string {
 }
 
 func withTuningMachineHash(labels map[string]string, machineHash string) map[string]string {
-	out := cloneTuningLabels(labels)
 	if machineHash == "" {
+		return cloneTuningLabels(labels)
+	}
+	if len(labels) == 0 {
+		out := make(map[string]string, 1)
+		out[tuningMachineHashLabel] = machineHash
 		return out
 	}
-	if out == nil {
-		out = map[string]string{}
+	out := make(map[string]string, len(labels)+1)
+	for key, value := range labels {
+		out[key] = value
 	}
 	out[tuningMachineHashLabel] = machineHash
 	return out
