@@ -617,11 +617,17 @@ func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32,
 		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router weight length %d, expected %d", len(weight), numExperts*hiddenSize))
 	}
 	out := make([][]float32, len(hidden))
+	// Single arena for all per-token scores rows. Was one alloc per
+	// token (len(hidden) small allocs); now one bulk alloc backing all
+	// rows with third-index cap = numExperts for safe per-row append.
+	scoresArena := make([]float32, len(hidden)*numExperts)
 	for tokenIndex, row := range hidden {
 		if len(row) != hiddenSize {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), hiddenSize))
 		}
-		scores := make([]float32, numExperts)
+		start := tokenIndex * numExperts
+		end := start + numExperts
+		scores := scoresArena[start:end:end]
 		// Hint the compiler that row[:hiddenSize] is in bounds, eliminating
 		// the per-multiply bounds check on row[i] inside the hot dot-product
 		// loop (16 tokens × 256 experts × 3072 fma = 12M iters per call).
