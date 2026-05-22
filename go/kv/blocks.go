@@ -859,6 +859,14 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 		return ""
 	}
 	builder := core.NewBuilder()
+	// Pre-size to the exact final length so Builder never resizes mid-write.
+	// Each block hash is 64 hex chars + 1 separator; the head fields run ~80
+	// chars typical (architecture + 3 ints + encoding + 5 separators).
+	size := len(bundle.Architecture) + len(string(bundle.KVEncoding)) + 5*1 + 30
+	for _, hash := range blockHashes {
+		size += 1 + len(hash)
+	}
+	builder.Grow(size)
 	builder.WriteString(bundle.Architecture)
 	builder.WriteString("|")
 	builder.WriteString(string(bundle.KVEncoding))
@@ -1038,9 +1046,13 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	labels := append([]string(nil), opts.Labels...)
 	labels = append(labels, "go-mlx", "kv-snapshot-block")
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
+	// Direct string concatenation skips the fmt.Sprintf parse + format
+	// state machinery on every per-block save (~SaveStateBlocks fires once
+	// per checkpointed block during prefill).
+	indexStr := core.Itoa(block.Index)
 	return state.PutOptions{
-		URI:    core.Sprintf("%s/block/%d", baseURI, block.Index),
-		Title:  firstNonEmpty(opts.Title, core.Sprintf("go-mlx KV block %d", block.Index)),
+		URI:    baseURI + "/block/" + indexStr,
+		Title:  firstNonEmpty(opts.Title, "go-mlx KV block "+indexStr),
 		Kind:   kind,
 		Track:  track,
 		Tags:   tags,
