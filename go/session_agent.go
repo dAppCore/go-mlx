@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -36,6 +37,14 @@ type AgentMemoryFoldReport struct {
 }
 
 const foldedAgentMemoryPrefillWakeMaxTokens = 16 * 1024
+
+// Hoisted sentinel errors. Each of these is returned multiple times from
+// the agent-memory lifecycle entry points; promoting them to package vars
+// removes per-call allocation in the validation hot path.
+var (
+	errAgentMemorySessionNil = core.NewError("mlx: model session is nil")
+	errAgentMemoryStoreNil   = core.NewError("mlx: state store is nil")
+)
 
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
 func (m *Model) WakeAgentMemory(ctx context.Context, store state.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
@@ -87,12 +96,16 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errAgentMemorySessionNil
 	}
 	plan, err := agent.PlanWake(ctx, store, opts, modelInfoToMemory(s.info))
 	if err != nil {
 		return nil, err
 	}
+	// Cache the prefix length — consumed by metalKVSnapshotBlockSource and
+	// LoadPrefixFromStateBlocksWithOptions on the two non-folded paths, and
+	// re-read inside shouldPrefillFoldedAgentMemory's bounds check.
+	prefixTokens := plan.Entry.PrefixTokens()
 	if shouldPrefillFoldedAgentMemory(plan.Entry) {
 		if err := s.prefillFoldedAgentMemory(ctx, store, plan, opts); err != nil {
 			return nil, err
@@ -102,7 +115,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		return plan.Report, nil
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, plan.Entry.PrefixTokens())
+		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, prefixTokens)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +126,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		s.agentMemory = agent.CloneWakeReport(plan.Report)
 		return plan.Report, nil
 	}
-	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, prefixTokens, opts.LoadOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -131,13 +144,17 @@ func (s *ModelSession) Wake(ctx context.Context, store state.Store, opts agent.W
 }
 
 func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
-	if entry.PrefixTokens() <= 0 || entry.PrefixTokens() > foldedAgentMemoryPrefillWakeMaxTokens {
+	prefix := entry.PrefixTokens()
+	if prefix <= 0 || prefix > foldedAgentMemoryPrefillWakeMaxTokens {
 		return false
 	}
-	if core.Lower(core.Trim(entry.Meta["folded_state"])) == "true" {
+	if meta := entry.Meta["folded_state"]; meta != "" && core.Lower(core.Trim(meta)) == "true" {
 		return true
 	}
 	for _, label := range entry.Labels {
+		if label == "" {
+			continue
+		}
 		if core.Lower(core.Trim(label)) == "folded-state" {
 			return true
 		}
@@ -147,7 +164,7 @@ func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
 
 func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store state.Store, plan *agent.WakePlan, opts agent.WakeOptions) error {
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errAgentMemorySessionNil
 	}
 	if plan == nil || plan.Bundle == nil {
 		return core.NewError("mlx: folded State wake plan is nil")
@@ -189,10 +206,10 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errAgentMemorySessionNil
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errAgentMemoryStoreNil
 	}
 	entryURI, bundleURI, indexURI, err := agent.SleepURIs(opts)
 	if err != nil {
@@ -201,14 +218,19 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 	if opts.ModelInfo.Architecture == "" {
 		opts.ModelInfo = modelInfoToMemory(s.info)
 	}
-	if opts.ParentEntryURI == "" && s.agentMemory != nil {
-		opts.ParentEntryURI = s.agentMemory.EntryURI
-	}
-	if opts.ParentBundleURI == "" && s.agentMemory != nil {
-		opts.ParentBundleURI = s.agentMemory.BundleURI
-	}
-	if opts.ParentIndexURI == "" && s.agentMemory != nil {
-		opts.ParentIndexURI = s.agentMemory.IndexURI
+	// Hoist the s.agentMemory nil check — was repeated three times in
+	// independent branch predicates. Single load + reused alias lets the
+	// three assignments share one pointer dereference each.
+	if parent := s.agentMemory; parent != nil {
+		if opts.ParentEntryURI == "" {
+			opts.ParentEntryURI = parent.EntryURI
+		}
+		if opts.ParentBundleURI == "" {
+			opts.ParentBundleURI = parent.BundleURI
+		}
+		if opts.ParentIndexURI == "" {
+			opts.ParentIndexURI = parent.IndexURI
+		}
 	}
 	blockOpts := agent.SleepBlockOptions(opts, bundleURI)
 	if opts.ReuseParentPrefix && blockOpts.ReusePrefix == nil {
@@ -297,9 +319,13 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store st
 		return "", nil, err
 	}
 	if s == nil || s.session == nil {
-		return "", nil, core.NewError("mlx: model session is nil")
+		return "", nil, errAgentMemorySessionNil
 	}
 	builder := core.NewBuilder()
+	// Generations typically produce hundreds of tokens of text. Pre-grow
+	// the backing slice to skip the early 64 -> 128 -> 256 -> 512 -> 1024
+	// reallocations during token streaming.
+	builder.Grow(1024)
 	cfg := toMetalGenerateConfig(applyGenerateOptions(generateOpts))
 	for tok := range s.session.Generate(ctx, cfg) {
 		builder.WriteString(tok.Text)
@@ -336,10 +362,13 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 		return nil, nil, core.NewError("mlx: exhausted model session is nil")
 	}
 	if store == nil {
-		return nil, nil, core.NewError("mlx: state store is nil")
+		return nil, nil, errAgentMemoryStoreNil
 	}
 	prompt := agentMemoryFoldedPrompt(opts)
-	if core.Trim(prompt) == "" {
+	// Empty-string fast path. agentMemoryFoldedPrompt returns "" when
+	// none of summary/tail/FoldedPrompt are supplied; only a user-passed
+	// whitespace-only FoldedPrompt reaches the slow Trim path.
+	if prompt == "" || core.Trim(prompt) == "" {
 		return nil, nil, core.NewError("mlx: folded State requires summary, recent tail, or folded prompt")
 	}
 	report := &AgentMemoryFoldReport{
@@ -375,7 +404,11 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 }
 
 func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
-	if core.Trim(opts.FoldedPrompt) != "" {
+	// Empty-string fast path on FoldedPrompt — skip the Trim function
+	// call when the user passed nothing at all. The hot caller
+	// (FoldAgentMemory in libraries that build summary+tail explicitly)
+	// almost always hits this branch.
+	if opts.FoldedPrompt != "" && core.Trim(opts.FoldedPrompt) != "" {
 		return opts.FoldedPrompt
 	}
 	summary := core.Trim(opts.Summary)
@@ -383,7 +416,17 @@ func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
 	if summary == "" && tail == "" {
 		return ""
 	}
+	// Static headers (~315 chars) + per-section wrappers (~30 each)
+	// + content. Pre-sizing avoids 2-3 internal slice growths.
+	size := 315
+	if summary != "" {
+		size += 24 + len(summary)
+	}
+	if tail != "" {
+		size += 28 + len(tail)
+	}
 	builder := core.NewBuilder()
+	builder.Grow(size)
 	builder.WriteString("The previous retained context window reached its live-token budget and has been compacted into this folded state.\n\n")
 	if summary != "" {
 		builder.WriteString("<summary>\n")
@@ -420,16 +463,23 @@ func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.Sl
 		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_from_entry_uri", checkpoint.EntryURI)
 	}
 	if report != nil {
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "summary_bytes", core.Sprintf("%d", report.SummaryBytes))
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", core.Sprintf("%d", report.RecentTailBytes))
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", core.Sprintf("%d", report.FoldedPromptBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "summary_bytes", strconv.Itoa(report.SummaryBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", strconv.Itoa(report.RecentTailBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", strconv.Itoa(report.FoldedPromptBytes))
 	}
-	opts.Labels = append([]string(nil), opts.Labels...)
-	opts.Labels = append(opts.Labels, "folded-state")
+	cloned := make([]string, len(opts.Labels), len(opts.Labels)+1)
+	copy(cloned, opts.Labels)
+	opts.Labels = append(cloned, "folded-state")
 	return opts
 }
 
 func addAgentMemoryFoldMeta(meta map[string]string, key, value string) map[string]string {
+	// Fast path: empty input is the dominant case for absent fields.
+	// Skip the core.Trim allocation entirely. Whitespace-only values
+	// still fall through to the slow path below.
+	if value == "" {
+		return meta
+	}
 	if core.Trim(value) == "" {
 		return meta
 	}
@@ -549,6 +599,9 @@ func toInferenceAgentMemorySleepResult(report *agent.SleepReport) *inference.Age
 	if report == nil {
 		return nil
 	}
+	// Hoist the KVEncoding string conversion — same value is consumed by
+	// both the Bundle ref and the top-level Encoding field.
+	encoding := string(report.KVEncoding)
 	return &inference.AgentMemorySleepResult{
 		Entry: inference.AgentMemoryRef{
 			URI:        report.EntryURI,
@@ -564,13 +617,13 @@ func toInferenceAgentMemorySleepResult(report *agent.SleepReport) *inference.Age
 			BundleURI: report.ParentBundleURI,
 			IndexURI:  report.ParentIndexURI,
 		},
-		Bundle:        agentMemoryStateRef(report.BundleURI, kv.StateBlockBundleKind, report.SnapshotHash, string(report.KVEncoding)),
+		Bundle:        agentMemoryStateRef(report.BundleURI, kv.StateBlockBundleKind, report.SnapshotHash, encoding),
 		Index:         agentMemoryStateRef(report.IndexURI, agent.StateIndexKind, report.IndexHash, ""),
 		TokenCount:    report.TokenCount,
 		BlockSize:     report.BlockSize,
 		BlocksWritten: report.BlocksWritten,
 		BlocksReused:  report.BlocksReused,
-		Encoding:      string(report.KVEncoding),
+		Encoding:      encoding,
 	}
 }
 
@@ -605,10 +658,10 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
 	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
 	if req.Adapter.Rank != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_rank", core.Sprintf("%d", req.Adapter.Rank))
+		meta = addAgentMemoryMetadata(meta, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
 	}
 	if req.Adapter.Alpha != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_alpha", core.Sprintf("%g", req.Adapter.Alpha))
+		meta = addAgentMemoryMetadata(meta, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
 	}
 	meta = addAgentMemoryMetadata(meta, "runtime_backend", req.Runtime.Backend)
 	meta = addAgentMemoryMetadata(meta, "runtime_device", req.Runtime.Device)
@@ -618,6 +671,11 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 }
 
 func addAgentMemoryMetadata(meta map[string]string, key, value string) map[string]string {
+	// Fast path: empty input is the dominant case for optional adapter
+	// + runtime fields. Skip the core.Trim allocation entirely.
+	if value == "" {
+		return meta
+	}
 	if core.Trim(value) == "" {
 		return meta
 	}
