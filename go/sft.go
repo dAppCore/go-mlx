@@ -540,9 +540,17 @@ func newSFTBatchBuilder(batchSize int) *sftBatchBuilder {
 	// with the same backing, so the doubling cascade across the first
 	// batch's appends collapses to a single allocation that gets reused
 	// for every subsequent batch.
+	//
+	// Pre-size out to cap=4 — short SFT runs (single-epoch over a small
+	// dataset) flush 1-4 batches, hitting the 0→1→2→4 doubling cascade
+	// on every Build call. The 4-element pre-size collapses two
+	// reallocations into one upfront ~384 B allocation. Larger runs
+	// still grow exponentially from 4 onward (4→8→16…), trading two
+	// fewer reallocations for the same upfront cost.
 	return &sftBatchBuilder{
 		batchSize: batchSize,
 		current:   make([]sftExample, 0, batchSize),
+		out:       make([]SFTBatch, 0, 4),
 	}
 }
 
