@@ -391,7 +391,7 @@ func DispatchExperts(hidden [][]float32, decisions []RouterDecision, experts map
 			if expert == nil {
 				return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch missing expert %d", expertID))
 			}
-			result := expert(append([]float32(nil), hidden[decision.TokenIndex]...))
+			result := expert(core.SliceClone(hidden[decision.TokenIndex]))
 			if out[decision.TokenIndex] == nil {
 				out[decision.TokenIndex] = make([]float32, len(result))
 			}
