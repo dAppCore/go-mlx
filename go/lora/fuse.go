@@ -359,7 +359,11 @@ func loadFuseAdapterWeights(path string) (map[string]*metal.Array, error) {
 }
 
 func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error) {
-	pairs := make(map[string]fusePair)
+	// Each fusePair binds exactly one lora_a + one lora_b tensor, so the
+	// final map size is at most len(weights)/2; presize to that ceiling
+	// to skip the runtime map-growth cycles a default-sized map would
+	// take while filling. Real qwen3 fuses populate 200-400 entries.
+	pairs := make(map[string]fusePair, len(weights)/2)
 	for name, tensor := range weights {
 		pairName, suffix, ok := fusePairName(name)
 		if !ok {
@@ -390,7 +394,9 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 		return nil, nil, errFuseNoBaseWeightFiles
 	}
 
-	fusedPairs := map[string]struct{}{}
+	// Worst-case every pair gets fused; presize to len(pairs) so
+	// the dominant fill phase avoids the runtime map-growth path.
+	fusedPairs := make(map[string]struct{}, len(pairs))
 	weightFiles := make([]string, 0, len(sourceFiles))
 	fusedKeys := make([]string, 0, len(pairs))
 	for _, sourceFile := range sourceFiles {
