@@ -207,7 +207,7 @@ func NewSleepIndex(bundle *kv.StateBlockBundle, opts SleepOptions, entryURI, bun
 		Title:      opts.Title,
 		TokenStart: 0,
 		TokenCount: bundle.TokenCount,
-		Labels:     append([]string(nil), opts.Labels...),
+		Labels:     core.SliceClone(opts.Labels),
 		Meta:       sleepEntryMeta(opts),
 	}
 	if entry.Title == "" {
