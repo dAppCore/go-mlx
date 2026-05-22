@@ -2,6 +2,8 @@
 
 package mlx
 
+import core "dappco.re/go"
+
 const (
 	rootMinInt32 = -1 << 31
 	rootMaxInt32 = 1<<31 - 1
@@ -62,7 +64,7 @@ func normalizeRootShapeArgs(shape []any) []int32 {
 			}
 			return out
 		case []int32:
-			return append([]int32(nil), dims...)
+			return core.SliceClone(dims)
 		case []int64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
