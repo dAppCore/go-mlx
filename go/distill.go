@@ -876,15 +876,17 @@ func cloneDistillLogits(logits DistillLogits) DistillLogits {
 		return nil
 	}
 	out := make(DistillLogits, len(logits))
-	for i := range logits {
-		row := logits[i]
-		out[i] = make([][]float32, len(row))
-		for j := range row {
-			src := row[j]
+	for i, row := range logits {
+		// Hoist the per-row outer make + take src via range to skip the
+		// re-index inside the per-token loop. outRow is also captured so
+		// the inner assignment doesn't double-index out[i][j].
+		outRow := make([][]float32, len(row))
+		for j, src := range row {
 			dst := make([]float32, len(src))
 			copy(dst, src)
-			out[i][j] = dst
+			outRow[j] = dst
 		}
+		out[i] = outRow
 	}
 	return out
 }
