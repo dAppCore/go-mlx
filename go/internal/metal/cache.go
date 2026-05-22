@@ -134,8 +134,8 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		if c.keys != nil {
 			oldK, oldV := c.keys, c.values
 			if prev%c.step != 0 {
-				oldK = Slice(oldK, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dk})
-				oldV = Slice(oldV, []int32{0, 0, 0, 0}, []int32{B, H, int32(prev), Dv})
+				oldK = Slice4(oldK, 0, 0, 0, 0, B, H, int32(prev), Dk)
+				oldV = Slice4(oldV, 0, 0, 0, 0, B, H, int32(prev), Dv)
 				Free(c.keys, c.values)
 			}
 			c.keys = Concatenate([]*Array{oldK, newK}, 2)
@@ -148,12 +148,12 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 
 	c.offset += seqLen
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, int32(prev), 0}, []int32{B, H, int32(c.offset), Dk})
-	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, int32(prev), 0}, []int32{B, H, int32(c.offset), Dv})
+	c.keys = SliceUpdateInplace4(c.keys, k, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dk)
+	c.values = SliceUpdateInplace4(c.values, v, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dv)
 	Free(oldK, oldV)
 
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.offset), Dk}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.offset), Dv})
+	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.offset), Dk),
+		Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.offset), Dv)
 }
 
 func (c *KVCache) State() []*Array {
