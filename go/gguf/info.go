@@ -468,8 +468,16 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// Overflow falls back to per-tensor make so the arena never reallocates
 	// (which would invalidate already-handed-out slice headers).
 	shapeArena := make([]uint64, 0, int(tensorCount)*4)
+	// Name arena — bump-allocate per-tensor name bytes from a single slab,
+	// then hand out zero-copy core.AsString views. Real GGUF tensor names
+	// are 12-30 chars (`blk.<N>.<component>.<weight|bias>`); 40 B/tensor
+	// covers the long end with headroom. Overflow falls back to per-
+	// tensor make. The arena MUST NOT be appended-past-capacity once any
+	// view has been handed out — string views alias the backing array,
+	// so a re-allocation would dangle every prior name.
+	nameArena := make([]byte, 0, int(tensorCount)*40)
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readGGUFString(reader, scratch[:])
+		name, err := readTensorNameInto(reader, scratch[:], &nameArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
@@ -573,6 +581,46 @@ var ggufInternedStrings = map[string]string{
 	"mixtral": "mixtral",
 	"phi":     "phi",
 	"bert":    "bert",
+}
+
+// readTensorNameInto reads a length-prefixed string and parks the bytes
+// in the supplied name arena, returning a zero-copy string view. Names
+// are never in ggufInternedStrings (every real tensor name contains a
+// layer index), so we skip the intern probe and the per-tensor string
+// alloc by aliasing the arena directly.
+//
+// If the name would push the arena past its reserved capacity, fall
+// back to readGGUFString's per-tensor copy — appending would re-allocate
+// the underlying array and dangle every earlier name view.
+func readTensorNameInto(reader io.Reader, scratch []byte, arena *[]byte) (string, error) {
+	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+		return "", err
+	}
+	length := binary.LittleEndian.Uint64(scratch[:8])
+	if length > 16<<20 {
+		return "", errGGUFStringTooLong
+	}
+	if length == 0 {
+		return "", nil
+	}
+	buf := *arena
+	if int(length) > cap(buf)-len(buf) {
+		// Arena overflow: fall back to a fresh per-tensor copy so the
+		// existing name views stay valid.
+		dst := make([]byte, length)
+		if _, err := io.ReadFull(reader, dst); err != nil {
+			return "", err
+		}
+		return core.AsString(dst), nil
+	}
+	start := len(buf)
+	end := start + int(length)
+	buf = buf[:end]
+	if _, err := io.ReadFull(reader, buf[start:end]); err != nil {
+		return "", err
+	}
+	*arena = buf
+	return core.AsString(buf[start:end]), nil
 }
 
 // readGGUFString reads a length-prefixed string into a fresh []byte.
