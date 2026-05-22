@@ -670,13 +670,7 @@ func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
 }
 
 func cloneIndexEntry(entry StateIndexEntry) StateIndexEntry {
-	entry.Labels = append([]string(nil), entry.Labels...)
-	if len(entry.Meta) > 0 {
-		meta := make(map[string]string, len(entry.Meta))
-		for key, value := range entry.Meta {
-			meta[key] = value
-		}
-		entry.Meta = meta
-	}
+	entry.Labels = core.SliceClone(entry.Labels)
+	entry.Meta = core.MapClone(entry.Meta)
 	return entry
 }
