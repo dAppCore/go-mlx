@@ -360,11 +360,20 @@ func quantizeQ8_0(values []float32) []byte {
 		if maxAbs > 0 {
 			scale = maxAbs / 127
 		}
-		out = appendUint16LE(out, float32ToFloat16(scale))
+		// Inline AppendUint16: skip the appendUint16LE func-call + its
+		// [2]byte temp. binary.LittleEndian.AppendUint16 lowers to a
+		// direct two-byte append.
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
+		invScale := float32(0)
+		if scale != 0 {
+			invScale = 1 / scale
+		}
 		for _, value := range block {
 			var q int
-			if scale != 0 {
-				q = int(math.Round(float64(value / scale)))
+			if invScale != 0 {
+				// Multiply by 1/scale instead of dividing — single FMUL
+				// vs FDIV per element (32x per block, millions per tensor).
+				q = int(math.Round(float64(value * invScale)))
 			}
 			q = clampInt(q, -127, 127)
 			out = append(out, byte(int8(q)))
@@ -382,12 +391,18 @@ func quantizeQ4_0(values []float32) []byte {
 		if maxAbs > 0 {
 			scale = maxAbs / 7
 		}
-		out = appendUint16LE(out, float32ToFloat16(scale))
-		packed := make([]byte, 16)
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
+		// Stack-allocated pack buffer instead of make([]byte, 16) per
+		// block — saves one heap alloc per 32 input floats.
+		var packed [16]byte
+		invScale := float32(0)
+		if scale != 0 {
+			invScale = 1 / scale
+		}
 		for i, value := range block {
 			var q int
-			if scale != 0 {
-				q = int(math.Round(float64(value/scale))) + 8
+			if invScale != 0 {
+				q = int(math.Round(float64(value*invScale))) + 8
 			}
 			q = clampInt(q, 0, 15)
 			if i < 16 {
@@ -396,7 +411,7 @@ func quantizeQ4_0(values []float32) []byte {
 				packed[i-16] |= byte(q << 4)
 			}
 		}
-		out = append(out, packed...)
+		out = append(out, packed[:]...)
 	}
 	return out
 }
