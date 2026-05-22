@@ -935,6 +935,15 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	// of slack, which is fine; the underlying array is heap-allocated
 	// either way.
 	id := firstNonEmpty(meta.ID, meta.ModelID)
+	// Fast path: scan each component case-insensitively for "jang". The
+	// vast majority of HF models have nothing JANG-related anywhere in
+	// id / tags / filenames — and the lowercase needle buffer is the
+	// only allocation in this function for the miss path. By scanning
+	// the original strings (no copy) first, the miss path returns nil
+	// in zero allocs.
+	if !inferJANGNeedlePresent(id, meta.Tags, meta.Files) {
+		return nil
+	}
 	size := len(id)
 	for _, tag := range meta.Tags {
 		size += 1 + len(tag)
@@ -984,6 +993,69 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	default:
 		return nil
 	}
+}
+
+// inferJANGNeedlePresent reports whether any of the id / tags /
+// filenames contains the case-insensitive token "jang". Pure scan, no
+// allocations — used to gate the lowercase-buffer build inside
+// InferJANG. The miss path (the dominant case across HF metadata)
+// returns false and avoids the only allocation in the function.
+func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) bool {
+	if containsJANGFold(id) {
+		return true
+	}
+	for _, tag := range tags {
+		if containsJANGFold(tag) {
+			return true
+		}
+	}
+	for _, file := range files {
+		if containsJANGFold(file.Name) || containsJANGFold(file.RFilename) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsJANGFold reports whether s contains the case-insensitive
+// 4-byte token "jang". Specialised for this token so the inner walk is
+// a tight 4-byte compare with ASCII folding inlined.
+func containsJANGFold(s string) bool {
+	if len(s) < 4 {
+		return false
+	}
+	last := len(s) - 4
+	for i := 0; i <= last; i++ {
+		c0 := s[i]
+		if c0 >= 'A' && c0 <= 'Z' {
+			c0 += 'a' - 'A'
+		}
+		if c0 != 'j' {
+			continue
+		}
+		c1 := s[i+1]
+		if c1 >= 'A' && c1 <= 'Z' {
+			c1 += 'a' - 'A'
+		}
+		if c1 != 'a' {
+			continue
+		}
+		c2 := s[i+2]
+		if c2 >= 'A' && c2 <= 'Z' {
+			c2 += 'a' - 'A'
+		}
+		if c2 != 'n' {
+			continue
+		}
+		c3 := s[i+3]
+		if c3 >= 'A' && c3 <= 'Z' {
+			c3 += 'a' - 'A'
+		}
+		if c3 == 'g' {
+			return true
+		}
+	}
+	return false
 }
 
 // appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
