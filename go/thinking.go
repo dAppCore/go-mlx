@@ -39,10 +39,16 @@ func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info M
 	}
 	processor := parser.NewProcessor(cfg, parserHint(info))
 	builder := core.NewBuilder()
+	// Hoist the one-element scratch slice for fallback decode out of
+	// the loop — the previous []int32{id} literal escaped to the heap
+	// on every fallback iteration, even when IDToken hits the inverse
+	// vocab path most steps.
+	scratch := [1]int32{}
 	for _, id := range ids {
 		piece := tok.IDToken(id)
 		if piece == "" {
-			decoded, err := tok.Decode([]int32{id})
+			scratch[0] = id
+			decoded, err := tok.Decode(scratch[:])
 			if err != nil {
 				return parser.Result{}, err
 			}
