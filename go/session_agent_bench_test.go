@@ -212,7 +212,10 @@ func BenchmarkSessionAgent_MetadataFromInf_Empty(b *testing.B) {
 	}
 }
 
-// Realistic req with adapter + runtime — drives 7 addAgentMemoryMetadata.
+// Realistic req with adapter + runtime — drives 9 addAgentMemoryMetadata.
+// Worst-case all-fields-set; hint=9 forces the swissmap 4-alloc bucket
+// layout. Common-case 8-or-fewer fields hits the 2-alloc compact layout
+// (see BenchmarkSessionAgent_MetadataFromInf_Typical).
 func BenchmarkSessionAgent_MetadataFromInf_Full(b *testing.B) {
 	req := inference.AgentMemorySleepRequest{
 		Adapter: inference.AdapterIdentity{
@@ -227,6 +230,31 @@ func BenchmarkSessionAgent_MetadataFromInf_Full(b *testing.B) {
 			Device:    "Apple M3 Ultra",
 			CacheMode: "page",
 			Version:   "0.42",
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionAgentBenchSinkInfMeta = agentMemoryMetadataFromInference(req)
+	}
+}
+
+// Typical req — most fields set, but CacheMode commonly empty (e.g. the
+// metal backend uses its single default). 8 entries fit in the swissmap
+// 2-alloc compact layout.
+func BenchmarkSessionAgent_MetadataFromInf_Typical(b *testing.B) {
+	req := inference.AgentMemorySleepRequest{
+		Adapter: inference.AdapterIdentity{
+			Hash:   "abc123",
+			Path:   "/models/lora.safetensors",
+			Format: "safetensors",
+			Rank:   16,
+			Alpha:  32.0,
+		},
+		Runtime: inference.RuntimeIdentity{
+			Backend: "metal",
+			Device:  "Apple M3 Ultra",
+			Version: "0.42",
 		},
 	}
 	b.ReportAllocs()
