@@ -251,6 +251,35 @@ func (model *mlxlmmodel) recv() (map[string]any, error) {
 	return obj, nil
 }
 
+// tokenResponse is the typed shape of a single streaming response from
+// bridge.py during Generate/Chat. Decoding into this struct avoids the
+// map[string]any allocation + four interface{} lookups + type
+// assertions the per-token path otherwise pays.
+type tokenResponse struct {
+	Token   string  `json:"token"`
+	TokenID float64 `json:"token_id"`
+	Error   string  `json:"error"`
+	Done    *bool   `json:"done"`
+}
+
+// recvToken reads and parses one streaming response line during
+// Generate/Chat. Allocates a stack-friendly typed value instead of the
+// map[string]any that recv returns.
+func (model *mlxlmmodel) recvToken(resp *tokenResponse) error {
+	line, err := model.stdout.ReadLine()
+	if err != nil {
+		if err == io.EOF {
+			return core.E("mlxlm.recv", "subprocess closed stdout", nil)
+		}
+		return core.E("mlxlm.recv", "read subprocess stdout", err)
+	}
+	*resp = tokenResponse{}
+	if r := core.JSONUnmarshal(line, resp); !r.OK {
+		return core.E("mlxlm.recv", "parse response", nil)
+	}
+	return nil
+}
+
 // Generate streams tokens from the subprocess for the given prompt.
 // Calls are serialised per model (mu lock).
 //
@@ -291,6 +320,7 @@ func (model *mlxlmmodel) Generate(ctx context.Context, prompt string, opts ...in
 			return
 		}
 
+		var resp tokenResponse
 		for {
 			select {
 			case <-ctx.Done():
@@ -301,28 +331,21 @@ func (model *mlxlmmodel) Generate(ctx context.Context, prompt string, opts ...in
 			default:
 			}
 
-			response, err := model.recv()
-			if err != nil {
+			if err := model.recvToken(&resp); err != nil {
 				model.lastErr = err
 				return
 			}
 
-			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = core.E("mlxlm.Generate", errMsg, nil)
+			if resp.Error != "" {
+				model.lastErr = core.E("mlxlm.Generate", resp.Error, nil)
 				return
 			}
 
-			if _, ok := response["done"]; ok {
+			if resp.Done != nil {
 				return
 			}
 
-			text, _ := response["token"].(string)
-			var id int32
-			if fid, ok := response["token_id"].(float64); ok {
-				id = int32(fid)
-			}
-
-			if !yield(inference.Token{ID: id, Text: text}) {
+			if !yield(inference.Token{ID: int32(resp.TokenID), Text: resp.Token}) {
 				model.cancelRequest("mlxlm.Generate")
 				model.drain()
 				return
@@ -383,6 +406,7 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 			return
 		}
 
+		var resp tokenResponse
 		for {
 			select {
 			case <-ctx.Done():
@@ -393,28 +417,21 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 			default:
 			}
 
-			response, err := model.recv()
-			if err != nil {
+			if err := model.recvToken(&resp); err != nil {
 				model.lastErr = err
 				return
 			}
 
-			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = core.E("mlxlm.Chat", errMsg, nil)
+			if resp.Error != "" {
+				model.lastErr = core.E("mlxlm.Chat", resp.Error, nil)
 				return
 			}
 
-			if _, ok := response["done"]; ok {
+			if resp.Done != nil {
 				return
 			}
 
-			text, _ := response["token"].(string)
-			var id int32
-			if fid, ok := response["token_id"].(float64); ok {
-				id = int32(fid)
-			}
-
-			if !yield(inference.Token{ID: id, Text: text}) {
+			if !yield(inference.Token{ID: int32(resp.TokenID), Text: resp.Token}) {
 				model.cancelRequest("mlxlm.Chat")
 				model.drain()
 				return
@@ -505,15 +522,12 @@ func (model *mlxlmmodel) Close() error {
 
 // drain discards subprocess output until "done" or "error", keeping the protocol in sync.
 func (model *mlxlmmodel) drain() {
+	var resp tokenResponse
 	for {
-		response, err := model.recv()
-		if err != nil {
+		if err := model.recvToken(&resp); err != nil {
 			return
 		}
-		if _, ok := response["done"]; ok {
-			return
-		}
-		if _, ok := response["error"]; ok {
+		if resp.Done != nil || resp.Error != "" {
 			return
 		}
 	}

@@ -274,6 +274,42 @@ func BenchmarkBackend_ReshapeFloat32_Large(b *testing.B) {
 	}
 }
 
+// --- recvToken vs recv — token-streaming hot loop. The map path
+// allocates one map[string]any per token plus four interface lookups;
+// the struct path decodes directly into a stack-friendly typed value.
+
+func BenchmarkBackend_Recv_MapDecode(b *testing.B) {
+	// Synthetic short-token streaming line — what bridge.py emits per
+	// generation step. Exercises only the JSON decode + lookup path,
+	// not the subprocess read.
+	line := []byte(`{"token":"hello","token_id":12345}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(line)))
+	for i := 0; i < b.N; i++ {
+		var obj map[string]any
+		if r := core.JSONUnmarshal(line, &obj); !r.OK {
+			b.Fatal("unmarshal failed")
+		}
+		_, _ = obj["token"].(string)
+		if fid, ok := obj["token_id"].(float64); ok {
+			backendBenchSinkInt = int(fid)
+		}
+	}
+}
+
+func BenchmarkBackend_Recv_StructDecode(b *testing.B) {
+	line := []byte(`{"token":"hello","token_id":12345}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(line)))
+	for i := 0; i < b.N; i++ {
+		var resp tokenResponse
+		if r := core.JSONUnmarshal(line, &resp); !r.OK {
+			b.Fatal("unmarshal failed")
+		}
+		backendBenchSinkInt = int(resp.TokenID)
+	}
+}
+
 // Silence unused-var lints when only a subset of benches is run.
 var _ = backendBenchSinkOpts
 var _ = backendBenchSinkResult
