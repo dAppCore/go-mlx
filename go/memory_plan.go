@@ -29,16 +29,37 @@ func PlanMemory(input MemoryPlanInput) memory.Plan {
 		Pack:      input.Pack,
 		ModelInfo: modelInfoPtrToMemory(input.ModelInfo),
 	})
-	if input.Pack != nil {
-		if skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*m2.LayerForwardSkeleton); skel != nil {
-			plan.ModelForwardSkeletonValidated = true
-			plan.ModelForwardSkeletonBytes = skel.EstimatedBytes()
-			plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
-		}
-		if mm, _ := input.Pack.MiniMaxM2.(*m2.TensorPlan); mm != nil {
-			plan.ExpertResidency = m2.PlanResidency(*mm, plan, nil)
-			plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
-		}
+	if input.Pack == nil {
+		return plan
+	}
+	skel, _ := input.Pack.MiniMaxM2LayerSkeleton.(*m2.LayerForwardSkeleton)
+	mm, _ := input.Pack.MiniMaxM2.(*m2.TensorPlan)
+	if skel == nil && mm == nil {
+		return plan
+	}
+	// At least one M2 note will be appended below; grow Notes once now
+	// so each append lands in spare capacity instead of triggering a
+	// per-append heap copy (NewPlan returns Notes sized at its own len).
+	extra := 0
+	if skel != nil {
+		extra++
+	}
+	if mm != nil {
+		extra++
+	}
+	if cap(plan.Notes)-len(plan.Notes) < extra {
+		grown := make([]string, len(plan.Notes), len(plan.Notes)+extra)
+		copy(grown, plan.Notes)
+		plan.Notes = grown
+	}
+	if skel != nil {
+		plan.ModelForwardSkeletonValidated = true
+		plan.ModelForwardSkeletonBytes = skel.EstimatedBytes()
+		plan.Notes = append(plan.Notes, "MiniMax M2 first-layer tensor skeleton validated from safetensors metadata")
+	}
+	if mm != nil {
+		plan.ExpertResidency = m2.PlanResidency(*mm, plan, nil)
+		plan.Notes = append(plan.Notes, "MiniMax M2 lazy expert residency enabled by memory planner")
 	}
 	return plan
 }
