@@ -128,21 +128,33 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 // directory so downstream inspect steps can skip ReadFile for files
 // that aren't there. Built from the same single PathGlob the weight
 // inspector already runs, so this is opportunistic — no extra syscalls.
+//
+// The index is a flat slice of basenames rather than a map: typical
+// model dirs hold 5-10 entries and the linear scan beats the map's
+// runtime.mapassign / hash cost at that size. The `populated` flag
+// lets callers distinguish "no listing available" (single-file
+// resolvedPath, dir.files=nil) from "listed but empty" (impossible in
+// practice, since the config.json check would have already failed).
 type modelPackDirIndex struct {
-	root  string
-	files map[string]struct{}
+	root      string
+	files     []string
+	populated bool
 }
 
 // has reports whether the named direct child of root is present in the
-// pre-fetched listing. Returns true if the index is nil (no listing
+// pre-fetched listing. Returns true if the index is empty (no listing
 // available) so callers fall through to the existing ReadFile probe —
 // the precise root-stat is preserved in that path.
 func (d *modelPackDirIndex) has(name string) bool {
-	if d == nil || d.files == nil {
+	if d == nil || !d.populated {
 		return true
 	}
-	_, ok := d.files[name]
-	return ok
+	for _, f := range d.files {
+		if f == name {
+			return true
+		}
+	}
+	return false
 }
 
 func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir *modelPackDirIndex) {
@@ -170,11 +182,12 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir 
 		entries := core.PathGlob(core.PathJoin(root, "*"))
 		if dir != nil {
 			dir.root = root
-			dir.files = make(map[string]struct{}, len(entries))
+			dir.populated = true
+			dir.files = make([]string, 0, len(entries))
 		}
 		for _, path := range entries {
 			if dir != nil {
-				dir.files[core.PathBase(path)] = struct{}{}
+				dir.files = append(dir.files, core.PathBase(path))
 			}
 			switch {
 			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
