@@ -998,11 +998,14 @@ func (p *sftStreamingPacker) flush() error {
 	if p == nil || p.emit == nil || len(p.current.inputs) == 0 {
 		return nil
 	}
-	example := sftExample{
-		inputs:  core.SliceClone(p.current.inputs),
-		targets: core.SliceClone(p.current.targets),
-		mask:    core.SliceClone(p.current.mask),
-	}
+	// Hand the emitted example p.current's backing arrays directly —
+	// the immediately-following p.current = sftExample{} drops our
+	// last reference to them, so the example is the sole owner. The
+	// previous form cloned all three slices then nuked the originals,
+	// paying three pointless allocations per flush. The next add()
+	// re-allocates fresh buffers via the cap(...) == 0 branch, same
+	// cost it pays today.
+	example := p.current
 	p.current = sftExample{}
 	return p.emit(example)
 }
