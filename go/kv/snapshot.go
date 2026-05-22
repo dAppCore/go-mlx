@@ -3,7 +3,9 @@
 package kv
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	stdio "io"
 	"math"
 
@@ -1271,17 +1273,17 @@ func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if snapshot == nil {
 		return "", core.NewError("mlx: KV snapshot is nil")
 	}
-	// bytesWithOptions is read-only — version derivation and token-offset
-	// defaulting are applied inline during encoding, so the defensive clone
-	// + normalize round-trip is pure waste. Direct encode is hash-stable
-	// because the writer always emits len(Tokens) when TokenOffset is zero.
+	// Stream the encoded bytes straight into sha256 — skips the
+	// bytesWithOptions intermediate []byte alloc (~50KB for 2048-token
+	// snapshots). bytesWithOptions is read-only over the snapshot, so
+	// the stream-encoder produces identical bytes.
 	opts := SaveOptions{}
 	if requiresNativeEncoding(snapshot) {
 		opts.KVEncoding = EncodingNative
 	}
-	data, err := snapshot.bytesWithOptions(opts)
-	if err != nil {
+	hash := sha256.New()
+	if err := snapshot.writeWithOptions(hash, opts); err != nil {
 		return "", err
 	}
-	return core.SHA256Hex(data), nil
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
