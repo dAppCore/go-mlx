@@ -340,26 +340,27 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 	decisions := make([]RouterDecision, 0, len(scores))
 	hasBias := len(bias) > 0
 	scoreFn := scoringFunc(cfg.ScoringFunc)
+	// Reuse one scored buffer across tokens — was alloc-per-token before,
+	// which dominated RouteTokens at 256 experts × 32 tokens (~128 KiB churn
+	// per call). Buffer is call-local so no concurrency risk.
+	scored := make(expertScoreSlice, cfg.NumLocalExperts)
 	for tokenIndex, row := range scores {
 		if len(row) != cfg.NumLocalExperts {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 routing row %d has %d scores, expected %d", tokenIndex, len(row), cfg.NumLocalExperts))
 		}
-		scored := make([]expertScore, 0, len(row))
 		if hasBias {
 			for expertID, raw := range row {
-				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw + bias[expertID])})
+				scored[expertID] = expertScore{ID: expertID, Score: scoreFn(raw + bias[expertID])}
 			}
 		} else {
 			for expertID, raw := range row {
-				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw)})
+				scored[expertID] = expertScore{ID: expertID, Score: scoreFn(raw)}
 			}
 		}
-		sort.SliceStable(scored, func(i, j int) bool {
-			if scored[i].Score == scored[j].Score {
-				return scored[i].ID < scored[j].ID
-			}
-			return scored[i].Score > scored[j].Score
-		})
+		// sort.Sort + typed sort.Interface avoids sort.SliceStable's reflect
+		// + closure allocation. The less function gives a total order via
+		// the ID tie-break so stability is intrinsic — Sort suffices.
+		sort.Sort(scored)
 		decision := RouterDecision{
 			TokenIndex: tokenIndex,
 			ExpertIDs:  make([]int, topK),
@@ -761,6 +762,24 @@ type expertScore struct {
 	ID    int
 	Score float32
 }
+
+// expertScoreSlice is a typed sort.Interface adapter for []expertScore,
+// kept in place of sort.SliceStable in RouteTokens. The reflect/closure
+// path of sort.SliceStable allocates a 64-byte sort helper per call; the
+// typed adapter is allocation-free. Less orders by Score descending with
+// a stable ID tie-break, giving a total order over unique expert IDs.
+//
+//	sort.Sort(scored)
+type expertScoreSlice []expertScore
+
+func (s expertScoreSlice) Len() int { return len(s) }
+func (s expertScoreSlice) Less(i, j int) bool {
+	if s[i].Score == s[j].Score {
+		return s[i].ID < s[j].ID
+	}
+	return s[i].Score > s[j].Score
+}
+func (s expertScoreSlice) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 
 func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRole) TensorSpec {
 	name := core.Concat("model.layers.", core.Itoa(layer), ".self_attn.", projection, ".weight")
