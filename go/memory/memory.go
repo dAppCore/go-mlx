@@ -231,8 +231,16 @@ func NewPlan(input Input) Plan {
 	applyArchitectureHints(&plan, modelArchitecture, profilePtr)
 	applyQuantizationHints(&plan)
 	applyGenericMoEResidency(&plan, input.Pack, profilePtr)
-	plan.EstimatedKVCacheBytes = estimateKVCacheBytesWithProfile(plan, input, KVCacheModeFP16, profilePtr)
-	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytesWithProfile(plan, input, plan.CacheMode, profilePtr)
+	// Both KV-cache estimates use the same gating + shape — compute
+	// once, scale the element count for each mode. usesGenerationKV
+	// + kvEstimateShape used to run twice per plan.
+	if usesGenerationKVCacheWithProfile(input, profilePtr) && plan.ContextLength > 0 {
+		if layers, hidden := kvEstimateShape(input, plan.MachineClass); layers > 0 && hidden > 0 {
+			elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
+			plan.EstimatedKVCacheBytes = elements * 2 // FP16 = 2 bytes/element
+			plan.EstimatedKVCacheModeBytes = scaleKVElements(elements, plan.CacheMode)
+		}
+	}
 	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
 		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
 	}
@@ -371,6 +379,13 @@ func estimateKVCacheBytesWithProfile(plan Plan, input Input, mode KVCacheMode, p
 		return 0
 	}
 	elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
+	return scaleKVElements(elements, mode)
+}
+
+// scaleKVElements maps the raw element count to bytes for the given
+// KV cache mode. Hoisted from estimateKVCacheBytes so NewPlan can
+// run the gating + shape compute once and call this twice instead.
+func scaleKVElements(elements uint64, mode KVCacheMode) uint64 {
 	switch mode {
 	case KVCacheModeKQ8VQ4:
 		return elements * 3 / 4
