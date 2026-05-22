@@ -17,6 +17,24 @@ import (
 	"dappco.re/go/mlx/kv"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. errModelSessionNil fires from every session-bound
+// method when session is nil — 12 sites in this file alone.
+var (
+	errModelSessionNil       = core.NewError("mlx: model session is nil")
+	errStateBundleNil        = core.NewError("mlx: state bundle is nil")
+	errStateKVBlockBundleNil = core.NewError("mlx: State KV block bundle is nil")
+	errNativeNoTokenPrefill  = core.NewError("mlx: native model session does not support token prefill")
+	errNativeNoTokenAppend   = core.NewError("mlx: native model session does not support token append")
+	errNativeNoKVRestore     = core.NewError("mlx: native model session does not support KV restore")
+	errNativeNilSessionFork  = core.NewError("mlx: native model returned nil session fork")
+	errNativeNilSession      = core.NewError("mlx: native model returned nil session")
+	errNativeNoSessions      = core.NewError("mlx: native model does not support sessions")
+	errModelNil              = core.NewError("mlx: model is nil")
+	errKVSnapshotNil         = core.NewError("mlx: KV snapshot is nil")
+)
+
 type nativeModelSessionFactory interface {
 	NewSession() metal.SessionHandle
 }
@@ -60,15 +78,15 @@ type ModelSession struct {
 // NewSession creates a persistent session for prefill, generation, KV capture, and forking.
 func (m *Model) NewSession() (*ModelSession, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errModelNil
 	}
 	factory, ok := m.model.(nativeModelSessionFactory)
 	if !ok {
-		return nil, core.NewError("mlx: native model does not support sessions")
+		return nil, errNativeNoSessions
 	}
 	session := factory.NewSession()
 	if session == nil {
-		return nil, core.NewError("mlx: native model returned nil session")
+		return nil, errNativeNilSession
 	}
 	return &ModelSession{session: session, info: m.Info(), tok: m.Tokenizer()}, nil
 }
@@ -91,7 +109,7 @@ func (m *Model) NewSessionFromKV(snapshot *kv.Snapshot) (*ModelSession, error) {
 // NewSessionFromBundle creates a persistent session restored from a state bundle.
 func (m *Model) NewSessionFromBundle(b *bundle.Bundle) (*ModelSession, error) {
 	if b == nil {
-		return nil, core.NewError("mlx: state bundle is nil")
+		return nil, errStateBundleNil
 	}
 	if err := bundle.CheckCompatibility(modelInfoToBundle(m.Info()), b); err != nil {
 		return nil, err
@@ -106,7 +124,7 @@ func (m *Model) NewSessionFromBundle(b *bundle.Bundle) (*ModelSession, error) {
 // Prefill loads prompt into the retained session KV state.
 func (s *ModelSession) Prefill(prompt string) error {
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	return s.session.Prefill(context.Background(), prompt)
 }
@@ -117,7 +135,7 @@ func (s *ModelSession) PrefillChunks(ctx context.Context, chunks iter.Seq[string
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if prefiller, ok := s.session.(nativeSessionChunkPrefiller); ok {
 		return prefiller.PrefillChunks(ctx, chunks)
@@ -131,19 +149,19 @@ func (s *ModelSession) PrefillTokens(ctx context.Context, tokens []int32) error 
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if prefiller, ok := s.session.(nativeSessionTokenPrefiller); ok {
 		return prefiller.PrefillTokens(ctx, tokens)
 	}
-	return core.NewError("mlx: native model session does not support token prefill")
+	return errNativeNoTokenPrefill
 }
 
 // AppendPrompt appends prompt tokens to the retained session KV state without
 // replaying the existing prefix.
 func (s *ModelSession) AppendPrompt(prompt string) error {
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	return s.session.AppendPrompt(context.Background(), prompt)
 }
@@ -155,7 +173,7 @@ func (s *ModelSession) AppendPromptChunks(ctx context.Context, chunks iter.Seq[s
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if appender, ok := s.session.(nativeSessionChunkAppender); ok {
 		return appender.AppendPromptChunks(ctx, chunks)
@@ -170,18 +188,18 @@ func (s *ModelSession) AppendTokens(ctx context.Context, tokens []int32) error {
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if appender, ok := s.session.(nativeSessionTokenAppender); ok {
 		return appender.AppendTokens(ctx, tokens)
 	}
-	return core.NewError("mlx: native model session does not support token append")
+	return errNativeNoTokenAppend
 }
 
 // Generate produces a buffered string from the retained session state.
 func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	if s == nil || s.session == nil {
-		return "", core.NewError("mlx: model session is nil")
+		return "", errModelSessionNil
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
@@ -272,7 +290,7 @@ func (s *ModelSession) CaptureKV() (*kv.Snapshot, error) {
 // memory with explicit capture options.
 func (s *ModelSession) CaptureKVWithOptions(opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errModelSessionNil
 	}
 	var (
 		snapshot *metal.KVSnapshot
@@ -314,14 +332,14 @@ func (s *ModelSession) SaveKV(path string) error {
 // RestoreKV replaces the retained session state with a restorable KV snapshot.
 func (s *ModelSession) RestoreKV(snapshot *kv.Snapshot) error {
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if snapshot == nil {
-		return core.NewError("mlx: KV snapshot is nil")
+		return errKVSnapshotNil
 	}
 	restorer, ok := s.session.(nativeSessionRestorer)
 	if !ok {
-		return core.NewError("mlx: native model session does not support KV restore")
+		return errNativeNoKVRestore
 	}
 	if err := restorer.RestoreKV(context.Background(), toMetalKVSnapshot(snapshot)); err != nil {
 		return err
@@ -391,7 +409,7 @@ func (s *ModelSession) SaveKVBlocksToState(ctx context.Context, store state.Writ
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errModelSessionNil
 	}
 	captureOpts := kv.CaptureOptions{}
 	if opts.KVEncoding == kv.EncodingNative {
@@ -443,10 +461,10 @@ func (s *ModelSession) LoadKVPrefixBlocksFromState(ctx context.Context, store st
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errModelSessionNil
 	}
 	if bundle == nil {
-		return core.NewError("mlx: State KV block bundle is nil")
+		return errStateKVBlockBundleNil
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
 		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
@@ -482,7 +500,7 @@ func (s *ModelSession) LoadKVPrefixBlocksFromMemvid(ctx context.Context, store s
 // RestoreBundle restores the session from a state bundle.
 func (s *ModelSession) RestoreBundle(b *bundle.Bundle) error {
 	if b == nil {
-		return core.NewError("mlx: state bundle is nil")
+		return errStateBundleNil
 	}
 	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
 		return err
@@ -501,7 +519,7 @@ func (s *ModelSession) RestoreBundleFromState(ctx context.Context, b *bundle.Bun
 		ctx = context.Background()
 	}
 	if b == nil {
-		return core.NewError("mlx: state bundle is nil")
+		return errStateBundleNil
 	}
 	if err := bundle.CheckCompatibility(modelInfoToBundle(s.info), b); err != nil {
 		return err
@@ -533,14 +551,14 @@ func (s *ModelSession) LoadBundle(path string) error {
 // Fork creates an independent session that starts from the same retained state.
 func (s *ModelSession) Fork() (*ModelSession, error) {
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errModelSessionNil
 	}
 	forked, err := s.session.Fork(context.Background())
 	if err != nil {
 		return nil, err
 	}
 	if forked == nil {
-		return nil, core.NewError("mlx: native model returned nil session fork")
+		return nil, errNativeNilSessionFork
 	}
 	return &ModelSession{session: forked, info: s.info, tok: s.tok, agentMemory: agent.CloneWakeReport(s.agentMemory)}, nil
 }
