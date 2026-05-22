@@ -7,6 +7,11 @@ import (
 	"dappco.re/go/inference/parser"
 )
 
+// errMLXTokenizerNil fires from FilterThinkingTokens whenever the caller
+// hands in a zero-value or already-closed Tokenizer — hoisted to package
+// level so the precondition slot costs no per-call core.NewError alloc.
+var errMLXTokenizerNil = core.NewError("mlx: tokenizer is nil")
+
 // c.Generate(ctx, prompt, mlx.WithThinkingMode(parser.Capture))
 func WithThinkingMode(mode parser.Mode) GenerateOption {
 	return func(c *GenerateConfig) { c.Thinking.Mode = mode }
@@ -44,7 +49,7 @@ func WithThinkingCapture(capture func(parser.Chunk)) GenerateOption {
 // visible := out.Text
 func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info ModelInfo) (parser.Result, error) {
 	if tok == nil || tok.tok == nil {
-		return parser.Result{}, core.NewError("mlx: tokenizer is nil")
+		return parser.Result{}, errMLXTokenizerNil
 	}
 	processor := parser.NewProcessor(cfg, parserHint(info))
 	builder := core.NewBuilder()
