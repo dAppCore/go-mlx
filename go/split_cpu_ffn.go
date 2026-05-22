@@ -242,14 +242,18 @@ func loadCPUSplitFFNExecutor(ctx context.Context, sourcePath string, cfg CPUSpli
 	if err != nil {
 		return nil, err
 	}
+	cacheHint := cfg.MaxCachedLayers
+	if cacheHint <= 0 {
+		// Unbounded cache: hint against layer count to avoid map regrows.
+		cacheHint = qwenCfg.NumHiddenLayers
+	}
 	return &CPUSplitFFNExecutor{
 		sourcePath: sourcePath,
 		index:      index,
 		cfg:        qwenCfg,
 		cacheCfg:   cfg,
-		layerCache: map[int]cpuSplitFFNLayer{},
-		cacheOrder: []int{},
-		stats:      cpuSplitFFNMemoryStats{},
+		layerCache: make(map[int]cpuSplitFFNLayer, cacheHint),
+		cacheOrder: make([]int, 0, cacheHint),
 	}, nil
 }
 
