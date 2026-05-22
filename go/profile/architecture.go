@@ -56,17 +56,8 @@ func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
 	if id == "" {
 		return ModelArchitectureProfile{}, false
 	}
-	for _, profile := range builtinArchitectureProfiles() {
-		if profile.ID == id {
-			return cloneArchitectureProfile(profile), true
-		}
-	}
-	for _, profile := range builtinArchitectureProfiles() {
-		for _, alias := range profile.Aliases {
-			if ArchitectureID(alias) == id || parser.NormaliseKey(alias) == id {
-				return cloneArchitectureProfile(profile), true
-			}
-		}
+	if idx, ok := builtinArchitectureProfileIndex[id]; ok {
+		return cloneArchitectureProfile(builtinArchitectureProfilesData[idx]), true
 	}
 	return ModelArchitectureProfile{}, false
 }
@@ -120,8 +111,34 @@ func ArchitectureID(value string) string {
 // clones before returning.
 var builtinArchitectureProfilesData = []ModelArchitectureProfile{}
 
+// builtinArchitectureProfileIndex maps every architecture ID that can
+// resolve to a built-in profile — the profile's own ID plus the
+// ArchitectureID and parser.NormaliseKey expansions of each alias — to
+// its slot in builtinArchitectureProfilesData. LookupArchitectureProfile
+// uses this to collapse the previous two linear-scan passes (exact ID,
+// then alias normalisation) into a single map probe.
+var builtinArchitectureProfileIndex = map[string]int{}
+
 func init() {
 	builtinArchitectureProfilesData = buildBuiltinArchitectureProfiles()
+	builtinArchitectureProfileIndex = make(map[string]int, len(builtinArchitectureProfilesData)*4)
+	for i, profile := range builtinArchitectureProfilesData {
+		if profile.ID != "" {
+			builtinArchitectureProfileIndex[profile.ID] = i
+		}
+		for _, alias := range profile.Aliases {
+			if key := ArchitectureID(alias); key != "" {
+				if _, exists := builtinArchitectureProfileIndex[key]; !exists {
+					builtinArchitectureProfileIndex[key] = i
+				}
+			}
+			if key := parser.NormaliseKey(alias); key != "" {
+				if _, exists := builtinArchitectureProfileIndex[key]; !exists {
+					builtinArchitectureProfileIndex[key] = i
+				}
+			}
+		}
+	}
 }
 
 func builtinArchitectureProfiles() []ModelArchitectureProfile {
