@@ -113,6 +113,16 @@ var (
 	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
 )
 
+// closedTokenChan is the shared "no tokens, generation skipped" channel
+// returned by every Stream entry when the receiver model is nil. Sharing
+// one closed channel avoids both the per-call make(chan Token) and the
+// goroutine launch that would otherwise just defer-close.
+var closedTokenChan = func() chan Token {
+	c := make(chan Token)
+	close(c)
+	return c
+}()
+
 // parserHintFromModel builds the parser.Hint without going through the
 // full m.Info() fan-out. The Hint only needs Architecture + Adapter name,
 // so we read the underlying native info once and skip the ModelInfo
@@ -959,12 +969,12 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 
 // GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
 func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -995,12 +1005,12 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 // GenerateChunksStream streams tokens from bounded prompt chunks without
 // building or tokenizing one giant prompt string.
 func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string], opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -1045,12 +1055,12 @@ func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string
 // ChatChunksStream streams chat tokens through the native template while
 // feeding long message content as bounded prompt chunks.
 func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Message, chunkBytes int, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -1098,12 +1108,12 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 
 // ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
 func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
