@@ -224,22 +224,47 @@ func readDenseSafetensors(path string) ([]denseSafetensor, error) {
 	if headerLen > uint64(len(data)-8) || headerEnd > len(data) {
 		return nil, core.NewError("mlx: safetensors header exceeds file size: " + path)
 	}
-	var header map[string]safetensors.HeaderEntry
-	if result := core.JSONUnmarshal(data[headerStart:headerEnd], &header); !result.OK {
-		return nil, quantizeGGUFResultError(result)
+	// Delegate header parsing to the shared safetensors walker (W8-I + W8-K).
+	// It hand-rolls the JSON parse, interns canonical dtype strings, and
+	// carves all Shape slices out of one slab so per-tensor cost lands at
+	// ~1 alloc once the arena is in scope — replacing the reflection-driven
+	// map[string]HeaderEntry decode that previously dominated this path's
+	// allocations. dataStart is the absolute offset of the first payload
+	// byte in `data` (i.e. headerEnd), which is what ParseHeaderRefs uses
+	// as the base for each TensorRef.DataStart.
+	index, err := safetensors.ParseHeaderRefs(path, data[headerStart:headerEnd], int64(headerEnd))
+	if err != nil {
+		return nil, err
 	}
-	tensors := make([]denseSafetensor, 0, len(header))
-	for name, entry := range header {
-		if name == "__metadata__" {
-			continue
-		}
-		tensor, err := decodeDenseSafetensor(path, name, entry, data[headerEnd:])
+	tensors := make([]denseSafetensor, 0, len(index.Tensors))
+	for _, name := range index.Names {
+		tensor, err := decodeDenseSafetensorRef(index.Tensors[name], data)
 		if err != nil {
 			return nil, err
 		}
 		tensors = append(tensors, tensor)
 	}
 	return tensors, nil
+}
+
+// decodeDenseSafetensorRef is the TensorRef-shaped sibling of
+// decodeDenseSafetensor. The shared safetensors walker emits one
+// TensorRef per tensor with Shape pre-validated and DType pre-uppercased,
+// so this path skips the per-entry validation that the HeaderEntry
+// variant has to do (handled inside ParseHeaderRefs / refFromHeaderSlab).
+// data is the whole-file byte slice; the payload window is sliced via
+// the TensorRef's absolute DataStart + ByteLen.
+func decodeDenseSafetensorRef(ref safetensors.TensorRef, data []byte) (denseSafetensor, error) {
+	end := ref.DataStart + ref.ByteLen
+	if ref.DataStart < 0 || end < ref.DataStart || end > int64(len(data)) {
+		return denseSafetensor{}, core.NewError("mlx: safetensors tensor offsets exceed payload: " + ref.Name)
+	}
+	raw := data[ref.DataStart:end]
+	values, err := safetensors.DecodeFloatData(ref.DType, raw, ref.Elements)
+	if err != nil {
+		return denseSafetensor{}, core.E("QuantizeModelPack", "decode "+ref.Path+" tensor "+ref.Name, err)
+	}
+	return denseSafetensor{Name: ref.Name, Shape: ref.Shape, Data: values}, nil
 }
 
 func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, payload []byte) (denseSafetensor, error) {
