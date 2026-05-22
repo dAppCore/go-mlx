@@ -4,7 +4,7 @@ package dataset
 
 import (
 	"bufio"
-	"bytes"
+	"encoding/json"
 	"io"
 
 	core "dappco.re/go"
@@ -12,18 +12,13 @@ import (
 	"dappco.re/go/mlx/chat"
 )
 
-const scannerMaxBytes = 16 * 1024 * 1024
-
 // Sentinel errors hoisted from the nil-guard call sites so they
 // allocate exactly once at package init instead of one *Err per
 // nil-receiver call. These are cold paths but the package contract
-// is the same either way, and resultError's "core result failed"
-// fallback fires whenever a non-error Value is wrapped in a failed
-// Result.
+// is the same either way.
 var (
-	errReaderNil        = core.NewError("dataset: reader is nil")
-	errJSONLDatasetNil  = core.NewError("dataset: JSONL dataset is nil")
-	errCoreResultFailed = core.NewError("core result failed")
+	errReaderNil       = core.NewError("dataset: reader is nil")
+	errJSONLDatasetNil = core.NewError("dataset: JSONL dataset is nil")
 )
 
 // Config controls JSONL ingestion and chat sample normalization.
@@ -80,17 +75,21 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if reader == nil {
 		return nil, errReaderNil
 	}
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxBytes)
+	// One streaming decoder for the whole file — json.Unmarshal would
+	// allocate a fresh decodeState (~5 allocs per call) per row,
+	// whereas Decoder reuses its internal scratch buffers across
+	// Decode() calls. Decoder handles inter-record whitespace
+	// (including empty lines) on its own.
+	dec := json.NewDecoder(bufio.NewReaderSize(reader, 64*1024))
 
 	var samples []Sample
 	// Hoist the record buffer out of the loop. The original `var
 	// record jsonRecord` inside the loop escaped to the heap on every
-	// iteration (json.Unmarshal takes the pointer reflectively). Once
-	// hoisted, json.Unmarshal still ignores keys that are absent in
+	// iteration (json.Decode takes the pointer reflectively). Once
+	// hoisted, json.Decode still ignores keys that are absent in
 	// the current row, so the previous row's string fields would
 	// carry over — zero the struct via assignment to a zero literal
-	// before each Unmarshal call. The slice fields (Messages,
+	// before each Decode call. The slice fields (Messages,
 	// Conversations) are reset to length 0 in-place so we keep the
 	// backing array across rows of the same shape and avoid an
 	// allocation per chat-shape row. msgBuf reuses the
@@ -99,34 +98,27 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	// safe.
 	var record jsonRecord
 	var msgBuf []inference.Message
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		// scanner.Bytes() aliases the scanner's internal buffer (no
-		// allocation), bytes.TrimSpace returns a sub-slice, and
-		// core.JSONUnmarshal eats []byte directly. The prior
-		// scanner.Text() path allocated a fresh string per row —
-		// shaving 1 alloc/row over 100k-row corpora is load-bearing.
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
-			continue
-		}
+	// recordNo numbers non-empty input records — empty/whitespace-only
+	// lines do not bump it. Error messages name "record N" for that
+	// reason, matching what the original "line N" form meant since the
+	// prior scanner loop incremented for every line but skipped empty
+	// ones before decoding.
+	recordNo := 0
+	for dec.More() {
+		recordNo++
 		messagesBuf := record.Messages[:0]
 		conversationsBuf := record.Conversations[:0]
 		record = jsonRecord{Messages: messagesBuf, Conversations: conversationsBuf}
-		if result := core.JSONUnmarshal(line, &record); !result.OK {
-			return nil, core.Errorf("dataset: parse JSONL line %d: %w", lineNo, resultError(result))
+		if err := dec.Decode(&record); err != nil {
+			return nil, core.Errorf("dataset: parse JSONL record %d: %w", recordNo, err)
 		}
 		sample, ok, err := record.toSample(cfg, &msgBuf)
 		if err != nil {
-			return nil, core.Errorf("dataset: normalize JSONL line %d: %w", lineNo, err)
+			return nil, core.Errorf("dataset: normalize JSONL record %d: %w", recordNo, err)
 		}
 		if ok {
 			samples = append(samples, sample)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, core.Errorf("dataset: read JSONL: %w", err)
 	}
 	// samples was built locally — every entry's Meta map was
 	// constructed fresh by labelled(). The slice is owned by the
@@ -379,12 +371,3 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func resultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return errCoreResultFailed
-}
