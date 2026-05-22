@@ -254,7 +254,7 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 		return nil
 	}
 	cloned := info
-	cloned.TensorTypes = append([]gguf.TensorTypeSummary(nil), info.TensorTypes...)
+	cloned.TensorTypes = core.SliceClone(info.TensorTypes)
 	return &cloned
 }
 
