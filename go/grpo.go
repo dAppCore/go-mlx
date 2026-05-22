@@ -203,6 +203,13 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, ds dataset
 		Experimental: true,
 		Config:       cfg,
 	}
+	// Pre-size Updates when the caller capped the run length — every
+	// successful step appends exactly one update, so we know the upper
+	// bound and can dodge the standard append 1→2→4→8…N alloc cascade
+	// that would otherwise back-and-forth across Updates as steps land.
+	if cfg.MaxSamples > 0 && cfg.Epochs > 0 {
+		result.Updates = make([]GRPOUpdate, 0, cfg.MaxSamples*cfg.Epochs)
+	}
 	if runner.PolicyInfo != nil {
 		result.Policy = runner.PolicyInfo(ctx)
 	}
