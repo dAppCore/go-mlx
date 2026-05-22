@@ -277,16 +277,17 @@ func BenchmarkPinnedArray_VsCopyPath_PinnedRaw_L16384(b *testing.B) {
 // Strided pinned construction exercises the C++23 std::mdspan layer
 // inside pinned_array_bridge.cpp. The strides here mirror the typical
 // non-contiguous view onto a larger backing buffer (e.g. taking a
-// per-layer slice from a packed KV tape).
+// per-layer slice from a packed KV tape). The view starts at
+// seq-position `seqOffset` (in elements: seqOffset × stride[axis=2]).
 func BenchmarkPinnedArray_Strided_Subview_L4096(b *testing.B) {
 	const B, H, L, D = 1, 8, 4096, 64
 	const storageL = 8192
+	const seqStart = 2048 // view starts at seq position 2048 inside storage
 	storageShape := []int{B, H, storageL, D}
 	viewShape := []int{B, H, L, D}
 	viewStrides := contiguousStrides(storageShape)
-	// Offset to position the view at the middle of the backing tape —
-	// this is how a layer slice would be read out of the .mp4 tape.
-	viewOffset := (storageL / 4) * H * D
+	// viewOffset is in storage elements: seq_start × stride_at_seq_axis.
+	viewOffset := seqStart * int(viewStrides[2])
 
 	raw := makePinnedFloat32Bytes(kvShapeElements(B, H, storageL, D))
 	b.SetBytes(int64(B * H * L * D * 4))
@@ -303,10 +304,11 @@ func BenchmarkPinnedArray_Strided_Subview_L4096(b *testing.B) {
 func BenchmarkPinnedArray_Strided_Subview_L16384(b *testing.B) {
 	const B, H, L, D = 1, 8, 16384, 64
 	const storageL = 32768
+	const seqStart = 8192
 	storageShape := []int{B, H, storageL, D}
 	viewShape := []int{B, H, L, D}
 	viewStrides := contiguousStrides(storageShape)
-	viewOffset := (storageL / 4) * H * D
+	viewOffset := seqStart * int(viewStrides[2])
 
 	raw := makePinnedFloat32Bytes(kvShapeElements(B, H, storageL, D))
 	b.SetBytes(int64(B * H * L * D * 4))
