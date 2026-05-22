@@ -859,8 +859,15 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		squares += float64(value * value)
 	}
 	scale := float32(1 / math.Sqrt(squares/float64(hiddenLen)+float64(eps)))
+	// Re-slice all three views to hiddenLen up-front so the per-element
+	// indexing has its bounds proved at the slice header — the compiler
+	// can then drop the bounds checks on normed/hidden/layer.norm reads
+	// in the inner loop.
+	normedView := normed[:hiddenLen]
+	hiddenView := hidden[:hiddenLen]
+	normView := layer.norm[:hiddenLen]
 	for i := 0; i < hiddenLen; i++ {
-		normed[i] = hidden[i] * scale * layer.norm[i]
+		normedView[i] = hiddenView[i] * scale * normView[i]
 	}
 
 	for row := 0; row < intermediateLen; row++ {
