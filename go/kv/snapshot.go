@@ -680,11 +680,11 @@ func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte)
 	if !ok {
 		return nil, "", 0, false, nil
 	}
-	raw = make([]byte, 0, rawBytes)
-	for _, value := range values {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], math.Float32bits(value))
-		raw = append(raw, buf[:]...)
+	// Pre-sized exact alloc + in-place PutUint32 — drops the
+	// per-element [4]byte stack buffer + 4-byte append cycle.
+	raw = make([]byte, rawBytes)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
 	}
 	return raw, "float32", len(values), true, nil
 }
