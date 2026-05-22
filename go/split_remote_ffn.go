@@ -93,8 +93,20 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	payload := RemoteSplitFFNRequest{
 		EndpointID: executor.endpoint.ID,
 		Layer:      req.Layer,
-		Hidden:     cloneSplitHidden(req.Hidden),
-		Labels:     cloneStringMap(executor.endpoint.Labels),
+		// cloneSplitHidden on req.Hidden was a defensive copy before
+		// handing the slice to JSONMarshal. JSONMarshal only reads
+		// from the slice and never mutates or retains references,
+		// payload itself is a local stack value, so the clone served
+		// no contract — drop it and let the marshaller iterate the
+		// caller's slice directly. Saves one alloc + N float32 worth
+		// of bytes per call.
+		Hidden: req.Hidden,
+		// Same reasoning for Labels: the marshaller iterates the map
+		// read-only, payload is stack-local, the constructor already
+		// snapshotted endpoint.Labels into the receiver. Aliasing the
+		// receiver's stable map saves one cloneStringMap call per
+		// ForwardFFN invocation (2 allocs / sizeof map entries).
+		Labels: executor.endpoint.Labels,
 	}
 	encoded := core.JSONMarshal(payload)
 	if !encoded.OK {
