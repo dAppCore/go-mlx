@@ -492,15 +492,18 @@ func LoadPackedExperts(plan TensorPlan, weightFiles []string, layer int, expertI
 		if err != nil {
 			return nil, err
 		}
-		gate, err := loadPackedProjection(index, findTensorSpec(specs, TensorRoleExpertGate))
+		gateSpec := findTensorSpec(specs, TensorRoleExpertGate)
+		gate, err := loadPackedProjection(index, &gateSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d gate_proj", expertID), err)
 		}
-		up, err := loadPackedProjection(index, findTensorSpec(specs, TensorRoleExpertUp))
+		upSpec := findTensorSpec(specs, TensorRoleExpertUp)
+		up, err := loadPackedProjection(index, &upSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d up_proj", expertID), err)
 		}
-		down, err := loadPackedProjection(index, findTensorSpec(specs, TensorRoleExpertDown))
+		downSpec := findTensorSpec(specs, TensorRoleExpertDown)
+		down, err := loadPackedProjection(index, &downSpec)
 		if err != nil {
 			return nil, core.E("minimax_m2.packed_experts", core.Sprintf("expert %d down_proj", expertID), err)
 		}
@@ -697,11 +700,11 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 	return events
 }
 
-func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedProjectionTensor, error) {
+func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPackedProjectionTensor, error) {
 	if spec.Packed == nil {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing descriptor: " + spec.Name)
 	}
-	weightRef, weightName, ok := findSafetensorRef(index, packedWeightCandidates(&spec))
+	weightRef, weightName, ok := findSafetensorRef(index, packedWeightCandidates(spec))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing weight tensor: " + spec.Name)
 	}
@@ -712,7 +715,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
-	scaleRef, _, ok := findSafetensorRef(index, sidecarCandidates(&spec, weightName, "scales"))
+	scaleRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "scales"))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
@@ -720,7 +723,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
-	biasRef, _, ok := findSafetensorRef(index, sidecarCandidates(&spec, weightName, "biases"))
+	biasRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "biases"))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
@@ -734,7 +737,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 		Scales:     scales,
 		Biases:     biases,
 	}
-	if projBiasRef, _, ok := findSafetensorRef(index, projectionBiasCandidates(&spec, weightName)); ok {
+	if projBiasRef, _, ok := findSafetensorRef(index, projectionBiasCandidates(spec, weightName)); ok {
 		tensor.Bias, err = safetensors.ReadRefValues(projBiasRef)
 		if err != nil {
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
