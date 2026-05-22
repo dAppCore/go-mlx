@@ -756,9 +756,12 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	totalValue := 0
 	totalKeyBytes := 0
 	totalValueBytes := 0
+	totalShape := 0
 	for i := range resultLayers {
-		heads := resultLayers[i].Heads
+		layer := &resultLayers[i]
+		heads := layer.Heads
 		totalHeads += len(heads)
+		totalShape += len(layer.KeyShape) + len(layer.ValueShape)
 		for j := range heads {
 			head := &heads[j]
 			totalKey += len(head.Key)
@@ -789,11 +792,20 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if totalValueBytes > 0 {
 		valueBytesSlab = make([]byte, totalValueBytes)
 	}
+	// Per-layer KeyShape + ValueShape get the same arena treatment as the
+	// per-head data — 2 SliceClones per layer = 60 allocs/snapshot on
+	// Gemma 4 E4B (30 layers) drops to 1 outer alloc. Single int32 slab
+	// shared across both shape families since they have identical type.
+	var shapeSlab []int32
+	if totalShape > 0 {
+		shapeSlab = make([]int32, totalShape)
+	}
 	headsOffset := 0
 	keyOffset := 0
 	valueOffset := 0
 	keyBytesOffset := 0
 	valueBytesOffset := 0
+	shapeOffset := 0
 	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
 	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
 	// ~160 B (6 slice headers + 2 dtype strings); for deep models (Gemma
@@ -805,15 +817,37 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		layerHeadsSrc := layer.Heads
 		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
+		// Per-layer shape clones cut from the shared int32 arena.
+		var keyShape, valueShape []int32
+		switch {
+		case layer.KeyShape == nil:
+		case len(layer.KeyShape) == 0:
+			keyShape = []int32{}
+		default:
+			end := shapeOffset + len(layer.KeyShape)
+			keyShape = shapeSlab[shapeOffset:end:end]
+			copy(keyShape, layer.KeyShape)
+			shapeOffset = end
+		}
+		switch {
+		case layer.ValueShape == nil:
+		case len(layer.ValueShape) == 0:
+			valueShape = []int32{}
+		default:
+			end := shapeOffset + len(layer.ValueShape)
+			valueShape = shapeSlab[shapeOffset:end:end]
+			copy(valueShape, layer.ValueShape)
+			shapeOffset = end
+		}
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   rootKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:   layer.KeyBytes,
-			KeyShape:   core.SliceClone(layer.KeyShape),
+			KeyShape:   keyShape,
 			ValueDType: rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
-			ValueShape: core.SliceClone(layer.ValueShape),
+			ValueShape: valueShape,
 			Heads:      layerHeads,
 		}
 		for j := range layerHeadsSrc {
@@ -912,9 +946,12 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	totalHeads := 0
 	totalKey := 0
 	totalValue := 0
+	totalShape := 0
 	for i := range resultLayers {
-		heads := resultLayers[i].Heads
+		layer := &resultLayers[i]
+		heads := layer.Heads
 		totalHeads += len(heads)
+		totalShape += len(layer.KeyShape) + len(layer.ValueShape)
 		for j := range heads {
 			head := &heads[j]
 			totalKey += len(head.Key)
@@ -929,9 +966,17 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if totalValue > 0 {
 		valueSlab = make([]float32, totalValue)
 	}
+	// Per-layer KeyShape + ValueShape share a single int32 arena. 2 clones
+	// per layer = 60 allocs/snapshot on Gemma 4 E4B (30 layers); single
+	// outer alloc collapses that to 1 regardless of layer count.
+	var shapeSlab []int32
+	if totalShape > 0 {
+		shapeSlab = make([]int32, totalShape)
+	}
 	headsOffset := 0
 	keyOffset := 0
 	valueOffset := 0
+	shapeOffset := 0
 	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
 	// + N×head struct-copy elision on the inverse direction.
 	for i := range resultLayers {
@@ -939,15 +984,37 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		layerHeadsSrc := layer.Heads
 		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
+		// Per-layer shape clones cut from the shared arena.
+		var keyShape, valueShape []int32
+		switch {
+		case layer.KeyShape == nil:
+		case len(layer.KeyShape) == 0:
+			keyShape = []int32{}
+		default:
+			end := shapeOffset + len(layer.KeyShape)
+			keyShape = shapeSlab[shapeOffset:end:end]
+			copy(keyShape, layer.KeyShape)
+			shapeOffset = end
+		}
+		switch {
+		case layer.ValueShape == nil:
+		case len(layer.ValueShape) == 0:
+			valueShape = []int32{}
+		default:
+			end := shapeOffset + len(layer.ValueShape)
+			valueShape = shapeSlab[shapeOffset:end:end]
+			copy(valueShape, layer.ValueShape)
+			shapeOffset = end
+		}
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   metalKVHeadDType(layer.KeyDType, layer.KeyBytes),
 			KeyBytes:   layer.KeyBytes,
-			KeyShape:   core.SliceClone(layer.KeyShape),
+			KeyShape:   keyShape,
 			ValueDType: metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
-			ValueShape: core.SliceClone(layer.ValueShape),
+			ValueShape: valueShape,
 			Heads:      layerHeads,
 		}
 		for j := range layerHeadsSrc {
