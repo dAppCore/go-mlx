@@ -158,6 +158,13 @@ func ensureEmptyFuseWeightDestination(output string) error {
 }
 
 func samePath(a, b string) bool {
+	// Fast path: identical strings cannot resolve to different absolutes,
+	// so skip the two PathAbs round-trips when the raw inputs already
+	// match. The fuse-self-fuse guard in prepareFuse fires this once per
+	// call and the SameAbsolute bench covers the equality path.
+	if a == b {
+		return true
+	}
 	absA := a
 	if resolved := core.PathAbs(a); resolved.OK {
 		absA = resolved.Value.(string)
