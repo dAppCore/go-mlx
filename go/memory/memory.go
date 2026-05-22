@@ -234,17 +234,36 @@ func NewPlan(input Input) Plan {
 	if input.Pack != nil && input.Pack.Architecture != "" {
 		packArch = input.Pack.Architecture
 	}
-	hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch)
+	// Pack carries its own ArchitectureProfile when the pack-creation
+	// path has already resolved it — typical for native-loaded packs.
+	// Use that instead of re-running profile.LookupArchitectureProfile,
+	// which clones the registered profile on every call (~70% of plan
+	// alloc footprint when a Pack is present). Only fall back to a
+	// registry lookup when the Pack does not have the profile cached.
 	var hintsPtr *profile.ModelArchitectureProfile
-	if hintsFound {
-		hintsPtr = &hintsProfile
+	var packPtr *profile.ModelArchitectureProfile
+	if input.Pack != nil && input.Pack.ArchitectureProfile != nil {
+		packPtr = input.Pack.ArchitectureProfile
+		// hintsArch may still differ from packArch when ModelInfo
+		// overrides the architecture. When they agree, the cached
+		// profile is correct for both call sites.
+		if packArch == hintsArch {
+			hintsPtr = packPtr
+		}
 	}
-	packPtr := hintsPtr
-	if packArch != hintsArch {
+	if hintsPtr == nil {
+		if hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch); hintsFound {
+			hp := hintsProfile
+			hintsPtr = &hp
+			if packArch == hintsArch {
+				packPtr = hintsPtr
+			}
+		}
+	}
+	if packPtr == nil && packArch != hintsArch {
 		if packProfile, ok := profile.LookupArchitectureProfile(packArch); ok {
-			packPtr = &packProfile
-		} else {
-			packPtr = nil
+			pp := packProfile
+			packPtr = &pp
 		}
 	}
 	applyArchitectureHints(&plan, hintsArch, hintsPtr)
@@ -468,18 +487,18 @@ func modelHints(input Input) (contextLength, quantization int, quantType, quantF
 
 func applyArchitectureHints(plan *Plan, architecture string, profileHint *profile.ModelArchitectureProfile) {
 	// Profile registry is authoritative when it matches — skip the
-	// normalize allocation entirely in that case. Only fall through
-	// to normalize for architectures the registry does not know.
+	// normalize allocation entirely in that case. NewPlan has already
+	// looked the architecture up in the registry and only passes a
+	// non-nil profileHint on hit, so a nil profileHint means the
+	// registry does not know this architecture and we go straight to
+	// the normalize fallback. The prior default branch repeated the
+	// LookupArchitectureProfile call (which clones the profile every
+	// call — 70% of the alloc footprint on NewPlan_Qwen3MoEPack).
 	var normalized string
-	switch {
-	case profileHint != nil:
+	if profileHint != nil {
 		normalized = profileHint.ID
-	default:
-		if p, ok := profile.LookupArchitectureProfile(architecture); ok {
-			normalized = p.ID
-		} else {
-			normalized = normalizeKnownArchitecture(architecture)
-		}
+	} else {
+		normalized = normalizeKnownArchitecture(architecture)
 	}
 	switch normalized {
 	case "qwen2":
@@ -618,6 +637,13 @@ func applyQuantizationHints(plan *Plan) {
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
 }
 
+// genericMoENotes is the static Notes slice for the generic MoE
+// residency plan — every MoE pack lands here so the same slice is
+// safe to share. The Notes field is read-only after the plan is
+// returned (the ExpertResidencyPlan is value-copied into Plan, so
+// callers cannot mutate this slice without first copying it).
+var genericMoENotes = []string{"MoE model uses lazy expert residency until backend-specific expert byte estimates are available"}
+
 func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profile.ModelArchitectureProfile) {
 	if plan == nil {
 		return
@@ -634,7 +660,7 @@ func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profi
 		PageInBatchSize:         1,
 		EvictionPolicy:          ExpertEvictionLRU,
 		FirstUseLatencyExpected: true,
-		Notes:                   []string{"MoE model uses lazy expert residency until backend-specific expert byte estimates are available"},
+		Notes:                   genericMoENotes,
 	}
 	plan.Notes = append(plan.Notes, "lazy expert residency enabled for MoE architecture")
 }
@@ -680,9 +706,12 @@ func percentBytes(value uint64, percent uint64) uint64 {
 // so the planner can match the variations seen in HF configs. Kept
 // private inside memory so the package is self-contained.
 func normalizeKnownArchitecture(value string) string {
-	value = lowerASCII(trimSpace(value))
-	value = replaceASCII(value, '-', '_')
-	value = replaceASCII(value, '.', '_')
+	// Trim first (string-slice operation, no alloc), then do
+	// lowercase + '-'/'.'→'_' substitution in one byte-pass. The
+	// previous form ran three passes (lowerASCII + replaceASCII×2)
+	// — each potentially allocating a new byte slice. canoniseASCII
+	// allocates at most once for the same final string.
+	value = canoniseASCII(trimSpace(value))
 	switch value {
 	case "qwen2_5", "qwen25":
 		return "qwen2"
@@ -730,6 +759,40 @@ func lowerASCII(s string) string {
 		}
 	}
 	return s
+}
+
+// canoniseASCII fuses lowerASCII + the two replaceASCII calls
+// ('-'→'_', '.'→'_') into a single pass. The original chain ran
+// three passes over the architecture string, each potentially
+// allocating a fresh []byte. Combined here, we allocate at most once
+// (when any rewrite is needed) and return the input unchanged on the
+// fast path where the string is already canonical.
+func canoniseASCII(s string) string {
+	// Scan for the first byte that needs rewriting. Most architecture
+	// strings hit the loop entry, find nothing, and return unchanged.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || c == '-' || c == '.' {
+			b := []byte(s)
+			b[i] = canonByte(c)
+			for j := i + 1; j < len(b); j++ {
+				b[j] = canonByte(b[j])
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+func canonByte(c byte) byte {
+	switch {
+	case c >= 'A' && c <= 'Z':
+		return c + ('a' - 'A')
+	case c == '-' || c == '.':
+		return '_'
+	default:
+		return c
+	}
 }
 
 func trimSpace(s string) string {

@@ -4,6 +4,7 @@ package dataset
 
 import (
 	"bufio"
+	"encoding/json"
 	"io"
 
 	core "dappco.re/go"
@@ -11,18 +12,13 @@ import (
 	"dappco.re/go/mlx/chat"
 )
 
-const scannerMaxBytes = 16 * 1024 * 1024
-
 // Sentinel errors hoisted from the nil-guard call sites so they
 // allocate exactly once at package init instead of one *Err per
 // nil-receiver call. These are cold paths but the package contract
-// is the same either way, and resultError's "core result failed"
-// fallback fires whenever a non-error Value is wrapped in a failed
-// Result.
+// is the same either way.
 var (
-	errReaderNil        = core.NewError("dataset: reader is nil")
-	errJSONLDatasetNil  = core.NewError("dataset: JSONL dataset is nil")
-	errCoreResultFailed = core.NewError("core result failed")
+	errReaderNil       = core.NewError("dataset: reader is nil")
+	errJSONLDatasetNil = core.NewError("dataset: JSONL dataset is nil")
 )
 
 // Config controls JSONL ingestion and chat sample normalization.
@@ -79,31 +75,50 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if reader == nil {
 		return nil, errReaderNil
 	}
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxBytes)
+	// One streaming decoder for the whole file — json.Unmarshal would
+	// allocate a fresh decodeState (~5 allocs per call) per row,
+	// whereas Decoder reuses its internal scratch buffers across
+	// Decode() calls. Decoder handles inter-record whitespace
+	// (including empty lines) on its own.
+	dec := json.NewDecoder(bufio.NewReaderSize(reader, 64*1024))
 
 	var samples []Sample
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := core.Trim(scanner.Text())
-		if line == "" {
-			continue
+	// Hoist the record buffer out of the loop. The original `var
+	// record jsonRecord` inside the loop escaped to the heap on every
+	// iteration (json.Decode takes the pointer reflectively). Once
+	// hoisted, json.Decode still ignores keys that are absent in
+	// the current row, so the previous row's string fields would
+	// carry over — zero the struct via assignment to a zero literal
+	// before each Decode call. The slice fields (Messages,
+	// Conversations) are reset to length 0 in-place so we keep the
+	// backing array across rows of the same shape and avoid an
+	// allocation per chat-shape row. msgBuf reuses the
+	// []inference.Message backing across openai/sharegpt rows —
+	// chat.Format consumes its argument synchronously so reuse is
+	// safe.
+	var record jsonRecord
+	var msgBuf []inference.Message
+	// recordNo numbers non-empty input records — empty/whitespace-only
+	// lines do not bump it. Error messages name "record N" for that
+	// reason, matching what the original "line N" form meant since the
+	// prior scanner loop incremented for every line but skipped empty
+	// ones before decoding.
+	recordNo := 0
+	for dec.More() {
+		recordNo++
+		messagesBuf := record.Messages[:0]
+		conversationsBuf := record.Conversations[:0]
+		record = jsonRecord{Messages: messagesBuf, Conversations: conversationsBuf}
+		if err := dec.Decode(&record); err != nil {
+			return nil, core.Errorf("dataset: parse JSONL record %d: %w", recordNo, err)
 		}
-		var record jsonRecord
-		if result := core.JSONUnmarshalString(line, &record); !result.OK {
-			return nil, core.Errorf("dataset: parse JSONL line %d: %w", lineNo, resultError(result))
-		}
-		sample, ok, err := record.toSample(cfg)
+		sample, ok, err := record.toSample(cfg, &msgBuf)
 		if err != nil {
-			return nil, core.Errorf("dataset: normalize JSONL line %d: %w", lineNo, err)
+			return nil, core.Errorf("dataset: normalize JSONL record %d: %w", recordNo, err)
 		}
 		if ok {
 			samples = append(samples, sample)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, core.Errorf("dataset: read JSONL: %w", err)
 	}
 	// samples was built locally — every entry's Meta map was
 	// constructed fresh by labelled(). The slice is owned by the
@@ -151,43 +166,72 @@ func (d *JSONLDataset) Samples() []Sample {
 	return CloneSamples(d.samples)
 }
 
-func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
+// toSample normalises a parsed jsonRecord. msgBuf is an optional
+// pointer to a reusable []inference.Message backing array for the
+// openai/sharegpt branches — pass nil when no reuse is available.
+// The helpers write back through *msgBuf so a grown backing array
+// is captured for the next row, saving one alloc per chat-shape row
+// over the lifetime of a LoadJSONL call. chat.Format does not retain
+// its messages argument, so the caller can safely reuse the buffer.
+func (r jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
 	if text := core.Trim(r.Text); text != "" {
 		return labelled(Sample{Text: text}, "text"), true, nil
 	}
 	if len(r.Messages) > 0 {
-		return MessagesToSample(messagesFromOpenAI(r.Messages), cfg.ChatTemplate, "openai_messages")
+		return MessagesToSample(appendMessagesFromOpenAI(msgBuf, r.Messages), cfg.ChatTemplate, "openai_messages")
 	}
 	if len(r.Conversations) > 0 {
-		return MessagesToSample(messagesFromShareGPT(r.Conversations), cfg.ChatTemplate, "sharegpt")
+		return MessagesToSample(appendMessagesFromShareGPT(msgBuf, r.Conversations), cfg.ChatTemplate, "sharegpt")
 	}
 	// Trim each candidate once per row — these used to be called 4-6
 	// times each because firstNonEmpty pre-trimmed for the check then
 	// returned an untrimmed value the caller trimmed again, and the
-	// outer guard re-trimmed for the empty check.
-	if prompt := core.Trim(r.Prompt); prompt != "" || firstNonEmpty(r.Response, r.Completion) != "" {
+	// outer guard re-trimmed for the empty check. The prompt-response
+	// and reasoning branches additionally recomputed firstNonEmpty
+	// inside the labelled Sample literal — split into prompt-present
+	// and response-only sub-cases so each call site touches its inputs
+	// exactly once. Branch order matches frequency: prompt-response,
+	// alpaca, reasoning.
+	if prompt := core.Trim(r.Prompt); prompt != "" {
 		return labelled(Sample{
 			Prompt:   prompt,
 			Response: firstNonEmpty(r.Response, r.Completion),
 		}, "prompt_response"), true, nil
 	}
-	if core.Trim(r.Instruction) != "" || core.Trim(r.Output) != "" {
+	if response := firstNonEmpty(r.Response, r.Completion); response != "" {
+		return labelled(Sample{
+			Response: response,
+		}, "prompt_response"), true, nil
+	}
+	if output := core.Trim(r.Output); core.Trim(r.Instruction) != "" || output != "" {
 		return labelled(Sample{
 			Prompt:   formatInstructionPrompt(r.Instruction, r.Input),
-			Response: core.Trim(r.Output),
+			Response: output,
 		}, "alpaca"), true, nil
 	}
-	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" || firstNonEmpty(r.Solution, r.Answer) != "" {
+	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" {
 		return labelled(Sample{
 			Prompt:   problem,
 			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), firstNonEmpty(r.Solution, r.Answer)),
 		}, "reasoning"), true, nil
 	}
+	if solution := firstNonEmpty(r.Solution, r.Answer); solution != "" {
+		return labelled(Sample{
+			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), solution),
+		}, "reasoning"), true, nil
+	}
 	return Sample{}, false, nil
 }
 
-func messagesFromOpenAI(records []messageRecord) []inference.Message {
-	out := make([]inference.Message, 0, len(records))
+// appendMessagesFromOpenAI fills *buf with normalised messages from
+// records, writing back through buf so a grown backing array is
+// captured for the next call. When buf is nil (no reuse available)
+// the slice is allocated fresh; otherwise we reset the existing
+// backing in place if cap is sufficient. Pass a reusable buffer
+// (typical: one per LoadJSONL call) to avoid the per-row slice alloc
+// the original `make([]Message, 0, n)` form triggered.
+func appendMessagesFromOpenAI(buf *[]inference.Message, records []messageRecord) []inference.Message {
+	out := claimMessageBuf(buf, len(records))
 	for _, record := range records {
 		// Short-circuit empty rows before the Trim/NormaliseRole
 		// work — JSON unmarshal leaves missing fields as "" so
@@ -202,11 +246,16 @@ func messagesFromOpenAI(records []messageRecord) []inference.Message {
 		}
 		out = append(out, inference.Message{Role: role, Content: content})
 	}
+	if buf != nil {
+		*buf = out
+	}
 	return out
 }
 
-func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
-	out := make([]inference.Message, 0, len(records))
+// appendMessagesFromShareGPT mirrors appendMessagesFromOpenAI for the
+// ShareGPT-shape record (from/value rather than role/content).
+func appendMessagesFromShareGPT(buf *[]inference.Message, records []shareGPTRecord) []inference.Message {
+	out := claimMessageBuf(buf, len(records))
 	for _, record := range records {
 		if record.From == "" && record.Value == "" {
 			continue
@@ -218,7 +267,23 @@ func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
 		}
 		out = append(out, inference.Message{Role: role, Content: content})
 	}
+	if buf != nil {
+		*buf = out
+	}
 	return out
+}
+
+// claimMessageBuf returns an empty slice with at least n capacity,
+// reusing *buf's backing array when possible. Hoisted from the two
+// append helpers since the prelude is identical.
+func claimMessageBuf(buf *[]inference.Message, n int) []inference.Message {
+	if buf == nil {
+		return make([]inference.Message, 0, n)
+	}
+	if cap(*buf) < n {
+		return make([]inference.Message, 0, n)
+	}
+	return (*buf)[:0]
 }
 
 // MessagesToSample converts a message list into a normalised Sample,
@@ -306,12 +371,3 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func resultError(result core.Result) error {
-	if result.OK {
-		return nil
-	}
-	if err, ok := result.Value.(error); ok {
-		return err
-	}
-	return errCoreResultFailed
-}
