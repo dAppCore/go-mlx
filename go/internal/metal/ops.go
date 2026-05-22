@@ -71,39 +71,6 @@ static inline int mlx_squeeze_axes_inline(
     return mlx_squeeze_axes(res, a, axes_buf, axes_num, s);
 }
 
-// mlx_slice_inline / mlx_slice_update_inline materialise the 3-array
-// starts/ends/strides triple on the C stack so the per-call Slice and
-// SliceUpdateInplace paths skip the three Go-side []C.int heap allocs.
-// strides are implicitly 1 (the only mode the wrappers currently use).
-static inline int mlx_slice_inline(
-    mlx_array* res, mlx_array a,
-    const int32_t* starts_in, const int32_t* ends_in, size_t n,
-    mlx_stream s) {
-    int starts_buf[8];
-    int ends_buf[8];
-    int strides_buf[8];
-    for (size_t i = 0; i < n; ++i) {
-        starts_buf[i] = (int)starts_in[i];
-        ends_buf[i] = (int)ends_in[i];
-        strides_buf[i] = 1;
-    }
-    return mlx_slice(res, a, starts_buf, n, ends_buf, n, strides_buf, n, s);
-}
-
-static inline int mlx_slice_update_inline(
-    mlx_array* res, mlx_array a, mlx_array upd,
-    const int32_t* starts_in, const int32_t* ends_in, size_t n,
-    mlx_stream s) {
-    int starts_buf[8];
-    int ends_buf[8];
-    int strides_buf[8];
-    for (size_t i = 0; i < n; ++i) {
-        starts_buf[i] = (int)starts_in[i];
-        ends_buf[i] = (int)ends_in[i];
-        strides_buf[i] = 1;
-    }
-    return mlx_slice_update(res, a, upd, starts_buf, n, ends_buf, n, strides_buf, n, s);
-}
 */
 import "C"
 
