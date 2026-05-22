@@ -291,15 +291,15 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cf
 				return err
 			}
 		}
-		updateGRPOResult(result, accumulator, update)
+		updateGRPOResult(result, accumulator, &update)
 		result.Updates = append(result.Updates, update)
-		if err := maybeSaveGRPOCheckpoint(ctx, runner, cfg, result, update); err != nil {
+		if err := maybeSaveGRPOCheckpoint(ctx, runner, cfg, result, &update); err != nil {
 			return err
 		}
 		if err := maybeRunGRPOEval(ctx, runner, cfg, result, epoch); err != nil {
 			return err
 		}
-		emitGRPOProbe(cfg, result, update, epoch)
+		emitGRPOProbe(cfg, result, &update, epoch)
 	}
 	return nil
 }
@@ -407,7 +407,7 @@ func scoreGRPORollout(ctx GRPORewardContext, funcs []GRPORewardFunc) ([]GRPORewa
 	return parts, total, nil
 }
 
-func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update GRPOUpdate) {
+func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update *GRPOUpdate) {
 	result.Metrics.Steps++
 	result.Metrics.Samples++
 	result.Metrics.Rollouts += len(update.Rollouts)
@@ -427,14 +427,14 @@ func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, up
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
 
-func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update GRPOUpdate) error {
+func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate) error {
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
 	path := core.PathJoin(cfg.CheckpointDir, grpoStepName(result.Metrics.Steps))
-	meta := NewGRPOCheckpointMetadata(path, cfg, result, update)
+	meta := NewGRPOCheckpointMetadata(path, cfg, result, *update)
 	if runner.SaveCheckpoint != nil {
-		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: update, Metadata: meta}); err != nil {
+		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: *update, Metadata: meta}); err != nil {
 			return err
 		}
 	}
@@ -472,7 +472,7 @@ func maybeRunGRPOEval(ctx context.Context, runner GRPORunner, cfg GRPOConfig, re
 	return nil
 }
 
-func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch int) {
+func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate, epoch int) {
 	if cfg.ProbeSink == nil {
 		return
 	}
@@ -851,7 +851,7 @@ type grpoMetricAccumulator struct {
 	lossSum   float64
 }
 
-func (a *grpoMetricAccumulator) add(update GRPOUpdate) {
+func (a *grpoMetricAccumulator) add(update *GRPOUpdate) {
 	if a == nil {
 		return
 	}
