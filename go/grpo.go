@@ -539,6 +539,13 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	if core.Index(text, "\r") >= 0 {
 		normalised = core.Replace(text, "\r\n", "\n")
 	}
+	// Single-line fast path — when the response is a single line (no
+	// "\n"), Split would allocate a one-element []string just to feed it
+	// straight to cleanGRPOAnswerLine. Skip the slice entirely. Short
+	// SFT answers ("42", "Paris", a sentence) hit this branch.
+	if core.Index(normalised, "\n") < 0 {
+		return cleanGRPOAnswerLine(normalised)
+	}
 	lines := core.Split(normalised, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := cleanGRPOAnswerLine(lines[i])
