@@ -521,7 +521,9 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		// pair loop is a plain dot product. Zero-norm positions get an
 		// all-zero scratch row (dot product will be 0 → < threshold →
 		// locked++), matching the original cosine-of-zero-vector
-		// semantics.
+		// semantics. Accumulate totalSum here so the headDim=1 path
+		// doesn't have to walk scratch[] a second time below.
+		var totalSum float64
 		for pos := 0; pos < seqLen; pos++ {
 			start := pos * headDim
 			row := flat[start : start+headDim]
@@ -543,6 +545,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			inv := 1.0 / math.Sqrt(sum)
 			for k := range out {
 				out[k] *= inv
+				totalSum += out[k]
 			}
 		}
 		// Pass 2: pure float64 dot product. The cosine is the dot of
@@ -570,10 +573,9 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			// stays as a branch + counter (M3's FCMPD + CSEL fast path
 			// beats the FMOV→shift trick whose float→int register move
 			// has ~5-cycle latency on Apple Silicon).
-			var totalSum float64
-			for k := 0; k < seqLen; k++ {
-				totalSum += scratch[k]
-			}
+			// totalSum was accumulated in Pass 1; the GQA path with
+			// headDim>1 ignores it (we'd need per-position totals for
+			// the general dot product, not a flat sum).
 			subSum := totalSum
 			for i := 0; i < seqLen; i++ {
 				ai := scratch[i]
