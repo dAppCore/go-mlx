@@ -972,16 +972,38 @@ func cloneDistillLogits(logits DistillLogits) DistillLogits {
 	if len(logits) == 0 {
 		return nil
 	}
+	// Two-pass clone — first sum the total float32 cell count across
+	// the batch, then allocate ONE flat backing buffer + slice the
+	// per-cell []float32 views into it. Replaces B*S inner make calls
+	// (one per token) with a single allocation, plus the per-batch
+	// middle [][]float32 outer (one alloc per batch element).
+	//
+	// For a 4×128×32000 teacher tensor that's 513 allocs → 5 allocs,
+	// while keeping the float32 backing identical so DistillationBatchLoss
+	// + StudentLogits readers see the same shape. The flat buffer also
+	// gives the resulting clone better cache locality on the inner
+	// loop (sequential float32 stride) versus the per-cell-alloc form
+	// where each row could land on a distinct page.
+	var totalCells int
+	for i := range logits {
+		row := logits[i]
+		for j := range row {
+			totalCells += len(row[j])
+		}
+	}
+	flat := make([]float32, totalCells)
 	out := make(DistillLogits, len(logits))
-	for i, row := range logits {
-		// Hoist the per-row outer make + take src via range to skip the
-		// re-index inside the per-token loop. outRow is also captured so
-		// the inner assignment doesn't double-index out[i][j].
+	cursor := 0
+	for i := range logits {
+		row := logits[i]
 		outRow := make([][]float32, len(row))
-		for j, src := range row {
-			dst := make([]float32, len(src))
+		for j := range row {
+			src := row[j]
+			next := cursor + len(src)
+			dst := flat[cursor:next:next]
 			copy(dst, src)
 			outRow[j] = dst
+			cursor = next
 		}
 		out[i] = outRow
 	}
