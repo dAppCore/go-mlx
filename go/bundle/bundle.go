@@ -662,14 +662,14 @@ func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
 }
 
 func cloneMeta(meta map[string]string) map[string]string {
+	// core.MapClone wraps maps.Clone, which returns a fresh empty map for
+	// an empty input. cloneMeta has always returned nil for both nil and
+	// zero-length input — keep that contract so JSON marshal omits the
+	// field via `omitempty` instead of emitting "{}".
 	if len(meta) == 0 {
 		return nil
 	}
-	cloned := make(map[string]string, len(meta))
-	for key, value := range meta {
-		cloned[key] = value
-	}
-	return cloned
+	return core.MapClone(meta)
 }
 
 func resultError(result core.Result) error {
