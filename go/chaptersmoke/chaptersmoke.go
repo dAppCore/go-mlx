@@ -252,7 +252,7 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.AnswerMaxTokens <= 0 {
 		cfg.AnswerMaxTokens = DefaultAnswerMaxTokens
 	}
-	cfg.Chapters = append([]Input(nil), cfg.Chapters...)
+	cfg.Chapters = core.SliceClone(cfg.Chapters)
 	return cfg
 }
 
