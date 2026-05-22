@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
+	"math"
 	"sort"
 	"strconv"
 
@@ -368,30 +369,21 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	file := open.Value.(*core.OSFile)
 	defer file.Close()
 
-	var magic [4]byte
-	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf magic: %w", err)
+	// Single 20-byte read covers magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// Reflect-free scratch — eliminates 4 binary.Read calls (+4 reflect allocs each).
+	var header [24]byte
+	if _, err := io.ReadFull(file, header[:24]); err != nil {
+		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
-	if string(magic[:]) != "GGUF" {
+	if core.AsString(header[:4]) != "GGUF" {
 		return nil, nil, core.NewError("mlx: invalid gguf magic")
 	}
-
-	var version uint32
-	if err := binary.Read(file, binary.LittleEndian, &version); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf version: %w", err)
-	}
+	version := binary.LittleEndian.Uint32(header[4:8])
 	if version < 2 {
 		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
-
-	var tensorCount uint64
-	if err := binary.Read(file, binary.LittleEndian, &tensorCount); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf tensor count: %w", err)
-	}
-	var metadataCount uint64
-	if err := binary.Read(file, binary.LittleEndian, &metadataCount); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf metadata count: %w", err)
-	}
+	tensorCount := binary.LittleEndian.Uint64(header[8:16])
+	metadataCount := binary.LittleEndian.Uint64(header[16:24])
 	if tensorCount > maxGGUFCollectionEntries {
 		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
@@ -399,17 +391,21 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
+	// Shared scratch buffer for all subsequent fixed-width reads.
+	// 8 bytes covers uint64 (the widest GGUF scalar); reuse for uint32, uint16, etc.
+	var scratch [8]byte
+
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
-		key, err := readGGUFString(file)
+		key, err := readGGUFString(file, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
-		var valueType uint32
-		if err := binary.Read(file, binary.LittleEndian, &valueType); err != nil {
+		if _, err := io.ReadFull(file, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
-		value, err := readGGUFValue(file, valueType)
+		valueType := binary.LittleEndian.Uint32(scratch[:4])
+		value, err := readGGUFValue(file, valueType, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
@@ -418,108 +414,140 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 
 	tensors := make([]ggufTensorInfo, 0, int(tensorCount))
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readGGUFString(file)
+		name, err := readGGUFString(file, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
-		var ndim uint32
-		if err := binary.Read(file, binary.LittleEndian, &ndim); err != nil {
+		if _, err := io.ReadFull(file, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
-		shape := make([]uint64, 0, int(ndim))
-		for range ndim {
-			var dim uint64
-			if err := binary.Read(file, binary.LittleEndian, &dim); err != nil {
+		ndim := binary.LittleEndian.Uint32(scratch[:4])
+		shape := make([]uint64, ndim)
+		for d := uint32(0); d < ndim; d++ {
+			if _, err := io.ReadFull(file, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
-			shape = append(shape, dim)
+			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
-		var tensorType uint32
-		if err := binary.Read(file, binary.LittleEndian, &tensorType); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor type: %w", err)
+		// tensorType(4) + offset(8) = 12 bytes in one read.
+		var trailer [12]byte
+		if _, err := io.ReadFull(file, trailer[:]); err != nil {
+			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
-		var offset uint64
-		if err := binary.Read(file, binary.LittleEndian, &offset); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor offset: %w", err)
-		}
+		tensorType := binary.LittleEndian.Uint32(trailer[:4])
+		offset := binary.LittleEndian.Uint64(trailer[4:12])
 		tensors = append(tensors, ggufTensorInfo{Name: name, Type: tensorType, Shape: shape, Offset: offset})
 	}
 
 	return metadata, tensors, nil
 }
 
-func readGGUFString(reader io.Reader) (string, error) {
-	var length uint64
-	if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+// readGGUFString reads a length-prefixed string into a fresh []byte.
+// `scratch` must be at least 8 bytes — used to decode the uint64 length
+// without a reflect.Read alloc.
+func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
+	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 		return "", err
 	}
+	length := binary.LittleEndian.Uint64(scratch[:8])
 	if length > 16<<20 {
 		return "", core.NewError("gguf string is unreasonably large")
+	}
+	if length == 0 {
+		return "", nil
 	}
 	buffer := make([]byte, length)
 	if _, err := io.ReadFull(reader, buffer); err != nil {
 		return "", err
 	}
-	return string(buffer), nil
+	// Zero-copy: buffer is freshly built and only the returned string
+	// references it — no aliasing risk.
+	return core.AsString(buffer), nil
 }
 
-func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
+func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, error) {
 	switch valueType {
 	case ggufValueTypeUint8:
-		return readGGUFBinary[uint8](reader)
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return uint8(0), err
+		}
+		return scratch[0], nil
 	case ggufValueTypeInt8:
-		return readGGUFBinary[int8](reader)
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return int8(0), err
+		}
+		return int8(scratch[0]), nil
 	case ggufValueTypeUint16:
-		return readGGUFBinary[uint16](reader)
+		if _, err := io.ReadFull(reader, scratch[:2]); err != nil {
+			return uint16(0), err
+		}
+		return binary.LittleEndian.Uint16(scratch[:2]), nil
 	case ggufValueTypeInt16:
-		return readGGUFBinary[int16](reader)
+		if _, err := io.ReadFull(reader, scratch[:2]); err != nil {
+			return int16(0), err
+		}
+		return int16(binary.LittleEndian.Uint16(scratch[:2])), nil
 	case ValueTypeUint32:
-		return readGGUFBinary[uint32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return uint32(0), err
+		}
+		return binary.LittleEndian.Uint32(scratch[:4]), nil
 	case ggufValueTypeInt32:
-		return readGGUFBinary[int32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return int32(0), err
+		}
+		return int32(binary.LittleEndian.Uint32(scratch[:4])), nil
 	case ggufValueTypeFloat32:
-		return readGGUFBinary[float32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return float32(0), err
+		}
+		return math.Float32frombits(binary.LittleEndian.Uint32(scratch[:4])), nil
 	case ggufValueTypeBool:
-		value, err := readGGUFBinary[uint8](reader)
-		return value != 0, err
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return false, err
+		}
+		return scratch[0] != 0, nil
 	case ValueTypeString:
-		return readGGUFString(reader)
+		return readGGUFString(reader, scratch)
 	case ggufValueTypeArray:
-		var elementType uint32
-		if err := binary.Read(reader, binary.LittleEndian, &elementType); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, err
 		}
-		var length uint64
-		if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+		elementType := binary.LittleEndian.Uint32(scratch[:4])
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 			return nil, err
 		}
+		length := binary.LittleEndian.Uint64(scratch[:8])
 		if length > maxGGUFCollectionEntries {
 			return nil, core.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
 		}
-		values := make([]any, 0, int(length))
+		values := make([]any, length)
 		for i := uint64(0); i < length; i++ {
-			value, err := readGGUFValue(reader, elementType)
+			value, err := readGGUFValue(reader, elementType, scratch)
 			if err != nil {
 				return nil, err
 			}
-			values = append(values, value)
+			values[i] = value
 		}
 		return values, nil
 	case ggufValueTypeUint64:
-		return readGGUFBinary[uint64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return uint64(0), err
+		}
+		return binary.LittleEndian.Uint64(scratch[:8]), nil
 	case ggufValueTypeInt64:
-		return readGGUFBinary[int64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return int64(0), err
+		}
+		return int64(binary.LittleEndian.Uint64(scratch[:8])), nil
 	case ggufValueTypeFloat64:
-		return readGGUFBinary[float64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return float64(0), err
+		}
+		return math.Float64frombits(binary.LittleEndian.Uint64(scratch[:8])), nil
 	default:
 		return nil, core.Errorf("unsupported gguf metadata type %d", valueType)
 	}
-}
-
-func readGGUFBinary[T any](reader io.Reader) (T, error) {
-	var value T
-	err := binary.Read(reader, binary.LittleEndian, &value)
-	return value, err
 }
 
 func readModelConfig(dir string) (*modelConfigProbe, error) {
