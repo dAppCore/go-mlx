@@ -53,6 +53,20 @@ var projectionLookup = map[string]projectionMatch{
 	"gate_proj": {".gate_proj.", ".gate_proj.weight"},
 }
 
+// projectionFamily is a bitmask reporting which projection groups appear
+// in a tensor name. The byte-walk in modelSliceProjectionFamily fills it
+// from a single substring scan over the name, replacing the 5-attention +
+// 2-FFN + 1-gate sequential Contains chain that the previous classifier
+// invoked per call. The bit layout lets the family helpers below collapse
+// to a single mask test (.&_attentionMask != 0 etc.).
+type projectionFamily uint8
+
+const (
+	projAttention projectionFamily = 1 << iota // any of q/k/v/o/out
+	projFFN                                    // up or down
+	projGate                                   // gate
+)
+
 type modelSliceManifest struct {
 	Version   string                   `json:"version"`
 	Source    string                   `json:"source"`
@@ -455,21 +469,14 @@ func modelSliceTensorIsAttention(name string) bool {
 		core.Contains(name, ".attn.") {
 		return true
 	}
-	// All five projection probes search for "._proj." / "._proj.weight"
-	// substrings that share the "_proj." suffix on the infix. If the name
-	// has no "_proj." anywhere, none of the five lookups can match — skip
-	// the per-projection switch + double substring scan. Sweep over the
-	// representative tensor-name set drops by ~10% because the embedding /
-	// norm / LM-head names go through this short-circuit instead of the
-	// five-projection chain.
-	if !core.Contains(name, "_proj.") {
-		return false
-	}
-	return modelSliceHasProjection(name, "q_proj") ||
-		modelSliceHasProjection(name, "k_proj") ||
-		modelSliceHasProjection(name, "v_proj") ||
-		modelSliceHasProjection(name, "o_proj") ||
-		modelSliceHasProjection(name, "out_proj")
+	// Single-pass projection family scan replaces five sequential
+	// Contains scans (".q_proj.", ".k_proj.", ".v_proj.", ".o_proj.",
+	// ".out_proj.") which each walk the whole name. The byte-walk hits
+	// the worst-case miss once for the "_proj." anchor + a constant-cost
+	// prefix verify per occurrence, instead of five whole-name walks
+	// terminating with a miss. The Sweep benchmark drops the worst case
+	// from ~5 substring scans to one byte-walk.
+	return modelSliceProjectionFamily(name)&projAttention != 0
 }
 
 func modelSliceTensorIsFFN(name string) bool {
@@ -478,18 +485,16 @@ func modelSliceTensorIsFFN(name string) bool {
 		core.Contains(name, "ffn") {
 		return true
 	}
-	// "up_proj" / "down_proj" share the "_proj." infix gate — names
-	// without "_proj." anywhere cannot match either projection so the
-	// per-projection switch + substring scans are dead work.
-	if !core.Contains(name, "_proj.") {
-		return false
-	}
-	return modelSliceHasProjection(name, "up_proj") ||
-		modelSliceHasProjection(name, "down_proj")
+	// Single-pass projection family scan — see modelSliceTensorIsAttention.
+	return modelSliceProjectionFamily(name)&projFFN != 0
 }
 
 func modelSliceTensorIsGate(name string) bool {
-	return modelSliceHasProjection(name, "gate_proj") || core.Contains(name, ".gate.")
+	if core.Contains(name, ".gate.") {
+		return true
+	}
+	// Single-pass projection family scan — see modelSliceTensorIsAttention.
+	return modelSliceProjectionFamily(name)&projGate != 0
 }
 
 func modelSliceTensorIsDownMeta(name string) bool {
@@ -508,6 +513,88 @@ func modelSliceTensorIsLMHead(name string) bool {
 	// HasPrefix("lm_head.") already matches "lm_head.weight" by
 	// construction — the explicit equality test was dead weight.
 	return core.HasPrefix(name, "lm_head.")
+}
+
+// modelSliceProjectionFamily walks name once and returns the union of
+// projection families ("_proj." anchored prefixes) it contains. Each
+// "_proj." occurrence is verified against the eight known projections
+// via a constant-cost byte compare on the bytes preceding the anchor,
+// avoiding the N×whole-name substring scans the old per-projection
+// chain performed when the name had no projection at all (the common
+// miss path on every embedding / norm / LM-head tensor name). Bit
+// layout matches projAttention / projFFN / projGate.
+func modelSliceProjectionFamily(name string) projectionFamily {
+	const anchor = "_proj."
+	// Scan name for every occurrence of the anchor; for each, the bytes
+	// before the anchor identify which projection (q/k/v/o/out/up/down/gate)
+	// and the dot before the prefix confirms the original ".<prefix>_proj."
+	// infix semantics. A single name can carry at most one projection family
+	// in practice but the loop tolerates multiple safely.
+	var fam projectionFamily
+	rest := name
+	offset := 0
+	for {
+		idx := core.Index(rest, anchor)
+		if idx < 0 {
+			return fam
+		}
+		// Absolute index of '_' in name.
+		abs := offset + idx
+		// Need a discriminator byte before "_proj.".
+		if abs == 0 {
+			// "_proj." at start cannot carry the leading "." prefix.
+			offset = abs + len(anchor)
+			rest = name[offset:]
+			continue
+		}
+		// Each known projection prefix needs a leading '.' to satisfy
+		// the original Contains(".<prefix>_proj.") semantics — names
+		// like "q_proj.foo" must NOT match because the original probe
+		// searched for the dot-prefixed infix.
+		switch name[abs-1] {
+		case 'q', 'k', 'v':
+			// .q_proj. / .k_proj. / .v_proj. — single discriminator,
+			// preceded by '.'.
+			if abs >= 2 && name[abs-2] == '.' {
+				fam |= projAttention
+			}
+		case 'o':
+			// .o_proj. (single 'o') or .out_proj. (long 'out' prefix).
+			// Cheap branch via direct byte compare on the byte two
+			// positions back; if it is '.', we have .o_proj.
+			if abs >= 2 && name[abs-2] == '.' {
+				fam |= projAttention
+			}
+			// Note: 'o' at abs-1 with 'u' at abs-2 is impossible —
+			// the matching out_proj path lives under case 't' below.
+		case 't':
+			// .out_proj. — discriminator 't', prefix bytes "u","o",".".
+			if abs >= 4 && name[abs-2] == 'u' && name[abs-3] == 'o' && name[abs-4] == '.' {
+				fam |= projAttention
+			}
+		case 'p':
+			// .up_proj. — discriminator 'p', prefix byte "u",".".
+			if abs >= 3 && name[abs-2] == 'u' && name[abs-3] == '.' {
+				fam |= projFFN
+			}
+		case 'n':
+			// .down_proj. — discriminator 'n', prefix bytes "w","o","d",".".
+			if abs >= 5 && name[abs-2] == 'w' && name[abs-3] == 'o' && name[abs-4] == 'd' && name[abs-5] == '.' {
+				fam |= projFFN
+			}
+		case 'e':
+			// .gate_proj. — discriminator 'e', prefix bytes "t","a","g",".".
+			if abs >= 5 && name[abs-2] == 't' && name[abs-3] == 'a' && name[abs-4] == 'g' && name[abs-5] == '.' {
+				fam |= projGate
+			}
+		}
+		// All three flags set — no further scanning can broaden the result.
+		if fam == projAttention|projFFN|projGate {
+			return fam
+		}
+		offset = abs + len(anchor)
+		rest = name[offset:]
+	}
 }
 
 // modelSliceHasProjection. Hot path is exclusively the eight projection
