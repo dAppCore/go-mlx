@@ -33,21 +33,25 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 	defer adapter.cacheMu.Unlock()
 	if adapter.cacheService == nil {
 		info := adapter.Info()
+		// Pre-build the tokenizer wrapper once so the Tokenize closure does
+		// not allocate a fresh *Model + *Tokenizer per call, nor pay the
+		// rootModel() cgo crossings (Adapter() + Info()) on every tokenize.
+		// adapter.model may still be nil here for zero-value test fixtures;
+		// in that case tokenizer.tok stays nil and the closure short-circuits.
+		var tokenizer *Tokenizer
+		if adapter.model != nil {
+			tokenizer = &Tokenizer{tok: adapter.model.Tokenizer()}
+		}
 		adapter.cacheService = blockcache.New(blockcache.Config{
 			BlockSize:     blockcache.DefaultBlockSize,
 			ModelHash:     inferenceModelInfoHash(info),
 			AdapterHash:   adapter.ActiveAdapter().Hash,
 			TokenizerHash: adapterTokenizerHashFromInfo(adapter, info),
 			Tokenize: func(prompt string) ([]int32, error) {
-				root := adapter.rootModel()
-				if root == nil {
+				if tokenizer == nil || tokenizer.tok == nil {
 					return nil, nil
 				}
-				tok := root.Tokenizer()
-				if tok == nil {
-					return nil, nil
-				}
-				return tok.Encode(prompt)
+				return tokenizer.Encode(prompt)
 			},
 			WarmPrompt: func(ctx context.Context, prompt string) error {
 				if adapter == nil || adapter.model == nil {
