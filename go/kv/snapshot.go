@@ -483,10 +483,11 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		// Batch the i32 block read so bounds check is paid once.
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
+			// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+			// f32s() reader. Single copy vs N×Uint32 + int32 cast.
 			snapshot.Tokens = make([]int32, tokenCount)
-			for i := range snapshot.Tokens {
-				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-			}
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.Tokens))), tokenCount*4)
+			copy(dst, chunk)
 		}
 	}
 	if snapshot.Version >= 2 {
@@ -495,9 +496,8 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 			chunk := reader.read(generatedCount * 4)
 			if chunk != nil {
 				snapshot.Generated = make([]int32, generatedCount)
-				for i := range snapshot.Generated {
-					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-				}
+				dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.Generated))), generatedCount*4)
+				copy(dst, chunk)
 			}
 		}
 	}
@@ -558,10 +558,11 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 		if shapeCount > 0 {
 			chunk := reader.read(shapeCount * 4)
 			if chunk != nil {
+				// Reinterpret-cast bytes → int32 via memcpy; same pattern
+				// as f32s() reader. Single copy vs N×Uint32 + int32 cast.
 				snapshot.LogitShape = make([]int32, shapeCount)
-				for i := range snapshot.LogitShape {
-					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-				}
+				dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(snapshot.LogitShape))), shapeCount*4)
+				copy(dst, chunk)
 			}
 		}
 		snapshot.Logits = reader.f32s()
@@ -602,9 +603,10 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		// regardless of token count.
 		chunk := reader.read(tokenCount * 4)
 		if chunk != nil {
-			for i := range tokens {
-				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-			}
+			// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+			// f32s() reader. Single copy vs N×Uint32 + int32 cast.
+			dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(tokens))), tokenCount*4)
+			copy(dst, chunk)
 		}
 	}
 	if reader.err != nil {
@@ -656,10 +658,11 @@ func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 		copy(grown, dst)
 		dst = grown
 	}
+	// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+	// f32s() reader. Single copy vs N×Uint32 + int32 cast.
 	out := dst[start:]
-	for i := range out {
-		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-	}
+	outBytes := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(out))), tokenCount*4)
+	copy(outBytes, chunk)
 	if reader.err != nil {
 		return dst, core.E("Load", "parse State tokens", reader.err)
 	}
@@ -744,12 +747,16 @@ func appendKVEncodedTensor(dst []byte, values []float32, dtype string, raw []byt
 	if len(values) == 0 && len(raw) > 0 {
 		return nil, errRawTensorNeedsNative
 	}
-	if encoding == EncodingQ8 && kvSnapshotCanQuantizeQ8(values) {
-		scale, quantized := quantizeKVSnapshotQ8(values)
-		dst = appendKVU32(dst, 1)
-		dst = appendKVU32(dst, uint32(len(values)))
-		dst = appendKVU32(dst, math.Float32bits(scale))
-		return append(dst, quantized...), nil
+	if encoding == EncodingQ8 {
+		if maxAbs, ok := kvSnapshotQ8Validate(values); ok {
+			// Fused: validate already produced maxAbs, skip the
+			// follow-on walk inside quantizeKVSnapshotQ8.
+			scale, quantized := quantizeKVSnapshotQ8WithMaxAbs(values, maxAbs)
+			dst = appendKVU32(dst, 1)
+			dst = appendKVU32(dst, uint32(len(values)))
+			dst = appendKVU32(dst, math.Float32bits(scale))
+			return append(dst, quantized...), nil
+		}
 	}
 	dst = appendKVU32(dst, 0)
 	dst = appendKVU32(dst, uint32(len(values)))
@@ -781,26 +788,6 @@ func kvSnapshotEncodedTensorSize(values []float32, dtype string, raw []byte, enc
 		return 12 + len(values), nil
 	}
 	return 8 + len(values)*4, nil
-}
-
-func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte) ([]byte, string, int, bool, error) {
-	dtype, elements, rawBytes, ok, err := kvSnapshotNativeTensorInfo(values, dtype, raw)
-	if err != nil {
-		return nil, "", 0, false, err
-	}
-	if len(raw) > 0 {
-		return raw, dtype, elements, true, nil
-	}
-	if !ok {
-		return nil, "", 0, false, nil
-	}
-	// Pre-sized exact alloc + in-place PutUint32 — drops the
-	// per-element [4]byte stack buffer + 4-byte append cycle.
-	raw = make([]byte, rawBytes)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:i*4+4], math.Float32bits(value))
-	}
-	return raw, "float32", len(values), true, nil
 }
 
 func kvSnapshotNativeTensorInfo(values []float32, dtype string, raw []byte) (string, int, int, bool, error) {
@@ -837,23 +824,86 @@ func normalizeKVSnapshotTensorDType(dtype string) (string, int) {
 	}
 }
 
-func kvSnapshotCanQuantizeQ8(values []float32) bool {
-	for _, value := range values {
-		if math.IsNaN(float64(value)) || math.IsInf(float64(value), 0) {
-			return false
+// kvSnapshotQ8Validate scans values for NaN/Inf and tracks the running
+// max-abs in one walk. Returns (maxAbs, ok). Bit-tricks:
+//   - NaN/Inf detect: the f32 bit pattern with exponent == 0xff has
+//     (bits & 0x7f800000) == 0x7f800000. Mask + compare is one ANDS +
+//     CCMP on ARM64 vs. math.IsNaN's float64 conversion + double bit
+//     decompose.
+//   - abs: bit-clear the sign bit (W10-H gguf maxAbsFloat32 pattern).
+//     Lowers to ARM64 FABS vs. math.Abs's float64 round-trip.
+//
+// 4-way unroll exposes ILP across M3's wide back-end so the per-
+// iteration FCMPS chain doesn't bottleneck on the loop-carried max.
+func kvSnapshotQ8Validate(values []float32) (float32, bool) {
+	const absMask = 0x7fffffff
+	const expMask = 0x7f800000
+	var m0, m1, m2, m3 float32
+	i := 0
+	n := len(values)
+	for ; i+4 <= n; i += 4 {
+		b0 := math.Float32bits(values[i])
+		b1 := math.Float32bits(values[i+1])
+		b2 := math.Float32bits(values[i+2])
+		b3 := math.Float32bits(values[i+3])
+		if (b0&expMask) == expMask || (b1&expMask) == expMask || (b2&expMask) == expMask || (b3&expMask) == expMask {
+			return 0, false
+		}
+		a0 := math.Float32frombits(b0 & absMask)
+		a1 := math.Float32frombits(b1 & absMask)
+		a2 := math.Float32frombits(b2 & absMask)
+		a3 := math.Float32frombits(b3 & absMask)
+		if a0 > m0 {
+			m0 = a0
+		}
+		if a1 > m1 {
+			m1 = a1
+		}
+		if a2 > m2 {
+			m2 = a2
+		}
+		if a3 > m3 {
+			m3 = a3
 		}
 	}
-	return true
-}
-
-func quantizeKVSnapshotQ8(values []float32) (float32, []byte) {
-	var maxAbs float32
-	for _, value := range values {
-		abs := float32(math.Abs(float64(value)))
+	maxAbs := m0
+	if m1 > maxAbs {
+		maxAbs = m1
+	}
+	if m2 > maxAbs {
+		maxAbs = m2
+	}
+	if m3 > maxAbs {
+		maxAbs = m3
+	}
+	for ; i < n; i++ {
+		b := math.Float32bits(values[i])
+		if (b & expMask) == expMask {
+			return 0, false
+		}
+		abs := math.Float32frombits(b & absMask)
 		if abs > maxAbs {
 			maxAbs = abs
 		}
 	}
+	return maxAbs, true
+}
+
+func kvSnapshotCanQuantizeQ8(values []float32) bool {
+	_, ok := kvSnapshotQ8Validate(values)
+	return ok
+}
+
+func quantizeKVSnapshotQ8(values []float32) (float32, []byte) {
+	maxAbs, _ := kvSnapshotQ8Validate(values)
+	return quantizeKVSnapshotQ8WithMaxAbs(values, maxAbs)
+}
+
+// quantizeKVSnapshotQ8WithMaxAbs is the inner quantise that skips the
+// validation walk when the caller already computed maxAbs. Used by the
+// fused validate+quantise path on the encode side; avoids a second walk
+// over the f32 values when both calls fire back-to-back.
+func quantizeKVSnapshotQ8WithMaxAbs(values []float32, maxAbs float32) (float32, []byte) {
 	scale := float32(1)
 	if maxAbs > 0 {
 		scale = maxAbs / 127
@@ -879,19 +929,17 @@ type kvSnapshotReader struct {
 }
 
 type kvSnapshotStreamWriter struct {
-	writer  stdio.Writer
-	err     error
-	buf     [4]byte
-	scratch []byte
+	writer stdio.Writer
+	err    error
+	buf    [4]byte
 }
 
 // kvSnapshotStreamWriterPool reuses streamWriter structs across
 // writeWithOptions calls — the struct escapes to heap (interface-
-// satisfying methods + &stream pointer threading), and its embedded
-// scratch buffer is the dominant alloc on subsequent encode passes.
-// SaveStateBlocks fires writeWithOptions per block hash + per block
-// payload + final bundle hash, so a pool collapses 6-8 stream allocs
-// into one across a single SaveStateBlocks call.
+// satisfying methods + &stream pointer threading). SaveStateBlocks
+// fires writeWithOptions per block hash + per block payload + final
+// bundle hash, so a pool collapses 6-8 stream allocs into one across
+// a single SaveStateBlocks call.
 var kvSnapshotStreamWriterPool = sync.Pool{
 	New: func() any { return &kvSnapshotStreamWriter{} },
 }
@@ -906,18 +954,7 @@ func acquireKVStreamWriter(writer stdio.Writer) *kvSnapshotStreamWriter {
 func releaseKVStreamWriter(stream *kvSnapshotStreamWriter) {
 	stream.writer = nil
 	stream.err = nil
-	// scratch slice retained for reuse — its capacity grows over time.
 	kvSnapshotStreamWriterPool.Put(stream)
-}
-
-// scratchFor returns a scratch buffer of length n, reusing the
-// previously-allocated scratch slice when it fits.
-func (w *kvSnapshotStreamWriter) scratchFor(n int) []byte {
-	if cap(w.scratch) < n {
-		w.scratch = make([]byte, n)
-		return w.scratch
-	}
-	return w.scratch[:n]
 }
 
 func (w *kvSnapshotStreamWriter) bytes(data []byte) {
@@ -959,17 +996,14 @@ func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	if w.err != nil || len(values) == 0 {
 		return
 	}
-	// Stage the whole block into the writer's reused scratch buffer
-	// then issue one writer.Write — saves N calls into writer.Write
-	// per value (sha256 + PutBytesStream both pay per-call overhead).
-	// Reinterpret-cast: int32 is little-endian on both arm64 and amd64
-	// (the only Go-supported architectures), so the byte view of
-	// []int32 matches the per-element PutUint32(uint32(value)) output.
-	// See f32sRaw for the same pattern.
-	buf := w.scratchFor(len(values) * 4)
+	// Reinterpret-cast write: int32 storage is little-endian on both
+	// arm64 and amd64 (Go-supported architectures), so the byte view
+	// of []int32 already matches the per-element PutUint32 output.
+	// Pass the byte view straight to writer.Write — writers (sha256,
+	// PutBytesStream) consume the data within the call, so we don't
+	// need a scratch staging copy. Same pattern as f32sRaw.
 	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
-	copy(buf, src)
-	w.bytes(buf)
+	w.bytes(src)
 }
 
 func (w *kvSnapshotStreamWriter) f32s(values []float32) {
@@ -982,22 +1016,16 @@ func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
 	if w.err != nil || len(values) == 0 {
 		return
 	}
-	// Stage the whole block into the writer's reused scratch buffer
-	// then issue one writer.Write — saves N calls into writer.Write
-	// per value (sha256 + PutBytesStream both pay per-call overhead).
-	//
-	// Reinterpret-cast the source slice as bytes — float32 storage
-	// is little-endian on both Go-supported architectures (arm64 and
-	// amd64), so the byte view of a []float32 already matches what
-	// PutUint32(buf, math.Float32bits(v)) writes element-by-element.
-	// One memcpy vs N×(PutUint32 + Float32bits) — measured ~4.3× on
-	// 2048-element runs and shaves ~2 µs off WriteWithOptions per
-	// 2048-token snapshot. Pattern is established in
-	// go/internal/metal/io_custom.go.
-	buf := w.scratchFor(len(values) * 4)
+	// Reinterpret-cast write: float32 storage is little-endian on both
+	// Go-supported architectures (arm64 + amd64), so the byte view of
+	// []float32 already matches what PutUint32(buf, Float32bits(v))
+	// would write element-by-element. Pass the byte view straight to
+	// writer.Write — writers (sha256, PutBytesStream) consume the data
+	// within the call, so the staging copy via the previously-pooled
+	// scratch buffer was net waste (memcpy into scratch then memcpy
+	// into the writer's own buffer). One memcpy vs two.
 	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
-	copy(buf, src)
-	w.bytes(buf)
+	w.bytes(src)
 }
 
 func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, raw []byte, encoding Encoding) error {
@@ -1031,13 +1059,17 @@ func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, r
 	if len(values) == 0 && len(raw) > 0 {
 		return errRawTensorNeedsNative
 	}
-	if encoding == EncodingQ8 && kvSnapshotCanQuantizeQ8(values) {
-		scale, quantized := quantizeKVSnapshotQ8(values)
-		w.u32(1)
-		w.u32(uint32(len(values)))
-		w.u32(math.Float32bits(scale))
-		w.bytes(quantized)
-		return w.err
+	if encoding == EncodingQ8 {
+		if maxAbs, ok := kvSnapshotQ8Validate(values); ok {
+			// Fused: validate already produced maxAbs, skip the
+			// follow-on walk inside quantizeKVSnapshotQ8.
+			scale, quantized := quantizeKVSnapshotQ8WithMaxAbs(values, maxAbs)
+			w.u32(1)
+			w.u32(uint32(len(values)))
+			w.u32(math.Float32bits(scale))
+			w.bytes(quantized)
+			return w.err
+		}
 	}
 	w.u32(0)
 	w.u32(uint32(len(values)))

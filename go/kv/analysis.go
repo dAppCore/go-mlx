@@ -96,7 +96,7 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		coherenceInvNorms = make([]float64, snapshot.NumHeads)
 	}
 	// One [][]float32 view-slice scratch reused across every
-	// kvAnalysisHeadVectors call (4 per Analyze: layer × {keys, values}).
+	// kvAnalysisHeadVectorsInto call (4 per Analyze: layer × {keys, values}).
 	// Each previous call allocated a fresh slice; reuse drops 4 small
 	// allocs per Analyze. Sized to numHeads — helper grows the cap if
 	// the snapshot violates that (defensive same as invNorms above).
@@ -347,13 +347,6 @@ func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
 	return groups
 }
 
-func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
-	// Pre-extend instead of pre-allocate-empty + N appends — len is
-	// known up-front (one slot per head). Hoists the keys/values branch
-	// out of the inner loop too.
-	return kvAnalysisHeadVectorsInto(nil, heads, keys)
-}
-
 // kvAnalysisHeadVectorsInto fills dst with the Key or Value slice view
 // of each head, returning the populated slice. Reuses dst when its
 // cap is sufficient; falls back to an alloc otherwise. The hoisted
@@ -479,7 +472,7 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	}
 	// Find the first contributor head — its (Key+Value) length is the
 	// shared mean-vector size; heads that don't match that exact shape
-	// are skipped (matches the original kvAnalysisMeanVector behaviour).
+	// are skipped (mean-vector behaviour: divergent shapes are dropped).
 	var size int
 	for _, head := range heads {
 		if l := len(head.Key) + len(head.Value); l > 0 {
@@ -513,35 +506,6 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if count == 0 {
 		return nil
 	}
-	invScale := float32(1) / float32(count)
-	for i := range mean {
-		mean[i] *= invScale
-	}
-	return mean
-}
-
-func kvAnalysisMeanVector(vectors [][]float32) []float32 {
-	if len(vectors) == 0 || len(vectors[0]) == 0 {
-		return nil
-	}
-	size := len(vectors[0])
-	mean := make([]float32, size)
-	var count int
-	for _, vector := range vectors {
-		if len(vector) != size {
-			continue
-		}
-		for i, value := range vector {
-			mean[i] += value
-		}
-		count++
-	}
-	if count == 0 {
-		return nil
-	}
-	// Multiply-by-inverse avoids the per-element float divide; for the
-	// multi-head non-GQA analysis path this loop runs through every
-	// flat-state element of every layer.
 	invScale := float32(1) / float32(count)
 	for i := range mean {
 		mean[i] *= invScale
@@ -760,15 +724,6 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		return 0, locked, pairs
 	}
 	return 1.0 - totalSimilarity/float64(pairs), locked, pairs
-}
-
-func kvAnalysisPositionVector(flat []float32, position, headDim int) []float32 {
-	start := position * headDim
-	end := start + headDim
-	if start < 0 || end > len(flat) {
-		return nil
-	}
-	return flat[start:end]
 }
 
 func kvAnalysisCosine32(a, b []float32) float64 {
