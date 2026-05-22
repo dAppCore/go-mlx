@@ -182,9 +182,19 @@ func firstNonZeroFloat32(values ...float32) float32 {
 }
 
 func firstNonEmptyStrings(values ...[]string) []string {
+	// The single in-package caller (Inspect) feeds JSON-decoded slices
+	// owned by a local adapterConfigJSON that goes out of scope after
+	// Inspect returns — the underlying array stays alive ONLY via the
+	// AdapterInfo.TargetKeys assignment. Every downstream consumer of
+	// AdapterInfo (backend.go, inference_contract.go, workload_bench.go,
+	// fast_eval.go) calls core.SliceClone(info.TargetKeys) before
+	// keeping or mutating the slice, so the defensive clone the
+	// previous implementation took inside this helper was pure
+	// redundancy. Returning the original slice drops the 1 alloc per
+	// Inspect call this helper would otherwise add.
 	for _, value := range values {
 		if len(value) != 0 {
-			return append([]string(nil), value...)
+			return value
 		}
 	}
 	return nil
