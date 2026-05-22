@@ -120,15 +120,19 @@ func NewResidencyManager(ctx context.Context, cfg ResidencyConfig) (*ResidencyMa
 	if policy.Enabled && cfg.Loader == nil {
 		return nil, core.NewError("mlx: expert residency requires loader for enabled policy")
 	}
+	residentHint := policy.MaxResidentExperts
+	if residentHint <= 0 {
+		residentHint = len(policy.StartupExpertIDs)
+	}
 	manager := &ResidencyManager{
 		layer:     cfg.Layer,
 		policy:    policy,
 		loader:    cfg.Loader,
 		probeSink: cfg.ProbeSink,
 		now:       cfg.now,
-		resident:  map[int]PackedExpertWeights{},
-		lastUsed:  map[int]int{},
-		hot:       map[int]bool{},
+		resident:  make(map[int]PackedExpertWeights, residentHint),
+		lastUsed:  make(map[int]int, residentHint),
+		hot:       make(map[int]bool, len(policy.StartupExpertIDs)),
 	}
 	if manager.now == nil {
 		manager.now = time.Now
