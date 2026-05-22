@@ -437,36 +437,44 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 	// ~20-field GenerationMetrics blobs we only read a few fields out
 	// of.
 	if fast := report.FastEval; fast != nil {
-		summary.PrefillTokensPerSec = fast.Generation.PrefillTokensPerSec
-		summary.DecodeTokensPerSec = fast.Generation.DecodeTokensPerSec
-		summary.PeakMemoryBytes = fast.Generation.PeakMemoryBytes
-		summary.ActiveMemoryBytes = fast.Generation.ActiveMemoryBytes
-		summary.PromptCacheHitRate = fast.PromptCache.HitRate
-		summary.PromptCacheHitTokens = fast.PromptCache.HitTokens
-		summary.PromptCacheMissTokens = fast.PromptCache.MissTokens
-		summary.PromptCacheRestoreDuration = fast.PromptCache.RestoreDuration
-		if fast.StateKVBlockWarm.Attempted {
-			summary.PromptCacheSource = fast.StateKVBlockWarm.Source
-			summary.PromptTokensAvoided = fast.StateKVBlockWarm.PromptTokensAvoided
-			summary.PromptCacheReplayTokens = fast.StateKVBlockWarm.ReplayTokens
-			summary.PromptCacheExactFallbackReplayTokens = fast.StateKVBlockWarm.ExactFallbackReplayTokens
-			summary.StateKVBlockRestoreDuration = fast.StateKVBlockWarm.RestoreDuration
-			summary.StateKVBlockStorePath = fast.StateKVBlockWarm.StorePath
-			summary.StateKVBlockStoreBytes = fast.StateKVBlockWarm.StoreBytes
-			summary.StateKVBlocksRead = fast.StateKVBlockWarm.BlocksRead
-			summary.StateKVChunksRead = fast.StateKVBlockWarm.ChunksRead
-			summary.StateKVPrefixTokensRestored = fast.StateKVBlockWarm.PrefixTokensRestored
+		// Cache the Generation + PromptCache sub-block pointers — each
+		// is read four times and the chained field-offset compute on
+		// every read collapses to a single pointer plus a fixed offset
+		// when we hand the compiler a sub-pointer to chase.
+		gen := &fast.Generation
+		summary.PrefillTokensPerSec = gen.PrefillTokensPerSec
+		summary.DecodeTokensPerSec = gen.DecodeTokensPerSec
+		summary.PeakMemoryBytes = gen.PeakMemoryBytes
+		summary.ActiveMemoryBytes = gen.ActiveMemoryBytes
+		pc := &fast.PromptCache
+		summary.PromptCacheHitRate = pc.HitRate
+		summary.PromptCacheHitTokens = pc.HitTokens
+		summary.PromptCacheMissTokens = pc.MissTokens
+		summary.PromptCacheRestoreDuration = pc.RestoreDuration
+		if kvWarm := &fast.StateKVBlockWarm; kvWarm.Attempted {
+			summary.PromptCacheSource = kvWarm.Source
+			summary.PromptTokensAvoided = kvWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = kvWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = kvWarm.ExactFallbackReplayTokens
+			summary.StateKVBlockRestoreDuration = kvWarm.RestoreDuration
+			summary.StateKVBlockStorePath = kvWarm.StorePath
+			summary.StateKVBlockStoreBytes = kvWarm.StoreBytes
+			summary.StateKVBlocksRead = kvWarm.BlocksRead
+			summary.StateKVChunksRead = kvWarm.ChunksRead
+			summary.StateKVPrefixTokensRestored = kvWarm.PrefixTokensRestored
 		}
 		summary.KVRestoreDuration = fast.KVRestore.Duration
-		if fast.SpeculativeDecode.Attempted && fast.SpeculativeDecode.Error == "" {
-			summary.SpeculativeAcceptanceRate = fast.SpeculativeDecode.Metrics.AcceptanceRate
-			summary.SpeculativeAcceptedTokens = fast.SpeculativeDecode.Metrics.AcceptedTokens
-			summary.SpeculativeRejectedTokens = fast.SpeculativeDecode.Metrics.RejectedTokens
+		if spec := &fast.SpeculativeDecode; spec.Attempted && spec.Error == "" {
+			m := &spec.Metrics
+			summary.SpeculativeAcceptanceRate = m.AcceptanceRate
+			summary.SpeculativeAcceptedTokens = m.AcceptedTokens
+			summary.SpeculativeRejectedTokens = m.RejectedTokens
 		}
-		if fast.PromptLookupDecode.Attempted && fast.PromptLookupDecode.Error == "" {
-			summary.PromptLookupAcceptanceRate = fast.PromptLookupDecode.Metrics.AcceptanceRate
-			summary.PromptLookupAcceptedTokens = fast.PromptLookupDecode.Metrics.AcceptedTokens
-			summary.PromptLookupRejectedTokens = fast.PromptLookupDecode.Metrics.RejectedTokens
+		if pl := &fast.PromptLookupDecode; pl.Attempted && pl.Error == "" {
+			m := &pl.Metrics
+			summary.PromptLookupAcceptanceRate = m.AcceptanceRate
+			summary.PromptLookupAcceptedTokens = m.AcceptedTokens
+			summary.PromptLookupRejectedTokens = m.RejectedTokens
 		}
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
