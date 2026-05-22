@@ -527,8 +527,16 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		if len(raw) != elements*8 {
 			return nil, core.NewError("F64 payload length does not match tensor shape")
 		}
-		for i := range values {
-			values[i] = float32(math.Float64frombits(binary.LittleEndian.Uint64(raw[i*8:])))
+		// Reinterpret-cast raw to []float64 in place, then downcast each
+		// element to float32. float64 storage is little-endian on both
+		// supported architectures (arm64 + amd64) so this is bit-exact
+		// vs binary.LittleEndian.Uint64+Float64frombits, but skips both
+		// the per-iter raw[i*8:] re-slice bounds check and the
+		// Uint64+Float64frombits dance — the compiler emits a direct
+		// LDR + FCVT pair on arm64.
+		src64 := unsafe.Slice((*float64)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src64 {
+			values[i] = float32(v)
 		}
 	default:
 		return nil, core.NewError("unsupported dense safetensors dtype: " + dtype)
