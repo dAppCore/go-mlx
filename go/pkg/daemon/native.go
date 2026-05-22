@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	core "dappco.re/go"
@@ -13,6 +14,13 @@ import (
 )
 
 const defaultNativeModelName = "default"
+
+var (
+	errRunnerNil            = core.NewError("native generate runner is nil")
+	errPromptRequired       = core.NewError("generate prompt is required")
+	errNoModelsConfigured   = core.NewError("no native models configured")
+	errGenerateModelMissing = core.NewError("generate model is required")
+)
 
 type nativeGenerateModel interface {
 	GenerateStream(context.Context, string, ...mlx.GenerateOption) <-chan mlx.Token
@@ -32,14 +40,28 @@ type NativeGenerateConfig struct {
 }
 
 // NativeGenerateRunner loads go-mlx models once and serves generate requests.
+//
+// The model cache is copy-on-write: reads load a pointer to the
+// current map and look up without any locking, writers serialise
+// through mu, build a fresh map with the new entry, and swap the
+// pointer atomically. The cache is read-heavy (one COW per loaded
+// model, then thousands of cache hits per second per active model)
+// so concurrent reads scale linearly with cores instead of contending
+// on a single mutex.
 type NativeGenerateRunner struct {
-	mu              sync.Mutex
+	mu              sync.Mutex // protects load + COW swap; reads are lock-free
 	modelPaths      map[string]string
 	defaultModel    string
 	defaultMaxToken int
 	loadOptions     []mlx.LoadOption
 	loadModel       func(string, ...mlx.LoadOption) (nativeGenerateModel, error)
-	models          map[string]nativeGenerateModel
+	models          atomic.Pointer[map[string]nativeGenerateModel]
+	// defaultOpts caches the option slice used when the request
+	// supplies neither MaxTokens nor Temperature — the common case.
+	// Built once at construction (one slice + one closure alloc) so
+	// every default-shaped Generate skips the per-call slice make +
+	// WithMaxTokens closure allocation.
+	defaultOpts []mlx.GenerateOption
 }
 
 // NewNativeGenerateRunner builds a native go-mlx generate backend.
@@ -48,7 +70,7 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 	if defaultModel == "" {
 		defaultModel = defaultNativeModelName
 	}
-	return &NativeGenerateRunner{
+	runner := &NativeGenerateRunner{
 		modelPaths:      copyStringMap(cfg.ModelPaths),
 		defaultModel:    defaultModel,
 		defaultMaxToken: cfg.DefaultMaxTokens,
@@ -56,14 +78,19 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 		loadModel: func(path string, opts ...mlx.LoadOption) (nativeGenerateModel, error) {
 			return mlx.LoadModel(path, opts...)
 		},
-		models: make(map[string]nativeGenerateModel),
 	}
+	empty := map[string]nativeGenerateModel{}
+	runner.models.Store(&empty)
+	if cfg.DefaultMaxTokens > 0 {
+		runner.defaultOpts = []mlx.GenerateOption{mlx.WithMaxTokens(cfg.DefaultMaxTokens)}
+	}
+	return runner
 }
 
 // Generate runs a prompt or chat request through a cached native go-mlx model.
 func (runner *NativeGenerateRunner) Generate(ctx context.Context, req GenerateRequest) (GenerateResult, error) {
 	if runner == nil {
-		return GenerateResult{}, core.NewError("native generate runner is nil")
+		return GenerateResult{}, errRunnerNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -80,13 +107,19 @@ func (runner *NativeGenerateRunner) Generate(ctx context.Context, req GenerateRe
 
 	opts := runner.generateOptions(req)
 	builder := core.NewBuilder()
+	// Pre-grow the response buffer. Tokens average ~4 bytes; sizing
+	// once up front avoids the strings.Builder growth ladder
+	// (8 -> 16 -> 32 -> ...) during the per-token write loop.
+	if hint := estimateGenerateBytes(req, runner.defaultMaxToken); hint > 0 {
+		builder.Grow(hint)
+	}
 	if len(req.Messages) > 0 {
 		for token := range model.ChatStream(ctx, toMLXMessages(req.Messages), opts...) {
 			builder.WriteString(token.Text)
 		}
 	} else {
 		if core.Trim(req.Prompt) == "" {
-			return GenerateResult{}, core.NewError("generate prompt is required")
+			return GenerateResult{}, errPromptRequired
 		}
 		for token := range model.GenerateStream(ctx, req.Prompt, opts...) {
 			builder.WriteString(token.Text)
@@ -109,23 +142,25 @@ func (runner *NativeGenerateRunner) Close() error {
 		return nil
 	}
 	runner.mu.Lock()
-	models := runner.models
-	runner.models = make(map[string]nativeGenerateModel)
+	empty := map[string]nativeGenerateModel{}
+	prev := runner.models.Swap(&empty)
 	runner.mu.Unlock()
 
 	var closeErr error
-	for _, model := range models {
-		if model == nil {
-			continue
+	if prev != nil {
+		for _, model := range *prev {
+			if model == nil {
+				continue
+			}
+			closeErr = core.ErrorJoin(closeErr, model.Close())
 		}
-		closeErr = core.ErrorJoin(closeErr, model.Close())
 	}
 	return closeErr
 }
 
 func (runner *NativeGenerateRunner) resolveModel(requested string) (string, string, error) {
 	if len(runner.modelPaths) == 0 {
-		return "", "", core.NewError("no native models configured")
+		return "", "", errNoModelsConfigured
 	}
 	modelName := core.Trim(requested)
 	if modelName != "" {
@@ -148,26 +183,62 @@ func (runner *NativeGenerateRunner) resolveModel(requested string) (string, stri
 			return name, path, nil
 		}
 	}
-	return "", "", core.NewError("generate model is required")
+	return "", "", errGenerateModelMissing
 }
 
 func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateModel, error) {
+	// Lock-free read fast path. The atomic load returns a pointer to
+	// an immutable map snapshot — any writer publishes a new map
+	// rather than mutating in place, so reads need no synchronisation.
+	if current := runner.models.Load(); current != nil {
+		if model := (*current)[name]; model != nil {
+			return model, nil
+		}
+	}
+
+	// Slow path: serialise load + COW publish. Double-check after
+	// taking the lock so concurrent first-time lookups for the same
+	// name don't each spend a load.
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 
-	if model := runner.models[name]; model != nil {
-		return model, nil
+	current := runner.models.Load()
+	if current != nil {
+		if model := (*current)[name]; model != nil {
+			return model, nil
+		}
 	}
 	model, err := runner.loadModel(path, runner.loadOptions...)
 	if err != nil {
 		return nil, core.Errorf("load native model %q: %w", name, err)
 	}
-	runner.models[name] = model
+	var next map[string]nativeGenerateModel
+	if current == nil {
+		next = map[string]nativeGenerateModel{name: model}
+	} else {
+		next = make(map[string]nativeGenerateModel, len(*current)+1)
+		for k, v := range *current {
+			next[k] = v
+		}
+		next[name] = model
+	}
+	runner.models.Store(&next)
 	return model, nil
 }
 
 func (runner *NativeGenerateRunner) generateOptions(req GenerateRequest) []mlx.GenerateOption {
-	var opts []mlx.GenerateOption
+	// Fast path: request leaves both knobs at zero, so the cached
+	// default-only option slice (one WithMaxTokens closure built at
+	// NewNativeGenerateRunner time) covers the call with zero
+	// allocations. Backends only read the option slice — never
+	// mutate it — so aliasing is safe.
+	if req.MaxTokens == 0 && req.Temperature == 0 {
+		return runner.defaultOpts
+	}
+	// At most two options are ever pushed; pre-sizing avoids the
+	// nil-slice -> 8-cap re-alloc that the first append would
+	// otherwise trigger on the per-generate hot path.
+	opts := make([]mlx.GenerateOption, 0, 2)
 	maxTokens := req.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = runner.defaultMaxToken
@@ -206,6 +277,21 @@ func toGenerateMetrics(metrics mlx.Metrics) GenerateMetrics {
 		PromptCacheMissTokens:    metrics.PromptCacheMissTokens,
 		PromptCacheRestoreMillis: float64(metrics.PromptCacheRestoreDuration) / float64(time.Millisecond),
 	}
+}
+
+// estimateGenerateBytes returns a strings.Builder pre-grow hint for
+// the generated response. The byte-per-token coefficient is a
+// conservative average across typical chat tokens.
+func estimateGenerateBytes(req GenerateRequest, fallbackMaxTokens int) int {
+	const bytesPerToken = 4
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = fallbackMaxTokens
+	}
+	if maxTokens <= 0 {
+		return 0
+	}
+	return maxTokens * bytesPerToken
 }
 
 func copyStringMap(in map[string]string) map[string]string {

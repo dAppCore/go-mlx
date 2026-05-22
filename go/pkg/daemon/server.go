@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"net"
 	"runtime"
@@ -17,6 +18,12 @@ const (
 	socketFileMode core.FileMode = 0o600
 	socketDirMode  core.FileMode = 0o700
 	maxFrameBytes                = 16 * 1024 * 1024
+)
+
+var (
+	errSocketPathRequired = core.NewError("socket path is required")
+	errXDGRuntimeDirUnset = core.NewError("XDG_RUNTIME_DIR is not set")
+	errDaemonOperation    = core.NewError("daemon operation failed")
 )
 
 type ServerConfig struct {
@@ -171,17 +178,24 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) error {
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxFrameBytes)
 
+	// req is hoisted across loop iterations. Each frame zeroes it
+	// before json.Unmarshal so per-frame heap-allocation of the
+	// Request struct turns into a single per-connection allocation.
+	// Backend handlers do not retain req past Dispatch's return
+	// (see generateRequestFromRequest), so reuse is safe.
+	var req Request
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return nil
 		}
 
-		line := core.Trim(string(scanner.Bytes()))
-		if line == "" {
+		trimmed := bytes.TrimSpace(scanner.Bytes())
+		if len(trimmed) == 0 {
 			continue
 		}
+		line := core.AsString(trimmed)
 
-		var req Request
+		req = Request{}
 		if result := core.JSONUnmarshalString(line, &req); !result.OK {
 			if encodeErr := writeJSONLine(conn, errorResponse{
 				Status:  "error",
@@ -234,14 +248,14 @@ func DefaultSocketPath() (string, error) {
 
 	runtimeDir := core.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDir == "" {
-		return "", core.NewError("XDG_RUNTIME_DIR is not set")
+		return "", errXDGRuntimeDirUnset
 	}
 	return core.PathJoin(runtimeDir, "ofm", "violet.sock"), nil
 }
 
 func prepareSocketPath(socketPath string) error {
 	if socketPath == "" {
-		return core.NewError("socket path is required")
+		return errSocketPathRequired
 	}
 	if r := core.MkdirAll(core.PathDir(socketPath), socketDirMode); !r.OK {
 		return core.Errorf("create socket directory: %w", daemonResultError(r))
@@ -269,8 +283,12 @@ func writeJSONLine(w core.Writer, value any) error {
 	if !encoded.OK {
 		return daemonResultError(encoded)
 	}
-	if written := core.WriteString(w, string(encoded.Value.([]byte))+"\n"); !written.OK {
-		return daemonResultError(written)
+	// Append the framing newline in-place — json.Marshal returns a
+	// fresh, single-owner slice with spare cap so this avoids the
+	// byte->string + concat double-alloc.
+	frame := append(encoded.Value.([]byte), '\n')
+	if _, err := w.Write(frame); err != nil {
+		return err
 	}
 	return nil
 }
@@ -290,5 +308,5 @@ func daemonResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("daemon operation failed")
+	return errDaemonOperation
 }
