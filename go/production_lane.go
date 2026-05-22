@@ -80,6 +80,26 @@ var longContextGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateFixedGemma4Sliding,
 }
 
+// hyperLongGemma4FastRuntimeGates is the precomputed shape returned by
+// Gemma4FastRuntimeGatesForContext when contextLength exceeds the long-form
+// chapter ceiling: the default set with the three fixed-cache gates removed
+// and the paged-decode fast concat gate appended. Computed once at package
+// init so each per-dispatch call just slice-clones it.
+var hyperLongGemma4FastRuntimeGates = buildHyperLongGemma4FastRuntimeGates()
+
+func buildHyperLongGemma4FastRuntimeGates() []string {
+	out := make([]string, 0, len(defaultGemma4FastRuntimeGates)-1)
+	for _, gate := range defaultGemma4FastRuntimeGates {
+		switch gate {
+		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
+			continue
+		default:
+			out = append(out, gate)
+		}
+	}
+	return append(out, Gemma4FastRuntimeGatePagedDecodeFastConcat)
+}
+
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
 	Name             string `json:"name"`
@@ -128,22 +148,7 @@ func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
 	if contextLength <= ProductionLaneLongFormContextLength {
 		return DefaultGemma4FastRuntimeGates()
 	}
-	// Hyper-long path: drop 2 fixed-cache gates (Cache + SharedMask — Sliding
-	// is not in the default set), then append paged-decode. Final length =
-	// len(default)-2+1. Pre-size exactly so the trailing append doesn't grow
-	// the backing array. Iterate the private global directly — no need to
-	// clone first.
-	out := make([]string, 0, len(defaultGemma4FastRuntimeGates)-1)
-	for _, gate := range defaultGemma4FastRuntimeGates {
-		switch gate {
-		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
-			continue
-		default:
-			out = append(out, gate)
-		}
-	}
-	out = append(out, Gemma4FastRuntimeGatePagedDecodeFastConcat)
-	return out
+	return core.SliceClone(hyperLongGemma4FastRuntimeGates)
 }
 
 // LongContextGemma4FastRuntimeGates returns gates that are accepted only for
