@@ -255,12 +255,23 @@ func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	return cfg
 }
 
+// kvBenchModes is the fixed mode set the workload benchmark compares —
+// hoisted out of kvBenchConfigFromModelInfo so we don't re-allocate the
+// same 4-element slice literal on every benchmark dispatch. CompareModes
+// reads cfg.Modes via range without mutation.
+var kvBenchModes = []memory.KVCacheMode{
+	memory.KVCacheModeFP16,
+	memory.KVCacheModePaged,
+	memory.KVCacheModeQ8,
+	memory.KVCacheModeKQ8VQ4,
+}
+
 func kvBenchConfigFromModelInfo(info ModelInfo) kv.BenchConfig {
 	return kv.BenchConfig{
 		ContextLength: info.ContextLength,
 		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,
-		Modes:         []memory.KVCacheMode{memory.KVCacheModeFP16, memory.KVCacheModePaged, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4},
+		Modes:         kvBenchModes,
 	}
 }
 
