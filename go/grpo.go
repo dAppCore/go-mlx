@@ -497,11 +497,15 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	if prompt == "" {
 		prompt = core.Trim(sample.Text)
 	}
+	// Extract the answer once and forward it to the reasoning step —
+	// extractGRPOReasoning would otherwise re-run the full meta-key
+	// sweep + line scan to recover the same value.
+	expected := ExtractGRPOExpectedAnswer(sample)
 	return GRPOSample{
 		Prompt:          prompt,
 		ReferenceAnswer: core.Trim(sample.Response),
-		ExpectedAnswer:  ExtractGRPOExpectedAnswer(sample),
-		Reasoning:       extractGRPOReasoning(sample),
+		ExpectedAnswer:  expected,
+		Reasoning:       extractGRPOReasoningWithAnswer(sample, expected),
 		Meta:            cloneStringMap(sample.Meta),
 	}
 }
@@ -546,6 +550,14 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 }
 
 func extractGRPOReasoning(sample dataset.Sample) string {
+	return extractGRPOReasoningWithAnswer(sample, ExtractGRPOExpectedAnswer(sample))
+}
+
+// extractGRPOReasoningWithAnswer is the inner form that takes the
+// already-extracted expected answer so callers (the dominant one being
+// GRPOSampleFromSFT) don't run ExtractGRPOExpectedAnswer twice — once
+// for the answer field and once again here for the suffix-strip.
+func extractGRPOReasoningWithAnswer(sample dataset.Sample, answer string) string {
 	if sample.Meta != nil {
 		if value := core.Trim(sample.Meta["reasoning"]); value != "" {
 			return value
@@ -554,9 +566,11 @@ func extractGRPOReasoning(sample dataset.Sample) string {
 			return value
 		}
 	}
+	if answer == "" {
+		return ""
+	}
 	response := core.Trim(sample.Response)
-	answer := ExtractGRPOExpectedAnswer(sample)
-	if response == "" || answer == "" {
+	if response == "" {
 		return ""
 	}
 	return core.Trim(core.TrimSuffix(response, answer))
