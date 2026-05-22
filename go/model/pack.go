@@ -350,18 +350,40 @@ func readTokenizerChatTemplate(path string) (string, bool, error) {
 		}
 		return "", false, read.Value.(error)
 	}
+	// chat_template is usually a single Jinja string but can also be a
+	// list of {name, template} dicts. Defer the decode via RawMessage
+	// so we don't pay the any-decoding cost — the common path is a
+	// single string which only needs a string-unmarshal afterwards.
 	var config struct {
-		ChatTemplate any `json:"chat_template"`
+		ChatTemplate core.RawMessage `json:"chat_template"`
 	}
 	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
 		return "", false, result.Value.(error)
 	}
-	switch template := config.ChatTemplate.(type) {
-	case string:
+	raw := config.ChatTemplate
+	if len(raw) == 0 || core.AsString(raw) == "null" {
+		return "", false, nil
+	}
+	switch raw[0] {
+	case '"':
+		var template string
+		if result := core.JSONUnmarshal(raw, &template); !result.OK {
+			return "", false, result.Value.(error)
+		}
 		template = core.Trim(template)
 		return template, template != "", nil
-	case []any:
-		if len(template) > 0 {
+	case '[':
+		// Non-empty arrays start with '[' followed by something other
+		// than ']'. The whitespace shapes JSON allows are space/tab/
+		// newline/carriage-return per RFC 8259.
+		for i := 1; i < len(raw); i++ {
+			c := raw[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				continue
+			}
+			if c == ']' {
+				return "", false, nil
+			}
 			return "named_chat_templates", true, nil
 		}
 	}
