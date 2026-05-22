@@ -113,6 +113,7 @@ type Gemma4VisionMLP struct {
 type Gemma4VisionPooler struct {
 	HiddenSize        int32
 	PoolingKernelSize int32
+	EmbeddingScale    float32 // Computed: sqrt(HiddenSize); cached to skip per-token math.Sqrt
 }
 
 // Gemma4VisionLayer is the public Phase 4 layer name for the vision encoder.
@@ -459,6 +460,7 @@ func buildGemma4VisionModel(cfg *Gemma4VisionConfig, weights map[string]*Array) 
 		Pooler: &Gemma4VisionPooler{
 			HiddenSize:        cfg.HiddenSize,
 			PoolingKernelSize: cfg.PoolingKernelSize,
+			EmbeddingScale:    float32(math.Sqrt(float64(cfg.HiddenSize))),
 		},
 		PostLayernorm: postLayernorm,
 		StdBias:       gemma4VisionWeightAny(weights, "std_bias"),
@@ -641,8 +643,7 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 	}
 
 	h := m.EmbedTokens.Forward(tokens)
-	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
-	scaledH := MulScalar(h, embeddingScale)
+	scaledH := MulScalar(h, m.Cfg.EmbeddingScale)
 	Free(h)
 	h = scaledH
 
@@ -1221,7 +1222,7 @@ func (p *Gemma4VisionPooler) Forward(hidden *Array, gridH, gridW int32) *Array {
 		pooled = Reshape(hidden, B*L, H)
 	}
 
-	scaled := MulScalar(pooled, float32(math.Sqrt(float64(p.HiddenSize))))
+	scaled := MulScalar(pooled, p.EmbeddingScale)
 	Free(pooled)
 	return scaled
 }

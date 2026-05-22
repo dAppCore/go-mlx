@@ -3724,3 +3724,57 @@ func TestGemma4_Gemma4Model_ApplyLoRA_Ugly(t *testing.T) {
 		t.Fatalf("variant mismatch for %s", target)
 	}
 }
+
+func TestGemma4_parseConfig_EmbeddingScalesCached_Good(t *testing.T) {
+	coverageTokens := "parseConfig EmbeddingScales Cached"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	type pair struct{ hidden, perLayer int32 }
+	cases := []pair{
+		{hidden: 2, perLayer: 2},
+		{hidden: 1024, perLayer: 256},
+		{hidden: 2048, perLayer: 256},
+		{hidden: 3072, perLayer: 384},
+		{hidden: 4096, perLayer: 0}, // disabled per-layer path
+	}
+	for _, c := range cases {
+		cfg := &Gemma4TextConfig{HiddenSize: c.hidden, HiddenSizePerLayerInput: c.perLayer}
+		gemma4FinaliseEmbeddingScales(cfg)
+
+		wantH := float32(math.Sqrt(float64(c.hidden)))
+		if cfg.EmbeddingScale != wantH {
+			t.Fatalf("EmbeddingScale(hidden=%d): cached %v != per-call %v", c.hidden, cfg.EmbeddingScale, wantH)
+		}
+		var wantP float32
+		if c.perLayer > 0 {
+			wantP = float32(math.Sqrt(float64(c.perLayer)))
+		}
+		if cfg.PerLayerInputEmbeddingScale != wantP {
+			t.Fatalf("PerLayerInputEmbeddingScale(perLayer=%d): cached %v != per-call %v", c.perLayer, cfg.PerLayerInputEmbeddingScale, wantP)
+		}
+	}
+}
+
+func TestGemma4_parseConfig_EmbeddingScalesCached_ResetsOnZero_Good(t *testing.T) {
+	coverageTokens := "parseConfig EmbeddingScales ResetsOnZero"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	// LoadGemma4 may clear HiddenSizePerLayerInput when weights are missing;
+	// the second invocation of gemma4FinaliseEmbeddingScales must zero the
+	// cached scale rather than retain a stale value.
+	cfg := &Gemma4TextConfig{HiddenSize: 2048, HiddenSizePerLayerInput: 256}
+	gemma4FinaliseEmbeddingScales(cfg)
+	if cfg.PerLayerInputEmbeddingScale == 0 {
+		t.Fatal("PerLayerInputEmbeddingScale = 0, want positive after first finalise")
+	}
+	cfg.HiddenSizePerLayerInput = 0
+	gemma4FinaliseEmbeddingScales(cfg)
+	if cfg.PerLayerInputEmbeddingScale != 0 {
+		t.Fatalf("PerLayerInputEmbeddingScale = %v, want 0 after per-layer reset", cfg.PerLayerInputEmbeddingScale)
+	}
+	if cfg.EmbeddingScale == 0 {
+		t.Fatal("EmbeddingScale = 0, want unchanged main embedding scale")
+	}
+}
