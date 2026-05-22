@@ -337,26 +337,23 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 		runtimeLabels["working_set_bytes"] = strconv.FormatUint(device.MaxRecommendedWorkingSetSize, 10)
 	}
 	runtimeLabels["load_available"] = boolLabel(loadReady)
-	modelLoadCapability := inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime)
-	if !loadReady {
-		modelLoadCapability = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
+	// Pre-built static tail — see metalCapabilityStaticTail and
+	// metalCapabilityFixedTail. The 38 static entries plus the (deterministic
+	// over a fixed model architecture) AlgorithmCapabilities slice are
+	// merged once at package init into metalCapabilityFixedTail. Per call
+	// we issue ONE make() at the final size and ONE copy() instead of three
+	// successive appends + the per-call profile.AlgorithmCapabilities()
+	// (which allocated a 14-cap slice + 14 fresh label maps every call).
+	// markMetalUnavailableCapabilities only mutates the per-element Status
+	// and Detail (value-types in the per-call slice copy), so sharing the
+	// underlying static is safe — the Labels-map header is not touched.
+	capabilities := make([]inference.Capability, 1+len(metalCapabilityFixedTail))
+	if loadReady {
+		capabilities[0] = metalModelLoadAvailable
+	} else {
+		capabilities[0] = metalModelLoadUnavailable
 	}
-	// Pre-compute algorithm capabilities first so we can size the
-	// combined slice in one make() instead of letting the literal
-	// append-grow when it merges. metalCapabilityFixedCount tracks
-	// the literal length below — bump it if entries are added or
-	// removed (compile-time check via len(capabilities) == const).
-	algorithmCaps := profile.AlgorithmCapabilities()
-	// Pre-built static tail — see metalCapabilityStaticTail. The 38
-	// entries that don't depend on loadReady are constructed once at
-	// package init; the per-call build is a make() + one append for
-	// modelLoadCapability + one bulk append for the static tail + one
-	// final append for algorithmCaps. Replaces 38 function calls + 38
-	// boxed append args with one slice copy.
-	capabilities := make([]inference.Capability, 0, metalCapabilityFixedCount+len(algorithmCaps))
-	capabilities = append(capabilities, modelLoadCapability)
-	capabilities = append(capabilities, metalCapabilityStaticTail...)
-	capabilities = append(capabilities, algorithmCaps...)
+	copy(capabilities[1:], metalCapabilityFixedTail)
 	if !loadReady {
 		capabilities = markMetalUnavailableCapabilities(capabilities)
 	}
@@ -437,6 +434,34 @@ func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inf
 // changes (the test in inference_contract_test.go counts the slice
 // after build and asserts the expected total).
 const metalCapabilityFixedCount = 39
+
+// metalModelLoadAvailable / metalModelLoadUnavailable are the two
+// possible shapes of the capabilities[0] entry built per call from
+// loadReady. inference.SupportedCapability / UnsupportedCapability
+// each allocate (constructor + labels map) — caching the two
+// outcomes once at package init drops 1–2 allocs per call.
+var (
+	metalModelLoadAvailable   = inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime)
+	metalModelLoadUnavailable = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
+)
+
+// metalCapabilityFixedTail is the merged static tail (metalCapabilityStaticTail
+// + profile.AlgorithmCapabilities()) built once at package init. The
+// per-call build is then ONE make() + ONE copy() instead of three
+// successive appends + a per-call AlgorithmCapabilities() (which
+// allocated its own backing array + N fresh label maps every call).
+// markMetalUnavailableCapabilities mutates Status and Detail on the
+// per-call slice copy, never touches Labels — sharing the static is
+// safe. Initialised via init() so we run after the profile package's
+// own init has populated builtinAlgorithmProfilesData.
+var metalCapabilityFixedTail []inference.Capability
+
+func init() {
+	algorithmCaps := profile.AlgorithmCapabilities()
+	metalCapabilityFixedTail = make([]inference.Capability, 0, len(metalCapabilityStaticTail)+len(algorithmCaps))
+	metalCapabilityFixedTail = append(metalCapabilityFixedTail, metalCapabilityStaticTail...)
+	metalCapabilityFixedTail = append(metalCapabilityFixedTail, algorithmCaps...)
+}
 
 // metalCapabilityStaticTail is the 38-entry portion of the capability
 // list that does NOT vary with loadReady. metalCapabilityReportWithLoad-
