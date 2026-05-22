@@ -368,7 +368,11 @@ func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
 }
 
 func modelSliceTensorIsEmbedding(name string) bool {
-	return core.Contains(name, "embed") || core.Contains(name, ".wte.") || core.HasSuffix(name, ".wte.weight")
+	// HasSuffix(".wte.weight") matches a strict subset of Contains(".wte.")
+	// — any name ending with ".wte.weight" already contains ".wte."
+	// somewhere — so the suffix check was dead. Drop it to skip one
+	// substring scan per embedding classifier call.
+	return core.Contains(name, "embed") || core.Contains(name, ".wte.")
 }
 
 func modelSliceTensorIsNorm(name string) bool {
