@@ -538,6 +538,13 @@ func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
 	if batch, ok := cfg.Batch.(dataset.BatchConfig); ok {
 		cfg.Batch = normalizeDatasetBatchConfig(batch)
 	}
-	cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
+	// QualityProbes defaults to nil for callers that don't wire a
+	// custom probe set — guarding the clone keeps the workload bench
+	// normalisation hot path (called once per RunWorkloadBench plus
+	// every cfg-without-probes dispatch) free of the SliceClone
+	// generic-dispatch+append shape on the empty slice.
+	if len(cfg.QualityProbes) > 0 {
+		cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
+	}
 	return cfg
 }
