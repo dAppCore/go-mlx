@@ -404,7 +404,11 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 }
 
 func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
-	if core.Trim(opts.FoldedPrompt) != "" {
+	// Empty-string fast path on FoldedPrompt — skip the Trim function
+	// call when the user passed nothing at all. The hot caller
+	// (FoldAgentMemory in libraries that build summary+tail explicitly)
+	// almost always hits this branch.
+	if opts.FoldedPrompt != "" && core.Trim(opts.FoldedPrompt) != "" {
 		return opts.FoldedPrompt
 	}
 	summary := core.Trim(opts.Summary)
