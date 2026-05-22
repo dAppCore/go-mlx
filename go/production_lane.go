@@ -2,6 +2,8 @@
 
 package mlx
 
+import core "dappco.re/go"
+
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
 	// driver-profile benchmark artefacts.
@@ -78,6 +80,26 @@ var longContextGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateFixedGemma4Sliding,
 }
 
+// hyperLongGemma4FastRuntimeGates is the precomputed shape returned by
+// Gemma4FastRuntimeGatesForContext when contextLength exceeds the long-form
+// chapter ceiling: the default set with the three fixed-cache gates removed
+// and the paged-decode fast concat gate appended. Computed once at package
+// init so each per-dispatch call just slice-clones it.
+var hyperLongGemma4FastRuntimeGates = buildHyperLongGemma4FastRuntimeGates()
+
+func buildHyperLongGemma4FastRuntimeGates() []string {
+	out := make([]string, 0, len(defaultGemma4FastRuntimeGates)-1)
+	for _, gate := range defaultGemma4FastRuntimeGates {
+		switch gate {
+		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
+			continue
+		default:
+			out = append(out, gate)
+		}
+	}
+	return append(out, Gemma4FastRuntimeGatePagedDecodeFastConcat)
+}
+
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
 	Name             string `json:"name"`
@@ -116,32 +138,21 @@ func DefaultProductionLane() ProductionLane {
 // by the current packed expert-ID fast lane. Rejected diagnostic gates such as
 // full native layer/model wrappers are intentionally excluded.
 func DefaultGemma4FastRuntimeGates() []string {
-	return append([]string(nil), defaultGemma4FastRuntimeGates...)
+	return core.SliceClone(defaultGemma4FastRuntimeGates)
 }
 
 // Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
 // requested context length. Contexts beyond the long-form chapter lane use
 // paged retained state instead of fixed full-capacity KV buffers.
 func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
-	gates := DefaultGemma4FastRuntimeGates()
 	if contextLength <= ProductionLaneLongFormContextLength {
-		return gates
+		return DefaultGemma4FastRuntimeGates()
 	}
-	out := make([]string, 0, len(gates))
-	for _, gate := range gates {
-		switch gate {
-		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
-			continue
-		default:
-			out = append(out, gate)
-		}
-	}
-	out = append(out, Gemma4FastRuntimeGatePagedDecodeFastConcat)
-	return out
+	return core.SliceClone(hyperLongGemma4FastRuntimeGates)
 }
 
 // LongContextGemma4FastRuntimeGates returns gates that are accepted only for
 // opencode-sized long-context Gemma 4 diagnostics.
 func LongContextGemma4FastRuntimeGates() []string {
-	return append([]string(nil), longContextGemma4FastRuntimeGates...)
+	return core.SliceClone(longContextGemma4FastRuntimeGates)
 }
