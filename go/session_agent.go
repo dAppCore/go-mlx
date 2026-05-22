@@ -218,14 +218,19 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 	if opts.ModelInfo.Architecture == "" {
 		opts.ModelInfo = modelInfoToMemory(s.info)
 	}
-	if opts.ParentEntryURI == "" && s.agentMemory != nil {
-		opts.ParentEntryURI = s.agentMemory.EntryURI
-	}
-	if opts.ParentBundleURI == "" && s.agentMemory != nil {
-		opts.ParentBundleURI = s.agentMemory.BundleURI
-	}
-	if opts.ParentIndexURI == "" && s.agentMemory != nil {
-		opts.ParentIndexURI = s.agentMemory.IndexURI
+	// Hoist the s.agentMemory nil check — was repeated three times in
+	// independent branch predicates. Single load + reused alias lets the
+	// three assignments share one pointer dereference each.
+	if parent := s.agentMemory; parent != nil {
+		if opts.ParentEntryURI == "" {
+			opts.ParentEntryURI = parent.EntryURI
+		}
+		if opts.ParentBundleURI == "" {
+			opts.ParentBundleURI = parent.BundleURI
+		}
+		if opts.ParentIndexURI == "" {
+			opts.ParentIndexURI = parent.IndexURI
+		}
 	}
 	blockOpts := agent.SleepBlockOptions(opts, bundleURI)
 	if opts.ReuseParentPrefix && blockOpts.ReusePrefix == nil {
