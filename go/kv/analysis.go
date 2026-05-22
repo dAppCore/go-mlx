@@ -557,9 +557,11 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			// aj < threshold/ai; for ai<0 it flips because we divided
 			// by a negative. ai==0 short-circuits the whole row to
 			// locked = (seqLen-i-1) since dot ≡ 0 < threshold.
-			// Loops unrolled 4× and the locked compare made branchless
-			// (sign-bit extraction) to expose ILP — the OoO window then
-			// covers the L1 latency of scratch[j] loads.
+			// Loops unrolled 4× to expose ILP — the OoO window covers
+			// the L1 latency of scratch[j] loads. The locked compare
+			// stays as a branch + counter (M3's FCMPD + CSEL fast path
+			// beats the FMOV→shift trick whose float→int register move
+			// has ~5-cycle latency on Apple Silicon).
 			for i := 0; i < seqLen; i++ {
 				ai := scratch[i]
 				remaining := seqLen - i - 1
@@ -570,50 +572,64 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				}
 				invT := threshold / ai
 				var subSum float64
-				var subLocked uint64
 				j := i + 1
 				if ai > 0 {
-					// Unroll by 4 — accumulate sum + branchless locked
-					// via sign-bit extraction of (aj - invT). For aj<invT
-					// the sign bit is set, so >>63&1 == 1.
 					for ; j+3 < seqLen; j += 4 {
 						a0 := scratch[j]
 						a1 := scratch[j+1]
 						a2 := scratch[j+2]
 						a3 := scratch[j+3]
 						subSum += a0 + a1 + a2 + a3
-						subLocked += math.Float64bits(a0-invT) >> 63
-						subLocked += math.Float64bits(a1-invT) >> 63
-						subLocked += math.Float64bits(a2-invT) >> 63
-						subLocked += math.Float64bits(a3-invT) >> 63
+						if a0 < invT {
+							locked++
+						}
+						if a1 < invT {
+							locked++
+						}
+						if a2 < invT {
+							locked++
+						}
+						if a3 < invT {
+							locked++
+						}
 					}
 					for ; j < seqLen; j++ {
 						aj := scratch[j]
 						subSum += aj
-						subLocked += math.Float64bits(aj-invT) >> 63
+						if aj < invT {
+							locked++
+						}
 					}
 				} else {
 					// ai < 0: condition is aj > invT (sign flipped).
-					// Encoded as (invT - aj) < 0 → sign bit set.
 					for ; j+3 < seqLen; j += 4 {
 						a0 := scratch[j]
 						a1 := scratch[j+1]
 						a2 := scratch[j+2]
 						a3 := scratch[j+3]
 						subSum += a0 + a1 + a2 + a3
-						subLocked += math.Float64bits(invT-a0) >> 63
-						subLocked += math.Float64bits(invT-a1) >> 63
-						subLocked += math.Float64bits(invT-a2) >> 63
-						subLocked += math.Float64bits(invT-a3) >> 63
+						if a0 > invT {
+							locked++
+						}
+						if a1 > invT {
+							locked++
+						}
+						if a2 > invT {
+							locked++
+						}
+						if a3 > invT {
+							locked++
+						}
 					}
 					for ; j < seqLen; j++ {
 						aj := scratch[j]
 						subSum += aj
-						subLocked += math.Float64bits(invT-aj) >> 63
+						if aj > invT {
+							locked++
+						}
 					}
 				}
 				totalSimilarity += ai * subSum
-				locked += int(subLocked)
 			}
 			pairs += seqLen * (seqLen - 1) / 2
 			continue
