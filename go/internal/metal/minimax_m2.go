@@ -12,6 +12,8 @@ import (
 	"sort"
 
 	"dappco.re/go"
+
+	"dappco.re/go/mlx/safetensors"
 )
 
 const maxMiniMaxM2SafetensorHeaderBytes = 256 << 20
@@ -156,12 +158,6 @@ type miniMaxM2SafetensorTensorRef struct {
 	Elements  int64
 	DataStart int64
 	ByteLen   int64
-}
-
-type miniMaxM2SafetensorHeaderEntry struct {
-	DType       string  `json:"dtype"`
-	Shape       []int64 `json:"shape"`
-	DataOffsets []int64 `json:"data_offsets"`
 }
 
 // validateMiniMaxM2NativeLoad checks the cheap, deterministic parts of a
@@ -377,51 +373,40 @@ func readMiniMaxM2SafetensorHeaderRefs(path string) (map[string]miniMaxM2Safeten
 	if _, err := io.ReadFull(file, headerBytes); err != nil {
 		return nil, core.E("minimax_m2.safetensors", "read header "+core.PathBase(path), err)
 	}
-	var header map[string]miniMaxM2SafetensorHeaderEntry
-	if result := core.JSONUnmarshal(headerBytes, &header); !result.OK {
-		return nil, core.E("minimax_m2.safetensors", "parse header "+core.PathBase(path), result.Value.(error))
+
+	// Delegate header parsing to the shared safetensors walker (W8-I).
+	// It hand-rolls the JSON parse, interns canonical dtype strings,
+	// and carves all Shape slices out of one slab so per-tensor cost
+	// lands at ~1 alloc once the arena is in scope — replacing the
+	// reflection-driven map[string]headerEntry decode that previously
+	// dominated this path's allocations.
+	index, err := safetensors.ParseHeaderRefs(path, headerBytes, int64(8+headerLen))
+	if err != nil {
+		return nil, core.E("minimax_m2.safetensors", "parse header "+core.PathBase(path), err)
 	}
-	tensors := make(map[string]miniMaxM2SafetensorTensorRef, len(header))
-	for name, entry := range header {
-		if name == "__metadata__" {
-			continue
-		}
-		tensor, err := miniMaxM2SafetensorRefFromHeader(path, name, entry, int64(8+headerLen))
-		if err != nil {
-			return nil, err
-		}
-		tensors[name] = tensor
+	tensors := make(map[string]miniMaxM2SafetensorTensorRef, len(index.Tensors))
+	for name, ref := range index.Tensors {
+		tensors[name] = miniMaxM2SafetensorRefFromIndex(ref)
 	}
 	return tensors, nil
 }
 
-func miniMaxM2SafetensorRefFromHeader(path, name string, entry miniMaxM2SafetensorHeaderEntry, dataStart int64) (miniMaxM2SafetensorTensorRef, error) {
-	if len(entry.DataOffsets) != 2 {
-		return miniMaxM2SafetensorTensorRef{}, core.NewError("minimax_m2 safetensors tensor has invalid data_offsets: " + name)
-	}
-	begin := entry.DataOffsets[0]
-	end := entry.DataOffsets[1]
-	if begin < 0 || end < begin {
-		return miniMaxM2SafetensorTensorRef{}, core.NewError("minimax_m2 safetensors tensor offsets are invalid: " + name)
-	}
-	shape := make([]uint64, 0, len(entry.Shape))
-	elements := int64(1)
-	for _, dim := range entry.Shape {
-		if dim <= 0 {
-			return miniMaxM2SafetensorTensorRef{}, core.NewError("minimax_m2 safetensors tensor has invalid shape: " + name)
-		}
-		shape = append(shape, uint64(dim))
-		elements *= dim
-	}
+// miniMaxM2SafetensorRefFromIndex projects a safetensors.TensorRef into
+// the minimax-local view, which carries Elements as int64 (used in
+// packed-byte equality checks against int64 sidecar sizes) and is
+// otherwise identical in shape. The Shape slice is reused as-is — it
+// references the safetensors header's shape slab, which is GC-rooted
+// for the lifetime of the returned ref.
+func miniMaxM2SafetensorRefFromIndex(ref safetensors.TensorRef) miniMaxM2SafetensorTensorRef {
 	return miniMaxM2SafetensorTensorRef{
-		Name:      name,
-		Path:      path,
-		DType:     core.Upper(entry.DType),
-		Shape:     shape,
-		Elements:  elements,
-		DataStart: dataStart + begin,
-		ByteLen:   end - begin,
-	}, nil
+		Name:      ref.Name,
+		Path:      ref.Path,
+		DType:     ref.DType,
+		Shape:     ref.Shape,
+		Elements:  int64(ref.Elements),
+		DataStart: ref.DataStart,
+		ByteLen:   ref.ByteLen,
+	}
 }
 
 func buildMiniMaxM2NativeLayerSkeleton(cfg miniMaxM2LoadConfig, jang miniMaxM2JANGLoadConfig, tensors map[string]miniMaxM2SafetensorTensorRef, layer int) (miniMaxM2NativeLayerSkeleton, error) {
