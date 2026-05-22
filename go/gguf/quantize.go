@@ -527,10 +527,11 @@ func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufM
 		if err != nil {
 			return err
 		}
-		if dataSize != ggufQuantizedTensorDataSize(tensor) {
-			return core.NewError(core.Sprintf("mlx: streamed GGUF tensor %s wrote %d bytes, want %d", tensor.Name, dataSize, ggufQuantizedTensorDataSize(tensor)))
+		expected := ggufQuantizedTensorDataSize(tensor)
+		if dataSize != expected {
+			return core.NewError("mlx: streamed GGUF tensor " + tensor.Name + " wrote " + strconv.FormatUint(dataSize, 10) + " bytes, want " + strconv.FormatUint(expected, 10))
 		}
-		written = tensor.Offset + ggufQuantizedTensorDataSize(tensor)
+		written = tensor.Offset + expected
 	}
 	return nil
 }
@@ -567,6 +568,18 @@ func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, t
 }
 
 func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int) (uint64, error) {
+	// Resolve the quantiser once outside the chunk loop — saves a
+	// switch per chunk (millions of chunks per multi-GB tensor).
+	var quantise func([]float32) []byte
+	switch format {
+	case QuantizeQ8_0:
+		quantise = quantizeQ8_0
+	case QuantizeQ4_0:
+		quantise = quantizeQ4_0
+	default:
+		return 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	}
+
 	reader, err := safetensors.OpenReader(ref)
 	if err != nil {
 		return 0, err
@@ -582,10 +595,7 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 		if err != nil {
 			return written, err
 		}
-		data, err := quantizeGGUFValues(format, values)
-		if err != nil {
-			return written, err
-		}
+		data := quantise(values)
 		if _, err := file.Write(data); err != nil {
 			return written, err
 		}
@@ -610,7 +620,15 @@ func assignGGUFTensorOffsets(tensors []ggufQuantizedTensor, alignment uint64) {
 	for i := range tensors {
 		offset += alignPadding(offset, alignment)
 		tensors[i].Offset = offset
-		offset += ggufQuantizedTensorDataSize(tensors[i])
+		// Inline the data-size computation rather than passing the struct
+		// by value to ggufQuantizedTensorDataSize (which would copy the
+		// whole ggufQuantizedTensor including the Shape/Data slice
+		// headers on every iteration).
+		if tensors[i].Size > 0 {
+			offset += tensors[i].Size
+		} else {
+			offset += uint64(len(tensors[i].Data))
+		}
 	}
 }
 
