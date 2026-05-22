@@ -365,7 +365,10 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 		return nil, nil, errAgentMemoryStoreNil
 	}
 	prompt := agentMemoryFoldedPrompt(opts)
-	if core.Trim(prompt) == "" {
+	// Empty-string fast path. agentMemoryFoldedPrompt returns "" when
+	// none of summary/tail/FoldedPrompt are supplied; only a user-passed
+	// whitespace-only FoldedPrompt reaches the slow Trim path.
+	if prompt == "" || core.Trim(prompt) == "" {
 		return nil, nil, core.NewError("mlx: folded State requires summary, recent tail, or folded prompt")
 	}
 	report := &AgentMemoryFoldReport{
