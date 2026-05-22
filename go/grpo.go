@@ -546,10 +546,20 @@ func extractGRPOReasoning(sample dataset.Sample) string {
 	return core.Trim(core.TrimSuffix(response, answer))
 }
 
+// grpoAnswerPrefixes are the reasoning-style answer prefixes
+// cleanGRPOAnswerLine looks for. Hoisted to a package-level var so
+// every call doesn't re-allocate the three-element backing array
+// (cleanGRPOAnswerLine fires for every line in every reasoning
+// sample on the GRPOSampleFromSFT / ExtractGRPOExpectedAnswer path).
+var grpoAnswerPrefixes = [...]string{"final answer:", "answer:", "solution:"}
+
 func cleanGRPOAnswerLine(line string) string {
 	line = core.Trim(line)
+	if line == "" {
+		return ""
+	}
 	lower := core.Lower(line)
-	for _, prefix := range []string{"final answer:", "answer:", "solution:"} {
+	for _, prefix := range grpoAnswerPrefixes {
 		if core.HasPrefix(lower, prefix) {
 			return core.Trim(line[len(prefix):])
 		}
