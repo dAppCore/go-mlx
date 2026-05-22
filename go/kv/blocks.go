@@ -268,6 +268,17 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 	}
 	seqLen := EffectiveSeqLen(s)
 	layers := make([]LayerSnapshot, len(s.Layers))
+	// Heads-slab: one backing slice across all layers collapses N per-layer
+	// make([]HeadSnapshot,...) into a single allocation. Hot during
+	// SaveStateBlocks — fires per checkpoint block × number of layers.
+	// Layers with no overlap (windowLen <= 0) skip head slicing entirely;
+	// the slab still under-uses the backing buffer in that case but never
+	// over-allocates because we size against NumHeads.
+	var headSlab []HeadSnapshot
+	var slabCursor int
+	if s.NumHeads > 0 && len(s.Layers) > 0 {
+		headSlab = make([]HeadSnapshot, len(s.Layers)*s.NumHeads)
+	}
 	for layerIndex, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
@@ -299,7 +310,13 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		layers[layerIndex].ValueDType = layer.ValueDType
 		layers[layerIndex].ValueBytes = valueLayerBytes
 		layers[layerIndex].ValueShape = valueLayerShape
-		layers[layerIndex].Heads = make([]HeadSnapshot, len(layer.Heads))
+		headCount := len(layer.Heads)
+		if headSlab != nil && slabCursor+headCount <= len(headSlab) {
+			layers[layerIndex].Heads = headSlab[slabCursor : slabCursor+headCount : slabCursor+headCount]
+			slabCursor += headCount
+		} else {
+			layers[layerIndex].Heads = make([]HeadSnapshot, headCount)
+		}
 		for headIndex, head := range layer.Heads {
 			key, err := sliceKVSnapshotTensor(head.Key, localStart, localEnd, s.HeadDim, windowLen)
 			if err != nil {
