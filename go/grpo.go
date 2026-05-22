@@ -599,12 +599,23 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	if core.Index(normalised, "\n") < 0 {
 		return cleanGRPOAnswerLine(normalised)
 	}
-	lines := core.Split(normalised, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := cleanGRPOAnswerLine(lines[i])
+	// Multi-line path — walk the input backward by "\n" boundaries
+	// instead of pre-splitting into a []string. The original form
+	// allocated a fresh []string sized to the line count then
+	// indexed backward; for a 2-line response that's an 8-element
+	// slice header + 2 string-header backings (~48 B). Now each
+	// substring slice is created lazily as we walk.
+	end := len(normalised)
+	for end > 0 {
+		start := core.LastIndex(normalised[:end], "\n")
+		line := cleanGRPOAnswerLine(normalised[start+1 : end])
 		if line != "" {
 			return line
 		}
+		if start < 0 {
+			return ""
+		}
+		end = start
 	}
 	return ""
 }

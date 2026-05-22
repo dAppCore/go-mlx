@@ -162,6 +162,27 @@ func BenchmarkGRPO_SampleFromSFT(b *testing.B) {
 	}
 }
 
+// BenchmarkGRPO_SampleFromSFT_MultiLine — more lines exercise the new
+// backward walk path that replaces core.Split with iterative
+// LastIndex. Five reasoning lines plus the answer at the tail.
+func BenchmarkGRPO_SampleFromSFT_MultiLine(b *testing.B) {
+	sample := dataset.Sample{
+		Prompt: "Solve: 17 + 25",
+		Response: "Let me think.\n" +
+			"First add the tens.\n" +
+			"Ten plus twenty is thirty.\n" +
+			"Then the ones.\n" +
+			"Seven plus five is twelve.\n" +
+			"Answer: 42",
+		Meta: map[string]string{"id": "row-1", "split": "train"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		grpoBenchSinkSample = GRPOSampleFromSFT(sample)
+	}
+}
+
 // BenchmarkGRPO_RewardContainsAnswer — exercises the default reward
 // closure that scores rollouts for the contains-answer rubric. Runs
 // once per rollout (group_size × steps over a training run).
