@@ -1018,9 +1018,10 @@ func (matrix *cpuSplitPackedMatrix) value(index int) float32 {
 
 func cpuSplitUnpackPackedValue(packed []byte, index, bits int) uint8 {
 	// Fast paths for the byte-aligned bit widths actually emitted by the
-	// JANG packers (8-bit dense, 4-bit nibble-packed). These cover the
-	// overwhelmingly common cases and skip the per-bit walk loop, which is
-	// hit hundreds of millions of times per layer otherwise.
+	// JANG packers (8-bit dense, 4-bit nibble-packed, 2-bit MiniMax M2
+	// routed-expert, 1-bit binary). These cover the overwhelmingly common
+	// cases and skip the per-bit walk loop, which is hit hundreds of
+	// millions of times per layer otherwise.
 	switch bits {
 	case 8:
 		return packed[index]
@@ -1030,6 +1031,10 @@ func cpuSplitUnpackPackedValue(packed []byte, index, bits int) uint8 {
 			return b & 0x0F
 		}
 		return b >> 4
+	case 2:
+		return (packed[index>>2] >> uint(((index)&3)<<1)) & 0x03
+	case 1:
+		return (packed[index>>3] >> uint(index&7)) & 0x01
 	}
 	bitOffset := index * bits
 	remaining := bits
