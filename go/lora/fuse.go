@@ -154,8 +154,16 @@ func ensureEmptyFuseWeightDestination(output string) error {
 		}
 		return core.E("lora.FuseIntoPack", "inspect output path", resultError(stat))
 	}
-	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
-	if len(weights) > 0 {
+	// Probe each weight pattern independently and short-circuit on the
+	// first non-empty match. The previous form appended both glob results
+	// into a fresh slice unconditionally, paying for the second glob +
+	// the concat alloc even when the first run already proved the
+	// destination is dirty. Real fuse paths fire this once per call;
+	// shaving the second glob's Readdir trip is the win.
+	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
+		return errFuseOutputContainsWeight
+	}
+	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
 		return errFuseOutputContainsWeight
 	}
 	return nil
