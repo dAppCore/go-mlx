@@ -495,7 +495,14 @@ func workloadAdapterInfo(path string, adapter *LoRAAdapter) WorkloadAdapterInfo 
 }
 
 func cloneWorkloadAdapterInfo(info WorkloadAdapterInfo) WorkloadAdapterInfo {
-	info.TargetKeys = core.SliceClone(info.TargetKeys)
+	// Skip the SliceClone call entirely when TargetKeys is empty —
+	// core.SliceClone → slices.Clone hits the make+copy path even for
+	// zero-length slices unless the input is nil, and a nil-check here
+	// pre-empts the generic call+return-path overhead on the common
+	// "adapter has no explicit target overrides" branch.
+	if len(info.TargetKeys) > 0 {
+		info.TargetKeys = core.SliceClone(info.TargetKeys)
+	}
 	return info
 }
 
