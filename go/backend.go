@@ -752,11 +752,48 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	// Single arena allocation for all per-layer Heads slices. Avoids N
 	// small allocations on a path that runs per KV capture / restore.
 	totalHeads := 0
+	totalKey := 0
+	totalValue := 0
+	totalKeyBytes := 0
+	totalValueBytes := 0
 	for i := range resultLayers {
-		totalHeads += len(resultLayers[i].Heads)
+		heads := resultLayers[i].Heads
+		totalHeads += len(heads)
+		for j := range heads {
+			head := &heads[j]
+			totalKey += len(head.Key)
+			totalValue += len(head.Value)
+			totalKeyBytes += len(head.KeyBytes)
+			totalValueBytes += len(head.ValueBytes)
+		}
 	}
 	headsSlab := make([]kv.HeadSnapshot, totalHeads)
+	// Pre-totalled-sized per-tensor slabs for the per-head data. Each head
+	// previously did 4 SliceClones — for Gemma 4 E4B (30 layers × 16 heads
+	// = 480 heads) that's 1920 small allocations per snapshot. Coalescing
+	// each tensor family into a single arena drops it to 4 allocations
+	// regardless of (layers × heads). nil slabs preserve "nothing to copy"
+	// when an entire family is empty (e.g. raw-bytes-only captures emit
+	// zero Key / Value floats; float-only emit zero Bytes).
+	var keySlab, valueSlab []float32
+	if totalKey > 0 {
+		keySlab = make([]float32, totalKey)
+	}
+	if totalValue > 0 {
+		valueSlab = make([]float32, totalValue)
+	}
+	var keyBytesSlab, valueBytesSlab []byte
+	if totalKeyBytes > 0 {
+		keyBytesSlab = make([]byte, totalKeyBytes)
+	}
+	if totalValueBytes > 0 {
+		valueBytesSlab = make([]byte, totalValueBytes)
+	}
 	headsOffset := 0
+	keyOffset := 0
+	valueOffset := 0
+	keyBytesOffset := 0
+	valueBytesOffset := 0
 	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
 	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
 	// ~160 B (6 slice headers + 2 dtype strings); for deep models (Gemma
@@ -781,13 +818,62 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		}
 		for j := range layerHeadsSrc {
 			head := &layerHeadsSrc[j]
+			// Allocate per-head slices out of the pre-sized arenas. Each
+			// branch preserves the prior nil-in -> nil-out / empty-in ->
+			// empty-out semantics of core.SliceClone so downstream
+			// callers see identical post-clone shape.
+			var headKey []float32
+			switch {
+			case head.Key == nil:
+				// nil in -> nil out
+			case len(head.Key) == 0:
+				headKey = []float32{}
+			default:
+				end := keyOffset + len(head.Key)
+				headKey = keySlab[keyOffset:end:end]
+				copy(headKey, head.Key)
+				keyOffset = end
+			}
+			var headValue []float32
+			switch {
+			case head.Value == nil:
+			case len(head.Value) == 0:
+				headValue = []float32{}
+			default:
+				end := valueOffset + len(head.Value)
+				headValue = valueSlab[valueOffset:end:end]
+				copy(headValue, head.Value)
+				valueOffset = end
+			}
+			var headKeyBytes []byte
+			switch {
+			case head.KeyBytes == nil:
+			case len(head.KeyBytes) == 0:
+				headKeyBytes = []byte{}
+			default:
+				end := keyBytesOffset + len(head.KeyBytes)
+				headKeyBytes = keyBytesSlab[keyBytesOffset:end:end]
+				copy(headKeyBytes, head.KeyBytes)
+				keyBytesOffset = end
+			}
+			var headValueBytes []byte
+			switch {
+			case head.ValueBytes == nil:
+			case len(head.ValueBytes) == 0:
+				headValueBytes = []byte{}
+			default:
+				end := valueBytesOffset + len(head.ValueBytes)
+				headValueBytes = valueBytesSlab[valueBytesOffset:end:end]
+				copy(headValueBytes, head.ValueBytes)
+				valueBytesOffset = end
+			}
 			layerHeads[j] = kv.HeadSnapshot{
-				Key:        core.SliceClone(head.Key),
+				Key:        headKey,
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
-				KeyBytes:   core.SliceClone(head.KeyBytes),
-				Value:      core.SliceClone(head.Value),
+				KeyBytes:   headKeyBytes,
+				Value:      headValue,
 				ValueDType: rootKVHeadDType(head.ValueDType, head.ValueBytes),
-				ValueBytes: core.SliceClone(head.ValueBytes),
+				ValueBytes: headValueBytes,
 			}
 		}
 		headsOffset = headsEnd
@@ -815,14 +901,37 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	}
 	resultLayers := result.Layers
 	layers := make([]metal.KVLayerSnapshot, len(resultLayers))
-	// Single arena allocation for all per-layer Heads slices. Mirror of
-	// toRootKVSnapshot — same N -> 1 collapse on the inverse path.
+	// Single arena allocations for the per-layer Heads slices and the
+	// per-head Key + Value tensor copies. The inverse direction only
+	// clones Key + Value (KeyBytes / ValueBytes pass through by reference
+	// from the root side), so the per-head alloc budget is 2 instead of
+	// toRootKVSnapshot's 4. Coalescing into single float32 slabs drops
+	// 2×heads small allocations to 2 outer allocations regardless of
+	// (layers × heads). Gemma 4 E4B (30 × 16 = 480 heads) goes from 960
+	// to 2 per snapshot.
 	totalHeads := 0
+	totalKey := 0
+	totalValue := 0
 	for i := range resultLayers {
-		totalHeads += len(resultLayers[i].Heads)
+		heads := resultLayers[i].Heads
+		totalHeads += len(heads)
+		for j := range heads {
+			head := &heads[j]
+			totalKey += len(head.Key)
+			totalValue += len(head.Value)
+		}
 	}
 	headsSlab := make([]metal.KVHeadSnapshot, totalHeads)
+	var keySlab, valueSlab []float32
+	if totalKey > 0 {
+		keySlab = make([]float32, totalKey)
+	}
+	if totalValue > 0 {
+		valueSlab = make([]float32, totalValue)
+	}
 	headsOffset := 0
+	keyOffset := 0
+	valueOffset := 0
 	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
 	// + N×head struct-copy elision on the inverse direction.
 	for i := range resultLayers {
@@ -843,11 +952,38 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		}
 		for j := range layerHeadsSrc {
 			head := &layerHeadsSrc[j]
+			// Allocate per-head Key + Value out of the pre-sized arenas;
+			// preserve the prior nil-in -> nil-out / empty-in -> empty-out
+			// shape of core.SliceClone so downstream metal sees no
+			// behavioural change.
+			var headKey []float32
+			switch {
+			case head.Key == nil:
+				// nil in -> nil out
+			case len(head.Key) == 0:
+				headKey = []float32{}
+			default:
+				end := keyOffset + len(head.Key)
+				headKey = keySlab[keyOffset:end:end]
+				copy(headKey, head.Key)
+				keyOffset = end
+			}
+			var headValue []float32
+			switch {
+			case head.Value == nil:
+			case len(head.Value) == 0:
+				headValue = []float32{}
+			default:
+				end := valueOffset + len(head.Value)
+				headValue = valueSlab[valueOffset:end:end]
+				copy(headValue, head.Value)
+				valueOffset = end
+			}
 			layerHeads[j] = metal.KVHeadSnapshot{
-				Key:        core.SliceClone(head.Key),
+				Key:        headKey,
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   head.KeyBytes,
-				Value:      core.SliceClone(head.Value),
+				Value:      headValue,
 				ValueDType: metalKVHeadDType(head.ValueDType, head.ValueBytes),
 				ValueBytes: head.ValueBytes,
 			}
