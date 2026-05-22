@@ -557,12 +557,13 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	// Hoist the architecture profile lookup: previously planFit hit
 	// profile.LookupArchitectureProfile up to 5 times per call
 	// (archSupported x2, resolveArchitectureProfile, archNativeRuntime,
-	// usesGenerationKVCache), and each lookup clones the profile (deep
-	// slice clones — dominant alloc per profile in the bench was 71%).
-	// One lookup, used everywhere downstream.
-	archProfile, archProfileOK := profile.LookupArchitectureProfile(arch)
+	// usesGenerationKVCache). Use the Ref form — read-only pointer into
+	// the immutable registry, no 5-slice clone. pack.ArchitectureProfile
+	// borrows the same pointer (the ModelPack is consumed inside this
+	// function; nothing downstream mutates the profile's slice fields).
+	archProfileRef, archProfileOK := profile.LookupArchitectureProfileRef(arch)
 	supportedArch := archProfileOK
-	nativeRuntime := archProfileOK && archProfile.NativeRuntime
+	nativeRuntime := archProfileOK && archProfileRef.NativeRuntime
 
 	pack := mp.ModelPack{
 		Architecture:          arch,
@@ -574,18 +575,15 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		ContextLength:         contextLimit,
 		WeightBytes:           weightBytes,
 	}
-	// Share the already-cloned profile rather than have
-	// resolveArchitectureProfile do a second lookup-and-clone.
 	if archProfileOK {
-		clone := archProfile
-		pack.ArchitectureProfile = &clone
+		pack.ArchitectureProfile = archProfileRef
 	}
 	memoryPlan := memory.NewPlan(memory.Input{Device: cfg.Device, Pack: &pack})
 	if cfg.ContextHint > 0 && cfg.ContextHint < memoryPlan.ContextLength {
 		memoryPlan.ContextLength = cfg.ContextHint
 	}
 	kvBytes := uint64(0)
-	if packUsesKVCache(&pack, archProfileOK, archProfile) {
+	if packUsesKVCache(&pack, archProfileOK, archProfileRef) {
 		kvBytes = estimateModelKVBytes(config, memoryPlan.ContextLength, memoryPlan.BatchSize, cfg.KVBytes)
 	}
 	runtimeBytes := estimateRuntimeOverheadBytes(weightBytes)
@@ -631,13 +629,15 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 // Skips the per-call profile.LookupArchitectureProfile inside the public
 // helper (the planFit caller already has the lookup result) and the
 // pack.ArchitectureProfile probe (we set it from the same lookup).
-func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile profile.ModelArchitectureProfile) bool {
+// archProfile is a read-only pointer into the static registry; do not
+// mutate.
+func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile *profile.ModelArchitectureProfile) bool {
 	if pack != nil {
 		if pack.Embedding != nil || pack.Rerank != nil {
 			return false
 		}
 	}
-	if archProfileOK && (archProfile.Embeddings || archProfile.Rerank) {
+	if archProfileOK && archProfile != nil && (archProfile.Embeddings || archProfile.Rerank) {
 		return false
 	}
 	return true
@@ -1736,12 +1736,12 @@ func indexString(s, substr string) int {
 }
 
 func archSupported(architecture string) bool {
-	_, ok := profile.LookupArchitectureProfile(architecture)
+	_, ok := profile.LookupArchitectureProfileRef(architecture)
 	return ok
 }
 
 func archNativeRuntime(architecture string) bool {
-	p, ok := profile.LookupArchitectureProfile(architecture)
+	p, ok := profile.LookupArchitectureProfileRef(architecture)
 	return ok && p.NativeRuntime
 }
 
@@ -1757,7 +1757,7 @@ func usesGenerationKVCache(pack *mp.ModelPack, architecture string) bool {
 			return false
 		}
 	}
-	if p, ok := profile.LookupArchitectureProfile(architecture); ok && (p.Embeddings || p.Rerank) {
+	if p, ok := profile.LookupArchitectureProfileRef(architecture); ok && (p.Embeddings || p.Rerank) {
 		return false
 	}
 	return true
@@ -1770,7 +1770,7 @@ func resolveArchitectureProfile(pack *mp.ModelPack) {
 	if pack.ArchitectureProfile != nil {
 		return
 	}
-	if resolved, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
-		pack.ArchitectureProfile = &resolved
+	if resolved, ok := profile.LookupArchitectureProfileRef(pack.Architecture); ok {
+		pack.ArchitectureProfile = resolved
 	}
 }
