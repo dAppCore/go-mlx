@@ -468,18 +468,18 @@ func modelHints(input Input) (contextLength, quantization int, quantType, quantF
 
 func applyArchitectureHints(plan *Plan, architecture string, profileHint *profile.ModelArchitectureProfile) {
 	// Profile registry is authoritative when it matches — skip the
-	// normalize allocation entirely in that case. Only fall through
-	// to normalize for architectures the registry does not know.
+	// normalize allocation entirely in that case. NewPlan has already
+	// looked the architecture up in the registry and only passes a
+	// non-nil profileHint on hit, so a nil profileHint means the
+	// registry does not know this architecture and we go straight to
+	// the normalize fallback. The prior default branch repeated the
+	// LookupArchitectureProfile call (which clones the profile every
+	// call — 70% of the alloc footprint on NewPlan_Qwen3MoEPack).
 	var normalized string
-	switch {
-	case profileHint != nil:
+	if profileHint != nil {
 		normalized = profileHint.ID
-	default:
-		if p, ok := profile.LookupArchitectureProfile(architecture); ok {
-			normalized = p.ID
-		} else {
-			normalized = normalizeKnownArchitecture(architecture)
-		}
+	} else {
+		normalized = normalizeKnownArchitecture(architecture)
 	}
 	switch normalized {
 	case "qwen2":
