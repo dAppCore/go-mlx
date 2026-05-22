@@ -1832,9 +1832,15 @@ func (m *Gemma4Model) splitPerLayerInputTensor(combined *Array) []*Array {
 	defer Free(combined)
 
 	perLayerInputs := make([]*Array, m.Cfg.NumHiddenLayers)
+	// Hoist the Squeeze axes slice out of the per-layer loop.  Squeeze is
+	// variadic and the substrate takes &axes[0] for the cgo inline call,
+	// so each `Squeeze(sliced, 2)` inside the loop body would heap-allocate
+	// a fresh `[]int{2}`.  One layer-2 squeeze per layer × 26 layers ==
+	// 26 allocs/token; with the hoist this becomes 1 alloc/forward.
+	squeezeAxis2 := []int{2}
 	for i := range m.Cfg.NumHiddenLayers {
 		sliced := SliceAxis(combined, 2, i, i+1)
-		perLayerInputs[i] = Squeeze(sliced, 2)
+		perLayerInputs[i] = Squeeze(sliced, squeezeAxis2...)
 		Free(sliced)
 	}
 	return perLayerInputs
