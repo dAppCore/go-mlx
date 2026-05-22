@@ -738,13 +738,29 @@ func fitResultError(result core.Result) error {
 
 // info := mlx.InferJANG(meta)
 func InferJANG(meta ModelMetadata) *jang.Info {
-	needle := core.Lower(firstNonEmpty(meta.ID, meta.ModelID))
+	// Build the lowercase "id tag1 tag2 file1 file2" haystack in one pass.
+	// Previously each tag + file Concat allocated a fresh string and Lower
+	// allocated again — 4+ allocs per tag/file. Now: one buf, lowercase
+	// inline, zero-copy return.
+	id := firstNonEmpty(meta.ID, meta.ModelID)
+	size := len(id)
 	for _, tag := range meta.Tags {
-		needle = core.Concat(needle, " ", core.Lower(tag))
+		size += 1 + len(tag)
 	}
 	for _, file := range meta.Files {
-		needle = core.Concat(needle, " ", core.Lower(file.filename()))
+		size += 1 + len(file.filename())
 	}
+	buf := make([]byte, 0, size)
+	buf = appendLowerASCII(buf, id)
+	for _, tag := range meta.Tags {
+		buf = append(buf, ' ')
+		buf = appendLowerASCII(buf, tag)
+	}
+	for _, file := range meta.Files {
+		buf = append(buf, ' ')
+		buf = appendLowerASCII(buf, file.filename())
+	}
+	needle := core.AsString(buf)
 
 	switch {
 	case core.Contains(needle, "jangtq"):
@@ -770,6 +786,20 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	default:
 		return nil
 	}
+}
+
+// appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
+// bytes pass through unchanged (consistent with the previous core.Lower
+// surface for our domain: model IDs, tags, filenames are all ASCII).
+func appendLowerASCII(dst []byte, s string) []byte {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		dst = append(dst, c)
+	}
+	return dst
 }
 
 func jangGroupSize(meta ModelMetadata) int {
