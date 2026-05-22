@@ -128,13 +128,35 @@ type SFTResult struct {
 
 // Metrics returns a stable JSON-friendly summary of an SFT run.
 func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
-	cfg = normalizeSFTConfig(cfg)
+	// Inline the four scalar defaults Metrics actually reads —
+	// normalizeSFTConfig calls normalizeSFTLoRAConfig which clones
+	// TargetKeys+TargetLayers (two SliceClones) every call. Metrics
+	// touches none of that. The trio of helpers Metrics calls below
+	// (SFTEffectiveBatchSize, etc.) all read only the already-normalised
+	// scalars now hoisted into local vars.
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	gradAccum := cfg.GradientAccumulationSteps
+	if gradAccum <= 0 {
+		gradAccum = 1
+	}
+	learningRate := cfg.LearningRate
+	if learningRate == 0 {
+		if cfg.AdamW.LearningRate != 0 || cfg.AdamW.LearningRateSet {
+			learningRate = cfg.AdamW.LearningRate
+		} else {
+			learningRate = 1e-5
+		}
+	}
+	effectiveBatchSize := batchSize * gradAccum
 	if r == nil {
 		return SFTMetrics{
-			LearningRate:              cfg.LearningRate,
-			BatchSize:                 cfg.BatchSize,
-			GradientAccumulationSteps: cfg.GradientAccumulationSteps,
-			EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
+			LearningRate:              learningRate,
+			BatchSize:                 batchSize,
+			GradientAccumulationSteps: gradAccum,
+			EffectiveBatchSize:        effectiveBatchSize,
 		}
 	}
 	optimizerSteps := r.OptimizerSteps
@@ -147,10 +169,10 @@ func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
 		Epochs:                    r.Epochs,
 		Samples:                   r.Samples,
 		LastLoss:                  r.LastLoss,
-		LearningRate:              cfg.LearningRate,
-		BatchSize:                 cfg.BatchSize,
-		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
-		EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
+		LearningRate:              learningRate,
+		BatchSize:                 batchSize,
+		GradientAccumulationSteps: gradAccum,
+		EffectiveBatchSize:        effectiveBatchSize,
 		CheckpointCount:           len(r.Checkpoints),
 		EvaluationCount:           len(r.Evaluations),
 	}
