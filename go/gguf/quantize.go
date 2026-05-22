@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"math"
 	"sort"
+	"strconv"
 
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
@@ -250,17 +251,17 @@ func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, pay
 	if begin < 0 || end < begin || end > int64(len(payload)) {
 		return denseSafetensor{}, core.NewError("mlx: safetensors tensor offsets exceed payload: " + name)
 	}
-	shape := make([]uint64, 0, len(entry.Shape))
+	if len(entry.Shape) == 0 {
+		return denseSafetensor{}, core.NewError("mlx: safetensors tensor shape is empty: " + name)
+	}
+	shape := make([]uint64, len(entry.Shape))
 	elements := uint64(1)
-	for _, dim := range entry.Shape {
+	for i, dim := range entry.Shape {
 		if dim <= 0 {
 			return denseSafetensor{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
 		}
-		shape = append(shape, uint64(dim))
+		shape[i] = uint64(dim)
 		elements *= uint64(dim)
-	}
-	if len(shape) == 0 {
-		return denseSafetensor{}, core.NewError("mlx: safetensors tensor shape is empty: " + name)
 	}
 	raw := payload[begin:end]
 	values, err := safetensors.DecodeFloatData(core.Upper(entry.DType), raw, int(elements))
@@ -306,7 +307,7 @@ func quantizeGGUFTensor(tensor denseSafetensor, format QuantizeFormat) (ggufQuan
 	return ggufQuantizedTensor{
 		Name:  tensor.Name,
 		Type:  tensorType,
-		Shape: append([]uint64(nil), tensor.Shape...),
+		Shape: core.SliceClone(tensor.Shape),
 		Data:  data,
 	}, nil
 }
@@ -332,7 +333,7 @@ func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format Quantize
 		tensors = append(tensors, ggufQuantizedTensor{
 			Name:  ref.Name,
 			Type:  tensorType,
-			Shape: append([]uint64(nil), ref.Shape...),
+			Shape: core.SliceClone(ref.Shape),
 			Size:  uint64(ref.Elements/blockSize) * uint64(bytesPerBlock),
 		})
 		refs = append(refs, ref)
@@ -360,11 +361,20 @@ func quantizeQ8_0(values []float32) []byte {
 		if maxAbs > 0 {
 			scale = maxAbs / 127
 		}
-		out = appendUint16LE(out, float32ToFloat16(scale))
+		// Inline AppendUint16: skip the appendUint16LE func-call + its
+		// [2]byte temp. binary.LittleEndian.AppendUint16 lowers to a
+		// direct two-byte append.
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
+		invScale := float32(0)
+		if scale != 0 {
+			invScale = 1 / scale
+		}
 		for _, value := range block {
 			var q int
-			if scale != 0 {
-				q = int(math.Round(float64(value / scale)))
+			if invScale != 0 {
+				// Multiply by 1/scale instead of dividing — single FMUL
+				// vs FDIV per element (32x per block, millions per tensor).
+				q = int(math.Round(float64(value * invScale)))
 			}
 			q = clampInt(q, -127, 127)
 			out = append(out, byte(int8(q)))
@@ -382,12 +392,18 @@ func quantizeQ4_0(values []float32) []byte {
 		if maxAbs > 0 {
 			scale = maxAbs / 7
 		}
-		out = appendUint16LE(out, float32ToFloat16(scale))
-		packed := make([]byte, 16)
+		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
+		// Stack-allocated pack buffer instead of make([]byte, 16) per
+		// block — saves one heap alloc per 32 input floats.
+		var packed [16]byte
+		invScale := float32(0)
+		if scale != 0 {
+			invScale = 1 / scale
+		}
 		for i, value := range block {
 			var q int
-			if scale != 0 {
-				q = int(math.Round(float64(value/scale))) + 8
+			if invScale != 0 {
+				q = int(math.Round(float64(value*invScale))) + 8
 			}
 			q = clampInt(q, 0, 15)
 			if i < 16 {
@@ -396,7 +412,7 @@ func quantizeQ4_0(values []float32) []byte {
 				packed[i-16] |= byte(q << 4)
 			}
 		}
-		out = append(out, packed...)
+		out = append(out, packed[:]...)
 	}
 	return out
 }
@@ -511,28 +527,24 @@ func writeQuantizedGGUFStream(ctx context.Context, path string, metadata []ggufM
 		if err != nil {
 			return err
 		}
-		if dataSize != ggufQuantizedTensorDataSize(tensor) {
-			return core.NewError(core.Sprintf("mlx: streamed GGUF tensor %s wrote %d bytes, want %d", tensor.Name, dataSize, ggufQuantizedTensorDataSize(tensor)))
+		expected := ggufQuantizedTensorDataSize(tensor)
+		if dataSize != expected {
+			return core.NewError("mlx: streamed GGUF tensor " + tensor.Name + " wrote " + strconv.FormatUint(dataSize, 10) + " bytes, want " + strconv.FormatUint(expected, 10))
 		}
-		written = tensor.Offset + ggufQuantizedTensorDataSize(tensor)
+		written = tensor.Offset + expected
 	}
 	return nil
 }
 
 func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, tensors []ggufQuantizedTensor) error {
-	write := func(value any) error {
-		return binary.Write(file, binary.LittleEndian, value)
-	}
-	if _, err := file.Write([]byte("GGUF")); err != nil {
-		return err
-	}
-	if err := write(uint32(3)); err != nil {
-		return err
-	}
-	if err := write(uint64(len(tensors))); err != nil {
-		return err
-	}
-	if err := write(uint64(len(metadata))); err != nil {
+	// Single 24-byte header: magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// One write call replaces 4 reflect.Write calls.
+	var header [24]byte
+	copy(header[:4], "GGUF")
+	binary.LittleEndian.PutUint32(header[4:8], 3)
+	binary.LittleEndian.PutUint64(header[8:16], uint64(len(tensors)))
+	binary.LittleEndian.PutUint64(header[16:24], uint64(len(metadata)))
+	if _, err := file.Write(header[:]); err != nil {
 		return err
 	}
 	for _, entry := range metadata {
@@ -556,6 +568,18 @@ func writeQuantizedGGUFHeader(file *core.OSFile, metadata []ggufMetadataEntry, t
 }
 
 func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref safetensors.TensorRef, format QuantizeFormat, chunkElements int) (uint64, error) {
+	// Resolve the quantiser once outside the chunk loop — saves a
+	// switch per chunk (millions of chunks per multi-GB tensor).
+	var quantise func([]float32) []byte
+	switch format {
+	case QuantizeQ8_0:
+		quantise = quantizeQ8_0
+	case QuantizeQ4_0:
+		quantise = quantizeQ4_0
+	default:
+		return 0, core.NewError("mlx: unsupported resolved GGUF format: " + string(format))
+	}
+
 	reader, err := safetensors.OpenReader(ref)
 	if err != nil {
 		return 0, err
@@ -571,10 +595,7 @@ func writeQuantizedGGUFTensorStream(ctx context.Context, file *core.OSFile, ref 
 		if err != nil {
 			return written, err
 		}
-		data, err := quantizeGGUFValues(format, values)
-		if err != nil {
-			return written, err
-		}
+		data := quantise(values)
 		if _, err := file.Write(data); err != nil {
 			return written, err
 		}
@@ -599,7 +620,15 @@ func assignGGUFTensorOffsets(tensors []ggufQuantizedTensor, alignment uint64) {
 	for i := range tensors {
 		offset += alignPadding(offset, alignment)
 		tensors[i].Offset = offset
-		offset += ggufQuantizedTensorDataSize(tensors[i])
+		// Inline the data-size computation rather than passing the struct
+		// by value to ggufQuantizedTensorDataSize (which would copy the
+		// whole ggufQuantizedTensor including the Shape/Data slice
+		// headers on every iteration).
+		if tensors[i].Size > 0 {
+			offset += tensors[i].Size
+		} else {
+			offset += uint64(len(tensors[i].Data))
+		}
 	}
 }
 
@@ -614,7 +643,10 @@ func writeGGUFMetadataEntry(file *core.OSFile, entry ggufMetadataEntry) error {
 	if err := writeGGUFStringValue(file, entry.Key); err != nil {
 		return err
 	}
-	if err := binary.Write(file, binary.LittleEndian, entry.ValueType); err != nil {
+	// valueType(4) — direct LE encoding skips reflect dispatch.
+	var typeBuf [4]byte
+	binary.LittleEndian.PutUint32(typeBuf[:], entry.ValueType)
+	if _, err := file.Write(typeBuf[:]); err != nil {
 		return err
 	}
 	return writeGGUFMetadataValue(file, entry.ValueType, entry.Value)
@@ -629,16 +661,21 @@ func writeGGUFMetadataValue(file *core.OSFile, valueType uint32, value any) erro
 		}
 		return writeGGUFStringValue(file, stringValue)
 	case ValueTypeUint32:
+		var v uint32
 		switch concrete := value.(type) {
 		case uint32:
-			return binary.Write(file, binary.LittleEndian, concrete)
+			v = concrete
 		case int:
-			return binary.Write(file, binary.LittleEndian, uint32(concrete))
+			v = uint32(concrete)
 		default:
 			return core.NewError("mlx: GGUF metadata value is not uint32")
 		}
+		var buf [4]byte
+		binary.LittleEndian.PutUint32(buf[:], v)
+		_, err := file.Write(buf[:])
+		return err
 	default:
-		return core.NewError(core.Sprintf("mlx: unsupported GGUF metadata write type %d", valueType))
+		return core.NewError("mlx: unsupported GGUF metadata write type " + strconv.FormatUint(uint64(valueType), 10))
 	}
 }
 
@@ -646,37 +683,66 @@ func writeGGUFTensorInfo(file *core.OSFile, tensor ggufQuantizedTensor) error {
 	if err := writeGGUFStringValue(file, tensor.Name); err != nil {
 		return err
 	}
-	if err := binary.Write(file, binary.LittleEndian, uint32(len(tensor.Shape))); err != nil {
-		return err
+	// Pack ndim(4) + all dim(8 each) + tensorType(4) + offset(8) into
+	// one batched write — avoids one binary.Write reflect call per
+	// dimension (typically 2-4 per tensor).
+	dims := tensor.Shape
+	bufLen := 4 + len(dims)*8 + 4 + 8
+	// Small scratch on stack for the common 2-4 dim case; fall back to
+	// heap for higher rank tensors (rare in real GGUF files).
+	var stack [64]byte
+	var buf []byte
+	if bufLen <= len(stack) {
+		buf = stack[:bufLen]
+	} else {
+		buf = make([]byte, bufLen)
 	}
-	for _, dim := range tensor.Shape {
-		if err := binary.Write(file, binary.LittleEndian, dim); err != nil {
-			return err
-		}
+	binary.LittleEndian.PutUint32(buf[:4], uint32(len(dims)))
+	pos := 4
+	for _, dim := range dims {
+		binary.LittleEndian.PutUint64(buf[pos:pos+8], dim)
+		pos += 8
 	}
-	if err := binary.Write(file, binary.LittleEndian, tensor.Type); err != nil {
-		return err
-	}
-	return binary.Write(file, binary.LittleEndian, tensor.Offset)
-}
-
-func writeGGUFStringValue(file *core.OSFile, value string) error {
-	if err := binary.Write(file, binary.LittleEndian, uint64(len(value))); err != nil {
-		return err
-	}
-	_, err := file.Write([]byte(value))
+	binary.LittleEndian.PutUint32(buf[pos:pos+4], tensor.Type)
+	pos += 4
+	binary.LittleEndian.PutUint64(buf[pos:pos+8], tensor.Offset)
+	_, err := file.Write(buf)
 	return err
 }
 
+func writeGGUFStringValue(file *core.OSFile, value string) error {
+	// Length-prefix in one batched write with the value bytes when the
+	// value is small enough to fit on stack. For the common metadata-
+	// key case (32-200 bytes) this skips one syscall + one Write call.
+	var stack [256]byte
+	if len(value)+8 <= len(stack) {
+		buf := stack[:8+len(value)]
+		binary.LittleEndian.PutUint64(buf[:8], uint64(len(value)))
+		copy(buf[8:], value)
+		_, err := file.Write(buf)
+		return err
+	}
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(value)))
+	if _, err := file.Write(lenBuf[:]); err != nil {
+		return err
+	}
+	_, err := file.Write(core.AsBytes(value))
+	return err
+}
+
+// ggufPaddingZeros — package-level read-only zero buffer for writePadding.
+// 32 KiB chunk matches the original on-stack size; living at package scope
+// avoids a 32 KiB stack-frame allocation per writePadding call.
+var ggufPaddingZeros [32 * 1024]byte
+
 func writePadding(file *core.OSFile, n uint64) error {
-	const chunkSize = 32 * 1024
-	var zeros [chunkSize]byte
 	for n > 0 {
-		size := uint64(chunkSize)
+		size := uint64(len(ggufPaddingZeros))
 		if n < size {
 			size = n
 		}
-		if _, err := file.Write(zeros[:size]); err != nil {
+		if _, err := file.Write(ggufPaddingZeros[:size]); err != nil {
 			return err
 		}
 		n -= size

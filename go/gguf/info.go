@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"io/fs"
+	"math"
 	"sort"
 	"strconv"
 
@@ -368,30 +369,27 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	file := open.Value.(*core.OSFile)
 	defer file.Close()
 
-	var magic [4]byte
-	if _, err := io.ReadFull(file, magic[:]); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf magic: %w", err)
+	// Wrap in a buffered reader — parseGGUF does hundreds of small fixed-
+	// width reads (8 / 4 / 12 bytes) per metadata entry + tensor. Without
+	// buffering each becomes its own syscall; with bufio (default 4 KiB)
+	// the read syscalls collapse to a handful for typical GGUF headers.
+	reader := core.NewBufReader(file)
+
+	// Single 20-byte read covers magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// Reflect-free scratch — eliminates 4 binary.Read calls (+4 reflect allocs each).
+	var header [24]byte
+	if _, err := io.ReadFull(reader, header[:24]); err != nil {
+		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
-	if string(magic[:]) != "GGUF" {
+	if core.AsString(header[:4]) != "GGUF" {
 		return nil, nil, core.NewError("mlx: invalid gguf magic")
 	}
-
-	var version uint32
-	if err := binary.Read(file, binary.LittleEndian, &version); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf version: %w", err)
-	}
+	version := binary.LittleEndian.Uint32(header[4:8])
 	if version < 2 {
 		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
-
-	var tensorCount uint64
-	if err := binary.Read(file, binary.LittleEndian, &tensorCount); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf tensor count: %w", err)
-	}
-	var metadataCount uint64
-	if err := binary.Read(file, binary.LittleEndian, &metadataCount); err != nil {
-		return nil, nil, core.Errorf("mlx: read gguf metadata count: %w", err)
-	}
+	tensorCount := binary.LittleEndian.Uint64(header[8:16])
+	metadataCount := binary.LittleEndian.Uint64(header[16:24])
 	if tensorCount > maxGGUFCollectionEntries {
 		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
@@ -399,127 +397,166 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
+	// Shared scratch buffer for all subsequent fixed-width reads.
+	// 8 bytes covers uint64 (the widest GGUF scalar); reuse for uint32, uint16, etc.
+	var scratch [8]byte
+
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
-		key, err := readGGUFString(file)
+		key, err := readGGUFString(reader, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
-		var valueType uint32
-		if err := binary.Read(file, binary.LittleEndian, &valueType); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
-		value, err := readGGUFValue(file, valueType)
+		valueType := binary.LittleEndian.Uint32(scratch[:4])
+		value, err := readGGUFValue(reader, valueType, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
 		metadata[key] = value
 	}
 
-	tensors := make([]ggufTensorInfo, 0, int(tensorCount))
+	tensors := make([]ggufTensorInfo, tensorCount)
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readGGUFString(file)
+		name, err := readGGUFString(reader, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
-		var ndim uint32
-		if err := binary.Read(file, binary.LittleEndian, &ndim); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
-		shape := make([]uint64, 0, int(ndim))
-		for range ndim {
-			var dim uint64
-			if err := binary.Read(file, binary.LittleEndian, &dim); err != nil {
+		ndim := binary.LittleEndian.Uint32(scratch[:4])
+		shape := make([]uint64, ndim)
+		for d := uint32(0); d < ndim; d++ {
+			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
-			shape = append(shape, dim)
+			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
-		var tensorType uint32
-		if err := binary.Read(file, binary.LittleEndian, &tensorType); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor type: %w", err)
+		// tensorType(4) + offset(8) = 12 bytes in one read.
+		var trailer [12]byte
+		if _, err := io.ReadFull(reader, trailer[:]); err != nil {
+			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
-		var offset uint64
-		if err := binary.Read(file, binary.LittleEndian, &offset); err != nil {
-			return nil, nil, core.Errorf("mlx: read gguf tensor offset: %w", err)
+		tensors[i] = ggufTensorInfo{
+			Name:   name,
+			Type:   binary.LittleEndian.Uint32(trailer[:4]),
+			Shape:  shape,
+			Offset: binary.LittleEndian.Uint64(trailer[4:12]),
 		}
-		tensors = append(tensors, ggufTensorInfo{Name: name, Type: tensorType, Shape: shape, Offset: offset})
 	}
 
 	return metadata, tensors, nil
 }
 
-func readGGUFString(reader io.Reader) (string, error) {
-	var length uint64
-	if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+// readGGUFString reads a length-prefixed string into a fresh []byte.
+// `scratch` must be at least 8 bytes — used to decode the uint64 length
+// without a reflect.Read alloc.
+func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
+	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 		return "", err
 	}
+	length := binary.LittleEndian.Uint64(scratch[:8])
 	if length > 16<<20 {
 		return "", core.NewError("gguf string is unreasonably large")
+	}
+	if length == 0 {
+		return "", nil
 	}
 	buffer := make([]byte, length)
 	if _, err := io.ReadFull(reader, buffer); err != nil {
 		return "", err
 	}
-	return string(buffer), nil
+	// Zero-copy: buffer is freshly built and only the returned string
+	// references it — no aliasing risk.
+	return core.AsString(buffer), nil
 }
 
-func readGGUFValue(reader io.Reader, valueType uint32) (any, error) {
+func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, error) {
 	switch valueType {
 	case ggufValueTypeUint8:
-		return readGGUFBinary[uint8](reader)
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return uint8(0), err
+		}
+		return scratch[0], nil
 	case ggufValueTypeInt8:
-		return readGGUFBinary[int8](reader)
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return int8(0), err
+		}
+		return int8(scratch[0]), nil
 	case ggufValueTypeUint16:
-		return readGGUFBinary[uint16](reader)
+		if _, err := io.ReadFull(reader, scratch[:2]); err != nil {
+			return uint16(0), err
+		}
+		return binary.LittleEndian.Uint16(scratch[:2]), nil
 	case ggufValueTypeInt16:
-		return readGGUFBinary[int16](reader)
+		if _, err := io.ReadFull(reader, scratch[:2]); err != nil {
+			return int16(0), err
+		}
+		return int16(binary.LittleEndian.Uint16(scratch[:2])), nil
 	case ValueTypeUint32:
-		return readGGUFBinary[uint32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return uint32(0), err
+		}
+		return binary.LittleEndian.Uint32(scratch[:4]), nil
 	case ggufValueTypeInt32:
-		return readGGUFBinary[int32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return int32(0), err
+		}
+		return int32(binary.LittleEndian.Uint32(scratch[:4])), nil
 	case ggufValueTypeFloat32:
-		return readGGUFBinary[float32](reader)
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
+			return float32(0), err
+		}
+		return math.Float32frombits(binary.LittleEndian.Uint32(scratch[:4])), nil
 	case ggufValueTypeBool:
-		value, err := readGGUFBinary[uint8](reader)
-		return value != 0, err
+		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
+			return false, err
+		}
+		return scratch[0] != 0, nil
 	case ValueTypeString:
-		return readGGUFString(reader)
+		return readGGUFString(reader, scratch)
 	case ggufValueTypeArray:
-		var elementType uint32
-		if err := binary.Read(reader, binary.LittleEndian, &elementType); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, err
 		}
-		var length uint64
-		if err := binary.Read(reader, binary.LittleEndian, &length); err != nil {
+		elementType := binary.LittleEndian.Uint32(scratch[:4])
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 			return nil, err
 		}
+		length := binary.LittleEndian.Uint64(scratch[:8])
 		if length > maxGGUFCollectionEntries {
 			return nil, core.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
 		}
-		values := make([]any, 0, int(length))
+		values := make([]any, length)
 		for i := uint64(0); i < length; i++ {
-			value, err := readGGUFValue(reader, elementType)
+			value, err := readGGUFValue(reader, elementType, scratch)
 			if err != nil {
 				return nil, err
 			}
-			values = append(values, value)
+			values[i] = value
 		}
 		return values, nil
 	case ggufValueTypeUint64:
-		return readGGUFBinary[uint64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return uint64(0), err
+		}
+		return binary.LittleEndian.Uint64(scratch[:8]), nil
 	case ggufValueTypeInt64:
-		return readGGUFBinary[int64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return int64(0), err
+		}
+		return int64(binary.LittleEndian.Uint64(scratch[:8])), nil
 	case ggufValueTypeFloat64:
-		return readGGUFBinary[float64](reader)
+		if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+			return float64(0), err
+		}
+		return math.Float64frombits(binary.LittleEndian.Uint64(scratch[:8])), nil
 	default:
 		return nil, core.Errorf("unsupported gguf metadata type %d", valueType)
 	}
-}
-
-func readGGUFBinary[T any](reader io.Reader) (T, error) {
-	var value T
-	err := binary.Read(reader, binary.LittleEndian, &value)
-	return value, err
 }
 
 func readModelConfig(dir string) (*modelConfigProbe, error) {
@@ -762,17 +799,48 @@ func inferGGUFContextLength(metadata map[string]any, architecture string) int {
 }
 
 func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes ...string) int {
-	prefixes := []string{"general"}
+	// Prefix iteration order: split-base, architecture, general.
+	// Encode as small fixed array (max 3 prefixes) with explicit length —
+	// no slice allocation, no append of variadic-built temporary slices.
+	var prefixes [3]string
+	n := 0
 	if architecture != "" {
-		prefixes = append([]string{architecture}, prefixes...)
-		if parts := core.SplitN(architecture, "_", 2); len(parts) == 2 && parts[0] != "" && parts[0] != architecture {
-			base := parts[0]
-			prefixes = append([]string{base}, prefixes...)
+		// Inline underscore split: most architectures ("qwen3", "llama",
+		// "gemma") have no underscore — skip the core.SplitN alloc on the
+		// common path. When present, slice without allocating new strings.
+		if idx := core.Index(architecture, "_"); idx > 0 && idx < len(architecture)-1 {
+			prefixes[n] = architecture[:idx]
+			n++
 		}
+		prefixes[n] = architecture
+		n++
 	}
-	for _, prefix := range prefixes {
+	prefixes[n] = "general"
+	n++
+
+	// Build "<prefix>.<suffix>" into a stack-allocated scratch buffer
+	// instead of forcing a runtime.concatstring2 alloc per probe. Map
+	// lookup via string(scratch[...]) still costs a key copy inside the
+	// runtime, but the inputs themselves stay on the stack.
+	var scratch [128]byte
+	for i := 0; i < n; i++ {
+		prefix := prefixes[i]
 		for _, suffix := range suffixes {
-			if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
+			total := len(prefix) + 1 + len(suffix)
+			if total > len(scratch) {
+				// Fallback for unusually long keys — rare; rebuild via
+				// alloc-allowed concat.
+				if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
+					return value
+				}
+				continue
+			}
+			copy(scratch[:len(prefix)], prefix)
+			scratch[len(prefix)] = '.'
+			copy(scratch[len(prefix)+1:total], suffix)
+			// map lookup with []byte-keyed conversion goes through the
+			// runtime's []byte-to-string fast path that doesn't allocate.
+			if value := metadataInt(metadata[string(scratch[:total])]); value > 0 {
 				return value
 			}
 		}
@@ -798,20 +866,32 @@ func metadataArrayLen(value any) int {
 
 func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architecture string) int {
 	if architecture != "" {
-		for _, key := range []string{
-			architecture + ".block_count",
-			architecture + ".n_layer",
-			architecture + ".num_hidden_layers",
-		} {
-			if count := metadataInt(metadata[key]); count > 0 {
+		// Same stack-scratch + m[string(b)] pattern as metadataIntForSuffix —
+		// avoids the per-probe concat alloc that runtime.concatstring2 would
+		// otherwise produce when escape analysis decides the result needs
+		// the heap.
+		var scratch [128]byte
+		copy(scratch[:len(architecture)], architecture)
+		scratch[len(architecture)] = '.'
+		base := len(architecture) + 1
+		for _, suffix := range [...]string{"block_count", "n_layer", "num_hidden_layers"} {
+			end := base + len(suffix)
+			if end > len(scratch) {
+				if count := metadataInt(metadata[architecture+"."+suffix]); count > 0 {
+					return count
+				}
+				continue
+			}
+			copy(scratch[base:end], suffix)
+			if count := metadataInt(metadata[string(scratch[:end])]); count > 0 {
 				return count
 			}
 		}
 	}
 
 	maxLayer := -1
-	for _, tensor := range tensors {
-		if index := extractLayerIndex(tensor.Name); index > maxLayer {
+	for i := range tensors {
+		if index := extractLayerIndex(tensors[i].Name); index > maxLayer {
 			maxLayer = index
 		}
 	}
@@ -821,8 +901,12 @@ func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architec
 	return 0
 }
 
+// extractLayerIndexMarkers — pkg-level so we don't rebuild the slice
+// on every tensor in inferLayerCount.
+var extractLayerIndexMarkers = [...]string{"model.layers.", "layers.", "blk.", "block."}
+
 func extractLayerIndex(name string) int {
-	for _, marker := range []string{"model.layers.", "layers.", "blk.", "block."} {
+	for _, marker := range extractLayerIndexMarkers {
 		index := indexString(name, marker)
 		if index < 0 {
 			continue
@@ -844,10 +928,13 @@ func extractLayerIndex(name string) int {
 }
 
 func inferQuantBits(tensors []ggufTensorInfo) int {
-	counts := map[int]int{}
-	for _, tensor := range tensors {
-		bits := ggufTensorBits(tensor.Type)
-		if bits > 0 {
+	// Bit widths are bounded (1, 2, 3, 4, 5, 6, 8, 16, 32, 64) so a
+	// fixed-size array beats a map both in dispatch (direct index) and
+	// allocation (none). Index 0 unused, 1..64 covers everything.
+	var counts [65]int
+	for i := range tensors {
+		bits := ggufTensorBits(tensors[i].Type)
+		if bits > 0 && bits < len(counts) {
 			counts[bits]++
 		}
 	}
@@ -855,6 +942,9 @@ func inferQuantBits(tensors []ggufTensorInfo) int {
 	bestBits := 0
 	bestCount := 0
 	for bits, count := range counts {
+		if count == 0 {
+			continue
+		}
 		if count > bestCount || (count == bestCount && bits > bestBits) {
 			bestBits = bits
 			bestCount = count
@@ -880,109 +970,83 @@ type ggufTensorTypeDetailsInfo struct {
 	Known     bool
 }
 
+// ggufTensorTypeDetailsTable — direct lookup by tensorType id, replaces the
+// 35-case switch in the per-tensor hot path. IDs are bounded 0..39 with
+// gaps (4, 5, 36, 37 unused in current GGML); unused entries default to
+// the zero ggufTensorTypeDetailsInfo (Known=false, treated as unknown).
+var ggufTensorTypeDetailsTable = [40]ggufTensorTypeDetailsInfo{
+	ggufTensorTypeF32:      {Name: "f32", DType: "float32", Bits: 32, Known: true},
+	ggufTensorTypeF16:      {Name: "f16", DType: "float16", Bits: 16, Known: true},
+	TensorTypeQ4_0:         {Name: "q4_0", DType: "ggml_q4_0", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_1:     {Name: "q4_1", DType: "ggml_q4_1", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ5_0:     {Name: "q5_0", DType: "ggml_q5_0", Bits: 5, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ5_1:     {Name: "q5_1", DType: "ggml_q5_1", Bits: 5, BlockSize: 32, Quantized: true, Known: true},
+	TensorTypeQ8_0:         {Name: "q8_0", DType: "ggml_q8_0", Bits: 8, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ8_1:     {Name: "q8_1", DType: "ggml_q8_1", Bits: 8, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ2K:      {Name: "q2_k", DType: "ggml_q2_k", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ3K:      {Name: "q3_k", DType: "ggml_q3_k", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ4K:      {Name: "q4_k", DType: "ggml_q4_k", Bits: 4, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ5K:      {Name: "q5_k", DType: "ggml_q5_k", Bits: 5, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ6K:      {Name: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeQ8K:      {Name: "q8_k", DType: "ggml_q8_k", Bits: 8, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2XXS:   {Name: "iq2_xxs", DType: "ggml_iq2_xxs", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2XS:    {Name: "iq2_xs", DType: "ggml_iq2_xs", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ3XXS:   {Name: "iq3_xxs", DType: "ggml_iq3_xxs", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ1S:     {Name: "iq1_s", DType: "ggml_iq1_s", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ4NL:    {Name: "iq4_nl", DType: "ggml_iq4_nl", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeIQ3S:     {Name: "iq3_s", DType: "ggml_iq3_s", Bits: 3, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ2S:     {Name: "iq2_s", DType: "ggml_iq2_s", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeIQ4XS:    {Name: "iq4_xs", DType: "ggml_iq4_xs", Bits: 4, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeI8:       {Name: "i8", DType: "int8", Bits: 8, Known: true},
+	ggufTensorTypeI16:      {Name: "i16", DType: "int16", Bits: 16, Known: true},
+	ggufTensorTypeI32:      {Name: "i32", DType: "int32", Bits: 32, Known: true},
+	ggufTensorTypeI64:      {Name: "i64", DType: "int64", Bits: 64, Known: true},
+	ggufTensorTypeF64:      {Name: "f64", DType: "float64", Bits: 64, Known: true},
+	ggufTensorTypeIQ1M:     {Name: "iq1_m", DType: "ggml_iq1_m", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeBF16:     {Name: "bf16", DType: "bfloat16", Bits: 16, Known: true},
+	ggufTensorTypeQ4_0_4_4: {Name: "q4_0_4_4", DType: "ggml_q4_0_4_4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_0_4_8: {Name: "q4_0_4_8", DType: "ggml_q4_0_4_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeQ4_0_8_8: {Name: "q4_0_8_8", DType: "ggml_q4_0_8_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeTQ1_0:    {Name: "tq1_0", DType: "ggml_tq1_0", Bits: 1, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeTQ2_0:    {Name: "tq2_0", DType: "ggml_tq2_0", Bits: 2, BlockSize: 256, Quantized: true, Known: true},
+	ggufTensorTypeMXFP4:    {Name: "mxfp4", DType: "ggml_mxfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+	ggufTensorTypeNVFP4:    {Name: "nvfp4", DType: "ggml_nvfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true},
+}
+
 func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
-	switch tensorType {
-	case ggufTensorTypeF32:
-		return ggufTensorTypeDetailsInfo{Name: "f32", DType: "float32", Bits: 32, Known: true}
-	case ggufTensorTypeF16:
-		return ggufTensorTypeDetailsInfo{Name: "f16", DType: "float16", Bits: 16, Known: true}
-	case TensorTypeQ4_0:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0", DType: "ggml_q4_0", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_1:
-		return ggufTensorTypeDetailsInfo{Name: "q4_1", DType: "ggml_q4_1", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ5_0:
-		return ggufTensorTypeDetailsInfo{Name: "q5_0", DType: "ggml_q5_0", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ5_1:
-		return ggufTensorTypeDetailsInfo{Name: "q5_1", DType: "ggml_q5_1", Bits: 5, BlockSize: 32, Quantized: true, Known: true}
-	case TensorTypeQ8_0:
-		return ggufTensorTypeDetailsInfo{Name: "q8_0", DType: "ggml_q8_0", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ8_1:
-		return ggufTensorTypeDetailsInfo{Name: "q8_1", DType: "ggml_q8_1", Bits: 8, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ2K:
-		return ggufTensorTypeDetailsInfo{Name: "q2_k", DType: "ggml_q2_k", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ3K:
-		return ggufTensorTypeDetailsInfo{Name: "q3_k", DType: "ggml_q3_k", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ4K:
-		return ggufTensorTypeDetailsInfo{Name: "q4_k", DType: "ggml_q4_k", Bits: 4, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ5K:
-		return ggufTensorTypeDetailsInfo{Name: "q5_k", DType: "ggml_q5_k", Bits: 5, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ6K:
-		return ggufTensorTypeDetailsInfo{Name: "q6_k", DType: "ggml_q6_k", Bits: 6, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeQ8K:
-		return ggufTensorTypeDetailsInfo{Name: "q8_k", DType: "ggml_q8_k", Bits: 8, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2XXS:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_xxs", DType: "ggml_iq2_xxs", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2XS:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_xs", DType: "ggml_iq2_xs", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ3XXS:
-		return ggufTensorTypeDetailsInfo{Name: "iq3_xxs", DType: "ggml_iq3_xxs", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ1S:
-		return ggufTensorTypeDetailsInfo{Name: "iq1_s", DType: "ggml_iq1_s", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ4NL:
-		return ggufTensorTypeDetailsInfo{Name: "iq4_nl", DType: "ggml_iq4_nl", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeIQ3S:
-		return ggufTensorTypeDetailsInfo{Name: "iq3_s", DType: "ggml_iq3_s", Bits: 3, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ2S:
-		return ggufTensorTypeDetailsInfo{Name: "iq2_s", DType: "ggml_iq2_s", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeIQ4XS:
-		return ggufTensorTypeDetailsInfo{Name: "iq4_xs", DType: "ggml_iq4_xs", Bits: 4, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeI8:
-		return ggufTensorTypeDetailsInfo{Name: "i8", DType: "int8", Bits: 8, Known: true}
-	case ggufTensorTypeI16:
-		return ggufTensorTypeDetailsInfo{Name: "i16", DType: "int16", Bits: 16, Known: true}
-	case ggufTensorTypeI32:
-		return ggufTensorTypeDetailsInfo{Name: "i32", DType: "int32", Bits: 32, Known: true}
-	case ggufTensorTypeI64:
-		return ggufTensorTypeDetailsInfo{Name: "i64", DType: "int64", Bits: 64, Known: true}
-	case ggufTensorTypeF64:
-		return ggufTensorTypeDetailsInfo{Name: "f64", DType: "float64", Bits: 64, Known: true}
-	case ggufTensorTypeIQ1M:
-		return ggufTensorTypeDetailsInfo{Name: "iq1_m", DType: "ggml_iq1_m", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeBF16:
-		return ggufTensorTypeDetailsInfo{Name: "bf16", DType: "bfloat16", Bits: 16, Known: true}
-	case ggufTensorTypeQ4_0_4_4:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_4_4", DType: "ggml_q4_0_4_4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_0_4_8:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_4_8", DType: "ggml_q4_0_4_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeQ4_0_8_8:
-		return ggufTensorTypeDetailsInfo{Name: "q4_0_8_8", DType: "ggml_q4_0_8_8", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeTQ1_0:
-		return ggufTensorTypeDetailsInfo{Name: "tq1_0", DType: "ggml_tq1_0", Bits: 1, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeTQ2_0:
-		return ggufTensorTypeDetailsInfo{Name: "tq2_0", DType: "ggml_tq2_0", Bits: 2, BlockSize: 256, Quantized: true, Known: true}
-	case ggufTensorTypeMXFP4:
-		return ggufTensorTypeDetailsInfo{Name: "mxfp4", DType: "ggml_mxfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	case ggufTensorTypeNVFP4:
-		return ggufTensorTypeDetailsInfo{Name: "nvfp4", DType: "ggml_nvfp4", Bits: 4, BlockSize: 32, Quantized: true, Known: true}
-	default:
-		return ggufTensorTypeDetailsInfo{}
+	if tensorType < uint32(len(ggufTensorTypeDetailsTable)) {
+		return ggufTensorTypeDetailsTable[tensorType]
 	}
+	return ggufTensorTypeDetailsInfo{}
 }
 
 func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationIssue) {
-	infos := make([]TensorInfo, 0, len(tensors))
+	infos := make([]TensorInfo, len(tensors))
 	var issues []ValidationIssue
-	for _, tensor := range tensors {
+	for i := range tensors {
+		tensor := &tensors[i]
 		details := ggufTensorTypeDetails(tensor.Type)
-		info := TensorInfo{
+		// tensor.Shape was freshly allocated in parseGGUF and is never
+		// mutated after this point — transfer ownership directly,
+		// skipping a per-tensor SliceClone.
+		infos[i] = TensorInfo{
 			Name:      tensor.Name,
 			Type:      tensor.Type,
 			TypeName:  details.Name,
 			DType:     details.DType,
 			Bits:      details.Bits,
 			BlockSize: details.BlockSize,
-			Shape:     append([]uint64(nil), tensor.Shape...),
+			Shape:     tensor.Shape,
 			Elements:  ggufTensorElements(tensor.Shape),
 			Offset:    tensor.Offset,
 			Quantized: details.Quantized,
 		}
-		infos = append(infos, info)
 
 		if !details.Known {
 			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "unknown_tensor_type",
-				Message:  core.Sprintf("tensor has unknown GGML type id %d", tensor.Type),
+				Message:  "tensor has unknown GGML type id " + strconv.FormatUint(uint64(tensor.Type), 10),
 				Tensor:   tensor.Name,
 			})
 		}
@@ -1009,7 +1073,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "tensor_shape_not_block_aligned",
-				Message:  core.Sprintf("tensor first dimension %d is not divisible by GGML block size %d", tensor.Shape[0], details.BlockSize),
+				Message:  "tensor first dimension " + strconv.FormatUint(tensor.Shape[0], 10) + " is not divisible by GGML block size " + strconv.Itoa(details.BlockSize),
 				Tensor:   tensor.Name,
 			})
 		}
@@ -1075,37 +1139,44 @@ func metadataIntIfPresent(metadata map[string]any, key string) (int, bool) {
 }
 
 func summarizeGGUFTensorTypes(tensors []TensorInfo) []TensorTypeSummary {
-	type summaryKey struct {
-		typ  uint32
-		name string
+	// Real GGUF files surface ~2-10 distinct tensor types (often just
+	// f32 + one quant variant). A linear search over a small slice is
+	// faster than a map allocation + hashing per-tensor here, and skips
+	// the materialise-then-copy round-trip into the output slice.
+	if len(tensors) == 0 {
+		return nil
 	}
-	byType := map[summaryKey]TensorTypeSummary{}
-	for _, tensor := range tensors {
-		key := summaryKey{typ: tensor.Type, name: tensor.TypeName}
-		summary := byType[key]
-		if summary.Count == 0 {
-			summary = TensorTypeSummary{
-				Type:      tensor.Type,
-				Name:      tensor.TypeName,
-				DType:     tensor.DType,
-				Bits:      tensor.Bits,
-				BlockSize: tensor.BlockSize,
-				Quantized: tensor.Quantized,
+	out := make([]TensorTypeSummary, 0, 8)
+	for i := range tensors {
+		t := &tensors[i]
+		found := false
+		for j := range out {
+			if out[j].Type == t.Type && out[j].Name == t.TypeName {
+				out[j].Count++
+				found = true
+				break
 			}
 		}
-		summary.Count++
-		byType[key] = summary
-	}
-	out := make([]TensorTypeSummary, 0, len(byType))
-	for _, summary := range byType {
-		out = append(out, summary)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Count != out[j].Count {
-			return out[i].Count > out[j].Count
+		if !found {
+			out = append(out, TensorTypeSummary{
+				Type:      t.Type,
+				Name:      t.TypeName,
+				DType:     t.DType,
+				Bits:      t.Bits,
+				BlockSize: t.BlockSize,
+				Quantized: t.Quantized,
+				Count:     1,
+			})
 		}
-		return out[i].Name < out[j].Name
-	})
+	}
+	if len(out) > 1 {
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Count != out[j].Count {
+				return out[i].Count > out[j].Count
+			}
+			return out[i].Name < out[j].Name
+		})
+	}
 	return out
 }
 
@@ -1127,87 +1198,62 @@ func quantizationGroupFromTensorTypes(summaries []TensorTypeSummary) int {
 	return group
 }
 
+// ggufFileTypeQuantizationTable — direct lookup table by GGUF file_type.
+// Replaces the case-by-case switch; lives in .rodata. Index 5, 6 unused
+// in the spec — those slots hold zero values (matching the prior default
+// arm "", 0).
+type ggufFileTypeEntry struct {
+	Name string
+	Bits int
+}
+
+var ggufFileTypeQuantizationTable = [40]ggufFileTypeEntry{
+	0:  {"f32", 32},
+	1:  {"f16", 16},
+	2:  {"q4_0", 4},
+	3:  {"q4_1", 4},
+	4:  {"q4_1_some_f16", 4},
+	7:  {"q8_0", 8},
+	8:  {"q5_0", 5},
+	9:  {"q5_1", 5},
+	10: {"q2_k", 2},
+	11: {"q3_k_s", 3},
+	12: {"q3_k_m", 3},
+	13: {"q3_k_l", 3},
+	14: {"q4_k_s", 4},
+	15: {"q4_k_m", 4},
+	16: {"q5_k_s", 5},
+	17: {"q5_k_m", 5},
+	18: {"q6_k", 6},
+	19: {"iq2_xxs", 2},
+	20: {"iq2_xs", 2},
+	21: {"q2_k_s", 2},
+	22: {"iq3_xs", 3},
+	23: {"iq3_xxs", 3},
+	24: {"iq1_s", 1},
+	25: {"iq4_nl", 4},
+	26: {"iq3_s", 3},
+	27: {"iq3_m", 3},
+	28: {"iq2_s", 2},
+	29: {"iq2_m", 2},
+	30: {"iq4_xs", 4},
+	31: {"iq1_m", 1},
+	32: {"bf16", 16},
+	33: {"q4_0_4_4", 4},
+	34: {"q4_0_4_8", 4},
+	35: {"q4_0_8_8", 4},
+	36: {"tq1_0", 1},
+	37: {"tq2_0", 2},
+	38: {"mxfp4", 4},
+	39: {"nvfp4", 4},
+}
+
 func ggufFileTypeQuantization(fileType int) (string, int) {
-	switch fileType {
-	case 0:
-		return "f32", 32
-	case 1:
-		return "f16", 16
-	case 2:
-		return "q4_0", 4
-	case 3:
-		return "q4_1", 4
-	case 4:
-		return "q4_1_some_f16", 4
-	case 7:
-		return "q8_0", 8
-	case 8:
-		return "q5_0", 5
-	case 9:
-		return "q5_1", 5
-	case 10:
-		return "q2_k", 2
-	case 11:
-		return "q3_k_s", 3
-	case 12:
-		return "q3_k_m", 3
-	case 13:
-		return "q3_k_l", 3
-	case 14:
-		return "q4_k_s", 4
-	case 15:
-		return "q4_k_m", 4
-	case 16:
-		return "q5_k_s", 5
-	case 17:
-		return "q5_k_m", 5
-	case 18:
-		return "q6_k", 6
-	case 19:
-		return "iq2_xxs", 2
-	case 20:
-		return "iq2_xs", 2
-	case 21:
-		return "q2_k_s", 2
-	case 22:
-		return "iq3_xs", 3
-	case 23:
-		return "iq3_xxs", 3
-	case 24:
-		return "iq1_s", 1
-	case 25:
-		return "iq4_nl", 4
-	case 26:
-		return "iq3_s", 3
-	case 27:
-		return "iq3_m", 3
-	case 28:
-		return "iq2_s", 2
-	case 29:
-		return "iq2_m", 2
-	case 30:
-		return "iq4_xs", 4
-	case 31:
-		return "iq1_m", 1
-	case 32:
-		return "bf16", 16
-	case 33:
-		return "q4_0_4_4", 4
-	case 34:
-		return "q4_0_4_8", 4
-	case 35:
-		return "q4_0_8_8", 4
-	case 36:
-		return "tq1_0", 1
-	case 37:
-		return "tq2_0", 2
-	case 38:
-		return "mxfp4", 4
-	case 39:
-		return "nvfp4", 4
-	default:
-		return "", 0
+	if fileType >= 0 && fileType < len(ggufFileTypeQuantizationTable) {
+		e := ggufFileTypeQuantizationTable[fileType]
+		return e.Name, e.Bits
 	}
+	return "", 0
 }
 
 func NormalizeQuantType(value string) string {
@@ -1284,13 +1330,19 @@ func ggufQuantizationIsMixed(quantType string, summaries []TensorTypeSummary) bo
 	if core.HasSuffix(quantType, "_m") || core.Contains(quantType, "some_f16") {
 		return true
 	}
-	seen := map[string]bool{}
-	for _, summary := range summaries {
-		if summary.Quantized && summary.Name != "" {
-			seen[summary.Name] = true
+	// summaries is the output of summarizeGGUFTensorTypes, which already
+	// deduplicates by (Type, TypeName). Just count the quantised entries
+	// directly — no need for a map.
+	quantisedCount := 0
+	for i := range summaries {
+		if summaries[i].Quantized && summaries[i].Name != "" {
+			quantisedCount++
+			if quantisedCount > 1 {
+				return true
+			}
 		}
 	}
-	return len(seen) > 1
+	return false
 }
 
 func indexString(s, substr string) int {
