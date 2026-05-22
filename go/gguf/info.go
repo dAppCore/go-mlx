@@ -15,6 +15,16 @@ import (
 
 const maxGGUFCollectionEntries uint64 = 1 << 20
 
+// Sentinel errors — lifted to package vars so the rare-but-hot-under-
+// churn failure paths don't allocate a fresh core.NewError per hit.
+// Mirrors the pattern from safetensors/header_parse.go after W9-Y.
+var (
+	errGGUFNoFile        = core.NewError("mlx: no .gguf file found")
+	errGGUFMultipleFiles = core.NewError("mlx: multiple .gguf files found")
+	errGGUFInvalidMagic  = core.NewError("mlx: invalid gguf magic")
+	errGGUFStringTooLong = core.NewError("gguf string is unreasonably large")
+)
+
 const (
 	ggufValueTypeUint8   = 0
 	ggufValueTypeInt8    = 1
@@ -356,11 +366,11 @@ func resolveGGUFFile(modelPath string) (string, error) {
 	ggufs := core.PathGlob(core.PathJoin(modelPath, "*.gguf"))
 	switch len(ggufs) {
 	case 0:
-		return "", core.NewError("mlx: no .gguf file found")
+		return "", errGGUFNoFile
 	case 1:
 		return ggufs[0], nil
 	default:
-		return "", core.NewError("mlx: multiple .gguf files found")
+		return "", errGGUFMultipleFiles
 	}
 }
 
@@ -419,7 +429,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
 	if core.AsString(scratch[:4]) != "GGUF" {
-		return nil, nil, core.NewError("mlx: invalid gguf magic")
+		return nil, nil, errGGUFInvalidMagic
 	}
 	version := binary.LittleEndian.Uint32(scratch[4:8])
 	if version < 2 {
@@ -576,7 +586,7 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	}
 	length := binary.LittleEndian.Uint64(scratch[:8])
 	if length > 16<<20 {
-		return "", core.NewError("gguf string is unreasonably large")
+		return "", errGGUFStringTooLong
 	}
 	if length == 0 {
 		return "", nil
