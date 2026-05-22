@@ -43,11 +43,18 @@ func Normalize(value string) (Condition, error) {
 
 // MustNormalize parses user input and falls back to CONT when invalid.
 func MustNormalize(value string) Condition {
-	condition, err := Normalize(value)
-	if err != nil {
+	switch core.Lower(core.Trim(value)) {
+	case "", "cont", "continuous", "continuous-stream":
+		return CONT
+	case "trad", "traditional", "traditional-runner":
+		return TRAD
+	case "trad-no-replay", "trad_no_replay", "traditional-no-replay":
+		return TRADNoReplay
+	case "cont-with-gap", "cont_with_gap", "continuous-with-gap":
+		return CONTWithGap
+	default:
 		return CONT
 	}
-	return condition
 }
 
 // Valid reports whether the condition is one of the four pre-registered levels.

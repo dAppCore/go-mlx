@@ -25,6 +25,7 @@
 package mlxlm
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
@@ -50,6 +51,9 @@ var (
 	bridgeScriptReady bool
 	bridgeScriptPath  string // extracted bridge.py temp path (created once per process)
 	bridgeScriptError error
+
+	errClassifyUnsupported      = core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
+	errBatchGenerateUnsupported = core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
 )
 
 // extractScript writes the embedded bridge.py to a temp file and returns its path.
@@ -408,13 +412,13 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 // Classify is not supported by the subprocess backend.
 // Use the native Metal backend for classification.
 func (model *mlxlmmodel) Classify(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.ClassifyResult, error) {
-	return nil, core.E("mlxlm.Classify", "not supported (use native Metal backend)", nil)
+	return nil, errClassifyUnsupported
 }
 
 // BatchGenerate is not supported by the subprocess backend.
 // Use the native Metal backend for batch generation.
 func (model *mlxlmmodel) BatchGenerate(_ context.Context, _ []string, _ ...inference.GenerateOption) ([]inference.BatchResult, error) {
-	return nil, core.E("mlxlm.BatchGenerate", "not supported (use native Metal backend)", nil)
+	return nil, errBatchGenerateUnsupported
 }
 
 // ModelType returns the architecture identifier reported by the subprocess.
@@ -534,14 +538,15 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 	queries := make([][][]float32, numLayers)
 
 	for layerIndex := range numLayers {
-		keyPath := core.JoinPath(snapshotDir, core.Sprintf("keys_%02d.bin", layerIndex))
+		suffix := layerSuffix(layerIndex)
+		keyPath := core.JoinPath(snapshotDir, "keys_"+suffix+".bin")
 		keyData, err := coreio.Local.Read(keyPath)
 		if err != nil {
 			continue
 		}
 		keys[layerIndex] = reshapeFloat32([]byte(keyData), numKeyValueHeads, seqLen*headDim)
 
-		queryPath := core.JoinPath(snapshotDir, core.Sprintf("queries_%02d.bin", layerIndex))
+		queryPath := core.JoinPath(snapshotDir, "queries_"+suffix+".bin")
 		queryData, err := coreio.Local.Read(queryPath)
 		if err != nil {
 			continue
@@ -563,28 +568,38 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 	}, nil
 }
 
+// layerSuffix returns the zero-padded 2-digit layer index used in
+// snapshot filenames (matches Sprintf "%02d" for 0..99).
+//
+//	layerSuffix(7)  // "07"
+//	layerSuffix(28) // "28"
+func layerSuffix(layerIndex int) string {
+	if layerIndex >= 0 && layerIndex < 10 {
+		return "0" + core.Itoa(layerIndex)
+	}
+	return core.Itoa(layerIndex)
+}
+
 // reshapeFloat32 reads raw little-endian float32 bytes and reshapes them into
 // [numHeads][stride] slices, one slice per attention head.
 //
 //	// 8 heads, seqLen=5, headDim=64 → stride=320 floats per head
 //	heads := reshapeFloat32(rawBytes, 8, 5*64)
 func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
-	total := len(data) / 4
-	flat := make([]float32, total)
-	for i := range flat {
-		bits := binary.LittleEndian.Uint32(data[i*4 : i*4+4])
-		flat[i] = math.Float32frombits(bits)
-	}
-
+	totalFloats := len(data) / 4
 	heads := make([][]float32, numHeads)
 	for h := range numHeads {
 		start := h * stride
 		end := start + stride
-		if end > len(flat) {
+		if end > totalFloats {
 			break
 		}
 		head := make([]float32, stride)
-		copy(head, flat[start:end])
+		base := start * 4
+		for i := 0; i < stride; i++ {
+			bits := binary.LittleEndian.Uint32(data[base+i*4 : base+i*4+4])
+			head[i] = math.Float32frombits(bits)
+		}
 		heads[h] = head
 	}
 	return heads
@@ -621,9 +636,8 @@ func newJSONLineReader(reader io.Reader) *jsonlinereader {
 
 func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
-		if index := indexByte(reader.pending, '\n'); index >= 0 {
-			line := make([]byte, index)
-			copy(line, reader.pending[:index])
+		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
+			line := core.SliceClone(reader.pending[:index])
 			if len(line) > 0 && line[len(line)-1] == '\r' {
 				line = line[:len(line)-1]
 			}
@@ -646,8 +660,7 @@ func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 		}
 		if err != nil {
 			if err == io.EOF && len(reader.pending) > 0 {
-				line := make([]byte, len(reader.pending))
-				copy(line, reader.pending)
+				line := core.SliceClone(reader.pending)
 				reader.pending = reader.pending[:0]
 				return line, nil
 			}
@@ -721,7 +734,7 @@ func stringSliceOption(opts core.Options, key string) ([]string, error) {
 	if !ok {
 		return nil, core.E("mlxlm.process", key+" must be []string", nil)
 	}
-	return append([]string(nil), args...), nil
+	return args, nil
 }
 
 func startMLXLMProcess(ctx context.Context, command string, args ...string) (*mlxlmprocess, error) {
@@ -755,7 +768,9 @@ func startMLXLMProcess(ctx context.Context, command string, args ...string) (*ml
 	syscall.CloseOnExec(stdoutRead)
 	syscall.CloseOnExec(stdoutWrite)
 
-	argv := append([]string{command}, args...)
+	argv := make([]string, 1+len(args))
+	argv[0] = command
+	copy(argv[1:], args)
 	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
 		Env:   core.Environ(),
 		Files: []uintptr{uintptr(stdinRead), uintptr(stdoutWrite), uintptr(2)},
@@ -883,13 +898,4 @@ func resultError(result core.Result) error {
 		return err
 	}
 	return nil
-}
-
-func indexByte(data []byte, want byte) int {
-	for index, value := range data {
-		if value == want {
-			return index
-		}
-	}
-	return -1
 }

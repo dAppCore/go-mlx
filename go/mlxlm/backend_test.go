@@ -5,6 +5,7 @@
 package mlxlm
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"io"
@@ -151,11 +152,11 @@ func TestReshapeFloat32_PartialHead_Ugly(t *testing.T) {
 }
 
 func TestMLXLMProcessHelpers_Bad(t *testing.T) {
-	if got := indexByte([]byte("abc\ndef"), '\n'); got != 3 {
-		t.Fatalf("indexByte(newline) = %d, want 3", got)
+	if got := bytes.IndexByte([]byte("abc\ndef"), '\n'); got != 3 {
+		t.Fatalf("bytes.IndexByte(newline) = %d, want 3", got)
 	}
-	if got := indexByte([]byte("abcdef"), '\n'); got != -1 {
-		t.Fatalf("indexByte(missing) = %d, want -1", got)
+	if got := bytes.IndexByte([]byte("abcdef"), '\n'); got != -1 {
+		t.Fatalf("bytes.IndexByte(missing) = %d, want -1", got)
 	}
 
 	args, err := stringSliceOption(core.NewOptions(), "args")
