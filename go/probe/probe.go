@@ -266,9 +266,13 @@ func (r *Recorder) EmitProbe(event Event) {
 	if r == nil {
 		return
 	}
+	// CloneEvent (the deep copy) runs outside the lock — only the
+	// slice append needs serialising. Multiple bus-driven emitters
+	// can now clone in parallel and only contend on the append.
+	cloned := CloneEvent(event)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.events = append(r.events, CloneEvent(event))
+	r.events = append(r.events, cloned)
+	r.mu.Unlock()
 }
 
 // Events returns recorded events without aliasing recorder storage.
