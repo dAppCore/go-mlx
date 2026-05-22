@@ -24,5 +24,14 @@ func (adapter *metaladapter) outputParser() parser.OutputParser {
 	if adapter == nil || adapter.model == nil {
 		return defaultOutputParser
 	}
-	return parser.ForHint(parserHint(adapter.rootModel().Info()))
+	// Bypass rootModel(). rootModel() allocates a fresh *Model + *Tokenizer
+	// every call (~3 allocs) and itself calls adapter.model.Info() to seed
+	// LoadConfig.ContextLength — work we don't need here. parserHint reads
+	// only Architecture + Adapter.Name, both already on metal.ModelInfo
+	// (metal.Model.Info() populates info.Adapter via m.Adapter()).
+	info := adapter.model.Info()
+	return parser.ForHint(parser.Hint{
+		Architecture: info.Architecture,
+		AdapterName:  info.Adapter.Name,
+	})
 }
