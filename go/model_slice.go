@@ -237,21 +237,42 @@ func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.Mode
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
-	// Lazy-allocate missing only when the first absent component is
-	// observed. The vast majority of slices passed to standalone checks
-	// either declare ExtractLevelAll (handled above) or have all four
-	// required components, so the typical path now skips the make()
-	// entirely.
-	var missing []inference.ModelComponent
-	for _, component := range modelSliceStandaloneRequired {
-		if !plan.HasComponent(component) {
-			if missing == nil {
-				missing = make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
-			}
-			missing = append(missing, component)
+	// Single sweep over plan.Components flips the four required-component
+	// bits in a local mask — for a 9-component plan this replaces the
+	// previous 4 × slices.Contains scans (~36 string-equality compares)
+	// with one len(plan.Components) pass and four direct bool reads.
+	// The hot path is "all four present" so the lazy missing-slice
+	// allocation is preserved.
+	var haveEmbed, haveAttn, haveFFN, haveLMHead bool
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentEmbeddings:
+			haveEmbed = true
+		case inference.ModelComponentAttention:
+			haveAttn = true
+		case inference.ModelComponentFFN:
+			haveFFN = true
+		case inference.ModelComponentLMHead:
+			haveLMHead = true
 		}
 	}
-	return len(missing) == 0, missing
+	if haveEmbed && haveAttn && haveFFN && haveLMHead {
+		return true, nil
+	}
+	missing := make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
+	if !haveEmbed {
+		missing = append(missing, inference.ModelComponentEmbeddings)
+	}
+	if !haveAttn {
+		missing = append(missing, inference.ModelComponentAttention)
+	}
+	if !haveFFN {
+		missing = append(missing, inference.ModelComponentFFN)
+	}
+	if !haveLMHead {
+		missing = append(missing, inference.ModelComponentLMHead)
+	}
+	return false, missing
 }
 
 func modelSliceLabelInt64(labels map[string]string, key string) int64 {
