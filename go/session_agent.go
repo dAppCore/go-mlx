@@ -411,6 +411,13 @@ func agentMemoryFoldedPrompt(opts AgentMemoryFoldOptions) string {
 	if opts.FoldedPrompt != "" && core.Trim(opts.FoldedPrompt) != "" {
 		return opts.FoldedPrompt
 	}
+	// Skip Trim on already-empty Summary / RecentTail — the dominant case
+	// in callers that rebuild the fold prompt with no checkpoint summary
+	// yet (e.g. the bare error-path FoldAgentMemory call). Same outcome,
+	// no function-call cost.
+	if opts.Summary == "" && opts.RecentTail == "" {
+		return ""
+	}
 	summary := core.Trim(opts.Summary)
 	tail := core.Trim(opts.RecentTail)
 	if summary == "" && tail == "" {
