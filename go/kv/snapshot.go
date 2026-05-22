@@ -1107,10 +1107,11 @@ func (r *kvSnapshotReader) i32s() []int32 {
 	if chunk == nil {
 		return nil
 	}
+	// Reinterpret-cast bytes → int32 via memcpy; same pattern as
+	// f32s() reader. Single copy vs N×Uint32 + int32 cast.
 	values := make([]int32, size)
-	for i := range values {
-		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), size*4)
+	copy(dst, chunk)
 	return values
 }
 
@@ -1134,10 +1135,15 @@ func (r *kvSnapshotReader) f32s() []float32 {
 	if chunk == nil {
 		return nil
 	}
+	// Reinterpret-cast the bytes back into float32 via memcpy: source
+	// is little-endian on both Go-supported architectures, matching
+	// what f32sRaw wrote. One copy vs N×Uint32+Float32frombits.
+	// We copy because chunk references the reader's input buffer
+	// (potentially mmap-backed); the returned slice must outlive the
+	// reader. Same pattern as f32sRaw on the write side.
 	values := make([]float32, size)
-	for i := range values {
-		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-	}
+	dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), size*4)
+	copy(dst, chunk)
 	return values
 }
 
@@ -1164,10 +1170,11 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 		if chunk == nil {
 			return kvSnapshotEncodedTensor{}
 		}
+		// Reinterpret-cast bytes → float32 via memcpy; same pattern
+		// as f32s() above. Single copy vs N×Uint32+Float32frombits.
 		values := make([]float32, size)
-		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4 : i*4+4]))
-		}
+		dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), size*4)
+		copy(dst, chunk)
 		return kvSnapshotEncodedTensor{Values: values}
 	case 1:
 		scale := math.Float32frombits(r.u32())
@@ -1226,9 +1233,10 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 	values := make([]float32, elements)
 	switch dtype {
 	case "float32":
-		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4 : i*4+4]))
-		}
+		// Reinterpret-cast bytes → float32 via memcpy; same pattern
+		// as f32s() reader. Single copy vs N×Uint32+Float32frombits.
+		dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), elements*4)
+		copy(dst, raw)
 	case "float16":
 		for i := range values {
 			values[i] = safetensors.Float16ToFloat32(binary.LittleEndian.Uint16(raw[i*2 : i*2+2]))
