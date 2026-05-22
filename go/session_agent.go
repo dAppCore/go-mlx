@@ -102,6 +102,10 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 	if err != nil {
 		return nil, err
 	}
+	// Cache the prefix length — consumed by metalKVSnapshotBlockSource and
+	// LoadPrefixFromStateBlocksWithOptions on the two non-folded paths, and
+	// re-read inside shouldPrefillFoldedAgentMemory's bounds check.
+	prefixTokens := plan.Entry.PrefixTokens()
 	if shouldPrefillFoldedAgentMemory(plan.Entry) {
 		if err := s.prefillFoldedAgentMemory(ctx, store, plan, opts); err != nil {
 			return nil, err
@@ -111,7 +115,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		return plan.Report, nil
 	}
 	if restorer, ok := s.session.(nativeSessionKVBlockRestorer); ok {
-		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, plan.Entry.PrefixTokens())
+		source, err := metalKVSnapshotBlockSource(ctx, store, plan.Bundle, prefixTokens)
 		if err != nil {
 			return nil, err
 		}
@@ -122,7 +126,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		s.agentMemory = agent.CloneWakeReport(plan.Report)
 		return plan.Report, nil
 	}
-	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, plan.Entry.PrefixTokens(), opts.LoadOptions)
+	snapshot, err := kv.LoadPrefixFromStateBlocksWithOptions(ctx, store, plan.Bundle, prefixTokens, opts.LoadOptions)
 	if err != nil {
 		return nil, err
 	}
