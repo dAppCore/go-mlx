@@ -196,7 +196,11 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if err := s.ready(); err != nil {
 		return memvid.ChunkRef{}, err
 	}
-	args := []string{"put", s.path, "--json", "--no-embedding", "--no-enrich"}
+	// 5 fixed flags + worst-case option flags (1 raw + 2 per uri/title/
+	// kind/track + 2 per tag + 2 per label). Pre-sized so subsequent
+	// appends never grow the backing array.
+	args := make([]string, 0, 14+2*(len(opts.Tags)+len(opts.Labels)))
+	args = append(args, "put", s.path, "--json", "--no-embedding", "--no-enrich")
 	if s.rawWrites {
 		args = append(args, "--raw")
 	}
