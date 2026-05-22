@@ -623,8 +623,7 @@ func newJSONLineReader(reader io.Reader) *jsonlinereader {
 func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
 		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
-			line := make([]byte, index)
-			copy(line, reader.pending[:index])
+			line := core.SliceClone(reader.pending[:index])
 			if len(line) > 0 && line[len(line)-1] == '\r' {
 				line = line[:len(line)-1]
 			}
@@ -647,8 +646,7 @@ func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 		}
 		if err != nil {
 			if err == io.EOF && len(reader.pending) > 0 {
-				line := make([]byte, len(reader.pending))
-				copy(line, reader.pending)
+				line := core.SliceClone(reader.pending)
 				reader.pending = reader.pending[:0]
 				return line, nil
 			}
