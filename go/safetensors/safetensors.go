@@ -48,6 +48,11 @@ func IndexFiles(paths []string) (Index, error) {
 		if err != nil {
 			return Index{}, err
 		}
+		if cap(index.Names) < len(index.Names)+len(shard.Names) {
+			grown := make([]string, len(index.Names), len(index.Names)+len(shard.Names))
+			copy(grown, index.Names)
+			index.Names = grown
+		}
 		for _, name := range shard.Names {
 			if _, ok := index.Tensors[name]; ok {
 				return Index{}, core.NewError("mlx: duplicate tensor in safetensors shards: " + name)
