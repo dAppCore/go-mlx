@@ -1103,10 +1103,16 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	// Direct string concatenation skips the fmt.Sprintf parse + format
 	// state machinery on every per-block save (~SaveStateBlocks fires once
-	// per checkpointed block during prefill).
+	// per checkpointed block during prefill). Avoid materialising the
+	// default title when opts.Title is non-empty — the previous code
+	// concatenated "go-mlx KV block " + indexStr unconditionally.
+	title := opts.Title
+	if title == "" {
+		title = "go-mlx KV block " + indexStr
+	}
 	return state.PutOptions{
 		URI:    baseURI + "/block/" + indexStr,
-		Title:  firstNonEmpty(opts.Title, "go-mlx KV block "+indexStr),
+		Title:  title,
 		Kind:   kind,
 		Track:  track,
 		Tags:   tags,
