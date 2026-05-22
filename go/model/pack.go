@@ -112,20 +112,25 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 }
 
 func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
-	lowerPath := core.Lower(resolvedPath)
 	var safetensors []string
 	var ggufs []string
-	if core.HasSuffix(lowerPath, ".safetensors") {
+	switch {
+	case hasASCIIInsensitiveSuffix(resolvedPath, ".safetensors"):
 		safetensors = []string{resolvedPath}
-	} else if core.HasSuffix(lowerPath, ".gguf") {
+	case hasASCIIInsensitiveSuffix(resolvedPath, ".gguf"):
 		ggufs = []string{resolvedPath}
-	} else {
+	default:
 		safetensors = core.PathGlob(core.PathJoin(root, "*.safetensors"))
 		ggufs = core.PathGlob(core.PathJoin(root, "*.gguf"))
 	}
 	sort.Strings(safetensors)
 	sort.Strings(ggufs)
-	for _, path := range append(append([]string(nil), safetensors...), ggufs...) {
+	for _, path := range safetensors {
+		if info := core.Stat(path); info.OK {
+			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
+		}
+	}
+	for _, path := range ggufs {
 		if info := core.Stat(path); info.OK {
 			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
 		}
@@ -134,22 +139,48 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	switch {
 	case len(safetensors) > 0 && len(ggufs) > 0:
 		pack.Format = mp.ModelPackFormatMixed
-		pack.WeightFiles = append(append([]string(nil), safetensors...), ggufs...)
+		merged := make([]string, 0, len(safetensors)+len(ggufs))
+		merged = append(merged, safetensors...)
+		merged = append(merged, ggufs...)
+		pack.WeightFiles = merged
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
 	case len(safetensors) > 0:
 		pack.Format = mp.ModelPackFormatSafetensors
-		pack.WeightFiles = append([]string(nil), safetensors...)
+		pack.WeightFiles = core.SliceClone(safetensors)
 	case len(ggufs) == 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = append([]string(nil), ggufs...)
+		pack.WeightFiles = core.SliceClone(ggufs)
 	case len(ggufs) > 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = append([]string(nil), ggufs...)
+		pack.WeightFiles = core.SliceClone(ggufs)
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
 	default:
 		pack.Format = mp.ModelPackFormatMissing
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingWeights, "no .safetensors or .gguf weights found", root)
 	}
+}
+
+// hasASCIIInsensitiveSuffix reports whether s ends with suffix, treating
+// A-Z and a-z as equal. Avoids allocating a lowered copy of s when the
+// only thing we need is a 4-12 byte extension match.
+func hasASCIIInsensitiveSuffix(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	tail := s[len(s)-len(suffix):]
+	for i := 0; i < len(suffix); i++ {
+		a, b := tail[i], suffix[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func inspectModelPackGGUF(pack *mp.ModelPack, path string) {
@@ -246,7 +277,7 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 		return nil
 	}
 	cloned := info
-	cloned.TensorTypes = append([]gguf.TensorTypeSummary(nil), info.TensorTypes...)
+	cloned.TensorTypes = core.SliceClone(info.TensorTypes)
 	return &cloned
 }
 
@@ -262,7 +293,10 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, read.Value.(error).Error(), tokenizerPath)
 		return
 	}
-	var probe map[string]any
+	// We only need to confirm tokenizer.json parses; the contents
+	// aren't read here. Unmarshalling into an empty struct skips
+	// allocating a map[string]any tree for a multi-MB tokenizer.
+	var probe struct{}
 	if result := core.JSONUnmarshal(read.Value.([]byte), &probe); !result.OK {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, result.Value.(error).Error(), tokenizerPath)
 		return
@@ -316,18 +350,40 @@ func readTokenizerChatTemplate(path string) (string, bool, error) {
 		}
 		return "", false, read.Value.(error)
 	}
+	// chat_template is usually a single Jinja string but can also be a
+	// list of {name, template} dicts. Defer the decode via RawMessage
+	// so we don't pay the any-decoding cost — the common path is a
+	// single string which only needs a string-unmarshal afterwards.
 	var config struct {
-		ChatTemplate any `json:"chat_template"`
+		ChatTemplate core.RawMessage `json:"chat_template"`
 	}
 	if result := core.JSONUnmarshal(read.Value.([]byte), &config); !result.OK {
 		return "", false, result.Value.(error)
 	}
-	switch template := config.ChatTemplate.(type) {
-	case string:
+	raw := config.ChatTemplate
+	if len(raw) == 0 || core.AsString(raw) == "null" {
+		return "", false, nil
+	}
+	switch raw[0] {
+	case '"':
+		var template string
+		if result := core.JSONUnmarshal(raw, &template); !result.OK {
+			return "", false, result.Value.(error)
+		}
 		template = core.Trim(template)
 		return template, template != "", nil
-	case []any:
-		if len(template) > 0 {
+	case '[':
+		// Non-empty arrays start with '[' followed by something other
+		// than ']'. The whitespace shapes JSON allows are space/tab/
+		// newline/carriage-return per RFC 8259.
+		for i := 1; i < len(raw); i++ {
+			c := raw[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				continue
+			}
+			if c == ']' {
+				return "", false, nil
+			}
 			return "named_chat_templates", true, nil
 		}
 	}
@@ -342,7 +398,7 @@ func readJinjaChatTemplate(path string) (string, bool, error) {
 		}
 		return "", false, read.Value.(error)
 	}
-	template := core.Trim(string(read.Value.([]byte)))
+	template := core.Trim(core.AsString(read.Value.([]byte)))
 	return template, template != "", nil
 }
 
@@ -351,16 +407,17 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
 		return
 	}
-	if profile, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
-		pack.Architecture = profile.ID
-		pack.ArchitectureProfile = &profile
+	resolved, ok := profile.LookupArchitectureProfile(pack.Architecture)
+	if ok {
+		pack.Architecture = resolved.ID
+		pack.ArchitectureProfile = &resolved
 	}
-	pack.SupportedArchitecture = modelPackSupportedArchitecture(pack.Architecture)
+	pack.SupportedArchitecture = ok
 	if !pack.SupportedArchitecture {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedArchitecture, "architecture is not supported by native go-mlx loaders: "+pack.Architecture, pack.ConfigPath)
 		return
 	}
-	if !modelPackNativeRuntimeSupported(pack.Architecture) {
+	if !resolved.NativeRuntime {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
 	}
 }
@@ -605,17 +662,30 @@ func inspectModelPackMiniMaxM2(pack *mp.ModelPack) {
 
 func inspectModelPackPolicy(pack *mp.ModelPack, cfg mp.ModelPackConfig) {
 	if cfg.ExpectedQuantBits > 0 && pack.QuantBits != cfg.ExpectedQuantBits {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueQuantizationMismatch, core.Sprintf("quantization is %d-bit, expected %d-bit", pack.QuantBits, cfg.ExpectedQuantBits), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueQuantizationMismatch,
+			core.Concat("quantization is ", core.Itoa(pack.QuantBits), "-bit, expected ", core.Itoa(cfg.ExpectedQuantBits), "-bit"),
+			pack.Root)
 	}
 	if cfg.MaxContextLength > 0 && pack.ContextLength > cfg.MaxContextLength {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueContextTooLarge, core.Sprintf("context length %d exceeds limit %d", pack.ContextLength, cfg.MaxContextLength), pack.Root)
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueContextTooLarge,
+			core.Concat("context length ", core.Itoa(pack.ContextLength), " exceeds limit ", core.Itoa(cfg.MaxContextLength)),
+			pack.Root)
 	}
 }
 
 func finalizeModelPack(pack *mp.ModelPack) {
-	chatOK := pack.HasChatTemplate || !modelPackRequiresChatTemplate(pack.Architecture)
+	// pack.ArchitectureProfile is populated by inspectModelPackArchitecture
+	// when the architecture id is known; consult it directly so we don't
+	// re-enter profile.LookupArchitectureProfile twice per finalize.
+	requiresChat := true
+	nativeRuntime := false
+	if pack.ArchitectureProfile != nil {
+		requiresChat = pack.ArchitectureProfile.RequiresChatTemplate
+		nativeRuntime = pack.ArchitectureProfile.NativeRuntime
+	}
+	chatOK := pack.HasChatTemplate || !requiresChat
 	pack.NativeLoadable = pack.SupportedArchitecture &&
-		modelPackNativeRuntimeSupported(pack.Architecture) &&
+		nativeRuntime &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		chatOK &&

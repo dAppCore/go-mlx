@@ -50,9 +50,18 @@ func (probe *modelConfigProbe) architecture() string {
 	if probe == nil {
 		return ""
 	}
+	// Resolve architectures[] once: bert_rerank takes priority over
+	// ModelType (cross-encoders carry it in the class name); remember
+	// the first non-empty result for the fallback path so we never
+	// re-classify the same string twice.
+	var firstResolved string
 	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType == "bert_rerank" {
+		modelType := architectureFromTransformersName(architecture)
+		if modelType == "bert_rerank" {
 			return modelType
+		}
+		if modelType != "" && firstResolved == "" {
+			firstResolved = modelType
 		}
 	}
 	if probe.ModelType != "" {
@@ -61,12 +70,7 @@ func (probe *modelConfigProbe) architecture() string {
 	if probe.TextConfig.ModelType != "" {
 		return normalizeKnownArchitecture(probe.TextConfig.ModelType)
 	}
-	for _, architecture := range probe.Architectures {
-		if modelType := architectureFromTransformersName(architecture); modelType != "" {
-			return modelType
-		}
-	}
-	return ""
+	return firstResolved
 }
 
 func (probe *modelConfigProbe) numLayers() int {
@@ -141,9 +145,7 @@ func (probe *modelConfigProbe) quantGroup() int {
 //
 //	id := normalizeKnownArchitecture("MiniMax-M2")  // → "minimax_m2"
 func normalizeKnownArchitecture(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
-	value = core.Replace(value, ".", "_")
+	value = normalizeASCIIIdentifier(value)
 	switch value {
 	case "qwen2_5", "qwen25":
 		return "qwen2"
@@ -224,8 +226,72 @@ func architectureFromTransformersName(architecture string) string {
 }
 
 func compactArchitectureName(value string) string {
-	compact := core.Lower(value)
-	compact = core.Replace(compact, "_", "")
-	compact = core.Replace(compact, "-", "")
-	return core.Replace(compact, ".", "")
+	buf := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch c {
+		case '_', '-', '.':
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf = append(buf, c)
+	}
+	return core.AsString(buf)
+}
+
+// normalizeASCIIIdentifier trims ASCII whitespace, lowercases A-Z, and
+// folds '-' and '.' to '_' in a single pass. Used by
+// normalizeKnownArchitecture for the canonicalisation step before the
+// known-id switch. Architecture identifiers are pure ASCII so the
+// scalar byte loop replaces three Replace/Lower/Trim allocations with
+// at most one.
+//
+//	id := normalizeASCIIIdentifier("  MiniMax-M2 ")  // → "minimax_m2"
+func normalizeASCIIIdentifier(value string) string {
+	start := 0
+	end := len(value)
+	for start < end {
+		c := value[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := value[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	needsChange := false
+	for i := start; i < end; i++ {
+		c := value[i]
+		if (c >= 'A' && c <= 'Z') || c == '-' || c == '.' {
+			needsChange = true
+			break
+		}
+	}
+	if !needsChange {
+		if start == 0 && end == len(value) {
+			return value
+		}
+		return value[start:end]
+	}
+	buf := make([]byte, end-start)
+	for i := 0; i < len(buf); i++ {
+		c := value[start+i]
+		switch c {
+		case '-', '.':
+			c = '_'
+		default:
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+		}
+		buf[i] = c
+	}
+	return core.AsString(buf)
 }
