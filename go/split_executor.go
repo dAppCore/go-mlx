@@ -372,7 +372,8 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		return "", core.NewError("mlx: split executor prefill returned empty hidden state")
 	}
 
-	tokens := cloneSplitTokenIDs(state.Tokens)
+	tokens := make([]int32, len(state.Tokens), len(state.Tokens)+cfg.MaxTokens)
+	copy(tokens, state.Tokens)
 	hidden := cloneSplitHidden(state.Hidden)
 	builder := core.NewBuilder()
 	decodeStart := time.Now()
