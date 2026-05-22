@@ -6,6 +6,16 @@ package dataset
 
 import core "dappco.re/go"
 
+// Sentinel errors hoisted from the nil-guard call sites so they
+// allocate exactly once at package init instead of one *Err per
+// nil-receiver call. These are cold paths (only fire when a caller
+// has passed a nil receiver) but the package contract is the same
+// either way.
+var (
+	errFuncDatasetNil  = core.NewError("dataset: dataset func is nil")
+	errSliceDatasetNil = core.NewError("dataset: slice dataset is nil")
+)
+
 // Sample is one supervised fine-tuning record.
 type Sample struct {
 	Prompt   string
@@ -32,7 +42,7 @@ type Func func() (Sample, bool, error)
 //	dataset := dataset.Func(func() (dataset.Sample, bool, error) { ... })
 func (fn Func) Next() (Sample, bool, error) {
 	if fn == nil {
-		return Sample{}, false, core.NewError("dataset: dataset func is nil")
+		return Sample{}, false, errFuncDatasetNil
 	}
 	return fn()
 }
@@ -47,13 +57,13 @@ type SliceDataset struct {
 //
 //	d := dataset.NewSliceDataset(samples)
 func NewSliceDataset(samples []Sample) *SliceDataset {
-	return &SliceDataset{samples: append([]Sample(nil), samples...)}
+	return &SliceDataset{samples: core.SliceClone(samples)}
 }
 
 // Next returns the next sample.
 func (d *SliceDataset) Next() (Sample, bool, error) {
 	if d == nil {
-		return Sample{}, false, core.NewError("dataset: slice dataset is nil")
+		return Sample{}, false, errSliceDatasetNil
 	}
 	if d.index >= len(d.samples) {
 		return Sample{}, false, nil
@@ -66,7 +76,7 @@ func (d *SliceDataset) Next() (Sample, bool, error) {
 // Reset rewinds the dataset.
 func (d *SliceDataset) Reset() error {
 	if d == nil {
-		return core.NewError("dataset: slice dataset is nil")
+		return errSliceDatasetNil
 	}
 	d.index = 0
 	return nil
@@ -95,12 +105,12 @@ func CloneSamples(samples []Sample) []Sample {
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
+	// core.MapClone wraps maps.Clone which uses runtime internals to
+	// pre-size the destination and bulk-copy entries, skipping the
+	// per-key hash/insert ceremony of a range-copy loop. Returns nil
+	// for an empty input (matching the prior nil-fast-path).
 	if len(values) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
+	return core.MapClone(values)
 }

@@ -212,11 +212,54 @@ func NewPlan(input Input) Plan {
 	if modelQuant > 0 && modelQuant < plan.PreferredQuantization {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
 	}
-	applyArchitectureHints(&plan, modelArchitecture)
+	// Resolve the canonical architecture once and look up the
+	// profile registry exactly once for the whole NewPlan call. The
+	// three downstream sites — applyArchitectureHints,
+	// applyGenericMoEResidency, and usesGenerationKVCache — used to
+	// each call profile.LookupArchitectureProfile, and the profile
+	// package clones the entry on every lookup. Caching here saves
+	// two clones (plus their child-slice allocations) per plan.
+	//
+	// The three sites had subtly different architecture precedence
+	// in the original code: applyArchitectureHints used
+	// modelArchitecture (ModelInfo > Pack), while
+	// applyGenericMoEResidency + usesGenerationKVCache used the
+	// Pack-precedence resolution (Pack > ModelInfo when both set).
+	// Resolve both forms and only fall back to a second lookup when
+	// the two strings differ; in the steady-state case where only
+	// one of ModelInfo/Pack is populated they agree and we get one
+	// lookup total.
+	hintsArch := modelArchitecture
+	packArch := modelArchitecture
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		packArch = input.Pack.Architecture
+	}
+	hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch)
+	var hintsPtr *profile.ModelArchitectureProfile
+	if hintsFound {
+		hintsPtr = &hintsProfile
+	}
+	packPtr := hintsPtr
+	if packArch != hintsArch {
+		if packProfile, ok := profile.LookupArchitectureProfile(packArch); ok {
+			packPtr = &packProfile
+		} else {
+			packPtr = nil
+		}
+	}
+	applyArchitectureHints(&plan, hintsArch, hintsPtr)
 	applyQuantizationHints(&plan)
-	applyGenericMoEResidency(&plan, input.Pack, modelArchitecture)
-	plan.EstimatedKVCacheBytes = estimateKVCacheBytes(plan, input, KVCacheModeFP16)
-	plan.EstimatedKVCacheModeBytes = estimateKVCacheBytes(plan, input, plan.CacheMode)
+	applyGenericMoEResidency(&plan, input.Pack, packPtr)
+	// Both KV-cache estimates use the same gating + shape — compute
+	// once, scale the element count for each mode. usesGenerationKV
+	// + kvEstimateShape used to run twice per plan.
+	if usesGenerationKVCacheWithProfile(input, packPtr) && plan.ContextLength > 0 {
+		if layers, hidden := kvEstimateShape(input, plan.MachineClass); layers > 0 && hidden > 0 {
+			elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
+			plan.EstimatedKVCacheBytes = elements * 2 // FP16 = 2 bytes/element
+			plan.EstimatedKVCacheModeBytes = scaleKVElements(elements, plan.CacheMode)
+		}
+	}
 	if plan.EstimatedKVCacheBytes > 0 && plan.EstimatedKVCacheModeBytes > 0 && plan.EstimatedKVCacheModeBytes < plan.EstimatedKVCacheBytes {
 		plan.KVCacheSavingsRatio = 1 - float64(plan.EstimatedKVCacheModeBytes)/float64(plan.EstimatedKVCacheBytes)
 	}
@@ -340,7 +383,11 @@ func baseClassPlan(class Class) Plan {
 }
 
 func estimateKVCacheBytes(plan Plan, input Input, mode KVCacheMode) uint64 {
-	if !usesGenerationKVCache(input) {
+	return estimateKVCacheBytesWithProfile(plan, input, mode, nil)
+}
+
+func estimateKVCacheBytesWithProfile(plan Plan, input Input, mode KVCacheMode, profileHint *profile.ModelArchitectureProfile) uint64 {
+	if !usesGenerationKVCacheWithProfile(input, profileHint) {
 		return 0
 	}
 	if plan.ContextLength <= 0 {
@@ -351,6 +398,13 @@ func estimateKVCacheBytes(plan Plan, input Input, mode KVCacheMode) uint64 {
 		return 0
 	}
 	elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
+	return scaleKVElements(elements, mode)
+}
+
+// scaleKVElements maps the raw element count to bytes for the given
+// KV cache mode. Hoisted from estimateKVCacheBytes so NewPlan can
+// run the gating + shape compute once and call this twice instead.
+func scaleKVElements(elements uint64, mode KVCacheMode) uint64 {
 	switch mode {
 	case KVCacheModeKQ8VQ4:
 		return elements * 3 / 4
@@ -412,10 +466,20 @@ func modelHints(input Input) (contextLength, quantization int, quantType, quantF
 	return contextLength, quantization, quantType, quantFamily, architecture, weightBytes
 }
 
-func applyArchitectureHints(plan *Plan, architecture string) {
-	normalized := normalizeKnownArchitecture(architecture)
-	if p, ok := profile.LookupArchitectureProfile(architecture); ok {
-		normalized = p.ID
+func applyArchitectureHints(plan *Plan, architecture string, profileHint *profile.ModelArchitectureProfile) {
+	// Profile registry is authoritative when it matches — skip the
+	// normalize allocation entirely in that case. Only fall through
+	// to normalize for architectures the registry does not know.
+	var normalized string
+	switch {
+	case profileHint != nil:
+		normalized = profileHint.ID
+	default:
+		if p, ok := profile.LookupArchitectureProfile(architecture); ok {
+			normalized = p.ID
+		} else {
+			normalized = normalizeKnownArchitecture(architecture)
+		}
 	}
 	switch normalized {
 	case "qwen2":
@@ -461,9 +525,9 @@ func applyArchitectureHints(plan *Plan, architecture string) {
 			plan.Notes = append(plan.Notes, "MiniMax M2 requires asymmetric compact KV cache below 64GB")
 		}
 	case "bert":
-		applyEncoderHints(plan, "BERT embedding encoder")
+		applyEncoderHints(plan, encoderHintBert)
 	case "bert_rerank":
-		applyEncoderHints(plan, "BERT cross-encoder rerank")
+		applyEncoderHints(plan, encoderHintBertRerank)
 	}
 }
 
@@ -497,17 +561,27 @@ func applyEncoderHints(plan *Plan, label string) {
 			plan.BatchSize = 4
 		}
 	}
-	plan.Notes = append(plan.Notes, label+" uses pooled sequence outputs and does not allocate generation KV cache")
+	plan.Notes = append(plan.Notes, label)
 }
 
+// Pre-computed encoder hint strings — applyEncoderHints used to build
+// these by concatenating a per-call label with a constant suffix at
+// runtime. With only two call sites it is cheaper to pre-compute the
+// full strings as package-level constants and pass the matching one in.
+const (
+	encoderHintBert       = "BERT embedding encoder uses pooled sequence outputs and does not allocate generation KV cache"
+	encoderHintBertRerank = "BERT cross-encoder rerank uses pooled sequence outputs and does not allocate generation KV cache"
+)
+
 func usesGenerationKVCache(input Input) bool {
-	architecture := ""
-	if input.ModelInfo != nil {
-		architecture = input.ModelInfo.Architecture
-	}
-	if input.Pack != nil && input.Pack.Architecture != "" {
-		architecture = input.Pack.Architecture
-	}
+	return usesGenerationKVCacheWithProfile(input, nil)
+}
+
+func usesGenerationKVCacheWithProfile(input Input, profileHint *profile.ModelArchitectureProfile) bool {
+	// Cheapest checks first — Pack-resident flags short-circuit
+	// without touching the architecture string or the profile
+	// registry. Most callers that pass Embedding/Rerank packs return
+	// here.
 	if input.Pack != nil {
 		if input.Pack.Embedding != nil || input.Pack.Rerank != nil {
 			return false
@@ -515,6 +589,21 @@ func usesGenerationKVCache(input Input) bool {
 		if input.Pack.ArchitectureProfile != nil && (input.Pack.ArchitectureProfile.Embeddings || input.Pack.ArchitectureProfile.Rerank) {
 			return false
 		}
+	}
+	// Caller may have already done the registry lookup — use the
+	// cached profile instead of touching the registry again.
+	if profileHint != nil {
+		if profileHint.Embeddings || profileHint.Rerank {
+			return false
+		}
+		return true
+	}
+	// Fall through to the legacy single-call path.
+	architecture := ""
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		architecture = input.Pack.Architecture
+	} else if input.ModelInfo != nil {
+		architecture = input.ModelInfo.Architecture
 	}
 	if p, ok := profile.LookupArchitectureProfile(architecture); ok && (p.Embeddings || p.Rerank) {
 		return false
@@ -529,17 +618,14 @@ func applyQuantizationHints(plan *Plan) {
 	plan.Notes = append(plan.Notes, "JANGTQ/JANG mixed precision protects attention while compressing routed experts; fit estimates should use measured weight bytes over uniform-bit heuristics")
 }
 
-func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, architecture string) {
+func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profile.ModelArchitectureProfile) {
 	if plan == nil {
 		return
 	}
-	if pack != nil && pack.Architecture != "" {
-		architecture = pack.Architecture
-	}
-	p, ok := profile.LookupArchitectureProfile(architecture)
-	if !ok || !p.MoE {
+	if profileHint == nil || !profileHint.MoE {
 		return
 	}
+	p := *profileHint
 	plan.ExpertResidency = ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    ExpertResidencyModeLazy,
@@ -626,18 +712,38 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func lowerASCII(s string) string {
-	b := []byte(s)
-	for i, c := range b {
+	// Fast path — most architecture identifiers are already lowercase
+	// after the first canonicalisation pass. Scan once; if there is
+	// nothing to convert, return the input unchanged to skip both the
+	// byte-slice allocation and the return-side string copy.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		if c >= 'A' && c <= 'Z' {
+			b := []byte(s)
 			b[i] = c + ('a' - 'A')
+			for j := i + 1; j < len(b); j++ {
+				if b[j] >= 'A' && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
 		}
 	}
-	return string(b)
+	return s
 }
 
 func trimSpace(s string) string {
-	start := 0
 	end := len(s)
+	if end == 0 {
+		return s
+	}
+	// Fast path — most canonicalised architecture strings have no
+	// leading or trailing whitespace. One bounds check per end and we
+	// return the input slice header unchanged.
+	if !isSpaceASCII(s[0]) && !isSpaceASCII(s[end-1]) {
+		return s
+	}
+	start := 0
 	for start < end && isSpaceASCII(s[start]) {
 		start++
 	}
@@ -652,11 +758,21 @@ func isSpaceASCII(c byte) bool {
 }
 
 func replaceASCII(s string, old, new byte) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c == old {
+	// Fast path — most identifiers never contain the sentinel byte we
+	// rewrite (dots, dashes). Scan once; if there is nothing to
+	// replace, return the input unchanged to skip both the byte-slice
+	// allocation and the return-side string copy.
+	for i := 0; i < len(s); i++ {
+		if s[i] == old {
+			b := []byte(s)
 			b[i] = new
+			for j := i + 1; j < len(b); j++ {
+				if b[j] == old {
+					b[j] = new
+				}
+			}
+			return string(b)
 		}
 	}
-	return string(b)
+	return s
 }

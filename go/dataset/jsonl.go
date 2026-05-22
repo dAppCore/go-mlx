@@ -13,6 +13,18 @@ import (
 
 const scannerMaxBytes = 16 * 1024 * 1024
 
+// Sentinel errors hoisted from the nil-guard call sites so they
+// allocate exactly once at package init instead of one *Err per
+// nil-receiver call. These are cold paths but the package contract
+// is the same either way, and resultError's "core result failed"
+// fallback fires whenever a non-error Value is wrapped in a failed
+// Result.
+var (
+	errReaderNil        = core.NewError("dataset: reader is nil")
+	errJSONLDatasetNil  = core.NewError("dataset: JSONL dataset is nil")
+	errCoreResultFailed = core.NewError("core result failed")
+)
+
 // Config controls JSONL ingestion and chat sample normalization.
 type Config struct {
 	ChatTemplate chat.Config
@@ -65,7 +77,7 @@ type shareGPTRecord struct {
 //	d, err := dataset.LoadJSONL(reader, dataset.Config{})
 func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if reader == nil {
-		return nil, core.NewError("dataset: reader is nil")
+		return nil, errReaderNil
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxBytes)
@@ -93,7 +105,11 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, core.Errorf("dataset: read JSONL: %w", err)
 	}
-	return &JSONLDataset{samples: CloneSamples(samples)}, nil
+	// samples was built locally — every entry's Meta map was
+	// constructed fresh by labelled(). The slice is owned by the
+	// dataset, so the defensive CloneSamples pass here is pure
+	// duplication. Hand off the freshly built slice directly.
+	return &JSONLDataset{samples: samples}, nil
 }
 
 // NewJSONL returns a replayable dataset from already-normalized samples.
@@ -106,7 +122,7 @@ func NewJSONL(samples []Sample) *JSONLDataset {
 // Next returns the next normalized sample.
 func (d *JSONLDataset) Next() (Sample, bool, error) {
 	if d == nil {
-		return Sample{}, false, core.NewError("dataset: JSONL dataset is nil")
+		return Sample{}, false, errJSONLDatasetNil
 	}
 	if d.index >= len(d.samples) {
 		return Sample{}, false, nil
@@ -119,7 +135,7 @@ func (d *JSONLDataset) Next() (Sample, bool, error) {
 // Reset rewinds the replayable dataset.
 func (d *JSONLDataset) Reset() error {
 	if d == nil {
-		return core.NewError("dataset: JSONL dataset is nil")
+		return errJSONLDatasetNil
 	}
 	d.index = 0
 	return nil
@@ -145,10 +161,14 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 	if len(r.Conversations) > 0 {
 		return MessagesToSample(messagesFromShareGPT(r.Conversations), cfg.ChatTemplate, "sharegpt")
 	}
-	if core.Trim(r.Prompt) != "" || core.Trim(firstNonEmpty(r.Response, r.Completion)) != "" {
+	// Trim each candidate once per row — these used to be called 4-6
+	// times each because firstNonEmpty pre-trimmed for the check then
+	// returned an untrimmed value the caller trimmed again, and the
+	// outer guard re-trimmed for the empty check.
+	if prompt := core.Trim(r.Prompt); prompt != "" || firstNonEmpty(r.Response, r.Completion) != "" {
 		return labelled(Sample{
-			Prompt:   core.Trim(r.Prompt),
-			Response: core.Trim(firstNonEmpty(r.Response, r.Completion)),
+			Prompt:   prompt,
+			Response: firstNonEmpty(r.Response, r.Completion),
 		}, "prompt_response"), true, nil
 	}
 	if core.Trim(r.Instruction) != "" || core.Trim(r.Output) != "" {
@@ -157,9 +177,9 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 			Response: core.Trim(r.Output),
 		}, "alpaca"), true, nil
 	}
-	if core.Trim(firstNonEmpty(r.Problem, r.Question)) != "" || core.Trim(firstNonEmpty(r.Solution, r.Answer)) != "" {
+	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" || firstNonEmpty(r.Solution, r.Answer) != "" {
 		return labelled(Sample{
-			Prompt:   core.Trim(firstNonEmpty(r.Problem, r.Question)),
+			Prompt:   problem,
 			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), firstNonEmpty(r.Solution, r.Answer)),
 		}, "reasoning"), true, nil
 	}
@@ -169,6 +189,12 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 func messagesFromOpenAI(records []messageRecord) []inference.Message {
 	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
+		// Short-circuit empty rows before the Trim/NormaliseRole
+		// work — JSON unmarshal leaves missing fields as "" so
+		// this is a hot skip for sparse messages.
+		if record.Role == "" && record.Content == "" {
+			continue
+		}
 		role := chat.NormaliseRole(record.Role)
 		content := core.Trim(record.Content)
 		if role == "" && content == "" {
@@ -182,6 +208,9 @@ func messagesFromOpenAI(records []messageRecord) []inference.Message {
 func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
 	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
+		if record.From == "" && record.Value == "" {
+			continue
+		}
 		role := chat.NormaliseRole(record.From)
 		content := core.Trim(record.Value)
 		if role == "" && content == "" {
@@ -215,16 +244,26 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 		})
 		return labelled(Sample{Text: text}, format), true, nil
 	}
-	promptMessages := cloneMessages(messages[:assistantIdx])
+	// chat.Format only reads from its slice argument (verified: all
+	// per-template formatters iterate with `for _, msg := range
+	// messages` without retaining), and the resulting Prompt is an
+	// immutable string baked into the returned Sample. The defensive
+	// cloneMessages copy was protecting nothing — drop it and pass
+	// the sub-slice directly.
 	response := core.Trim(messages[assistantIdx].Content)
-	prompt := chat.Format(promptMessages, cfg)
+	prompt := chat.Format(messages[:assistantIdx], cfg)
 	return labelled(Sample{Prompt: prompt, Response: response}, format), true, nil
 }
 
 func labelled(sample Sample, format string) Sample {
-	sample.Meta = cloneStringMap(sample.Meta)
-	if sample.Meta == nil {
-		sample.Meta = map[string]string{}
+	// Fast path — toSample always hands a Sample with nil Meta to
+	// labelled, so the clone path returns nil. Pre-size the fresh
+	// map to one entry to skip the runtime growth step the
+	// untyped map literal would trigger.
+	if len(sample.Meta) == 0 {
+		sample.Meta = make(map[string]string, 1)
+	} else {
+		sample.Meta = cloneStringMap(sample.Meta)
 	}
 	sample.Meta["format"] = format
 	return sample
@@ -254,19 +293,14 @@ func formatReasoningResponse(thinking, solution string) string {
 	return thinking + "\n\n" + solution
 }
 
-func cloneMessages(messages []inference.Message) []inference.Message {
-	if len(messages) == 0 {
-		return nil
-	}
-	out := make([]inference.Message, len(messages))
-	copy(out, messages)
-	return out
-}
-
+// firstNonEmpty returns the first value with a non-empty trimmed form,
+// already trimmed. Callers were universally trimming the result a
+// second time before use; returning the trimmed value eliminates the
+// duplicate Trim per row.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if core.Trim(value) != "" {
-			return value
+		if trimmed := core.Trim(value); trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""
@@ -279,5 +313,5 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
