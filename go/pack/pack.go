@@ -3,6 +3,7 @@
 package pack
 
 import (
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
 	"dappco.re/go/inference/quant/jang"
@@ -206,7 +207,7 @@ func (p ModelPack) IssueSummary() string {
 	if len(p.Issues) == 0 {
 		return "unknown"
 	}
-	var codes []string
+	codes := make([]string, 0, len(p.Issues))
 	for _, issue := range p.Issues {
 		if issue.Severity == ModelPackIssueError {
 			codes = append(codes, string(issue.Code))
@@ -215,9 +216,5 @@ func (p ModelPack) IssueSummary() string {
 	if len(codes) == 0 {
 		return "unknown"
 	}
-	out := codes[0]
-	for _, c := range codes[1:] {
-		out += ", " + c
-	}
-	return out
+	return core.Join(", ", codes...)
 }
