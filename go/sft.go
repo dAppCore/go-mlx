@@ -1039,10 +1039,16 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 	}
 	// First add into an empty accumulator: pre-size to maxSeqLen (when
 	// known) so the doubling cascade across subsequent appends collapses
-	// into a single allocation per accumulator field.
+	// into a single allocation per accumulator field. Inputs + Targets
+	// share one 2*maxSeqLen-wide backing — they're both []int of the
+	// same maximum length and never grow past maxSeqLen (caller flushes
+	// when adding would overflow). Carving two cap-maxSeqLen views out
+	// of the shared backing drops one allocation per first-add. Mask
+	// stays separate (different element type).
 	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
-		p.current.inputs = make([]int, 0, p.maxSeqLen)
-		p.current.targets = make([]int, 0, p.maxSeqLen)
+		intBacking := make([]int, 2*p.maxSeqLen)
+		p.current.inputs = intBacking[:0:p.maxSeqLen]
+		p.current.targets = intBacking[p.maxSeqLen : p.maxSeqLen : 2*p.maxSeqLen]
 		p.current.mask = make([]float32, 0, p.maxSeqLen)
 	}
 	p.current.inputs = append(p.current.inputs, srcInputs...)
