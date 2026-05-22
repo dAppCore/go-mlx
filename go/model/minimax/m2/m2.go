@@ -600,12 +600,16 @@ func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32,
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), hiddenSize))
 		}
 		scores := make([]float32, numExperts)
+		// Hint the compiler that row[:hiddenSize] is in bounds, eliminating
+		// the per-multiply bounds check on row[i] inside the hot dot-product
+		// loop (16 tokens × 256 experts × 3072 fma = 12M iters per call).
+		hiddenRow := row[:hiddenSize:hiddenSize]
 		base := 0
 		for expertID := 0; expertID < numExperts; expertID++ {
-			expertWeights := weight[base : base+hiddenSize]
+			expertWeights := weight[base : base+hiddenSize : base+hiddenSize]
 			sum := float32(0)
 			for i, w := range expertWeights {
-				sum += row[i] * w
+				sum += hiddenRow[i] * w
 			}
 			scores[expertID] = sum
 			base += hiddenSize
