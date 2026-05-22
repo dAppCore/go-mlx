@@ -304,13 +304,18 @@ func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
 }
 
 func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
-	vectors := make([][]float32, 0, len(heads))
-	for _, head := range heads {
-		if keys {
-			vectors = append(vectors, head.Key)
-			continue
+	// Pre-extend instead of pre-allocate-empty + N appends — len is
+	// known up-front (one slot per head). Hoists the keys/values branch
+	// out of the inner loop too.
+	vectors := make([][]float32, len(heads))
+	if keys {
+		for i := range heads {
+			vectors[i] = heads[i].Key
 		}
-		vectors = append(vectors, head.Value)
+	} else {
+		for i := range heads {
+			vectors[i] = heads[i].Value
+		}
 	}
 	return vectors
 }
