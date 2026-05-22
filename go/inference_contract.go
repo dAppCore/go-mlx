@@ -87,7 +87,9 @@ func (backend *metalbackend) PlanModelSlice(ctx context.Context, req inference.M
 		return nil, err
 	}
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size for the two known keys we set below — initial
+		// bucket holds both without a grow on the second insertion.
+		plan.Labels = make(map[string]string, 2)
 	}
 	plan.Labels["backend"] = "metal"
 	plan.Labels["library"] = "go-mlx"
@@ -132,7 +134,10 @@ func (backend *metalbackend) PlanSplitInference(ctx context.Context, req inferen
 		Labels:     cloneInferenceLabels(req.Labels),
 	}
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size for the two known keys we're about to set
+		// (backend, library) so the map's initial bucket holds both
+		// without triggering a grow on the second insertion.
+		plan.Labels = make(map[string]string, 2)
 	}
 	plan.Labels["backend"] = "metal"
 	plan.Labels["library"] = "go-mlx"
@@ -813,9 +818,14 @@ func cloneInferenceSplitEndpoints(endpoints []inference.SplitEndpoint) []inferen
 		return nil
 	}
 	out := make([]inference.SplitEndpoint, len(endpoints))
-	for i, endpoint := range endpoints {
-		out[i] = endpoint
-		out[i].Labels = cloneInferenceLabels(endpoint.Labels)
+	// Index iteration — the range-and-copy form copied each endpoint
+	// twice (once into the loop-var, once into the output) on every
+	// step. SplitEndpoint carries Address/Role/Format strings plus
+	// the Labels map header, so the copy is non-trivial. Index assigns
+	// straight from source to destination.
+	for i := range endpoints {
+		out[i] = endpoints[i]
+		out[i].Labels = cloneInferenceLabels(endpoints[i].Labels)
 	}
 	return out
 }
