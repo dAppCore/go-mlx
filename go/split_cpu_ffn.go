@@ -118,6 +118,12 @@ type cpuSplitPackedMatrix struct {
 	biases []float32
 	rows   int
 	cols   int
+	// Hot-path mirrors of desc fields. The per-element value() lookup ran
+	// hundreds of millions of times per layer; reading them off the struct
+	// directly avoids the chase through desc.GroupSize / desc.Bits each call.
+	groupSize int
+	bits      int
+	elements  uint64
 }
 
 const cpuSplitFloat32Bytes = int64(4)
@@ -795,12 +801,15 @@ func (executor *CPUSplitFFNExecutor) loadPackedMatrix(primaryName, foundName str
 		return nil, nil, err
 	}
 	return nil, &cpuSplitPackedMatrix{
-		desc:   desc,
-		packed: packed,
-		scales: scales,
-		biases: biases,
-		rows:   rows,
-		cols:   cols,
+		desc:      desc,
+		packed:    packed,
+		scales:    scales,
+		biases:    biases,
+		rows:      rows,
+		cols:      cols,
+		groupSize: desc.GroupSize,
+		bits:      desc.Bits,
+		elements:  desc.Elements,
 	}, nil
 }
 
@@ -906,11 +915,11 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 }
 
 func (matrix *cpuSplitPackedMatrix) value(index int) float32 {
-	if matrix == nil || index < 0 || uint64(index) >= matrix.desc.Elements {
+	if matrix == nil || index < 0 || uint64(index) >= matrix.elements {
 		return 0
 	}
-	group := index / matrix.desc.GroupSize
-	q := cpuSplitUnpackPackedValue(matrix.packed, index, matrix.desc.Bits)
+	group := index / matrix.groupSize
+	q := cpuSplitUnpackPackedValue(matrix.packed, index, matrix.bits)
 	return float32(q)*matrix.scales[group] + matrix.biases[group]
 }
 
