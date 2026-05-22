@@ -226,9 +226,14 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 		ctx = context.Background()
 	}
 	cfg = normalizeWorkloadBenchConfig(cfg)
+	// normalizeWorkloadBenchConfig already produced a fresh clone of the
+	// caller's QuantizationProfile and bound it to cfg — cfg is a local
+	// value the caller never sees, so the report can take ownership of
+	// the same clone instead of paying a second jang.ClonePackedProfile
+	// (full struct copy + RoleBits clone) on every dispatch.
 	report := &WorkloadBenchReport{
 		Version:             WorkloadBenchReportVersion,
-		QuantizationProfile: jang.ClonePackedProfile(cfg.QuantizationProfile),
+		QuantizationProfile: cfg.QuantizationProfile,
 	}
 
 	fastEval, err := RunFastEval(ctx, runner.FastEval, cfg.FastEval)
@@ -259,7 +264,13 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.Eval = normalizeWorkloadEvalConfig(cfg.Eval)
-	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
+	// Guard the ClonePackedProfile call — the helper short-circuits on
+	// nil but the cross-package function call + return still costs CPU
+	// cycles on every cfg normalisation, and the no-quantisation path
+	// is the typical shape for callers that haven't wired a profile.
+	if cfg.QuantizationProfile != nil {
+		cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
+	}
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
 	cfg.ExpertResidency = m2.NormalisePlan(cfg.ExpertResidency)
 	return cfg
@@ -369,7 +380,15 @@ func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg 
 		return report
 	}
 	start := time.Now()
-	metrics, err := runner.EvaluatePerplexity(ctx, cloneWorkloadEvalSamples(cfg.EvalSamples))
+	// normalizeWorkloadBenchConfig already produced a defensive clone
+	// of cfg.EvalSamples (including per-sample Meta map clones) before
+	// this helper ran. The slice and its Meta payloads are private to
+	// the RunWorkloadBench call frame — we only read its length below —
+	// so we hand the same backing slice straight to the user callback
+	// instead of paying a second cloneWorkloadEvalSamples (one slice
+	// alloc + one map alloc per sample with metadata) on every
+	// perplexity-evaluation dispatch.
+	metrics, err := runner.EvaluatePerplexity(ctx, cfg.EvalSamples)
 	report.Duration = nonZeroDuration(time.Since(start))
 	if err != nil {
 		report.Error = err.Error()
@@ -424,54 +443,70 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 	// ~20-field GenerationMetrics blobs we only read a few fields out
 	// of.
 	if fast := report.FastEval; fast != nil {
-		summary.PrefillTokensPerSec = fast.Generation.PrefillTokensPerSec
-		summary.DecodeTokensPerSec = fast.Generation.DecodeTokensPerSec
-		summary.PeakMemoryBytes = fast.Generation.PeakMemoryBytes
-		summary.ActiveMemoryBytes = fast.Generation.ActiveMemoryBytes
-		summary.PromptCacheHitRate = fast.PromptCache.HitRate
-		summary.PromptCacheHitTokens = fast.PromptCache.HitTokens
-		summary.PromptCacheMissTokens = fast.PromptCache.MissTokens
-		summary.PromptCacheRestoreDuration = fast.PromptCache.RestoreDuration
-		if fast.StateKVBlockWarm.Attempted {
-			summary.PromptCacheSource = fast.StateKVBlockWarm.Source
-			summary.PromptTokensAvoided = fast.StateKVBlockWarm.PromptTokensAvoided
-			summary.PromptCacheReplayTokens = fast.StateKVBlockWarm.ReplayTokens
-			summary.PromptCacheExactFallbackReplayTokens = fast.StateKVBlockWarm.ExactFallbackReplayTokens
-			summary.StateKVBlockRestoreDuration = fast.StateKVBlockWarm.RestoreDuration
-			summary.StateKVBlockStorePath = fast.StateKVBlockWarm.StorePath
-			summary.StateKVBlockStoreBytes = fast.StateKVBlockWarm.StoreBytes
-			summary.StateKVBlocksRead = fast.StateKVBlockWarm.BlocksRead
-			summary.StateKVChunksRead = fast.StateKVBlockWarm.ChunksRead
-			summary.StateKVPrefixTokensRestored = fast.StateKVBlockWarm.PrefixTokensRestored
+		// Cache the Generation + PromptCache sub-block pointers — each
+		// is read four times and the chained field-offset compute on
+		// every read collapses to a single pointer plus a fixed offset
+		// when we hand the compiler a sub-pointer to chase.
+		gen := &fast.Generation
+		summary.PrefillTokensPerSec = gen.PrefillTokensPerSec
+		summary.DecodeTokensPerSec = gen.DecodeTokensPerSec
+		summary.PeakMemoryBytes = gen.PeakMemoryBytes
+		summary.ActiveMemoryBytes = gen.ActiveMemoryBytes
+		pc := &fast.PromptCache
+		summary.PromptCacheHitRate = pc.HitRate
+		summary.PromptCacheHitTokens = pc.HitTokens
+		summary.PromptCacheMissTokens = pc.MissTokens
+		summary.PromptCacheRestoreDuration = pc.RestoreDuration
+		if kvWarm := &fast.StateKVBlockWarm; kvWarm.Attempted {
+			summary.PromptCacheSource = kvWarm.Source
+			summary.PromptTokensAvoided = kvWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = kvWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = kvWarm.ExactFallbackReplayTokens
+			summary.StateKVBlockRestoreDuration = kvWarm.RestoreDuration
+			summary.StateKVBlockStorePath = kvWarm.StorePath
+			summary.StateKVBlockStoreBytes = kvWarm.StoreBytes
+			summary.StateKVBlocksRead = kvWarm.BlocksRead
+			summary.StateKVChunksRead = kvWarm.ChunksRead
+			summary.StateKVPrefixTokensRestored = kvWarm.PrefixTokensRestored
 		}
 		summary.KVRestoreDuration = fast.KVRestore.Duration
-		if fast.SpeculativeDecode.Attempted && fast.SpeculativeDecode.Error == "" {
-			summary.SpeculativeAcceptanceRate = fast.SpeculativeDecode.Metrics.AcceptanceRate
-			summary.SpeculativeAcceptedTokens = fast.SpeculativeDecode.Metrics.AcceptedTokens
-			summary.SpeculativeRejectedTokens = fast.SpeculativeDecode.Metrics.RejectedTokens
+		if spec := &fast.SpeculativeDecode; spec.Attempted && spec.Error == "" {
+			m := &spec.Metrics
+			summary.SpeculativeAcceptanceRate = m.AcceptanceRate
+			summary.SpeculativeAcceptedTokens = m.AcceptedTokens
+			summary.SpeculativeRejectedTokens = m.RejectedTokens
 		}
-		if fast.PromptLookupDecode.Attempted && fast.PromptLookupDecode.Error == "" {
-			summary.PromptLookupAcceptanceRate = fast.PromptLookupDecode.Metrics.AcceptanceRate
-			summary.PromptLookupAcceptedTokens = fast.PromptLookupDecode.Metrics.AcceptedTokens
-			summary.PromptLookupRejectedTokens = fast.PromptLookupDecode.Metrics.RejectedTokens
+		if pl := &fast.PromptLookupDecode; pl.Attempted && pl.Error == "" {
+			m := &pl.Metrics
+			summary.PromptLookupAcceptanceRate = m.AcceptanceRate
+			summary.PromptLookupAcceptedTokens = m.AcceptedTokens
+			summary.PromptLookupRejectedTokens = m.RejectedTokens
 		}
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
 	summary.AdapterFuseDuration = report.Adapter.Fuse.Duration
-	if report.ExpertResidency.Attempted && report.ExpertResidency.Error == "" {
-		summary.ExpertResidencyResidentExperts = report.ExpertResidency.Stats.ResidentExperts
-		summary.ExpertResidencyPeakResidentExperts = report.ExpertResidency.Stats.PeakResidentExperts
-		summary.ExpertResidencyPageIns = report.ExpertResidency.Stats.PageIns
-		summary.ExpertResidencyPageOuts = report.ExpertResidency.Stats.PageOuts
-		summary.ExpertResidencyLoadedBytes = report.ExpertResidency.Stats.LoadedBytes
-		summary.ExpertResidencyEvictedBytes = report.ExpertResidency.Stats.EvictedBytes
-		summary.ExpertResidencyFirstUseLatency = report.ExpertResidency.Stats.FirstUseLatency
-		summary.ExpertResidencyTotalLoadDuration = report.ExpertResidency.Stats.TotalLoadDuration
+	// Cache the residency sub-report pointer when reading the Stats
+	// block so we don't pay the chained field-offset compute on every
+	// summary field — eight stats reads collapse to one cached pointer
+	// plus eight fixed-offset loads.
+	if er := &report.ExpertResidency; er.Attempted && er.Error == "" {
+		stats := &er.Stats
+		summary.ExpertResidencyResidentExperts = stats.ResidentExperts
+		summary.ExpertResidencyPeakResidentExperts = stats.PeakResidentExperts
+		summary.ExpertResidencyPageIns = stats.PageIns
+		summary.ExpertResidencyPageOuts = stats.PageOuts
+		summary.ExpertResidencyLoadedBytes = stats.LoadedBytes
+		summary.ExpertResidencyEvictedBytes = stats.EvictedBytes
+		summary.ExpertResidencyFirstUseLatency = stats.FirstUseLatency
+		summary.ExpertResidencyTotalLoadDuration = stats.TotalLoadDuration
 	}
-	summary.EvalSamples = report.Evaluation.Metrics.Samples
-	summary.EvalTokens = report.Evaluation.Metrics.Tokens
-	summary.EvalLoss = report.Evaluation.Metrics.Loss
-	summary.Perplexity = report.Evaluation.Metrics.Perplexity
+	// Eval metrics are read four times — cache the sub-block pointer to
+	// match the residency pattern.
+	em := &report.Evaluation.Metrics
+	summary.EvalSamples = em.Samples
+	summary.EvalTokens = em.Tokens
+	summary.EvalLoss = em.Loss
+	summary.Perplexity = em.Perplexity
 	return summary
 }
 
@@ -484,13 +519,26 @@ func workloadAdapterInfo(path string, adapter *LoRAAdapter) WorkloadAdapterInfo 
 	if adapter != nil {
 		info.Rank = adapter.Config.Rank
 		info.Alpha = adapter.Config.Alpha
-		info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
+		// Adapters built without an explicit TargetKeys override carry
+		// a nil slice — match cloneWorkloadAdapterInfo by guarding the
+		// SliceClone behind a len>0 check so the no-targets branch
+		// pays only a nil-check instead of the slices.Clone shape.
+		if len(adapter.Config.TargetKeys) > 0 {
+			info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
+		}
 	}
 	return info
 }
 
 func cloneWorkloadAdapterInfo(info WorkloadAdapterInfo) WorkloadAdapterInfo {
-	info.TargetKeys = core.SliceClone(info.TargetKeys)
+	// Skip the SliceClone call entirely when TargetKeys is empty —
+	// core.SliceClone → slices.Clone hits the make+copy path even for
+	// zero-length slices unless the input is nil, and a nil-check here
+	// pre-empts the generic call+return-path overhead on the common
+	// "adapter has no explicit target overrides" branch.
+	if len(info.TargetKeys) > 0 {
+		info.TargetKeys = core.SliceClone(info.TargetKeys)
+	}
 	return info
 }
 
@@ -498,10 +546,19 @@ func cloneWorkloadEvalSamples(samples []WorkloadEvalSample) []WorkloadEvalSample
 	if len(samples) == 0 {
 		return nil
 	}
+	// Bulk-copy the sample headers in one shot — the previous loop
+	// re-copied the WorkloadEvalSample struct (string headers + map
+	// pointer) twice per iteration via `range sample, out[i] = sample`.
+	// `copy` is a memmove and lets us index `samples[i].Meta` directly
+	// without taking a fresh per-iteration sample copy. The Meta clone
+	// is skipped for nil maps so the API/internal "no metadata" path
+	// pays only the slice alloc.
 	out := make([]WorkloadEvalSample, len(samples))
-	for i, sample := range samples {
-		out[i] = sample
-		out[i].Meta = core.MapClone(sample.Meta)
+	copy(out, samples)
+	for i := range samples {
+		if meta := samples[i].Meta; meta != nil {
+			out[i].Meta = core.MapClone(meta)
+		}
 	}
 	return out
 }
@@ -517,6 +574,13 @@ func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
 	if batch, ok := cfg.Batch.(dataset.BatchConfig); ok {
 		cfg.Batch = normalizeDatasetBatchConfig(batch)
 	}
-	cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
+	// QualityProbes defaults to nil for callers that don't wire a
+	// custom probe set — guarding the clone keeps the workload bench
+	// normalisation hot path (called once per RunWorkloadBench plus
+	// every cfg-without-probes dispatch) free of the SliceClone
+	// generic-dispatch+append shape on the empty slice.
+	if len(cfg.QualityProbes) > 0 {
+		cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
+	}
 	return cfg
 }
