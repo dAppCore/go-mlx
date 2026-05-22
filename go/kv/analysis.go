@@ -95,15 +95,24 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 	if snapshot.NumHeads > 0 {
 		coherenceInvNorms = make([]float64, snapshot.NumHeads)
 	}
+	// One [][]float32 view-slice scratch reused across every
+	// kvAnalysisHeadVectors call (4 per Analyze: layer × {keys, values}).
+	// Each previous call allocated a fresh slice; reuse drops 4 small
+	// allocs per Analyze. Sized to numHeads — helper grows the cap if
+	// the snapshot violates that (defensive same as invNorms above).
+	var headVectorScratch [][]float32
+	if snapshot.NumHeads > 0 {
+		headVectorScratch = make([][]float32, snapshot.NumHeads)
+	}
 
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
 			continue
 		}
-		keyHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, true)
-		valueHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, false)
+		keyHeads := kvAnalysisHeadVectorsInto(headVectorScratch, layerSnapshot.Heads, true)
 		keyCoherence, keyLocked, keyPairs := kvAnalysisPairCoherence(keyHeads, coherenceInvNorms)
+		valueHeads := kvAnalysisHeadVectorsInto(headVectorScratch, layerSnapshot.Heads, false)
 		valueCoherence, valueLocked, valuePairs := kvAnalysisPairCoherence(valueHeads, coherenceInvNorms)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
@@ -342,17 +351,29 @@ func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 	// Pre-extend instead of pre-allocate-empty + N appends — len is
 	// known up-front (one slot per head). Hoists the keys/values branch
 	// out of the inner loop too.
-	vectors := make([][]float32, len(heads))
+	return kvAnalysisHeadVectorsInto(nil, heads, keys)
+}
+
+// kvAnalysisHeadVectorsInto fills dst with the Key or Value slice view
+// of each head, returning the populated slice. Reuses dst when its
+// cap is sufficient; falls back to an alloc otherwise. The hoisted
+// keys/values branch keeps the inner-loop body straight-line.
+func kvAnalysisHeadVectorsInto(dst [][]float32, heads []HeadSnapshot, keys bool) [][]float32 {
+	if cap(dst) < len(heads) {
+		dst = make([][]float32, len(heads))
+	} else {
+		dst = dst[:len(heads)]
+	}
 	if keys {
 		for i := range heads {
-			vectors[i] = heads[i].Key
+			dst[i] = heads[i].Key
 		}
 	} else {
 		for i := range heads {
-			vectors[i] = heads[i].Value
+			dst[i] = heads[i].Value
 		}
 	}
-	return vectors
+	return dst
 }
 
 func kvAnalysisPairCoherence(vectors [][]float32, invNorms []float64) (float64, int, int) {
