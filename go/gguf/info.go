@@ -1002,6 +1002,9 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 	for i := range tensors {
 		tensor := &tensors[i]
 		details := ggufTensorTypeDetails(tensor.Type)
+		// tensor.Shape was freshly allocated in parseGGUF and is never
+		// mutated after this point — transfer ownership directly,
+		// skipping a per-tensor SliceClone.
 		infos[i] = TensorInfo{
 			Name:      tensor.Name,
 			Type:      tensor.Type,
@@ -1009,7 +1012,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 			DType:     details.DType,
 			Bits:      details.Bits,
 			BlockSize: details.BlockSize,
-			Shape:     core.SliceClone(tensor.Shape),
+			Shape:     tensor.Shape,
 			Elements:  ggufTensorElements(tensor.Shape),
 			Offset:    tensor.Offset,
 			Quantized: details.Quantized,
@@ -1112,37 +1115,44 @@ func metadataIntIfPresent(metadata map[string]any, key string) (int, bool) {
 }
 
 func summarizeGGUFTensorTypes(tensors []TensorInfo) []TensorTypeSummary {
-	type summaryKey struct {
-		typ  uint32
-		name string
+	// Real GGUF files surface ~2-10 distinct tensor types (often just
+	// f32 + one quant variant). A linear search over a small slice is
+	// faster than a map allocation + hashing per-tensor here, and skips
+	// the materialise-then-copy round-trip into the output slice.
+	if len(tensors) == 0 {
+		return nil
 	}
-	byType := map[summaryKey]TensorTypeSummary{}
-	for _, tensor := range tensors {
-		key := summaryKey{typ: tensor.Type, name: tensor.TypeName}
-		summary := byType[key]
-		if summary.Count == 0 {
-			summary = TensorTypeSummary{
-				Type:      tensor.Type,
-				Name:      tensor.TypeName,
-				DType:     tensor.DType,
-				Bits:      tensor.Bits,
-				BlockSize: tensor.BlockSize,
-				Quantized: tensor.Quantized,
+	out := make([]TensorTypeSummary, 0, 8)
+	for i := range tensors {
+		t := &tensors[i]
+		found := false
+		for j := range out {
+			if out[j].Type == t.Type && out[j].Name == t.TypeName {
+				out[j].Count++
+				found = true
+				break
 			}
 		}
-		summary.Count++
-		byType[key] = summary
-	}
-	out := make([]TensorTypeSummary, 0, len(byType))
-	for _, summary := range byType {
-		out = append(out, summary)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Count != out[j].Count {
-			return out[i].Count > out[j].Count
+		if !found {
+			out = append(out, TensorTypeSummary{
+				Type:      t.Type,
+				Name:      t.TypeName,
+				DType:     t.DType,
+				Bits:      t.Bits,
+				BlockSize: t.BlockSize,
+				Quantized: t.Quantized,
+				Count:     1,
+			})
 		}
-		return out[i].Name < out[j].Name
-	})
+	}
+	if len(out) > 1 {
+		sort.Slice(out, func(i, j int) bool {
+			if out[i].Count != out[j].Count {
+				return out[i].Count > out[j].Count
+			}
+			return out[i].Name < out[j].Name
+		})
+	}
 	return out
 }
 
