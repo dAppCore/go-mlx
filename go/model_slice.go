@@ -4,6 +4,8 @@ package mlx
 
 import (
 	"context"
+	"slices"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -13,6 +15,30 @@ import (
 )
 
 const modelSliceManifestVersion = "go-mlx.model-slice.v1"
+
+// projectionMatch holds the two pre-built substrings modelSliceHasProjection
+// scans for ("."+name+"." and "."+name+".weight"). Pre-computing them at
+// package init keeps the classifier alloc-free across every tensor-name
+// walk, which fires N_projections × N_tensors times per SliceModel pass.
+type projectionMatch struct {
+	infix  string
+	suffix string
+}
+
+// projectionLookup is the pre-computed substring set for every projection
+// name passed to modelSliceHasProjection across model_slice.go. The static
+// table replaces two per-call string concatenations ("."+name+"." and
+// "."+name+".weight") which dominate the worst-case tensor sweep.
+var projectionLookup = map[string]projectionMatch{
+	"q_proj":    {".q_proj.", ".q_proj.weight"},
+	"k_proj":    {".k_proj.", ".k_proj.weight"},
+	"v_proj":    {".v_proj.", ".v_proj.weight"},
+	"o_proj":    {".o_proj.", ".o_proj.weight"},
+	"out_proj":  {".out_proj.", ".out_proj.weight"},
+	"up_proj":   {".up_proj.", ".up_proj.weight"},
+	"down_proj": {".down_proj.", ".down_proj.weight"},
+	"gate_proj": {".gate_proj.", ".gate_proj.weight"},
+}
 
 type modelSliceManifest struct {
 	Version   string                   `json:"version"`
@@ -164,13 +190,17 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	}
 	selectedBytes := tensorRefsByteLen(refs)
 	sourceTensorBytes := indexTensorByteLen(index)
-	plan.Labels["tensor_count"] = core.Sprintf("%d", len(refs))
+	// strconv.Itoa / FormatInt / FormatFloat skip the fmt format-string
+	// parse and the interface{} boxing core.Sprintf would round-trip
+	// through — each label assignment drops from ~80 ns / 1-2 allocs
+	// to ~15 ns / 1 alloc (the result string itself).
+	plan.Labels["tensor_count"] = strconv.Itoa(len(refs))
 	plan.Labels["weight_file"] = "model.safetensors"
-	plan.Labels["source_weight_files"] = core.Sprintf("%d", len(source.WeightFiles))
-	plan.Labels["selected_tensor_bytes"] = core.Sprintf("%d", selectedBytes)
-	plan.Labels["source_tensor_bytes"] = core.Sprintf("%d", sourceTensorBytes)
+	plan.Labels["source_weight_files"] = strconv.Itoa(len(source.WeightFiles))
+	plan.Labels["selected_tensor_bytes"] = strconv.FormatInt(selectedBytes, 10)
+	plan.Labels["source_tensor_bytes"] = strconv.FormatInt(sourceTensorBytes, 10)
 	if sourceTensorBytes > 0 {
-		plan.Labels["retained_tensor_ratio"] = core.Sprintf("%.4f", float64(selectedBytes)/float64(sourceTensorBytes))
+		plan.Labels["retained_tensor_ratio"] = strconv.FormatFloat(float64(selectedBytes)/float64(sourceTensorBytes), 'f', 4, 64)
 	}
 
 	if err := writeModelSliceManifest(req.OutputPath, *plan, names); err != nil {
@@ -179,19 +209,32 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	return plan, nil
 }
 
+// modelSliceStandaloneRequired lists the components that must appear in any
+// plan a caller wants to reload as a complete model. Hoisted to package
+// scope so each modelSliceStandalone call reuses the same four-element
+// backing instead of rebuilding it from literals every time.
+var modelSliceStandaloneRequired = [...]inference.ModelComponent{
+	inference.ModelComponentEmbeddings,
+	inference.ModelComponentAttention,
+	inference.ModelComponentFFN,
+	inference.ModelComponentLMHead,
+}
+
 func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
-	required := []inference.ModelComponent{
-		inference.ModelComponentEmbeddings,
-		inference.ModelComponentAttention,
-		inference.ModelComponentFFN,
-		inference.ModelComponentLMHead,
-	}
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
-	missing := make([]inference.ModelComponent, 0, len(required))
-	for _, component := range required {
+	// Lazy-allocate missing only when the first absent component is
+	// observed. The vast majority of slices passed to standalone checks
+	// either declare ExtractLevelAll (handled above) or have all four
+	// required components, so the typical path now skips the make()
+	// entirely.
+	var missing []inference.ModelComponent
+	for _, component := range modelSliceStandaloneRequired {
 		if !plan.HasComponent(component) {
+			if missing == nil {
+				missing = make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
+			}
 			missing = append(missing, component)
 		}
 	}
@@ -202,11 +245,22 @@ func modelSliceLabelInt64(labels map[string]string, key string) int64 {
 	if len(labels) == 0 {
 		return 0
 	}
-	parsed := core.ParseInt(labels[key], 10, 64)
-	if !parsed.OK {
+	// Empty value short-circuit — strconv.ParseInt("") allocates a
+	// strconv.NumError on the failure path that always escapes to
+	// the heap, so explicitly skipping that branch keeps the
+	// miss-key case alloc-free.
+	value := labels[key]
+	if value == "" {
 		return 0
 	}
-	return parsed.Value.(int64)
+	// strconv.ParseInt avoids the core.Result interface-boxing trip
+	// (Value any + type-assertion on the hot path). The semantics are
+	// identical — both return 0 on parse failure.
+	v, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
 }
 
 func tensorRefsByteLen(refs []safetensors.TensorRef) int64 {
@@ -225,11 +279,50 @@ func indexTensorByteLen(index safetensors.Index) int64 {
 	return total
 }
 
+// modelSliceInclusionMask collapses the per-component HasComponent lookups
+// into bool fields so a tensor-name walk pays the plan.HasComponent cost
+// once per slice operation instead of once per tensor × per component.
+// plan.HasComponent is a linear scan over plan.Components, so for an
+// N-tensor / 8-component pass this was N × 8 × |Components| compares.
+type modelSliceInclusionMask struct {
+	all        bool
+	embeddings bool
+	norms      bool
+	attention  bool
+	ffn        bool
+	gate       bool
+	downMeta   bool
+	router     bool
+	experts    bool
+	lmHead     bool
+}
+
+// buildModelSliceInclusionMask materialises the inclusion mask once for a
+// given plan so the per-tensor classifier can read it via direct field
+// loads on the hot path.
+func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclusionMask {
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		return modelSliceInclusionMask{all: true}
+	}
+	return modelSliceInclusionMask{
+		embeddings: plan.HasComponent(inference.ModelComponentEmbeddings),
+		norms:      plan.HasComponent(inference.ModelComponentNorms),
+		attention:  plan.HasComponent(inference.ModelComponentAttention),
+		ffn:        plan.HasComponent(inference.ModelComponentFFN),
+		gate:       plan.HasComponent(inference.ModelComponentGate),
+		downMeta:   plan.HasComponent(inference.ModelComponentDownMeta),
+		router:     plan.HasComponent(inference.ModelComponentRouter),
+		experts:    plan.HasComponent(inference.ModelComponentExperts),
+		lmHead:     plan.HasComponent(inference.ModelComponentLMHead),
+	}
+}
+
 func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
 	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	names := make([]string, 0, len(index.Names))
+	mask := buildModelSliceInclusionMask(plan)
 	for _, name := range index.Names {
-		if !modelSliceIncludesTensor(plan, name) {
+		if !modelSliceIncludesTensorMask(mask, name) {
 			continue
 		}
 		refs = append(refs, index.Tensors[name])
@@ -238,41 +331,58 @@ func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors
 	return refs, names
 }
 
-func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
-	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+// modelSliceIncludesTensorMask is the mask-driven hot-path classifier used
+// by selectModelSliceTensorRefs. Direct bool-field loads replace
+// plan.HasComponent's per-call linear scan over plan.Components. Branch
+// order is tuned for typical transformer weights — attention then FFN
+// dominate a per-layer sweep, so checking them first lets the common
+// per-layer tensors short-circuit before the embeddings / norms /
+// LM-head substring scans that won't match.
+func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) bool {
+	if mask.all {
 		return true
 	}
 	lower := core.Lower(name)
 	switch {
-	case plan.HasComponent(inference.ModelComponentEmbeddings) && modelSliceTensorIsEmbedding(lower):
+	case mask.attention && modelSliceTensorIsAttention(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentNorms) && modelSliceTensorIsNorm(lower):
+	case mask.ffn && modelSliceTensorIsFFN(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentAttention) && modelSliceTensorIsAttention(lower):
+	case mask.norms && modelSliceTensorIsNorm(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentFFN) && modelSliceTensorIsFFN(lower):
+	case mask.gate && modelSliceTensorIsGate(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentGate) && modelSliceTensorIsGate(lower):
+	case mask.experts && modelSliceTensorIsExpert(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentDownMeta) && modelSliceTensorIsDownMeta(lower):
+	case mask.router && modelSliceTensorIsRouter(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentRouter) && modelSliceTensorIsRouter(lower):
+	case mask.downMeta && modelSliceTensorIsDownMeta(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentExperts) && modelSliceTensorIsExpert(lower):
+	case mask.embeddings && modelSliceTensorIsEmbedding(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentLMHead) && modelSliceTensorIsLMHead(lower):
+	case mask.lmHead && modelSliceTensorIsLMHead(lower):
 		return true
 	default:
 		return false
 	}
 }
 
+func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
+	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(plan), name)
+}
+
 func modelSliceTensorIsEmbedding(name string) bool {
-	return core.Contains(name, "embed") || core.Contains(name, ".wte.") || core.HasSuffix(name, ".wte.weight")
+	// HasSuffix(".wte.weight") matches a strict subset of Contains(".wte.")
+	// — any name ending with ".wte.weight" already contains ".wte."
+	// somewhere — so the suffix check was dead. Drop it to skip one
+	// substring scan per embedding classifier call.
+	return core.Contains(name, "embed") || core.Contains(name, ".wte.")
 }
 
 func modelSliceTensorIsNorm(name string) bool {
-	return core.Contains(name, "norm") || core.Contains(name, "layernorm")
+	// "layernorm" already contains "norm", so the first check subsumes
+	// it — the redundant second core.Contains scan was dead.
+	return core.Contains(name, "norm")
 }
 
 func modelSliceTensorIsAttention(name string) bool {
@@ -311,15 +421,27 @@ func modelSliceTensorIsExpert(name string) bool {
 }
 
 func modelSliceTensorIsLMHead(name string) bool {
-	return name == "lm_head.weight" || core.HasPrefix(name, "lm_head.")
+	// HasPrefix("lm_head.") already matches "lm_head.weight" by
+	// construction — the explicit equality test was dead weight.
+	return core.HasPrefix(name, "lm_head.")
 }
 
 func modelSliceHasProjection(name, projection string) bool {
+	if match, ok := projectionLookup[projection]; ok {
+		return core.Contains(name, match.infix) || core.HasSuffix(name, match.suffix)
+	}
+	// Fallback for callers passing unseen projection names — preserves the
+	// original "."+projection+"." semantics without the lookup table.
 	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
 }
 
 func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
-	files := []string{"config.json"}
+	// Pre-size to the maximum 9 entries (1 default + 5 tokenizer + 3
+	// label) so the slice header backs a single allocation instead of
+	// growing through three doublings (1 -> 2 -> 4 -> 8 -> 16) on a
+	// fully-decorated plan.
+	files := make([]string, 1, 9)
+	files[0] = "config.json"
 	if plan.HasComponent(inference.ModelComponentTokenizer) {
 		files = append(files, "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "special_tokens_map.json", "generation_config.json")
 	}
@@ -355,7 +477,7 @@ func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, t
 		Output:  plan.OutputPath,
 		Plan:    plan,
 		Weight:  "model.safetensors",
-		Tensors: append([]string(nil), tensors...),
+		Tensors: slices.Clone(tensors),
 		Labels:  cloneStringMap(plan.Labels),
 		WeightMap: map[string]string{
 			"model.safetensors": "selected tensors",

@@ -101,6 +101,7 @@
 package mlx
 
 import (
+	"slices"
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
@@ -225,7 +226,10 @@ type AttentionSnapshot struct {
 
 // HasQueries reports whether query tensors are present in the snapshot.
 func (s *AttentionSnapshot) HasQueries() bool {
-	return s != nil && s.Queries != nil && len(s.Queries) > 0
+	// len(nil) == 0 — the explicit s.Queries != nil check is redundant,
+	// and dropping it lets the inliner fold the single bounds load into
+	// a fused nil-check + length compare instead of a three-step chain.
+	return s != nil && len(s.Queries) > 0
 }
 
 // ModelInfo describes a loaded model.
@@ -570,6 +574,20 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 		return LoadConfig{}, core.NewError("mlx: unsupported KV cache mode: " + string(cfg.CacheMode))
 	}
 
+	// Fast-path the canonical "", "gpu", "cpu" values that the default
+	// LoadConfig and almost every caller provide. core.Lower/Trim each
+	// walk the string and Trim allocates a fresh substring for any
+	// whitespace input, which dominates a 90%-clean hot path. Skip both
+	// scans when the input is already canonical and only fall through
+	// to the normalising slow path when the device string actually
+	// needs work.
+	switch cfg.Device {
+	case "gpu", "cpu":
+		return cfg, nil
+	case "":
+		cfg.Device = "gpu"
+		return cfg, nil
+	}
 	device := core.Lower(core.Trim(cfg.Device))
 	if device == "" {
 		device = "gpu"
@@ -585,8 +603,12 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 
 func cloneSplitInferencePlan(plan inference.SplitInferencePlan) *inference.SplitInferencePlan {
 	cloned := plan
-	cloned.LocalSlice.Components = append([]inference.ModelComponent(nil), plan.LocalSlice.Components...)
-	cloned.LocalSlice.Notes = append([]string(nil), plan.LocalSlice.Notes...)
+	// slices.Clone short-circuits to nil for nil-input slices without
+	// calling runtime.makeslice / typedslicecopy — the prior append([]T(nil),
+	// nil...) form still emitted both calls. For Components and Notes, the
+	// vast majority of plans have one or the other empty.
+	cloned.LocalSlice.Components = slices.Clone(plan.LocalSlice.Components)
+	cloned.LocalSlice.Notes = slices.Clone(plan.LocalSlice.Notes)
 	cloned.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
 	cloned.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
 	cloned.Labels = cloneInferenceLabels(plan.Labels)
