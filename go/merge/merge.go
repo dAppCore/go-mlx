@@ -224,8 +224,13 @@ func ensureEmptyDestination(output string) error {
 		}
 		return core.E("Packs", "inspect output path", resultError(stat))
 	}
-	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
-	if len(weights) > 0 {
+	// Check the two glob patterns independently — the previous append form
+	// always allocated a combined slice even when the first pattern was
+	// already non-empty. Short-circuit on the first non-empty pattern.
+	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
+		return core.NewError("mlx: merged output path already contains model weights")
+	}
+	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
 		return core.NewError("mlx: merged output path already contains model weights")
 	}
 	return nil
@@ -236,7 +241,15 @@ func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 	for i := 1; i < len(packs); i++ {
 		pack := packs[i]
 		if !opts.AllowArchitectureMismatch && pack.Architecture != base.Architecture {
-			return core.NewError(core.Sprintf("mlx: model merge architecture mismatch: %s vs %s", base.Architecture, pack.Architecture))
+			// core.Concat is ~4x cheaper than core.Sprintf for fixed-string
+			// composition. Architecture names are short identifiers; the fmt
+			// machinery is pure overhead here.
+			return core.NewError(core.Concat(
+				"mlx: model merge architecture mismatch: ",
+				base.Architecture,
+				" vs ",
+				pack.Architecture,
+			))
 		}
 		if opts.AllowTokenizerMismatch {
 			continue
@@ -710,9 +723,13 @@ func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []by
 }
 
 func writeProvenance(path string, provenance Provenance) error {
-	slices := append([]string(nil), provenance.SkippedTensors...)
-	sort.Strings(slices)
-	provenance.SkippedTensors = slices
+	// core.SliceClone — exact-cap clone, avoids growslice over-allocation
+	// from append([]string(nil), src...). Also takes the empty-slice fast
+	// path internally so we don't waste an alloc on a typical merge with
+	// no skipped tensors.
+	sorted := core.SliceClone(provenance.SkippedTensors)
+	sort.Strings(sorted)
+	provenance.SkippedTensors = sorted
 	data := core.JSONMarshal(provenance)
 	if !data.OK {
 		return core.E("Packs", "marshal merge provenance", resultError(data))
