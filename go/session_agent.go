@@ -38,6 +38,14 @@ type AgentMemoryFoldReport struct {
 
 const foldedAgentMemoryPrefillWakeMaxTokens = 16 * 1024
 
+// Hoisted sentinel errors. Each of these is returned multiple times from
+// the agent-memory lifecycle entry points; promoting them to package vars
+// removes per-call allocation in the validation hot path.
+var (
+	errAgentMemorySessionNil = core.NewError("mlx: model session is nil")
+	errAgentMemoryStoreNil   = core.NewError("mlx: state store is nil")
+)
+
 // WakeAgentMemory creates a new session from a durable indexed KV prefix.
 func (m *Model) WakeAgentMemory(ctx context.Context, store state.Store, opts agent.WakeOptions) (*ModelSession, *agent.WakeReport, error) {
 	if ctx == nil {
@@ -88,7 +96,7 @@ func (s *ModelSession) WakeAgentMemory(ctx context.Context, store state.Store, o
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errAgentMemorySessionNil
 	}
 	plan, err := agent.PlanWake(ctx, store, opts, modelInfoToMemory(s.info))
 	if err != nil {
@@ -152,7 +160,7 @@ func shouldPrefillFoldedAgentMemory(entry agent.StateIndexEntry) bool {
 
 func (s *ModelSession) prefillFoldedAgentMemory(ctx context.Context, store state.Store, plan *agent.WakePlan, opts agent.WakeOptions) error {
 	if s == nil || s.session == nil {
-		return core.NewError("mlx: model session is nil")
+		return errAgentMemorySessionNil
 	}
 	if plan == nil || plan.Bundle == nil {
 		return core.NewError("mlx: folded State wake plan is nil")
@@ -194,10 +202,10 @@ func (s *ModelSession) SleepAgentMemory(ctx context.Context, store state.Writer,
 		ctx = context.Background()
 	}
 	if s == nil || s.session == nil {
-		return nil, core.NewError("mlx: model session is nil")
+		return nil, errAgentMemorySessionNil
 	}
 	if store == nil {
-		return nil, core.NewError("mlx: state store is nil")
+		return nil, errAgentMemoryStoreNil
 	}
 	entryURI, bundleURI, indexURI, err := agent.SleepURIs(opts)
 	if err != nil {
@@ -302,7 +310,7 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store st
 		return "", nil, err
 	}
 	if s == nil || s.session == nil {
-		return "", nil, core.NewError("mlx: model session is nil")
+		return "", nil, errAgentMemorySessionNil
 	}
 	builder := core.NewBuilder()
 	cfg := toMetalGenerateConfig(applyGenerateOptions(generateOpts))
@@ -341,7 +349,7 @@ func (m *Model) FoldAgentMemory(ctx context.Context, exhausted *ModelSession, st
 		return nil, nil, core.NewError("mlx: exhausted model session is nil")
 	}
 	if store == nil {
-		return nil, nil, core.NewError("mlx: state store is nil")
+		return nil, nil, errAgentMemoryStoreNil
 	}
 	prompt := agentMemoryFoldedPrompt(opts)
 	if core.Trim(prompt) == "" {
