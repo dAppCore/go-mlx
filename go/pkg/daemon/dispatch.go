@@ -245,7 +245,34 @@ func normalizeAction(action string) string {
 	return core.Lower(core.Trim(action))
 }
 
+// Stub responses are pre-built once and shared across every dispatch.
+// Returning the same map is safe — the dispatch path passes the value
+// straight to writeJSONLine which only marshals (read-only) and no
+// other consumer mutates a Response after Dispatch returns.
+// (See dispatch.go's only resp[k]= writers — both build a fresh map
+// in generateResponseFromResult, never touch a stub.)
+var (
+	stubEmbedResponse    = Response{"status": "stub", "action": "embed"}
+	stubScoreResponse    = Response{"status": "stub", "action": "score"}
+	stubGenerateResponse = Response{"status": "stub", "action": "generate"}
+
+	stubEmbedHandler    Handler = func(context.Context, Request) (Response, error) { return stubEmbedResponse, nil }
+	stubScoreHandler    Handler = func(context.Context, Request) (Response, error) { return stubScoreResponse, nil }
+	stubGenerateHandler Handler = func(context.Context, Request) (Response, error) { return stubGenerateResponse, nil }
+)
+
 func stubHandler(action string) Handler {
+	switch action {
+	case "embed":
+		return stubEmbedHandler
+	case "score":
+		return stubScoreHandler
+	case "generate":
+		return stubGenerateHandler
+	}
+	// Fallback for any future stub registration — fresh closure +
+	// map so the action label is captured. The three built-in stubs
+	// above cover the only call sites today.
 	return func(context.Context, Request) (Response, error) {
 		return Response{
 			"status": "stub",
