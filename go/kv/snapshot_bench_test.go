@@ -150,6 +150,62 @@ func BenchmarkAnalyze_2048Tokens(b *testing.B) {
 	}
 }
 
+// benchMultiHeadSnapshot builds a numHeads>4 snapshot so Analyze
+// routes through analyzeKVMultiHead → kvAnalysisPairCoherence instead
+// of the GQA path. Shape mirrors a qwen3-class layer slice with 8
+// heads × 64 headDim — the per-pair inner dot is realistic, not the
+// headDim=1 degenerate the GQA benches use.
+func benchMultiHeadSnapshot(tokenCount, numHeads, headDim int) *Snapshot {
+	tokens := make([]int32, tokenCount)
+	for i := range tokenCount {
+		tokens[i] = int32(i + 1)
+	}
+	layers := make([]LayerSnapshot, 2)
+	for layer := range layers {
+		heads := make([]HeadSnapshot, numHeads)
+		for h := range heads {
+			key := make([]float32, tokenCount*headDim)
+			value := make([]float32, tokenCount*headDim)
+			for pos := range tokenCount {
+				key[pos*headDim+h%headDim] = 1
+				value[pos*headDim+(numHeads-h-1)%headDim] = 1
+			}
+			heads[h] = HeadSnapshot{Key: key, Value: value}
+		}
+		layers[layer] = LayerSnapshot{Layer: layer, CacheIndex: layer, Heads: heads}
+	}
+	return &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "qwen3",
+		Tokens:        tokens,
+		TokenOffset:   tokenCount,
+		NumLayers:     2,
+		NumHeads:      numHeads,
+		SeqLen:        tokenCount,
+		HeadDim:       headDim,
+		NumQueryHeads: numHeads,
+		Layers:        layers,
+	}
+}
+
+func BenchmarkAnalyze_MultiHead_512Tokens_8Heads_64HeadDim(b *testing.B) {
+	snap := benchMultiHeadSnapshot(512, 8, 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkAnalysis = Analyze(snap)
+	}
+}
+
+func BenchmarkAnalyze_MultiHead_2048Tokens_8Heads_64HeadDim(b *testing.B) {
+	snap := benchMultiHeadSnapshot(2048, 8, 64)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkAnalysis = Analyze(snap)
+	}
+}
+
 // --- HashSnapshot ---
 
 func BenchmarkHashSnapshot_512Tokens(b *testing.B) {
