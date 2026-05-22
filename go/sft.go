@@ -925,6 +925,14 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 		example.targets = core.SliceClone(example.targets[start:])
 		example.mask = core.SliceClone(example.mask[start:])
 	}
+	// First add into an empty accumulator: pre-size to maxSeqLen (when
+	// known) so the doubling cascade across subsequent appends collapses
+	// into a single allocation per accumulator field.
+	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
+		p.current.inputs = make([]int, 0, p.maxSeqLen)
+		p.current.targets = make([]int, 0, p.maxSeqLen)
+		p.current.mask = make([]float32, 0, p.maxSeqLen)
+	}
 	p.current.inputs = append(p.current.inputs, example.inputs...)
 	p.current.targets = append(p.current.targets, example.targets...)
 	p.current.mask = append(p.current.mask, example.mask...)

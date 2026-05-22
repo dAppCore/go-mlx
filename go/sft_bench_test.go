@@ -126,6 +126,26 @@ func BenchmarkSFT_HasTrainingTarget(b *testing.B) {
 	}
 }
 
+// BenchmarkSFT_StreamingPacker — exercise the per-sample packer add
+// + final flush path. maxSeqLen=64, 8 samples of length 6 (no trim,
+// no mid-add flush) → tests the pre-sized accumulator growth.
+func BenchmarkSFT_StreamingPacker(b *testing.B) {
+	ex := sftExample{
+		inputs:  []int{1, 2, 3, 4, 5, 6},
+		targets: []int{2, 3, 4, 5, 6, 7},
+		mask:    []float32{0, 0, 0, 1, 1, 1},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		packer := newSFTStreamingPacker(64, func(sftExample) error { return nil })
+		for j := 0; j < 8; j++ {
+			_ = packer.add(ex)
+		}
+		_ = packer.finish()
+	}
+}
+
 // BenchmarkSFT_StepName tracks the checkpoint directory-name builder
 // — runs every CheckpointEvery steps during long training runs.
 func BenchmarkSFT_StepName(b *testing.B) {
