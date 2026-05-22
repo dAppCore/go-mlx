@@ -427,19 +427,22 @@ func gemma4AssistantKVFromCache(cache Cache) (gemma4AssistantTargetKV, error) {
 		Free(owned...)
 		return gemma4AssistantTargetKV{}, errTargetCacheLenEmpty
 	}
-	kShape := keys.Shape()
-	vShape := values.Shape()
+	// Stack-allocated shape scratch — assistant verify cache trim is called
+	// per draft step. Both Slice calls are rank-4 by guard (len ≥ 4).
+	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	kShape := keys.ShapeInto(kShapeBuf[:0])
+	vShape := values.ShapeInto(vShapeBuf[:0])
 	if len(kShape) >= 4 && len(vShape) >= 4 {
 		if kShape[2] < visible || vShape[2] < visible {
 			Free(owned...)
 			return gemma4AssistantTargetKV{}, errTargetCacheTooShort
 		}
 		if kShape[2] != visible {
-			keys = Slice(keys, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], visible, kShape[3]})
+			keys = Slice4(keys, 0, 0, 0, 0, kShape[0], kShape[1], visible, kShape[3])
 			owned = append(owned, keys)
 		}
 		if vShape[2] != visible {
-			values = Slice(values, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], visible, vShape[3]})
+			values = Slice4(values, 0, 0, 0, 0, vShape[0], vShape[1], visible, vShape[3])
 			owned = append(owned, values)
 		}
 	}
@@ -588,7 +591,9 @@ func cloneGemma4AssistantArray(array *Array) (*Array, error) {
 }
 
 func gemma4AssistantBackboneHidden(hidden *Array, backboneHidden int32) (*Array, bool, error) {
-	shape := hidden.Shape()
+	// Stack-allocated shape scratch — per-assistant-draft-step path.
+	var shapeBuf [maxTensorRank]int32
+	shape := hidden.ShapeInto(shapeBuf[:0])
 	switch {
 	case len(shape) == 3 && shape[0] == 1 && shape[1] == 1 && shape[2] == backboneHidden:
 		return hidden, false, nil
@@ -605,7 +610,10 @@ func (layer *Gemma4AssistantLayer) forwardDraftStep(x *Array, targetKV sharedKV,
 	if layer == nil || layer.Attention == nil || layer.MLP == nil {
 		return nil, errAsstDraftStepLayerIncomplete
 	}
-	shape := x.Shape()
+	// Stack-allocated shape scratch — per-assistant-draft-step per-layer
+	// hot path. Avoids the per-call []int32 heap alloc.
+	var shapeBuf [maxTensorRank]int32
+	shape := x.ShapeInto(shapeBuf[:0])
 	if len(shape) != 3 {
 		return nil, core.NewError(core.Sprintf("gemma4.assistant draft step layer input shape = %v, want [batch sequence hidden]", shape))
 	}
@@ -678,7 +686,9 @@ func (attn *Gemma4AssistantAttention) forwardWithTargetKV(x *Array, targetKV sha
 	}
 	Free(q)
 
-	transposed := Transpose(out, 0, 2, 1, 3)
+	// Rank-4 attention output transpose [B,H,L,D] → [B,L,H,D] — scalar-pass
+	// Transpose4 form (eliminates the []int axes heap alloc).
+	transposed := Transpose4(out, 0, 2, 1, 3)
 	Free(out)
 	reshaped := Reshape(transposed, B, L, attn.NHeads*attn.HeadDim)
 	Free(transposed)

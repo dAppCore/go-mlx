@@ -427,11 +427,9 @@ func loraRegularization(params []*Array, lambda float32) *Array {
 			current = AsType(param, DTypeFloat32)
 		}
 
-		shape := current.Shape()
-		size := 1
-		for _, dim := range shape {
-			size *= int(dim)
-		}
+		// Total element count via one C call — Shape() previously allocated
+		// a fresh []int32 each call just to fold the product back to a scalar.
+		size := current.Size()
 		if size == 0 {
 			if current != param {
 				Free(current)
