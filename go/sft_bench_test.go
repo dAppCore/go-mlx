@@ -26,7 +26,29 @@ var (
 	sftBenchSinkInts     []int
 	sftBenchSinkExample  sftExample
 	sftBenchSinkStepName string
+	sftBenchSinkInt      int
 )
+
+// BenchmarkSFT_EffectiveBatchSize — called inline by the probe meta
+// builder (once per gradient step) and by SFTResult.Metrics. Tracks
+// whether the helper stays tight or starts paying for unrelated
+// normalisation work like LoRA TargetKeys backfills.
+func BenchmarkSFT_EffectiveBatchSize(b *testing.B) {
+	cfg := SFTConfig{
+		BatchSize:                 4,
+		GradientAccumulationSteps: 2,
+		LoRA: LoRAConfig{
+			Rank:         8,
+			TargetKeys:   []string{"q_proj", "v_proj"},
+			TargetLayers: []string{"layer.0", "layer.1"},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkInt = SFTEffectiveBatchSize(cfg)
+	}
+}
 
 // BenchmarkSFT_RunProbeMeta mirrors the runSFTBatchGroup probe.Event.Meta
 // construction (6 string fields, all int-formatted today via Sprintf).

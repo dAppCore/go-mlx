@@ -188,8 +188,18 @@ func normalizeSFTConfig(cfg SFTConfig) SFTConfig {
 
 // SFTEffectiveBatchSize returns the optimizer batch size after accumulation.
 func SFTEffectiveBatchSize(cfg SFTConfig) int {
-	cfg = normalizeSFTConfig(cfg)
-	return cfg.BatchSize * cfg.GradientAccumulationSteps
+	// Inline only the two field defaults we need — avoids the
+	// six SliceClone operations normalizeSFTLoRAConfig performs on
+	// TargetKeys/TargetLayers backfills.
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	gradAccum := cfg.GradientAccumulationSteps
+	if gradAccum <= 0 {
+		gradAccum = 1
+	}
+	return batchSize * gradAccum
 }
 
 // BuildSFTTrainingBatches tokenizes an SFT dataset using runner-level batching settings.
