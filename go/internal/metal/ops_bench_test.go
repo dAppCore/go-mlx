@@ -125,3 +125,46 @@ func BenchmarkSliceUpdateInplace_4D_PerToken(b *testing.B) {
 		Free(s)
 	}
 }
+
+func BenchmarkSoftmax_PerToken(b *testing.B) {
+	a := Zeros([]int32{1, 32000}, DTypeFloat32)
+	defer Free(a)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Softmax(a)
+		Free(s)
+	}
+}
+
+func BenchmarkSum_PerToken(b *testing.B) {
+	a := Zeros([]int32{1, 8, 1, 128}, DTypeFloat32)
+	defer Free(a)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Sum(a, -1, false)
+		Free(s)
+	}
+}
+
+func BenchmarkMean_PerToken(b *testing.B) {
+	a := Zeros([]int32{1, 8, 1, 128}, DTypeFloat32)
+	defer Free(a)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		m := Mean(a, -1, false)
+		Free(m)
+	}
+}
+
+func BenchmarkZeros_4D_PerToken(b *testing.B) {
+	shape := []int32{1, 8, 64, 128}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		z := Zeros(shape, DTypeFloat32)
+		Free(z)
+	}
+}

@@ -19,6 +19,35 @@ static const void* go_mlx_array_data_bfloat16(mlx_array arr) {
 static const void* go_mlx_array_data_complex64(mlx_array arr) {
 	return (const void*)mlx_array_data_complex64(arr);
 }
+
+// mlx_zeros_inline / mlx_array_new_data_inline materialise the shape array
+// on the C stack so the Go side passes &shape[0] from the caller-owned slice
+// without forcing the cgo escape analyser to heap-allocate a []C.int copy.
+// Rank is bounded by maxTensorRank = 8 in ops.go.
+static inline int mlx_zeros_inline(
+    mlx_array* res, const int32_t* shape_in, size_t shape_num,
+    mlx_dtype dtype, mlx_stream s) {
+    int shape_buf[8];
+    for (size_t i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    return mlx_zeros(res, shape_buf, shape_num, dtype, s);
+}
+
+// mlx_array_new_data_inline_i / _ll variants accept the caller's int32 (for
+// raw-tensor APIs) or long long (for Go-int variadic FromValues) shape slice
+// and copy into a 8-slot stack int buffer before forwarding.
+static inline mlx_array mlx_array_new_data_inline_i(
+    const void* data, const int32_t* shape_in, int shape_num, mlx_dtype dtype) {
+    int shape_buf[8];
+    for (int i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    return mlx_array_new_data(data, shape_buf, shape_num, dtype);
+}
+
+static inline mlx_array mlx_array_new_data_inline_ll(
+    const void* data, const long long* shape_in, int shape_num, mlx_dtype dtype) {
+    int shape_buf[8];
+    for (int i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    return mlx_array_new_data(data, shape_buf, shape_num, dtype);
+}
 */
 import "C"
 
@@ -91,15 +120,16 @@ type arrayTypes interface {
 }
 
 // FromValues creates an Array from a Go slice with the given shape.
+// Routes through mlx_array_new_data_inline_ll so the per-call shape array is
+// stack-allocated on the C side — relevant for tokenizer / prefill code that
+// builds many small input tensors.
 func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 	Init()
 	if len(shape) == 0 {
 		panic("mlx: shape required for non-scalar tensors")
 	}
-
-	cShape := make([]C.int, len(shape))
-	for i := range shape {
-		cShape[i] = C.int(shape[i])
+	if len(shape) > maxTensorRank {
+		panic("FromValues: rank exceeds maxTensorRank")
 	}
 
 	// reflect.TypeOf is required here to map Go generic type parameters to MLX-C
@@ -141,7 +171,8 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 	}
 
 	tt := newArray("")
-	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&bts[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	shapePtr := (*C.longlong)(unsafe.Pointer(&shape[0]))
+	tt.ctx = C.mlx_array_new_data_inline_ll(unsafe.Pointer(&bts[0]), shapePtr, C.int(len(shape)), C.mlx_dtype(dtype))
 	if tt.ctx.ctx == nil {
 		if err := lastError(); err != nil {
 			panic(err)
@@ -149,7 +180,6 @@ func FromValues[S ~[]E, E arrayTypes](s S, shape ...int) *Array {
 		panic("mlx: array data creation failed")
 	}
 	runtime.KeepAlive(bts)
-	runtime.KeepAlive(cShape)
 	return tt
 }
 
@@ -174,14 +204,21 @@ func fromSingleInt32(value int32) *Array {
 }
 
 // Zeros creates a zero-filled Array with the given shape and dtype.
+// Routes through mlx_zeros_inline so the per-call C.int shape array is
+// stack-allocated on the C side, eliminating the Go heap copy and the
+// associated cgo escape — relevant for the per-token sample-mask path
+// and the cache page-grow path.
 func Zeros(shape []int32, dtype DType) *Array {
 	Init()
-	cShape := make([]C.int, len(shape))
-	for i, s := range shape {
-		cShape[i] = C.int(s)
+	if len(shape) > maxTensorRank {
+		panic("Zeros: rank exceeds maxTensorRank")
 	}
 	tt := newArray("ZEROS")
-	C.mlx_zeros(&tt.ctx, unsafe.SliceData(cShape), C.size_t(len(cShape)), C.mlx_dtype(dtype), DefaultStream().ctx)
+	var shapePtr *C.int32_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+	}
+	C.mlx_zeros_inline(&tt.ctx, shapePtr, C.size_t(len(shape)), C.mlx_dtype(dtype), DefaultStream().ctx)
 	return tt
 }
 
@@ -454,6 +491,8 @@ func rawArrayDataPointer(src *Array) unsafe.Pointer {
 }
 
 // FromRawBytes creates an Array from already-packed little-endian tensor bytes.
+// Routes through mlx_array_new_data_inline_ll so the per-call shape array is
+// stack-allocated on the C side, eliminating the Go heap copy.
 func FromRawBytes(raw []byte, shape []int, dtype DType) *Array {
 	Init()
 	if len(shape) == 0 {
@@ -465,12 +504,12 @@ func FromRawBytes(raw []byte, shape []int, dtype DType) *Array {
 	if byteSize := DTypeByteSize(dtype); byteSize <= 0 || len(raw)%byteSize != 0 {
 		panic("mlx: raw tensor byte length does not match dtype")
 	}
-	cShape := make([]C.int, len(shape))
-	for i := range shape {
-		cShape[i] = C.int(shape[i])
+	if len(shape) > maxTensorRank {
+		panic("FromRawBytes: rank exceeds maxTensorRank")
 	}
 	tt := newArray("")
-	tt.ctx = C.mlx_array_new_data(unsafe.Pointer(&raw[0]), unsafe.SliceData(cShape), C.int(len(cShape)), C.mlx_dtype(dtype))
+	shapePtr := (*C.longlong)(unsafe.Pointer(&shape[0]))
+	tt.ctx = C.mlx_array_new_data_inline_ll(unsafe.Pointer(&raw[0]), shapePtr, C.int(len(shape)), C.mlx_dtype(dtype))
 	if tt.ctx.ctx == nil {
 		if err := lastError(); err != nil {
 			panic(err)
@@ -478,7 +517,6 @@ func FromRawBytes(raw []byte, shape []int, dtype DType) *Array {
 		panic("mlx: raw array data creation failed")
 	}
 	runtime.KeepAlive(raw)
-	runtime.KeepAlive(cShape)
 	return tt
 }
 

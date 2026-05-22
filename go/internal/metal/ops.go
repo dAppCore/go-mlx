@@ -71,6 +71,28 @@ static inline int mlx_squeeze_axes_inline(
     return mlx_squeeze_axes(res, a, axes_buf, axes_num, s);
 }
 
+// mlx_*_single_axis_inline materialise the single-element axis array on the
+// C stack so the per-call Go side stops allocating a 1-int slice.  Sum /
+// Mean each take a single int axis from the Go API; Softmax pins axis = -1
+// (last dim).  Used on the sampler / loss / reduction hot paths.
+static inline int mlx_softmax_single_axis_inline(
+    mlx_array* res, mlx_array a, int axis, bool precise, mlx_stream s) {
+    int axes_buf[1] = { axis };
+    return mlx_softmax_axes(res, a, axes_buf, 1, precise, s);
+}
+
+static inline int mlx_sum_single_axis_inline(
+    mlx_array* res, mlx_array a, int axis, bool keepdims, mlx_stream s) {
+    int axes_buf[1] = { axis };
+    return mlx_sum_axes(res, a, axes_buf, 1, keepdims, s);
+}
+
+static inline int mlx_mean_single_axis_inline(
+    mlx_array* res, mlx_array a, int axis, bool keepdims, mlx_stream s) {
+    int axes_buf[1] = { axis };
+    return mlx_mean_axes(res, a, axes_buf, 1, keepdims, s);
+}
+
 */
 import "C"
 
@@ -393,13 +415,14 @@ func GatherQMM(x, w, scales, biases, lhsIndices, rhsIndices *Array, transpose bo
 	return out
 }
 
-// Softmax returns softmax along the last axis.
+// Softmax returns softmax along the last axis.  Routes through
+// mlx_softmax_single_axis_inline so the single-element axis array is C-stack
+// allocated rather than a per-call Go []C.int{}.
 //
 //	probs := metal.Softmax(logits) // convert raw logits to probability distribution
 func Softmax(a *Array) *Array {
 	out := newArray("SOFTMAX", a)
-	axis := []C.int{C.int(-1)}
-	C.mlx_softmax_axes(&out.ctx, a.ctx, &axis[0], C.size_t(1), C._Bool(false), DefaultStream().ctx)
+	C.mlx_softmax_single_axis_inline(&out.ctx, a.ctx, C.int(-1), C.bool(false), DefaultStream().ctx)
 	return out
 }
 
@@ -419,19 +442,21 @@ func TopK(a *Array, k int) *Array {
 	return out
 }
 
-// Sum reduces by summation along the given axis.
+// Sum reduces by summation along the given axis.  Routes through
+// mlx_sum_single_axis_inline so the single-element axis array stays on the
+// C stack and the per-call Go alloc is removed.
 func Sum(a *Array, axis int, keepDims bool) *Array {
 	out := newArray("SUM", a)
-	axes := []C.int{C.int(axis)}
-	C.mlx_sum_axes(&out.ctx, a.ctx, &axes[0], C.size_t(1), C._Bool(keepDims), DefaultStream().ctx)
+	C.mlx_sum_single_axis_inline(&out.ctx, a.ctx, C.int(axis), C.bool(keepDims), DefaultStream().ctx)
 	return out
 }
 
-// Mean reduces by averaging along the given axis.
+// Mean reduces by averaging along the given axis.  Routes through
+// mlx_mean_single_axis_inline so the single-element axis array stays on the
+// C stack and the per-call Go alloc is removed.
 func Mean(a *Array, axis int, keepDims bool) *Array {
 	out := newArray("MEAN", a)
-	axes := []C.int{C.int(axis)}
-	C.mlx_mean_axes(&out.ctx, a.ctx, &axes[0], C.size_t(1), C._Bool(keepDims), DefaultStream().ctx)
+	C.mlx_mean_single_axis_inline(&out.ctx, a.ctx, C.int(axis), C.bool(keepDims), DefaultStream().ctx)
 	return out
 }
 
