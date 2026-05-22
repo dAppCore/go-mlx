@@ -2,8 +2,6 @@
 
 package mlx
 
-import core "dappco.re/go"
-
 const (
 	rootMinInt32 = -1 << 31
 	rootMaxInt32 = 1<<31 - 1
@@ -66,7 +64,14 @@ func normalizeRootShapeArgs(shape []any) []int32 {
 			}
 			return out
 		case []int32:
-			return core.SliceClone(dims)
+			// Skip the defensive clone — the sole caller (Reshape) spreads
+			// the result via `...` into metal.Reshape, which copies the
+			// values into a C buffer and never retains the slice header.
+			// Eliding the clone saves the only allocation in this path and
+			// converts it from O(n) memcpy + alloc to O(1) pointer return.
+			// Behavioural contract: callers may not mutate the input slice
+			// expecting isolation from the returned slice.
+			return dims
 		case []int64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
@@ -94,9 +99,26 @@ func normalizeRootShapeArgs(shape []any) []int32 {
 		}
 	}
 
+	// Inline the type switch on the variadic walk — normalizeRootInt32Arg
+	// is over the inliner budget (10-case switch), so the per-element
+	// function call costs a kind-string push + return jump on every dim.
+	// For a 4D shape that's 4 saved calls per Reshape, and Reshape fires
+	// per-token during generation. The int / int32 / int64 cases are the
+	// only ones the per-token Reshape path actually hits — keep them at
+	// the top of the switch; everything else falls through to the shared
+	// helper to keep the binary size bounded.
 	out := make([]int32, len(shape))
 	for i, dim := range shape {
-		out[i] = normalizeRootInt32Arg("shape", dim)
+		switch v := dim.(type) {
+		case int:
+			out[i] = rootInt64ToInt32("shape", int64(v))
+		case int32:
+			out[i] = v
+		case int64:
+			out[i] = rootInt64ToInt32("shape", v)
+		default:
+			out[i] = normalizeRootInt32Arg("shape", dim)
+		}
 	}
 	return out
 }

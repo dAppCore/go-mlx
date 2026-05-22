@@ -128,13 +128,35 @@ type SFTResult struct {
 
 // Metrics returns a stable JSON-friendly summary of an SFT run.
 func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
-	cfg = normalizeSFTConfig(cfg)
+	// Inline the four scalar defaults Metrics actually reads —
+	// normalizeSFTConfig calls normalizeSFTLoRAConfig which clones
+	// TargetKeys+TargetLayers (two SliceClones) every call. Metrics
+	// touches none of that. The trio of helpers Metrics calls below
+	// (SFTEffectiveBatchSize, etc.) all read only the already-normalised
+	// scalars now hoisted into local vars.
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	gradAccum := cfg.GradientAccumulationSteps
+	if gradAccum <= 0 {
+		gradAccum = 1
+	}
+	learningRate := cfg.LearningRate
+	if learningRate == 0 {
+		if cfg.AdamW.LearningRate != 0 || cfg.AdamW.LearningRateSet {
+			learningRate = cfg.AdamW.LearningRate
+		} else {
+			learningRate = 1e-5
+		}
+	}
+	effectiveBatchSize := batchSize * gradAccum
 	if r == nil {
 		return SFTMetrics{
-			LearningRate:              cfg.LearningRate,
-			BatchSize:                 cfg.BatchSize,
-			GradientAccumulationSteps: cfg.GradientAccumulationSteps,
-			EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
+			LearningRate:              learningRate,
+			BatchSize:                 batchSize,
+			GradientAccumulationSteps: gradAccum,
+			EffectiveBatchSize:        effectiveBatchSize,
 		}
 	}
 	optimizerSteps := r.OptimizerSteps
@@ -147,10 +169,10 @@ func (r *SFTResult) Metrics(cfg SFTConfig) SFTMetrics {
 		Epochs:                    r.Epochs,
 		Samples:                   r.Samples,
 		LastLoss:                  r.LastLoss,
-		LearningRate:              cfg.LearningRate,
-		BatchSize:                 cfg.BatchSize,
-		GradientAccumulationSteps: cfg.GradientAccumulationSteps,
-		EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
+		LearningRate:              learningRate,
+		BatchSize:                 batchSize,
+		GradientAccumulationSteps: gradAccum,
+		EffectiveBatchSize:        effectiveBatchSize,
 		CheckpointCount:           len(r.Checkpoints),
 		EvaluationCount:           len(r.Evaluations),
 	}
@@ -596,13 +618,13 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		if err != nil {
 			return sftExample{}, false, err
 		}
-		// Pre-size for ids + optional EOS so no growth occurs.
-		extra := 0
-		if !cfg.NoEOS {
-			extra = 1
-		}
-		seq = make([]int32, 0, len(ids)+extra)
-		seq = append(seq, ids...)
+		// Reuse ids directly — Tokenizer.Encode allocates a fresh slice
+		// per call (internal tokenizer.Encode + stripImplicitBOS), so we
+		// own it exclusively. The downstream EOS append usually fits
+		// the existing cap (inner Encode over-allocates len(text)+1);
+		// if not, append falls back to a single re-alloc — strictly no
+		// worse than the previous unconditional make+copy.
+		seq = ids
 	} else {
 		promptIDs, err := tok.Encode(sample.Prompt)
 		if err != nil {
@@ -631,10 +653,16 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
 	// shifted by one. Building both in a single index walk lets the loop
 	// amortise bounds-check elision across the two writes instead of
-	// paying for two separate range loops + int widenings.
+	// paying for two separate range loops + int widenings. The backing
+	// is shared via a 2n-wide carve so the two []int slices come from one
+	// allocation — sftBatchFromExamples already transfers ownership of
+	// both fields into the batch (different slots, same root backing is
+	// safe — Tokens[i] and Targets[i] are independent slice headers, GC
+	// only frees when neither references the backing).
 	n := len(seq) - 1
-	inputs := make([]int, n)
-	targets := make([]int, n)
+	intBacking := make([]int, 2*n)
+	inputs := intBacking[:n:n]
+	targets := intBacking[n : 2*n : 2*n]
 	for i := 0; i < n; i++ {
 		inputs[i] = int(seq[i])
 		targets[i] = int(seq[i+1])
@@ -661,8 +689,17 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
-		inputs = core.SliceClone(inputs[start:])
-		targets = core.SliceClone(targets[start:])
+		// Combined-backing carve for the truncated inputs+targets — same
+		// share trick the construction path uses, except now the original
+		// 2n backing is being trimmed to 2*MaxSeqLen. One alloc covers
+		// both slices instead of two SliceClones. The mask clone stays
+		// separate (different element type).
+		truncLen := cfg.MaxSeqLen
+		truncBacking := make([]int, 2*truncLen)
+		copy(truncBacking[:truncLen], inputs[start:])
+		copy(truncBacking[truncLen:], targets[start:])
+		inputs = truncBacking[:truncLen:truncLen]
+		targets = truncBacking[truncLen : 2*truncLen : 2*truncLen]
 		mask = core.SliceClone(mask[start:])
 	}
 	if !hasTrainingTarget(mask) {
