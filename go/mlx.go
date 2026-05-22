@@ -478,8 +478,27 @@ func WithExpectedQuantization(bits int) LoadOption {
 	return func(c *LoadConfig) { c.ExpectedQuantization = bits }
 }
 
+// withDeviceGPUOption / withDeviceCPUOption short-cut the two canonical
+// device values WithDevice receives in 99% of caller paths. The string
+// space is theoretically open (callers can pass any string and have
+// normalizeLoadConfig reject it), but the package-level singleton
+// closures eliminate the per-call alloc for the two values that actually
+// reach this builder — matching the Wave 5 switch-cached static closure
+// pattern. The default branch preserves the original semantics for the
+// fallback path.
+var (
+	withDeviceGPUOption LoadOption = func(c *LoadConfig) { c.Device = "gpu" }
+	withDeviceCPUOption LoadOption = func(c *LoadConfig) { c.Device = "cpu" }
+)
+
 // WithDevice selects the execution device: "gpu" or "cpu".
 func WithDevice(device string) LoadOption {
+	switch device {
+	case "gpu":
+		return withDeviceGPUOption
+	case "cpu":
+		return withDeviceCPUOption
+	}
 	return func(c *LoadConfig) { c.Device = device }
 }
 
@@ -519,13 +538,55 @@ func WithMemoryPlan(plan memory.Plan) LoadOption {
 	}
 }
 
+// withCachePolicy*Option singletons exhaust the memory.KVCachePolicy
+// constant set ("", "rotating", "full"). Returning the pre-built closure
+// for each known value drops the WithCachePolicy alloc to zero on the
+// option-stack hot path — same pattern as withPromptCache*Option.
+var (
+	withCachePolicyDefaultOption  LoadOption = func(c *LoadConfig) { c.CachePolicy = memory.KVCacheDefault }
+	withCachePolicyRotatingOption LoadOption = func(c *LoadConfig) { c.CachePolicy = memory.KVCacheRotating }
+	withCachePolicyFullOption     LoadOption = func(c *LoadConfig) { c.CachePolicy = memory.KVCacheFull }
+)
+
 // WithCachePolicy selects the KV cache policy used by the native backend.
 func WithCachePolicy(policy memory.KVCachePolicy) LoadOption {
+	switch policy {
+	case memory.KVCacheDefault:
+		return withCachePolicyDefaultOption
+	case memory.KVCacheRotating:
+		return withCachePolicyRotatingOption
+	case memory.KVCacheFull:
+		return withCachePolicyFullOption
+	}
 	return func(c *LoadConfig) { c.CachePolicy = policy }
 }
 
+// withCacheMode*Option singletons exhaust the memory.KVCacheMode constant
+// set ("", "fp16", "q8", "k-q8-v-q4", "paged"). Each known mode returns the
+// pre-built closure so WithKVCacheMode allocates nothing on the canonical
+// caller paths — same finite-domain pattern as withCachePolicy*Option.
+var (
+	withCacheModeDefaultOption LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeDefault }
+	withCacheModeFP16Option    LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeFP16 }
+	withCacheModeQ8Option      LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeQ8 }
+	withCacheModeKQ8VQ4Option  LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModeKQ8VQ4 }
+	withCacheModePagedOption   LoadOption = func(c *LoadConfig) { c.CacheMode = memory.KVCacheModePaged }
+)
+
 // WithKVCacheMode selects the native KV cache storage mode.
 func WithKVCacheMode(mode memory.KVCacheMode) LoadOption {
+	switch mode {
+	case memory.KVCacheModeDefault:
+		return withCacheModeDefaultOption
+	case memory.KVCacheModeFP16:
+		return withCacheModeFP16Option
+	case memory.KVCacheModeQ8:
+		return withCacheModeQ8Option
+	case memory.KVCacheModeKQ8VQ4:
+		return withCacheModeKQ8VQ4Option
+	case memory.KVCacheModePaged:
+		return withCacheModePagedOption
+	}
 	return func(c *LoadConfig) { c.CacheMode = mode }
 }
 
