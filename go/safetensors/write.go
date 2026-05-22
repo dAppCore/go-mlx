@@ -57,11 +57,19 @@ func WriteSubset(ctx context.Context, path string, refs []TensorRef) error {
 	if err := writeAll(file, headerBytes); err != nil {
 		return err
 	}
+	// Reuse a single byte buffer across every per-ref chunked copy.
+	// writeRefRawChunks previously allocated its own buffer per call,
+	// so a subset of N tensors meant N small-or-large allocations.
+	// Each ref's payload size is capped by chunkBytes anyway, so
+	// reuse is safe — the buffer is grown on demand by passing
+	// through writeRefRawChunksScratch.
+	var scratch []byte
 	for _, ref := range ordered {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := writeRefRawChunks(ctx, file, ref, defaultRawChunkBytes); err != nil {
+		scratch, err = writeRefRawChunksScratch(ctx, file, ref, defaultRawChunkBytes, scratch)
+		if err != nil {
 			return err
 		}
 	}
@@ -88,20 +96,34 @@ func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error)
 
 	ordered := make([]TensorRef, 0, len(names))
 	header := make(map[string]HeaderEntry, len(names))
+	// Single int64 slab covering all per-tensor Shape + DataOffsets slices —
+	// every header entry needs len(Shape)+2 int64s, so we count once then
+	// hand each entry a sub-slice. Replaces 2*N small allocs with one.
+	totalDims := 0
+	for _, name := range names {
+		totalDims += len(byName[name].Shape)
+	}
+	slab := make([]int64, totalDims+2*len(names))
+	cursor := 0
 	var offset int64
 	for _, name := range names {
 		ref := byName[name]
-		shape := make([]int64, len(ref.Shape))
+		shape := slab[cursor : cursor+len(ref.Shape) : cursor+len(ref.Shape)]
+		cursor += len(ref.Shape)
 		for i, dim := range ref.Shape {
 			if dim > uint64(maxInt64Value()) {
 				return nil, nil, core.NewError("mlx: safetensors subset tensor shape is too large: " + ref.Name)
 			}
 			shape[i] = int64(dim)
 		}
+		offsets := slab[cursor : cursor+2 : cursor+2]
+		cursor += 2
+		offsets[0] = offset
+		offsets[1] = offset + ref.ByteLen
 		header[name] = HeaderEntry{
 			DType:       core.Upper(ref.DType),
 			Shape:       shape,
-			DataOffsets: []int64{offset, offset + ref.ByteLen},
+			DataOffsets: offsets,
 		}
 		offset += ref.ByteLen
 		ordered = append(ordered, ref)
@@ -110,38 +132,52 @@ func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error)
 }
 
 func writeRefRawChunks(ctx context.Context, out *core.OSFile, ref TensorRef, chunkBytes int64) error {
+	_, err := writeRefRawChunksScratch(ctx, out, ref, chunkBytes, nil)
+	return err
+}
+
+// writeRefRawChunksScratch streams one tensor's raw payload through a
+// caller-supplied byte buffer, returning the (possibly grown) buffer
+// for the next call to reuse. Hoisting the buffer up to WriteSubset
+// collapses what was N small allocs into one.
+func writeRefRawChunksScratch(ctx context.Context, out *core.OSFile, ref TensorRef, chunkBytes int64, scratch []byte) ([]byte, error) {
 	if chunkBytes <= 0 {
 		chunkBytes = defaultRawChunkBytes
 	}
 	opened := core.Open(ref.Path)
 	if !opened.OK {
-		return resultError(opened)
+		return scratch, resultError(opened)
 	}
 	in := opened.Value.(*core.OSFile)
 	defer in.Close()
 
-	buffer := make([]byte, minInt64(chunkBytes, ref.ByteLen))
+	need := minInt64(chunkBytes, ref.ByteLen)
+	if int64(cap(scratch)) < need {
+		scratch = make([]byte, need)
+	} else {
+		scratch = scratch[:need]
+	}
 	remaining := ref.ByteLen
 	offset := ref.DataStart
 	for remaining > 0 {
 		if err := ctx.Err(); err != nil {
-			return err
+			return scratch, err
 		}
-		want := minInt64(int64(len(buffer)), remaining)
-		n, err := in.ReadAt(buffer[:want], offset)
+		want := minInt64(int64(len(scratch)), remaining)
+		n, err := in.ReadAt(scratch[:want], offset)
 		if err != nil && !(err == core.EOF && int64(n) == want) {
-			return err
+			return scratch, err
 		}
 		if int64(n) != want {
-			return core.NewError("mlx: safetensors tensor payload is truncated: " + ref.Name)
+			return scratch, core.NewError("mlx: safetensors tensor payload is truncated: " + ref.Name)
 		}
-		if err := writeAll(out, buffer[:want]); err != nil {
-			return err
+		if err := writeAll(out, scratch[:want]); err != nil {
+			return scratch, err
 		}
 		offset += want
 		remaining -= want
 	}
-	return nil
+	return scratch, nil
 }
 
 func writeAll(file *core.OSFile, data []byte) error {
