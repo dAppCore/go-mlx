@@ -7,10 +7,111 @@ package metal
 /*
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
+
+// mlx_as_strided_inline materialises the cgo shape + strides arrays inside
+// the C frame so callers can pass int32 / int64 values directly without
+// allocating Go-side []C.int / []C.int64_t backing arrays.  MLX caps tensor
+// rank at 8, and the metal model code tops out at rank 5 (Gemma 4 vision);
+// fixed-arity 8-slot C stack arrays cover both with headroom and avoid the
+// per-call cgo pointer-checker forcing the backing slice onto the Go heap.
+static inline int mlx_as_strided_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* shape_in, size_t shape_num,
+    const int64_t* strides_in, size_t strides_num,
+    size_t offset, mlx_stream s) {
+    int shape_buf[8];
+    int64_t strides_buf[8];
+    for (size_t i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    for (size_t i = 0; i < strides_num; ++i) strides_buf[i] = strides_in[i];
+    return mlx_as_strided(res, a, shape_buf, shape_num, strides_buf, strides_num, offset, s);
+}
+
+// mlx_reshape_inline / mlx_broadcast_to_inline / mlx_transpose_axes_inline /
+// mlx_squeeze_axes_inline / mlx_sum_axes_inline / mlx_mean_axes_inline /
+// mlx_softmax_axes_inline take a single int32 (or int) array and copy into
+// a 8-slot stack buffer before forwarding to MLX, eliminating the per-call
+// Go heap alloc for the cgo int array.
+static inline int mlx_reshape_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* shape_in, size_t shape_num,
+    mlx_stream s) {
+    int shape_buf[8];
+    for (size_t i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    return mlx_reshape(res, a, shape_buf, shape_num, s);
+}
+
+static inline int mlx_broadcast_to_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* shape_in, size_t shape_num,
+    mlx_stream s) {
+    int shape_buf[8];
+    for (size_t i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+    return mlx_broadcast_to(res, a, shape_buf, shape_num, s);
+}
+
+static inline int mlx_transpose_axes_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* axes_in, size_t axes_num,
+    mlx_stream s) {
+    int axes_buf[8];
+    for (size_t i = 0; i < axes_num; ++i) axes_buf[i] = (int)axes_in[i];
+    return mlx_transpose_axes(res, a, axes_buf, axes_num, s);
+}
+
+static inline int mlx_squeeze_axes_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* axes_in, size_t axes_num,
+    mlx_stream s) {
+    int axes_buf[8];
+    for (size_t i = 0; i < axes_num; ++i) axes_buf[i] = (int)axes_in[i];
+    return mlx_squeeze_axes(res, a, axes_buf, axes_num, s);
+}
+
+// mlx_slice_inline / mlx_slice_update_inline materialise the 3-array
+// starts/ends/strides triple on the C stack so the per-call Slice and
+// SliceUpdateInplace paths skip the three Go-side []C.int heap allocs.
+// strides are implicitly 1 (the only mode the wrappers currently use).
+static inline int mlx_slice_inline(
+    mlx_array* res, mlx_array a,
+    const int32_t* starts_in, const int32_t* ends_in, size_t n,
+    mlx_stream s) {
+    int starts_buf[8];
+    int ends_buf[8];
+    int strides_buf[8];
+    for (size_t i = 0; i < n; ++i) {
+        starts_buf[i] = (int)starts_in[i];
+        ends_buf[i] = (int)ends_in[i];
+        strides_buf[i] = 1;
+    }
+    return mlx_slice(res, a, starts_buf, n, ends_buf, n, strides_buf, n, s);
+}
+
+static inline int mlx_slice_update_inline(
+    mlx_array* res, mlx_array a, mlx_array upd,
+    const int32_t* starts_in, const int32_t* ends_in, size_t n,
+    mlx_stream s) {
+    int starts_buf[8];
+    int ends_buf[8];
+    int strides_buf[8];
+    for (size_t i = 0; i < n; ++i) {
+        starts_buf[i] = (int)starts_in[i];
+        ends_buf[i] = (int)ends_in[i];
+        strides_buf[i] = 1;
+    }
+    return mlx_slice_update(res, a, upd, starts_buf, n, ends_buf, n, strides_buf, n, s);
+}
 */
 import "C"
 
 import "unsafe"
+
+// maxTensorRank is the largest tensor rank supported by MLX (and by the model
+// code in this package — Gemma 4 vision tops out at rank 5, Gemma 4 text +
+// Qwen 3 + Llama 3 attention top out at rank 4).  Sized at 8 to provide
+// headroom for future ops while still fitting comfortably on a goroutine
+// stack frame, so per-call cgo int arrays can be materialised inline rather
+// than allocated on the heap.
+const maxTensorRank = 8
 
 func optionalInt(v int) C.mlx_optional_int {
 	return C.mlx_optional_int{
@@ -443,18 +544,25 @@ func AsType(a *Array, dtype DType) *Array {
 	return out
 }
 
-// AsStrided creates a view with custom strides.
+// AsStrided creates a view with custom strides.  Transformer attention paths
+// call this with rank-4 shape + strides three times per layer (Q/K/V) on the
+// per-token forward pass, so this routes through mlx_as_strided_inline — the
+// shape/strides arrays are materialised on the C stack rather than the Go
+// heap, eliminating two cgo allocs per call (one for cShape, one for cStrides).
 func AsStrided(a *Array, shape []int32, strides []int64, offset int64) *Array {
+	if len(shape) > maxTensorRank || len(strides) > maxTensorRank {
+		panic("AsStrided: rank exceeds maxTensorRank")
+	}
 	out := newArray("AS_STRIDED", a)
-	cShape := make([]C.int, len(shape))
-	for i, s := range shape {
-		cShape[i] = C.int(s)
+	var shapePtr *C.int32_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
 	}
-	cStrides := make([]C.int64_t, len(strides))
-	for i, s := range strides {
-		cStrides[i] = C.int64_t(s)
+	var stridesPtr *C.int64_t
+	if len(strides) > 0 {
+		stridesPtr = (*C.int64_t)(unsafe.Pointer(&strides[0]))
 	}
-	C.mlx_as_strided(&out.ctx, a.ctx, &cShape[0], C.size_t(len(cShape)), &cStrides[0], C.size_t(len(cStrides)), C.size_t(offset), DefaultStream().ctx)
+	C.mlx_as_strided_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), stridesPtr, C.size_t(len(strides)), C.size_t(offset), DefaultStream().ctx)
 	return out
 }
 
