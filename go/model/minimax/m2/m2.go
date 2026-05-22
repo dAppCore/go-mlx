@@ -1075,10 +1075,10 @@ func ForwardLazyExpertLoadMetal(hidden [][]float32, load LazyExpertLoad) (Packed
 	}
 	return PackedLayerForwardResult{
 		Output:            output,
-		Decisions:         append([]RouterDecision(nil), load.Decisions...),
-		SelectedExpertIDs: append([]int(nil), load.SelectedExpertIDs...),
+		Decisions:         core.SliceClone(load.Decisions),
+		SelectedExpertIDs: core.SliceClone(load.SelectedExpertIDs),
 		LoadedPackedBytes: load.LoadedPackedBytes,
-		ProbeEvents:       append([]probe.Event(nil), load.ProbeEvents...),
+		ProbeEvents:       core.SliceClone(load.ProbeEvents),
 	}, nil
 }
 
