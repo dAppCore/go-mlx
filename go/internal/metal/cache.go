@@ -264,16 +264,16 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// fresh buffer per K/V per token instead of two.
 	if c.keys != nil && c.idx >= c.maxSize {
 		oldK, oldV := c.keys, c.values
-		prefixK := Slice(oldK, []int32{0, 0, 1, 0}, []int32{B, H, int32(c.maxSize), Dk})
-		prefixV := Slice(oldV, []int32{0, 0, 1, 0}, []int32{B, H, int32(c.maxSize), Dv})
+		prefixK := Slice4(oldK, 0, 0, 1, 0, B, H, int32(c.maxSize), Dk)
+		prefixV := Slice4(oldV, 0, 0, 1, 0, B, H, int32(c.maxSize), Dv)
 		c.keys = Concatenate([]*Array{prefixK, k}, 2)
 		c.values = Concatenate([]*Array{prefixV, v}, 2)
 		Free(oldK, oldV, prefixK, prefixV)
 		c.offset++
 		// idx stays at maxSize — buffer is now full and temporally ordered.
 		// Return Slice views so caller Free() does not invalidate c.keys.
-		return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.maxSize), Dk}),
-			Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.maxSize), Dv})
+		return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.maxSize), Dk),
+			Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.maxSize), Dv)
 	}
 
 	// Below cap: grow + write at temporal tail (same as legacy growth path).
@@ -299,8 +299,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// SliceUpdate (the IDEAS.md "good shape" pre-allocated buffer with
 	// offset indexing).
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dk})
-	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, int32(c.idx), 0}, []int32{B, H, int32(c.idx + 1), Dv})
+	c.keys = SliceUpdateInplace4(c.keys, k, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dk)
+	c.values = SliceUpdateInplace4(c.values, v, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dv)
 	Free(oldK, oldV)
 
 	c.offset++
@@ -309,8 +309,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// Below cap the storage may extend past idx (pre-allocated headroom);
 	// return a view bounded to the valid window.
 	window := min(c.offset, c.maxSize)
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(window), Dk}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(window), Dv})
+	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(window), Dk),
+		Slice4(c.values, 0, 0, 0, 0, B, H, int32(window), Dv)
 }
 
 func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array) {
@@ -330,8 +330,8 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	// incoming multi-token segment.
 	var prevK, prevV *Array
 	if c.keys != nil && c.keys.Valid() && c.idx > 0 {
-		prevK = Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk})
-		prevV = Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
+		prevK = Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk)
+		prevV = Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv)
 	}
 
 	var fullK, fullV *Array
@@ -352,18 +352,18 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	if trim := full - c.maxSize; trim > 0 {
 		// Preserve the full multi-token prompt for the current attention pass,
 		// while storing only the bounded sliding window for future decode steps.
-		c.keys = Slice(fullK, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(full), Dk})
-		c.values = Slice(fullV, []int32{0, 0, int32(trim), 0}, []int32{B, H, int32(full), Dv})
+		c.keys = Slice4(fullK, 0, 0, int32(trim), 0, B, H, int32(full), Dk)
+		c.values = Slice4(fullV, 0, 0, int32(trim), 0, B, H, int32(full), Dv)
 		c.idx = int(c.keys.Shape()[2])
-		return Slice(fullK, []int32{0, 0, 0, 0}, []int32{B, H, int32(full), Dk}),
-			Slice(fullV, []int32{0, 0, 0, 0}, []int32{B, H, int32(full), Dv})
+		return Slice4(fullK, 0, 0, 0, 0, B, H, int32(full), Dk),
+			Slice4(fullV, 0, 0, 0, 0, B, H, int32(full), Dv)
 	}
 
 	c.keys, c.values = fullK, fullV
 	c.idx = full
 	// Return Slice views so callers can Free them without destroying the cache.
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dk}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{B, H, int32(c.idx), Dv})
+	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk),
+		Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv)
 }
 
 func (c *RotatingKVCache) orderedState() []*Array {
@@ -388,8 +388,8 @@ func (c *RotatingKVCache) orderedState() []*Array {
 	}
 	dv := c.values.Shape()[3]
 	return []*Array{
-		Slice(c.keys, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(window), shape[3]}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(window), dv}),
+		Slice4(c.keys, 0, 0, 0, 0, shape[0], shape[1], int32(window), shape[3]),
+		Slice4(c.values, 0, 0, 0, 0, shape[0], shape[1], int32(window), dv),
 	}
 }
 
@@ -553,8 +553,8 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	writeLen := seqLen
 	if writeLen > c.maxSize {
 		start := writeLen - c.maxSize
-		writeK = Slice(k, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(writeLen), kKeyDim})
-		writeV = Slice(v, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(writeLen), vValueDim})
+		writeK = Slice4(k, 0, 0, int32(start), 0, kBatch, kHeads, int32(writeLen), kKeyDim)
+		writeV = Slice4(v, 0, 0, int32(start), 0, kBatch, kHeads, int32(writeLen), vValueDim)
 		defer Free(writeK, writeV)
 		writeLen = c.maxSize
 	}
@@ -613,8 +613,8 @@ func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *A
 		return fullK, fullV
 	}
 	prefixLen := totalLen - c.maxSize
-	prefixK := Slice(fullK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(prefixLen), kShape[3]})
-	prefixV := Slice(fullV, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(prefixLen), vShape[3]})
+	prefixK := Slice4(fullK, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3])
+	prefixV := Slice4(fullV, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3])
 	tailK, tailV := c.validState()
 	if tailK == nil || tailV == nil {
 		Free(prefixK, prefixV, tailK, tailV)
@@ -728,8 +728,8 @@ func (c *FixedKVCache) validStateWithStream(stream *Stream) (*Array, *Array) {
 	if c.keys.NumDims() < 4 || c.values.NumDims() < 4 {
 		return nil, nil
 	}
-	return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{int32(c.keys.Dim(0)), int32(c.keys.Dim(1)), int32(c.length), int32(c.keys.Dim(3))}),
-		Slice(c.values, []int32{0, 0, 0, 0}, []int32{int32(c.values.Dim(0)), int32(c.values.Dim(1)), int32(c.length), int32(c.values.Dim(3))})
+	return Slice4(c.keys, 0, 0, 0, 0, int32(c.keys.Dim(0)), int32(c.keys.Dim(1)), int32(c.length), int32(c.keys.Dim(3))),
+		Slice4(c.values, 0, 0, 0, 0, int32(c.values.Dim(0)), int32(c.values.Dim(1)), int32(c.length), int32(c.values.Dim(3)))
 }
 
 // FixedState returns cloned full-capacity K/V handles for compiled decode.
@@ -1482,7 +1482,7 @@ func cachePageView(a *Array, shape []int32, start, take, totalLen int) (*Array, 
 	if start == 0 && take == totalLen {
 		return a, false
 	}
-	return Slice(a, []int32{0, 0, int32(start), 0}, []int32{shape[0], shape[1], int32(start + take), shape[3]}), true
+	return Slice4(a, 0, 0, int32(start), 0, shape[0], shape[1], int32(start+take), shape[3]), true
 }
 
 func (c *PagedKVCache) trimToMaxSize() {
@@ -1530,13 +1530,13 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	}
 	oldK, oldV := c.kPages[0], c.vPages[0]
 	newLen := pageLen - tokens
-	tailK := Slice(oldK, []int32{0, 0, int32(tokens), 0}, []int32{kShape[0], kShape[1], int32(pageLen), kShape[3]})
-	tailV := Slice(oldV, []int32{0, 0, int32(tokens), 0}, []int32{vShape[0], vShape[1], int32(pageLen), vShape[3]})
+	tailK := Slice4(oldK, 0, 0, int32(tokens), 0, kShape[0], kShape[1], int32(pageLen), kShape[3])
+	tailV := Slice4(oldV, 0, 0, int32(tokens), 0, vShape[0], vShape[1], int32(pageLen), vShape[3])
 	if pagedKVPreallocEnabled() {
 		pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, oldK.Dtype())
 		pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, oldV.Dtype())
-		c.kPages[0] = SliceUpdateInplace(pageK, tailK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(newLen), kShape[3]})
-		c.vPages[0] = SliceUpdateInplace(pageV, tailV, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(newLen), vShape[3]})
+		c.kPages[0] = SliceUpdateInplace4(pageK, tailK, 0, 0, 0, 0, kShape[0], kShape[1], int32(newLen), kShape[3])
+		c.vPages[0] = SliceUpdateInplace4(pageV, tailV, 0, 0, 0, 0, vShape[0], vShape[1], int32(newLen), vShape[3])
 		Free(pageK, pageV)
 	} else {
 		c.kPages[0] = tailK
@@ -1634,7 +1634,7 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page.Clone()
 	}
-	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]})
+	return Slice4(page, 0, 0, 0, 0, shape[0], shape[1], int32(length), shape[3])
 }
 
 func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
@@ -1670,7 +1670,7 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page, false
 	}
-	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]}), true
+	return Slice4(page, 0, 0, 0, 0, shape[0], shape[1], int32(length), shape[3]), true
 }
 
 // identifyPage returns (isK, ok) — isK is true when the page is the i-th K
@@ -1799,14 +1799,14 @@ func (c *PagedKVCache) appendMaterialized(k, v *Array, seqLen int) bool {
 	}
 	if totalLen != seqLen {
 		start := totalLen - seqLen
-		writeK = Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(totalLen), kShape[3]})
-		writeV = Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(totalLen), vShape[3]})
+		writeK = Slice4(k, 0, 0, int32(start), 0, kShape[0], kShape[1], int32(totalLen), kShape[3])
+		writeV = Slice4(v, 0, 0, int32(start), 0, vShape[0], vShape[1], int32(totalLen), vShape[3])
 		defer Free(writeK, writeV)
 	}
 	start := c.materializedLength
 	oldK, oldV := c.materializedKeys, c.materializedVals
-	c.materializedKeys = SliceUpdateInplace(c.materializedKeys, writeK, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + seqLen), kShape[3]})
-	c.materializedVals = SliceUpdateInplace(c.materializedVals, writeV, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + seqLen), vShape[3]})
+	c.materializedKeys = SliceUpdateInplace4(c.materializedKeys, writeK, 0, 0, int32(start), 0, kShape[0], kShape[1], int32(start+seqLen), kShape[3])
+	c.materializedVals = SliceUpdateInplace4(c.materializedVals, writeV, 0, 0, int32(start), 0, vShape[0], vShape[1], int32(start+seqLen), vShape[3])
 	Free(oldK, oldV)
 	c.materializedLength += seqLen
 	return c.materializedLength == c.length
@@ -1830,8 +1830,8 @@ func (c *PagedKVCache) initMaterializedFromPages(state PagedKVState) bool {
 	c.materializedKeys = Zeros([]int32{kShape[0], kShape[1], int32(c.maxSize), kShape[3]}, fullK.Dtype())
 	c.materializedVals = Zeros([]int32{vShape[0], vShape[1], int32(c.maxSize), vShape[3]}, fullV.Dtype())
 	oldK, oldV := c.materializedKeys, c.materializedVals
-	c.materializedKeys = SliceUpdateInplace(c.materializedKeys, fullK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(state.Length), kShape[3]})
-	c.materializedVals = SliceUpdateInplace(c.materializedVals, fullV, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(state.Length), vShape[3]})
+	c.materializedKeys = SliceUpdateInplace4(c.materializedKeys, fullK, 0, 0, 0, 0, kShape[0], kShape[1], int32(state.Length), kShape[3])
+	c.materializedVals = SliceUpdateInplace4(c.materializedVals, fullV, 0, 0, 0, 0, vShape[0], vShape[1], int32(state.Length), vShape[3])
 	Free(oldK, oldV, fullK, fullV)
 	c.materializedLength = state.Length
 	return true
@@ -1846,8 +1846,8 @@ func (c *PagedKVCache) materializedVisibleState() (*Array, *Array) {
 	if len(kShape) < 4 || len(vShape) < 4 {
 		return nil, nil
 	}
-	return Slice(c.materializedKeys, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(c.materializedLength), kShape[3]}),
-		Slice(c.materializedVals, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(c.materializedLength), vShape[3]})
+	return Slice4(c.materializedKeys, 0, 0, 0, 0, kShape[0], kShape[1], int32(c.materializedLength), kShape[3]),
+		Slice4(c.materializedVals, 0, 0, 0, 0, vShape[0], vShape[1], int32(c.materializedLength), vShape[3])
 }
 
 func (c *PagedKVCache) materializedShapesMatch(kShape, vShape []int32) bool {
@@ -1877,7 +1877,7 @@ func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 		return k, v
 	}
 	start := int(kShape[2]) - maxSize
-	return Slice(k, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], kShape[2], kShape[3]}),
-		Slice(v, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], vShape[2], vShape[3]})
+	return Slice4(k, 0, 0, int32(start), 0, kShape[0], kShape[1], kShape[2], kShape[3]),
+		Slice4(v, 0, 0, int32(start), 0, vShape[0], vShape[1], vShape[2], vShape[3])
 }
 
