@@ -246,6 +246,35 @@ func BenchmarkSessionAgent_FoldedSleepOpts(b *testing.B) {
 	}
 }
 
+// Options carry user-supplied Meta (3 entries). Exercises the
+// cloneStringMap + pre-sized destination merge — the upstream call into
+// addAgentMemoryFoldMeta then never grows the map.
+func BenchmarkSessionAgent_FoldedSleepOpts_WithMeta(b *testing.B) {
+	opts := agent.SleepOptions{
+		Labels: []string{"env=prod"},
+		Meta: map[string]string{
+			"custom_a": "value-a",
+			"custom_b": "value-b",
+			"custom_c": "value-c",
+		},
+	}
+	checkpoint := &agent.SleepReport{
+		EntryURI:  "state://entry/parent",
+		BundleURI: "state://bundle/parent",
+		IndexURI:  "state://index/parent",
+	}
+	report := &AgentMemoryFoldReport{
+		SummaryBytes:      300,
+		RecentTailBytes:   800,
+		FoldedPromptBytes: 1100,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionAgentBenchSinkSleepOpts = foldedAgentMemorySleepOptions(opts, checkpoint, report)
+	}
+}
+
 // --- agentMemorySleepOptionsFromInference ---
 
 // Full req — drives both the metadata builder and the labels-from-inf

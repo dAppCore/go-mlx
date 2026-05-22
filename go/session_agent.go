@@ -501,18 +501,28 @@ func agentMemoryTextChunks(text string, chunkBytes int) iter.Seq[string] {
 			yield(text)
 			return
 		}
+		// Byte-level scan with rune-boundary alignment. The previous
+		// implementation drove a `range text` loop which paid for full
+		// UTF-8 decoding on every rune — N decodes per chunk to find
+		// the boundary one rune past chunkBytes. Here we jump directly
+		// to start+chunkBytes and only advance past UTF-8 continuation
+		// bytes (top two bits 10xxxxxx) until we hit a rune-start byte.
+		// Identical chunk boundaries, but O(text_bytes) byte compares
+		// instead of O(text_bytes) full rune decodes.
 		start := 0
-		for index := range text {
-			if index == start || index-start < chunkBytes {
-				continue
-			}
-			if !yield(text[start:index]) {
+		for start < len(text) {
+			end := start + chunkBytes
+			if end >= len(text) {
+				yield(text[start:])
 				return
 			}
-			start = index
-		}
-		if start < len(text) {
-			yield(text[start:])
+			for end < len(text) && text[end]&0xC0 == 0x80 {
+				end++
+			}
+			if !yield(text[start:end]) {
+				return
+			}
+			start = end
 		}
 	}
 }
