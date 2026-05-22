@@ -57,6 +57,33 @@ type readableCache interface {
 	ReadState() (state []*Array, owned []*Array)
 }
 
+// stateAppender is an optional interface implemented by caches that can append
+// their state arrays into a caller-provided slice — bypasses the per-call
+// `[]*Array{...}` literal allocation that `State()` produces. Used by hot
+// prefill paths (prompt_cache.prefillCacheStateArrays) where Gemma 4's 26-cache
+// fan-out previously paid 27 allocs per dispatch (one per State() call plus the
+// outer slice). Caches that don't implement this gracefully fall back to State().
+type stateAppender interface {
+	AppendState(dst []*Array) []*Array
+}
+
+// appendCacheState appends a cache's live state arrays into dst. Prefers
+// AppendState (alloc-free) when implemented; falls back to State() copy.
+func appendCacheState(dst []*Array, c Cache) []*Array {
+	if c == nil {
+		return dst
+	}
+	if a, ok := c.(stateAppender); ok {
+		return a.AppendState(dst)
+	}
+	for _, state := range c.State() {
+		if state != nil && state.Valid() {
+			dst = append(dst, state)
+		}
+	}
+	return dst
+}
+
 func cacheReadState(cache Cache) (state []*Array, owned []*Array) {
 	if cache == nil {
 		return nil, nil
@@ -134,6 +161,20 @@ func (c *KVCache) State() []*Array {
 		return nil
 	}
 	return []*Array{c.keys, c.values}
+}
+
+// AppendState appends valid state arrays into dst. See stateAppender.
+func (c *KVCache) AppendState(dst []*Array) []*Array {
+	if c.keys == nil {
+		return dst
+	}
+	if c.keys != nil && c.keys.Valid() {
+		dst = append(dst, c.keys)
+	}
+	if c.values != nil && c.values.Valid() {
+		dst = append(dst, c.values)
+	}
+	return dst
 }
 
 func (c *KVCache) Offset() int { return c.offset }
@@ -361,6 +402,20 @@ func (c *RotatingKVCache) State() []*Array {
 	// raw arrays are the canonical reference. Returning them directly keeps
 	// the legacy contract that Reset/Free invalidates State() callers' handles.
 	return []*Array{c.keys, c.values}
+}
+
+// AppendState appends valid state arrays into dst. See stateAppender.
+func (c *RotatingKVCache) AppendState(dst []*Array) []*Array {
+	if c.keys == nil {
+		return dst
+	}
+	if c.keys != nil && c.keys.Valid() {
+		dst = append(dst, c.keys)
+	}
+	if c.values != nil && c.values.Valid() {
+		dst = append(dst, c.values)
+	}
+	return dst
 }
 
 func (c *RotatingKVCache) Offset() int { return c.offset }
@@ -730,6 +785,20 @@ func (c *FixedKVCache) State() []*Array {
 	return []*Array{c.keys, c.values}
 }
 
+// AppendState appends valid state arrays into dst. See stateAppender.
+func (c *FixedKVCache) AppendState(dst []*Array) []*Array {
+	if c.keys == nil {
+		return dst
+	}
+	if c.keys != nil && c.keys.Valid() {
+		dst = append(dst, c.keys)
+	}
+	if c.values != nil && c.values.Valid() {
+		dst = append(dst, c.values)
+	}
+	return dst
+}
+
 func (c *FixedKVCache) ReadState() ([]*Array, []*Array) {
 	k, v := c.validState()
 	if k == nil || v == nil {
@@ -1076,6 +1145,24 @@ func (c *PagedKVCache) State() []*Array {
 	out = append(out, c.kPages...)
 	out = append(out, c.vPages...)
 	return out
+}
+
+// AppendState appends valid state arrays into dst. See stateAppender.
+func (c *PagedKVCache) AppendState(dst []*Array) []*Array {
+	if len(c.kPages) == 0 {
+		return dst
+	}
+	for _, page := range c.kPages {
+		if page != nil && page.Valid() {
+			dst = append(dst, page)
+		}
+	}
+	for _, page := range c.vPages {
+		if page != nil && page.Valid() {
+			dst = append(dst, page)
+		}
+	}
+	return dst
 }
 
 func (c *PagedKVCache) ReadState() ([]*Array, []*Array) {

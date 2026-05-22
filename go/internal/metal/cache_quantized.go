@@ -125,6 +125,26 @@ func (c *QuantizedKVCache) State() []*Array {
 	return []*Array{c.keys, c.values, c.keyScale, c.valueScale}
 }
 
+// AppendState appends valid state arrays into dst. See stateAppender.
+func (c *QuantizedKVCache) AppendState(dst []*Array) []*Array {
+	if c.keys == nil {
+		return dst
+	}
+	if c.keys != nil && c.keys.Valid() {
+		dst = append(dst, c.keys)
+	}
+	if c.values != nil && c.values.Valid() {
+		dst = append(dst, c.values)
+	}
+	if c.keyScale != nil && c.keyScale.Valid() {
+		dst = append(dst, c.keyScale)
+	}
+	if c.valueScale != nil && c.valueScale.Valid() {
+		dst = append(dst, c.valueScale)
+	}
+	return dst
+}
+
 func (c *QuantizedKVCache) ReadState() ([]*Array, []*Array) {
 	k, v := c.dequantizedState()
 	if k == nil || v == nil {
