@@ -328,8 +328,11 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 }
 
 func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, error) {
+	// Inline the per-length collect+iterate to skip a [2]int + [4]int
+	// slice literal alloc per layer + per head (SaveStateBlocks fires
+	// once per checkpointed block, with O(layers × heads) alloc count).
 	windowLen := 0
-	for _, length := range []int{
+	for _, length := range [2]int{
 		kvSnapshotLayerRawWindowLen(layer.KeyBytes, layer.KeyDType, layer.KeyShape, seqLen),
 		kvSnapshotLayerRawWindowLen(layer.ValueBytes, layer.ValueDType, layer.ValueShape, seqLen),
 	} {
@@ -348,7 +351,7 @@ func kvSnapshotLayerWindowLen(layer LayerSnapshot, seqLen, headDim int) (int, er
 		}
 	}
 	for _, head := range layer.Heads {
-		for _, length := range []int{
+		for _, length := range [4]int{
 			kvSnapshotTensorWindowLen(len(head.Key), seqLen, headDim),
 			kvSnapshotTensorWindowLen(len(head.Value), seqLen, headDim),
 			kvSnapshotRawTensorWindowLen(head.KeyBytes, head.KeyDType, seqLen, headDim),
