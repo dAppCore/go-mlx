@@ -51,8 +51,14 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	inspectModelPackJANG(&pack, root)
 	inspectModelPackCodebook(&pack, root)
 	inspectModelPackTokenizer(&pack, root)
-	inspectModelPackChatTemplate(&pack, root, cfg)
+	// Architecture resolution happens BEFORE chat-template inspection so
+	// the latter can read pack.ArchitectureProfile directly instead of
+	// re-entering profile.LookupArchitectureProfile twice (one each for
+	// nativeChatTemplateName + modelPackRequiresChatTemplate). The
+	// canonical ID written into pack.Architecture is what subsequent
+	// stages already expect anyway.
 	inspectModelPackArchitecture(&pack)
+	inspectModelPackChatTemplate(&pack, root, cfg)
 	inspectModelPackTaskProfiles(&pack, root)
 	inspectModelPackMiniMaxM2(&pack)
 	inspectModelPackPolicy(&pack, cfg)
@@ -366,13 +372,23 @@ func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelP
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
 	}
 
-	if template := nativeChatTemplateName(pack.Architecture); template != "" {
-		pack.ChatTemplate = template
+	// inspectModelPackArchitecture has already resolved
+	// pack.ArchitectureProfile when the architecture is known; consult
+	// it directly so we don't re-enter profile.LookupArchitectureProfile
+	// once for the native template and again for the requires-template
+	// predicate.
+	archProfile := pack.ArchitectureProfile
+	if archProfile != nil && archProfile.ChatTemplate != "" {
+		pack.ChatTemplate = archProfile.ChatTemplate
 		pack.ChatTemplateSource = mp.ModelPackChatTemplateNative
 		pack.HasChatTemplate = true
 		return
 	}
-	if !modelPackRequiresChatTemplate(pack.Architecture) {
+	requiresTemplate := true
+	if archProfile != nil {
+		requiresTemplate = archProfile.RequiresChatTemplate
+	}
+	if !requiresTemplate {
 		return
 	}
 	if cfg.RequireChatTemplate {
