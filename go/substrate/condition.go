@@ -73,6 +73,10 @@ func MustNormalize(value string) Condition {
 // lookupCondition returns the canonical Condition for one of the
 // recognised aliases or false for any other input. Held as a single
 // switch so Normalize / MustNormalize share the alias-table.
+//
+// When adding a new alias, mirror it into matchConditionFold's
+// length-bucket switch below so the case-insensitive path stays in
+// step with the exact-match path.
 func lookupCondition(value string) (Condition, bool) {
 	switch value {
 	case "", "cont", "continuous", "continuous-stream":
