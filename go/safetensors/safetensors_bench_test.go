@@ -312,6 +312,32 @@ func BenchmarkSafetensors_DecodeFloatData_F16_2048(b *testing.B) {
 	}
 }
 
+func BenchmarkSafetensors_DecodeFloatData_F16_256(b *testing.B) {
+	elements := 256
+	raw := make([]byte, elements*2)
+	for i := 0; i < elements; i++ {
+		binary.LittleEndian.PutUint16(raw[i*2:], 0x3c00)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stSinkFloats, stSinkErr = DecodeFloatData("F16", raw, elements)
+	}
+}
+
+func BenchmarkSafetensors_DecodeFloatData_F16_16384(b *testing.B) {
+	elements := 16384
+	raw := make([]byte, elements*2)
+	for i := 0; i < elements; i++ {
+		binary.LittleEndian.PutUint16(raw[i*2:], 0x3c00)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		stSinkFloats, stSinkErr = DecodeFloatData("F16", raw, elements)
+	}
+}
+
 func BenchmarkSafetensors_DecodeFloatData_BF16_2048(b *testing.B) {
 	elements := 2048
 	raw := make([]byte, elements*2)
