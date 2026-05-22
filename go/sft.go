@@ -946,9 +946,13 @@ func sftAdapterStep(adapter *LoRAAdapter, batches []SFTBatch, optimizer *AdamW) 
 	}
 	metalBatches := make([]Batch, len(batches))
 	targets := make([][][]int, len(batches))
-	for i, batch := range batches {
-		metalBatches[i] = batch.Batch
-		targets[i] = batch.Targets
+	// Index iteration — range over []SFTBatch copies the whole struct
+	// (Batch's three slice headers + Targets' slice header = 96 B) per
+	// iteration just to forward two field reads. Indexing keeps the
+	// loop body to two field loads off the underlying array.
+	for i := range batches {
+		metalBatches[i] = batches[i].Batch
+		targets[i] = batches[i].Targets
 	}
 	return adapter.StepAccumulated(metalBatches, targets, optimizer)
 }
