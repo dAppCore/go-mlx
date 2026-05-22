@@ -255,11 +255,50 @@ func indexTensorByteLen(index safetensors.Index) int64 {
 	return total
 }
 
+// modelSliceInclusionMask collapses the per-component HasComponent lookups
+// into bool fields so a tensor-name walk pays the plan.HasComponent cost
+// once per slice operation instead of once per tensor × per component.
+// plan.HasComponent is a linear scan over plan.Components, so for an
+// N-tensor / 8-component pass this was N × 8 × |Components| compares.
+type modelSliceInclusionMask struct {
+	all        bool
+	embeddings bool
+	norms      bool
+	attention  bool
+	ffn        bool
+	gate       bool
+	downMeta   bool
+	router     bool
+	experts    bool
+	lmHead     bool
+}
+
+// buildModelSliceInclusionMask materialises the inclusion mask once for a
+// given plan so the per-tensor classifier can read it via direct field
+// loads on the hot path.
+func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclusionMask {
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		return modelSliceInclusionMask{all: true}
+	}
+	return modelSliceInclusionMask{
+		embeddings: plan.HasComponent(inference.ModelComponentEmbeddings),
+		norms:      plan.HasComponent(inference.ModelComponentNorms),
+		attention:  plan.HasComponent(inference.ModelComponentAttention),
+		ffn:        plan.HasComponent(inference.ModelComponentFFN),
+		gate:       plan.HasComponent(inference.ModelComponentGate),
+		downMeta:   plan.HasComponent(inference.ModelComponentDownMeta),
+		router:     plan.HasComponent(inference.ModelComponentRouter),
+		experts:    plan.HasComponent(inference.ModelComponentExperts),
+		lmHead:     plan.HasComponent(inference.ModelComponentLMHead),
+	}
+}
+
 func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
 	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	names := make([]string, 0, len(index.Names))
+	mask := buildModelSliceInclusionMask(plan)
 	for _, name := range index.Names {
-		if !modelSliceIncludesTensor(plan, name) {
+		if !modelSliceIncludesTensorMask(mask, name) {
 			continue
 		}
 		refs = append(refs, index.Tensors[name])
@@ -268,33 +307,40 @@ func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors
 	return refs, names
 }
 
-func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
-	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+// modelSliceIncludesTensorMask is the mask-driven hot-path classifier used
+// by selectModelSliceTensorRefs. Direct bool-field loads replace
+// plan.HasComponent's per-call linear scan over plan.Components.
+func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) bool {
+	if mask.all {
 		return true
 	}
 	lower := core.Lower(name)
 	switch {
-	case plan.HasComponent(inference.ModelComponentEmbeddings) && modelSliceTensorIsEmbedding(lower):
+	case mask.embeddings && modelSliceTensorIsEmbedding(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentNorms) && modelSliceTensorIsNorm(lower):
+	case mask.norms && modelSliceTensorIsNorm(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentAttention) && modelSliceTensorIsAttention(lower):
+	case mask.attention && modelSliceTensorIsAttention(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentFFN) && modelSliceTensorIsFFN(lower):
+	case mask.ffn && modelSliceTensorIsFFN(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentGate) && modelSliceTensorIsGate(lower):
+	case mask.gate && modelSliceTensorIsGate(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentDownMeta) && modelSliceTensorIsDownMeta(lower):
+	case mask.downMeta && modelSliceTensorIsDownMeta(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentRouter) && modelSliceTensorIsRouter(lower):
+	case mask.router && modelSliceTensorIsRouter(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentExperts) && modelSliceTensorIsExpert(lower):
+	case mask.experts && modelSliceTensorIsExpert(lower):
 		return true
-	case plan.HasComponent(inference.ModelComponentLMHead) && modelSliceTensorIsLMHead(lower):
+	case mask.lmHead && modelSliceTensorIsLMHead(lower):
 		return true
 	default:
 		return false
 	}
+}
+
+func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
+	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(plan), name)
 }
 
 func modelSliceTensorIsEmbedding(name string) bool {
