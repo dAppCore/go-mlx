@@ -97,7 +97,11 @@ func (plan TensorPlan) EstimatedPackedExpertBytes() uint64 {
 		return 0
 	}
 	total := uint64(0)
-	for _, spec := range specs {
+	// Index iteration: TensorSpec is 120 B, well above the value-copy
+	// threshold. Pointer alias lets the switch + specDenseBytes share the
+	// stack-allocated spec instead of doing a fresh 120 B copy per call.
+	for i := range specs {
+		spec := &specs[i]
 		switch spec.Role {
 		case TensorRoleExpertGate, TensorRoleExpertUp, TensorRoleExpertDown:
 			if spec.Packed != nil && spec.Packed.PackedBytes > 0 {
@@ -410,7 +414,7 @@ func defaultHotExpertIDs(total, count int) []int {
 	return ids
 }
 
-func specDenseBytes(spec TensorSpec) uint64 {
+func specDenseBytes(spec *TensorSpec) uint64 {
 	if len(spec.Shape) == 0 {
 		return 0
 	}

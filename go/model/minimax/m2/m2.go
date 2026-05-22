@@ -212,8 +212,10 @@ func (tensor ResolvedTensor) EstimatedBytes() uint64 {
 // skeleton. It is deliberately metadata-only and does not read tensor payloads.
 func (skeleton LayerForwardSkeleton) EstimatedBytes() uint64 {
 	total := skeleton.RouterGate.EstimatedBytes()
-	for _, tensor := range skeleton.Attention {
-		total += tensor.EstimatedBytes()
+	// Index iteration: ResolvedTensor is 112 B, above the value-copy
+	// threshold. Range-by-value would copy each Attention entry per step.
+	for i := range skeleton.Attention {
+		total += skeleton.Attention[i].EstimatedBytes()
 	}
 	if skeleton.RouterBias != nil {
 		total += skeleton.RouterBias.EstimatedBytes()
@@ -641,13 +643,8 @@ func BuildLayerForwardSkeleton(plan TensorPlan, weightFiles []string, layer int)
 	if err != nil {
 		return LayerForwardSkeleton{}, core.E("minimax_m2.layer_skeleton", "index safetensors", err)
 	}
-	skeleton := LayerForwardSkeleton{Layer: layer}
-	for _, role := range []TensorRole{
-		TensorRoleAttentionQ,
-		TensorRoleAttentionK,
-		TensorRoleAttentionV,
-		TensorRoleAttentionO,
-	} {
+	skeleton := LayerForwardSkeleton{Layer: layer, Attention: make([]ResolvedTensor, 0, 4)}
+	for _, role := range attentionSkeletonRoles {
 		resolved, err := resolveSkeletonTensor(index, findTensorSpec(specs, role), packedWeightCandidates)
 		if err != nil {
 			return LayerForwardSkeleton{}, err
@@ -1045,6 +1042,18 @@ var packedSuffixes = [...]string{".packed", ".qweight"}
 //
 //	event.Meta = metaMinimaxM2
 var metaMinimaxM2 = map[string]string{"architecture": "minimax_m2"}
+
+// attentionSkeletonRoles is the fixed list of attention projection roles
+// resolved by BuildLayerForwardSkeleton. Lifted to a package-level array
+// so the role loop doesn't allocate a fresh 4-elem slice per call.
+//
+//	for _, role := range attentionSkeletonRoles { ... }
+var attentionSkeletonRoles = [...]TensorRole{
+	TensorRoleAttentionQ,
+	TensorRoleAttentionK,
+	TensorRoleAttentionV,
+	TensorRoleAttentionO,
+}
 
 func trimPackedSuffix(name string) string {
 	for _, suffix := range packedSuffixes {
