@@ -175,10 +175,13 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		return chapterError(report, err.Error())
 	}
 	captureStart := time.Now()
+	// report.BundleURI is "<captureURI>/bundle" — strip the suffix instead
+	// of re-running slug() + the same concat. slug() is the costliest part
+	// of bundle URI formation (Lower/Trim + byte-walk + alloc).
 	bundle, err := runner.Capture(ctx, chapter.Text, store.Writer, kv.StateBlockOptions{
 		BlockSize:  cfg.BlockSize,
 		KVEncoding: kv.EncodingNative,
-		URI:        "mlx://state-chapter-smoke/" + slug(index, chapter.Name),
+		URI:        core.TrimSuffix(report.BundleURI, "/bundle"),
 		Labels:     []string{"chapter-smoke", "state-kv"},
 	})
 	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
