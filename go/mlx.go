@@ -527,33 +527,49 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 	return cfg
 }
 
+// normalizeLoadConfig validation errors hoisted to package vars — the
+// failure paths are rare in callers but each core.NewError() allocates
+// a fresh error value; reusing a single instance per message keeps the
+// rare path alloc-free and preserves errors.Is comparability.
+var (
+	errMlxContextLengthNegative      = core.NewError("mlx: context length must be >= 0")
+	errMlxGemma4SlidingWindowNeg     = core.NewError("mlx: Gemma 4 sliding window must be >= 0")
+	errMlxParallelSlotsNegative      = core.NewError("mlx: parallel slots must be >= 0")
+	errMlxPromptCacheMinTokensNeg    = core.NewError("mlx: prompt cache minimum tokens must be >= 0")
+	errMlxQuantizationNegative       = core.NewError("mlx: quantization bits must be >= 0")
+	errMlxBatchSizeNegative          = core.NewError("mlx: batch size must be >= 0")
+	errMlxPrefillChunkSizeNegative   = core.NewError("mlx: prefill chunk size must be >= 0")
+	errMlxExpectedQuantizationNeg    = core.NewError("mlx: expected quantization bits must be >= 0")
+	errMlxSplitInferenceRemotePlan   = core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+)
+
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 	if cfg.ContextLength < 0 {
-		return LoadConfig{}, core.NewError("mlx: context length must be >= 0")
+		return LoadConfig{}, errMlxContextLengthNegative
 	}
 	if cfg.Gemma4SlidingWindow < 0 {
-		return LoadConfig{}, core.NewError("mlx: Gemma 4 sliding window must be >= 0")
+		return LoadConfig{}, errMlxGemma4SlidingWindowNeg
 	}
 	if cfg.ParallelSlots < 0 {
-		return LoadConfig{}, core.NewError("mlx: parallel slots must be >= 0")
+		return LoadConfig{}, errMlxParallelSlotsNegative
 	}
 	if cfg.PromptCacheMinTokens < 0 {
-		return LoadConfig{}, core.NewError("mlx: prompt cache minimum tokens must be >= 0")
+		return LoadConfig{}, errMlxPromptCacheMinTokensNeg
 	}
 	if cfg.PromptCache && cfg.PromptCacheMinTokens == 0 {
 		cfg.PromptCacheMinTokens = DefaultPromptCacheMinTokens
 	}
 	if cfg.Quantization < 0 {
-		return LoadConfig{}, core.NewError("mlx: quantization bits must be >= 0")
+		return LoadConfig{}, errMlxQuantizationNegative
 	}
 	if cfg.BatchSize < 0 {
-		return LoadConfig{}, core.NewError("mlx: batch size must be >= 0")
+		return LoadConfig{}, errMlxBatchSizeNegative
 	}
 	if cfg.PrefillChunkSize < 0 {
-		return LoadConfig{}, core.NewError("mlx: prefill chunk size must be >= 0")
+		return LoadConfig{}, errMlxPrefillChunkSizeNegative
 	}
 	if cfg.ExpectedQuantization < 0 {
-		return LoadConfig{}, core.NewError("mlx: expected quantization bits must be >= 0")
+		return LoadConfig{}, errMlxExpectedQuantizationNeg
 	}
 	if cfg.SplitInference != nil {
 		if err := inference.ValidateSplitInferencePlan(*cfg.SplitInference); err != nil {
@@ -564,7 +580,7 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 			mode = inference.SplitInferenceModeLocal
 		}
 		if mode != inference.SplitInferenceModeLocal {
-			return LoadConfig{}, core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+			return LoadConfig{}, errMlxSplitInferenceRemotePlan
 		}
 	}
 	switch cfg.CacheMode {
