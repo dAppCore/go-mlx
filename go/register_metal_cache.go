@@ -37,7 +37,7 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 			BlockSize:     blockcache.DefaultBlockSize,
 			ModelHash:     inferenceModelInfoHash(info),
 			AdapterHash:   adapter.ActiveAdapter().Hash,
-			TokenizerHash: adapterTokenizerHash(adapter),
+			TokenizerHash: adapterTokenizerHashFromInfo(adapter, info),
 			Tokenize: func(prompt string) ([]int32, error) {
 				root := adapter.rootModel()
 				if root == nil || root.Tokenizer() == nil {
@@ -71,11 +71,20 @@ func adapterTokenizerHash(adapter *metaladapter) string {
 	if adapter == nil || adapter.model == nil {
 		return ""
 	}
+	return adapterTokenizerHashFromInfo(adapter, adapter.Info())
+}
+
+// adapterTokenizerHashFromInfo is the inner form that lets callers pass an
+// already-resolved inference.ModelInfo, avoiding a second adapter.Info() cgo
+// crossing when the caller has just made the call themselves.
+func adapterTokenizerHashFromInfo(adapter *metaladapter, info inference.ModelInfo) string {
+	if adapter == nil || adapter.model == nil {
+		return ""
+	}
 	root := adapter.rootModel()
 	if root == nil || root.Tokenizer() == nil {
 		return ""
 	}
-	info := adapter.Info()
 	tok := root.Tokenizer()
 	return blockcache.HashModelParts(info.Architecture, info.VocabSize, tok.BOS(), tok.EOS())
 }
