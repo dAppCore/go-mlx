@@ -16,8 +16,13 @@ import "C"
 // loop on FixedKVCache calls this twice per Update (in validState), so the
 // saved allocations compound with sequence length.
 //
-//	k := fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim)
-func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32) *Array {
+// The stream argument lets callers pass a pre-resolved stream so the
+// steady-state path can avoid the per-call DefaultStream() lookup, which
+// runs currentDefaultDevice() each time and allocates a defer record for
+// C.mlx_device_free.
+//
+//	k := fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim, c.stream())
+func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
 	out := newArray("SLICE", a)
 	var cStarts [4]C.int
 	var cEnds [4]C.int
@@ -31,8 +36,20 @@ func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32) *A
 		&cStarts[0], 4,
 		&cEnds[0], 4,
 		&cStrides[0], 4,
-		DefaultStream().ctx,
+		stream.ctx,
 	)
+	return out
+}
+
+// fixedKVCacheAsType is the FixedKVCache-local variant of metal.AsType
+// that accepts a pre-resolved stream, avoiding the inner DefaultStream()
+// call.  Used on the FP16 storage path when converting Float32 input k
+// and v tensors to the FP16 storage dtype on every Update.
+//
+//	k = fixedKVCacheAsType(k, DTypeFloat16, stream)
+func fixedKVCacheAsType(a *Array, dtype DType, stream *Stream) *Array {
+	out := newArray("ASTYPE", a)
+	C.mlx_astype(&out.ctx, a.ctx, C.mlx_dtype(dtype), stream.ctx)
 	return out
 }
 
@@ -42,8 +59,8 @@ func fixedKVCacheSlice4D(a *Array, batch, heads, seqStart, seqEnd, dim int32) *A
 // cgo int arrays.  Called twice per Update on the steady-state single-token
 // path (once for keys, once for values).
 //
-//	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, c.batch, c.heads, int32(start), int32(start+writeLen), c.keyDim)
-func fixedKVCacheSliceUpdate4D(a, update *Array, batch, heads, seqStart, seqEnd, dim int32) *Array {
+//	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, c.batch, c.heads, int32(start), int32(start+writeLen), c.keyDim, c.stream())
+func fixedKVCacheSliceUpdate4D(a, update *Array, batch, heads, seqStart, seqEnd, dim int32, stream *Stream) *Array {
 	out := newArray("SLICE_UPDATE", a, update)
 	var cStarts [4]C.int
 	var cEnds [4]C.int
@@ -57,7 +74,7 @@ func fixedKVCacheSliceUpdate4D(a, update *Array, batch, heads, seqStart, seqEnd,
 		&cStarts[0], 4,
 		&cEnds[0], 4,
 		&cStrides[0], 4,
-		DefaultStream().ctx,
+		stream.ctx,
 	)
 	return out
 }

@@ -356,6 +356,14 @@ func (c *RotatingKVCache) Detach() {
 // lifetime — Reset() is the only path that invalidates them. The cached
 // shape lets the steady-state single-token Update path avoid calling
 // Array.Shape(), which allocates a fresh []int32 on every call.
+//
+// FixedKVCache resolves the MLX dispatch stream once per Update via the
+// local fixedKVCacheUpdateStream variable, then threads it through the
+// 4–6 MLX ops the Update produces.  This collapses the DefaultStream() →
+// currentDefaultDevice() defer-record allocation from per-op down to
+// per-Update.  The cache does NOT persist the stream across Updates,
+// because callers may install a temporary default stream via
+// withGenerationStream between calls.
 type FixedKVCache struct {
 	keys, values              *Array
 	slidingIndices, lastIndex *Array
@@ -403,7 +411,14 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return nil, nil
 	}
-	k, v, ownK, ownV := c.storageKVPair(k, v)
+	// Resolve the dispatch stream once up-front and thread it through
+	// every MLX op in this Update — AsType conversions on the FP16
+	// path, the two slice-update writes, and the two slice reads in
+	// validState.  Cuts ~5 DefaultStream() → currentDefaultDevice()
+	// defer-record allocations per token on the FP16 single-token
+	// decode loop.
+	stream := DefaultStream()
+	k, v, ownK, ownV := c.storageKVPair(k, v, stream)
 	defer freeOwnedPair(ownK, ownV)
 	// Use Dim accessors (single cgo call, no slice alloc) instead of
 	// Shape() — the steady-state single-token decode loop hits this path
@@ -445,14 +460,14 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	// Use the FixedKVCache-specific 4D slice-update helper — stack-allocated
 	// cgo int arrays save three [4]C.int heap allocations per call versus
 	// the generic SliceUpdateInplace.  Two calls per Update × hundreds of
-	// tokens per decode loop.
-	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, kBatch, kHeads, int32(start), int32(start+writeLen), kKeyDim)
-	c.values = fixedKVCacheSliceUpdate4D(c.values, writeV, kBatch, kHeads, int32(start), int32(start+writeLen), vValueDim)
+	// tokens per decode loop.  Stream was resolved at the top of Update.
+	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, kBatch, kHeads, int32(start), int32(start+writeLen), kKeyDim, stream)
+	c.values = fixedKVCacheSliceUpdate4D(c.values, writeV, kBatch, kHeads, int32(start), int32(start+writeLen), vValueDim, stream)
 	Free(oldK, oldV)
 
 	c.offset += seqLen
 	c.length = min(c.offset, c.maxSize)
-	return c.validState()
+	return c.validStateWithStream(stream)
 }
 
 func (c *FixedKVCache) updateOverflow(k, v *Array, seqLen int) (*Array, *Array) {
@@ -563,7 +578,8 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return
 	}
-	k, v, ownK, ownV := c.storageKVPair(k, v)
+	stream := DefaultStream()
+	k, v, ownK, ownV := c.storageKVPair(k, v, stream)
 	defer freeOwnedPair(ownK, ownV)
 	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return
@@ -578,14 +594,21 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	c.values = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), vValueDim}, v.Dtype())
 	tailLen := min(kSeq, c.maxSize)
 	oldK, oldV := c.keys, c.values
-	c.keys = fixedKVCacheSliceUpdate4D(c.keys, k, kBatch, kHeads, 0, int32(tailLen), kKeyDim)
-	c.values = fixedKVCacheSliceUpdate4D(c.values, v, kBatch, kHeads, 0, int32(tailLen), vValueDim)
+	c.keys = fixedKVCacheSliceUpdate4D(c.keys, k, kBatch, kHeads, 0, int32(tailLen), kKeyDim, stream)
+	c.values = fixedKVCacheSliceUpdate4D(c.values, v, kBatch, kHeads, 0, int32(tailLen), vValueDim, stream)
 	Free(oldK, oldV)
 	c.batch, c.heads, c.keyDim, c.valueDim = kBatch, kHeads, kKeyDim, vValueDim
 	c.shapeCached = true
 }
 
 func (c *FixedKVCache) validState() (*Array, *Array) {
+	return c.validStateWithStream(DefaultStream())
+}
+
+// validStateWithStream is the alloc-conscious variant used by Update's
+// hot path, which has already resolved the stream once for its slice-
+// update ops.  External callers go through validState which re-resolves.
+func (c *FixedKVCache) validStateWithStream(stream *Stream) (*Array, *Array) {
 	if c.keys == nil || c.values == nil || c.length <= 0 {
 		return nil, nil
 	}
@@ -593,8 +616,8 @@ func (c *FixedKVCache) validState() (*Array, *Array) {
 	// the stack-allocating fixedKVCacheSlice4D helper to skip both the
 	// Shape() []int32 allocs and Slice's three [4]C.int heap allocs.
 	if c.shapeCached {
-		return fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim),
-			fixedKVCacheSlice4D(c.values, c.batch, c.heads, 0, int32(c.length), c.valueDim)
+		return fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim, stream),
+			fixedKVCacheSlice4D(c.values, c.batch, c.heads, 0, int32(c.length), c.valueDim, stream)
 	}
 	// Fallback for paths that bypass ensureShape (legacy / pre-cache state).
 	if c.keys.NumDims() < 4 || c.values.NumDims() < 4 {
@@ -701,9 +724,13 @@ func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 // that cacheStorageKV does — important on the per-token decode loop where
 // every Update converts F32→F16 for the cache buffer.
 //
-//	convK, convV, ownK, ownV := c.storageKVPair(k, v)
+// stream is the pre-resolved MLX stream; passing it through to the
+// FP16-conversion AsType ops avoids two more DefaultStream() lookups
+// per Update on the FP16 storage path.
+//
+//	convK, convV, ownK, ownV := c.storageKVPair(k, v, stream)
 //	defer freeOwnedPair(ownK, ownV)
-func (c *FixedKVCache) storageKVPair(k, v *Array) (convK, convV, ownK, ownV *Array) {
+func (c *FixedKVCache) storageKVPair(k, v *Array, stream *Stream) (convK, convV, ownK, ownV *Array) {
 	if c == nil || !c.hasStorageDType {
 		return k, v, nil, nil
 	}
@@ -712,11 +739,11 @@ func (c *FixedKVCache) storageKVPair(k, v *Array) (convK, convV, ownK, ownV *Arr
 	}
 	convK, convV = k, v
 	if k != nil && k.Valid() && k.Dtype() != c.storageDType {
-		convK = AsType(k, c.storageDType)
+		convK = fixedKVCacheAsType(k, c.storageDType, stream)
 		ownK = convK
 	}
 	if v != nil && v.Valid() && v.Dtype() != c.storageDType {
-		convV = AsType(v, c.storageDType)
+		convV = fixedKVCacheAsType(v, c.storageDType, stream)
 		ownV = convV
 	}
 	return convK, convV, ownK, ownV
