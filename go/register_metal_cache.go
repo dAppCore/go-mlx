@@ -40,10 +40,14 @@ func (adapter *metaladapter) blockCacheService() *blockcache.Service {
 			TokenizerHash: adapterTokenizerHashFromInfo(adapter, info),
 			Tokenize: func(prompt string) ([]int32, error) {
 				root := adapter.rootModel()
-				if root == nil || root.Tokenizer() == nil {
+				if root == nil {
 					return nil, nil
 				}
-				return root.Tokenizer().Encode(prompt)
+				tok := root.Tokenizer()
+				if tok == nil {
+					return nil, nil
+				}
+				return tok.Encode(prompt)
 			},
 			WarmPrompt: func(ctx context.Context, prompt string) error {
 				if adapter == nil || adapter.model == nil {
@@ -82,9 +86,12 @@ func adapterTokenizerHashFromInfo(adapter *metaladapter, info inference.ModelInf
 		return ""
 	}
 	root := adapter.rootModel()
-	if root == nil || root.Tokenizer() == nil {
+	if root == nil {
 		return ""
 	}
 	tok := root.Tokenizer()
+	if tok == nil {
+		return ""
+	}
 	return blockcache.HashModelParts(info.Architecture, info.VocabSize, tok.BOS(), tok.EOS())
 }
