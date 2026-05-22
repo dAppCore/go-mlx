@@ -214,7 +214,7 @@ func PlanLocalTuning(ctx context.Context, req inference.TuningPlanRequest) (infe
 }
 
 func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architecture string) (inference.RuntimeIdentity, string) {
-	p, ok := profile.LookupArchitectureProfile(architecture)
+	p, ok := profile.LookupArchitectureProfileRef(architecture)
 	if !ok {
 		return runtime, ""
 	}

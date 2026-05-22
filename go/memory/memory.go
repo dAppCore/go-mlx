@@ -252,18 +252,16 @@ func NewPlan(input Input) Plan {
 		}
 	}
 	if hintsPtr == nil {
-		if hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch); hintsFound {
-			hp := hintsProfile
-			hintsPtr = &hp
+		if hintsProfile, hintsFound := profile.LookupArchitectureProfileRef(hintsArch); hintsFound {
+			hintsPtr = hintsProfile
 			if packArch == hintsArch {
 				packPtr = hintsPtr
 			}
 		}
 	}
 	if packPtr == nil && packArch != hintsArch {
-		if packProfile, ok := profile.LookupArchitectureProfile(packArch); ok {
-			pp := packProfile
-			packPtr = &pp
+		if packProfile, ok := profile.LookupArchitectureProfileRef(packArch); ok {
+			packPtr = packProfile
 		}
 	}
 	applyArchitectureHints(&plan, hintsArch, hintsPtr)
@@ -624,7 +622,7 @@ func usesGenerationKVCacheWithProfile(input Input, profileHint *profile.ModelArc
 	} else if input.ModelInfo != nil {
 		architecture = input.ModelInfo.Architecture
 	}
-	if p, ok := profile.LookupArchitectureProfile(architecture); ok && (p.Embeddings || p.Rerank) {
+	if p, ok := profile.LookupArchitectureProfileRef(architecture); ok && (p.Embeddings || p.Rerank) {
 		return false
 	}
 	return true

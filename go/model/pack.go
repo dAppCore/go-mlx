@@ -576,10 +576,10 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
 		return
 	}
-	resolved, ok := profile.LookupArchitectureProfile(pack.Architecture)
+	resolved, ok := profile.LookupArchitectureProfileRef(pack.Architecture)
 	if ok {
 		pack.Architecture = resolved.ID
-		pack.ArchitectureProfile = &resolved
+		pack.ArchitectureProfile = resolved
 	}
 	pack.SupportedArchitecture = ok
 	if !pack.SupportedArchitecture {
@@ -591,7 +591,7 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		// profile we already hold; pass it in directly so we don't
 		// re-enter profile.LookupArchitectureProfile (full trim, alias
 		// scan, clone) just to read the same shape.
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessageFor(&resolved, pack.Architecture), pack.ConfigPath)
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessageFor(resolved, pack.Architecture), pack.ConfigPath)
 	}
 }
 
@@ -600,8 +600,8 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 // modelPackUnsupportedRuntimeMessageFor with a profile they already
 // own to skip the redundant LookupArchitectureProfile.
 func modelPackUnsupportedRuntimeMessage(architecture string) string {
-	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
-		return modelPackUnsupportedRuntimeMessageFor(&profile, architecture)
+	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok {
+		return modelPackUnsupportedRuntimeMessageFor(profile, architecture)
 	}
 	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
 }
@@ -630,9 +630,9 @@ func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPac
 	}
 	arch := pack.ArchitectureProfile
 	if arch == nil && pack.Architecture != "" {
-		if resolved, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
-			pack.ArchitectureProfile = &resolved
-			arch = &resolved
+		if resolved, ok := profile.LookupArchitectureProfileRef(pack.Architecture); ok {
+			pack.ArchitectureProfile = resolved
+			arch = resolved
 		}
 	}
 	if arch == nil {
@@ -842,7 +842,7 @@ func modelPackUsesGenerationKVCache(pack *mp.ModelPack, architecture string) boo
 			return false
 		}
 	}
-	if profile, ok := profile.LookupArchitectureProfile(architecture); ok && (profile.Embeddings || profile.Rerank) {
+	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok && (profile.Embeddings || profile.Rerank) {
 		return false
 	}
 	return true
@@ -919,7 +919,7 @@ func finalizeModelPack(pack *mp.ModelPack) {
 //
 //	if model.SupportsArchitecture("qwen3") { ... }
 func SupportsArchitecture(architecture string) bool {
-	_, ok := profile.LookupArchitectureProfile(architecture)
+	_, ok := profile.LookupArchitectureProfileRef(architecture)
 	return ok
 }
 
@@ -928,18 +928,18 @@ func modelPackSupportedArchitecture(architecture string) bool {
 }
 
 func modelPackNativeRuntimeSupported(architecture string) bool {
-	profile, ok := profile.LookupArchitectureProfile(architecture)
+	profile, ok := profile.LookupArchitectureProfileRef(architecture)
 	return ok && profile.NativeRuntime
 }
 
 func nativeChatTemplateName(architecture string) string {
-	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
+	if profile, ok := profile.LookupArchitectureProfileRef(architecture); ok {
 		return profile.ChatTemplate
 	}
 	return ""
 }
 
 func modelPackRequiresChatTemplate(architecture string) bool {
-	profile, ok := profile.LookupArchitectureProfile(architecture)
+	profile, ok := profile.LookupArchitectureProfileRef(architecture)
 	return !ok || profile.RequiresChatTemplate
 }

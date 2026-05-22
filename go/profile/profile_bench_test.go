@@ -24,15 +24,16 @@ import (
 
 // Sinks defeat compiler DCE.
 var (
-	profileBenchSinkAlgorithms    []prof.AlgorithmProfile
-	profileBenchSinkAlgorithm     prof.AlgorithmProfile
-	profileBenchSinkAlgorithmOK   bool
-	profileBenchSinkCapabilities  []inference.Capability
-	profileBenchSinkArchitectures []prof.ModelArchitectureProfile
-	profileBenchSinkArchitecture  prof.ModelArchitectureProfile
-	profileBenchSinkArchOK        bool
-	profileBenchSinkArchIDs       []string
-	profileBenchSinkArchID        string
+	profileBenchSinkAlgorithms     []prof.AlgorithmProfile
+	profileBenchSinkAlgorithm      prof.AlgorithmProfile
+	profileBenchSinkAlgorithmOK    bool
+	profileBenchSinkCapabilities   []inference.Capability
+	profileBenchSinkArchitectures  []prof.ModelArchitectureProfile
+	profileBenchSinkArchitecture   prof.ModelArchitectureProfile
+	profileBenchSinkArchitectureRP *prof.ModelArchitectureProfile
+	profileBenchSinkArchOK         bool
+	profileBenchSinkArchIDs        []string
+	profileBenchSinkArchID         string
 )
 
 // --- BuiltinAlgorithmProfiles ---
@@ -131,6 +132,43 @@ func BenchmarkProfile_LookupArchitectureProfile_Empty(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		profileBenchSinkArchitecture, profileBenchSinkArchOK = prof.LookupArchitectureProfile("")
+	}
+}
+
+// --- LookupArchitectureProfileRef ---
+// Pointer-into-static-table form used by read-only callers (planFit,
+// archSupported, archNativeRuntime, tuningRuntimeForArchitecture,
+// memory.NewPlan, model.pack inspectors). Should be zero-alloc.
+
+func BenchmarkProfile_LookupArchitectureProfileRef_Native(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkArchitectureRP, profileBenchSinkArchOK = prof.LookupArchitectureProfileRef("qwen3")
+	}
+}
+
+func BenchmarkProfile_LookupArchitectureProfileRef_TransformersName(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkArchitectureRP, profileBenchSinkArchOK = prof.LookupArchitectureProfileRef("Qwen3ForCausalLM")
+	}
+}
+
+func BenchmarkProfile_LookupArchitectureProfileRef_Alias(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkArchitectureRP, profileBenchSinkArchOK = prof.LookupArchitectureProfileRef("MiniMaxM2ForCausalLM")
+	}
+}
+
+func BenchmarkProfile_LookupArchitectureProfileRef_Empty(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		profileBenchSinkArchitectureRP, profileBenchSinkArchOK = prof.LookupArchitectureProfileRef("")
 	}
 }
 

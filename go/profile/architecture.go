@@ -50,16 +50,37 @@ func BuiltinArchitectureProfiles() []ModelArchitectureProfile {
 }
 
 // LookupArchitectureProfile resolves config model_type or Transformers
-// architecture names to a built-in profile.
+// architecture names to a built-in profile. Returns a defensive
+// deep-clone so external callers may mutate the result without
+// touching the shared registry. In-package read-only consumers should
+// prefer LookupArchitectureProfileRef, which returns a pointer into
+// the static table and avoids the per-call 5-slice clone.
 func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
-	id := ArchitectureID(value)
-	if id == "" {
+	ref, ok := LookupArchitectureProfileRef(value)
+	if !ok {
 		return ModelArchitectureProfile{}, false
 	}
-	if idx, ok := builtinArchitectureProfileIndex[id]; ok {
-		return cloneArchitectureProfile(builtinArchitectureProfilesData[idx]), true
+	return cloneArchitectureProfile(*ref), true
+}
+
+// LookupArchitectureProfileRef resolves an architecture name to a
+// pointer into the immutable built-in registry. The returned pointer
+// (and its slice fields LoRATargets/QuantizationHints/CacheHints/
+// Notes/Aliases) MUST NOT be mutated — the data is shared across all
+// callers for the lifetime of the process. Use this on the hot path
+// (planFit, archSupported, archNativeRuntime,
+// tuningRuntimeForArchitecture, memory.NewPlan) where a defensive
+// clone is pure overhead. Callers that need to mutate the result
+// must use LookupArchitectureProfile.
+func LookupArchitectureProfileRef(value string) (*ModelArchitectureProfile, bool) {
+	id := ArchitectureID(value)
+	if id == "" {
+		return nil, false
 	}
-	return ModelArchitectureProfile{}, false
+	if idx, ok := builtinArchitectureProfileIndex[id]; ok {
+		return &builtinArchitectureProfilesData[idx], true
+	}
+	return nil, false
 }
 
 func ArchitectureID(value string) string {
