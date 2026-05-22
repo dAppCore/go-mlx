@@ -497,79 +497,84 @@ var (
 )
 
 func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
+	// Local pointer aliases — the previous form did event.X.Y per field
+	// (load .X pointer + load .Y field), which the compiler can't hoist
+	// across nil checks. One pointer fetch + many field reads compiles
+	// to single loads. toInferenceProbeEvent fires per probe event,
+	// which under ProbeSink is emitted per token during generation.
 	out := inference.ProbeEvent{
 		Kind:   inference.ProbeEventKind(event.Kind),
 		Phase:  inference.ProbePhase(event.Phase),
 		Step:   event.Step,
 		Labels: cloneInferenceLabels(event.Meta),
 	}
-	if event.Token != nil {
+	if token := event.Token; token != nil {
 		out.Token = &inference.ProbeToken{
-			ID:              event.Token.ID,
-			Text:            event.Token.Text,
-			PromptTokens:    event.Token.PromptTokens,
-			GeneratedTokens: event.Token.GeneratedTokens,
+			ID:              token.ID,
+			Text:            token.Text,
+			PromptTokens:    token.PromptTokens,
+			GeneratedTokens: token.GeneratedTokens,
 		}
 	}
-	if event.Logits != nil {
+	if logits := event.Logits; logits != nil {
 		out.Logits = &inference.ProbeLogits{
-			VocabularySize: event.Logits.VocabSize,
-			Min:            event.Logits.MinLogit,
-			Max:            event.Logits.MaxLogit,
-			Mean:           float32(event.Logits.MeanLogit),
-			Top:            toInferenceProbeLogits(event.Logits.Top),
+			VocabularySize: logits.VocabSize,
+			Min:            logits.MinLogit,
+			Max:            logits.MaxLogit,
+			Mean:           float32(logits.MeanLogit),
+			Top:            toInferenceProbeLogits(logits.Top),
 		}
 	}
-	if event.Entropy != nil {
-		out.Entropy = &inference.ProbeEntropy{Value: event.Entropy.Value, Unit: event.Entropy.Unit}
+	if entropy := event.Entropy; entropy != nil {
+		out.Entropy = &inference.ProbeEntropy{Value: entropy.Value, Unit: entropy.Unit}
 	}
-	if event.SelectedHeads != nil {
-		out.SelectedHeads = &inference.ProbeHeadSelection{Layer: event.SelectedHeads.Layer, Heads: core.SliceClone(event.SelectedHeads.Heads)}
+	if heads := event.SelectedHeads; heads != nil {
+		out.SelectedHeads = &inference.ProbeHeadSelection{Layer: heads.Layer, Heads: core.SliceClone(heads.Heads)}
 	}
-	if event.LayerCoherence != nil {
+	if coherence := event.LayerCoherence; coherence != nil {
 		out.LayerCoherence = &inference.ProbeLayerCoherence{
-			Layer:          event.LayerCoherence.Layer,
-			KVCoupling:     event.LayerCoherence.KVCoupling,
-			MeanCoherence:  meanNonZero(event.LayerCoherence.KeyCoherence, event.LayerCoherence.ValueCoherence, event.LayerCoherence.CrossAlignment),
-			PhaseLock:      event.LayerCoherence.PhaseLock,
-			SpectralStable: event.LayerCoherence.HeadEntropy,
+			Layer:          coherence.Layer,
+			KVCoupling:     coherence.KVCoupling,
+			MeanCoherence:  meanNonZero(coherence.KeyCoherence, coherence.ValueCoherence, coherence.CrossAlignment),
+			PhaseLock:      coherence.PhaseLock,
+			SpectralStable: coherence.HeadEntropy,
 		}
 	}
-	if event.RouterDecision != nil {
+	if router := event.RouterDecision; router != nil {
 		out.RouterDecision = &inference.ProbeRouterDecision{
-			Layer:       event.RouterDecision.Layer,
-			ExpertIDs:   core.SliceClone(event.RouterDecision.ExpertIDs),
-			ExpertProbs: core.SliceClone(event.RouterDecision.Weights),
+			Layer:       router.Layer,
+			ExpertIDs:   core.SliceClone(router.ExpertIDs),
+			ExpertProbs: core.SliceClone(router.Weights),
 		}
 	}
-	if event.Residual != nil {
+	if residual := event.Residual; residual != nil {
 		out.Residual = &inference.ProbeResidualSummary{
-			Layer: event.Residual.Layer,
-			Mean:  event.Residual.Mean,
-			RMS:   event.Residual.RMS,
-			Norm:  event.Residual.L2Norm,
+			Layer: residual.Layer,
+			Mean:  residual.Mean,
+			RMS:   residual.RMS,
+			Norm:  residual.L2Norm,
 		}
 	}
-	if event.Cache != nil {
+	if cache := event.Cache; cache != nil {
 		out.Cache = &inference.ProbeCachePressure{
-			PromptTokens:    event.Cache.PromptTokens,
-			GeneratedTokens: event.Cache.GeneratedTokens,
-			CachedTokens:    event.Cache.CacheTokens,
-			HitRate:         event.Cache.Utilization,
+			PromptTokens:    cache.PromptTokens,
+			GeneratedTokens: cache.GeneratedTokens,
+			CachedTokens:    cache.CacheTokens,
+			HitRate:         cache.Utilization,
 		}
 	}
-	if event.Memory != nil {
+	if memory := event.Memory; memory != nil {
 		out.Memory = &inference.ProbeMemoryPressure{
-			ActiveBytes: event.Memory.ActiveBytes,
-			PeakBytes:   event.Memory.PeakBytes,
+			ActiveBytes: memory.ActiveBytes,
+			PeakBytes:   memory.PeakBytes,
 		}
 	}
-	if event.Training != nil {
+	if training := event.Training; training != nil {
 		out.Training = &inference.ProbeTraining{
-			Epoch:        event.Training.Epoch,
-			Step:         event.Training.Step,
-			Loss:         event.Training.Loss,
-			LearningRate: event.Training.LearningRate,
+			Epoch:        training.Epoch,
+			Step:         training.Step,
+			Loss:         training.Loss,
+			LearningRate: training.LearningRate,
 		}
 	}
 	return out
@@ -577,8 +582,9 @@ func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
 
 func toInferenceProbeLogits(logits []metal.ProbeLogit) []inference.ProbeLogit {
 	out := make([]inference.ProbeLogit, len(logits))
-	for i, logit := range logits {
-		out[i] = inference.ProbeLogit{ID: logit.TokenID, Value: logit.Logit}
+	// Index iteration — same rationale as toRootProbeLogits.
+	for i := range logits {
+		out[i] = inference.ProbeLogit{ID: logits[i].TokenID, Value: logits[i].Logit}
 	}
 	return out
 }
@@ -743,29 +749,30 @@ func (sink inferenceProbeSink) EmitProbe(event probe.Event) {
 }
 
 func toInferenceRootProbeEvent(event probe.Event) inference.ProbeEvent {
+	// Local pointer aliases — see toInferenceProbeEvent for rationale.
 	out := inference.ProbeEvent{
 		Kind:   inference.ProbeEventKind(event.Kind),
 		Phase:  inference.ProbePhase(event.Phase),
 		Step:   event.Step,
 		Labels: cloneInferenceLabels(event.Meta),
 	}
-	if event.Token != nil {
+	if token := event.Token; token != nil {
 		out.Token = &inference.ProbeToken{
-			ID:              event.Token.ID,
-			Text:            event.Token.Text,
-			PromptTokens:    event.Token.PromptTokens,
-			GeneratedTokens: event.Token.GeneratedTokens,
+			ID:              token.ID,
+			Text:            token.Text,
+			PromptTokens:    token.PromptTokens,
+			GeneratedTokens: token.GeneratedTokens,
 		}
 	}
-	if event.Entropy != nil {
-		out.Entropy = &inference.ProbeEntropy{Value: event.Entropy.Value, Unit: event.Entropy.Unit}
+	if entropy := event.Entropy; entropy != nil {
+		out.Entropy = &inference.ProbeEntropy{Value: entropy.Value, Unit: entropy.Unit}
 	}
-	if event.Training != nil {
+	if training := event.Training; training != nil {
 		out.Training = &inference.ProbeTraining{
-			Epoch:        event.Training.Epoch,
-			Step:         event.Training.Step,
-			Loss:         event.Training.Loss,
-			LearningRate: event.Training.LearningRate,
+			Epoch:        training.Epoch,
+			Step:         training.Step,
+			Loss:         training.Loss,
+			LearningRate: training.LearningRate,
 		}
 	}
 	return out
