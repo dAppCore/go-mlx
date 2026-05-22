@@ -202,6 +202,15 @@ type mutex interface {
 	Unlock()
 }
 
+// chatMessagePayload is the wire shape mlxlm.Chat ships to bridge.py
+// for each turn. Held as a typed struct rather than a map[string]string
+// so each Chat call pays one slice allocation, not len(messages) map
+// allocations.
+type chatMessagePayload struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 func optionalFloat32Field(v any, fieldName string) (float32, bool) {
 	field := reflect.ValueOf(v).FieldByName(fieldName)
 	if !field.IsValid() {
@@ -335,11 +344,16 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 		defer model.mu.Unlock()
 		model.lastErr = nil
 
-		messagePayloads := make([]map[string]string, len(messages))
+		// Serialise as a typed struct rather than N maps with two
+		// string keys each — drops len(messages) map allocations
+		// (~5-100B per map plus map-header overhead) to a single
+		// slice allocation. bridge.py reads role/content via
+		// dict.get() so JSON key order is irrelevant.
+		messagePayloads := make([]chatMessagePayload, len(messages))
 		for i, msg := range messages {
-			messagePayloads[i] = map[string]string{
-				"role":    msg.Role,
-				"content": msg.Content,
+			messagePayloads[i] = chatMessagePayload{
+				Role:    msg.Role,
+				Content: msg.Content,
 			}
 		}
 
