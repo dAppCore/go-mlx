@@ -404,6 +404,18 @@ func buildModelSliceInclusionMask(plan *inference.ModelSlicePlan) modelSliceIncl
 }
 
 func selectModelSliceTensorRefs(plan *inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
+	// ExtractLevelAll selects every tensor regardless of name, so the
+	// per-tensor mask-classifier walk (core.Lower + substring scans)
+	// is pure overhead — short-cut to a direct copy of every ref. The
+	// names slice aliases the source via SliceClone for the same
+	// safety guarantees the masked branch provides.
+	if plan.ExtractLevel == inference.ModelExtractLevelAll {
+		refs := make([]safetensors.TensorRef, len(index.Names))
+		for i, name := range index.Names {
+			refs[i] = index.Tensors[name]
+		}
+		return refs, core.SliceClone(index.Names)
+	}
 	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	names := make([]string, 0, len(index.Names))
 	mask := buildModelSliceInclusionMask(plan)
