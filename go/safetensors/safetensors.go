@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	stdio "io"
 	"math"
-	"sort"
 
 	core "dappco.re/go"
 )
@@ -61,7 +60,7 @@ func IndexFiles(paths []string) (Index, error) {
 			index.Names = append(index.Names, name)
 		}
 	}
-	sort.Strings(index.Names)
+	core.SliceSort(index.Names)
 	return index, nil
 }
 
@@ -104,7 +103,7 @@ func ReadIndex(path string) (Index, error) {
 		index.Tensors[name] = ref
 		index.Names = append(index.Names, name)
 	}
-	sort.Strings(index.Names)
+	core.SliceSort(index.Names)
 	return index, nil
 }
 
