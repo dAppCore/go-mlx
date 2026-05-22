@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -116,7 +117,10 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 		return SplitFFNResult{}, core.NewError("mlx: remote split FFN response body shape is invalid")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return SplitFFNResult{}, core.NewError(core.Sprintf("mlx: remote split FFN endpoint returned %d: %s", resp.StatusCode, core.Trim(body)))
+		// core.Sprintf("%d: %s", ...) routed through fmt's reflection-driven
+		// formatter — strconv.Itoa is direct ascii conversion with zero
+		// reflection; core.Concat fuses the parts without a fmt.State.
+		return SplitFFNResult{}, core.NewError(core.Concat("mlx: remote split FFN endpoint returned ", strconv.Itoa(resp.StatusCode), ": ", core.Trim(body)))
 	}
 	var remote RemoteSplitFFNResponse
 	if result := core.JSONUnmarshal([]byte(body), &remote); !result.OK {
