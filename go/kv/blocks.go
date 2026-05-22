@@ -701,6 +701,14 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 	if err != nil {
 		return nil, err
 	}
+	// Pre-size block-tracking slices against the expected block count —
+	// SaveStateBlocks walks blockSize-aligned ranges, so the count is
+	// known within a layer-window adjustment of (seqLen + blockSize - 1) /
+	// blockSize. Saves the geometric-grow append cycle per block.
+	expectedBlocks := 1
+	if blockSize > 0 && len(s.Tokens) > 0 {
+		expectedBlocks = (len(s.Tokens) + blockSize - 1) / blockSize
+	}
 	bundle := &StateBlockBundle{
 		Version:      StateBlockVersion,
 		Kind:         StateBlockBundleKind,
@@ -713,9 +721,9 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 		NumHeads:     s.NumHeads,
 		SeqLen:       EffectiveSeqLen(s),
 		HeadDim:      s.HeadDim,
-		Blocks:       []StateBlockRef{},
+		Blocks:       make([]StateBlockRef, 0, expectedBlocks),
 	}
-	blockHashes := []string{}
+	blockHashes := make([]string, 0, expectedBlocks)
 	err = s.walkBlocks(blockSize, false, func(block Block) (bool, error) {
 		ref, hash, payloadEncoding, payloadByteCount, reused, err := saveOrReuseKVSnapshotStateBlock(ctx, store, block, opts, encoding)
 		if err != nil {
