@@ -14,8 +14,9 @@ const (
 )
 
 var (
-	errRegistryNil    = core.NewError("registry is nil")
-	errActionRequired = core.NewError("action is required")
+	errRegistryNil        = core.NewError("registry is nil")
+	errActionRequired     = core.NewError("action is required")
+	errGenerateBackendNil = core.NewError("generate backend is nil")
 )
 
 // Request is one JSON-line frame from a local Violet client.
@@ -175,7 +176,7 @@ func (r *Registry) Register(action string, handler Handler) error {
 // RegisterGenerateBackend replaces the default generate stub with a native backend.
 func (r *Registry) RegisterGenerateBackend(backend GenerateBackend) error {
 	if backend == nil {
-		return core.NewError("generate backend is nil")
+		return errGenerateBackendNil
 	}
 	return r.Register("generate", func(ctx context.Context, req Request) (Response, error) {
 		result, err := backend.Generate(ctx, generateRequestFromRequest(req))
