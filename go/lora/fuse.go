@@ -230,7 +230,14 @@ func copyLocalFile(sourcePath, destinationPath string) error {
 }
 
 func fuseAdapterWeightFiles(path string) ([]string, error) {
-	if core.HasSuffix(core.Lower(path), ".safetensors") {
+	// HasSuffix on the lowered path allocates whenever the temp-dir or
+	// caller path contains uppercase ASCII (every macOS bench tempdir
+	// hits this — the bench reported 2 allocs for the single-file
+	// path, one of which was core.Lower's case-fold copy). Case-fold
+	// only the trailing 12 bytes that form the suffix candidate — that
+	// covers the .Safetensors / .SAFETENSORS variants the previous
+	// code admitted without paying for a full-path scan + alloc.
+	if hasSafetensorsSuffixFold(path) {
 		return []string{path}, nil
 	}
 	matches := core.PathGlob(core.PathJoin(path, "*.safetensors"))
@@ -239,6 +246,30 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 		return nil, errFuseNoAdapterSafetensors
 	}
 	return matches, nil
+}
+
+// hasSafetensorsSuffixFold case-folds only the trailing 12-byte
+// .safetensors candidate window, so paths with uppercase elsewhere
+// (e.g. macOS /private/var/folders/.../T/... tempdirs) don't trigger
+// a full-path Lower copy. Mirrors core.HasSuffix's semantics for the
+// .safetensors / .Safetensors / .SAFETENSORS triple.
+const safetensorsSuffix = ".safetensors"
+
+func hasSafetensorsSuffixFold(path string) bool {
+	if len(path) < len(safetensorsSuffix) {
+		return false
+	}
+	tail := path[len(path)-len(safetensorsSuffix):]
+	for i := 0; i < len(safetensorsSuffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != safetensorsSuffix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func fusePairName(weightName string) (string, string, bool) {
