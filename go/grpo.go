@@ -586,20 +586,26 @@ func normalizeGRPOConfig(cfg GRPOConfig) GRPOConfig {
 }
 
 func grpoRewardStats(rollouts []GRPORollout) (float64, float64) {
-	if len(rollouts) == 0 {
+	n := len(rollouts)
+	if n == 0 {
 		return 0, 0
 	}
-	var mean float64
-	for _, rollout := range rollouts {
-		mean += rollout.Reward
+	// Index iteration — range over []GRPORollout copies the whole struct
+	// (Text/Reasoning/Answer strings, TokenIDs + RewardParts slice
+	// headers, all the float fields) on each iteration even though we
+	// only ever read the Reward float. Indexing skips the copy.
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += rollouts[i].Reward
 	}
-	mean /= float64(len(rollouts))
+	invN := 1.0 / float64(n)
+	mean := sum * invN
 	var variance float64
-	for _, rollout := range rollouts {
-		delta := rollout.Reward - mean
+	for i := 0; i < n; i++ {
+		delta := rollouts[i].Reward - mean
 		variance += delta * delta
 	}
-	variance /= float64(len(rollouts))
+	variance *= invN
 	return mean, math.Sqrt(variance)
 }
 
