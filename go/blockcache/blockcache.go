@@ -649,7 +649,7 @@ func cacheContextErr(ctx context.Context) error {
 }
 
 func cloneBlockCacheLabels(input map[string]string) map[string]string {
-	return cloneBlockCacheLabelsExtra(input, 0)
+	return core.MapClone(input)
 }
 
 func cloneBlockCacheLabelsExtra(input map[string]string, extra int) map[string]string {
