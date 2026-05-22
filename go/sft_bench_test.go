@@ -18,11 +18,12 @@ import (
 )
 
 var (
-	sftBenchSinkMap     map[string]string
-	sftBenchSinkLoRA    SFTLoRAMetadata
-	sftBenchSinkBatch   SFTBatch
-	sftBenchSinkInts    []int
-	sftBenchSinkExample sftExample
+	sftBenchSinkMap      map[string]string
+	sftBenchSinkLoRA     SFTLoRAMetadata
+	sftBenchSinkBatch    SFTBatch
+	sftBenchSinkInts     []int
+	sftBenchSinkExample  sftExample
+	sftBenchSinkStepName string
 )
 
 // BenchmarkSFT_RunProbeMeta mirrors the runSFTBatchGroup probe.Event.Meta
@@ -120,6 +121,16 @@ func BenchmarkSFT_HasTrainingTarget(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = hasTrainingTarget(mask)
+	}
+}
+
+// BenchmarkSFT_StepName tracks the checkpoint directory-name builder
+// — runs every CheckpointEvery steps during long training runs.
+func BenchmarkSFT_StepName(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sftBenchSinkStepName = sftStepName(12345)
 	}
 }
 

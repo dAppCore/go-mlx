@@ -463,6 +463,29 @@ func sftCheckpointMetadataPath(path string) string {
 	return core.PathJoin(path, "sft_checkpoint.json")
 }
 
+// sftStepName renders the step-NNNNNN directory name used for SFT
+// checkpoints — same output as fmt.Sprintf("step-%06d", step). Built
+// with strconv.AppendInt so no fmt format-parser and no interface
+// boxing of the int arg, with a pre-sized scratch buffer keeping the
+// alloc count at one.
+func sftStepName(step int) string {
+	const prefix = "step-"
+	const padTo = 6
+	buf := make([]byte, 0, len(prefix)+20)
+	buf = append(buf, prefix...)
+	if step >= 0 && step < 100000 {
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
+	}
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
+}
+
 type sftBatchBuilder struct {
 	batchSize int
 	current   []sftExample
@@ -782,7 +805,7 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 	result.Losses = append(result.Losses, lossValue)
 
 	if cfg.CheckpointDir != "" && cfg.CheckpointEvery > 0 && result.Steps%cfg.CheckpointEvery == 0 {
-		path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Steps))
+		path := core.PathJoin(cfg.CheckpointDir, sftStepName(result.Steps))
 		if err := adapter.Save(path); err != nil {
 			return err
 		}
