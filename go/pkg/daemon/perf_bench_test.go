@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	mlx "dappco.re/go/mlx"
 )
 
@@ -107,6 +108,42 @@ func BenchmarkFrameTrimAndParse(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkNativeRunner_ModelForCached drives the modelFor read path
+// concurrently to exercise the RWMutex read fast-path on a populated
+// runner cache. The model is pre-loaded once.
+func BenchmarkNativeRunner_ModelForCached(b *testing.B) {
+	runner := &NativeGenerateRunner{
+		modelPaths: map[string]string{"main": "/m/main"},
+		models:     map[string]nativeGenerateModel{"main": &noopGenerateModel{}},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _ = runner.modelFor("main", "/m/main")
+		}
+	})
+}
+
+type noopGenerateModel struct{}
+
+func (n *noopGenerateModel) GenerateStream(_ context.Context, _ string, _ ...mlx.GenerateOption) <-chan mlx.Token {
+	ch := make(chan mlx.Token)
+	close(ch)
+	return ch
+}
+
+func (n *noopGenerateModel) ChatStream(_ context.Context, _ []inference.Message, _ ...mlx.GenerateOption) <-chan mlx.Token {
+	ch := make(chan mlx.Token)
+	close(ch)
+	return ch
+}
+
+func (n *noopGenerateModel) WarmPromptCache(string) error { return nil }
+func (n *noopGenerateModel) Metrics() mlx.Metrics         { return mlx.Metrics{} }
+func (n *noopGenerateModel) Err() error                   { return nil }
+func (n *noopGenerateModel) Close() error                 { return nil }
 
 func BenchmarkRegistryActions(b *testing.B) {
 	r := NewRegistry("violet", "test")
