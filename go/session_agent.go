@@ -313,6 +313,10 @@ func (s *ModelSession) GenerateAndSleepAgentMemory(ctx context.Context, store st
 		return "", nil, errAgentMemorySessionNil
 	}
 	builder := core.NewBuilder()
+	// Generations typically produce hundreds of tokens of text. Pre-grow
+	// the backing slice to skip the early 64 -> 128 -> 256 -> 512 -> 1024
+	// reallocations during token streaming.
+	builder.Grow(1024)
 	cfg := toMetalGenerateConfig(applyGenerateOptions(generateOpts))
 	for tok := range s.session.Generate(ctx, cfg) {
 		builder.WriteString(tok.Text)
