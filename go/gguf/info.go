@@ -790,16 +790,25 @@ func inferGGUFContextLength(metadata map[string]any, architecture string) int {
 }
 
 func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes ...string) int {
-	prefixes := []string{"general"}
+	// Prefix iteration order: split-base, architecture, general.
+	// Encode as small fixed array (max 3 prefixes) with explicit length —
+	// no slice allocation, no append of variadic-built temporary slices.
+	var prefixes [3]string
+	n := 0
 	if architecture != "" {
-		prefixes = append([]string{architecture}, prefixes...)
 		if parts := core.SplitN(architecture, "_", 2); len(parts) == 2 && parts[0] != "" && parts[0] != architecture {
-			base := parts[0]
-			prefixes = append([]string{base}, prefixes...)
+			prefixes[n] = parts[0]
+			n++
 		}
+		prefixes[n] = architecture
+		n++
 	}
-	for _, prefix := range prefixes {
+	prefixes[n] = "general"
+	n++
+	for i := 0; i < n; i++ {
+		prefix := prefixes[i]
 		for _, suffix := range suffixes {
+			// Direct concat lowers to runtime.concatstring2 — no temporary slice.
 			if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
 				return value
 			}
@@ -988,29 +997,29 @@ func ggufTensorTypeDetails(tensorType uint32) ggufTensorTypeDetailsInfo {
 }
 
 func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationIssue) {
-	infos := make([]TensorInfo, 0, len(tensors))
+	infos := make([]TensorInfo, len(tensors))
 	var issues []ValidationIssue
-	for _, tensor := range tensors {
+	for i := range tensors {
+		tensor := &tensors[i]
 		details := ggufTensorTypeDetails(tensor.Type)
-		info := TensorInfo{
+		infos[i] = TensorInfo{
 			Name:      tensor.Name,
 			Type:      tensor.Type,
 			TypeName:  details.Name,
 			DType:     details.DType,
 			Bits:      details.Bits,
 			BlockSize: details.BlockSize,
-			Shape:     append([]uint64(nil), tensor.Shape...),
+			Shape:     core.SliceClone(tensor.Shape),
 			Elements:  ggufTensorElements(tensor.Shape),
 			Offset:    tensor.Offset,
 			Quantized: details.Quantized,
 		}
-		infos = append(infos, info)
 
 		if !details.Known {
 			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "unknown_tensor_type",
-				Message:  core.Sprintf("tensor has unknown GGML type id %d", tensor.Type),
+				Message:  "tensor has unknown GGML type id " + strconv.FormatUint(uint64(tensor.Type), 10),
 				Tensor:   tensor.Name,
 			})
 		}
@@ -1037,7 +1046,7 @@ func buildGGUFTensorInfos(tensors []ggufTensorInfo) ([]TensorInfo, []ValidationI
 			issues = append(issues, ValidationIssue{
 				Severity: GGUFValidationError,
 				Code:     "tensor_shape_not_block_aligned",
-				Message:  core.Sprintf("tensor first dimension %d is not divisible by GGML block size %d", tensor.Shape[0], details.BlockSize),
+				Message:  "tensor first dimension " + strconv.FormatUint(tensor.Shape[0], 10) + " is not divisible by GGML block size " + strconv.Itoa(details.BlockSize),
 				Tensor:   tensor.Name,
 			})
 		}
