@@ -596,34 +596,39 @@ func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
 }
 
 // indexHash streams the canonical input into a sha256 hasher.
-// Streaming wins for the index-level hash because the per-entry
-// contribution scales linearly with len(Entries); using a single
-// strings.Builder would double-and-copy its backing slice up through
-// hundreds of KB before the Sum, which loses to sha256's fixed-size
-// block buffer at scale (1000-entry index measured at 25 µs streaming
-// vs 57 µs builder-batched).
+// The bounded header (Kind|BundleURI|...|ChatTemplateHash) is
+// pre-built in a Builder so the two int writes don't escape their
+// digit buffer to the heap through hash.Hash's interface dispatch;
+// the per-entry tail then streams pipe+entry-hash pairs straight
+// to sha256 because Builder-batching the entry tail loses at scale
+// — the doubling backing slice grows into hundreds of KB on a
+// 1000-entry index (measured 25 µs streaming vs 57 µs full-builder).
 func indexHash(index *StateIndex) string {
 	if index == nil {
 		return ""
 	}
+	header := core.NewBuilder()
+	header.Grow(256)
+	var intBuf [20]byte
+	header.WriteString(index.Kind)
+	header.WriteByte('|')
+	header.WriteString(index.BundleURI)
+	header.WriteByte('|')
+	header.WriteString(index.SnapshotHash)
+	header.WriteByte('|')
+	header.WriteString(string(index.KVEncoding))
+	header.WriteByte('|')
+	header.Write(strconv.AppendInt(intBuf[:0], int64(index.TokenCount), 10))
+	header.WriteByte('|')
+	header.Write(strconv.AppendInt(intBuf[:0], int64(index.BlockSize), 10))
+	header.WriteByte('|')
+	header.WriteString(index.Model.Hash)
+	header.WriteByte('|')
+	header.WriteString(index.Tokenizer.Hash)
+	header.WriteByte('|')
+	header.WriteString(index.Tokenizer.ChatTemplateHash)
 	hash := sha256.New()
-	writeIndexHashString(hash, index.Kind)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.BundleURI)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.SnapshotHash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, string(index.KVEncoding))
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, index.TokenCount)
-	writeIndexHashString(hash, "|")
-	writeIndexHashInt(hash, index.BlockSize)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Model.Hash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Tokenizer.Hash)
-	writeIndexHashString(hash, "|")
-	writeIndexHashString(hash, index.Tokenizer.ChatTemplateHash)
+	hash.Write(core.AsBytes(header.String()))
 	for i := range index.Entries {
 		writeIndexHashString(hash, "|")
 		entryHash := index.Entries[i].Hash
