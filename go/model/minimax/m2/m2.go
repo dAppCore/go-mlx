@@ -266,18 +266,19 @@ func BuildTensorPlan(cfg Config, info *jang.Info) (TensorPlan, error) {
 // 62*256 expert specs up front.
 func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error) {
 	if layer < 0 || layer >= plan.Config.NumHiddenLayers {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 layer %d out of range", layer))
+		return nil, core.NewError(core.Concat("mlx: MiniMax M2 layer ", core.Itoa(layer), " out of range"))
 	}
 	if expert < 0 || expert >= plan.Config.NumLocalExperts {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 expert %d out of range", expert))
+		return nil, core.NewError(core.Concat("mlx: MiniMax M2 expert ", core.Itoa(expert), " out of range"))
 	}
+	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
 	specs := []TensorSpec{
 		plan.attentionSpec(layer, "q_proj", TensorRoleAttentionQ),
 		plan.attentionSpec(layer, "k_proj", TensorRoleAttentionK),
 		plan.attentionSpec(layer, "v_proj", TensorRoleAttentionV),
 		plan.attentionSpec(layer, "o_proj", TensorRoleAttentionO),
 		{
-			Name:  core.Sprintf("model.layers.%d.block_sparse_moe.gate.weight", layer),
+			Name:  core.Concat(layerPrefix, "block_sparse_moe.gate.weight"),
 			Role:  TensorRoleRouterGate,
 			Layer: layer,
 			Shape: []uint64{uint64(plan.Config.NumLocalExperts), uint64(plan.Config.HiddenSize)},
@@ -289,7 +290,7 @@ func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error)
 	}
 	if plan.Config.UseRoutingBias {
 		specs = append(specs, TensorSpec{
-			Name:  core.Sprintf("model.layers.%d.block_sparse_moe.e_score_correction_bias", layer),
+			Name:  core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
 			Role:  TensorRoleRouterBias,
 			Layer: layer,
 			Shape: []uint64{uint64(plan.Config.NumLocalExperts)},
@@ -762,7 +763,7 @@ type expertScore struct {
 }
 
 func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRole) TensorSpec {
-	name := core.Sprintf("model.layers.%d.self_attn.%s.weight", layer, projection)
+	name := core.Concat("model.layers.", core.Itoa(layer), ".self_attn.", projection, ".weight")
 	qSize := firstPositive(plan.Config.NumAttentionHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
 	kvSize := firstPositive(plan.Config.NumKeyValueHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
 	shape := []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.HiddenSize)}
@@ -790,21 +791,23 @@ func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRo
 func attentionAliases(layer int, projection string, role TensorRole) []string {
 	switch role {
 	case TensorRoleAttentionQ, TensorRoleAttentionK, TensorRoleAttentionV:
-		return []string{core.Sprintf("model.layers.%d.self_attn.qkv_proj.weight", layer)}
+		return []string{core.Concat("model.layers.", core.Itoa(layer), ".self_attn.qkv_proj.weight")}
 	default:
 		return nil
 	}
 }
 
 func (plan TensorPlan) expertSpec(layer, expert int, projection string, role TensorRole) TensorSpec {
-	name := core.Sprintf("model.layers.%d.block_sparse_moe.experts.%d.%s.weight", layer, expert, projection)
+	layerStr := core.Itoa(layer)
+	expertStr := core.Itoa(expert)
+	name := core.Concat("model.layers.", layerStr, ".block_sparse_moe.experts.", expertStr, ".", projection, ".weight")
 	shape := []uint64{uint64(plan.Config.IntermediateSize), uint64(plan.Config.HiddenSize)}
 	if projection == "down_proj" {
 		shape = []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.IntermediateSize)}
 	}
 	spec := TensorSpec{
 		Name:    name,
-		Aliases: []string{core.Sprintf("model.layers.%d.mlp.experts.%d.%s.weight", layer, expert, projection)},
+		Aliases: []string{core.Concat("model.layers.", layerStr, ".mlp.experts.", expertStr, ".", projection, ".weight")},
 		Role:    role,
 		Layer:   layer,
 		Expert:  expert,

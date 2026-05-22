@@ -125,6 +125,35 @@ func BenchmarkDispatchExperts(b *testing.B) {
 	}
 }
 
+// BenchmarkLayerTensorSpecs covers per-layer + per-expert tensor name
+// fan-out used during model loading. MiniMax M2 has 62 layers x 256 experts
+// so the inner-name Sprintf budget compounds quickly.
+func BenchmarkLayerTensorSpecs(b *testing.B) {
+	cfg := Config{
+		ModelType:          "minimax_m2",
+		HiddenSize:         3072,
+		IntermediateSize:   1536,
+		NumHiddenLayers:    62,
+		NumAttentionHeads:  48,
+		NumKeyValueHeads:   8,
+		HeadDim:            128,
+		NumLocalExperts:    256,
+		NumExpertsPerToken: 8,
+		ScoringFunc:        "sigmoid",
+		UseRoutingBias:     true,
+	}
+	plan, err := BuildTensorPlan(cfg, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := plan.LayerTensorSpecs(0, 0); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // BenchmarkRouterBiasCandidates covers the per-call layer/prefix string
 // build path used when resolving the routing correction bias tensor.
 func BenchmarkRouterBiasCandidates(b *testing.B) {
