@@ -40,6 +40,12 @@ const (
 	kvSnapshotStatePayloadJSONBase64 = "json-base64"
 )
 
+// kvSnapshotStateBlockDefaultLabels is the per-block label pair used
+// when the caller passes empty StateBlockOptions.Labels — shared
+// across blocks so the per-block PutOptions skips a slice allocation.
+// State stores treat PutOptions.Labels as read-only input.
+var kvSnapshotStateBlockDefaultLabels = []string{"go-mlx", "kv-snapshot-block"}
+
 // Block is one contiguous token range from a KV snapshot.
 type Block struct {
 	Index      int
@@ -188,10 +194,17 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 	if err != nil {
 		return err
 	}
+	// includeHash signals an external observer of the block snapshots —
+	// SplitBlocks / RangeBlocks return blocks to the caller, so each
+	// snapshot needs cloned slices for independent ownership. The internal
+	// SaveStateBlocks path passes includeHash=false; it encodes + hashes
+	// each block within yield and discards the snapshot before the next
+	// iteration, so non-cloning sub-views are safe.
+	cloneSlices := includeHash
 	for i := 0; i < len(boundaries)-1; i++ {
 		start := boundaries[i]
 		end := boundaries[i+1]
-		blockSnapshot, err := s.SliceBlock(start, end, baseOffset, end == seqLen)
+		blockSnapshot, err := s.sliceBlockInternal(start, end, baseOffset, end == seqLen, cloneSlices)
 		if err != nil {
 			return err
 		}
@@ -263,11 +276,30 @@ func kvBoundaryInsert(boundaries []int, v int) []int {
 }
 
 func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
+	return s.sliceBlockInternal(start, end, baseOffset, final, true)
+}
+
+// sliceBlockInternal is the implementation of SliceBlock. When cloneSlices
+// is false, per-head Key/Value/KeyBytes/ValueBytes return as sub-views of
+// the parent snapshot — used only by walkBlocks(includeHash=false), the
+// SaveStateBlocks path that immediately encodes and discards each block.
+func (s *Snapshot) sliceBlockInternal(start, end, baseOffset int, final bool, cloneSlices bool) (*Snapshot, error) {
 	if start < 0 || end <= start || end > len(s.Tokens) {
 		return nil, core.NewError("mlx: invalid KV snapshot block range")
 	}
 	seqLen := EffectiveSeqLen(s)
 	layers := make([]LayerSnapshot, len(s.Layers))
+	// Heads-slab: one backing slice across all layers collapses N per-layer
+	// make([]HeadSnapshot,...) into a single allocation. Hot during
+	// SaveStateBlocks — fires per checkpoint block × number of layers.
+	// Layers with no overlap (windowLen <= 0) skip head slicing entirely;
+	// the slab still under-uses the backing buffer in that case but never
+	// over-allocates because we size against NumHeads.
+	var headSlab []HeadSnapshot
+	var slabCursor int
+	if s.NumHeads > 0 && len(s.Layers) > 0 {
+		headSlab = make([]HeadSnapshot, len(s.Layers)*s.NumHeads)
+	}
 	for layerIndex, layer := range s.Layers {
 		windowLen, err := kvSnapshotLayerWindowLen(layer, seqLen, s.HeadDim)
 		if err != nil {
@@ -299,21 +331,27 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		layers[layerIndex].ValueDType = layer.ValueDType
 		layers[layerIndex].ValueBytes = valueLayerBytes
 		layers[layerIndex].ValueShape = valueLayerShape
-		layers[layerIndex].Heads = make([]HeadSnapshot, len(layer.Heads))
+		headCount := len(layer.Heads)
+		if headSlab != nil && slabCursor+headCount <= len(headSlab) {
+			layers[layerIndex].Heads = headSlab[slabCursor : slabCursor+headCount : slabCursor+headCount]
+			slabCursor += headCount
+		} else {
+			layers[layerIndex].Heads = make([]HeadSnapshot, headCount)
+		}
 		for headIndex, head := range layer.Heads {
-			key, err := sliceKVSnapshotTensor(head.Key, localStart, localEnd, s.HeadDim, windowLen)
+			key, err := sliceKVSnapshotTensorOpt(head.Key, localStart, localEnd, s.HeadDim, windowLen, cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice key tensor", err)
 			}
-			value, err := sliceKVSnapshotTensor(head.Value, localStart, localEnd, s.HeadDim, windowLen)
+			value, err := sliceKVSnapshotTensorOpt(head.Value, localStart, localEnd, s.HeadDim, windowLen, cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice value tensor", err)
 			}
-			keyBytes, err := sliceKVSnapshotRawTensor(head.KeyBytes, head.KeyDType, localStart, localEnd, windowLen, len(head.Key))
+			keyBytes, err := sliceKVSnapshotRawTensorOpt(head.KeyBytes, head.KeyDType, localStart, localEnd, windowLen, len(head.Key), cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice native key tensor", err)
 			}
-			valueBytes, err := sliceKVSnapshotRawTensor(head.ValueBytes, head.ValueDType, localStart, localEnd, windowLen, len(head.Value))
+			valueBytes, err := sliceKVSnapshotRawTensorOpt(head.ValueBytes, head.ValueDType, localStart, localEnd, windowLen, len(head.Value), cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice native value tensor", err)
 			}
@@ -327,10 +365,16 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 			}
 		}
 	}
+	var tokens []int32
+	if cloneSlices {
+		tokens = core.SliceClone(s.Tokens[start:end])
+	} else {
+		tokens = s.Tokens[start:end]
+	}
 	block := &Snapshot{
 		Version:       effectiveVersion(s, KVSnapshotEncodingFloat32),
 		Architecture:  s.Architecture,
-		Tokens:        core.SliceClone(s.Tokens[start:end]),
+		Tokens:        tokens,
 		TokenOffset:   baseOffset + end,
 		NumLayers:     s.NumLayers,
 		NumHeads:      s.NumHeads,
@@ -340,9 +384,15 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		Layers:        layers,
 	}
 	if final {
-		block.Generated = core.SliceClone(s.Generated)
-		block.LogitShape = core.SliceClone(s.LogitShape)
-		block.Logits = core.SliceClone(s.Logits)
+		if cloneSlices {
+			block.Generated = core.SliceClone(s.Generated)
+			block.LogitShape = core.SliceClone(s.LogitShape)
+			block.Logits = core.SliceClone(s.Logits)
+		} else {
+			block.Generated = s.Generated
+			block.LogitShape = s.LogitShape
+			block.Logits = s.Logits
+		}
 	}
 	return block, nil
 }
@@ -444,6 +494,14 @@ func kvSnapshotLayerRawWindowLen(raw []byte, dtype string, shape []int32, seqLen
 }
 
 func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([]float32, error) {
+	return sliceKVSnapshotTensorOpt(values, start, end, headDim, seqLen, true)
+}
+
+// sliceKVSnapshotTensorOpt slices a head Key/Value tensor. clone=false
+// returns a sub-view of values (zero-alloc) — only the internal
+// SaveStateBlocks walkBlocks path uses this, because the block snapshot
+// is encoded + discarded within the yield call.
+func sliceKVSnapshotTensorOpt(values []float32, start, end, headDim, seqLen int, clone bool) ([]float32, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
@@ -461,10 +519,19 @@ func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([
 	if begin < 0 || finish > len(values) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot tensor block range")
 	}
-	return core.SliceClone(values[begin:finish]), nil
+	if clone {
+		return core.SliceClone(values[begin:finish]), nil
+	}
+	return values[begin:finish:finish], nil
 }
 
 func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valueCount int) ([]byte, error) {
+	return sliceKVSnapshotRawTensorOpt(raw, dtype, start, end, seqLen, valueCount, true)
+}
+
+// sliceKVSnapshotRawTensorOpt slices a head's raw-byte tensor. clone=false
+// returns a sub-view — see sliceKVSnapshotTensorOpt for the safe-use rule.
+func sliceKVSnapshotRawTensorOpt(raw []byte, dtype string, start, end, seqLen, valueCount int, clone bool) ([]byte, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -487,7 +554,10 @@ func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valu
 	if begin < 0 || finish > len(raw) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot raw tensor block range")
 	}
-	return core.SliceClone(raw[begin:finish]), nil
+	if clone {
+		return core.SliceClone(raw[begin:finish]), nil
+	}
+	return raw[begin:finish:finish], nil
 }
 
 func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, start, end int) ([]byte, []int32, error) {
@@ -546,6 +616,12 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		// accumulates a known count, so geometric grow is pure waste.
 		Tokens: make([]int32, 0, totalTokens),
 	}
+	// Pre-size the per-head KeyBytes/ValueBytes buffers against the summed
+	// raw payload across all blocks. appendKVSnapshotRawBlock otherwise
+	// rides through Go's geometric grow on every block — once on first
+	// arrival, plus one or two grows by block 3. The pre-sum pass walks
+	// blocks × layers × heads but does no allocs.
+	preSizeAssembledRawBytes(assembled, blocks)
 	for _, block := range blocks {
 		if block.Snapshot == nil {
 			return nil, core.NewError("mlx: KV snapshot block is nil")
@@ -563,6 +639,39 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		assembled.TokenOffset = len(assembled.Tokens)
 	}
 	return assembled, nil
+}
+
+// preSizeAssembledRawBytes pre-allocates per-head raw byte buffers in the
+// assembled snapshot against the total payload across all blocks. Saves
+// the appendKVSnapshotRawBlock geometric-grow path during AssembleBlocks.
+func preSizeAssembledRawBytes(assembled *Snapshot, blocks []Block) {
+	if assembled == nil || len(assembled.Layers) == 0 || len(blocks) == 0 {
+		return
+	}
+	for layerIndex := range assembled.Layers {
+		for headIndex := range assembled.Layers[layerIndex].Heads {
+			var keyTotal, valueTotal int
+			for _, block := range blocks {
+				if block.Snapshot == nil || layerIndex >= len(block.Snapshot.Layers) {
+					continue
+				}
+				srcLayer := block.Snapshot.Layers[layerIndex]
+				if headIndex >= len(srcLayer.Heads) {
+					continue
+				}
+				srcHead := srcLayer.Heads[headIndex]
+				keyTotal += len(srcHead.KeyBytes)
+				valueTotal += len(srcHead.ValueBytes)
+			}
+			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
+			if keyTotal > 0 {
+				dstHead.KeyBytes = make([]byte, 0, keyTotal)
+			}
+			if valueTotal > 0 {
+				dstHead.ValueBytes = make([]byte, 0, valueTotal)
+			}
+		}
+	}
 }
 
 func validateKVSnapshotBlockOrder(blocks []Block) (int, error) {
@@ -584,6 +693,21 @@ func validateKVSnapshotBlockOrder(blocks []Block) (int, error) {
 
 func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 	out := make([]LayerSnapshot, len(layers))
+	// Heads-slab: one backing slice across all layers — typical assembled
+	// snapshots carry uniform NumHeads per layer (the first block sets
+	// shape so we use it as the slab size). Layers with a divergent head
+	// count fall back to per-layer make.
+	var slabHeadsPerLayer int
+	for _, layer := range layers {
+		if len(layer.Heads) > slabHeadsPerLayer {
+			slabHeadsPerLayer = len(layer.Heads)
+		}
+	}
+	var headSlab []HeadSnapshot
+	var slabCursor int
+	if slabHeadsPerLayer > 0 {
+		headSlab = make([]HeadSnapshot, len(layers)*slabHeadsPerLayer)
+	}
 	for i, layer := range layers {
 		out[i] = LayerSnapshot{
 			Layer:      layer.Layer,
@@ -593,8 +717,14 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 			ValueDType: layer.ValueDType,
 			ValueShape: core.SliceClone(layer.ValueShape),
 		}
-		if len(layer.Heads) > 0 {
-			out[i].Heads = make([]HeadSnapshot, len(layer.Heads))
+		headCount := len(layer.Heads)
+		if headCount > 0 {
+			if headSlab != nil && slabCursor+headCount <= len(headSlab) {
+				out[i].Heads = headSlab[slabCursor : slabCursor+headCount : slabCursor+headCount]
+				slabCursor += headCount
+			} else {
+				out[i].Heads = make([]HeadSnapshot, headCount)
+			}
 		}
 	}
 	return out
@@ -759,7 +889,6 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 		HeadDim:      s.HeadDim,
 		Blocks:       make([]StateBlockRef, 0, expectedBlocks),
 	}
-	blockHashes := make([]string, 0, expectedBlocks)
 	err = s.walkBlocks(blockSize, false, func(block Block) (bool, error) {
 		ref, hash, payloadEncoding, payloadByteCount, reused, err := saveOrReuseKVSnapshotStateBlock(ctx, store, block, opts, encoding)
 		if err != nil {
@@ -768,7 +897,6 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 		if reused {
 			bundle.ReusedBlocks++
 		}
-		blockHashes = append(blockHashes, hash)
 		bundle.Blocks = append(bundle.Blocks, StateBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
@@ -784,7 +912,7 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 	if err != nil {
 		return nil, err
 	}
-	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle, blockHashes)
+	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle)
 	return bundle, nil
 }
 
@@ -823,7 +951,6 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 		BlockSize:  blockSize,
 		Blocks:     []StateBlockRef{},
 	}
-	blockHashes := []string{}
 	err = stream(func(block Block) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -839,7 +966,6 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 			bundle.ReusedBlocks++
 		}
 		applyKVSnapshotStateBundleBlock(bundle, block)
-		blockHashes = append(blockHashes, hash)
 		bundle.Blocks = append(bundle.Blocks, StateBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
@@ -858,7 +984,7 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 	if err := ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
-	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle, blockHashes)
+	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle)
 	return bundle, nil
 }
 
@@ -898,7 +1024,7 @@ func applyKVSnapshotStateBundleBlock(bundle *StateBlockBundle, block Block) {
 	}
 }
 
-func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []string) string {
+func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle) string {
 	if bundle == nil {
 		return ""
 	}
@@ -907,8 +1033,8 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 	// Each block hash is 64 hex chars + 1 separator; the head fields run ~80
 	// chars typical (architecture + 3 ints + encoding + 5 separators).
 	size := len(bundle.Architecture) + len(string(bundle.KVEncoding)) + 5*1 + 30
-	for _, hash := range blockHashes {
-		size += 1 + len(hash)
+	for _, ref := range bundle.Blocks {
+		size += 1 + len(ref.KVHash)
 	}
 	builder.Grow(size)
 	builder.WriteString(bundle.Architecture)
@@ -924,9 +1050,9 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.TokenOffset), 10))
 	builder.WriteString("|")
 	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.BlockSize), 10))
-	for _, hash := range blockHashes {
+	for _, ref := range bundle.Blocks {
 		builder.WriteString("|")
-		builder.WriteString(hash)
+		builder.WriteString(ref.KVHash)
 	}
 	// SHA256HexString uses core.AsBytes under the hood — skips the
 	// []byte copy of the Builder.String() roundtrip on every block-
@@ -988,7 +1114,8 @@ func hashStateBlockPayload(block Block, encoding Encoding) (string, error) {
 	if err := block.Snapshot.writeWithOptions(hash, SaveOptions{KVEncoding: encoding}); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(hash.Sum(sum[:0])), nil
 }
 
 func saveKVSnapshotStateBlock(ctx context.Context, store state.Writer, block Block, opts StateBlockOptions, encoding Encoding) (state.ChunkRef, string, string, int, error) {
@@ -1004,7 +1131,8 @@ func saveKVSnapshotStateBlock(ctx context.Context, store state.Writer, block Blo
 		if err != nil {
 			return state.ChunkRef{}, "", "", 0, core.E("Snapshot.SaveStateBlocks", "stream raw State block", err)
 		}
-		return ref, hex.EncodeToString(hash.Sum(nil)), kvSnapshotStatePayloadRaw, payloadSize, nil
+		var sum [sha256.Size]byte
+		return ref, hex.EncodeToString(hash.Sum(sum[:0])), kvSnapshotStatePayloadRaw, payloadSize, nil
 	}
 	data, err := block.Snapshot.bytesWithOptions(SaveOptions{KVEncoding: encoding})
 	if err != nil {
@@ -1095,11 +1223,21 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	tags["block_index"] = indexStr
 	tags["token_start"] = core.Itoa(block.TokenStart)
 	tags["token_count"] = core.Itoa(block.TokenCount)
-	// Pre-size for the deterministic 2 appended labels — avoids the
-	// geometric-grow path on every per-block State save.
-	labels := make([]string, len(opts.Labels), len(opts.Labels)+2)
-	copy(labels, opts.Labels)
-	labels = append(labels, "go-mlx", "kv-snapshot-block")
+	// Skip the per-block labels make when the caller supplied no extra
+	// labels — the default two-element pair is identical across blocks,
+	// share a single package-global slice. State stores treat Labels as
+	// read-only input; mutating the returned PutOptions is contract-
+	// violating already.
+	var labels []string
+	if len(opts.Labels) == 0 {
+		labels = kvSnapshotStateBlockDefaultLabels
+	} else {
+		// Pre-size for the deterministic 2 appended labels — avoids the
+		// geometric-grow path on every per-block State save.
+		labels = make([]string, len(opts.Labels), len(opts.Labels)+2)
+		copy(labels, opts.Labels)
+		labels = append(labels, "go-mlx", "kv-snapshot-block")
+	}
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	// Direct string concatenation skips the fmt.Sprintf parse + format
 	// state machinery on every per-block save (~SaveStateBlocks fires once
@@ -1184,15 +1322,13 @@ func LoadFromStateBlocksWithOptions(ctx context.Context, store state.Store, bund
 	if bundle.Kind != StateBlockBundleKind {
 		return nil, core.NewError("mlx: invalid State KV block bundle kind")
 	}
-	blocks := make([]Block, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
+	if len(bundle.Blocks) == 0 {
+		return nil, core.NewError("mlx: KV snapshot blocks are empty")
 	}
-	snapshot, err := AssembleBlocks(blocks)
+	// Stream-assemble: load each block, fold into the assembled snapshot,
+	// then release the per-block snapshot pointer. Avoids holding every
+	// per-block []float32 / []byte alive until AssembleBlocks runs.
+	snapshot, err := loadAndAssembleStateBlocks(ctx, store, bundle, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,6 +1336,110 @@ func LoadFromStateBlocksWithOptions(ctx context.Context, store state.Store, bund
 		return nil, core.NewError("mlx: State KV block token offset mismatch")
 	}
 	return snapshot, nil
+}
+
+// loadAndAssembleStateBlocks streams blocks from a State bundle into a
+// single assembled snapshot without retaining the per-block Snapshot
+// pointers between iterations. The first block defines the assembled
+// shape (Architecture, Layer count, head dimensions, raw tensor dtypes
+// + shapes) — subsequent blocks fold into the same skeleton.
+func loadAndAssembleStateBlocks(ctx context.Context, store state.Store, bundle *StateBlockBundle, opts LoadOptions) (*Snapshot, error) {
+	// Validate ordering up front against bundle.Blocks rather than after
+	// loading every snapshot. The full block snapshots aren't required
+	// for ordering checks.
+	totalTokens := 0
+	nextStart := 0
+	for index, ref := range bundle.Blocks {
+		if ref.Index != index {
+			return nil, core.NewError("mlx: KV snapshot blocks are not ordered by index")
+		}
+		if ref.TokenStart != nextStart || ref.TokenCount <= 0 {
+			return nil, core.NewError("mlx: KV snapshot blocks are not contiguous")
+		}
+		nextStart += ref.TokenCount
+		totalTokens += ref.TokenCount
+	}
+	var assembled *Snapshot
+	var lastBlock *Snapshot
+	for index, ref := range bundle.Blocks {
+		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+		if block.Snapshot == nil {
+			return nil, core.NewError("mlx: KV snapshot block is nil")
+		}
+		if block.Index != index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+			return nil, core.NewError("mlx: KV snapshot block metadata mismatch")
+		}
+		if len(block.Snapshot.Tokens) != ref.TokenCount {
+			return nil, core.NewError("mlx: KV snapshot block token count mismatch")
+		}
+		if assembled == nil {
+			first := block.Snapshot
+			assembled = &Snapshot{
+				Version:       first.Version,
+				Architecture:  first.Architecture,
+				NumLayers:     first.NumLayers,
+				NumHeads:      first.NumHeads,
+				HeadDim:       first.HeadDim,
+				NumQueryHeads: first.NumQueryHeads,
+				Layers:        emptyKVSnapshotLayers(first.Layers),
+				Tokens:        make([]int32, 0, totalTokens),
+			}
+			// Pre-size assembled per-head byte buffers from bundle metadata
+			// rather than walking the full block list — the bundle's
+			// PayloadByteCount sums the raw block payload sizes, which
+			// approximates the head byte counts when payload encoding is
+			// raw. Falls back to no pre-size when bytes counts aren't
+			// available; appendKVSnapshotRawBlock then handles growth.
+			preSizeAssembledRawBytesFromFirst(assembled, first, len(bundle.Blocks))
+		}
+		if err := appendKVSnapshotBlock(assembled, block.Snapshot); err != nil {
+			return nil, err
+		}
+		lastBlock = block.Snapshot
+	}
+	if assembled == nil || lastBlock == nil {
+		return nil, core.NewError("mlx: KV snapshot blocks are empty")
+	}
+	assembled.Generated = core.SliceClone(lastBlock.Generated)
+	assembled.TokenOffset = lastBlock.TokenOffset
+	assembled.LogitShape = core.SliceClone(lastBlock.LogitShape)
+	assembled.Logits = core.SliceClone(lastBlock.Logits)
+	if assembled.TokenOffset == 0 {
+		assembled.TokenOffset = len(assembled.Tokens)
+	}
+	return assembled, nil
+}
+
+// preSizeAssembledRawBytesFromFirst pre-allocates per-head KeyBytes /
+// ValueBytes buffers in assembled by extrapolating from the first
+// block's byte count × the block count — cheaper than the full-blocks
+// pre-pass when blocks are uniformly sized.
+func preSizeAssembledRawBytesFromFirst(assembled *Snapshot, first *Snapshot, blockCount int) {
+	if assembled == nil || first == nil || blockCount <= 0 {
+		return
+	}
+	for layerIndex := range assembled.Layers {
+		if layerIndex >= len(first.Layers) {
+			continue
+		}
+		firstLayer := first.Layers[layerIndex]
+		for headIndex := range assembled.Layers[layerIndex].Heads {
+			if headIndex >= len(firstLayer.Heads) {
+				continue
+			}
+			firstHead := firstLayer.Heads[headIndex]
+			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
+			if keyCap := len(firstHead.KeyBytes) * blockCount; keyCap > 0 {
+				dstHead.KeyBytes = make([]byte, 0, keyCap)
+			}
+			if valueCap := len(firstHead.ValueBytes) * blockCount; valueCap > 0 {
+				dstHead.ValueBytes = make([]byte, 0, valueCap)
+			}
+		}
+	}
 }
 
 // LoadFromMemvidBlocksWithOptions restores a full KV snapshot from a
@@ -1313,13 +1553,21 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 	if prefixTokens > bundle.TokenCount {
 		return nil, core.NewError("mlx: State token prefix exceeds bundle token count")
 	}
-	refs := stateBlockRefsForPrefix(bundle, prefixTokens)
-	if len(refs) == 0 {
+	// Inline iteration over bundle.Blocks skips the intermediate
+	// stateBlockRefsForPrefix slice allocation — we already break when the
+	// running token count covers prefixTokens, the same condition
+	// stateBlockRefsForPrefix uses to truncate.
+	if len(bundle.Blocks) == 0 {
 		return nil, core.NewError("mlx: State token prefix has no covering blocks")
 	}
 	tokens := make([]int32, 0, prefixTokens)
 	nextStart := 0
-	for expectedIndex, ref := range refs {
+	expectedIndex := 0
+	covered := false
+	for _, ref := range bundle.Blocks {
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
 		if ref.Index != expectedIndex || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
 			return nil, core.NewError("mlx: State token blocks are not contiguous")
 		}
@@ -1356,9 +1604,14 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 			return nil, core.NewError("mlx: State token block token count mismatch")
 		}
 		nextStart += ref.TokenCount
+		expectedIndex++
+		covered = true
 		if len(tokens) >= prefixTokens {
 			break
 		}
+	}
+	if !covered {
+		return nil, core.NewError("mlx: State token prefix has no covering blocks")
 	}
 	if len(tokens) < prefixTokens {
 		return nil, core.NewError("mlx: State token prefix blocks do not cover requested tokens")

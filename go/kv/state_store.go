@@ -226,10 +226,14 @@ func kvSnapshotStatePutOptions(snapshot *Snapshot, opts StateOptions, envelope k
 }
 
 func cloneKVSnapshotStateTags(input map[string]string) map[string]string {
-	// Caller always writes 3-5 additional bookkeeping tags after the clone,
-	// so size against input+5 to skip the runtime rehash on the typical
-	// per-block-save path.
-	out := make(map[string]string, len(input)+5)
+	// Caller always writes up to 6 additional bookkeeping tags after the
+	// clone (kv_hash, kv_encoding, payload_encoding, block_index,
+	// token_start, token_count) — size against input+6 so the map never
+	// grows mid-insert on the per-block-save path.
+	if len(input) == 0 {
+		return make(map[string]string, 6)
+	}
+	out := make(map[string]string, len(input)+6)
 	for key, value := range input {
 		out[key] = value
 	}
