@@ -119,9 +119,12 @@ var memoryPlannerDeviceInfo = safeRuntimeDeviceInfo
 
 func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	var plan memory.Plan
-	if cfg.MemoryPlan != nil {
+	switch {
+	case cfg.MemoryPlan != nil:
+		// Already pointing at a caller-supplied plan — no copy needed;
+		// the field-derivation reads below treat the value identically.
 		plan = *cfg.MemoryPlan
-	} else if cfg.AutoMemoryPlan {
+	case cfg.AutoMemoryPlan:
 		var pack *mp.ModelPack
 		if inspected, err := model.Inspect(modelPath, mp.WithPackRequireChatTemplate(false)); err == nil {
 			pack = &inspected
@@ -130,11 +133,12 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 			Device: memoryPlannerDeviceInfo(),
 			Pack:   pack,
 		})
-	} else {
+		// Only when WE built the plan does cfg.MemoryPlan need an
+		// updated pointer; the caller-supplied case already has it.
+		cfg.MemoryPlan = &plan
+	default:
 		return cfg
 	}
-
-	cfg.MemoryPlan = &plan
 	if plan.ContextLength > 0 && (cfg.ContextLength == 0 || cfg.ContextLength == DefaultLocalContextLength) {
 		cfg.ContextLength = plan.ContextLength
 	}
