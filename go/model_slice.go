@@ -15,6 +15,30 @@ import (
 
 const modelSliceManifestVersion = "go-mlx.model-slice.v1"
 
+// projectionMatch holds the two pre-built substrings modelSliceHasProjection
+// scans for ("."+name+"." and "."+name+".weight"). Pre-computing them at
+// package init keeps the classifier alloc-free across every tensor-name
+// walk, which fires N_projections × N_tensors times per SliceModel pass.
+type projectionMatch struct {
+	infix  string
+	suffix string
+}
+
+// projectionLookup is the pre-computed substring set for every projection
+// name passed to modelSliceHasProjection across model_slice.go. The static
+// table replaces two per-call string concatenations ("."+name+"." and
+// "."+name+".weight") which dominate the worst-case tensor sweep.
+var projectionLookup = map[string]projectionMatch{
+	"q_proj":    {".q_proj.", ".q_proj.weight"},
+	"k_proj":    {".k_proj.", ".k_proj.weight"},
+	"v_proj":    {".v_proj.", ".v_proj.weight"},
+	"o_proj":    {".o_proj.", ".o_proj.weight"},
+	"out_proj":  {".out_proj.", ".out_proj.weight"},
+	"up_proj":   {".up_proj.", ".up_proj.weight"},
+	"down_proj": {".down_proj.", ".down_proj.weight"},
+	"gate_proj": {".gate_proj.", ".gate_proj.weight"},
+}
+
 type modelSliceManifest struct {
 	Version   string                   `json:"version"`
 	Source    string                   `json:"source"`
@@ -320,6 +344,11 @@ func modelSliceTensorIsLMHead(name string) bool {
 }
 
 func modelSliceHasProjection(name, projection string) bool {
+	if match, ok := projectionLookup[projection]; ok {
+		return core.Contains(name, match.infix) || core.HasSuffix(name, match.suffix)
+	}
+	// Fallback for callers passing unseen projection names — preserves the
+	// original "."+projection+"." semantics without the lookup table.
 	return core.Contains(name, "."+projection+".") || core.HasSuffix(name, "."+projection+".weight")
 }
 
