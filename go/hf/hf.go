@@ -1536,70 +1536,113 @@ func architectureFromTransformersName(architecture string) string {
 	// Case-sensitive fast path first — the canonical HF transformers class
 	// names are PascalCase ("Qwen3ForCausalLM"). Avoids the Lower+Replace
 	// allocs for the common path.
-	switch {
-	case core.Contains(architecture, "Gemma4"):
-		return "gemma4_text"
-	case core.Contains(architecture, "Gemma3"):
-		return "gemma3"
-	case core.Contains(architecture, "Gemma2"):
-		return "gemma2"
-	case core.Contains(architecture, "Qwen3"):
-		// Qwen3 hits — disambiguate MoE / Next via compact form only here.
-		if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
-			return "qwen3_moe"
-		} else if core.Contains(compact, "qwen3next") {
-			return "qwen3_next"
-		}
-		return "qwen3"
-	case core.Contains(architecture, "Qwen2"):
-		return "qwen2"
-	case core.Contains(architecture, "Llama"):
-		return "llama"
-	case core.Contains(architecture, "MiniMaxM2"):
-		return "minimax_m2"
-	case core.Contains(architecture, "Mixtral"):
-		return "mixtral"
-	case core.Contains(architecture, "Mistral"):
-		return "mistral"
-	case core.Contains(architecture, "Phi"):
-		return "phi"
-	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
-		return "deepseek"
-	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
-		return "gpt_oss"
-	case core.Contains(architecture, "Bert") || core.Contains(architecture, "Roberta") || core.Contains(architecture, "Deberta"):
-		// Bert / Roberta / Deberta family — disambiguate rerank via compact.
-		compact := lowerNoSep(architecture)
-		if core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification") {
-			return "bert_rerank"
-		}
-		if core.Contains(architecture, "Bert") {
-			return "bert"
-		}
-		return ""
-	default:
-		// Unknown PascalCase shape — the only patterns the compact form
-		// matches all start with 'b' (bert/roberta/xlmroberta/debertav2)
-		// or 'q' (qwen3moe/qwen3next). If the input has neither (case-
-		// insensitively), the compact form can't match anything — return
-		// "" without paying for lowerNoSep's allocation.
-		if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
-			return ""
-		}
-		// Fall back to compact lower form so a few stragglers like
-		// "qwen3_moe" or "bert_for_sequence_classification" still
-		// classify when callers feed snake_case identifiers.
-		compact := lowerNoSep(architecture)
-		switch {
-		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-			return "bert_rerank"
-		case core.Contains(compact, "qwen3moe"):
-			return "qwen3_moe"
-		case core.Contains(compact, "qwen3next"):
-			return "qwen3_next"
-		}
+	//
+	// Dispatch via the first character so we run at most 3 Contains per
+	// call (the family check + any disambiguation), instead of walking up
+	// to 11 sequential Contains for less-common families like Bert. Most
+	// transformer class names share a single first character per family
+	// (Gemma*, Qwen*, Phi*, Bert*, etc.), so a first-byte switch is a
+	// reliable family selector.
+	if len(architecture) == 0 {
 		return ""
 	}
+	switch architecture[0] {
+	case 'G':
+		switch {
+		case core.Contains(architecture, "Gemma4"):
+			return "gemma4_text"
+		case core.Contains(architecture, "Gemma3"):
+			return "gemma3"
+		case core.Contains(architecture, "Gemma2"):
+			return "gemma2"
+		case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
+			return "gpt_oss"
+		}
+	case 'Q':
+		switch {
+		case core.Contains(architecture, "Qwen3"):
+			// Qwen3 hits — disambiguate MoE / Next via compact form only here.
+			if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
+				return "qwen3_moe"
+			} else if core.Contains(compact, "qwen3next") {
+				return "qwen3_next"
+			}
+			return "qwen3"
+		case core.Contains(architecture, "Qwen2"):
+			return "qwen2"
+		}
+	case 'L':
+		if core.Contains(architecture, "Llama") {
+			return "llama"
+		}
+	case 'M':
+		switch {
+		case core.Contains(architecture, "MiniMaxM2"):
+			return "minimax_m2"
+		case core.Contains(architecture, "Mixtral"):
+			return "mixtral"
+		case core.Contains(architecture, "Mistral"):
+			return "mistral"
+		}
+	case 'P':
+		if core.Contains(architecture, "Phi") {
+			return "phi"
+		}
+	case 'D':
+		switch {
+		case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
+			return "deepseek"
+		case core.Contains(architecture, "Deberta"):
+			// Deberta family — disambiguate rerank via compact.
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "debertav2forsequenceclassification") {
+				return "bert_rerank"
+			}
+		}
+	case 'B':
+		if core.Contains(architecture, "Bert") {
+			// Bert family — disambiguate rerank via compact.
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "bertforsequenceclassification") {
+				return "bert_rerank"
+			}
+			return "bert"
+		}
+	case 'R':
+		if core.Contains(architecture, "Roberta") {
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "robertaforsequenceclassification") {
+				return "bert_rerank"
+			}
+		}
+	case 'X':
+		// xlm-roberta is the only family starting with X we classify.
+		compact := lowerNoSep(architecture)
+		if core.Contains(compact, "xlmrobertaforsequenceclassification") {
+			return "bert_rerank"
+		}
+	}
+	// Unknown first-character shape — the only patterns the compact form
+	// matches all start with 'b' (bert/roberta/xlmroberta/debertav2) or
+	// 'q' (qwen3moe/qwen3next). If the input has neither (case-
+	// insensitively), the compact form can't match anything — return ""
+	// without paying for lowerNoSep's allocation.
+	if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
+		return ""
+	}
+	// Fall back to compact lower form so a few stragglers like
+	// "qwen3_moe" or "bert_for_sequence_classification" still
+	// classify when callers feed snake_case identifiers.
+	compact := lowerNoSep(architecture)
+	switch {
+	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+		return "bert_rerank"
+	case core.Contains(compact, "qwen3moe"):
+		return "qwen3_moe"
+	case core.Contains(compact, "qwen3next"):
+		return "qwen3_next"
+	}
+	return ""
 }
 
 // hasASCIIByteFold reports whether s contains b or B (where b is the
