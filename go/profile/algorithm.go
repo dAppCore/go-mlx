@@ -38,7 +38,21 @@ func LookupAlgorithmProfile(id inference.CapabilityID) (AlgorithmProfile, bool) 
 	return AlgorithmProfile{}, false
 }
 
+// builtinAlgorithmProfilesData is the singleton backing list — built once
+// at package init, exposed through builtinAlgorithmProfiles. Callers must
+// not mutate this slice or its entries; the public API clones before
+// returning.
+var builtinAlgorithmProfilesData = []AlgorithmProfile{}
+
+func init() {
+	builtinAlgorithmProfilesData = buildBuiltinAlgorithmProfiles()
+}
+
 func builtinAlgorithmProfiles() []AlgorithmProfile {
+	return builtinAlgorithmProfilesData
+}
+
+func buildBuiltinAlgorithmProfiles() []AlgorithmProfile {
 	return []AlgorithmProfile{
 		algorithmNative(inference.CapabilityScheduler, inference.CapabilityGroupRuntime, "scheduler", "bounded request queueing, stream backpressure, cancellation IDs, and latency metrics are implemented"),
 		algorithmNative(inference.CapabilityRequestCancel, inference.CapabilityGroupRuntime, "request-cancel", "generation and scheduled requests can be cancelled through context/cancellation IDs"),
