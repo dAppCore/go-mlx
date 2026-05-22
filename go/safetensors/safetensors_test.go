@@ -89,6 +89,87 @@ func assertRawTensorEqual(t *testing.T, want, got TensorRef) {
 	}
 }
 
+// TestSubsetHeaderEncoded_ParityWithJSONMarshal anchors the hand-rolled
+// JSON encoder against the reflection-driven core.JSONMarshal form. The
+// W10-R refactor of subsetHeader → subsetHeaderEncoded swapped a
+// map[string]HeaderEntry + JSONMarshal pipeline for a single byte
+// append. This test fixes that "bit-exact" claim — any structural drift
+// (key order, integer width, dtype canonicalisation, string escapes)
+// would break model-extract round-trips and pack-time golden files.
+func TestSubsetHeaderEncoded_ParityWithJSONMarshal(t *testing.T) {
+	cases := []struct {
+		name string
+		refs []TensorRef
+	}{
+		{
+			name: "single_2d_f32",
+			refs: []TensorRef{
+				{Name: "weight", DType: "F32", Shape: []uint64{2048, 2048}, ByteLen: 2048 * 2048 * 4},
+			},
+		},
+		{
+			name: "multi_dim_mix",
+			refs: []TensorRef{
+				{Name: "model.layers.0.self_attn.q_proj.weight", DType: "F16", Shape: []uint64{4, 28, 2048, 64}, ByteLen: 4 * 28 * 2048 * 64 * 2},
+				{Name: "model.layers.0.self_attn.k_proj.weight", DType: "BF16", Shape: []uint64{4, 28, 2048, 64}, ByteLen: 4 * 28 * 2048 * 64 * 2},
+				{Name: "alpha", DType: "U8", Shape: []uint64{16}, ByteLen: 16},
+			},
+		},
+		{
+			name: "lowercase_dtype_canonicalised",
+			refs: []TensorRef{
+				{Name: "x", DType: "f32", Shape: []uint64{4}, ByteLen: 16},
+			},
+		},
+		{
+			name: "single_one_dim",
+			refs: []TensorRef{
+				{Name: "bias", DType: "F32", Shape: []uint64{128}, ByteLen: 512},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, got, err := subsetHeaderEncoded(tc.refs)
+			if err != nil {
+				t.Fatalf("subsetHeaderEncoded: %v", err)
+			}
+			// Reference: build the same map[string]HeaderEntry the old
+			// subsetHeader produced, then JSONMarshal it.
+			byName := map[string]TensorRef{}
+			names := make([]string, 0, len(tc.refs))
+			for _, ref := range tc.refs {
+				byName[ref.Name] = ref
+				names = append(names, ref.Name)
+			}
+			core.SliceSort(names)
+			header := make(map[string]HeaderEntry, len(names))
+			var offset int64
+			for _, name := range names {
+				ref := byName[name]
+				shape := make([]int64, len(ref.Shape))
+				for i, d := range ref.Shape {
+					shape[i] = int64(d)
+				}
+				header[name] = HeaderEntry{
+					DType:       core.Upper(ref.DType),
+					Shape:       shape,
+					DataOffsets: []int64{offset, offset + ref.ByteLen},
+				}
+				offset += ref.ByteLen
+			}
+			encoded := core.JSONMarshal(header)
+			if !encoded.OK {
+				t.Fatalf("JSONMarshal reference: %v", encoded.Value)
+			}
+			want := encoded.Value.([]byte)
+			if string(got) != string(want) {
+				t.Fatalf("encoder drift:\n got=%s\nwant=%s", got, want)
+			}
+		})
+	}
+}
+
 func writeRawSafetensors(t *testing.T, path string, tensors map[string][]byte) {
 	t.Helper()
 	header := map[string]HeaderEntry{}

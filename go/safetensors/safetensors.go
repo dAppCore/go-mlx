@@ -7,8 +7,25 @@ import (
 	"encoding/binary"
 	stdio "io"
 	"math"
+	"unsafe"
 
 	core "dappco.re/go"
+)
+
+// Sentinel errors hoisted to package vars — see W9-Y in header_parse.go
+// for context. These are static-message errors fired on validation
+// failure paths inside the read/decode hot paths. Lifting them avoids
+// the per-fire core.NewError alloc and lets errors.Is comparison work
+// against typed sentinels (e.g. callers wanting to distinguish "chunk
+// truncated" from "chunk out of bounds" without text-matching).
+var (
+	errChunkOutOfBounds   = core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+	errChunkTruncated     = core.NewError("mlx: safetensors tensor chunk is truncated")
+	errF32PayloadMismatch = core.NewError("F32 payload length does not match tensor shape")
+	errF16PayloadMismatch = core.NewError("F16 payload length does not match tensor shape")
+	errBF16PayloadMatch   = core.NewError("BF16 payload length does not match tensor shape")
+	errF64PayloadMismatch = core.NewError("F64 payload length does not match tensor shape")
+	errCoreResultFailed   = core.NewError("core result failed")
 )
 
 // HeaderEntry is one tensor entry in the safetensors JSON header.
@@ -328,7 +345,7 @@ func (r TensorReader) Close() {
 
 func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
-		return nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+		return nil, errChunkOutOfBounds
 	}
 	raw := make([]byte, count*r.bytesPerElement)
 	start := r.ref.DataStart + int64(offset*r.bytesPerElement)
@@ -337,7 +354,7 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 		return nil, err
 	}
 	if n != len(raw) {
-		return nil, core.NewError("mlx: safetensors tensor chunk is truncated")
+		return nil, errChunkTruncated
 	}
 	return DecodeFloatData(r.ref.DType, raw, count)
 }
@@ -349,7 +366,7 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 // (possibly grown) valuesScratch sliced to count.
 func (r TensorReader) readFloat32ChunkInto(offset, count int, rawScratch []byte, valuesScratch []float32) ([]byte, []float32, []float32, error) {
 	if offset < 0 || count < 0 || offset+count > r.ref.Elements {
-		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk exceeds tensor bounds")
+		return rawScratch, valuesScratch, nil, errChunkOutOfBounds
 	}
 	rawNeed := count * r.bytesPerElement
 	if cap(rawScratch) < rawNeed {
@@ -363,7 +380,7 @@ func (r TensorReader) readFloat32ChunkInto(offset, count int, rawScratch []byte,
 		return rawScratch, valuesScratch, nil, err
 	}
 	if n != len(rawScratch) {
-		return rawScratch, valuesScratch, nil, core.NewError("mlx: safetensors tensor chunk is truncated")
+		return rawScratch, valuesScratch, nil, errChunkTruncated
 	}
 	values, err := decodeFloatDataInto(r.ref.DType, rawScratch, count, valuesScratch)
 	if err != nil {
@@ -443,7 +460,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
 
 const defaultChunkElements = 1 << 20
@@ -487,42 +504,58 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 	switch dtype {
 	case "F32":
 		if len(raw) != elements*4 {
-			return nil, core.NewError("F32 payload length does not match tensor shape")
+			return nil, errF32PayloadMismatch
 		}
-		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
-		}
+		// Reinterpret-cast: float32 storage is little-endian on both
+		// Go-supported architectures (arm64 + amd64), so the safetensors
+		// on-disk byte view of an F32 tensor matches []float32 verbatim.
+		// One memcpy replaces N × (LittleEndian.Uint32 + Float32frombits +
+		// per-iter raw[i*4:] re-slice). Same pattern as kv/snapshot.go
+		// decodeKVSnapshotNativeTensor.
+		dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), elements*4)
+		copy(dst, raw)
 	case "F16":
 		if len(raw) != elements*2 {
-			return nil, core.NewError("F16 payload length does not match tensor shape")
+			return nil, errF16PayloadMismatch
 		}
-		// Hoist a fixed-cap subslice and read by direct byte pair so
-		// the compiler can elide the per-iter bound-check on raw[i*2:]
-		// re-slicing. With Float16ToFloat32 dominating per-elem cost,
-		// this drops the F16 decode to ~3.2us / 2048 elems (-23%).
-		buf := raw[: elements*2 : elements*2]
-		for i := 0; i < elements; i++ {
-			j := i * 2
-			values[i] = Float16ToFloat32(uint16(buf[j]) | uint16(buf[j+1])<<8)
+		// Reinterpret-cast raw as []uint16. fp16 storage is little-endian
+		// on both supported architectures, so bytes-on-disk match the
+		// uint16 layout exactly. This eliminates the per-iter byte pair
+		// combine + raw[i*2:] re-slice — the compiler emits LDR.H +
+		// Float16ToFloat32 per element. Float16ToFloat32 still dominates
+		// the per-elem cost (it's a non-trivial bit-twiddle), so this is
+		// pure load-path simplification.
+		src16 := unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src16 {
+			values[i] = Float16ToFloat32(v)
 		}
 	case "BF16":
 		if len(raw) != elements*2 {
-			return nil, core.NewError("BF16 payload length does not match tensor shape")
+			return nil, errBF16PayloadMatch
 		}
-		// Same byte-pair hoist as F16. The body is a straight bit shift
-		// into the float32 high half — no function call, so the saving
-		// is smaller (-9%) but compounds when packed alongside F16.
-		buf := raw[: elements*2 : elements*2]
-		for i := 0; i < elements; i++ {
-			j := i * 2
-			values[i] = math.Float32frombits((uint32(buf[j]) | uint32(buf[j+1])<<8) << 16)
+		// Same unsafe-uint16-slice pattern as F16. BF16 → F32 is just
+		// "uint16 → uint32 → shift 16 → Float32frombits" which is itself
+		// the high-half bit pattern of the target float32 — but Go's
+		// Float32frombits is unavoidable to preserve NaN payloads.
+		// The unsafe-slice cast still skips the per-iter byte combine.
+		src16 := unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src16 {
+			values[i] = math.Float32frombits(uint32(v) << 16)
 		}
 	case "F64":
 		if len(raw) != elements*8 {
-			return nil, core.NewError("F64 payload length does not match tensor shape")
+			return nil, errF64PayloadMismatch
 		}
-		for i := range values {
-			values[i] = float32(math.Float64frombits(binary.LittleEndian.Uint64(raw[i*8:])))
+		// Reinterpret-cast raw to []float64 in place, then downcast each
+		// element to float32. float64 storage is little-endian on both
+		// supported architectures (arm64 + amd64) so this is bit-exact
+		// vs binary.LittleEndian.Uint64+Float64frombits, but skips both
+		// the per-iter raw[i*8:] re-slice bounds check and the
+		// Uint64+Float64frombits dance — the compiler emits a direct
+		// LDR + FCVT pair on arm64.
+		src64 := unsafe.Slice((*float64)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src64 {
+			values[i] = float32(v)
 		}
 	default:
 		return nil, core.NewError("unsupported dense safetensors dtype: " + dtype)
