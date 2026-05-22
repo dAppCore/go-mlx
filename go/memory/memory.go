@@ -491,9 +491,9 @@ func applyArchitectureHints(plan *Plan, architecture string, profileHint *profil
 			plan.Notes = append(plan.Notes, "MiniMax M2 requires asymmetric compact KV cache below 64GB")
 		}
 	case "bert":
-		applyEncoderHints(plan, "BERT embedding encoder")
+		applyEncoderHints(plan, encoderHintBert)
 	case "bert_rerank":
-		applyEncoderHints(plan, "BERT cross-encoder rerank")
+		applyEncoderHints(plan, encoderHintBertRerank)
 	}
 }
 
@@ -527,8 +527,17 @@ func applyEncoderHints(plan *Plan, label string) {
 			plan.BatchSize = 4
 		}
 	}
-	plan.Notes = append(plan.Notes, label+" uses pooled sequence outputs and does not allocate generation KV cache")
+	plan.Notes = append(plan.Notes, label)
 }
+
+// Pre-computed encoder hint strings — applyEncoderHints used to build
+// these by concatenating a per-call label with a constant suffix at
+// runtime. With only two call sites it is cheaper to pre-compute the
+// full strings as package-level constants and pass the matching one in.
+const (
+	encoderHintBert       = "BERT embedding encoder uses pooled sequence outputs and does not allocate generation KV cache"
+	encoderHintBertRerank = "BERT cross-encoder rerank uses pooled sequence outputs and does not allocate generation KV cache"
+)
 
 func usesGenerationKVCache(input Input) bool {
 	return usesGenerationKVCacheWithProfile(input, nil)
