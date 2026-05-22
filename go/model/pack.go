@@ -578,20 +578,44 @@ func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 	if pack == nil {
 		return nil
 	}
-	var capabilities []inference.Capability
-	if pack.Embedding != nil {
+	// Tally first so we can size the slice exactly — capabilities is
+	// short (typically 0-2 entries) but the per-grow alloc pattern
+	// fires for every Inspect call on a MoE or embedding model. One
+	// upfront make beats up to four geometric-growth reallocations.
+	hasEmbedding := pack.Embedding != nil
+	hasRerank := pack.Rerank != nil
+	hasMoE := pack.ArchitectureProfile != nil && pack.ArchitectureProfile.MoE
+	hasCodebook := pack.Codebook != nil
+	count := 0
+	if hasEmbedding {
+		count++
+	}
+	if hasRerank {
+		count++
+	}
+	if hasMoE {
+		count += 2
+	}
+	if hasCodebook {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	capabilities := make([]inference.Capability, 0, count)
+	if hasEmbedding {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityEmbeddings, pack.Architecture))
 	}
-	if pack.Rerank != nil {
+	if hasRerank {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityRerank, pack.Architecture))
 	}
-	if pack.ArchitectureProfile != nil && pack.ArchitectureProfile.MoE {
+	if hasMoE {
 		capabilities = append(capabilities,
 			modelPackAlgorithmCapability(inference.CapabilityMoERouting, pack.Architecture),
 			modelPackAlgorithmCapability(inference.CapabilityMoELazyExperts, pack.Architecture),
 		)
 	}
-	if pack.Codebook != nil {
+	if hasCodebook {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityCodebookVQ, pack.Architecture))
 	}
 	return capabilities
