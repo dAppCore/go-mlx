@@ -329,14 +329,18 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 
 func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
-	stat := core.Stat(tokenizerPath)
-	if !stat.OK {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
-		return
-	}
+	// Single I/O round-trip: ReadFile already surfaces a stat-shaped
+	// "does not exist" via core.IsNotExist, so the prior explicit Stat
+	// was a duplicate syscall (and a duplicate Result alloc) on every
+	// Inspect.
 	read := core.ReadFile(tokenizerPath)
 	if !read.OK {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, read.Value.(error).Error(), tokenizerPath)
+		err := read.Value.(error)
+		if core.IsNotExist(err) {
+			pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
+			return
+		}
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, err.Error(), tokenizerPath)
 		return
 	}
 	// We only need to confirm tokenizer.json parses; the contents
