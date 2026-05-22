@@ -177,6 +177,19 @@ func samePath(a, b string) bool {
 	if a == b {
 		return true
 	}
+	// Both inputs already absolute + canonical short-circuit. PathAbs
+	// calls filepath.Abs which calls filepath.Clean — Clean allocates a
+	// fresh byte buffer even when no cleaning is needed (the routine
+	// always builds a "lazybuf" working buffer). When both inputs look
+	// canonical (start with '/', no double-slashes, no ".." or "." path
+	// segments, no trailing '/'), their absolute forms equal themselves,
+	// and string inequality already proves they differ. The fuse
+	// DistinctRelative bench covers this exact shape and the previous
+	// path paid for two filepath.Abs+Clean trips returning fresh strings
+	// only to compare them — two allocs / call.
+	if isCleanAbsolute(a) && isCleanAbsolute(b) {
+		return false
+	}
 	absA := a
 	if resolved := core.PathAbs(a); resolved.OK {
 		absA = resolved.Value.(string)
@@ -186,6 +199,38 @@ func samePath(a, b string) bool {
 		absB = resolved.Value.(string)
 	}
 	return absA == absB
+}
+
+// isCleanAbsolute reports whether p is a Unix absolute path with no
+// segments that require filepath.Clean to canonicalise — no //,
+// no /./ or trailing /., no /../ or trailing /.., and no trailing /.
+// Matches the canonical-form invariant filepath.Clean produces.
+func isCleanAbsolute(p string) bool {
+	if len(p) == 0 || p[0] != '/' {
+		return false
+	}
+	if len(p) > 1 && p[len(p)-1] == '/' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		// Probe the segment that follows this '/'.
+		switch {
+		case i+1 < len(p) && p[i+1] == '/':
+			return false
+		case i+1 == len(p)-1 && p[i+1] == '.':
+			return false
+		case i+1 < len(p)-1 && p[i+1] == '.' && p[i+2] == '/':
+			return false
+		case i+2 == len(p)-1 && p[i+1] == '.' && p[i+2] == '.':
+			return false
+		case i+2 < len(p)-1 && p[i+1] == '.' && p[i+2] == '.' && p[i+3] == '/':
+			return false
+		}
+	}
+	return true
 }
 
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
