@@ -424,6 +424,11 @@ func slug(index int, name string) string {
 		name = defaultChapterSlug(index)
 	}
 	builder := core.NewBuilder()
+	// Pre-grow to the input rune count's upper bound (UTF-8 bytes) so
+	// the builder skips its grow-and-copy ladder for typical chapter
+	// names. Worst-case overestimate is fine — Builder.String() trims to
+	// the actually-written length.
+	builder.Grow(len(name))
 	lastDash := false
 	for _, r := range name {
 		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
