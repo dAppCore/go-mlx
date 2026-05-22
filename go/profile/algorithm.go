@@ -30,12 +30,11 @@ func BuiltinAlgorithmProfiles() []AlgorithmProfile {
 
 // LookupAlgorithmProfile returns the built-in profile for id.
 func LookupAlgorithmProfile(id inference.CapabilityID) (AlgorithmProfile, bool) {
-	for _, profile := range builtinAlgorithmProfiles() {
-		if profile.ID == id {
-			return inference.CloneAlgorithmProfile(profile), true
-		}
+	idx, ok := builtinAlgorithmProfileIndex[id]
+	if !ok {
+		return AlgorithmProfile{}, false
 	}
-	return AlgorithmProfile{}, false
+	return inference.CloneAlgorithmProfile(builtinAlgorithmProfilesData[idx]), true
 }
 
 // builtinAlgorithmProfilesData is the singleton backing list — built once
@@ -44,8 +43,17 @@ func LookupAlgorithmProfile(id inference.CapabilityID) (AlgorithmProfile, bool) 
 // returning.
 var builtinAlgorithmProfilesData = []AlgorithmProfile{}
 
+// builtinAlgorithmProfileIndex maps each profile ID to its position in
+// builtinAlgorithmProfilesData so LookupAlgorithmProfile resolves in
+// O(1) instead of a linear scan over the 14-entry matrix.
+var builtinAlgorithmProfileIndex = map[inference.CapabilityID]int{}
+
 func init() {
 	builtinAlgorithmProfilesData = buildBuiltinAlgorithmProfiles()
+	builtinAlgorithmProfileIndex = make(map[inference.CapabilityID]int, len(builtinAlgorithmProfilesData))
+	for i, profile := range builtinAlgorithmProfilesData {
+		builtinAlgorithmProfileIndex[profile.ID] = i
+	}
 }
 
 func builtinAlgorithmProfiles() []AlgorithmProfile {
