@@ -313,7 +313,12 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}
 	rewardFuncs := cfg.RewardFuncs
 	if len(rewardFuncs) == 0 {
-		rewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
+		// Default reward funcs slice is shared package-wide — the
+		// closure has no per-call state (weight=1 is captured at init)
+		// and scoreGRPORollout only reads from the slice. Previously a
+		// fresh closure + 1-element slice fired once per buildGRPOUpdate
+		// call (per training step) for callers using the default config.
+		rewardFuncs = defaultGRPORewardFuncs
 	}
 	// Hoist invariants out of the rollout loop — the KL branch flag and
 	// the cfg-side values never change across rollouts. The compiler
@@ -627,6 +632,13 @@ func cleanGRPOAnswerLine(line string) string {
 	}
 	return line
 }
+
+// defaultGRPORewardFuncs is the fallback []GRPORewardFunc used by
+// buildGRPOUpdate when GRPOConfig.RewardFuncs is empty. Package-level
+// so we don't allocate a fresh closure + 1-element slice once per
+// training step on the default-config path. The captured weight (1)
+// is fixed at init.
+var defaultGRPORewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
 
 // GRPORewardContainsAnswer rewards a rollout when it contains the expected answer.
 func GRPORewardContainsAnswer(weight float64) GRPORewardFunc {
