@@ -277,8 +277,12 @@ func writeJSONLine(w core.Writer, value any) error {
 	if !encoded.OK {
 		return daemonResultError(encoded)
 	}
-	if written := core.WriteString(w, string(encoded.Value.([]byte))+"\n"); !written.OK {
-		return daemonResultError(written)
+	// Append the framing newline in-place — json.Marshal returns a
+	// fresh, single-owner slice with spare cap so this avoids the
+	// byte->string + concat double-alloc.
+	frame := append(encoded.Value.([]byte), '\n')
+	if _, err := w.Write(frame); err != nil {
+		return err
 	}
 	return nil
 }
