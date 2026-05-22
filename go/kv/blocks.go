@@ -524,10 +524,10 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		}
 	}
 	last := blocks[len(blocks)-1].Snapshot
-	assembled.Generated = append([]int32(nil), last.Generated...)
+	assembled.Generated = core.SliceClone(last.Generated)
 	assembled.TokenOffset = last.TokenOffset
-	assembled.LogitShape = append([]int32(nil), last.LogitShape...)
-	assembled.Logits = append([]float32(nil), last.Logits...)
+	assembled.LogitShape = core.SliceClone(last.LogitShape)
+	assembled.Logits = core.SliceClone(last.Logits)
 	if assembled.TokenOffset == 0 {
 		assembled.TokenOffset = len(assembled.Tokens)
 	}
