@@ -841,20 +841,23 @@ func metadataArrayLen(value any) int {
 
 func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architecture string) int {
 	if architecture != "" {
-		for _, key := range []string{
-			architecture + ".block_count",
-			architecture + ".n_layer",
-			architecture + ".num_hidden_layers",
-		} {
-			if count := metadataInt(metadata[key]); count > 0 {
-				return count
-			}
+		// Inline lookups — runtime.concatstring2 keeps each key on the
+		// concat fast path. Previously the slice literal forced 3 string
+		// concats up front even when the first key hit.
+		if count := metadataInt(metadata[architecture+".block_count"]); count > 0 {
+			return count
+		}
+		if count := metadataInt(metadata[architecture+".n_layer"]); count > 0 {
+			return count
+		}
+		if count := metadataInt(metadata[architecture+".num_hidden_layers"]); count > 0 {
+			return count
 		}
 	}
 
 	maxLayer := -1
-	for _, tensor := range tensors {
-		if index := extractLayerIndex(tensor.Name); index > maxLayer {
+	for i := range tensors {
+		if index := extractLayerIndex(tensors[i].Name); index > maxLayer {
 			maxLayer = index
 		}
 	}
@@ -864,8 +867,12 @@ func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architec
 	return 0
 }
 
+// extractLayerIndexMarkers — pkg-level so we don't rebuild the slice
+// on every tensor in inferLayerCount.
+var extractLayerIndexMarkers = [...]string{"model.layers.", "layers.", "blk.", "block."}
+
 func extractLayerIndex(name string) int {
-	for _, marker := range []string{"model.layers.", "layers.", "blk.", "block."} {
+	for _, marker := range extractLayerIndexMarkers {
 		index := indexString(name, marker)
 		if index < 0 {
 			continue
