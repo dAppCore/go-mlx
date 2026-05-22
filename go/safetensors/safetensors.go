@@ -208,6 +208,11 @@ func WriteRefFloat32Chunks(ctx context.Context, file *core.OSFile, ref TensorRef
 		return err
 	}
 	defer reader.Close()
+	// Reuse a single byte scratch across chunk writes — every chunk
+	// needs at most chunkElements*4 bytes, so a one-shot allocation
+	// covers them all (subsequent calls reslice in-place). For tensors
+	// big enough to span multiple chunks this drops per-chunk alloc.
+	var scratch []byte
 	for offset := 0; offset < ref.Elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -217,7 +222,8 @@ func WriteRefFloat32Chunks(ctx context.Context, file *core.OSFile, ref TensorRef
 		if err != nil {
 			return err
 		}
-		if err := writeFloat32Values(file, values); err != nil {
+		scratch, err = writeFloat32ValuesScratch(file, values, scratch)
+		if err != nil {
 			return err
 		}
 	}
@@ -364,12 +370,25 @@ func resultError(result core.Result) error {
 const defaultChunkElements = 1 << 20
 
 func writeFloat32Values(file *core.OSFile, values []float32) error {
-	raw := make([]byte, len(values)*4)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
-	}
-	_, err := file.Write(raw)
+	_, err := writeFloat32ValuesScratch(file, values, nil)
 	return err
+}
+
+// writeFloat32ValuesScratch reuses a caller-supplied byte buffer for
+// the F32 encode. The buffer is grown when too small and returned so
+// the caller (WriteRefFloat32Chunks) can reuse it across chunks.
+func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []byte) ([]byte, error) {
+	need := len(values) * 4
+	if cap(scratch) < need {
+		scratch = make([]byte, need)
+	} else {
+		scratch = scratch[:need]
+	}
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(scratch[i*4:], math.Float32bits(value))
+	}
+	_, err := file.Write(scratch)
+	return scratch, err
 }
 
 func DecodeFloatData(dtype string, raw []byte, elements int) ([]float32, error) {
