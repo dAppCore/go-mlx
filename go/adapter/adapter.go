@@ -101,7 +101,11 @@ func (a *Adapter) Generate(ctx context.Context, prompt string, opts GenOpts) (Re
 	// check, and the Metrics fetch all skip the interface-table reload
 	// the compiler emits for repeated a.model accesses.
 	model := a.model
-	builder := core.NewBuilder()
+	// Stack-allocate the Builder via a value-typed local — core.NewBuilder
+	// returns *strings.Builder which always heap-escapes. The Builder's
+	// internal byte slice still grows on the heap, but the header itself
+	// stays on the stack frame and we drop one alloc per Generate call.
+	var builder core.Builder
 	for token := range model.Generate(ctx, prompt, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
@@ -157,7 +161,9 @@ func (a *Adapter) Chat(ctx context.Context, messages []inference.Message, opts G
 	}
 
 	model := a.model
-	builder := core.NewBuilder()
+	// Value-typed Builder local — matches the alloc-shaving rationale in
+	// Generate (see comment there).
+	var builder core.Builder
 	for token := range model.Chat(ctx, messages, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}

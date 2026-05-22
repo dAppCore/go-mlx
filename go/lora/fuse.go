@@ -97,11 +97,14 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 	if opts.OutputPath == "" {
 		return fusePrepared{}, errFuseOutputPathRequired
 	}
-	// core.Lower allocates a fresh string only when uppercase chars are
-	// present; the previous code called it twice on the same input so
-	// any uppercase path paid for the allocation + scan twice. Hoist.
-	lowerOutputPath := core.Lower(opts.OutputPath)
-	if core.HasSuffix(lowerOutputPath, ".safetensors") || core.HasSuffix(lowerOutputPath, ".gguf") {
+	// Case-fold only the trailing suffix bytes for the .safetensors /
+	// .gguf shape check — the previous form called core.Lower on the
+	// full output path twice (once each via HasSuffix on the lowered
+	// copy), allocating whenever the path contained uppercase ASCII
+	// anywhere (most paths do — tmp dirs, app bundles, drive letters).
+	// hasSafetensorsSuffixFold + hasGgufSuffixFold scan only the last
+	// 12/5 bytes, never alloc, and short-circuit on length mismatch.
+	if hasSafetensorsSuffixFold(opts.OutputPath) || hasGgufSuffixFold(opts.OutputPath) {
 		return fusePrepared{}, errFuseOutputNotPackDir
 	}
 	if opts.SourcePack.Format != pack.ModelPackFormatSafetensors {
@@ -154,8 +157,16 @@ func ensureEmptyFuseWeightDestination(output string) error {
 		}
 		return core.E("lora.FuseIntoPack", "inspect output path", resultError(stat))
 	}
-	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
-	if len(weights) > 0 {
+	// Probe each weight pattern independently and short-circuit on the
+	// first non-empty match. The previous form appended both glob results
+	// into a fresh slice unconditionally, paying for the second glob +
+	// the concat alloc even when the first run already proved the
+	// destination is dirty. Real fuse paths fire this once per call;
+	// shaving the second glob's Readdir trip is the win.
+	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
+		return errFuseOutputContainsWeight
+	}
+	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
 		return errFuseOutputContainsWeight
 	}
 	return nil
@@ -169,6 +180,19 @@ func samePath(a, b string) bool {
 	if a == b {
 		return true
 	}
+	// Both inputs already absolute + canonical short-circuit. PathAbs
+	// calls filepath.Abs which calls filepath.Clean — Clean allocates a
+	// fresh byte buffer even when no cleaning is needed (the routine
+	// always builds a "lazybuf" working buffer). When both inputs look
+	// canonical (start with '/', no double-slashes, no ".." or "." path
+	// segments, no trailing '/'), their absolute forms equal themselves,
+	// and string inequality already proves they differ. The fuse
+	// DistinctRelative bench covers this exact shape and the previous
+	// path paid for two filepath.Abs+Clean trips returning fresh strings
+	// only to compare them — two allocs / call.
+	if isCleanAbsolute(a) && isCleanAbsolute(b) {
+		return false
+	}
 	absA := a
 	if resolved := core.PathAbs(a); resolved.OK {
 		absA = resolved.Value.(string)
@@ -178,6 +202,38 @@ func samePath(a, b string) bool {
 		absB = resolved.Value.(string)
 	}
 	return absA == absB
+}
+
+// isCleanAbsolute reports whether p is a Unix absolute path with no
+// segments that require filepath.Clean to canonicalise — no //,
+// no /./ or trailing /., no /../ or trailing /.., and no trailing /.
+// Matches the canonical-form invariant filepath.Clean produces.
+func isCleanAbsolute(p string) bool {
+	if len(p) == 0 || p[0] != '/' {
+		return false
+	}
+	if len(p) > 1 && p[len(p)-1] == '/' {
+		return false
+	}
+	for i := 0; i < len(p); i++ {
+		if p[i] != '/' {
+			continue
+		}
+		// Probe the segment that follows this '/'.
+		switch {
+		case i+1 < len(p) && p[i+1] == '/':
+			return false
+		case i+1 == len(p)-1 && p[i+1] == '.':
+			return false
+		case i+1 < len(p)-1 && p[i+1] == '.' && p[i+2] == '/':
+			return false
+		case i+2 == len(p)-1 && p[i+1] == '.' && p[i+2] == '.':
+			return false
+		case i+2 < len(p)-1 && p[i+1] == '.' && p[i+2] == '.' && p[i+3] == '/':
+			return false
+		}
+	}
+	return true
 }
 
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
@@ -230,7 +286,14 @@ func copyLocalFile(sourcePath, destinationPath string) error {
 }
 
 func fuseAdapterWeightFiles(path string) ([]string, error) {
-	if core.HasSuffix(core.Lower(path), ".safetensors") {
+	// HasSuffix on the lowered path allocates whenever the temp-dir or
+	// caller path contains uppercase ASCII (every macOS bench tempdir
+	// hits this — the bench reported 2 allocs for the single-file
+	// path, one of which was core.Lower's case-fold copy). Case-fold
+	// only the trailing 12 bytes that form the suffix candidate — that
+	// covers the .Safetensors / .SAFETENSORS variants the previous
+	// code admitted without paying for a full-path scan + alloc.
+	if hasSafetensorsSuffixFold(path) {
 		return []string{path}, nil
 	}
 	matches := core.PathGlob(core.PathJoin(path, "*.safetensors"))
@@ -241,23 +304,91 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 	return matches, nil
 }
 
-func fusePairName(weightName string) (string, string, bool) {
-	for _, variant := range []struct {
-		suffix string
-		kind   string
-	}{
-		{suffix: ".lora_a.weight", kind: "a"},
-		{suffix: ".lora_A.weight", kind: "a"},
-		{suffix: ".lora_a", kind: "a"},
-		{suffix: ".lora_A", kind: "a"},
-		{suffix: ".lora_b.weight", kind: "b"},
-		{suffix: ".lora_B.weight", kind: "b"},
-		{suffix: ".lora_b", kind: "b"},
-		{suffix: ".lora_B", kind: "b"},
-	} {
-		if core.HasSuffix(weightName, variant.suffix) {
-			return core.TrimSuffix(weightName, variant.suffix), variant.kind, true
+// hasSafetensorsSuffixFold case-folds only the trailing 12-byte
+// .safetensors candidate window, so paths with uppercase elsewhere
+// (e.g. macOS /private/var/folders/.../T/... tempdirs) don't trigger
+// a full-path Lower copy. Mirrors core.HasSuffix's semantics for the
+// .safetensors / .Safetensors / .SAFETENSORS triple.
+const safetensorsSuffix = ".safetensors"
+
+func hasSafetensorsSuffixFold(path string) bool {
+	if len(path) < len(safetensorsSuffix) {
+		return false
+	}
+	tail := path[len(path)-len(safetensorsSuffix):]
+	for i := 0; i < len(safetensorsSuffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
 		}
+		if c != safetensorsSuffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hasGgufSuffixFold mirrors hasSafetensorsSuffixFold for the .gguf
+// 5-byte tail check used by prepareFuse to reject output paths that
+// point at a weight file instead of a pack directory.
+const ggufSuffix = ".gguf"
+
+func hasGgufSuffixFold(path string) bool {
+	if len(path) < len(ggufSuffix) {
+		return false
+	}
+	tail := path[len(path)-len(ggufSuffix):]
+	for i := 0; i < len(ggufSuffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != ggufSuffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func fusePairName(weightName string) (string, string, bool) {
+	// The 8-variant table splits cleanly along ".weight"-tail: 4 variants
+	// end in ".weight" (so the second-to-last segment is ".lora_X"), and
+	// 4 are bare ".lora_X" tails. Probe the .weight tail once to halve
+	// the candidate set, then dispatch on the kind byte ('a','A','b','B').
+	// Worst case drops from 8 HasSuffix scans (the non-LoRA miss hit ~22ns)
+	// to one HasSuffix + one byte read + one TrimSuffix. The kind byte
+	// is the byte immediately preceding the chosen tail.
+	if core.HasSuffix(weightName, ".weight") {
+		// Layout: ...lora_<X>.weight — kind byte at len-8 ('.weight' is
+		// 7 chars, the byte before that is the X).
+		head := len(weightName) - len(".lora_X.weight")
+		if head < 0 {
+			return "", "", false
+		}
+		if weightName[head:head+6] != ".lora_" {
+			return "", "", false
+		}
+		switch weightName[head+6] {
+		case 'a', 'A':
+			return weightName[:head], "a", true
+		case 'b', 'B':
+			return weightName[:head], "b", true
+		}
+		return "", "", false
+	}
+	// Bare ".lora_X" tail.
+	head := len(weightName) - len(".lora_X")
+	if head < 0 {
+		return "", "", false
+	}
+	if weightName[head:head+6] != ".lora_" {
+		return "", "", false
+	}
+	switch weightName[head+6] {
+	case 'a', 'A':
+		return weightName[:head], "a", true
+	case 'b', 'B':
+		return weightName[:head], "b", true
 	}
 	return "", "", false
 }
@@ -317,12 +448,17 @@ func FuseIntoPack(ctx context.Context, opts FuseOptions) (*FuseResult, error) {
 	}
 
 	provenancePath := core.PathJoin(prepared.Output, FuseProvenanceFile)
+	// outputWeightFileNames maps PathBase across every weight shard; the
+	// first basename is also written into the provenance OutputWeight
+	// scalar. Build the slice once and reuse its first entry instead of
+	// running core.PathBase a second time on weightFiles[0].
+	outputWeightNames := outputWeightFileNames(weightFiles)
 	if err := writeFuseProvenance(provenancePath, FuseProvenance{
 		Version:         1,
 		SourceModel:     prepared.Model,
 		Adapter:         prepared.Adapter,
-		OutputWeight:    core.PathBase(weightFiles[0]),
-		OutputWeights:   outputWeightFileNames(weightFiles),
+		OutputWeight:    outputWeightNames[0],
+		OutputWeights:   outputWeightNames,
 		FusedWeightKeys: fusedKeys,
 		Labels:          opts.Labels,
 	}); err != nil {

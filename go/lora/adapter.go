@@ -3,6 +3,7 @@
 package lora
 
 import (
+	"encoding/hex"
 	"slices"
 
 	core "dappco.re/go"
@@ -131,15 +132,35 @@ func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) stri
 		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
-	parts := make([]string, 1, 1+len(paths))
-	parts[0] = core.SHA256Hex(config)
+	// Hash each input on the stack ([32]byte from core.SHA256), then
+	// hex-encode straight into a single pre-sized buffer separated by
+	// '\n'. The previous code allocated a parts []string + one fresh
+	// hex string per input via core.SHA256Hex + a Join result string —
+	// (N+3) allocs for N weight files. The single-buffer rewrite drops
+	// that to ONE buffer alloc + the final outer HexEncode, regardless
+	// of file count. SHA-256 still dominates timing on real weights;
+	// allocs shed are the per-call constant cost.
+	configSum := core.SHA256(config)
+	// One hex digest is 64 bytes; the joiner adds one '\n' between
+	// each consecutive pair. Worst case = config + all weight files
+	// successfully read, so size for that ceiling and slice down once
+	// the read loop finishes.
+	totalCount := 1 + len(paths)
+	buf := make([]byte, totalCount*64+(totalCount-1))
+	hex.Encode(buf[:64], configSum[:])
+	written := 64
 	for _, weightPath := range paths {
 		read := core.ReadFile(weightPath)
-		if read.OK {
-			parts = append(parts, core.SHA256Hex(read.Value.([]byte)))
+		if !read.OK {
+			continue
 		}
+		buf[written] = '\n'
+		weightSum := core.SHA256(read.Value.([]byte))
+		hex.Encode(buf[written+1:written+65], weightSum[:])
+		written += 65
 	}
-	return core.SHA256HexString(core.Join("\n", parts...))
+	finalSum := core.SHA256(buf[:written])
+	return core.HexEncode(finalSum[:])
 }
 
 func firstNonZeroInt(values ...int) int {
@@ -161,9 +182,19 @@ func firstNonZeroFloat32(values ...float32) float32 {
 }
 
 func firstNonEmptyStrings(values ...[]string) []string {
+	// The single in-package caller (Inspect) feeds JSON-decoded slices
+	// owned by a local adapterConfigJSON that goes out of scope after
+	// Inspect returns — the underlying array stays alive ONLY via the
+	// AdapterInfo.TargetKeys assignment. Every downstream consumer of
+	// AdapterInfo (backend.go, inference_contract.go, workload_bench.go,
+	// fast_eval.go) calls core.SliceClone(info.TargetKeys) before
+	// keeping or mutating the slice, so the defensive clone the
+	// previous implementation took inside this helper was pure
+	// redundancy. Returning the original slice drops the 1 alloc per
+	// Inspect call this helper would otherwise add.
 	for _, value := range values {
 		if len(value) != 0 {
-			return append([]string(nil), value...)
+			return value
 		}
 	}
 	return nil
