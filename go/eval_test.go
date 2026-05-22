@@ -142,18 +142,21 @@ func TestEvalBatchDataHelpers_Good(t *testing.T) {
 	if !equalInt32Slices(lengths, []int32{2, 3}) || maxLen != 3 {
 		t.Fatalf("lengths=%v max=%d, want [2 3]/3", lengths, maxLen)
 	}
-	tokens := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
-	if !equalInt32Slices(tokens, []int32{1, 2, 0, 5, 6, 7}) {
-		t.Fatalf("token data = %v, want padded rows", tokens)
+	tokensPtr := evalBatchTokenData(batch.Batch.Tokens, lengths, maxLen)
+	if !equalInt32Slices(*tokensPtr, []int32{1, 2, 0, 5, 6, 7}) {
+		t.Fatalf("token data = %v, want padded rows", *tokensPtr)
 	}
-	targets := evalBatchTokenData(batch.Targets, lengths, maxLen)
-	if !equalInt32Slices(targets, []int32{2, 3, 0, 6, 7, 8}) {
-		t.Fatalf("target data = %v, want padded rows", targets)
+	releaseEvalBatchInt32Buf(tokensPtr)
+	targetsPtr := evalBatchTokenData(batch.Targets, lengths, maxLen)
+	if !equalInt32Slices(*targetsPtr, []int32{2, 3, 0, 6, 7, 8}) {
+		t.Fatalf("target data = %v, want padded rows", *targetsPtr)
 	}
-	mask := evalBatchLossMaskData(batch, lengths, maxLen)
-	if !equalFloat32Slices(mask, []float32{1, 0, 0, 0.25, 1, 0}) {
-		t.Fatalf("loss mask data = %v, want padded mask", mask)
+	releaseEvalBatchInt32Buf(targetsPtr)
+	maskPtr := evalBatchLossMaskData(batch, lengths, maxLen)
+	if !equalFloat32Slices(*maskPtr, []float32{1, 0, 0, 0.25, 1, 0}) {
+		t.Fatalf("loss mask data = %v, want padded mask", *maskPtr)
 	}
+	releaseEvalBatchFloat32Buf(maskPtr)
 	if evalNeedsExplicitAttentionMask([]int32{3, 3}, 3) {
 		t.Fatal("equal lengths should not need explicit attention mask")
 	}
