@@ -92,6 +92,17 @@ type Model struct {
 	gguf        *gguf.Info
 	adapterInfo lora.AdapterInfo
 	cleanup     func() error
+	// cachedParserHint is the memoised parser.Hint dispatched into
+	// parser.NewProcessor on every Generate / Chat / *Stream entry.
+	// LoadModel pre-builds it; the 7 hot-path entries call hintForParser
+	// which falls back to a one-time build when callers construct *Model
+	// directly (test fixtures, sidecar adapters). Skips the per-call
+	// m.model.Info() fan-out that otherwise clones the native
+	// AdapterInfo.TargetKeys slice on every dispatch.
+	cachedParserHint parser.Hint
+	// parserHintBuilt gates the lazy build in hintForParser — set true
+	// by refreshParserHint (LoadModel and LoRA mutation surfaces).
+	parserHintBuilt bool
 }
 
 var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
@@ -135,14 +146,15 @@ var closedTokenChan = func() chan Token {
 	return c
 }()
 
-// parserHintFromModel builds the parser.Hint without going through the
-// full m.Info() fan-out. The Hint only needs Architecture + Adapter name,
-// so we read the underlying native info once and skip the ModelInfo
-// composition + second m.Adapter() / m.model.Info() round-trip done by
-// m.Info() on every Generate / Chat / *Stream entry. See callers under
-// Generate, Chat, GenerateChunks, GenerateStream, GenerateChunksStream,
-// ChatChunksStream, ChatStream.
-func parserHintFromModel(m *Model) parser.Hint {
+// buildParserHint constructs the parser.Hint from the live native model
+// info + cached adapter / gguf metadata. The Hint only needs Architecture
+// + Adapter name; everything else m.Info() composes is dead weight on the
+// parser path. Called once at LoadModel and again from the LoRA mutation
+// surfaces (LoadLoRA / UnloadLoRA / NewLoRA) — the inference hot paths
+// then read the cached value direct from m.parserHint without re-entering
+// m.model.Info() (which itself clones the native AdapterInfo.TargetKeys
+// slice via cloneMetalAdapterInfo).
+func (m *Model) buildParserHint() parser.Hint {
 	info := m.model.Info()
 	architecture := info.Architecture
 	if architecture == "" && m.gguf != nil {
@@ -156,6 +168,30 @@ func parserHintFromModel(m *Model) parser.Hint {
 		Architecture: architecture,
 		AdapterName:  adapterName,
 	}
+}
+
+// refreshParserHint recomputes and stores the cached parser.Hint after a
+// mutation that could change either the architecture (gguf reload) or the
+// adapter name (LoRA load / unload / re-apply). The 7 Generate / Chat /
+// *Stream entry points read the cached value with no further allocation,
+// so the cost is paid once at the mutation point instead of per call.
+// Safe to call only after m.model is wired (the m.model nil guard up top
+// of every entry path runs first); refreshing in that state would panic,
+// so callers in the LoRA / Load path are the only valid sites.
+func (m *Model) refreshParserHint() {
+	m.cachedParserHint = m.buildParserHint()
+	m.parserHintBuilt = true
+}
+
+// hintForParser returns the cached parser.Hint, building it on first call
+// when *Model was constructed directly (test fixtures, in-tree adapters
+// bypassing LoadModel). The eager LoadModel path warms the cache so the
+// hot-path read on production traffic is a single field load.
+func (m *Model) hintForParser() parser.Hint {
+	if !m.parserHintBuilt {
+		m.refreshParserHint()
+	}
+	return m.cachedParserHint
 }
 
 var readGGUFInfo = gguf.ReadInfo
@@ -285,14 +321,19 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		return nil, quantErr
 	}
 
-	return &Model{
+	m := &Model{
 		model:       native,
 		cfg:         cfg,
 		tok:         &Tokenizer{tok: native.Tokenizer()},
 		gguf:        ggufInfo,
 		adapterInfo: adapterInfo,
 		cleanup:     cleanup,
-	}, nil
+	}
+	// Pre-build the parser hint once now — the 7 Generate / Chat / *Stream
+	// entry points then read m.parserHint directly without re-entering
+	// m.model.Info() (which clones native AdapterInfo.TargetKeys) per call.
+	m.refreshParserHint()
+	return m, nil
 }
 
 func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
@@ -875,7 +916,7 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	builder := core.NewBuilder()
 	// Pre-grow for the expected output footprint — MaxTokens caps the
 	// emitted token stream and 4 bytes/token is a conservative average
@@ -899,7 +940,7 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 	// Index iteration — the range-and-copy form copied each
 	// inference.Message (two string headers = 32 bytes) into the loop
 	// variable before we rebuilt the metal.ChatMessage. Chat lists are
@@ -935,7 +976,7 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 	}
 	if generator, ok := m.model.(nativeChunkGenerator); ok {
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 		builder := core.NewBuilder()
 		// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
 		// chunked path on the same allocation budget as the giant-string
@@ -1151,7 +1192,7 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)
 			if text == "" {
@@ -1187,7 +1228,7 @@ func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 		if generator, ok := m.model.(nativeChunkGenerator); ok {
 			for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 				text := filter.Process(tok.Text)
@@ -1237,7 +1278,7 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i := range messages {
@@ -1291,7 +1332,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
 		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i := range messages {
@@ -1604,7 +1645,13 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 	if cfg != nil {
 		mcfg = *cfg
 	}
-	return model.model.ApplyLoRA(toMetalLoRAConfig(mcfg))
+	adapter := model.model.ApplyLoRA(toMetalLoRAConfig(mcfg))
+	// ApplyLoRA mutates the native model's adapter identity — refresh the
+	// cached parserHint so the next Generate / Chat picks up the new
+	// adapter name in its parser dispatch without re-reading m.model.Info()
+	// per call.
+	model.refreshParserHint()
+	return adapter
 }
 
 // LoadLoRA loads a saved adapter package into a loaded model and returns it.
@@ -1626,6 +1673,10 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	}
 	m.adapterInfo = info
 	m.cfg.AdapterPath = path
+	// Adapter identity changed — refresh the cached parserHint so the next
+	// Generate / Chat picks up the new adapter name without paying for an
+	// m.model.Info() fan-out per call.
+	m.refreshParserHint()
 	return adapter, nil
 }
 
@@ -1646,6 +1697,11 @@ func (m *Model) UnloadLoRA() error {
 	}
 	m.adapterInfo = lora.AdapterInfo{}
 	m.cfg.AdapterPath = ""
+	// Adapter cleared — refresh the cached parserHint so the next Generate
+	// / Chat reads the post-unload adapter name (may fall back to the
+	// native model's AdapterInfo.Name) without re-entering m.model.Info()
+	// per call.
+	m.refreshParserHint()
 	return nil
 }
 
