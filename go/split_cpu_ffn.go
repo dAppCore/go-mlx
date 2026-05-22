@@ -878,8 +878,18 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 }
 
 func cpuSplitDot(a, b []float32) float32 {
+	// Re-slice b to len(a) so the compiler can prove every b[i] is in
+	// bounds when walking the indexed loop. Without the hint, each b[i]
+	// triggers a per-iteration bounds check that dominates the inner dot
+	// when len(a) is in the thousands (the projection row size).
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	a = a[:n]
+	b = b[:n]
 	var sum float32
-	for i := range a {
+	for i := 0; i < n; i++ {
 		sum += a[i] * b[i]
 	}
 	return sum
