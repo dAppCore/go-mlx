@@ -167,5 +167,11 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	if len(remote.Hidden) == 0 {
 		return SplitFFNResult{}, errRemoteSplitFFNEmptyHidden
 	}
-	return SplitFFNResult{Hidden: cloneSplitHidden(remote.Hidden)}, nil
+	// remote.Hidden was allocated fresh by JSONUnmarshal into the
+	// stack-local remote value just above; no other code holds a
+	// reference to that backing array. The previous cloneSplitHidden
+	// produced a second copy purely for paranoia. Returning the
+	// unmarshalled slice directly transfers ownership and saves the
+	// per-response copy of N float32s plus the slice-header alloc.
+	return SplitFFNResult{Hidden: remote.Hidden}, nil
 }
