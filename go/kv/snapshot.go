@@ -22,6 +22,23 @@ const (
 	kvSnapshotMagic = "MLXKV001"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// failure path. errSnapshotNil is defined in blocks.go (same package).
+var (
+	errRawTensorNeedsNative       = core.NewError("mlx: KV snapshot raw tensor requires native encoding")
+	errUnsupportedNativeDtype     = core.NewError("mlx: unsupported KV native tensor dtype")
+	errStateTokenBlockTokenCount  = core.NewError("mlx: State token block token count is invalid")
+	errNativeByteLenMismatch      = core.NewError("mlx: KV native tensor byte length mismatch")
+	errUnknownFilesystem          = core.NewError("unknown filesystem error")
+	errUnsupportedTensorEncoding  = core.NewError("mlx: unsupported KV tensor encoding")
+	errUnsupportedSnapshotVersion = core.NewError("mlx: unsupported KV snapshot version")
+	errUnsupportedNativeTensor    = core.NewError("mlx: unsupported KV snapshot native tensor dtype")
+	errTruncatedSnapshot          = core.NewError("mlx: truncated KV snapshot")
+	errNativeElementCount         = core.NewError("mlx: KV native tensor element count mismatch")
+	errInvalidSnapshotMagic       = core.NewError("mlx: invalid KV snapshot magic")
+)
+
 // Encoding controls how K/V tensors are represented on disk.
 type Encoding string
 
@@ -152,7 +169,7 @@ func (s *Snapshot) Save(path string) error {
 // SaveWithOptions writes the snapshot with explicit K/V tensor encoding.
 func (s *Snapshot) SaveWithOptions(path string, opts SaveOptions) error {
 	if s == nil {
-		return core.NewError("mlx: KV snapshot is nil")
+		return errSnapshotNil
 	}
 	data, err := s.bytesWithOptions(opts)
 	if err != nil {
@@ -167,7 +184,7 @@ func (s *Snapshot) SaveWithOptions(path string, opts SaveOptions) error {
 // MarshalBinary returns the stable binary representation used by Save.
 func (s *Snapshot) MarshalBinary() ([]byte, error) {
 	if s == nil {
-		return nil, core.NewError("mlx: KV snapshot is nil")
+		return nil, errSnapshotNil
 	}
 	return s.bytesWithOptions(SaveOptions{})
 }
@@ -175,7 +192,7 @@ func (s *Snapshot) MarshalBinary() ([]byte, error) {
 // UnmarshalBinary replaces the snapshot with data loaded from the stable binary format.
 func (s *Snapshot) UnmarshalBinary(data []byte) error {
 	if s == nil {
-		return core.NewError("mlx: KV snapshot is nil")
+		return errSnapshotNil
 	}
 	loaded, err := parseKVSnapshot(data)
 	if err != nil {
@@ -577,7 +594,7 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 	}
 	tokenCount := int(reader.u32())
 	if tokenCount < 0 || tokenCount > (len(reader.data)-reader.offset)/4 {
-		return nil, core.NewError("mlx: State token block token count is invalid")
+		return nil, errStateTokenBlockTokenCount
 	}
 	tokens := make([]int32, tokenCount)
 	if tokenCount > 0 {
@@ -602,11 +619,11 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 	reader := kvSnapshotReader{data: data}
 	if magic := string(reader.read(len(kvSnapshotMagic))); magic != kvSnapshotMagic {
-		return dst, core.NewError("mlx: invalid KV snapshot magic")
+		return dst, errInvalidSnapshotMagic
 	}
 	version := int(reader.u32())
 	if version <= 0 || version > SnapshotVersion {
-		return dst, core.NewError("mlx: unsupported KV snapshot version")
+		return dst, errUnsupportedSnapshotVersion
 	}
 	architectureLength := int(reader.u32())
 	reader.read(architectureLength)
@@ -618,7 +635,7 @@ func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
 	}
 	tokenCount := int(reader.u32())
 	if tokenCount < 0 || tokenCount > (len(reader.data)-reader.offset)/4 {
-		return dst, core.NewError("mlx: State token block token count is invalid")
+		return dst, errStateTokenBlockTokenCount
 	}
 	if tokenCount == 0 {
 		return dst, nil
@@ -725,7 +742,7 @@ func appendKVEncodedTensor(dst []byte, values []float32, dtype string, raw []byt
 		}
 	}
 	if len(values) == 0 && len(raw) > 0 {
-		return nil, core.NewError("mlx: KV snapshot raw tensor requires native encoding")
+		return nil, errRawTensorNeedsNative
 	}
 	if encoding == EncodingQ8 && kvSnapshotCanQuantizeQ8(values) {
 		scale, quantized := quantizeKVSnapshotQ8(values)
@@ -758,7 +775,7 @@ func kvSnapshotEncodedTensorSize(values []float32, dtype string, raw []byte, enc
 		}
 	}
 	if len(values) == 0 && len(raw) > 0 {
-		return 0, core.NewError("mlx: KV snapshot raw tensor requires native encoding")
+		return 0, errRawTensorNeedsNative
 	}
 	if encoding == EncodingQ8 && kvSnapshotCanQuantizeQ8(values) {
 		return 12 + len(values), nil
@@ -790,14 +807,14 @@ func kvSnapshotNativeTensorInfo(values []float32, dtype string, raw []byte) (str
 	if len(raw) > 0 {
 		dtype, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
 		if dtype == "" || bytesPerValue <= 0 {
-			return "", 0, 0, false, core.NewError("mlx: unsupported KV snapshot native tensor dtype")
+			return "", 0, 0, false, errUnsupportedNativeTensor
 		}
 		if len(raw)%bytesPerValue != 0 {
-			return "", 0, 0, false, core.NewError("mlx: KV native tensor byte length mismatch")
+			return "", 0, 0, false, errNativeByteLenMismatch
 		}
 		elements := len(raw) / bytesPerValue
 		if len(values) > 0 && elements != len(values) {
-			return "", 0, 0, false, core.NewError("mlx: KV native tensor element count mismatch")
+			return "", 0, 0, false, errNativeElementCount
 		}
 		return dtype, elements, len(raw), true, nil
 	}
@@ -1012,7 +1029,7 @@ func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, r
 		}
 	}
 	if len(values) == 0 && len(raw) > 0 {
-		return core.NewError("mlx: KV snapshot raw tensor requires native encoding")
+		return errRawTensorNeedsNative
 	}
 	if encoding == EncodingQ8 && kvSnapshotCanQuantizeQ8(values) {
 		scale, quantized := quantizeKVSnapshotQ8(values)
@@ -1033,7 +1050,7 @@ func (r *kvSnapshotReader) read(n int) []byte {
 		return nil
 	}
 	if n < 0 || len(r.data)-r.offset < n {
-		r.err = core.NewError("mlx: truncated KV snapshot")
+		r.err = errTruncatedSnapshot
 		return nil
 	}
 	chunk := r.data[r.offset : r.offset+n]
@@ -1209,7 +1226,7 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 			Bytes:  raw,
 		}
 	default:
-		r.err = core.NewError("mlx: unsupported KV tensor encoding")
+		r.err = errUnsupportedTensorEncoding
 		return kvSnapshotEncodedTensor{}
 	}
 }
@@ -1217,10 +1234,10 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 func validateKVSnapshotNativeTensor(dtype string, raw []byte, elements int) (string, error) {
 	dtype, bytesPerValue := normalizeKVSnapshotTensorDType(dtype)
 	if dtype == "" || bytesPerValue <= 0 {
-		return "", core.NewError("mlx: unsupported KV native tensor dtype")
+		return "", errUnsupportedNativeDtype
 	}
 	if elements < 0 || len(raw) != elements*bytesPerValue {
-		return "", core.NewError("mlx: KV native tensor byte length mismatch")
+		return "", errNativeByteLenMismatch
 	}
 	return dtype, nil
 }
@@ -1246,7 +1263,7 @@ func decodeKVSnapshotNativeTensor(dtype string, raw []byte, elements int) ([]flo
 			values[i] = math.Float32frombits(uint32(binary.LittleEndian.Uint16(raw[i*2:i*2+2])) << 16)
 		}
 	default:
-		return nil, core.NewError("mlx: unsupported KV native tensor dtype")
+		return nil, errUnsupportedNativeDtype
 	}
 	return values, nil
 }
@@ -1318,7 +1335,7 @@ func ResultError(result core.Result) error {
 	if text, ok := result.Value.(string); ok {
 		return core.NewError(text)
 	}
-	return core.NewError("unknown filesystem error")
+	return errUnknownFilesystem
 }
 
 const defaultCacheBlockSize = 512
@@ -1388,7 +1405,7 @@ func snapshotHasLayerNativeTensors(snapshot *Snapshot) bool {
 //	hash, err := kv.HashSnapshot(snap)
 func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if snapshot == nil {
-		return "", core.NewError("mlx: KV snapshot is nil")
+		return "", errSnapshotNil
 	}
 	// Stream the encoded bytes straight into sha256 — skips the
 	// bytesWithOptions intermediate []byte alloc (~50KB for 2048-token
