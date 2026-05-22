@@ -2,6 +2,8 @@
 
 package mlx
 
+import core "dappco.re/go"
+
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
 	// driver-profile benchmark artefacts.
@@ -116,7 +118,7 @@ func DefaultProductionLane() ProductionLane {
 // by the current packed expert-ID fast lane. Rejected diagnostic gates such as
 // full native layer/model wrappers are intentionally excluded.
 func DefaultGemma4FastRuntimeGates() []string {
-	return append([]string(nil), defaultGemma4FastRuntimeGates...)
+	return core.SliceClone(defaultGemma4FastRuntimeGates)
 }
 
 // Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
@@ -147,5 +149,5 @@ func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
 // LongContextGemma4FastRuntimeGates returns gates that are accepted only for
 // opencode-sized long-context Gemma 4 diagnostics.
 func LongContextGemma4FastRuntimeGates() []string {
-	return append([]string(nil), longContextGemma4FastRuntimeGates...)
+	return core.SliceClone(longContextGemma4FastRuntimeGates)
 }
