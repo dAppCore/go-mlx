@@ -1004,13 +1004,16 @@ func cpuSplitTrimPackedSuffix(name string) string {
 }
 
 func cpuSplitUniqueStrings(values []string) []string {
-	seen := map[string]bool{}
+	seen := make(map[string]struct{}, len(values))
 	out := make([]string, 0, len(values))
 	for _, value := range values {
-		if value == "" || seen[value] {
+		if value == "" {
 			continue
 		}
-		seen[value] = true
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
 		out = append(out, value)
 	}
 	return out
