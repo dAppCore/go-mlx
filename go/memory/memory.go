@@ -234,17 +234,36 @@ func NewPlan(input Input) Plan {
 	if input.Pack != nil && input.Pack.Architecture != "" {
 		packArch = input.Pack.Architecture
 	}
-	hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch)
+	// Pack carries its own ArchitectureProfile when the pack-creation
+	// path has already resolved it — typical for native-loaded packs.
+	// Use that instead of re-running profile.LookupArchitectureProfile,
+	// which clones the registered profile on every call (~70% of plan
+	// alloc footprint when a Pack is present). Only fall back to a
+	// registry lookup when the Pack does not have the profile cached.
 	var hintsPtr *profile.ModelArchitectureProfile
-	if hintsFound {
-		hintsPtr = &hintsProfile
+	var packPtr *profile.ModelArchitectureProfile
+	if input.Pack != nil && input.Pack.ArchitectureProfile != nil {
+		packPtr = input.Pack.ArchitectureProfile
+		// hintsArch may still differ from packArch when ModelInfo
+		// overrides the architecture. When they agree, the cached
+		// profile is correct for both call sites.
+		if packArch == hintsArch {
+			hintsPtr = packPtr
+		}
 	}
-	packPtr := hintsPtr
-	if packArch != hintsArch {
+	if hintsPtr == nil {
+		if hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch); hintsFound {
+			hp := hintsProfile
+			hintsPtr = &hp
+			if packArch == hintsArch {
+				packPtr = hintsPtr
+			}
+		}
+	}
+	if packPtr == nil && packArch != hintsArch {
 		if packProfile, ok := profile.LookupArchitectureProfile(packArch); ok {
-			packPtr = &packProfile
-		} else {
-			packPtr = nil
+			pp := packProfile
+			packPtr = &pp
 		}
 	}
 	applyArchitectureHints(&plan, hintsArch, hintsPtr)
