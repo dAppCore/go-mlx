@@ -328,8 +328,17 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	klCoef := cfg.KLCoefficient
 	advEps := cfg.AdvantageEpsilon
 	n := len(rollouts)
+	// Reuse a single GRPORewardContext across rollouts — the user-facing
+	// reward func still receives it by value (scoreGRPORollout derefs
+	// before each fn call), so we just refresh the Rollout + Index
+	// fields per iteration instead of building a fresh ctx struct
+	// (GRPOSample with map header + GRPORollout with strings + slices)
+	// every time. Sample is invariant across the group.
+	rewardCtx := GRPORewardContext{Sample: request.Sample}
 	for i := 0; i < n; i++ {
-		parts, total, err := scoreGRPORollout(GRPORewardContext{Sample: request.Sample, Rollout: rollouts[i], Index: i}, rewardFuncs)
+		rewardCtx.Rollout = rollouts[i]
+		rewardCtx.Index = i
+		parts, total, err := scoreGRPORollout(&rewardCtx, rewardFuncs)
 		if err != nil {
 			return GRPOUpdate{}, err
 		}
@@ -384,14 +393,14 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}, nil
 }
 
-func scoreGRPORollout(ctx GRPORewardContext, funcs []GRPORewardFunc) ([]GRPOReward, float64, error) {
+func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc) ([]GRPOReward, float64, error) {
 	parts := make([]GRPOReward, 0, len(funcs))
 	var total float64
 	for _, fn := range funcs {
 		if fn == nil {
 			continue
 		}
-		reward, err := fn(ctx)
+		reward, err := fn(*ctx)
 		if err != nil {
 			return nil, 0, err
 		}
