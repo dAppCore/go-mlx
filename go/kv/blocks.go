@@ -1283,17 +1283,38 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 		if ref.Index != expectedIndex || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
 			return nil, core.NewError("mlx: State token blocks are not contiguous")
 		}
-		block, err := LoadStateBlockTokensWithOptions(ctx, store, ref, opts)
-		if err != nil {
-			return nil, err
+		// Fast path: when the block is raw-payload-stored (the predominant
+		// case after the SaveStateBlocks switch to BinaryWriter), parse
+		// tokens directly into the result slice. Avoids the per-block
+		// []int32 allocation that LoadStateBlockTokensWithOptions would
+		// otherwise pay through parseKVSnapshotTokens.
+		var blockTokenCount int
+		var err error
+		if ref.PayloadEncoding == kvSnapshotStatePayloadRaw {
+			data, derr := loadRawStateBlockPayload(ctx, store, ref)
+			if derr != nil {
+				return nil, derr
+			}
+			before := len(tokens)
+			tokens, err = parseKVSnapshotTokensInto(tokens, data)
+			if err != nil {
+				return nil, err
+			}
+			blockTokenCount = len(tokens) - before
+		} else {
+			block, lerr := LoadStateBlockTokensWithOptions(ctx, store, ref, opts)
+			if lerr != nil {
+				return nil, lerr
+			}
+			if block.Index != ref.Index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+				return nil, core.NewError("mlx: State token block metadata mismatch")
+			}
+			tokens = append(tokens, block.Tokens...)
+			blockTokenCount = len(block.Tokens)
 		}
-		if len(block.Tokens) != block.TokenCount {
+		if blockTokenCount != ref.TokenCount {
 			return nil, core.NewError("mlx: State token block token count mismatch")
 		}
-		if block.Index != ref.Index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
-			return nil, core.NewError("mlx: State token block metadata mismatch")
-		}
-		tokens = append(tokens, block.Tokens...)
 		nextStart += ref.TokenCount
 		if len(tokens) >= prefixTokens {
 			break

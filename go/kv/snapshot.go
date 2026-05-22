@@ -581,6 +581,59 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 	return tokens, nil
 }
 
+// parseKVSnapshotTokensInto appends the token block from data to dst and
+// returns the extended slice. Avoids the per-block []int32 allocation
+// LoadPrefixTokensFromStateBlocks otherwise pays through parseKVSnapshotTokens.
+func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
+	reader := kvSnapshotReader{data: data}
+	if magic := string(reader.read(len(kvSnapshotMagic))); magic != kvSnapshotMagic {
+		return dst, core.NewError("mlx: invalid KV snapshot magic")
+	}
+	version := int(reader.u32())
+	if version <= 0 || version > SnapshotVersion {
+		return dst, core.NewError("mlx: unsupported KV snapshot version")
+	}
+	architectureLength := int(reader.u32())
+	reader.read(architectureLength)
+	for range 5 {
+		reader.u32()
+	}
+	if version >= 2 {
+		reader.u32()
+	}
+	tokenCount := int(reader.u32())
+	if tokenCount < 0 || tokenCount > (len(reader.data)-reader.offset)/4 {
+		return dst, core.NewError("mlx: State token block token count is invalid")
+	}
+	if tokenCount == 0 {
+		return dst, nil
+	}
+	chunk := reader.read(tokenCount * 4)
+	if chunk == nil {
+		if reader.err != nil {
+			return dst, core.E("Load", "parse State tokens", reader.err)
+		}
+		return dst, nil
+	}
+	// Extend dst once for the whole block — avoids per-token append regrow.
+	start := len(dst)
+	if cap(dst) >= start+tokenCount {
+		dst = dst[:start+tokenCount]
+	} else {
+		grown := make([]int32, start+tokenCount, max(cap(dst)*2, start+tokenCount))
+		copy(grown, dst)
+		dst = grown
+	}
+	out := dst[start:]
+	for i := range out {
+		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+	}
+	if reader.err != nil {
+		return dst, core.E("Load", "parse State tokens", reader.err)
+	}
+	return dst, nil
+}
+
 func appendKVBytes(dst, src []byte) []byte {
 	dst = appendKVU32(dst, uint32(len(src)))
 	return append(dst, src...)
