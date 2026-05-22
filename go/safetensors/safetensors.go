@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	stdio "io"
 	"math"
+	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -489,9 +490,14 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		if len(raw) != elements*4 {
 			return nil, core.NewError("F32 payload length does not match tensor shape")
 		}
-		for i := range values {
-			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(raw[i*4:]))
-		}
+		// Reinterpret-cast: float32 storage is little-endian on both
+		// Go-supported architectures (arm64 + amd64), so the safetensors
+		// on-disk byte view of an F32 tensor matches []float32 verbatim.
+		// One memcpy replaces N × (LittleEndian.Uint32 + Float32frombits +
+		// per-iter raw[i*4:] re-slice). Same pattern as kv/snapshot.go
+		// decodeKVSnapshotNativeTensor.
+		dst := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), elements*4)
+		copy(dst, raw)
 	case "F16":
 		if len(raw) != elements*2 {
 			return nil, core.NewError("F16 payload length does not match tensor shape")
