@@ -125,16 +125,16 @@ func (s *Snapshot) Clone() *Snapshot {
 	cloned := &Snapshot{
 		Version:       s.Version,
 		Architecture:  s.Architecture,
-		Tokens:        append([]int32(nil), s.Tokens...),
-		Generated:     append([]int32(nil), s.Generated...),
+		Tokens:        core.SliceClone(s.Tokens),
+		Generated:     core.SliceClone(s.Generated),
 		TokenOffset:   s.TokenOffset,
 		NumLayers:     s.NumLayers,
 		NumHeads:      s.NumHeads,
 		SeqLen:        s.SeqLen,
 		HeadDim:       s.HeadDim,
 		NumQueryHeads: s.NumQueryHeads,
-		LogitShape:    append([]int32(nil), s.LogitShape...),
-		Logits:        append([]float32(nil), s.Logits...),
+		LogitShape:    core.SliceClone(s.LogitShape),
+		Logits:        core.SliceClone(s.Logits),
 		Layers:        cloneKVLayers(s.Layers),
 	}
 	return cloned
@@ -208,16 +208,7 @@ func (s *Snapshot) encodedSizeWithOptions(opts SaveOptions) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	if version <= 0 || version > SnapshotVersion {
 		return 0, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -285,16 +276,7 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	}
 	data := make([]byte, 0, size)
 	data = append(data, kvSnapshotMagic...)
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	if version <= 0 || version > SnapshotVersion {
 		return nil, core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
 	}
@@ -316,14 +298,10 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 		data = appendKVU32(data, uint32(tokenOffset))
 	}
 	data = appendKVU32(data, uint32(len(s.Tokens)))
-	for _, token := range s.Tokens {
-		data = appendKVI32(data, token)
-	}
+	data = appendKVI32sRaw(data, s.Tokens)
 	if version >= 2 {
 		data = appendKVU32(data, uint32(len(s.Generated)))
-		for _, token := range s.Generated {
-			data = appendKVI32(data, token)
-		}
+		data = appendKVI32sRaw(data, s.Generated)
 	}
 	data = appendKVU32(data, uint32(len(s.Layers)))
 	for _, layer := range s.Layers {
@@ -360,9 +338,7 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	}
 	if version >= 2 {
 		data = appendKVU32(data, uint32(len(s.LogitShape)))
-		for _, dim := range s.LogitShape {
-			data = appendKVI32(data, dim)
-		}
+		data = appendKVI32sRaw(data, s.LogitShape)
 		data = appendKVF32s(data, s.Logits)
 	}
 	return data, nil
@@ -376,16 +352,7 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	if _, err := s.encodedSizeWithOptions(opts); err != nil {
 		return err
 	}
-	version := s.Version
-	if version == 0 {
-		version = SnapshotVersion
-	}
-	if encoding != KVSnapshotEncodingFloat32 && version < 3 {
-		version = 3
-	}
-	if snapshotHasLayerNativeTensors(s) && version < 4 {
-		version = 4
-	}
+	version := effectiveVersion(s, encoding)
 	stream := kvSnapshotStreamWriter{writer: writer}
 	stream.bytes(core.AsBytes(kvSnapshotMagic))
 	stream.u32(uint32(version))
@@ -403,14 +370,10 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 		stream.u32(uint32(tokenOffset))
 	}
 	stream.u32(uint32(len(s.Tokens)))
-	for _, token := range s.Tokens {
-		stream.i32(token)
-	}
+	stream.i32sRaw(s.Tokens)
 	if version >= 2 {
 		stream.u32(uint32(len(s.Generated)))
-		for _, token := range s.Generated {
-			stream.i32(token)
-		}
+		stream.i32sRaw(s.Generated)
 	}
 	stream.u32(uint32(len(s.Layers)))
 	for _, layer := range s.Layers {
@@ -443,9 +406,7 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	}
 	if version >= 2 {
 		stream.u32(uint32(len(s.LogitShape)))
-		for _, dim := range s.LogitShape {
-			stream.i32(dim)
-		}
+		stream.i32sRaw(s.LogitShape)
 		stream.f32s(s.Logits)
 	}
 	return stream.err
@@ -489,17 +450,24 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	}
 	tokenCount := int(reader.u32())
 	if tokenCount > 0 {
-		snapshot.Tokens = make([]int32, tokenCount)
-		for i := range snapshot.Tokens {
-			snapshot.Tokens[i] = reader.i32()
+		// Batch the i32 block read so bounds check is paid once.
+		chunk := reader.read(tokenCount * 4)
+		if chunk != nil {
+			snapshot.Tokens = make([]int32, tokenCount)
+			for i := range snapshot.Tokens {
+				snapshot.Tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+			}
 		}
 	}
 	if snapshot.Version >= 2 {
 		generatedCount := int(reader.u32())
 		if generatedCount > 0 {
-			snapshot.Generated = make([]int32, generatedCount)
-			for i := range snapshot.Generated {
-				snapshot.Generated[i] = reader.i32()
+			chunk := reader.read(generatedCount * 4)
+			if chunk != nil {
+				snapshot.Generated = make([]int32, generatedCount)
+				for i := range snapshot.Generated {
+					snapshot.Generated[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				}
 			}
 		}
 	}
@@ -544,9 +512,12 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	if snapshot.Version >= 2 {
 		shapeCount := int(reader.u32())
 		if shapeCount > 0 {
-			snapshot.LogitShape = make([]int32, shapeCount)
-			for i := range snapshot.LogitShape {
-				snapshot.LogitShape[i] = reader.i32()
+			chunk := reader.read(shapeCount * 4)
+			if chunk != nil {
+				snapshot.LogitShape = make([]int32, shapeCount)
+				for i := range snapshot.LogitShape {
+					snapshot.LogitShape[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+				}
 			}
 		}
 		snapshot.Logits = reader.f32s()
@@ -582,13 +553,73 @@ func parseKVSnapshotTokens(data []byte) ([]int32, error) {
 		return nil, core.NewError("mlx: State token block token count is invalid")
 	}
 	tokens := make([]int32, tokenCount)
-	for i := range tokens {
-		tokens[i] = reader.i32()
+	if tokenCount > 0 {
+		// Batch the token block read so bounds check is paid once
+		// regardless of token count.
+		chunk := reader.read(tokenCount * 4)
+		if chunk != nil {
+			for i := range tokens {
+				tokens[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+			}
+		}
 	}
 	if reader.err != nil {
 		return nil, core.E("Load", "parse State tokens", reader.err)
 	}
 	return tokens, nil
+}
+
+// parseKVSnapshotTokensInto appends the token block from data to dst and
+// returns the extended slice. Avoids the per-block []int32 allocation
+// LoadPrefixTokensFromStateBlocks otherwise pays through parseKVSnapshotTokens.
+func parseKVSnapshotTokensInto(dst []int32, data []byte) ([]int32, error) {
+	reader := kvSnapshotReader{data: data}
+	if magic := string(reader.read(len(kvSnapshotMagic))); magic != kvSnapshotMagic {
+		return dst, core.NewError("mlx: invalid KV snapshot magic")
+	}
+	version := int(reader.u32())
+	if version <= 0 || version > SnapshotVersion {
+		return dst, core.NewError("mlx: unsupported KV snapshot version")
+	}
+	architectureLength := int(reader.u32())
+	reader.read(architectureLength)
+	for range 5 {
+		reader.u32()
+	}
+	if version >= 2 {
+		reader.u32()
+	}
+	tokenCount := int(reader.u32())
+	if tokenCount < 0 || tokenCount > (len(reader.data)-reader.offset)/4 {
+		return dst, core.NewError("mlx: State token block token count is invalid")
+	}
+	if tokenCount == 0 {
+		return dst, nil
+	}
+	chunk := reader.read(tokenCount * 4)
+	if chunk == nil {
+		if reader.err != nil {
+			return dst, core.E("Load", "parse State tokens", reader.err)
+		}
+		return dst, nil
+	}
+	// Extend dst once for the whole block — avoids per-token append regrow.
+	start := len(dst)
+	if cap(dst) >= start+tokenCount {
+		dst = dst[:start+tokenCount]
+	} else {
+		grown := make([]int32, start+tokenCount, max(cap(dst)*2, start+tokenCount))
+		copy(grown, dst)
+		dst = grown
+	}
+	out := dst[start:]
+	for i := range out {
+		out[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
+	}
+	if reader.err != nil {
+		return dst, core.E("Load", "parse State tokens", reader.err)
+	}
+	return dst, nil
 }
 
 func appendKVBytes(dst, src []byte) []byte {
@@ -608,8 +639,14 @@ func appendKVI32(dst []byte, value int32) []byte {
 
 func appendKVI32s(dst []byte, values []int32) []byte {
 	dst = appendKVU32(dst, uint32(len(values)))
+	return appendKVI32sRaw(dst, values)
+}
+
+// appendKVI32sRaw appends int32 values without a length prefix.
+// Used by bytesWithOptions when the length has already been written.
+func appendKVI32sRaw(dst []byte, values []int32) []byte {
 	for _, value := range values {
-		dst = appendKVI32(dst, value)
+		dst = appendKVU32(dst, uint32(value))
 	}
 	return dst
 }
@@ -690,11 +727,11 @@ func normalizeKVSnapshotNativeTensor(values []float32, dtype string, raw []byte)
 	if !ok {
 		return nil, "", 0, false, nil
 	}
-	raw = make([]byte, 0, rawBytes)
-	for _, value := range values {
-		var buf [4]byte
-		binary.LittleEndian.PutUint32(buf[:], math.Float32bits(value))
-		raw = append(raw, buf[:]...)
+	// Pre-sized exact alloc + in-place PutUint32 — drops the
+	// per-element [4]byte stack buffer + 4-byte append cycle.
+	raw = make([]byte, rawBytes)
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
 	}
 	return raw, "float32", len(values), true, nil
 }
@@ -810,8 +847,14 @@ func (w *kvSnapshotStreamWriter) i32(value int32) {
 
 func (w *kvSnapshotStreamWriter) i32s(values []int32) {
 	w.u32(uint32(len(values)))
+	w.i32sRaw(values)
+}
+
+// i32sRaw writes int32 values without a length prefix. Used by
+// writeWithOptions when the length has already been written.
+func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	for _, value := range values {
-		w.i32(value)
+		w.u32(uint32(value))
 	}
 }
 
@@ -888,9 +931,15 @@ func (r *kvSnapshotReader) i32s() []int32 {
 	if size <= 0 {
 		return nil
 	}
+	// Single bounds check + direct decode amortises the per-element
+	// read+slice overhead the per-call r.u32() loop incurred.
+	chunk := r.read(size * 4)
+	if chunk == nil {
+		return nil
+	}
 	values := make([]int32, size)
 	for i := range values {
-		values[i] = r.i32()
+		values[i] = int32(binary.LittleEndian.Uint32(chunk[i*4:]))
 	}
 	return values
 }
@@ -906,9 +955,18 @@ func (r *kvSnapshotReader) bytes() []byte {
 
 func (r *kvSnapshotReader) f32s() []float32 {
 	size := int(r.u32())
+	if size <= 0 {
+		return nil
+	}
+	// Single bounds check + direct decode amortises the per-element
+	// read+slice overhead the per-call r.u32() loop incurred.
+	chunk := r.read(size * 4)
+	if chunk == nil {
+		return nil
+	}
 	values := make([]float32, size)
 	for i := range values {
-		values[i] = math.Float32frombits(r.u32())
+		values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
 	}
 	return values
 }
@@ -928,9 +986,17 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 	size := int(r.u32())
 	switch encoding {
 	case 0:
+		if size <= 0 {
+			return kvSnapshotEncodedTensor{Values: []float32{}}
+		}
+		// Single bounds check via batched read avoids per-element bounds work.
+		chunk := r.read(size * 4)
+		if chunk == nil {
+			return kvSnapshotEncodedTensor{}
+		}
 		values := make([]float32, size)
 		for i := range values {
-			values[i] = math.Float32frombits(r.u32())
+			values[i] = math.Float32frombits(binary.LittleEndian.Uint32(chunk[i*4:]))
 		}
 		return kvSnapshotEncodedTensor{Values: values}
 	case 1:
@@ -1017,11 +1083,11 @@ func cloneKVLayers(src []LayerSnapshot) []LayerSnapshot {
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   layer.KeyDType,
-			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
-			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			KeyBytes:   core.SliceClone(layer.KeyBytes),
+			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: layer.ValueDType,
-			ValueBytes: append([]byte(nil), layer.ValueBytes...),
-			ValueShape: append([]int32(nil), layer.ValueShape...),
+			ValueBytes: core.SliceClone(layer.ValueBytes),
+			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      cloneKVHeads(layer.Heads),
 		}
 	}
@@ -1041,12 +1107,12 @@ func cloneKVHeads(src []HeadSnapshot) []HeadSnapshot {
 
 func cloneKVHead(src HeadSnapshot) HeadSnapshot {
 	return HeadSnapshot{
-		Key:        append([]float32(nil), src.Key...),
+		Key:        core.SliceClone(src.Key),
 		KeyDType:   src.KeyDType,
-		KeyBytes:   append([]byte(nil), src.KeyBytes...),
-		Value:      append([]float32(nil), src.Value...),
+		KeyBytes:   core.SliceClone(src.KeyBytes),
+		Value:      core.SliceClone(src.Value),
 		ValueDType: src.ValueDType,
-		ValueBytes: append([]byte(nil), src.ValueBytes...),
+		ValueBytes: core.SliceClone(src.ValueBytes),
 	}
 }
 
@@ -1081,6 +1147,12 @@ const defaultCacheBlockSize = 512
 
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
+		// Empty-string fast path skips the core.Trim call entirely
+		// — the State PutOptions hot path passes a literal default
+		// URI/Title as second arg, which is always non-empty.
+		if value == "" {
+			continue
+		}
 		if core.Trim(value) != "" {
 			return value
 		}
@@ -1140,13 +1212,15 @@ func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if snapshot == nil {
 		return "", core.NewError("mlx: KV snapshot is nil")
 	}
-	cloned := snapshot.Clone()
-	normalizeSnapshot(cloned)
+	// bytesWithOptions is read-only — version derivation and token-offset
+	// defaulting are applied inline during encoding, so the defensive clone
+	// + normalize round-trip is pure waste. Direct encode is hash-stable
+	// because the writer always emits len(Tokens) when TokenOffset is zero.
 	opts := SaveOptions{}
-	if requiresNativeEncoding(cloned) {
+	if requiresNativeEncoding(snapshot) {
 		opts.KVEncoding = EncodingNative
 	}
-	data, err := cloned.bytesWithOptions(opts)
+	data, err := snapshot.bytesWithOptions(opts)
 	if err != nil {
 		return "", err
 	}

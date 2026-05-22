@@ -203,7 +203,10 @@ func kvSnapshotStatePutOptions(snapshot *Snapshot, opts StateOptions, envelope k
 	tags["architecture"] = envelope.Architecture
 	tags["token_count"] = core.Itoa(envelope.TokenCount)
 	tags["payload_bytes"] = core.Itoa(envelope.PayloadByteCount)
-	labels := append([]string(nil), opts.Labels...)
+	// Pre-size for the deterministic 2 appended labels — avoids the
+	// geometric-grow path on every State KV save.
+	labels := make([]string, len(opts.Labels), len(opts.Labels)+2)
+	copy(labels, opts.Labels)
 	labels = append(labels, "go-mlx", "kv-snapshot")
 	return state.PutOptions{
 		URI:    firstNonEmpty(opts.URI, "mlx://kv-snapshot/"+envelope.KVHash),
@@ -216,7 +219,10 @@ func kvSnapshotStatePutOptions(snapshot *Snapshot, opts StateOptions, envelope k
 }
 
 func cloneKVSnapshotStateTags(input map[string]string) map[string]string {
-	out := map[string]string{}
+	// Caller always writes 3-5 additional bookkeeping tags after the clone,
+	// so size against input+5 to skip the runtime rehash on the typical
+	// per-block-save path.
+	out := make(map[string]string, len(input)+5)
 	for key, value := range input {
 		out[key] = value
 	}

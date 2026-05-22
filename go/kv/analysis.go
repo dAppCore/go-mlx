@@ -285,10 +285,13 @@ func kvAnalysisNumHeads(snapshot *Snapshot) int {
 }
 
 func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
-	groups := make(map[int][]int)
 	if snapshot == nil {
-		return groups
+		return map[int][]int{}
 	}
+	// Pre-size the hint map against layer count — Analyze callers
+	// always have len(Layers) layers to bucket, so the runtime can
+	// skip its rehash cycle on the bucket map.
+	groups := make(map[int][]int, len(snapshot.Layers))
 	for _, layer := range snapshot.Layers {
 		groups[layer.CacheIndex] = append(groups[layer.CacheIndex], layer.Layer)
 	}
@@ -301,13 +304,18 @@ func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
 }
 
 func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
-	vectors := make([][]float32, 0, len(heads))
-	for _, head := range heads {
-		if keys {
-			vectors = append(vectors, head.Key)
-			continue
+	// Pre-extend instead of pre-allocate-empty + N appends — len is
+	// known up-front (one slot per head). Hoists the keys/values branch
+	// out of the inner loop too.
+	vectors := make([][]float32, len(heads))
+	if keys {
+		for i := range heads {
+			vectors[i] = heads[i].Key
 		}
-		vectors = append(vectors, head.Value)
+	} else {
+		for i := range heads {
+			vectors[i] = heads[i].Value
+		}
 	}
 	return vectors
 }
@@ -351,7 +359,9 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if len(heads) == 0 {
 		return nil
 	}
-	var states [][]float32
+	// At most one state slot per head — pre-size to skip the
+	// geometric-grow append cycle.
+	states := make([][]float32, 0, len(heads))
 	for _, head := range heads {
 		if len(head.Key) == 0 && len(head.Value) == 0 {
 			continue
@@ -383,9 +393,12 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	if count == 0 {
 		return nil
 	}
-	scale := float32(count)
+	// Multiply-by-inverse avoids the per-element float divide; for the
+	// multi-head non-GQA analysis path this loop runs through every
+	// flat-state element of every layer.
+	invScale := float32(1) / float32(count)
 	for i := range mean {
-		mean[i] /= scale
+		mean[i] *= invScale
 	}
 	return mean
 }
@@ -457,7 +470,11 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 	if seqLen <= 1 || headDim <= 0 {
 		return 0
 	}
-	magnitudes := make([]float64, seqLen)
+	// Two-pass without retaining magnitudes — first pass accumulates
+	// sqrt(sum-of-squares) per position into the running total; second
+	// pass recomputes the same magnitudes for entropy. This drops the
+	// per-head []float64{seqLen} allocation (16KB at seqLen=2048) which
+	// dominated Analyze's per-call alloc footprint.
 	var total float64
 	for pos := 0; pos < seqLen; pos++ {
 		start := pos * headDim
@@ -465,26 +482,44 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 			break
 		}
 		var sum float64
-		for dim := 0; dim < headDim && start+dim < len(head); dim++ {
-			value := float64(head[start+dim])
-			sum += value * value
+		end := start + headDim
+		if end > len(head) {
+			end = len(head)
 		}
-		magnitudes[pos] = math.Sqrt(sum)
-		total += magnitudes[pos]
+		for _, value := range head[start:end] {
+			v := float64(value)
+			sum += v * v
+		}
+		total += math.Sqrt(sum)
 	}
 	if total == 0 {
 		return 0
 	}
-	var entropy float64
-	for _, magnitude := range magnitudes {
-		p := magnitude / total
-		if p > 0 {
-			entropy -= p * math.Log2(p)
-		}
-	}
 	maxEntropy := math.Log2(float64(seqLen))
 	if maxEntropy == 0 {
 		return 0
+	}
+	invTotal := 1 / total
+	var entropy float64
+	for pos := 0; pos < seqLen; pos++ {
+		start := pos * headDim
+		if start >= len(head) {
+			break
+		}
+		var sum float64
+		end := start + headDim
+		if end > len(head) {
+			end = len(head)
+		}
+		for _, value := range head[start:end] {
+			v := float64(value)
+			sum += v * v
+		}
+		magnitude := math.Sqrt(sum)
+		p := magnitude * invTotal
+		if p > 0 {
+			entropy -= p * math.Log2(p)
+		}
 	}
 	return entropy / maxEntropy
 }
