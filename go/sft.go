@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"strconv"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
@@ -539,9 +540,17 @@ func newSFTBatchBuilder(batchSize int) *sftBatchBuilder {
 	// with the same backing, so the doubling cascade across the first
 	// batch's appends collapses to a single allocation that gets reused
 	// for every subsequent batch.
+	//
+	// Pre-size out to cap=4 — short SFT runs (single-epoch over a small
+	// dataset) flush 1-4 batches, hitting the 0→1→2→4 doubling cascade
+	// on every Build call. The 4-element pre-size collapses two
+	// reallocations into one upfront ~384 B allocation. Larger runs
+	// still grow exponentially from 4 onward (4→8→16…), trading two
+	// fewer reallocations for the same upfront cost.
 	return &sftBatchBuilder{
 		batchSize: batchSize,
 		current:   make([]sftExample, 0, batchSize),
+		out:       make([]SFTBatch, 0, 4),
 	}
 }
 
@@ -575,19 +584,29 @@ func (b *sftBatchBuilder) flush() {
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
 	n := len(examples)
-	// Share one [][]int backing across Tokens + Targets — both are the
-	// same type and same length, so a single 2n-wide allocation lets us
-	// carve two n-wide 3-index views into it instead of paying two
-	// separate makes. Length stays [n]int and LossMask stays [n][]float32
-	// (different types — distinct backings required).
-	intRows := make([][]int, 2*n)
+	// Share one 3n-wide slice-header backing across Tokens + Targets +
+	// LossMask. [][]int and [][]float32 have identical 24-byte slice
+	// header layout (data ptr + len + cap) and identical GC scan masks
+	// (one pointer field at offset 0), so reinterpreting a trailing
+	// stretch of [][]int as [][]float32 via unsafe.Slice is sound. The
+	// caller-side semantics (Tokens[i] is []int, LossMask[i] is
+	// []float32) stay intact because the assignment fully overwrites
+	// each header with the correct typed slice from the source example.
+	// Length stays []int (different element layout — 8 B int vs 24 B
+	// slice header). Net: 3 allocs → 2 allocs per batch.
+	headers := make([][]int, 3*n)
+	lossMaskBacking := headers[2*n : 3*n : 3*n]
+	var lossMask [][]float32
+	if n > 0 {
+		lossMask = unsafe.Slice((*[]float32)(unsafe.Pointer(&lossMaskBacking[0])), n)
+	}
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   intRows[:n:n],
+			Tokens:   headers[:n:n],
 			Length:   make([]int, n),
-			LossMask: make([][]float32, n),
+			LossMask: lossMask,
 		},
-		Targets: intRows[n : 2*n : 2*n],
+		Targets: headers[n : 2*n : 2*n],
 	}
 	// Transfer ownership of each example's slices into the batch — the
 	// callers (sftBatchBuilder.flush and runSFTDatasetEpoch.flushCurrent)
@@ -653,21 +672,31 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
 	// shifted by one. Building both in a single index walk lets the loop
 	// amortise bounds-check elision across the two writes instead of
-	// paying for two separate range loops + int widenings. The backing
-	// is shared via a 2n-wide carve so the two []int slices come from one
-	// allocation — sftBatchFromExamples already transfers ownership of
-	// both fields into the batch (different slots, same root backing is
-	// safe — Tokens[i] and Targets[i] are independent slice headers, GC
-	// only frees when neither references the backing).
+	// paying for two separate range loops + int widenings. inputs +
+	// targets + mask share ONE backing: 2n+(n+1)/2 ints worth, where the
+	// trailing (n+1)/2 ints host n float32s via unsafe.Slice reinterpret.
+	// []int is 8-byte aligned (guaranteed by Go's allocator) which
+	// exceeds float32's 4-byte alignment requirement, so the reinterpret
+	// is safe. Neither []int nor []float32 contains pointers so GC
+	// scanning of the combined allocation is straightforward (one base
+	// pointer kept alive while any of the three views is referenced).
+	// Net: 2 allocs → 1 alloc on the main buildSFTExample path.
 	n := len(seq) - 1
-	intBacking := make([]int, 2*n)
-	inputs := intBacking[:n:n]
-	targets := intBacking[n : 2*n : 2*n]
+	maskInts := (n + 1) / 2
+	combined := make([]int, 2*n+maskInts)
+	inputs := combined[:n:n]
+	targets := combined[n : 2*n : 2*n]
 	for i := 0; i < n; i++ {
 		inputs[i] = int(seq[i])
 		targets[i] = int(seq[i+1])
 	}
-	mask := make([]float32, n)
+	var mask []float32
+	if n > 0 {
+		mask = unsafe.Slice((*float32)(unsafe.Pointer(&combined[2*n])), n)
+		// combined is freshly allocated and zero-initialised; the
+		// reinterpreted mask view inherits that zero state byte-for-byte
+		// (n floats of all-zero bytes is the +0.0 representation).
+	}
 	if trainWholeText {
 		for i := range mask {
 			mask[i] = 1
@@ -1039,10 +1068,16 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 	}
 	// First add into an empty accumulator: pre-size to maxSeqLen (when
 	// known) so the doubling cascade across subsequent appends collapses
-	// into a single allocation per accumulator field.
+	// into a single allocation per accumulator field. Inputs + Targets
+	// share one 2*maxSeqLen-wide backing — they're both []int of the
+	// same maximum length and never grow past maxSeqLen (caller flushes
+	// when adding would overflow). Carving two cap-maxSeqLen views out
+	// of the shared backing drops one allocation per first-add. Mask
+	// stays separate (different element type).
 	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
-		p.current.inputs = make([]int, 0, p.maxSeqLen)
-		p.current.targets = make([]int, 0, p.maxSeqLen)
+		intBacking := make([]int, 2*p.maxSeqLen)
+		p.current.inputs = intBacking[:0:p.maxSeqLen]
+		p.current.targets = intBacking[p.maxSeqLen : p.maxSeqLen : 2*p.maxSeqLen]
 		p.current.mask = make([]float32, 0, p.maxSeqLen)
 	}
 	p.current.inputs = append(p.current.inputs, srcInputs...)
