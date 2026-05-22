@@ -74,13 +74,17 @@ func modelInfoToBundle(info ModelInfo) bundle.ModelInfo {
 //
 //	s := sampleFromGenerateConfig(cfg)
 func sampleFromGenerateConfig(cfg GenerateConfig) bundle.Sampler {
+	// core.SliceClone (= slices.Clone) is the canonical Wave-5+ shape —
+	// the previous `append([]int32(nil), …)` produced the same alloc
+	// (32 B / 1 alloc for an 8-token stop list) but mixed clone idioms
+	// across the codebase. Same observable behaviour; canonicalised.
 	return bundle.Sampler{
 		MaxTokens:     cfg.MaxTokens,
 		Temperature:   cfg.Temperature,
 		TopK:          cfg.TopK,
 		TopP:          cfg.TopP,
 		MinP:          cfg.MinP,
-		StopTokens:    append([]int32(nil), cfg.StopTokens...),
+		StopTokens:    core.SliceClone(cfg.StopTokens),
 		RepeatPenalty: cfg.RepeatPenalty,
 	}
 }
