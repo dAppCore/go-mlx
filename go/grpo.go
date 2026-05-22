@@ -6,6 +6,7 @@ import (
 	"context"
 	"dappco.re/go/mlx/dataset"
 	"math"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -438,20 +439,25 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch 
 	if cfg.ProbeSink == nil {
 		return
 	}
+	// Direct strconv.Itoa / strconv.FormatFloat — escape the
+	// fmt.Sprintf format-parser path that interface-boxes each arg
+	// and runs the (small) format machinery on every probe event.
+	// emitGRPOProbe fires once per training step, so the per-event
+	// alloc/CPU saving compounds across an epoch.
+	meta := make(map[string]string, 8)
+	meta["grpo_experimental"] = "true"
+	meta["group_size"] = strconv.Itoa(cfg.GroupSize)
+	meta["rollouts"] = strconv.Itoa(len(update.Rollouts))
+	meta["reward_mean"] = strconv.FormatFloat(update.RewardMean, 'f', 6, 64)
+	meta["reward_std"] = strconv.FormatFloat(update.RewardStd, 'f', 6, 64)
+	meta["kl_mean"] = strconv.FormatFloat(update.KLMean, 'f', 6, 64)
+	meta["checkpoint_count"] = strconv.Itoa(len(result.Checkpoints))
+	meta["evaluation_count"] = strconv.Itoa(len(result.Evaluations))
 	cfg.ProbeSink.EmitProbe(probe.Event{
 		Kind:  probe.KindTraining,
 		Phase: probe.PhaseTraining,
 		Step:  result.Metrics.Steps,
-		Meta: map[string]string{
-			"grpo_experimental": "true",
-			"group_size":        core.Sprintf("%d", cfg.GroupSize),
-			"rollouts":          core.Sprintf("%d", len(update.Rollouts)),
-			"reward_mean":       core.Sprintf("%.6f", update.RewardMean),
-			"reward_std":        core.Sprintf("%.6f", update.RewardStd),
-			"kl_mean":           core.Sprintf("%.6f", update.KLMean),
-			"checkpoint_count":  core.Sprintf("%d", len(result.Checkpoints)),
-			"evaluation_count":  core.Sprintf("%d", len(result.Evaluations)),
-		},
+		Meta:  meta,
 		Training: &probe.Training{
 			Step:         result.Metrics.Steps,
 			Epoch:        epoch,
