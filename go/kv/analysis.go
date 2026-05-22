@@ -524,7 +524,8 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				locked += remaining
 				continue
 			}
-			rowA := flat[i*headDim : (i+1)*headDim]
+			baseA := i * headDim
+			rowA := flat[baseA : baseA+headDim]
 			for j := i + 1; j < seqLen; j++ {
 				invB := invNorms[j]
 				if invB == 0 {
@@ -532,10 +533,14 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 					locked++
 					continue
 				}
-				rowB := flat[j*headDim : (j+1)*headDim]
+				// Index directly into flat — drops the rowB := slice
+				// header creation and lets the compiler prove the
+				// j*headDim+k addressing is in bounds via the
+				// outer len(flat) check.
+				baseB := j * headDim
 				var dot float64
-				for k := range rowA {
-					dot += float64(rowA[k]) * float64(rowB[k])
+				for k, av := range rowA {
+					dot += float64(av) * float64(flat[baseB+k])
 				}
 				similarity := dot * invA * invB
 				totalSimilarity += similarity
