@@ -542,22 +542,31 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	if err := validateDistillLogitShapes(teacher, student); err != nil {
 		return DistillLoss{}, err
 	}
+	// Validate temperature once at the call boundary — the per-token inner
+	// loop invokes logSoftmax{,AndProb}TemperatureInto thousands of times,
+	// and the helpers' per-call `temperature <= 0 || NaN || Inf` check is
+	// the same gate every iteration. Hoist + pass the pre-computed invTemp
+	// so the helpers skip both the per-call validation and the per-call
+	// reciprocal division.
+	if cfg.Temperature <= 0 || math.IsNaN(cfg.Temperature) || math.IsInf(cfg.Temperature, 0) {
+		return DistillLoss{}, core.NewError("mlx: distillation temperature must be finite and positive")
+	}
+	invTemp := 1.0 / cfg.Temperature
 	var softCE float64
 	var entropy float64
 	var tokens int
 	// Scratch buffers reused across every masked token — vocab size is
 	// constant (shape-checked above), so three pre-allocated float64 slices
-	// replace per-token allocations inside logSoftmaxTemperatureInto +
-	// logSoftmaxAndProbTemperatureInto. For a 32k vocab and 1000 tokens
+	// replace per-token allocations inside logSoftmaxInvTempInto +
+	// logSoftmaxAndProbInvTempInto. For a 32k vocab and 1000 tokens
 	// this skips ~2000 256KB allocations per call.
 	// teacherProbScratch holds prob(x) = exp(log_prob(x)) computed once
 	// inside the log-softmax loop — the inner accumulator below would
 	// otherwise call math.Exp per element to recover it.
 	var teacherScratch, teacherProbScratch, studentScratch []float64
-	// Hoist mask-empty once — distillMaskIncludes treats an empty mask as
-	// "all tokens included", so per-cell calls were wasted when the mask
-	// is absent or zero-length. maskRows is non-nil only when we need
-	// per-row inspection.
+	// Hoist mask-empty once — an empty mask means "all tokens included",
+	// so per-cell calls were wasted when the mask is absent or zero-length.
+	// maskRows is non-nil only when we need per-row inspection.
 	var maskRows [][]float32
 	if len(mask) > 0 {
 		maskRows = mask
@@ -589,8 +598,47 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 				upper = len(maskRow)
 			}
 		}
+		// Split mask-present vs mask-absent paths — the per-j `if maskRow
+		// != nil && maskRow[j] <= 0` check fires every iteration even when
+		// the entire batch was called without a mask, which is the common
+		// pre-tokenized teacher-forcing path. Mask-absent branch drops the
+		// per-token branch + bounds-check entirely.
+		if maskRow == nil {
+			for j := 0; j < upper; j++ {
+				tCell := tRow[j]
+				sCell := sRow[j]
+				vocab := len(tCell)
+				if cap(teacherScratch) < vocab {
+					teacherScratch = make([]float64, vocab)
+					teacherProbScratch = make([]float64, vocab)
+					studentScratch = make([]float64, vocab)
+				}
+				teacherScratch = teacherScratch[:vocab]
+				teacherProbScratch = teacherProbScratch[:vocab]
+				studentScratch = studentScratch[:vocab]
+				if err := logSoftmaxAndProbInvTempInto(tCell, invTemp, teacherScratch, teacherProbScratch); err != nil {
+					return DistillLoss{}, err
+				}
+				if err := logSoftmaxInvTempInto(sCell, invTemp, studentScratch); err != nil {
+					return DistillLoss{}, err
+				}
+				// Teacher probabilities are already in teacherProbScratch —
+				// the inner loop skips the per-element math.Exp the original
+				// form paid to recover prob from log-prob. For 32k vocab this
+				// saves ~32k math.Exp calls per masked token. Subtracting
+				// directly (softCE -= prob*X) folds the negation into the
+				// accumulator update so no per-iteration temporary is
+				// needed.
+				for k, teacherProb := range teacherProbScratch {
+					softCE -= teacherProb * studentScratch[k]
+					entropy -= teacherProb * teacherScratch[k]
+				}
+				tokens++
+			}
+			continue
+		}
 		for j := 0; j < upper; j++ {
-			if maskRow != nil && maskRow[j] <= 0 {
+			if maskRow[j] <= 0 {
 				continue
 			}
 			tCell := tRow[j]
@@ -604,19 +652,12 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			teacherScratch = teacherScratch[:vocab]
 			teacherProbScratch = teacherProbScratch[:vocab]
 			studentScratch = studentScratch[:vocab]
-			if err := logSoftmaxAndProbTemperatureInto(tCell, cfg.Temperature, teacherScratch, teacherProbScratch); err != nil {
+			if err := logSoftmaxAndProbInvTempInto(tCell, invTemp, teacherScratch, teacherProbScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
+			if err := logSoftmaxInvTempInto(sCell, invTemp, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			// Teacher probabilities are already in teacherProbScratch —
-			// the inner loop skips the per-element math.Exp the original
-			// form paid to recover prob from log-prob. For 32k vocab this
-			// saves ~32k math.Exp calls per masked token. Subtracting
-			// directly (softCE -= prob*X) folds the negation into the
-			// accumulator update so no per-iteration temporary is
-			// needed.
 			for k, teacherProb := range teacherProbScratch {
 				softCE -= teacherProb * studentScratch[k]
 				entropy -= teacherProb * teacherScratch[k]
@@ -813,25 +854,18 @@ func validateDistillLogitShapes(teacher, student DistillLogits) error {
 	return nil
 }
 
-// logSoftmaxAndProbTemperatureInto writes both log_prob and prob for
-// each logit. logOut[i] = log(softmax(logits/temp))[i] and
-// probOut[i] = exp(logOut[i]). The DistillationBatchLoss inner loop
-// needs both teacher log-probs (for the entropy term) and teacher
-// probs (as the weight on the softCE / entropy accumulators). The
-// previous form called math.Exp inside the inner accumulator loop to
-// recover prob from log_prob; capturing prob during the renormalize
-// pass here skips that per-element math.Exp entirely.
-func logSoftmaxAndProbTemperatureInto(logits []float32, temperature float64, logOut, probOut []float64) error {
-	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
-		return core.NewError("mlx: distillation temperature must be finite and positive")
-	}
-	if len(logits) == 0 {
-		return core.NewError("mlx: distillation logits are empty")
-	}
-	if len(logOut) != len(logits) || len(probOut) != len(logits) {
-		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
-	}
-	invTemp := 1.0 / temperature
+// logSoftmaxAndProbInvTempInto writes both log_prob and prob for
+// each logit, given pre-computed invTemp (1/temperature). logOut[i] =
+// log(softmax(logits/temp))[i] and probOut[i] = exp(logOut[i]). The
+// DistillationBatchLoss inner loop needs both teacher log-probs (for
+// the entropy term) and teacher probs (as the weight on the softCE /
+// entropy accumulators). The previous form called math.Exp inside the
+// inner accumulator loop to recover prob from log_prob; capturing prob
+// during the renormalize pass here skips that per-element math.Exp
+// entirely. The invTemp + buffer-shape preconditions are caller-owned
+// (validated once in DistillationBatchLoss), so the per-token call
+// pays no validation overhead.
+func logSoftmaxAndProbInvTempInto(logits []float32, invTemp float64, logOut, probOut []float64) error {
 	maxLogit := math.Inf(-1)
 	for i, logit := range logits {
 		value := float64(logit) * invTemp
@@ -861,25 +895,14 @@ func logSoftmaxAndProbTemperatureInto(logits []float32, temperature float64, log
 	return nil
 }
 
-// logSoftmaxTemperatureInto writes len(logits) log-softmax values into out.
-// out must be pre-sized to len(logits); callers in the distillation hot
-// loop reuse the same scratch buffer across every masked token to skip
-// per-token allocation of vocab-sized float64 slices.
-func logSoftmaxTemperatureInto(logits []float32, temperature float64, out []float64) error {
-	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
-		return core.NewError("mlx: distillation temperature must be finite and positive")
-	}
-	if len(logits) == 0 {
-		return core.NewError("mlx: distillation logits are empty")
-	}
-	if len(out) != len(logits) {
-		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
-	}
-	// Reciprocal multiply — Go's `value / temperature` per element is a
-	// vocab-sized stream of float divisions. Multiplying by 1/temp is the
-	// standard substitution and matches the numerical accuracy used by
-	// every other softmax-with-temperature implementation in the stack.
-	invTemp := 1.0 / temperature
+// logSoftmaxInvTempInto writes len(logits) log-softmax values into out,
+// given pre-computed invTemp (1/temperature). out must be pre-sized to
+// len(logits); callers in the distillation hot loop reuse the same
+// scratch buffer across every masked token to skip per-token allocation
+// of vocab-sized float64 slices. invTemp + buffer-shape preconditions
+// are caller-owned (validated once in DistillationBatchLoss), so the
+// per-token call pays no validation overhead.
+func logSoftmaxInvTempInto(logits []float32, invTemp float64, out []float64) error {
 	maxLogit := math.Inf(-1)
 	for i, logit := range logits {
 		value := float64(logit) * invTemp
@@ -900,16 +923,6 @@ func logSoftmaxTemperatureInto(logits []float32, temperature float64, out []floa
 		out[i] = value - logDenom
 	}
 	return nil
-}
-
-func distillMaskIncludes(mask [][]float32, row, col int) bool {
-	if len(mask) == 0 {
-		return true
-	}
-	if row >= len(mask) || col >= len(mask[row]) {
-		return false
-	}
-	return mask[row][col] > 0
 }
 
 type distillMetricAccumulator struct {
