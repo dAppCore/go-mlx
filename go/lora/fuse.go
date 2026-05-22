@@ -97,11 +97,14 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 	if opts.OutputPath == "" {
 		return fusePrepared{}, errFuseOutputPathRequired
 	}
-	// core.Lower allocates a fresh string only when uppercase chars are
-	// present; the previous code called it twice on the same input so
-	// any uppercase path paid for the allocation + scan twice. Hoist.
-	lowerOutputPath := core.Lower(opts.OutputPath)
-	if core.HasSuffix(lowerOutputPath, ".safetensors") || core.HasSuffix(lowerOutputPath, ".gguf") {
+	// Case-fold only the trailing suffix bytes for the .safetensors /
+	// .gguf shape check — the previous form called core.Lower on the
+	// full output path twice (once each via HasSuffix on the lowered
+	// copy), allocating whenever the path contained uppercase ASCII
+	// anywhere (most paths do — tmp dirs, app bundles, drive letters).
+	// hasSafetensorsSuffixFold + hasGgufSuffixFold scan only the last
+	// 12/5 bytes, never alloc, and short-circuit on length mismatch.
+	if hasSafetensorsSuffixFold(opts.OutputPath) || hasGgufSuffixFold(opts.OutputPath) {
 		return fusePrepared{}, errFuseOutputNotPackDir
 	}
 	if opts.SourcePack.Format != pack.ModelPackFormatSafetensors {
@@ -319,6 +322,28 @@ func hasSafetensorsSuffixFold(path string) bool {
 			c += 'a' - 'A'
 		}
 		if c != safetensorsSuffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// hasGgufSuffixFold mirrors hasSafetensorsSuffixFold for the .gguf
+// 5-byte tail check used by prepareFuse to reject output paths that
+// point at a weight file instead of a pack directory.
+const ggufSuffix = ".gguf"
+
+func hasGgufSuffixFold(path string) bool {
+	if len(path) < len(ggufSuffix) {
+		return false
+	}
+	tail := path[len(path)-len(ggufSuffix):]
+	for i := 0; i < len(ggufSuffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != ggufSuffix[i] {
 			return false
 		}
 	}
