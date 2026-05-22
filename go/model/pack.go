@@ -128,8 +128,21 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	case hasASCIIInsensitiveSuffix(resolvedPath, ".gguf"):
 		ggufs = []string{resolvedPath}
 	default:
-		safetensors = core.PathGlob(core.PathJoin(root, "*.safetensors"))
-		ggufs = core.PathGlob(core.PathJoin(root, "*.gguf"))
+		// One directory walk classifies both extensions instead of two
+		// passes via `*.safetensors` + `*.gguf`. filepath.Glob opens
+		// the directory and readdirs every entry regardless of pattern,
+		// so calling it twice doubled the syscall/alloc surface for a
+		// directory that typically holds 5-10 files. The single `*`
+		// pattern lets us bucket in one pass.
+		entries := core.PathGlob(core.PathJoin(root, "*"))
+		for _, path := range entries {
+			switch {
+			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
+				safetensors = append(safetensors, path)
+			case hasASCIIInsensitiveSuffix(path, ".gguf"):
+				ggufs = append(ggufs, path)
+			}
+		}
 	}
 	sort.Strings(safetensors)
 	sort.Strings(ggufs)
