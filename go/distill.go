@@ -564,17 +564,29 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 		// three teacher[i] / two student[i] slice-header loads per token
 		// the compiler can't fold because mask/teacher/student aliasing
 		// can't be proven away through the function call boundary.
-		var maskRow []float32
-		if maskRows != nil && i < len(maskRows) {
-			maskRow = maskRows[i]
-		}
 		tRow := teacher[i]
 		sRow := student[i]
-		for j := range tRow {
-			if maskRows != nil {
-				if maskRow == nil || j >= len(maskRow) || maskRow[j] <= 0 {
-					continue
-				}
+		upper := len(tRow)
+		var maskRow []float32
+		if maskRows != nil {
+			if i >= len(maskRows) {
+				continue
+			}
+			maskRow = maskRows[i]
+			if maskRow == nil {
+				continue
+			}
+			// Cap the inner loop at len(maskRow) — j values past the
+			// mask length all hit the original `j >= len(maskRow)`
+			// guard and were skipped anyway. Bounding upper eliminates
+			// the per-j length check inside the loop.
+			if len(maskRow) < upper {
+				upper = len(maskRow)
+			}
+		}
+		for j := 0; j < upper; j++ {
+			if maskRow != nil && maskRow[j] <= 0 {
+				continue
 			}
 			tCell := tRow[j]
 			sCell := sRow[j]
@@ -596,11 +608,13 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			// Teacher probabilities are already in teacherProbScratch —
 			// the inner loop skips the per-element math.Exp the original
 			// form paid to recover prob from log-prob. For 32k vocab this
-			// saves ~32k math.Exp calls per masked token.
+			// saves ~32k math.Exp calls per masked token. Subtracting
+			// directly (softCE -= prob*X) folds the negation into the
+			// accumulator update so no per-iteration temporary is
+			// needed.
 			for k, teacherProb := range teacherProbScratch {
-				negProb := -teacherProb
-				softCE += negProb * studentScratch[k]
-				entropy += negProb * teacherScratch[k]
+				softCE -= teacherProb * studentScratch[k]
+				entropy -= teacherProb * teacherScratch[k]
 			}
 			tokens++
 		}
