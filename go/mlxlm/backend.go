@@ -25,6 +25,7 @@
 package mlxlm
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/binary"
@@ -621,7 +622,7 @@ func newJSONLineReader(reader io.Reader) *jsonlinereader {
 
 func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
-		if index := indexByte(reader.pending, '\n'); index >= 0 {
+		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
 			line := make([]byte, index)
 			copy(line, reader.pending[:index])
 			if len(line) > 0 && line[len(line)-1] == '\r' {
@@ -883,13 +884,4 @@ func resultError(result core.Result) error {
 		return err
 	}
 	return nil
-}
-
-func indexByte(data []byte, want byte) int {
-	for index, value := range data {
-		if value == want {
-			return index
-		}
-	}
-	return -1
 }
