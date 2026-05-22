@@ -101,7 +101,6 @@
 package mlx
 
 import (
-	"slices"
 	// Note: AX-6 - time.Duration is part of the public Metrics API.
 	"time"
 
@@ -603,12 +602,12 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 
 func cloneSplitInferencePlan(plan inference.SplitInferencePlan) *inference.SplitInferencePlan {
 	cloned := plan
-	// slices.Clone short-circuits to nil for nil-input slices without
+	// core.SliceClone short-circuits to nil for nil-input slices without
 	// calling runtime.makeslice / typedslicecopy — the prior append([]T(nil),
 	// nil...) form still emitted both calls. For Components and Notes, the
 	// vast majority of plans have one or the other empty.
-	cloned.LocalSlice.Components = slices.Clone(plan.LocalSlice.Components)
-	cloned.LocalSlice.Notes = slices.Clone(plan.LocalSlice.Notes)
+	cloned.LocalSlice.Components = core.SliceClone(plan.LocalSlice.Components)
+	cloned.LocalSlice.Notes = core.SliceClone(plan.LocalSlice.Notes)
 	cloned.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
 	cloned.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
 	cloned.Labels = cloneInferenceLabels(plan.Labels)
