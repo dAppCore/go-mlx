@@ -10,6 +10,7 @@ package blockcache
 import (
 	"context"
 	"crypto/sha256"
+	"hash"
 	"sync"
 
 	core "dappco.re/go"
@@ -583,15 +584,15 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 	return core.HexEncode(hash.Sum(nil))
 }
 
-func writeBlockCacheHashString(hash interface{ Write([]byte) (int, error) }, value string) {
+func writeBlockCacheHashString(h hash.Hash, value string) {
 	var length [4]byte
 	n := uint32(len(value))
 	length[0] = byte(n)
 	length[1] = byte(n >> 8)
 	length[2] = byte(n >> 16)
 	length[3] = byte(n >> 24)
-	hash.Write(length[:])
-	hash.Write(core.AsBytes(value))
+	h.Write(length[:])
+	h.Write(core.AsBytes(value))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity
