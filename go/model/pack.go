@@ -407,16 +407,17 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingArchitecture, "model architecture could not be determined", pack.ConfigPath)
 		return
 	}
-	if profile, ok := profile.LookupArchitectureProfile(pack.Architecture); ok {
-		pack.Architecture = profile.ID
-		pack.ArchitectureProfile = &profile
+	resolved, ok := profile.LookupArchitectureProfile(pack.Architecture)
+	if ok {
+		pack.Architecture = resolved.ID
+		pack.ArchitectureProfile = &resolved
 	}
-	pack.SupportedArchitecture = modelPackSupportedArchitecture(pack.Architecture)
+	pack.SupportedArchitecture = ok
 	if !pack.SupportedArchitecture {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedArchitecture, "architecture is not supported by native go-mlx loaders: "+pack.Architecture, pack.ConfigPath)
 		return
 	}
-	if !modelPackNativeRuntimeSupported(pack.Architecture) {
+	if !resolved.NativeRuntime {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
 	}
 }
@@ -673,9 +674,18 @@ func inspectModelPackPolicy(pack *mp.ModelPack, cfg mp.ModelPackConfig) {
 }
 
 func finalizeModelPack(pack *mp.ModelPack) {
-	chatOK := pack.HasChatTemplate || !modelPackRequiresChatTemplate(pack.Architecture)
+	// pack.ArchitectureProfile is populated by inspectModelPackArchitecture
+	// when the architecture id is known; consult it directly so we don't
+	// re-enter profile.LookupArchitectureProfile twice per finalize.
+	requiresChat := true
+	nativeRuntime := false
+	if pack.ArchitectureProfile != nil {
+		requiresChat = pack.ArchitectureProfile.RequiresChatTemplate
+		nativeRuntime = pack.ArchitectureProfile.NativeRuntime
+	}
+	chatOK := pack.HasChatTemplate || !requiresChat
 	pack.NativeLoadable = pack.SupportedArchitecture &&
-		modelPackNativeRuntimeSupported(pack.Architecture) &&
+		nativeRuntime &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		chatOK &&
