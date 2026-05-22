@@ -1083,11 +1083,11 @@ func cloneKVLayers(src []LayerSnapshot) []LayerSnapshot {
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
 			KeyDType:   layer.KeyDType,
-			KeyBytes:   append([]byte(nil), layer.KeyBytes...),
-			KeyShape:   append([]int32(nil), layer.KeyShape...),
+			KeyBytes:   core.SliceClone(layer.KeyBytes),
+			KeyShape:   core.SliceClone(layer.KeyShape),
 			ValueDType: layer.ValueDType,
-			ValueBytes: append([]byte(nil), layer.ValueBytes...),
-			ValueShape: append([]int32(nil), layer.ValueShape...),
+			ValueBytes: core.SliceClone(layer.ValueBytes),
+			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      cloneKVHeads(layer.Heads),
 		}
 	}
