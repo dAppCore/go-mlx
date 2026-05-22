@@ -359,15 +359,21 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 	var merged int
 	var copied int
 	var skipped []string
+	// Reuse the refs scratch slice across tensors — readTensorRefsInto
+	// rewinds length to 0 each call and only re-mallocs when capacity is
+	// insufficient. Drops N-1 per-tensor make() allocs (where N = number
+	// of tensors, typically 200+ for qwen3-class checkpoints).
+	var refsScratch []safetensors.TensorRef
 	for _, name := range indexes[0].Names {
 		if err := ctx.Err(); err != nil {
 			return 0, 0, nil, err
 		}
 		if method == MethodLinear || method == MethodSLERP {
-			refs, complete, err := readTensorRefs(indexes, name)
+			refs, complete, err := readTensorRefsInto(indexes, name, refsScratch)
 			if err != nil {
 				return 0, 0, nil, err
 			}
+			refsScratch = refs
 			switch {
 			case complete:
 				var err error
@@ -418,7 +424,19 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 }
 
 func readTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.TensorRef, bool, error) {
-	refs := make([]safetensors.TensorRef, 0, len(indexes))
+	return readTensorRefsInto(indexes, name, nil)
+}
+
+// readTensorRefsInto is the scratch-slice-reusing variant of
+// readTensorRefs. The caller passes a previously-returned slice (or
+// nil) and we reset its length to 0 before refilling — the backing
+// array is reused across iterations in writeMergedSafetensors so the
+// per-tensor make() goes away after the first call.
+func readTensorRefsInto(indexes []safetensors.Index, name string, scratch []safetensors.TensorRef) ([]safetensors.TensorRef, bool, error) {
+	refs := scratch[:0]
+	if cap(refs) < len(indexes) {
+		refs = make([]safetensors.TensorRef, 0, len(indexes))
+	}
 	var shape []uint64
 	complete := true
 	for _, index := range indexes {
