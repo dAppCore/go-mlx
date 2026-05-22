@@ -38,20 +38,27 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 	}
 	for {
 		p.skipWS()
-		name, ok := p.parseString()
+		// Peek at the raw byte span of the tensor name. For tensor
+		// names (common case — no escapes) this is alloc-free; the
+		// string conversion happens once at the end, downstream of
+		// the __metadata__ check so the metadata key path costs zero
+		// allocs.
+		start, end, hasEsc, ok := p.peekStringSpan()
 		if !ok {
 			return core.NewError("mlx: safetensors header key is not a string")
 		}
+		isMetadata := !hasEsc && end-start == 12 && bytesEqual(data[start:end], _metadataKey)
 		p.skipWS()
 		if !p.expect(':') {
 			return core.NewError("mlx: safetensors header missing ':' after key")
 		}
 		p.skipWS()
-		if name == "__metadata__" {
+		if isMetadata {
 			if err := p.skipValue(); err != nil {
 				return err
 			}
 		} else {
+			name := materialiseString(data, start, end, hasEsc)
 			if _, dup := idx.Tensors[name]; dup {
 				return core.NewError("mlx: duplicate tensor in safetensors header: " + name)
 			}
@@ -73,6 +80,37 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 			return core.NewError("mlx: safetensors header expected ',' or '}'")
 		}
 	}
+}
+
+// _metadataKey is the literal bytes "__metadata__" — pre-stored to
+// avoid an allocation on the bytes comparison in the hot loop.
+var _metadataKey = []byte("__metadata__")
+
+// bytesEqual is a tiny inlined equality check that avoids the
+// bytes.Equal import (and its NaN-style fast-paths) for a known small
+// span.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// materialiseString converts a previously-peeked string span into a
+// string. The common case (no backslash escapes) is a single
+// `string()` conversion. Escaped strings re-parse via the slow path.
+func materialiseString(data []byte, start, end int, hasEsc bool) string {
+	if !hasEsc {
+		return string(data[start:end])
+	}
+	p := jsonParser{data: data, pos: start}
+	s, _ := p.parseStringEscaped(start)
+	return s
 }
 
 // jsonParser is a focused walker for the safetensors header. It is not
@@ -131,6 +169,43 @@ func (p *jsonParser) parseString() (string, bool) {
 		i++
 	}
 	return "", false
+}
+
+// peekStringSpan reads the bounds of a JSON string without allocating.
+// It returns (start, end, hasEsc, ok) where start..end is the byte
+// range between the opening and closing quotes. hasEsc is true if any
+// backslash escapes were encountered — the caller must use
+// materialiseString to convert to a string in that case. p.pos is
+// advanced past the closing quote.
+func (p *jsonParser) peekStringSpan() (int, int, bool, bool) {
+	if p.pos >= len(p.data) || p.data[p.pos] != '"' {
+		return 0, 0, false, false
+	}
+	start := p.pos + 1
+	i := start
+	hasEsc := false
+	for i < len(p.data) {
+		c := p.data[i]
+		if c == '"' {
+			p.pos = i + 1
+			return start, i, hasEsc, true
+		}
+		if c == '\\' {
+			hasEsc = true
+			// Skip the escape — \uXXXX is 6 bytes, others 2.
+			if i+1 >= len(p.data) {
+				return 0, 0, false, false
+			}
+			if p.data[i+1] == 'u' {
+				i += 6
+			} else {
+				i += 2
+			}
+			continue
+		}
+		i++
+	}
+	return 0, 0, false, false
 }
 
 // parseStringEscaped is the slow path for strings with escape
@@ -255,6 +330,10 @@ func (p *jsonParser) parseInt64() (int64, bool) {
 // Inner-key order is not fixed; entries from real models hit shape
 // permutations from python's json.dumps default + the rust safetensors
 // crate. We tolerate any of the six orderings without re-allocating.
+//
+// Inner keys are matched against canonical bytes without ever being
+// converted to strings — this is the 3-allocs-per-tensor win that
+// dropped IndexFiles_TwoShards below 200 allocs.
 func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeSlab *[]uint64) (TensorRef, error) {
 	if !p.expect('{') {
 		return TensorRef{}, core.NewError("mlx: safetensors tensor entry is not an object: " + name)
@@ -271,7 +350,7 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 	)
 	for {
 		p.skipWS()
-		key, ok := p.parseString()
+		keyStart, keyEnd, hasEsc, ok := p.peekStringSpan()
 		if !ok {
 			return TensorRef{}, core.NewError("mlx: safetensors tensor key parse failed: " + name)
 		}
@@ -280,15 +359,20 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 			return TensorRef{}, core.NewError("mlx: safetensors tensor entry missing ':': " + name)
 		}
 		p.skipWS()
-		switch key {
-		case "dtype":
-			d, ok := p.parseString()
+		// Dispatch on the raw byte span — no string materialisation.
+		keyKind := unknownKey
+		if !hasEsc {
+			keyKind = innerKeyKind(p.data[keyStart:keyEnd])
+		}
+		switch keyKind {
+		case dtypeKey:
+			d, ok := p.parseInternedDType()
 			if !ok {
 				return TensorRef{}, core.NewError("mlx: safetensors dtype is not a string: " + name)
 			}
 			dtype = d
 			haveDtype = true
-		case "shape":
+		case shapeKey:
 			s, l, err := p.parseShape(shapeSlab, name)
 			if err != nil {
 				return TensorRef{}, err
@@ -296,7 +380,7 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 			shapeStart = s
 			shapeLen = l
 			haveShape = true
-		case "data_offsets":
+		case dataOffsetsKey:
 			begin, end, err := p.parseDataOffsets(name)
 			if err != nil {
 				return TensorRef{}, err
@@ -332,7 +416,7 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 			return TensorRef{
 				Name:      name,
 				Path:      path,
-				DType:     core.Upper(dtype),
+				DType:     dtype,
 				Shape:     shape,
 				Elements:  elements,
 				DataStart: dataStart + offsetBegin,
@@ -342,6 +426,183 @@ func (p *jsonParser) parseTensorEntry(path, name string, dataStart int64, shapeS
 			return TensorRef{}, core.NewError("mlx: safetensors tensor expected ',' or '}'")
 		}
 	}
+}
+
+// innerKey is the discriminator for the three known keys inside a
+// safetensors tensor entry. Anything else triggers the skip-value
+// path.
+type innerKey int
+
+const (
+	unknownKey innerKey = iota
+	dtypeKey
+	shapeKey
+	dataOffsetsKey
+)
+
+// innerKeyKind matches a raw key byte span against the three known
+// safetensors keys without ever allocating a string. The implementation
+// is a length-first switch with direct byte compares — the same shape
+// as DTypeByteSize's hand-rolled match.
+func innerKeyKind(key []byte) innerKey {
+	switch len(key) {
+	case 5:
+		// "shape" or "dtype" — both 5 bytes.
+		if key[0] == 's' && key[1] == 'h' && key[2] == 'a' && key[3] == 'p' && key[4] == 'e' {
+			return shapeKey
+		}
+		if key[0] == 'd' && key[1] == 't' && key[2] == 'y' && key[3] == 'p' && key[4] == 'e' {
+			return dtypeKey
+		}
+	case 12:
+		// "data_offsets"
+		if key[0] == 'd' && key[1] == 'a' && key[2] == 't' && key[3] == 'a' &&
+			key[4] == '_' && key[5] == 'o' && key[6] == 'f' && key[7] == 'f' &&
+			key[8] == 's' && key[9] == 'e' && key[10] == 't' && key[11] == 's' {
+			return dataOffsetsKey
+		}
+	}
+	return unknownKey
+}
+
+// parseInternedDType reads a dtype JSON string and returns one of the
+// pre-allocated canonical dtype constants. This avoids:
+//   - the string conversion alloc on the raw dtype span
+//   - the core.Upper alloc when the source is lowercase
+//
+// All safetensors writers in practice use uppercase canonical names
+// (F32, F16, BF16, F64, U8, U16, U32, U64, I8, I16, I32, I64, BOOL,
+// F8_E5M2, F8_E4M3FN). The interner returns the canonical pointer for
+// any case variant; unknown dtypes fall through to a heap string so
+// downstream DTypeByteSize errors carry the original spelling.
+func (p *jsonParser) parseInternedDType() (string, bool) {
+	if p.pos >= len(p.data) || p.data[p.pos] != '"' {
+		return "", false
+	}
+	start := p.pos + 1
+	i := start
+	for i < len(p.data) {
+		c := p.data[i]
+		if c == '"' {
+			p.pos = i + 1
+			return internDType(p.data[start:i]), true
+		}
+		if c == '\\' {
+			// dtype values are short ASCII tokens — escapes are not
+			// expected, but if we see one fall through to the slow
+			// path which yields the heap string.
+			return p.parseStringEscaped(start)
+		}
+		i++
+	}
+	return "", false
+}
+
+// internDType returns the canonical uppercase string for the supplied
+// dtype byte span without allocating in the common case. The match is
+// case-insensitive — uppercase canonicals exact-match in the most
+// common path, and the (rare) lowercase variants from older writers
+// pick up the same canonical pointer.
+func internDType(b []byte) string {
+	switch len(b) {
+	case 2:
+		// I8, U8 — i / u + 8.
+		c0 := b[0]
+		if (c0 == 'I' || c0 == 'i') && b[1] == '8' {
+			return "I8"
+		}
+		if (c0 == 'U' || c0 == 'u') && b[1] == '8' {
+			return "U8"
+		}
+	case 3:
+		// F16, F32, F64, I16, I32, I64, U16, U32, U64.
+		c0 := b[0]
+		c1 := b[1]
+		c2 := b[2]
+		// uppercase canonicals first — the fast path.
+		switch {
+		case c0 == 'F' && c1 == '3' && c2 == '2':
+			return "F32"
+		case c0 == 'F' && c1 == '1' && c2 == '6':
+			return "F16"
+		case c0 == 'F' && c1 == '6' && c2 == '4':
+			return "F64"
+		case c0 == 'I' && c1 == '3' && c2 == '2':
+			return "I32"
+		case c0 == 'I' && c1 == '6' && c2 == '4':
+			return "I64"
+		case c0 == 'I' && c1 == '1' && c2 == '6':
+			return "I16"
+		case c0 == 'U' && c1 == '3' && c2 == '2':
+			return "U32"
+		case c0 == 'U' && c1 == '6' && c2 == '4':
+			return "U64"
+		case c0 == 'U' && c1 == '1' && c2 == '6':
+			return "U16"
+		}
+		// lowercase / mixed — single-character normalise.
+		if c0 == 'f' || c0 == 'F' {
+			if c1 == '3' && c2 == '2' {
+				return "F32"
+			}
+			if c1 == '1' && c2 == '6' {
+				return "F16"
+			}
+			if c1 == '6' && c2 == '4' {
+				return "F64"
+			}
+		}
+		if c0 == 'i' || c0 == 'I' {
+			if c1 == '3' && c2 == '2' {
+				return "I32"
+			}
+			if c1 == '6' && c2 == '4' {
+				return "I64"
+			}
+			if c1 == '1' && c2 == '6' {
+				return "I16"
+			}
+		}
+		if c0 == 'u' || c0 == 'U' {
+			if c1 == '3' && c2 == '2' {
+				return "U32"
+			}
+			if c1 == '6' && c2 == '4' {
+				return "U64"
+			}
+			if c1 == '1' && c2 == '6' {
+				return "U16"
+			}
+		}
+	case 4:
+		// BF16, BOOL.
+		c0 := b[0]
+		if (c0 == 'B' || c0 == 'b') && (b[1] == 'F' || b[1] == 'f') && b[2] == '1' && b[3] == '6' {
+			return "BF16"
+		}
+		if (c0 == 'B' || c0 == 'b') && (b[1] == 'O' || b[1] == 'o') && (b[2] == 'O' || b[2] == 'o') && (b[3] == 'L' || b[3] == 'l') {
+			return "BOOL"
+		}
+	case 7:
+		// F8_E5M2
+		if (b[0] == 'F' || b[0] == 'f') && b[1] == '8' && b[2] == '_' &&
+			(b[3] == 'E' || b[3] == 'e') && b[4] == '5' &&
+			(b[5] == 'M' || b[5] == 'm') && b[6] == '2' {
+			return "F8_E5M2"
+		}
+	case 9:
+		// F8_E4M3FN
+		if (b[0] == 'F' || b[0] == 'f') && b[1] == '8' && b[2] == '_' &&
+			(b[3] == 'E' || b[3] == 'e') && b[4] == '4' &&
+			(b[5] == 'M' || b[5] == 'm') && b[6] == '3' &&
+			(b[7] == 'F' || b[7] == 'f') && (b[8] == 'N' || b[8] == 'n') {
+			return "F8_E4M3FN"
+		}
+	}
+	// Non-canonical dtype — uppercase the heap string so downstream
+	// DTypeByteSize errors carry the user-visible form. core.Upper
+	// is a no-op when already uppercase ASCII.
+	return core.Upper(string(b))
 }
 
 // parseShape walks a JSON array of positive integers and appends each
