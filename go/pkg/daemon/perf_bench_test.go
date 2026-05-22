@@ -80,6 +80,22 @@ func BenchmarkGenerateOptions(b *testing.B) {
 	}
 }
 
+// BenchmarkGenerateOptions_DefaultsHit measures the common-case path
+// where the request leaves MaxTokens and Temperature unset — the
+// daemon-default-only fast path that returns the cached option slice.
+func BenchmarkGenerateOptions_DefaultsHit(b *testing.B) {
+	runner := NewNativeGenerateRunner(NativeGenerateConfig{
+		ModelPaths:       map[string]string{"default": "/m"},
+		DefaultMaxTokens: 256,
+	})
+	req := GenerateRequest{}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = runner.generateOptions(req)
+	}
+}
+
 func BenchmarkNewNativeGenerateRunner(b *testing.B) {
 	cfg := NativeGenerateConfig{
 		ModelPaths: map[string]string{

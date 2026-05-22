@@ -47,6 +47,12 @@ type NativeGenerateRunner struct {
 	loadOptions     []mlx.LoadOption
 	loadModel       func(string, ...mlx.LoadOption) (nativeGenerateModel, error)
 	models          map[string]nativeGenerateModel
+	// defaultOpts caches the option slice used when the request
+	// supplies neither MaxTokens nor Temperature — the common case.
+	// Built once at construction (one slice + one closure alloc) so
+	// every default-shaped Generate skips the per-call slice make +
+	// WithMaxTokens closure allocation.
+	defaultOpts []mlx.GenerateOption
 }
 
 // NewNativeGenerateRunner builds a native go-mlx generate backend.
@@ -55,7 +61,7 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 	if defaultModel == "" {
 		defaultModel = defaultNativeModelName
 	}
-	return &NativeGenerateRunner{
+	runner := &NativeGenerateRunner{
 		modelPaths:      copyStringMap(cfg.ModelPaths),
 		defaultModel:    defaultModel,
 		defaultMaxToken: cfg.DefaultMaxTokens,
@@ -65,6 +71,10 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 		},
 		models: make(map[string]nativeGenerateModel),
 	}
+	if cfg.DefaultMaxTokens > 0 {
+		runner.defaultOpts = []mlx.GenerateOption{mlx.WithMaxTokens(cfg.DefaultMaxTokens)}
+	}
+	return runner
 }
 
 // Generate runs a prompt or chat request through a cached native go-mlx model.
@@ -180,6 +190,14 @@ func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateM
 }
 
 func (runner *NativeGenerateRunner) generateOptions(req GenerateRequest) []mlx.GenerateOption {
+	// Fast path: request leaves both knobs at zero, so the cached
+	// default-only option slice (one WithMaxTokens closure built at
+	// NewNativeGenerateRunner time) covers the call with zero
+	// allocations. Backends only read the option slice — never
+	// mutate it — so aliasing is safe.
+	if req.MaxTokens == 0 && req.Temperature == 0 {
+		return runner.defaultOpts
+	}
 	// At most two options are ever pushed; pre-sizing avoids the
 	// nil-slice -> 8-cap re-alloc that the first append would
 	// otherwise trigger on the per-generate hot path.
