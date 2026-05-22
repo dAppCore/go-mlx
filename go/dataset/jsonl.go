@@ -93,7 +93,11 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, core.Errorf("dataset: read JSONL: %w", err)
 	}
-	return &JSONLDataset{samples: CloneSamples(samples)}, nil
+	// samples was built locally — every entry's Meta map was
+	// constructed fresh by labelled(). The slice is owned by the
+	// dataset, so the defensive CloneSamples pass here is pure
+	// duplication. Hand off the freshly built slice directly.
+	return &JSONLDataset{samples: samples}, nil
 }
 
 // NewJSONL returns a replayable dataset from already-normalized samples.
