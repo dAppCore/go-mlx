@@ -41,27 +41,58 @@ type TensorReader struct {
 }
 
 func IndexFiles(paths []string) (Index, error) {
-	index := Index{Tensors: map[string]TensorRef{}}
-	for _, path := range paths {
+	if len(paths) == 0 {
+		return Index{Tensors: map[string]TensorRef{}}, nil
+	}
+	// Reuse the first shard's map + Names slice as the merged
+	// accumulator — saves one empty-map alloc and lets us size the
+	// merged Names slice based on the first shard's count × shard
+	// count (close enough for uniform safetensors splits). Subsequent
+	// shards merge their entries in-place.
+	first, err := ReadIndex(paths[0])
+	if err != nil {
+		return Index{}, err
+	}
+	if len(paths) == 1 {
+		core.SliceSort(first.Names)
+		first.Path = ""
+		return first, nil
+	}
+	// Estimate the merged total: assume each remaining shard has at
+	// least as many tensors as the first. Over-allocate by 1.5x to
+	// absorb non-uniform splits without re-growing.
+	estTotal := len(first.Names) * len(paths)
+	if estTotal < len(first.Names)+len(first.Names) {
+		estTotal = len(first.Names) + len(first.Names)
+	}
+	merged := Index{Tensors: first.Tensors, Path: ""}
+	if cap(first.Names) < estTotal {
+		grown := make([]string, len(first.Names), estTotal)
+		copy(grown, first.Names)
+		merged.Names = grown
+	} else {
+		merged.Names = first.Names
+	}
+	for _, path := range paths[1:] {
 		shard, err := ReadIndex(path)
 		if err != nil {
 			return Index{}, err
 		}
-		if cap(index.Names) < len(index.Names)+len(shard.Names) {
-			grown := make([]string, len(index.Names), len(index.Names)+len(shard.Names))
-			copy(grown, index.Names)
-			index.Names = grown
+		if cap(merged.Names) < len(merged.Names)+len(shard.Names) {
+			grown := make([]string, len(merged.Names), len(merged.Names)+len(shard.Names))
+			copy(grown, merged.Names)
+			merged.Names = grown
 		}
 		for _, name := range shard.Names {
-			if _, ok := index.Tensors[name]; ok {
+			if _, ok := merged.Tensors[name]; ok {
 				return Index{}, core.NewError("mlx: duplicate tensor in safetensors shards: " + name)
 			}
-			index.Tensors[name] = shard.Tensors[name]
-			index.Names = append(index.Names, name)
+			merged.Tensors[name] = shard.Tensors[name]
+			merged.Names = append(merged.Names, name)
 		}
 	}
-	core.SliceSort(index.Names)
-	return index, nil
+	core.SliceSort(merged.Names)
+	return merged, nil
 }
 
 func ReadIndex(path string) (Index, error) {
@@ -81,39 +112,30 @@ func ReadIndex(path string) (Index, error) {
 	if _, err := stdio.ReadFull(file, headerBytes); err != nil {
 		return Index{}, err
 	}
-	var header map[string]HeaderEntry
-	if result := core.JSONUnmarshal(headerBytes, &header); !result.OK {
-		return Index{}, resultError(result)
-	}
+	dataStart := int64(8 + headerLen)
 
+	// First pass — count tensors + total shape dims so the map, Names
+	// slice and shape slab each take one sized allocation. The walker
+	// then runs a hand-rolled JSON parse over the header bytes,
+	// emitting one TensorRef per tensor directly (no HeaderEntry,
+	// no per-tensor Shape/DataOffsets slice allocs). This replaces the
+	// reflection-driven json.Unmarshal that dominated the alloc count
+	// on model-load (see Wave 8 W8-I profile).
+	tensors, totalDims := countTensorsAndDims(headerBytes)
+	if tensors < 0 {
+		// Fall back to a conservative initial size — the parser will
+		// surface any structural error encountered on the live pass.
+		tensors = 0
+		totalDims = 0
+	}
 	index := Index{
 		Path:    path,
-		Tensors: make(map[string]TensorRef, len(header)),
-		Names:   make([]string, 0, len(header)),
-	}
-	dataStart := int64(8 + headerLen)
-	// Pre-scan to size a single uint64 slab covering every per-tensor
-	// Shape slice. Replaces N small allocs (one per tensor) with one,
-	// matching the writeSubset slab pattern. RefFromHeader stays a
-	// public allocator for callers outside the index path.
-	totalDims := 0
-	for name, entry := range header {
-		if name == "__metadata__" {
-			continue
-		}
-		totalDims += len(entry.Shape)
+		Tensors: make(map[string]TensorRef, tensors),
+		Names:   make([]string, 0, tensors),
 	}
 	shapeSlab := make([]uint64, 0, totalDims)
-	for name, entry := range header {
-		if name == "__metadata__" {
-			continue
-		}
-		ref, err := refFromHeaderSlab(path, name, entry, dataStart, &shapeSlab)
-		if err != nil {
-			return Index{}, err
-		}
-		index.Tensors[name] = ref
-		index.Names = append(index.Names, name)
+	if err := parseHeaderInto(path, headerBytes, dataStart, &index, &shapeSlab); err != nil {
+		return Index{}, err
 	}
 	core.SliceSort(index.Names)
 	return index, nil
