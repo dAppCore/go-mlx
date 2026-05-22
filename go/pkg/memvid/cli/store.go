@@ -503,7 +503,11 @@ type viewResponse struct {
 	Content string `json:"content"`
 }
 
-func (v viewResponse) text() string {
+// text resolves the chunk payload from the view response, falling
+// back through Content → Caption → SearchText. Pointer receiver
+// avoids copying the 96-byte viewResponse struct on every Search hit
+// (Search calls Resolve N times per query, each call ends in text()).
+func (v *viewResponse) text() string {
 	if v.Content != "" {
 		return v.Content
 	}
