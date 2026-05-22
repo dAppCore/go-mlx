@@ -223,9 +223,9 @@ func (index *StateIndex) Entry(uri string) (StateIndexEntry, bool) {
 	if index == nil {
 		return StateIndexEntry{}, false
 	}
-	for _, entry := range index.Entries {
-		if entry.URI == uri {
-			return cloneIndexEntry(entry), true
+	for i := range index.Entries {
+		if index.Entries[i].URI == uri {
+			return cloneIndexEntry(index.Entries[i]), true
 		}
 	}
 	return StateIndexEntry{}, false
