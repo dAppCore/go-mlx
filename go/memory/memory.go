@@ -506,13 +506,10 @@ func applyEncoderHints(plan *Plan, label string) {
 }
 
 func usesGenerationKVCache(input Input) bool {
-	architecture := ""
-	if input.ModelInfo != nil {
-		architecture = input.ModelInfo.Architecture
-	}
-	if input.Pack != nil && input.Pack.Architecture != "" {
-		architecture = input.Pack.Architecture
-	}
+	// Cheapest checks first — Pack-resident flags short-circuit
+	// without touching the architecture string or the profile
+	// registry. Most callers that pass Embedding/Rerank packs return
+	// here.
 	if input.Pack != nil {
 		if input.Pack.Embedding != nil || input.Pack.Rerank != nil {
 			return false
@@ -520,6 +517,14 @@ func usesGenerationKVCache(input Input) bool {
 		if input.Pack.ArchitectureProfile != nil && (input.Pack.ArchitectureProfile.Embeddings || input.Pack.ArchitectureProfile.Rerank) {
 			return false
 		}
+	}
+	// Architecture string only needed for the registry lookup branch
+	// — derive lazily.
+	architecture := ""
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		architecture = input.Pack.Architecture
+	} else if input.ModelInfo != nil {
+		architecture = input.ModelInfo.Architecture
 	}
 	if p, ok := profile.LookupArchitectureProfile(architecture); ok && (p.Embeddings || p.Rerank) {
 		return false
