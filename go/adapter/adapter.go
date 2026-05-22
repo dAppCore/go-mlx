@@ -207,7 +207,21 @@ func (a *Adapter) InspectAttention(ctx context.Context, prompt string, opts ...i
 }
 
 func genOptsToInference(opts GenOpts) []inference.GenerateOption {
-	var generateOpts []inference.GenerateOption
+	// Count first so the slice is allocated at its exact final length —
+	// the alternative (nil-start + append) takes the growslice path on
+	// the second append, and the (0, 2) presize wastes a slot in the
+	// common single-field case.
+	want := 0
+	if opts.MaxTokens > 0 {
+		want++
+	}
+	if opts.Temp > 0 {
+		want++
+	}
+	if want == 0 {
+		return nil
+	}
+	generateOpts := make([]inference.GenerateOption, 0, want)
 	if opts.MaxTokens > 0 {
 		generateOpts = append(generateOpts, inference.WithMaxTokens(opts.MaxTokens))
 	}
