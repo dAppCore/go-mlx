@@ -15,6 +15,16 @@ import (
 
 const maxGGUFCollectionEntries uint64 = 1 << 20
 
+// Sentinel errors — lifted to package vars so the rare-but-hot-under-
+// churn failure paths don't allocate a fresh core.NewError per hit.
+// Mirrors the pattern from safetensors/header_parse.go after W9-Y.
+var (
+	errGGUFNoFile        = core.NewError("mlx: no .gguf file found")
+	errGGUFMultipleFiles = core.NewError("mlx: multiple .gguf files found")
+	errGGUFInvalidMagic  = core.NewError("mlx: invalid gguf magic")
+	errGGUFStringTooLong = core.NewError("gguf string is unreasonably large")
+)
+
 const (
 	ggufValueTypeUint8   = 0
 	ggufValueTypeInt8    = 1
@@ -356,11 +366,11 @@ func resolveGGUFFile(modelPath string) (string, error) {
 	ggufs := core.PathGlob(core.PathJoin(modelPath, "*.gguf"))
 	switch len(ggufs) {
 	case 0:
-		return "", core.NewError("mlx: no .gguf file found")
+		return "", errGGUFNoFile
 	case 1:
 		return ggufs[0], nil
 	default:
-		return "", core.NewError("mlx: multiple .gguf files found")
+		return "", errGGUFMultipleFiles
 	}
 }
 
@@ -403,21 +413,30 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// the read syscalls collapse to a handful for typical GGUF headers.
 	reader := core.NewBufReader(file)
 
-	// Single 20-byte read covers magic(4) + version(4) + tensorCount(8) + metadataCount(8).
-	// Reflect-free scratch — eliminates 4 binary.Read calls (+4 reflect allocs each).
-	var header [24]byte
-	if _, err := io.ReadFull(reader, header[:24]); err != nil {
+	// Shared scratch buffer used for the file header, every fixed-width
+	// metadata/tensor read, and short string reads (interned-key fast
+	// path). 64 B covers all known GGUF metadata keys + the bounded
+	// architecture-name vocabulary; longer strings fall through to per-
+	// call make. Declaring it once at the top of parseGGUF means
+	// io.ReadFull's interface-typed buf parameter forces a single per-
+	// call heap escape rather than one per read site (header + trailer
+	// each used to allocate their own [N]byte locals).
+	var scratch [64]byte
+
+	// First 24 bytes: magic(4) + version(4) + tensorCount(8) + metadataCount(8).
+	// Reflect-free read — eliminates 4 binary.Read calls (+4 reflect allocs each).
+	if _, err := io.ReadFull(reader, scratch[:24]); err != nil {
 		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
-	if core.AsString(header[:4]) != "GGUF" {
-		return nil, nil, core.NewError("mlx: invalid gguf magic")
+	if core.AsString(scratch[:4]) != "GGUF" {
+		return nil, nil, errGGUFInvalidMagic
 	}
-	version := binary.LittleEndian.Uint32(header[4:8])
+	version := binary.LittleEndian.Uint32(scratch[4:8])
 	if version < 2 {
 		return nil, nil, core.Errorf("mlx: unsupported gguf version %d", version)
 	}
-	tensorCount := binary.LittleEndian.Uint64(header[8:16])
-	metadataCount := binary.LittleEndian.Uint64(header[16:24])
+	tensorCount := binary.LittleEndian.Uint64(scratch[8:16])
+	metadataCount := binary.LittleEndian.Uint64(scratch[16:24])
 	if tensorCount > maxGGUFCollectionEntries {
 		return nil, nil, core.Errorf("mlx: gguf tensor count %d exceeds limit %d", tensorCount, maxGGUFCollectionEntries)
 	}
@@ -425,18 +444,20 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
-	// Shared scratch buffer for all subsequent fixed-width reads + short-
-	// string reads. 64 B covers all known GGUF metadata keys + the bounded
-	// architecture-name vocabulary; longer strings fall through to per-
-	// call make. The buffer is already escaped to heap (it's passed by
-	// slice into io.Reader.Read implementations), so reusing it for short
-	// string reads avoids the per-string heap alloc when the read content
-	// matches an entry in ggufInternedStrings.
-	var scratch [64]byte
-
 	metadata := make(map[string]any, int(metadataCount))
+	// Key arena — most metadata keys hit ggufInternedStrings (zero alloc),
+	// but unknown / synthetic / future keys still allocate a fresh string
+	// each. Bump-allocating into a per-call slab amortises the miss cost.
+	// Sized at 48 B/entry — long-tail tokenizer.* keys peak around 40 B.
+	keyArena := make([]byte, 0, int(metadataCount)*48)
+	// Value-string arena — string-typed metadata values land here.
+	// Sized at 56 B/entry; real-world values (tokenizer names, version
+	// strings, descriptions) cluster under 48 B. Lifetime is tied to
+	// the metadata map / Info via Go's GC: any string-view that escapes
+	// into Info keeps the arena live until that Info is dropped.
+	valueArena := make([]byte, 0, int(metadataCount)*56)
 	for i := uint64(0); i < metadataCount; i++ {
-		key, err := readGGUFString(reader, scratch[:])
+		key, err := readStringIntoArena(reader, scratch[:], &keyArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
@@ -444,7 +465,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
 		valueType := binary.LittleEndian.Uint32(scratch[:4])
-		value, err := readGGUFValue(reader, valueType, scratch[:])
+		value, err := readGGUFValue(reader, valueType, scratch[:], &valueArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
@@ -458,8 +479,16 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// Overflow falls back to per-tensor make so the arena never reallocates
 	// (which would invalidate already-handed-out slice headers).
 	shapeArena := make([]uint64, 0, int(tensorCount)*4)
+	// Name arena — bump-allocate per-tensor name bytes from a single slab,
+	// then hand out zero-copy core.AsString views. Real GGUF tensor names
+	// are 12-30 chars (`blk.<N>.<component>.<weight|bias>`); 40 B/tensor
+	// covers the long end with headroom. Overflow falls back to per-
+	// tensor make. The arena MUST NOT be appended-past-capacity once any
+	// view has been handed out — string views alias the backing array,
+	// so a re-allocation would dangle every prior name.
+	nameArena := make([]byte, 0, int(tensorCount)*40)
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readGGUFString(reader, scratch[:])
+		name, err := readStringIntoArena(reader, scratch[:], &nameArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
@@ -485,16 +514,19 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			}
 			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
-		// tensorType(4) + offset(8) = 12 bytes in one read.
-		var trailer [12]byte
-		if _, err := io.ReadFull(reader, trailer[:]); err != nil {
+		// tensorType(4) + offset(8) = 12 bytes in one read. Reuse the
+		// per-call `scratch` arena rather than declaring a per-tensor
+		// `[12]byte` local — io.ReadFull's interface-typed `buf` argument
+		// would force every iteration's local to escape, costing one
+		// heap alloc per tensor (~200 on a qwen3-class model).
+		if _, err := io.ReadFull(reader, scratch[:12]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
 		tensors[i] = ggufTensorInfo{
 			Name:   name,
-			Type:   binary.LittleEndian.Uint32(trailer[:4]),
+			Type:   binary.LittleEndian.Uint32(scratch[:4]),
 			Shape:  shape,
-			Offset: binary.LittleEndian.Uint64(trailer[4:12]),
+			Offset: binary.LittleEndian.Uint64(scratch[4:12]),
 		}
 	}
 
@@ -562,6 +594,61 @@ var ggufInternedStrings = map[string]string{
 	"bert":    "bert",
 }
 
+// readStringIntoArena reads a length-prefixed string and parks the bytes
+// in the supplied arena, returning a zero-copy string view. Used for
+// short-lived bulk strings (tensor names, metadata keys) where the
+// caller wants to amortise allocations across many reads.
+//
+// First tries ggufInternedStrings for the singleton fast path. If the
+// name would push the arena past its reserved capacity, falls back to
+// a fresh per-call copy so the existing arena views stay valid.
+func readStringIntoArena(reader io.Reader, scratch []byte, arena *[]byte) (string, error) {
+	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
+		return "", err
+	}
+	length := binary.LittleEndian.Uint64(scratch[:8])
+	if length > 16<<20 {
+		return "", errGGUFStringTooLong
+	}
+	if length == 0 {
+		return "", nil
+	}
+	buf := *arena
+	remaining := cap(buf) - len(buf)
+	if int(length) > remaining {
+		// Arena overflow: copy through scratch when possible (short
+		// strings still hit the intern map); else fresh make.
+		if uint64(len(scratch)) >= length {
+			if _, err := io.ReadFull(reader, scratch[:length]); err != nil {
+				return "", err
+			}
+			if interned, ok := ggufInternedStrings[string(scratch[:length])]; ok {
+				return interned, nil
+			}
+			return string(scratch[:length]), nil
+		}
+		dst := make([]byte, length)
+		if _, err := io.ReadFull(reader, dst); err != nil {
+			return "", err
+		}
+		return core.AsString(dst), nil
+	}
+	start := len(buf)
+	end := start + int(length)
+	buf = buf[:end]
+	if _, err := io.ReadFull(reader, buf[start:end]); err != nil {
+		return "", err
+	}
+	// Intern probe — singleton hit means we don't need the arena slot.
+	// Roll back the cursor so future calls can reuse the space.
+	if interned, ok := ggufInternedStrings[string(buf[start:end])]; ok {
+		*arena = buf[:start]
+		return interned, nil
+	}
+	*arena = buf
+	return core.AsString(buf[start:end]), nil
+}
+
 // readGGUFString reads a length-prefixed string into a fresh []byte.
 // `scratch` must be at least 8 bytes — used to decode the uint64 length
 // without a reflect.Read alloc. When `scratch` is large enough (≥ length),
@@ -573,7 +660,7 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	}
 	length := binary.LittleEndian.Uint64(scratch[:8])
 	if length > 16<<20 {
-		return "", core.NewError("gguf string is unreasonably large")
+		return "", errGGUFStringTooLong
 	}
 	if length == 0 {
 		return "", nil
@@ -601,7 +688,7 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	return core.AsString(buffer), nil
 }
 
-func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, error) {
+func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena *[]byte) (any, error) {
 	switch valueType {
 	case ggufValueTypeUint8:
 		if _, err := io.ReadFull(reader, scratch[:1]); err != nil {
@@ -644,6 +731,9 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, err
 		}
 		return scratch[0] != 0, nil
 	case ValueTypeString:
+		if strArena != nil {
+			return readStringIntoArena(reader, scratch, strArena)
+		}
 		return readGGUFString(reader, scratch)
 	case ggufValueTypeArray:
 		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
@@ -659,7 +749,7 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte) (any, err
 		}
 		values := make([]any, length)
 		for i := uint64(0); i < length; i++ {
-			value, err := readGGUFValue(reader, elementType, scratch)
+			value, err := readGGUFValue(reader, elementType, scratch, strArena)
 			if err != nil {
 				return nil, err
 			}
