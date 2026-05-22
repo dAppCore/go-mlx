@@ -1368,8 +1368,36 @@ func (c *PagedKVCache) Detach() {
 
 func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 	kPages, vPages, owned := c.visiblePages()
+	if len(kPages) == 1 && len(vPages) == 1 {
+		// Single-page fast path: the visible-page slice/clone is already a
+		// fresh Array suitable for return — skip the redundant Clone inside
+		// concatenatePagedState by handing ownership directly to the caller
+		// and dropping the two pages from the owned-free list.
+		fullK, fullV := kPages[0], vPages[0]
+		owned = pagedOwnedExcept(owned, fullK, fullV)
+		Free(owned...)
+		return fullK, fullV
+	}
 	defer Free(owned...)
 	return concatenatePagedState(kPages, vPages)
+}
+
+// pagedOwnedExcept returns owned with the entries equal to k or v removed.
+// Used by concatenatedState's single-page fast path to skip the Clone+Free
+// dance — kPages[0] and vPages[0] flow out to the caller, so they must not
+// be Free'd in the owned-list cleanup.
+func pagedOwnedExcept(owned []*Array, k, v *Array) []*Array {
+	if len(owned) == 0 {
+		return owned
+	}
+	out := owned[:0]
+	for _, a := range owned {
+		if a == k || a == v {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
