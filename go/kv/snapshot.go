@@ -484,6 +484,15 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 	layerCount := int(reader.u32())
 	if layerCount > 0 {
 		snapshot.Layers = make([]LayerSnapshot, layerCount)
+		// Heads-slab: typical snapshots carry NumHeads heads per layer, so
+		// one backing slice sized to layerCount*NumHeads collapses the per-
+		// layer make([]HeadSnapshot,...) into a single allocation. Layers
+		// with a different head count fall through to the per-layer make.
+		var headSlab []HeadSnapshot
+		var slabCursor int
+		if snapshot.NumHeads > 0 {
+			headSlab = make([]HeadSnapshot, layerCount*snapshot.NumHeads)
+		}
 		for layerIdx := range snapshot.Layers {
 			layer := &snapshot.Layers[layerIdx]
 			layer.Layer = int(reader.i32())
@@ -500,7 +509,12 @@ func parseKVSnapshotWithOptions(data []byte, opts LoadOptions) (*Snapshot, error
 				layer.ValueBytes = value.Bytes
 			}
 			if headCount > 0 {
-				layer.Heads = make([]HeadSnapshot, headCount)
+				if headSlab != nil && slabCursor+headCount <= len(headSlab) {
+					layer.Heads = headSlab[slabCursor : slabCursor+headCount : slabCursor+headCount]
+					slabCursor += headCount
+				} else {
+					layer.Heads = make([]HeadSnapshot, headCount)
+				}
 				for headIdx := range layer.Heads {
 					if snapshot.Version >= 3 {
 						key := reader.encodedTensor(opts)
