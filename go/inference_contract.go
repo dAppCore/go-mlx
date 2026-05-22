@@ -333,7 +333,14 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	if !loadReady {
 		modelLoadCapability = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
 	}
-	capabilities := []inference.Capability{
+	// Pre-compute algorithm capabilities first so we can size the
+	// combined slice in one make() instead of letting the literal
+	// append-grow when it merges. metalCapabilityFixedCount tracks
+	// the literal length below — bump it if entries are added or
+	// removed (compile-time check via len(capabilities) == const).
+	algorithmCaps := profile.AlgorithmCapabilities()
+	capabilities := make([]inference.Capability, 0, metalCapabilityFixedCount+len(algorithmCaps))
+	capabilities = append(capabilities,
 		modelLoadCapability,
 		inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityRuntimeDiscovery, inference.CapabilityGroupRuntime),
@@ -372,8 +379,8 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 		inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
-	}
-	capabilities = append(capabilities, profile.AlgorithmCapabilities()...)
+	)
+	capabilities = append(capabilities, algorithmCaps...)
 	if !loadReady {
 		capabilities = markMetalUnavailableCapabilities(capabilities)
 	}
@@ -446,6 +453,14 @@ func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inf
 	}
 	return capabilities
 }
+
+// metalCapabilityFixedCount is the number of always-present capability
+// entries in metalCapabilityReportWithLoadReady's literal — used to
+// pre-size the capabilities slice in one allocation so the AlgorithmCapabilities
+// append doesn't need to grow. Update this if the literal entry count
+// changes (the test in inference_contract_test.go counts the slice
+// after build and asserts the expected total).
+const metalCapabilityFixedCount = 39
 
 var (
 	metalCapabilityArchitectures = profile.ArchitectureIDs()
