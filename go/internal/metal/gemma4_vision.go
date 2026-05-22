@@ -626,7 +626,10 @@ func (m *Gemma4Model) ForwardMultiModal(tokens *Array, imagePixels []*Array, cac
 		return m.Forward(tokens, caches)
 	}
 
-	shape := tokens.Shape()
+	// Stack-allocated shape scratch — multimodal forward-pass entrypoint.
+	// Reused as the tokenShape argument to injectGemma4ImageFeatures.
+	var shapeBuf [maxTensorRank]int32
+	shape := tokens.ShapeInto(shapeBuf[:0])
 	if len(shape) != 2 {
 		return m.Forward(tokens, caches)
 	}
@@ -689,7 +692,10 @@ func (m *Gemma4Model) encodeGemma4Images(imagePixels []*Array) *Array {
 func (m *Gemma4Model) injectGemma4ImageFeatures(h *Array, tokenIDs []int32, tokenShape []int32, features *Array) *Array {
 	featureRows := features
 	if features.NumDims() == 3 {
-		shape := features.Shape()
+		// Stack-allocated shape scratch — image-feature reshape called per
+		// multimodal forward pass.
+		var shapeBuf [maxTensorRank]int32
+		shape := features.ShapeInto(shapeBuf[:0])
 		featureRows = Reshape(features, shape[0]*shape[1], shape[2])
 		defer Free(featureRows)
 	}
@@ -697,7 +703,8 @@ func (m *Gemma4Model) injectGemma4ImageFeatures(h *Array, tokenIDs []int32, toke
 		return h
 	}
 
-	B, L, H := tokenShape[0], tokenShape[1], h.Shape()[2]
+	// h.Shape()[2] previously allocated; use Dim(2) instead.
+	B, L, H := tokenShape[0], tokenShape[1], int32(h.Dim(2))
 	if int32(featureRows.Dim(1)) != H {
 		core.Error("gemma4: image features hidden size mismatch", "features", featureRows.Dim(1), "hidden", H)
 		return h
@@ -739,7 +746,9 @@ func (m *Gemma4Model) injectGemma4ImageFeatures(h *Array, tokenIDs []int32, toke
 func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mask *Array, caches []Cache) *Array {
 	m.ensureCacheLayout()
 
-	shape := tokens.Shape()
+	// Stack-allocated shape scratch — per-forward-pass hot path.
+	var shapeBuf [maxTensorRank]int32
+	shape := tokens.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	perLayerInputs := m.computePerLayerInputs(tokens, h)
@@ -858,7 +867,8 @@ func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *Array) (*Array, int32, 
 	}
 
 	if p.PositionEmbeddingTable != nil && p.PositionEmbeddingTable.Valid() {
-		pos := p.positionEmbeddings(hidden.Shape()[0], gridH, gridW)
+		// hidden.Shape()[0] previously allocated; Dim(0) is one C call zero allocs.
+		pos := p.positionEmbeddings(int32(hidden.Dim(0)), gridH, gridW)
 		if pos != nil && pos.Valid() {
 			next := Add(hidden, pos)
 			Free(hidden, pos)
@@ -869,7 +879,11 @@ func (p *Gemma4VisionPatchEmbedder) Forward(pixelValues *Array) (*Array, int32, 
 }
 
 func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, int32, int32) {
-	shape := pixelValues.Shape()
+	// Stack-allocated shape scratch — vision patch embed prepare; per-image
+	// hot path. The Transpose(0,2,3,1) on the rank-4 branches is rank-4 by
+	// case-construction, so Transpose4 applies.
+	var shapeBuf [maxTensorRank]int32
+	shape := pixelValues.ShapeInto(shapeBuf[:0])
 	channels := p.NumChannels
 	if channels <= 0 {
 		channels = 3
@@ -890,7 +904,7 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 		}
 		if shape[0] == channels {
 			expanded := ExpandDims(pixelValues, 0)
-			transposed := Transpose(expanded, 0, 2, 3, 1)
+			transposed := Transpose4(expanded, 0, 2, 3, 1)
 			Free(expanded)
 			return p.prepareRawNHWC(transposed, true)
 		}
@@ -899,7 +913,7 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 			return p.prepareRawNHWC(pixelValues.Clone(), true)
 		}
 		if shape[1] == channels {
-			transposed := Transpose(pixelValues, 0, 2, 3, 1)
+			transposed := Transpose4(pixelValues, 0, 2, 3, 1)
 			return p.prepareRawNHWC(transposed, true)
 		}
 	}
@@ -907,7 +921,10 @@ func (p *Gemma4VisionPatchEmbedder) prepare(pixelValues *Array) (*Array, bool, i
 }
 
 func (p *Gemma4VisionPatchEmbedder) prepareRawNHWC(nhwc *Array, owned bool) (*Array, bool, int32, int32) {
-	shape := nhwc.Shape()
+	// Stack-allocated shape scratch — per-image patch-embed convolution
+	// path. Both nhwc and conv are rank-4 NHWC tensors.
+	var shapeBuf, convShapeBuf [maxTensorRank]int32
+	shape := nhwc.ShapeInto(shapeBuf[:0])
 	if len(shape) != 4 || p.PatchConvWeight == nil || !p.PatchConvWeight.Valid() {
 		if owned {
 			Free(nhwc)
@@ -926,7 +943,7 @@ func (p *Gemma4VisionPatchEmbedder) prepareRawNHWC(nhwc *Array, owned bool) (*Ar
 
 	conv := Conv2d(scaled, p.PatchConvWeight, int(p.PatchSize), int(p.PatchSize), 0, 0, 1, 1, 1)
 	Free(scaled)
-	convShape := conv.Shape()
+	convShape := conv.ShapeInto(convShapeBuf[:0])
 	patches := Reshape(conv, convShape[0], convShape[1]*convShape[2], convShape[3])
 	Free(conv)
 	return patches, true, gridH, gridW
@@ -944,7 +961,9 @@ func (p *Gemma4VisionPatchEmbedder) poolKernel() int32 {
 
 func (p *Gemma4VisionPatchEmbedder) positionEmbeddings(batch, gridH, gridW int32) *Array {
 	table := p.PositionEmbeddingTable
-	shape := table.Shape()
+	// Stack-allocated shape scratch — per-vision-pass position embedding.
+	var shapeBuf [maxTensorRank]int32
+	shape := table.ShapeInto(shapeBuf[:0])
 	if len(shape) < 2 {
 		return nil
 	}
@@ -1033,7 +1052,11 @@ func (l *Gemma4VisionEncoderLayer) Forward(x *Array, gridH, gridW int32, cfg *Ge
 }
 
 func (a *Gemma4VisionAttention) Forward(x *Array, gridH, gridW int32, cfg *Gemma4VisionConfig) *Array {
-	shape := x.Shape()
+	// Stack-allocated shape scratch — per-vision-attention-layer hot path.
+	// All rank-4 Transposes on the V and out paths use the scalar-pass
+	// Transpose4 (axes 0,2,1,3 — rank-4 by construction).
+	var shapeBuf [maxTensorRank]int32
+	shape := x.ShapeInto(shapeBuf[:0])
 	B, L := shape[0], shape[1]
 
 	qProj := a.QProj.Forward(x)
@@ -1057,7 +1080,7 @@ func (a *Gemma4VisionAttention) Forward(x *Array, gridH, gridW int32, cfg *Gemma
 	Free(vProj)
 	vNorm := RMSNormNoScale(v, cfg.RMSNormEps)
 	Free(v)
-	v = Transpose(vNorm, 0, 2, 1, 3)
+	v = Transpose4(vNorm, 0, 2, 1, 3)
 	Free(vNorm)
 
 	repeatFactor := a.NHeads / a.NKVHeads
@@ -1075,7 +1098,7 @@ func (a *Gemma4VisionAttention) Forward(x *Array, gridH, gridW int32, cfg *Gemma
 		Free(kAttn, vAttn)
 	}
 
-	transposed := Transpose(out, 0, 2, 1, 3)
+	transposed := Transpose4(out, 0, 2, 1, 3)
 	Free(out)
 	reshaped := Reshape(transposed, B, L, a.NHeads*a.HeadDim)
 	Free(transposed)
@@ -1085,19 +1108,23 @@ func (a *Gemma4VisionAttention) Forward(x *Array, gridH, gridW int32, cfg *Gemma
 }
 
 func gemma4VisionRoPEAndTranspose(x *Array, gridH, gridW int32, base float32, headDim int32) *Array {
+	// Rank-4 transposes (axes 0,2,1,3) — substrate Transpose4 form.
 	if rotated := gemma4VisionApply2DRoPE(x, gridH, gridW, base); rotated != nil {
-		transposed := Transpose(rotated, 0, 2, 1, 3)
+		transposed := Transpose4(rotated, 0, 2, 1, 3)
 		Free(rotated)
 		return transposed
 	}
-	transposed := Transpose(x, 0, 2, 1, 3)
+	transposed := Transpose4(x, 0, 2, 1, 3)
 	out := RoPE(transposed, int(headDim), false, base, 1.0, 0)
 	Free(transposed)
 	return out
 }
 
 func gemma4VisionApply2DRoPE(x *Array, gridH, gridW int32, base float32) *Array {
-	shape := x.Shape()
+	// Stack-allocated shape scratch — per-vision-layer 2D RoPE; rank-4 by
+	// guard. The three rank-4 Slice calls use the scalar-pass Slice4 form.
+	var shapeBuf [maxTensorRank]int32
+	shape := x.ShapeInto(shapeBuf[:0])
 	if len(shape) != 4 || base == 0 {
 		return nil
 	}
@@ -1121,15 +1148,15 @@ func gemma4VisionApply2DRoPE(x *Array, gridH, gridW int32, base float32) *Array 
 	cosX, sinX, cosY, sinY := gemma4Vision2DRoPETables(B, L, gridH, gridW, rotatedPerDim, base)
 	defer Free(cosX, sinX, cosY, sinY)
 
-	xPart := Slice(x, []int32{0, 0, 0, 0}, []int32{B, L, N, rotatedPerDim})
-	yPart := Slice(x, []int32{0, 0, 0, rotatedPerDim}, []int32{B, L, N, rotatedTotal})
+	xPart := Slice4(x, 0, 0, 0, 0, B, L, N, rotatedPerDim)
+	yPart := Slice4(x, 0, 0, 0, rotatedPerDim, B, L, N, rotatedTotal)
 	xRot := gemma4VisionRotatePart(xPart, cosX, sinX)
 	yRot := gemma4VisionRotatePart(yPart, cosY, sinY)
 	Free(xPart, yPart)
 
 	parts := []*Array{xRot, yRot}
 	if rotatedTotal < D {
-		rest := Slice(x, []int32{0, 0, 0, rotatedTotal}, []int32{B, L, N, D})
+		rest := Slice4(x, 0, 0, 0, rotatedTotal, B, L, N, D)
 		parts = append(parts, rest)
 	}
 	out := Concatenate(parts, 3)
@@ -1172,11 +1199,14 @@ func gemma4Vision2DRoPETables(batch, seqLen, gridH, gridW, dim int32, base float
 }
 
 func gemma4VisionRotatePart(x, cos, sin *Array) *Array {
-	shape := x.Shape()
+	// Stack-allocated shape scratch — per-vision-layer rotate half;
+	// x is always rank-4 [B,L,N,D] by caller (gemma4VisionApply2DRoPE).
+	var shapeBuf [maxTensorRank]int32
+	shape := x.ShapeInto(shapeBuf[:0])
 	D := shape[3]
 	half := D / 2
-	first := Slice(x, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], shape[2], half})
-	second := Slice(x, []int32{0, 0, 0, half}, []int32{shape[0], shape[1], shape[2], D})
+	first := Slice4(x, 0, 0, 0, 0, shape[0], shape[1], shape[2], half)
+	second := Slice4(x, 0, 0, 0, half, shape[0], shape[1], shape[2], D)
 	negativeSecond := Negative(second)
 	rotated := Concatenate([]*Array{negativeSecond, first}, 3)
 	scaled := Mul(x, cos)
@@ -1204,7 +1234,9 @@ func (m *Gemma4VisionMLP) Forward(x *Array) *Array {
 }
 
 func (p *Gemma4VisionPooler) Forward(hidden *Array, gridH, gridW int32) *Array {
-	shape := hidden.Shape()
+	// Stack-allocated shape scratch — per-vision-pass pooler entrypoint.
+	var shapeBuf [maxTensorRank]int32
+	shape := hidden.ShapeInto(shapeBuf[:0])
 	B, L, H := shape[0], shape[1], shape[2]
 	k := p.PoolingKernelSize
 	var pooled *Array
