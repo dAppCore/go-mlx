@@ -130,6 +130,37 @@ func TestKVSnapshot_MarshalUnmarshalBinary_Good(t *testing.T) {
 	}
 }
 
+func TestKVSnapshot_Q8ValidateBitTricks_Good(t *testing.T) {
+	// Bit-trick validate (NaN/Inf detect via exp mask + abs via bit-clear)
+	// must produce maxAbs identical to the prior math.Abs walk and reject
+	// the same NaN/Inf inputs as math.IsNaN/math.IsInf would.
+	probes := []struct {
+		name string
+		vals []float32
+		ok   bool
+		max  float32
+	}{
+		{name: "positive", vals: []float32{0.5, 1.0, 1.5, 0.25}, ok: true, max: 1.5},
+		{name: "negative", vals: []float32{-0.5, -1.0, -1.5, -0.25}, ok: true, max: 1.5},
+		{name: "mixed", vals: []float32{-1.0, 2.0, -3.0, 0.5, -0.25, 0.75, 1.25, -1.5}, ok: true, max: 3.0},
+		{name: "zero", vals: []float32{0, 0, 0, 0}, ok: true, max: 0},
+		{name: "scalar-tail", vals: []float32{0.5, -0.5, 1.0}, ok: true, max: 1.0},
+		{name: "nan-in-block", vals: []float32{1, 2, float32(math.NaN()), 3}, ok: false},
+		{name: "nan-in-tail", vals: []float32{1, 2, 3, 4, float32(math.NaN())}, ok: false},
+		{name: "posinf", vals: []float32{1, 2, float32(math.Inf(1))}, ok: false},
+		{name: "neginf", vals: []float32{1, 2, float32(math.Inf(-1))}, ok: false},
+	}
+	for _, probe := range probes {
+		maxAbs, ok := kvSnapshotQ8Validate(probe.vals)
+		if ok != probe.ok {
+			t.Fatalf("%s: ok = %v, want %v", probe.name, ok, probe.ok)
+		}
+		if ok && maxAbs != probe.max {
+			t.Fatalf("%s: maxAbs = %v, want %v", probe.name, maxAbs, probe.max)
+		}
+	}
+}
+
 func TestKVSnapshot_SaveLoadQuantizedQ8_Good(t *testing.T) {
 	snapshot := &Snapshot{
 		Version:       SnapshotVersion,
