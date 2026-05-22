@@ -12,6 +12,7 @@ import "C"
 
 import (
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"dappco.re/go"
@@ -249,20 +250,54 @@ func (c *MetalKernelConfig) AddTemplateBool(name string, value bool) {
 	C.mlx_fast_metal_kernel_config_add_template_arg_bool(c.ctx, cName, C._Bool(value))
 }
 
+// metalKernelOutputArgScratchRank caps the pooled scratch buffer reused in
+// AddOutputArg. Every current caller in this package emits a shape of rank
+// 1, 2, or 3; arbitrary callers may pass an *Array's full shape, but MLX
+// itself caps tensor rank well below this bound. Shapes that exceed the
+// cap fall back to a heap-allocated buffer.
+const metalKernelOutputArgScratchRank = 8
+
+// metalKernelOutputArgScratch is a sync.Pool of fixed-rank C.int buffers used
+// by AddOutputArg as a shape-conversion scratch. The cgo trampoline forces
+// any Go pointer passed across the boundary to escape, so a stack array does
+// not actually stay on the stack; pooling lets us amortise the allocation
+// across calls and keep the per-call alloc count at zero on the fast path.
+var metalKernelOutputArgScratch = sync.Pool{
+	New: func() any {
+		buf := make([]C.int, metalKernelOutputArgScratchRank)
+		return &buf
+	},
+}
+
 // AddOutputArg declares an output array with the given shape and dtype.
 // Call once per output in the order matching outputNames from NewMetalKernel.
 //
 //	cfg.AddOutputArg([]int32{4, 16}, metal.DTypeFloat32)
 func (c *MetalKernelConfig) AddOutputArg(shape []int32, dtype DType) {
-	cShape := make([]C.int, len(shape))
+	n := len(shape)
+	if n == 0 {
+		C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, nil, 0, C.mlx_dtype(dtype))
+		return
+	}
+	if n <= metalKernelOutputArgScratchRank {
+		// Pooled scratch fast path: the C callee copies the shape buffer
+		// synchronously, so the same buffer can be returned to the pool
+		// once the cgo call returns. This eliminates the per-call
+		// make([]C.int, len(shape)) allocation on MoE-heavy hot paths.
+		bufPtr := metalKernelOutputArgScratch.Get().(*[]C.int)
+		buf := (*bufPtr)[:n]
+		for i, s := range shape[:n] {
+			buf[i] = C.int(s)
+		}
+		C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, &buf[0], C.size_t(n), C.mlx_dtype(dtype))
+		metalKernelOutputArgScratch.Put(bufPtr)
+		return
+	}
+	cShape := make([]C.int, n)
 	for i, s := range shape {
 		cShape[i] = C.int(s)
 	}
-	var shapePtr *C.int
-	if len(cShape) > 0 {
-		shapePtr = &cShape[0]
-	}
-	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, shapePtr, C.size_t(len(cShape)), C.mlx_dtype(dtype))
+	C.mlx_fast_metal_kernel_config_add_output_arg(c.ctx, &cShape[0], C.size_t(n), C.mlx_dtype(dtype))
 }
 
 // SetInitValue sets the initial value for output buffers before kernel dispatch.
