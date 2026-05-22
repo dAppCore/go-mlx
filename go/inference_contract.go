@@ -7,6 +7,7 @@ import (
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -308,17 +309,21 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 
 func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool, loadReady bool) inference.CapabilityReport {
 	device := metalCapabilityDeviceInfo(available)
-	runtimeLabels := map[string]string{}
+	// Pre-size for the three possible runtime labels (memory, working
+	// set, load_available). Drop the fmt-format-parser path in favour
+	// of strconv.FormatUint — same value, no interface-boxing of the
+	// uint64 arg + no fmt format-machinery overhead.
+	//
+	// The original len()==0 guard that nil'd the map was dead code —
+	// load_available is always set, so len ≥ 1 every call.
+	runtimeLabels := make(map[string]string, 3)
 	if device.MemorySize > 0 {
-		runtimeLabels["memory_bytes"] = core.Sprintf("%d", device.MemorySize)
+		runtimeLabels["memory_bytes"] = strconv.FormatUint(device.MemorySize, 10)
 	}
 	if device.MaxRecommendedWorkingSetSize > 0 {
-		runtimeLabels["working_set_bytes"] = core.Sprintf("%d", device.MaxRecommendedWorkingSetSize)
+		runtimeLabels["working_set_bytes"] = strconv.FormatUint(device.MaxRecommendedWorkingSetSize, 10)
 	}
 	runtimeLabels["load_available"] = boolLabel(loadReady)
-	if len(runtimeLabels) == 0 {
-		runtimeLabels = nil
-	}
 	modelLoadCapability := inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime)
 	if !loadReady {
 		modelLoadCapability = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
