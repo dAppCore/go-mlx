@@ -368,12 +368,14 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 	}
 	out := make([]float32, len(req.Hidden))
 	rows := len(req.Hidden) / executor.cfg.HiddenSize
+	normed := make([]float32, layer.hidden)
+	activated := make([]float32, layer.intermediate)
 	for row := 0; row < rows; row++ {
 		if err := ctx.Err(); err != nil {
 			return SplitFFNResult{}, err
 		}
 		start := row * executor.cfg.HiddenSize
-		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps)
+		cpuSplitForwardDenseRow(req.Hidden[start:start+executor.cfg.HiddenSize], out[start:start+executor.cfg.HiddenSize], layer, executor.cfg.RMSNormEps, normed, activated)
 	}
 	return SplitFFNResult{Hidden: out}, nil
 }
@@ -814,8 +816,7 @@ func (executor *CPUSplitFFNExecutor) tensorRef(candidates []string) (safetensors
 	return safetensors.TensorRef{}, "", false
 }
 
-func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32) {
-	normed := make([]float32, layer.hidden)
+func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps float32, normed, activated []float32) {
 	var squares float64
 	for _, value := range hidden {
 		squares += float64(value * value)
@@ -825,7 +826,6 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		normed[i] = hidden[i] * scale * layer.norm[i]
 	}
 
-	activated := make([]float32, layer.intermediate)
 	for row := 0; row < layer.intermediate; row++ {
 		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, layer.hidden)
 		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, layer.hidden)
