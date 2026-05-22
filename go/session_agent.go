@@ -579,6 +579,9 @@ func toInferenceAgentMemorySleepResult(report *agent.SleepReport) *inference.Age
 	if report == nil {
 		return nil
 	}
+	// Hoist the KVEncoding string conversion — same value is consumed by
+	// both the Bundle ref and the top-level Encoding field.
+	encoding := string(report.KVEncoding)
 	return &inference.AgentMemorySleepResult{
 		Entry: inference.AgentMemoryRef{
 			URI:        report.EntryURI,
@@ -594,13 +597,13 @@ func toInferenceAgentMemorySleepResult(report *agent.SleepReport) *inference.Age
 			BundleURI: report.ParentBundleURI,
 			IndexURI:  report.ParentIndexURI,
 		},
-		Bundle:        agentMemoryStateRef(report.BundleURI, kv.StateBlockBundleKind, report.SnapshotHash, string(report.KVEncoding)),
+		Bundle:        agentMemoryStateRef(report.BundleURI, kv.StateBlockBundleKind, report.SnapshotHash, encoding),
 		Index:         agentMemoryStateRef(report.IndexURI, agent.StateIndexKind, report.IndexHash, ""),
 		TokenCount:    report.TokenCount,
 		BlockSize:     report.BlockSize,
 		BlocksWritten: report.BlocksWritten,
 		BlocksReused:  report.BlocksReused,
-		Encoding:      string(report.KVEncoding),
+		Encoding:      encoding,
 	}
 }
 
