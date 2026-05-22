@@ -34,10 +34,11 @@ func BenchmarkAsStrided_4D_PerToken(b *testing.B) {
 func BenchmarkReshape_2D_PerToken(b *testing.B) {
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 6)
 	defer Free(a)
+	shape := []int32{2, 3}
 
 	b.ReportAllocs()
 	for b.Loop() {
-		r := Reshape(a, 2, 3)
+		r := Reshape(a, shape...)
 		Free(r)
 	}
 }
@@ -46,10 +47,11 @@ func BenchmarkReshape_4D_PerToken(b *testing.B) {
 	data := make([]float32, 1024)
 	a := FromValues(data, 1024)
 	defer Free(a)
+	shape := []int32{1, 8, 1, 128}
 
 	b.ReportAllocs()
 	for b.Loop() {
-		r := Reshape(a, 1, 8, 1, 128)
+		r := Reshape(a, shape...)
 		Free(r)
 	}
 }
@@ -58,10 +60,11 @@ func BenchmarkTranspose_4D_PerToken(b *testing.B) {
 	// [B, L, H, D] -> [B, H, L, D] — the Q/K/V reshape-transpose pattern.
 	a := Zeros([]int32{1, 1, 8, 128}, DTypeFloat32)
 	defer Free(a)
+	axes := []int{0, 2, 1, 3}
 
 	b.ReportAllocs()
 	for b.Loop() {
-		t := Transpose(a, 0, 2, 1, 3)
+		t := Transpose(a, axes...)
 		Free(t)
 	}
 }
@@ -82,10 +85,11 @@ func BenchmarkBroadcastTo_4D_PerToken(b *testing.B) {
 func BenchmarkSqueeze_PerToken(b *testing.B) {
 	a := Zeros([]int32{1, 1, 1, 128}, DTypeFloat32)
 	defer Free(a)
+	axes := []int{0, 2}
 
 	b.ReportAllocs()
 	for b.Loop() {
-		s := Squeeze(a, 0, 2)
+		s := Squeeze(a, axes...)
 		Free(s)
 	}
 }

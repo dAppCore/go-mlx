@@ -49,9 +49,13 @@ static inline int mlx_broadcast_to_inline(
     return mlx_broadcast_to(res, a, shape_buf, shape_num, s);
 }
 
+// mlx_transpose_axes_inline / mlx_squeeze_axes_inline accept a pointer to the
+// caller's int64 slice (Go's `int` on darwin/arm64) and narrow into a stack
+// int buffer on the C side.  Lets Transpose([]int) / Squeeze([]int) stay
+// alloc-free while still using a single inline wrapper per call.
 static inline int mlx_transpose_axes_inline(
     mlx_array* res, mlx_array a,
-    const int32_t* axes_in, size_t axes_num,
+    const long long* axes_in, size_t axes_num,
     mlx_stream s) {
     int axes_buf[8];
     for (size_t i = 0; i < axes_num; ++i) axes_buf[i] = (int)axes_in[i];
@@ -60,7 +64,7 @@ static inline int mlx_transpose_axes_inline(
 
 static inline int mlx_squeeze_axes_inline(
     mlx_array* res, mlx_array a,
-    const int32_t* axes_in, size_t axes_num,
+    const long long* axes_in, size_t axes_num,
     mlx_stream s) {
     int axes_buf[8];
     for (size_t i = 0; i < axes_num; ++i) axes_buf[i] = (int)axes_in[i];
@@ -464,30 +468,37 @@ func Mean(a *Array, axis int, keepDims bool) *Array {
 	return out
 }
 
-// Reshape changes the shape of an array.
+// Reshape changes the shape of an array.  Routes through the
+// mlx_reshape_inline cgo wrapper so the per-call C.int shape array is
+// stack-allocated in C rather than heap-allocated in Go.
 //
 //	input := metal.Reshape(tokens, 1, int32(len(tokens))) // add batch dim: [L] → [1, L]
 func Reshape(a *Array, shape ...int32) *Array {
-	out := newArray("RESHAPE", a)
-	cShape := make([]C.int, len(shape))
-	for i, s := range shape {
-		cShape[i] = C.int(s)
+	if len(shape) > maxTensorRank {
+		panic("Reshape: rank exceeds maxTensorRank")
 	}
-	C.mlx_reshape(&out.ctx, a.ctx, &cShape[0], C.size_t(len(cShape)), DefaultStream().ctx)
+	out := newArray("RESHAPE", a)
+	var shapePtr *C.int32_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+	}
+	C.mlx_reshape_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), DefaultStream().ctx)
 	return out
 }
 
 // Transpose permutes dimensions. If no axes given, reverses all dims.
+// Routes through mlx_transpose_axes_inline so the caller's []int axes are
+// narrowed to C int on the C stack rather than via a Go-side cgo-int slice.
 func Transpose(a *Array, axes ...int) *Array {
+	if len(axes) > maxTensorRank {
+		panic("Transpose: rank exceeds maxTensorRank")
+	}
 	out := newArray("TRANSPOSE", a)
 	if len(axes) == 0 {
 		C.mlx_transpose(&out.ctx, a.ctx, DefaultStream().ctx)
 	} else {
-		cAxes := make([]C.int, len(axes))
-		for i, ax := range axes {
-			cAxes[i] = C.int(ax)
-		}
-		C.mlx_transpose_axes(&out.ctx, a.ctx, &cAxes[0], C.size_t(len(cAxes)), DefaultStream().ctx)
+		axesPtr := (*C.longlong)(unsafe.Pointer(&axes[0]))
+		C.mlx_transpose_axes_inline(&out.ctx, a.ctx, axesPtr, C.size_t(len(axes)), DefaultStream().ctx)
 	}
 	return out
 }
@@ -499,14 +510,19 @@ func ExpandDims(a *Array, axis int) *Array {
 	return out
 }
 
-// Squeeze removes dimensions of size 1.
+// Squeeze removes dimensions of size 1.  Routes through
+// mlx_squeeze_axes_inline so the caller's []int axes are narrowed to C int
+// on the C stack rather than via a Go-side cgo-int slice.
 func Squeeze(a *Array, axes ...int) *Array {
-	out := newArray("SQUEEZE", a)
-	cAxes := make([]C.int, len(axes))
-	for i, ax := range axes {
-		cAxes[i] = C.int(ax)
+	if len(axes) > maxTensorRank {
+		panic("Squeeze: rank exceeds maxTensorRank")
 	}
-	C.mlx_squeeze_axes(&out.ctx, a.ctx, &cAxes[0], C.size_t(len(cAxes)), DefaultStream().ctx)
+	out := newArray("SQUEEZE", a)
+	var axesPtr *C.longlong
+	if len(axes) > 0 {
+		axesPtr = (*C.longlong)(unsafe.Pointer(&axes[0]))
+	}
+	C.mlx_squeeze_axes_inline(&out.ctx, a.ctx, axesPtr, C.size_t(len(axes)), DefaultStream().ctx)
 	return out
 }
 
@@ -526,14 +542,19 @@ func Concatenate(arrays []*Array, axis int) *Array {
 	return out
 }
 
-// BroadcastTo broadcasts an array to the given shape.
+// BroadcastTo broadcasts an array to the given shape.  Routes through
+// mlx_broadcast_to_inline so the per-call C.int shape array is materialised
+// on the C stack rather than the Go heap.
 func BroadcastTo(a *Array, shape []int32) *Array {
-	out := newArray("BROADCAST", a)
-	cShape := make([]C.int, len(shape))
-	for i, s := range shape {
-		cShape[i] = C.int(s)
+	if len(shape) > maxTensorRank {
+		panic("BroadcastTo: rank exceeds maxTensorRank")
 	}
-	C.mlx_broadcast_to(&out.ctx, a.ctx, &cShape[0], C.size_t(len(cShape)), DefaultStream().ctx)
+	out := newArray("BROADCAST", a)
+	var shapePtr *C.int32_t
+	if len(shape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
+	}
+	C.mlx_broadcast_to_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), DefaultStream().ctx)
 	return out
 }
 
