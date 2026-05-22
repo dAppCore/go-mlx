@@ -1322,15 +1322,13 @@ func LoadFromStateBlocksWithOptions(ctx context.Context, store state.Store, bund
 	if bundle.Kind != StateBlockBundleKind {
 		return nil, core.NewError("mlx: invalid State KV block bundle kind")
 	}
-	blocks := make([]Block, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
+	if len(bundle.Blocks) == 0 {
+		return nil, core.NewError("mlx: KV snapshot blocks are empty")
 	}
-	snapshot, err := AssembleBlocks(blocks)
+	// Stream-assemble: load each block, fold into the assembled snapshot,
+	// then release the per-block snapshot pointer. Avoids holding every
+	// per-block []float32 / []byte alive until AssembleBlocks runs.
+	snapshot, err := loadAndAssembleStateBlocks(ctx, store, bundle, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1338,6 +1336,110 @@ func LoadFromStateBlocksWithOptions(ctx context.Context, store state.Store, bund
 		return nil, core.NewError("mlx: State KV block token offset mismatch")
 	}
 	return snapshot, nil
+}
+
+// loadAndAssembleStateBlocks streams blocks from a State bundle into a
+// single assembled snapshot without retaining the per-block Snapshot
+// pointers between iterations. The first block defines the assembled
+// shape (Architecture, Layer count, head dimensions, raw tensor dtypes
+// + shapes) — subsequent blocks fold into the same skeleton.
+func loadAndAssembleStateBlocks(ctx context.Context, store state.Store, bundle *StateBlockBundle, opts LoadOptions) (*Snapshot, error) {
+	// Validate ordering up front against bundle.Blocks rather than after
+	// loading every snapshot. The full block snapshots aren't required
+	// for ordering checks.
+	totalTokens := 0
+	nextStart := 0
+	for index, ref := range bundle.Blocks {
+		if ref.Index != index {
+			return nil, core.NewError("mlx: KV snapshot blocks are not ordered by index")
+		}
+		if ref.TokenStart != nextStart || ref.TokenCount <= 0 {
+			return nil, core.NewError("mlx: KV snapshot blocks are not contiguous")
+		}
+		nextStart += ref.TokenCount
+		totalTokens += ref.TokenCount
+	}
+	var assembled *Snapshot
+	var lastBlock *Snapshot
+	for index, ref := range bundle.Blocks {
+		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+		if block.Snapshot == nil {
+			return nil, core.NewError("mlx: KV snapshot block is nil")
+		}
+		if block.Index != index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+			return nil, core.NewError("mlx: KV snapshot block metadata mismatch")
+		}
+		if len(block.Snapshot.Tokens) != ref.TokenCount {
+			return nil, core.NewError("mlx: KV snapshot block token count mismatch")
+		}
+		if assembled == nil {
+			first := block.Snapshot
+			assembled = &Snapshot{
+				Version:       first.Version,
+				Architecture:  first.Architecture,
+				NumLayers:     first.NumLayers,
+				NumHeads:      first.NumHeads,
+				HeadDim:       first.HeadDim,
+				NumQueryHeads: first.NumQueryHeads,
+				Layers:        emptyKVSnapshotLayers(first.Layers),
+				Tokens:        make([]int32, 0, totalTokens),
+			}
+			// Pre-size assembled per-head byte buffers from bundle metadata
+			// rather than walking the full block list — the bundle's
+			// PayloadByteCount sums the raw block payload sizes, which
+			// approximates the head byte counts when payload encoding is
+			// raw. Falls back to no pre-size when bytes counts aren't
+			// available; appendKVSnapshotRawBlock then handles growth.
+			preSizeAssembledRawBytesFromFirst(assembled, first, len(bundle.Blocks))
+		}
+		if err := appendKVSnapshotBlock(assembled, block.Snapshot); err != nil {
+			return nil, err
+		}
+		lastBlock = block.Snapshot
+	}
+	if assembled == nil || lastBlock == nil {
+		return nil, core.NewError("mlx: KV snapshot blocks are empty")
+	}
+	assembled.Generated = core.SliceClone(lastBlock.Generated)
+	assembled.TokenOffset = lastBlock.TokenOffset
+	assembled.LogitShape = core.SliceClone(lastBlock.LogitShape)
+	assembled.Logits = core.SliceClone(lastBlock.Logits)
+	if assembled.TokenOffset == 0 {
+		assembled.TokenOffset = len(assembled.Tokens)
+	}
+	return assembled, nil
+}
+
+// preSizeAssembledRawBytesFromFirst pre-allocates per-head KeyBytes /
+// ValueBytes buffers in assembled by extrapolating from the first
+// block's byte count × the block count — cheaper than the full-blocks
+// pre-pass when blocks are uniformly sized.
+func preSizeAssembledRawBytesFromFirst(assembled *Snapshot, first *Snapshot, blockCount int) {
+	if assembled == nil || first == nil || blockCount <= 0 {
+		return
+	}
+	for layerIndex := range assembled.Layers {
+		if layerIndex >= len(first.Layers) {
+			continue
+		}
+		firstLayer := first.Layers[layerIndex]
+		for headIndex := range assembled.Layers[layerIndex].Heads {
+			if headIndex >= len(firstLayer.Heads) {
+				continue
+			}
+			firstHead := firstLayer.Heads[headIndex]
+			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
+			if keyCap := len(firstHead.KeyBytes) * blockCount; keyCap > 0 {
+				dstHead.KeyBytes = make([]byte, 0, keyCap)
+			}
+			if valueCap := len(firstHead.ValueBytes) * blockCount; valueCap > 0 {
+				dstHead.ValueBytes = make([]byte, 0, valueCap)
+			}
+		}
+	}
 }
 
 // LoadFromMemvidBlocksWithOptions restores a full KV snapshot from a
