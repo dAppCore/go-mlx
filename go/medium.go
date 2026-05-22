@@ -168,5 +168,12 @@ func copyMediumFile(medium coreio.Medium, sourcePath, destinationPath string) er
 }
 
 func fromSlashPath(path string) string {
+	// On POSIX (os.PathSeparator == '/') the substitution is a no-op
+	// but strings.Replace still allocates a fresh string + scan-and-copy.
+	// The const comparison collapses at build time so Windows callers
+	// pay the rewrite and Darwin/Linux pay only the branch + return.
+	if core.PathSeparator == '/' {
+		return path
+	}
 	return core.Replace(path, "/", string(core.PathSeparator))
 }
