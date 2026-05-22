@@ -134,7 +134,11 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 			core.Trim(body),
 		))
 	}
-	if result := core.JSONUnmarshal([]byte(body), out); !result.OK {
+	// JSONUnmarshalString takes a string and zero-copies it to []byte via
+	// AsBytes — json.Unmarshal treats the buffer as read-only and copies
+	// strings into the target via SetString. Saves the []byte(body) copy
+	// that allocated a duplicate of the entire response body on every call.
+	if result := core.JSONUnmarshalString(body, out); !result.OK {
 		return core.E("RemoteSource", "parse response", fitResultError(result))
 	}
 	return nil
