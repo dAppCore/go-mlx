@@ -663,11 +663,21 @@ func isSpaceASCII(c byte) bool {
 }
 
 func replaceASCII(s string, old, new byte) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c == old {
+	// Fast path — most identifiers never contain the sentinel byte we
+	// rewrite (dots, dashes). Scan once; if there is nothing to
+	// replace, return the input unchanged to skip both the byte-slice
+	// allocation and the return-side string copy.
+	for i := 0; i < len(s); i++ {
+		if s[i] == old {
+			b := []byte(s)
 			b[i] = new
+			for j := i + 1; j < len(b); j++ {
+				if b[j] == old {
+					b[j] = new
+				}
+			}
+			return string(b)
 		}
 	}
-	return string(b)
+	return s
 }
