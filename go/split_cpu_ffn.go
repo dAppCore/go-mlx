@@ -887,6 +887,19 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		normedView[i] = hiddenView[i] * scale * normView[i]
 	}
 
+	// Hoist the projection-weight slice headers + packed-matrix pointers
+	// into locals before the row walks. The row loop ran ~intermediate
+	// passes per token and each pass re-loaded gate/up/down slice headers
+	// (and their packed-matrix counterparts) off the cpuSplitFFNLayer
+	// struct in argument position; pulling them to registers up-front lets
+	// the per-row call use a local instead.
+	gateDense := layer.gate
+	upDense := layer.up
+	downDense := layer.down
+	gatePacked := layer.gatePacked
+	upPacked := layer.upPacked
+	downPacked := layer.downPacked
+
 	// Re-slice bias arrays + activated buffer to the loop bounds so the
 	// per-row indexing in the projection-and-bias-fold loops compiles
 	// without per-iter bounds checks. Loader keeps these matched to
@@ -900,8 +913,8 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		upBiasView = layer.upBias[:intermediateLen]
 	}
 	for row := 0; row < intermediateLen; row++ {
-		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, hiddenLen)
-		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, hiddenLen)
+		gate := cpuSplitProjectRow(normed, gateDense, gatePacked, row, hiddenLen)
+		up := cpuSplitProjectRow(normed, upDense, upPacked, row, hiddenLen)
 		if hasGateBias {
 			gate += gateBiasView[row]
 		}
@@ -918,7 +931,7 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		downBiasView = layer.downBias[:hiddenLen]
 	}
 	for row := 0; row < hiddenLen; row++ {
-		mlp := cpuSplitProjectRow(activated, layer.down, layer.downPacked, row, intermediateLen)
+		mlp := cpuSplitProjectRow(activated, downDense, downPacked, row, intermediateLen)
 		if hasDownBias {
 			mlp += downBiasView[row]
 		}
