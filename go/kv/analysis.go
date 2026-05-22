@@ -85,6 +85,17 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		entropyScratch = make([]float64, snapshot.SeqLen)
 	}
 
+	// One invNorms scratch reused across every kvAnalysisPairCoherence
+	// call (every layer × {keys, values}). Sized to numHeads — same
+	// reuse pattern as entropyScratch. The PairCoherence helper falls
+	// back to its own alloc when given nil/short scratch (defensive
+	// against snapshots whose NumHeads field doesn't match Heads slice
+	// length).
+	var coherenceInvNorms []float64
+	if snapshot.NumHeads > 0 {
+		coherenceInvNorms = make([]float64, snapshot.NumHeads)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
@@ -92,8 +103,8 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		}
 		keyHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, true)
 		valueHeads := kvAnalysisHeadVectors(layerSnapshot.Heads, false)
-		keyCoherence, keyLocked, keyPairs := kvAnalysisPairCoherence(keyHeads)
-		valueCoherence, valueLocked, valuePairs := kvAnalysisPairCoherence(valueHeads)
+		keyCoherence, keyLocked, keyPairs := kvAnalysisPairCoherence(keyHeads, coherenceInvNorms)
+		valueCoherence, valueLocked, valuePairs := kvAnalysisPairCoherence(valueHeads, coherenceInvNorms)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
 		result.LayerKeyCoherence[layer] = keyCoherence
@@ -344,12 +355,26 @@ func kvAnalysisHeadVectors(heads []HeadSnapshot, keys bool) [][]float32 {
 	return vectors
 }
 
-func kvAnalysisPairCoherence(vectors [][]float32) (float64, int, int) {
+func kvAnalysisPairCoherence(vectors [][]float32, invNorms []float64) (float64, int, int) {
 	// Precompute per-vector 1/|v| once so the O(N²) pair loop only
 	// pays a dot product + 2 muls — same self-norm-recompute waste
-	// kvAnalysisPositionDifferentiation had.
+	// kvAnalysisPositionDifferentiation had. invNorms is caller-owned
+	// scratch reused across every PairCoherence call; falls back to
+	// per-call alloc when the cap is too small (defensive — callers
+	// size it from snapshot.NumHeads which may not match len(vectors)
+	// for malformed snapshots).
 	n := len(vectors)
-	invNorms := make([]float64, n)
+	if cap(invNorms) < n {
+		invNorms = make([]float64, n)
+	} else {
+		invNorms = invNorms[:n]
+		// Zero the reused slots — previous call may have left non-zero
+		// inverse norms in place; zero-norm semantics depend on
+		// invNorms[i] == 0 for the empty/zero-vector case.
+		for i := range invNorms {
+			invNorms[i] = 0
+		}
+	}
 	for i, vec := range vectors {
 		var sum float64
 		for _, value := range vec {
