@@ -99,14 +99,15 @@ func RunModelMemvidKVChapterSmoke(ctx context.Context, model *Model, cfg chapter
 }
 
 func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
-	gen := GenerateConfig{}
-	if cfg.AnswerMaxTokens > 0 {
-		gen.MaxTokens = cfg.AnswerMaxTokens
+	// gen starts at the zero value, so the previous "only assign if
+	// non-zero" guards were equivalent to unconditional assignment —
+	// writing zero into a zero field is a no-op. Returning a struct
+	// literal lets the compiler skip the local stack copy + branch
+	// sequence and emit a single composite-literal store.
+	return GenerateConfig{
+		MaxTokens:   cfg.AnswerMaxTokens,
+		Temperature: cfg.Temperature,
 	}
-	if cfg.Temperature != 0 {
-		gen.Temperature = cfg.Temperature
-	}
-	return gen
 }
 
 func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
