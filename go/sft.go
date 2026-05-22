@@ -689,8 +689,17 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
-		inputs = core.SliceClone(inputs[start:])
-		targets = core.SliceClone(targets[start:])
+		// Combined-backing carve for the truncated inputs+targets — same
+		// share trick the construction path uses, except now the original
+		// 2n backing is being trimmed to 2*MaxSeqLen. One alloc covers
+		// both slices instead of two SliceClones. The mask clone stays
+		// separate (different element type).
+		truncLen := cfg.MaxSeqLen
+		truncBacking := make([]int, 2*truncLen)
+		copy(truncBacking[:truncLen], inputs[start:])
+		copy(truncBacking[truncLen:], targets[start:])
+		inputs = truncBacking[:truncLen:truncLen]
+		targets = truncBacking[truncLen : 2*truncLen : 2*truncLen]
 		mask = core.SliceClone(mask[start:])
 	}
 	if !hasTrainingTarget(mask) {
