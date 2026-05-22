@@ -588,13 +588,22 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 				}
 				totalSimilarity += ai * subSum
 				invT := threshold / ai
-				j := i + 1
+				// Re-slice scratch to the j-tail so bounds-check
+				// elimination can prove each unrolled load is in range
+				// from a single per-iteration length check.
+				tail := scratch[i+1:]
+				m := len(tail)
+				k := 0
 				if ai > 0 {
-					for ; j+3 < seqLen; j += 4 {
-						a0 := scratch[j]
-						a1 := scratch[j+1]
-						a2 := scratch[j+2]
-						a3 := scratch[j+3]
+					for ; k+3 < m; k += 4 {
+						// Re-slice to a fixed 4-element window so the
+						// 4 loads share a single length check (BCE
+						// sees window[3] cap=4 → no further checks).
+						window := tail[k : k+4 : k+4]
+						a0 := window[0]
+						a1 := window[1]
+						a2 := window[2]
+						a3 := window[3]
 						if a0 < invT {
 							locked++
 						}
@@ -608,18 +617,19 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 							locked++
 						}
 					}
-					for ; j < seqLen; j++ {
-						if scratch[j] < invT {
+					for ; k < m; k++ {
+						if tail[k] < invT {
 							locked++
 						}
 					}
 				} else {
 					// ai < 0: condition is aj > invT (sign flipped).
-					for ; j+3 < seqLen; j += 4 {
-						a0 := scratch[j]
-						a1 := scratch[j+1]
-						a2 := scratch[j+2]
-						a3 := scratch[j+3]
+					for ; k+3 < m; k += 4 {
+						window := tail[k : k+4 : k+4]
+						a0 := window[0]
+						a1 := window[1]
+						a2 := window[2]
+						a3 := window[3]
 						if a0 > invT {
 							locked++
 						}
@@ -633,8 +643,8 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 							locked++
 						}
 					}
-					for ; j < seqLen; j++ {
-						if scratch[j] > invT {
+					for ; k < m; k++ {
+						if tail[k] > invT {
 							locked++
 						}
 					}
