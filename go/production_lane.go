@@ -2,7 +2,6 @@
 
 package mlx
 
-import core "dappco.re/go"
 
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
@@ -137,22 +136,31 @@ func DefaultProductionLane() ProductionLane {
 // DefaultGemma4FastRuntimeGates returns the accepted Gemma 4 runtime gates used
 // by the current packed expert-ID fast lane. Rejected diagnostic gates such as
 // full native layer/model wrappers are intentionally excluded.
+//
+// The result shares the package-init singleton — callers in this codebase only
+// range over it (cmd/mlx/main.go) and never mutate or store-then-mutate. The
+// slice is immutable after package init; treat it as read-only.
 func DefaultGemma4FastRuntimeGates() []string {
-	return core.SliceClone(defaultGemma4FastRuntimeGates)
+	return defaultGemma4FastRuntimeGates
 }
 
 // Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
 // requested context length. Contexts beyond the long-form chapter lane use
 // paged retained state instead of fixed full-capacity KV buffers.
+//
+// Same read-only contract as DefaultGemma4FastRuntimeGates — the shared
+// package-init singletons are returned directly.
 func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
 	if contextLength <= ProductionLaneLongFormContextLength {
-		return DefaultGemma4FastRuntimeGates()
+		return defaultGemma4FastRuntimeGates
 	}
-	return core.SliceClone(hyperLongGemma4FastRuntimeGates)
+	return hyperLongGemma4FastRuntimeGates
 }
 
 // LongContextGemma4FastRuntimeGates returns gates that are accepted only for
 // opencode-sized long-context Gemma 4 diagnostics.
+//
+// Read-only contract — see DefaultGemma4FastRuntimeGates.
 func LongContextGemma4FastRuntimeGates() []string {
-	return core.SliceClone(longContextGemma4FastRuntimeGates)
+	return longContextGemma4FastRuntimeGates
 }

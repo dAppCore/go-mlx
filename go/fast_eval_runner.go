@@ -17,6 +17,12 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
+// Hoisted package-level sentinel — the decode generate closure runs once
+// per bench iteration (target + draft) plus once per speculative decode
+// call. Sharing one *Err avoids the per-call core.NewError allocation on
+// the otherwise hot path.
+var errModelDecodeNil = core.NewError("mlx: bench decode runner has nil model")
+
 // NewModelFastEvalRunner adapts a loaded Model to bench.Runner with
 // verb-shaped callbacks for each driver-specific bench section.
 func NewModelFastEvalRunner(model *Model) bench.Runner {
@@ -338,11 +344,24 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 		metrics := fromMlxMetrics(model.Metrics())
 		events := recorder.Events()
 		report.EventCount = len(events)
-		report.KindCounts = make(map[string]int)
+		// Probe kinds are bounded (~10 distinct values across the
+		// inference + training set). Pre-size avoids the initial map
+		// growth on every probe-overhead bench iteration.
+		report.KindCounts = make(map[string]int, 8)
 		report.Events = make([]any, len(events))
-		for i, event := range events {
-			report.KindCounts[string(event.Kind)]++
-			report.Events[i] = event
+		// Index iteration + pointer-to-slot avoids the per-step
+		// boxing of the ~120 B probe.Event into an `any` interface
+		// header. Boxing a value copies the struct onto the heap (1
+		// alloc/event) before storing the pointer in the interface
+		// payload; storing &events[i] reuses the heap-resident slot
+		// the recorder already allocated via make([]Event, …) +
+		// CloneEvent. Encoding/JSON marshals *probe.Event identically
+		// to probe.Event (encoder dereferences), and the only consumer
+		// of ProbeReport.Events is bench-driven JSON output (no
+		// reflection-based type assertion in the codebase).
+		for i := range events {
+			report.KindCounts[string(events[i].Kind)]++
+			report.Events[i] = &events[i]
 		}
 		report.Metrics = metrics
 		if metrics.TotalDuration > 0 {
@@ -435,9 +454,13 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 }
 
 func decodeResultToBench(result decode.Result) bench.DecodeOptimisationResult {
-	tokenIDs := make([]int32, len(result.Tokens))
-	for i, tok := range result.Tokens {
-		tokenIDs[i] = tok.ID
+	tokens := result.Tokens
+	tokenIDs := make([]int32, len(tokens))
+	// Index iteration avoids the per-step copy of the decode.Token (ID
+	// + Text + any future fields) into the loop variable that
+	// range-and-copy makes; only the int32 ID actually escapes.
+	for i := range tokens {
+		tokenIDs[i] = tokens[i].ID
 	}
 	return bench.DecodeOptimisationResult{
 		Mode:   result.Mode,
@@ -478,13 +501,16 @@ func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
 func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc {
 	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
 		if model == nil || model.model == nil {
-			return decode.Generation{}, core.NewError("mlx: bench decode runner has nil model")
+			return decode.Generation{}, errModelDecodeNil
 		}
 		generateCfg := base
 		if cfg.MaxTokens > 0 {
 			generateCfg.MaxTokens = cfg.MaxTokens
 		}
-		tokens := []decode.Token{}
+		// Pre-size tokens to MaxTokens — speculative/prompt-lookup decode
+		// caps emitted tokens at MaxTokens, so a single make() avoids the
+		// per-token append-grow doubling on every decoded step.
+		tokens := make([]decode.Token, 0, generateCfg.MaxTokens)
 		for token := range model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
 			tokens = append(tokens, decode.Token{
 				ID:   token.ID,

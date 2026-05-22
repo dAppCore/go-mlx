@@ -63,22 +63,47 @@ var (
 	attachGemma4AssistantDraft       = attachGemma4AssistantDraftToTarget
 )
 
+// Per-request hot-path error sentinels — these fire from the public
+// SpeculativePair.Generate / Model.GenerateSpeculative entries on every
+// invocation that misses a precondition. Hoisting to package level drops
+// the per-call core.NewError alloc on the (target nil / draft nil / pair
+// nil / target runtime missing) paths.
+var (
+	errMLXSpeculativeTargetNil           = core.NewError("mlx: target model is nil")
+	errMLXSpeculativeDraftNil            = core.NewError("mlx: draft model is nil")
+	errMLXSpeculativeMaxNeg              = core.NewError("mlx: speculative max tokens must be >= 0")
+	errMLXSpeculativeDraftTokensNeg      = core.NewError("mlx: speculative draft tokens must be >= 0")
+	errMLXSpeculativePairNil             = core.NewError("mlx: speculative pair is nil")
+	errMLXSpeculativeGemma4Unsupp        = core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
+	errMLXSpeculativeGemma4Attach        = core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
+	errMLXSpeculativeTargetPathRequired  = core.NewError("mlx: speculative target path is required")
+	errMLXSpeculativeDraftPathRequired   = core.NewError("mlx: speculative draft path is required")
+	errMLXSpeculativeValidateTargetNil   = core.NewError("mlx: speculative target model is nil")
+	errMLXSpeculativeValidateDraftNil    = core.NewError("mlx: speculative draft model is nil")
+	errMLXSpeculativeVocabMismatch       = core.NewError("mlx: speculative target and draft vocab sizes differ")
+	errMLXSpeculativeTokenizersRequired  = core.NewError("mlx: speculative target and draft tokenizers are required")
+	errMLXSpeculativeTokenizersDiffer    = core.NewError("mlx: speculative target and draft tokenizers differ")
+	errMLXSpeculativeAssistantNil        = core.NewError("mlx: speculative Gemma 4 assistant is nil")
+	errMLXSpeculativeTokenizerNil        = core.NewError("mlx: speculative tokenizer is nil")
+	errMLXSpeculativeTokenizerProbeFail  = core.NewError("mlx: speculative tokenizer probe failed")
+)
+
 // GenerateSpeculative runs the portable target/draft speculative decode
 // reference path and returns acceptance metrics. It does not yet claim a native
 // MTP speedup; production visible-throughput work still needs backend block
 // verification.
 func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
 	if m == nil || m.model == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: target model is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeTargetNil
 	}
 	if draft == nil || draft.model == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: draft model is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeDraftNil
 	}
 	if cfg.MaxTokens < 0 {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative max tokens must be >= 0")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeMaxNeg
 	}
 	if cfg.DraftTokens < 0 {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative draft tokens must be >= 0")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeDraftTokensNeg
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -105,10 +130,10 @@ func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt st
 // validates the shared tokenizer surface required by speculative decoding.
 func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig) (*SpeculativePair, error) {
 	if core.Trim(targetPath) == "" {
-		return nil, core.NewError("mlx: speculative target path is required")
+		return nil, errMLXSpeculativeTargetPathRequired
 	}
 	if core.Trim(draftPath) == "" {
-		return nil, core.NewError("mlx: speculative draft path is required")
+		return nil, errMLXSpeculativeDraftPathRequired
 	}
 	target, err := LoadModel(targetPath, cfg.TargetOptions...)
 	if err != nil {
@@ -155,12 +180,12 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 // Generate runs the pair through the package-first speculative reference path.
 func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
 	if pair == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative pair is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativePairNil
 	}
 	if pair.Gemma4Assistant != nil {
 		generator, ok := pair.Target.model.(nativeGemma4AssistantGenerator)
 		if !ok {
-			return SpeculativeDecodeResult{}, core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
+			return SpeculativeDecodeResult{}, errMLXSpeculativeGemma4Unsupp
 		}
 		generateCfg := cfg.GenerateConfig
 		if generateCfg.MaxTokens == 0 {
@@ -213,7 +238,7 @@ func isGemma4AssistantDraft(draftPath string) bool {
 func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*metal.Gemma4AssistantPair, error) {
 	attacher, ok := target.(nativeGemma4AssistantAttacher)
 	if !ok {
-		return nil, core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
+		return nil, errMLXSpeculativeGemma4Attach
 	}
 	return attacher.AttachGemma4Assistant(draftPath)
 }
@@ -221,8 +246,12 @@ func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*
 func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4AssistantGenerateResult) decode.Result {
 	emitted := len(result.Tokens)
 	tokens := make([]decode.Token, emitted)
-	for i, token := range result.Tokens {
-		tokens[i] = decode.Token{ID: token.ID, Text: token.Text}
+	// Index iteration — the range form copied each metal.Token (ID +
+	// Text string header) into the loop var before we rebuilt the
+	// decode.Token; reading via result.Tokens[i] skips that intermediate
+	// copy when emitted is large (long generations are the hot path).
+	for i := range result.Tokens {
+		tokens[i] = decode.Token{ID: result.Tokens[i].ID, Text: result.Tokens[i].Text}
 	}
 	var acceptanceRate float64
 	if result.DraftTokens > 0 {
@@ -251,22 +280,22 @@ func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4Ass
 
 func validateSpeculativePair(target, draft *Model, probes []string) (SpeculativePairReport, error) {
 	if target == nil || target.model == nil {
-		return SpeculativePairReport{}, core.NewError("mlx: speculative target model is nil")
+		return SpeculativePairReport{}, errMLXSpeculativeValidateTargetNil
 	}
 	if draft == nil || draft.model == nil {
-		return SpeculativePairReport{}, core.NewError("mlx: speculative draft model is nil")
+		return SpeculativePairReport{}, errMLXSpeculativeValidateDraftNil
 	}
 	report := SpeculativePairReport{
 		Target: target.Info(),
 		Draft:  draft.Info(),
 	}
 	if report.Target.VocabSize > 0 && report.Draft.VocabSize > 0 && report.Target.VocabSize != report.Draft.VocabSize {
-		return report, core.NewError("mlx: speculative target and draft vocab sizes differ")
+		return report, errMLXSpeculativeVocabMismatch
 	}
 	targetTokenizer := target.Tokenizer()
 	draftTokenizer := draft.Tokenizer()
 	if targetTokenizer == nil || targetTokenizer.tok == nil || draftTokenizer == nil || draftTokenizer.tok == nil {
-		return report, core.NewError("mlx: speculative target and draft tokenizers are required")
+		return report, errMLXSpeculativeTokenizersRequired
 	}
 	report.TokenizerProbe = speculativeTokenizerProbes(probes)
 	for _, probe := range report.TokenizerProbe {
@@ -279,7 +308,7 @@ func validateSpeculativePair(target, draft *Model, probes []string) (Speculative
 			return report, err
 		}
 		if !int32SlicesEqual(targetTokens, draftTokens) {
-			return report, core.NewError("mlx: speculative target and draft tokenizers differ")
+			return report, errMLXSpeculativeTokenizersDiffer
 		}
 	}
 	return report, nil
@@ -287,22 +316,22 @@ func validateSpeculativePair(target, draft *Model, probes []string) (Speculative
 
 func validateSpeculativeGemma4AssistantPair(target *Model, assistant *metal.Gemma4AssistantPair, probes []string) (SpeculativePairReport, error) {
 	if target == nil || target.model == nil {
-		return SpeculativePairReport{}, core.NewError("mlx: speculative target model is nil")
+		return SpeculativePairReport{}, errMLXSpeculativeValidateTargetNil
 	}
 	if assistant == nil || assistant.Assistant == nil {
-		return SpeculativePairReport{}, core.NewError("mlx: speculative Gemma 4 assistant is nil")
+		return SpeculativePairReport{}, errMLXSpeculativeAssistantNil
 	}
 	report := SpeculativePairReport{
 		Target: target.Info(),
 		Draft:  gemma4AssistantModelInfo(assistant.Assistant),
 	}
 	if report.Target.VocabSize > 0 && report.Draft.VocabSize > 0 && report.Target.VocabSize != report.Draft.VocabSize {
-		return report, core.NewError("mlx: speculative target and draft vocab sizes differ")
+		return report, errMLXSpeculativeVocabMismatch
 	}
 	targetTokenizer := target.Tokenizer()
 	draftTokenizer := &Tokenizer{tok: assistant.Assistant.Tokenizer()}
 	if targetTokenizer == nil || targetTokenizer.tok == nil || draftTokenizer.tok == nil {
-		return report, core.NewError("mlx: speculative target and draft tokenizers are required")
+		return report, errMLXSpeculativeTokenizersRequired
 	}
 	report.TokenizerProbe = speculativeTokenizerProbes(probes)
 	for _, probe := range report.TokenizerProbe {
@@ -315,7 +344,7 @@ func validateSpeculativeGemma4AssistantPair(target *Model, assistant *metal.Gemm
 			return report, err
 		}
 		if !int32SlicesEqual(targetTokens, draftTokens) {
-			return report, core.NewError("mlx: speculative target and draft tokenizers differ")
+			return report, errMLXSpeculativeTokenizersDiffer
 		}
 	}
 	return report, nil
@@ -339,20 +368,27 @@ func gemma4AssistantModelInfo(assistant *metal.Gemma4AssistantModel) ModelInfo {
 
 func encodeSpeculativeProbe(tok *Tokenizer, probe string) (tokens []int32, err error) {
 	if tok == nil || tok.tok == nil {
-		return nil, core.NewError("mlx: speculative tokenizer is nil")
+		return nil, errMLXSpeculativeTokenizerNil
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			err = core.NewError("mlx: speculative tokenizer probe failed")
+			err = errMLXSpeculativeTokenizerProbeFail
 			tokens = nil
 		}
 	}()
 	return tok.Encode(probe)
 }
 
+// defaultSpeculativeTokenizerProbes is the shared default probe set
+// returned by speculativeTokenizerProbes when the caller passes nil/
+// empty probes. Hoisted to package level so each LoadSpeculativePair
+// call returns the same slice header instead of rebuilding a 3-string
+// literal on every invocation.
+var defaultSpeculativeTokenizerProbes = []string{"hello", "The quick brown fox", "Answer in one short sentence."}
+
 func speculativeTokenizerProbes(probes []string) []string {
 	if len(probes) == 0 {
-		return []string{"hello", "The quick brown fox", "Answer in one short sentence."}
+		return defaultSpeculativeTokenizerProbes
 	}
 	out := make([]string, len(probes))
 	copy(out, probes)

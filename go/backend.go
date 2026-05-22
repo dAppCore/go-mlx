@@ -111,6 +111,18 @@ var (
 	errMLXPromptCacheClearUnsupp = core.NewError("mlx: native model does not support prompt cache clearing")
 	errMLXLoRALoadUnsupp         = core.NewError("mlx: native model does not support LoRA loading")
 	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
+	// Per-block sentinels hit on the State KV block restore hot path —
+	// metalKVSnapshotBlockSource.Load fires once per covering block during
+	// every WarmPromptCacheFromStateBlocks call (large prefixes mean dozens
+	// of invocations), so hoisting these to package-level drops a per-block
+	// core.NewError alloc on every load.
+	errMLXStateKVStoreNil           = core.NewError("mlx: state store is nil")
+	errMLXStateKVPrefixExceeds      = core.NewError("mlx: State KV prefix exceeds bundle token count")
+	errMLXStateKVPrefixNoCovering   = core.NewError("mlx: State KV prefix has no covering blocks")
+	errMLXStateKVBlockOutOfRange    = core.NewError("mlx: State KV block index is out of range")
+	errMLXStateKVBlockMetaMismatch  = core.NewError("mlx: State KV block metadata mismatch")
+	errMLXStateKVBlockSnapshotNil   = core.NewError("mlx: State KV block snapshot is nil")
+	errMLXStateKVPrefixInvalidTrim  = core.NewError("mlx: State KV prefix has invalid trim range")
 )
 
 // closedTokenChan is the shared "no tokens, generation skipped" channel
@@ -300,16 +312,41 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	}
 }
 
+// metalProbeSinkAdapter forwards metal.ProbeEvent into a probe.Sink
+// after the metal→root event conversion. Replaces the per-call closure
+// allocation in toMetalProbeSink — the closure form below captured
+// `sink` into a fresh func per Generate/Chat/Classify call (24 B + GC
+// pressure on the per-call hot path even when ProbeSink was non-nil but
+// emitted few events). The struct form is heap-allocated once per call
+// but is two pointer-sized words and qualifies for stack allocation
+// when the metal config doesn't escape.
+type metalProbeSinkAdapter struct {
+	sink probe.Sink
+}
+
+// EmitProbe converts metal.ProbeEvent to probe.Event and forwards to the
+// wrapped root sink. Called per token during generation when the caller
+// supplies a ProbeSink — the conversion still allocates per event but
+// the dispatch site no longer allocates a closure per Generate call.
+func (a metalProbeSinkAdapter) EmitProbe(event metal.ProbeEvent) {
+	a.sink.EmitProbe(toRootProbeEvent(event))
+}
+
 func toMetalProbeSink(sink probe.Sink) metal.ProbeSink {
 	if sink == nil {
 		return nil
 	}
-	return metal.ProbeSinkFunc(func(event metal.ProbeEvent) {
-		sink.EmitProbe(toRootProbeEvent(event))
-	})
+	return metalProbeSinkAdapter{sink: sink}
 }
 
 func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
+	// Read sub-fields direct through the source pointer — the previous
+	// `x := *event.X` dereference-copy form materialised the entire
+	// substruct (ProbeLogits alone is ~130 B with three slice headers
+	// + a map header) into a local before reading individual fields.
+	// toRootProbeEvent fires per probe event, which under ProbeSink is
+	// emitted PER TOKEN during generation — skipping the redundant
+	// substruct copy compounds across long generations.
 	out := probe.Event{
 		Kind:  probe.Kind(event.Kind),
 		Phase: probe.Phase(event.Phase),
@@ -317,7 +354,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		Meta:  cloneMetalProbeMeta(event.Meta),
 	}
 	if event.Token != nil {
-		token := *event.Token
+		token := event.Token
 		out.Token = &probe.Token{
 			ID:              token.ID,
 			Text:            token.Text,
@@ -326,7 +363,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Logits != nil {
-		logits := *event.Logits
+		logits := event.Logits
 		out.Logits = &probe.Logits{
 			Shape:      core.SliceClone(logits.Shape),
 			VocabSize:  logits.VocabSize,
@@ -341,11 +378,11 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Entropy != nil {
-		entropy := *event.Entropy
+		entropy := event.Entropy
 		out.Entropy = &probe.Entropy{Value: entropy.Value, Unit: entropy.Unit}
 	}
 	if event.SelectedHeads != nil {
-		heads := *event.SelectedHeads
+		heads := event.SelectedHeads
 		out.SelectedHeads = &probe.HeadSelection{
 			Layer:  heads.Layer,
 			Heads:  core.SliceClone(heads.Heads),
@@ -353,7 +390,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.LayerCoherence != nil {
-		coherence := *event.LayerCoherence
+		coherence := event.LayerCoherence
 		out.LayerCoherence = &probe.LayerCoherence{
 			Layer:          coherence.Layer,
 			KeyCoherence:   coherence.KeyCoherence,
@@ -365,7 +402,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.RouterDecision != nil {
-		router := *event.RouterDecision
+		router := event.RouterDecision
 		out.RouterDecision = &probe.RouterDecision{
 			Layer:       router.Layer,
 			TokenID:     router.TokenID,
@@ -375,7 +412,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Residual != nil {
-		residual := *event.Residual
+		residual := event.Residual
 		out.Residual = &probe.ResidualSummary{
 			Layer:    residual.Layer,
 			Mean:     residual.Mean,
@@ -386,7 +423,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Cache != nil {
-		cache := *event.Cache
+		cache := event.Cache
 		out.Cache = &probe.CachePressure{
 			PromptTokens:    cache.PromptTokens,
 			GeneratedTokens: cache.GeneratedTokens,
@@ -399,7 +436,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Memory != nil {
-		memory := *event.Memory
+		memory := event.Memory
 		out.Memory = &probe.MemoryPressure{
 			ActiveBytes: memory.ActiveBytes,
 			PeakBytes:   memory.PeakBytes,
@@ -407,7 +444,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Training != nil {
-		training := *event.Training
+		training := event.Training
 		out.Training = &probe.Training{
 			Step:         training.Step,
 			Epoch:        training.Epoch,
@@ -424,11 +461,15 @@ func toRootProbeLogits(logits []metal.ProbeLogit) []probe.Logit {
 		return nil
 	}
 	out := make([]probe.Logit, len(logits))
-	for i, logit := range logits {
+	// Index iteration — ProbeLogit is 3 fields (int32 + 2 float32 = 12 B).
+	// Marginal per-entry, but probe.Logits.Top can hold the full Top-K
+	// (commonly 50-100 entries per probe event), and probe events are
+	// emitted per-token when ProbeSink is enabled.
+	for i := range logits {
 		out[i] = probe.Logit{
-			TokenID:     logit.TokenID,
-			Logit:       logit.Logit,
-			Probability: logit.Probability,
+			TokenID:     logits[i].TokenID,
+			Logit:       logits[i].Logit,
+			Probability: logits[i].Probability,
 		}
 	}
 	return out
@@ -486,12 +527,21 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	if totalNative > 0 {
 		nativeSlab = make([]NativePhaseTrace, totalNative)
 	}
-	for i, phase := range phases {
+	// Index iteration — metal.TokenPhaseTrace is ~144 B (16 duration
+	// + Step int + FinalToken bool + NativeEvents slice header).
+	// metal.NativePhaseTrace is ~48 B (string + duration + string).
+	// TraceTokenPhases emits ONE phase trace per decoded token, so for
+	// long generations the range form was copying many KB of struct
+	// data into loop variables before re-emitting it via field rebuild.
+	for i := range phases {
+		phase := &phases[i]
+		nativeSrc := phase.NativeEvents
 		var phaseNative []NativePhaseTrace
-		if n := len(phase.NativeEvents); n > 0 {
+		if n := len(nativeSrc); n > 0 {
 			end := nativeOffset + n
 			phaseNative = nativeSlab[nativeOffset:end:end]
-			for j, event := range phase.NativeEvents {
+			for j := range nativeSrc {
+				event := &nativeSrc[j]
 				phaseNative[j] = NativePhaseTrace{
 					Name:     event.Name,
 					Duration: event.Duration,
@@ -528,7 +578,11 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 		return nil
 	}
 	out := make([]NativePhaseTrace, len(events))
-	for i, event := range events {
+	// Index iteration — see toRootTokenPhaseTraces; NativePhaseTrace is
+	// ~48 B and the range form copied each event into the loop variable
+	// before re-emitting via field rebuild.
+	for i := range events {
+		event := &events[i]
 		out[i] = NativePhaseTrace{
 			Name:     event.Name,
 			Duration: event.Duration,
@@ -574,7 +628,10 @@ func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 	if totalLogits > 0 {
 		logitsSlab = make([]float32, totalLogits)
 	}
-	for i, result := range results {
+	// Index iteration — metal.ClassifyResult carries a Token (3 fields)
+	// + Logits slice header. Skip the per-iter struct copy.
+	for i := range results {
+		result := &results[i]
 		var resultLogits []float32
 		switch {
 		case result.Logits == nil:
@@ -608,11 +665,17 @@ func toRootBatchResults(results []metal.BatchResult) []BatchResult {
 	}
 	tokensSlab := make([]Token, totalTokens)
 	tokensOffset := 0
-	for i, result := range results {
-		tokensEnd := tokensOffset + len(result.Tokens)
+	// Index iteration — metal.BatchResult is a Tokens slice header +
+	// error interface. metal.Token is a small (ID int32 + Text string)
+	// 24 B struct, but for long-generation batches the outer slice can
+	// be hundreds long and the inner Tokens slices can be thousands.
+	for i := range results {
+		result := &results[i]
+		tokensSrc := result.Tokens
+		tokensEnd := tokensOffset + len(tokensSrc)
 		resultTokens := tokensSlab[tokensOffset:tokensEnd:tokensEnd]
-		for j, token := range result.Tokens {
-			resultTokens[j] = toRootToken(token)
+		for j := range tokensSrc {
+			resultTokens[j] = toRootToken(tokensSrc[j])
 		}
 		out[i] = BatchResult{
 			Tokens: resultTokens,
@@ -643,17 +706,26 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if result == nil {
 		return nil
 	}
-	layers := make([]kv.LayerSnapshot, len(result.Layers))
+	resultLayers := result.Layers
+	layers := make([]kv.LayerSnapshot, len(resultLayers))
 	// Single arena allocation for all per-layer Heads slices. Avoids N
 	// small allocations on a path that runs per KV capture / restore.
 	totalHeads := 0
-	for i := range result.Layers {
-		totalHeads += len(result.Layers[i].Heads)
+	for i := range resultLayers {
+		totalHeads += len(resultLayers[i].Heads)
 	}
 	headsSlab := make([]kv.HeadSnapshot, totalHeads)
 	headsOffset := 0
-	for i, layer := range result.Layers {
-		headsEnd := headsOffset + len(layer.Heads)
+	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
+	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
+	// ~160 B (6 slice headers + 2 dtype strings); for deep models (Gemma
+	// 4 E4B = 30 layers × 16 heads = 480 head-copies per snapshot)
+	// the range-and-copy intermediate variable was 100+ KB of redundant
+	// stack copies per capture. Read fields direct from resultLayers[i].
+	for i := range resultLayers {
+		layer := &resultLayers[i]
+		layerHeadsSrc := layer.Heads
+		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
@@ -666,7 +738,8 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      layerHeads,
 		}
-		for j, head := range layer.Heads {
+		for j := range layerHeadsSrc {
+			head := &layerHeadsSrc[j]
 			layerHeads[j] = kv.HeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
@@ -699,17 +772,22 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
 	}
-	layers := make([]metal.KVLayerSnapshot, len(result.Layers))
+	resultLayers := result.Layers
+	layers := make([]metal.KVLayerSnapshot, len(resultLayers))
 	// Single arena allocation for all per-layer Heads slices. Mirror of
 	// toRootKVSnapshot — same N -> 1 collapse on the inverse path.
 	totalHeads := 0
-	for i := range result.Layers {
-		totalHeads += len(result.Layers[i].Heads)
+	for i := range resultLayers {
+		totalHeads += len(resultLayers[i].Heads)
 	}
 	headsSlab := make([]metal.KVHeadSnapshot, totalHeads)
 	headsOffset := 0
-	for i, layer := range result.Layers {
-		headsEnd := headsOffset + len(layer.Heads)
+	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
+	// + N×head struct-copy elision on the inverse direction.
+	for i := range resultLayers {
+		layer := &resultLayers[i]
+		layerHeadsSrc := layer.Heads
+		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
@@ -722,7 +800,8 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      layerHeads,
 		}
-		for j, head := range layer.Heads {
+		for j := range layerHeadsSrc {
+			head := &layerHeadsSrc[j]
 			layerHeads[j] = metal.KVHeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
@@ -798,6 +877,12 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 	builder := core.NewBuilder()
+	// Pre-grow for the expected output footprint — MaxTokens caps the
+	// emitted token stream and 4 bytes/token is a conservative average
+	// across ASCII + short BPE pieces, matching the FilterThinkingTokens
+	// sizing heuristic in thinking.go. Grow(0) is a no-op when MaxTokens
+	// is unset.
+	builder.Grow(cfg.MaxTokens * 4)
 	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
 	}
@@ -815,11 +900,19 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+	// Index iteration — the range-and-copy form copied each
+	// inference.Message (two string headers = 32 bytes) into the loop
+	// variable before we rebuilt the metal.ChatMessage. Chat lists are
+	// rarely empty and skip-the-copy pays back for any non-trivial
+	// conversation history.
 	metalMessages := make([]metal.ChatMessage, len(messages))
-	for i, msg := range messages {
-		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+	for i := range messages {
+		metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 	}
 	builder := core.NewBuilder()
+	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
+	// FilterThinkingTokens decoder and Model.Generate above.
+	builder.Grow(cfg.MaxTokens * 4)
 	for tok := range m.model.Chat(context.Background(), metalMessages, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
 	}
@@ -844,6 +937,10 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		builder := core.NewBuilder()
+		// Same MaxTokens × 4 pre-grow as Generate/Chat above — keeps the
+		// chunked path on the same allocation budget as the giant-string
+		// path it falls back to.
+		builder.Grow(cfg.MaxTokens * 4)
 		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 			builder.WriteString(filter.Process(tok.Text))
 		}
@@ -950,7 +1047,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		ctx = context.Background()
 	}
 	if store == nil {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: state store is nil")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVStoreNil
 	}
 	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
 		return metal.KVSnapshotBlockSource{}, err
@@ -959,20 +1056,28 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		prefixTokens = bundle.TokenCount
 	}
 	if prefixTokens > bundle.TokenCount {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix exceeds bundle token count")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixExceeds
 	}
-	refs := make([]kv.StateBlockRef, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
+	// Index iteration — kv.StateBlockRef carries two strings + a nested
+	// state.ChunkRef (multiple string fields) per entry, so range-and-
+	// copy materialises a non-trivial struct into the loop variable
+	// each step before append re-copies it into refs. Pull a pointer-
+	// aliased read off bundle.Blocks[i] for the gating fields and
+	// append the source entry directly when we keep it.
+	blocks := bundle.Blocks
+	refs := make([]kv.StateBlockRef, 0, len(blocks))
+	for i := range blocks {
+		tokenStart := blocks[i].TokenStart
+		if tokenStart >= prefixTokens {
 			break
 		}
-		refs = append(refs, ref)
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+		refs = append(refs, blocks[i])
+		if tokenStart+blocks[i].TokenCount >= prefixTokens {
 			break
 		}
 	}
 	if len(refs) == 0 {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix has no covering blocks")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixNoCovering
 	}
 	source := metal.KVSnapshotBlockSource{
 		TokenCount:   bundle.TokenCount,
@@ -991,7 +1096,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			loadCtx = ctx
 		}
 		if index < 0 || index >= len(refs) {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block index is out of range")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockOutOfRange
 		}
 		ref := refs[index]
 		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
@@ -999,16 +1104,16 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			return metal.KVSnapshotBlock{}, err
 		}
 		if block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block metadata mismatch")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockMetaMismatch
 		}
 		snapshot := block.Snapshot
 		if snapshot == nil {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block snapshot is nil")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockSnapshotNil
 		}
 		if block.TokenStart+block.TokenCount > prefixTokens {
 			trimTokens := prefixTokens - block.TokenStart
 			if trimTokens <= 0 {
-				return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV prefix has invalid trim range")
+				return metal.KVSnapshotBlock{}, errMLXStateKVPrefixInvalidTrim
 			}
 			baseOffset := kv.EffectiveTokenOffset(snapshot) - kv.EffectiveSeqLen(snapshot)
 			if baseOffset < 0 {
@@ -1133,9 +1238,10 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i, msg := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		for i := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 		}
 		if generator, ok := m.model.(nativeChatChunkGenerator); ok {
 			for tok := range generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)) {
@@ -1186,9 +1292,10 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i, msg := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		for i := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 		}
 		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)

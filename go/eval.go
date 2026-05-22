@@ -12,15 +12,35 @@ import (
 	"math"
 )
 
+// Per-batch sentinels — evalBatchLengths is called once per evaluate-batch
+// call (one per Eval/Run iteration), so hoisting these to package level
+// drops a per-call core.NewError alloc on the validation path.
+var (
+	errMLXEvalBatchUnaligned        = core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	errMLXEvalBatchEmptySeq         = core.NewError("mlx: eval batch contains an empty sequence")
+	errMLXEvalTokenizerNil          = core.NewError("mlx: model tokenizer is nil")
+	errMLXEvalBatchNotSFTBatch      = core.NewError("mlx: eval batch is not an SFTBatch")
+	errMLXEvalNoForward             = core.NewError("mlx: native model does not expose eval forward")
+	errMLXEvalForwardNilLogits      = core.NewError("mlx: eval forward returned nil logits")
+	errMLXEvalLossNil               = core.NewError("mlx: eval loss returned nil")
+	errMLXEvalLossNonFinite         = core.NewError("mlx: eval loss is not finite")
+	errMLXEvalDatasetSampleNotKnown = core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
+)
+
 // RunModelEval evaluates a loaded model over an SFT/JSONL dataset stream.
 // The mlx-root wrapper adapts dataset.Dataset/dataset.Sample/SFTBatch to eval's
 // opaque types and forwards to eval.RunDataset.
 func RunModelEval(ctx context.Context, model *Model, ds dataset.Dataset, cfg eval.Config) (*eval.Report, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
-	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
-	cfg.QualityProbes = append(cfg.QualityProbes, eval.ResponseCoverageProbe())
+	// Pre-size for len+1 so the second append doesn't trigger a regrow —
+	// the original cloned via append([]T(nil), ...) then appended the
+	// ResponseCoverageProbe, paying the grow twice. One make + two
+	// appends fits the final size in a single allocation.
+	probes := make([]eval.QualityProbe, len(cfg.QualityProbes), len(cfg.QualityProbes)+1)
+	copy(probes, cfg.QualityProbes)
+	cfg.QualityProbes = append(probes, eval.ResponseCoverageProbe())
 	return eval.RunDataset(ctx, NewModelEvalRunner(model), wrapSFTDataset(ds), cfg)
 }
 
@@ -110,7 +130,7 @@ func loraToEvalAdapter(info lora.AdapterInfo) eval.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -124,7 +144,7 @@ func evalAdapterToLora(info eval.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -163,7 +183,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 				return eval.AdapterInfo{}, err
 			}
 			if model == nil {
-				return eval.AdapterInfo{}, core.NewError("mlx: model is nil")
+				return eval.AdapterInfo{}, errMLXModelNil
 			}
 			if _, err := model.LoadLoRA(path); err != nil {
 				return eval.AdapterInfo{}, err
@@ -172,7 +192,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 		},
 		BuildBatches: func(ctx context.Context, ds eval.Dataset, cfg eval.BatchConfig) ([]eval.Batch, error) {
 			if model == nil {
-				return nil, core.NewError("mlx: model is nil")
+				return nil, errMLXModelNil
 			}
 			batchCfg, ok := cfg.(dataset.BatchConfig)
 			if !ok {
@@ -180,7 +200,7 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 			}
 			tok := model.Tokenizer()
 			if tok == nil {
-				return nil, core.NewError("mlx: model tokenizer is nil")
+				return nil, errMLXEvalTokenizerNil
 			}
 			sftDataset := evalDatasetToSFT(ds)
 			sftBatches, err := BuildDatasetBatches(tok, sftDataset, batchCfg)
@@ -188,18 +208,24 @@ func NewModelEvalRunner(model *Model) eval.Runner {
 				return nil, err
 			}
 			batches := make([]eval.Batch, len(sftBatches))
-			for i, b := range sftBatches {
-				batches[i] = b
+			// Index iteration — SFTBatch is ~96 B (Batch struct with 3
+			// slice headers + the Targets [][]int header). Range copied
+			// each into the loop variable before we boxed it into the
+			// eval.Batch interface. For large eval runs (hundreds of
+			// batches) this is meaningful pure-stack waste; index reads
+			// straight from source into the interface slot.
+			for i := range sftBatches {
+				batches[i] = sftBatches[i]
 			}
 			return batches, nil
 		},
 		EvaluateBatch: func(ctx context.Context, batch eval.Batch) (eval.BatchMetrics, error) {
 			if model == nil {
-				return eval.BatchMetrics{}, core.NewError("mlx: model is nil")
+				return eval.BatchMetrics{}, errMLXModelNil
 			}
 			sftBatch, ok := batch.(SFTBatch)
 			if !ok {
-				return eval.BatchMetrics{}, core.NewError("mlx: eval batch is not an SFTBatch")
+				return eval.BatchMetrics{}, errMLXEvalBatchNotSFTBatch
 			}
 			m, err := model.evaluateDatasetBatch(ctx, sftBatch)
 			if err != nil {
@@ -224,7 +250,7 @@ func (a *evalDatasetSFTAdapter) Next() (dataset.Sample, bool, error) {
 	if s, ok := sample.(dataset.Sample); ok {
 		return s, true, nil
 	}
-	return dataset.Sample{}, false, core.NewError("mlx: eval dataset returned a non-dataset.Sample value")
+	return dataset.Sample{}, false, errMLXEvalDatasetSampleNotKnown
 }
 
 func evalDatasetToSFT(d eval.Dataset) dataset.Dataset {
@@ -243,7 +269,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 		return evalBatchMetricsDarwin{}, err
 	}
 	if m == nil || m.model == nil {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: model is nil")
+		return evalBatchMetricsDarwin{}, errMLXModelNil
 	}
 
 	lengths, maxLen, err := evalBatchLengths(batch)
@@ -258,7 +284,7 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 
 	native, ok := m.model.(nativeEvalInternalModel)
 	if !ok {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: native model does not expose eval forward")
+		return evalBatchMetricsDarwin{}, errMLXEvalNoForward
 	}
 	internal := native.Internal()
 	caches := internal.NewCache()
@@ -266,18 +292,18 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 
 	logits := internal.ForwardMasked(inputs, attnMask, caches)
 	if logits == nil {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval forward returned nil logits")
+		return evalBatchMetricsDarwin{}, errMLXEvalForwardNilLogits
 	}
 	loss := MaskedCrossEntropyLoss(logits, targets, lossMask)
 	if loss == nil {
 		Free(logits)
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss returned nil")
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNil
 	}
 	Materialize(loss)
 	lossValue := loss.Float()
 	Free(logits, loss)
 	if math.IsNaN(lossValue) || math.IsInf(lossValue, 0) {
-		return evalBatchMetricsDarwin{}, core.NewError("mlx: eval loss is not finite")
+		return evalBatchMetricsDarwin{}, errMLXEvalLossNonFinite
 	}
 	return evalBatchMetricsDarwin{
 		Samples: len(lengths),
@@ -287,24 +313,30 @@ func (m *Model) evaluateDatasetBatch(ctx context.Context, batch SFTBatch) (evalB
 }
 
 func evalBatchLengths(batch SFTBatch) ([]int32, int, error) {
-	if len(batch.Batch.Tokens) == 0 || len(batch.Batch.Tokens) != len(batch.Targets) {
-		return nil, 0, core.NewError("mlx: eval batch tokens and targets must be non-empty and aligned")
+	tokens := batch.Batch.Tokens
+	targets := batch.Targets
+	if len(tokens) == 0 || len(tokens) != len(targets) {
+		return nil, 0, errMLXEvalBatchUnaligned
 	}
-	lengths := make([]int32, len(batch.Batch.Tokens))
+	// Local slice references avoid the per-row batch.Batch.Length/.LossMask
+	// re-resolve through the SFTBatch indirection on every iteration.
+	rowLengths := batch.Batch.Length
+	lossMasks := batch.Batch.LossMask
+	lengths := make([]int32, len(tokens))
 	maxLen := 0
-	for i := range batch.Batch.Tokens {
-		n := len(batch.Batch.Tokens[i])
-		if len(batch.Targets[i]) < n {
-			n = len(batch.Targets[i])
+	for i := range tokens {
+		n := len(tokens[i])
+		if len(targets[i]) < n {
+			n = len(targets[i])
 		}
-		if i < len(batch.Batch.Length) && batch.Batch.Length[i] > 0 && batch.Batch.Length[i] < n {
-			n = batch.Batch.Length[i]
+		if i < len(rowLengths) && rowLengths[i] > 0 && rowLengths[i] < n {
+			n = rowLengths[i]
 		}
-		if i < len(batch.Batch.LossMask) && len(batch.Batch.LossMask[i]) < n {
-			n = len(batch.Batch.LossMask[i])
+		if i < len(lossMasks) && len(lossMasks[i]) < n {
+			n = len(lossMasks[i])
 		}
 		if n <= 0 {
-			return nil, 0, core.NewError("mlx: eval batch contains an empty sequence")
+			return nil, 0, errMLXEvalBatchEmptySeq
 		}
 		lengths[i] = int32(n)
 		if n > maxLen {
@@ -319,8 +351,14 @@ func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
 	for i, seq := range seqs {
 		limit := int(lengths[i])
 		base := i * maxLen
-		for j := 0; j < limit; j++ {
-			data[base+j] = int32(seq[j])
+		// Local slice + ranged limit lets the compiler hoist the per-iter
+		// bounds checks on data[base+j] and seq[j] — the previous form
+		// repeated data[base+j] with two-operand index, which the SSA
+		// pass treats as needing a fresh bounds check per write.
+		dst := data[base : base+limit : base+limit]
+		src := seq[:limit:limit]
+		for j := range dst {
+			dst[j] = int32(src[j])
 		}
 	}
 	return data
@@ -360,15 +398,30 @@ func evalBatchAttentionMask(lengths []int32, maxLen int) *Array {
 	negInf := float32(math.Inf(-1))
 	batchSize := len(lengths)
 	data := make([]float32, batchSize*maxLen*maxLen)
+	// data is zero-initialised — only need to set negInf positions.
+	// Causal+padding mask: for each (i,j), unmask iff j <= i && j < length.
+	// Walk the masked region by row, writing the negInf tail in two
+	// runs per row instead of branching per cell. This drops the per-
+	// (i,j) compare from O(N²) to one slice write per row.
 	for b, length := range lengths {
 		base := b * maxLen * maxLen
+		limit := int(length)
 		for i := 0; i < maxLen; i++ {
-			for j := 0; j < maxLen; j++ {
-				if j <= i && j < int(length) {
-					data[base+i*maxLen+j] = 0
-				} else {
-					data[base+i*maxLen+j] = negInf
-				}
+			rowStart := base + i*maxLen
+			// Unmasked range: j in [0, min(i+1, limit)). All other cells
+			// in the row stay non-zero (negInf).
+			unmaskedEnd := i + 1
+			if unmaskedEnd > limit {
+				unmaskedEnd = limit
+			}
+			if unmaskedEnd < 0 {
+				unmaskedEnd = 0
+			}
+			// Fill the masked tail with negInf — left zeros are already
+			// the unmask value, no per-cell store needed there.
+			tail := data[rowStart+unmaskedEnd : rowStart+maxLen]
+			for j := range tail {
+				tail[j] = negInf
 			}
 		}
 	}
