@@ -993,7 +993,14 @@ func lookPath(command string) (string, error) {
 
 func executable(path string) bool {
 	info := core.Stat(path)
-	return info.OK && !info.Value.(core.FsFileInfo).IsDir() && info.Value.(core.FsFileInfo).Mode()&0111 != 0
+	if !info.OK {
+		return false
+	}
+	stat, ok := info.Value.(core.FsFileInfo)
+	if !ok {
+		return false
+	}
+	return !stat.IsDir() && stat.Mode()&0111 != 0
 }
 
 func resultError(result core.Result) error {
