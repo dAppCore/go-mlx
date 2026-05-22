@@ -251,17 +251,17 @@ func decodeDenseSafetensor(path, name string, entry safetensors.HeaderEntry, pay
 	if begin < 0 || end < begin || end > int64(len(payload)) {
 		return denseSafetensor{}, core.NewError("mlx: safetensors tensor offsets exceed payload: " + name)
 	}
-	shape := make([]uint64, 0, len(entry.Shape))
+	if len(entry.Shape) == 0 {
+		return denseSafetensor{}, core.NewError("mlx: safetensors tensor shape is empty: " + name)
+	}
+	shape := make([]uint64, len(entry.Shape))
 	elements := uint64(1)
-	for _, dim := range entry.Shape {
+	for i, dim := range entry.Shape {
 		if dim <= 0 {
 			return denseSafetensor{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
 		}
-		shape = append(shape, uint64(dim))
+		shape[i] = uint64(dim)
 		elements *= uint64(dim)
-	}
-	if len(shape) == 0 {
-		return denseSafetensor{}, core.NewError("mlx: safetensors tensor shape is empty: " + name)
 	}
 	raw := payload[begin:end]
 	values, err := safetensors.DecodeFloatData(core.Upper(entry.DType), raw, int(elements))
