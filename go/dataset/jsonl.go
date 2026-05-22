@@ -84,6 +84,17 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxBytes)
 
 	var samples []Sample
+	// Hoist the record buffer out of the loop. The original `var
+	// record jsonRecord` inside the loop escaped to the heap on every
+	// iteration (json.Unmarshal takes the pointer reflectively). Once
+	// hoisted, json.Unmarshal still ignores keys that are absent in
+	// the current row, so the previous row's string fields would
+	// carry over — zero the struct via assignment to a zero literal
+	// before each Unmarshal call. The slice fields (Messages,
+	// Conversations) are reset to length 0 in-place so we keep the
+	// backing array across rows of the same shape and avoid an
+	// allocation per chat-shape row.
+	var record jsonRecord
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
@@ -96,7 +107,9 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 		if len(line) == 0 {
 			continue
 		}
-		var record jsonRecord
+		messagesBuf := record.Messages[:0]
+		conversationsBuf := record.Conversations[:0]
+		record = jsonRecord{Messages: messagesBuf, Conversations: conversationsBuf}
 		if result := core.JSONUnmarshal(line, &record); !result.OK {
 			return nil, core.Errorf("dataset: parse JSONL line %d: %w", lineNo, resultError(result))
 		}
