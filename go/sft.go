@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"strconv"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
@@ -575,19 +576,29 @@ func (b *sftBatchBuilder) flush() {
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
 	n := len(examples)
-	// Share one [][]int backing across Tokens + Targets — both are the
-	// same type and same length, so a single 2n-wide allocation lets us
-	// carve two n-wide 3-index views into it instead of paying two
-	// separate makes. Length stays [n]int and LossMask stays [n][]float32
-	// (different types — distinct backings required).
-	intRows := make([][]int, 2*n)
+	// Share one 3n-wide slice-header backing across Tokens + Targets +
+	// LossMask. [][]int and [][]float32 have identical 24-byte slice
+	// header layout (data ptr + len + cap) and identical GC scan masks
+	// (one pointer field at offset 0), so reinterpreting a trailing
+	// stretch of [][]int as [][]float32 via unsafe.Slice is sound. The
+	// caller-side semantics (Tokens[i] is []int, LossMask[i] is
+	// []float32) stay intact because the assignment fully overwrites
+	// each header with the correct typed slice from the source example.
+	// Length stays []int (different element layout — 8 B int vs 24 B
+	// slice header). Net: 3 allocs → 2 allocs per batch.
+	headers := make([][]int, 3*n)
+	lossMaskBacking := headers[2*n : 3*n : 3*n]
+	var lossMask [][]float32
+	if n > 0 {
+		lossMask = unsafe.Slice((*[]float32)(unsafe.Pointer(&lossMaskBacking[0])), n)
+	}
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   intRows[:n:n],
+			Tokens:   headers[:n:n],
 			Length:   make([]int, n),
-			LossMask: make([][]float32, n),
+			LossMask: lossMask,
 		},
-		Targets: intRows[n : 2*n : 2*n],
+		Targets: headers[n : 2*n : 2*n],
 	}
 	// Transfer ownership of each example's slices into the batch — the
 	// callers (sftBatchBuilder.flush and runSFTDatasetEpoch.flushCurrent)
