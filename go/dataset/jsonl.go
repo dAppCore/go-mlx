@@ -13,6 +13,18 @@ import (
 
 const scannerMaxBytes = 16 * 1024 * 1024
 
+// Sentinel errors hoisted from the nil-guard call sites so they
+// allocate exactly once at package init instead of one *Err per
+// nil-receiver call. These are cold paths but the package contract
+// is the same either way, and resultError's "core result failed"
+// fallback fires whenever a non-error Value is wrapped in a failed
+// Result.
+var (
+	errReaderNil        = core.NewError("dataset: reader is nil")
+	errJSONLDatasetNil  = core.NewError("dataset: JSONL dataset is nil")
+	errCoreResultFailed = core.NewError("core result failed")
+)
+
 // Config controls JSONL ingestion and chat sample normalization.
 type Config struct {
 	ChatTemplate chat.Config
@@ -65,7 +77,7 @@ type shareGPTRecord struct {
 //	d, err := dataset.LoadJSONL(reader, dataset.Config{})
 func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	if reader == nil {
-		return nil, core.NewError("dataset: reader is nil")
+		return nil, errReaderNil
 	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 0, 64*1024), scannerMaxBytes)
@@ -110,7 +122,7 @@ func NewJSONL(samples []Sample) *JSONLDataset {
 // Next returns the next normalized sample.
 func (d *JSONLDataset) Next() (Sample, bool, error) {
 	if d == nil {
-		return Sample{}, false, core.NewError("dataset: JSONL dataset is nil")
+		return Sample{}, false, errJSONLDatasetNil
 	}
 	if d.index >= len(d.samples) {
 		return Sample{}, false, nil
@@ -123,7 +135,7 @@ func (d *JSONLDataset) Next() (Sample, bool, error) {
 // Reset rewinds the replayable dataset.
 func (d *JSONLDataset) Reset() error {
 	if d == nil {
-		return core.NewError("dataset: JSONL dataset is nil")
+		return errJSONLDatasetNil
 	}
 	d.index = 0
 	return nil
@@ -292,5 +304,5 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
