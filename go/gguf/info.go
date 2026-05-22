@@ -866,17 +866,26 @@ func metadataArrayLen(value any) int {
 
 func inferLayerCount(metadata map[string]any, tensors []ggufTensorInfo, architecture string) int {
 	if architecture != "" {
-		// Inline lookups — runtime.concatstring2 keeps each key on the
-		// concat fast path. Previously the slice literal forced 3 string
-		// concats up front even when the first key hit.
-		if count := metadataInt(metadata[architecture+".block_count"]); count > 0 {
-			return count
-		}
-		if count := metadataInt(metadata[architecture+".n_layer"]); count > 0 {
-			return count
-		}
-		if count := metadataInt(metadata[architecture+".num_hidden_layers"]); count > 0 {
-			return count
+		// Same stack-scratch + m[string(b)] pattern as metadataIntForSuffix —
+		// avoids the per-probe concat alloc that runtime.concatstring2 would
+		// otherwise produce when escape analysis decides the result needs
+		// the heap.
+		var scratch [128]byte
+		copy(scratch[:len(architecture)], architecture)
+		scratch[len(architecture)] = '.'
+		base := len(architecture) + 1
+		for _, suffix := range [...]string{"block_count", "n_layer", "num_hidden_layers"} {
+			end := base + len(suffix)
+			if end > len(scratch) {
+				if count := metadataInt(metadata[architecture+"."+suffix]); count > 0 {
+					return count
+				}
+				continue
+			}
+			copy(scratch[base:end], suffix)
+			if count := metadataInt(metadata[string(scratch[:end])]); count > 0 {
+				return count
+			}
 		}
 	}
 
