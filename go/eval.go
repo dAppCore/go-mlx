@@ -365,15 +365,30 @@ func evalBatchAttentionMask(lengths []int32, maxLen int) *Array {
 	negInf := float32(math.Inf(-1))
 	batchSize := len(lengths)
 	data := make([]float32, batchSize*maxLen*maxLen)
+	// data is zero-initialised — only need to set negInf positions.
+	// Causal+padding mask: for each (i,j), unmask iff j <= i && j < length.
+	// Walk the masked region by row, writing the negInf tail in two
+	// runs per row instead of branching per cell. This drops the per-
+	// (i,j) compare from O(N²) to one slice write per row.
 	for b, length := range lengths {
 		base := b * maxLen * maxLen
+		limit := int(length)
 		for i := 0; i < maxLen; i++ {
-			for j := 0; j < maxLen; j++ {
-				if j <= i && j < int(length) {
-					data[base+i*maxLen+j] = 0
-				} else {
-					data[base+i*maxLen+j] = negInf
-				}
+			rowStart := base + i*maxLen
+			// Unmasked range: j in [0, min(i+1, limit)). All other cells
+			// in the row stay non-zero (negInf).
+			unmaskedEnd := i + 1
+			if unmaskedEnd > limit {
+				unmaskedEnd = limit
+			}
+			if unmaskedEnd < 0 {
+				unmaskedEnd = 0
+			}
+			// Fill the masked tail with negInf — left zeros are already
+			// the unmask value, no per-cell store needed there.
+			tail := data[rowStart+unmaskedEnd : rowStart+maxLen]
+			for j := range tail {
+				tail[j] = negInf
 			}
 		}
 	}
