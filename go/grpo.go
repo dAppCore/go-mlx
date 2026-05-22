@@ -645,21 +645,54 @@ func cleanGRPOAnswerLine(line string) string {
 		return ""
 	}
 	// First-byte gate — the three answer prefixes all start with one of
-	// {a, f, s}. Anything else skips the core.Lower allocation entirely.
-	// On free-form text the dominant outcome is "no match", so we cash
-	// in the per-line lowercase string for nothing in the common case.
+	// {a, f, s}. Anything else skips the prefix scan entirely. On
+	// free-form text the dominant outcome is "no match".
 	switch line[0] {
 	case 'a', 'A', 'f', 'F', 's', 'S':
 	default:
 		return line
 	}
-	lower := core.Lower(line)
+	// Case-fold prefix compare directly against the raw line — the
+	// prefixes are all ASCII so byte-level case folding suffices.
+	// Replaces the previous `lower := core.Lower(line)` allocation
+	// which fired on every line whose first byte hit the trigger
+	// switch but whose remaining bytes contained any uppercase letter.
+	// Mixed-case headers like "Answer:" used to pay the lower alloc
+	// (~32 B) just so HasPrefix could compare; the inline asciiHas-
+	// PrefixFold collapses that to zero allocations.
 	for _, prefix := range grpoAnswerPrefixes {
-		if core.HasPrefix(lower, prefix) {
+		if asciiHasPrefixFold(line, prefix) {
 			return core.Trim(line[len(prefix):])
 		}
 	}
 	return line
+}
+
+// asciiHasPrefixFold reports whether prefix is a case-insensitive ASCII
+// prefix of s. prefix MUST be lowercase ASCII (a-z + punctuation only)
+// — the caller is responsible for that invariant. Used by
+// cleanGRPOAnswerLine where the prefix set is a fixed package-level
+// array of lowercased keywords, so the contract holds by construction.
+func asciiHasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		c := s[i]
+		// Fold ASCII A-Z to a-z by setting bit 5 — bit 5 is the
+		// upper/lower case distinguishing bit for ASCII letters and
+		// has no effect on the punctuation characters the prefix set
+		// contains (':' / ' '). Non-letter bytes outside that range
+		// won't match a lowercase letter byte anyway so the compare
+		// fails honestly without any further branch.
+		if c >= 'A' && c <= 'Z' {
+			c |= 0x20
+		}
+		if c != prefix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // defaultGRPORewardFuncs is the fallback []GRPORewardFunc used by
