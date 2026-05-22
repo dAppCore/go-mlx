@@ -198,12 +198,15 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
+	// Contains(".safetensors") is a strict superset of HasSuffix(".safetensors"):
+	// any name ending in .safetensors necessarily contains the substring. The
+	// previous HasSuffix terms were dead under the OR — drop them and let the
+	// Contains checks carry both the suffix and the .safetensors.index.json
+	// case the copy filter is meant to skip.
 	lower := core.Lower(name)
 	return lower == FuseProvenanceFile ||
 		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf") ||
-		core.HasSuffix(lower, ".safetensors") ||
-		core.HasSuffix(lower, ".gguf")
+		core.Contains(lower, ".gguf")
 }
 
 func copyLocalFile(sourcePath, destinationPath string) error {
