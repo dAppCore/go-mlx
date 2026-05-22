@@ -340,7 +340,11 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 		return 0, 0, nil, resultError(encoded)
 	}
 	headerBytes := encoded.Value.([]byte)
-	if err := binary.Write(file, binary.LittleEndian, uint64(len(headerBytes))); err != nil {
+	// binary.Write goes through reflection — for a single uint64 that's
+	// significant overhead. PutUint64 + file.Write is the direct form.
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(headerBytes)))
+	if _, err := file.Write(lenBuf[:]); err != nil {
 		return 0, 0, nil, err
 	}
 	if _, err := file.Write(headerBytes); err != nil {
