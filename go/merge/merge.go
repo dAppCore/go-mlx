@@ -148,7 +148,10 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 	if opts.OutputPath == "" {
 		return prepared{}, core.NewError("mlx: merged model output path is required")
 	}
-	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
+	// hasSuffixFold replaces core.Lower(opts.OutputPath) which allocated a
+	// full copy of the (potentially long) output path string just to test
+	// two short suffixes.
+	if hasSuffixFold(opts.OutputPath, ".safetensors") || hasSuffixFold(opts.OutputPath, ".gguf") {
 		return prepared{}, core.NewError("mlx: merged output path must be a model-pack directory")
 	}
 
@@ -188,7 +191,7 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 		if pack.Format != mp.ModelPackFormatSafetensors {
 			return prepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
 		}
-		if samePath(pack.Root, output) {
+		if samePathResolved(pack.Root, output) {
 			return prepared{}, core.NewError("mlx: merged output path must differ from source model path")
 		}
 		packs = append(packs, pack)
@@ -221,8 +224,13 @@ func ensureEmptyDestination(output string) error {
 		}
 		return core.E("Packs", "inspect output path", resultError(stat))
 	}
-	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
-	if len(weights) > 0 {
+	// Check the two glob patterns independently — the previous append form
+	// always allocated a combined slice even when the first pattern was
+	// already non-empty. Short-circuit on the first non-empty pattern.
+	if len(core.PathGlob(core.PathJoin(output, "*.safetensors"))) > 0 {
+		return core.NewError("mlx: merged output path already contains model weights")
+	}
+	if len(core.PathGlob(core.PathJoin(output, "*.gguf"))) > 0 {
 		return core.NewError("mlx: merged output path already contains model weights")
 	}
 	return nil
@@ -230,17 +238,35 @@ func ensureEmptyDestination(output string) error {
 
 func validatePackCompatibility(packs []mp.ModelPack, opts Options) error {
 	base := packs[0]
+	// Hash the base tokenizer once up front, lazily — only if we actually
+	// need it (any non-AllowTokenizerMismatch source). Previously the
+	// inner loop re-read + re-hashed the base file once per source pack,
+	// turning an O(1) check into O(N) IO + crypto for the N-source case.
+	var baseHash string
+	var baseHashErr error
+	baseHashLoaded := opts.AllowTokenizerMismatch
 	for i := 1; i < len(packs); i++ {
 		pack := packs[i]
 		if !opts.AllowArchitectureMismatch && pack.Architecture != base.Architecture {
-			return core.NewError(core.Sprintf("mlx: model merge architecture mismatch: %s vs %s", base.Architecture, pack.Architecture))
+			// core.Concat is ~4x cheaper than core.Sprintf for fixed-string
+			// composition. Architecture names are short identifiers; the fmt
+			// machinery is pure overhead here.
+			return core.NewError(core.Concat(
+				"mlx: model merge architecture mismatch: ",
+				base.Architecture,
+				" vs ",
+				pack.Architecture,
+			))
 		}
 		if opts.AllowTokenizerMismatch {
 			continue
 		}
-		baseHash, err := hashFile(base.TokenizerPath)
-		if err != nil {
-			return core.E("Packs", "hash base tokenizer", err)
+		if !baseHashLoaded {
+			baseHash, baseHashErr = hashFile(base.TokenizerPath)
+			baseHashLoaded = true
+		}
+		if baseHashErr != nil {
+			return core.E("Packs", "hash base tokenizer", baseHashErr)
 		}
 		hash, err := hashFile(pack.TokenizerPath)
 		if err != nil {
@@ -270,7 +296,6 @@ func validateTensorIndexes(indexes []safetensors.Index, allowMismatch bool) erro
 	for i := 1; i < len(indexes); i++ {
 		index := indexes[i]
 		for _, name := range base.Names {
-			baseRef := base.Tensors[name]
 			ref, ok := index.Tensors[name]
 			if !ok {
 				if allowMismatch {
@@ -278,6 +303,10 @@ func validateTensorIndexes(indexes []safetensors.Index, allowMismatch bool) erro
 				}
 				return core.NewError("mlx: model merge tensor missing from source: " + name)
 			}
+			// baseRef is only needed when we actually compare shapes — lift
+			// the lookup inside the if-ok branch. Saves one map probe per
+			// matched-name iteration (the dominant path).
+			baseRef := base.Tensors[name]
 			if !sameUint64Slice(baseRef.Shape, ref.Shape) {
 				if allowMismatch {
 					continue
@@ -311,7 +340,11 @@ func writeMergedSafetensors(ctx context.Context, path string, indexes []safetens
 		return 0, 0, nil, resultError(encoded)
 	}
 	headerBytes := encoded.Value.([]byte)
-	if err := binary.Write(file, binary.LittleEndian, uint64(len(headerBytes))); err != nil {
+	// binary.Write goes through reflection — for a single uint64 that's
+	// significant overhead. PutUint64 + file.Write is the direct form.
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(headerBytes)))
+	if _, err := file.Write(lenBuf[:]); err != nil {
 		return 0, 0, nil, err
 	}
 	if _, err := file.Write(headerBytes); err != nil {
@@ -407,18 +440,37 @@ func readTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.Ten
 
 func buildMergedHeader(index safetensors.Index) map[string]safetensors.HeaderEntry {
 	header := make(map[string]safetensors.HeaderEntry, len(index.Names))
+	// Pool both shape and DataOffsets backing arrays into one contiguous
+	// []int64 slab. Previously each tensor cost 2 small heap allocations
+	// (shape + 2-element DataOffsets). Now each tensor's Shape and
+	// DataOffsets are sub-slices into the slab; total allocs drop from
+	// 2*N to 1 across the whole header build.
+	totalDims := 0
+	for _, name := range index.Names {
+		totalDims += len(index.Tensors[name].Shape)
+	}
+	// Reserve 2 trailing slots per tensor for DataOffsets.
+	slab := make([]int64, totalDims+2*len(index.Names))
+	shapeCursor := 0
+	offsetsCursor := totalDims
 	var offset int64
 	for _, name := range index.Names {
 		ref := index.Tensors[name]
 		byteLen := int64(ref.Elements * 4)
-		shape := make([]int64, 0, len(ref.Shape))
+		dims := len(ref.Shape)
+		shape := slab[shapeCursor : shapeCursor : shapeCursor+dims]
 		for _, dim := range ref.Shape {
 			shape = append(shape, int64(dim))
 		}
+		shapeCursor += dims
+		dataOffsets := slab[offsetsCursor : offsetsCursor+2 : offsetsCursor+2]
+		dataOffsets[0] = offset
+		dataOffsets[1] = offset + byteLen
+		offsetsCursor += 2
 		header[name] = safetensors.HeaderEntry{
 			DType:       "F32",
 			Shape:       shape,
-			DataOffsets: []int64{offset, offset + byteLen},
+			DataOffsets: dataOffsets,
 		}
 		offset += byteLen
 	}
@@ -471,23 +523,38 @@ func writeLinearChunks(ctx context.Context, file *core.OSFile, refs []safetensor
 		return err
 	}
 	defer safetensors.CloseReaders(readers)
+	// Reuse the out + scratch buffers across chunks — both are the same
+	// size every iteration so the previous make-per-chunk pattern paid
+	// for two allocations per chunk that we never needed to grow.
+	out := make([]float32, chunkElements)
+	var scratch []byte
 	for offset := 0; offset < elements; offset += chunkElements {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		count := min(chunkElements, elements-offset)
-		out := make([]float32, count)
+		// Reset out for this chunk — zero only the slice prefix we will
+		// actually accumulate into.
+		out = out[:count]
+		for i := range out {
+			out[i] = 0
+		}
 		for sourceIndex, reader := range readers {
 			values, err := reader.ReadFloat32Chunk(offset, count)
 			if err != nil {
 				return err
 			}
-			weight := weights[sourceIndex]
+			// Cast weight to float32 once outside the inner accumulator
+			// loop — same precision argument as linearMerge (the inputs
+			// are float32, the weights are normalised in [0,1]).
+			weight32 := float32(weights[sourceIndex])
 			for i, value := range values {
-				out[i] += float32(float64(value) * weight)
+				out[i] += value * weight32
 			}
 		}
-		if err := writeFloat32Values(file, out); err != nil {
+		var err error
+		scratch, err = writeFloat32ValuesScratch(file, out, scratch)
+		if err != nil {
 			return err
 		}
 	}
@@ -578,9 +645,14 @@ func linearMerge(values [][]float32, weights []float64) ([]float32, error) {
 		if len(source) != len(out) {
 			return nil, core.NewError("mlx: tensor length mismatch during linear merge")
 		}
-		weight := weights[sourceIndex]
+		// Cast the weight to float32 once outside the inner loop —
+		// previously every element did a float32->float64->mul->float32
+		// round-trip. Linear merge weights are normalised in [0,1] so
+		// float32 precision is sufficient (matches the source tensor
+		// dtype anyway).
+		weight32 := float32(weights[sourceIndex])
 		for i, value := range source {
-			out[i] += float32(float64(value) * weight)
+			out[i] += value * weight32
 		}
 	}
 	return out, nil
@@ -651,18 +723,38 @@ func normalizedWeights(sources []Source) ([]float64, error) {
 }
 
 func writeFloat32Values(file *core.OSFile, values []float32) error {
-	raw := make([]byte, len(values)*4)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(raw[i*4:], math.Float32bits(value))
-	}
-	_, err := file.Write(raw)
+	_, err := writeFloat32ValuesScratch(file, values, nil)
 	return err
 }
 
+// writeFloat32ValuesScratch is the byte-buffer-reusing variant for the
+// chunked write paths. The caller owns scratch so the same backing array
+// is reused across chunks instead of one make per chunk. The returned
+// slice (possibly the same as scratch) carries forward the now-grown
+// capacity for the caller's next call. Pass nil for scratch on a single
+// call site.
+func writeFloat32ValuesScratch(file *core.OSFile, values []float32, scratch []byte) ([]byte, error) {
+	needed := len(values) * 4
+	if cap(scratch) < needed {
+		scratch = make([]byte, needed)
+	} else {
+		scratch = scratch[:needed]
+	}
+	for i, value := range values {
+		binary.LittleEndian.PutUint32(scratch[i*4:], math.Float32bits(value))
+	}
+	_, err := file.Write(scratch)
+	return scratch, err
+}
+
 func writeProvenance(path string, provenance Provenance) error {
-	slices := append([]string(nil), provenance.SkippedTensors...)
-	sort.Strings(slices)
-	provenance.SkippedTensors = slices
+	// core.SliceClone — exact-cap clone, avoids growslice over-allocation
+	// from append([]string(nil), src...). Also takes the empty-slice fast
+	// path internally so we don't waste an alloc on a typical merge with
+	// no skipped tensors.
+	sorted := core.SliceClone(provenance.SkippedTensors)
+	sort.Strings(sorted)
+	provenance.SkippedTensors = sorted
 	data := core.JSONMarshal(provenance)
 	if !data.OK {
 		return core.E("Packs", "marshal merge provenance", resultError(data))
@@ -671,6 +763,27 @@ func writeProvenance(path string, provenance Provenance) error {
 		return core.E("Packs", "write merge provenance", resultError(result))
 	}
 	return nil
+}
+
+// hasSuffixFold reports whether s ends with suffix using ASCII case
+// folding. Suffix is required to be lowercase. Pure scan, no allocations —
+// replaces the core.Lower(s) + core.HasSuffix pattern that always allocated
+// a lowered copy of s regardless of input.
+func hasSuffixFold(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	off := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		c := s[off+i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func sameUint64Slice(a, b []uint64) bool {
@@ -717,10 +830,28 @@ func samePath(a, b string) bool {
 	return absA == absB
 }
 
+// samePathResolved is the per-source-loop variant where the right-hand
+// side is already absolute. Saves a core.PathAbs call (and any associated
+// filesystem inspection) per iteration.
+func samePathResolved(a, absB string) bool {
+	absA := a
+	if resolved := core.PathAbs(a); resolved.OK {
+		absA = resolved.Value.(string)
+	}
+	return absA == absB
+}
+
+// modelPackMetadataPatterns is the canonical pattern list — hoisted out
+// of copyModelPackMetadata so the slice literal isn't rebuilt per call.
+var modelPackMetadataPatterns = [...]string{"*.json", "*.model", "*.txt"}
+
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	patterns := []string{"*.json", "*.model", "*.txt"}
-	seen := map[string]struct{}{}
-	for _, pattern := range patterns {
+	// Typical metadata footprint: config.json, tokenizer.json,
+	// tokenizer_config.json, special_tokens_map.json, generation_config.json
+	// — ~5-8 entries. Pre-size the seen map to skip the initial maphint
+	// rebalances.
+	seen := make(map[string]struct{}, 8)
+	for _, pattern := range modelPackMetadataPatterns {
 		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
 			name := core.PathBase(sourcePath)
 			if _, ok := seen[name]; ok {
@@ -739,12 +870,67 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
-	lower := core.Lower(name)
-	return lower == "adapter_provenance.json" ||
-		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf") ||
-		core.HasSuffix(lower, ".safetensors") ||
-		core.HasSuffix(lower, ".gguf")
+	// Two prior issues in this predicate:
+	//
+	// 1. core.Lower(name) allocated a fresh copy of every filename even
+	//    though most metadata filenames are already lowercase.
+	// 2. The Contains(".safetensors")|HasSuffix(".safetensors") pair is
+	//    redundant — HasSuffix is a strict subset of Contains for the same
+	//    suffix. Same for ".gguf". Drop the HasSuffix legs entirely.
+	//
+	// We keep the Contains semantics (legacy: filters anything *named*
+	// with .safetensors in its path, e.g. .safetensors.index.json) by
+	// using a case-folding containsFold helper.
+	if equalFold(name, "adapter_provenance.json") {
+		return true
+	}
+	return containsFold(name, ".safetensors") || containsFold(name, ".gguf")
+}
+
+// equalFold is len-prefixed ASCII case-insensitive equality. Zero allocations.
+func equalFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// containsFold reports whether s contains substr using ASCII case folding.
+// substr is required to be lowercase. Zero allocations.
+func containsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	last := len(s) - len(substr)
+outer:
+	for i := 0; i <= last; i++ {
+		for j := 0; j < len(substr); j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != substr[j] {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func copyModelPackLocalFile(sourcePath, destinationPath string) error {

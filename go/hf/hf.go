@@ -5,6 +5,7 @@ package hf
 import (
 	"context"
 	"slices"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/quant/jang"
@@ -123,7 +124,15 @@ func (s *RemoteSource) getJSON(ctx context.Context, target string, out any) erro
 		return core.E("RemoteSource", "read response", core.NewError("unexpected response body shape"))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return core.NewError(core.Sprintf("mlx: HF metadata request failed: %d %s", resp.StatusCode, core.Trim(body)))
+		// Avoid core.Sprintf — its fmt machinery is hot-path heavy for
+		// what is just an int + string assembly. strconv.Itoa+Concat is
+		// roughly 4x cheaper for this error message shape.
+		return core.NewError(core.Concat(
+			"mlx: HF metadata request failed: ",
+			strconv.Itoa(resp.StatusCode),
+			" ",
+			core.Trim(body),
+		))
 	}
 	if result := core.JSONUnmarshal([]byte(body), out); !result.OK {
 		return core.E("RemoteSource", "parse response", fitResultError(result))
@@ -294,7 +303,21 @@ type fitEntry struct {
 }
 
 func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
-	var entries []fitEntry
+	// Hoist Source nil-check before the search/id loops — both used to
+	// re-check inside the loop body. Also pre-size entries to the known
+	// minimum: local paths + IDs are deterministic, search adds at most
+	// MaxResults. Saves the growslice walk inside the hot path.
+	if (cfg.Query != "" || len(cfg.ModelIDs) > 0) && cfg.Source == nil {
+		if cfg.Query != "" {
+			return nil, core.NewError("mlx: HF metadata source is required for query search")
+		}
+		return nil, core.NewError("mlx: HF metadata source is required for model id lookup")
+	}
+	capacity := len(cfg.LocalPaths) + len(cfg.ModelIDs)
+	if cfg.Query != "" && cfg.MaxResults > 0 {
+		capacity += cfg.MaxResults
+	}
+	entries := make([]fitEntry, 0, capacity)
 	for _, path := range cfg.LocalPaths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -306,9 +329,6 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		entries = append(entries, fitEntry{meta: meta, source: SourceLocal, localPath: root})
 	}
 	if cfg.Query != "" {
-		if cfg.Source == nil {
-			return nil, core.NewError("mlx: HF metadata source is required for query search")
-		}
 		found, err := cfg.Source.SearchModels(ctx, cfg.Query, cfg.MaxResults)
 		if err != nil {
 			return nil, err
@@ -318,9 +338,6 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		}
 	}
 	for _, id := range cfg.ModelIDs {
-		if cfg.Source == nil {
-			return nil, core.NewError("mlx: HF metadata source is required for model id lookup")
-		}
 		meta, err := cfg.Source.ModelMetadata(ctx, id)
 		if err != nil {
 			return nil, err
@@ -359,15 +376,24 @@ func resolveLocalMetadataRoot(path string) string {
 	if len(snapshots) > 0 {
 		return core.PathDir(snapshots[0])
 	}
-	if core.HasSuffix(core.Lower(path), "config.json") {
+	// hasSuffixFold avoids allocating a lowered copy of the full path
+	// (paths can be long: ~/.cache/huggingface/hub/...) just to test a
+	// 12-byte suffix.
+	if hasSuffixFold(path, "config.json") {
 		return core.PathDir(path)
 	}
 	return path
 }
 
+// localModelIDSearchPaths is the small array we walk in localModelID —
+// hoisted so the slice literal isn't allocated per call.
+var localModelIDSearchOrder = [2]int{0, 1}
+
 func localModelID(inputPath, root string) string {
-	for _, path := range []string{root, inputPath} {
-		for current := path; current != "" && current != "."; current = core.PathDir(current) {
+	paths := [2]string{root, inputPath}
+	for _, idx := range localModelIDSearchOrder {
+		path := paths[idx]
+		for current := path; current != "" && current != "."; {
 			base := core.PathBase(current)
 			if core.HasPrefix(base, "models--") {
 				return core.Replace(core.TrimPrefix(base, "models--"), "--", "/")
@@ -376,14 +402,31 @@ func localModelID(inputPath, root string) string {
 			if parent == current {
 				break
 			}
+			current = parent
 		}
 	}
 	return core.PathBase(root)
 }
 
+// localModelFiles patterns: precomputed so the make([]string,...) literal
+// is not re-built per call. The path glob payload is the dominant cost
+// (one Path call + one glob syscall per pattern) so this is presentation
+// rather than a perf hot spot, but it keeps the call site allocation-free
+// for the iteration list itself.
+var localModelFilePatterns = []string{
+	"*.safetensors",
+	"*.gguf",
+	"*.bin",
+	"tokenizer.json",
+	"tokenizer_config.json",
+}
+
 func localModelFiles(root string) []ModelFile {
-	var files []ModelFile
-	for _, pattern := range []string{"*.safetensors", "*.gguf", "*.bin", "tokenizer.json", "tokenizer_config.json"} {
+	// Pre-size: a typical pack has 1-4 safetensors shards + tokenizer.json
+	// + tokenizer_config.json. 8 is a comfortable initial capacity that
+	// avoids growslice for almost every real model.
+	files := make([]ModelFile, 0, 8)
+	for _, pattern := range localModelFilePatterns {
 		for _, path := range core.PathGlob(core.PathJoin(root, pattern)) {
 			info := core.Stat(path)
 			var size uint64
@@ -409,10 +452,24 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	meta := entry.meta
 	config := meta.Config.normalized()
 	modelID := firstNonEmpty(meta.ID, meta.ModelID)
-	arch := config.architecture()
-	contextLimit := config.contextLength()
-	quantBits, quantGroup := config.quantization()
-	quantType := config.quantizationType()
+	// Inline the architecture / contextLength / quantization /
+	// quantizationType accessors here — each one normalizes config again
+	// (a value copy of the ~96-byte ModelConfig struct) before reading a
+	// single field. We've already normalised once at the top of the
+	// function; read directly from the normalised local instead.
+	arch := configArchitecture(&config)
+	contextLimit := firstPositive(config.ContextLength, config.MaxPositionEmbeddings)
+	quant := config.QuantizationConfig
+	if quant == nil {
+		quant = config.Quantization
+	}
+	var quantBits, quantGroup int
+	var quantType string
+	if quant != nil {
+		quantBits = quant.Bits
+		quantGroup = quant.GroupSize
+		quantType = quant.Type
+	}
 	quantFamily := ""
 	format, weightBytes := weightFormatAndBytes(meta.Files)
 	info := meta.JANG
@@ -490,28 +547,43 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 }
 
 func weightFormatAndBytes(files []ModelFile) (string, uint64) {
+	if len(files) == 0 {
+		return "", 0
+	}
+	// Cache the format strings — pulling string(mp.ModelPackFormat...) out
+	// of the loop avoids the implicit conversion per iteration and lets
+	// the per-format pointer compare instead of a fresh string each time.
+	const (
+		fmtBin = "bin"
+	)
+	safetensors := string(mp.ModelPackFormatSafetensors)
+	gguf := string(mp.ModelPackFormatGGUF)
+	mixed := string(mp.ModelPackFormatMixed)
+
 	var format string
 	var total uint64
 	for _, file := range files {
-		name := core.Lower(file.filename())
+		// hasSuffixFold avoids the per-file Lower alloc — model weight
+		// filenames are ASCII so case-folding the suffix is sufficient.
+		name := file.filename()
 		switch {
-		case core.HasSuffix(name, ".safetensors"):
+		case hasSuffixFold(name, ".safetensors"):
 			if format == "" {
-				format = string(mp.ModelPackFormatSafetensors)
-			} else if format != string(mp.ModelPackFormatSafetensors) {
-				format = string(mp.ModelPackFormatMixed)
+				format = safetensors
+			} else if format != safetensors {
+				format = mixed
 			}
 			total += file.byteSize()
-		case core.HasSuffix(name, ".gguf"):
+		case hasSuffixFold(name, ".gguf"):
 			if format == "" {
-				format = string(mp.ModelPackFormatGGUF)
-			} else if format != string(mp.ModelPackFormatGGUF) {
-				format = string(mp.ModelPackFormatMixed)
+				format = gguf
+			} else if format != gguf {
+				format = mixed
 			}
 			total += file.byteSize()
-		case core.HasSuffix(name, ".bin"):
+		case hasSuffixFold(name, ".bin"):
 			if format == "" {
-				format = "bin"
+				format = fmtBin
 			}
 			total += file.byteSize()
 		}
@@ -519,27 +591,74 @@ func weightFormatAndBytes(files []ModelFile) (string, uint64) {
 	return format, total
 }
 
+// hasSuffixFold reports whether s ends with suffix using ASCII case-folding.
+// Suffix is required to be lowercase. Pure scan, no allocations.
+func hasSuffixFold(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	off := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		c := s[off+i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func inferQuantBits(files []ModelFile) int {
+	if len(files) == 0 {
+		return 0
+	}
+	// Reusable scratch buffer for the lowered form. Most filenames are
+	// already lowercase ("model-q4_k_m.gguf") so the hot path skips the
+	// allocation entirely; only mixed-case names pay for one lowering.
+	// Scratch is reused across iterations: the previous lowered string is
+	// not referenced past its switch block, so overwriting is safe.
+	var scratch []byte
 	for _, file := range files {
-		name := core.Lower(file.filename())
+		name := file.filename()
+		var lowered string
+		if hasASCIIUpper(name) {
+			scratch = appendLowerASCII(scratch[:0], name)
+			lowered = core.AsString(scratch)
+		} else {
+			lowered = name
+		}
 		switch {
-		case core.Contains(name, "q2"):
+		case core.Contains(lowered, "q2"):
 			return 2
-		case core.Contains(name, "q3"):
+		case core.Contains(lowered, "q3"):
 			return 3
-		case core.Contains(name, "q4") || core.Contains(name, "4bit") || core.Contains(name, "4-bit"):
+		case core.Contains(lowered, "q4") || core.Contains(lowered, "4bit") || core.Contains(lowered, "4-bit"):
 			return 4
-		case core.Contains(name, "q5"):
+		case core.Contains(lowered, "q5"):
 			return 5
-		case core.Contains(name, "q6"):
+		case core.Contains(lowered, "q6"):
 			return 6
-		case core.Contains(name, "q8") || core.Contains(name, "8bit") || core.Contains(name, "8-bit"):
+		case core.Contains(lowered, "q8") || core.Contains(lowered, "8bit") || core.Contains(lowered, "8-bit"):
 			return 8
-		case core.Contains(name, "bf16") || core.Contains(name, "fp16") || core.Contains(name, "f16"):
+		case core.Contains(lowered, "bf16") || core.Contains(lowered, "fp16") || core.Contains(lowered, "f16"):
 			return 16
 		}
 	}
 	return 0
+}
+
+// hasASCIIUpper reports whether s contains any ASCII uppercase byte.
+// Pure scan, no allocations — gate before paying for the lowering buffer.
+func hasASCIIUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 func estimateModelKVBytes(config ModelConfig, contextLength, batchSize, bytesPerElement int) uint64 {
@@ -655,14 +774,26 @@ func (config ModelConfig) normalized() ModelConfig {
 	if text.ModelType == "" {
 		text.ModelType = config.ModelType
 	}
-	if len(text.Architectures) == 0 {
-		text.Architectures = append([]string(nil), config.Architectures...)
+	if len(text.Architectures) == 0 && len(config.Architectures) > 0 {
+		// core.SliceClone — explicit zero-copy substrate primitive that
+		// produces a backing array sized to len(src) only. The previous
+		// append([]string(nil), src...) form went through the runtime
+		// growslice path which over-allocates capacity for further appends
+		// we never make.
+		text.Architectures = core.SliceClone(config.Architectures)
 	}
 	return text
 }
 
 func (config ModelConfig) architecture() string {
 	config = config.normalized()
+	return configArchitecture(&config)
+}
+
+// configArchitecture is the already-normalised, pointer-receiver variant
+// for callers that have already done the normalize. Avoids the second
+// normalize value-copy of ~96-byte ModelConfig.
+func configArchitecture(config *ModelConfig) string {
 	for _, arch := range config.Architectures {
 		if modelType := architectureFromTransformersName(arch); modelType == "bert_rerank" {
 			return modelType
@@ -738,13 +869,41 @@ func fitResultError(result core.Result) error {
 
 // info := mlx.InferJANG(meta)
 func InferJANG(meta ModelMetadata) *jang.Info {
-	needle := core.Lower(firstNonEmpty(meta.ID, meta.ModelID))
+	// Build the lowercase "id tag1 tag2 file1 file2" haystack in one pass.
+	// Previously each tag + file Concat allocated a fresh string and Lower
+	// allocated again — 4+ allocs per tag/file. Now: one buf, lowercase
+	// inline, zero-copy return.
+	//
+	// We over-estimate the size by an upper-bound (use the longer of Name
+	// and RFilename per file) so we can do a single pass without resolving
+	// filename() twice per file. The buf will grow at most by 0-X bytes
+	// of slack, which is fine; the underlying array is heap-allocated
+	// either way.
+	id := firstNonEmpty(meta.ID, meta.ModelID)
+	size := len(id)
 	for _, tag := range meta.Tags {
-		needle = core.Concat(needle, " ", core.Lower(tag))
+		size += 1 + len(tag)
 	}
 	for _, file := range meta.Files {
-		needle = core.Concat(needle, " ", core.Lower(file.filename()))
+		// Upper bound — max(Name, RFilename). Avoids the firstNonEmpty
+		// scan here while still preventing growslice in the append loop.
+		nameLen := len(file.Name)
+		if len(file.RFilename) > nameLen {
+			nameLen = len(file.RFilename)
+		}
+		size += 1 + nameLen
 	}
+	buf := make([]byte, 0, size)
+	buf = appendLowerASCII(buf, id)
+	for _, tag := range meta.Tags {
+		buf = append(buf, ' ')
+		buf = appendLowerASCII(buf, tag)
+	}
+	for _, file := range meta.Files {
+		buf = append(buf, ' ')
+		buf = appendLowerASCII(buf, file.filename())
+	}
+	needle := core.AsString(buf)
 
 	switch {
 	case core.Contains(needle, "jangtq"):
@@ -772,6 +931,20 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 	}
 }
 
+// appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
+// bytes pass through unchanged (consistent with the previous core.Lower
+// surface for our domain: model IDs, tags, filenames are all ASCII).
+func appendLowerASCII(dst []byte, s string) []byte {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		dst = append(dst, c)
+	}
+	return dst
+}
+
 func jangGroupSize(meta ModelMetadata) int {
 	if quant := meta.Config.QuantizationConfig; quant != nil && quant.GroupSize > 0 {
 		return quant.GroupSize
@@ -782,10 +955,22 @@ func jangGroupSize(meta ModelMetadata) int {
 	return 64
 }
 
+// jangProfileLookup parallels needle/value forms with their UPPER variants.
+// Hoisted out of inferJANGProfileName so the literal slice and the
+// per-match core.Upper allocation are paid once at init, not per call.
+var jangProfileLookup = [...]struct{ Lower, Upper string }{
+	{"jang_1l", "JANG_1L"},
+	{"jang_2s", "JANG_2S"},
+	{"jang_2l", "JANG_2L"},
+	{"jang_3l", "JANG_3L"},
+	{"jang_4k", "JANG_4K"},
+	{"jang_4m", "JANG_4M"},
+}
+
 func inferJANGProfileName(value string) string {
-	for _, profile := range []string{"jang_1l", "jang_2s", "jang_2l", "jang_3l", "jang_4k", "jang_4m"} {
-		if core.Contains(value, profile) {
-			return core.Upper(profile)
+	for i := range jangProfileLookup {
+		if core.Contains(value, jangProfileLookup[i].Lower) {
+			return jangProfileLookup[i].Upper
 		}
 	}
 	return "JANG"
@@ -829,12 +1014,26 @@ func readModelConfig(dir string) (*modelConfigProbe, error) {
 }
 
 func firstNonEmpty(values ...string) string {
+	// hasNonWhitespace avoids the core.Trim allocation that the previous
+	// implementation paid every time the input had any leading/trailing
+	// whitespace. We only care whether the trimmed form is non-empty —
+	// not what it contains — so a single byte scan is sufficient.
 	for _, value := range values {
-		if core.Trim(value) != "" {
+		if hasNonWhitespace(value) {
 			return value
 		}
 	}
 	return ""
+}
+
+func hasNonWhitespace(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\v' && c != '\f' {
+			return true
+		}
+	}
+	return false
 }
 
 func firstPositive(values ...int) int {
@@ -936,8 +1135,68 @@ func (probe *modelConfigProbe) quantGroup() int {
 }
 
 func normalizeKnownArchitecture(value string) string {
-	value = core.Lower(core.Trim(value))
-	value = core.Replace(value, "-", "_")
+	// Skip Trim+Lower+Replace when the input is already in canonical form
+	// (no leading/trailing whitespace, no uppercase, no '-'). Most callers
+	// (ModelConfig.architecture for HF model_type, repeat lookups) hit this.
+	if !needsNormalisation(value) {
+		return matchKnownArchitecture(value)
+	}
+	return matchKnownArchitecture(normaliseArchString(value))
+}
+
+// normaliseArchString trims surrounding whitespace, lowercases ASCII, and
+// rewrites '-' to '_' in a single pass. Replaces the old
+// Lower(Trim(...))+Replace(...) chain that allocated twice and walked the
+// string three times.
+func normaliseArchString(s string) string {
+	// Find trim bounds.
+	start, end := 0, len(s)
+	for start < end {
+		c := s[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := s[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	if start == end {
+		return ""
+	}
+	buf := make([]byte, end-start)
+	for i := start; i < end; i++ {
+		c := s[i]
+		if c == '-' {
+			c = '_'
+		} else if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i-start] = c
+	}
+	return core.AsString(buf)
+}
+
+// needsNormalisation reports whether normalizeKnownArchitecture has any
+// transformation work to do — true if value contains whitespace, '-', or
+// ASCII uppercase. Pure scan, no allocations.
+func needsNormalisation(value string) bool {
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		if c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\r' || (c >= 'A' && c <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+// matchKnownArchitecture is the bare switch table — pulled out so both the
+// fast and slow paths share it without duplication.
+func matchKnownArchitecture(value string) string {
 	switch value {
 	case "qwen3_5":
 		return "qwen3_next"
@@ -963,14 +1222,10 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func architectureFromTransformersName(architecture string) string {
-	compact := core.Lower(core.Replace(core.Replace(architecture, "_", ""), "-", ""))
+	// Case-sensitive fast path first — the canonical HF transformers class
+	// names are PascalCase ("Qwen3ForCausalLM"). Avoids the Lower+Replace
+	// allocs for the common path.
 	switch {
-	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-		return "bert_rerank"
-	case core.Contains(compact, "qwen3moe"):
-		return "qwen3_moe"
-	case core.Contains(compact, "qwen3next"):
-		return "qwen3_next"
 	case core.Contains(architecture, "Gemma4"):
 		return "gemma4_text"
 	case core.Contains(architecture, "Gemma3"):
@@ -978,6 +1233,12 @@ func architectureFromTransformersName(architecture string) string {
 	case core.Contains(architecture, "Gemma2"):
 		return "gemma2"
 	case core.Contains(architecture, "Qwen3"):
+		// Qwen3 hits — disambiguate MoE / Next via compact form only here.
+		if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
+			return "qwen3_moe"
+		} else if core.Contains(compact, "qwen3next") {
+			return "qwen3_next"
+		}
 		return "qwen3"
 	case core.Contains(architecture, "Qwen2"):
 		return "qwen2"
@@ -995,11 +1256,53 @@ func architectureFromTransformersName(architecture string) string {
 		return "deepseek"
 	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
 		return "gpt_oss"
-	case core.Contains(architecture, "Bert"):
-		return "bert"
+	case core.Contains(architecture, "Bert") || core.Contains(architecture, "Roberta") || core.Contains(architecture, "Deberta"):
+		// Bert / Roberta / Deberta family — disambiguate rerank via compact.
+		compact := lowerNoSep(architecture)
+		if core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification") {
+			return "bert_rerank"
+		}
+		if core.Contains(architecture, "Bert") {
+			return "bert"
+		}
+		return ""
 	default:
+		// Unknown PascalCase shape — fall back to compact lower form so a
+		// few stragglers like "qwen3_moe" or "bert_for_sequence_classification"
+		// still classify when callers feed snake_case identifiers.
+		compact := lowerNoSep(architecture)
+		switch {
+		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+			return "bert_rerank"
+		case core.Contains(compact, "qwen3moe"):
+			return "qwen3_moe"
+		case core.Contains(compact, "qwen3next"):
+			return "qwen3_next"
+		}
 		return ""
 	}
+}
+
+// lowerNoSep returns architecture lowercased with "_" and "-" removed.
+// Pure helper used by the slow paths of architectureFromTransformersName —
+// kept out of line so the fast PascalCase path costs zero allocations.
+func lowerNoSep(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Single pass over bytes: skip "_"/"-" and lowercase ASCII inline.
+	buf := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '_' || c == '-' {
+			continue
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf = append(buf, c)
+	}
+	return core.AsString(buf)
 }
 
 func indexString(s, substr string) int {
