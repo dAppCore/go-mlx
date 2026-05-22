@@ -191,7 +191,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	if err != nil {
 		return nil, err
 	}
-	refs, names := selectModelSliceTensorRefs(*plan, index)
+	refs, names := selectModelSliceTensorRefs(plan, index)
 	if len(refs) == 0 {
 		return nil, errModelSliceNoTensorsSelected
 	}
@@ -363,8 +363,11 @@ type modelSliceInclusionMask struct {
 
 // buildModelSliceInclusionMask materialises the inclusion mask once for a
 // given plan so the per-tensor classifier can read it via direct field
-// loads on the hot path.
-func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclusionMask {
+// loads on the hot path. Takes plan by pointer — the function only reads
+// ExtractLevel + Components, so a pointer avoids the ~200-byte value-copy
+// the by-value form forced on every call from selectModelSliceTensorRefs
+// and modelSliceIncludesTensor.
+func buildModelSliceInclusionMask(plan *inference.ModelSlicePlan) modelSliceInclusionMask {
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return modelSliceInclusionMask{all: true}
 	}
@@ -400,7 +403,7 @@ func buildModelSliceInclusionMask(plan inference.ModelSlicePlan) modelSliceInclu
 	return mask
 }
 
-func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
+func selectModelSliceTensorRefs(plan *inference.ModelSlicePlan, index safetensors.Index) ([]safetensors.TensorRef, []string) {
 	refs := make([]safetensors.TensorRef, 0, len(index.Names))
 	names := make([]string, 0, len(index.Names))
 	mask := buildModelSliceInclusionMask(plan)
@@ -493,7 +496,7 @@ func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) boo
 }
 
 func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
-	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(plan), name)
+	return modelSliceIncludesTensorMask(buildModelSliceInclusionMask(&plan), name)
 }
 
 func modelSliceTensorIsEmbedding(name string) bool {
