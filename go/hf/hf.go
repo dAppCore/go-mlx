@@ -294,7 +294,21 @@ type fitEntry struct {
 }
 
 func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
-	var entries []fitEntry
+	// Hoist Source nil-check before the search/id loops — both used to
+	// re-check inside the loop body. Also pre-size entries to the known
+	// minimum: local paths + IDs are deterministic, search adds at most
+	// MaxResults. Saves the growslice walk inside the hot path.
+	if (cfg.Query != "" || len(cfg.ModelIDs) > 0) && cfg.Source == nil {
+		if cfg.Query != "" {
+			return nil, core.NewError("mlx: HF metadata source is required for query search")
+		}
+		return nil, core.NewError("mlx: HF metadata source is required for model id lookup")
+	}
+	capacity := len(cfg.LocalPaths) + len(cfg.ModelIDs)
+	if cfg.Query != "" && cfg.MaxResults > 0 {
+		capacity += cfg.MaxResults
+	}
+	entries := make([]fitEntry, 0, capacity)
 	for _, path := range cfg.LocalPaths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -306,9 +320,6 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		entries = append(entries, fitEntry{meta: meta, source: SourceLocal, localPath: root})
 	}
 	if cfg.Query != "" {
-		if cfg.Source == nil {
-			return nil, core.NewError("mlx: HF metadata source is required for query search")
-		}
 		found, err := cfg.Source.SearchModels(ctx, cfg.Query, cfg.MaxResults)
 		if err != nil {
 			return nil, err
@@ -318,9 +329,6 @@ func collectFitEntries(ctx context.Context, cfg FitConfig) ([]fitEntry, error) {
 		}
 	}
 	for _, id := range cfg.ModelIDs {
-		if cfg.Source == nil {
-			return nil, core.NewError("mlx: HF metadata source is required for model id lookup")
-		}
 		meta, err := cfg.Source.ModelMetadata(ctx, id)
 		if err != nil {
 			return nil, err
@@ -381,9 +389,25 @@ func localModelID(inputPath, root string) string {
 	return core.PathBase(root)
 }
 
+// localModelFiles patterns: precomputed so the make([]string,...) literal
+// is not re-built per call. The path glob payload is the dominant cost
+// (one Path call + one glob syscall per pattern) so this is presentation
+// rather than a perf hot spot, but it keeps the call site allocation-free
+// for the iteration list itself.
+var localModelFilePatterns = []string{
+	"*.safetensors",
+	"*.gguf",
+	"*.bin",
+	"tokenizer.json",
+	"tokenizer_config.json",
+}
+
 func localModelFiles(root string) []ModelFile {
-	var files []ModelFile
-	for _, pattern := range []string{"*.safetensors", "*.gguf", "*.bin", "tokenizer.json", "tokenizer_config.json"} {
+	// Pre-size: a typical pack has 1-4 safetensors shards + tokenizer.json
+	// + tokenizer_config.json. 8 is a comfortable initial capacity that
+	// avoids growslice for almost every real model.
+	files := make([]ModelFile, 0, 8)
+	for _, pattern := range localModelFilePatterns {
 		for _, path := range core.PathGlob(core.PathJoin(root, pattern)) {
 			info := core.Stat(path)
 			var size uint64
@@ -717,8 +741,13 @@ func (config ModelConfig) normalized() ModelConfig {
 	if text.ModelType == "" {
 		text.ModelType = config.ModelType
 	}
-	if len(text.Architectures) == 0 {
-		text.Architectures = append([]string(nil), config.Architectures...)
+	if len(text.Architectures) == 0 && len(config.Architectures) > 0 {
+		// core.SliceClone — explicit zero-copy substrate primitive that
+		// produces a backing array sized to len(src) only. The previous
+		// append([]string(nil), src...) form went through the runtime
+		// growslice path which over-allocates capacity for further appends
+		// we never make.
+		text.Architectures = core.SliceClone(config.Architectures)
 	}
 	return text
 }
