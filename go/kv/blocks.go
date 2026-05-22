@@ -563,6 +563,12 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		// accumulates a known count, so geometric grow is pure waste.
 		Tokens: make([]int32, 0, totalTokens),
 	}
+	// Pre-size the per-head KeyBytes/ValueBytes buffers against the summed
+	// raw payload across all blocks. appendKVSnapshotRawBlock otherwise
+	// rides through Go's geometric grow on every block — once on first
+	// arrival, plus one or two grows by block 3. The pre-sum pass walks
+	// blocks × layers × heads but does no allocs.
+	preSizeAssembledRawBytes(assembled, blocks)
 	for _, block := range blocks {
 		if block.Snapshot == nil {
 			return nil, core.NewError("mlx: KV snapshot block is nil")
@@ -580,6 +586,39 @@ func AssembleBlocks(blocks []Block) (*Snapshot, error) {
 		assembled.TokenOffset = len(assembled.Tokens)
 	}
 	return assembled, nil
+}
+
+// preSizeAssembledRawBytes pre-allocates per-head raw byte buffers in the
+// assembled snapshot against the total payload across all blocks. Saves
+// the appendKVSnapshotRawBlock geometric-grow path during AssembleBlocks.
+func preSizeAssembledRawBytes(assembled *Snapshot, blocks []Block) {
+	if assembled == nil || len(assembled.Layers) == 0 || len(blocks) == 0 {
+		return
+	}
+	for layerIndex := range assembled.Layers {
+		for headIndex := range assembled.Layers[layerIndex].Heads {
+			var keyTotal, valueTotal int
+			for _, block := range blocks {
+				if block.Snapshot == nil || layerIndex >= len(block.Snapshot.Layers) {
+					continue
+				}
+				srcLayer := block.Snapshot.Layers[layerIndex]
+				if headIndex >= len(srcLayer.Heads) {
+					continue
+				}
+				srcHead := srcLayer.Heads[headIndex]
+				keyTotal += len(srcHead.KeyBytes)
+				valueTotal += len(srcHead.ValueBytes)
+			}
+			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
+			if keyTotal > 0 {
+				dstHead.KeyBytes = make([]byte, 0, keyTotal)
+			}
+			if valueTotal > 0 {
+				dstHead.ValueBytes = make([]byte, 0, valueTotal)
+			}
+		}
+	}
 }
 
 func validateKVSnapshotBlockOrder(blocks []Block) (int, error) {
@@ -601,6 +640,21 @@ func validateKVSnapshotBlockOrder(blocks []Block) (int, error) {
 
 func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 	out := make([]LayerSnapshot, len(layers))
+	// Heads-slab: one backing slice across all layers — typical assembled
+	// snapshots carry uniform NumHeads per layer (the first block sets
+	// shape so we use it as the slab size). Layers with a divergent head
+	// count fall back to per-layer make.
+	var slabHeadsPerLayer int
+	for _, layer := range layers {
+		if len(layer.Heads) > slabHeadsPerLayer {
+			slabHeadsPerLayer = len(layer.Heads)
+		}
+	}
+	var headSlab []HeadSnapshot
+	var slabCursor int
+	if slabHeadsPerLayer > 0 {
+		headSlab = make([]HeadSnapshot, len(layers)*slabHeadsPerLayer)
+	}
 	for i, layer := range layers {
 		out[i] = LayerSnapshot{
 			Layer:      layer.Layer,
@@ -610,8 +664,14 @@ func emptyKVSnapshotLayers(layers []LayerSnapshot) []LayerSnapshot {
 			ValueDType: layer.ValueDType,
 			ValueShape: core.SliceClone(layer.ValueShape),
 		}
-		if len(layer.Heads) > 0 {
-			out[i].Heads = make([]HeadSnapshot, len(layer.Heads))
+		headCount := len(layer.Heads)
+		if headCount > 0 {
+			if headSlab != nil && slabCursor+headCount <= len(headSlab) {
+				out[i].Heads = headSlab[slabCursor : slabCursor+headCount : slabCursor+headCount]
+				slabCursor += headCount
+			} else {
+				out[i].Heads = make([]HeadSnapshot, headCount)
+			}
 		}
 	}
 	return out
