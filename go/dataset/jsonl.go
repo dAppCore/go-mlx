@@ -189,6 +189,12 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 func messagesFromOpenAI(records []messageRecord) []inference.Message {
 	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
+		// Short-circuit empty rows before the Trim/NormaliseRole
+		// work — JSON unmarshal leaves missing fields as "" so
+		// this is a hot skip for sparse messages.
+		if record.Role == "" && record.Content == "" {
+			continue
+		}
 		role := chat.NormaliseRole(record.Role)
 		content := core.Trim(record.Content)
 		if role == "" && content == "" {
@@ -202,6 +208,9 @@ func messagesFromOpenAI(records []messageRecord) []inference.Message {
 func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
 	out := make([]inference.Message, 0, len(records))
 	for _, record := range records {
+		if record.From == "" && record.Value == "" {
+			continue
+		}
 		role := chat.NormaliseRole(record.From)
 		content := core.Trim(record.Value)
 		if role == "" && content == "" {
