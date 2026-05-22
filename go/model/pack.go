@@ -456,12 +456,27 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		return
 	}
 	if !resolved.NativeRuntime {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
+		// The unsupported-runtime message specialises on the resolved
+		// profile we already hold; pass it in directly so we don't
+		// re-enter profile.LookupArchitectureProfile (full trim, alias
+		// scan, clone) just to read the same shape.
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessageFor(&resolved, pack.Architecture), pack.ConfigPath)
 	}
 }
 
+// modelPackUnsupportedRuntimeMessage retains the lookup-by-name shape
+// for external callers; in-package consumers route through
+// modelPackUnsupportedRuntimeMessageFor with a profile they already
+// own to skip the redundant LookupArchitectureProfile.
 func modelPackUnsupportedRuntimeMessage(architecture string) string {
 	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
+		return modelPackUnsupportedRuntimeMessageFor(&profile, architecture)
+	}
+	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
+}
+
+func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitectureProfile, architecture string) string {
+	if profile != nil {
 		switch {
 		case profile.ID == "qwen3_6":
 			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet; use mlx_lm fallback: " + architecture
