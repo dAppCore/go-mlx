@@ -291,6 +291,9 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 }
 
 func DTypeByteSize(dtype string) (int, error) {
+	// Canonical fast path covers the four supported dtypes by exact
+	// match (the common case after RefFromHeader has normalised
+	// entry.DType through core.Upper).
 	switch dtype {
 	case "F16", "BF16":
 		return 2, nil
@@ -299,16 +302,29 @@ func DTypeByteSize(dtype string) (int, error) {
 	case "F64":
 		return 8, nil
 	}
-	switch core.Upper(dtype) {
-	case "F16", "BF16":
-		return 2, nil
-	case "F32":
-		return 4, nil
-	case "F64":
-		return 8, nil
-	default:
-		return 0, core.NewError("unsupported dense safetensors dtype: " + dtype)
+	// Non-canonical input (callers handing us lowercase / mixed case).
+	// Branch by length so we never call core.Upper — that path was
+	// dominating the 26 ns / 1 alloc on lowercase "bf16". Each branch
+	// is a single direct byte compare for the ASCII letters.
+	switch len(dtype) {
+	case 3:
+		// F16, F32, F64.
+		if (dtype[0] == 'F' || dtype[0] == 'f') && dtype[1] == '1' && dtype[2] == '6' {
+			return 2, nil
+		}
+		if (dtype[0] == 'F' || dtype[0] == 'f') && dtype[1] == '3' && dtype[2] == '2' {
+			return 4, nil
+		}
+		if (dtype[0] == 'F' || dtype[0] == 'f') && dtype[1] == '6' && dtype[2] == '4' {
+			return 8, nil
+		}
+	case 4:
+		// BF16.
+		if (dtype[0] == 'B' || dtype[0] == 'b') && (dtype[1] == 'F' || dtype[1] == 'f') && dtype[2] == '1' && dtype[3] == '6' {
+			return 2, nil
+		}
 	}
+	return 0, core.NewError("unsupported dense safetensors dtype: " + dtype)
 }
 
 func maxIntValue() int { return int(^uint(0) >> 1) }
