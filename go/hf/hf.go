@@ -79,13 +79,19 @@ func (s *RemoteSource) SearchModels(ctx context.Context, query string, limit int
 	if limit <= 0 {
 		limit = 10
 	}
-	values := core.URLValues{
-		"search": []string{query},
-		"limit":  []string{core.Itoa(limit)},
-		"full":   []string{"true"},
-	}
+	// Build the query string directly via Concat — the previous form
+	// allocated a URLValues map plus three []string{...} entries, then
+	// url.Values.Encode() did a sorted string build. The HF /api/models
+	// endpoint doesn't care about parameter order, so a direct Concat is
+	// equivalent on the wire and saves four small allocations.
 	var models []ModelMetadata
-	target := core.Concat(s.baseURL, "/api/models?", values.Encode())
+	target := core.Concat(
+		s.baseURL,
+		"/api/models?full=true&limit=",
+		strconv.Itoa(limit),
+		"&search=",
+		core.URLEncode(query),
+	)
 	if err := s.getJSON(ctx, target, &models); err != nil {
 		return nil, err
 	}
