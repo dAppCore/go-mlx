@@ -220,6 +220,15 @@ func EstimateCPUSplitFFNMemory(ctx context.Context, sourcePath string, opts ...C
 	return executor.EstimateMemoryReport(ctx)
 }
 
+// Per-call error sentinels — ForwardFFN runs hot (per layer per token),
+// EstimateMemoryReport runs per estimate. Hoisting the constant-string
+// errors keeps the allocation off the hot path for the executor-nil and
+// hidden-size-mismatch guard branches.
+var (
+	errMLXCPUSplitFFNExecutorNil       = core.NewError("mlx: CPU split FFN executor is nil")
+	errMLXCPUSplitFFNHiddenMismatch    = core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
+)
+
 func loadCPUSplitFFNExecutor(ctx context.Context, sourcePath string, cfg CPUSplitFFNConfig) (*CPUSplitFFNExecutor, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -369,13 +378,13 @@ func (executor *CPUSplitFFNExecutor) ForwardFFN(ctx context.Context, req SplitFF
 		return SplitFFNResult{}, err
 	}
 	if executor == nil {
-		return SplitFFNResult{}, core.NewError("mlx: CPU split FFN executor is nil")
+		return SplitFFNResult{}, errMLXCPUSplitFFNExecutorNil
 	}
 	if req.Layer < 0 || req.Layer >= executor.cfg.NumHiddenLayers {
 		return SplitFFNResult{}, core.Errorf("mlx: CPU split FFN layer %d out of range", req.Layer)
 	}
 	if len(req.Hidden) == 0 || len(req.Hidden)%executor.cfg.HiddenSize != 0 {
-		return SplitFFNResult{}, core.NewError("mlx: CPU split FFN hidden state does not match model hidden size")
+		return SplitFFNResult{}, errMLXCPUSplitFFNHiddenMismatch
 	}
 	layer, err := executor.layer(ctx, req.Layer)
 	if err != nil {
@@ -437,7 +446,7 @@ func (executor *CPUSplitFFNExecutor) EstimateMemoryReport(ctx context.Context) (
 		return CPUSplitFFNMemoryReport{}, err
 	}
 	if executor == nil {
-		return CPUSplitFFNMemoryReport{}, core.NewError("mlx: CPU split FFN executor is nil")
+		return CPUSplitFFNMemoryReport{}, errMLXCPUSplitFFNExecutorNil
 	}
 	report := CPUSplitFFNMemoryReport{
 		Estimated:     true,
