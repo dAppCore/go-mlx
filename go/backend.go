@@ -756,12 +756,16 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	totalValue := 0
 	totalKeyBytes := 0
 	totalValueBytes := 0
-	totalShape := 0
+	// totalInt32 covers per-layer KeyShape + ValueShape AND the top-level
+	// Tokens + Generated + LogitShape slices — all share the same int32
+	// element type and the same once-per-snapshot lifetime, so they share
+	// one arena. Drops 3 + 2×layers small clones to 1 outer alloc.
+	totalInt32 := len(result.Tokens) + len(result.Generated) + len(result.LogitShape)
 	for i := range resultLayers {
 		layer := &resultLayers[i]
 		heads := layer.Heads
 		totalHeads += len(heads)
-		totalShape += len(layer.KeyShape) + len(layer.ValueShape)
+		totalInt32 += len(layer.KeyShape) + len(layer.ValueShape)
 		for j := range heads {
 			head := &heads[j]
 			totalKey += len(head.Key)
@@ -792,20 +796,16 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if totalValueBytes > 0 {
 		valueBytesSlab = make([]byte, totalValueBytes)
 	}
-	// Per-layer KeyShape + ValueShape get the same arena treatment as the
-	// per-head data — 2 SliceClones per layer = 60 allocs/snapshot on
-	// Gemma 4 E4B (30 layers) drops to 1 outer alloc. Single int32 slab
-	// shared across both shape families since they have identical type.
-	var shapeSlab []int32
-	if totalShape > 0 {
-		shapeSlab = make([]int32, totalShape)
+	var int32Slab []int32
+	if totalInt32 > 0 {
+		int32Slab = make([]int32, totalInt32)
 	}
 	headsOffset := 0
 	keyOffset := 0
 	valueOffset := 0
 	keyBytesOffset := 0
 	valueBytesOffset := 0
-	shapeOffset := 0
+	int32Offset := 0
 	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
 	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
 	// ~160 B (6 slice headers + 2 dtype strings); for deep models (Gemma
@@ -824,20 +824,20 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		case len(layer.KeyShape) == 0:
 			keyShape = []int32{}
 		default:
-			end := shapeOffset + len(layer.KeyShape)
-			keyShape = shapeSlab[shapeOffset:end:end]
+			end := int32Offset + len(layer.KeyShape)
+			keyShape = int32Slab[int32Offset:end:end]
 			copy(keyShape, layer.KeyShape)
-			shapeOffset = end
+			int32Offset = end
 		}
 		switch {
 		case layer.ValueShape == nil:
 		case len(layer.ValueShape) == 0:
 			valueShape = []int32{}
 		default:
-			end := shapeOffset + len(layer.ValueShape)
-			valueShape = shapeSlab[shapeOffset:end:end]
+			end := int32Offset + len(layer.ValueShape)
+			valueShape = int32Slab[int32Offset:end:end]
 			copy(valueShape, layer.ValueShape)
-			shapeOffset = end
+			int32Offset = end
 		}
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
@@ -912,18 +912,52 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		}
 		headsOffset = headsEnd
 	}
+	// Top-level int32 slices share the same arena as the per-layer shape
+	// clones — preserves the same nil-in/empty-in/non-empty semantics
+	// core.SliceClone provided so downstream callers see no change.
+	var tokens, generated, logitShape []int32
+	switch {
+	case result.Tokens == nil:
+	case len(result.Tokens) == 0:
+		tokens = []int32{}
+	default:
+		end := int32Offset + len(result.Tokens)
+		tokens = int32Slab[int32Offset:end:end]
+		copy(tokens, result.Tokens)
+		int32Offset = end
+	}
+	switch {
+	case result.Generated == nil:
+	case len(result.Generated) == 0:
+		generated = []int32{}
+	default:
+		end := int32Offset + len(result.Generated)
+		generated = int32Slab[int32Offset:end:end]
+		copy(generated, result.Generated)
+		int32Offset = end
+	}
+	switch {
+	case result.LogitShape == nil:
+	case len(result.LogitShape) == 0:
+		logitShape = []int32{}
+	default:
+		end := int32Offset + len(result.LogitShape)
+		logitShape = int32Slab[int32Offset:end:end]
+		copy(logitShape, result.LogitShape)
+		int32Offset = end
+	}
 	return &kv.Snapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
-		Tokens:        core.SliceClone(result.Tokens),
-		Generated:     core.SliceClone(result.Generated),
+		Tokens:        tokens,
+		Generated:     generated,
 		TokenOffset:   result.TokenOffset,
 		NumLayers:     result.NumLayers,
 		NumHeads:      result.NumHeads,
 		SeqLen:        result.SeqLen,
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
-		LogitShape:    core.SliceClone(result.LogitShape),
+		LogitShape:    logitShape,
 		Logits:        core.SliceClone(result.Logits),
 		Layers:        layers,
 	}
@@ -946,12 +980,16 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	totalHeads := 0
 	totalKey := 0
 	totalValue := 0
-	totalShape := 0
+	// totalInt32 covers per-layer KeyShape + ValueShape AND the top-level
+	// Tokens + Generated + LogitShape slices — all share the same int32
+	// element type and the same once-per-snapshot lifetime, so they share
+	// one arena. Drops 3 + 2×layers small clones to 1 outer alloc.
+	totalInt32 := len(result.Tokens) + len(result.Generated) + len(result.LogitShape)
 	for i := range resultLayers {
 		layer := &resultLayers[i]
 		heads := layer.Heads
 		totalHeads += len(heads)
-		totalShape += len(layer.KeyShape) + len(layer.ValueShape)
+		totalInt32 += len(layer.KeyShape) + len(layer.ValueShape)
 		for j := range heads {
 			head := &heads[j]
 			totalKey += len(head.Key)
@@ -966,17 +1004,14 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if totalValue > 0 {
 		valueSlab = make([]float32, totalValue)
 	}
-	// Per-layer KeyShape + ValueShape share a single int32 arena. 2 clones
-	// per layer = 60 allocs/snapshot on Gemma 4 E4B (30 layers); single
-	// outer alloc collapses that to 1 regardless of layer count.
-	var shapeSlab []int32
-	if totalShape > 0 {
-		shapeSlab = make([]int32, totalShape)
+	var int32Slab []int32
+	if totalInt32 > 0 {
+		int32Slab = make([]int32, totalInt32)
 	}
 	headsOffset := 0
 	keyOffset := 0
 	valueOffset := 0
-	shapeOffset := 0
+	int32Offset := 0
 	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
 	// + N×head struct-copy elision on the inverse direction.
 	for i := range resultLayers {
@@ -991,20 +1026,20 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		case len(layer.KeyShape) == 0:
 			keyShape = []int32{}
 		default:
-			end := shapeOffset + len(layer.KeyShape)
-			keyShape = shapeSlab[shapeOffset:end:end]
+			end := int32Offset + len(layer.KeyShape)
+			keyShape = int32Slab[int32Offset:end:end]
 			copy(keyShape, layer.KeyShape)
-			shapeOffset = end
+			int32Offset = end
 		}
 		switch {
 		case layer.ValueShape == nil:
 		case len(layer.ValueShape) == 0:
 			valueShape = []int32{}
 		default:
-			end := shapeOffset + len(layer.ValueShape)
-			valueShape = shapeSlab[shapeOffset:end:end]
+			end := int32Offset + len(layer.ValueShape)
+			valueShape = int32Slab[int32Offset:end:end]
 			copy(valueShape, layer.ValueShape)
-			shapeOffset = end
+			int32Offset = end
 		}
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
@@ -1057,18 +1092,52 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		}
 		headsOffset = headsEnd
 	}
+	// Top-level int32 slices share the same arena as the per-layer shape
+	// clones — preserves the same nil-in/empty-in/non-empty semantics
+	// core.SliceClone provided so downstream callers see no change.
+	var tokens, generated, logitShape []int32
+	switch {
+	case result.Tokens == nil:
+	case len(result.Tokens) == 0:
+		tokens = []int32{}
+	default:
+		end := int32Offset + len(result.Tokens)
+		tokens = int32Slab[int32Offset:end:end]
+		copy(tokens, result.Tokens)
+		int32Offset = end
+	}
+	switch {
+	case result.Generated == nil:
+	case len(result.Generated) == 0:
+		generated = []int32{}
+	default:
+		end := int32Offset + len(result.Generated)
+		generated = int32Slab[int32Offset:end:end]
+		copy(generated, result.Generated)
+		int32Offset = end
+	}
+	switch {
+	case result.LogitShape == nil:
+	case len(result.LogitShape) == 0:
+		logitShape = []int32{}
+	default:
+		end := int32Offset + len(result.LogitShape)
+		logitShape = int32Slab[int32Offset:end:end]
+		copy(logitShape, result.LogitShape)
+		int32Offset = end
+	}
 	return &metal.KVSnapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
-		Tokens:        core.SliceClone(result.Tokens),
-		Generated:     core.SliceClone(result.Generated),
+		Tokens:        tokens,
+		Generated:     generated,
 		TokenOffset:   result.TokenOffset,
 		NumLayers:     result.NumLayers,
 		NumHeads:      result.NumHeads,
 		SeqLen:        result.SeqLen,
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
-		LogitShape:    core.SliceClone(result.LogitShape),
+		LogitShape:    logitShape,
 		Logits:        core.SliceClone(result.Logits),
 		Layers:        layers,
 	}
