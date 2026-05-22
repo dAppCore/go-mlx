@@ -48,6 +48,12 @@ func FilterThinkingTokens(tok *Tokenizer, ids []int32, cfg parser.Config, info M
 	}
 	processor := parser.NewProcessor(cfg, parserHint(info))
 	builder := core.NewBuilder()
+	// Pre-grow the builder for the expected output footprint —
+	// 4 bytes/token is a conservative average that covers ASCII +
+	// most short BPE pieces, so we sidestep the initial capacity
+	// doublings the un-sized builder otherwise pays as the loop
+	// streams pieces in. Grow(0) is a no-op when ids is empty.
+	builder.Grow(len(ids) * 4)
 	// Hoist the one-element scratch slice for fallback decode out of
 	// the loop — the previous []int32{id} literal escaped to the heap
 	// on every fallback iteration, even when IDToken hits the inverse
