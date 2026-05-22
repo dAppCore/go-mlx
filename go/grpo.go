@@ -418,7 +418,7 @@ func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOCon
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
-	path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Metrics.Steps))
+	path := core.PathJoin(cfg.CheckpointDir, grpoStepName(result.Metrics.Steps))
 	meta := NewGRPOCheckpointMetadata(path, cfg, result, update)
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: update, Metadata: meta}); err != nil {
@@ -768,6 +768,35 @@ func loadGRPOResumeMetadata(path string) (*GRPOCheckpointMetadata, error) {
 
 func grpoCheckpointMetadataPath(path string) string {
 	return core.PathJoin(path, "grpo_checkpoint.json")
+}
+
+// grpoStepName renders the step-NNNNNN directory name used for GRPO
+// checkpoints. Same output as fmt.Sprintf("step-%06d", step) — six-
+// digit zero-pad below 1e6, untruncated digit count above. Built with
+// strconv.AppendInt so no fmt format-parser + no interface-boxing of
+// the int arg; pre-sized output keeps the alloc count at one.
+func grpoStepName(step int) string {
+	const prefix = "step-"
+	const padTo = 6
+	// Allocate room for the prefix plus enough digits — 20 covers the
+	// max int64 width.
+	buf := make([]byte, 0, len(prefix)+20)
+	buf = append(buf, prefix...)
+	if step >= 0 && step < 100000 {
+		// Hand-rolled zero-pad — strconv.Itoa lacks a Printf-style
+		// width modifier, so for the typical sub-1e5 range we count
+		// leading zeros ourselves. Above 1e5 strconv emits the full
+		// width naturally.
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
+	}
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
 }
 
 type grpoMetricAccumulator struct {
