@@ -175,3 +175,55 @@ func BenchmarkInfo_ReadInfo_VocabHeavy(b *testing.B) {
 		benchSinkInfo, benchSinkErr = ReadInfo(tmp)
 	}
 }
+
+// quantize.go hot-loop benches. Per AX-11 — the inner block loop runs
+// once per 32 float32s; a 7B-parameter tensor takes ~200M iterations.
+// Cost shape is dominated by the per-block math (scale + per-element
+// quantise) so measuring at 8192 values (256 blocks) gives a stable
+// per-iteration cost without dwarfing the warm-up.
+
+var benchSinkBytes []byte
+
+func benchQuantizeValues(n int) []float32 {
+	out := make([]float32, n)
+	// Deterministic-but-non-trivial input: sine-modulated so block
+	// max-abs varies across blocks (forces the scale + invScale path
+	// to actually execute, vs constant-zero input which would short-
+	// circuit the inner loop).
+	for i := range out {
+		// Map i into a small float range with sign flips. Pure-Go math
+		// to keep the bench file free of imports it doesn't already use.
+		x := float32(i%256) - 128
+		out[i] = x / 64
+	}
+	return out
+}
+
+func BenchmarkQuantize_Q8_0(b *testing.B) {
+	values := benchQuantizeValues(8192)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkBytes = quantizeQ8_0(values)
+	}
+}
+
+func BenchmarkQuantize_Q4_0(b *testing.B) {
+	values := benchQuantizeValues(8192)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkBytes = quantizeQ4_0(values)
+	}
+}
+
+func BenchmarkQuantize_MaxAbs(b *testing.B) {
+	values := benchQuantizeValues(8192)
+	var sink float32
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sink = maxAbsFloat32(values)
+	}
+	_ = sink
+}
