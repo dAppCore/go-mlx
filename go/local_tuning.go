@@ -173,19 +173,30 @@ func PlanLocalTuning(ctx context.Context, req inference.TuningPlanRequest) (infe
 	runtime, runtimeWarning := tuningRuntimeForArchitecture(runtime, modelIdentity.Architecture)
 
 	workloads := tuningWorkloadsOrDefault(req.Workloads)
+	// Pre-size Candidates + Recommended for the loop below. The loop
+	// emits up to len(workloads) candidates (clamped by maxCandidates
+	// when set) and one Recommended entry per workload that doesn't
+	// already have one — sizing both up front skips the
+	// double-on-grow allocation rhythm append() would otherwise
+	// trigger on the workload sweep.
+	candidateCap := len(workloads)
+	maxCandidates := req.Budget.MaxCandidates
+	if maxCandidates > 0 && maxCandidates < candidateCap {
+		candidateCap = maxCandidates
+	}
 	plan := inference.TuningPlan{
 		Runtime:     runtime,
 		Device:      tuningDeviceInfo(device),
 		Model:       modelIdentity,
 		Adapter:     req.Adapter,
 		Workloads:   workloads,
-		Recommended: map[inference.TuningWorkload]string{},
+		Candidates:  make([]inference.TuningCandidate, 0, candidateCap),
+		Recommended: make(map[inference.TuningWorkload]string, candidateCap),
 		Labels:      cloneTuningLabels(req.Labels),
 	}
 	if runtimeWarning != "" {
 		plan.Warnings = append(plan.Warnings, runtimeWarning)
 	}
-	maxCandidates := req.Budget.MaxCandidates
 	for _, workload := range workloads {
 		candidate := tuningCandidateForWorkload(workload, modelIdentity, req.Adapter, runtime, memoryPlan)
 		plan.Candidates = append(plan.Candidates, candidate)
