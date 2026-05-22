@@ -520,26 +520,54 @@ func weightFormatAndBytes(files []ModelFile) (string, uint64) {
 }
 
 func inferQuantBits(files []ModelFile) int {
+	if len(files) == 0 {
+		return 0
+	}
+	// Reusable scratch buffer for the lowered form. Most filenames are
+	// already lowercase ("model-q4_k_m.gguf") so the hot path skips the
+	// allocation entirely; only mixed-case names pay for one lowering.
+	// Scratch is reused across iterations: the previous lowered string is
+	// not referenced past its switch block, so overwriting is safe.
+	var scratch []byte
 	for _, file := range files {
-		name := core.Lower(file.filename())
+		name := file.filename()
+		var lowered string
+		if hasASCIIUpper(name) {
+			scratch = appendLowerASCII(scratch[:0], name)
+			lowered = core.AsString(scratch)
+		} else {
+			lowered = name
+		}
 		switch {
-		case core.Contains(name, "q2"):
+		case core.Contains(lowered, "q2"):
 			return 2
-		case core.Contains(name, "q3"):
+		case core.Contains(lowered, "q3"):
 			return 3
-		case core.Contains(name, "q4") || core.Contains(name, "4bit") || core.Contains(name, "4-bit"):
+		case core.Contains(lowered, "q4") || core.Contains(lowered, "4bit") || core.Contains(lowered, "4-bit"):
 			return 4
-		case core.Contains(name, "q5"):
+		case core.Contains(lowered, "q5"):
 			return 5
-		case core.Contains(name, "q6"):
+		case core.Contains(lowered, "q6"):
 			return 6
-		case core.Contains(name, "q8") || core.Contains(name, "8bit") || core.Contains(name, "8-bit"):
+		case core.Contains(lowered, "q8") || core.Contains(lowered, "8bit") || core.Contains(lowered, "8-bit"):
 			return 8
-		case core.Contains(name, "bf16") || core.Contains(name, "fp16") || core.Contains(name, "f16"):
+		case core.Contains(lowered, "bf16") || core.Contains(lowered, "fp16") || core.Contains(lowered, "f16"):
 			return 16
 		}
 	}
 	return 0
+}
+
+// hasASCIIUpper reports whether s contains any ASCII uppercase byte.
+// Pure scan, no allocations — gate before paying for the lowering buffer.
+func hasASCIIUpper(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			return true
+		}
+	}
+	return false
 }
 
 func estimateModelKVBytes(config ModelConfig, contextLength, batchSize, bytesPerElement int) uint64 {
