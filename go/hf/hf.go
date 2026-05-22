@@ -373,9 +373,15 @@ func resolveLocalMetadataRoot(path string) string {
 	return path
 }
 
+// localModelIDSearchPaths is the small array we walk in localModelID —
+// hoisted so the slice literal isn't allocated per call.
+var localModelIDSearchOrder = [2]int{0, 1}
+
 func localModelID(inputPath, root string) string {
-	for _, path := range []string{root, inputPath} {
-		for current := path; current != "" && current != "."; current = core.PathDir(current) {
+	paths := [2]string{root, inputPath}
+	for _, idx := range localModelIDSearchOrder {
+		path := paths[idx]
+		for current := path; current != "" && current != "."; {
 			base := core.PathBase(current)
 			if core.HasPrefix(base, "models--") {
 				return core.Replace(core.TrimPrefix(base, "models--"), "--", "/")
@@ -384,6 +390,7 @@ func localModelID(inputPath, root string) string {
 			if parent == current {
 				break
 			}
+			current = parent
 		}
 	}
 	return core.PathBase(root)
@@ -903,10 +910,22 @@ func jangGroupSize(meta ModelMetadata) int {
 	return 64
 }
 
+// jangProfileLookup parallels needle/value forms with their UPPER variants.
+// Hoisted out of inferJANGProfileName so the literal slice and the
+// per-match core.Upper allocation are paid once at init, not per call.
+var jangProfileLookup = [...]struct{ Lower, Upper string }{
+	{"jang_1l", "JANG_1L"},
+	{"jang_2s", "JANG_2S"},
+	{"jang_2l", "JANG_2L"},
+	{"jang_3l", "JANG_3L"},
+	{"jang_4k", "JANG_4K"},
+	{"jang_4m", "JANG_4M"},
+}
+
 func inferJANGProfileName(value string) string {
-	for _, profile := range []string{"jang_1l", "jang_2s", "jang_2l", "jang_3l", "jang_4k", "jang_4m"} {
-		if core.Contains(value, profile) {
-			return core.Upper(profile)
+	for i := range jangProfileLookup {
+		if core.Contains(value, jangProfileLookup[i].Lower) {
+			return jangProfileLookup[i].Upper
 		}
 	}
 	return "JANG"
