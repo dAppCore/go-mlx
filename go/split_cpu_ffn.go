@@ -936,18 +936,22 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	// for groupSize/bits/elements) on every element of every projection
 	// row. With ~hidden_size elements per row and ~intermediate rows per
 	// token, that ran into the billions per layer.
+	//
+	// matrix.elements equals matrix.rows * matrix.cols by construction
+	// (PackedTensorDescriptor.Elements is the product of shape dims set in
+	// NewPackedTensorDescriptor from []uint64{rows, cols}). With the row
+	// bound check at the top of the function and col < cols <= matrix.cols
+	// inside the loop, every idx is provably under elements, so the per-
+	// element guard from the original (*cpuSplitPackedMatrix).value path
+	// drops out entirely.
 	packed := matrix.packed
 	scales := matrix.scales
 	biases := matrix.biases
 	groupSize := matrix.groupSize
 	bits := matrix.bits
-	elements := matrix.elements
 	var sum float32
 	for col := 0; col < cols; col++ {
 		idx := offset + col
-		if idx < 0 || uint64(idx) >= elements {
-			continue
-		}
 		group := idx / groupSize
 		q := cpuSplitUnpackPackedValue(packed, idx, bits)
 		sum += in[col] * (float32(q)*scales[group] + biases[group])
