@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"slices"
 	"strconv"
 
 	core "dappco.re/go"
@@ -391,7 +392,7 @@ func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, t
 		Output:  plan.OutputPath,
 		Plan:    plan,
 		Weight:  "model.safetensors",
-		Tensors: append([]string(nil), tensors...),
+		Tensors: slices.Clone(tensors),
 		Labels:  cloneStringMap(plan.Labels),
 		WeightMap: map[string]string{
 			"model.safetensors": "selected tensors",
