@@ -209,19 +209,32 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	return plan, nil
 }
 
+// modelSliceStandaloneRequired lists the components that must appear in any
+// plan a caller wants to reload as a complete model. Hoisted to package
+// scope so each modelSliceStandalone call reuses the same four-element
+// backing instead of rebuilding it from literals every time.
+var modelSliceStandaloneRequired = [...]inference.ModelComponent{
+	inference.ModelComponentEmbeddings,
+	inference.ModelComponentAttention,
+	inference.ModelComponentFFN,
+	inference.ModelComponentLMHead,
+}
+
 func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
-	required := []inference.ModelComponent{
-		inference.ModelComponentEmbeddings,
-		inference.ModelComponentAttention,
-		inference.ModelComponentFFN,
-		inference.ModelComponentLMHead,
-	}
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
-	missing := make([]inference.ModelComponent, 0, len(required))
-	for _, component := range required {
+	// Lazy-allocate missing only when the first absent component is
+	// observed. The vast majority of slices passed to standalone checks
+	// either declare ExtractLevelAll (handled above) or have all four
+	// required components, so the typical path now skips the make()
+	// entirely.
+	var missing []inference.ModelComponent
+	for _, component := range modelSliceStandaloneRequired {
 		if !plan.HasComponent(component) {
+			if missing == nil {
+				missing = make([]inference.ModelComponent, 0, len(modelSliceStandaloneRequired))
+			}
 			missing = append(missing, component)
 		}
 	}
