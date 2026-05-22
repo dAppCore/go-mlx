@@ -504,9 +504,19 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		quantBits = inferQuantBits(meta.Files)
 	}
 
+	// Hoist the architecture profile lookup: previously planFit hit
+	// profile.LookupArchitectureProfile up to 5 times per call
+	// (archSupported x2, resolveArchitectureProfile, archNativeRuntime,
+	// usesGenerationKVCache), and each lookup clones the profile (deep
+	// slice clones — dominant alloc per profile in the bench was 71%).
+	// One lookup, used everywhere downstream.
+	archProfile, archProfileOK := profile.LookupArchitectureProfile(arch)
+	supportedArch := archProfileOK
+	nativeRuntime := archProfileOK && archProfile.NativeRuntime
+
 	pack := mp.ModelPack{
 		Architecture:          arch,
-		SupportedArchitecture: archSupported(arch),
+		SupportedArchitecture: supportedArch,
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
 		QuantType:             quantType,
@@ -514,13 +524,18 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		ContextLength:         contextLimit,
 		WeightBytes:           weightBytes,
 	}
-	resolveArchitectureProfile(&pack)
+	// Share the already-cloned profile rather than have
+	// resolveArchitectureProfile do a second lookup-and-clone.
+	if archProfileOK {
+		clone := archProfile
+		pack.ArchitectureProfile = &clone
+	}
 	memoryPlan := memory.NewPlan(memory.Input{Device: cfg.Device, Pack: &pack})
 	if cfg.ContextHint > 0 && cfg.ContextHint < memoryPlan.ContextLength {
 		memoryPlan.ContextLength = cfg.ContextHint
 	}
 	kvBytes := uint64(0)
-	if usesGenerationKVCache(&pack, arch) {
+	if packUsesKVCache(&pack, archProfileOK, archProfile) {
 		kvBytes = estimateModelKVBytes(config, memoryPlan.ContextLength, memoryPlan.BatchSize, cfg.KVBytes)
 	}
 	runtimeBytes := estimateRuntimeOverheadBytes(weightBytes)
@@ -538,7 +553,7 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		LocalPath:             entry.localPath,
 		Source:                entry.source,
 		Architecture:          arch,
-		SupportedArchitecture: archSupported(arch),
+		SupportedArchitecture: supportedArch,
 		WeightFormat:          format,
 		QuantBits:             quantBits,
 		QuantGroup:            quantGroup,
@@ -554,12 +569,28 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 		Embeddings:            pack.Embedding != nil,
 		Rerank:                pack.Rerank != nil,
 	}
-	plan.NativeLoadable = plan.SupportedArchitecture && archNativeRuntime(arch) && format != ""
+	plan.NativeLoadable = supportedArch && nativeRuntime && format != ""
 	plan.MemoryFits = weightBytes > 0 && (limit == 0 || totalBytes <= limit)
 	plan.InferenceFits = plan.NativeLoadable && plan.MemoryFits
 	plan.Training = estimateTrainingFit(config, plan, limit, cfg.LoRARank)
 	plan.Notes = fitNotes(plan, limit)
 	return plan
+}
+
+// packUsesKVCache is the planFit-local variant of usesGenerationKVCache.
+// Skips the per-call profile.LookupArchitectureProfile inside the public
+// helper (the planFit caller already has the lookup result) and the
+// pack.ArchitectureProfile probe (we set it from the same lookup).
+func packUsesKVCache(pack *mp.ModelPack, archProfileOK bool, archProfile profile.ModelArchitectureProfile) bool {
+	if pack != nil {
+		if pack.Embedding != nil || pack.Rerank != nil {
+			return false
+		}
+	}
+	if archProfileOK && (archProfile.Embeddings || archProfile.Rerank) {
+		return false
+	}
+	return true
 }
 
 func weightFormatAndBytes(files []ModelFile) (string, uint64) {
