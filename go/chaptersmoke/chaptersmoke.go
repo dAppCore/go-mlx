@@ -549,9 +549,9 @@ func (s *countingStore) UniqueReads() int {
 }
 
 func (s *countingStore) record(chunkID int) {
+	// newCountingStore is the only constructor and it initialises
+	// s.unique, so the nil-guard is dead. Hot inner of every Get /
+	// Resolve / ResolveBytes — strip the branch.
 	s.reads++
-	if s.unique == nil {
-		s.unique = map[int]struct{}{}
-	}
 	s.unique[chunkID] = struct{}{}
 }
