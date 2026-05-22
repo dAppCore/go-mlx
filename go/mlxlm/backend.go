@@ -48,6 +48,7 @@ var bridgeFS embed.FS
 var (
 	mlxlmCore         = newMLXLMCore()
 	bridgeScriptLock  = mlxlmCore.Lock("mlxlm.bridgeScript").Mutex
+	bridgeScriptDone  core.AtomicBool // fast-path probe — set after first init
 	bridgeScriptReady bool
 	bridgeScriptPath  string // extracted bridge.py temp path (created once per process)
 	bridgeScriptError error
@@ -60,6 +61,14 @@ var (
 //
 //	bridgePath, err := extractScript() // called automatically by LoadModel
 func extractScript() (string, error) {
+	// Fast path: post-init readers skip the mutex entirely via an
+	// atomic acquire on the "done" flag. The path/error pair is
+	// published-before via the matching atomic store inside the
+	// locked block; only the very first writer pays the lock cost.
+	if bridgeScriptDone.Load() {
+		return bridgeScriptPath, bridgeScriptError
+	}
+
 	bridgeScriptLock.Lock()
 	defer bridgeScriptLock.Unlock()
 
@@ -71,19 +80,23 @@ func extractScript() (string, error) {
 	data, err := bridgeFS.ReadFile("bridge.py")
 	if err != nil {
 		bridgeScriptError = core.E("mlxlm.extractScript", "read embedded bridge.py", err)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
 	if dir == "" {
 		bridgeScriptError = core.E("mlxlm.extractScript", "create temp dir", nil)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	p := core.JoinPath(dir, "bridge.py")
 	if err := coreio.Local.Write(p, string(data)); err != nil {
 		bridgeScriptError = core.E("mlxlm.extractScript", "write bridge.py", err)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	bridgeScriptPath = p
+	bridgeScriptDone.Store(true)
 	return bridgeScriptPath, bridgeScriptError
 }
 
