@@ -27,33 +27,44 @@ func All() []Condition {
 
 // Normalize parses user input into a canonical substrate condition.
 func Normalize(value string) (Condition, error) {
-	switch core.Lower(core.Trim(value)) {
-	case "", "cont", "continuous", "continuous-stream":
-		return CONT, nil
-	case "trad", "traditional", "traditional-runner":
-		return TRAD, nil
-	case "trad-no-replay", "trad_no_replay", "traditional-no-replay":
-		return TRADNoReplay, nil
-	case "cont-with-gap", "cont_with_gap", "continuous-with-gap":
-		return CONTWithGap, nil
-	default:
-		return "", core.NewError("substrate: unsupported condition: " + value)
+	// Fast path: already-canonical inputs (the dominant case for
+	// CLI flags + config-loaded values) skip the Trim+Lower
+	// allocation pair entirely.
+	if c, ok := lookupCondition(value); ok {
+		return c, nil
 	}
+	if c, ok := lookupCondition(core.Lower(core.Trim(value))); ok {
+		return c, nil
+	}
+	return "", core.NewError("substrate: unsupported condition: " + value)
 }
 
 // MustNormalize parses user input and falls back to CONT when invalid.
 func MustNormalize(value string) Condition {
-	switch core.Lower(core.Trim(value)) {
+	if c, ok := lookupCondition(value); ok {
+		return c
+	}
+	if c, ok := lookupCondition(core.Lower(core.Trim(value))); ok {
+		return c
+	}
+	return CONT
+}
+
+// lookupCondition returns the canonical Condition for one of the
+// recognised aliases or false for any other input. Held as a single
+// switch so Normalize / MustNormalize share the alias-table.
+func lookupCondition(value string) (Condition, bool) {
+	switch value {
 	case "", "cont", "continuous", "continuous-stream":
-		return CONT
+		return CONT, true
 	case "trad", "traditional", "traditional-runner":
-		return TRAD
+		return TRAD, true
 	case "trad-no-replay", "trad_no_replay", "traditional-no-replay":
-		return TRADNoReplay
+		return TRADNoReplay, true
 	case "cont-with-gap", "cont_with_gap", "continuous-with-gap":
-		return CONTWithGap
+		return CONTWithGap, true
 	default:
-		return CONT
+		return "", false
 	}
 }
 

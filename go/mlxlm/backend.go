@@ -48,6 +48,7 @@ var bridgeFS embed.FS
 var (
 	mlxlmCore         = newMLXLMCore()
 	bridgeScriptLock  = mlxlmCore.Lock("mlxlm.bridgeScript").Mutex
+	bridgeScriptDone  core.AtomicBool // fast-path probe — set after first init
 	bridgeScriptReady bool
 	bridgeScriptPath  string // extracted bridge.py temp path (created once per process)
 	bridgeScriptError error
@@ -60,6 +61,14 @@ var (
 //
 //	bridgePath, err := extractScript() // called automatically by LoadModel
 func extractScript() (string, error) {
+	// Fast path: post-init readers skip the mutex entirely via an
+	// atomic acquire on the "done" flag. The path/error pair is
+	// published-before via the matching atomic store inside the
+	// locked block; only the very first writer pays the lock cost.
+	if bridgeScriptDone.Load() {
+		return bridgeScriptPath, bridgeScriptError
+	}
+
 	bridgeScriptLock.Lock()
 	defer bridgeScriptLock.Unlock()
 
@@ -71,19 +80,23 @@ func extractScript() (string, error) {
 	data, err := bridgeFS.ReadFile("bridge.py")
 	if err != nil {
 		bridgeScriptError = core.E("mlxlm.extractScript", "read embedded bridge.py", err)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	dir := (&core.Fs{}).New("/").TempDir("mlxlm-")
 	if dir == "" {
 		bridgeScriptError = core.E("mlxlm.extractScript", "create temp dir", nil)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	p := core.JoinPath(dir, "bridge.py")
 	if err := coreio.Local.Write(p, string(data)); err != nil {
 		bridgeScriptError = core.E("mlxlm.extractScript", "write bridge.py", err)
+		bridgeScriptDone.Store(true)
 		return bridgeScriptPath, bridgeScriptError
 	}
 	bridgeScriptPath = p
+	bridgeScriptDone.Store(true)
 	return bridgeScriptPath, bridgeScriptError
 }
 
@@ -202,6 +215,15 @@ type mutex interface {
 	Unlock()
 }
 
+// chatMessagePayload is the wire shape mlxlm.Chat ships to bridge.py
+// for each turn. Held as a typed struct rather than a map[string]string
+// so each Chat call pays one slice allocation, not len(messages) map
+// allocations.
+type chatMessagePayload struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 func optionalFloat32Field(v any, fieldName string) (float32, bool) {
 	field := reflect.ValueOf(v).FieldByName(fieldName)
 	if !field.IsValid() {
@@ -240,6 +262,35 @@ func (model *mlxlmmodel) recv() (map[string]any, error) {
 		return nil, core.E("mlxlm.recv", "parse response", nil)
 	}
 	return obj, nil
+}
+
+// tokenResponse is the typed shape of a single streaming response from
+// bridge.py during Generate/Chat. Decoding into this struct avoids the
+// map[string]any allocation + four interface{} lookups + type
+// assertions the per-token path otherwise pays.
+type tokenResponse struct {
+	Token   string  `json:"token"`
+	TokenID float64 `json:"token_id"`
+	Error   string  `json:"error"`
+	Done    *bool   `json:"done"`
+}
+
+// recvToken reads and parses one streaming response line during
+// Generate/Chat. Allocates a stack-friendly typed value instead of the
+// map[string]any that recv returns.
+func (model *mlxlmmodel) recvToken(resp *tokenResponse) error {
+	line, err := model.stdout.ReadLine()
+	if err != nil {
+		if err == io.EOF {
+			return core.E("mlxlm.recv", "subprocess closed stdout", nil)
+		}
+		return core.E("mlxlm.recv", "read subprocess stdout", err)
+	}
+	*resp = tokenResponse{}
+	if r := core.JSONUnmarshal(line, resp); !r.OK {
+		return core.E("mlxlm.recv", "parse response", nil)
+	}
+	return nil
 }
 
 // Generate streams tokens from the subprocess for the given prompt.
@@ -282,6 +333,7 @@ func (model *mlxlmmodel) Generate(ctx context.Context, prompt string, opts ...in
 			return
 		}
 
+		var resp tokenResponse
 		for {
 			select {
 			case <-ctx.Done():
@@ -292,28 +344,21 @@ func (model *mlxlmmodel) Generate(ctx context.Context, prompt string, opts ...in
 			default:
 			}
 
-			response, err := model.recv()
-			if err != nil {
+			if err := model.recvToken(&resp); err != nil {
 				model.lastErr = err
 				return
 			}
 
-			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = core.E("mlxlm.Generate", errMsg, nil)
+			if resp.Error != "" {
+				model.lastErr = core.E("mlxlm.Generate", resp.Error, nil)
 				return
 			}
 
-			if _, ok := response["done"]; ok {
+			if resp.Done != nil {
 				return
 			}
 
-			text, _ := response["token"].(string)
-			var id int32
-			if fid, ok := response["token_id"].(float64); ok {
-				id = int32(fid)
-			}
-
-			if !yield(inference.Token{ID: id, Text: text}) {
+			if !yield(inference.Token{ID: int32(resp.TokenID), Text: resp.Token}) {
 				model.cancelRequest("mlxlm.Generate")
 				model.drain()
 				return
@@ -335,11 +380,16 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 		defer model.mu.Unlock()
 		model.lastErr = nil
 
-		messagePayloads := make([]map[string]string, len(messages))
+		// Serialise as a typed struct rather than N maps with two
+		// string keys each — drops len(messages) map allocations
+		// (~5-100B per map plus map-header overhead) to a single
+		// slice allocation. bridge.py reads role/content via
+		// dict.get() so JSON key order is irrelevant.
+		messagePayloads := make([]chatMessagePayload, len(messages))
 		for i, msg := range messages {
-			messagePayloads[i] = map[string]string{
-				"role":    msg.Role,
-				"content": msg.Content,
+			messagePayloads[i] = chatMessagePayload{
+				Role:    msg.Role,
+				Content: msg.Content,
 			}
 		}
 
@@ -369,6 +419,7 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 			return
 		}
 
+		var resp tokenResponse
 		for {
 			select {
 			case <-ctx.Done():
@@ -379,28 +430,21 @@ func (model *mlxlmmodel) Chat(ctx context.Context, messages []inference.Message,
 			default:
 			}
 
-			response, err := model.recv()
-			if err != nil {
+			if err := model.recvToken(&resp); err != nil {
 				model.lastErr = err
 				return
 			}
 
-			if errMsg, ok := response["error"].(string); ok {
-				model.lastErr = core.E("mlxlm.Chat", errMsg, nil)
+			if resp.Error != "" {
+				model.lastErr = core.E("mlxlm.Chat", resp.Error, nil)
 				return
 			}
 
-			if _, ok := response["done"]; ok {
+			if resp.Done != nil {
 				return
 			}
 
-			text, _ := response["token"].(string)
-			var id int32
-			if fid, ok := response["token_id"].(float64); ok {
-				id = int32(fid)
-			}
-
-			if !yield(inference.Token{ID: id, Text: text}) {
+			if !yield(inference.Token{ID: int32(resp.TokenID), Text: resp.Token}) {
 				model.cancelRequest("mlxlm.Chat")
 				model.drain()
 				return
@@ -491,15 +535,12 @@ func (model *mlxlmmodel) Close() error {
 
 // drain discards subprocess output until "done" or "error", keeping the protocol in sync.
 func (model *mlxlmmodel) drain() {
+	var resp tokenResponse
 	for {
-		response, err := model.recv()
-		if err != nil {
+		if err := model.recvToken(&resp); err != nil {
 			return
 		}
-		if _, ok := response["done"]; ok {
-			return
-		}
-		if _, ok := response["error"]; ok {
+		if resp.Done != nil || resp.Error != "" {
 			return
 		}
 	}
@@ -574,11 +615,27 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 //	layerSuffix(7)  // "07"
 //	layerSuffix(28) // "28"
 func layerSuffix(layerIndex int) string {
-	if layerIndex >= 0 && layerIndex < 10 {
-		return "0" + core.Itoa(layerIndex)
+	if layerIndex >= 0 && layerIndex < len(layerSuffixTable) {
+		return layerSuffixTable[layerIndex]
 	}
 	return core.Itoa(layerIndex)
 }
+
+// layerSuffixTable holds the precomputed two-digit zero-padded labels
+// for layers 0..99 — covers every architecture currently shipped
+// (Gemma-3B = 28, Llama-3-8B = 32, Llama-3-70B = 80) without an Itoa
+// allocation per call.
+var layerSuffixTable = func() [100]string {
+	var table [100]string
+	for i := 0; i < len(table); i++ {
+		if i < 10 {
+			table[i] = "0" + core.Itoa(i)
+		} else {
+			table[i] = core.Itoa(i)
+		}
+	}
+	return table
+}()
 
 // reshapeFloat32 reads raw little-endian float32 bytes and reshapes them into
 // [numHeads][stride] slices, one slice per attention head.
@@ -588,13 +645,25 @@ func layerSuffix(layerIndex int) string {
 func reshapeFloat32(data []byte, numHeads, stride int) [][]float32 {
 	totalFloats := len(data) / 4
 	heads := make([][]float32, numHeads)
-	for h := range numHeads {
+	if stride <= 0 || numHeads <= 0 {
+		return heads
+	}
+	// Determine how many full heads fit, then allocate one backing
+	// buffer for all of them and slice it into capped per-head views.
+	// Drops N+1 allocations (one per head plus the outer slice) to two
+	// — outer slice header + backing buffer — for a typical Gemma-3B
+	// inspection with 32 heads × 640-float stride.
+	fullHeads := totalFloats / stride
+	if fullHeads > numHeads {
+		fullHeads = numHeads
+	}
+	if fullHeads == 0 {
+		return heads
+	}
+	backing := make([]float32, fullHeads*stride)
+	for h := 0; h < fullHeads; h++ {
 		start := h * stride
-		end := start + stride
-		if end > totalFloats {
-			break
-		}
-		head := make([]float32, stride)
+		head := backing[start : start+stride : start+stride]
 		base := start * 4
 		for i := 0; i < stride; i++ {
 			bits := binary.LittleEndian.Uint32(data[base+i*4 : base+i*4+4])
@@ -618,50 +687,84 @@ func (model *mlxlmmodel) kill() {
 	}
 }
 
-const maxJSONLineBytes = 1024 * 1024
+const (
+	maxJSONLineBytes      = 1024 * 1024
+	jsonReaderInitialSize = 32 * 1024
+)
 
 type jsonlinereader struct {
 	reader  io.Reader
-	pending []byte
-	scratch []byte
+	buf     []byte // ring-style: live data lives at [readPos:writePos]
+	readPos int
+	writePos int
 }
 
 func newJSONLineReader(reader io.Reader) *jsonlinereader {
 	return &jsonlinereader{
-		reader:  reader,
-		pending: make([]byte, 0, 32*1024),
-		scratch: make([]byte, 32*1024),
+		reader: reader,
+		buf:    make([]byte, jsonReaderInitialSize),
 	}
 }
 
 func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
-		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
-			line := core.SliceClone(reader.pending[:index])
-			if len(line) > 0 && line[len(line)-1] == '\r' {
-				line = line[:len(line)-1]
+		if reader.writePos > reader.readPos {
+			pending := reader.buf[reader.readPos:reader.writePos]
+			if index := bytes.IndexByte(pending, '\n'); index >= 0 {
+				line := core.SliceClone(pending[:index])
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
+				reader.readPos += index + 1
+				if reader.readPos == reader.writePos {
+					reader.readPos, reader.writePos = 0, 0
+				}
+				return line, nil
 			}
-			reader.pending = reader.pending[index+1:]
-			return line, nil
 		}
 
-		if len(reader.pending) >= maxJSONLineBytes {
+		pendingLen := reader.writePos - reader.readPos
+		if pendingLen >= maxJSONLineBytes {
 			return nil, core.E("mlxlm.recv", "JSONL line exceeds 1 MiB", nil)
 		}
 
-		chunk := reader.scratch
-		if remaining := maxJSONLineBytes - len(reader.pending); remaining < len(chunk) {
-			chunk = chunk[:remaining]
+		// Compact: shift live bytes to head when the tail is full but
+		// the head has been consumed. Avoids the per-Read append-copy
+		// the previous design paid by routing reads through a separate
+		// scratch buffer.
+		if reader.writePos == len(reader.buf) {
+			if reader.readPos > 0 {
+				copy(reader.buf, reader.buf[reader.readPos:reader.writePos])
+				reader.writePos = pendingLen
+				reader.readPos = 0
+			} else {
+				// Tail full, nothing to compact — grow toward the cap.
+				target := len(reader.buf) * 2
+				if target > maxJSONLineBytes {
+					target = maxJSONLineBytes
+				}
+				if target == len(reader.buf) {
+					return nil, core.E("mlxlm.recv", "JSONL line exceeds 1 MiB", nil)
+				}
+				grown := make([]byte, target)
+				copy(grown, reader.buf[:reader.writePos])
+				reader.buf = grown
+			}
 		}
-		n, err := reader.reader.Read(chunk)
+
+		writable := reader.buf[reader.writePos:]
+		if remaining := maxJSONLineBytes - pendingLen; remaining < len(writable) {
+			writable = writable[:remaining]
+		}
+		n, err := reader.reader.Read(writable)
 		if n > 0 {
-			reader.pending = append(reader.pending, chunk[:n]...)
+			reader.writePos += n
 			continue
 		}
 		if err != nil {
-			if err == io.EOF && len(reader.pending) > 0 {
-				line := core.SliceClone(reader.pending)
-				reader.pending = reader.pending[:0]
+			if err == io.EOF && pendingLen > 0 {
+				line := core.SliceClone(reader.buf[reader.readPos:reader.writePos])
+				reader.readPos, reader.writePos = 0, 0
 				return line, nil
 			}
 			return nil, err
@@ -890,7 +993,14 @@ func lookPath(command string) (string, error) {
 
 func executable(path string) bool {
 	info := core.Stat(path)
-	return info.OK && !info.Value.(core.FsFileInfo).IsDir() && info.Value.(core.FsFileInfo).Mode()&0111 != 0
+	if !info.OK {
+		return false
+	}
+	stat, ok := info.Value.(core.FsFileInfo)
+	if !ok {
+		return false
+	}
+	return !stat.IsDir() && stat.Mode()&0111 != 0
 }
 
 func resultError(result core.Result) error {
