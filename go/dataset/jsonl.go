@@ -149,10 +149,14 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 	if len(r.Conversations) > 0 {
 		return MessagesToSample(messagesFromShareGPT(r.Conversations), cfg.ChatTemplate, "sharegpt")
 	}
-	if core.Trim(r.Prompt) != "" || core.Trim(firstNonEmpty(r.Response, r.Completion)) != "" {
+	// Trim each candidate once per row — these used to be called 4-6
+	// times each because firstNonEmpty pre-trimmed for the check then
+	// returned an untrimmed value the caller trimmed again, and the
+	// outer guard re-trimmed for the empty check.
+	if prompt := core.Trim(r.Prompt); prompt != "" || firstNonEmpty(r.Response, r.Completion) != "" {
 		return labelled(Sample{
-			Prompt:   core.Trim(r.Prompt),
-			Response: core.Trim(firstNonEmpty(r.Response, r.Completion)),
+			Prompt:   prompt,
+			Response: firstNonEmpty(r.Response, r.Completion),
 		}, "prompt_response"), true, nil
 	}
 	if core.Trim(r.Instruction) != "" || core.Trim(r.Output) != "" {
@@ -161,9 +165,9 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 			Response: core.Trim(r.Output),
 		}, "alpaca"), true, nil
 	}
-	if core.Trim(firstNonEmpty(r.Problem, r.Question)) != "" || core.Trim(firstNonEmpty(r.Solution, r.Answer)) != "" {
+	if problem := firstNonEmpty(r.Problem, r.Question); problem != "" || firstNonEmpty(r.Solution, r.Answer) != "" {
 		return labelled(Sample{
-			Prompt:   core.Trim(firstNonEmpty(r.Problem, r.Question)),
+			Prompt:   problem,
 			Response: formatReasoningResponse(firstNonEmpty(r.Thinking, r.Reasoning), firstNonEmpty(r.Solution, r.Answer)),
 		}, "reasoning"), true, nil
 	}
@@ -267,10 +271,14 @@ func cloneMessages(messages []inference.Message) []inference.Message {
 	return out
 }
 
+// firstNonEmpty returns the first value with a non-empty trimmed form,
+// already trimmed. Callers were universally trimming the result a
+// second time before use; returning the trimmed value eliminates the
+// duplicate Trim per row.
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
-		if core.Trim(value) != "" {
-			return value
+		if trimmed := core.Trim(value); trimmed != "" {
+			return trimmed
 		}
 	}
 	return ""
