@@ -4,6 +4,8 @@ package mlx
 
 import (
 	"context"
+	"strconv"
+
 	core "dappco.re/go"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/probe"
@@ -186,8 +188,18 @@ func normalizeSFTConfig(cfg SFTConfig) SFTConfig {
 
 // SFTEffectiveBatchSize returns the optimizer batch size after accumulation.
 func SFTEffectiveBatchSize(cfg SFTConfig) int {
-	cfg = normalizeSFTConfig(cfg)
-	return cfg.BatchSize * cfg.GradientAccumulationSteps
+	// Inline only the two field defaults we need — avoids the
+	// six SliceClone operations normalizeSFTLoRAConfig performs on
+	// TargetKeys/TargetLayers backfills.
+	batchSize := cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 1
+	}
+	gradAccum := cfg.GradientAccumulationSteps
+	if gradAccum <= 0 {
+		gradAccum = 1
+	}
+	return batchSize * gradAccum
 }
 
 // BuildSFTTrainingBatches tokenizes an SFT dataset using runner-level batching settings.
@@ -348,7 +360,7 @@ func newSFTMetadata(path string, adapterPath string, model string, cfg SFTConfig
 		EffectiveBatchSize:        SFTEffectiveBatchSize(cfg),
 		MaxSeqLen:                 cfg.MaxSeqLen,
 		SequencePacking:           cfg.SequencePacking,
-		EvalPrompts:               append([]string(nil), cfg.EvalPrompts...),
+		EvalPrompts:               core.SliceClone(cfg.EvalPrompts),
 		LoRA:                      sftLoRAMetadata(cfg.LoRA),
 		AdamW:                     sftAdamWMetadata(sftAdamWConfig(cfg)),
 	}
@@ -360,8 +372,8 @@ func sftLoRAMetadata(cfg LoRAConfig) SFTLoRAMetadata {
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
-		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
+		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      cfg.DType.String(),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
@@ -421,13 +433,13 @@ func normalizeSFTLoRAConfig(cfg LoRAConfig) LoRAConfig {
 		cfg.Scale = cfg.Alpha / float32(cfg.Rank)
 	}
 	if len(cfg.TargetKeys) == 0 && len(cfg.TargetLayers) > 0 {
-		cfg.TargetKeys = append([]string(nil), cfg.TargetLayers...)
+		cfg.TargetKeys = core.SliceClone(cfg.TargetLayers)
 	}
 	if len(cfg.TargetKeys) == 0 {
 		cfg.TargetKeys = []string{"q_proj", "v_proj"}
 	}
 	if len(cfg.TargetLayers) == 0 {
-		cfg.TargetLayers = append([]string(nil), cfg.TargetKeys...)
+		cfg.TargetLayers = core.SliceClone(cfg.TargetKeys)
 	}
 	if cfg.DType == 0 {
 		cfg.DType = DTypeFloat32
@@ -461,6 +473,29 @@ func sftCheckpointMetadataPath(path string) string {
 	return core.PathJoin(path, "sft_checkpoint.json")
 }
 
+// sftStepName renders the step-NNNNNN directory name used for SFT
+// checkpoints — same output as fmt.Sprintf("step-%06d", step). Built
+// with strconv.AppendInt so no fmt format-parser and no interface
+// boxing of the int arg, with a pre-sized scratch buffer keeping the
+// alloc count at one.
+func sftStepName(step int) string {
+	const prefix = "step-"
+	const padTo = 6
+	buf := make([]byte, 0, len(prefix)+20)
+	buf = append(buf, prefix...)
+	if step >= 0 && step < 100000 {
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
+	}
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
+}
+
 type sftBatchBuilder struct {
 	batchSize int
 	current   []sftExample
@@ -483,7 +518,7 @@ func (b *sftBatchBuilder) add(example sftExample) {
 
 func (b *sftBatchBuilder) finish() []SFTBatch {
 	b.flush()
-	return append([]SFTBatch(nil), b.out...)
+	return core.SliceClone(b.out)
 }
 
 func (b *sftBatchBuilder) flush() {
@@ -495,19 +530,20 @@ func (b *sftBatchBuilder) flush() {
 }
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
+	n := len(examples)
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   make([][]int, 0, len(examples)),
-			Length:   make([]int, 0, len(examples)),
-			LossMask: make([][]float32, 0, len(examples)),
+			Tokens:   make([][]int, n),
+			Length:   make([]int, n),
+			LossMask: make([][]float32, n),
 		},
-		Targets: make([][]int, 0, len(examples)),
+		Targets: make([][]int, n),
 	}
-	for _, example := range examples {
-		batch.Batch.Tokens = append(batch.Batch.Tokens, append([]int(nil), example.inputs...))
-		batch.Batch.Length = append(batch.Batch.Length, len(example.inputs))
-		batch.Batch.LossMask = append(batch.Batch.LossMask, append([]float32(nil), example.mask...))
-		batch.Targets = append(batch.Targets, append([]int(nil), example.targets...))
+	for i, example := range examples {
+		batch.Batch.Tokens[i] = core.SliceClone(example.inputs)
+		batch.Batch.Length[i] = len(example.inputs)
+		batch.Batch.LossMask[i] = core.SliceClone(example.mask)
+		batch.Targets[i] = core.SliceClone(example.targets)
 	}
 	return batch
 }
@@ -521,6 +557,12 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		if err != nil {
 			return sftExample{}, false, err
 		}
+		// Pre-size for ids + optional EOS so no growth occurs.
+		extra := 0
+		if !cfg.NoEOS {
+			extra = 1
+		}
+		seq = make([]int32, 0, len(ids)+extra)
 		seq = append(seq, ids...)
 	} else {
 		promptIDs, err := tok.Encode(sample.Prompt)
@@ -532,6 +574,11 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 			return sftExample{}, false, err
 		}
 		promptLen = len(promptIDs)
+		extra := 0
+		if !cfg.NoEOS {
+			extra = 1
+		}
+		seq = make([]int32, 0, len(promptIDs)+len(responseIDs)+extra)
 		seq = append(seq, promptIDs...)
 		seq = append(seq, responseIDs...)
 	}
@@ -550,18 +597,25 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 			mask[i] = 1
 		}
 	} else {
-		for i := range mask {
-			if i+1 >= promptLen {
-				mask[i] = 1
+		// mask is zero-initialised by make — only write the trailing 1s
+		// starting where the response begins (i+1 >= promptLen).
+		start := promptLen - 1
+		if start < 0 {
+			start = 0
+		}
+		if start < len(mask) {
+			tail := mask[start:]
+			for i := range tail {
+				tail[i] = 1
 			}
 		}
 	}
 
 	if cfg.MaxSeqLen > 0 && len(inputs) > cfg.MaxSeqLen {
 		start := len(inputs) - cfg.MaxSeqLen
-		inputs = append([]int(nil), inputs[start:]...)
-		targets = append([]int(nil), targets[start:]...)
-		mask = append([]float32(nil), mask[start:]...)
+		inputs = core.SliceClone(inputs[start:])
+		targets = core.SliceClone(targets[start:])
+		mask = core.SliceClone(mask[start:])
 	}
 	if !hasTrainingTarget(mask) {
 		return sftExample{}, false, nil
@@ -780,7 +834,7 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 	result.Losses = append(result.Losses, lossValue)
 
 	if cfg.CheckpointDir != "" && cfg.CheckpointEvery > 0 && result.Steps%cfg.CheckpointEvery == 0 {
-		path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Steps))
+		path := core.PathJoin(cfg.CheckpointDir, sftStepName(result.Steps))
 		if err := adapter.Save(path); err != nil {
 			return err
 		}
@@ -810,18 +864,18 @@ func (m *Model) runSFTBatchGroup(ctx context.Context, batches []SFTBatch, adapte
 	}
 
 	if sink := sftProbeSink(cfg); sink != nil {
+		meta := make(map[string]string, 6)
+		meta["batch_size"] = strconv.Itoa(cfg.BatchSize)
+		meta["effective_batch_size"] = strconv.Itoa(SFTEffectiveBatchSize(cfg))
+		meta["gradient_accumulation_steps"] = strconv.Itoa(cfg.GradientAccumulationSteps)
+		meta["sequence_packing"] = strconv.FormatBool(cfg.SequencePacking)
+		meta["optimizer_step"] = strconv.Itoa(result.OptimizerSteps)
+		meta["sft_checkpoint_metadata_ver"] = strconv.Itoa(SFTCheckpointMetadataVersion)
 		sink.EmitProbe(probe.Event{
 			Kind:  probe.KindTraining,
 			Phase: probe.PhaseTraining,
 			Step:  result.Steps,
-			Meta: map[string]string{
-				"batch_size":                  core.Sprintf("%d", cfg.BatchSize),
-				"effective_batch_size":        core.Sprintf("%d", SFTEffectiveBatchSize(cfg)),
-				"gradient_accumulation_steps": core.Sprintf("%d", cfg.GradientAccumulationSteps),
-				"sequence_packing":            core.Sprintf("%t", cfg.SequencePacking),
-				"optimizer_step":              core.Sprintf("%d", result.OptimizerSteps),
-				"sft_checkpoint_metadata_ver": core.Sprintf("%d", SFTCheckpointMetadataVersion),
-			},
+			Meta:  meta,
 			Training: &probe.Training{
 				Step:         result.Steps,
 				Epoch:        epoch,
@@ -877,9 +931,17 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 	}
 	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
 		start := len(example.inputs) - p.maxSeqLen
-		example.inputs = append([]int(nil), example.inputs[start:]...)
-		example.targets = append([]int(nil), example.targets[start:]...)
-		example.mask = append([]float32(nil), example.mask[start:]...)
+		example.inputs = core.SliceClone(example.inputs[start:])
+		example.targets = core.SliceClone(example.targets[start:])
+		example.mask = core.SliceClone(example.mask[start:])
+	}
+	// First add into an empty accumulator: pre-size to maxSeqLen (when
+	// known) so the doubling cascade across subsequent appends collapses
+	// into a single allocation per accumulator field.
+	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
+		p.current.inputs = make([]int, 0, p.maxSeqLen)
+		p.current.targets = make([]int, 0, p.maxSeqLen)
+		p.current.mask = make([]float32, 0, p.maxSeqLen)
 	}
 	p.current.inputs = append(p.current.inputs, example.inputs...)
 	p.current.targets = append(p.current.targets, example.targets...)
@@ -899,9 +961,9 @@ func (p *sftStreamingPacker) flush() error {
 		return nil
 	}
 	example := sftExample{
-		inputs:  append([]int(nil), p.current.inputs...),
-		targets: append([]int(nil), p.current.targets...),
-		mask:    append([]float32(nil), p.current.mask...),
+		inputs:  core.SliceClone(p.current.inputs),
+		targets: core.SliceClone(p.current.targets),
+		mask:    core.SliceClone(p.current.mask),
 	}
 	p.current = sftExample{}
 	return p.emit(example)

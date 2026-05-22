@@ -2,6 +2,8 @@
 
 package mlx
 
+import core "dappco.re/go"
+
 const (
 	rootMinInt32 = -1 << 31
 	rootMaxInt32 = 1<<31 - 1
@@ -54,37 +56,39 @@ func normalizeRootIntArg(kind string, value any) int {
 
 func normalizeRootShapeArgs(shape []any) []int32 {
 	if len(shape) == 1 {
+		// Typed-slice fast paths skip per-element interface boxing through
+		// normalizeRootInt32Arg, which would re-wrap each value in `any`.
 		switch dims := shape[0].(type) {
 		case []int:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootInt64ToInt32("shape", int64(dim))
 			}
 			return out
 		case []int32:
-			return append([]int32(nil), dims...)
+			return core.SliceClone(dims)
 		case []int64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootInt64ToInt32("shape", dim)
 			}
 			return out
 		case []uint:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", uint64(dim))
 			}
 			return out
 		case []uint32:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", uint64(dim))
 			}
 			return out
 		case []uint64:
 			out := make([]int32, len(dims))
 			for i, dim := range dims {
-				out[i] = normalizeRootInt32Arg("shape", dim)
+				out[i] = rootUint64ToInt32("shape", dim)
 			}
 			return out
 		}
