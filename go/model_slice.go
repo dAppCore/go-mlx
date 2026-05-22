@@ -572,8 +572,25 @@ var (
 )
 
 func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
-	tokenizer := plan.HasComponent(inference.ModelComponentTokenizer)
-	labels := plan.HasComponent(inference.ModelComponentLabels)
+	// Single-pass detection of the two relevant component flags.
+	// plan.HasComponent runs slices.Contains over plan.Components on
+	// each call; for a typical 8+ component plan that was 16+ string-
+	// equality compares to gate the 4-way switch. One walk over
+	// plan.Components flips both bools and lets the switch run on
+	// direct loads. Early-exit once both flags are set so the typical
+	// "both present" path terminates as soon as it has the answer.
+	var tokenizer, labels bool
+	for _, component := range plan.Components {
+		switch component {
+		case inference.ModelComponentTokenizer:
+			tokenizer = true
+		case inference.ModelComponentLabels:
+			labels = true
+		}
+		if tokenizer && labels {
+			break
+		}
+	}
 	switch {
 	case tokenizer && labels:
 		return modelSliceMetadataFilesBoth
