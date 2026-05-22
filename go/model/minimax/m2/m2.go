@@ -355,11 +355,15 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 			}
 			return scored[i].Score > scored[j].Score
 		})
-		decision := RouterDecision{TokenIndex: tokenIndex}
+		decision := RouterDecision{
+			TokenIndex: tokenIndex,
+			ExpertIDs:  make([]int, topK),
+			Weights:    make([]float32, topK),
+		}
 		total := float32(0)
 		for i := 0; i < topK; i++ {
-			decision.ExpertIDs = append(decision.ExpertIDs, scored[i].ID)
-			decision.Weights = append(decision.Weights, scored[i].Score)
+			decision.ExpertIDs[i] = scored[i].ID
+			decision.Weights[i] = scored[i].Score
 			total += scored[i].Score
 		}
 		if total > 0 {
