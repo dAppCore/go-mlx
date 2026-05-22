@@ -894,10 +894,13 @@ func extractLayerIndex(name string) int {
 }
 
 func inferQuantBits(tensors []ggufTensorInfo) int {
-	counts := map[int]int{}
-	for _, tensor := range tensors {
-		bits := ggufTensorBits(tensor.Type)
-		if bits > 0 {
+	// Bit widths are bounded (1, 2, 3, 4, 5, 6, 8, 16, 32, 64) so a
+	// fixed-size array beats a map both in dispatch (direct index) and
+	// allocation (none). Index 0 unused, 1..64 covers everything.
+	var counts [65]int
+	for i := range tensors {
+		bits := ggufTensorBits(tensors[i].Type)
+		if bits > 0 && bits < len(counts) {
 			counts[bits]++
 		}
 	}
@@ -905,6 +908,9 @@ func inferQuantBits(tensors []ggufTensorInfo) int {
 	bestBits := 0
 	bestCount := 0
 	for bits, count := range counts {
+		if count == 0 {
+			continue
+		}
 		if count > bestCount || (count == bestCount && bits > bestBits) {
 			bestBits = bits
 			bestCount = count
