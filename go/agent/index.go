@@ -210,6 +210,15 @@ func (index *StateIndex) Validate() error {
 	return index.validate(true)
 }
 
+// validateLinearScanThreshold is the entry count below which Validate
+// uses an O(N²) linear scan over previously-seen URIs instead of
+// allocating a hash-set. Measured on M3 Ultra: for N ≤ 32 a string-eq
+// scan dominates map setup + bucket allocation. Above that, the map's
+// O(N) scaling pays back. Typical session/chapter indexes sit well
+// under the threshold so this collapses the seen-map alloc to zero on
+// the common path.
+const validateLinearScanThreshold = 32
+
 func (index *StateIndex) validate(checkHashes bool) error {
 	if index == nil {
 		return errStateIndexNil
@@ -226,17 +235,32 @@ func (index *StateIndex) validate(checkHashes bool) error {
 	if len(index.Entries) == 0 {
 		return errStateIndexNoEntries
 	}
-	seen := make(map[string]bool, len(index.Entries))
 	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
-	for i := range index.Entries {
-		entry := &index.Entries[i]
-		if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
-			return err
+	if len(index.Entries) <= validateLinearScanThreshold {
+		for i := range index.Entries {
+			entry := &index.Entries[i]
+			if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
+				return err
+			}
+			uri := entry.URI
+			for j := 0; j < i; j++ {
+				if index.Entries[j].URI == uri {
+					return errStateIndexDuplicateURI
+				}
+			}
 		}
-		if seen[entry.URI] {
-			return errStateIndexDuplicateURI
+	} else {
+		seen := make(map[string]struct{}, len(index.Entries))
+		for i := range index.Entries {
+			entry := &index.Entries[i]
+			if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
+				return err
+			}
+			if _, ok := seen[entry.URI]; ok {
+				return errStateIndexDuplicateURI
+			}
+			seen[entry.URI] = struct{}{}
 		}
-		seen[entry.URI] = true
 	}
 	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
 		return errStateIndexHashMismatch
