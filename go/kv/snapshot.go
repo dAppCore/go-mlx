@@ -912,19 +912,17 @@ type kvSnapshotReader struct {
 }
 
 type kvSnapshotStreamWriter struct {
-	writer  stdio.Writer
-	err     error
-	buf     [4]byte
-	scratch []byte
+	writer stdio.Writer
+	err    error
+	buf    [4]byte
 }
 
 // kvSnapshotStreamWriterPool reuses streamWriter structs across
 // writeWithOptions calls — the struct escapes to heap (interface-
-// satisfying methods + &stream pointer threading), and its embedded
-// scratch buffer is the dominant alloc on subsequent encode passes.
-// SaveStateBlocks fires writeWithOptions per block hash + per block
-// payload + final bundle hash, so a pool collapses 6-8 stream allocs
-// into one across a single SaveStateBlocks call.
+// satisfying methods + &stream pointer threading). SaveStateBlocks
+// fires writeWithOptions per block hash + per block payload + final
+// bundle hash, so a pool collapses 6-8 stream allocs into one across
+// a single SaveStateBlocks call.
 var kvSnapshotStreamWriterPool = sync.Pool{
 	New: func() any { return &kvSnapshotStreamWriter{} },
 }
@@ -939,18 +937,7 @@ func acquireKVStreamWriter(writer stdio.Writer) *kvSnapshotStreamWriter {
 func releaseKVStreamWriter(stream *kvSnapshotStreamWriter) {
 	stream.writer = nil
 	stream.err = nil
-	// scratch slice retained for reuse — its capacity grows over time.
 	kvSnapshotStreamWriterPool.Put(stream)
-}
-
-// scratchFor returns a scratch buffer of length n, reusing the
-// previously-allocated scratch slice when it fits.
-func (w *kvSnapshotStreamWriter) scratchFor(n int) []byte {
-	if cap(w.scratch) < n {
-		w.scratch = make([]byte, n)
-		return w.scratch
-	}
-	return w.scratch[:n]
 }
 
 func (w *kvSnapshotStreamWriter) bytes(data []byte) {
@@ -992,17 +979,14 @@ func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	if w.err != nil || len(values) == 0 {
 		return
 	}
-	// Stage the whole block into the writer's reused scratch buffer
-	// then issue one writer.Write — saves N calls into writer.Write
-	// per value (sha256 + PutBytesStream both pay per-call overhead).
-	// Reinterpret-cast: int32 is little-endian on both arm64 and amd64
-	// (the only Go-supported architectures), so the byte view of
-	// []int32 matches the per-element PutUint32(uint32(value)) output.
-	// See f32sRaw for the same pattern.
-	buf := w.scratchFor(len(values) * 4)
+	// Reinterpret-cast write: int32 storage is little-endian on both
+	// arm64 and amd64 (Go-supported architectures), so the byte view
+	// of []int32 already matches the per-element PutUint32 output.
+	// Pass the byte view straight to writer.Write — writers (sha256,
+	// PutBytesStream) consume the data within the call, so we don't
+	// need a scratch staging copy. Same pattern as f32sRaw.
 	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
-	copy(buf, src)
-	w.bytes(buf)
+	w.bytes(src)
 }
 
 func (w *kvSnapshotStreamWriter) f32s(values []float32) {
@@ -1015,22 +999,16 @@ func (w *kvSnapshotStreamWriter) f32sRaw(values []float32) {
 	if w.err != nil || len(values) == 0 {
 		return
 	}
-	// Stage the whole block into the writer's reused scratch buffer
-	// then issue one writer.Write — saves N calls into writer.Write
-	// per value (sha256 + PutBytesStream both pay per-call overhead).
-	//
-	// Reinterpret-cast the source slice as bytes — float32 storage
-	// is little-endian on both Go-supported architectures (arm64 and
-	// amd64), so the byte view of a []float32 already matches what
-	// PutUint32(buf, math.Float32bits(v)) writes element-by-element.
-	// One memcpy vs N×(PutUint32 + Float32bits) — measured ~4.3× on
-	// 2048-element runs and shaves ~2 µs off WriteWithOptions per
-	// 2048-token snapshot. Pattern is established in
-	// go/internal/metal/io_custom.go.
-	buf := w.scratchFor(len(values) * 4)
+	// Reinterpret-cast write: float32 storage is little-endian on both
+	// Go-supported architectures (arm64 + amd64), so the byte view of
+	// []float32 already matches what PutUint32(buf, Float32bits(v))
+	// would write element-by-element. Pass the byte view straight to
+	// writer.Write — writers (sha256, PutBytesStream) consume the data
+	// within the call, so the staging copy via the previously-pooled
+	// scratch buffer was net waste (memcpy into scratch then memcpy
+	// into the writer's own buffer). One memcpy vs two.
 	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
-	copy(buf, src)
-	w.bytes(buf)
+	w.bytes(src)
 }
 
 func (w *kvSnapshotStreamWriter) encodedTensor(values []float32, dtype string, raw []byte, encoding Encoding) error {
