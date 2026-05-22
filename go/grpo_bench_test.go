@@ -182,6 +182,66 @@ func BenchmarkGRPO_RewardContainsAnswer(b *testing.B) {
 	}
 }
 
+// BenchmarkGRPO_RewardContainsAnswer_MatchInText — match lives in the
+// long Text fragment instead of the short Answer field. Exercises the
+// linear scan over a representative rollout completion.
+func BenchmarkGRPO_RewardContainsAnswer_MatchInText(b *testing.B) {
+	fn := GRPORewardContainsAnswer(1)
+	ctx := GRPORewardContext{
+		Sample: GRPOSample{ExpectedAnswer: "forty two"},
+		Rollout: GRPORollout{
+			Answer:    "the result follows",
+			Text:      "The arithmetic produces forty two so the answer is right",
+			Reasoning: "Adding seventeen and twenty five gives the same number",
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		grpoBenchSinkReward, _ = fn(ctx)
+	}
+}
+
+// BenchmarkGRPO_RewardContainsAnswer_NoMatch — expected answer absent
+// from all three fragments. Worst-case linear scan over all three
+// fragments without a hit.
+func BenchmarkGRPO_RewardContainsAnswer_NoMatch(b *testing.B) {
+	fn := GRPORewardContainsAnswer(1)
+	ctx := GRPORewardContext{
+		Sample: GRPOSample{ExpectedAnswer: "1729"},
+		Rollout: GRPORollout{
+			Answer:    "42",
+			Text:      "The arithmetic produces forty two so the answer is 42",
+			Reasoning: "Adding seventeen and twenty five gives forty two",
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		grpoBenchSinkReward, _ = fn(ctx)
+	}
+}
+
+// BenchmarkGRPO_RewardContainsAnswer_Unicode — expected answer contains
+// a non-ASCII character (an em-dash "—"). Forces the fallback to
+// core.Join + core.Lower so we keep visibility on the slower path.
+func BenchmarkGRPO_RewardContainsAnswer_Unicode(b *testing.B) {
+	fn := GRPORewardContainsAnswer(1)
+	ctx := GRPORewardContext{
+		Sample: GRPOSample{ExpectedAnswer: "vingt — quatre"},
+		Rollout: GRPORollout{
+			Answer:    "vingt — quatre",
+			Text:      "La réponse est vingt — quatre",
+			Reasoning: "L'addition produit vingt — quatre",
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		grpoBenchSinkReward, _ = fn(ctx)
+	}
+}
+
 // BenchmarkGRPO_RewardExactAnswer — sister bench, exercises the
 // exact-match scorer.
 func BenchmarkGRPO_RewardExactAnswer(b *testing.B) {
