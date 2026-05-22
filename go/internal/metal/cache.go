@@ -113,7 +113,11 @@ func NewKVCache() *KVCache {
 
 func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	prev := c.offset
-	shape := k.Shape()
+	// Stack-allocated shape scratch — KV tensors are always rank-4 ([B,H,L,D]).
+	// Avoids the per-call []int32 heap allocs from k.Shape() / v.Shape() /
+	// c.keys.Shape(). On the bench hot path these were 3 allocs of 24 B each.
+	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	shape := k.ShapeInto(kShapeBuf[:0])
 	if len(shape) < 4 {
 		// K/V must be [B, H, L, D] — if not, pass through unchanged
 		if c.keys == nil {
@@ -123,10 +127,10 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		return c.keys, c.values
 	}
 	B, H, Dk := shape[0], shape[1], shape[3]
-	Dv := v.Shape()[3]
+	Dv := v.ShapeInto(vShapeBuf[:0])[3]
 
 	// Grow buffer if needed.
-	if c.keys == nil || (prev+seqLen) > int(c.keys.Shape()[2]) {
+	if c.keys == nil || (prev+seqLen) > c.keys.Dim(2) {
 		nSteps := (c.step + seqLen - 1) / c.step
 		newK := Zeros([]int32{B, H, int32(nSteps * c.step), Dk}, k.Dtype())
 		newV := Zeros([]int32{B, H, int32(nSteps * c.step), Dv}, v.Dtype())

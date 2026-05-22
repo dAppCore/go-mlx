@@ -360,6 +360,22 @@ func (t *Array) Shape() []int32 {
 	return dims
 }
 
+// ShapeInto writes the array's dimensions into dst[:NumDims()] and returns
+// the populated subslice. dst must have cap >= NumDims(). Callers can hand
+// in a stack-allocated buffer or a pooled scratch to avoid the per-call
+// `make([]int32, ndim)` heap alloc that Shape() pays.
+//
+//	var scratch [maxTensorRank]int32
+//	shape := arr.ShapeInto(scratch[:0])
+func (t *Array) ShapeInto(dst []int32) []int32 {
+	n := t.NumDims()
+	dst = dst[:n]
+	for i := 0; i < n; i++ {
+		dst[i] = int32(t.Dim(i))
+	}
+	return dst
+}
+
 // Size returns the total number of elements.
 //
 //	n := weights.Size() // e.g. 4096*4096 = 16777216
