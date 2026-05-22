@@ -726,15 +726,19 @@ func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {
 }
 
 func cloneSplitInferencePlan(plan inference.SplitInferencePlan) *inference.SplitInferencePlan {
-	cloned := plan
-	// core.SliceClone short-circuits to nil for nil-input slices without
-	// calling runtime.makeslice / typedslicecopy — the prior append([]T(nil),
-	// nil...) form still emitted both calls. For Components and Notes, the
-	// vast majority of plans have one or the other empty.
-	cloned.LocalSlice.Components = core.SliceClone(plan.LocalSlice.Components)
-	cloned.LocalSlice.Notes = core.SliceClone(plan.LocalSlice.Notes)
-	cloned.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
-	cloned.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
-	cloned.Labels = cloneInferenceLabels(plan.Labels)
-	return &cloned
+	// plan is already a value-copy taken on parameter receive — mutating
+	// its slice/map fields in place builds the cloned shape without the
+	// extra `cloned := plan` struct-copy the prior form paid. Returning
+	// &plan escapes the parameter to heap, replacing the two-copy
+	// (parameter + cloned local) pattern with one heap-allocated value.
+	//
+	// core.SliceClone still short-circuits to nil for nil-input slices,
+	// keeping the typical "Components present, Notes empty" plan shape
+	// alloc-light for the slice/map sub-fields.
+	plan.LocalSlice.Components = core.SliceClone(plan.LocalSlice.Components)
+	plan.LocalSlice.Notes = core.SliceClone(plan.LocalSlice.Notes)
+	plan.LocalSlice.Labels = cloneInferenceLabels(plan.LocalSlice.Labels)
+	plan.Endpoints = cloneInferenceSplitEndpoints(plan.Endpoints)
+	plan.Labels = cloneInferenceLabels(plan.Labels)
+	return &plan
 }
