@@ -298,14 +298,10 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 		data = appendKVU32(data, uint32(tokenOffset))
 	}
 	data = appendKVU32(data, uint32(len(s.Tokens)))
-	for _, token := range s.Tokens {
-		data = appendKVI32(data, token)
-	}
+	data = appendKVI32sRaw(data, s.Tokens)
 	if version >= 2 {
 		data = appendKVU32(data, uint32(len(s.Generated)))
-		for _, token := range s.Generated {
-			data = appendKVI32(data, token)
-		}
+		data = appendKVI32sRaw(data, s.Generated)
 	}
 	data = appendKVU32(data, uint32(len(s.Layers)))
 	for _, layer := range s.Layers {
@@ -342,9 +338,7 @@ func (s *Snapshot) bytesWithOptions(opts SaveOptions) ([]byte, error) {
 	}
 	if version >= 2 {
 		data = appendKVU32(data, uint32(len(s.LogitShape)))
-		for _, dim := range s.LogitShape {
-			data = appendKVI32(data, dim)
-		}
+		data = appendKVI32sRaw(data, s.LogitShape)
 		data = appendKVF32s(data, s.Logits)
 	}
 	return data, nil
@@ -651,8 +645,14 @@ func appendKVI32(dst []byte, value int32) []byte {
 
 func appendKVI32s(dst []byte, values []int32) []byte {
 	dst = appendKVU32(dst, uint32(len(values)))
+	return appendKVI32sRaw(dst, values)
+}
+
+// appendKVI32sRaw appends int32 values without a length prefix.
+// Used by bytesWithOptions when the length has already been written.
+func appendKVI32sRaw(dst []byte, values []int32) []byte {
 	for _, value := range values {
-		dst = appendKVI32(dst, value)
+		dst = appendKVU32(dst, uint32(value))
 	}
 	return dst
 }
