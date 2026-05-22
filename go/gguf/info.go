@@ -796,8 +796,11 @@ func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes
 	var prefixes [3]string
 	n := 0
 	if architecture != "" {
-		if parts := core.SplitN(architecture, "_", 2); len(parts) == 2 && parts[0] != "" && parts[0] != architecture {
-			prefixes[n] = parts[0]
+		// Inline underscore split: most architectures ("qwen3", "llama",
+		// "gemma") have no underscore — skip the core.SplitN alloc on the
+		// common path. When present, slice without allocating new strings.
+		if idx := core.Index(architecture, "_"); idx > 0 && idx < len(architecture)-1 {
+			prefixes[n] = architecture[:idx]
 			n++
 		}
 		prefixes[n] = architecture
