@@ -12,19 +12,36 @@ import (
 // level so the precondition slot costs no per-call core.NewError alloc.
 var errMLXTokenizerNil = core.NewError("mlx: tokenizer is nil")
 
-// c.Generate(ctx, prompt, mlx.WithThinkingMode(parser.Capture))
-func WithThinkingMode(mode parser.Mode) GenerateOption {
-	return func(c *GenerateConfig) { c.Thinking.Mode = mode }
-}
-
-// Pre-allocated closures for the constant-mode Show/Hide shortcuts —
+// Pre-allocated closures for the constant-mode Show/Hide/Capture shortcuts —
 // the previous WithShowThinking / WithHideThinking helpers built a
 // fresh capturing closure on every call (24 B/op, 1 alloc). With
 // mode fixed, share a single GenerateOption value across all calls.
+// withCaptureModeFn covers WithThinkingMode(parser.Capture) — the
+// dedicated WithCaptureThinking variant still allocates a closure
+// because it also wires the per-call capture callback.
 var (
 	withShowThinkingFn = func(c *GenerateConfig) { c.Thinking.Mode = parser.Show }
 	withHideThinkingFn = func(c *GenerateConfig) { c.Thinking.Mode = parser.Hide }
+	withCaptureModeFn  = func(c *GenerateConfig) { c.Thinking.Mode = parser.Capture }
 )
+
+// c.Generate(ctx, prompt, mlx.WithThinkingMode(parser.Capture))
+//
+// The three known parser.Mode values reuse the static Show/Hide/Capture
+// closures — drops the 24 B per-call closure alloc for the common path.
+// Unknown/future modes (including the zero-value "") fall through to a
+// fresh closure so the API still preserves the per-call mode write.
+func WithThinkingMode(mode parser.Mode) GenerateOption {
+	switch mode {
+	case parser.Show:
+		return withShowThinkingFn
+	case parser.Hide:
+		return withHideThinkingFn
+	case parser.Capture:
+		return withCaptureModeFn
+	}
+	return func(c *GenerateConfig) { c.Thinking.Mode = mode }
+}
 
 // c.Generate(ctx, prompt, mlx.WithShowThinking())
 func WithShowThinking() GenerateOption { return withShowThinkingFn }
