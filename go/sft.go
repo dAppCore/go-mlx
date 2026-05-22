@@ -230,6 +230,13 @@ func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBa
 
 	cfg = normalizeSFTConfig(cfg)
 	builder := newSFTBatchBuilder(cfg.BatchSize)
+	// Hoist a small per-call SFTConfig for buildSFTExample — it only
+	// reads MaxSeqLen + NoEOS and never mutates, so the same value is
+	// safe to share across every sample. Passing the full SFTConfig by
+	// value copied 18 fields (including embedded LoRAConfig with two
+	// []string slices) per sample; the narrowed struct strips that
+	// per-iteration copy. Mirrors BuildDatasetBatches's existing hoist.
+	exampleCfg := SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS}
 	for {
 		sample, ok, err := ds.Next()
 		if err != nil {
@@ -238,7 +245,7 @@ func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBa
 		if !ok {
 			break
 		}
-		example, usable, err := buildSFTExample(tok, sample, cfg)
+		example, usable, err := buildSFTExample(tok, sample, exampleCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -506,7 +513,14 @@ func newSFTBatchBuilder(batchSize int) *sftBatchBuilder {
 	if batchSize <= 0 {
 		batchSize = 1
 	}
-	return &sftBatchBuilder{batchSize: batchSize}
+	// Pre-size current to batchSize — every flush truncates back to :0
+	// with the same backing, so the doubling cascade across the first
+	// batch's appends collapses to a single allocation that gets reused
+	// for every subsequent batch.
+	return &sftBatchBuilder{
+		batchSize: batchSize,
+		current:   make([]sftExample, 0, batchSize),
+	}
 }
 
 func (b *sftBatchBuilder) add(example sftExample) {
@@ -518,7 +532,15 @@ func (b *sftBatchBuilder) add(example sftExample) {
 
 func (b *sftBatchBuilder) finish() []SFTBatch {
 	b.flush()
-	return core.SliceClone(b.out)
+	// Hand b.out directly to the caller — finish() is the terminal
+	// builder call and b is discarded immediately by every existing
+	// caller (BuildSFTBatches / BuildDatasetBatches). The defensive
+	// core.SliceClone the original form paid only trimmed the slice
+	// from append-grown cap down to exact len, providing no isolation
+	// (the SFTBatch elements still share their inner []]int slices).
+	// Caller-side memory hygiene from cap == len is not worth one
+	// per-build allocation.
+	return b.out
 }
 
 func (b *sftBatchBuilder) flush() {
@@ -531,19 +553,36 @@ func (b *sftBatchBuilder) flush() {
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
 	n := len(examples)
+	// Share one [][]int backing across Tokens + Targets — both are the
+	// same type and same length, so a single 2n-wide allocation lets us
+	// carve two n-wide 3-index views into it instead of paying two
+	// separate makes. Length stays [n]int and LossMask stays [n][]float32
+	// (different types — distinct backings required).
+	intRows := make([][]int, 2*n)
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   make([][]int, n),
+			Tokens:   intRows[:n:n],
 			Length:   make([]int, n),
 			LossMask: make([][]float32, n),
 		},
-		Targets: make([][]int, n),
+		Targets: intRows[n : 2*n : 2*n],
 	}
-	for i, example := range examples {
-		batch.Batch.Tokens[i] = core.SliceClone(example.inputs)
+	// Transfer ownership of each example's slices into the batch — the
+	// callers (sftBatchBuilder.flush and runSFTDatasetEpoch.flushCurrent)
+	// truncate the examples slice immediately after this call, dropping
+	// their last live reference to the struct values. Every sftExample
+	// originates from buildSFTExample which always returns fresh
+	// allocations (no aliasing), or from sftStreamingPacker.flush which
+	// already transferred ownership exclusively to the example. The
+	// previous per-element SliceClone trio was three pointless
+	// allocations per example per batch — gone now that the batch is the
+	// sole owner.
+	for i := range examples {
+		example := &examples[i]
+		batch.Batch.Tokens[i] = example.inputs
 		batch.Batch.Length[i] = len(example.inputs)
-		batch.Batch.LossMask[i] = core.SliceClone(example.mask)
-		batch.Targets[i] = core.SliceClone(example.targets)
+		batch.Batch.LossMask[i] = example.mask
+		batch.Targets[i] = example.targets
 	}
 	return batch
 }
@@ -589,9 +628,18 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 		return sftExample{}, false, nil
 	}
 
-	inputs := int32ToIntSlice(seq[:len(seq)-1])
-	targets := int32ToIntSlice(seq[1:])
-	mask := make([]float32, len(inputs))
+	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
+	// shifted by one. Building both in a single index walk lets the loop
+	// amortise bounds-check elision across the two writes instead of
+	// paying for two separate range loops + int widenings.
+	n := len(seq) - 1
+	inputs := make([]int, n)
+	targets := make([]int, n)
+	for i := 0; i < n; i++ {
+		inputs[i] = int(seq[i])
+		targets[i] = int(seq[i+1])
+	}
+	mask := make([]float32, n)
 	if trainWholeText {
 		for i := range mask {
 			mask[i] = 1
@@ -633,17 +681,17 @@ func sftResultError(result core.Result) error {
 	return core.NewError("core result failed")
 }
 
-func int32ToIntSlice(values []int32) []int {
-	out := make([]int, len(values))
-	for i, value := range values {
-		out[i] = int(value)
-	}
-	return out
-}
-
 func hasTrainingTarget(mask []float32) bool {
-	for _, value := range mask {
-		if value != 0 {
+	// Scan backward — the SFT response mask is zero across the prompt
+	// region and one across the response region, with the response
+	// region at the tail. A backward scan finds the first 1 in O(1)
+	// for typical inputs; the original forward scan walked the entire
+	// prompt prefix every time. For trainWholeText the mask is all
+	// ones so direction doesn't matter (O(1) either way). The
+	// no-training-target case still costs O(N) but that's the rare
+	// path filtered out by the caller.
+	for i := len(mask) - 1; i >= 0; i-- {
+		if mask[i] != 0 {
 			return true
 		}
 	}
@@ -772,6 +820,12 @@ func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, ds datas
 	if cfg.SequencePacking {
 		packer = newSFTStreamingPacker(cfg.MaxSeqLen, emit)
 	}
+	// Narrowed per-sample SFTConfig — buildSFTExample only reads
+	// MaxSeqLen + NoEOS so we strip the rest. Avoids copying the full
+	// SFTConfig (including embedded LoRAConfig with two []string
+	// slices) on every dataset row across every epoch. Same trick
+	// BuildDatasetBatches uses for the same call.
+	exampleCfg := SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -783,7 +837,7 @@ func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, ds datas
 		if !ok {
 			break
 		}
-		example, usable, err := buildSFTExample(tok, sample, cfg)
+		example, usable, err := buildSFTExample(tok, sample, exampleCfg)
 		if err != nil {
 			return err
 		}
@@ -896,9 +950,13 @@ func sftAdapterStep(adapter *LoRAAdapter, batches []SFTBatch, optimizer *AdamW) 
 	}
 	metalBatches := make([]Batch, len(batches))
 	targets := make([][][]int, len(batches))
-	for i, batch := range batches {
-		metalBatches[i] = batch.Batch
-		targets[i] = batch.Targets
+	// Index iteration — range over []SFTBatch copies the whole struct
+	// (Batch's three slice headers + Targets' slice header = 96 B) per
+	// iteration just to forward two field reads. Indexing keeps the
+	// loop body to two field loads off the underlying array.
+	for i := range batches {
+		metalBatches[i] = batches[i].Batch
+		targets[i] = batches[i].Targets
 	}
 	return adapter.StepAccumulated(metalBatches, targets, optimizer)
 }
@@ -929,11 +987,18 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 			return err
 		}
 	}
-	if p.maxSeqLen > 0 && len(example.inputs) > p.maxSeqLen {
-		start := len(example.inputs) - p.maxSeqLen
-		example.inputs = core.SliceClone(example.inputs[start:])
-		example.targets = core.SliceClone(example.targets[start:])
-		example.mask = core.SliceClone(example.mask[start:])
+	// Truncate by narrowing the source range — the subsequent appends
+	// already copy into p.current, so the prior SliceClone trio was
+	// wasted intermediate allocation. Mirrors the same pattern adopted
+	// in datasetPacker.add.
+	srcInputs := example.inputs
+	srcTargets := example.targets
+	srcMask := example.mask
+	if p.maxSeqLen > 0 && len(srcInputs) > p.maxSeqLen {
+		start := len(srcInputs) - p.maxSeqLen
+		srcInputs = srcInputs[start:]
+		srcTargets = srcTargets[start:]
+		srcMask = srcMask[start:]
 	}
 	// First add into an empty accumulator: pre-size to maxSeqLen (when
 	// known) so the doubling cascade across subsequent appends collapses
@@ -943,9 +1008,9 @@ func (p *sftStreamingPacker) add(example sftExample) error {
 		p.current.targets = make([]int, 0, p.maxSeqLen)
 		p.current.mask = make([]float32, 0, p.maxSeqLen)
 	}
-	p.current.inputs = append(p.current.inputs, example.inputs...)
-	p.current.targets = append(p.current.targets, example.targets...)
-	p.current.mask = append(p.current.mask, example.mask...)
+	p.current.inputs = append(p.current.inputs, srcInputs...)
+	p.current.targets = append(p.current.targets, srcTargets...)
+	p.current.mask = append(p.current.mask, srcMask...)
 	return nil
 }
 
@@ -960,11 +1025,14 @@ func (p *sftStreamingPacker) flush() error {
 	if p == nil || p.emit == nil || len(p.current.inputs) == 0 {
 		return nil
 	}
-	example := sftExample{
-		inputs:  core.SliceClone(p.current.inputs),
-		targets: core.SliceClone(p.current.targets),
-		mask:    core.SliceClone(p.current.mask),
-	}
+	// Hand the emitted example p.current's backing arrays directly —
+	// the immediately-following p.current = sftExample{} drops our
+	// last reference to them, so the example is the sole owner. The
+	// previous form cloned all three slices then nuked the originals,
+	// paying three pointless allocations per flush. The next add()
+	// re-allocates fresh buffers via the cap(...) == 0 branch, same
+	// cost it pays today.
+	example := p.current
 	p.current = sftExample{}
 	return p.emit(example)
 }

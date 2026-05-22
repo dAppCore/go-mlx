@@ -263,7 +263,10 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cf
 			break
 		}
 		sample := GRPOSampleFromSFT(raw)
-		if core.Trim(sample.Prompt) == "" {
+		// sample.Prompt is already trimmed by GRPOSampleFromSFT — the
+		// previous core.Trim re-scan was wasted work on every dataset
+		// row in every epoch.
+		if sample.Prompt == "" {
 			continue
 		}
 		samples++
@@ -288,15 +291,15 @@ func runGRPOEpoch(ctx context.Context, runner GRPORunner, ds dataset.Dataset, cf
 				return err
 			}
 		}
-		updateGRPOResult(result, accumulator, update)
+		updateGRPOResult(result, accumulator, &update)
 		result.Updates = append(result.Updates, update)
-		if err := maybeSaveGRPOCheckpoint(ctx, runner, cfg, result, update); err != nil {
+		if err := maybeSaveGRPOCheckpoint(ctx, runner, cfg, result, &update); err != nil {
 			return err
 		}
 		if err := maybeRunGRPOEval(ctx, runner, cfg, result, epoch); err != nil {
 			return err
 		}
-		emitGRPOProbe(cfg, result, update, epoch)
+		emitGRPOProbe(cfg, result, &update, epoch)
 	}
 	return nil
 }
@@ -310,7 +313,12 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}
 	rewardFuncs := cfg.RewardFuncs
 	if len(rewardFuncs) == 0 {
-		rewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
+		// Default reward funcs slice is shared package-wide — the
+		// closure has no per-call state (weight=1 is captured at init)
+		// and scoreGRPORollout only reads from the slice. Previously a
+		// fresh closure + 1-element slice fired once per buildGRPOUpdate
+		// call (per training step) for callers using the default config.
+		rewardFuncs = defaultGRPORewardFuncs
 	}
 	// Hoist invariants out of the rollout loop — the KL branch flag and
 	// the cfg-side values never change across rollouts. The compiler
@@ -320,12 +328,40 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	klCoef := cfg.KLCoefficient
 	advEps := cfg.AdvantageEpsilon
 	n := len(rollouts)
+	// Reuse a single GRPORewardContext across rollouts — the user-facing
+	// reward func still receives it by value (scoreGRPORollout derefs
+	// before each fn call), so we just refresh the Rollout + Index
+	// fields per iteration instead of building a fresh ctx struct
+	// (GRPOSample with map header + GRPORollout with strings + slices)
+	// every time. Sample is invariant across the group.
+	rewardCtx := GRPORewardContext{Sample: request.Sample}
+	// Pre-allocate one shared []GRPOReward backing for all rollouts'
+	// parts in this step. scoreGRPORollout carves a per-rollout view
+	// out of it instead of paying its own make per call. Capacity =
+	// n × len(funcs) is the upper bound (every fn produces one entry);
+	// the actual len consumed depends on how many funcs are non-nil.
+	// cloneGRPORollouts later copies these views OUT into the cloned
+	// rollouts' own flat backing, so the shared partsBacking can be
+	// GC'd at the end of buildGRPOUpdate without retaining anything.
+	partsBacking := make([]GRPOReward, 0, n*len(rewardFuncs))
 	for i := 0; i < n; i++ {
-		parts, total, err := scoreGRPORollout(GRPORewardContext{Sample: request.Sample, Rollout: rollouts[i], Index: i}, rewardFuncs)
+		rewardCtx.Rollout = rollouts[i]
+		rewardCtx.Index = i
+		// Hand the running tail of partsBacking to scoreGRPORollout so
+		// it appends into the shared backing rather than allocating its
+		// own parts slice per rollout.
+		start := len(partsBacking)
+		filled, total, err := scoreGRPORollout(&rewardCtx, rewardFuncs, partsBacking)
 		if err != nil {
 			return GRPOUpdate{}, err
 		}
-		rollouts[i].RewardParts = parts
+		partsBacking = filled
+		// Slice rollouts[i].RewardParts as a 3-index view bounded to
+		// what scoreGRPORollout actually appended — capacity is locked
+		// so a subsequent append on this view can't overwrite the next
+		// rollout's range.
+		end := len(partsBacking)
+		rollouts[i].RewardParts = partsBacking[start:end:end]
 		rollouts[i].Reward = total
 		if computeKL {
 			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
@@ -376,52 +412,62 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}, nil
 }
 
-func scoreGRPORollout(ctx GRPORewardContext, funcs []GRPORewardFunc) ([]GRPOReward, float64, error) {
-	parts := make([]GRPOReward, 0, len(funcs))
+// scoreGRPORollout walks every reward func against ctx and appends a
+// GRPOReward per non-nil func into out. The caller passes in the
+// shared partsBacking and gets the grown slice back so it can carve a
+// per-rollout view at known offsets. Returning out instead of a fresh
+// allocation lets buildGRPOUpdate amortise N per-rollout allocations
+// down to a single n*len(funcs) make at the top of the step.
+func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc, out []GRPOReward) ([]GRPOReward, float64, error) {
 	var total float64
 	for _, fn := range funcs {
 		if fn == nil {
 			continue
 		}
-		reward, err := fn(ctx)
+		reward, err := fn(*ctx)
 		if err != nil {
-			return nil, 0, err
+			return out, 0, err
 		}
 		if reward.Name == "" {
 			reward.Name = "reward"
 		}
 		if math.IsNaN(reward.Score) || math.IsInf(reward.Score, 0) {
-			return nil, 0, core.NewError("mlx: experimental GRPO reward is not finite")
+			return out, 0, core.NewError("mlx: experimental GRPO reward is not finite")
 		}
-		parts = append(parts, reward)
+		out = append(out, reward)
 		total += reward.Score
 	}
-	return parts, total, nil
+	return out, total, nil
 }
 
-func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update GRPOUpdate) {
+func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update *GRPOUpdate) {
 	result.Metrics.Steps++
 	result.Metrics.Samples++
 	result.Metrics.Rollouts += len(update.Rollouts)
 	result.Metrics.LastLoss = update.Loss
 	result.Metrics.KLCoefficient = update.KLCoefficient
 	accumulator.add(update)
-	result.Metrics.RewardMean = accumulator.rewardMean()
-	result.Metrics.RewardStd = accumulator.rewardStd()
-	result.Metrics.KLMean = accumulator.klMean()
-	result.Metrics.Loss = accumulator.loss()
+	// snapshot returns all four metric averages in a single nil/zero
+	// guard with one float division — replacing four separate method
+	// calls each with their own guard + divide. Mirrors the same
+	// pattern adopted for the distill metric accumulator.
+	avg := accumulator.snapshot()
+	result.Metrics.RewardMean = avg.rewardMean
+	result.Metrics.RewardStd = avg.rewardStd
+	result.Metrics.KLMean = avg.klMean
+	result.Metrics.Loss = avg.loss
 	result.Metrics.CheckpointCount = len(result.Checkpoints)
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
 
-func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update GRPOUpdate) error {
+func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate) error {
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
 	path := core.PathJoin(cfg.CheckpointDir, grpoStepName(result.Metrics.Steps))
-	meta := NewGRPOCheckpointMetadata(path, cfg, result, update)
+	meta := NewGRPOCheckpointMetadata(path, cfg, result, *update)
 	if runner.SaveCheckpoint != nil {
-		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: update, Metadata: meta}); err != nil {
+		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: *update, Metadata: meta}); err != nil {
 			return err
 		}
 	}
@@ -459,7 +505,7 @@ func maybeRunGRPOEval(ctx context.Context, runner GRPORunner, cfg GRPOConfig, re
 	return nil
 }
 
-func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch int) {
+func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update *GRPOUpdate, epoch int) {
 	if cfg.ProbeSink == nil {
 		return
 	}
@@ -497,13 +543,20 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	if prompt == "" {
 		prompt = core.Trim(sample.Text)
 	}
+	// Trim Response once and feed the trimmed string back into the
+	// (by-value) sample copy so the inner ExtractGRPOExpectedAnswer +
+	// extractGRPOReasoningWithAnswer both see a pre-trimmed Response.
+	// strings.TrimSpace is a no-op on already-trimmed input so the
+	// inner re-trims become free; we save the two extra whitespace
+	// scans the original form paid on every reasoning sample.
+	sample.Response = core.Trim(sample.Response)
 	// Extract the answer once and forward it to the reasoning step —
-	// extractGRPOReasoning would otherwise re-run the full meta-key
+	// the without-answer form would otherwise re-run the full meta-key
 	// sweep + line scan to recover the same value.
 	expected := ExtractGRPOExpectedAnswer(sample)
 	return GRPOSample{
 		Prompt:          prompt,
-		ReferenceAnswer: core.Trim(sample.Response),
+		ReferenceAnswer: sample.Response,
 		ExpectedAnswer:  expected,
 		Reasoning:       extractGRPOReasoningWithAnswer(sample, expected),
 		Meta:            cloneStringMap(sample.Meta),
@@ -539,6 +592,13 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	if core.Index(text, "\r") >= 0 {
 		normalised = core.Replace(text, "\r\n", "\n")
 	}
+	// Single-line fast path — when the response is a single line (no
+	// "\n"), Split would allocate a one-element []string just to feed it
+	// straight to cleanGRPOAnswerLine. Skip the slice entirely. Short
+	// SFT answers ("42", "Paris", a sentence) hit this branch.
+	if core.Index(normalised, "\n") < 0 {
+		return cleanGRPOAnswerLine(normalised)
+	}
 	lines := core.Split(normalised, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := cleanGRPOAnswerLine(lines[i])
@@ -547,10 +607,6 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 		}
 	}
 	return ""
-}
-
-func extractGRPOReasoning(sample dataset.Sample) string {
-	return extractGRPOReasoningWithAnswer(sample, ExtractGRPOExpectedAnswer(sample))
 }
 
 // extractGRPOReasoningWithAnswer is the inner form that takes the
@@ -588,6 +644,15 @@ func cleanGRPOAnswerLine(line string) string {
 	if line == "" {
 		return ""
 	}
+	// First-byte gate — the three answer prefixes all start with one of
+	// {a, f, s}. Anything else skips the core.Lower allocation entirely.
+	// On free-form text the dominant outcome is "no match", so we cash
+	// in the per-line lowercase string for nothing in the common case.
+	switch line[0] {
+	case 'a', 'A', 'f', 'F', 's', 'S':
+	default:
+		return line
+	}
 	lower := core.Lower(line)
 	for _, prefix := range grpoAnswerPrefixes {
 		if core.HasPrefix(lower, prefix) {
@@ -596,6 +661,13 @@ func cleanGRPOAnswerLine(line string) string {
 	}
 	return line
 }
+
+// defaultGRPORewardFuncs is the fallback []GRPORewardFunc used by
+// buildGRPOUpdate when GRPOConfig.RewardFuncs is empty. Package-level
+// so we don't allocate a fresh closure + 1-element slice once per
+// training step on the default-config path. The captured weight (1)
+// is fixed at init.
+var defaultGRPORewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
 
 // GRPORewardContainsAnswer rewards a rollout when it contains the expected answer.
 func GRPORewardContainsAnswer(weight float64) GRPORewardFunc {
@@ -808,7 +880,7 @@ type grpoMetricAccumulator struct {
 	lossSum   float64
 }
 
-func (a *grpoMetricAccumulator) add(update GRPOUpdate) {
+func (a *grpoMetricAccumulator) add(update *GRPOUpdate) {
 	if a == nil {
 		return
 	}
@@ -820,44 +892,77 @@ func (a *grpoMetricAccumulator) add(update GRPOUpdate) {
 	a.lossSum += update.Loss
 }
 
-func (a *grpoMetricAccumulator) rewardMean() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
-	}
-	return a.rewardSum / float64(a.groups)
+// grpoMetricsSnapshot is the all-in-one return shape for snapshot —
+// every field is the per-group average of the corresponding
+// accumulator sum, or 0 when the accumulator has no groups yet.
+type grpoMetricsSnapshot struct {
+	rewardMean, rewardStd, klMean, loss float64
 }
 
-func (a *grpoMetricAccumulator) rewardStd() float64 {
+// snapshot returns the per-group averages for all four metrics in a
+// single nil/zero guard with one float division — replaces the four
+// individual accessor methods (rewardMean, rewardStd, klMean, loss),
+// each of which paid its own nil-guard + divide.
+func (a *grpoMetricAccumulator) snapshot() grpoMetricsSnapshot {
 	if a == nil || a.groups == 0 {
-		return 0
+		return grpoMetricsSnapshot{}
 	}
-	return a.stdSum / float64(a.groups)
-}
-
-func (a *grpoMetricAccumulator) klMean() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
+	invGroups := 1.0 / float64(a.groups)
+	return grpoMetricsSnapshot{
+		rewardMean: a.rewardSum * invGroups,
+		rewardStd:  a.stdSum * invGroups,
+		klMean:     a.klSum * invGroups,
+		loss:       a.lossSum * invGroups,
 	}
-	return a.klSum / float64(a.groups)
-}
-
-func (a *grpoMetricAccumulator) loss() float64 {
-	if a == nil || a.groups == 0 {
-		return 0
-	}
-	return a.lossSum / float64(a.groups)
 }
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 	out := make([]GRPORollout, len(rollouts))
+	// Bulk copy the struct slice first — copy() lowers to memmove for
+	// contiguous element memory, replacing the per-iteration struct
+	// copy (GRPORollout is ~10 fields wide so each per-iter copy is
+	// a non-trivial pile of moves). Inner slice fields are then
+	// re-sliced into per-field flat backings so out's TokenIDs /
+	// RewardParts don't alias rollouts' but only allocate two big
+	// buffers instead of 2*N (one per rollout per field).
+	copy(out, rollouts)
+	// Two-pass clone for the inner slice fields — sum once for sizing,
+	// then carve per-rollout views out of two shared backing buffers.
+	// For a default group of 4 rollouts with 128 tokens + 1 reward each
+	// this collapses 8 inner allocs down to 2 (one per shared backing).
+	var totalTokens, totalRewards int
 	for i := range rollouts {
-		out[i] = rollouts[i]
-		// core.SliceClone is slices.Clone — pre-sized make+copy, one
-		// alloc per slice instead of append-grow on a nil head. Also
-		// returns nil for nil input so empty TokenIDs / RewardParts
-		// don't allocate at all.
-		out[i].TokenIDs = core.SliceClone(rollouts[i].TokenIDs)
-		out[i].RewardParts = core.SliceClone(rollouts[i].RewardParts)
+		totalTokens += len(rollouts[i].TokenIDs)
+		totalRewards += len(rollouts[i].RewardParts)
+	}
+	var tokenBacking []int32
+	if totalTokens > 0 {
+		tokenBacking = make([]int32, totalTokens)
+	}
+	var rewardBacking []GRPOReward
+	if totalRewards > 0 {
+		rewardBacking = make([]GRPOReward, totalRewards)
+	}
+	var tokenCursor, rewardCursor int
+	for i := range rollouts {
+		if src := rollouts[i].TokenIDs; len(src) > 0 {
+			next := tokenCursor + len(src)
+			dst := tokenBacking[tokenCursor:next:next]
+			copy(dst, src)
+			out[i].TokenIDs = dst
+			tokenCursor = next
+		} else {
+			out[i].TokenIDs = nil
+		}
+		if src := rollouts[i].RewardParts; len(src) > 0 {
+			next := rewardCursor + len(src)
+			dst := rewardBacking[rewardCursor:next:next]
+			copy(dst, src)
+			out[i].RewardParts = dst
+			rewardCursor = next
+		} else {
+			out[i].RewardParts = nil
+		}
 	}
 	return out
 }

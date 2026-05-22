@@ -320,16 +320,30 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 			result.Evaluations = grown
 		}
 	}
-	for _, sftBatch := range batches {
+	// Index iteration — range over []SFTBatch copies the whole struct
+	// per iteration (Batch's three slice headers + Targets' header =
+	// 96 B). Indexing keeps the body to direct field reads and the
+	// single assignment into batch.SFT.
+	for i := range batches {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		sftBatch := &batches[i]
 		step := result.Metrics.Steps + 1
-		cacheKey := DistillBatchCacheKey(sftBatch)
+		// Only compute CacheKey when there's a teacher cache to look it
+		// up in — the key is a JSON-marshal + SHA256 over the entire
+		// SFTBatch (tokens + targets + mask), which can be several KB of
+		// JSON encode per batch. Runners without TeacherCache attached
+		// would otherwise pay this scan on every step for a value that
+		// gets thrown away inside teacherLogitsForDistillBatch.
+		var cacheKey string
+		if runner.TeacherCache != nil {
+			cacheKey = DistillBatchCacheKey(*sftBatch)
+		}
 		batch := DistillBatch{
 			Step:        step,
 			Epoch:       epoch,
-			SFT:         sftBatch,
+			SFT:         *sftBatch,
 			Temperature: cfg.Temperature,
 			CacheKey:    cacheKey,
 		}
@@ -350,16 +364,16 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 				return err
 			}
 		}
-		updateDistillResult(result, accumulator, sftBatch, loss, cacheStatus)
+		updateDistillResult(result, accumulator, len(sftBatch.Batch.Tokens), &loss, cacheStatus)
 		result.Losses = append(result.Losses, loss)
 
-		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, batch, loss); err != nil {
+		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, &batch, &loss); err != nil {
 			return err
 		}
 		if err := maybeRunDistillEval(ctx, runner, cfg, result, epoch); err != nil {
 			return err
 		}
-		emitDistillProbe(cfg, result, loss, cacheStatus, epoch)
+		emitDistillProbe(cfg, result, &loss, cacheStatus, epoch)
 	}
 	return nil
 }
@@ -414,8 +428,7 @@ func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, bat
 	return logits, "miss", nil
 }
 
-func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, batch SFTBatch, loss DistillLoss, cacheStatus string) {
-	samples := len(batch.Batch.Tokens)
+func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, samples int, loss *DistillLoss, cacheStatus string) {
 	result.Metrics.Steps++
 	result.Metrics.Batches++
 	result.Metrics.Samples += samples
@@ -441,17 +454,17 @@ func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumu
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
 
-func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch DistillBatch, loss DistillLoss) error {
+func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch *DistillBatch, loss *DistillLoss) error {
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
 	path := core.PathJoin(cfg.CheckpointDir, formatDistillStepDir(result.Metrics.Steps))
-	meta := NewDistillCheckpointMetadata(path, cfg, result, loss, batch.Epoch)
+	meta := NewDistillCheckpointMetadata(path, cfg, result, *loss, batch.Epoch)
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, DistillCheckpointContext{
 			Path:     path,
-			Batch:    batch,
-			Loss:     loss,
+			Batch:    *batch,
+			Loss:     *loss,
 			Metadata: meta,
 		}); err != nil {
 			return err
@@ -492,7 +505,7 @@ func maybeRunDistillEval(ctx context.Context, runner DistillRunner, cfg DistillC
 	return nil
 }
 
-func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss DistillLoss, cacheStatus string, epoch int) {
+func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss *DistillLoss, cacheStatus string, epoch int) {
 	if cfg.ProbeSink == nil {
 		return
 	}
@@ -533,10 +546,14 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	var entropy float64
 	var tokens int
 	// Scratch buffers reused across every masked token — vocab size is
-	// constant (shape-checked above), so two pre-allocated float64 slices
-	// replace the per-call make inside logSoftmaxTemperature. For a 32k
-	// vocab and 1000 tokens this skips ~2000 256KB allocations per call.
-	var teacherScratch, studentScratch []float64
+	// constant (shape-checked above), so three pre-allocated float64 slices
+	// replace per-token allocations inside logSoftmaxTemperatureInto +
+	// logSoftmaxAndProbTemperatureInto. For a 32k vocab and 1000 tokens
+	// this skips ~2000 256KB allocations per call.
+	// teacherProbScratch holds prob(x) = exp(log_prob(x)) computed once
+	// inside the log-softmax loop — the inner accumulator below would
+	// otherwise call math.Exp per element to recover it.
+	var teacherScratch, teacherProbScratch, studentScratch []float64
 	// Hoist mask-empty once — distillMaskIncludes treats an empty mask as
 	// "all tokens included", so per-cell calls were wasted when the mask
 	// is absent or zero-length. maskRows is non-nil only when we need
@@ -548,36 +565,61 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	for i := range teacher {
 		// Per-row mask access — fetch maskRow once, then per-column the
 		// check is a single len + element compare with no extra branches.
+		// Hoist tRow + sRow once per i: the inner loop previously paid for
+		// three teacher[i] / two student[i] slice-header loads per token
+		// the compiler can't fold because mask/teacher/student aliasing
+		// can't be proven away through the function call boundary.
+		tRow := teacher[i]
+		sRow := student[i]
+		upper := len(tRow)
 		var maskRow []float32
-		if maskRows != nil && i < len(maskRows) {
-			maskRow = maskRows[i]
-		}
-		for j := range teacher[i] {
-			if maskRows != nil {
-				if maskRow == nil || j >= len(maskRow) || maskRow[j] <= 0 {
-					continue
-				}
+		if maskRows != nil {
+			if i >= len(maskRows) {
+				continue
 			}
-			vocab := len(teacher[i][j])
+			maskRow = maskRows[i]
+			if maskRow == nil {
+				continue
+			}
+			// Cap the inner loop at len(maskRow) — j values past the
+			// mask length all hit the original `j >= len(maskRow)`
+			// guard and were skipped anyway. Bounding upper eliminates
+			// the per-j length check inside the loop.
+			if len(maskRow) < upper {
+				upper = len(maskRow)
+			}
+		}
+		for j := 0; j < upper; j++ {
+			if maskRow != nil && maskRow[j] <= 0 {
+				continue
+			}
+			tCell := tRow[j]
+			sCell := sRow[j]
+			vocab := len(tCell)
 			if cap(teacherScratch) < vocab {
 				teacherScratch = make([]float64, vocab)
+				teacherProbScratch = make([]float64, vocab)
 				studentScratch = make([]float64, vocab)
 			}
 			teacherScratch = teacherScratch[:vocab]
+			teacherProbScratch = teacherProbScratch[:vocab]
 			studentScratch = studentScratch[:vocab]
-			if err := logSoftmaxTemperatureInto(teacher[i][j], cfg.Temperature, teacherScratch); err != nil {
+			if err := logSoftmaxAndProbTemperatureInto(tCell, cfg.Temperature, teacherScratch, teacherProbScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			if err := logSoftmaxTemperatureInto(student[i][j], cfg.Temperature, studentScratch); err != nil {
+			if err := logSoftmaxTemperatureInto(sCell, cfg.Temperature, studentScratch); err != nil {
 				return DistillLoss{}, err
 			}
-			// negProb hoists the shared -math.Exp(teacherLogProb) so the
-			// two accumulator lines don't recompute -prob. Both terms are
-			// fma-friendly (one mul + one add into a running sum).
-			for k, teacherLogProb := range teacherScratch {
-				negProb := -math.Exp(teacherLogProb)
-				softCE += negProb * studentScratch[k]
-				entropy += negProb * teacherLogProb
+			// Teacher probabilities are already in teacherProbScratch —
+			// the inner loop skips the per-element math.Exp the original
+			// form paid to recover prob from log-prob. For 32k vocab this
+			// saves ~32k math.Exp calls per masked token. Subtracting
+			// directly (softCE -= prob*X) folds the negation into the
+			// accumulator update so no per-iteration temporary is
+			// needed.
+			for k, teacherProb := range teacherProbScratch {
+				softCE -= teacherProb * studentScratch[k]
+				entropy -= teacherProb * teacherScratch[k]
 			}
 			tokens++
 		}
@@ -771,18 +813,52 @@ func validateDistillLogitShapes(teacher, student DistillLogits) error {
 	return nil
 }
 
-func logSoftmaxTemperature(logits []float32, temperature float64) ([]float64, error) {
+// logSoftmaxAndProbTemperatureInto writes both log_prob and prob for
+// each logit. logOut[i] = log(softmax(logits/temp))[i] and
+// probOut[i] = exp(logOut[i]). The DistillationBatchLoss inner loop
+// needs both teacher log-probs (for the entropy term) and teacher
+// probs (as the weight on the softCE / entropy accumulators). The
+// previous form called math.Exp inside the inner accumulator loop to
+// recover prob from log_prob; capturing prob during the renormalize
+// pass here skips that per-element math.Exp entirely.
+func logSoftmaxAndProbTemperatureInto(logits []float32, temperature float64, logOut, probOut []float64) error {
 	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
-		return nil, core.NewError("mlx: distillation temperature must be finite and positive")
+		return core.NewError("mlx: distillation temperature must be finite and positive")
 	}
 	if len(logits) == 0 {
-		return nil, core.NewError("mlx: distillation logits are empty")
+		return core.NewError("mlx: distillation logits are empty")
 	}
-	scaled := make([]float64, len(logits))
-	if err := logSoftmaxTemperatureInto(logits, temperature, scaled); err != nil {
-		return nil, err
+	if len(logOut) != len(logits) || len(probOut) != len(logits) {
+		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
 	}
-	return scaled, nil
+	invTemp := 1.0 / temperature
+	maxLogit := math.Inf(-1)
+	for i, logit := range logits {
+		value := float64(logit) * invTemp
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return core.NewError("mlx: distillation logit is not finite")
+		}
+		logOut[i] = value
+		if value > maxLogit {
+			maxLogit = value
+		}
+	}
+	// Compute exp(value - maxLogit) and accumulate the partition fn.
+	// Store the unnormalised exp in probOut so we don't need to
+	// recompute math.Exp during the normalise pass below.
+	var sumExp float64
+	for i, value := range logOut {
+		e := math.Exp(value - maxLogit)
+		probOut[i] = e
+		sumExp += e
+	}
+	logDenom := maxLogit + math.Log(sumExp)
+	invSum := 1.0 / sumExp
+	for i, value := range logOut {
+		logOut[i] = value - logDenom
+		probOut[i] *= invSum
+	}
+	return nil
 }
 
 // logSoftmaxTemperatureInto writes len(logits) log-softmax values into out.
@@ -799,9 +875,14 @@ func logSoftmaxTemperatureInto(logits []float32, temperature float64, out []floa
 	if len(out) != len(logits) {
 		return core.NewError("mlx: log-softmax scratch buffer size mismatch")
 	}
+	// Reciprocal multiply — Go's `value / temperature` per element is a
+	// vocab-sized stream of float divisions. Multiplying by 1/temp is the
+	// standard substitution and matches the numerical accuracy used by
+	// every other softmax-with-temperature implementation in the stack.
+	invTemp := 1.0 / temperature
 	maxLogit := math.Inf(-1)
 	for i, logit := range logits {
-		value := float64(logit) / temperature
+		value := float64(logit) * invTemp
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return core.NewError("mlx: distillation logit is not finite")
 		}
@@ -839,7 +920,7 @@ type distillMetricAccumulator struct {
 	entropySum float64
 }
 
-func (a *distillMetricAccumulator) add(loss DistillLoss) {
+func (a *distillMetricAccumulator) add(loss *DistillLoss) {
 	if a == nil || loss.Tokens <= 0 {
 		return
 	}
@@ -878,18 +959,53 @@ func cloneDistillLogits(logits DistillLogits) DistillLogits {
 	if len(logits) == 0 {
 		return nil
 	}
+	// Three-flat-buffer clone — first count rows + cells across the
+	// batch, then allocate THREE flat buffers (the outer DistillLogits,
+	// one shared [][]float32 for the middle row-slice-headers, one
+	// shared []float32 for all cell data). Each per-batch middle slice
+	// + per-cell []float32 are carved as 3-index slice views into the
+	// shared backings instead of paying their own malloc.
+	//
+	// For a 4×128×32000 teacher tensor:
+	//   pre:   513 allocs (1 outer + 4 middle + 4×128 inner)
+	//   2-pass:  6 allocs (1 outer + 4 middle + 1 flat cell buffer)
+	//   3-pass:  3 allocs (1 outer + 1 flat middle + 1 flat cell)
+	//
+	// The flat-backing form also gives the resulting clone better cache
+	// locality (sequential float32 + sequential slice-header stride)
+	// versus the per-cell-alloc form where each row could land on a
+	// distinct page.
+	var totalRows, totalCells int
+	for i := range logits {
+		row := logits[i]
+		totalRows += len(row)
+		for j := range row {
+			totalCells += len(row[j])
+		}
+	}
 	out := make(DistillLogits, len(logits))
-	for i, row := range logits {
-		// Hoist the per-row outer make + take src via range to skip the
-		// re-index inside the per-token loop. outRow is also captured so
-		// the inner assignment doesn't double-index out[i][j].
-		outRow := make([][]float32, len(row))
-		for j, src := range row {
-			dst := make([]float32, len(src))
+	if totalRows == 0 {
+		return out
+	}
+	rowBacking := make([][]float32, totalRows)
+	flat := make([]float32, totalCells)
+	rowCursor := 0
+	cellCursor := 0
+	for i := range logits {
+		row := logits[i]
+		rowsHere := len(row)
+		rowEnd := rowCursor + rowsHere
+		outRow := rowBacking[rowCursor:rowEnd:rowEnd]
+		for j := range row {
+			src := row[j]
+			next := cellCursor + len(src)
+			dst := flat[cellCursor:next:next]
 			copy(dst, src)
 			outRow[j] = dst
+			cellCursor = next
 		}
 		out[i] = outRow
+		rowCursor = rowEnd
 	}
 	return out
 }
@@ -930,16 +1046,23 @@ func distillCollectSamples(ctx context.Context, ds dataset.Dataset, maxSamples i
 
 // formatDistillStepDir builds the "step-NNNNNN" checkpoint dirname using
 // strconv.AppendInt with explicit zero padding, avoiding fmt's reflection
-// path on the per-checkpoint hot loop.
+// path on the per-checkpoint hot loop. Digit count is computed in place
+// instead of via a throwaway strconv.AppendInt(nil, ...) so the function
+// allocates exactly once — the returned string itself.
 func formatDistillStepDir(step int) string {
 	const prefix = "step-"
-	const width = 6
-	buf := make([]byte, 0, len(prefix)+width)
+	const padTo = 6
+	buf := make([]byte, 0, len(prefix)+20)
 	buf = append(buf, prefix...)
-	digits := strconv.AppendInt(nil, int64(step), 10)
-	for pad := width - len(digits); pad > 0; pad-- {
-		buf = append(buf, '0')
+	if step >= 0 && step < 100000 {
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
 	}
-	buf = append(buf, digits...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
 	return string(buf)
 }
