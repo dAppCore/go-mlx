@@ -168,11 +168,14 @@ func (s *Store) Binary() string {
 }
 
 func (s *Store) Get(ctx context.Context, chunkID int) (string, error) {
-	chunk, err := s.Resolve(ctx, chunkID)
+	// Resolve builds a full Chunk just so we can read .Text; viewFrame
+	// returns the underlying viewResponse directly. Skip the Chunk +
+	// ChunkRef construction entirely on the Get path.
+	view, err := s.viewFrame(ctx, chunkID)
 	if err != nil {
 		return "", err
 	}
-	return chunk.Text, nil
+	return view.text(), nil
 }
 
 func (s *Store) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) {
