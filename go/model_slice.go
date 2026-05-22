@@ -121,7 +121,7 @@ func InspectModelSlice(path string) (ModelSliceInspection, error) {
 	if offloadBytes < 0 {
 		offloadBytes = 0
 	}
-	standalone, missing := modelSliceStandalone(manifest.Plan)
+	standalone, missing := modelSliceStandalone(&manifest.Plan)
 	inspection := ModelSliceInspection{
 		Path:                     path,
 		ManifestPath:             manifestPath,
@@ -199,7 +199,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	if result := core.MkdirAll(req.OutputPath, 0o755); !result.OK {
 		return nil, modelSliceResultError(result)
 	}
-	for _, name := range modelSliceMetadataFiles(*plan) {
+	for _, name := range modelSliceMetadataFiles(plan) {
 		if err := copyModelSliceFile(source.Root, req.OutputPath, name); err != nil {
 			return nil, err
 		}
@@ -252,7 +252,7 @@ var modelSliceStandaloneRequired = [...]inference.ModelComponent{
 	inference.ModelComponentLMHead,
 }
 
-func modelSliceStandalone(plan inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
+func modelSliceStandalone(plan *inference.ModelSlicePlan) (bool, []inference.ModelComponent) {
 	if plan.ExtractLevel == inference.ModelExtractLevelAll {
 		return true, nil
 	}
@@ -720,7 +720,7 @@ var (
 	}
 )
 
-func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
+func modelSliceMetadataFiles(plan *inference.ModelSlicePlan) []string {
 	// Single-pass detection of the two relevant component flags.
 	// plan.HasComponent runs slices.Contains over plan.Components on
 	// each call; for a typical 8+ component plan that was 16+ string-
