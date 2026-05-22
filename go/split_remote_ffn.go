@@ -123,7 +123,13 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 		return SplitFFNResult{}, core.NewError(core.Concat("mlx: remote split FFN endpoint returned ", strconv.Itoa(resp.StatusCode), ": ", core.Trim(body)))
 	}
 	var remote RemoteSplitFFNResponse
-	if result := core.JSONUnmarshal([]byte(body), &remote); !result.OK {
+	// core.ReadAll handed us a string built from a fresh []byte buffer the
+	// HTTP transport owns alone; core.AsBytes returns the same backing
+	// array without copying. JSONUnmarshal does not retain references past
+	// the call (it consumes tokens into target fields), so the read-only
+	// alias is safe here. Saves one alloc the size of the response body
+	// on every successful ForwardFFN call.
+	if result := core.JSONUnmarshal(core.AsBytes(body), &remote); !result.OK {
 		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "parse response", modelSliceResultError(result))
 	}
 	if remote.Error != "" {
