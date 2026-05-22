@@ -261,33 +261,34 @@ func (b *Bus) EmitProbe(event Event) {
 	// Fast-path for the common one-sink bus — the snapshot only
 	// needs to defend against concurrent Bus.Add, and one sink
 	// fits in a single interface slot without allocating a
-	// freshly-copied slice header.
+	// freshly-copied slice header. Inlining the owned-sink dispatch
+	// here lets the compiler hoist the type-assertion check past the
+	// nil-sink early-return and keeps the OneSink path branch-light.
 	if len(b.sinks) == 1 {
 		sink := b.sinks[0]
 		b.mu.RUnlock()
-		dispatchSink(sink, event)
+		if sink == nil {
+			return
+		}
+		if owned, ok := sink.(ownedEventSink); ok {
+			owned.emitProbeOwned(event)
+			return
+		}
+		sink.EmitProbe(CloneEvent(event))
 		return
 	}
 	sinks := core.SliceClone(b.sinks)
 	b.mu.RUnlock()
 	for _, sink := range sinks {
-		dispatchSink(sink, event)
+		if sink == nil {
+			continue
+		}
+		if owned, ok := sink.(ownedEventSink); ok {
+			owned.emitProbeOwned(event)
+			continue
+		}
+		sink.EmitProbe(CloneEvent(event))
 	}
-}
-
-// dispatchSink hands `event` to a sink, skipping the fanout
-// CloneEvent if the sink takes ownership of the event itself
-// (see ownedEventSink). Nil sinks are silently dropped to match
-// the public Bus.Add and Bus.EmitProbe nil-tolerance contract.
-func dispatchSink(sink Sink, event Event) {
-	if sink == nil {
-		return
-	}
-	if owned, ok := sink.(ownedEventSink); ok {
-		owned.emitProbeOwned(event)
-		return
-	}
-	sink.EmitProbe(CloneEvent(event))
 }
 
 // Recorder stores probe events in memory for tests, reproducible probes,
