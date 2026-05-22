@@ -265,7 +265,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 	}
 
 	if stat := core.Stat(resolvedPath); stat.OK && !stat.Value.(core.FsFileInfo).IsDir() {
-		if core.HasSuffix(core.Lower(resolvedPath), ".gguf") {
+		if hasASCIIInsensitiveSuffix(resolvedPath, ".gguf") {
 			ggufInfo, err := ReadInfo(resolvedPath)
 			if err == nil {
 				return []DiscoveredModel{{
@@ -346,7 +346,10 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 }
 
 func resolveGGUFFile(modelPath string) (string, error) {
-	if core.HasSuffix(core.Lower(modelPath), ".gguf") {
+	// Case-insensitive .gguf suffix check without allocating a lowered
+	// copy of modelPath. Real callers always pass lowercase paths, but
+	// stay lenient to the historical .GGUF spelling.
+	if hasASCIIInsensitiveSuffix(modelPath, ".gguf") {
 		return modelPath, nil
 	}
 
@@ -359,6 +362,31 @@ func resolveGGUFFile(modelPath string) (string, error) {
 	default:
 		return "", core.NewError("mlx: multiple .gguf files found")
 	}
+}
+
+// hasASCIIInsensitiveSuffix is a zero-alloc ASCII case-insensitive
+// HasSuffix. Used in cold-start path probes where allocating a lowered
+// copy of the input just to compare against a literal extension is
+// wasteful (a few hundred bytes per ReadInfo at the file-open boundary).
+func hasASCIIInsensitiveSuffix(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	si := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		a := s[si+i]
+		b := suffix[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
@@ -397,9 +425,14 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 		return nil, nil, core.Errorf("mlx: gguf metadata count %d exceeds limit %d", metadataCount, maxGGUFCollectionEntries)
 	}
 
-	// Shared scratch buffer for all subsequent fixed-width reads.
-	// 8 bytes covers uint64 (the widest GGUF scalar); reuse for uint32, uint16, etc.
-	var scratch [8]byte
+	// Shared scratch buffer for all subsequent fixed-width reads + short-
+	// string reads. 64 B covers all known GGUF metadata keys + the bounded
+	// architecture-name vocabulary; longer strings fall through to per-
+	// call make. The buffer is already escaped to heap (it's passed by
+	// slice into io.Reader.Read implementations), so reusing it for short
+	// string reads avoids the per-string heap alloc when the read content
+	// matches an entry in ggufInternedStrings.
+	var scratch [64]byte
 
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
@@ -419,6 +452,12 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	}
 
 	tensors := make([]ggufTensorInfo, tensorCount)
+	// Shape arena — bump-allocate per-tensor shapes from a single slab
+	// instead of one `make([]uint64, ndim)` per tensor. Real GGUF tensors
+	// run 1-4 dims (rank-2 weights dominate); 4 is a safe initial budget.
+	// Overflow falls back to per-tensor make so the arena never reallocates
+	// (which would invalidate already-handed-out slice headers).
+	shapeArena := make([]uint64, 0, int(tensorCount)*4)
 	for i := uint64(0); i < tensorCount; i++ {
 		name, err := readGGUFString(reader, scratch[:])
 		if err != nil {
@@ -428,7 +467,18 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
 		ndim := binary.LittleEndian.Uint32(scratch[:4])
-		shape := make([]uint64, ndim)
+		var shape []uint64
+		if remaining := cap(shapeArena) - len(shapeArena); int(ndim) <= remaining {
+			start := len(shapeArena)
+			end := start + int(ndim)
+			shapeArena = shapeArena[:end]
+			// Three-index slice caps the per-tensor view at exactly `ndim`
+			// elements so any future append on this Shape can't bleed into
+			// the next tensor's region of the arena.
+			shape = shapeArena[start:end:end]
+		} else {
+			shape = make([]uint64, ndim)
+		}
 		for d := uint32(0); d < ndim; d++ {
 			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
@@ -451,9 +501,72 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	return metadata, tensors, nil
 }
 
+// ggufInternedStrings — singleton mappings for high-frequency GGUF metadata
+// keys + bounded-vocabulary string values (architecture names). Map lookup
+// via m[string(b)] uses Go's runtime []byte→string fast path that skips
+// the conversion alloc; on hit we return the singleton, on miss we fall
+// through to the normal allocate-and-convert path.
+//
+// Real GGUF metadata keys peak around 32 B (tokenizer.ggml.* family is the
+// long end). The 64 B short-string threshold in readGGUFString comfortably
+// covers all interned entries.
+var ggufInternedStrings = map[string]string{
+	// general.* — present in every well-formed GGUF.
+	"general.architecture":            "general.architecture",
+	"general.name":                    "general.name",
+	"general.author":                  "general.author",
+	"general.version":                 "general.version",
+	"general.url":                     "general.url",
+	"general.description":             "general.description",
+	"general.license":                 "general.license",
+	"general.file_type":               "general.file_type",
+	"general.quantization_version":    "general.quantization_version",
+	"general.quantization_type":       "general.quantization_type",
+	"general.quantization":            "general.quantization",
+	"general.quantization_group_size": "general.quantization_group_size",
+	"general.alignment":               "general.alignment",
+	"quantization.type":               "quantization.type",
+	"quantization.name":               "quantization.name",
+	"quantization.group_size":         "quantization.group_size",
+	// Common architecture *.block_count / *.context_length / *.embedding_length —
+	// pre-prefixed per known model family.
+	"qwen3.block_count":       "qwen3.block_count",
+	"qwen3.context_length":    "qwen3.context_length",
+	"qwen3.embedding_length":  "qwen3.embedding_length",
+	"qwen3.vocab_size":        "qwen3.vocab_size",
+	"qwen2.block_count":       "qwen2.block_count",
+	"qwen2.context_length":    "qwen2.context_length",
+	"qwen2.embedding_length":  "qwen2.embedding_length",
+	"llama.block_count":       "llama.block_count",
+	"llama.context_length":    "llama.context_length",
+	"llama.embedding_length":  "llama.embedding_length",
+	"llama.vocab_size":        "llama.vocab_size",
+	"gemma3.block_count":      "gemma3.block_count",
+	"gemma3.context_length":   "gemma3.context_length",
+	"gemma3.embedding_length": "gemma3.embedding_length",
+	"gemma3.vocab_size":       "gemma3.vocab_size",
+	"gemma2.block_count":      "gemma2.block_count",
+	"phi.block_count":         "phi.block_count",
+	"mistral.block_count":     "mistral.block_count",
+	"mixtral.block_count":     "mixtral.block_count",
+	"bert.block_count":        "bert.block_count",
+	// Bounded-vocabulary architecture-name values.
+	"qwen3":   "qwen3",
+	"qwen2":   "qwen2",
+	"llama":   "llama",
+	"gemma3":  "gemma3",
+	"gemma2":  "gemma2",
+	"mistral": "mistral",
+	"mixtral": "mixtral",
+	"phi":     "phi",
+	"bert":    "bert",
+}
+
 // readGGUFString reads a length-prefixed string into a fresh []byte.
 // `scratch` must be at least 8 bytes — used to decode the uint64 length
-// without a reflect.Read alloc.
+// without a reflect.Read alloc. When `scratch` is large enough (≥ length),
+// short strings are read into it and checked against ggufInternedStrings;
+// interned hits return the singleton with zero per-call heap allocation.
 func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 		return "", err
@@ -464,6 +577,20 @@ func readGGUFString(reader io.Reader, scratch []byte) (string, error) {
 	}
 	if length == 0 {
 		return "", nil
+	}
+	if uint64(len(scratch)) >= length {
+		// Caller provided a buffer big enough — read into it and try the
+		// intern map. Map lookup uses m[string(slice)] fast path that
+		// avoids the per-call conversion alloc; on hit, return the static
+		// singleton (zero alloc). On miss, fall back to a heap copy via
+		// string() conversion (one alloc, same as the make path below).
+		if _, err := io.ReadFull(reader, scratch[:length]); err != nil {
+			return "", err
+		}
+		if interned, ok := ggufInternedStrings[string(scratch[:length])]; ok {
+			return interned, nil
+		}
+		return string(scratch[:length]), nil
 	}
 	buffer := make([]byte, length)
 	if _, err := io.ReadFull(reader, buffer); err != nil {
