@@ -30,8 +30,8 @@ brew install cmake
 
 go-mlx often participates in a Go workspace alongside neighbouring modules. For local development, keep the module path aligned with the current `dappco.re` namespace:
 
-```go
-replace dappco.re/go/inference => ../go-inference
+```
+replace dappco.re/go/core/inference => ../go-inference
 ```
 
 After adding modules or changing dependencies: `go work sync`
@@ -48,21 +48,6 @@ Run from the module root:
 go generate ./...
 ```
 
-Fresh checkouts must initialise the source submodules before building:
-
-```bash
-git submodule update --init --recursive
-```
-
-The forwarding translation units in `internal/metal/` include source files from
-the git submodules `lib/mlx` and `lib/mlx-c`; leaving those submodules empty
-will make the C++ includes fail before the Go package can build. The
-`lib/generated` tree contains generated sources, not a submodule, and must also
-be present for those forwarded includes to resolve.
-Those forwarding files are the only local compilation entrypoints for the
-upstream `.cpp` files; do not also add the same upstream sources to a separate
-target or CMake source list, or the linker may see duplicate definitions.
-
 This executes the `//go:generate` directives in `mlx.go`:
 
 ```
@@ -71,12 +56,11 @@ cmake --build build --parallel
 cmake --install build
 ```
 
-CMake fetches mlx-c v0.6.0 from GitHub and builds it against the local
-patched `lib/mlx` submodule with:
+CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
 - `MLX_BUILD_GGUF=ON` (GGUF load/save support)
 - `BUILD_SHARED_LIBS=ON`
-- macOS deployment target: 26.0 (go-mlx supported minimum)
+- macOS deployment target: 13.3 (minimum required by MLX)
 
 The built library installs to `dist/include/` and `dist/lib/`. Build time is approximately 2 minutes on M3 Ultra.
 
@@ -182,17 +166,6 @@ Key benchmarks:
 
 Model-level benchmarks (`model.Forward`, tokenizer) require model files on disk and are not included in the automated suite.
 
-For machine/model-level checks, use the fast eval harness:
-
-```bash
-go-mlx bench -json /path/to/model
-```
-
-This runs a short generation pass plus prompt-cache, KV restore,
-state-bundle, and probe-overhead checks. It is intended for beta tester
-reports and for validating that memory-planner changes are supported by local
-data before they become defaults.
-
 ---
 
 ## Code Structure
@@ -284,9 +257,9 @@ Co-Authored-By: Virgil <virgil@lethean.io>
 
 ```cmake
 set(MLX_BUILD_SAFETENSORS ON)   # Required for model loading
-set(MLX_BUILD_GGUF ON)          # GGUF load/save support
+set(MLX_BUILD_GGUF OFF)         # GGUF not supported
 set(BUILD_SHARED_LIBS ON)       # Shared .dylib for rpath loading
-set(CMAKE_OSX_DEPLOYMENT_TARGET 26.0)  # go-mlx supported minimum
+set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3)  # MLX minimum
 ```
 
 To force a clean rebuild:
@@ -322,9 +295,9 @@ go build -tags nomlxlm ./...
 
 ```
 go-mlx
-├── dappco.re/go/inference           (shared interfaces, zero dependencies)
-└── mlx-c v0.6.0                     (CMake, fetched from GitHub at generate time)
-    └── Apple MLX v0.31.1             (local patched lib/mlx submodule)
+├── forge.lthn.ai/core/go-inference  (shared interfaces, zero dependencies)
+└── mlx-c v0.4.1                     (CMake, fetched from GitHub at generate time)
+    └── Apple MLX (Metal GPU compute)
         └── Foundation, Metal, Accelerate frameworks
 ```
 

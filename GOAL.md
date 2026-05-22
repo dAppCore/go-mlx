@@ -30,216 +30,112 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
   The `100k` lane remains a stress ceiling and degradation probe, not the normal
   pass/fail shape for day-to-day agent work.
 
-## Current Status: Production Benchmark Path Accepted; Training State Design Ready
+## Current Status: Active Parity Gap; Production Path Not Yet Accepted
 
-The Gemma 4 E2B q4 production benchmark lane is accepted. The broader goal is
-now narrowed to the current production path plus the training-state handoff
-design. Treat the evidence table below as a research ledger: it records useful
-wins, rejected probes, and historical results, but no row is a production
-sign-off unless it also satisfies the live gates in this section.
+The current q4 retained-State lane works, but the production benchmark lane is
+not accepted. Fresh 2026-05-21 evidence after the latest Go hot-path pass still
+shows that go-mlx is materially behind llama.cpp on raw decode. The wall-time
+comparison is useful but must be read with the known llama.cpp thinking-channel
+skew: that anchor generated leaked thinking-channel content, so its generated
+and visible token counts are inflated relative to the intended answer stream.
 
-The current production candidate is the q4-first `lthn-mlx` fast Gemma 4 lane
-with retained state, paged/fixed-cache memory management, and machine-readable
-wall-clock, decode, prefill, restore, memory, and estimated energy reporting.
-The primary acceptance shape is now an opencode-sized `30k`-`40k` first context
-with real append turns and long output budgets. The `100k` rows remain important
-because they expose hyper-long attention, cache, and memory scaling, but they
-are calibration/stress evidence rather than the default product workload.
+Fresh working evidence lives under `/private/tmp/go-mlx-goal/reports/` until the
+next canonical runtime report set is regenerated:
 
-The latest same-shape `mlx_lm` anchor still beats the current go-mlx `100k`
-retained workflow after the hyper-long fp16 paged-K/V improvement, so that
-stress lane remains useful future optimisation evidence. For production, the
-required verdict is narrower and more realistic: prove the `30k`-`40k` retained
-append workflow against configured `mlx_lm`, llama.cpp, and vLLM anchors. That
-benchmark gate is now satisfied: `mlx_lm` is faster on raw decode but fails the
-strict output floor on the same workload, llama.cpp passes the output floor but
-trails go-mlx on wall time and estimated energy, and vLLM Metal cannot load the
-same Gemma 4 snapshot because strict `mlx_lm` loading rejects the shared/global
-K/V tensors.
+- `2026-05-21-after-hotpaths-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  `10` retained turns from a `30000` token first context, `64178` final live
+  tokens, `28363` appended tokens, `5787` visible/generated tokens,
+  `101.898s` total wall time, `16.070s` append time, `77.350 tok/s` raw decode,
+  `63.669 tok/s` effective turn throughput, `3.535 GiB` process RSS, and
+  `10189.769 J` estimated at `100 W`.
+- `2026-05-21-cache-pageview-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  diagnostic run after reducing paged K/V append churn; `9` turns ok and `1`
+  below the visible-token floor, `63640` final live tokens, `28363` appended
+  tokens, `5249` visible/generated tokens, `94.851s` wall time, `16.096s`
+  append time, `77.495 tok/s` raw decode, `62.607 tok/s` effective turn
+  throughput, `3523 MB` process RSS, and `9485.066 J` estimated at `100 W`.
+  This row is useful for local delta tracking but is not an accepted production
+  row because one turn missed the visible-token floor.
+- `2026-05-21-cache-shape-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  diagnostic run after caching paged K/V page layout metadata; `10/10` retained
+  turns, `63973` final live tokens, `28363` appended tokens, `5582`
+  visible/generated tokens, `99.460s` wall time, `16.162s` append time,
+  `77.221 tok/s` raw decode, `63.107 tok/s` effective turn throughput,
+  `3529 MB` process RSS, and `9945.972 J` estimated at `100 W`. This row
+  restores a clean floor pass after the bookkeeping cleanup but still does not
+  close raw decode.
+- `2026-05-21-cache-scratch-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  diagnostic run after reusing borrowed page-state slice backing arrays; `8`
+  turns ok and `2` below the visible-token floor, `62963` final live tokens,
+  `28363` appended tokens, `4571` visible/generated tokens, `85.298s` wall
+  time, `16.031s` append time, `78.521 tok/s` raw decode, `61.554 tok/s`
+  effective turn throughput, `3510 MB` process RSS, and `8529.827 J`
+  estimated at `100 W`. This is the current fastest raw-decode diagnostic in
+  this local sequence, but the failed floor means it is not a production row.
+- `2026-05-21-current-llamacpp-gemma4-e2b-q4km-opencode-r10-g1024.json`:
+  `10/10` llama.cpp turns, `67563` final live tokens, `27303` appended tokens,
+  `10240` generated tokens, `10237` visible tokens, `131.912s` wall time,
+  `34.036s` prompt time, `97.074s` decode time, `105.486 tok/s` raw decode,
+  `77.605` visible tok/s wall throughput, and `13191.239 J` estimated at
+  `100 W`. The token-count side of this row is skewed by leaked thinking
+  channel content; keep it as a speed anchor, not as a clean answer-volume
+  baseline.
 
-The 2026-05-21 opencode-sized `state-ramp-profile` lane is recorded in
-`docs/runtime/2026-05-21-opencode-state-ramp-probe.md`. The accepted go-mlx row
-now proves a `30000` token warmed Gemma 4 chat state plus `10` whole retained
-append/generate turns, captured output, assistant-turn closure, a `256` visible
-token floor, bounded memory, and exposed wall/decode/append/energy accounting:
-`107.741s`, `76.847 tok/s` raw decode, `64.565 tok/s` effective turn
-throughput, `63584` final live tokens, `3.137 GiB` active MLX memory, and
-`10774.150 J` estimated at `100 W`. This row does not close production by
-itself; the first same-shape `mlx_lm` anchor is now recorded and shows faster
-raw decode but fails the strict `256` visible-token floor on turn 3, while the
-full marked run has `7/10` below-floor turns. The same-shape llama.cpp
-`Q4_K_M` anchor is now recorded with native BOS handling: it completes `10/10`
-turns at `102.714 tok/s` raw decode, `76.012` visible tok/s wall throughput,
-and `13120.245 J` estimated at `100 W`, but every turn includes a visible
-Gemma channel marker, so content-shape drift is recorded separately from speed.
-The same-shape vLLM Metal attempt is documented as a load failure: it reaches
-the Metal worker and chunked-prefill setup, then strict `mlx_lm` loading rejects
-`80` Gemma 4 shared/global K/V tensors. The accepted state has now been grown
-through the `100k` stress lane. The state-ramp runner treats that stress ceiling
-as a lifecycle boundary:
-fixed-turn ramps stop when the live state reaches the target or configured
-compaction threshold, and reports expose `context_exhausted`,
-`folded_state_required`, `compaction_threshold_tokens`, and
-`compaction_tail_tokens` so the next engine step is checkpoint, summarise, and
-prefill a folded state rather than append blindly. The package API now exposes
-that transition through `Model.FoldAgentMemory`: it sleeps the exhausted
-checkpoint, prefills a fresh session from summary-plus-tail text, sleeps the
-folded State with parent lineage, and records folded-state metadata for later
-wake/replay. Folded entries now wake with `restore_strategy=folded-prefill`:
-the engine reads only the compact folded token prefix from the State file and
-prefills that small new window, avoiding multi-block K/V assembly. The 100k
-stress rerun proves the three-block folded State wake is fixed. A follow-up
-full-timeline checkpoint rerun fixes the old `65536` token exhausted-checkpoint
-cap: `RangeKVBlocks` now streams the full session token timeline, and the real
-100k State report records a `101745` token checkpoint across `201` blocks while
-the live State is `101744` tokens.
-The AX hot-path benchmark pass now records this contract:
-`BenchmarkLoadPrefixFromStateBlocks_MixedWindowThreeBlocks` is
-`18968 ns/op`, `80258 B/op`, `49 allocs/op`, while
-`BenchmarkLoadPrefixTokensFromStateBlocks_MixedWindowThreeBlocks` is
-`13891 ns/op`, `36993 B/op`, `14 allocs/op`.
+Interpretation: go-mlx's wall time is lower in these pairs and the llama.cpp
+extra output is expected because that comparator leaked thinking-channel text.
+Do not reject the retained-State wall-time angle on token count alone. The
+remaining hard speed gap is raw decode: go-mlx is still about `1.34x` behind
+llama.cpp (`105.486 / 78.521`). That is not a small calibration delta, and it
+cannot be treated as a production pass. The next optimisation target is the
+native decode/eval boundary and long-context attention layout described in
+`IDEAS.md`, not more short-output benchmark rows.
 
-The first folded lifecycle probe on the same E2B q4 lane is recorded in the
-runtime note and manifest as
-`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-ramp-fold-lifecycle-50k-mark-fixed-energy100w.json`:
-after `30000` initial tokens and `6` retained append/generate turns, the engine
-folded a `50714` token exhausted checkpoint into a `221` token compact state,
-woke it in `86.637ms`, and continued without replaying the exhausted prefix or
-hitting the prior non-finite-logits failure.
+Latest local microbenchmark delta: `BenchmarkPagedKVCache_AppendSingleTokenPageConcat_128`
+improved from about `53168 B/op` and `3833 allocs/op` to `17472 B/op` and
+`1282 allocs/op` after avoiding exact-token page slices, lazy `Owned` state
+allocation, repeated page-shape queries, and per-token borrowed-state slice
+allocation. The prealloc variant also improved from about `85137 B/op` and
+`6026 allocs/op` to `51408 B/op` and `3599 allocs/op`, but it still costs more
+memory than concat and remains diagnostic rather than a default.
+The previous intermediate row was `19504 B/op` and
+`1536 allocs/op` after avoiding exact-token page slices, lazy `Owned` state
+allocation, and repeated page-shape queries.
 
-The 100k folded State token-wake rerun is now recorded as
-`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-semantic-state-tokenwake-energy100w.json`:
-it grows the same `30000` token warmed State to `102704` live tokens, folds a
-`677` token compact State across `3` blocks, wakes it in `223.207ms`, and
-continues for `512` tokens at `101.979 tok/s`. The full-timeline checkpoint
-rerun is recorded as
-`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-fulltimeline-tokenwake-energy100w.json`:
-it grows to `101744` live tokens, writes a `101745` token exhausted checkpoint,
-folds the same `677` token compact State, wakes it in `222.619ms`, and
-continues for `512` tokens at `100.577 tok/s`. This closes the warm build-up
-`100k` stress gate and the checkpoint capture-cap blocker. The wake-only
-follow-up probe is recorded as
-`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-state-wake-fold-fulltimeline-tightprompt-energy100w.json`:
-it reopens the existing full-timeline State file, wakes the folded `677` token
-State in `298.243ms`, appends the tightened one-sentence recovery prompt in
-`77.407ms`, and generates `24` visible tokens at `99.194 tok/s` with no
-recorded `output_issues`. The remaining production blocker is late-turn content
-degradation (`10/23` turns below the `256` visible-token floor on the
-full-timeline rerun). That blocker is now bounded by the fold-on-degradation
-runner path, recorded as
-`docs/runtime/2026-05-21-go-mlx-gemma4-e2b-4bit-opencode-state-ramp-30k-to-100k-fold-on-degradation-energy100w.json`:
-with `fold-on-degradation` enabled at `2` consecutive below-floor turns, the
-runner stops the live ramp at turn `16` and `81400` tokens after the second
-consecutive below-floor output, writes an `81401` token checkpoint, folds a
-`670` token compact State across `3` blocks, wakes it in `212.134ms`, and
-continues for `24` visible tokens at `98.658 tok/s`. Memory remains bounded at
-`3.304 GiB` process RSS and `3.156 GiB` active MLX, so the degradation gate is
-closed as an explicit lifecycle boundary rather than a hidden quality collapse.
+Current open gates:
 
-The retained-turn CLI path now has non-Metal `go test -benchmem` coverage for
-the hot state-ramp prompt/append/report functions. That benchmark pass found
-and fixed two avoidable costs: Gemma 4 whole-turn prompt wrapping dropped from
-`579.5 ns/op`, `4752 B/op`, `7 allocs/op` to `132.1 ns/op`, `1056 B/op`,
-`2 allocs/op`, and contiguous accepted append sections now reuse the existing
-token slice instead of copying `4096` tokens (`0 B/op`, `0 allocs/op` on the
-contiguous benchmark).
+- [x] Retained State can wake, append, generate, and report wall/decode/append,
+      memory, and estimated energy without replaying the full first context.
+- [x] The benchmark harness can run a realistic opencode-shaped `30k` first
+      context with `10` retained turns and compare it against a llama.cpp
+      anchor.
+- [ ] Same-workload retained workflow beats or matches llama.cpp on wall time,
+      raw decode, and estimated energy, with visible output counts and known
+      thinking-channel leakage reported side by side rather than used to hide
+      the speed result.
+- [ ] Raw decode is within the acceptable calibration band. The current gap is
+      `1.36x` versus llama.cpp, so this remains the primary code gap.
+- [ ] The default CLI path uses the fastest safe settings without requiring
+      hidden extra flags.
+- [ ] Long-output story/book turns remain coherent with `max_tokens` in the
+      thousands, not only diagnostic `128` token outputs.
+- [ ] The `30k` to `100k` warm build-up and folded-State lifecycle are rerun
+      after the decode/eval-boundary fixes and compared against one-shot/replay
+      behaviour.
+- [ ] The seven `mlx-community` Gemma 4 E2B formats (`mxfp4`, `mxfp8`, `4bit`,
+      `5bit`, `6bit`, `8bit`, `bf16`) are listed with go-mlx support status and
+      llama.cpp anchors where a comparable GGUF quant exists.
+- [ ] Canonical benchmark artefacts are regenerated and indexed after the code
+      stabilises. The old `docs/runtime/2026-*` report set is being removed from
+      this commit candidate and must not be cited as current acceptance evidence.
 
-Treat `IDEAS.md` as the current expert optimisation brief for this lane. Its
-Gemini Pro guidance around C++23 `std::mdspan`, Go `runtime.Pinner`, strict MLX
-eval boundaries, Gemma 4 5:1 local/global attention, PLE handling, shared/global
-K/V layout, and one native decode boundary per token is the source of the next
-implementation direction. Atomic-Chat and its `atomic-llama-cpp-turboquant`
-backend are secondary reference implementations for Metal/Gemma 4 ideas:
-TurboQuant K/V and Gemma 4 MTP are valid labelled R&D lanes, but their numbers
-must stay separate from no-draft raw decode evidence.
-
-The small-model matrix target is the full `mlx-community` Gemma 4 E2B set:
-`mxfp4`, `mxfp8`, `4bit`, `5bit`, `6bit`, `8bit`, and `bf16`. Those formats
-must be recorded as supported, unsupported, or incompatible with go-mlx, vLLM,
-`mlx_lm`, and llama.cpp. llama.cpp comparisons use the nearest comparable GGUF
-quant when no native MLX-format equivalent exists.
-
-The production benchmark lane is accepted because these gates are all satisfied:
-
-- [x] A current opencode-sized E2B q4 retained workflow completes with a
-      `30k`-`40k` first context, 10+ append/generate turns, realistic long
-      output budgets, bounded memory, captured output, and same-shape runner
-      anchors. The go-mlx side of this gate now has an accepted row; the gate
-      now has same-shape `mlx_lm` and llama.cpp anchors plus a same-shape vLLM
-      Metal load-failure note. The runner anchors carry content-shape caveats:
-      `mlx_lm` stops short on most marked turns, while llama.cpp emits visible
-      Gemma channel markers.
-- [x] A warm build-up stress run starts from the accepted `30k`-`40k` state,
-      appends/generates in retained state until the live context reaches about
-      `100k`, and reports cumulative append cost, decode, wall time, memory,
-      estimated energy, and delta versus one-shot `100k` prefill and replaying
-      the whole prefix each turn.
-      Use real opencode-like append material for acceptance runs; synthetic
-      repeated token blocks are diagnostic only because they hide entropy and
-      cache-access patterns. Generated assistant tokens count into the live
-      state for turn `N+1`. Report effective turn throughput as generated
-      tokens divided by append-plus-decode wall time, separately from raw decode
-      tok/s. When this run reaches the live context budget, the accepted outcome
-      is a reported `folded_state_required` boundary with a summary-plus-tail
-      folded-state handoff, not further raw appends into an exhausted window.
-      The API-level handoff is now implemented by `Model.FoldAgentMemory`, and
-      `state-ramp-profile` can execute it with `-fold-on-exhaustion` plus an
-      explicit `-fold-store` path. The accepted warm build-up with semantic
-      summary/tail material is now recorded by the 100k folded State token-wake
-      and full-timeline checkpoint rows; the wake-only `state-wake-profile` row
-      records the folded wake/continue turn without rerunning the full 100k
-      build-up.
-- [x] A current guarded 100k-token E2B q4 retained-state run completes on the
-      target machine with 10+ turns, realistic generation length, bounded memory,
-      and recorded restore-versus-replay savings. This is now the hyper-long
-      stress/degradation gate, not the normal opencode workload.
-- [x] A guarded 10-chapter/full-book run completes with captured markdown,
-      enough output budget for real continuation, no late-turn degeneration, and
-      no tiny-token shortcut masquerading as workload evidence.
-- [x] Same-shape runner anchors exist for the accepted workflow: go-mlx versus
-      configured `mlx_lm`, vLLM where it can load the model, and llama.cpp where
-      the model format is comparable. Report wall time, raw decode, prefill,
-      restore, memory, and estimated energy separately. Treat those as measured
-      stats, not the goal by themselves, unless a configured rival wins the
-      accepted repeated workflow; then the losing stat becomes the next boundary
-      to close.
-- [x] The seven-format `mlx-community` E2B matrix is current for go-mlx and has
-      runner anchor rows for vLLM and llama.cpp where each runner can load a
-      comparable format. Loader failures must include command, version, and
-      error text rather than being silently skipped.
-- [x] Long-context degradation is explained and improved or bounded. The
-      `30k`-`40k` interactive lane and the `100k` stress lane must not collapse
-      into paths that only look good on README-sized or `max_tokens=128` smoke
-      prompts. If the warm build-up curve bends upward around `60k`-`80k`,
-      inspect MLX graph lifetime/eval boundaries, dynamic K/V concatenation or
-      other `O(N^2)` movement, and local-layer leakage beyond the intended
-      sliding window. The folded wake prompt drift is now bounded by the
-      wake-only probe. The full 100k ramp still exposes late-turn content
-      degradation, but the accepted fold-on-degradation run now turns that into
-      a measured handoff boundary: it stops after `2` consecutive below-floor
-      turns at turn `16`, folds the `81400` token live State, wakes the compact
-      State in `212.134ms`, and continues without treating the degraded context
-      as a healthy production window.
-- [x] `lthn/lemer-mlx` or the chosen default small-model lane has an accepted
-      prompt/template path for multi-turn story/workflow continuation, not just a
-      native-load smoke pass.
-- [x] The canonical benchmark artefacts are cleaned, indexed, and reproducible
-      enough that a new worker can replay the production path without digging
-      through abandoned JSON and stderr fragments.
-
-      The canonical production artefacts now have a tracked
-      manifest at
-      `docs/runtime/2026-05-20-production-benchmark-manifest.json` and a
-      verifier at `scripts/verify_production_benchmark_manifest.sh`. The
-      verifier checks file existence, git tracking, non-empty artefacts, JSON
-      parseability, and index references. The strict cleanup gate
-      `scripts/verify_production_benchmark_manifest.sh --strict-clean` now
-      passes after pruning three obsolete tracked 2026-05-19 book fragments and
-      quarantining 137 noncanonical generated runtime fragments under the
-      ignored `docs/runtime/.quarantine/2026-05-20-noncanonical/` directory.
+Treat `IDEAS.md` as the active optimisation brief. Its highest-priority path is
+strict MLX eval boundaries / graph lifetime control first, then pinned State
+memory and C++23 `std::mdspan` layout work. Gemma 4 local/global attention
+windowing, PLE handling, and K/V layout must be verified against the actual code
+before declaring memory or decode fixed.
 
 Do not close this goal because a short-context decode number is healthy. The
-production claim is repeated-workflow wall time and retained-state savings under
+production claim is repeated-workflow wall time and retained-State savings under
 real output budgets, with runner anchors and energy assumptions exposed.
 
 ## Production Acceptance Criteria

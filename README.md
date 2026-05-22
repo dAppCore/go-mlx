@@ -1,14 +1,14 @@
 [![Go Reference](https://pkg.go.dev/badge/dappco.re/go/mlx.svg)](https://pkg.go.dev/dappco.re/go/mlx)
-[![Licence: EUPL-1.2](https://img.shields.io/badge/Licence-EUPL--1.2-blue.svg)](LICENCE)
+[![License: EUPL-1.2](https://img.shields.io/badge/License-EUPL--1.2-blue.svg)](LICENSE.md)
 [![Go Version](https://img.shields.io/badge/Go-1.26-00ADD8?style=flat&logo=go)](go.mod)
 
 # go-mlx
 
-Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `Session.BeginFrame`, `Session.FinishFrame`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`, `KernelScanlineFilter`, `KernelCRTFilter`, `KernelSoftenFilter`, `KernelSharpenFilter`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
+Native Apple Metal GPU inference via mlx-c CGO bindings, implementing the `inference.Backend` and `inference.TextModel` interfaces from go-inference for Apple Silicon (M1-M4). Supports Gemma 3, Gemma 4 (dense and MoE), Qwen 2/3, and Llama 3 architectures from HuggingFace safetensors directories and GGUF checkpoints, with fused Metal kernels for RMSNorm, RoPE, scaled dot-product attention, KV cache management, LoRA fine-tuning with AdamW, and batch inference. The root package also exposes an RFC-style direct model API (`mlx.LoadModel`, `model.Generate`, `model.GenerateStream`) and a non-LLM frame-compute API (`mlx.NewSession`, `PixelBuffer`, `KernelRGB565ToRGBA8`, `KernelNearestScale`) for Apple GPU-accelerated image and emulator workloads. A Python subprocess backend (`mlxlm`) is provided as a CGO-free alternative. Platform-restricted: `darwin/arm64` only; a no-op stub compiles on all other platforms.
 
 **Module**: `dappco.re/go/mlx`
 **Licence**: EUPL-1.2
-**Language**: Go 1.26
+**Language**: Go 1.25
 
 ## Quick Start
 
@@ -17,21 +17,15 @@ import (
     "context"
     "fmt"
 
-    "dappco.re/go/inference"
+    "dappco.re/go/core/inference"
     _ "dappco.re/go/mlx"  // registers "metal" backend via init()
 )
 
 model, err := inference.LoadModel("/Volumes/Data/lem/safetensors/gemma-3-1b/")
-if err != nil {
-    panic(err)
-}
 defer model.Close()
 
 for tok := range model.Generate(context.Background(), "Hello", inference.WithMaxTokens(256)) {
     fmt.Print(tok.Text)
-}
-if err := model.Err(); err != nil {
-    panic(err)
 }
 ```
 
@@ -72,39 +66,27 @@ if err != nil {
 }
 defer session.Close()
 
-src, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
+src, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  320,
     Height: 224,
     Stride: 640,
     Format: mlx.PixelRGB565,
 })
-if err != nil {
-    panic(err)
-}
-rgba, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
+rgba, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  320,
     Height: 224,
     Stride: 1280,
     Format: mlx.PixelRGBA8,
 })
-if err != nil {
-    panic(err)
-}
-scaled, err := session.NewPixelBuffer(mlx.PixelBufferDesc{
+scaled, _ := session.NewPixelBuffer(mlx.PixelBufferDesc{
     Width:  960,
     Height: 672,
     Stride: 3840,
     Format: mlx.PixelRGBA8,
 })
-if err != nil {
-    panic(err)
-}
 
 frameBytes := make([]byte, src.Descriptor().SizeBytes())
 if err := src.Upload(frameBytes); err != nil {
-    panic(err)
-}
-if err := session.BeginFrame(); err != nil {
     panic(err)
 }
 if err := session.Run(mlx.KernelRGB565ToRGBA8, mlx.KernelArgs{
@@ -119,15 +101,7 @@ if err := session.Run(mlx.KernelNearestScale, mlx.KernelArgs{
 }); err != nil {
     panic(err)
 }
-if err := session.Run(mlx.KernelScanlineFilter, mlx.KernelArgs{
-    Inputs:  map[string]mlx.Buffer{"src": scaled},
-    Outputs: map[string]mlx.Buffer{"dst": scaled},
-    Scalars: map[string]float64{"strength": 0.3},
-}); err != nil {
-    panic(err)
-}
-frameMetrics, err := session.FinishFrame()
-if err != nil {
+if err := session.Sync(); err != nil {
     panic(err)
 }
 
@@ -136,46 +110,20 @@ if err != nil {
     panic(err)
 }
 _ = finalFrame
-_ = frameMetrics
 ```
-
-## Research-Grade Pipeline
-
-go-mlx is positioned as a Go-native research-grade model runner — not just inference. The root package exposes the full training and operations pipeline so harnesses can stop reaching for Python `mlx-lm`:
-
-| Feature | Function | What it does |
-|---------|----------|--------------|
-| LoRA fine-tuning | `mlx.ApplyLoRA` + `mlx.NewAdamW` | Low-rank adaptation training with AdamW, mixed precision, gradient checkpointing |
-| LoRA fusion | `mlx.FuseLoRAIntoModelPack(ctx, opts)` | Bake a trained LoRA adapter into the base model as a fresh safetensors pack |
-| Knowledge distillation | `mlx.RunKnowledgeDistillation(ctx, runner, dataset, cfg)` | KL or soft-CE loss against a teacher's logits, with checkpoint resumption |
-| GRPO | `mlx.RunGRPOReasoningTraining(ctx, runner, dataset, cfg)` | Group-relative policy optimisation with reward functions and reference KL |
-| Eval | `mlx.RunModelEval(ctx, model, dataset, cfg)` | Dataset-native perplexity plus pluggable quality probes |
-| Model merge | `mlx.MergeModelPacks(ctx, opts)` | Linear / SLERP / TIES / DARE merging of multiple model packs with provenance |
-| GGUF quantise | `mlx.QuantizeModelPackToGGUF(ctx, opts)` | Native Go safetensors → GGUF Q8_0 / Q4_0 / Q4_K_M |
-| KV snapshot | `snapshot.Save(path)` / `mlx.LoadKVSnapshot(path)` | Portable binary KV cache (Float32 or Q8 symmetric int8) for session restore |
-| HF fit | `mlx.PlanHFModelFits(ctx, cfg)` | HuggingFace Hub metadata search to plan what fits on local hardware |
-| Attention probe | `inference.AttentionInspector` adapter | Extract post-RoPE K vectors per head per layer for analysis |
-
-See [`docs/`](docs/) and [`examples/`](examples/) for the full surface.
 
 ## Documentation
 
 - [Compute Guide](docs/compute.md) — frame-oriented Metal compute sessions, pixel buffers, kernels, metrics
 - [Architecture](docs/architecture.md) — CGO binding, model architectures, weight loading, KV cache, attention, batch inference, LoRA training, mlxlm backend
 - [Models](docs/models.md) — model loading, supported architectures, tokenisation, chat templates
-- [Training](docs/training.md) — LoRA fine-tuning, AdamW, gradient computation, checkpoints, fusion
-- [Distillation](docs/distillation.md) — knowledge distillation (KL, soft cross-entropy)
-- [GRPO](docs/grpo.md) — group-relative policy optimisation for RL
-- [Eval](docs/eval.md) — dataset-native perplexity, quality probes, eval reports
-- [Model Operations](docs/model-operations.md) — merge, GGUF quantise, KV snapshot, HF fit
+- [Training](docs/training.md) — LoRA fine-tuning, AdamW, gradient computation, checkpoints
 - [Development Guide](docs/development.md) — prerequisites (mlx-c CMake build), CGO flags, test patterns, benchmarks
 - [Project History](docs/history.md) — completed phases, commit hashes, known limitations
-- [Examples](examples/) — runnable usage examples organised by type
 
 ## Build & Test
 
 ```bash
-git submodule update --init --recursive
 go generate ./...        # builds mlx-c C library (required first time)
 go test ./...
 go build ./...

@@ -15,7 +15,6 @@ Go Application
     v
 inference.TextModel / inference.TrainableModel   <-- go-inference interfaces
 mlx.LoadModel / mlx.NewSession                   <-- direct root APIs
-cmd/violet + pkg/daemon                          <-- Unix-socket native sidecar
     |
     v
 register_metal.go (metalAdapter)                  <-- Backend registration + type conversion
@@ -41,26 +40,23 @@ internal/metal/                                   <-- All CGO code
     +-- metal.go       Init, error handler, Eval, Materialize
     |
     v
-mlx-c v0.6.0                                     <-- C API (fetched by CMake)
+mlx-c v0.4.1                                     <-- C API (fetched by CMake)
     |
     v
-Apple MLX v0.31.1 / Metal / Accelerate            <-- local patched lib/mlx
+Apple MLX / Metal / Accelerate                    <-- GPU compute
 ```
 
 ## CGO Binding
 
 ### Build Chain
 
-mlx-c is fetched and built by CMake via `go generate ./...`. The
-`CMakeLists.txt` at the module root pulls mlx-c v0.6.0 from GitHub and points
-mlx-c's nested MLX dependency at the local patched `lib/mlx` submodule:
+mlx-c is fetched and built by CMake via `go generate ./...`. The `CMakeLists.txt` at the module root pulls mlx-c v0.4.1 from GitHub:
 
 ```cmake
-set(FETCHCONTENT_SOURCE_DIR_MLX "${CMAKE_CURRENT_SOURCE_DIR}/lib/mlx" CACHE PATH "Local patched MLX source")
 FetchContent_Declare(
   mlx-c
   GIT_REPOSITORY "https://github.com/ml-explore/mlx-c.git"
-  GIT_TAG "v0.6.0"
+  GIT_TAG "v0.4.1"
 )
 ```
 
@@ -137,7 +133,6 @@ Key points:
 - `Model.Close()` deterministically frees all weight arrays without relying on GC. Tied output weights (shared with the embedding table) are detected and skipped to prevent double-free.
 - Each `Generate()` call allocates fresh KV caches that are released to GC when the iterator completes.
 - Call `ClearCache()` between multi-turn chat turns for prompt memory reclaim rather than waiting for GC.
-- Violet's native daemon route loads configured models on first use and keeps them resident until shutdown. Its `generate` action goes through the same root `mlx.LoadModel` defaults as direct callers, so local agent harnesses can avoid a separate HTTP server when they already own tool execution and routing.
 
 ## Fused Metal Kernels
 
@@ -209,7 +204,7 @@ Used for Gemma 3 sliding-window attention layers. When `ContextLen` is set via `
 `newSampler(temp, topP, minP, topK)` builds a composable pipeline:
 
 ```
-Temperature -> TopP -> TopK -> MinP -> RandomCategorical
+TopP -> MinP -> TopK -> Temperature -> RandomCategorical
 ```
 
 If `temp == 0`, the chain collapses to greedy (argmax).
@@ -220,7 +215,7 @@ If `temp == 0`, the chain collapses to greedy (argmax).
 - **TopP (nucleus)** -- keep the smallest set with cumulative probability exceeding `p`
 - **MinP** -- mask tokens below `min_p * max_probability`
 
-Full sampling chain (Temperature + TopP + TopK + MinP) adds approximately 560 us over greedy per token.
+Full sampling chain (TopP + MinP + TopK) adds approximately 560 us over greedy per token.
 
 ## Public APIs
 
@@ -235,7 +230,7 @@ Consumer pattern:
 
 ```go
 import (
-    "dappco.re/go/inference"
+    "dappco.re/go/core/inference"
     _ "dappco.re/go/mlx"
 )
 
@@ -258,17 +253,9 @@ session, err := mlx.NewSession()
 
 Options from `inference.LoadConfig` understood by the Metal backend:
 
-- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers; default `131072` (`128Ki` tokens)
-- `ParallelSlots` -- caps concurrent native inference calls for one loaded model before KV/cache allocation; default 1
+- `ContextLen` -- replaces unbounded `KVCache` with `RotatingKVCache(contextLen)` for all layers
 - `AdapterPath` -- loads a trained LoRA adapter from disk at model load time
 - `GPULayers` -- logged as a warning if set to 0 (Metal always uses full GPU offload)
-
-The direct root API adds `PromptCache` load settings and `WarmPromptCache`.
-The cache is a single in-memory exact token-prefix KV snapshot. It is intentionally
-conservative: dense prefixes can be sliced and restored, while wrapped rotating
-sliding-window caches are skipped unless they are still contiguous from the
-start. This keeps reuse correct for Qwen-style long prefixes and avoids silently
-reusing an invalid Gemma sliding-window state.
 
 ## mlxlm Subprocess Backend
 
