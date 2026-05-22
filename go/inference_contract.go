@@ -347,47 +347,15 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	// the literal length below — bump it if entries are added or
 	// removed (compile-time check via len(capabilities) == const).
 	algorithmCaps := profile.AlgorithmCapabilities()
+	// Pre-built static tail — see metalCapabilityStaticTail. The 38
+	// entries that don't depend on loadReady are constructed once at
+	// package init; the per-call build is a make() + one append for
+	// modelLoadCapability + one bulk append for the static tail + one
+	// final append for algorithmCaps. Replaces 38 function calls + 38
+	// boxed append args with one slice copy.
 	capabilities := make([]inference.Capability, 0, metalCapabilityFixedCount+len(algorithmCaps))
-	capabilities = append(capabilities,
-		modelLoadCapability,
-		inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityRuntimeDiscovery, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityAutoTuning, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityModelReplace, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityModelSlice, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityGenerate, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityChat, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityClassify, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityBatchGenerate, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityTokenizer, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityChatTemplate, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityLoRAInference, inference.CapabilityGroupModel),
-		inference.SupportedCapability(inference.CapabilityStateBundle, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityPromptCache, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityAgentMemory, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityStateWake, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityStateSleep, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityStateFork, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityLoRATraining, inference.CapabilityGroupTraining),
-		inference.SupportedCapability(inference.CapabilityDistillation, inference.CapabilityGroupTraining),
-		inference.SupportedCapability(inference.CapabilityGRPO, inference.CapabilityGroupTraining),
-		inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
-		inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
-		inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
-		inference.ExperimentalCapability(inference.CapabilitySplitInference, inference.CapabilityGroupModel, "local dense Qwen split execution supports Metal attention/logits plus CPU FFN; remote FFN/expert execution is not wired yet"),
-		inference.PlannedCapability(inference.CapabilityDifferentialLoad, inference.CapabilityGroupRuntime, "base/fine-tune differential loading belongs in go-ai/go-ml orchestration"),
-		inference.PlannedCapability(inference.CapabilityVIndex, inference.CapabilityGroupProbe, "LarQL-style vindex extraction is planned for research queries"),
-		inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
-		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
-	)
+	capabilities = append(capabilities, modelLoadCapability)
+	capabilities = append(capabilities, metalCapabilityStaticTail...)
 	capabilities = append(capabilities, algorithmCaps...)
 	if !loadReady {
 		capabilities = markMetalUnavailableCapabilities(capabilities)
@@ -469,6 +437,56 @@ func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inf
 // changes (the test in inference_contract_test.go counts the slice
 // after build and asserts the expected total).
 const metalCapabilityFixedCount = 39
+
+// metalCapabilityStaticTail is the 38-entry portion of the capability
+// list that does NOT vary with loadReady. metalCapabilityReportWithLoad-
+// Ready prepends the per-call modelLoadCapability (entry 0 — varies
+// because it switches between Supported and Unsupported based on
+// loadReady) and appends the per-call algorithmCaps tail (varies in
+// length); the middle is identical on every call. Pre-building once at
+// package init replaces 38 SupportedCapability/Experimental/Planned
+// calls + 38 boxed append args with one bulk slice copy. Keep in sync
+// with metalCapabilityFixedCount (38 entries here + 1 modelLoadCapability
+// at index 0 = 39).
+var metalCapabilityStaticTail = []inference.Capability{
+	inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityRuntimeDiscovery, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityAutoTuning, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityModelReplace, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityModelSlice, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityMemoryPlanning, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityKVCachePlanning, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityBenchmark, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityEvaluation, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityQuantization, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityModelMerge, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityGenerate, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityChat, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityClassify, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityBatchGenerate, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityTokenizer, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityChatTemplate, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityLoRAInference, inference.CapabilityGroupModel),
+	inference.SupportedCapability(inference.CapabilityStateBundle, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityKVSnapshot, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityPromptCache, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityAgentMemory, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityStateWake, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityStateSleep, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityStateFork, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityLoRATraining, inference.CapabilityGroupTraining),
+	inference.SupportedCapability(inference.CapabilityDistillation, inference.CapabilityGroupTraining),
+	inference.SupportedCapability(inference.CapabilityGRPO, inference.CapabilityGroupTraining),
+	inference.SupportedCapability(inference.CapabilityProbeEvents, inference.CapabilityGroupProbe),
+	inference.SupportedCapability(inference.CapabilityAttentionProbe, inference.CapabilityGroupProbe),
+	inference.SupportedCapability(inference.CapabilityLogitProbe, inference.CapabilityGroupProbe),
+	inference.ExperimentalCapability(inference.CapabilitySplitInference, inference.CapabilityGroupModel, "local dense Qwen split execution supports Metal attention/logits plus CPU FFN; remote FFN/expert execution is not wired yet"),
+	inference.PlannedCapability(inference.CapabilityDifferentialLoad, inference.CapabilityGroupRuntime, "base/fine-tune differential loading belongs in go-ai/go-ml orchestration"),
+	inference.PlannedCapability(inference.CapabilityVIndex, inference.CapabilityGroupProbe, "LarQL-style vindex extraction is planned for research queries"),
+	inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
+	inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
+}
 
 var (
 	metalCapabilityArchitectures = profile.ArchitectureIDs()
