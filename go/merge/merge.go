@@ -191,7 +191,7 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 		if pack.Format != mp.ModelPackFormatSafetensors {
 			return prepared{}, core.NewError("mlx: model merge currently requires safetensors source weights")
 		}
-		if samePath(pack.Root, output) {
+		if samePathResolved(pack.Root, output) {
 			return prepared{}, core.NewError("mlx: merged output path must differ from source model path")
 		}
 		packs = append(packs, pack)
@@ -784,6 +784,17 @@ func samePath(a, b string) bool {
 	absB := b
 	if resolved := core.PathAbs(b); resolved.OK {
 		absB = resolved.Value.(string)
+	}
+	return absA == absB
+}
+
+// samePathResolved is the per-source-loop variant where the right-hand
+// side is already absolute. Saves a core.PathAbs call (and any associated
+// filesystem inspection) per iteration.
+func samePathResolved(a, absB string) bool {
+	absA := a
+	if resolved := core.PathAbs(a); resolved.OK {
+		absA = resolved.Value.(string)
 	}
 	return absA == absB
 }
