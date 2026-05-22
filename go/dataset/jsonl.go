@@ -93,8 +93,12 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	// before each Unmarshal call. The slice fields (Messages,
 	// Conversations) are reset to length 0 in-place so we keep the
 	// backing array across rows of the same shape and avoid an
-	// allocation per chat-shape row.
+	// allocation per chat-shape row. msgBuf reuses the
+	// []inference.Message backing across openai/sharegpt rows —
+	// chat.Format consumes its argument synchronously so reuse is
+	// safe.
 	var record jsonRecord
+	var msgBuf []inference.Message
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
@@ -113,7 +117,7 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 		if result := core.JSONUnmarshal(line, &record); !result.OK {
 			return nil, core.Errorf("dataset: parse JSONL line %d: %w", lineNo, resultError(result))
 		}
-		sample, ok, err := record.toSample(cfg)
+		sample, ok, err := record.toSample(cfg, &msgBuf)
 		if err != nil {
 			return nil, core.Errorf("dataset: normalize JSONL line %d: %w", lineNo, err)
 		}
@@ -170,15 +174,22 @@ func (d *JSONLDataset) Samples() []Sample {
 	return CloneSamples(d.samples)
 }
 
-func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
+// toSample normalises a parsed jsonRecord. msgBuf is an optional
+// pointer to a reusable []inference.Message backing array for the
+// openai/sharegpt branches — pass nil when no reuse is available.
+// The helpers write back through *msgBuf so a grown backing array
+// is captured for the next row, saving one alloc per chat-shape row
+// over the lifetime of a LoadJSONL call. chat.Format does not retain
+// its messages argument, so the caller can safely reuse the buffer.
+func (r jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
 	if text := core.Trim(r.Text); text != "" {
 		return labelled(Sample{Text: text}, "text"), true, nil
 	}
 	if len(r.Messages) > 0 {
-		return MessagesToSample(messagesFromOpenAI(r.Messages), cfg.ChatTemplate, "openai_messages")
+		return MessagesToSample(appendMessagesFromOpenAI(msgBuf, r.Messages), cfg.ChatTemplate, "openai_messages")
 	}
 	if len(r.Conversations) > 0 {
-		return MessagesToSample(messagesFromShareGPT(r.Conversations), cfg.ChatTemplate, "sharegpt")
+		return MessagesToSample(appendMessagesFromShareGPT(msgBuf, r.Conversations), cfg.ChatTemplate, "sharegpt")
 	}
 	// Trim each candidate once per row — these used to be called 4-6
 	// times each because firstNonEmpty pre-trimmed for the check then
@@ -220,8 +231,15 @@ func (r jsonRecord) toSample(cfg Config) (Sample, bool, error) {
 	return Sample{}, false, nil
 }
 
-func messagesFromOpenAI(records []messageRecord) []inference.Message {
-	out := make([]inference.Message, 0, len(records))
+// appendMessagesFromOpenAI fills *buf with normalised messages from
+// records, writing back through buf so a grown backing array is
+// captured for the next call. When buf is nil (no reuse available)
+// the slice is allocated fresh; otherwise we reset the existing
+// backing in place if cap is sufficient. Pass a reusable buffer
+// (typical: one per LoadJSONL call) to avoid the per-row slice alloc
+// the original `make([]Message, 0, n)` form triggered.
+func appendMessagesFromOpenAI(buf *[]inference.Message, records []messageRecord) []inference.Message {
+	out := claimMessageBuf(buf, len(records))
 	for _, record := range records {
 		// Short-circuit empty rows before the Trim/NormaliseRole
 		// work — JSON unmarshal leaves missing fields as "" so
@@ -236,11 +254,16 @@ func messagesFromOpenAI(records []messageRecord) []inference.Message {
 		}
 		out = append(out, inference.Message{Role: role, Content: content})
 	}
+	if buf != nil {
+		*buf = out
+	}
 	return out
 }
 
-func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
-	out := make([]inference.Message, 0, len(records))
+// appendMessagesFromShareGPT mirrors appendMessagesFromOpenAI for the
+// ShareGPT-shape record (from/value rather than role/content).
+func appendMessagesFromShareGPT(buf *[]inference.Message, records []shareGPTRecord) []inference.Message {
+	out := claimMessageBuf(buf, len(records))
 	for _, record := range records {
 		if record.From == "" && record.Value == "" {
 			continue
@@ -252,7 +275,23 @@ func messagesFromShareGPT(records []shareGPTRecord) []inference.Message {
 		}
 		out = append(out, inference.Message{Role: role, Content: content})
 	}
+	if buf != nil {
+		*buf = out
+	}
 	return out
+}
+
+// claimMessageBuf returns an empty slice with at least n capacity,
+// reusing *buf's backing array when possible. Hoisted from the two
+// append helpers since the prelude is identical.
+func claimMessageBuf(buf *[]inference.Message, n int) []inference.Message {
+	if buf == nil {
+		return make([]inference.Message, 0, n)
+	}
+	if cap(*buf) < n {
+		return make([]inference.Message, 0, n)
+	}
+	return (*buf)[:0]
 }
 
 // MessagesToSample converts a message list into a normalised Sample,
