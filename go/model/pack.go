@@ -164,6 +164,40 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	}
 }
 
+// containsASCIIInsensitive reports whether s contains substr, treating
+// A-Z and a-z as equal. substr MUST already be lowercase ASCII (the
+// caller passes a fixed string literal like "normalize"). Avoids
+// allocating a lowered copy of s — the substr lengths in this package
+// are short (≤ 12 bytes) so the naive byte-walk is fine.
+//
+//	containsASCIIInsensitive("Sentence/Normalize", "normalize")  // → true
+func containsASCIIInsensitive(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(substr); j++ {
+			a := s[i+j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if a != substr[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
 // hasASCIIInsensitiveSuffix reports whether s ends with suffix, treating
 // A-Z and a-z as equal. Avoids allocating a lowered copy of s when the
 // only thing we need is a 4-12 byte extension match.
@@ -566,8 +600,13 @@ func readSentenceTransformerNormalize(root string) (bool, bool) {
 	if result := core.JSONUnmarshal(read.Value.([]byte), &modules); !result.OK {
 		return false, false
 	}
+	// Test "normalize" insensitively against Type+Path without
+	// allocating a lowered copy per field. modules.json typically
+	// carries 1-4 entries; the per-call Lower allocs (one per field,
+	// two per row) compound on every Inspect against a
+	// sentence-transformers model.
 	for _, module := range modules {
-		if core.Contains(core.Lower(module.Type), "normalize") || core.Contains(core.Lower(module.Path), "normalize") {
+		if containsASCIIInsensitive(module.Type, "normalize") || containsASCIIInsensitive(module.Path, "normalize") {
 			return true, true
 		}
 	}
