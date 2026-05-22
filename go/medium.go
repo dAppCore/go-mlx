@@ -84,13 +84,28 @@ func mediumRelativePath(root, target string) string {
 	if root == "" {
 		return core.TrimPrefix(target, "/")
 	}
-	// Forward-slash paths are POSIX; compute relative via filepath.Rel and
-	// convert back to slash form so callers receive consistent separators.
+	// Hot path: walkMedium feeds the visit callback with target paths
+	// built via `PathJoin(root, entry.Name())`, so >99% of callers hit
+	// `target == root + "/" + suffix` (clean POSIX, no "..", no
+	// trailing slash on root). When that prefix invariant holds we
+	// can return the suffix directly — no filepath.Rel clean+walk, no
+	// fromSlashPath/ToSlash round-trip, no Result type assertion.
+	if rl := len(root); len(target) > rl+1 && target[rl] == '/' && target[:rl] == root {
+		return target[rl+1:]
+	}
+	// Cold path — non-prefix targets or paths with ".." components.
+	// Forward-slash paths are POSIX; compute relative via filepath.Rel
+	// and convert back to slash form so callers receive consistent
+	// separators.
 	relativeResult := core.PathRel(fromSlashPath(root), fromSlashPath(target))
-	if !relativeResult.OK || relativeResult.Value.(string) == "." {
+	if !relativeResult.OK {
 		return ""
 	}
-	return core.PathToSlash(relativeResult.Value.(string))
+	rel, _ := relativeResult.Value.(string)
+	if rel == "." {
+		return ""
+	}
+	return core.PathToSlash(rel)
 }
 
 func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) error {
