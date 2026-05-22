@@ -11,10 +11,22 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
+// Per-call sentinel — RunFastEvalBench / RunFastEvalBenchWithDraft are
+// the entry points exercised by bench / driver harness loops; sharing
+// the existing errMLXModelNil sentinel reuses the alloc declared in
+// backend.go for the nil-model guard. errFastEvalSpeculativePairNil
+// covers the dedicated SpeculativePair entry; errFastEvalResultFailed
+// is the JSON marshal/unmarshal failure fallback used by every bench
+// iteration that exercises state-bundle JSON round-trips.
+var (
+	errFastEvalSpeculativePairNil = core.NewError("mlx: speculative pair is nil")
+	errFastEvalResultFailed       = core.NewError("core result failed")
+)
+
 // RunFastEvalBench runs the benchmark harness against a loaded Model.
 func RunFastEvalBench(ctx context.Context, model *Model, cfg bench.Config) (*bench.Report, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	return RunFastEval(ctx, NewModelFastEvalRunner(model), cfg)
 }
@@ -23,7 +35,7 @@ func RunFastEvalBench(ctx context.Context, model *Model, cfg bench.Config) (*ben
 // model for speculative decode reporting.
 func RunFastEvalBenchWithDraft(ctx context.Context, model, draft *Model, cfg bench.Config) (*bench.Report, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	return RunFastEval(ctx, NewModelFastEvalRunnerWithDraft(model, draft), cfg)
 }
@@ -32,7 +44,7 @@ func RunFastEvalBenchWithDraft(ctx context.Context, model, draft *Model, cfg ben
 // loaded target/draft pair, preserving native assistant-only pair state.
 func RunFastEvalBenchWithSpeculativePair(ctx context.Context, pair *SpeculativePair, cfg bench.Config) (*bench.Report, error) {
 	if pair == nil || pair.Target == nil {
-		return nil, core.NewError("mlx: speculative pair is nil")
+		return nil, errFastEvalSpeculativePairNil
 	}
 	return RunFastEval(ctx, NewModelFastEvalRunnerWithSpeculativePair(pair), cfg)
 }
@@ -140,5 +152,5 @@ func fastEvalResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errFastEvalResultFailed
 }
