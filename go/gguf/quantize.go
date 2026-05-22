@@ -390,29 +390,47 @@ func quantizeQ8_0(values []float32) []byte {
 		// [2]byte temp. binary.LittleEndian.AppendUint16 lowers to a
 		// direct two-byte append.
 		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
-		invScale := float32(0)
-		if scale != 0 {
-			invScale = 1 / scale
+		// Stack-allocated pack buffer + single append at end of block —
+		// replaces 32 individual `out = append(out, byte)` calls (each
+		// with its own bounds check + length update) with one bulk
+		// memcpy. Matches the pattern Q4_0 already uses.
+		var packed [32]byte
+		if scale == 0 {
+			// Zero-block fast path: invScale would be zero so every q
+			// is 0; skip the per-element work. `packed` already zeroed
+			// by the var declaration.
+			out = append(out, packed[:]...)
+			continue
 		}
-		for _, value := range block {
+		invScale := 1 / scale
+		// Hoist the invScale==0 branch out of the inner loop — saves
+		// 32 branch evaluations per block.
+		for i, value := range block {
+			// Multiply by 1/scale instead of dividing — single FMUL
+			// vs FDIV per element (32x per block, millions per tensor).
+			// Round-half-away-from-zero in float32 directly; skips the
+			// float32→float64→math.Round→int round-trip and the call
+			// overhead of math.Round (which handles edge cases
+			// irrelevant to a clamped-to-127 quantiser).
+			scaled := value * invScale
 			var q int
-			if invScale != 0 {
-				// Multiply by 1/scale instead of dividing — single FMUL
-				// vs FDIV per element (32x per block, millions per tensor).
-				// Round-half-away-from-zero in float32 directly; skips the
-				// float32→float64→math.Round→int round-trip and the call
-				// overhead of math.Round (which handles edge cases
-				// irrelevant to a clamped-to-127 quantiser).
-				scaled := value * invScale
-				if scaled >= 0 {
-					q = int(scaled + 0.5)
-				} else {
-					q = int(scaled - 0.5)
-				}
+			if scaled >= 0 {
+				q = int(scaled + 0.5)
+			} else {
+				q = int(scaled - 0.5)
 			}
-			q = clampInt(q, -127, 127)
-			out = append(out, byte(int8(q)))
+			// Inline clampInt — avoids the func-call boundary on a
+			// 2-branch primitive. The compiler will most likely inline
+			// already, but doing it explicitly keeps the hot path
+			// dependency-light.
+			if q < -127 {
+				q = -127
+			} else if q > 127 {
+				q = 127
+			}
+			packed[i] = byte(int8(q))
 		}
+		out = append(out, packed[:]...)
 	}
 	return out
 }
@@ -430,30 +448,58 @@ func quantizeQ4_0(values []float32) []byte {
 		// Stack-allocated pack buffer instead of make([]byte, 16) per
 		// block — saves one heap alloc per 32 input floats.
 		var packed [16]byte
-		invScale := float32(0)
-		if scale != 0 {
-			invScale = 1 / scale
+		if scale == 0 {
+			// Zero-block fast path: q=0 → q+8=8 (Q4_0 stores
+			// (q+8) ∈ [0,15] unsigned). Both nibbles of each packed
+			// byte are 8, so the byte value is 0x88. Skips the
+			// per-element multiply + round + branch work.
+			for i := range packed {
+				packed[i] = 0x88
+			}
+			out = append(out, packed[:]...)
+			continue
 		}
-		for i, value := range block {
+		invScale := 1 / scale
+		// Split the i<16 branch out of the inner loop — two clean
+		// 16-iter loops let the back-end keep the lower-nibble writes
+		// (packed[i] = q) and upper-nibble OR-writes (packed[i-16] |=
+		// q<<4) on independent memory dependencies. Same total work,
+		// less branch overhead and a cleaner dep chain.
+		for i := 0; i < 16; i++ {
+			value := block[i]
+			scaled := value * invScale
 			var q int
-			if invScale != 0 {
-				// Round-half-away-from-zero in float32 — same optimisation
-				// as quantizeQ8_0. The +8 bias re-centres the signed
-				// quantised range into the [0,15] unsigned range Q4_0
-				// stores.
-				scaled := value * invScale
-				if scaled >= 0 {
-					q = int(scaled+0.5) + 8
-				} else {
-					q = int(scaled-0.5) + 8
-				}
-			}
-			q = clampInt(q, 0, 15)
-			if i < 16 {
-				packed[i] = byte(q)
+			// Round-half-away-from-zero in float32 — same optimisation
+			// as quantizeQ8_0. The +8 bias re-centres the signed
+			// quantised range into the [0,15] unsigned range Q4_0
+			// stores.
+			if scaled >= 0 {
+				q = int(scaled+0.5) + 8
 			} else {
-				packed[i-16] |= byte(q << 4)
+				q = int(scaled-0.5) + 8
 			}
+			if q < 0 {
+				q = 0
+			} else if q > 15 {
+				q = 15
+			}
+			packed[i] = byte(q)
+		}
+		for i := 16; i < 32; i++ {
+			value := block[i]
+			scaled := value * invScale
+			var q int
+			if scaled >= 0 {
+				q = int(scaled+0.5) + 8
+			} else {
+				q = int(scaled-0.5) + 8
+			}
+			if q < 0 {
+				q = 0
+			} else if q > 15 {
+				q = 15
+			}
+			packed[i-16] |= byte(q << 4)
 		}
 		out = append(out, packed[:]...)
 	}
@@ -800,10 +846,49 @@ func alignPadding(offset, alignment uint64) uint64 {
 	return (alignment - (offset % alignment)) % alignment
 }
 
+// maxAbsFloat32 returns max(|v|) over values. The inner loop avoids
+// math.Abs (which round-trips float32→float64→float32 per element); a
+// direct bit-clear of the float32 sign bit lowers to ARM64 FABS in one
+// instruction. The 4-way unroll (W8-A2 lever) lets the M-series pipeline
+// keep four FABS+FCMP chains independent so per-iteration latency hides
+// behind instruction-level parallelism. Block-sized inputs (32 / 256
+// elements) hit the unrolled path; the scalar tail handles the
+// remainder.
 func maxAbsFloat32(values []float32) float32 {
-	var maxAbs float32
-	for _, value := range values {
-		abs := float32(math.Abs(float64(value)))
+	const mask = 0x7fffffff
+	var m0, m1, m2, m3 float32
+	i := 0
+	n := len(values)
+	for ; i+4 <= n; i += 4 {
+		a0 := math.Float32frombits(math.Float32bits(values[i]) & mask)
+		a1 := math.Float32frombits(math.Float32bits(values[i+1]) & mask)
+		a2 := math.Float32frombits(math.Float32bits(values[i+2]) & mask)
+		a3 := math.Float32frombits(math.Float32bits(values[i+3]) & mask)
+		if a0 > m0 {
+			m0 = a0
+		}
+		if a1 > m1 {
+			m1 = a1
+		}
+		if a2 > m2 {
+			m2 = a2
+		}
+		if a3 > m3 {
+			m3 = a3
+		}
+	}
+	maxAbs := m0
+	if m1 > maxAbs {
+		maxAbs = m1
+	}
+	if m2 > maxAbs {
+		maxAbs = m2
+	}
+	if m3 > maxAbs {
+		maxAbs = m3
+	}
+	for ; i < n; i++ {
+		abs := math.Float32frombits(math.Float32bits(values[i]) & mask)
 		if abs > maxAbs {
 			maxAbs = abs
 		}
