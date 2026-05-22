@@ -202,12 +202,17 @@ func (c *MemoryDistillLogitCache) PutTeacherLogits(_ context.Context, key string
 	if c == nil {
 		return nil
 	}
+	// Clone outside the write lock — the clone is a pure copy of caller
+	// data with no shared state, so it can race freely with other
+	// goroutines. Acquiring the lock only for the map assignment shrinks
+	// the critical section from O(B*S*V) to O(1).
+	cloned := cloneDistillLogits(logits)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.logits == nil {
 		c.logits = map[string]DistillLogits{}
 	}
-	c.logits[key] = cloneDistillLogits(logits)
+	c.logits[key] = cloned
+	c.mu.Unlock()
 	return nil
 }
 
