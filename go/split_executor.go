@@ -48,8 +48,12 @@ type SplitExecutorPlacement struct {
 
 // Requires reports whether placement still needs component supplied externally.
 func (plan SplitExecutorPlacement) Requires(component inference.ModelComponent) bool {
-	for _, placement := range plan.RequiredPlacements {
-		if placement.Component == component {
+	// Index iteration — SplitComponentPlacement carries Component, Role,
+	// Bytes, two bools, and a Note string (~56B); range form would copy each
+	// element into the loop var even though we only need the discriminator.
+	placements := plan.RequiredPlacements
+	for i := range placements {
+		if placements[i].Component == component {
 			return true
 		}
 	}
@@ -514,8 +518,8 @@ func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNEx
 }
 
 func splitExecutorPlacementsReady(placements []SplitComponentPlacement) bool {
-	for _, placement := range placements {
-		if placement.Required && !placement.Ready {
+	for i := range placements {
+		if placements[i].Required && !placements[i].Ready {
 			return false
 		}
 	}
