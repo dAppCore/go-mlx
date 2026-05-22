@@ -182,7 +182,7 @@ func BenchmarkProjectionBiasCandidates(b *testing.B) {
 	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = projectionBiasCandidates(spec, weightName)
+		_ = projectionBiasCandidates(&spec, weightName)
 	}
 }
 
@@ -195,7 +195,7 @@ func BenchmarkPackedWeightCandidates(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = packedWeightCandidates(spec)
+		_ = packedWeightCandidates(&spec)
 	}
 }
 
@@ -208,7 +208,7 @@ func BenchmarkRouterBiasCandidates(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = routerBiasCandidates(spec, 17)
+		_ = routerBiasCandidates(&spec, 17)
 	}
 }
 
@@ -222,7 +222,7 @@ func BenchmarkSidecarCandidates(b *testing.B) {
 	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = sidecarCandidates(spec, weightName, "scales")
+		_ = sidecarCandidates(&spec, weightName, "scales")
 	}
 }
 

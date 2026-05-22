@@ -560,7 +560,7 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 	if err != nil {
 		return RouterWeights{}, core.E("minimax_m2.router", "index safetensors", err)
 	}
-	ref, name, ok := findSafetensorRef(index, routerGateCandidates(routerSpec))
+	ref, name, ok := findSafetensorRef(index, routerGateCandidates(&routerSpec))
 	if !ok {
 		return RouterWeights{}, core.NewError("mlx: MiniMax M2 router missing gate tensor: " + routerSpec.Name)
 	}
@@ -578,7 +578,7 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 		HiddenSize: int(ref.Shape[1]),
 	}
 	biasSpec := findTensorSpec(specs, TensorRoleRouterBias)
-	if biasRef, _, ok := findSafetensorRef(index, routerBiasCandidates(biasSpec, layer)); ok {
+	if biasRef, _, ok := findSafetensorRef(index, routerBiasCandidates(&biasSpec, layer)); ok {
 		router.Bias, err = safetensors.ReadRefValues(biasRef)
 		if err != nil {
 			return RouterWeights{}, core.E("minimax_m2.router", "read correction bias", err)
@@ -658,7 +658,7 @@ func BuildLayerForwardSkeleton(plan TensorPlan, weightFiles []string, layer int)
 	skeleton.RouterGate = routerGate
 	if plan.Config.UseRoutingBias {
 		biasSpec := findTensorSpec(specs, TensorRoleRouterBias)
-		routerBias, err := resolveSkeletonTensor(index, biasSpec, func(spec TensorSpec) []string {
+		routerBias, err := resolveSkeletonTensor(index, biasSpec, func(spec *TensorSpec) []string {
 			return routerBiasCandidates(spec, layer)
 		})
 		if err != nil {
@@ -701,7 +701,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	if spec.Packed == nil {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing descriptor: " + spec.Name)
 	}
-	weightRef, weightName, ok := findSafetensorRef(index, packedWeightCandidates(spec))
+	weightRef, weightName, ok := findSafetensorRef(index, packedWeightCandidates(&spec))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing weight tensor: " + spec.Name)
 	}
@@ -712,7 +712,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
-	scaleRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "scales"))
+	scaleRef, _, ok := findSafetensorRef(index, sidecarCandidates(&spec, weightName, "scales"))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
@@ -720,7 +720,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
-	biasRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "biases"))
+	biasRef, _, ok := findSafetensorRef(index, sidecarCandidates(&spec, weightName, "biases"))
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
@@ -734,7 +734,7 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 		Scales:     scales,
 		Biases:     biases,
 	}
-	if projBiasRef, _, ok := findSafetensorRef(index, projectionBiasCandidates(spec, weightName)); ok {
+	if projBiasRef, _, ok := findSafetensorRef(index, projectionBiasCandidates(&spec, weightName)); ok {
 		tensor.Bias, err = safetensors.ReadRefValues(projBiasRef)
 		if err != nil {
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
@@ -746,11 +746,11 @@ func loadPackedProjection(index safetensors.Index, spec TensorSpec) (JANGPackedP
 	return tensor, nil
 }
 
-func resolveSkeletonTensor(index safetensors.Index, spec TensorSpec, candidates func(TensorSpec) []string) (ResolvedTensor, error) {
+func resolveSkeletonTensor(index safetensors.Index, spec TensorSpec, candidates func(*TensorSpec) []string) (ResolvedTensor, error) {
 	if spec.Name == "" {
 		return ResolvedTensor{}, core.NewError("mlx: MiniMax M2 layer skeleton received empty tensor spec")
 	}
-	ref, name, ok := findSafetensorRef(index, candidates(spec))
+	ref, name, ok := findSafetensorRef(index, candidates(&spec))
 	if !ok {
 		return ResolvedTensor{}, core.NewError("mlx: MiniMax M2 layer skeleton missing tensor: " + spec.Name)
 	}
@@ -943,7 +943,7 @@ func uniqueExpertIDs(ids []int) []int {
 	return out
 }
 
-func packedWeightCandidates(spec TensorSpec) []string {
+func packedWeightCandidates(spec *TensorSpec) []string {
 	bases := make([]string, 0, 1+len(spec.Aliases))
 	bases = append(bases, spec.Name)
 	bases = append(bases, spec.Aliases...)
@@ -954,7 +954,7 @@ func packedWeightCandidates(spec TensorSpec) []string {
 	return out
 }
 
-func routerGateCandidates(spec TensorSpec) []string {
+func routerGateCandidates(spec *TensorSpec) []string {
 	hasName := spec.Name != ""
 	extra := 0
 	if hasName {
@@ -969,7 +969,7 @@ func routerGateCandidates(spec TensorSpec) []string {
 	return out
 }
 
-func routerBiasCandidates(spec TensorSpec, layer int) []string {
+func routerBiasCandidates(spec *TensorSpec, layer int) []string {
 	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
 	names := []string{
 		spec.Name,
@@ -987,7 +987,7 @@ func routerBiasCandidates(spec TensorSpec, layer int) []string {
 	return out
 }
 
-func sidecarCandidates(spec TensorSpec, weightName, sidecar string) []string {
+func sidecarCandidates(spec *TensorSpec, weightName, sidecar string) []string {
 	names := make([]string, 0, 3+len(spec.Aliases))
 	names = append(names, weightName)
 	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
@@ -1004,7 +1004,7 @@ func sidecarCandidates(spec TensorSpec, weightName, sidecar string) []string {
 	return out
 }
 
-func projectionBiasCandidates(spec TensorSpec, weightName string) []string {
+func projectionBiasCandidates(spec *TensorSpec, weightName string) []string {
 	names := make([]string, 0, 2+len(spec.Aliases))
 	names = append(names, weightName, spec.Name)
 	names = append(names, spec.Aliases...)
