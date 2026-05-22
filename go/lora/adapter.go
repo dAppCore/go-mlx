@@ -60,7 +60,11 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if path == "" {
 		return AdapterInfo{}, errAdapterPathRequired
 	}
-	configPath := adapterConfigPath(path)
+	// HasSuffix is called by both adapterConfigPath and hashAdapter on the
+	// same path argument; compute it once and pass the result through the
+	// internal variants so the SIMD scan only runs once per Inspect.
+	isSafetensors := core.HasSuffix(path, ".safetensors")
+	configPath := adapterConfigPathPrecomputed(path, isSafetensors)
 	read := core.ReadFile(configPath)
 	if !read.OK {
 		return AdapterInfo{}, core.E("lora.Inspect", "read adapter_config.json", resultError(read))
@@ -89,21 +93,36 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if info.Alpha == 0 && info.Scale != 0 && info.Rank > 0 {
 		info.Alpha = info.Scale * float32(info.Rank)
 	}
-	info.Hash = hashAdapter(path, configBytes)
+	info.Hash = hashAdapterPrecomputed(path, configBytes, isSafetensors)
 	return info, nil
 }
 
 func adapterConfigPath(path string) string {
-	if core.HasSuffix(path, ".safetensors") {
+	return adapterConfigPathPrecomputed(path, core.HasSuffix(path, ".safetensors"))
+}
+
+// adapterConfigPathPrecomputed is the precomputed-suffix variant of
+// adapterConfigPath; the Inspect hot path computes the .safetensors
+// suffix check once and threads the result through this helper.
+func adapterConfigPathPrecomputed(path string, isSafetensors bool) string {
+	if isSafetensors {
 		return core.PathJoin(core.PathDir(path), "adapter_config.json")
 	}
 	return core.PathJoin(path, "adapter_config.json")
 }
 
 func hashAdapter(path string, config []byte) string {
+	return hashAdapterPrecomputed(path, config, core.HasSuffix(path, ".safetensors"))
+}
+
+// hashAdapterPrecomputed is the precomputed-suffix variant of
+// hashAdapter; the Inspect hot path computes the .safetensors suffix
+// check once and threads the result through this helper to avoid the
+// second SIMD scan.
+func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) string {
 	parts := []string{core.SHA256Hex(config)}
 	paths := []string{path}
-	if !core.HasSuffix(path, ".safetensors") {
+	if !isSafetensors {
 		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
