@@ -574,11 +574,27 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 //	layerSuffix(7)  // "07"
 //	layerSuffix(28) // "28"
 func layerSuffix(layerIndex int) string {
-	if layerIndex >= 0 && layerIndex < 10 {
-		return "0" + core.Itoa(layerIndex)
+	if layerIndex >= 0 && layerIndex < len(layerSuffixTable) {
+		return layerSuffixTable[layerIndex]
 	}
 	return core.Itoa(layerIndex)
 }
+
+// layerSuffixTable holds the precomputed two-digit zero-padded labels
+// for layers 0..99 — covers every architecture currently shipped
+// (Gemma-3B = 28, Llama-3-8B = 32, Llama-3-70B = 80) without an Itoa
+// allocation per call.
+var layerSuffixTable = func() [100]string {
+	var table [100]string
+	for i := 0; i < len(table); i++ {
+		if i < 10 {
+			table[i] = "0" + core.Itoa(i)
+		} else {
+			table[i] = core.Itoa(i)
+		}
+	}
+	return table
+}()
 
 // reshapeFloat32 reads raw little-endian float32 bytes and reshapes them into
 // [numHeads][stride] slices, one slice per attention head.
