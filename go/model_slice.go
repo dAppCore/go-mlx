@@ -15,6 +15,20 @@ import (
 
 const modelSliceManifestVersion = "go-mlx.model-slice.v1"
 
+// SliceModel validation errors hoisted to package vars — each
+// previously allocated a fresh core.NewError on the rare failure
+// path. Sharing instances also makes errors.Is comparable for
+// callers that need to distinguish "no output path" from "no
+// tensors selected" without parsing the message text.
+var (
+	errModelSliceOutputPathRequired   = core.NewError("mlx: model slice output path is required")
+	errModelSliceSourcePathRequired   = core.NewError("mlx: model slice source path is required")
+	errModelSliceUnsupportedFormat    = core.NewError("mlx: model slice materialisation currently supports safetensors packs only")
+	errModelSliceNoSafetensorsWeights = core.NewError("mlx: model slice source has no safetensors weights")
+	errModelSliceNoTensorsSelected    = core.NewError("mlx: model slice selected no tensors")
+	errModelSliceCoreResultFailed     = core.NewError("mlx: model slice core result failed")
+)
+
 // projectionMatch holds the two pre-built substrings modelSliceHasProjection
 // scans for ("."+name+"." and "."+name+".weight"). Pre-computing them at
 // package init keeps the classifier alloc-free across every tensor-name
@@ -142,10 +156,10 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		return nil, err
 	}
 	if core.Trim(req.OutputPath) == "" {
-		return nil, core.NewError("mlx: model slice output path is required")
+		return nil, errModelSliceOutputPathRequired
 	}
 	if core.Trim(req.Model.Path) == "" {
-		return nil, core.NewError("mlx: model slice source path is required")
+		return nil, errModelSliceSourcePathRequired
 	}
 
 	source, err := model.Inspect(req.Model.Path)
@@ -153,10 +167,10 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 		return nil, err
 	}
 	if source.Format != mp.ModelPackFormatSafetensors {
-		return nil, core.NewError("mlx: model slice materialisation currently supports safetensors packs only")
+		return nil, errModelSliceUnsupportedFormat
 	}
 	if len(source.WeightFiles) == 0 {
-		return nil, core.NewError("mlx: model slice source has no safetensors weights")
+		return nil, errModelSliceNoSafetensorsWeights
 	}
 
 	index, err := safetensors.IndexFiles(source.WeightFiles)
@@ -165,7 +179,7 @@ func (backend *metalbackend) SliceModel(ctx context.Context, req inference.Model
 	}
 	refs, names := selectModelSliceTensorRefs(*plan, index)
 	if len(refs) == 0 {
-		return nil, core.NewError("mlx: model slice selected no tensors")
+		return nil, errModelSliceNoTensorsSelected
 	}
 
 	if result := core.MkdirAll(req.OutputPath, 0o755); !result.OK {
@@ -522,5 +536,5 @@ func modelSliceResultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("mlx: model slice core result failed")
+	return errModelSliceCoreResultFailed
 }
