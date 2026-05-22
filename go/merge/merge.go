@@ -148,7 +148,10 @@ func prepare(ctx context.Context, opts Options) (prepared, error) {
 	if opts.OutputPath == "" {
 		return prepared{}, core.NewError("mlx: merged model output path is required")
 	}
-	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
+	// hasSuffixFold replaces core.Lower(opts.OutputPath) which allocated a
+	// full copy of the (potentially long) output path string just to test
+	// two short suffixes.
+	if hasSuffixFold(opts.OutputPath, ".safetensors") || hasSuffixFold(opts.OutputPath, ".gguf") {
 		return prepared{}, core.NewError("mlx: merged output path must be a model-pack directory")
 	}
 
@@ -720,6 +723,27 @@ func writeProvenance(path string, provenance Provenance) error {
 	return nil
 }
 
+// hasSuffixFold reports whether s ends with suffix using ASCII case
+// folding. Suffix is required to be lowercase. Pure scan, no allocations —
+// replaces the core.Lower(s) + core.HasSuffix pattern that always allocated
+// a lowered copy of s regardless of input.
+func hasSuffixFold(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	off := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		c := s[off+i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func sameUint64Slice(a, b []uint64) bool {
 	if len(a) != len(b) {
 		return false
@@ -786,12 +810,67 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
-	lower := core.Lower(name)
-	return lower == "adapter_provenance.json" ||
-		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf") ||
-		core.HasSuffix(lower, ".safetensors") ||
-		core.HasSuffix(lower, ".gguf")
+	// Two prior issues in this predicate:
+	//
+	// 1. core.Lower(name) allocated a fresh copy of every filename even
+	//    though most metadata filenames are already lowercase.
+	// 2. The Contains(".safetensors")|HasSuffix(".safetensors") pair is
+	//    redundant — HasSuffix is a strict subset of Contains for the same
+	//    suffix. Same for ".gguf". Drop the HasSuffix legs entirely.
+	//
+	// We keep the Contains semantics (legacy: filters anything *named*
+	// with .safetensors in its path, e.g. .safetensors.index.json) by
+	// using a case-folding containsFold helper.
+	if equalFold(name, "adapter_provenance.json") {
+		return true
+	}
+	return containsFold(name, ".safetensors") || containsFold(name, ".gguf")
+}
+
+// equalFold is len-prefixed ASCII case-insensitive equality. Zero allocations.
+func equalFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if ca >= 'A' && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// containsFold reports whether s contains substr using ASCII case folding.
+// substr is required to be lowercase. Zero allocations.
+func containsFold(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(substr) > len(s) {
+		return false
+	}
+	last := len(s) - len(substr)
+outer:
+	for i := 0; i <= last; i++ {
+		for j := 0; j < len(substr); j++ {
+			c := s[i+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != substr[j] {
+				continue outer
+			}
+		}
+		return true
+	}
+	return false
 }
 
 func copyModelPackLocalFile(sourcePath, destinationPath string) error {
