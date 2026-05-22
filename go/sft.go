@@ -513,7 +513,14 @@ func newSFTBatchBuilder(batchSize int) *sftBatchBuilder {
 	if batchSize <= 0 {
 		batchSize = 1
 	}
-	return &sftBatchBuilder{batchSize: batchSize}
+	// Pre-size current to batchSize — every flush truncates back to :0
+	// with the same backing, so the doubling cascade across the first
+	// batch's appends collapses to a single allocation that gets reused
+	// for every subsequent batch.
+	return &sftBatchBuilder{
+		batchSize: batchSize,
+		current:   make([]sftExample, 0, batchSize),
+	}
 }
 
 func (b *sftBatchBuilder) add(example sftExample) {
