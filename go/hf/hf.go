@@ -1020,26 +1020,33 @@ func fitResultError(result core.Result) error {
 
 // info := mlx.InferJANG(meta)
 func InferJANG(meta ModelMetadata) *jang.Info {
-	// Build the lowercase "id tag1 tag2 file1 file2" haystack in one pass.
-	// Previously each tag + file Concat allocated a fresh string and Lower
-	// allocated again — 4+ allocs per tag/file. Now: one buf, lowercase
-	// inline, zero-copy return.
-	//
-	// We over-estimate the size by an upper-bound (use the longer of Name
-	// and RFilename per file) so we can do a single pass without resolving
-	// filename() twice per file. The buf will grow at most by 0-X bytes
-	// of slack, which is fine; the underlying array is heap-allocated
-	// either way.
+	// Fast-path classify before any heap work. inferJANGNeedlePresent
+	// scans the id / tags / filenames in-place for "jang" and "jangtq"
+	// tokens. The miss path (the dominant case across HF metadata)
+	// returns jangNone in zero allocs. The JANGTQ branch needs only the
+	// QuantizationConfig group size — no haystack scan — so we skip the
+	// lowercase-buffer build entirely for those packs.
 	id := firstNonEmpty(meta.ID, meta.ModelID)
-	// Fast path: scan each component case-insensitively for "jang". The
-	// vast majority of HF models have nothing JANG-related anywhere in
-	// id / tags / filenames — and the lowercase needle buffer is the
-	// only allocation in this function for the miss path. By scanning
-	// the original strings (no copy) first, the miss path returns nil
-	// in zero allocs.
-	if !inferJANGNeedlePresent(id, meta.Tags, meta.Files) {
+	presence := inferJANGNeedlePresent(id, meta.Tags, meta.Files)
+	switch presence {
+	case jangNone:
 		return nil
+	case jangTQ:
+		info := &jang.Info{
+			Profile:          "JANGTQ",
+			WeightFormat:     "mxtq",
+			Method:           "affine+mxtq",
+			GroupSize:        jangGroupSize(meta),
+			BitsDefault:      2,
+			RoutedExpertBits: 2,
+		}
+		info.Packed = jang.BuildPackedProfile(info)
+		return info
 	}
+	// jangBasic — need to scan the haystack for a specific profile name
+	// (jang_1l, jang_2s, etc.). Build the lowercase "id tag1 tag2
+	// file1 file2" haystack in one pass; the buffer is the only
+	// allocation specific to this branch.
 	size := len(id)
 	for _, tag := range meta.Tags {
 		size += 1 + len(tag)
@@ -1064,64 +1071,79 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 		buf = appendLowerASCII(buf, file.filename())
 	}
 	needle := core.AsString(buf)
-
-	switch {
-	case core.Contains(needle, "jangtq"):
-		info := &jang.Info{
-			Profile:          "JANGTQ",
-			WeightFormat:     "mxtq",
-			Method:           "affine+mxtq",
-			GroupSize:        jangGroupSize(meta),
-			BitsDefault:      2,
-			RoutedExpertBits: 2,
-		}
-		info.Packed = jang.BuildPackedProfile(info)
-		return info
-	case core.Contains(needle, "jang"):
-		profile := inferJANGProfileName(needle)
-		info := &jang.Info{
-			Profile:     profile,
-			GroupSize:   jangGroupSize(meta),
-			BitsDefault: firstPositive(jang.ProfileBits(profile), 0),
-		}
-		info.Packed = jang.BuildPackedProfile(info)
-		return info
-	default:
-		return nil
+	profile := inferJANGProfileName(needle)
+	info := &jang.Info{
+		Profile:     profile,
+		GroupSize:   jangGroupSize(meta),
+		BitsDefault: firstPositive(jang.ProfileBits(profile), 0),
 	}
+	info.Packed = jang.BuildPackedProfile(info)
+	return info
 }
 
-// inferJANGNeedlePresent reports whether any of the id / tags /
-// filenames contains the case-insensitive token "jang". Pure scan, no
-// allocations — used to gate the lowercase-buffer build inside
-// InferJANG. The miss path (the dominant case across HF metadata)
-// returns false and avoids the only allocation in the function.
-func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) bool {
-	if containsJANGFold(id) {
-		return true
+// JANG token-presence states. Returned by inferJANGNeedlePresent so
+// InferJANG can skip the lowercase-haystack build for the JANGTQ branch
+// (which doesn't need a haystack scan past detection).
+type jangPresence uint8
+
+const (
+	jangNone   jangPresence = 0
+	jangBasic  jangPresence = 1 // "jang" present, "jangtq" not
+	jangTQ     jangPresence = 2 // "jangtq" present (implies "jang")
+)
+
+// inferJANGNeedlePresent classifies the strongest JANG token present in
+// the id / tags / filenames in a single pass per component. Pure scan,
+// no allocations — used to gate the lowercase-buffer build inside
+// InferJANG. jangNone (the dominant case across HF metadata) returns in
+// zero allocs after a tight byte scan. jangTQ short-circuits the
+// haystack build downstream because the JANGTQ branch only needs the
+// QuantizationConfig group size, not a needle scan.
+func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) jangPresence {
+	state := scanJANGFold(id)
+	if state == jangTQ {
+		return jangTQ
 	}
 	for _, tag := range tags {
-		if containsJANGFold(tag) {
-			return true
+		s := scanJANGFold(tag)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
 		}
 	}
 	for _, file := range files {
-		if containsJANGFold(file.Name) || containsJANGFold(file.RFilename) {
-			return true
+		s := scanJANGFold(file.Name)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
+		}
+		s = scanJANGFold(file.RFilename)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
 		}
 	}
-	return false
+	return state
 }
 
-// containsJANGFold reports whether s contains the case-insensitive
-// 4-byte token "jang". Specialised for this token so the inner walk is
-// a tight 4-byte compare with ASCII folding inlined.
-func containsJANGFold(s string) bool {
+// scanJANGFold reports the strongest JANG token present in s — jangTQ
+// when "jangtq" is found, jangBasic when only "jang" is found, jangNone
+// otherwise. Single ASCII byte scan with case folding inline. Per
+// starting position 'j', try the longer 6-byte "jangtq" match first;
+// fall back to 4-byte "jang". Returns early on jangTQ.
+func scanJANGFold(s string) jangPresence {
 	if len(s) < 4 {
-		return false
+		return jangNone
 	}
-	last := len(s) - 4
-	for i := 0; i <= last; i++ {
+	state := jangNone
+	last4 := len(s) - 4
+	for i := 0; i <= last4; i++ {
 		c0 := s[i]
 		if c0 >= 'A' && c0 <= 'Z' {
 			c0 += 'a' - 'A'
@@ -1147,11 +1169,29 @@ func containsJANGFold(s string) bool {
 		if c3 >= 'A' && c3 <= 'Z' {
 			c3 += 'a' - 'A'
 		}
-		if c3 == 'g' {
-			return true
+		if c3 != 'g' {
+			continue
 		}
+		// "jang" matched at i. Probe for the "tq" extension if there's
+		// room — jangtq is the strongest match.
+		if i+6 <= len(s) {
+			c4 := s[i+4]
+			if c4 >= 'A' && c4 <= 'Z' {
+				c4 += 'a' - 'A'
+			}
+			if c4 == 't' {
+				c5 := s[i+5]
+				if c5 >= 'A' && c5 <= 'Z' {
+					c5 += 'a' - 'A'
+				}
+				if c5 == 'q' {
+					return jangTQ
+				}
+			}
+		}
+		state = jangBasic
 	}
-	return false
+	return state
 }
 
 // appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
