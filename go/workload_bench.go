@@ -168,6 +168,16 @@ func DefaultWorkloadBenchConfig() WorkloadBenchConfig {
 	return WorkloadBenchConfig{FastEval: bench.DefaultConfig()}
 }
 
+// Sentinel errors hoisted from per-call core.NewError sites — the
+// "mlx: model is nil" message recurred at four entry points and each
+// call allocated a fresh *Err. Sharing one instance keeps the message
+// stable for callers comparing via errors.Is and removes the cold-path
+// allocation entirely.
+var (
+	errWorkloadModelNil   = core.NewError("mlx: model is nil")
+	errWorkloadAdapterNil = core.NewError("mlx: workload adapter has no native handle")
+)
+
 // NewModelWorkloadBenchRunner adapts a loaded Model to the workload benchmark.
 func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 	return WorkloadBenchRunner{
@@ -178,7 +188,7 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 				return WorkloadAdapterInfo{}, err
 			}
 			if model == nil {
-				return WorkloadAdapterInfo{}, core.NewError("mlx: model is nil")
+				return WorkloadAdapterInfo{}, errWorkloadModelNil
 			}
 			adapter, err := model.LoadLoRA(path)
 			if err != nil {
@@ -191,10 +201,10 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 				return err
 			}
 			if model == nil {
-				return core.NewError("mlx: model is nil")
+				return errWorkloadModelNil
 			}
 			if info.adapter == nil {
-				return core.NewError("mlx: workload adapter has no native handle")
+				return errWorkloadAdapterNil
 			}
 			model.MergeLoRA(info.adapter)
 			return nil
@@ -205,7 +215,7 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 // RunModelWorkloadBench runs the workload benchmark against a loaded Model.
 func RunModelWorkloadBench(ctx context.Context, model *Model, cfg WorkloadBenchConfig) (*WorkloadBenchReport, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errWorkloadModelNil
 	}
 	return RunWorkloadBench(ctx, NewModelWorkloadBenchRunner(model), cfg)
 }
@@ -255,12 +265,23 @@ func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	return cfg
 }
 
+// kvBenchModes is the fixed mode set the workload benchmark compares —
+// hoisted out of kvBenchConfigFromModelInfo so we don't re-allocate the
+// same 4-element slice literal on every benchmark dispatch. CompareModes
+// reads cfg.Modes via range without mutation.
+var kvBenchModes = []memory.KVCacheMode{
+	memory.KVCacheModeFP16,
+	memory.KVCacheModePaged,
+	memory.KVCacheModeQ8,
+	memory.KVCacheModeKQ8VQ4,
+}
+
 func kvBenchConfigFromModelInfo(info ModelInfo) kv.BenchConfig {
 	return kv.BenchConfig{
 		ContextLength: info.ContextLength,
 		NumLayers:     info.NumLayers,
 		HiddenSize:    info.HiddenSize,
-		Modes:         []memory.KVCacheMode{memory.KVCacheModeFP16, memory.KVCacheModePaged, memory.KVCacheModeQ8, memory.KVCacheModeKQ8VQ4},
+		Modes:         kvBenchModes,
 	}
 }
 
@@ -395,37 +416,44 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 	if report == nil {
 		return summary
 	}
-	if report.FastEval != nil {
-		summary.PrefillTokensPerSec = report.FastEval.Generation.PrefillTokensPerSec
-		summary.DecodeTokensPerSec = report.FastEval.Generation.DecodeTokensPerSec
-		summary.PeakMemoryBytes = report.FastEval.Generation.PeakMemoryBytes
-		summary.ActiveMemoryBytes = report.FastEval.Generation.ActiveMemoryBytes
-		summary.PromptCacheHitRate = report.FastEval.PromptCache.HitRate
-		summary.PromptCacheHitTokens = report.FastEval.PromptCache.HitTokens
-		summary.PromptCacheMissTokens = report.FastEval.PromptCache.MissTokens
-		summary.PromptCacheRestoreDuration = report.FastEval.PromptCache.RestoreDuration
-		if report.FastEval.StateKVBlockWarm.Attempted {
-			summary.PromptCacheSource = report.FastEval.StateKVBlockWarm.Source
-			summary.PromptTokensAvoided = report.FastEval.StateKVBlockWarm.PromptTokensAvoided
-			summary.PromptCacheReplayTokens = report.FastEval.StateKVBlockWarm.ReplayTokens
-			summary.PromptCacheExactFallbackReplayTokens = report.FastEval.StateKVBlockWarm.ExactFallbackReplayTokens
-			summary.StateKVBlockRestoreDuration = report.FastEval.StateKVBlockWarm.RestoreDuration
-			summary.StateKVBlockStorePath = report.FastEval.StateKVBlockWarm.StorePath
-			summary.StateKVBlockStoreBytes = report.FastEval.StateKVBlockWarm.StoreBytes
-			summary.StateKVBlocksRead = report.FastEval.StateKVBlockWarm.BlocksRead
-			summary.StateKVChunksRead = report.FastEval.StateKVBlockWarm.ChunksRead
-			summary.StateKVPrefixTokensRestored = report.FastEval.StateKVBlockWarm.PrefixTokensRestored
+	// Cache report.FastEval into a local pointer to avoid the ~30
+	// re-dereferences the previous body paid through report.FastEval
+	// for every field read. The sub-report structs (StateKVBlockWarm,
+	// SpeculativeDecode, PromptLookupDecode) are deliberately kept as
+	// pointer-deref chains — copying them into locals would clone
+	// ~20-field GenerationMetrics blobs we only read a few fields out
+	// of.
+	if fast := report.FastEval; fast != nil {
+		summary.PrefillTokensPerSec = fast.Generation.PrefillTokensPerSec
+		summary.DecodeTokensPerSec = fast.Generation.DecodeTokensPerSec
+		summary.PeakMemoryBytes = fast.Generation.PeakMemoryBytes
+		summary.ActiveMemoryBytes = fast.Generation.ActiveMemoryBytes
+		summary.PromptCacheHitRate = fast.PromptCache.HitRate
+		summary.PromptCacheHitTokens = fast.PromptCache.HitTokens
+		summary.PromptCacheMissTokens = fast.PromptCache.MissTokens
+		summary.PromptCacheRestoreDuration = fast.PromptCache.RestoreDuration
+		if fast.StateKVBlockWarm.Attempted {
+			summary.PromptCacheSource = fast.StateKVBlockWarm.Source
+			summary.PromptTokensAvoided = fast.StateKVBlockWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = fast.StateKVBlockWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = fast.StateKVBlockWarm.ExactFallbackReplayTokens
+			summary.StateKVBlockRestoreDuration = fast.StateKVBlockWarm.RestoreDuration
+			summary.StateKVBlockStorePath = fast.StateKVBlockWarm.StorePath
+			summary.StateKVBlockStoreBytes = fast.StateKVBlockWarm.StoreBytes
+			summary.StateKVBlocksRead = fast.StateKVBlockWarm.BlocksRead
+			summary.StateKVChunksRead = fast.StateKVBlockWarm.ChunksRead
+			summary.StateKVPrefixTokensRestored = fast.StateKVBlockWarm.PrefixTokensRestored
 		}
-		summary.KVRestoreDuration = report.FastEval.KVRestore.Duration
-		if report.FastEval.SpeculativeDecode.Attempted && report.FastEval.SpeculativeDecode.Error == "" {
-			summary.SpeculativeAcceptanceRate = report.FastEval.SpeculativeDecode.Metrics.AcceptanceRate
-			summary.SpeculativeAcceptedTokens = report.FastEval.SpeculativeDecode.Metrics.AcceptedTokens
-			summary.SpeculativeRejectedTokens = report.FastEval.SpeculativeDecode.Metrics.RejectedTokens
+		summary.KVRestoreDuration = fast.KVRestore.Duration
+		if fast.SpeculativeDecode.Attempted && fast.SpeculativeDecode.Error == "" {
+			summary.SpeculativeAcceptanceRate = fast.SpeculativeDecode.Metrics.AcceptanceRate
+			summary.SpeculativeAcceptedTokens = fast.SpeculativeDecode.Metrics.AcceptedTokens
+			summary.SpeculativeRejectedTokens = fast.SpeculativeDecode.Metrics.RejectedTokens
 		}
-		if report.FastEval.PromptLookupDecode.Attempted && report.FastEval.PromptLookupDecode.Error == "" {
-			summary.PromptLookupAcceptanceRate = report.FastEval.PromptLookupDecode.Metrics.AcceptanceRate
-			summary.PromptLookupAcceptedTokens = report.FastEval.PromptLookupDecode.Metrics.AcceptedTokens
-			summary.PromptLookupRejectedTokens = report.FastEval.PromptLookupDecode.Metrics.RejectedTokens
+		if fast.PromptLookupDecode.Attempted && fast.PromptLookupDecode.Error == "" {
+			summary.PromptLookupAcceptanceRate = fast.PromptLookupDecode.Metrics.AcceptanceRate
+			summary.PromptLookupAcceptedTokens = fast.PromptLookupDecode.Metrics.AcceptedTokens
+			summary.PromptLookupRejectedTokens = fast.PromptLookupDecode.Metrics.RejectedTokens
 		}
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
@@ -456,13 +484,13 @@ func workloadAdapterInfo(path string, adapter *LoRAAdapter) WorkloadAdapterInfo 
 	if adapter != nil {
 		info.Rank = adapter.Config.Rank
 		info.Alpha = adapter.Config.Alpha
-		info.TargetKeys = append([]string(nil), adapter.Config.TargetKeys...)
+		info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
 	}
 	return info
 }
 
 func cloneWorkloadAdapterInfo(info WorkloadAdapterInfo) WorkloadAdapterInfo {
-	info.TargetKeys = append([]string(nil), info.TargetKeys...)
+	info.TargetKeys = core.SliceClone(info.TargetKeys)
 	return info
 }
 
@@ -473,12 +501,7 @@ func cloneWorkloadEvalSamples(samples []WorkloadEvalSample) []WorkloadEvalSample
 	out := make([]WorkloadEvalSample, len(samples))
 	for i, sample := range samples {
 		out[i] = sample
-		if sample.Meta != nil {
-			out[i].Meta = make(map[string]string, len(sample.Meta))
-			for key, value := range sample.Meta {
-				out[i].Meta[key] = value
-			}
-		}
+		out[i].Meta = core.MapClone(sample.Meta)
 	}
 	return out
 }
@@ -494,6 +517,6 @@ func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
 	if batch, ok := cfg.Batch.(dataset.BatchConfig); ok {
 		cfg.Batch = normalizeDatasetBatchConfig(batch)
 	}
-	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
+	cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
 	return cfg
 }
