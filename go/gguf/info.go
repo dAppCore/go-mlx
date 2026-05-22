@@ -485,16 +485,19 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 			}
 			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
-		// tensorType(4) + offset(8) = 12 bytes in one read.
-		var trailer [12]byte
-		if _, err := io.ReadFull(reader, trailer[:]); err != nil {
+		// tensorType(4) + offset(8) = 12 bytes in one read. Reuse the
+		// per-call `scratch` arena rather than declaring a per-tensor
+		// `[12]byte` local — io.ReadFull's interface-typed `buf` argument
+		// would force every iteration's local to escape, costing one
+		// heap alloc per tensor (~200 on a qwen3-class model).
+		if _, err := io.ReadFull(reader, scratch[:12]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
 		tensors[i] = ggufTensorInfo{
 			Name:   name,
-			Type:   binary.LittleEndian.Uint32(trailer[:4]),
+			Type:   binary.LittleEndian.Uint32(scratch[:4]),
 			Shape:  shape,
-			Offset: binary.LittleEndian.Uint64(trailer[4:12]),
+			Offset: binary.LittleEndian.Uint64(scratch[4:12]),
 		}
 	}
 
