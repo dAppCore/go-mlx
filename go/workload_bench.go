@@ -456,13 +456,13 @@ func workloadAdapterInfo(path string, adapter *LoRAAdapter) WorkloadAdapterInfo 
 	if adapter != nil {
 		info.Rank = adapter.Config.Rank
 		info.Alpha = adapter.Config.Alpha
-		info.TargetKeys = append([]string(nil), adapter.Config.TargetKeys...)
+		info.TargetKeys = core.SliceClone(adapter.Config.TargetKeys)
 	}
 	return info
 }
 
 func cloneWorkloadAdapterInfo(info WorkloadAdapterInfo) WorkloadAdapterInfo {
-	info.TargetKeys = append([]string(nil), info.TargetKeys...)
+	info.TargetKeys = core.SliceClone(info.TargetKeys)
 	return info
 }
 
@@ -473,12 +473,7 @@ func cloneWorkloadEvalSamples(samples []WorkloadEvalSample) []WorkloadEvalSample
 	out := make([]WorkloadEvalSample, len(samples))
 	for i, sample := range samples {
 		out[i] = sample
-		if sample.Meta != nil {
-			out[i].Meta = make(map[string]string, len(sample.Meta))
-			for key, value := range sample.Meta {
-				out[i].Meta[key] = value
-			}
-		}
+		out[i].Meta = core.MapClone(sample.Meta)
 	}
 	return out
 }
@@ -494,6 +489,6 @@ func normalizeWorkloadEvalConfig(cfg eval.Config) eval.Config {
 	if batch, ok := cfg.Batch.(dataset.BatchConfig); ok {
 		cfg.Batch = normalizeDatasetBatchConfig(batch)
 	}
-	cfg.QualityProbes = append([]eval.QualityProbe(nil), cfg.QualityProbes...)
+	cfg.QualityProbes = core.SliceClone(cfg.QualityProbes)
 	return cfg
 }
