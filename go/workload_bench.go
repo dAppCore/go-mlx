@@ -374,7 +374,15 @@ func runWorkloadEvaluation(ctx context.Context, runner WorkloadBenchRunner, cfg 
 		return report
 	}
 	start := time.Now()
-	metrics, err := runner.EvaluatePerplexity(ctx, cloneWorkloadEvalSamples(cfg.EvalSamples))
+	// normalizeWorkloadBenchConfig already produced a defensive clone
+	// of cfg.EvalSamples (including per-sample Meta map clones) before
+	// this helper ran. The slice and its Meta payloads are private to
+	// the RunWorkloadBench call frame — we only read its length below —
+	// so we hand the same backing slice straight to the user callback
+	// instead of paying a second cloneWorkloadEvalSamples (one slice
+	// alloc + one map alloc per sample with metadata) on every
+	// perplexity-evaluation dispatch.
+	metrics, err := runner.EvaluatePerplexity(ctx, cfg.EvalSamples)
 	report.Duration = nonZeroDuration(time.Since(start))
 	if err != nil {
 		report.Error = err.Error()
