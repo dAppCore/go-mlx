@@ -706,9 +706,12 @@ func percentBytes(value uint64, percent uint64) uint64 {
 // so the planner can match the variations seen in HF configs. Kept
 // private inside memory so the package is self-contained.
 func normalizeKnownArchitecture(value string) string {
-	value = lowerASCII(trimSpace(value))
-	value = replaceASCII(value, '-', '_')
-	value = replaceASCII(value, '.', '_')
+	// Trim first (string-slice operation, no alloc), then do
+	// lowercase + '-'/'.'→'_' substitution in one byte-pass. The
+	// previous form ran three passes (lowerASCII + replaceASCII×2)
+	// — each potentially allocating a new byte slice. canoniseASCII
+	// allocates at most once for the same final string.
+	value = canoniseASCII(trimSpace(value))
 	switch value {
 	case "qwen2_5", "qwen25":
 		return "qwen2"
@@ -756,6 +759,40 @@ func lowerASCII(s string) string {
 		}
 	}
 	return s
+}
+
+// canoniseASCII fuses lowerASCII + the two replaceASCII calls
+// ('-'→'_', '.'→'_') into a single pass. The original chain ran
+// three passes over the architecture string, each potentially
+// allocating a fresh []byte. Combined here, we allocate at most once
+// (when any rewrite is needed) and return the input unchanged on the
+// fast path where the string is already canonical.
+func canoniseASCII(s string) string {
+	// Scan for the first byte that needs rewriting. Most architecture
+	// strings hit the loop entry, find nothing, and return unchanged.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || c == '-' || c == '.' {
+			b := []byte(s)
+			b[i] = canonByte(c)
+			for j := i + 1; j < len(b); j++ {
+				b[j] = canonByte(b[j])
+			}
+			return string(b)
+		}
+	}
+	return s
+}
+
+func canonByte(c byte) byte {
+	switch {
+	case c >= 'A' && c <= 'Z':
+		return c + ('a' - 'A')
+	case c == '-' || c == '.':
+		return '_'
+	default:
+		return c
+	}
 }
 
 func trimSpace(s string) string {
