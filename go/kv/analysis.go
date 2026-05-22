@@ -557,21 +557,37 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 			// aj < threshold/ai; for ai<0 it flips because we divided
 			// by a negative. ai==0 short-circuits the whole row to
 			// locked = (seqLen-i-1) since dot ≡ 0 < threshold.
+			//
+			// subSum = sum_{j>i} scratch[j] reduces to O(1) per i via
+			// a running totalSum that subtracts scratch[i] as i
+			// advances. Pulls the O(N²) FADDD chain out of the inner
+			// loop, leaving the inner loop as load + compare + cinc
+			// only (the M3 FCMPD/CINC dual-issue can ~saturate at
+			// pair / cycle).
+			//
 			// Loops unrolled 4× to expose ILP — the OoO window covers
 			// the L1 latency of scratch[j] loads. The locked compare
 			// stays as a branch + counter (M3's FCMPD + CSEL fast path
 			// beats the FMOV→shift trick whose float→int register move
 			// has ~5-cycle latency on Apple Silicon).
+			var totalSum float64
+			for k := 0; k < seqLen; k++ {
+				totalSum += scratch[k]
+			}
+			subSum := totalSum
 			for i := 0; i < seqLen; i++ {
 				ai := scratch[i]
 				remaining := seqLen - i - 1
+				// subSum tracks sum_{j>i} scratch[j]. Subtract ai
+				// before using since we need sum over j > i (exclusive).
+				subSum -= ai
 				if ai == 0 {
 					// dot ≡ 0 for the rest of this row.
 					locked += remaining
 					continue
 				}
+				totalSimilarity += ai * subSum
 				invT := threshold / ai
-				var subSum float64
 				j := i + 1
 				if ai > 0 {
 					for ; j+3 < seqLen; j += 4 {
@@ -579,7 +595,6 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 						a1 := scratch[j+1]
 						a2 := scratch[j+2]
 						a3 := scratch[j+3]
-						subSum += a0 + a1 + a2 + a3
 						if a0 < invT {
 							locked++
 						}
@@ -594,9 +609,7 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 						}
 					}
 					for ; j < seqLen; j++ {
-						aj := scratch[j]
-						subSum += aj
-						if aj < invT {
+						if scratch[j] < invT {
 							locked++
 						}
 					}
@@ -607,7 +620,6 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 						a1 := scratch[j+1]
 						a2 := scratch[j+2]
 						a3 := scratch[j+3]
-						subSum += a0 + a1 + a2 + a3
 						if a0 > invT {
 							locked++
 						}
@@ -622,14 +634,11 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 						}
 					}
 					for ; j < seqLen; j++ {
-						aj := scratch[j]
-						subSum += aj
-						if aj > invT {
+						if scratch[j] > invT {
 							locked++
 						}
 					}
 				}
-				totalSimilarity += ai * subSum
 			}
 			pairs += seqLen * (seqLen - 1) / 2
 			continue
