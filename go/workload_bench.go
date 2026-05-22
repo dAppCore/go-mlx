@@ -264,7 +264,13 @@ func RunWorkloadBench(ctx context.Context, runner WorkloadBenchRunner, cfg Workl
 
 func normalizeWorkloadBenchConfig(cfg WorkloadBenchConfig) WorkloadBenchConfig {
 	cfg.Eval = normalizeWorkloadEvalConfig(cfg.Eval)
-	cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
+	// Guard the ClonePackedProfile call — the helper short-circuits on
+	// nil but the cross-package function call + return still costs CPU
+	// cycles on every cfg normalisation, and the no-quantisation path
+	// is the typical shape for callers that haven't wired a profile.
+	if cfg.QuantizationProfile != nil {
+		cfg.QuantizationProfile = jang.ClonePackedProfile(cfg.QuantizationProfile)
+	}
 	cfg.EvalSamples = cloneWorkloadEvalSamples(cfg.EvalSamples)
 	cfg.ExpertResidency = m2.NormalisePlan(cfg.ExpertResidency)
 	return cfg
