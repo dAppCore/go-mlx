@@ -170,8 +170,8 @@ func NewStateIndex(bundle *kv.StateBlockBundle, opts StateIndexOptions) (*StateI
 			fillIndexEntryByteSpan(&index.Entries[i], bundle)
 		}
 		if index.Entries[i].Hash == "" {
-			index.Entries[i].Hash = indexEntryHash(index.Entries[i])
-		} else if index.Entries[i].Hash != indexEntryHash(index.Entries[i]) {
+			index.Entries[i].Hash = indexEntryHash(&index.Entries[i])
+		} else if index.Entries[i].Hash != indexEntryHash(&index.Entries[i]) {
 			return nil, errStateIndexEntryHashMismatch
 		}
 	}
@@ -247,7 +247,7 @@ func (index *StateIndex) validateEntry(entry StateIndexEntry, checkHash, indexBu
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
 		return errStateIndexEntryByteSpan
 	}
-	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
+	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(&entry) {
 		return errStateIndexEntryHashMismatch
 	}
 	return nil
@@ -633,14 +633,14 @@ func indexHash(index *StateIndex) string {
 		writeIndexHashString(hash, "|")
 		entryHash := index.Entries[i].Hash
 		if entryHash == "" {
-			entryHash = indexEntryHash(index.Entries[i])
+			entryHash = indexEntryHash(&index.Entries[i])
 		}
 		writeIndexHashString(hash, entryHash)
 	}
 	return core.HexEncode(hash.Sum(nil))
 }
 
-func indexEntryHash(entry StateIndexEntry) string {
+func indexEntryHash(entry *StateIndexEntry) string {
 	b := core.NewBuilder()
 	// Pre-grow to a typical entry-hash input size to amortise the
 	// 64→128→256→… backing slice growth chain. A representative
