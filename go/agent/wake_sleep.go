@@ -169,7 +169,14 @@ func SleepURIs(opts SleepOptions) (entryURI, bundleURI, indexURI string, err err
 	bundleURI = core.Trim(opts.BundleURI)
 	indexURI = core.Trim(opts.IndexURI)
 	if entryURI == "" {
-		entryURI = firstNonEmptyString(bundleURI, indexURI, "mlx://state/latest")
+		switch {
+		case bundleURI != "":
+			entryURI = bundleURI
+		case indexURI != "":
+			entryURI = indexURI
+		default:
+			entryURI = "mlx://state/latest"
+		}
 	}
 	if bundleURI == "" {
 		bundleURI = entryURI + "/bundle"
