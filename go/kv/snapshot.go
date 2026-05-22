@@ -1009,6 +1009,44 @@ func (r *kvSnapshotReader) string() string {
 	return string(r.read(size))
 }
 
+// dtypeString reads a length-prefixed dtype tag. KV snapshots use a fixed
+// six-token vocabulary ("float32"/"F32", "float16"/"F16", "bfloat16"/"BF16");
+// matching bytes-first returns the literal canonical string with zero
+// allocation. Unknown dtypes fall back to a fresh string for the validator
+// to reject downstream.
+func (r *kvSnapshotReader) dtypeString() string {
+	size := int(r.u32())
+	chunk := r.read(size)
+	if chunk == nil {
+		return ""
+	}
+	switch len(chunk) {
+	case 3:
+		switch string(chunk) {
+		case "F32":
+			return "F32"
+		case "F16":
+			return "F16"
+		}
+	case 4:
+		if string(chunk) == "BF16" {
+			return "BF16"
+		}
+	case 7:
+		switch string(chunk) {
+		case "float32":
+			return "float32"
+		case "float16":
+			return "float16"
+		}
+	case 8:
+		if string(chunk) == "bfloat16" {
+			return "bfloat16"
+		}
+	}
+	return string(chunk)
+}
+
 func (r *kvSnapshotReader) i32s() []int32 {
 	size := int(r.u32())
 	if size <= 0 {
@@ -1091,7 +1129,7 @@ func (r *kvSnapshotReader) encodedTensor(opts LoadOptions) kvSnapshotEncodedTens
 		}
 		return kvSnapshotEncodedTensor{Values: values}
 	case 2:
-		dtype := r.string()
+		dtype := r.dtypeString()
 		raw := r.bytes()
 		dtype, err := validateKVSnapshotNativeTensor(dtype, raw, size)
 		if err != nil {
