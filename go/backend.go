@@ -655,17 +655,26 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	if result == nil {
 		return nil
 	}
-	layers := make([]kv.LayerSnapshot, len(result.Layers))
+	resultLayers := result.Layers
+	layers := make([]kv.LayerSnapshot, len(resultLayers))
 	// Single arena allocation for all per-layer Heads slices. Avoids N
 	// small allocations on a path that runs per KV capture / restore.
 	totalHeads := 0
-	for i := range result.Layers {
-		totalHeads += len(result.Layers[i].Heads)
+	for i := range resultLayers {
+		totalHeads += len(resultLayers[i].Heads)
 	}
 	headsSlab := make([]kv.HeadSnapshot, totalHeads)
 	headsOffset := 0
-	for i, layer := range result.Layers {
-		headsEnd := headsOffset + len(layer.Heads)
+	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
+	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
+	// ~160 B (6 slice headers + 2 dtype strings); for deep models (Gemma
+	// 4 E4B = 30 layers × 16 heads = 480 head-copies per snapshot)
+	// the range-and-copy intermediate variable was 100+ KB of redundant
+	// stack copies per capture. Read fields direct from resultLayers[i].
+	for i := range resultLayers {
+		layer := &resultLayers[i]
+		layerHeadsSrc := layer.Heads
+		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
@@ -678,7 +687,8 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      layerHeads,
 		}
-		for j, head := range layer.Heads {
+		for j := range layerHeadsSrc {
+			head := &layerHeadsSrc[j]
 			layerHeads[j] = kv.HeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
@@ -711,17 +721,22 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
 	}
-	layers := make([]metal.KVLayerSnapshot, len(result.Layers))
+	resultLayers := result.Layers
+	layers := make([]metal.KVLayerSnapshot, len(resultLayers))
 	// Single arena allocation for all per-layer Heads slices. Mirror of
 	// toRootKVSnapshot — same N -> 1 collapse on the inverse path.
 	totalHeads := 0
-	for i := range result.Layers {
-		totalHeads += len(result.Layers[i].Heads)
+	for i := range resultLayers {
+		totalHeads += len(resultLayers[i].Heads)
 	}
 	headsSlab := make([]metal.KVHeadSnapshot, totalHeads)
 	headsOffset := 0
-	for i, layer := range result.Layers {
-		headsEnd := headsOffset + len(layer.Heads)
+	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
+	// + N×head struct-copy elision on the inverse direction.
+	for i := range resultLayers {
+		layer := &resultLayers[i]
+		layerHeadsSrc := layer.Heads
+		headsEnd := headsOffset + len(layerHeadsSrc)
 		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
@@ -734,7 +749,8 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			ValueShape: core.SliceClone(layer.ValueShape),
 			Heads:      layerHeads,
 		}
-		for j, head := range layer.Heads {
+		for j := range layerHeadsSrc {
+			head := &layerHeadsSrc[j]
 			layerHeads[j] = metal.KVHeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
