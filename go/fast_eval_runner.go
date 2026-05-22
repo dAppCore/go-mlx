@@ -344,11 +344,17 @@ func modelBenchProbeOverhead(model *Model) func(context.Context, bench.Config, t
 		metrics := fromMlxMetrics(model.Metrics())
 		events := recorder.Events()
 		report.EventCount = len(events)
-		report.KindCounts = make(map[string]int)
+		// Probe kinds are bounded (~10 distinct values across the
+		// inference + training set). Pre-size avoids the initial map
+		// growth on every probe-overhead bench iteration.
+		report.KindCounts = make(map[string]int, 8)
 		report.Events = make([]any, len(events))
-		for i, event := range events {
-			report.KindCounts[string(event.Kind)]++
-			report.Events[i] = event
+		// Index iteration avoids the per-step copy of the 120-byte
+		// probe.Event (14 fields, mostly pointers) into a loop variable
+		// before we re-store it into Events[i] anyway.
+		for i := range events {
+			report.KindCounts[string(events[i].Kind)]++
+			report.Events[i] = events[i]
 		}
 		report.Metrics = metrics
 		if metrics.TotalDuration > 0 {
