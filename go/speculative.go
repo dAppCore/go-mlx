@@ -63,22 +63,37 @@ var (
 	attachGemma4AssistantDraft       = attachGemma4AssistantDraftToTarget
 )
 
+// Per-request hot-path error sentinels — these fire from the public
+// SpeculativePair.Generate / Model.GenerateSpeculative entries on every
+// invocation that misses a precondition. Hoisting to package level drops
+// the per-call core.NewError alloc on the (target nil / draft nil / pair
+// nil / target runtime missing) paths.
+var (
+	errMLXSpeculativeTargetNil      = core.NewError("mlx: target model is nil")
+	errMLXSpeculativeDraftNil       = core.NewError("mlx: draft model is nil")
+	errMLXSpeculativeMaxNeg         = core.NewError("mlx: speculative max tokens must be >= 0")
+	errMLXSpeculativeDraftTokensNeg = core.NewError("mlx: speculative draft tokens must be >= 0")
+	errMLXSpeculativePairNil        = core.NewError("mlx: speculative pair is nil")
+	errMLXSpeculativeGemma4Unsupp   = core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
+	errMLXSpeculativeGemma4Attach   = core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
+)
+
 // GenerateSpeculative runs the portable target/draft speculative decode
 // reference path and returns acceptance metrics. It does not yet claim a native
 // MTP speedup; production visible-throughput work still needs backend block
 // verification.
 func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
 	if m == nil || m.model == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: target model is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeTargetNil
 	}
 	if draft == nil || draft.model == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: draft model is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeDraftNil
 	}
 	if cfg.MaxTokens < 0 {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative max tokens must be >= 0")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeMaxNeg
 	}
 	if cfg.DraftTokens < 0 {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative draft tokens must be >= 0")
+		return SpeculativeDecodeResult{}, errMLXSpeculativeDraftTokensNeg
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -155,12 +170,12 @@ func LoadSpeculativePair(targetPath, draftPath string, cfg SpeculativePairConfig
 // Generate runs the pair through the package-first speculative reference path.
 func (pair *SpeculativePair) Generate(ctx context.Context, prompt string, cfg SpeculativeDecodeConfig) (SpeculativeDecodeResult, error) {
 	if pair == nil {
-		return SpeculativeDecodeResult{}, core.NewError("mlx: speculative pair is nil")
+		return SpeculativeDecodeResult{}, errMLXSpeculativePairNil
 	}
 	if pair.Gemma4Assistant != nil {
 		generator, ok := pair.Target.model.(nativeGemma4AssistantGenerator)
 		if !ok {
-			return SpeculativeDecodeResult{}, core.NewError("mlx: target runtime cannot run Gemma 4 assistant generation")
+			return SpeculativeDecodeResult{}, errMLXSpeculativeGemma4Unsupp
 		}
 		generateCfg := cfg.GenerateConfig
 		if generateCfg.MaxTokens == 0 {
@@ -213,7 +228,7 @@ func isGemma4AssistantDraft(draftPath string) bool {
 func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*metal.Gemma4AssistantPair, error) {
 	attacher, ok := target.(nativeGemma4AssistantAttacher)
 	if !ok {
-		return nil, core.NewError("mlx: target runtime cannot attach Gemma 4 assistant")
+		return nil, errMLXSpeculativeGemma4Attach
 	}
 	return attacher.AttachGemma4Assistant(draftPath)
 }
