@@ -359,7 +359,9 @@ func kvAnalysisLayerState(heads []HeadSnapshot) []float32 {
 	if len(heads) == 0 {
 		return nil
 	}
-	var states [][]float32
+	// At most one state slot per head — pre-size to skip the
+	// geometric-grow append cycle.
+	states := make([][]float32, 0, len(heads))
 	for _, head := range heads {
 		if len(head.Key) == 0 && len(head.Value) == 0 {
 			continue
