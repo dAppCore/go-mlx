@@ -12,7 +12,9 @@ package mlx
 import (
 	"testing"
 
+	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
 
@@ -20,6 +22,7 @@ import (
 var (
 	backendBenchSinkMetalCfg  metal.GenerateConfig
 	backendBenchSinkMetalSink metal.ProbeSink
+	backendBenchSinkHint      parser.Hint
 )
 
 // noopProbeSink is a minimal probe.Sink that drops every event — used by
@@ -92,5 +95,48 @@ func BenchmarkBackend_ToMetalProbeSink_NonNil(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		backendBenchSinkMetalSink = toMetalProbeSink(sink)
+	}
+}
+
+// --- hintForParser cache (Wave6-W1A) ---
+// Per-Generate parser.Hint dispatch — pre-cached at LoadModel + on LoRA
+// mutation; the cached read is the hot-path replacement for the prior
+// per-call m.model.Info() fan-out (which itself cloned the native
+// AdapterInfo.TargetKeys slice).
+
+func BenchmarkBackend_HintForParser_Cached(b *testing.B) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "qwen3",
+				Adapter:      metal.AdapterInfo{Name: "probe-lora"},
+			},
+		},
+		adapterInfo: lora.AdapterInfo{Name: "probe-lora"},
+	}
+	// Warm the cache so we measure the steady-state read, not the
+	// one-time lazy build.
+	model.refreshParserHint()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkHint = model.hintForParser()
+	}
+}
+
+func BenchmarkBackend_HintForParser_Build(b *testing.B) {
+	model := &Model{
+		model: &fakeNativeModel{
+			info: metal.ModelInfo{
+				Architecture: "qwen3",
+				Adapter:      metal.AdapterInfo{Name: "probe-lora"},
+			},
+		},
+		adapterInfo: lora.AdapterInfo{Name: "probe-lora"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkHint = model.buildParserHint()
 	}
 }
