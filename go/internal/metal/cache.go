@@ -663,7 +663,7 @@ func (c *FixedKVCache) validStateWithStream(stream *Stream) (*Array, *Array) {
 		return nil, nil
 	}
 	// Cached dims are stable for the lifetime of c.keys / c.values — use
-	// the stack-allocating fixedKVCacheSlice4D helper to skip both the
+	// the pooled-cgo-int fixedKVCacheSlice4D helper to skip both the
 	// Shape() []int32 allocs and Slice's three [4]C.int heap allocs.
 	if c.shapeCached {
 		return fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim, stream),
