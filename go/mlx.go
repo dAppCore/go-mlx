@@ -443,9 +443,23 @@ func WithParallelSlots(n int) LoadOption {
 	return func(c *LoadConfig) { c.ParallelSlots = n }
 }
 
+// withPromptCacheEnabledOption / withPromptCacheDisabledOption are the two
+// package-init singleton closures returned by WithPromptCache. The builder
+// only takes a bool so the value space is exhausted by two pre-built
+// closures, dropping the per-call alloc to zero and matching the Wave 5
+// switch-cached static closure pattern (finite-domain builders return a
+// pointer to a pre-existing closure instead of constructing a new one).
+var (
+	withPromptCacheEnabledOption  LoadOption = func(c *LoadConfig) { c.PromptCache = true }
+	withPromptCacheDisabledOption LoadOption = func(c *LoadConfig) { c.PromptCache = false }
+)
+
 // WithPromptCache enables or disables exact token-prefix KV caching.
 func WithPromptCache(enabled bool) LoadOption {
-	return func(c *LoadConfig) { c.PromptCache = enabled }
+	if enabled {
+		return withPromptCacheEnabledOption
+	}
+	return withPromptCacheDisabledOption
 }
 
 // WithPromptCacheMinTokens sets the minimum prefix length considered cacheable.
@@ -480,9 +494,20 @@ func WithMedium(medium coreio.Medium) LoadOption {
 	return func(c *LoadConfig) { c.Medium = medium }
 }
 
+// withAutoMemoryPlanEnabledOption / withAutoMemoryPlanDisabledOption are the
+// pre-built closures returned by WithAutoMemoryPlan — same switch-cached
+// finite-domain pattern as withPromptCacheEnabledOption.
+var (
+	withAutoMemoryPlanEnabledOption  LoadOption = func(c *LoadConfig) { c.AutoMemoryPlan = true }
+	withAutoMemoryPlanDisabledOption LoadOption = func(c *LoadConfig) { c.AutoMemoryPlan = false }
+)
+
 // WithAutoMemoryPlan enables or disables measured-device runtime planning.
 func WithAutoMemoryPlan(enabled bool) LoadOption {
-	return func(c *LoadConfig) { c.AutoMemoryPlan = enabled }
+	if enabled {
+		return withAutoMemoryPlanEnabledOption
+	}
+	return withAutoMemoryPlanDisabledOption
 }
 
 // WithMemoryPlan applies an explicit memory plan instead of probing the device.
