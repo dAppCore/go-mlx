@@ -430,7 +430,7 @@ func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([
 	if begin < 0 || finish > len(values) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot tensor block range")
 	}
-	return append([]float32(nil), values[begin:finish]...), nil
+	return core.SliceClone(values[begin:finish]), nil
 }
 
 func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valueCount int) ([]byte, error) {
@@ -456,7 +456,7 @@ func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valu
 	if begin < 0 || finish > len(raw) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot raw tensor block range")
 	}
-	return append([]byte(nil), raw[begin:finish]...), nil
+	return core.SliceClone(raw[begin:finish]), nil
 }
 
 func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, start, end int) ([]byte, []int32, error) {
@@ -485,7 +485,7 @@ func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, star
 			dst += rowBytes
 		}
 	}
-	outShape := append([]int32(nil), shape...)
+	outShape := core.SliceClone(shape)
 	outShape[2] = int32(take)
 	return out, outShape, nil
 }
