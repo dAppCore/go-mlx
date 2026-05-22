@@ -410,6 +410,37 @@ func emitTuningEvent(emit func(inference.TuningEvent) bool, event inference.Tuni
 }
 
 func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity inference.ModelIdentity, adapter inference.AdapterIdentity, runtime inference.RuntimeIdentity, plan memory.Plan) inference.TuningCandidate {
+	// Pre-size Reasons + Labels with knowledge of which workload branch
+	// will fire below. Original code paid:
+	//   - Reasons: SliceClone(plan.Notes) sized at len, then append grows
+	//     on every workload-with-reason switch case (4 of 5+ shapes).
+	//   - Labels: `map{"machine_class": ...}` literal sized at 1, then
+	//     AgentState inserts a second key triggering grow.
+	// Pre-sizing both removes the grow-copy on the hot path.
+	addsReason := false
+	switch workload {
+	case inference.TuningWorkloadLowLatency,
+		inference.TuningWorkloadThroughput,
+		inference.TuningWorkloadLongContext,
+		inference.TuningWorkloadAgentState:
+		addsReason = true
+	}
+	var reasons []string
+	n := len(plan.Notes)
+	extra := 0
+	if addsReason {
+		extra = 1
+	}
+	if n+extra > 0 {
+		reasons = make([]string, n, n+extra)
+		copy(reasons, plan.Notes)
+	}
+	labelHint := 1
+	if workload == inference.TuningWorkloadAgentState {
+		labelHint = 2
+	}
+	labels := make(map[string]string, labelHint)
+	labels["machine_class"] = string(plan.MachineClass)
 	candidate := inference.TuningCandidate{
 		Workload:             workload,
 		Model:                modelIdentity,
@@ -427,8 +458,8 @@ func tuningCandidateForWorkload(workload inference.TuningWorkload, modelIdentity
 		MemoryLimitBytes:     plan.MemoryLimitBytes,
 		CacheLimitBytes:      plan.CacheLimitBytes,
 		WiredLimitBytes:      plan.WiredLimitBytes,
-		Reasons:              core.SliceClone(plan.Notes),
-		Labels:               map[string]string{"machine_class": string(plan.MachineClass)},
+		Reasons:              reasons,
+		Labels:               labels,
 	}
 	switch workload {
 	case inference.TuningWorkloadLowLatency:
