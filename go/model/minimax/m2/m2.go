@@ -881,7 +881,7 @@ func packedExpertLoadedBytes(experts map[int]PackedExpertWeights) uint64 {
 }
 
 func uniqueExpertIDs(ids []int) []int {
-	seen := map[int]bool{}
+	seen := make(map[int]bool, len(ids))
 	out := make([]int, 0, len(ids))
 	for _, id := range ids {
 		if seen[id] {
