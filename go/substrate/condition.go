@@ -51,7 +51,12 @@ func Normalize(value string) (Condition, error) {
 	if c, ok := matchConditionFold(value); ok {
 		return c, nil
 	}
-	return "", core.NewError("substrate: unsupported condition: " + value)
+	// Splitting the prefix into Operation + the input into Message
+	// saves the prefix+value string concat (Pattern 10-ish): Err's
+	// rendered form (Operation: Message) builds the printed string
+	// at .Error() time, not at construction. The slow path drops
+	// one of the two allocations.
+	return "", core.E("substrate: unsupported condition", value, nil)
 }
 
 // MustNormalize parses user input and falls back to CONT when invalid.
