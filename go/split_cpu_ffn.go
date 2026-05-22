@@ -888,10 +888,19 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	if matrix == nil || row < 0 || row >= matrix.rows {
 		return 0
 	}
+	// Hoist the loop bound: the original double-condition (col < matrix.cols
+	// && col < len(input)) re-read both sources every iteration. min() once,
+	// then a single-bound loop lets the compiler elide bounds checks on the
+	// input slice when col stays under len(input).
+	cols := matrix.cols
+	if n := len(input); n < cols {
+		cols = n
+	}
 	offset := row * matrix.cols
+	in := input[:cols]
 	var sum float32
-	for col := 0; col < matrix.cols && col < len(input); col++ {
-		sum += input[col] * matrix.value(offset+col)
+	for col := 0; col < cols; col++ {
+		sum += in[col] * matrix.value(offset+col)
 	}
 	return sum
 }
