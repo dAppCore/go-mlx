@@ -454,6 +454,12 @@ func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.Sl
 }
 
 func addAgentMemoryFoldMeta(meta map[string]string, key, value string) map[string]string {
+	// Fast path: empty input is the dominant case for absent fields.
+	// Skip the core.Trim allocation entirely. Whitespace-only values
+	// still fall through to the slow path below.
+	if value == "" {
+		return meta
+	}
 	if core.Trim(value) == "" {
 		return meta
 	}
@@ -642,6 +648,11 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 }
 
 func addAgentMemoryMetadata(meta map[string]string, key, value string) map[string]string {
+	// Fast path: empty input is the dominant case for optional adapter
+	// + runtime fields. Skip the core.Trim allocation entirely.
+	if value == "" {
+		return meta
+	}
 	if core.Trim(value) == "" {
 		return meta
 	}
