@@ -120,12 +120,19 @@ func hashAdapter(path string, config []byte) string {
 // check once and threads the result through this helper to avoid the
 // second SIMD scan.
 func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) string {
-	parts := []string{core.SHA256Hex(config)}
-	paths := []string{path}
-	if !isSafetensors {
+	// Resolve weight paths first so we know the worst-case parts capacity
+	// (config hash + one per weight file). The directory branch always
+	// allocates a fresh slice from PathGlob; the file branch can skip the
+	// throwaway 1-elem slice the previous code allocated unconditionally.
+	var paths []string
+	if isSafetensors {
+		paths = []string{path}
+	} else {
 		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
+	parts := make([]string, 1, 1+len(paths))
+	parts[0] = core.SHA256Hex(config)
 	for _, weightPath := range paths {
 		read := core.ReadFile(weightPath)
 		if read.OK {
