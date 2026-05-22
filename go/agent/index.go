@@ -31,6 +31,11 @@ const (
 	KVSnapshotMemvidBundleIndexVersion = KVSnapshotStateBundleIndexVersion
 )
 
+// stateIndexPutLabels is the canonical label set attached to every
+// SaveStateIndex Put call. Package-scoped so each call shares one backing
+// array instead of allocating a fresh slice literal per save.
+var stateIndexPutLabels = []string{"go-mlx", "kv-snapshot-bundle-index"}
+
 // StateIndexOptions configures a durable index for named State
 // spans such as chapters, sections, or checkpointed agent states.
 type StateIndexOptions struct {
@@ -264,7 +269,7 @@ func SaveStateIndex(ctx context.Context, store state.Writer, index *StateIndex, 
 		Title:  "go-mlx State index",
 		Kind:   StateIndexKind,
 		Track:  "session-kv-index",
-		Labels: []string{"go-mlx", "kv-snapshot-bundle-index"},
+		Labels: stateIndexPutLabels,
 	})
 	if err != nil {
 		return state.ChunkRef{}, core.E("kv.Snapshot.SaveStateIndex", "write State index", err)
