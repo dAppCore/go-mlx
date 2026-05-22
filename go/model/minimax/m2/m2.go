@@ -859,7 +859,11 @@ func findTensorSpec(specs []TensorSpec, role TensorRole) TensorSpec {
 }
 
 func decisionExpertIDs(decisions []RouterDecision) []int {
-	var ids []int
+	total := 0
+	for _, decision := range decisions {
+		total += len(decision.ExpertIDs)
+	}
+	ids := make([]int, 0, total)
 	for _, decision := range decisions {
 		ids = append(ids, decision.ExpertIDs...)
 	}

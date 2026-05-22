@@ -125,6 +125,24 @@ func BenchmarkDispatchExperts(b *testing.B) {
 	}
 }
 
+// BenchmarkDecisionExpertIDs covers the flatten + pre-size path used when
+// turning router decisions into the unique-expert load fan-out.
+func BenchmarkDecisionExpertIDs(b *testing.B) {
+	const tokens, topK = 32, 8
+	decisions := make([]RouterDecision, tokens)
+	for i := range decisions {
+		ids := make([]int, topK)
+		for j := range ids {
+			ids[j] = (i*31 + j) & 0xff
+		}
+		decisions[i] = RouterDecision{TokenIndex: i, ExpertIDs: ids}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = decisionExpertIDs(decisions)
+	}
+}
+
 // BenchmarkLayerTensorSpecs covers per-layer + per-expert tensor name
 // fan-out used during model loading. MiniMax M2 has 62 layers x 256 experts
 // so the inner-name Sprintf budget compounds quickly.
