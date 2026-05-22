@@ -407,18 +407,37 @@ func readTensorRefs(indexes []safetensors.Index, name string) ([]safetensors.Ten
 
 func buildMergedHeader(index safetensors.Index) map[string]safetensors.HeaderEntry {
 	header := make(map[string]safetensors.HeaderEntry, len(index.Names))
+	// Pool both shape and DataOffsets backing arrays into one contiguous
+	// []int64 slab. Previously each tensor cost 2 small heap allocations
+	// (shape + 2-element DataOffsets). Now each tensor's Shape and
+	// DataOffsets are sub-slices into the slab; total allocs drop from
+	// 2*N to 1 across the whole header build.
+	totalDims := 0
+	for _, name := range index.Names {
+		totalDims += len(index.Tensors[name].Shape)
+	}
+	// Reserve 2 trailing slots per tensor for DataOffsets.
+	slab := make([]int64, totalDims+2*len(index.Names))
+	shapeCursor := 0
+	offsetsCursor := totalDims
 	var offset int64
 	for _, name := range index.Names {
 		ref := index.Tensors[name]
 		byteLen := int64(ref.Elements * 4)
-		shape := make([]int64, 0, len(ref.Shape))
+		dims := len(ref.Shape)
+		shape := slab[shapeCursor : shapeCursor : shapeCursor+dims]
 		for _, dim := range ref.Shape {
 			shape = append(shape, int64(dim))
 		}
+		shapeCursor += dims
+		dataOffsets := slab[offsetsCursor : offsetsCursor+2 : offsetsCursor+2]
+		dataOffsets[0] = offset
+		dataOffsets[1] = offset + byteLen
+		offsetsCursor += 2
 		header[name] = safetensors.HeaderEntry{
 			DType:       "F32",
 			Shape:       shape,
-			DataOffsets: []int64{offset, offset + byteLen},
+			DataOffsets: dataOffsets,
 		}
 		offset += byteLen
 	}
