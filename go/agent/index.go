@@ -622,8 +622,8 @@ func indexHash(index *StateIndex) string {
 	if index == nil {
 		return ""
 	}
-	header := core.NewBuilder()
-	header.Grow(256)
+	header := hashBufPool.Get().(*bytes.Buffer)
+	header.Reset()
 	var intBuf [20]byte
 	header.WriteString(index.Kind)
 	header.WriteByte('|')
@@ -643,7 +643,8 @@ func indexHash(index *StateIndex) string {
 	header.WriteByte('|')
 	header.WriteString(index.Tokenizer.ChatTemplateHash)
 	hash := sha256.New()
-	hash.Write(core.AsBytes(header.String()))
+	hash.Write(header.Bytes())
+	hashBufPool.Put(header)
 	for i := range index.Entries {
 		writeIndexHashString(hash, "|")
 		entryHash := index.Entries[i].Hash
