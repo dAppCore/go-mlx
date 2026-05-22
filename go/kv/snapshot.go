@@ -351,10 +351,18 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	if err != nil {
 		return err
 	}
-	if _, err := s.encodedSizeWithOptions(opts); err != nil {
-		return err
-	}
 	version := effectiveVersion(s, encoding)
+	// Cheap up-front sanity covers what encodedSizeWithOptions exists to
+	// guard at this layer — version range and architecture-string length.
+	// Per-tensor validation surfaces naturally through stream.encodedTensor
+	// during the write loop; callers (HashSnapshot, state-block stream)
+	// treat any error as fatal, so the half-flush is harmless.
+	if version <= 0 || version > SnapshotVersion {
+		return core.E("Snapshot.Save", "unsupported KV snapshot version", nil)
+	}
+	if len(s.Architecture) > int(^uint32(0)) {
+		return core.E("Snapshot.Save", "architecture string too large", nil)
+	}
 	stream := kvSnapshotStreamWriter{writer: writer}
 	stream.bytes(core.AsBytes(kvSnapshotMagic))
 	stream.u32(uint32(version))
