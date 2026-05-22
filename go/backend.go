@@ -322,6 +322,13 @@ func toMetalProbeSink(sink probe.Sink) metal.ProbeSink {
 }
 
 func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
+	// Read sub-fields direct through the source pointer — the previous
+	// `x := *event.X` dereference-copy form materialised the entire
+	// substruct (ProbeLogits alone is ~130 B with three slice headers
+	// + a map header) into a local before reading individual fields.
+	// toRootProbeEvent fires per probe event, which under ProbeSink is
+	// emitted PER TOKEN during generation — skipping the redundant
+	// substruct copy compounds across long generations.
 	out := probe.Event{
 		Kind:  probe.Kind(event.Kind),
 		Phase: probe.Phase(event.Phase),
@@ -329,7 +336,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		Meta:  cloneMetalProbeMeta(event.Meta),
 	}
 	if event.Token != nil {
-		token := *event.Token
+		token := event.Token
 		out.Token = &probe.Token{
 			ID:              token.ID,
 			Text:            token.Text,
@@ -338,7 +345,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Logits != nil {
-		logits := *event.Logits
+		logits := event.Logits
 		out.Logits = &probe.Logits{
 			Shape:      core.SliceClone(logits.Shape),
 			VocabSize:  logits.VocabSize,
@@ -353,11 +360,11 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Entropy != nil {
-		entropy := *event.Entropy
+		entropy := event.Entropy
 		out.Entropy = &probe.Entropy{Value: entropy.Value, Unit: entropy.Unit}
 	}
 	if event.SelectedHeads != nil {
-		heads := *event.SelectedHeads
+		heads := event.SelectedHeads
 		out.SelectedHeads = &probe.HeadSelection{
 			Layer:  heads.Layer,
 			Heads:  core.SliceClone(heads.Heads),
@@ -365,7 +372,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.LayerCoherence != nil {
-		coherence := *event.LayerCoherence
+		coherence := event.LayerCoherence
 		out.LayerCoherence = &probe.LayerCoherence{
 			Layer:          coherence.Layer,
 			KeyCoherence:   coherence.KeyCoherence,
@@ -377,7 +384,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.RouterDecision != nil {
-		router := *event.RouterDecision
+		router := event.RouterDecision
 		out.RouterDecision = &probe.RouterDecision{
 			Layer:       router.Layer,
 			TokenID:     router.TokenID,
@@ -387,7 +394,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Residual != nil {
-		residual := *event.Residual
+		residual := event.Residual
 		out.Residual = &probe.ResidualSummary{
 			Layer:    residual.Layer,
 			Mean:     residual.Mean,
@@ -398,7 +405,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Cache != nil {
-		cache := *event.Cache
+		cache := event.Cache
 		out.Cache = &probe.CachePressure{
 			PromptTokens:    cache.PromptTokens,
 			GeneratedTokens: cache.GeneratedTokens,
@@ -411,7 +418,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Memory != nil {
-		memory := *event.Memory
+		memory := event.Memory
 		out.Memory = &probe.MemoryPressure{
 			ActiveBytes: memory.ActiveBytes,
 			PeakBytes:   memory.PeakBytes,
@@ -419,7 +426,7 @@ func toRootProbeEvent(event metal.ProbeEvent) probe.Event {
 		}
 	}
 	if event.Training != nil {
-		training := *event.Training
+		training := event.Training
 		out.Training = &probe.Training{
 			Step:         training.Step,
 			Epoch:        training.Epoch,
