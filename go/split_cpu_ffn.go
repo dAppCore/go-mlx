@@ -870,24 +870,42 @@ func cpuSplitForwardDenseRow(hidden, out []float32, layer cpuSplitFFNLayer, eps 
 		normedView[i] = hiddenView[i] * scale * normView[i]
 	}
 
+	// Re-slice bias arrays + activated buffer to the loop bounds so the
+	// per-row indexing in the projection-and-bias-fold loops compiles
+	// without per-iter bounds checks. Loader keeps these matched to
+	// intermediate/hidden sizes already, so the slice is exactly correct.
+	activatedView := activated[:intermediateLen]
+	var gateBiasView, upBiasView []float32
+	if hasGateBias {
+		gateBiasView = layer.gateBias[:intermediateLen]
+	}
+	if hasUpBias {
+		upBiasView = layer.upBias[:intermediateLen]
+	}
 	for row := 0; row < intermediateLen; row++ {
 		gate := cpuSplitProjectRow(normed, layer.gate, layer.gatePacked, row, hiddenLen)
 		up := cpuSplitProjectRow(normed, layer.up, layer.upPacked, row, hiddenLen)
 		if hasGateBias {
-			gate += layer.gateBias[row]
+			gate += gateBiasView[row]
 		}
 		if hasUpBias {
-			up += layer.upBias[row]
+			up += upBiasView[row]
 		}
-		activated[row] = cpuSplitSiLU(gate) * up
+		activatedView[row] = cpuSplitSiLU(gate) * up
 	}
 
+	outView := out[:hiddenLen]
+	hiddenViewRes := hidden[:hiddenLen]
+	var downBiasView []float32
+	if hasDownBias {
+		downBiasView = layer.downBias[:hiddenLen]
+	}
 	for row := 0; row < hiddenLen; row++ {
 		mlp := cpuSplitProjectRow(activated, layer.down, layer.downPacked, row, intermediateLen)
 		if hasDownBias {
-			mlp += layer.downBias[row]
+			mlp += downBiasView[row]
 		}
-		out[row] = hidden[row] + mlp
+		outView[row] = hiddenViewRes[row] + mlp
 	}
 }
 
