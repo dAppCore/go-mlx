@@ -187,6 +187,18 @@ type Sink interface {
 	EmitProbe(Event)
 }
 
+// ownedEventSink is implemented by sinks that accept an unshared
+// event without the Bus pre-cloning it — the sink promises to take
+// over ownership (deep-copying internally if it retains the event).
+// Implementing this interface lets the Bus skip its own defensive
+// CloneEvent when fanning out to that sink, eliminating the
+// double-clone for the Bus → Recorder hot path. Sinks that don't
+// implement it still receive the standard pre-cloned Event so the
+// public Sink contract is unchanged.
+type ownedEventSink interface {
+	emitProbeOwned(Event)
+}
+
 // SinkFunc adapts a function into a Sink.
 type SinkFunc func(Event)
 
@@ -253,18 +265,29 @@ func (b *Bus) EmitProbe(event Event) {
 	if len(b.sinks) == 1 {
 		sink := b.sinks[0]
 		b.mu.RUnlock()
-		if sink != nil {
-			sink.EmitProbe(CloneEvent(event))
-		}
+		dispatchSink(sink, event)
 		return
 	}
 	sinks := core.SliceClone(b.sinks)
 	b.mu.RUnlock()
 	for _, sink := range sinks {
-		if sink != nil {
-			sink.EmitProbe(CloneEvent(event))
-		}
+		dispatchSink(sink, event)
 	}
+}
+
+// dispatchSink hands `event` to a sink, skipping the fanout
+// CloneEvent if the sink takes ownership of the event itself
+// (see ownedEventSink). Nil sinks are silently dropped to match
+// the public Bus.Add and Bus.EmitProbe nil-tolerance contract.
+func dispatchSink(sink Sink, event Event) {
+	if sink == nil {
+		return
+	}
+	if owned, ok := sink.(ownedEventSink); ok {
+		owned.emitProbeOwned(event)
+		return
+	}
+	sink.EmitProbe(CloneEvent(event))
 }
 
 // Recorder stores probe events in memory for tests, reproducible probes,
@@ -295,6 +318,14 @@ func (r *Recorder) EmitProbe(event Event) {
 	r.mu.Lock()
 	r.events = append(r.events, cloned)
 	r.mu.Unlock()
+}
+
+// emitProbeOwned satisfies ownedEventSink so a Bus can hand the
+// recorder an unshared event without paying for the standard fanout
+// CloneEvent — the recorder clones internally anyway. Behaviour is
+// otherwise identical to EmitProbe.
+func (r *Recorder) emitProbeOwned(event Event) {
+	r.EmitProbe(event)
 }
 
 // Events returns recorded events without aliasing recorder storage.
