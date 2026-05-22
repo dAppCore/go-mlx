@@ -162,7 +162,7 @@ func (manager *ResidencyManager) EnsureExperts(ctx context.Context, expertIDs []
 		if _, ok := manager.resident[expertID]; ok {
 			manager.touch(expertID)
 			manager.stats.Hits++
-			manager.emitExpertResidencyProbe(probe.ExpertResidencyActionHit, []int{expertID}, 0, 0, 0)
+			manager.emitExpertResidencyProbe(probe.ExpertResidencyActionHit, expertID, 0, 0, 0)
 			continue
 		}
 		if err := manager.ensureCapacityFor(expertID, requested); err != nil {
@@ -224,7 +224,7 @@ func (manager *ResidencyManager) loadExpert(ctx context.Context, expertID int, a
 		manager.stats.ColdLoads++
 	}
 	manager.updateResidentStats()
-	manager.emitExpertResidencyProbe(action, []int{expertID}, loadedBytes, 0, duration)
+	manager.emitExpertResidencyProbe(action, expertID, loadedBytes, 0, duration)
 	return nil
 }
 
@@ -276,7 +276,7 @@ func (manager *ResidencyManager) evictExpert(expertID int) {
 	manager.stats.PageOuts++
 	manager.stats.EvictedBytes += evictedBytes
 	manager.updateResidentStats()
-	manager.emitExpertResidencyProbe(probe.ExpertResidencyActionEvict, []int{expertID}, 0, evictedBytes, 0)
+	manager.emitExpertResidencyProbe(probe.ExpertResidencyActionEvict, expertID, 0, evictedBytes, 0)
 }
 
 func (manager *ResidencyManager) touch(expertID int) {
@@ -297,7 +297,11 @@ func (manager *ResidencyManager) snapshotStats() memory.ExpertResidencyStats {
 	return stats
 }
 
-func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertResidencyAction, expertIDs []int, loadedBytes, evictedBytes uint64, duration time.Duration) {
+// emitExpertResidencyProbe publishes one residency probe for a single expert.
+// All callers pass exactly one expert ID so the int parameter lets the
+// allocator skip the []int{id} singleton slice and a redundant SliceClone
+// on the hot residency-hit path.
+func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertResidencyAction, expertID int, loadedBytes, evictedBytes uint64, duration time.Duration) {
 	if manager.probeSink == nil {
 		return
 	}
@@ -308,7 +312,7 @@ func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertRes
 		ExpertResidency: &probe.ExpertResidency{
 			Action:             action,
 			Layer:              manager.layer,
-			ExpertIDs:          core.SliceClone(expertIDs),
+			ExpertIDs:          []int{expertID},
 			ResidentExperts:    len(manager.resident),
 			MaxResidentExperts: manager.policy.MaxResidentExperts,
 			LoadedBytes:        loadedBytes,
