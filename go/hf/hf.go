@@ -1433,9 +1433,17 @@ func architectureFromTransformersName(architecture string) string {
 		}
 		return ""
 	default:
-		// Unknown PascalCase shape — fall back to compact lower form so a
-		// few stragglers like "qwen3_moe" or "bert_for_sequence_classification"
-		// still classify when callers feed snake_case identifiers.
+		// Unknown PascalCase shape — the only patterns the compact form
+		// matches all start with 'b' (bert/roberta/xlmroberta/debertav2)
+		// or 'q' (qwen3moe/qwen3next). If the input has neither (case-
+		// insensitively), the compact form can't match anything — return
+		// "" without paying for lowerNoSep's allocation.
+		if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
+			return ""
+		}
+		// Fall back to compact lower form so a few stragglers like
+		// "qwen3_moe" or "bert_for_sequence_classification" still
+		// classify when callers feed snake_case identifiers.
 		compact := lowerNoSep(architecture)
 		switch {
 		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
@@ -1447,6 +1455,19 @@ func architectureFromTransformersName(architecture string) string {
 		}
 		return ""
 	}
+}
+
+// hasASCIIByteFold reports whether s contains b or B (where b is the
+// lowercase form). Pure byte scan, no allocations.
+func hasASCIIByteFold(s string, lower byte) bool {
+	upper := lower &^ 0x20 // upper-case form
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == lower || c == upper {
+			return true
+		}
+	}
+	return false
 }
 
 // lowerNoSep returns architecture lowercased with "_" and "-" removed.
