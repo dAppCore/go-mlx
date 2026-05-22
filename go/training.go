@@ -3,6 +3,7 @@
 package mlx
 
 import (
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/probe"
@@ -98,8 +99,8 @@ func toMetalLoRAConfig(cfg LoRAConfig) metal.LoRAConfig {
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
-		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
+		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      metal.DType(cfg.DType),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
@@ -112,8 +113,8 @@ func fromMetalLoRAConfig(cfg metal.LoRAConfig) LoRAConfig {
 		Rank:                       cfg.Rank,
 		Alpha:                      cfg.Alpha,
 		Scale:                      cfg.Scale,
-		TargetKeys:                 append([]string(nil), cfg.TargetKeys...),
-		TargetLayers:               append([]string(nil), cfg.TargetLayers...),
+		TargetKeys:                 core.SliceClone(cfg.TargetKeys),
+		TargetLayers:               core.SliceClone(cfg.TargetLayers),
 		Lambda:                     cfg.Lambda,
 		DType:                      DType(cfg.DType),
 		AllowGemma4ExtendedTargets: cfg.AllowGemma4ExtendedTargets,
