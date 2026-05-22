@@ -315,7 +315,7 @@ func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertRes
 			EvictedBytes:       evictedBytes,
 			Duration:           int64(duration),
 		},
-		Meta: map[string]string{"architecture": "minimax_m2"},
+		Meta: metaMinimaxM2,
 	})
 }
 

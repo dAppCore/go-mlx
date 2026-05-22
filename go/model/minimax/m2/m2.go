@@ -667,7 +667,7 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 				ExpertIDs: core.SliceClone(decision.ExpertIDs),
 				Weights:   core.SliceClone(decision.Weights),
 			},
-			Meta: map[string]string{"architecture": "minimax_m2"},
+			Meta: metaMinimaxM2,
 		})
 	}
 	return events
@@ -989,6 +989,14 @@ func trimWeightSuffix(name string) string {
 }
 
 var packedSuffixes = [...]string{".packed", ".qweight"}
+
+// metaMinimaxM2 is the architecture-tag map attached to every probe.Event
+// emitted by this package. The probe contract treats Meta as read-only on
+// the publish path (recorder/exporter call cloneMeta before storing), so a
+// shared sentinel removes one map alloc per emitted event.
+//
+//	event.Meta = metaMinimaxM2
+var metaMinimaxM2 = map[string]string{"architecture": "minimax_m2"}
 
 func trimPackedSuffix(name string) string {
 	for _, suffix := range packedSuffixes {
