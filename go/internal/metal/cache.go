@@ -1065,13 +1065,34 @@ type PagedKVCache struct {
 	borrowedKeysScratch                []*Array
 	borrowedValuesScratch              []*Array
 	borrowedOwnedScratch               []*Array
-	materializedLength                 int
-	storageDType                       DType
-	hasStorageDType                    bool
-	offset                             int
-	length                             int
-	maxSize                            int
-	pageSize                           int
+	// Scratch buffers for visiblePages — reused across Update calls so the
+	// per-token concatenatedState() path doesn't allocate three []*Array
+	// slices each time.  The slices are consumed within concatenatedState
+	// (kPages/vPages feed Concatenate, owned is Free'd) so they're safe to
+	// reuse on the next call.
+	visibleKScratch     []*Array
+	visibleVScratch     []*Array
+	visibleOwnedScratch []*Array
+	// Scratch buffers for K/V shape readouts — Dim() into these from inside
+	// appendPagesPrealloc/Concat instead of calling Shape() which allocates a
+	// new []int32 every time.  The slices are passed down to helpers within
+	// the same call frame (canAppendToLastPage, append* helpers, cachePageView)
+	// and never retained beyond the Update.
+	kShapeScratch []int32
+	vShapeScratch []int32
+	materializedLength  int
+	storageDType        DType
+	hasStorageDType     bool
+	offset              int
+	length              int
+	maxSize             int
+	pageSize            int
+	// preallocStorage is true when pages have storage = c.pageSize (prealloc
+	// path); false when storage equals the actual fill length (concat path).
+	// Set lazily on first page append; cleared on Reset.  Used by visiblePage
+	// to skip page.Shape() allocations — the cached pageShape + this flag
+	// fully describe the slice/clone branch without a per-call cgo Shape().
+	preallocStorage bool
 }
 
 type pagedKVPageShape struct {
@@ -1325,6 +1346,12 @@ func (c *PagedKVCache) Reset() {
 	c.borrowedKeysScratch = nil
 	c.borrowedValuesScratch = nil
 	c.borrowedOwnedScratch = nil
+	c.visibleKScratch = nil
+	c.visibleVScratch = nil
+	c.visibleOwnedScratch = nil
+	c.kShapeScratch = nil
+	c.vShapeScratch = nil
+	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
 }
@@ -1341,8 +1368,36 @@ func (c *PagedKVCache) Detach() {
 
 func (c *PagedKVCache) concatenatedState() (*Array, *Array) {
 	kPages, vPages, owned := c.visiblePages()
+	if len(kPages) == 1 && len(vPages) == 1 {
+		// Single-page fast path: the visible-page slice/clone is already a
+		// fresh Array suitable for return — skip the redundant Clone inside
+		// concatenatePagedState by handing ownership directly to the caller
+		// and dropping the two pages from the owned-free list.
+		fullK, fullV := kPages[0], vPages[0]
+		owned = pagedOwnedExcept(owned, fullK, fullV)
+		Free(owned...)
+		return fullK, fullV
+	}
 	defer Free(owned...)
 	return concatenatePagedState(kPages, vPages)
+}
+
+// pagedOwnedExcept returns owned with the entries equal to k or v removed.
+// Used by concatenatedState's single-page fast path to skip the Clone+Free
+// dance — kPages[0] and vPages[0] flow out to the caller, so they must not
+// be Free'd in the owned-list cleanup.
+func pagedOwnedExcept(owned []*Array, k, v *Array) []*Array {
+	if len(owned) == 0 {
+		return owned
+	}
+	out := owned[:0]
+	for _, a := range owned {
+		if a == k || a == v {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
 }
 
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
@@ -1381,9 +1436,8 @@ func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return 0
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 {
+	kShape, vShape, ok := c.populateShapeScratch(k, v)
+	if !ok {
 		c.kPages = append(c.kPages, k.Clone())
 		c.vPages = append(c.vPages, v.Clone())
 		c.pageLens = append(c.pageLens, seqLen)
@@ -1427,9 +1481,12 @@ func (c *PagedKVCache) appendPagesPrealloc(k, v *Array, seqLen int) int {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return 0
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 {
+	// Use scratch slices populated via Dim() instead of k.Shape()/v.Shape() —
+	// each Shape() call allocates a fresh []int32 on every token-Update, while
+	// Dim is a single cgo read.  The scratch is only read within this call
+	// frame; helpers receive []int32 views and don't retain them.
+	kShape, vShape, ok := c.populateShapeScratch(k, v)
+	if !ok {
 		return c.appendPagesConcat(k, v, seqLen)
 	}
 	totalLen := int(kShape[2])
@@ -1453,6 +1510,38 @@ func (c *PagedKVCache) appendPagesPrealloc(k, v *Array, seqLen int) int {
 		start += take
 	}
 	return seqLen
+}
+
+// populateShapeScratch fills the cache's K/V shape scratch slices from the
+// arrays' Dim() values and returns views over them.  Saves two Shape() heap
+// allocations per appendPages*  call.  The returned slices are only valid
+// until the next populateShapeScratch / Reset.
+func (c *PagedKVCache) populateShapeScratch(k, v *Array) (kShape, vShape []int32, ok bool) {
+	if k == nil || v == nil || !k.Valid() || !v.Valid() {
+		return nil, nil, false
+	}
+	if k.NumDims() < 4 || v.NumDims() < 4 {
+		return nil, nil, false
+	}
+	if cap(c.kShapeScratch) < 4 {
+		c.kShapeScratch = make([]int32, 4)
+	} else {
+		c.kShapeScratch = c.kShapeScratch[:4]
+	}
+	if cap(c.vShapeScratch) < 4 {
+		c.vShapeScratch = make([]int32, 4)
+	} else {
+		c.vShapeScratch = c.vShapeScratch[:4]
+	}
+	c.kShapeScratch[0] = int32(k.Dim(0))
+	c.kShapeScratch[1] = int32(k.Dim(1))
+	c.kShapeScratch[2] = int32(k.Dim(2))
+	c.kShapeScratch[3] = int32(k.Dim(3))
+	c.vShapeScratch[0] = int32(v.Dim(0))
+	c.vShapeScratch[1] = int32(v.Dim(1))
+	c.vShapeScratch[2] = int32(v.Dim(2))
+	c.vShapeScratch[3] = int32(v.Dim(3))
+	return c.kShapeScratch, c.vShapeScratch, true
 }
 
 func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
@@ -1507,8 +1596,12 @@ func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []in
 	last := len(c.kPages) - 1
 	writeStart := c.pageLen(last)
 	oldK, oldV := c.kPages[last], c.vPages[last]
-	c.kPages[last] = SliceUpdateInplace(oldK, pieceK, []int32{0, 0, int32(writeStart), 0}, []int32{kShape[0], kShape[1], int32(writeStart + take), kShape[3]})
-	c.vPages[last] = SliceUpdateInplace(oldV, pieceV, []int32{0, 0, int32(writeStart), 0}, []int32{vShape[0], vShape[1], int32(writeStart + take), vShape[3]})
+	// pagedSliceUpdate4D consolidates the three [4]C.int cgo allocations of
+	// SliceUpdateInplace into a single 12-element make — 2 makes per token
+	// vs 6 for the generic helper.
+	stream := DefaultStream()
+	c.kPages[last] = pagedSliceUpdate4D(oldK, pieceK, kShape[0], kShape[1], int32(writeStart), int32(writeStart+take), kShape[3], stream)
+	c.vPages[last] = pagedSliceUpdate4D(oldV, pieceV, vShape[0], vShape[1], int32(writeStart), int32(writeStart+take), vShape[3], stream)
 	c.pageLens[last] = writeStart + take
 	c.recordPageShape(kShape, vShape)
 	Free(oldK, oldV)
@@ -1525,12 +1618,14 @@ func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32
 	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
 	pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, k.Dtype())
 	pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, v.Dtype())
-	updatedK := SliceUpdateInplace(pageK, pieceK, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(take), kShape[3]})
-	updatedV := SliceUpdateInplace(pageV, pieceV, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(take), vShape[3]})
+	stream := DefaultStream()
+	updatedK := pagedSliceUpdate4D(pageK, pieceK, kShape[0], kShape[1], 0, int32(take), kShape[3], stream)
+	updatedV := pagedSliceUpdate4D(pageV, pieceV, vShape[0], vShape[1], 0, int32(take), vShape[3], stream)
 	c.kPages = append(c.kPages, updatedK)
 	c.vPages = append(c.vPages, updatedV)
 	c.pageLens = append(c.pageLens, take)
 	c.recordPageShape(kShape, vShape)
+	c.preallocStorage = true
 	Free(pageK, pageV)
 	if ownedK {
 		Free(pieceK)
@@ -1669,8 +1764,30 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 	if page == nil || !page.Valid() {
 		return nil
 	}
-	shape := page.Shape()
 	length := c.pageLen(i)
+	// Fast path: when the cached pageShape is set we know batch/heads/dim for
+	// the K and V sides, and the storage seq-length is c.pageSize for prealloc
+	// pages or pageLens[i] for concat pages.  This lets us skip the per-call
+	// page.Shape() allocation and decide Slice vs Clone using cached info, and
+	// route through pagedSlice4D which consolidates the three cgo-int slice
+	// allocations of metal.Slice into a single make.
+	if c.pageShape.set && length > 0 {
+		if isK, ok := c.identifyPage(page, i); ok {
+			storage := length
+			if c.preallocStorage {
+				storage = c.pageSize
+			}
+			if length >= storage {
+				return page.Clone()
+			}
+			stream := DefaultStream()
+			if isK {
+				return pagedSlice4D(page, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim, stream)
+			}
+			return pagedSlice4D(page, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim, stream)
+		}
+	}
+	shape := page.Shape()
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page.Clone()
 	}
@@ -1685,11 +1802,46 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 	if c.pageSize > 0 && length >= c.pageSize {
 		return page, false
 	}
+	// Fast path: avoid page.Shape() when the cached pageShape is set.  Storage
+	// is c.pageSize for prealloc pages; for concat pages the page is fully
+	// filled (length == pageLens[i] == shape[2]) so borrow returns the page
+	// directly without slicing.  Routes the slice via pagedSlice4D (one cgo-int
+	// make instead of three) when a partial view is needed.
+	if c.pageShape.set && length > 0 {
+		if isK, ok := c.identifyPage(page, i); ok {
+			storage := length
+			if c.preallocStorage {
+				storage = c.pageSize
+			}
+			if length >= storage {
+				return page, false
+			}
+			stream := DefaultStream()
+			if isK {
+				return pagedSlice4D(page, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim, stream), true
+			}
+			return pagedSlice4D(page, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim, stream), true
+		}
+	}
 	shape := page.Shape()
 	if len(shape) < 4 || length <= 0 || length >= int(shape[2]) {
 		return page, false
 	}
 	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(length), shape[3]}), true
+}
+
+// identifyPage returns (isK, ok) — isK is true when the page is the i-th K
+// page, false when it is the i-th V page.  ok is false when the page doesn't
+// match either, which can happen when the caller has cloned pages out of the
+// cache.  Falls through to the legacy page.Shape() path in that case.
+func (c *PagedKVCache) identifyPage(page *Array, i int) (bool, bool) {
+	if i >= 0 && i < len(c.kPages) && c.kPages[i] == page {
+		return true, true
+	}
+	if i >= 0 && i < len(c.vPages) && c.vPages[i] == page {
+		return false, true
+	}
+	return false, false
 }
 
 func (c *PagedKVCache) borrowedKeys(n int) []*Array {
@@ -1720,17 +1872,37 @@ func (c *PagedKVCache) borrowedOwned(length, capacity int) []*Array {
 }
 
 func (c *PagedKVCache) visiblePages() (kPages, vPages, owned []*Array) {
-	if len(c.kPages) == 0 || len(c.vPages) == 0 || len(c.kPages) != len(c.vPages) {
+	n := len(c.kPages)
+	if n == 0 || len(c.vPages) == 0 || n != len(c.vPages) {
 		return nil, nil, nil
 	}
-	kPages = make([]*Array, len(c.kPages))
-	vPages = make([]*Array, len(c.vPages))
-	owned = make([]*Array, 0, len(c.kPages)+len(c.vPages))
+	// Reuse scratch buffers across Update calls — concatenatedState consumes
+	// these slices within the same call (kPages/vPages flow into Concatenate,
+	// owned is Free'd via defer), so reuse is safe.  Saves 3 allocs per Update.
+	if cap(c.visibleKScratch) < n {
+		c.visibleKScratch = make([]*Array, n)
+	} else {
+		c.visibleKScratch = c.visibleKScratch[:n]
+	}
+	if cap(c.visibleVScratch) < n {
+		c.visibleVScratch = make([]*Array, n)
+	} else {
+		c.visibleVScratch = c.visibleVScratch[:n]
+	}
+	if cap(c.visibleOwnedScratch) < 2*n {
+		c.visibleOwnedScratch = make([]*Array, 0, 2*n)
+	} else {
+		c.visibleOwnedScratch = c.visibleOwnedScratch[:0]
+	}
+	kPages = c.visibleKScratch
+	vPages = c.visibleVScratch
+	owned = c.visibleOwnedScratch
 	for i := range c.kPages {
 		kPages[i] = c.visiblePage(c.kPages[i], i)
 		vPages[i] = c.visiblePage(c.vPages[i], i)
 		owned = append(owned, kPages[i], vPages[i])
 	}
+	c.visibleOwnedScratch = owned
 	return kPages, vPages, owned
 }
 
