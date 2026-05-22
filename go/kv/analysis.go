@@ -285,10 +285,13 @@ func kvAnalysisNumHeads(snapshot *Snapshot) int {
 }
 
 func kvSharedCacheLayerGroups(snapshot *Snapshot) map[int][]int {
-	groups := make(map[int][]int)
 	if snapshot == nil {
-		return groups
+		return map[int][]int{}
 	}
+	// Pre-size the hint map against layer count — Analyze callers
+	// always have len(Layers) layers to bucket, so the runtime can
+	// skip its rehash cycle on the bucket map.
+	groups := make(map[int][]int, len(snapshot.Layers))
 	for _, layer := range snapshot.Layers {
 		groups[layer.CacheIndex] = append(groups[layer.CacheIndex], layer.Layer)
 	}
