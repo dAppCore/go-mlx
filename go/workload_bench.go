@@ -168,6 +168,16 @@ func DefaultWorkloadBenchConfig() WorkloadBenchConfig {
 	return WorkloadBenchConfig{FastEval: bench.DefaultConfig()}
 }
 
+// Sentinel errors hoisted from per-call core.NewError sites — the
+// "mlx: model is nil" message recurred at four entry points and each
+// call allocated a fresh *Err. Sharing one instance keeps the message
+// stable for callers comparing via errors.Is and removes the cold-path
+// allocation entirely.
+var (
+	errWorkloadModelNil   = core.NewError("mlx: model is nil")
+	errWorkloadAdapterNil = core.NewError("mlx: workload adapter has no native handle")
+)
+
 // NewModelWorkloadBenchRunner adapts a loaded Model to the workload benchmark.
 func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 	return WorkloadBenchRunner{
@@ -178,7 +188,7 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 				return WorkloadAdapterInfo{}, err
 			}
 			if model == nil {
-				return WorkloadAdapterInfo{}, core.NewError("mlx: model is nil")
+				return WorkloadAdapterInfo{}, errWorkloadModelNil
 			}
 			adapter, err := model.LoadLoRA(path)
 			if err != nil {
@@ -191,10 +201,10 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 				return err
 			}
 			if model == nil {
-				return core.NewError("mlx: model is nil")
+				return errWorkloadModelNil
 			}
 			if info.adapter == nil {
-				return core.NewError("mlx: workload adapter has no native handle")
+				return errWorkloadAdapterNil
 			}
 			model.MergeLoRA(info.adapter)
 			return nil
@@ -205,7 +215,7 @@ func NewModelWorkloadBenchRunner(model *Model) WorkloadBenchRunner {
 // RunModelWorkloadBench runs the workload benchmark against a loaded Model.
 func RunModelWorkloadBench(ctx context.Context, model *Model, cfg WorkloadBenchConfig) (*WorkloadBenchReport, error) {
 	if model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errWorkloadModelNil
 	}
 	return RunWorkloadBench(ctx, NewModelWorkloadBenchRunner(model), cfg)
 }
