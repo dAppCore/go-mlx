@@ -646,50 +646,84 @@ func (model *mlxlmmodel) kill() {
 	}
 }
 
-const maxJSONLineBytes = 1024 * 1024
+const (
+	maxJSONLineBytes      = 1024 * 1024
+	jsonReaderInitialSize = 32 * 1024
+)
 
 type jsonlinereader struct {
 	reader  io.Reader
-	pending []byte
-	scratch []byte
+	buf     []byte // ring-style: live data lives at [readPos:writePos]
+	readPos int
+	writePos int
 }
 
 func newJSONLineReader(reader io.Reader) *jsonlinereader {
 	return &jsonlinereader{
-		reader:  reader,
-		pending: make([]byte, 0, 32*1024),
-		scratch: make([]byte, 32*1024),
+		reader: reader,
+		buf:    make([]byte, jsonReaderInitialSize),
 	}
 }
 
 func (reader *jsonlinereader) ReadLine() ([]byte, error) {
 	for {
-		if index := bytes.IndexByte(reader.pending, '\n'); index >= 0 {
-			line := core.SliceClone(reader.pending[:index])
-			if len(line) > 0 && line[len(line)-1] == '\r' {
-				line = line[:len(line)-1]
+		if reader.writePos > reader.readPos {
+			pending := reader.buf[reader.readPos:reader.writePos]
+			if index := bytes.IndexByte(pending, '\n'); index >= 0 {
+				line := core.SliceClone(pending[:index])
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
+				reader.readPos += index + 1
+				if reader.readPos == reader.writePos {
+					reader.readPos, reader.writePos = 0, 0
+				}
+				return line, nil
 			}
-			reader.pending = reader.pending[index+1:]
-			return line, nil
 		}
 
-		if len(reader.pending) >= maxJSONLineBytes {
+		pendingLen := reader.writePos - reader.readPos
+		if pendingLen >= maxJSONLineBytes {
 			return nil, core.E("mlxlm.recv", "JSONL line exceeds 1 MiB", nil)
 		}
 
-		chunk := reader.scratch
-		if remaining := maxJSONLineBytes - len(reader.pending); remaining < len(chunk) {
-			chunk = chunk[:remaining]
+		// Compact: shift live bytes to head when the tail is full but
+		// the head has been consumed. Avoids the per-Read append-copy
+		// the previous design paid by routing reads through a separate
+		// scratch buffer.
+		if reader.writePos == len(reader.buf) {
+			if reader.readPos > 0 {
+				copy(reader.buf, reader.buf[reader.readPos:reader.writePos])
+				reader.writePos = pendingLen
+				reader.readPos = 0
+			} else {
+				// Tail full, nothing to compact — grow toward the cap.
+				target := len(reader.buf) * 2
+				if target > maxJSONLineBytes {
+					target = maxJSONLineBytes
+				}
+				if target == len(reader.buf) {
+					return nil, core.E("mlxlm.recv", "JSONL line exceeds 1 MiB", nil)
+				}
+				grown := make([]byte, target)
+				copy(grown, reader.buf[:reader.writePos])
+				reader.buf = grown
+			}
 		}
-		n, err := reader.reader.Read(chunk)
+
+		writable := reader.buf[reader.writePos:]
+		if remaining := maxJSONLineBytes - pendingLen; remaining < len(writable) {
+			writable = writable[:remaining]
+		}
+		n, err := reader.reader.Read(writable)
 		if n > 0 {
-			reader.pending = append(reader.pending, chunk[:n]...)
+			reader.writePos += n
 			continue
 		}
 		if err != nil {
-			if err == io.EOF && len(reader.pending) > 0 {
-				line := core.SliceClone(reader.pending)
-				reader.pending = reader.pending[:0]
+			if err == io.EOF && pendingLen > 0 {
+				line := core.SliceClone(reader.buf[reader.readPos:reader.writePos])
+				reader.readPos, reader.writePos = 0, 0
 				return line, nil
 			}
 			return nil, err
