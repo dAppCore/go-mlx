@@ -334,14 +334,20 @@ func (b *Bundle) stateRef() (state.ChunkRef, bool) {
 	if b == nil {
 		return state.ChunkRef{}, false
 	}
-	for _, ref := range b.Refs {
-		if ref.Kind == RefState && ref.State.ChunkID != 0 {
-			return ref.State, true
-		}
-		if ref.Kind == RefState && ref.Memvid.ChunkID != 0 {
-			return ref.Memvid, true
-		}
-		if ref.Kind == RefMemvid {
+	refs := b.Refs
+	for i := range refs {
+		ref := &refs[i]
+		switch ref.Kind {
+		case RefState:
+			// State refs prefer the typed State field; fall back to the
+			// older Memvid field for migrated bundles.
+			if ref.State.ChunkID != 0 {
+				return ref.State, true
+			}
+			if ref.Memvid.ChunkID != 0 {
+				return ref.Memvid, true
+			}
+		case RefMemvid:
 			return ref.Memvid, true
 		}
 	}
