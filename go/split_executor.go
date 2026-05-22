@@ -545,12 +545,17 @@ type splitPowerRecorder struct {
 	total       float64
 }
 
+// splitPowerExpectedSamples covers the standard recorder phases:
+// start, prefill, first_token, complete.
+const splitPowerExpectedSamples = 4
+
 func newSplitPowerRecorder(ctx context.Context, meter SplitPowerMeter) *splitPowerRecorder {
 	recorder := &splitPowerRecorder{meter: meter}
 	if meter == nil {
 		recorder.powerReport.Source = "not_configured"
 		return recorder
 	}
+	recorder.powerReport.Samples = make([]SplitPowerSample, 0, splitPowerExpectedSamples)
 	recorder.sample(ctx, "start")
 	return recorder
 }
