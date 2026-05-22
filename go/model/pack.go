@@ -350,7 +350,7 @@ func readJinjaChatTemplate(path string) (string, bool, error) {
 		}
 		return "", false, read.Value.(error)
 	}
-	template := core.Trim(string(read.Value.([]byte)))
+	template := core.Trim(core.AsString(read.Value.([]byte)))
 	return template, template != "", nil
 }
 
