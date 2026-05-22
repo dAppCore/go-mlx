@@ -8,13 +8,19 @@ import (
 	"dappco.re/go/mlx/adapter"
 )
 
+// metalBackendOption is the constant LoadOption used by NewMLXBackend
+// to force the Metal backend. Hoisting it once at package init
+// avoids the closure allocation that inference.WithBackend("metal")
+// would do on every NewMLXBackend call.
+var metalBackendOption = inference.WithBackend("metal")
+
 // NewMLXBackend loads the Metal backend and wraps it in an adapter.Adapter.
 //
 //	a, err := mlx.NewMLXBackend(modelPath, inference.WithContextLen(4096))
 func NewMLXBackend(modelPath string, loadOpts ...inference.LoadOption) (*adapter.Adapter, error) {
 	opts := make([]inference.LoadOption, len(loadOpts), len(loadOpts)+1)
 	copy(opts, loadOpts)
-	opts = append(opts, inference.WithBackend("metal"))
+	opts = append(opts, metalBackendOption)
 	r := inference.LoadModel(modelPath, opts...)
 	if !r.OK {
 		if err, ok := r.Value.(error); ok {

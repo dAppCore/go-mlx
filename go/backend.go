@@ -98,6 +98,54 @@ var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel,
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
+// Package-level sentinel for the "model is nil" guard that fires from
+// every public Model method when the caller passes a zero-value or
+// already-Close()d *Model. Sharing one *Err avoids an allocation per
+// call on what is almost always a hot path during test fixtures and
+// during defensive checks in adapter / sidecar code.
+var (
+	errMLXModelNil               = core.NewError("mlx: model is nil")
+	errMLXKVPromptRestoreUnsupp  = core.NewError("mlx: native model does not support KV prompt cache restore")
+	errMLXKVCaptureUnsupp        = core.NewError("mlx: native model does not support KV capture")
+	errMLXPromptCacheWarmUnsupp  = core.NewError("mlx: native model does not support prompt cache warming")
+	errMLXPromptCacheClearUnsupp = core.NewError("mlx: native model does not support prompt cache clearing")
+	errMLXLoRALoadUnsupp         = core.NewError("mlx: native model does not support LoRA loading")
+	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
+)
+
+// closedTokenChan is the shared "no tokens, generation skipped" channel
+// returned by every Stream entry when the receiver model is nil. Sharing
+// one closed channel avoids both the per-call make(chan Token) and the
+// goroutine launch that would otherwise just defer-close.
+var closedTokenChan = func() chan Token {
+	c := make(chan Token)
+	close(c)
+	return c
+}()
+
+// parserHintFromModel builds the parser.Hint without going through the
+// full m.Info() fan-out. The Hint only needs Architecture + Adapter name,
+// so we read the underlying native info once and skip the ModelInfo
+// composition + second m.Adapter() / m.model.Info() round-trip done by
+// m.Info() on every Generate / Chat / *Stream entry. See callers under
+// Generate, Chat, GenerateChunks, GenerateStream, GenerateChunksStream,
+// ChatChunksStream, ChatStream.
+func parserHintFromModel(m *Model) parser.Hint {
+	info := m.model.Info()
+	architecture := info.Architecture
+	if architecture == "" && m.gguf != nil {
+		architecture = m.gguf.Architecture
+	}
+	adapterName := m.adapterInfo.Name
+	if adapterName == "" {
+		adapterName = info.Adapter.Name
+	}
+	return parser.Hint{
+		Architecture: architecture,
+		AdapterName:  adapterName,
+	}
+}
+
 var readGGUFInfo = gguf.ReadInfo
 
 func appendCleanup(cleanup *func() error, next func() error) {
@@ -114,6 +162,16 @@ func appendCleanup(cleanup *func() error, next func() error) {
 	}
 }
 
+// runCleanup invokes the optional cleanup closure, returning nil if cleanup
+// itself is nil. Lets LoadModel keep a nil cleanup on the common no-Medium
+// path without a no-op closure allocation.
+func runCleanup(cleanup func() error) error {
+	if cleanup == nil {
+		return nil
+	}
+	return cleanup()
+}
+
 // LoadModel loads a model directly through go-mlx without going through go-inference.
 func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
@@ -124,7 +182,10 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	resolvedPath := modelPath
 	resolvedAdapterPath := cfg.AdapterPath
 	var adapterInfo lora.AdapterInfo
-	cleanup := func() error { return nil }
+	// cleanup stays nil on the common no-Medium path. runCleanup +
+	// Close already short on nil, sparing a no-op closure allocation
+	// per LoadModel call.
+	var cleanup func() error
 	if cfg.Medium != nil {
 		resolvedPath, cleanup, err = stageModelFromMedium(cfg.Medium, modelPath)
 		if err != nil {
@@ -134,7 +195,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 			var adapterCleanup func() error
 			resolvedAdapterPath, adapterCleanup, err = stagePathFromMedium(cfg.Medium, cfg.AdapterPath)
 			if err != nil {
-				if cleanupErr := cleanup(); cleanupErr != nil {
+				if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 					return nil, core.ErrorJoin(err, cleanupErr)
 				}
 				return nil, err
@@ -143,13 +204,13 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		}
 	}
 	if slice, ok, sliceErr := inspectModelSliceIfPresent(resolvedPath); sliceErr != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(sliceErr, cleanupErr)
 		}
 		return nil, sliceErr
 	} else if ok && slice.RequiresSplitPlacement {
 		err := core.NewError("mlx: model slice requires split placement; use LoadSplitExecutor or lthn-mlx slice-smoke -split")
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(err, cleanupErr)
 		}
 		return nil, err
@@ -158,7 +219,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 	if resolvedAdapterPath != "" {
 		adapterInfo, err = lora.Inspect(resolvedAdapterPath, cfg.AdapterPath)
 		if err != nil {
-			if cleanupErr := cleanup(); cleanupErr != nil {
+			if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 				return nil, core.ErrorJoin(err, cleanupErr)
 			}
 			return nil, err
@@ -183,7 +244,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		WiredLimitBytes:      cfg.WiredLimitBytes,
 	})
 	if err != nil {
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			return nil, core.ErrorJoin(err, cleanupErr)
 		}
 		return nil, err
@@ -206,7 +267,7 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 		if closeErr := native.Close(); closeErr != nil {
 			quantErr = core.ErrorJoin(quantErr, closeErr)
 		}
-		if cleanupErr := cleanup(); cleanupErr != nil {
+		if cleanupErr := runCleanup(cleanup); cleanupErr != nil {
 			quantErr = core.ErrorJoin(quantErr, cleanupErr)
 		}
 		return nil, quantErr
@@ -411,7 +472,34 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 		return nil
 	}
 	out := make([]TokenPhaseTrace, len(phases))
+	// Single arena allocation for the per-phase NativeEvents slices.
+	// TraceTokenPhases-enabled metrics emit one TokenPhaseTrace per
+	// decoded token, each with a NativeEvents fanout — collapsing the
+	// per-phase make into one slab avoids len(phases) small allocs on
+	// every Metrics() read with phase tracing enabled.
+	totalNative := 0
+	for i := range phases {
+		totalNative += len(phases[i].NativeEvents)
+	}
+	var nativeSlab []NativePhaseTrace
+	nativeOffset := 0
+	if totalNative > 0 {
+		nativeSlab = make([]NativePhaseTrace, totalNative)
+	}
 	for i, phase := range phases {
+		var phaseNative []NativePhaseTrace
+		if n := len(phase.NativeEvents); n > 0 {
+			end := nativeOffset + n
+			phaseNative = nativeSlab[nativeOffset:end:end]
+			for j, event := range phase.NativeEvents {
+				phaseNative[j] = NativePhaseTrace{
+					Name:     event.Name,
+					Duration: event.Duration,
+					Error:    event.Error,
+				}
+			}
+			nativeOffset = end
+		}
 		out[i] = TokenPhaseTrace{
 			Step:                phase.Step,
 			FinalToken:          phase.FinalToken,
@@ -429,7 +517,7 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 			DetachDuration:      phase.DetachDuration,
 			CacheProbeDuration:  phase.CacheProbeDuration,
 			OtherDuration:       phase.OtherDuration,
-			NativeEvents:        toRootNativePhaseTraces(phase.NativeEvents),
+			NativeEvents:        phaseNative,
 		}
 	}
 	return out
@@ -471,10 +559,37 @@ func toRootClassifyResults(results []metal.ClassifyResult) []ClassifyResult {
 		return nil
 	}
 	out := make([]ClassifyResult, len(results))
+	// Single arena allocation for all per-result Logits slices. Classify
+	// is called over multiple prompts at once and each result has a
+	// vocab-sized logits vector — collapsing the per-result clone into
+	// one slab cuts N allocs to 1 on the return path. Per-result nil vs
+	// non-nil empty is preserved (matches the prior core.SliceClone
+	// nil-in / empty-in semantics).
+	totalLogits := 0
+	for i := range results {
+		totalLogits += len(results[i].Logits)
+	}
+	var logitsSlab []float32
+	logitsOffset := 0
+	if totalLogits > 0 {
+		logitsSlab = make([]float32, totalLogits)
+	}
 	for i, result := range results {
+		var resultLogits []float32
+		switch {
+		case result.Logits == nil:
+			// nil in -> nil out (matches slices.Clone(nil)).
+		case len(result.Logits) == 0:
+			resultLogits = []float32{}
+		default:
+			end := logitsOffset + len(result.Logits)
+			resultLogits = logitsSlab[logitsOffset:end:end]
+			copy(resultLogits, result.Logits)
+			logitsOffset = end
+		}
 		out[i] = ClassifyResult{
 			Token:  toRootToken(result.Token),
-			Logits: core.SliceClone(result.Logits),
+			Logits: resultLogits,
 		}
 	}
 	return out
@@ -485,15 +600,25 @@ func toRootBatchResults(results []metal.BatchResult) []BatchResult {
 		return nil
 	}
 	out := make([]BatchResult, len(results))
+	// Single arena allocation for all per-result Tokens slices. Avoids
+	// len(results) small allocations on BatchGenerate's return path.
+	totalTokens := 0
+	for i := range results {
+		totalTokens += len(results[i].Tokens)
+	}
+	tokensSlab := make([]Token, totalTokens)
+	tokensOffset := 0
 	for i, result := range results {
-		tokens := make([]Token, len(result.Tokens))
+		tokensEnd := tokensOffset + len(result.Tokens)
+		resultTokens := tokensSlab[tokensOffset:tokensEnd:tokensEnd]
 		for j, token := range result.Tokens {
-			tokens[j] = toRootToken(token)
+			resultTokens[j] = toRootToken(token)
 		}
 		out[i] = BatchResult{
-			Tokens: tokens,
+			Tokens: resultTokens,
 			Err:    result.Err,
 		}
+		tokensOffset = tokensEnd
 	}
 	return out
 }
@@ -519,7 +644,17 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		return nil
 	}
 	layers := make([]kv.LayerSnapshot, len(result.Layers))
+	// Single arena allocation for all per-layer Heads slices. Avoids N
+	// small allocations on a path that runs per KV capture / restore.
+	totalHeads := 0
+	for i := range result.Layers {
+		totalHeads += len(result.Layers[i].Heads)
+	}
+	headsSlab := make([]kv.HeadSnapshot, totalHeads)
+	headsOffset := 0
 	for i, layer := range result.Layers {
+		headsEnd := headsOffset + len(layer.Heads)
+		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = kv.LayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
@@ -529,10 +664,10 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 			ValueDType: rootKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
 			ValueShape: core.SliceClone(layer.ValueShape),
-			Heads:      make([]kv.HeadSnapshot, len(layer.Heads)),
+			Heads:      layerHeads,
 		}
 		for j, head := range layer.Heads {
-			layers[i].Heads[j] = kv.HeadSnapshot{
+			layerHeads[j] = kv.HeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   rootKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   core.SliceClone(head.KeyBytes),
@@ -541,6 +676,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 				ValueBytes: core.SliceClone(head.ValueBytes),
 			}
 		}
+		headsOffset = headsEnd
 	}
 	return &kv.Snapshot{
 		Version:       result.Version,
@@ -564,7 +700,17 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		return nil
 	}
 	layers := make([]metal.KVLayerSnapshot, len(result.Layers))
+	// Single arena allocation for all per-layer Heads slices. Mirror of
+	// toRootKVSnapshot — same N -> 1 collapse on the inverse path.
+	totalHeads := 0
+	for i := range result.Layers {
+		totalHeads += len(result.Layers[i].Heads)
+	}
+	headsSlab := make([]metal.KVHeadSnapshot, totalHeads)
+	headsOffset := 0
 	for i, layer := range result.Layers {
+		headsEnd := headsOffset + len(layer.Heads)
+		layerHeads := headsSlab[headsOffset:headsEnd:headsEnd]
 		layers[i] = metal.KVLayerSnapshot{
 			Layer:      layer.Layer,
 			CacheIndex: layer.CacheIndex,
@@ -574,10 +720,10 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			ValueDType: metalKVHeadDType(layer.ValueDType, layer.ValueBytes),
 			ValueBytes: layer.ValueBytes,
 			ValueShape: core.SliceClone(layer.ValueShape),
-			Heads:      make([]metal.KVHeadSnapshot, len(layer.Heads)),
+			Heads:      layerHeads,
 		}
 		for j, head := range layer.Heads {
-			layers[i].Heads[j] = metal.KVHeadSnapshot{
+			layerHeads[j] = metal.KVHeadSnapshot{
 				Key:        core.SliceClone(head.Key),
 				KeyDType:   metalKVHeadDType(head.KeyDType, head.KeyBytes),
 				KeyBytes:   head.KeyBytes,
@@ -586,6 +732,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 				ValueBytes: head.ValueBytes,
 			}
 		}
+		headsOffset = headsEnd
 	}
 	return &metal.KVSnapshot{
 		Version:       result.Version,
@@ -612,9 +759,16 @@ func rootKVHeadDType(dtype metal.DType, raw []byte) string {
 	if len(raw) == 0 {
 		return ""
 	}
+	// Inline the three KV-supported dtype names to avoid the dtype.String()
+	// map lookup. Called per-head inside the KV snapshot clone hot path —
+	// thousands of invocations per snapshot.
 	switch dtype {
-	case metal.DTypeFloat32, metal.DTypeFloat16, metal.DTypeBFloat16:
-		return dtype.String()
+	case metal.DTypeFloat32:
+		return "float32"
+	case metal.DTypeFloat16:
+		return "float16"
+	case metal.DTypeBFloat16:
+		return "bfloat16"
 	default:
 		return ""
 	}
@@ -639,10 +793,10 @@ func metalKVHeadDType(dtype string, raw []byte) metal.DType {
 // Generate produces a buffered string result.
 func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 	builder := core.NewBuilder()
 	for tok := range m.model.Generate(context.Background(), prompt, toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(tok.Text))
@@ -657,10 +811,10 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 // Chat produces a buffered string result using the model's native chat template.
 func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
-	filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 	metalMessages := make([]metal.ChatMessage, len(messages))
 	for i, msg := range messages {
 		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -684,11 +838,11 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	if generator, ok := m.model.(nativeChunkGenerator); ok {
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		builder := core.NewBuilder()
 		for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 			builder.WriteString(filter.Process(tok.Text))
@@ -705,11 +859,11 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 // WarmPromptCache prefills the exact token-prefix cache for a stable prompt prefix.
 func (m *Model) WarmPromptCache(prompt string) error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	warmer, ok := m.model.(nativePromptCacheWarmer)
 	if !ok {
-		return core.NewError("mlx: native model does not support prompt cache warming")
+		return errMLXPromptCacheWarmUnsupp
 	}
 	return warmer.WarmPromptCache(context.Background(), prompt)
 }
@@ -721,7 +875,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if warmer, ok := m.model.(nativePromptCacheChunkWarmer); ok {
 		return warmer.WarmPromptCacheChunks(ctx, chunks)
@@ -734,11 +888,11 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 // turns while keeping the same loaded weights.
 func (m *Model) ClearPromptCache() error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	clearer, ok := m.model.(nativePromptCacheClearer)
 	if !ok {
-		return core.NewError("mlx: native model does not support prompt cache clearing")
+		return errMLXPromptCacheClearUnsupp
 	}
 	clearer.ClearPromptCache()
 	return nil
@@ -747,11 +901,11 @@ func (m *Model) ClearPromptCache() error {
 // WarmPromptCacheFromKV installs a captured K/V prefix directly as the model prompt cache.
 func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	restorer, ok := m.model.(nativePromptCacheKVRestorer)
 	if !ok {
-		return core.NewError("mlx: native model does not support KV prompt cache restore")
+		return errMLXKVPromptRestoreUnsupp
 	}
 	return restorer.RestorePromptCacheFromKV(context.Background(), toMetalKVSnapshot(snapshot))
 }
@@ -763,7 +917,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if restorer, ok := m.model.(nativePromptCacheKVBlockRestorer); ok {
 		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
@@ -778,7 +932,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 	}
 	restorer, ok := m.model.(nativePromptCacheKVRestorer)
 	if !ok {
-		return core.NewError("mlx: native model does not support KV prompt cache restore")
+		return errMLXKVPromptRestoreUnsupp
 	}
 	return restorer.RestorePromptCacheFromKV(ctx, toMetalKVSnapshot(snapshot))
 }
@@ -825,6 +979,13 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		PrefixTokens: prefixTokens,
 		BlockCount:   len(refs),
 	}
+	// Hoist invariants out of the per-block closure. KVEncoding is bundle-
+	// scoped — checking it once at construction lets each Load call use
+	// the captured loadOpts directly without re-branching on every block.
+	loadOpts := kv.LoadOptions{}
+	if bundle.KVEncoding == kv.EncodingNative {
+		loadOpts.RawKVOnly = true
+	}
 	source.Load = func(loadCtx context.Context, index int) (metal.KVSnapshotBlock, error) {
 		if loadCtx == nil {
 			loadCtx = ctx
@@ -833,10 +994,6 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block index is out of range")
 		}
 		ref := refs[index]
-		loadOpts := kv.LoadOptions{}
-		if bundle.KVEncoding == kv.EncodingNative {
-			loadOpts.RawKVOnly = true
-		}
 		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
 		if err != nil {
 			return metal.KVSnapshotBlock{}, err
@@ -879,17 +1036,17 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 
 // GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.
 func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		for tok := range m.model.Generate(ctx, prompt, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)
 			if text == "" {
@@ -915,17 +1072,17 @@ func (m *Model) GenerateStream(ctx context.Context, prompt string, opts ...Gener
 // GenerateChunksStream streams tokens from bounded prompt chunks without
 // building or tokenizing one giant prompt string.
 func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string], opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		if generator, ok := m.model.(nativeChunkGenerator); ok {
 			for tok := range generator.GenerateChunks(ctx, chunks, toMetalGenerateConfig(cfg)) {
 				text := filter.Process(tok.Text)
@@ -965,17 +1122,17 @@ func (m *Model) GenerateChunksStream(ctx context.Context, chunks iter.Seq[string
 // ChatChunksStream streams chat tokens through the native template while
 // feeding long message content as bounded prompt chunks.
 func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Message, chunkBytes int, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -1018,17 +1175,17 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 
 // ChatStream streams chat tokens through a channel until generation completes or ctx is cancelled.
 func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, opts ...GenerateOption) <-chan Token {
+	if m == nil || m.model == nil {
+		return closedTokenChan
+	}
 	out := make(chan Token)
 	go func() {
 		defer close(out)
-		if m == nil || m.model == nil {
-			return
-		}
 		if ctx == nil {
 			ctx = context.Background()
 		}
 		cfg := applyGenerateOptions(opts)
-		filter := parser.NewProcessor(cfg.Thinking, parserHint(m.Info()))
+		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
 		metalMessages := make([]metal.ChatMessage, len(messages))
 		for i, msg := range messages {
 			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
@@ -1058,7 +1215,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 // Classify runs batched prefill-only inference over multiple prompts.
 func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyResult, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
 	results, err := m.model.Classify(context.Background(), prompts, toMetalGenerateConfig(cfg), cfg.ReturnLogits)
@@ -1071,7 +1228,7 @@ func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyRe
 // BatchGenerate runs autoregressive generation for multiple prompts at once.
 func (m *Model) BatchGenerate(prompts []string, opts ...GenerateOption) ([]BatchResult, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	results, err := m.model.BatchGenerate(context.Background(), prompts, toMetalGenerateConfig(applyGenerateOptions(opts)))
 	if err != nil {
@@ -1171,8 +1328,20 @@ func (m *Model) Info() ModelInfo {
 		MemoryLimitBytes:     m.cfg.MemoryLimitBytes,
 		CacheLimitBytes:      m.cfg.CacheLimitBytes,
 		WiredLimitBytes:      m.cfg.WiredLimitBytes,
-		Adapter:              m.Adapter(),
+		// Reuse the info we already pulled from the native model — calling
+		// m.Adapter() here would re-enter m.model.Info() when adapterInfo
+		// is empty, doubling the native-side fetch.
+		Adapter: m.adapterFromNativeInfo(info),
 	}
+}
+
+// adapterFromNativeInfo mirrors m.Adapter() but reuses an already-loaded
+// metal.ModelInfo, sparing the second m.model.Info() round-trip.
+func (m *Model) adapterFromNativeInfo(info metal.ModelInfo) lora.AdapterInfo {
+	if !m.adapterInfo.IsEmpty() {
+		return m.adapterInfo
+	}
+	return toRootAdapterInfo(info.Adapter)
 }
 
 // Adapter returns the active LoRA inference adapter identity.
@@ -1193,7 +1362,7 @@ func (m *Model) Adapter() lora.AdapterInfo {
 // InspectAttention runs a single prefill pass and returns extracted K tensors.
 func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	result, err := m.model.InspectAttention(context.Background(), prompt)
 	if err != nil {
@@ -1211,7 +1380,7 @@ func (m *Model) CaptureKV(prompt string) (*kv.Snapshot, error) {
 // cache tensors with explicit capture options.
 func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVSnapshotterWithOptions); ok {
 		result, err := snapshotter.CaptureKVWithOptions(context.Background(), prompt, toMetalKVSnapshotCaptureOptions(opts))
@@ -1226,7 +1395,7 @@ func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv
 	}
 	snapshotter, ok := m.model.(nativeKVSnapshotter)
 	if !ok {
-		return nil, core.NewError("mlx: native model does not support KV capture")
+		return nil, errMLXKVCaptureUnsupp
 	}
 	result, err := snapshotter.CaptureKV(context.Background(), prompt)
 	if err != nil {
@@ -1252,7 +1421,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVChunkSnapshotterWithOptions); ok {
 		result, err := snapshotter.CaptureKVChunksWithOptions(ctx, chunks, toMetalKVSnapshotCaptureOptions(opts))
@@ -1280,10 +1449,10 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 }
 
 func promptChunksToString(chunks iter.Seq[string]) string {
-	builder := core.NewBuilder()
 	if chunks == nil {
 		return ""
 	}
+	builder := core.NewBuilder()
 	for chunk := range chunks {
 		builder.WriteString(chunk)
 	}
@@ -1334,7 +1503,7 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 // LoadLoRA loads a saved adapter package into a loaded model and returns it.
 func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	info, err := lora.InspectAdapter(path)
 	if err != nil {
@@ -1342,7 +1511,7 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	}
 	loader, ok := m.model.(nativeLoRALoader)
 	if !ok {
-		return nil, core.NewError("mlx: native model does not support LoRA loading")
+		return nil, errMLXLoRALoadUnsupp
 	}
 	adapter, err := loader.LoadLoRA(path)
 	if err != nil {
@@ -1356,14 +1525,14 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 // UnloadLoRA removes the active inference adapter when the backend supports it.
 func (m *Model) UnloadLoRA() error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if m.adapterInfo.IsEmpty() {
 		return nil
 	}
 	unloader, ok := m.model.(nativeLoRAUnloader)
 	if !ok {
-		return core.NewError("mlx: native model does not support LoRA unloading")
+		return errMLXLoRAUnloadUnsupp
 	}
 	if err := unloader.UnloadLoRA(); err != nil {
 		return err
