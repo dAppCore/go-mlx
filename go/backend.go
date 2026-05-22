@@ -98,6 +98,13 @@ var loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel,
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
+// Package-level sentinel for the "model is nil" guard that fires from
+// every public Model method when the caller passes a zero-value or
+// already-Close()d *Model. Sharing one *Err avoids an allocation per
+// call on what is almost always a hot path during test fixtures and
+// during defensive checks in adapter / sidecar code.
+var errMLXModelNil = core.NewError("mlx: model is nil")
+
 // parserHintFromModel builds the parser.Hint without going through the
 // full m.Info() fan-out. The Hint only needs Architecture + Adapter name,
 // so we read the underlying native info once and skip the ModelInfo
@@ -701,7 +708,7 @@ func metalKVHeadDType(dtype string, raw []byte) metal.DType {
 // Generate produces a buffered string result.
 func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
@@ -719,7 +726,7 @@ func (m *Model) Generate(prompt string, opts ...GenerateOption) (string, error) 
 // Chat produces a buffered string result using the model's native chat template.
 func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (string, error) {
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
@@ -746,7 +753,7 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return "", core.NewError("mlx: model is nil")
+		return "", errMLXModelNil
 	}
 	if generator, ok := m.model.(nativeChunkGenerator); ok {
 		cfg := applyGenerateOptions(opts)
@@ -767,7 +774,7 @@ func (m *Model) GenerateChunks(ctx context.Context, chunks iter.Seq[string], opt
 // WarmPromptCache prefills the exact token-prefix cache for a stable prompt prefix.
 func (m *Model) WarmPromptCache(prompt string) error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	warmer, ok := m.model.(nativePromptCacheWarmer)
 	if !ok {
@@ -783,7 +790,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if warmer, ok := m.model.(nativePromptCacheChunkWarmer); ok {
 		return warmer.WarmPromptCacheChunks(ctx, chunks)
@@ -796,7 +803,7 @@ func (m *Model) WarmPromptCacheChunks(ctx context.Context, chunks iter.Seq[strin
 // turns while keeping the same loaded weights.
 func (m *Model) ClearPromptCache() error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	clearer, ok := m.model.(nativePromptCacheClearer)
 	if !ok {
@@ -809,7 +816,7 @@ func (m *Model) ClearPromptCache() error {
 // WarmPromptCacheFromKV installs a captured K/V prefix directly as the model prompt cache.
 func (m *Model) WarmPromptCacheFromKV(snapshot *kv.Snapshot) error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	restorer, ok := m.model.(nativePromptCacheKVRestorer)
 	if !ok {
@@ -825,7 +832,7 @@ func (m *Model) WarmPromptCacheFromStateBlocks(ctx context.Context, store state.
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if restorer, ok := m.model.(nativePromptCacheKVBlockRestorer); ok {
 		source, err := metalKVSnapshotBlockSource(ctx, store, bundle, prefixTokens)
@@ -1123,7 +1130,7 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 // Classify runs batched prefill-only inference over multiple prompts.
 func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyResult, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	cfg := applyGenerateOptions(opts)
 	results, err := m.model.Classify(context.Background(), prompts, toMetalGenerateConfig(cfg), cfg.ReturnLogits)
@@ -1136,7 +1143,7 @@ func (m *Model) Classify(prompts []string, opts ...GenerateOption) ([]ClassifyRe
 // BatchGenerate runs autoregressive generation for multiple prompts at once.
 func (m *Model) BatchGenerate(prompts []string, opts ...GenerateOption) ([]BatchResult, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	results, err := m.model.BatchGenerate(context.Background(), prompts, toMetalGenerateConfig(applyGenerateOptions(opts)))
 	if err != nil {
@@ -1270,7 +1277,7 @@ func (m *Model) Adapter() lora.AdapterInfo {
 // InspectAttention runs a single prefill pass and returns extracted K tensors.
 func (m *Model) InspectAttention(prompt string) (*AttentionSnapshot, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	result, err := m.model.InspectAttention(context.Background(), prompt)
 	if err != nil {
@@ -1288,7 +1295,7 @@ func (m *Model) CaptureKV(prompt string) (*kv.Snapshot, error) {
 // cache tensors with explicit capture options.
 func (m *Model) CaptureKVWithOptions(prompt string, opts kv.CaptureOptions) (*kv.Snapshot, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVSnapshotterWithOptions); ok {
 		result, err := snapshotter.CaptureKVWithOptions(context.Background(), prompt, toMetalKVSnapshotCaptureOptions(opts))
@@ -1329,7 +1336,7 @@ func (m *Model) CaptureKVChunksWithOptions(ctx context.Context, chunks iter.Seq[
 		ctx = context.Background()
 	}
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	if snapshotter, ok := m.model.(nativeKVChunkSnapshotterWithOptions); ok {
 		result, err := snapshotter.CaptureKVChunksWithOptions(ctx, chunks, toMetalKVSnapshotCaptureOptions(opts))
@@ -1411,7 +1418,7 @@ func NewLoRA(model *Model, cfg *LoRAConfig) *LoRAAdapter {
 // LoadLoRA loads a saved adapter package into a loaded model and returns it.
 func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 	if m == nil || m.model == nil {
-		return nil, core.NewError("mlx: model is nil")
+		return nil, errMLXModelNil
 	}
 	info, err := lora.InspectAdapter(path)
 	if err != nil {
@@ -1433,7 +1440,7 @@ func (m *Model) LoadLoRA(path string) (*LoRAAdapter, error) {
 // UnloadLoRA removes the active inference adapter when the backend supports it.
 func (m *Model) UnloadLoRA() error {
 	if m == nil || m.model == nil {
-		return core.NewError("mlx: model is nil")
+		return errMLXModelNil
 	}
 	if m.adapterInfo.IsEmpty() {
 		return nil
