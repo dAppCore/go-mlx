@@ -111,6 +111,18 @@ var (
 	errMLXPromptCacheClearUnsupp = core.NewError("mlx: native model does not support prompt cache clearing")
 	errMLXLoRALoadUnsupp         = core.NewError("mlx: native model does not support LoRA loading")
 	errMLXLoRAUnloadUnsupp       = core.NewError("mlx: native model does not support LoRA unloading")
+	// Per-block sentinels hit on the State KV block restore hot path —
+	// metalKVSnapshotBlockSource.Load fires once per covering block during
+	// every WarmPromptCacheFromStateBlocks call (large prefixes mean dozens
+	// of invocations), so hoisting these to package-level drops a per-block
+	// core.NewError alloc on every load.
+	errMLXStateKVStoreNil           = core.NewError("mlx: state store is nil")
+	errMLXStateKVPrefixExceeds      = core.NewError("mlx: State KV prefix exceeds bundle token count")
+	errMLXStateKVPrefixNoCovering   = core.NewError("mlx: State KV prefix has no covering blocks")
+	errMLXStateKVBlockOutOfRange    = core.NewError("mlx: State KV block index is out of range")
+	errMLXStateKVBlockMetaMismatch  = core.NewError("mlx: State KV block metadata mismatch")
+	errMLXStateKVBlockSnapshotNil   = core.NewError("mlx: State KV block snapshot is nil")
+	errMLXStateKVPrefixInvalidTrim  = core.NewError("mlx: State KV prefix has invalid trim range")
 )
 
 // closedTokenChan is the shared "no tokens, generation skipped" channel
@@ -950,7 +962,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		ctx = context.Background()
 	}
 	if store == nil {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: state store is nil")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVStoreNil
 	}
 	if err := kv.ValidateStateBlockBundle(bundle); err != nil {
 		return metal.KVSnapshotBlockSource{}, err
@@ -959,7 +971,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		prefixTokens = bundle.TokenCount
 	}
 	if prefixTokens > bundle.TokenCount {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix exceeds bundle token count")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixExceeds
 	}
 	refs := make([]kv.StateBlockRef, 0, len(bundle.Blocks))
 	for _, ref := range bundle.Blocks {
@@ -972,7 +984,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		}
 	}
 	if len(refs) == 0 {
-		return metal.KVSnapshotBlockSource{}, core.NewError("mlx: State KV prefix has no covering blocks")
+		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixNoCovering
 	}
 	source := metal.KVSnapshotBlockSource{
 		TokenCount:   bundle.TokenCount,
@@ -991,7 +1003,7 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			loadCtx = ctx
 		}
 		if index < 0 || index >= len(refs) {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block index is out of range")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockOutOfRange
 		}
 		ref := refs[index]
 		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
@@ -999,16 +1011,16 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 			return metal.KVSnapshotBlock{}, err
 		}
 		if block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block metadata mismatch")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockMetaMismatch
 		}
 		snapshot := block.Snapshot
 		if snapshot == nil {
-			return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV block snapshot is nil")
+			return metal.KVSnapshotBlock{}, errMLXStateKVBlockSnapshotNil
 		}
 		if block.TokenStart+block.TokenCount > prefixTokens {
 			trimTokens := prefixTokens - block.TokenStart
 			if trimTokens <= 0 {
-				return metal.KVSnapshotBlock{}, core.NewError("mlx: State KV prefix has invalid trim range")
+				return metal.KVSnapshotBlock{}, errMLXStateKVPrefixInvalidTrim
 			}
 			baseOffset := kv.EffectiveTokenOffset(snapshot) - kv.EffectiveSeqLen(snapshot)
 			if baseOffset < 0 {
