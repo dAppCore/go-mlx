@@ -14,7 +14,21 @@ import (
 //
 //	value := firstNonEmpty(primary, fallback)
 func firstNonEmpty(values ...string) string {
+	// Fast path: the leading byte is plain-ASCII non-whitespace. That
+	// covers the common shape — URLs, model IDs, architecture names,
+	// phase strings — where the caller fed us an already-tidy string.
+	// ASCII whitespace bytes are all < 0x21 (space=0x20, \t=0x09, \n=0x0A,
+	// \v=0x0B, \f=0x0C, \r=0x0D), so `c > ' '` excludes every one of
+	// them. The `c < 0x80` guard keeps us out of UTF-8 lead bytes — a
+	// leading 0xC2 0xA0 (NBSP) is Unicode whitespace and needs the
+	// full core.Trim path. Fall through to the unicode-correct branch
+	// only when the first byte is whitespace or non-ASCII.
 	for _, value := range values {
+		if len(value) > 0 {
+			if c := value[0]; c > ' ' && c < 0x80 {
+				return value
+			}
+		}
 		if core.Trim(value) != "" {
 			return value
 		}
