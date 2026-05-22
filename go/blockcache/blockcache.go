@@ -309,8 +309,8 @@ func (service *Service) statsLocked() inference.CacheStats {
 	if service.diskEnabled() {
 		stats.DiskBytes = service.diskBytesLocked()
 		stats.Labels["disk_path"] = service.cfg.DiskPath
-		stats.Labels["disk_blocks"] = core.Sprintf("%d", len(core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json"))))
-		stats.Labels["disk_corrupt"] = core.Sprintf("%d", service.diskCorrupt)
+		stats.Labels["disk_blocks"] = core.Itoa(len(core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json"))))
+		stats.Labels["disk_corrupt"] = core.FormatUint(service.diskCorrupt, 10)
 	}
 	if service.stateStoreEnabled() {
 		stats.Labels["cold_store"] = "state"
