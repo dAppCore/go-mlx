@@ -628,9 +628,7 @@ func appendKVBytes(dst, src []byte) []byte {
 }
 
 func appendKVU32(dst []byte, value uint32) []byte {
-	var buf [4]byte
-	binary.LittleEndian.PutUint32(buf[:], value)
-	return append(dst, buf[:]...)
+	return binary.LittleEndian.AppendUint32(dst, value)
 }
 
 func appendKVI32(dst []byte, value int32) []byte {
