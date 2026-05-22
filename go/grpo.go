@@ -6,6 +6,7 @@ import (
 	"context"
 	"dappco.re/go/mlx/dataset"
 	"math"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -202,6 +203,13 @@ func RunGRPOReasoningTraining(ctx context.Context, runner GRPORunner, ds dataset
 		Experimental: true,
 		Config:       cfg,
 	}
+	// Pre-size Updates when the caller capped the run length — every
+	// successful step appends exactly one update, so we know the upper
+	// bound and can dodge the standard append 1→2→4→8…N alloc cascade
+	// that would otherwise back-and-forth across Updates as steps land.
+	if cfg.MaxSamples > 0 && cfg.Epochs > 0 {
+		result.Updates = make([]GRPOUpdate, 0, cfg.MaxSamples*cfg.Epochs)
+	}
 	if runner.PolicyInfo != nil {
 		result.Policy = runner.PolicyInfo(ctx)
 	}
@@ -304,14 +312,22 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	if len(rewardFuncs) == 0 {
 		rewardFuncs = []GRPORewardFunc{GRPORewardContainsAnswer(1)}
 	}
-	for i := range rollouts {
+	// Hoist invariants out of the rollout loop — the KL branch flag and
+	// the cfg-side values never change across rollouts. The compiler
+	// can't prove that for an interface-method field (runner.Reference-
+	// LogProb), so it re-checks both per iteration unless we lift them.
+	computeKL := cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil
+	klCoef := cfg.KLCoefficient
+	advEps := cfg.AdvantageEpsilon
+	n := len(rollouts)
+	for i := 0; i < n; i++ {
 		parts, total, err := scoreGRPORollout(GRPORewardContext{Sample: request.Sample, Rollout: rollouts[i], Index: i}, rewardFuncs)
 		if err != nil {
 			return GRPOUpdate{}, err
 		}
 		rollouts[i].RewardParts = parts
 		rollouts[i].Reward = total
-		if cfg.KLCoefficient != 0 && runner.ReferenceLogProb != nil {
+		if computeKL {
 			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
 			if err != nil {
 				return GRPOUpdate{}, err
@@ -321,20 +337,29 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 		}
 	}
 	rewardMean, rewardStd := grpoRewardStats(rollouts)
+	// Reciprocal mul, single division, single std-vs-eps branch outside
+	// the inner loop — when rewardStd ≤ advEps every rollout's advantage
+	// is zero so the (reward-mean)/std arithmetic can be skipped entirely.
+	invStd := 0.0
+	useStd := rewardStd > advEps
+	if useStd {
+		invStd = 1.0 / rewardStd
+	}
 	var loss float64
 	var klSum float64
-	for i := range rollouts {
-		if rewardStd <= cfg.AdvantageEpsilon {
-			rollouts[i].Advantage = 0
+	for i := 0; i < n; i++ {
+		if useStd {
+			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) * invStd
 		} else {
-			rollouts[i].Advantage = (rollouts[i].Reward - rewardMean) / rewardStd
+			rollouts[i].Advantage = 0
 		}
-		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + cfg.KLCoefficient*rollouts[i].KL
+		rollouts[i].LossContribution = -rollouts[i].Advantage*rollouts[i].LogProb + klCoef*rollouts[i].KL
 		loss += rollouts[i].LossContribution
 		klSum += rollouts[i].KL
 	}
-	loss /= float64(len(rollouts))
-	klMean := klSum / float64(len(rollouts))
+	invN := 1.0 / float64(n)
+	loss *= invN
+	klMean := klSum * invN
 	if math.IsNaN(loss) || math.IsInf(loss, 0) {
 		return GRPOUpdate{}, core.NewError("mlx: experimental GRPO loss is not finite")
 	}
@@ -393,7 +418,7 @@ func maybeSaveGRPOCheckpoint(ctx context.Context, runner GRPORunner, cfg GRPOCon
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
-	path := core.PathJoin(cfg.CheckpointDir, core.Sprintf("step-%06d", result.Metrics.Steps))
+	path := core.PathJoin(cfg.CheckpointDir, grpoStepName(result.Metrics.Steps))
 	meta := NewGRPOCheckpointMetadata(path, cfg, result, update)
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, GRPOCheckpointContext{Path: path, Update: update, Metadata: meta}); err != nil {
@@ -438,20 +463,25 @@ func emitGRPOProbe(cfg GRPOConfig, result *GRPOResult, update GRPOUpdate, epoch 
 	if cfg.ProbeSink == nil {
 		return
 	}
+	// Direct strconv.Itoa / strconv.FormatFloat — escape the
+	// fmt.Sprintf format-parser path that interface-boxes each arg
+	// and runs the (small) format machinery on every probe event.
+	// emitGRPOProbe fires once per training step, so the per-event
+	// alloc/CPU saving compounds across an epoch.
+	meta := make(map[string]string, 8)
+	meta["grpo_experimental"] = "true"
+	meta["group_size"] = strconv.Itoa(cfg.GroupSize)
+	meta["rollouts"] = strconv.Itoa(len(update.Rollouts))
+	meta["reward_mean"] = strconv.FormatFloat(update.RewardMean, 'f', 6, 64)
+	meta["reward_std"] = strconv.FormatFloat(update.RewardStd, 'f', 6, 64)
+	meta["kl_mean"] = strconv.FormatFloat(update.KLMean, 'f', 6, 64)
+	meta["checkpoint_count"] = strconv.Itoa(len(result.Checkpoints))
+	meta["evaluation_count"] = strconv.Itoa(len(result.Evaluations))
 	cfg.ProbeSink.EmitProbe(probe.Event{
 		Kind:  probe.KindTraining,
 		Phase: probe.PhaseTraining,
 		Step:  result.Metrics.Steps,
-		Meta: map[string]string{
-			"grpo_experimental": "true",
-			"group_size":        core.Sprintf("%d", cfg.GroupSize),
-			"rollouts":          core.Sprintf("%d", len(update.Rollouts)),
-			"reward_mean":       core.Sprintf("%.6f", update.RewardMean),
-			"reward_std":        core.Sprintf("%.6f", update.RewardStd),
-			"kl_mean":           core.Sprintf("%.6f", update.KLMean),
-			"checkpoint_count":  core.Sprintf("%d", len(result.Checkpoints)),
-			"evaluation_count":  core.Sprintf("%d", len(result.Evaluations)),
-		},
+		Meta:  meta,
 		Training: &probe.Training{
 			Step:         result.Metrics.Steps,
 			Epoch:        epoch,
@@ -467,19 +497,31 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	if prompt == "" {
 		prompt = core.Trim(sample.Text)
 	}
+	// Extract the answer once and forward it to the reasoning step —
+	// extractGRPOReasoning would otherwise re-run the full meta-key
+	// sweep + line scan to recover the same value.
+	expected := ExtractGRPOExpectedAnswer(sample)
 	return GRPOSample{
 		Prompt:          prompt,
 		ReferenceAnswer: core.Trim(sample.Response),
-		ExpectedAnswer:  ExtractGRPOExpectedAnswer(sample),
-		Reasoning:       extractGRPOReasoning(sample),
+		ExpectedAnswer:  expected,
+		Reasoning:       extractGRPOReasoningWithAnswer(sample, expected),
 		Meta:            cloneStringMap(sample.Meta),
 	}
 }
 
+// grpoAnswerMetaKeys are the SFT-meta keys ExtractGRPOExpectedAnswer
+// consults when the dataset carries an explicit answer field. Hoisted
+// to package-level so we don't rebuild the four-entry backing array
+// on every reasoning sample.
+var grpoAnswerMetaKeys = [...]string{"answer", "expected_answer", "solution", "output"}
+
 // ExtractGRPOExpectedAnswer returns the answer target from reasoning-style samples.
 func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
-	for _, key := range []string{"answer", "expected_answer", "solution", "output"} {
-		if sample.Meta != nil {
+	if sample.Meta != nil {
+		// Lift the nil check out of the loop — meta is invariant across
+		// the key sweep.
+		for _, key := range grpoAnswerMetaKeys {
 			if value := core.Trim(sample.Meta[key]); value != "" {
 				return value
 			}
@@ -489,7 +531,15 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	if text == "" {
 		text = core.Trim(sample.Text)
 	}
-	lines := core.Split(core.Replace(text, "\r\n", "\n"), "\n")
+	// Fast path — when the text has no CR we skip the strings.Count
+	// scan that ReplaceAll runs to size the result builder. The typical
+	// SFT sample is LF-only, so this short-circuits the (small but
+	// real) per-call Count walk for the common case.
+	normalised := text
+	if core.Index(text, "\r") >= 0 {
+		normalised = core.Replace(text, "\r\n", "\n")
+	}
+	lines := core.Split(normalised, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := cleanGRPOAnswerLine(lines[i])
 		if line != "" {
@@ -500,6 +550,14 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 }
 
 func extractGRPOReasoning(sample dataset.Sample) string {
+	return extractGRPOReasoningWithAnswer(sample, ExtractGRPOExpectedAnswer(sample))
+}
+
+// extractGRPOReasoningWithAnswer is the inner form that takes the
+// already-extracted expected answer so callers (the dominant one being
+// GRPOSampleFromSFT) don't run ExtractGRPOExpectedAnswer twice — once
+// for the answer field and once again here for the suffix-strip.
+func extractGRPOReasoningWithAnswer(sample dataset.Sample, answer string) string {
 	if sample.Meta != nil {
 		if value := core.Trim(sample.Meta["reasoning"]); value != "" {
 			return value
@@ -508,18 +566,30 @@ func extractGRPOReasoning(sample dataset.Sample) string {
 			return value
 		}
 	}
+	if answer == "" {
+		return ""
+	}
 	response := core.Trim(sample.Response)
-	answer := ExtractGRPOExpectedAnswer(sample)
-	if response == "" || answer == "" {
+	if response == "" {
 		return ""
 	}
 	return core.Trim(core.TrimSuffix(response, answer))
 }
 
+// grpoAnswerPrefixes are the reasoning-style answer prefixes
+// cleanGRPOAnswerLine looks for. Hoisted to a package-level var so
+// every call doesn't re-allocate the three-element backing array
+// (cleanGRPOAnswerLine fires for every line in every reasoning
+// sample on the GRPOSampleFromSFT / ExtractGRPOExpectedAnswer path).
+var grpoAnswerPrefixes = [...]string{"final answer:", "answer:", "solution:"}
+
 func cleanGRPOAnswerLine(line string) string {
 	line = core.Trim(line)
+	if line == "" {
+		return ""
+	}
 	lower := core.Lower(line)
-	for _, prefix := range []string{"final answer:", "answer:", "solution:"} {
+	for _, prefix := range grpoAnswerPrefixes {
 		if core.HasPrefix(lower, prefix) {
 			return core.Trim(line[len(prefix):])
 		}
@@ -580,20 +650,26 @@ func normalizeGRPOConfig(cfg GRPOConfig) GRPOConfig {
 }
 
 func grpoRewardStats(rollouts []GRPORollout) (float64, float64) {
-	if len(rollouts) == 0 {
+	n := len(rollouts)
+	if n == 0 {
 		return 0, 0
 	}
-	var mean float64
-	for _, rollout := range rollouts {
-		mean += rollout.Reward
+	// Index iteration — range over []GRPORollout copies the whole struct
+	// (Text/Reasoning/Answer strings, TokenIDs + RewardParts slice
+	// headers, all the float fields) on each iteration even though we
+	// only ever read the Reward float. Indexing skips the copy.
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += rollouts[i].Reward
 	}
-	mean /= float64(len(rollouts))
+	invN := 1.0 / float64(n)
+	mean := sum * invN
 	var variance float64
-	for _, rollout := range rollouts {
-		delta := rollout.Reward - mean
+	for i := 0; i < n; i++ {
+		delta := rollouts[i].Reward - mean
 		variance += delta * delta
 	}
-	variance /= float64(len(rollouts))
+	variance *= invN
 	return mean, math.Sqrt(variance)
 }
 
@@ -694,6 +770,35 @@ func grpoCheckpointMetadataPath(path string) string {
 	return core.PathJoin(path, "grpo_checkpoint.json")
 }
 
+// grpoStepName renders the step-NNNNNN directory name used for GRPO
+// checkpoints. Same output as fmt.Sprintf("step-%06d", step) — six-
+// digit zero-pad below 1e6, untruncated digit count above. Built with
+// strconv.AppendInt so no fmt format-parser + no interface-boxing of
+// the int arg; pre-sized output keeps the alloc count at one.
+func grpoStepName(step int) string {
+	const prefix = "step-"
+	const padTo = 6
+	// Allocate room for the prefix plus enough digits — 20 covers the
+	// max int64 width.
+	buf := make([]byte, 0, len(prefix)+20)
+	buf = append(buf, prefix...)
+	if step >= 0 && step < 100000 {
+		// Hand-rolled zero-pad — strconv.Itoa lacks a Printf-style
+		// width modifier, so for the typical sub-1e5 range we count
+		// leading zeros ourselves. Above 1e5 strconv emits the full
+		// width naturally.
+		digits := 1
+		for n := step / 10; n > 0; n /= 10 {
+			digits++
+		}
+		for i := digits; i < padTo; i++ {
+			buf = append(buf, '0')
+		}
+	}
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
+}
+
 type grpoMetricAccumulator struct {
 	groups    int
 	rollouts  int
@@ -745,10 +850,14 @@ func (a *grpoMetricAccumulator) loss() float64 {
 
 func cloneGRPORollouts(rollouts []GRPORollout) []GRPORollout {
 	out := make([]GRPORollout, len(rollouts))
-	for i, rollout := range rollouts {
-		out[i] = rollout
-		out[i].TokenIDs = append([]int32(nil), rollout.TokenIDs...)
-		out[i].RewardParts = append([]GRPOReward(nil), rollout.RewardParts...)
+	for i := range rollouts {
+		out[i] = rollouts[i]
+		// core.SliceClone is slices.Clone — pre-sized make+copy, one
+		// alloc per slice instead of append-grow on a nil head. Also
+		// returns nil for nil input so empty TokenIDs / RewardParts
+		// don't allocate at all.
+		out[i].TokenIDs = core.SliceClone(rollouts[i].TokenIDs)
+		out[i].RewardParts = core.SliceClone(rollouts[i].RewardParts)
 	}
 	return out
 }

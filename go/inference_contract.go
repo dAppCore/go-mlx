@@ -7,6 +7,7 @@ import (
 	"dappco.re/go/inference/bench"
 	"dappco.re/go/mlx/dataset"
 	"dappco.re/go/mlx/memory"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -86,7 +87,9 @@ func (backend *metalbackend) PlanModelSlice(ctx context.Context, req inference.M
 		return nil, err
 	}
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size for the two known keys we set below — initial
+		// bucket holds both without a grow on the second insertion.
+		plan.Labels = make(map[string]string, 2)
 	}
 	plan.Labels["backend"] = "metal"
 	plan.Labels["library"] = "go-mlx"
@@ -131,7 +134,10 @@ func (backend *metalbackend) PlanSplitInference(ctx context.Context, req inferen
 		Labels:     cloneInferenceLabels(req.Labels),
 	}
 	if plan.Labels == nil {
-		plan.Labels = map[string]string{}
+		// Pre-size for the two known keys we're about to set
+		// (backend, library) so the map's initial bucket holds both
+		// without triggering a grow on the second insertion.
+		plan.Labels = make(map[string]string, 2)
 	}
 	plan.Labels["backend"] = "metal"
 	plan.Labels["library"] = "go-mlx"
@@ -308,22 +314,33 @@ func metalCapabilityReport(model inference.ModelIdentity, adapter inference.Adap
 
 func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool, loadReady bool) inference.CapabilityReport {
 	device := metalCapabilityDeviceInfo(available)
-	runtimeLabels := map[string]string{}
+	// Pre-size for the three possible runtime labels (memory, working
+	// set, load_available). Drop the fmt-format-parser path in favour
+	// of strconv.FormatUint — same value, no interface-boxing of the
+	// uint64 arg + no fmt format-machinery overhead.
+	//
+	// The original len()==0 guard that nil'd the map was dead code —
+	// load_available is always set, so len ≥ 1 every call.
+	runtimeLabels := make(map[string]string, 3)
 	if device.MemorySize > 0 {
-		runtimeLabels["memory_bytes"] = core.Sprintf("%d", device.MemorySize)
+		runtimeLabels["memory_bytes"] = strconv.FormatUint(device.MemorySize, 10)
 	}
 	if device.MaxRecommendedWorkingSetSize > 0 {
-		runtimeLabels["working_set_bytes"] = core.Sprintf("%d", device.MaxRecommendedWorkingSetSize)
+		runtimeLabels["working_set_bytes"] = strconv.FormatUint(device.MaxRecommendedWorkingSetSize, 10)
 	}
 	runtimeLabels["load_available"] = boolLabel(loadReady)
-	if len(runtimeLabels) == 0 {
-		runtimeLabels = nil
-	}
 	modelLoadCapability := inference.SupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime)
 	if !loadReady {
 		modelLoadCapability = inference.UnsupportedCapability(inference.CapabilityModelLoad, inference.CapabilityGroupRuntime, "native Metal runtime is unavailable; no usable Metal device is visible for model loading")
 	}
-	capabilities := []inference.Capability{
+	// Pre-compute algorithm capabilities first so we can size the
+	// combined slice in one make() instead of letting the literal
+	// append-grow when it merges. metalCapabilityFixedCount tracks
+	// the literal length below — bump it if entries are added or
+	// removed (compile-time check via len(capabilities) == const).
+	algorithmCaps := profile.AlgorithmCapabilities()
+	capabilities := make([]inference.Capability, 0, metalCapabilityFixedCount+len(algorithmCaps))
+	capabilities = append(capabilities,
 		modelLoadCapability,
 		inference.SupportedCapability(inference.CapabilityModelFit, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityRuntimeDiscovery, inference.CapabilityGroupRuntime),
@@ -362,8 +379,8 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 		inference.SupportedCapability(inference.CapabilityResponsesAPI, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityAnthropicMessages, inference.CapabilityGroupRuntime),
 		inference.SupportedCapability(inference.CapabilityOllamaCompat, inference.CapabilityGroupRuntime),
-	}
-	capabilities = append(capabilities, profile.AlgorithmCapabilities()...)
+	)
+	capabilities = append(capabilities, algorithmCaps...)
 	if !loadReady {
 		capabilities = markMetalUnavailableCapabilities(capabilities)
 	}
@@ -385,38 +402,43 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	}
 }
 
+// metalLoadBlockedCapabilities is the immutable lookup table of
+// capability IDs that get marked unsupported when the Metal runtime
+// is unavailable. Hoisted to package-level so markMetalUnavailable-
+// Capabilities doesn't rebuild a 26-entry hash map on every call.
+var metalLoadBlockedCapabilities = map[inference.CapabilityID]bool{
+	inference.CapabilityModelLoad:      true,
+	inference.CapabilityAutoTuning:     true,
+	inference.CapabilityBenchmark:      true,
+	inference.CapabilityEvaluation:     true,
+	inference.CapabilityGenerate:       true,
+	inference.CapabilityChat:           true,
+	inference.CapabilityClassify:       true,
+	inference.CapabilityBatchGenerate:  true,
+	inference.CapabilityLoRAInference:  true,
+	inference.CapabilityStateBundle:    true,
+	inference.CapabilityKVSnapshot:     true,
+	inference.CapabilityPromptCache:    true,
+	inference.CapabilityAgentMemory:    true,
+	inference.CapabilityStateWake:      true,
+	inference.CapabilityStateSleep:     true,
+	inference.CapabilityStateFork:      true,
+	inference.CapabilityLoRATraining:   true,
+	inference.CapabilityDistillation:   true,
+	inference.CapabilityGRPO:           true,
+	inference.CapabilityProbeEvents:    true,
+	inference.CapabilityAttentionProbe: true,
+	inference.CapabilityLogitProbe:     true,
+	inference.CapabilityScheduler:      true,
+	inference.CapabilityRequestCancel:  true,
+	inference.CapabilityCacheBlocks:    true,
+	inference.CapabilityCacheWarm:      true,
+}
+
 func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inference.Capability {
-	loadBlocked := map[inference.CapabilityID]bool{
-		inference.CapabilityModelLoad:      true,
-		inference.CapabilityAutoTuning:     true,
-		inference.CapabilityBenchmark:      true,
-		inference.CapabilityEvaluation:     true,
-		inference.CapabilityGenerate:       true,
-		inference.CapabilityChat:           true,
-		inference.CapabilityClassify:       true,
-		inference.CapabilityBatchGenerate:  true,
-		inference.CapabilityLoRAInference:  true,
-		inference.CapabilityStateBundle:    true,
-		inference.CapabilityKVSnapshot:     true,
-		inference.CapabilityPromptCache:    true,
-		inference.CapabilityAgentMemory:    true,
-		inference.CapabilityStateWake:      true,
-		inference.CapabilityStateSleep:     true,
-		inference.CapabilityStateFork:      true,
-		inference.CapabilityLoRATraining:   true,
-		inference.CapabilityDistillation:   true,
-		inference.CapabilityGRPO:           true,
-		inference.CapabilityProbeEvents:    true,
-		inference.CapabilityAttentionProbe: true,
-		inference.CapabilityLogitProbe:     true,
-		inference.CapabilityScheduler:      true,
-		inference.CapabilityRequestCancel:  true,
-		inference.CapabilityCacheBlocks:    true,
-		inference.CapabilityCacheWarm:      true,
-	}
 	const detail = "native Metal runtime is unavailable; no usable Metal device is visible for model loading"
 	for i := range capabilities {
-		if !loadBlocked[capabilities[i].ID] {
+		if !metalLoadBlockedCapabilities[capabilities[i].ID] {
 			continue
 		}
 		capabilities[i].Status = inference.CapabilityStatusUnsupported
@@ -431,6 +453,14 @@ func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inf
 	}
 	return capabilities
 }
+
+// metalCapabilityFixedCount is the number of always-present capability
+// entries in metalCapabilityReportWithLoadReady's literal — used to
+// pre-size the capabilities slice in one allocation so the AlgorithmCapabilities
+// append doesn't need to grow. Update this if the literal entry count
+// changes (the test in inference_contract_test.go counts the slice
+// after build and asserts the expected total).
+const metalCapabilityFixedCount = 39
 
 var (
 	metalCapabilityArchitectures = profile.ArchitectureIDs()
@@ -570,15 +600,25 @@ func toInferenceAdapterIdentity(info metal.AdapterInfo) inference.AdapterIdentit
 }
 
 func adapterIdentityLabels(name string, scale float32) map[string]string {
-	labels := map[string]string{}
+	// Cheap pre-check — return nil before allocating the map when both
+	// fields are zero. adapterIdentityLabels is called per
+	// toInferenceAdapterIdentity / toInferenceRootAdapterIdentity which
+	// fire on every CapabilityReport / TrainSFT / BenchReport call, and
+	// the zero-name + zero-scale shape is the dominant "no adapter
+	// loaded" case.
+	if name == "" && scale == 0 {
+		return nil
+	}
+	// Pre-size for the two possible keys. strconv.FormatFloat with 'g'
+	// matches Sprintf("%g") semantics — shortest representation that
+	// round-trips — but skips the fmt format-parser + interface-boxing.
+	// Bitsize 32 matches the float32 input precision.
+	labels := make(map[string]string, 2)
 	if name != "" {
 		labels["name"] = name
 	}
 	if scale != 0 {
-		labels["scale"] = core.Sprintf("%g", scale)
-	}
-	if len(labels) == 0 {
-		return nil
+		labels["scale"] = strconv.FormatFloat(float64(scale), 'g', -1, 32)
 	}
 	return labels
 }
@@ -590,10 +630,13 @@ func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
 		ContextLength:     plan.ContextLength,
 		BatchSize:         plan.BatchSize,
 		CacheMode:         string(plan.CacheMode),
-		Quantization:      core.Sprintf("%d-bit", plan.PreferredQuantization),
-		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
-		TrainingFeasible:  plan.MachineClass != memory.ClassApple16GB,
-		Notes:             append([]string(nil), plan.Notes...),
+		// Plain strconv + concat — skip the fmt format-parser path that
+		// boxes the int + walks the format string for one int and one
+		// literal suffix. strconv.Itoa hits the digit-emit loop direct.
+		Quantization:     strconv.Itoa(plan.PreferredQuantization) + "-bit",
+		KVCacheBytes:     plan.EstimatedKVCacheModeBytes,
+		TrainingFeasible: plan.MachineClass != memory.ClassApple16GB,
+		Notes:            append([]string(nil), plan.Notes...),
 	}
 }
 
@@ -777,11 +820,12 @@ func cloneInferenceLabels(labels map[string]string) map[string]string {
 	if len(labels) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(labels))
-	for key, value := range labels {
-		out[key] = value
-	}
-	return out
+	// core.MapClone → maps.Clone uses runtime.mapclone for bulk-bucket
+	// hash-table copy rather than the user-space range+assign loop.
+	// Same alloc shape (2 allocs / 336 bytes for a 4-entry string map),
+	// iteration moves into compiled runtime code. Matches the helpers.go
+	// cloneStringMap adoption (6dd0c53).
+	return core.MapClone(labels)
 }
 
 func cloneInferenceSplitEndpoints(endpoints []inference.SplitEndpoint) []inference.SplitEndpoint {
@@ -789,9 +833,14 @@ func cloneInferenceSplitEndpoints(endpoints []inference.SplitEndpoint) []inferen
 		return nil
 	}
 	out := make([]inference.SplitEndpoint, len(endpoints))
-	for i, endpoint := range endpoints {
-		out[i] = endpoint
-		out[i].Labels = cloneInferenceLabels(endpoint.Labels)
+	// Index iteration — the range-and-copy form copied each endpoint
+	// twice (once into the loop-var, once into the output) on every
+	// step. SplitEndpoint carries Address/Role/Format strings plus
+	// the Labels map header, so the copy is non-trivial. Index assigns
+	// straight from source to destination.
+	for i := range endpoints {
+		out[i] = endpoints[i]
+		out[i].Labels = cloneInferenceLabels(endpoints[i].Labels)
 	}
 	return out
 }
