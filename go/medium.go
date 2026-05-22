@@ -78,7 +78,7 @@ func cleanMediumPath(p string) string {
 }
 
 func mediumRelativePath(root, target string) string {
-	if target == "" {
+	if target == "" || target == root {
 		return ""
 	}
 	if root == "" {
