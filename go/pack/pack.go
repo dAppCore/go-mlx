@@ -207,14 +207,35 @@ func (p ModelPack) IssueSummary() string {
 	if len(p.Issues) == 0 {
 		return "unknown"
 	}
-	codes := make([]string, 0, len(p.Issues))
+	// Single-pass build — skip the intermediate codes slice. Pre-size
+	// the Builder against the total error-code byte count so its
+	// internal buffer never grows. The earlier "collect into []string,
+	// then core.Join" path took two allocs (slice header + Builder);
+	// streaming directly into the Builder drops it to one.
+	total := 0
+	count := 0
 	for _, issue := range p.Issues {
 		if issue.Severity == ModelPackIssueError {
-			codes = append(codes, string(issue.Code))
+			total += len(issue.Code)
+			count++
 		}
 	}
-	if len(codes) == 0 {
+	if count == 0 {
 		return "unknown"
 	}
-	return core.Join(", ", codes...)
+	total += 2 * (count - 1) // ", " separators
+	b := core.NewBuilder()
+	b.Grow(total)
+	first := true
+	for _, issue := range p.Issues {
+		if issue.Severity != ModelPackIssueError {
+			continue
+		}
+		if !first {
+			b.WriteString(", ")
+		}
+		first = false
+		b.WriteString(string(issue.Code))
+	}
+	return b.String()
 }
