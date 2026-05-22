@@ -670,10 +670,15 @@ func appendKVI32s(dst []byte, values []int32) []byte {
 // appendKVI32sRaw appends int32 values without a length prefix.
 // Used by bytesWithOptions when the length has already been written.
 func appendKVI32sRaw(dst []byte, values []int32) []byte {
-	for _, value := range values {
-		dst = appendKVU32(dst, uint32(value))
+	if len(values) == 0 {
+		return dst
 	}
-	return dst
+	// Reinterpret-cast: int32 is little-endian on both Go-supported
+	// architectures, so the byte view of []int32 matches the
+	// per-element appendKVU32(uint32(v)) loop output. Single append
+	// vs N×PutUint32 — see f32sRaw comment.
+	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
+	return append(dst, src...)
 }
 
 func appendKVF32s(dst []byte, values []float32) []byte {
@@ -940,10 +945,13 @@ func (w *kvSnapshotStreamWriter) i32sRaw(values []int32) {
 	// Stage the whole block into the writer's reused scratch buffer
 	// then issue one writer.Write — saves N calls into writer.Write
 	// per value (sha256 + PutBytesStream both pay per-call overhead).
+	// Reinterpret-cast: int32 is little-endian on both arm64 and amd64
+	// (the only Go-supported architectures), so the byte view of
+	// []int32 matches the per-element PutUint32(uint32(value)) output.
+	// See f32sRaw for the same pattern.
 	buf := w.scratchFor(len(values) * 4)
-	for i, value := range values {
-		binary.LittleEndian.PutUint32(buf[i*4:i*4+4], uint32(value))
-	}
+	src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
+	copy(buf, src)
 	w.bytes(buf)
 }
 
