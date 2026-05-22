@@ -390,38 +390,43 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	}
 }
 
+// metalLoadBlockedCapabilities is the immutable lookup table of
+// capability IDs that get marked unsupported when the Metal runtime
+// is unavailable. Hoisted to package-level so markMetalUnavailable-
+// Capabilities doesn't rebuild a 26-entry hash map on every call.
+var metalLoadBlockedCapabilities = map[inference.CapabilityID]bool{
+	inference.CapabilityModelLoad:      true,
+	inference.CapabilityAutoTuning:     true,
+	inference.CapabilityBenchmark:      true,
+	inference.CapabilityEvaluation:     true,
+	inference.CapabilityGenerate:       true,
+	inference.CapabilityChat:           true,
+	inference.CapabilityClassify:       true,
+	inference.CapabilityBatchGenerate:  true,
+	inference.CapabilityLoRAInference:  true,
+	inference.CapabilityStateBundle:    true,
+	inference.CapabilityKVSnapshot:     true,
+	inference.CapabilityPromptCache:    true,
+	inference.CapabilityAgentMemory:    true,
+	inference.CapabilityStateWake:      true,
+	inference.CapabilityStateSleep:     true,
+	inference.CapabilityStateFork:      true,
+	inference.CapabilityLoRATraining:   true,
+	inference.CapabilityDistillation:   true,
+	inference.CapabilityGRPO:           true,
+	inference.CapabilityProbeEvents:    true,
+	inference.CapabilityAttentionProbe: true,
+	inference.CapabilityLogitProbe:     true,
+	inference.CapabilityScheduler:      true,
+	inference.CapabilityRequestCancel:  true,
+	inference.CapabilityCacheBlocks:    true,
+	inference.CapabilityCacheWarm:      true,
+}
+
 func markMetalUnavailableCapabilities(capabilities []inference.Capability) []inference.Capability {
-	loadBlocked := map[inference.CapabilityID]bool{
-		inference.CapabilityModelLoad:      true,
-		inference.CapabilityAutoTuning:     true,
-		inference.CapabilityBenchmark:      true,
-		inference.CapabilityEvaluation:     true,
-		inference.CapabilityGenerate:       true,
-		inference.CapabilityChat:           true,
-		inference.CapabilityClassify:       true,
-		inference.CapabilityBatchGenerate:  true,
-		inference.CapabilityLoRAInference:  true,
-		inference.CapabilityStateBundle:    true,
-		inference.CapabilityKVSnapshot:     true,
-		inference.CapabilityPromptCache:    true,
-		inference.CapabilityAgentMemory:    true,
-		inference.CapabilityStateWake:      true,
-		inference.CapabilityStateSleep:     true,
-		inference.CapabilityStateFork:      true,
-		inference.CapabilityLoRATraining:   true,
-		inference.CapabilityDistillation:   true,
-		inference.CapabilityGRPO:           true,
-		inference.CapabilityProbeEvents:    true,
-		inference.CapabilityAttentionProbe: true,
-		inference.CapabilityLogitProbe:     true,
-		inference.CapabilityScheduler:      true,
-		inference.CapabilityRequestCancel:  true,
-		inference.CapabilityCacheBlocks:    true,
-		inference.CapabilityCacheWarm:      true,
-	}
 	const detail = "native Metal runtime is unavailable; no usable Metal device is visible for model loading"
 	for i := range capabilities {
-		if !loadBlocked[capabilities[i].ID] {
+		if !metalLoadBlockedCapabilities[capabilities[i].ID] {
 			continue
 		}
 		capabilities[i].Status = inference.CapabilityStatusUnsupported
