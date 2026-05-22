@@ -981,12 +981,26 @@ func readModelConfig(dir string) (*modelConfigProbe, error) {
 }
 
 func firstNonEmpty(values ...string) string {
+	// hasNonWhitespace avoids the core.Trim allocation that the previous
+	// implementation paid every time the input had any leading/trailing
+	// whitespace. We only care whether the trimmed form is non-empty —
+	// not what it contains — so a single byte scan is sufficient.
 	for _, value := range values {
-		if core.Trim(value) != "" {
+		if hasNonWhitespace(value) {
 			return value
 		}
 	}
 	return ""
+}
+
+func hasNonWhitespace(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\v' && c != '\f' {
+			return true
+		}
+	}
+	return false
 }
 
 func firstPositive(values ...int) int {
