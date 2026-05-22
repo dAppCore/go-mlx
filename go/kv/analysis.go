@@ -164,13 +164,21 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 	var layerCount, entropyCount, couplingCount int
 	var lockedPairs, totalPairs int
 
+	// One invNorms scratch per Analyze — reused across all layer
+	// keys+values calls to avoid per-layer/per-side allocations
+	// (snapshot.SeqLen × 8 bytes × layers × 2 sides).
+	var invNorms []float64
+	if snapshot.SeqLen > 0 {
+		invNorms = make([]float64, snapshot.SeqLen)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
 			continue
 		}
-		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true)
-		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false)
+		keyDiff, keyLocked, keyPairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, true, invNorms)
+		valueDiff, valueLocked, valuePairs := kvAnalysisPositionDifferentiation(layerSnapshot.Heads, snapshot.SeqLen, snapshot.HeadDim, false, invNorms)
 		coupling, couplingN := kvAnalysisLayerCoupling(layerSnapshot.Heads)
 
 		result.LayerKeyCoherence[layer] = keyDiff
@@ -403,10 +411,23 @@ func kvAnalysisMeanVector(vectors [][]float32) []float32 {
 	return mean
 }
 
-func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool) (float64, int, int) {
+func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int, keys bool, invNorms []float64) (float64, int, int) {
 	if seqLen < 2 || headDim <= 0 {
 		return 0, 0, 0
 	}
+	// Precompute per-position inverse norms once (O(seqLen)) so the
+	// O(seqLen²) pair loop only pays a dot product + 2 muls. Previously
+	// each pair recomputed normA + normB inside kvAnalysisCosine32,
+	// giving O(seqLen²·headDim) self-norm work — pure waste because
+	// normA only depends on position i. Drops Analyze_2048Tokens from
+	// ~28ms to a fraction. invNorms is caller-owned scratch reused
+	// across keys+values+layers.
+	if cap(invNorms) < seqLen {
+		invNorms = make([]float64, seqLen)
+	} else {
+		invNorms = invNorms[:seqLen]
+	}
+	threshold := 1.0 - kvCoherenceThreshold
 	var totalSimilarity float64
 	var locked, pairs int
 	for _, head := range heads {
@@ -414,20 +435,62 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		if keys {
 			flat = head.Key
 		}
+		if len(flat) < seqLen*headDim {
+			continue
+		}
+		// Pass 1: per-position |v| as 1/|v| (or 0 for zero positions).
+		for pos := 0; pos < seqLen; pos++ {
+			start := pos * headDim
+			row := flat[start : start+headDim]
+			var sum float64
+			for _, value := range row {
+				v := float64(value)
+				sum += v * v
+			}
+			if sum == 0 {
+				invNorms[pos] = 0
+			} else {
+				invNorms[pos] = 1.0 / math.Sqrt(sum)
+			}
+		}
+		// Pass 2: pairwise dot products only — divide once with
+		// precomputed inverse norms, no per-pair sqrt.
 		for i := 0; i < seqLen; i++ {
-			first := kvAnalysisPositionVector(flat, i, headDim)
-			if first == nil {
+			invA := invNorms[i]
+			if invA == 0 {
+				// Pairs with the zero-norm row still increment counters
+				// (matches the original kvAnalysisCosine32 behaviour of
+				// returning 0 similarity on degenerate inputs).
+				for j := i + 1; j < seqLen; j++ {
+					if invNorms[j] == 0 {
+						continue
+					}
+					pairs++
+					if threshold > 0 {
+						locked++
+					}
+				}
 				continue
 			}
+			rowA := flat[i*headDim : (i+1)*headDim]
 			for j := i + 1; j < seqLen; j++ {
-				second := kvAnalysisPositionVector(flat, j, headDim)
-				if second == nil {
+				invB := invNorms[j]
+				if invB == 0 {
+					pairs++
+					if threshold > 0 {
+						locked++
+					}
 					continue
 				}
-				similarity := kvAnalysisCosine32(first, second)
+				rowB := flat[j*headDim : (j+1)*headDim]
+				var dot float64
+				for k := range rowA {
+					dot += float64(rowA[k]) * float64(rowB[k])
+				}
+				similarity := dot * invA * invB
 				totalSimilarity += similarity
 				pairs++
-				if similarity < 1.0-kvCoherenceThreshold {
+				if similarity < threshold {
 					locked++
 				}
 			}
