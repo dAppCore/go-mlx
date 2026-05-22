@@ -393,10 +393,39 @@ func inspectLocalMetadata(path string) (ModelMetadata, string, error) {
 }
 
 func resolveLocalMetadataRoot(path string) string {
-	snapshots := core.PathGlob(core.PathJoin(path, "snapshots", "*", "config.json"))
-	slices.Sort(snapshots)
-	if len(snapshots) > 0 {
-		return core.PathDir(snapshots[0])
+	// Replace filepath.Glob(path/snapshots/*/config.json) with a single
+	// ReadDir of path/snapshots + per-entry stat for config.json. Glob
+	// runs a readdir then per-match stat *and* allocates the full match
+	// path strings plus an outer []string. ReadDir hands back DirEntry
+	// values so we never materialise the match path until we've found
+	// the lexically-first snapshot containing config.json.
+	snapshotsDir := core.PathJoin(path, "snapshots")
+	read := core.ReadDir(core.DirFS(snapshotsDir), ".")
+	if read.OK {
+		entries, ok := read.Value.([]core.FsDirEntry)
+		if ok && len(entries) > 0 {
+			// Find the lexically-first snapshot directory whose
+			// config.json stats clean. slices.Sort on the previous
+			// Glob output produced the same ordering. ReadDir on
+			// Darwin/Linux returns dirents in arbitrary order, so
+			// scan all entries and track the smallest valid name.
+			var winner string
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if winner != "" && name >= winner {
+					continue
+				}
+				if stat := core.Stat(core.PathJoin(snapshotsDir, name, "config.json")); stat.OK {
+					winner = name
+				}
+			}
+			if winner != "" {
+				return core.PathJoin(snapshotsDir, winner)
+			}
+		}
 	}
 	// hasSuffixFold avoids allocating a lowered copy of the full path
 	// (paths can be long: ~/.cache/huggingface/hub/...) just to test a
