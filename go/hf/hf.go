@@ -452,10 +452,24 @@ func planFit(entry fitEntry, cfg FitConfig) FitPlan {
 	meta := entry.meta
 	config := meta.Config.normalized()
 	modelID := firstNonEmpty(meta.ID, meta.ModelID)
-	arch := config.architecture()
-	contextLimit := config.contextLength()
-	quantBits, quantGroup := config.quantization()
-	quantType := config.quantizationType()
+	// Inline the architecture / contextLength / quantization /
+	// quantizationType accessors here — each one normalizes config again
+	// (a value copy of the ~96-byte ModelConfig struct) before reading a
+	// single field. We've already normalised once at the top of the
+	// function; read directly from the normalised local instead.
+	arch := configArchitecture(&config)
+	contextLimit := firstPositive(config.ContextLength, config.MaxPositionEmbeddings)
+	quant := config.QuantizationConfig
+	if quant == nil {
+		quant = config.Quantization
+	}
+	var quantBits, quantGroup int
+	var quantType string
+	if quant != nil {
+		quantBits = quant.Bits
+		quantGroup = quant.GroupSize
+		quantType = quant.Type
+	}
 	quantFamily := ""
 	format, weightBytes := weightFormatAndBytes(meta.Files)
 	info := meta.JANG
@@ -773,6 +787,13 @@ func (config ModelConfig) normalized() ModelConfig {
 
 func (config ModelConfig) architecture() string {
 	config = config.normalized()
+	return configArchitecture(&config)
+}
+
+// configArchitecture is the already-normalised, pointer-receiver variant
+// for callers that have already done the normalize. Avoids the second
+// normalize value-copy of ~96-byte ModelConfig.
+func configArchitecture(config *ModelConfig) string {
 	for _, arch := range config.Architectures {
 		if modelType := architectureFromTransformersName(arch); modelType == "bert_rerank" {
 			return modelType
