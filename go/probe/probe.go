@@ -354,9 +354,5 @@ func cloneMeta(meta map[string]string) map[string]string {
 	if len(meta) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(meta))
-	for key, value := range meta {
-		out[key] = value
-	}
-	return out
+	return core.MapClone(meta)
 }
