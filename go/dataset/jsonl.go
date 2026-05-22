@@ -230,9 +230,14 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 }
 
 func labelled(sample Sample, format string) Sample {
-	sample.Meta = cloneStringMap(sample.Meta)
-	if sample.Meta == nil {
-		sample.Meta = map[string]string{}
+	// Fast path — toSample always hands a Sample with nil Meta to
+	// labelled, so the clone path returns nil. Pre-size the fresh
+	// map to one entry to skip the runtime growth step the
+	// untyped map literal would trigger.
+	if len(sample.Meta) == 0 {
+		sample.Meta = make(map[string]string, 1)
+	} else {
+		sample.Meta = cloneStringMap(sample.Meta)
 	}
 	sample.Meta["format"] = format
 	return sample
