@@ -41,12 +41,14 @@ func All() []Condition {
 // Normalize parses user input into a canonical substrate condition.
 func Normalize(value string) (Condition, error) {
 	// Fast path: already-canonical inputs (the dominant case for
-	// CLI flags + config-loaded values) skip the Trim+Lower
-	// allocation pair entirely.
+	// CLI flags + config-loaded values) skip any Trim+Lower work.
 	if c, ok := lookupCondition(value); ok {
 		return c, nil
 	}
-	if c, ok := lookupCondition(core.Lower(core.Trim(value))); ok {
+	// Case-insensitive + whitespace-tolerant path. matchConditionFold
+	// walks the input bytes once — trims ASCII whitespace and
+	// case-folds in-place — instead of allocating a Trim+Lower copy.
+	if c, ok := matchConditionFold(value); ok {
 		return c, nil
 	}
 	return "", core.NewError("substrate: unsupported condition: " + value)
@@ -57,7 +59,7 @@ func MustNormalize(value string) Condition {
 	if c, ok := lookupCondition(value); ok {
 		return c
 	}
-	if c, ok := lookupCondition(core.Lower(core.Trim(value))); ok {
+	if c, ok := matchConditionFold(value); ok {
 		return c
 	}
 	return CONT
@@ -79,6 +81,99 @@ func lookupCondition(value string) (Condition, bool) {
 	default:
 		return "", false
 	}
+}
+
+// foldAliases is the case-folded alias table used by matchConditionFold.
+// Each entry pairs a canonical lowercase alias with its Condition. The
+// table mirrors lookupCondition's switch but in an iterable form so the
+// fold walk can early-return on the first length+byte match without
+// allocating a lowercased input copy. Package-init merged so the slice
+// itself costs one allocation total (Pattern 10) rather than per-call.
+var foldAliases = [...]struct {
+	alias string
+	cond  Condition
+}{
+	{"", CONT},
+	{"cont", CONT},
+	{"continuous", CONT},
+	{"continuous-stream", CONT},
+	{"trad", TRAD},
+	{"traditional", TRAD},
+	{"traditional-runner", TRAD},
+	{"trad-no-replay", TRADNoReplay},
+	{"trad_no_replay", TRADNoReplay},
+	{"traditional-no-replay", TRADNoReplay},
+	{"cont-with-gap", CONTWithGap},
+	{"cont_with_gap", CONTWithGap},
+	{"continuous-with-gap", CONTWithGap},
+}
+
+// matchConditionFold performs the same lookup as lookupCondition but
+// against a whitespace-trimmed, case-folded view of value — without
+// allocating the trimmed/lowered copy. Walks input once to find the
+// trim window, tries the zero-alloc canonical switch on the trimmed
+// substring (covers the all-lowercase-with-whitespace path), then
+// falls back to a byte-fold sweep over the alias table. Bails fast
+// on length mismatch, so the per-call cost is dominated by the
+// matching alias's length, not the full table sweep.
+func matchConditionFold(value string) (Condition, bool) {
+	lo, hi := 0, len(value)
+	for lo < hi && isASCIISpace(value[lo]) {
+		lo++
+	}
+	for hi > lo && isASCIISpace(value[hi-1]) {
+		hi--
+	}
+	trimmed := value[lo:hi]
+	// Whitespace-only path: trimmed input matches a canonical alias
+	// directly via the switch. Saves the table sweep when the only
+	// transformation needed was whitespace removal.
+	if c, ok := lookupCondition(trimmed); ok {
+		return c, true
+	}
+	trimmedLen := len(trimmed)
+	for _, e := range foldAliases {
+		if len(e.alias) != trimmedLen {
+			continue
+		}
+		if equalASCIIFold(trimmed, e.alias) {
+			return e.cond, true
+		}
+	}
+	return "", false
+}
+
+// isASCIISpace reports whether b is one of the five ASCII whitespace
+// bytes recognised by strings.TrimSpace's fast path. Mirrors that
+// inlinable set so matchConditionFold can avoid the runtime call.
+func isASCIISpace(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\v', '\f', '\r':
+		return true
+	default:
+		return false
+	}
+}
+
+// equalASCIIFold reports whether s and lower are byte-equal under
+// ASCII case folding. lower MUST be lowercase ASCII (all
+// foldAliases entries are). Faster than strings.EqualFold because
+// it skips Unicode case-folding work the alias table never needs.
+func equalASCIIFold(s, lower string) bool {
+	// Length-equality is the caller's contract (matchConditionFold
+	// pre-checks), so the loop walks both strings in lockstep.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		// ASCII uppercase folds to lower by OR-ing 0x20. Any non-
+		// ASCII or non-letter byte must match exactly.
+		if c >= 'A' && c <= 'Z' {
+			c |= 0x20
+		}
+		if c != lower[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Valid reports whether the condition is one of the four pre-registered levels.
