@@ -188,10 +188,17 @@ func (s *Snapshot) walkBlocks(blockSize int, includeHash bool, yield func(Block)
 	if err != nil {
 		return err
 	}
+	// includeHash signals an external observer of the block snapshots —
+	// SplitBlocks / RangeBlocks return blocks to the caller, so each
+	// snapshot needs cloned slices for independent ownership. The internal
+	// SaveStateBlocks path passes includeHash=false; it encodes + hashes
+	// each block within yield and discards the snapshot before the next
+	// iteration, so non-cloning sub-views are safe.
+	cloneSlices := includeHash
 	for i := 0; i < len(boundaries)-1; i++ {
 		start := boundaries[i]
 		end := boundaries[i+1]
-		blockSnapshot, err := s.SliceBlock(start, end, baseOffset, end == seqLen)
+		blockSnapshot, err := s.sliceBlockInternal(start, end, baseOffset, end == seqLen, cloneSlices)
 		if err != nil {
 			return err
 		}
@@ -263,6 +270,14 @@ func kvBoundaryInsert(boundaries []int, v int) []int {
 }
 
 func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot, error) {
+	return s.sliceBlockInternal(start, end, baseOffset, final, true)
+}
+
+// sliceBlockInternal is the implementation of SliceBlock. When cloneSlices
+// is false, per-head Key/Value/KeyBytes/ValueBytes return as sub-views of
+// the parent snapshot — used only by walkBlocks(includeHash=false), the
+// SaveStateBlocks path that immediately encodes and discards each block.
+func (s *Snapshot) sliceBlockInternal(start, end, baseOffset int, final bool, cloneSlices bool) (*Snapshot, error) {
 	if start < 0 || end <= start || end > len(s.Tokens) {
 		return nil, core.NewError("mlx: invalid KV snapshot block range")
 	}
@@ -318,19 +333,19 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 			layers[layerIndex].Heads = make([]HeadSnapshot, headCount)
 		}
 		for headIndex, head := range layer.Heads {
-			key, err := sliceKVSnapshotTensor(head.Key, localStart, localEnd, s.HeadDim, windowLen)
+			key, err := sliceKVSnapshotTensorOpt(head.Key, localStart, localEnd, s.HeadDim, windowLen, cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice key tensor", err)
 			}
-			value, err := sliceKVSnapshotTensor(head.Value, localStart, localEnd, s.HeadDim, windowLen)
+			value, err := sliceKVSnapshotTensorOpt(head.Value, localStart, localEnd, s.HeadDim, windowLen, cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice value tensor", err)
 			}
-			keyBytes, err := sliceKVSnapshotRawTensor(head.KeyBytes, head.KeyDType, localStart, localEnd, windowLen, len(head.Key))
+			keyBytes, err := sliceKVSnapshotRawTensorOpt(head.KeyBytes, head.KeyDType, localStart, localEnd, windowLen, len(head.Key), cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice native key tensor", err)
 			}
-			valueBytes, err := sliceKVSnapshotRawTensor(head.ValueBytes, head.ValueDType, localStart, localEnd, windowLen, len(head.Value))
+			valueBytes, err := sliceKVSnapshotRawTensorOpt(head.ValueBytes, head.ValueDType, localStart, localEnd, windowLen, len(head.Value), cloneSlices)
 			if err != nil {
 				return nil, core.E("Snapshot.SplitBlocks", "slice native value tensor", err)
 			}
@@ -344,10 +359,16 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 			}
 		}
 	}
+	var tokens []int32
+	if cloneSlices {
+		tokens = core.SliceClone(s.Tokens[start:end])
+	} else {
+		tokens = s.Tokens[start:end]
+	}
 	block := &Snapshot{
 		Version:       effectiveVersion(s, KVSnapshotEncodingFloat32),
 		Architecture:  s.Architecture,
-		Tokens:        core.SliceClone(s.Tokens[start:end]),
+		Tokens:        tokens,
 		TokenOffset:   baseOffset + end,
 		NumLayers:     s.NumLayers,
 		NumHeads:      s.NumHeads,
@@ -357,9 +378,15 @@ func (s *Snapshot) SliceBlock(start, end, baseOffset int, final bool) (*Snapshot
 		Layers:        layers,
 	}
 	if final {
-		block.Generated = core.SliceClone(s.Generated)
-		block.LogitShape = core.SliceClone(s.LogitShape)
-		block.Logits = core.SliceClone(s.Logits)
+		if cloneSlices {
+			block.Generated = core.SliceClone(s.Generated)
+			block.LogitShape = core.SliceClone(s.LogitShape)
+			block.Logits = core.SliceClone(s.Logits)
+		} else {
+			block.Generated = s.Generated
+			block.LogitShape = s.LogitShape
+			block.Logits = s.Logits
+		}
 	}
 	return block, nil
 }
@@ -461,6 +488,14 @@ func kvSnapshotLayerRawWindowLen(raw []byte, dtype string, shape []int32, seqLen
 }
 
 func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([]float32, error) {
+	return sliceKVSnapshotTensorOpt(values, start, end, headDim, seqLen, true)
+}
+
+// sliceKVSnapshotTensorOpt slices a head Key/Value tensor. clone=false
+// returns a sub-view of values (zero-alloc) — only the internal
+// SaveStateBlocks walkBlocks path uses this, because the block snapshot
+// is encoded + discarded within the yield call.
+func sliceKVSnapshotTensorOpt(values []float32, start, end, headDim, seqLen int, clone bool) ([]float32, error) {
 	if len(values) == 0 {
 		return nil, nil
 	}
@@ -478,10 +513,19 @@ func sliceKVSnapshotTensor(values []float32, start, end, headDim, seqLen int) ([
 	if begin < 0 || finish > len(values) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot tensor block range")
 	}
-	return core.SliceClone(values[begin:finish]), nil
+	if clone {
+		return core.SliceClone(values[begin:finish]), nil
+	}
+	return values[begin:finish:finish], nil
 }
 
 func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valueCount int) ([]byte, error) {
+	return sliceKVSnapshotRawTensorOpt(raw, dtype, start, end, seqLen, valueCount, true)
+}
+
+// sliceKVSnapshotRawTensorOpt slices a head's raw-byte tensor. clone=false
+// returns a sub-view — see sliceKVSnapshotTensorOpt for the safe-use rule.
+func sliceKVSnapshotRawTensorOpt(raw []byte, dtype string, start, end, seqLen, valueCount int, clone bool) ([]byte, error) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -504,7 +548,10 @@ func sliceKVSnapshotRawTensor(raw []byte, dtype string, start, end, seqLen, valu
 	if begin < 0 || finish > len(raw) || begin >= finish {
 		return nil, core.NewError("mlx: invalid KV snapshot raw tensor block range")
 	}
-	return core.SliceClone(raw[begin:finish]), nil
+	if clone {
+		return core.SliceClone(raw[begin:finish]), nil
+	}
+	return raw[begin:finish:finish], nil
 }
 
 func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, start, end int) ([]byte, []int32, error) {
