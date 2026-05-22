@@ -445,8 +445,13 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	}
 
 	metadata := make(map[string]any, int(metadataCount))
+	// Key arena — most metadata keys hit ggufInternedStrings (zero alloc),
+	// but unknown / synthetic / future keys still allocate a fresh string
+	// each. Bump-allocating into a per-call slab amortises the miss cost.
+	// Sized at 48 B/entry — long-tail tokenizer.* keys peak around 40 B.
+	keyArena := make([]byte, 0, int(metadataCount)*48)
 	for i := uint64(0); i < metadataCount; i++ {
-		key, err := readGGUFString(reader, scratch[:])
+		key, err := readStringIntoArena(reader, scratch[:], &keyArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
@@ -477,7 +482,7 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	// so a re-allocation would dangle every prior name.
 	nameArena := make([]byte, 0, int(tensorCount)*40)
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readTensorNameInto(reader, scratch[:], &nameArena)
+		name, err := readStringIntoArena(reader, scratch[:], &nameArena)
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
@@ -583,16 +588,15 @@ var ggufInternedStrings = map[string]string{
 	"bert":    "bert",
 }
 
-// readTensorNameInto reads a length-prefixed string and parks the bytes
-// in the supplied name arena, returning a zero-copy string view. Names
-// are never in ggufInternedStrings (every real tensor name contains a
-// layer index), so we skip the intern probe and the per-tensor string
-// alloc by aliasing the arena directly.
+// readStringIntoArena reads a length-prefixed string and parks the bytes
+// in the supplied arena, returning a zero-copy string view. Used for
+// short-lived bulk strings (tensor names, metadata keys) where the
+// caller wants to amortise allocations across many reads.
 //
-// If the name would push the arena past its reserved capacity, fall
-// back to readGGUFString's per-tensor copy — appending would re-allocate
-// the underlying array and dangle every earlier name view.
-func readTensorNameInto(reader io.Reader, scratch []byte, arena *[]byte) (string, error) {
+// First tries ggufInternedStrings for the singleton fast path. If the
+// name would push the arena past its reserved capacity, falls back to
+// a fresh per-call copy so the existing arena views stay valid.
+func readStringIntoArena(reader io.Reader, scratch []byte, arena *[]byte) (string, error) {
 	if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 		return "", err
 	}
@@ -604,9 +608,19 @@ func readTensorNameInto(reader io.Reader, scratch []byte, arena *[]byte) (string
 		return "", nil
 	}
 	buf := *arena
-	if int(length) > cap(buf)-len(buf) {
-		// Arena overflow: fall back to a fresh per-tensor copy so the
-		// existing name views stay valid.
+	remaining := cap(buf) - len(buf)
+	if int(length) > remaining {
+		// Arena overflow: copy through scratch when possible (short
+		// strings still hit the intern map); else fresh make.
+		if uint64(len(scratch)) >= length {
+			if _, err := io.ReadFull(reader, scratch[:length]); err != nil {
+				return "", err
+			}
+			if interned, ok := ggufInternedStrings[string(scratch[:length])]; ok {
+				return interned, nil
+			}
+			return string(scratch[:length]), nil
+		}
 		dst := make([]byte, length)
 		if _, err := io.ReadFull(reader, dst); err != nil {
 			return "", err
@@ -618,6 +632,12 @@ func readTensorNameInto(reader io.Reader, scratch []byte, arena *[]byte) (string
 	buf = buf[:end]
 	if _, err := io.ReadFull(reader, buf[start:end]); err != nil {
 		return "", err
+	}
+	// Intern probe — singleton hit means we don't need the arena slot.
+	// Roll back the cursor so future calls can reuse the space.
+	if interned, ok := ggufInternedStrings[string(buf[start:end])]; ok {
+		*arena = buf[:start]
+		return interned, nil
 	}
 	*arena = buf
 	return core.AsString(buf[start:end]), nil
