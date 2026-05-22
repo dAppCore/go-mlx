@@ -78,7 +78,31 @@ func (e *CommandError) Error() string {
 	if detail == "" {
 		detail = "unknown error"
 	}
-	return core.Concat("memvid-cli ", core.Join(" ", e.Args...), " failed: ", detail)
+	// Single-Builder build: avoids the intermediate Join allocation
+	// that the previous Concat(prefix, Join, suffix, detail) form
+	// produced. Pre-size to the exact final length so the underlying
+	// buffer never grows. 2 allocs → 1 alloc on the hot error path.
+	const prefix = "memvid-cli "
+	const suffix = " failed: "
+	n := len(prefix) + len(suffix) + len(detail)
+	if argc := len(e.Args); argc > 0 {
+		n += argc - 1
+		for _, a := range e.Args {
+			n += len(a)
+		}
+	}
+	b := core.NewBuilder()
+	b.Grow(n)
+	b.WriteString(prefix)
+	for i, a := range e.Args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(a)
+	}
+	b.WriteString(suffix)
+	b.WriteString(detail)
+	return b.String()
 }
 
 func (e *CommandError) Unwrap() error {
