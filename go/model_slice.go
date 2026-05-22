@@ -340,7 +340,9 @@ func modelSliceTensorIsExpert(name string) bool {
 }
 
 func modelSliceTensorIsLMHead(name string) bool {
-	return name == "lm_head.weight" || core.HasPrefix(name, "lm_head.")
+	// HasPrefix("lm_head.") already matches "lm_head.weight" by
+	// construction — the explicit equality test was dead weight.
+	return core.HasPrefix(name, "lm_head.")
 }
 
 func modelSliceHasProjection(name, projection string) bool {
