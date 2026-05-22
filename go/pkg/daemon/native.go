@@ -5,6 +5,7 @@ package daemon
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	core "dappco.re/go"
@@ -39,14 +40,22 @@ type NativeGenerateConfig struct {
 }
 
 // NativeGenerateRunner loads go-mlx models once and serves generate requests.
+//
+// The model cache is copy-on-write: reads load a pointer to the
+// current map and look up without any locking, writers serialise
+// through mu, build a fresh map with the new entry, and swap the
+// pointer atomically. The cache is read-heavy (one COW per loaded
+// model, then thousands of cache hits per second per active model)
+// so concurrent reads scale linearly with cores instead of contending
+// on a single mutex.
 type NativeGenerateRunner struct {
-	mu              sync.Mutex
+	mu              sync.Mutex // protects load + COW swap; reads are lock-free
 	modelPaths      map[string]string
 	defaultModel    string
 	defaultMaxToken int
 	loadOptions     []mlx.LoadOption
 	loadModel       func(string, ...mlx.LoadOption) (nativeGenerateModel, error)
-	models          map[string]nativeGenerateModel
+	models          atomic.Pointer[map[string]nativeGenerateModel]
 	// defaultOpts caches the option slice used when the request
 	// supplies neither MaxTokens nor Temperature — the common case.
 	// Built once at construction (one slice + one closure alloc) so
@@ -69,8 +78,9 @@ func NewNativeGenerateRunner(cfg NativeGenerateConfig) *NativeGenerateRunner {
 		loadModel: func(path string, opts ...mlx.LoadOption) (nativeGenerateModel, error) {
 			return mlx.LoadModel(path, opts...)
 		},
-		models: make(map[string]nativeGenerateModel),
 	}
+	empty := map[string]nativeGenerateModel{}
+	runner.models.Store(&empty)
 	if cfg.DefaultMaxTokens > 0 {
 		runner.defaultOpts = []mlx.GenerateOption{mlx.WithMaxTokens(cfg.DefaultMaxTokens)}
 	}
@@ -132,16 +142,18 @@ func (runner *NativeGenerateRunner) Close() error {
 		return nil
 	}
 	runner.mu.Lock()
-	models := runner.models
-	runner.models = make(map[string]nativeGenerateModel)
+	empty := map[string]nativeGenerateModel{}
+	prev := runner.models.Swap(&empty)
 	runner.mu.Unlock()
 
 	var closeErr error
-	for _, model := range models {
-		if model == nil {
-			continue
+	if prev != nil {
+		for _, model := range *prev {
+			if model == nil {
+				continue
+			}
+			closeErr = core.ErrorJoin(closeErr, model.Close())
 		}
-		closeErr = core.ErrorJoin(closeErr, model.Close())
 	}
 	return closeErr
 }
@@ -175,17 +187,42 @@ func (runner *NativeGenerateRunner) resolveModel(requested string) (string, stri
 }
 
 func (runner *NativeGenerateRunner) modelFor(name, path string) (nativeGenerateModel, error) {
+	// Lock-free read fast path. The atomic load returns a pointer to
+	// an immutable map snapshot — any writer publishes a new map
+	// rather than mutating in place, so reads need no synchronisation.
+	if current := runner.models.Load(); current != nil {
+		if model := (*current)[name]; model != nil {
+			return model, nil
+		}
+	}
+
+	// Slow path: serialise load + COW publish. Double-check after
+	// taking the lock so concurrent first-time lookups for the same
+	// name don't each spend a load.
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 
-	if model := runner.models[name]; model != nil {
-		return model, nil
+	current := runner.models.Load()
+	if current != nil {
+		if model := (*current)[name]; model != nil {
+			return model, nil
+		}
 	}
 	model, err := runner.loadModel(path, runner.loadOptions...)
 	if err != nil {
 		return nil, core.Errorf("load native model %q: %w", name, err)
 	}
-	runner.models[name] = model
+	var next map[string]nativeGenerateModel
+	if current == nil {
+		next = map[string]nativeGenerateModel{name: model}
+	} else {
+		next = make(map[string]nativeGenerateModel, len(*current)+1)
+		for k, v := range *current {
+			next[k] = v
+		}
+		next[name] = model
+	}
+	runner.models.Store(&next)
 	return model, nil
 }
 

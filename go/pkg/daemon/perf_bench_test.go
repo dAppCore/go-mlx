@@ -169,13 +169,14 @@ func BenchmarkFrameTrimAndParse_Hoisted(b *testing.B) {
 }
 
 // BenchmarkNativeRunner_ModelForCached drives the modelFor read path
-// concurrently to exercise the RWMutex read fast-path on a populated
-// runner cache. The model is pre-loaded once.
+// concurrently to exercise the lock-free atomic read fast-path on a
+// populated runner cache. The model is pre-loaded once.
 func BenchmarkNativeRunner_ModelForCached(b *testing.B) {
 	runner := &NativeGenerateRunner{
 		modelPaths: map[string]string{"main": "/m/main"},
-		models:     map[string]nativeGenerateModel{"main": &noopGenerateModel{}},
 	}
+	seed := map[string]nativeGenerateModel{"main": &noopGenerateModel{}}
+	runner.models.Store(&seed)
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -183,6 +184,22 @@ func BenchmarkNativeRunner_ModelForCached(b *testing.B) {
 			_, _ = runner.modelFor("main", "/m/main")
 		}
 	})
+}
+
+// BenchmarkNativeRunner_ModelForCached_Serial measures the same
+// cache-hit path without the contention noise — pure atomic.Pointer
+// load + map lookup.
+func BenchmarkNativeRunner_ModelForCached_Serial(b *testing.B) {
+	runner := &NativeGenerateRunner{
+		modelPaths: map[string]string{"main": "/m/main"},
+	}
+	seed := map[string]nativeGenerateModel{"main": &noopGenerateModel{}}
+	runner.models.Store(&seed)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = runner.modelFor("main", "/m/main")
+	}
 }
 
 type noopGenerateModel struct{}
