@@ -416,37 +416,44 @@ func summarizeWorkloadBench(report *WorkloadBenchReport) WorkloadBenchSummary {
 	if report == nil {
 		return summary
 	}
-	if report.FastEval != nil {
-		summary.PrefillTokensPerSec = report.FastEval.Generation.PrefillTokensPerSec
-		summary.DecodeTokensPerSec = report.FastEval.Generation.DecodeTokensPerSec
-		summary.PeakMemoryBytes = report.FastEval.Generation.PeakMemoryBytes
-		summary.ActiveMemoryBytes = report.FastEval.Generation.ActiveMemoryBytes
-		summary.PromptCacheHitRate = report.FastEval.PromptCache.HitRate
-		summary.PromptCacheHitTokens = report.FastEval.PromptCache.HitTokens
-		summary.PromptCacheMissTokens = report.FastEval.PromptCache.MissTokens
-		summary.PromptCacheRestoreDuration = report.FastEval.PromptCache.RestoreDuration
-		if report.FastEval.StateKVBlockWarm.Attempted {
-			summary.PromptCacheSource = report.FastEval.StateKVBlockWarm.Source
-			summary.PromptTokensAvoided = report.FastEval.StateKVBlockWarm.PromptTokensAvoided
-			summary.PromptCacheReplayTokens = report.FastEval.StateKVBlockWarm.ReplayTokens
-			summary.PromptCacheExactFallbackReplayTokens = report.FastEval.StateKVBlockWarm.ExactFallbackReplayTokens
-			summary.StateKVBlockRestoreDuration = report.FastEval.StateKVBlockWarm.RestoreDuration
-			summary.StateKVBlockStorePath = report.FastEval.StateKVBlockWarm.StorePath
-			summary.StateKVBlockStoreBytes = report.FastEval.StateKVBlockWarm.StoreBytes
-			summary.StateKVBlocksRead = report.FastEval.StateKVBlockWarm.BlocksRead
-			summary.StateKVChunksRead = report.FastEval.StateKVBlockWarm.ChunksRead
-			summary.StateKVPrefixTokensRestored = report.FastEval.StateKVBlockWarm.PrefixTokensRestored
+	// Cache report.FastEval into a local pointer to avoid the ~30
+	// re-dereferences the previous body paid through report.FastEval
+	// for every field read. The sub-report structs (StateKVBlockWarm,
+	// SpeculativeDecode, PromptLookupDecode) are deliberately kept as
+	// pointer-deref chains — copying them into locals would clone
+	// ~20-field GenerationMetrics blobs we only read a few fields out
+	// of.
+	if fast := report.FastEval; fast != nil {
+		summary.PrefillTokensPerSec = fast.Generation.PrefillTokensPerSec
+		summary.DecodeTokensPerSec = fast.Generation.DecodeTokensPerSec
+		summary.PeakMemoryBytes = fast.Generation.PeakMemoryBytes
+		summary.ActiveMemoryBytes = fast.Generation.ActiveMemoryBytes
+		summary.PromptCacheHitRate = fast.PromptCache.HitRate
+		summary.PromptCacheHitTokens = fast.PromptCache.HitTokens
+		summary.PromptCacheMissTokens = fast.PromptCache.MissTokens
+		summary.PromptCacheRestoreDuration = fast.PromptCache.RestoreDuration
+		if fast.StateKVBlockWarm.Attempted {
+			summary.PromptCacheSource = fast.StateKVBlockWarm.Source
+			summary.PromptTokensAvoided = fast.StateKVBlockWarm.PromptTokensAvoided
+			summary.PromptCacheReplayTokens = fast.StateKVBlockWarm.ReplayTokens
+			summary.PromptCacheExactFallbackReplayTokens = fast.StateKVBlockWarm.ExactFallbackReplayTokens
+			summary.StateKVBlockRestoreDuration = fast.StateKVBlockWarm.RestoreDuration
+			summary.StateKVBlockStorePath = fast.StateKVBlockWarm.StorePath
+			summary.StateKVBlockStoreBytes = fast.StateKVBlockWarm.StoreBytes
+			summary.StateKVBlocksRead = fast.StateKVBlockWarm.BlocksRead
+			summary.StateKVChunksRead = fast.StateKVBlockWarm.ChunksRead
+			summary.StateKVPrefixTokensRestored = fast.StateKVBlockWarm.PrefixTokensRestored
 		}
-		summary.KVRestoreDuration = report.FastEval.KVRestore.Duration
-		if report.FastEval.SpeculativeDecode.Attempted && report.FastEval.SpeculativeDecode.Error == "" {
-			summary.SpeculativeAcceptanceRate = report.FastEval.SpeculativeDecode.Metrics.AcceptanceRate
-			summary.SpeculativeAcceptedTokens = report.FastEval.SpeculativeDecode.Metrics.AcceptedTokens
-			summary.SpeculativeRejectedTokens = report.FastEval.SpeculativeDecode.Metrics.RejectedTokens
+		summary.KVRestoreDuration = fast.KVRestore.Duration
+		if fast.SpeculativeDecode.Attempted && fast.SpeculativeDecode.Error == "" {
+			summary.SpeculativeAcceptanceRate = fast.SpeculativeDecode.Metrics.AcceptanceRate
+			summary.SpeculativeAcceptedTokens = fast.SpeculativeDecode.Metrics.AcceptedTokens
+			summary.SpeculativeRejectedTokens = fast.SpeculativeDecode.Metrics.RejectedTokens
 		}
-		if report.FastEval.PromptLookupDecode.Attempted && report.FastEval.PromptLookupDecode.Error == "" {
-			summary.PromptLookupAcceptanceRate = report.FastEval.PromptLookupDecode.Metrics.AcceptanceRate
-			summary.PromptLookupAcceptedTokens = report.FastEval.PromptLookupDecode.Metrics.AcceptedTokens
-			summary.PromptLookupRejectedTokens = report.FastEval.PromptLookupDecode.Metrics.RejectedTokens
+		if fast.PromptLookupDecode.Attempted && fast.PromptLookupDecode.Error == "" {
+			summary.PromptLookupAcceptanceRate = fast.PromptLookupDecode.Metrics.AcceptanceRate
+			summary.PromptLookupAcceptedTokens = fast.PromptLookupDecode.Metrics.AcceptedTokens
+			summary.PromptLookupRejectedTokens = fast.PromptLookupDecode.Metrics.RejectedTokens
 		}
 	}
 	summary.AdapterLoadDuration = report.Adapter.Load.Duration
