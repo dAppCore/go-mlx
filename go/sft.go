@@ -664,21 +664,31 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
 	// shifted by one. Building both in a single index walk lets the loop
 	// amortise bounds-check elision across the two writes instead of
-	// paying for two separate range loops + int widenings. The backing
-	// is shared via a 2n-wide carve so the two []int slices come from one
-	// allocation — sftBatchFromExamples already transfers ownership of
-	// both fields into the batch (different slots, same root backing is
-	// safe — Tokens[i] and Targets[i] are independent slice headers, GC
-	// only frees when neither references the backing).
+	// paying for two separate range loops + int widenings. inputs +
+	// targets + mask share ONE backing: 2n+(n+1)/2 ints worth, where the
+	// trailing (n+1)/2 ints host n float32s via unsafe.Slice reinterpret.
+	// []int is 8-byte aligned (guaranteed by Go's allocator) which
+	// exceeds float32's 4-byte alignment requirement, so the reinterpret
+	// is safe. Neither []int nor []float32 contains pointers so GC
+	// scanning of the combined allocation is straightforward (one base
+	// pointer kept alive while any of the three views is referenced).
+	// Net: 2 allocs → 1 alloc on the main buildSFTExample path.
 	n := len(seq) - 1
-	intBacking := make([]int, 2*n)
-	inputs := intBacking[:n:n]
-	targets := intBacking[n : 2*n : 2*n]
+	maskInts := (n + 1) / 2
+	combined := make([]int, 2*n+maskInts)
+	inputs := combined[:n:n]
+	targets := combined[n : 2*n : 2*n]
 	for i := 0; i < n; i++ {
 		inputs[i] = int(seq[i])
 		targets[i] = int(seq[i+1])
 	}
-	mask := make([]float32, n)
+	var mask []float32
+	if n > 0 {
+		mask = unsafe.Slice((*float32)(unsafe.Pointer(&combined[2*n])), n)
+		// combined is freshly allocated and zero-initialised; the
+		// reinterpreted mask view inherits that zero state byte-for-byte
+		// (n floats of all-zero bytes is the +0.0 representation).
+	}
 	if trainWholeText {
 		for i := range mask {
 			mask[i] = 1
