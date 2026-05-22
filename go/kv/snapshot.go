@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	stdio "io"
 	"math"
+	"sync"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/safetensors"
@@ -363,7 +364,8 @@ func (s *Snapshot) writeWithOptions(writer stdio.Writer, opts SaveOptions) error
 	if len(s.Architecture) > int(^uint32(0)) {
 		return core.E("Snapshot.Save", "architecture string too large", nil)
 	}
-	stream := kvSnapshotStreamWriter{writer: writer}
+	stream := acquireKVStreamWriter(writer)
+	defer releaseKVStreamWriter(stream)
 	stream.bytes(core.AsBytes(kvSnapshotMagic))
 	stream.u32(uint32(version))
 	stream.bytesWithLength(core.AsBytes(s.Architecture))
@@ -853,6 +855,31 @@ type kvSnapshotStreamWriter struct {
 	err     error
 	buf     [4]byte
 	scratch []byte
+}
+
+// kvSnapshotStreamWriterPool reuses streamWriter structs across
+// writeWithOptions calls — the struct escapes to heap (interface-
+// satisfying methods + &stream pointer threading), and its embedded
+// scratch buffer is the dominant alloc on subsequent encode passes.
+// SaveStateBlocks fires writeWithOptions per block hash + per block
+// payload + final bundle hash, so a pool collapses 6-8 stream allocs
+// into one across a single SaveStateBlocks call.
+var kvSnapshotStreamWriterPool = sync.Pool{
+	New: func() any { return &kvSnapshotStreamWriter{} },
+}
+
+func acquireKVStreamWriter(writer stdio.Writer) *kvSnapshotStreamWriter {
+	stream := kvSnapshotStreamWriterPool.Get().(*kvSnapshotStreamWriter)
+	stream.writer = writer
+	stream.err = nil
+	return stream
+}
+
+func releaseKVStreamWriter(stream *kvSnapshotStreamWriter) {
+	stream.writer = nil
+	stream.err = nil
+	// scratch slice retained for reuse — its capacity grows over time.
+	kvSnapshotStreamWriterPool.Put(stream)
 }
 
 // scratchFor returns a scratch buffer of length n, reusing the
