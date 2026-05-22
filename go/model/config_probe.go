@@ -35,7 +35,14 @@ type modelConfigProbe struct {
 //
 //	probe, err := readModelConfig(modelDir)
 func readModelConfig(dir string) (*modelConfigProbe, error) {
-	read := core.ReadFile(core.PathJoin(dir, "config.json"))
+	return readModelConfigAt(core.PathJoin(dir, "config.json"))
+}
+
+// readModelConfigAt reads + decodes config.json from a pre-built path.
+// Used by inspectModelPackConfig to reuse the path it already builds
+// for issue reporting — avoids redoing filepath.Join.
+func readModelConfigAt(path string) (*modelConfigProbe, error) {
+	read := core.ReadFile(path)
 	if !read.OK {
 		return nil, read.Value.(error)
 	}
@@ -51,16 +58,19 @@ func (probe *modelConfigProbe) architecture() string {
 		return ""
 	}
 	// Resolve architectures[] once: bert_rerank takes priority over
-	// ModelType (cross-encoders carry it in the class name); remember
-	// the first non-empty result for the fallback path so we never
-	// re-classify the same string twice.
+	// ModelType (cross-encoders carry it in the class name). Only the
+	// bert_rerank case can short-circuit; firstResolved is the fallback
+	// when neither ModelType nor TextConfig.ModelType is set, so we
+	// only compute it if we'll actually need it — skipping the
+	// classify-and-discard work when ModelType already covers us.
+	needFirstResolved := probe.ModelType == "" && probe.TextConfig.ModelType == ""
 	var firstResolved string
 	for _, architecture := range probe.Architectures {
 		modelType := architectureFromTransformersName(architecture)
 		if modelType == "bert_rerank" {
 			return modelType
 		}
-		if modelType != "" && firstResolved == "" {
+		if needFirstResolved && modelType != "" && firstResolved == "" {
 			firstResolved = modelType
 		}
 	}

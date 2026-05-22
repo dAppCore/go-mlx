@@ -41,19 +41,30 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	}
 
 	config, configErr := inspectModelPackConfig(&pack, root)
-	inspectModelPackWeights(&pack, resolvedPath, root)
+	// The dir index is opportunistic — populated by inspectModelPackWeights
+	// from its single glob, then consumed by downstream NotExist probes
+	// to avoid spurious open()/Result allocations. Stays empty (and
+	// therefore inert) when the caller hands us a single-file path.
+	var dir modelPackDirIndex
+	inspectModelPackWeights(&pack, resolvedPath, root, &dir)
 	if pack.Format == mp.ModelPackFormatGGUF && len(pack.WeightFiles) == 1 {
 		inspectModelPackGGUF(&pack, pack.WeightFiles[0])
 	}
 	if configErr == nil && config != nil {
 		applyModelPackConfigMetadata(&pack, config)
 	}
-	inspectModelPackJANG(&pack, root)
-	inspectModelPackCodebook(&pack, root)
+	inspectModelPackJANG(&pack, root, &dir)
+	inspectModelPackCodebook(&pack, root, &dir)
 	inspectModelPackTokenizer(&pack, root)
-	inspectModelPackChatTemplate(&pack, root, cfg)
+	// Architecture resolution happens BEFORE chat-template inspection so
+	// the latter can read pack.ArchitectureProfile directly instead of
+	// re-entering profile.LookupArchitectureProfile twice (one each for
+	// nativeChatTemplateName + modelPackRequiresChatTemplate). The
+	// canonical ID written into pack.Architecture is what subsequent
+	// stages already expect anyway.
 	inspectModelPackArchitecture(&pack)
-	inspectModelPackTaskProfiles(&pack, root)
+	inspectModelPackChatTemplate(&pack, root, cfg, &dir)
+	inspectModelPackTaskProfiles(&pack, root, &dir)
 	inspectModelPackMiniMaxM2(&pack)
 	inspectModelPackPolicy(&pack, cfg)
 	finalizeModelPack(&pack)
@@ -96,7 +107,9 @@ func Validate(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error
 
 func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe, error) {
 	configPath := core.PathJoin(root, "config.json")
-	config, err := readModelConfig(root)
+	// Pass the joined path in directly — readModelConfig would rebuild
+	// the same string via filepath.Join, so reuse what we just minted.
+	config, err := readModelConfigAt(configPath)
 	if err != nil {
 		code := mp.ModelPackIssueMissingConfig
 		message := "config.json is required for native go-mlx loading"
@@ -111,7 +124,77 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 	return config, nil
 }
 
-func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
+// modelPackDirIndex caches presence of the specific optional-config
+// filenames the inspect pipeline probes downstream — built from the
+// same single PathGlob the weight inspector already runs, so this is
+// opportunistic and adds no extra syscall. The index records exactly
+// the six basenames we'd otherwise ReadFile-then-IsNotExist for, in
+// fixed bool fields, so populating + querying is zero-alloc.
+//
+// The `populated` flag lets callers distinguish "no listing available"
+// (single-file resolvedPath) from "listed but file absent" — the
+// former falls through to the regular ReadFile probe so semantics for
+// the single-file entry path stay unchanged.
+type modelPackDirIndex struct {
+	populated         bool
+	jangConfig        bool
+	codebookConfig    bool
+	tokenizerConfig   bool
+	chatTemplateJinja bool
+	sentenceBert      bool
+	modulesJSON       bool
+}
+
+// has reports whether the named direct child of root is present in the
+// pre-fetched listing. Returns true if the index is empty (no listing
+// available) so callers fall through to the existing ReadFile probe —
+// the precise root-stat is preserved in that path. The name argument
+// is one of the six recognised optional-config filenames; anything
+// else returns true (let the caller perform the normal probe).
+func (d *modelPackDirIndex) has(name string) bool {
+	if d == nil || !d.populated {
+		return true
+	}
+	switch name {
+	case "jang_config.json":
+		return d.jangConfig
+	case "codebook_config.json":
+		return d.codebookConfig
+	case "tokenizer_config.json":
+		return d.tokenizerConfig
+	case "chat_template.jinja":
+		return d.chatTemplateJinja
+	case "sentence_bert_config.json":
+		return d.sentenceBert
+	case "modules.json":
+		return d.modulesJSON
+	}
+	return true
+}
+
+// record marks the matching field when basename is one of the
+// recognised optional-config filenames; otherwise it's a no-op.
+func (d *modelPackDirIndex) record(basename string) {
+	if d == nil {
+		return
+	}
+	switch basename {
+	case "jang_config.json":
+		d.jangConfig = true
+	case "codebook_config.json":
+		d.codebookConfig = true
+	case "tokenizer_config.json":
+		d.tokenizerConfig = true
+	case "chat_template.jinja":
+		d.chatTemplateJinja = true
+	case "sentence_bert_config.json":
+		d.sentenceBert = true
+	case "modules.json":
+		d.modulesJSON = true
+	}
+}
+
+func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir *modelPackDirIndex) {
 	var safetensors []string
 	var ggufs []string
 	switch {
@@ -120,8 +203,32 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 	case hasASCIIInsensitiveSuffix(resolvedPath, ".gguf"):
 		ggufs = []string{resolvedPath}
 	default:
-		safetensors = core.PathGlob(core.PathJoin(root, "*.safetensors"))
-		ggufs = core.PathGlob(core.PathJoin(root, "*.gguf"))
+		// One directory walk classifies both extensions instead of two
+		// passes via `*.safetensors` + `*.gguf`. filepath.Glob opens
+		// the directory and readdirs every entry regardless of pattern,
+		// so calling it twice doubled the syscall/alloc surface for a
+		// directory that typically holds 5-10 files. The single `*`
+		// pattern lets us bucket in one pass — and the basenames of
+		// non-weight entries become a presence index for the four
+		// optional-config probes downstream (jang_config.json,
+		// codebook_config.json, tokenizer_config.json,
+		// chat_template.jinja). Those four ReadFile calls cost two
+		// allocs each for NotExist on the common safetensors model
+		// pack; the dir index lets us skip the syscall when the file
+		// can't be there.
+		entries := core.PathGlob(core.PathJoin(root, "*"))
+		if dir != nil {
+			dir.populated = true
+		}
+		for _, path := range entries {
+			dir.record(core.PathBase(path))
+			switch {
+			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
+				safetensors = append(safetensors, path)
+			case hasASCIIInsensitiveSuffix(path, ".gguf"):
+				ggufs = append(ggufs, path)
+			}
+		}
 	}
 	sort.Strings(safetensors)
 	sort.Strings(ggufs)
@@ -136,6 +243,10 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		}
 	}
 
+	// safetensors / ggufs are freshly minted: PathGlob returns a new
+	// filepath.Glob slice, and the single-path cases assign a fresh
+	// []string{resolvedPath} above. No prior reference exists, so we
+	// hand the slice straight to pack.WeightFiles without cloning.
 	switch {
 	case len(safetensors) > 0 && len(ggufs) > 0:
 		pack.Format = mp.ModelPackFormatMixed
@@ -146,18 +257,52 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string) {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMixedWeightFormats, "model pack contains both safetensors and GGUF weights", root)
 	case len(safetensors) > 0:
 		pack.Format = mp.ModelPackFormatSafetensors
-		pack.WeightFiles = core.SliceClone(safetensors)
+		pack.WeightFiles = safetensors
 	case len(ggufs) == 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = core.SliceClone(ggufs)
+		pack.WeightFiles = ggufs
 	case len(ggufs) > 1:
 		pack.Format = mp.ModelPackFormatGGUF
-		pack.WeightFiles = core.SliceClone(ggufs)
+		pack.WeightFiles = ggufs
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMultipleGGUF, "model pack contains multiple GGUF files; native loading expects one", root)
 	default:
 		pack.Format = mp.ModelPackFormatMissing
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingWeights, "no .safetensors or .gguf weights found", root)
 	}
+}
+
+// containsASCIIInsensitive reports whether s contains substr, treating
+// A-Z and a-z as equal. substr MUST already be lowercase ASCII (the
+// caller passes a fixed string literal like "normalize"). Avoids
+// allocating a lowered copy of s — the substr lengths in this package
+// are short (≤ 12 bytes) so the naive byte-walk is fine.
+//
+//	containsASCIIInsensitive("Sentence/Normalize", "normalize")  // → true
+func containsASCIIInsensitive(s, substr string) bool {
+	if len(substr) == 0 {
+		return true
+	}
+	if len(s) < len(substr) {
+		return false
+	}
+	last := len(s) - len(substr)
+	for i := 0; i <= last; i++ {
+		matched := true
+		for j := 0; j < len(substr); j++ {
+			a := s[i+j]
+			if a >= 'A' && a <= 'Z' {
+				a += 'a' - 'A'
+			}
+			if a != substr[j] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 // hasASCIIInsensitiveSuffix reports whether s ends with suffix, treating
@@ -217,7 +362,10 @@ func applyModelPackConfigMetadata(pack *mp.ModelPack, config *modelConfigProbe) 
 	pack.VocabSize = firstPositive(pack.VocabSize, config.vocabSize())
 }
 
-func inspectModelPackJANG(pack *mp.ModelPack, root string) {
+func inspectModelPackJANG(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
+	if !dir.has("jang_config.json") {
+		return
+	}
 	info, err := jang.ReadConfig(root)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueQuantizationMismatch, "jang_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "jang_config.json"))
@@ -250,7 +398,10 @@ func inspectModelPackJANG(pack *mp.ModelPack, root string) {
 	}
 }
 
-func inspectModelPackCodebook(pack *mp.ModelPack, root string) {
+func inspectModelPackCodebook(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
+	if !dir.has("codebook_config.json") {
+		return
+	}
 	profile, err := codebook.ReadProfile(root)
 	if err != nil {
 		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueUnsupportedCodebook, "codebook_config.json could not be parsed: "+err.Error(), core.PathJoin(root, "codebook_config.json"))
@@ -283,14 +434,18 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 
 func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
-	stat := core.Stat(tokenizerPath)
-	if !stat.OK {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
-		return
-	}
+	// Single I/O round-trip: ReadFile already surfaces a stat-shaped
+	// "does not exist" via core.IsNotExist, so the prior explicit Stat
+	// was a duplicate syscall (and a duplicate Result alloc) on every
+	// Inspect.
 	read := core.ReadFile(tokenizerPath)
 	if !read.OK {
-		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, read.Value.(error).Error(), tokenizerPath)
+		err := read.Value.(error)
+		if core.IsNotExist(err) {
+			pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
+			return
+		}
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueInvalidTokenizer, err.Error(), tokenizerPath)
 		return
 	}
 	// We only need to confirm tokenizer.json parses; the contents
@@ -305,36 +460,50 @@ func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
 	pack.HasTokenizer = true
 }
 
-func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelPackConfig) {
-	tokenizerConfigPath := core.PathJoin(root, "tokenizer_config.json")
-	if template, ok, err := readTokenizerChatTemplate(tokenizerConfigPath); ok {
-		pack.TokenizerConfigPath = tokenizerConfigPath
-		pack.ChatTemplate = template
-		pack.ChatTemplateSource = mp.ModelPackChatTemplateFile
-		pack.HasChatTemplate = true
-		return
-	} else if err != nil {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
+func inspectModelPackChatTemplate(pack *mp.ModelPack, root string, cfg mp.ModelPackConfig, dir *modelPackDirIndex) {
+	if dir.has("tokenizer_config.json") {
+		tokenizerConfigPath := core.PathJoin(root, "tokenizer_config.json")
+		if template, ok, err := readTokenizerChatTemplate(tokenizerConfigPath); ok {
+			pack.TokenizerConfigPath = tokenizerConfigPath
+			pack.ChatTemplate = template
+			pack.ChatTemplateSource = mp.ModelPackChatTemplateFile
+			pack.HasChatTemplate = true
+			return
+		} else if err != nil {
+			pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), tokenizerConfigPath)
+		}
 	}
 
-	jinjaPath := core.PathJoin(root, "chat_template.jinja")
-	if template, ok, err := readJinjaChatTemplate(jinjaPath); ok {
-		pack.TokenizerConfigPath = jinjaPath
-		pack.ChatTemplate = template
-		pack.ChatTemplateSource = mp.ModelPackChatTemplateJinja
-		pack.HasChatTemplate = true
-		return
-	} else if err != nil {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
+	if dir.has("chat_template.jinja") {
+		jinjaPath := core.PathJoin(root, "chat_template.jinja")
+		if template, ok, err := readJinjaChatTemplate(jinjaPath); ok {
+			pack.TokenizerConfigPath = jinjaPath
+			pack.ChatTemplate = template
+			pack.ChatTemplateSource = mp.ModelPackChatTemplateJinja
+			pack.HasChatTemplate = true
+			return
+		} else if err != nil {
+			pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueMissingChatTemplate, err.Error(), jinjaPath)
+		}
 	}
 
-	if template := nativeChatTemplateName(pack.Architecture); template != "" {
-		pack.ChatTemplate = template
+	// inspectModelPackArchitecture has already resolved
+	// pack.ArchitectureProfile when the architecture is known; consult
+	// it directly so we don't re-enter profile.LookupArchitectureProfile
+	// once for the native template and again for the requires-template
+	// predicate.
+	archProfile := pack.ArchitectureProfile
+	if archProfile != nil && archProfile.ChatTemplate != "" {
+		pack.ChatTemplate = archProfile.ChatTemplate
 		pack.ChatTemplateSource = mp.ModelPackChatTemplateNative
 		pack.HasChatTemplate = true
 		return
 	}
-	if !modelPackRequiresChatTemplate(pack.Architecture) {
+	requiresTemplate := true
+	if archProfile != nil {
+		requiresTemplate = archProfile.RequiresChatTemplate
+	}
+	if !requiresTemplate {
 		return
 	}
 	if cfg.RequireChatTemplate {
@@ -418,12 +587,27 @@ func inspectModelPackArchitecture(pack *mp.ModelPack) {
 		return
 	}
 	if !resolved.NativeRuntime {
-		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessage(pack.Architecture), pack.ConfigPath)
+		// The unsupported-runtime message specialises on the resolved
+		// profile we already hold; pass it in directly so we don't
+		// re-enter profile.LookupArchitectureProfile (full trim, alias
+		// scan, clone) just to read the same shape.
+		pack.AddIssue(mp.ModelPackIssueWarning, mp.ModelPackIssueUnsupportedRuntime, modelPackUnsupportedRuntimeMessageFor(&resolved, pack.Architecture), pack.ConfigPath)
 	}
 }
 
+// modelPackUnsupportedRuntimeMessage retains the lookup-by-name shape
+// for external callers; in-package consumers route through
+// modelPackUnsupportedRuntimeMessageFor with a profile they already
+// own to skip the redundant LookupArchitectureProfile.
 func modelPackUnsupportedRuntimeMessage(architecture string) string {
 	if profile, ok := profile.LookupArchitectureProfile(architecture); ok {
+		return modelPackUnsupportedRuntimeMessageFor(&profile, architecture)
+	}
+	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
+}
+
+func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitectureProfile, architecture string) string {
+	if profile != nil {
 		switch {
 		case profile.ID == "qwen3_6":
 			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet; use mlx_lm fallback: " + architecture
@@ -440,7 +624,7 @@ func modelPackUnsupportedRuntimeMessage(architecture string) string {
 	return "architecture is recognized, but native runtime loading is not implemented yet: " + architecture
 }
 
-func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string) {
+func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
 	if pack == nil {
 		return
 	}
@@ -455,17 +639,17 @@ func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string) {
 		return
 	}
 	if arch.Embeddings {
-		embedding := inspectModelPackEmbeddingProfile(pack, root)
+		embedding := inspectModelPackEmbeddingProfile(pack, root, dir)
 		pack.Embedding = &embedding
 	}
 	if arch.Rerank {
-		rerank := inspectModelPackRerankProfile(pack, root)
+		rerank := inspectModelPackRerankProfile(pack, root, dir)
 		pack.Rerank = &rerank
 	}
 	pack.Capabilities = modelPackCapabilities(pack)
 }
 
-func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelEmbeddingProfile {
+func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string, dir *modelPackDirIndex) mp.ModelEmbeddingProfile {
 	profile := mp.ModelEmbeddingProfile{
 		Dimension:         pack.HiddenSize,
 		Pooling:           "cls",
@@ -475,7 +659,7 @@ func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelE
 	if root == "" {
 		return profile
 	}
-	if maxSeq, ok := readSentenceBertMaxSequence(root); ok {
+	if maxSeq, ok := readSentenceBertMaxSequence(root, dir); ok {
 		profile.MaxSequenceLength = firstPositive(maxSeq, profile.MaxSequenceLength)
 		profile.Source = "sentence-transformers"
 	}
@@ -483,21 +667,21 @@ func inspectModelPackEmbeddingProfile(pack *mp.ModelPack, root string) mp.ModelE
 		profile.Pooling = pooling
 		profile.Source = "sentence-transformers"
 	}
-	if normalize, ok := readSentenceTransformerNormalize(root); ok {
+	if normalize, ok := readSentenceTransformerNormalize(root, dir); ok {
 		profile.Normalize = normalize
 		profile.Source = "sentence-transformers"
 	}
 	return profile
 }
 
-func inspectModelPackRerankProfile(pack *mp.ModelPack, root string) mp.ModelRerankProfile {
+func inspectModelPackRerankProfile(pack *mp.ModelPack, root string, dir *modelPackDirIndex) mp.ModelRerankProfile {
 	profile := mp.ModelRerankProfile{
 		Method:            "cross-encoder",
 		MaxSequenceLength: pack.ContextLength,
 		Source:            "transformers",
 	}
 	if root != "" {
-		if maxSeq, ok := readSentenceBertMaxSequence(root); ok {
+		if maxSeq, ok := readSentenceBertMaxSequence(root, dir); ok {
 			profile.MaxSequenceLength = firstPositive(maxSeq, profile.MaxSequenceLength)
 			profile.Source = "sentence-transformers"
 		}
@@ -505,7 +689,10 @@ func inspectModelPackRerankProfile(pack *mp.ModelPack, root string) mp.ModelRera
 	return profile
 }
 
-func readSentenceBertMaxSequence(root string) (int, bool) {
+func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool) {
+	if !dir.has("sentence_bert_config.json") {
+		return 0, false
+	}
 	read := core.ReadFile(core.PathJoin(root, "sentence_bert_config.json"))
 	if !read.OK {
 		return 0, false
@@ -550,7 +737,10 @@ func readSentenceTransformerPooling(root string) (string, bool) {
 	return "", false
 }
 
-func readSentenceTransformerNormalize(root string) (bool, bool) {
+func readSentenceTransformerNormalize(root string, dir *modelPackDirIndex) (bool, bool) {
+	if !dir.has("modules.json") {
+		return false, false
+	}
 	read := core.ReadFile(core.PathJoin(root, "modules.json"))
 	if !read.OK {
 		return false, false
@@ -562,8 +752,13 @@ func readSentenceTransformerNormalize(root string) (bool, bool) {
 	if result := core.JSONUnmarshal(read.Value.([]byte), &modules); !result.OK {
 		return false, false
 	}
+	// Test "normalize" insensitively against Type+Path without
+	// allocating a lowered copy per field. modules.json typically
+	// carries 1-4 entries; the per-call Lower allocs (one per field,
+	// two per row) compound on every Inspect against a
+	// sentence-transformers model.
 	for _, module := range modules {
-		if core.Contains(core.Lower(module.Type), "normalize") || core.Contains(core.Lower(module.Path), "normalize") {
+		if containsASCIIInsensitive(module.Type, "normalize") || containsASCIIInsensitive(module.Path, "normalize") {
 			return true, true
 		}
 	}
@@ -574,20 +769,44 @@ func modelPackCapabilities(pack *mp.ModelPack) []inference.Capability {
 	if pack == nil {
 		return nil
 	}
-	var capabilities []inference.Capability
-	if pack.Embedding != nil {
+	// Tally first so we can size the slice exactly — capabilities is
+	// short (typically 0-2 entries) but the per-grow alloc pattern
+	// fires for every Inspect call on a MoE or embedding model. One
+	// upfront make beats up to four geometric-growth reallocations.
+	hasEmbedding := pack.Embedding != nil
+	hasRerank := pack.Rerank != nil
+	hasMoE := pack.ArchitectureProfile != nil && pack.ArchitectureProfile.MoE
+	hasCodebook := pack.Codebook != nil
+	count := 0
+	if hasEmbedding {
+		count++
+	}
+	if hasRerank {
+		count++
+	}
+	if hasMoE {
+		count += 2
+	}
+	if hasCodebook {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	capabilities := make([]inference.Capability, 0, count)
+	if hasEmbedding {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityEmbeddings, pack.Architecture))
 	}
-	if pack.Rerank != nil {
+	if hasRerank {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityRerank, pack.Architecture))
 	}
-	if pack.ArchitectureProfile != nil && pack.ArchitectureProfile.MoE {
+	if hasMoE {
 		capabilities = append(capabilities,
 			modelPackAlgorithmCapability(inference.CapabilityMoERouting, pack.Architecture),
 			modelPackAlgorithmCapability(inference.CapabilityMoELazyExperts, pack.Architecture),
 		)
 	}
-	if pack.Codebook != nil {
+	if hasCodebook {
 		capabilities = append(capabilities, modelPackAlgorithmCapability(inference.CapabilityCodebookVQ, pack.Architecture))
 	}
 	return capabilities
