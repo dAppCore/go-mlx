@@ -242,22 +242,44 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 }
 
 func fusePairName(weightName string) (string, string, bool) {
-	for _, variant := range []struct {
-		suffix string
-		kind   string
-	}{
-		{suffix: ".lora_a.weight", kind: "a"},
-		{suffix: ".lora_A.weight", kind: "a"},
-		{suffix: ".lora_a", kind: "a"},
-		{suffix: ".lora_A", kind: "a"},
-		{suffix: ".lora_b.weight", kind: "b"},
-		{suffix: ".lora_B.weight", kind: "b"},
-		{suffix: ".lora_b", kind: "b"},
-		{suffix: ".lora_B", kind: "b"},
-	} {
-		if core.HasSuffix(weightName, variant.suffix) {
-			return core.TrimSuffix(weightName, variant.suffix), variant.kind, true
+	// The 8-variant table splits cleanly along ".weight"-tail: 4 variants
+	// end in ".weight" (so the second-to-last segment is ".lora_X"), and
+	// 4 are bare ".lora_X" tails. Probe the .weight tail once to halve
+	// the candidate set, then dispatch on the kind byte ('a','A','b','B').
+	// Worst case drops from 8 HasSuffix scans (the non-LoRA miss hit ~22ns)
+	// to one HasSuffix + one byte read + one TrimSuffix. The kind byte
+	// is the byte immediately preceding the chosen tail.
+	if core.HasSuffix(weightName, ".weight") {
+		// Layout: ...lora_<X>.weight — kind byte at len-8 ('.weight' is
+		// 7 chars, the byte before that is the X).
+		head := len(weightName) - len(".lora_X.weight")
+		if head < 0 {
+			return "", "", false
 		}
+		if weightName[head:head+6] != ".lora_" {
+			return "", "", false
+		}
+		switch weightName[head+6] {
+		case 'a', 'A':
+			return weightName[:head], "a", true
+		case 'b', 'B':
+			return weightName[:head], "b", true
+		}
+		return "", "", false
+	}
+	// Bare ".lora_X" tail.
+	head := len(weightName) - len(".lora_X")
+	if head < 0 {
+		return "", "", false
+	}
+	if weightName[head:head+6] != ".lora_" {
+		return "", "", false
+	}
+	switch weightName[head+6] {
+	case 'a', 'A':
+		return weightName[:head], "a", true
+	case 'b', 'B':
+		return weightName[:head], "b", true
 	}
 	return "", "", false
 }
