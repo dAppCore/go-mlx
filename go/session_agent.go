@@ -425,8 +425,9 @@ func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.Sl
 		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", strconv.Itoa(report.RecentTailBytes))
 		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", strconv.Itoa(report.FoldedPromptBytes))
 	}
-	opts.Labels = append([]string(nil), opts.Labels...)
-	opts.Labels = append(opts.Labels, "folded-state")
+	cloned := make([]string, len(opts.Labels), len(opts.Labels)+1)
+	copy(cloned, opts.Labels)
+	opts.Labels = append(cloned, "folded-state")
 	return opts
 }
 
