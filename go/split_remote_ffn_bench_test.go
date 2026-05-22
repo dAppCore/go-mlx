@@ -110,7 +110,7 @@ func BenchmarkRemoteSplitFFN_NewExecutor_NoExtraHeaders(b *testing.B) {
 		if err != nil {
 			b.Fatalf("NewRemoteSplitFFNExecutor: %v", err)
 		}
-		_ = exec.preHeader["Accept"] // touch field
+		_ = exec.userHeader // touch field
 	}
 }
 
@@ -137,6 +137,6 @@ func BenchmarkRemoteSplitFFN_NewExecutor_WithHeadersAndLabels(b *testing.B) {
 		if err != nil {
 			b.Fatalf("NewRemoteSplitFFNExecutor: %v", err)
 		}
-		_ = exec.preHeader["Accept"] // touch field
+		_ = exec.userHeader // touch field
 	}
 }

@@ -40,36 +40,24 @@ type RemoteSplitFFNResponse struct {
 type RemoteSplitFFNExecutor struct {
 	endpoint inference.SplitEndpoint
 	url      string
-	// preHeader holds the canonicalised request headers — Accept +
-	// Content-Type sentinels plus any caller-supplied headers — already
-	// in the http.Header (= map[string][]string) shape ForwardFFN needs
-	// to splat into each new request. Building this at construction
-	// time replaces a per-ForwardFFN sequence of
-	//   httpReq.Header.Set("Accept", "application/json")
-	//   httpReq.Header.Set("Content-Type", "application/json")
-	//   for k, v := range headers { httpReq.Header.Set(k, v) }
-	// where each Set allocates a fresh []string{value} backing slice
-	// plus runs textproto.CanonicalMIMEHeaderKey on every key. Per-call
-	// cost becomes a single range over the prebuilt map with direct
-	// map-index assignment, reusing the package-singleton 1-element
-	// slices verbatim.
-	preHeader core.Header
-	client    *core.HTTPClient
-}
-
-// preBuiltSplitFFNHeader carries the always-on Accept + Content-Type
-// header values as canonicalised http.Header entries so the executor
-// constructor can fold them into its prebuilt per-request header map
-// without re-creating the []string{value} slices on each call.
-var preBuiltSplitFFNHeader = core.Header{
-	"Accept":       jsonContentTypeValues,
-	"Content-Type": jsonContentTypeValues,
+	// userHeader holds caller-supplied request headers in the
+	// already-canonicalised http.Header (= map[string][]string) shape
+	// ForwardFFN splats into each new request. Canonical keys + shared
+	// 1-element value slices are produced once at construction via
+	// Header.Set, so per-call cost is a direct map-index assignment
+	// per entry — no textproto.CanonicalMIMEHeaderKey, no fresh
+	// []string{value} backing slice. nil when the caller provided no
+	// headers, which lets ForwardFFN skip the range loop entirely on
+	// the bare-endpoint deployment shape.
+	userHeader core.Header
+	client     *core.HTTPClient
 }
 
 // jsonContentTypeValues is the shared 1-element header value slice
-// reused across every prebuilt header copy — net/http.Header treats
-// the []string as the canonical value vector, so a single immutable
-// allocation services all RemoteSplitFFNExecutor instances.
+// reused across every ForwardFFN request — net/http.Header treats the
+// []string as the canonical value vector, so a single immutable
+// package-level allocation services every Accept + Content-Type
+// header write without ever materialising a fresh slice.
 var jsonContentTypeValues = []string{"application/json"}
 
 // Sentinel errors for the remote FFN executor hot paths. Built once at
@@ -95,25 +83,25 @@ func NewRemoteSplitFFNExecutor(cfg RemoteSplitFFNConfig) (*RemoteSplitFFNExecuto
 	if client == nil {
 		client = &core.HTTPClient{}
 	}
-	// Build the canonicalised request header up front. The static
-	// Accept + Content-Type pair is seeded by copying from the
-	// preBuiltSplitFFNHeader template; caller-supplied headers go
-	// through Header.Set so their keys get canonicalised once at
-	// construction (textproto.CanonicalMIMEHeaderKey) instead of on
-	// every ForwardFFN call. Per-call cost then drops to a single
-	// range over the prebuilt map with a direct map assignment.
-	preHeader := make(core.Header, len(preBuiltSplitFFNHeader)+len(cfg.Headers))
-	for k, v := range preBuiltSplitFFNHeader {
-		preHeader[k] = v
-	}
-	for k, v := range cfg.Headers {
-		preHeader.Set(k, v)
+	// Canonicalise caller-supplied headers once at construction so
+	// ForwardFFN can splat them directly via map-index assignment
+	// instead of paying textproto.CanonicalMIMEHeaderKey + a fresh
+	// []string{value} backing slice per Header.Set on every request.
+	// Leave userHeader nil when the caller provided no extra headers
+	// — ForwardFFN can then short-circuit the range loop entirely
+	// for the bare-endpoint deployment shape.
+	var userHeader core.Header
+	if len(cfg.Headers) > 0 {
+		userHeader = make(core.Header, len(cfg.Headers))
+		for k, v := range cfg.Headers {
+			userHeader.Set(k, v)
+		}
 	}
 	return &RemoteSplitFFNExecutor{
-		endpoint:  cfg.Endpoint,
-		url:       url,
-		preHeader: preHeader,
-		client:    client,
+		endpoint:   cfg.Endpoint,
+		url:        url,
+		userHeader: userHeader,
+		client:     client,
 	}, nil
 }
 
@@ -164,19 +152,21 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	}
 	httpReq := httpReqResult.Value.(*core.Request)
 	// httpReq.Header was just constructed empty by NewRequestWithContext
-	// (make(Header) with no entries). Splat the prebuilt canonicalised
-	// entries directly via map-index assignment — net/http reads the
-	// header as map[string][]string at write time, so reusing the
-	// shared 1-element value slices across requests is safe (the value
-	// slices are never mutated by the transport). The previous
-	//   Header.Set("Accept", "application/json")
-	//   Header.Set("Content-Type", "application/json")
-	//   for k, v := range executor.headers { Header.Set(k, v) }
-	// path went through textproto.CanonicalMIMEHeaderKey on every key
-	// and allocated a fresh []string{value} backing slice per Set call;
-	// the prebuilt header skips both, dropping 2 + len(executor.headers)
-	// per-call slice allocations.
-	for key, values := range executor.preHeader {
+	// (make(Header) with no entries). Splat the always-on Accept +
+	// Content-Type pair directly via map-index assignment against the
+	// shared package-singleton jsonContentTypeValues slice — both
+	// keys are already canonical so net/http's textproto.CanonicalMIME
+	// HeaderKey can be skipped, and the value slice never escapes /
+	// is never mutated by the transport so the singleton is safe to
+	// share. The previous Header.Set path went through canonicalisation
+	// per call and allocated a fresh []string{value} backing slice per
+	// Set; the direct assignment drops both costs.
+	httpReq.Header["Accept"] = jsonContentTypeValues
+	httpReq.Header["Content-Type"] = jsonContentTypeValues
+	// User headers were canonicalised once at construction and stored
+	// in the shared canonical form, so the per-call cost is a direct
+	// map copy per entry. nil userHeader skips the iteration entirely.
+	for key, values := range executor.userHeader {
 		httpReq.Header[key] = values
 	}
 	resp, err := executor.client.Do(httpReq)
