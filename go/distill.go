@@ -364,16 +364,16 @@ func runDistillEpoch(ctx context.Context, runner DistillRunner, ds dataset.Datas
 				return err
 			}
 		}
-		updateDistillResult(result, accumulator, len(sftBatch.Batch.Tokens), loss, cacheStatus)
+		updateDistillResult(result, accumulator, len(sftBatch.Batch.Tokens), &loss, cacheStatus)
 		result.Losses = append(result.Losses, loss)
 
-		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, &batch, loss); err != nil {
+		if err := maybeSaveDistillCheckpoint(ctx, runner, cfg, result, &batch, &loss); err != nil {
 			return err
 		}
 		if err := maybeRunDistillEval(ctx, runner, cfg, result, epoch); err != nil {
 			return err
 		}
-		emitDistillProbe(cfg, result, loss, cacheStatus, epoch)
+		emitDistillProbe(cfg, result, &loss, cacheStatus, epoch)
 	}
 	return nil
 }
@@ -428,7 +428,7 @@ func teacherLogitsForDistillBatch(ctx context.Context, runner DistillRunner, bat
 	return logits, "miss", nil
 }
 
-func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, samples int, loss DistillLoss, cacheStatus string) {
+func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumulator, samples int, loss *DistillLoss, cacheStatus string) {
 	result.Metrics.Steps++
 	result.Metrics.Batches++
 	result.Metrics.Samples += samples
@@ -454,17 +454,17 @@ func updateDistillResult(result *DistillResult, accumulator *distillMetricAccumu
 	result.Metrics.EvaluationCount = len(result.Evaluations)
 }
 
-func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch *DistillBatch, loss DistillLoss) error {
+func maybeSaveDistillCheckpoint(ctx context.Context, runner DistillRunner, cfg DistillConfig, result *DistillResult, batch *DistillBatch, loss *DistillLoss) error {
 	if cfg.CheckpointDir == "" || cfg.CheckpointEvery <= 0 || result.Metrics.Steps%cfg.CheckpointEvery != 0 {
 		return nil
 	}
 	path := core.PathJoin(cfg.CheckpointDir, formatDistillStepDir(result.Metrics.Steps))
-	meta := NewDistillCheckpointMetadata(path, cfg, result, loss, batch.Epoch)
+	meta := NewDistillCheckpointMetadata(path, cfg, result, *loss, batch.Epoch)
 	if runner.SaveCheckpoint != nil {
 		if err := runner.SaveCheckpoint(ctx, DistillCheckpointContext{
 			Path:     path,
 			Batch:    *batch,
-			Loss:     loss,
+			Loss:     *loss,
 			Metadata: meta,
 		}); err != nil {
 			return err
@@ -505,7 +505,7 @@ func maybeRunDistillEval(ctx context.Context, runner DistillRunner, cfg DistillC
 	return nil
 }
 
-func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss DistillLoss, cacheStatus string, epoch int) {
+func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss *DistillLoss, cacheStatus string, epoch int) {
 	if cfg.ProbeSink == nil {
 		return
 	}
@@ -933,7 +933,7 @@ type distillMetricAccumulator struct {
 	entropySum float64
 }
 
-func (a *distillMetricAccumulator) add(loss DistillLoss) {
+func (a *distillMetricAccumulator) add(loss *DistillLoss) {
 	if a == nil || loss.Tokens <= 0 {
 		return
 	}
