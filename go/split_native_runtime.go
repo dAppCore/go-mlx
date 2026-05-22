@@ -191,11 +191,16 @@ func nativeSplitLocalRuntimeReady(ctx context.Context, runtime *NativeSplitLocal
 }
 
 func (runtime *NativeSplitLocalRuntime) nativeModel(ctx context.Context) (nativeSplitModel, error) {
-	if err := nativeSplitLocalRuntimeReady(ctx, runtime); err != nil {
-		return nil, err
-	}
+	// Every public method (Prefill / ForwardAttention / Sample /
+	// DecodeToken) already gated on nativeSplitLocalRuntimeReady before
+	// calling nativeModel — re-running ctx.Err + nil + path checks here
+	// repeated the same ctx-channel cas + receiver deref on every call.
+	// Fast-path the cached model and skip the duplicate readiness work.
 	if runtime.model != nil {
 		return runtime.model, nil
+	}
+	if err := nativeSplitLocalRuntimeReady(ctx, runtime); err != nil {
+		return nil, err
 	}
 	model, err := loadNativeSplitModel(runtime.slicePath, toMetalSplitLoadConfig(runtime.cfg))
 	if err != nil {
