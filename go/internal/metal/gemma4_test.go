@@ -3753,6 +3753,25 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_Good(t *testing.T) {
 		if cfg.PerLayerInputEmbeddingScale != wantP {
 			t.Fatalf("PerLayerInputEmbeddingScale(perLayer=%d): cached %v != per-call %v", c.perLayer, cfg.PerLayerInputEmbeddingScale, wantP)
 		}
+		wantProj := float32(math.Pow(float64(c.hidden), -0.5))
+		if cfg.PerLayerProjectionScale != wantProj {
+			t.Fatalf("PerLayerProjectionScale(hidden=%d): cached %v != per-call %v", c.hidden, cfg.PerLayerProjectionScale, wantProj)
+		}
+	}
+}
+
+func TestGemma4_perLayerCombineScale_MatchesMathPow_Good(t *testing.T) {
+	coverageTokens := "perLayerCombineScale MatchesMathPow"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	// gemma4PerLayerCombineScale folds the per-token math.Pow(2, -0.5)
+	// inside perLayerInputTensor; the constant must remain bit-exact
+	// against the float32 narrowing of the live computation so the
+	// forward pass output is unchanged.
+	want := float32(math.Pow(2, -0.5))
+	if gemma4PerLayerCombineScale != want {
+		t.Fatalf("gemma4PerLayerCombineScale = %v, want %v (1/sqrt(2))", gemma4PerLayerCombineScale, want)
 	}
 }
 
@@ -3776,5 +3795,16 @@ func TestGemma4_parseConfig_EmbeddingScalesCached_ResetsOnZero_Good(t *testing.T
 	}
 	if cfg.EmbeddingScale == 0 {
 		t.Fatal("EmbeddingScale = 0, want unchanged main embedding scale")
+	}
+	if cfg.PerLayerProjectionScale == 0 {
+		t.Fatal("PerLayerProjectionScale = 0, want unchanged when only per-layer reset")
+	}
+	// A second zeroing of HiddenSize must also zero PerLayerProjectionScale
+	// — the loader may clear HiddenSize in pathological configs and the
+	// projection scale tracks HiddenSize.
+	cfg.HiddenSize = 0
+	gemma4FinaliseEmbeddingScales(cfg)
+	if cfg.PerLayerProjectionScale != 0 {
+		t.Fatalf("PerLayerProjectionScale = %v, want 0 after HiddenSize reset", cfg.PerLayerProjectionScale)
 	}
 }

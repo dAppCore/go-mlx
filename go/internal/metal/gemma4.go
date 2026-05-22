@@ -18,6 +18,13 @@ var enableCompiledGemma4PerLayerInputs = core.Env("GO_MLX_ENABLE_COMPILED_GEMMA4
 // It exists only to isolate the Gemma 4 per-layer input cost.
 var disableGemma4PerLayerInputs = core.Env("GO_MLX_DISABLE_GEMMA4_PER_LAYER_INPUTS") == "1"
 
+// gemma4PerLayerCombineScale is the constant 2**-0.5 (i.e. 1/sqrt(2))
+// applied as the final scaling factor when combining the per-layer
+// projected hidden with the per-layer input embedding inside
+// perLayerInputTensor. Lifting the float32 narrowing here keeps the
+// per-token forward pass free of math.Pow.
+const gemma4PerLayerCombineScale float32 = 0.70710678118654752440
+
 // Gemma4TextConfig holds Gemma 4 text model configuration.
 type Gemma4TextConfig struct {
 	ModelType                 string                `json:"model_type"`
@@ -56,6 +63,7 @@ type Gemma4TextConfig struct {
 	LayerTypes                  []string            `json:"-"`
 	EmbeddingScale              float32             `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
 	PerLayerInputEmbeddingScale float32             `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
+	PerLayerProjectionScale     float32             `json:"-"` // Computed: 1/sqrt(hidden_size); cached to skip per-token math.Pow in perLayerInputTensor
 }
 
 // RopeParams holds RoPE configuration for a single attention type.
@@ -651,19 +659,22 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 	return &cfg, nil
 }
 
-// gemma4FinaliseEmbeddingScales caches sqrt(HiddenSize) and
-// sqrt(HiddenSizePerLayerInput) on the config so per-token forward
-// passes can skip the math.Sqrt + float32 narrowing entirely. Safe to
-// call multiple times — the loader re-invokes after inferring or
-// resetting HiddenSizePerLayerInput from weights.
+// gemma4FinaliseEmbeddingScales caches sqrt(HiddenSize),
+// sqrt(HiddenSizePerLayerInput), and 1/sqrt(HiddenSize) on the config
+// so per-token forward passes can skip the math.Sqrt/math.Pow + float32
+// narrowing entirely. Safe to call multiple times — the loader
+// re-invokes after inferring or resetting HiddenSizePerLayerInput from
+// weights.
 func gemma4FinaliseEmbeddingScales(cfg *Gemma4TextConfig) {
 	if cfg == nil {
 		return
 	}
 	if cfg.HiddenSize > 0 {
 		cfg.EmbeddingScale = float32(math.Sqrt(float64(cfg.HiddenSize)))
+		cfg.PerLayerProjectionScale = float32(math.Pow(float64(cfg.HiddenSize), -0.5))
 	} else {
 		cfg.EmbeddingScale = 0
+		cfg.PerLayerProjectionScale = 0
 	}
 	if cfg.HiddenSizePerLayerInput > 0 {
 		cfg.PerLayerInputEmbeddingScale = float32(math.Sqrt(float64(cfg.HiddenSizePerLayerInput)))
@@ -1797,7 +1808,7 @@ func (m *Gemma4Model) perLayerInputTensor(tokens, hidden *Array, B, L int32) *Ar
 	}
 
 	projected := m.PerLayerModelProj.Forward(hidden)
-	projectedScaled := MulScalar(projected, float32(math.Pow(float64(m.Cfg.HiddenSize), -0.5)))
+	projectedScaled := MulScalar(projected, m.Cfg.PerLayerProjectionScale)
 	Free(projected)
 	projected = gemma4NormalizePerLayerTensor(projectedScaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
 	if projected != projectedScaled {
@@ -1808,7 +1819,7 @@ func (m *Gemma4Model) perLayerInputTensor(tokens, hidden *Array, B, L int32) *Ar
 
 	combined := Add(projectedNormed, perLayer)
 	Free(projectedNormed, perLayer)
-	combinedScaled := MulScalar(combined, float32(math.Pow(2, -0.5)))
+	combinedScaled := MulScalar(combined, gemma4PerLayerCombineScale)
 	Free(combined)
 	combined = combinedScaled
 	return combined
@@ -1821,9 +1832,15 @@ func (m *Gemma4Model) splitPerLayerInputTensor(combined *Array) []*Array {
 	defer Free(combined)
 
 	perLayerInputs := make([]*Array, m.Cfg.NumHiddenLayers)
+	// Hoist the Squeeze axes slice out of the per-layer loop.  Squeeze is
+	// variadic and the substrate takes &axes[0] for the cgo inline call,
+	// so each `Squeeze(sliced, 2)` inside the loop body would heap-allocate
+	// a fresh `[]int{2}`.  One layer-2 squeeze per layer × 26 layers ==
+	// 26 allocs/token; with the hoist this becomes 1 alloc/forward.
+	squeezeAxis2 := []int{2}
 	for i := range m.Cfg.NumHiddenLayers {
 		sliced := SliceAxis(combined, 2, i, i+1)
-		perLayerInputs[i] = Squeeze(sliced, 2)
+		perLayerInputs[i] = Squeeze(sliced, squeezeAxis2...)
 		Free(sliced)
 	}
 	return perLayerInputs

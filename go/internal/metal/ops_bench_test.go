@@ -168,3 +168,91 @@ func BenchmarkZeros_4D_PerToken(b *testing.B) {
 		Free(z)
 	}
 }
+
+// BenchmarkAsStrided_4D_PerToken_InlineSliceLiterals mirrors the actual
+// gemma3 / gemma4 / qwen3 attention forward pattern: the [B, H, L, D]
+// shape and rank-4 strides are constructed as Go slice literals INSIDE
+// the per-token call (caller has only the cfg + B + L in scope).  The
+// W10-A substrate fix made the AsStrided call itself 0-alloc when the
+// caller passes pre-built slices; this benchmark measures the residual
+// inline-literal cost that the model files still pay three times per
+// layer per token (Q/K/V).
+func BenchmarkAsStrided_4D_PerToken_InlineSliceLiterals(b *testing.B) {
+	a := Zeros([]int32{1024}, DTypeFloat32)
+	defer Free(a)
+
+	// Treat these as if they were cfg fields (loop-hoisted to mirror the
+	// model files reading from *TextConfig / *Qwen3Config).
+	var (
+		B   int32 = 1
+		H   int32 = 8
+		L   int32 = 1
+		D   int32 = 128
+		HxD int32 = H * D
+	)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		v := AsStrided(a,
+			[]int32{B, H, L, D},
+			[]int64{int64(L * HxD), int64(D), int64(HxD), 1},
+			0,
+		)
+		Free(v)
+	}
+}
+
+// BenchmarkReshape_4D_PerToken_VariadicArgs mirrors the gemma3 / qwen3
+// attention forward call site `Reshape(transposed, B, L, H*D)` — the
+// variadic slice escapes to the heap because the substrate dereferences
+// &shape[0] for the cgo inline call.  Documents the residual per-layer
+// alloc the variadic call shape leaves at the model-layer site even
+// after W10-A made the substrate Reshape 0-alloc.
+func BenchmarkReshape_4D_PerToken_VariadicArgs(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1024)
+	defer Free(a)
+
+	var (
+		B int32 = 1
+		L int32 = 1
+		H int32 = 8
+		D int32 = 128
+	)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape(a, B, L, H*D)
+		Free(r)
+	}
+}
+
+// BenchmarkTranspose_4D_PerToken_VariadicArgs mirrors the gemma3 /
+// qwen3 / gemma4 attention forward call site `Transpose(out, 0, 2, 1,
+// 3)`.  The variadic []int axes argument escapes to the heap because
+// the substrate takes &axes[0] for the cgo inline call.
+func BenchmarkTranspose_4D_PerToken_VariadicArgs(b *testing.B) {
+	a := Zeros([]int32{1, 1, 8, 128}, DTypeFloat32)
+	defer Free(a)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		t := Transpose(a, 0, 2, 1, 3)
+		Free(t)
+	}
+}
+
+// BenchmarkSqueeze_PerToken_VariadicArgs mirrors the gemma4
+// splitPerLayerInputTensor inner-loop call `Squeeze(sliced, 2)` — one
+// per layer, per forward.  The variadic []int axes escapes to the heap
+// because the substrate takes &axes[0] for the cgo inline call.
+func BenchmarkSqueeze_PerToken_VariadicArgs(b *testing.B) {
+	a := Zeros([]int32{1, 1, 1, 128}, DTypeFloat32)
+	defer Free(a)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Squeeze(a, 2)
+		Free(s)
+	}
+}
