@@ -48,6 +48,17 @@ func BenchmarkNormalizeAction(b *testing.B) {
 	}
 }
 
+// BenchmarkNormalizeAction_Clean measures the realistic hot-path
+// shape — well-formed actions arrive lowercase and untrimmed from
+// JSON unmarshal and should walk the fast path with zero allocs.
+func BenchmarkNormalizeAction_Clean(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = normalizeAction("generate")
+	}
+}
+
 func BenchmarkRegistryDispatch_Stub(b *testing.B) {
 	r := NewRegistry("violet", "test")
 	ctx := context.Background()
@@ -76,6 +87,8 @@ func BenchmarkNewNativeGenerateRunner(b *testing.B) {
 	}
 }
 
+var toMLXMessagesSink []inference.Message
+
 func BenchmarkToMLXMessages(b *testing.B) {
 	msgs := []Message{
 		{Role: "system", Content: "you are helpful"},
@@ -86,7 +99,7 @@ func BenchmarkToMLXMessages(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = toMLXMessages(msgs)
+		toMLXMessagesSink = toMLXMessages(msgs)
 	}
 }
 
@@ -172,6 +185,40 @@ func BenchmarkRegistryActions(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = r.Actions()
 	}
+}
+
+// BenchmarkBuilderPregrow_TokenStream simulates the per-token append
+// path inside Generate. It compares a default strings.Builder against
+// one pre-grown to the expected response size — the difference
+// captures the realloc churn the live generate path now avoids.
+func BenchmarkBuilderPregrow_TokenStream(b *testing.B) {
+	tokens := make([]string, 256)
+	for i := range tokens {
+		tokens[i] = "tok "
+	}
+	b.Run("default", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			bld := core.NewBuilder()
+			for _, t := range tokens {
+				bld.WriteString(t)
+			}
+			_ = bld.String()
+		}
+	})
+	b.Run("pregrown", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			bld := core.NewBuilder()
+			bld.Grow(256 * 4)
+			for _, t := range tokens {
+				bld.WriteString(t)
+			}
+			_ = bld.String()
+		}
+	})
 }
 
 // discardWriter implements core.Writer with zero-cost Write.

@@ -87,6 +87,12 @@ func (runner *NativeGenerateRunner) Generate(ctx context.Context, req GenerateRe
 
 	opts := runner.generateOptions(req)
 	builder := core.NewBuilder()
+	// Pre-grow the response buffer. Tokens average ~4 bytes; sizing
+	// once up front avoids the strings.Builder growth ladder
+	// (8 -> 16 -> 32 -> ...) during the per-token write loop.
+	if hint := estimateGenerateBytes(req, runner.defaultMaxToken); hint > 0 {
+		builder.Grow(hint)
+	}
 	if len(req.Messages) > 0 {
 		for token := range model.ChatStream(ctx, toMLXMessages(req.Messages), opts...) {
 			builder.WriteString(token.Text)
@@ -213,6 +219,21 @@ func toGenerateMetrics(metrics mlx.Metrics) GenerateMetrics {
 		PromptCacheMissTokens:    metrics.PromptCacheMissTokens,
 		PromptCacheRestoreMillis: float64(metrics.PromptCacheRestoreDuration) / float64(time.Millisecond),
 	}
+}
+
+// estimateGenerateBytes returns a strings.Builder pre-grow hint for
+// the generated response. The byte-per-token coefficient is a
+// conservative average across typical chat tokens.
+func estimateGenerateBytes(req GenerateRequest, fallbackMaxTokens int) int {
+	const bytesPerToken = 4
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = fallbackMaxTokens
+	}
+	if maxTokens <= 0 {
+		return 0
+	}
+	return maxTokens * bytesPerToken
 }
 
 func copyStringMap(in map[string]string) map[string]string {
