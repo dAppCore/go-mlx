@@ -924,9 +924,26 @@ func cpuSplitPackedDot(input []float32, matrix *cpuSplitPackedMatrix, row int) f
 	}
 	offset := row * matrix.cols
 	in := input[:cols]
+	// Hoist hot fields from matrix once — the per-element value() call
+	// would chase each of these through the struct (and through the desc
+	// for groupSize/bits/elements) on every element of every projection
+	// row. With ~hidden_size elements per row and ~intermediate rows per
+	// token, that ran into the billions per layer.
+	packed := matrix.packed
+	scales := matrix.scales
+	biases := matrix.biases
+	groupSize := matrix.groupSize
+	bits := matrix.bits
+	elements := matrix.elements
 	var sum float32
 	for col := 0; col < cols; col++ {
-		sum += in[col] * matrix.value(offset+col)
+		idx := offset + col
+		if idx < 0 || uint64(idx) >= elements {
+			continue
+		}
+		group := idx / groupSize
+		q := cpuSplitUnpackPackedValue(packed, idx, bits)
+		sum += in[col] * (float32(q)*scales[group] + biases[group])
 	}
 	return sum
 }
