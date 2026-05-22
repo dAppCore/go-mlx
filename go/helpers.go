@@ -14,7 +14,21 @@ import (
 //
 //	value := firstNonEmpty(primary, fallback)
 func firstNonEmpty(values ...string) string {
+	// Fast path: the leading byte is plain-ASCII non-whitespace. That
+	// covers the common shape — URLs, model IDs, architecture names,
+	// phase strings — where the caller fed us an already-tidy string.
+	// ASCII whitespace bytes are all < 0x21 (space=0x20, \t=0x09, \n=0x0A,
+	// \v=0x0B, \f=0x0C, \r=0x0D), so `c > ' '` excludes every one of
+	// them. The `c < 0x80` guard keeps us out of UTF-8 lead bytes — a
+	// leading 0xC2 0xA0 (NBSP) is Unicode whitespace and needs the
+	// full core.Trim path. Fall through to the unicode-correct branch
+	// only when the first byte is whitespace or non-ASCII.
 	for _, value := range values {
+		if len(value) > 0 {
+			if c := value[0]; c > ' ' && c < 0x80 {
+				return value
+			}
+		}
 		if core.Trim(value) != "" {
 			return value
 		}
@@ -74,13 +88,17 @@ func modelInfoToBundle(info ModelInfo) bundle.ModelInfo {
 //
 //	s := sampleFromGenerateConfig(cfg)
 func sampleFromGenerateConfig(cfg GenerateConfig) bundle.Sampler {
+	// core.SliceClone (= slices.Clone) is the canonical Wave-5+ shape —
+	// the previous `append([]int32(nil), …)` produced the same alloc
+	// (32 B / 1 alloc for an 8-token stop list) but mixed clone idioms
+	// across the codebase. Same observable behaviour; canonicalised.
 	return bundle.Sampler{
 		MaxTokens:     cfg.MaxTokens,
 		Temperature:   cfg.Temperature,
 		TopK:          cfg.TopK,
 		TopP:          cfg.TopP,
 		MinP:          cfg.MinP,
-		StopTokens:    append([]int32(nil), cfg.StopTokens...),
+		StopTokens:    core.SliceClone(cfg.StopTokens),
 		RepeatPenalty: cfg.RepeatPenalty,
 	}
 }

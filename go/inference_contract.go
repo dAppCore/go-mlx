@@ -519,26 +519,20 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	// header allocation (~80 B per call) collapses to a single one-time
 	// cost. metalRuntimeLabels is read-only — consumers don't mutate.
 	runtimeLabels := metalRuntimeLabels(memoryBytesStr, workingSetBytesStr, device.MemorySize, device.MaxRecommendedWorkingSetSize, loadReady)
-	// Pre-built static tails — see metalCapabilityFixedTail (loadReady=true)
-	// and metalCapabilityFixedTailMarked (loadReady=false, already passed
-	// through markMetalUnavailableCapabilities once at package init). The
-	// 38 static entries plus the (deterministic over a fixed model
-	// architecture) AlgorithmCapabilities slice are merged once at package
-	// init; the markMetalUnavailable pass is also done once for the
-	// !loadReady form. Per call we issue ONE make() at the final size and
-	// ONE copy() instead of three successive appends + the per-call
-	// AlgorithmCapabilities() + the per-call markMetalUnavailableCapabilities
-	// scan (which itself allocated 4 strings per call from the populated-
-	// Detail concat path).
-	source := metalCapabilityFixedTail
-	head := metalModelLoadAvailable
+	// Full pre-built capability list — see metalCapabilityFixedFull /
+	// metalCapabilityFixedFullMarked. Both forms (head + fixed tail) are
+	// merged once at package init; the !loadReady tail has already been
+	// passed through markMetalUnavailableCapabilities once at init.
+	// Per call we just hand back the singleton — same Wave-5+ shared-
+	// read-only-singleton pattern Architectures / Quantizations /
+	// CacheModes / Labels adopted above. Drops the per-call
+	// make([]inference.Capability, 39) alloc (~4 KB / 1 alloc) and the
+	// copy() body that followed it; the only meaningful per-call cost
+	// is now the CapabilityReport struct itself (returned by value).
+	capabilities := metalCapabilityFixedFull
 	if !loadReady {
-		source = metalCapabilityFixedTailMarked
-		head = metalModelLoadUnavailable
+		capabilities = metalCapabilityFixedFullMarked
 	}
-	capabilities := make([]inference.Capability, 1+len(source))
-	capabilities[0] = head
-	copy(capabilities[1:], source)
 	return inference.CapabilityReport{
 		Runtime: inference.RuntimeIdentity{
 			Backend:       "metal",
@@ -642,7 +636,9 @@ var (
 // pre-built shapes of the tail (38 static entries + AlgorithmCapabilities
 // from profile). One mirrors the loadReady=true form, the other has
 // already been passed through markMetalUnavailableCapabilities once at
-// package init. Per call we just pick the right one and copy.
+// package init. They're folded into metalCapabilityFixedFull /
+// metalCapabilityFixedFullMarked below (head + tail) — the per-call
+// path now reads only the full forms directly.
 //
 // This drops the per-call markMetalUnavailableCapabilities scan (a 39+N
 // element loop + ~4 string concat allocs per call when the populated-
@@ -655,6 +651,18 @@ var (
 var (
 	metalCapabilityFixedTail       []inference.Capability
 	metalCapabilityFixedTailMarked []inference.Capability
+	// metalCapabilityFixedFull / metalCapabilityFixedFullMarked are the
+	// full per-call slices — head (metalModelLoadAvailable /
+	// metalModelLoadUnavailable) plus the corresponding tail, pre-built
+	// once at init. Consumers (go-ml / go-ai / local_tuning) treat the
+	// Capabilities slice as read-only, mirroring the same convention
+	// Architectures / Quantizations / CacheModes / Labels rely on. This
+	// folds the per-call make([]inference.Capability, 39) (~4 KB / 1
+	// alloc) into a one-time init cost. The two slices are independent
+	// backings so a hypothetical-but-unsupported consumer mutation in
+	// one branch cannot bleed into the other.
+	metalCapabilityFixedFull       []inference.Capability
+	metalCapabilityFixedFullMarked []inference.Capability
 )
 
 func init() {
@@ -667,6 +675,14 @@ func init() {
 	metalCapabilityFixedTailMarked = make([]inference.Capability, len(metalCapabilityFixedTail))
 	copy(metalCapabilityFixedTailMarked, metalCapabilityFixedTail)
 	metalCapabilityFixedTailMarked = markMetalUnavailableCapabilities(metalCapabilityFixedTailMarked)
+	// Build the head-prepended full forms once. Independent backings so
+	// either branch can be exposed without aliasing the other.
+	metalCapabilityFixedFull = make([]inference.Capability, 1+len(metalCapabilityFixedTail))
+	metalCapabilityFixedFull[0] = metalModelLoadAvailable
+	copy(metalCapabilityFixedFull[1:], metalCapabilityFixedTail)
+	metalCapabilityFixedFullMarked = make([]inference.Capability, 1+len(metalCapabilityFixedTailMarked))
+	metalCapabilityFixedFullMarked[0] = metalModelLoadUnavailable
+	copy(metalCapabilityFixedFullMarked[1:], metalCapabilityFixedTailMarked)
 }
 
 // metalCapabilityStaticTail is the 38-entry portion of the capability
