@@ -506,10 +506,18 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	}
 }
 
+// grpoAnswerMetaKeys are the SFT-meta keys ExtractGRPOExpectedAnswer
+// consults when the dataset carries an explicit answer field. Hoisted
+// to package-level so we don't rebuild the four-entry backing array
+// on every reasoning sample.
+var grpoAnswerMetaKeys = [...]string{"answer", "expected_answer", "solution", "output"}
+
 // ExtractGRPOExpectedAnswer returns the answer target from reasoning-style samples.
 func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
-	for _, key := range []string{"answer", "expected_answer", "solution", "output"} {
-		if sample.Meta != nil {
+	if sample.Meta != nil {
+		// Lift the nil check out of the loop — meta is invariant across
+		// the key sweep.
+		for _, key := range grpoAnswerMetaKeys {
 			if value := core.Trim(sample.Meta[key]); value != "" {
 				return value
 			}
@@ -519,7 +527,15 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 	if text == "" {
 		text = core.Trim(sample.Text)
 	}
-	lines := core.Split(core.Replace(text, "\r\n", "\n"), "\n")
+	// Fast path — when the text has no CR we skip the strings.Count
+	// scan that ReplaceAll runs to size the result builder. The typical
+	// SFT sample is LF-only, so this short-circuits the (small but
+	// real) per-call Count walk for the common case.
+	normalised := text
+	if core.Index(text, "\r") >= 0 {
+		normalised = core.Replace(text, "\r\n", "\n")
+	}
+	lines := core.Split(normalised, "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
 		line := cleanGRPOAnswerLine(lines[i])
 		if line != "" {
