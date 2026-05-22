@@ -588,6 +588,15 @@ func cleanGRPOAnswerLine(line string) string {
 	if line == "" {
 		return ""
 	}
+	// First-byte gate — the three answer prefixes all start with one of
+	// {a, f, s}. Anything else skips the core.Lower allocation entirely.
+	// On free-form text the dominant outcome is "no match", so we cash
+	// in the per-line lowercase string for nothing in the common case.
+	switch line[0] {
+	case 'a', 'A', 'f', 'F', 's', 'S':
+	default:
+		return line
+	}
 	lower := core.Lower(line)
 	for _, prefix := range grpoAnswerPrefixes {
 		if core.HasPrefix(lower, prefix) {
