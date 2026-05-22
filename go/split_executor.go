@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -377,6 +378,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 	decodeStart := time.Now()
 	generatedTokens := 0
 	var firstTokenDuration time.Duration
+	requiresFFN := executor.placement.Requires(inference.ModelComponentFFN)
 	for step := 0; step < cfg.MaxTokens; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
@@ -390,19 +392,19 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 				Config: cfg,
 			})
 			if err != nil {
-				return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("attention layer %d step %d", layer, step), err)
+				return "", core.E("mlx.SplitExecutor.Generate", splitExecutorLayerStepLabel("attention layer ", layer, step), err)
 			}
 			if len(attention.Hidden) == 0 {
 				return "", core.Errorf("mlx: split executor attention layer %d step %d returned empty hidden state", layer, step)
 			}
 			hidden = cloneSplitHidden(attention.Hidden)
-			if executor.placement.Requires(inference.ModelComponentFFN) {
+			if requiresFFN {
 				ffn, err := executor.ffn.ForwardFFN(ctx, SplitFFNRequest{
 					Layer:  layer,
 					Hidden: cloneSplitHidden(hidden),
 				})
 				if err != nil {
-					return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("ffn layer %d step %d", layer, step), err)
+					return "", core.E("mlx.SplitExecutor.Generate", splitExecutorLayerStepLabel("ffn layer ", layer, step), err)
 				}
 				if len(ffn.Hidden) == 0 {
 					return "", core.Errorf("mlx: split executor ffn layer %d step %d returned empty hidden state", layer, step)
@@ -418,7 +420,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 			Config: cfg,
 		})
 		if err != nil {
-			return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("sample step %d", step), err)
+			return "", core.E("mlx.SplitExecutor.Generate", splitExecutorStepLabel("sample step ", step), err)
 		}
 		tokens = append(tokens, sample.TokenID)
 		if len(sample.Hidden) > 0 {
@@ -429,7 +431,7 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 		}
 		text, err := executor.local.DecodeToken(ctx, sample.TokenID)
 		if err != nil {
-			return "", core.E("mlx.SplitExecutor.Generate", core.Sprintf("decode token step %d", step), err)
+			return "", core.E("mlx.SplitExecutor.Generate", splitExecutorStepLabel("decode token step ", step), err)
 		}
 		generatedTokens++
 		if firstTokenDuration == 0 {
@@ -609,4 +611,20 @@ func splitExecutorStopToken(stopTokens []int32, id int32) bool {
 		}
 	}
 	return false
+}
+
+func splitExecutorLayerStepLabel(prefix string, layer, step int) string {
+	buf := make([]byte, 0, len(prefix)+24)
+	buf = append(buf, prefix...)
+	buf = strconv.AppendInt(buf, int64(layer), 10)
+	buf = append(buf, " step "...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
+}
+
+func splitExecutorStepLabel(prefix string, step int) string {
+	buf := make([]byte, 0, len(prefix)+12)
+	buf = append(buf, prefix...)
+	buf = strconv.AppendInt(buf, int64(step), 10)
+	return string(buf)
 }
