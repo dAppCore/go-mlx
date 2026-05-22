@@ -417,7 +417,12 @@ func modelSliceHasProjection(name, projection string) bool {
 }
 
 func modelSliceMetadataFiles(plan inference.ModelSlicePlan) []string {
-	files := []string{"config.json"}
+	// Pre-size to the maximum 9 entries (1 default + 5 tokenizer + 3
+	// label) so the slice header backs a single allocation instead of
+	// growing through three doublings (1 -> 2 -> 4 -> 8 -> 16) on a
+	// fully-decorated plan.
+	files := make([]string, 1, 9)
+	files[0] = "config.json"
 	if plan.HasComponent(inference.ModelComponentTokenizer) {
 		files = append(files, "tokenizer.json", "tokenizer_config.json", "chat_template.jinja", "special_tokens_map.json", "generation_config.json")
 	}
