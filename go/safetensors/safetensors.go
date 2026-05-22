@@ -518,26 +518,29 @@ func decodeFloatDataInto(dtype string, raw []byte, elements int, scratch []float
 		if len(raw) != elements*2 {
 			return nil, errF16PayloadMismatch
 		}
-		// Hoist a fixed-cap subslice and read by direct byte pair so
-		// the compiler can elide the per-iter bound-check on raw[i*2:]
-		// re-slicing. With Float16ToFloat32 dominating per-elem cost,
-		// this drops the F16 decode to ~3.2us / 2048 elems (-23%).
-		buf := raw[: elements*2 : elements*2]
-		for i := 0; i < elements; i++ {
-			j := i * 2
-			values[i] = Float16ToFloat32(uint16(buf[j]) | uint16(buf[j+1])<<8)
+		// Reinterpret-cast raw as []uint16. fp16 storage is little-endian
+		// on both supported architectures, so bytes-on-disk match the
+		// uint16 layout exactly. This eliminates the per-iter byte pair
+		// combine + raw[i*2:] re-slice — the compiler emits LDR.H +
+		// Float16ToFloat32 per element. Float16ToFloat32 still dominates
+		// the per-elem cost (it's a non-trivial bit-twiddle), so this is
+		// pure load-path simplification.
+		src16 := unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src16 {
+			values[i] = Float16ToFloat32(v)
 		}
 	case "BF16":
 		if len(raw) != elements*2 {
 			return nil, errBF16PayloadMatch
 		}
-		// Same byte-pair hoist as F16. The body is a straight bit shift
-		// into the float32 high half — no function call, so the saving
-		// is smaller (-9%) but compounds when packed alongside F16.
-		buf := raw[: elements*2 : elements*2]
-		for i := 0; i < elements; i++ {
-			j := i * 2
-			values[i] = math.Float32frombits((uint32(buf[j]) | uint32(buf[j+1])<<8) << 16)
+		// Same unsafe-uint16-slice pattern as F16. BF16 → F32 is just
+		// "uint16 → uint32 → shift 16 → Float32frombits" which is itself
+		// the high-half bit pattern of the target float32 — but Go's
+		// Float32frombits is unavoidable to preserve NaN payloads.
+		// The unsafe-slice cast still skips the per-iter byte combine.
+		src16 := unsafe.Slice((*uint16)(unsafe.Pointer(unsafe.SliceData(raw))), elements)
+		for i, v := range src16 {
+			values[i] = math.Float32frombits(uint32(v) << 16)
 		}
 	case "F64":
 		if len(raw) != elements*8 {
