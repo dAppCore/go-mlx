@@ -564,10 +564,9 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	// inside the log-softmax loop — the inner accumulator below would
 	// otherwise call math.Exp per element to recover it.
 	var teacherScratch, teacherProbScratch, studentScratch []float64
-	// Hoist mask-empty once — distillMaskIncludes treats an empty mask as
-	// "all tokens included", so per-cell calls were wasted when the mask
-	// is absent or zero-length. maskRows is non-nil only when we need
-	// per-row inspection.
+	// Hoist mask-empty once — an empty mask means "all tokens included",
+	// so per-cell calls were wasted when the mask is absent or zero-length.
+	// maskRows is non-nil only when we need per-row inspection.
 	var maskRows [][]float32
 	if len(mask) > 0 {
 		maskRows = mask
@@ -924,16 +923,6 @@ func logSoftmaxInvTempInto(logits []float32, invTemp float64, out []float64) err
 		out[i] = value - logDenom
 	}
 	return nil
-}
-
-func distillMaskIncludes(mask [][]float32, row, col int) bool {
-	if len(mask) == 0 {
-		return true
-	}
-	if row >= len(mask) || col >= len(mask[row]) {
-		return false
-	}
-	return mask[row][col] > 0
 }
 
 type distillMetricAccumulator struct {
