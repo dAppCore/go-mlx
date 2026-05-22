@@ -513,22 +513,31 @@ func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 		QuantGroup:    info.QuantGroup,
 		ContextLength: info.ContextLength,
 	}
-	builder := core.NewBuilder()
-	builder.WriteString(model.Name)
-	builder.WriteByte('\n')
-	builder.WriteString(model.Path)
-	builder.WriteByte('\n')
-	builder.WriteString(model.Architecture)
-	builder.WriteByte('\n')
+	// Build the canonical identity input into the pooled bytes.Buffer
+	// (shared with indexHash + indexEntryHash) then hash directly via
+	// sha256.Sum256. Saves the *strings.Builder + Builder.String()
+	// intermediate string vs the legacy `stateHash(builder.String())`
+	// path — same digest input, two allocs collapsed into one (just
+	// the HexEncode return string).
+	buf := hashBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
 	var intBuf [20]byte
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
-	model.Hash = stateHash(builder.String())
+	buf.WriteString(model.Name)
+	buf.WriteByte('\n')
+	buf.WriteString(model.Path)
+	buf.WriteByte('\n')
+	buf.WriteString(model.Architecture)
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
+	sum := sha256.Sum256(buf.Bytes())
+	hashBufPool.Put(buf)
+	model.Hash = core.HexEncode(sum[:])
 	return model
 }
 
