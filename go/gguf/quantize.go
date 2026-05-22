@@ -390,29 +390,47 @@ func quantizeQ8_0(values []float32) []byte {
 		// [2]byte temp. binary.LittleEndian.AppendUint16 lowers to a
 		// direct two-byte append.
 		out = binary.LittleEndian.AppendUint16(out, float32ToFloat16(scale))
-		invScale := float32(0)
-		if scale != 0 {
-			invScale = 1 / scale
+		// Stack-allocated pack buffer + single append at end of block —
+		// replaces 32 individual `out = append(out, byte)` calls (each
+		// with its own bounds check + length update) with one bulk
+		// memcpy. Matches the pattern Q4_0 already uses.
+		var packed [32]byte
+		if scale == 0 {
+			// Zero-block fast path: invScale would be zero so every q
+			// is 0; skip the per-element work. `packed` already zeroed
+			// by the var declaration.
+			out = append(out, packed[:]...)
+			continue
 		}
-		for _, value := range block {
+		invScale := 1 / scale
+		// Hoist the invScale==0 branch out of the inner loop — saves
+		// 32 branch evaluations per block.
+		for i, value := range block {
+			// Multiply by 1/scale instead of dividing — single FMUL
+			// vs FDIV per element (32x per block, millions per tensor).
+			// Round-half-away-from-zero in float32 directly; skips the
+			// float32→float64→math.Round→int round-trip and the call
+			// overhead of math.Round (which handles edge cases
+			// irrelevant to a clamped-to-127 quantiser).
+			scaled := value * invScale
 			var q int
-			if invScale != 0 {
-				// Multiply by 1/scale instead of dividing — single FMUL
-				// vs FDIV per element (32x per block, millions per tensor).
-				// Round-half-away-from-zero in float32 directly; skips the
-				// float32→float64→math.Round→int round-trip and the call
-				// overhead of math.Round (which handles edge cases
-				// irrelevant to a clamped-to-127 quantiser).
-				scaled := value * invScale
-				if scaled >= 0 {
-					q = int(scaled + 0.5)
-				} else {
-					q = int(scaled - 0.5)
-				}
+			if scaled >= 0 {
+				q = int(scaled + 0.5)
+			} else {
+				q = int(scaled - 0.5)
 			}
-			q = clampInt(q, -127, 127)
-			out = append(out, byte(int8(q)))
+			// Inline clampInt — avoids the func-call boundary on a
+			// 2-branch primitive. The compiler will most likely inline
+			// already, but doing it explicitly keeps the hot path
+			// dependency-light.
+			if q < -127 {
+				q = -127
+			} else if q > 127 {
+				q = 127
+			}
+			packed[i] = byte(int8(q))
 		}
+		out = append(out, packed[:]...)
 	}
 	return out
 }
