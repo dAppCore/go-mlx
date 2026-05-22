@@ -335,14 +335,33 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	// (GRPOSample with map header + GRPORollout with strings + slices)
 	// every time. Sample is invariant across the group.
 	rewardCtx := GRPORewardContext{Sample: request.Sample}
+	// Pre-allocate one shared []GRPOReward backing for all rollouts'
+	// parts in this step. scoreGRPORollout carves a per-rollout view
+	// out of it instead of paying its own make per call. Capacity =
+	// n × len(funcs) is the upper bound (every fn produces one entry);
+	// the actual len consumed depends on how many funcs are non-nil.
+	// cloneGRPORollouts later copies these views OUT into the cloned
+	// rollouts' own flat backing, so the shared partsBacking can be
+	// GC'd at the end of buildGRPOUpdate without retaining anything.
+	partsBacking := make([]GRPOReward, 0, n*len(rewardFuncs))
 	for i := 0; i < n; i++ {
 		rewardCtx.Rollout = rollouts[i]
 		rewardCtx.Index = i
-		parts, total, err := scoreGRPORollout(&rewardCtx, rewardFuncs)
+		// Hand the running tail of partsBacking to scoreGRPORollout so
+		// it appends into the shared backing rather than allocating its
+		// own parts slice per rollout.
+		start := len(partsBacking)
+		filled, total, err := scoreGRPORollout(&rewardCtx, rewardFuncs, partsBacking)
 		if err != nil {
 			return GRPOUpdate{}, err
 		}
-		rollouts[i].RewardParts = parts
+		partsBacking = filled
+		// Slice rollouts[i].RewardParts as a 3-index view bounded to
+		// what scoreGRPORollout actually appended — capacity is locked
+		// so a subsequent append on this view can't overwrite the next
+		// rollout's range.
+		end := len(partsBacking)
+		rollouts[i].RewardParts = partsBacking[start:end:end]
 		rollouts[i].Reward = total
 		if computeKL {
 			reference, err := runner.ReferenceLogProb(ctx, request, rollouts[i])
@@ -393,8 +412,13 @@ func buildGRPOUpdate(ctx context.Context, runner GRPORunner, request GRPORollout
 	}, nil
 }
 
-func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc) ([]GRPOReward, float64, error) {
-	parts := make([]GRPOReward, 0, len(funcs))
+// scoreGRPORollout walks every reward func against ctx and appends a
+// GRPOReward per non-nil func into out. The caller passes in the
+// shared partsBacking and gets the grown slice back so it can carve a
+// per-rollout view at known offsets. Returning out instead of a fresh
+// allocation lets buildGRPOUpdate amortise N per-rollout allocations
+// down to a single n*len(funcs) make at the top of the step.
+func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc, out []GRPOReward) ([]GRPOReward, float64, error) {
 	var total float64
 	for _, fn := range funcs {
 		if fn == nil {
@@ -402,18 +426,18 @@ func scoreGRPORollout(ctx *GRPORewardContext, funcs []GRPORewardFunc) ([]GRPORew
 		}
 		reward, err := fn(*ctx)
 		if err != nil {
-			return nil, 0, err
+			return out, 0, err
 		}
 		if reward.Name == "" {
 			reward.Name = "reward"
 		}
 		if math.IsNaN(reward.Score) || math.IsInf(reward.Score, 0) {
-			return nil, 0, core.NewError("mlx: experimental GRPO reward is not finite")
+			return out, 0, core.NewError("mlx: experimental GRPO reward is not finite")
 		}
-		parts = append(parts, reward)
+		out = append(out, reward)
 		total += reward.Score
 	}
-	return parts, total, nil
+	return out, total, nil
 }
 
 func updateGRPOResult(result *GRPOResult, accumulator *grpoMetricAccumulator, update *GRPOUpdate) {
