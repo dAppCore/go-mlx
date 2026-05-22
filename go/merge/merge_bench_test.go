@@ -15,8 +15,10 @@ package merge
 
 import (
 	"context"
+	"encoding/binary"
 	"math"
 	"testing"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/safetensors"
@@ -29,6 +31,7 @@ var (
 	benchMergeErr    error
 	benchMergeBool   bool
 	benchMergeFloat  float64
+	benchMergeBytes  []byte
 	benchMergeHeader map[string]safetensors.HeaderEntry
 )
 
@@ -287,6 +290,73 @@ func BenchmarkWriteFloat32Values_65536(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		benchMergeErr = writeFloat32Values(file, values)
 	}
+}
+
+// BenchmarkWriteFloat32ValuesScratch_1M sizes the slice large enough
+// that the float-serialisation loop dominates over alloc + the file
+// write syscall. Exposes the unsafe reinterpret-cast win on the merge
+// writer's hot path — single memcpy vs per-element PutUint32 +
+// Float32bits. Reuses scratch across iterations so allocation cost is
+// paid once (mirrors the chunked-merge IO callers).
+func BenchmarkWriteFloat32ValuesScratch_1M(b *testing.B) {
+	dir := b.TempDir()
+	created := core.Create(core.PathJoin(dir, "out.bin"))
+	if !created.OK {
+		b.Fatal(created.Error())
+	}
+	file := created.Value.(*core.OSFile)
+	defer file.Close()
+
+	values := make([]float32, 1<<20)
+	for i := range values {
+		values[i] = float32(i % 1024)
+	}
+	scratch := make([]byte, len(values)*4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		scratch, benchMergeErr = writeFloat32ValuesScratch(file, values, scratch)
+	}
+}
+
+// BenchmarkWriteFloat32ValuesEncode_1M_* measures only the float→byte
+// serialisation step — the inner kernel writeFloat32ValuesScratch
+// exists to replace. Isolates the unsafe reinterpret-cast win from
+// the file.Write syscall floor. The LoopForm variant is the legacy
+// per-element binary.LittleEndian.PutUint32(buf, math.Float32bits(v))
+// path; the UnsafeForm variant is what ships in writeFloat32Values
+// Scratch. Direct apples-to-apples — same fixture, same scratch
+// reuse. Mirrors the comparison W8-A2 made in go/kv/snapshot.go
+// f32sRaw.
+func BenchmarkWriteFloat32ValuesEncode_1M_LoopForm(b *testing.B) {
+	values := make([]float32, 1<<20)
+	for i := range values {
+		values[i] = float32(i % 1024)
+	}
+	scratch := make([]byte, len(values)*4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		for i, value := range values {
+			binary.LittleEndian.PutUint32(scratch[i*4:], math.Float32bits(value))
+		}
+	}
+	benchMergeBytes = scratch
+}
+
+func BenchmarkWriteFloat32ValuesEncode_1M_UnsafeForm(b *testing.B) {
+	values := make([]float32, 1<<20)
+	for i := range values {
+		values[i] = float32(i % 1024)
+	}
+	scratch := make([]byte, len(values)*4)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for n := 0; n < b.N; n++ {
+		src := unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(values))), len(values)*4)
+		copy(scratch, src)
+	}
+	benchMergeBytes = scratch
 }
 
 // --- writeLinearChunks — chunked merge IO path ---
