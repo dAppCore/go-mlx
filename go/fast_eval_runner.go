@@ -17,6 +17,12 @@ import (
 	"dappco.re/go/mlx/probe"
 )
 
+// Hoisted package-level sentinel — the decode generate closure runs once
+// per bench iteration (target + draft) plus once per speculative decode
+// call. Sharing one *Err avoids the per-call core.NewError allocation on
+// the otherwise hot path.
+var errModelDecodeNil = core.NewError("mlx: bench decode runner has nil model")
+
 // NewModelFastEvalRunner adapts a loaded Model to bench.Runner with
 // verb-shaped callbacks for each driver-specific bench section.
 func NewModelFastEvalRunner(model *Model) bench.Runner {
@@ -478,13 +484,16 @@ func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
 func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc {
 	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
 		if model == nil || model.model == nil {
-			return decode.Generation{}, core.NewError("mlx: bench decode runner has nil model")
+			return decode.Generation{}, errModelDecodeNil
 		}
 		generateCfg := base
 		if cfg.MaxTokens > 0 {
 			generateCfg.MaxTokens = cfg.MaxTokens
 		}
-		tokens := []decode.Token{}
+		// Pre-size tokens to MaxTokens — speculative/prompt-lookup decode
+		// caps emitted tokens at MaxTokens, so a single make() avoids the
+		// per-token append-grow doubling on every decoded step.
+		tokens := make([]decode.Token, 0, generateCfg.MaxTokens)
 		for token := range model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
 			tokens = append(tokens, decode.Token{
 				ID:   token.ID,
