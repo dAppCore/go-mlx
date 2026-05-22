@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"hash"
 	"strconv"
 	"sync"
@@ -287,7 +288,7 @@ func (index *StateIndex) validateEntry(entry *StateIndexEntry, checkHash, indexB
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
 		return errStateIndexEntryByteSpan
 	}
-	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
+	if checkHash && entry.Hash != "" && !indexEntryHashEquals(entry, entry.Hash) {
 		return errStateIndexEntryHashMismatch
 	}
 	return nil
@@ -693,7 +694,12 @@ func indexHash(index *StateIndex) string {
 	return core.HexEncode(h.Sum(sumBuf[:0]))
 }
 
-func indexEntryHash(entry *StateIndexEntry) string {
+// indexEntryHashBytes writes the canonical entry input into the shared
+// hashBufPool and returns the binary SHA-256 digest in a stack-allocated
+// array. The hex wrapper builds on this; validate() reuses the binary
+// form to compare against the stored hex without allocating the
+// computed hex string.
+func indexEntryHashBytes(entry *StateIndexEntry) [sha256.Size]byte {
 	b := hashBufPool.Get().(*bytes.Buffer)
 	b.Reset()
 	var intBuf [20]byte
@@ -741,7 +747,30 @@ func indexEntryHash(entry *StateIndexEntry) string {
 	}
 	sum := sha256.Sum256(b.Bytes())
 	hashBufPool.Put(b)
+	return sum
+}
+
+func indexEntryHash(entry *StateIndexEntry) string {
+	sum := indexEntryHashBytes(entry)
 	return core.HexEncode(sum[:])
+}
+
+// indexEntryHashEquals reports whether expectedHex (a 64-char SHA-256
+// hex string) matches the freshly-computed canonical hash of entry.
+// Avoids the HexEncode alloc of indexEntryHash by decoding the
+// expected hex into a stack [32]byte and comparing arrays. Hit per
+// entry on every Validate(checkHashes=true) — N alloc savings for
+// N-entry indexes.
+func indexEntryHashEquals(entry *StateIndexEntry, expectedHex string) bool {
+	if len(expectedHex) != sha256.Size*2 {
+		return false
+	}
+	sum := indexEntryHashBytes(entry)
+	var expected [sha256.Size]byte
+	if _, err := hex.Decode(expected[:], core.AsBytes(expectedHex)); err != nil {
+		return false
+	}
+	return sum == expected
 }
 
 // writeIndexHashString is the only remaining hash.Hash helper —
