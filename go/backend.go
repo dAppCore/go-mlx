@@ -761,6 +761,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	// element type and the same once-per-snapshot lifetime, so they share
 	// one arena. Drops 3 + 2×layers small clones to 1 outer alloc.
 	totalInt32 := len(result.Tokens) + len(result.Generated) + len(result.LogitShape)
+	totalLogits := len(result.Logits)
 	for i := range resultLayers {
 		layer := &resultLayers[i]
 		heads := layer.Heads
@@ -775,26 +776,25 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		}
 	}
 	headsSlab := make([]kv.HeadSnapshot, totalHeads)
-	// Pre-totalled-sized per-tensor slabs for the per-head data. Each head
-	// previously did 4 SliceClones — for Gemma 4 E4B (30 layers × 16 heads
-	// = 480 heads) that's 1920 small allocations per snapshot. Coalescing
-	// each tensor family into a single arena drops it to 4 allocations
-	// regardless of (layers × heads). nil slabs preserve "nothing to copy"
-	// when an entire family is empty (e.g. raw-bytes-only captures emit
-	// zero Key / Value floats; float-only emit zero Bytes).
-	var keySlab, valueSlab []float32
-	if totalKey > 0 {
-		keySlab = make([]float32, totalKey)
+	// One float32 slab covers per-head Key + per-head Value + top-level
+	// Logits — all are []float32 with once-per-snapshot lifetime. Previous
+	// shape: 2 head-family slabs + 1 standalone Logits clone = 3 allocs;
+	// unified: 1 alloc regardless of (layers × heads × Logits len).
+	// keyOffset / valueOffset / logitsOffset partition the slab into the
+	// three regions without ever overlapping (offsets are monotonic and
+	// total exactly totalFloat32). 3-cap sub-slicing keeps each sub-region
+	// safely append-bounded against neighbours.
+	totalFloat32 := totalKey + totalValue + totalLogits
+	var float32Slab []float32
+	if totalFloat32 > 0 {
+		float32Slab = make([]float32, totalFloat32)
 	}
-	if totalValue > 0 {
-		valueSlab = make([]float32, totalValue)
-	}
-	var keyBytesSlab, valueBytesSlab []byte
-	if totalKeyBytes > 0 {
-		keyBytesSlab = make([]byte, totalKeyBytes)
-	}
-	if totalValueBytes > 0 {
-		valueBytesSlab = make([]byte, totalValueBytes)
+	// Same pattern for per-head KeyBytes + ValueBytes — both []byte, both
+	// once-per-snapshot — one byteSlab instead of two outer allocs.
+	totalBytes := totalKeyBytes + totalValueBytes
+	var byteSlab []byte
+	if totalBytes > 0 {
+		byteSlab = make([]byte, totalBytes)
 	}
 	var int32Slab []int32
 	if totalInt32 > 0 {
@@ -802,9 +802,14 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	}
 	headsOffset := 0
 	keyOffset := 0
-	valueOffset := 0
+	// value region begins where key region ends.
+	valueOffset := totalKey
+	// logits region begins where value region ends (we lay it down at the
+	// end below).
+	logitsOffset := totalKey + totalValue
 	keyBytesOffset := 0
-	valueBytesOffset := 0
+	// valueBytes region begins where keyBytes region ends.
+	valueBytesOffset := totalKeyBytes
 	int32Offset := 0
 	// Index iteration on both loops — KVLayerSnapshot is ~136 B (4 slice
 	// headers + 2 strings + 2 byte-slice headers) and KVHeadSnapshot is
@@ -864,7 +869,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 				headKey = []float32{}
 			default:
 				end := keyOffset + len(head.Key)
-				headKey = keySlab[keyOffset:end:end]
+				headKey = float32Slab[keyOffset:end:end]
 				copy(headKey, head.Key)
 				keyOffset = end
 			}
@@ -875,7 +880,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 				headValue = []float32{}
 			default:
 				end := valueOffset + len(head.Value)
-				headValue = valueSlab[valueOffset:end:end]
+				headValue = float32Slab[valueOffset:end:end]
 				copy(headValue, head.Value)
 				valueOffset = end
 			}
@@ -886,7 +891,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 				headKeyBytes = []byte{}
 			default:
 				end := keyBytesOffset + len(head.KeyBytes)
-				headKeyBytes = keyBytesSlab[keyBytesOffset:end:end]
+				headKeyBytes = byteSlab[keyBytesOffset:end:end]
 				copy(headKeyBytes, head.KeyBytes)
 				keyBytesOffset = end
 			}
@@ -897,7 +902,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 				headValueBytes = []byte{}
 			default:
 				end := valueBytesOffset + len(head.ValueBytes)
-				headValueBytes = valueBytesSlab[valueBytesOffset:end:end]
+				headValueBytes = byteSlab[valueBytesOffset:end:end]
 				copy(headValueBytes, head.ValueBytes)
 				valueBytesOffset = end
 			}
@@ -946,6 +951,18 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		copy(logitShape, result.LogitShape)
 		int32Offset = end
 	}
+	// Top-level Logits sits in the tail region of the shared float32 slab.
+	var topLogits []float32
+	switch {
+	case result.Logits == nil:
+	case len(result.Logits) == 0:
+		topLogits = []float32{}
+	default:
+		end := logitsOffset + len(result.Logits)
+		topLogits = float32Slab[logitsOffset:end:end]
+		copy(topLogits, result.Logits)
+		logitsOffset = end
+	}
 	return &kv.Snapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
@@ -958,7 +975,7 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
 		LogitShape:    logitShape,
-		Logits:        core.SliceClone(result.Logits),
+		Logits:        topLogits,
 		Layers:        layers,
 	}
 }
@@ -985,6 +1002,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	// element type and the same once-per-snapshot lifetime, so they share
 	// one arena. Drops 3 + 2×layers small clones to 1 outer alloc.
 	totalInt32 := len(result.Tokens) + len(result.Generated) + len(result.LogitShape)
+	totalLogits := len(result.Logits)
 	for i := range resultLayers {
 		layer := &resultLayers[i]
 		heads := layer.Heads
@@ -997,12 +1015,14 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		}
 	}
 	headsSlab := make([]metal.KVHeadSnapshot, totalHeads)
-	var keySlab, valueSlab []float32
-	if totalKey > 0 {
-		keySlab = make([]float32, totalKey)
-	}
-	if totalValue > 0 {
-		valueSlab = make([]float32, totalValue)
+	// One float32 slab covers per-head Key + per-head Value + top-level
+	// Logits — all []float32, all once-per-snapshot. Previous shape was
+	// 2 head-family slabs + 1 standalone Logits clone = 3 outer allocs;
+	// unified: 1 alloc regardless of (layers × heads × Logits len).
+	totalFloat32 := totalKey + totalValue + totalLogits
+	var float32Slab []float32
+	if totalFloat32 > 0 {
+		float32Slab = make([]float32, totalFloat32)
 	}
 	var int32Slab []int32
 	if totalInt32 > 0 {
@@ -1010,7 +1030,10 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	}
 	headsOffset := 0
 	keyOffset := 0
-	valueOffset := 0
+	// value region begins where key region ends.
+	valueOffset := totalKey
+	// logits region begins where value region ends.
+	logitsOffset := totalKey + totalValue
 	int32Offset := 0
 	// Index iteration — see toRootKVSnapshot for rationale; same N×layer
 	// + N×head struct-copy elision on the inverse direction.
@@ -1066,7 +1089,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 				headKey = []float32{}
 			default:
 				end := keyOffset + len(head.Key)
-				headKey = keySlab[keyOffset:end:end]
+				headKey = float32Slab[keyOffset:end:end]
 				copy(headKey, head.Key)
 				keyOffset = end
 			}
@@ -1077,7 +1100,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 				headValue = []float32{}
 			default:
 				end := valueOffset + len(head.Value)
-				headValue = valueSlab[valueOffset:end:end]
+				headValue = float32Slab[valueOffset:end:end]
 				copy(headValue, head.Value)
 				valueOffset = end
 			}
@@ -1126,6 +1149,18 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		copy(logitShape, result.LogitShape)
 		int32Offset = end
 	}
+	// Top-level Logits sits in the tail region of the shared float32 slab.
+	var topLogits []float32
+	switch {
+	case result.Logits == nil:
+	case len(result.Logits) == 0:
+		topLogits = []float32{}
+	default:
+		end := logitsOffset + len(result.Logits)
+		topLogits = float32Slab[logitsOffset:end:end]
+		copy(topLogits, result.Logits)
+		logitsOffset = end
+	}
 	return &metal.KVSnapshot{
 		Version:       result.Version,
 		Architecture:  result.Architecture,
@@ -1138,7 +1173,7 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		HeadDim:       result.HeadDim,
 		NumQueryHeads: result.NumQueryHeads,
 		LogitShape:    logitShape,
-		Logits:        core.SliceClone(result.Logits),
+		Logits:        topLogits,
 		Layers:        layers,
 	}
 }
