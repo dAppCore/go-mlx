@@ -10,6 +10,27 @@ import (
 	core "dappco.re/go"
 )
 
+// Constant validation errors hoisted to package vars — each previously
+// allocated a fresh core.NewError on the (rare but hot under churn)
+// validation path. MoE expert-ID matvec validation fires on every
+// dispatch under the explicit Gemma 4 opt-in gate; W8-J / W9-K shaved
+// the validate path further, so the per-call allocation here is the
+// last remaining alloc on the route's validation hot path.
+var (
+	errEIMWSumRouteWeightsDtype  = core.NewError("mlx: quantized expert id weighted matvec sum route weights must be float32")
+	errEIMWSumNeedRouteWeights   = core.NewError("mlx: quantized expert id weighted matvec sum requires route weights")
+	errEIMWeightDtype            = core.NewError("mlx: quantized expert id matvec weight must be uint32")
+	errEIMScalesBiasesDtype      = core.NewError("mlx: quantized expert id matvec scales and biases must be float32, float16, or bfloat16")
+	errEIMScalesBiasesShape      = core.NewError("mlx: quantized expert id matvec scales and biases must be [experts, out, groups]")
+	errEIMNeedWeightScalesBiases = core.NewError("mlx: quantized expert id matvec requires weight, scales, and biases")
+	errEIMNeedInput              = core.NewError("mlx: quantized expert id matvec requires input")
+	errEIMNeedExpertIDs          = core.NewError("mlx: quantized expert id matvec requires expert ids")
+	errEIMInputDtype             = core.NewError("mlx: quantized expert id matvec input must be float32")
+	errEIMGroupSizeInvalid       = core.NewError("mlx: quantized expert id matvec group size must be positive")
+	errEIMExpertIDsDtype         = core.NewError("mlx: quantized expert id matvec expert ids must be int32 or uint32")
+	errEIMDimsInvalid            = core.NewError("mlx: quantized expert id matvec dimensions must be positive")
+)
+
 // quantizedExpertIDMatVec is a correctness scaffold for llama.cpp-style
 // expert-ID matvec work. It consumes MLX affine-packed quantized expert rows and
 // produces one route row per expert id. One SIMD group reduces each routed
@@ -112,10 +133,10 @@ func quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, bia
 		return nil, err
 	}
 	if routeWeights == nil || !routeWeights.Valid() {
-		return nil, core.NewError("mlx: quantized expert id weighted matvec sum requires route weights")
+		return nil, errEIMWSumNeedRouteWeights
 	}
 	if routeWeights.Dtype() != DTypeFloat32 {
-		return nil, core.NewError("mlx: quantized expert id weighted matvec sum route weights must be float32")
+		return nil, errEIMWSumRouteWeightsDtype
 	}
 	if routeWeights.Size() != meta.routes {
 		return nil, core.NewError(core.Sprintf("mlx: quantized expert id weighted matvec sum route weight count %d, expected %d", routeWeights.Size(), meta.routes))
@@ -632,19 +653,19 @@ type quantizedExpertIDMatVecMeta struct {
 func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, groupSize, bits int) (quantizedExpertIDMatVecMeta, error) {
 	var meta quantizedExpertIDMatVecMeta
 	if input == nil || !input.Valid() {
-		return meta, core.NewError("mlx: quantized expert id matvec requires input")
+		return meta, errEIMNeedInput
 	}
 	if weight == nil || !weight.Valid() || scales == nil || !scales.Valid() || biases == nil || !biases.Valid() {
-		return meta, core.NewError("mlx: quantized expert id matvec requires weight, scales, and biases")
+		return meta, errEIMNeedWeightScalesBiases
 	}
 	if expertIDs == nil || !expertIDs.Valid() {
-		return meta, core.NewError("mlx: quantized expert id matvec requires expert ids")
+		return meta, errEIMNeedExpertIDs
 	}
 	if input.Dtype() != DTypeFloat32 {
-		return meta, core.NewError("mlx: quantized expert id matvec input must be float32")
+		return meta, errEIMInputDtype
 	}
 	if weight.Dtype() != DTypeUint32 {
-		return meta, core.NewError("mlx: quantized expert id matvec weight must be uint32")
+		return meta, errEIMWeightDtype
 	}
 	// Resolve dtypes once per validation — Array.Dtype() is a cgo call,
 	// and the old code re-resolved scales/expertIDs dtypes up to 4 times.
@@ -658,17 +679,17 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 	case DTypeFloat32, DTypeFloat16, DTypeBFloat16:
 		meta.sidecarDType = scalesDtype
 	default:
-		return meta, core.NewError("mlx: quantized expert id matvec scales and biases must be float32, float16, or bfloat16")
+		return meta, errEIMScalesBiasesDtype
 	}
 	expertIDsDtype := expertIDs.Dtype()
 	if expertIDsDtype != DTypeInt32 && expertIDsDtype != DTypeUint32 {
-		return meta, core.NewError("mlx: quantized expert id matvec expert ids must be int32 or uint32")
+		return meta, errEIMExpertIDsDtype
 	}
 	if bits != 2 && bits != 4 && bits != 8 {
 		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec unsupported bits %d", bits))
 	}
 	if groupSize <= 0 {
-		return meta, core.NewError("mlx: quantized expert id matvec group size must be positive")
+		return meta, errEIMGroupSizeInvalid
 	}
 	// Read dimensions via direct Dim(i) cgo to avoid Shape()'s per-call
 	// []int32 heap allocation on the MoE-decode hot path. Error paths
@@ -681,7 +702,7 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec weight shape %v, expected [experts, out, packed_in]", weight.Shape()))
 	}
 	if scales.NumDims() != 3 || biases.NumDims() != 3 {
-		return meta, core.NewError("mlx: quantized expert id matvec scales and biases must be [experts, out, groups]")
+		return meta, errEIMScalesBiasesShape
 	}
 
 	meta.inputRows = input.Dim(0)
@@ -694,7 +715,7 @@ func validateQuantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *A
 	meta.groups = meta.inDim / groupSize
 	meta.sharedInput = meta.inputRows == 1 && meta.routes > 1
 	if meta.inputRows <= 0 || meta.routes <= 0 || meta.inDim <= 0 || meta.experts <= 0 || meta.outDim <= 0 || meta.packedIn <= 0 {
-		return meta, core.NewError("mlx: quantized expert id matvec dimensions must be positive")
+		return meta, errEIMDimsInvalid
 	}
 	if meta.inputRows != 1 && meta.inputRows != meta.routes {
 		return meta, core.NewError(core.Sprintf("mlx: quantized expert id matvec input row count %d must be 1 or match expert id count %d", meta.inputRows, meta.routes))
