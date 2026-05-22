@@ -799,23 +799,56 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
 	// Caller already has the archNativeRuntime result from the hoisted
 	// LookupArchitectureProfile in planFit — pass it through so fitNotes
 	// doesn't repeat the full lookup-and-clone.
-	var notes []string
-	if !plan.SupportedArchitecture {
+	//
+	// Pre-count the notes so the result slice is allocated exactly once
+	// at the right capacity. The previous append-from-nil pattern paid
+	// 2-3 growslice allocs when 2+ notes fired (cap 1 → 2 → 4). For the
+	// zero-note case we return nil so the FitPlan.Notes field stays nil.
+	unsupported := !plan.SupportedArchitecture
+	notNative := plan.SupportedArchitecture && !nativeRuntime
+	unknownBytes := plan.WeightBytes == 0
+	overBudget := memoryLimit > 0 && plan.ExpectedTotalBytes > memoryLimit
+	contextCapped := plan.ContextLimit > 0 && plan.ContextRecommendation < plan.ContextLimit
+	quantBelowPref := plan.QuantBits > 0 && plan.MemoryPlan.PreferredQuantization > 0 && plan.QuantBits < plan.MemoryPlan.PreferredQuantization
+	count := 0
+	if unsupported {
+		count++
+	}
+	if notNative {
+		count++
+	}
+	if unknownBytes {
+		count++
+	}
+	if overBudget {
+		count++
+	}
+	if contextCapped {
+		count++
+	}
+	if quantBelowPref {
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	notes := make([]string, 0, count)
+	if unsupported {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
-	if plan.SupportedArchitecture && !nativeRuntime {
+	if notNative {
 		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
 	}
-	if plan.WeightBytes == 0 {
+	if unknownBytes {
 		notes = append(notes, "weight byte size is unknown")
 	}
-	if memoryLimit > 0 && plan.ExpectedTotalBytes > memoryLimit {
+	if overBudget {
 		notes = append(notes, "estimated model+KV memory exceeds local working-set budget")
 	}
-	if plan.ContextLimit > 0 && plan.ContextRecommendation < plan.ContextLimit {
+	if contextCapped {
 		notes = append(notes, "context recommendation is capped by local machine class")
 	}
-	if plan.QuantBits > 0 && plan.MemoryPlan.PreferredQuantization > 0 && plan.QuantBits < plan.MemoryPlan.PreferredQuantization {
+	if quantBelowPref {
 		notes = append(notes, "model quantization is below machine-class preference")
 	}
 	return notes
