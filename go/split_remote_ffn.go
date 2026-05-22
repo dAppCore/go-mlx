@@ -144,7 +144,13 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 		return SplitFFNResult{}, core.E("RemoteSplitFFNExecutor.ForwardFFN", "parse response", modelSliceResultError(result))
 	}
 	if remote.Error != "" {
-		return SplitFFNResult{}, core.NewError("mlx: remote split FFN endpoint error: " + remote.Error)
+		// "fixed prefix" + remote.Error compiled to runtime.concatstring2
+		// — runtime allocates a fresh backing buffer and copies both halves
+		// each time. core.Concat pre-sizes a strings.Builder exactly,
+		// folding both writes into a single Grow + WriteString sequence
+		// and producing one allocation total instead of one for the
+		// intermediate concat plus one for the error string.
+		return SplitFFNResult{}, core.NewError(core.Concat("mlx: remote split FFN endpoint error: ", remote.Error))
 	}
 	if len(remote.Hidden) == 0 {
 		return SplitFFNResult{}, errRemoteSplitFFNEmptyHidden
