@@ -234,10 +234,13 @@ func tuningRuntimeForArchitecture(runtime inference.RuntimeIdentity, architectur
 // options. This is the fast path a UI uses after selecting or persisting a
 // tuning profile.
 func TuningCandidateLoadOptions(candidate inference.TuningCandidate) []LoadOption {
-	opts := []LoadOption{
-		WithAutoMemoryPlan(false),
-		WithPromptCache(candidate.PromptCache),
-	}
+	// Two always-on options + up to 10 conditional options (one per
+	// non-zero field below). Pre-size at 12 so the conditional
+	// appends never trigger a grow-copy on a populated candidate
+	// (cap-4 -> cap-8 -> cap-16 in the literal-then-append shape).
+	opts := make([]LoadOption, 2, 12)
+	opts[0] = WithAutoMemoryPlan(false)
+	opts[1] = WithPromptCache(candidate.PromptCache)
 	if candidate.ContextLength > 0 {
 		opts = append(opts, WithContextLength(candidate.ContextLength))
 	}
