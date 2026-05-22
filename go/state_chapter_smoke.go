@@ -103,10 +103,18 @@ func chapterGenerateConfig(cfg chaptersmoke.Config) GenerateConfig {
 }
 
 func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
-	out := []GenerateOption{
+	// Pre-size to the maximum number of options the function can append
+	// (2 always-set + up to 6 conditional). The previous literal started
+	// at cap=2 and let append grow the backing array — for a chapter
+	// config with TopK + TopP + StopTokens + RepeatPenalty + ProbeSink
+	// set, that meant up to three regrows (cap 2 → 4 → 8) and the
+	// associated slice-header churn. Single make + append is one alloc
+	// total regardless of how many fields the caller sets.
+	out := make([]GenerateOption, 0, 8)
+	out = append(out,
 		WithMaxTokens(cfg.MaxTokens),
 		WithTemperature(cfg.Temperature),
-	}
+	)
 	if cfg.TopK > 0 {
 		out = append(out, WithTopK(cfg.TopK))
 	}
