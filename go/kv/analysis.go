@@ -78,6 +78,13 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 	var layerCount, entropyCount, couplingCount int
 	var lockedPairs, totalPairs int
 
+	// One magnitudes scratch reused across every kvAnalysisHeadEntropy
+	// call (every layer × head × side). Was per-call alloc before.
+	var entropyScratch []float64
+	if snapshot.SeqLen > 0 {
+		entropyScratch = make([]float64, snapshot.SeqLen)
+	}
+
 	for layer := range numLayers {
 		layerSnapshot, ok := snapshot.layer(layer)
 		if !ok || len(layerSnapshot.Heads) == 0 {
@@ -105,11 +112,11 @@ func analyzeKVMultiHead(snapshot *Snapshot) *Analysis {
 		}
 		for _, head := range layerSnapshot.Heads {
 			if len(head.Key) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, entropyScratch)
 				entropyCount++
 			}
 			if len(head.Value) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, entropyScratch)
 				entropyCount++
 			}
 		}
@@ -195,11 +202,14 @@ func analyzeKVGQA(snapshot *Snapshot) *Analysis {
 		}
 		for _, head := range layerSnapshot.Heads {
 			if len(head.Key) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim)
+				// invNorms double-duty: reuse as the entropy
+				// magnitudes scratch since the position-differentiation
+				// pair loop has finished consuming it for this layer.
+				entropyTotal += kvAnalysisHeadEntropy(head.Key, snapshot.SeqLen, snapshot.HeadDim, invNorms)
 				entropyCount++
 			}
 			if len(head.Value) > 0 {
-				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim)
+				entropyTotal += kvAnalysisHeadEntropy(head.Value, snapshot.SeqLen, snapshot.HeadDim, invNorms)
 				entropyCount++
 			}
 		}
@@ -584,31 +594,41 @@ func kvAnalysisCosine32(a, b []float32) float64 {
 	return dot / denom
 }
 
-func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
+func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int, scratch []float64) float64 {
 	if seqLen <= 1 || headDim <= 0 {
 		return 0
 	}
-	// Two-pass without retaining magnitudes — first pass accumulates
-	// sqrt(sum-of-squares) per position into the running total; second
-	// pass recomputes the same magnitudes for entropy. This drops the
-	// per-head []float64{seqLen} allocation (16KB at seqLen=2048) which
-	// dominated Analyze's per-call alloc footprint.
+	// Single-pass via caller-owned scratch slice. The prior
+	// implementation paid 2× sqrt + 2× inner FMA loop to avoid the
+	// per-head allocation, but with analyzeKVGQA passing in a shared
+	// buffer (reused across all heads + layers + sides) the alloc
+	// cost falls to zero. scratch is cap-checked so over-eager callers
+	// don't have to size it perfectly.
+	if cap(scratch) < seqLen {
+		scratch = make([]float64, seqLen)
+	} else {
+		scratch = scratch[:seqLen]
+	}
 	var total float64
+	n := 0
 	for pos := 0; pos < seqLen; pos++ {
 		start := pos * headDim
 		if start >= len(head) {
 			break
 		}
-		var sum float64
 		end := start + headDim
 		if end > len(head) {
 			end = len(head)
 		}
+		var sum float64
 		for _, value := range head[start:end] {
 			v := float64(value)
 			sum += v * v
 		}
-		total += math.Sqrt(sum)
+		mag := math.Sqrt(sum)
+		scratch[n] = mag
+		total += mag
+		n++
 	}
 	if total == 0 {
 		return 0
@@ -619,21 +639,7 @@ func kvAnalysisHeadEntropy(head []float32, seqLen, headDim int) float64 {
 	}
 	invTotal := 1 / total
 	var entropy float64
-	for pos := 0; pos < seqLen; pos++ {
-		start := pos * headDim
-		if start >= len(head) {
-			break
-		}
-		var sum float64
-		end := start + headDim
-		if end > len(head) {
-			end = len(head)
-		}
-		for _, value := range head[start:end] {
-			v := float64(value)
-			sum += v * v
-		}
-		magnitude := math.Sqrt(sum)
+	for _, magnitude := range scratch[:n] {
 		p := magnitude * invTotal
 		if p > 0 {
 			entropy -= p * math.Log2(p)
