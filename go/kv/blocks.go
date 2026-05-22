@@ -988,7 +988,8 @@ func hashStateBlockPayload(block Block, encoding Encoding) (string, error) {
 	if err := block.Snapshot.writeWithOptions(hash, SaveOptions{KVEncoding: encoding}); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(hash.Sum(sum[:0])), nil
 }
 
 func saveKVSnapshotStateBlock(ctx context.Context, store state.Writer, block Block, opts StateBlockOptions, encoding Encoding) (state.ChunkRef, string, string, int, error) {
@@ -1004,7 +1005,8 @@ func saveKVSnapshotStateBlock(ctx context.Context, store state.Writer, block Blo
 		if err != nil {
 			return state.ChunkRef{}, "", "", 0, core.E("Snapshot.SaveStateBlocks", "stream raw State block", err)
 		}
-		return ref, hex.EncodeToString(hash.Sum(nil)), kvSnapshotStatePayloadRaw, payloadSize, nil
+		var sum [sha256.Size]byte
+		return ref, hex.EncodeToString(hash.Sum(sum[:0])), kvSnapshotStatePayloadRaw, payloadSize, nil
 	}
 	data, err := block.Snapshot.bytesWithOptions(SaveOptions{KVEncoding: encoding})
 	if err != nil {

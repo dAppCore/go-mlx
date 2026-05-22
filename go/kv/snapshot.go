@@ -1307,5 +1307,9 @@ func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if err := snapshot.writeWithOptions(hash, opts); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	// Stack-resident scratch defeats hash.Sum's nil-path 32-byte heap
+	// alloc — the digest writes into our buffer; hex.EncodeToString still
+	// allocates its 64-char output (unavoidable string return).
+	var sum [sha256.Size]byte
+	return hex.EncodeToString(hash.Sum(sum[:0])), nil
 }
