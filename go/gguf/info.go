@@ -817,11 +817,30 @@ func metadataIntForSuffix(metadata map[string]any, architecture string, suffixes
 	}
 	prefixes[n] = "general"
 	n++
+
+	// Build "<prefix>.<suffix>" into a stack-allocated scratch buffer
+	// instead of forcing a runtime.concatstring2 alloc per probe. Map
+	// lookup via string(scratch[...]) still costs a key copy inside the
+	// runtime, but the inputs themselves stay on the stack.
+	var scratch [128]byte
 	for i := 0; i < n; i++ {
 		prefix := prefixes[i]
 		for _, suffix := range suffixes {
-			// Direct concat lowers to runtime.concatstring2 — no temporary slice.
-			if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
+			total := len(prefix) + 1 + len(suffix)
+			if total > len(scratch) {
+				// Fallback for unusually long keys — rare; rebuild via
+				// alloc-allowed concat.
+				if value := metadataInt(metadata[prefix+"."+suffix]); value > 0 {
+					return value
+				}
+				continue
+			}
+			copy(scratch[:len(prefix)], prefix)
+			scratch[len(prefix)] = '.'
+			copy(scratch[len(prefix)+1:total], suffix)
+			// map lookup with []byte-keyed conversion goes through the
+			// runtime's []byte-to-string fast path that doesn't allocate.
+			if value := metadataInt(metadata[string(scratch[:total])]); value > 0 {
 				return value
 			}
 		}
