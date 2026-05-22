@@ -384,11 +384,14 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 	generatedTokens := 0
 	var firstTokenDuration time.Duration
 	requiresFFN := executor.placement.Requires(inference.ModelComponentFFN)
+	// Hoist state.Layers — the inner layer loop reads it state.Layers times
+	// per step, and state is no longer mutated past prefill.
+	numLayers := state.Layers
 	for step := 0; step < cfg.MaxTokens; step++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		for layer := 0; layer < state.Layers; layer++ {
+		for layer := 0; layer < numLayers; layer++ {
 			attention, err := executor.local.ForwardAttention(ctx, SplitAttentionRequest{
 				Step:   step,
 				Layer:  layer,
