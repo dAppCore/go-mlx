@@ -535,14 +535,15 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 	queries := make([][][]float32, numLayers)
 
 	for layerIndex := range numLayers {
-		keyPath := core.JoinPath(snapshotDir, core.Sprintf("keys_%02d.bin", layerIndex))
+		suffix := layerSuffix(layerIndex)
+		keyPath := core.JoinPath(snapshotDir, "keys_"+suffix+".bin")
 		keyData, err := coreio.Local.Read(keyPath)
 		if err != nil {
 			continue
 		}
 		keys[layerIndex] = reshapeFloat32([]byte(keyData), numKeyValueHeads, seqLen*headDim)
 
-		queryPath := core.JoinPath(snapshotDir, core.Sprintf("queries_%02d.bin", layerIndex))
+		queryPath := core.JoinPath(snapshotDir, "queries_"+suffix+".bin")
 		queryData, err := coreio.Local.Read(queryPath)
 		if err != nil {
 			continue
@@ -562,6 +563,18 @@ func (model *mlxlmmodel) InspectAttention(ctx context.Context, prompt string, op
 		Queries:       queries,
 		Architecture:  architecture,
 	}, nil
+}
+
+// layerSuffix returns the zero-padded 2-digit layer index used in
+// snapshot filenames (matches Sprintf "%02d" for 0..99).
+//
+//	layerSuffix(7)  // "07"
+//	layerSuffix(28) // "28"
+func layerSuffix(layerIndex int) string {
+	if layerIndex >= 0 && layerIndex < 10 {
+		return "0" + core.Itoa(layerIndex)
+	}
+	return core.Itoa(layerIndex)
 }
 
 // reshapeFloat32 reads raw little-endian float32 bytes and reshapes them into

@@ -186,6 +186,35 @@ func BenchmarkBackend_ReadLine_Long(b *testing.B) {
 	}
 }
 
+// --- zero-padded 2-digit layer index — InspectAttention builds
+// keys_NN.bin / queries_NN.bin paths per layer. Sprintf "%02d" is
+// the canonical-but-slow way; manual format via layerSuffix wins by
+// skipping the fmt state machine.
+
+func formatLayer02dSprintf(idx int) string {
+	return "keys_" + core.Sprintf("%02d", idx) + ".bin"
+}
+
+func formatLayer02dManual(idx int) string {
+	return "keys_" + layerSuffix(idx) + ".bin"
+}
+
+func BenchmarkBackend_Format02d_Sprintf(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkStr = formatLayer02dSprintf(i & 31)
+	}
+}
+
+func BenchmarkBackend_Format02d_Manual(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkStr = formatLayer02dManual(i & 31)
+	}
+}
+
+var backendBenchSinkStr string
+
 // --- reshapeFloat32 — InspectAttention reads per-layer KV/Q binary
 // blobs and reshapes them to [numHeads][stride]float32. For Gemma-3B
 // that's 28 layers × ~32 heads × 5 seq × 128 head_dim per inspect
