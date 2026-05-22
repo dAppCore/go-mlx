@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"hash"
 	"strconv"
 	"sync"
@@ -210,6 +211,15 @@ func (index *StateIndex) Validate() error {
 	return index.validate(true)
 }
 
+// validateLinearScanThreshold is the entry count below which Validate
+// uses an O(N²) linear scan over previously-seen URIs instead of
+// allocating a hash-set. Measured on M3 Ultra: for N ≤ 32 a string-eq
+// scan dominates map setup + bucket allocation. Above that, the map's
+// O(N) scaling pays back. Typical session/chapter indexes sit well
+// under the threshold so this collapses the seen-map alloc to zero on
+// the common path.
+const validateLinearScanThreshold = 32
+
 func (index *StateIndex) validate(checkHashes bool) error {
 	if index == nil {
 		return errStateIndexNil
@@ -226,19 +236,34 @@ func (index *StateIndex) validate(checkHashes bool) error {
 	if len(index.Entries) == 0 {
 		return errStateIndexNoEntries
 	}
-	seen := make(map[string]bool, len(index.Entries))
 	indexBundleURIEmpty := core.Trim(index.BundleURI) == ""
-	for i := range index.Entries {
-		entry := &index.Entries[i]
-		if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
-			return err
+	if len(index.Entries) <= validateLinearScanThreshold {
+		for i := range index.Entries {
+			entry := &index.Entries[i]
+			if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
+				return err
+			}
+			uri := entry.URI
+			for j := 0; j < i; j++ {
+				if index.Entries[j].URI == uri {
+					return errStateIndexDuplicateURI
+				}
+			}
 		}
-		if seen[entry.URI] {
-			return errStateIndexDuplicateURI
+	} else {
+		seen := make(map[string]struct{}, len(index.Entries))
+		for i := range index.Entries {
+			entry := &index.Entries[i]
+			if err := index.validateEntry(entry, checkHashes, indexBundleURIEmpty); err != nil {
+				return err
+			}
+			if _, ok := seen[entry.URI]; ok {
+				return errStateIndexDuplicateURI
+			}
+			seen[entry.URI] = struct{}{}
 		}
-		seen[entry.URI] = true
 	}
-	if checkHashes && index.Hash != "" && index.Hash != indexHash(index) {
+	if checkHashes && index.Hash != "" && !indexHashEquals(index, index.Hash) {
 		return errStateIndexHashMismatch
 	}
 	return nil
@@ -263,7 +288,7 @@ func (index *StateIndex) validateEntry(entry *StateIndexEntry, checkHash, indexB
 	if entry.ByteStart < 0 || entry.ByteCount < 0 {
 		return errStateIndexEntryByteSpan
 	}
-	if checkHash && entry.Hash != "" && entry.Hash != indexEntryHash(entry) {
+	if checkHash && entry.Hash != "" && !indexEntryHashEquals(entry, entry.Hash) {
 		return errStateIndexEntryHashMismatch
 	}
 	return nil
@@ -489,22 +514,31 @@ func indexModel(blk *kv.StateBlockBundle, opts StateIndexOptions) bundle.Model {
 		QuantGroup:    info.QuantGroup,
 		ContextLength: info.ContextLength,
 	}
-	builder := core.NewBuilder()
-	builder.WriteString(model.Name)
-	builder.WriteByte('\n')
-	builder.WriteString(model.Path)
-	builder.WriteByte('\n')
-	builder.WriteString(model.Architecture)
-	builder.WriteByte('\n')
+	// Build the canonical identity input into the pooled bytes.Buffer
+	// (shared with indexHash + indexEntryHash) then hash directly via
+	// sha256.Sum256. Saves the *strings.Builder + Builder.String()
+	// intermediate string vs the legacy `stateHash(builder.String())`
+	// path — same digest input, two allocs collapsed into one (just
+	// the HexEncode return string).
+	buf := hashBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
 	var intBuf [20]byte
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
-	builder.WriteByte('\n')
-	builder.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
-	model.Hash = stateHash(builder.String())
+	buf.WriteString(model.Name)
+	buf.WriteByte('\n')
+	buf.WriteString(model.Path)
+	buf.WriteByte('\n')
+	buf.WriteString(model.Architecture)
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.VocabSize), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.NumLayers), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.QuantBits), 10))
+	buf.WriteByte('\n')
+	buf.Write(strconv.AppendInt(intBuf[:0], int64(model.ContextLength), 10))
+	sum := sha256.Sum256(buf.Bytes())
+	hashBufPool.Put(buf)
+	model.Hash = core.HexEncode(sum[:])
 	return model
 }
 
@@ -611,17 +645,22 @@ func stateBlockRefsSortedByTokenStart(blocks []kv.StateBlockRef) bool {
 	return true
 }
 
-// indexHash streams the canonical input into a sha256 hasher.
-// The bounded header (Kind|BundleURI|...|ChatTemplateHash) is
-// pre-built in a Builder so the two int writes don't escape their
-// digit buffer to the heap through hash.Hash's interface dispatch;
-// the per-entry tail then streams pipe+entry-hash pairs straight
-// to sha256 because Builder-batching the entry tail loses at scale
-// — the doubling backing slice grows into hundreds of KB on a
-// 1000-entry index (measured 25 µs streaming vs 57 µs full-builder).
-func indexHash(index *StateIndex) string {
+// indexHashBytes streams the canonical input into a sha256 hasher and
+// returns the binary digest in a stack-allocated array. The bounded
+// header (Kind|BundleURI|...|ChatTemplateHash) is pre-built in a
+// pooled bytes.Buffer so the two int writes don't escape their digit
+// buffer to the heap through hash.Hash's interface dispatch; the
+// per-entry tail then streams pipe+entry-hash pairs straight to
+// sha256 because Builder-batching the entry tail loses at scale —
+// the doubling backing slice grows into hundreds of KB on a 1000-
+// entry index (measured 25 µs streaming vs 57 µs full-builder).
+//
+// Returns the zero array when index is nil so the hex wrapper can
+// emit "" without an extra branch.
+func indexHashBytes(index *StateIndex) [sha256.Size]byte {
+	var zero [sha256.Size]byte
 	if index == nil {
-		return ""
+		return zero
 	}
 	header := hashBufPool.Get().(*bytes.Buffer)
 	header.Reset()
@@ -657,10 +696,43 @@ func indexHash(index *StateIndex) string {
 	// Sum into a stack-allocated [32]byte rather than passing nil
 	// (which heap-allocates the digest slice).
 	var sumBuf [sha256.Size]byte
-	return core.HexEncode(h.Sum(sumBuf[:0]))
+	digest := h.Sum(sumBuf[:0])
+	var out [sha256.Size]byte
+	copy(out[:], digest)
+	return out
 }
 
-func indexEntryHash(entry *StateIndexEntry) string {
+func indexHash(index *StateIndex) string {
+	if index == nil {
+		return ""
+	}
+	sum := indexHashBytes(index)
+	return core.HexEncode(sum[:])
+}
+
+// indexHashEquals reports whether expectedHex matches the
+// freshly-computed canonical hash of index. Avoids the HexEncode
+// alloc by decoding expectedHex into a stack [32]byte and comparing
+// arrays. Used by Validate's tail check so the index-hash recompute
+// path adds zero allocs.
+func indexHashEquals(index *StateIndex, expectedHex string) bool {
+	if len(expectedHex) != sha256.Size*2 {
+		return false
+	}
+	sum := indexHashBytes(index)
+	var expected [sha256.Size]byte
+	if _, err := hex.Decode(expected[:], core.AsBytes(expectedHex)); err != nil {
+		return false
+	}
+	return sum == expected
+}
+
+// indexEntryHashBytes writes the canonical entry input into the shared
+// hashBufPool and returns the binary SHA-256 digest in a stack-allocated
+// array. The hex wrapper builds on this; validate() reuses the binary
+// form to compare against the stored hex without allocating the
+// computed hex string.
+func indexEntryHashBytes(entry *StateIndexEntry) [sha256.Size]byte {
 	b := hashBufPool.Get().(*bytes.Buffer)
 	b.Reset()
 	var intBuf [20]byte
@@ -689,7 +761,12 @@ func indexEntryHash(entry *StateIndexEntry) string {
 			b.WriteString(value)
 		}
 	} else if len(entry.Meta) > 1 {
-		keys := make([]string, 0, len(entry.Meta))
+		// Stack-rooted small-buffer for the common 2-8 meta-key case
+		// (sleepEntryMeta produces 0-3 parent_* keys + caller-supplied
+		// session id / agent name). For larger Meta append spills to
+		// heap on the second grow — accepted floor for the rare path.
+		var stackKeys [8]string
+		keys := stackKeys[:0]
 		for key := range entry.Meta {
 			keys = append(keys, key)
 		}
@@ -703,7 +780,30 @@ func indexEntryHash(entry *StateIndexEntry) string {
 	}
 	sum := sha256.Sum256(b.Bytes())
 	hashBufPool.Put(b)
+	return sum
+}
+
+func indexEntryHash(entry *StateIndexEntry) string {
+	sum := indexEntryHashBytes(entry)
 	return core.HexEncode(sum[:])
+}
+
+// indexEntryHashEquals reports whether expectedHex (a 64-char SHA-256
+// hex string) matches the freshly-computed canonical hash of entry.
+// Avoids the HexEncode alloc of indexEntryHash by decoding the
+// expected hex into a stack [32]byte and comparing arrays. Hit per
+// entry on every Validate(checkHashes=true) — N alloc savings for
+// N-entry indexes.
+func indexEntryHashEquals(entry *StateIndexEntry, expectedHex string) bool {
+	if len(expectedHex) != sha256.Size*2 {
+		return false
+	}
+	sum := indexEntryHashBytes(entry)
+	var expected [sha256.Size]byte
+	if _, err := hex.Decode(expected[:], core.AsBytes(expectedHex)); err != nil {
+		return false
+	}
+	return sum == expected
 }
 
 // writeIndexHashString is the only remaining hash.Hash helper —
