@@ -189,13 +189,23 @@ type Sink interface {
 }
 
 // ownedEventSink is implemented by sinks that accept an unshared
-// event without the Bus pre-cloning it — the sink promises to take
-// over ownership (deep-copying internally if it retains the event).
-// Implementing this interface lets the Bus skip its own defensive
-// CloneEvent when fanning out to that sink, eliminating the
-// double-clone for the Bus → Recorder hot path. Sinks that don't
-// implement it still receive the standard pre-cloned Event so the
-// public Sink contract is unchanged.
+// event without the Bus pre-cloning it. By implementing this
+// interface, the sink declares that the Bus may deliver the event
+// directly (no fanout-side CloneEvent) and that the sink may defer
+// any defensive cloning to read time. Implementing this interface
+// lets the Bus skip its own defensive CloneEvent when fanning out
+// to that sink and the sink itself can skip the on-emit clone if
+// it has a read-side deep-clone (e.g., Recorder.Events()).
+//
+// In exchange, the bus caller must not mutate the event (or any
+// payload pointer the event aliases) after the Bus.EmitProbe call
+// returns — the Bus's existing contract for owned sinks is that
+// the caller has transferred ownership, and the on-emit clone
+// elision rests on that promise.
+//
+// Sinks that don't implement this interface still receive the
+// standard pre-cloned Event so the public Sink contract is
+// unchanged.
 type ownedEventSink interface {
 	emitProbeOwned(Event)
 }
@@ -343,12 +353,26 @@ func (r *Recorder) EmitProbe(event Event) {
 	r.mu.Unlock()
 }
 
-// emitProbeOwned satisfies ownedEventSink so a Bus can hand the
-// recorder an unshared event without paying for the standard fanout
-// CloneEvent — the recorder clones internally anyway. Behaviour is
-// otherwise identical to EmitProbe.
+// emitProbeOwned satisfies ownedEventSink. The Bus invokes this
+// method when it has already verified the caller transferred event
+// ownership — the bus-side fanout no longer clones, and the
+// recorder can store the value by value without a second defensive
+// clone because Events() always returns a fresh deep-clone snapshot
+// on read. Direct callers must use EmitProbe (which still defends
+// against post-emit caller mutation); only the Bus's owned-sink
+// fast-path may bypass the on-emit clone.
+//
+// emitProbeOwned must be called only from the same package as
+// ownedEventSink; the unexported interface guarantees that
+// external callers cannot satisfy it and therefore cannot invoke
+// this method directly.
 func (r *Recorder) emitProbeOwned(event Event) {
-	r.EmitProbe(event)
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
 }
 
 // Events returns recorded events without aliasing recorder storage.

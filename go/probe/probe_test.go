@@ -69,6 +69,39 @@ func TestBus_FansOutToAllSinks_Good(t *testing.T) {
 	}
 }
 
+// TestBus_OwnedSink_EventsAreDeepClonedOnRead verifies the
+// owned-sink path: the Bus skips on-emit cloning, but Recorder.Events()
+// returns deep-cloned events so consumers can never alias storage.
+// Even if the underlying recorder storage shares pointers with the
+// bus-delivered event (per the relaxed owned-sink contract), the
+// snapshot returned by Events() is fully detached.
+func TestBus_OwnedSink_EventsAreDeepClonedOnRead_Good(t *testing.T) {
+	rec := NewRecorder()
+	bus := NewBus(rec)
+	bus.EmitProbe(Event{
+		Kind:  KindToken,
+		Token: &Token{ID: 7, Text: "answer"},
+		Meta:  map[string]string{"k": "v"},
+	})
+	first := rec.Events()
+	second := rec.Events()
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("events len first=%d second=%d, want 1 each", len(first), len(second))
+	}
+	if first[0].Token == second[0].Token {
+		t.Fatal("Events() returned aliased Token pointers across calls")
+	}
+	// Mutating first[] snapshot must not affect second[] snapshot.
+	first[0].Token.ID = 99
+	first[0].Meta["k"] = "mutated"
+	if second[0].Token.ID != 7 {
+		t.Fatalf("second snapshot Token.ID = %d, want 7 (snapshots aliased)", second[0].Token.ID)
+	}
+	if second[0].Meta["k"] != "v" {
+		t.Fatalf("second snapshot Meta[k] = %q, want v (snapshots aliased)", second[0].Meta["k"])
+	}
+}
+
 func TestBus_AddNilIgnored_Ugly(t *testing.T) {
 	bus := NewBus()
 	bus.Add(nil) // must not panic; no sink added
