@@ -13,6 +13,7 @@ package chaptersmoke
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -251,7 +252,7 @@ func normalizeConfig(cfg Config) Config {
 	if cfg.AnswerMaxTokens <= 0 {
 		cfg.AnswerMaxTokens = DefaultAnswerMaxTokens
 	}
-	cfg.Chapters = append([]Input(nil), cfg.Chapters...)
+	cfg.Chapters = core.SliceClone(cfg.Chapters)
 	return cfg
 }
 
@@ -343,11 +344,31 @@ func normalizeStoreKind(kind, path string) string {
 			return kind
 		}
 	}
-	lowerPath := core.Lower(path)
-	if core.HasSuffix(lowerPath, ".mp4") || core.HasSuffix(lowerPath, ".mv2") {
+	// Avoid lowering the entire path string just to check a 4-char
+	// suffix — inspect the last 4 bytes directly and ASCII-lower them.
+	if hasCaseInsensitiveSuffix(path, ".mp4") || hasCaseInsensitiveSuffix(path, ".mv2") {
 		return StoreCLI
 	}
 	return StoreFileLog
+}
+
+// hasCaseInsensitiveSuffix reports whether path ends with suffix using
+// ASCII-only case folding. Allocation-free.
+func hasCaseInsensitiveSuffix(path, suffix string) bool {
+	if len(path) < len(suffix) {
+		return false
+	}
+	tail := path[len(path)-len(suffix):]
+	for i := 0; i < len(suffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateStoreKind(kind string) error {
@@ -399,7 +420,11 @@ func chapterName(index int, name string) string {
 	if core.Trim(name) != "" {
 		return name
 	}
-	return core.Sprintf("chapter-%d", index+1)
+	// Hand-built "chapter-N" — avoids Sprintf("%d") interface boxing.
+	buf := make([]byte, 0, 8+20)
+	buf = append(buf, "chapter-"...)
+	buf = strconv.AppendInt(buf, int64(index+1), 10)
+	return core.AsString(buf)
 }
 
 func storeFileName(kind string) string {
@@ -416,9 +441,14 @@ func bundleURI(index int, name string) string {
 func slug(index int, name string) string {
 	name = core.Lower(core.Trim(name))
 	if name == "" {
-		name = core.Sprintf("chapter-%d", index+1)
+		name = defaultChapterSlug(index)
 	}
 	builder := core.NewBuilder()
+	// Pre-grow to the input rune count's upper bound (UTF-8 bytes) so
+	// the builder skips its grow-and-copy ladder for typical chapter
+	// names. Worst-case overestimate is fine — Builder.String() trims to
+	// the actually-written length.
+	builder.Grow(len(name))
 	lastDash := false
 	for _, r := range name {
 		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
@@ -432,17 +462,31 @@ func slug(index int, name string) string {
 			lastDash = true
 		}
 	}
-	out := builder.String()
-	for core.HasPrefix(out, "-") {
-		out = core.TrimPrefix(out, "-")
-	}
-	for core.HasSuffix(out, "-") {
-		out = core.TrimSuffix(out, "-")
-	}
+	// Trim leading/trailing dashes in a single pass each — replaces two
+	// HasPrefix/HasSuffix loops that each scanned the prefix on every
+	// iteration. TrimLeft/TrimRight are single linear sweeps.
+	out := core.TrimLeft(core.TrimRight(builder.String(), "-"), "-")
 	if out == "" {
-		out = core.Sprintf("chapter-%d", index+1)
+		out = defaultChapterSlug(index)
 	}
-	return core.Sprintf("%02d-%s", index+1, out)
+	// Hand-built "%02d-out" — avoids Sprintf parsing + interface boxing.
+	idx := index + 1
+	buf := make([]byte, 0, 3+len(out))
+	if idx < 10 {
+		buf = append(buf, '0')
+	}
+	buf = strconv.AppendInt(buf, int64(idx), 10)
+	buf = append(buf, '-')
+	buf = append(buf, out...)
+	return core.AsString(buf)
+}
+
+// defaultChapterSlug returns "chapter-N" without Sprintf boxing.
+func defaultChapterSlug(index int) string {
+	buf := make([]byte, 0, 8+20)
+	buf = append(buf, "chapter-"...)
+	buf = strconv.AppendInt(buf, int64(index+1), 10)
+	return core.AsString(buf)
 }
 
 func fileCount(dir string) int {
@@ -525,9 +569,9 @@ func (s *countingStore) UniqueReads() int {
 }
 
 func (s *countingStore) record(chunkID int) {
+	// newCountingStore is the only constructor and it initialises
+	// s.unique, so the nil-guard is dead. Hot inner of every Get /
+	// Resolve / ResolveBytes — strip the branch.
 	s.reads++
-	if s.unique == nil {
-		s.unique = map[int]struct{}{}
-	}
 	s.unique[chunkID] = struct{}{}
 }

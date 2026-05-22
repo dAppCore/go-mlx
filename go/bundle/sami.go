@@ -52,14 +52,25 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	}
 	meanCoherence := meanUnit(analysis.MeanKeyCoherence, analysis.MeanValueCoherence)
 	meanCross := clampUnit(analysis.MeanCrossAlignment)
+	// Hoist analysis-field slices + fallback scalars out of the per-layer
+	// loop. Without this, each iteration re-dereferences analysis three
+	// times and re-reads the same fallback floats.
+	layerKey := analysis.LayerKeyCoherence
+	layerValue := analysis.LayerValueCoherence
+	layerAlign := analysis.LayerCrossAlignment
+	fallbackKey := analysis.MeanKeyCoherence
+	fallbackValue := analysis.MeanValueCoherence
+	fallbackAlign := analysis.MeanCrossAlignment
 	layerCoherence := make([]float64, numLayers)
 	layerCross := make([]float64, numLayers)
 	for layer := range numLayers {
-		layerCoherence[layer] = meanUnit(
-			layerMetric(analysis.LayerKeyCoherence, layer, analysis.MeanKeyCoherence),
-			layerMetric(analysis.LayerValueCoherence, layer, analysis.MeanValueCoherence),
-		)
-		layerCross[layer] = layerMetric(analysis.LayerCrossAlignment, layer, analysis.MeanCrossAlignment)
+		// layerMetric guarantees [0,1] (NaN/Inf → 0 via clampRange), so the
+		// average of two clamped values is also in [0,1] — no outer clamp
+		// needed. Skipping it strips one branch + function-call per layer.
+		k := layerMetric(layerKey, layer, fallbackKey)
+		v := layerMetric(layerValue, layer, fallbackValue)
+		layerCoherence[layer] = (k + v) / 2.0
+		layerCross[layer] = layerMetric(layerAlign, layer, fallbackAlign)
 	}
 	jointCollapseCount := analysis.JointCollapseCount
 	if jointCollapseCount < 0 {

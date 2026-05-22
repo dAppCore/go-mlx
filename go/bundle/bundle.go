@@ -12,6 +12,7 @@ package bundle
 
 import (
 	"context"
+	"strconv"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -173,8 +174,9 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 	if snap.Version == 0 {
 		snap.Version = kv.SnapshotVersion
 	}
+	tokenCount := len(snap.Tokens)
 	if snap.TokenOffset == 0 {
-		snap.TokenOffset = len(snap.Tokens)
+		snap.TokenOffset = tokenCount
 	}
 	kvHash, err := kv.HashSnapshot(snap)
 	if err != nil {
@@ -200,7 +202,7 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 		Prompt: Prompt{
 			Text:        opts.Prompt,
 			Hash:        HashString(opts.Prompt),
-			TokenCount:  len(snap.Tokens),
+			TokenCount:  tokenCount,
 			TokenOffset: snap.TokenOffset,
 		},
 		Tokenizer: tokenizer,
@@ -212,7 +214,7 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 		KVHash:    kvHash,
 		Analysis:  analysis,
 		SAMI:      sami,
-		Refs:      buildRefs(opts.Refs, append(append([]state.ChunkRef(nil), opts.StateRefs...), opts.MemvidRefs...)),
+		Refs:      buildRefs(opts.Refs, joinChunkRefs(opts.StateRefs, opts.MemvidRefs)),
 		Meta:      cloneMeta(opts.Meta),
 	}
 	if AdapterEmpty(b.Adapter) {
@@ -333,14 +335,20 @@ func (b *Bundle) stateRef() (state.ChunkRef, bool) {
 	if b == nil {
 		return state.ChunkRef{}, false
 	}
-	for _, ref := range b.Refs {
-		if ref.Kind == RefState && ref.State.ChunkID != 0 {
-			return ref.State, true
-		}
-		if ref.Kind == RefState && ref.Memvid.ChunkID != 0 {
-			return ref.Memvid, true
-		}
-		if ref.Kind == RefMemvid {
+	refs := b.Refs
+	for i := range refs {
+		ref := &refs[i]
+		switch ref.Kind {
+		case RefState:
+			// State refs prefer the typed State field; fall back to the
+			// older Memvid field for migrated bundles.
+			if ref.State.ChunkID != 0 {
+				return ref.State, true
+			}
+			if ref.Memvid.ChunkID != 0 {
+				return ref.Memvid, true
+			}
+		case RefMemvid:
 			return ref.Memvid, true
 		}
 	}
@@ -444,7 +452,7 @@ func AdapterFromInfo(info lora.AdapterInfo) Adapter {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: append([]string(nil), info.TargetKeys...),
+		TargetKeys: core.SliceClone(info.TargetKeys),
 	}
 }
 
@@ -459,7 +467,7 @@ func AdapterToInfo(adapter Adapter) lora.AdapterInfo {
 		Rank:       adapter.Rank,
 		Alpha:      adapter.Alpha,
 		Scale:      adapter.Scale,
-		TargetKeys: append([]string(nil), adapter.TargetKeys...),
+		TargetKeys: core.SliceClone(adapter.TargetKeys),
 	}
 }
 
@@ -477,10 +485,20 @@ func HashString(value string) string {
 //
 //	uri := bundle.StateURI(ref)
 func StateURI(ref state.ChunkRef) string {
+	// Hand-built — avoids Sprintf's interface boxing of segment and chunk
+	// ID. Two branches, both single-allocation.
 	if ref.Segment != "" {
-		return core.Sprintf("state://%s#chunk=%d", ref.Segment, ref.ChunkID)
+		buf := make([]byte, 0, 8+len(ref.Segment)+7+20)
+		buf = append(buf, "state://"...)
+		buf = append(buf, ref.Segment...)
+		buf = append(buf, "#chunk="...)
+		buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+		return core.AsString(buf)
 	}
-	return core.Sprintf("state://chunk/%d", ref.ChunkID)
+	buf := make([]byte, 0, 14+20)
+	buf = append(buf, "state://chunk/"...)
+	buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+	return core.AsString(buf)
 }
 
 func buildModel(snapshot *kv.Snapshot, opts Options) Model {
@@ -504,7 +522,24 @@ func buildModel(snapshot *kv.Snapshot, opts Options) Model {
 		QuantGroup:    src.QuantGroup,
 		ContextLength: src.ContextLength,
 	}
-	model.Hash = HashString(core.Join("\n", model.Name, model.Path, model.Architecture, core.Sprintf("%d", model.VocabSize), core.Sprintf("%d", model.NumLayers), core.Sprintf("%d", model.QuantBits), core.Sprintf("%d", model.ContextLength)))
+	// Hand-built hash payload — avoids 4× Sprintf("%d") boxing and a
+	// 7-arg Join intermediate slice. Capacity sized for typical
+	// model.Path + Architecture strings plus 4 small integer fields.
+	buf := make([]byte, 0, len(model.Name)+len(model.Path)+len(model.Architecture)+48)
+	buf = append(buf, model.Name...)
+	buf = append(buf, '\n')
+	buf = append(buf, model.Path...)
+	buf = append(buf, '\n')
+	buf = append(buf, model.Architecture...)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.VocabSize), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.NumLayers), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.QuantBits), 10)
+	buf = append(buf, '\n')
+	buf = strconv.AppendInt(buf, int64(model.ContextLength), 10)
+	model.Hash = HashString(core.AsString(buf))
 	return model
 }
 
@@ -522,13 +557,46 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 	if adapter.Path == "" {
 		adapter.Path = adapterPath
 	}
-	if adapter.Hash == "" {
-		adapter.Hash = HashString(core.Join("\n", adapter.Name, adapter.Path, core.Sprintf("%d", adapter.Rank), core.Sprintf("%f", adapter.Alpha), core.Sprintf("%f", adapter.Scale), core.Join(",", adapter.TargetKeys...)))
+	// Fast-skip the hash computation when the adapter is fully empty —
+	// the final all-zero check at the end would clear the freshly-built
+	// hash anyway, so building it is wasted SHA + alloc on every
+	// adapter-less bundle.New.
+	allEmpty := adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0
+	if adapter.Hash == "" && !allEmpty {
+		// Hand-built hash payload — avoids Sprintf("%d") + 2× Sprintf("%f")
+		// boxing and a 6-arg Join intermediate. Float formatting matches
+		// fmt's default %f precision (6 decimals).
+		keyCommas := 0
+		if n := len(adapter.TargetKeys); n > 1 {
+			keyCommas = n - 1
+		}
+		keyBytes := 0
+		for _, key := range adapter.TargetKeys {
+			keyBytes += len(key)
+		}
+		buf := make([]byte, 0, len(adapter.Name)+len(adapter.Path)+keyBytes+keyCommas+48)
+		buf = append(buf, adapter.Name...)
+		buf = append(buf, '\n')
+		buf = append(buf, adapter.Path...)
+		buf = append(buf, '\n')
+		buf = strconv.AppendInt(buf, int64(adapter.Rank), 10)
+		buf = append(buf, '\n')
+		buf = strconv.AppendFloat(buf, float64(adapter.Alpha), 'f', 6, 32)
+		buf = append(buf, '\n')
+		buf = strconv.AppendFloat(buf, float64(adapter.Scale), 'f', 6, 32)
+		buf = append(buf, '\n')
+		for i, key := range adapter.TargetKeys {
+			if i > 0 {
+				buf = append(buf, ',')
+			}
+			buf = append(buf, key...)
+		}
+		adapter.Hash = HashString(core.AsString(buf))
 	}
 	if adapter.Path == "" && adapter.Name == "" && adapter.Rank == 0 && adapter.Alpha == 0 && adapter.Scale == 0 && len(adapter.TargetKeys) == 0 {
 		adapter.Hash = ""
 	}
-	adapter.TargetKeys = append([]string(nil), adapter.TargetKeys...)
+	adapter.TargetKeys = core.SliceClone(adapter.TargetKeys)
 	return adapter
 }
 
@@ -559,10 +627,32 @@ func checkAdapterCompatibility(active lora.AdapterInfo, expected Adapter) error 
 //
 // Deprecated: use StateURI.
 func MemvidURI(ref state.ChunkRef) string {
+	// Hand-built — same pattern as StateURI; no Sprintf boxing.
 	if ref.Segment != "" {
-		return core.Sprintf("memvid://%s#chunk=%d", ref.Segment, ref.ChunkID)
+		buf := make([]byte, 0, 9+len(ref.Segment)+7+20)
+		buf = append(buf, "memvid://"...)
+		buf = append(buf, ref.Segment...)
+		buf = append(buf, "#chunk="...)
+		buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+		return core.AsString(buf)
 	}
-	return core.Sprintf("memvid://chunk/%d", ref.ChunkID)
+	buf := make([]byte, 0, 15+20)
+	buf = append(buf, "memvid://chunk/"...)
+	buf = strconv.AppendInt(buf, int64(ref.ChunkID), 10)
+	return core.AsString(buf)
+}
+
+// joinChunkRefs returns a single allocation containing primary first
+// then fallback. Replaces the `append(append(nil, A...), B...)` pattern
+// which allocates twice and grows on the second append.
+func joinChunkRefs(primary, fallback []state.ChunkRef) []state.ChunkRef {
+	if len(primary) == 0 && len(fallback) == 0 {
+		return nil
+	}
+	out := make([]state.ChunkRef, 0, len(primary)+len(fallback))
+	out = append(out, primary...)
+	out = append(out, fallback...)
+	return out
 }
 
 func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
@@ -584,14 +674,14 @@ func buildRefs(refs []Ref, stateRefs []state.ChunkRef) []Ref {
 }
 
 func cloneMeta(meta map[string]string) map[string]string {
+	// core.MapClone wraps maps.Clone, which returns a fresh empty map for
+	// an empty input. cloneMeta has always returned nil for both nil and
+	// zero-length input — keep that contract so JSON marshal omits the
+	// field via `omitempty` instead of emitting "{}".
 	if len(meta) == 0 {
 		return nil
 	}
-	cloned := make(map[string]string, len(meta))
-	for key, value := range meta {
-		cloned[key] = value
-	}
-	return cloned
+	return core.MapClone(meta)
 }
 
 func resultError(result core.Result) error {
