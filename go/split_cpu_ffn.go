@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"math"
+	"strconv"
 	"sync"
 
 	core "dappco.re/go"
@@ -544,7 +545,7 @@ func (executor *CPUSplitFFNExecutor) estimateLayerMemory(layer int) (CPUSplitFFN
 	if layer < 0 || layer >= executor.cfg.NumHiddenLayers {
 		return CPUSplitFFNMemoryReport{}, core.Errorf("mlx: CPU split FFN layer %d out of range", layer)
 	}
-	prefix := core.Sprintf("model.layers.%d", layer)
+	prefix := "model.layers." + strconv.Itoa(layer)
 	var report CPUSplitFFNMemoryReport
 	if err := executor.estimateVectorMemory(&report, cpuSplitWeightCandidates(prefix+".post_attention_layernorm.weight"), prefix+".post_attention_layernorm.weight", executor.cfg.HiddenSize, true); err != nil {
 		return CPUSplitFFNMemoryReport{}, err
@@ -655,7 +656,7 @@ func (executor *CPUSplitFFNExecutor) loadLayer(ctx context.Context, layer int) (
 	if err := ctx.Err(); err != nil {
 		return cpuSplitFFNLayer{}, err
 	}
-	prefix := core.Sprintf("model.layers.%d", layer)
+	prefix := "model.layers." + strconv.Itoa(layer)
 	norm, err := executor.loadVector(prefix+".post_attention_layernorm.weight", executor.cfg.HiddenSize)
 	if err != nil {
 		return cpuSplitFFNLayer{}, err
