@@ -14,6 +14,19 @@ import (
 	"dappco.re/go/inference"
 )
 
+// errAdapterNil is the sentinel returned when the receiver Adapter or its
+// wrapped model is nil. Hoisted to a package-level var so the hot guard at
+// the top of every Adapter method does not allocate a fresh *Err per call.
+var errAdapterNil = core.NewError("adapter: inference adapter is nil")
+
+// errCallbackNil is the sentinel returned when a streaming token callback
+// is nil. Hoisted for the same reason as errAdapterNil.
+var errCallbackNil = core.NewError("adapter: token callback is nil")
+
+// errInspectUnsupported is the sentinel returned by InspectAttention when
+// the wrapped model does not implement inference.AttentionInspector.
+var errInspectUnsupported = core.NewError("adapter: wrapped model does not support attention inspection")
+
 // GenOpts controls buffered adapter generation.
 type GenOpts struct {
 	MaxTokens int
@@ -78,31 +91,35 @@ func (a *Adapter) Close() error {
 //	result, err := a.Generate(ctx, "prompt", adapter.GenOpts{MaxTokens: 64})
 func (a *Adapter) Generate(ctx context.Context, prompt string, opts GenOpts) (Result, error) {
 	if a == nil || a.model == nil {
-		return Result{}, core.NewError("adapter: inference adapter is nil")
+		return Result{}, errAdapterNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	// Cache the model pointer locally so the streaming loop, the Err
+	// check, and the Metrics fetch all skip the interface-table reload
+	// the compiler emits for repeated a.model accesses.
+	model := a.model
 	builder := core.NewBuilder()
-	for token := range a.model.Generate(ctx, prompt, genOptsToInference(opts)...) {
+	for token := range model.Generate(ctx, prompt, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := a.model.Err(); err != nil {
+	if err := model.Err(); err != nil {
 		return Result{Text: builder.String()}, err
 	}
 
-	metrics := a.model.Metrics()
+	metrics := model.Metrics()
 	return Result{Text: builder.String(), Metrics: &metrics}, nil
 }
 
 // GenerateStream forwards token text to a callback.
 func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpts, cb TokenCallback) error {
 	if a == nil || a.model == nil {
-		return core.NewError("adapter: inference adapter is nil")
+		return errAdapterNil
 	}
 	if cb == nil {
-		return core.NewError("adapter: token callback is nil")
+		return errCallbackNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -110,8 +127,9 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	model := a.model
 	var callbackErr error
-	tokens := a.model.Generate(ctx, prompt, genOptsToInference(opts)...)
+	tokens := model.Generate(ctx, prompt, genOptsToInference(opts)...)
 	for token := range tokens {
 		if callbackErr != nil {
 			continue
@@ -124,7 +142,7 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return a.model.Err()
+	return model.Err()
 }
 
 // Chat collects a streamed chat response into a single string.
@@ -132,31 +150,32 @@ func (a *Adapter) GenerateStream(ctx context.Context, prompt string, opts GenOpt
 //	result, err := a.Chat(ctx, messages, adapter.GenOpts{})
 func (a *Adapter) Chat(ctx context.Context, messages []inference.Message, opts GenOpts) (Result, error) {
 	if a == nil || a.model == nil {
-		return Result{}, core.NewError("adapter: inference adapter is nil")
+		return Result{}, errAdapterNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
+	model := a.model
 	builder := core.NewBuilder()
-	for token := range a.model.Chat(ctx, messages, genOptsToInference(opts)...) {
+	for token := range model.Chat(ctx, messages, genOptsToInference(opts)...) {
 		builder.WriteString(token.Text)
 	}
-	if err := a.model.Err(); err != nil {
+	if err := model.Err(); err != nil {
 		return Result{Text: builder.String()}, err
 	}
 
-	metrics := a.model.Metrics()
+	metrics := model.Metrics()
 	return Result{Text: builder.String(), Metrics: &metrics}, nil
 }
 
 // ChatStream forwards chat token text to a callback.
 func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, opts GenOpts, cb TokenCallback) error {
 	if a == nil || a.model == nil {
-		return core.NewError("adapter: inference adapter is nil")
+		return errAdapterNil
 	}
 	if cb == nil {
-		return core.NewError("adapter: token callback is nil")
+		return errCallbackNil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -164,8 +183,9 @@ func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	model := a.model
 	var callbackErr error
-	tokens := a.model.Chat(ctx, messages, genOptsToInference(opts)...)
+	tokens := model.Chat(ctx, messages, genOptsToInference(opts)...)
 	for token := range tokens {
 		if callbackErr != nil {
 			continue
@@ -178,28 +198,39 @@ func (a *Adapter) ChatStream(ctx context.Context, messages []inference.Message, 
 	if callbackErr != nil {
 		return callbackErr
 	}
-	return a.model.Err()
+	return model.Err()
 }
 
 // InspectAttention delegates to the underlying model when supported.
 func (a *Adapter) InspectAttention(ctx context.Context, prompt string, opts ...inference.GenerateOption) (*inference.AttentionSnapshot, error) {
 	if a == nil || a.model == nil {
-		return nil, core.NewError("adapter: inference adapter is nil")
+		return nil, errAdapterNil
 	}
 	inspector, ok := a.model.(inference.AttentionInspector)
 	if !ok {
-		return nil, core.NewError("adapter: wrapped model does not support attention inspection")
+		return nil, errInspectUnsupported
 	}
 	return inspector.InspectAttention(ctx, prompt, opts...)
 }
 
 func genOptsToInference(opts GenOpts) []inference.GenerateOption {
-	var generateOpts []inference.GenerateOption
-	if opts.MaxTokens > 0 {
-		generateOpts = append(generateOpts, inference.WithMaxTokens(opts.MaxTokens))
+	// Switch on the 2x2 truth table so the slice is constructed in a
+	// single literal expression — no count phase, no make + append +
+	// append round-trip. The compiler emits each branch as a direct
+	// slice-literal initialisation at its exact final length.
+	hasMax := opts.MaxTokens > 0
+	hasTemp := opts.Temp > 0
+	switch {
+	case hasMax && hasTemp:
+		return []inference.GenerateOption{
+			inference.WithMaxTokens(opts.MaxTokens),
+			inference.WithTemperature(float32(opts.Temp)),
+		}
+	case hasMax:
+		return []inference.GenerateOption{inference.WithMaxTokens(opts.MaxTokens)}
+	case hasTemp:
+		return []inference.GenerateOption{inference.WithTemperature(float32(opts.Temp))}
+	default:
+		return nil
 	}
-	if opts.Temp > 0 {
-		generateOpts = append(generateOpts, inference.WithTemperature(float32(opts.Temp)))
-	}
-	return generateOpts
 }

@@ -23,6 +23,16 @@ import (
 // Kind labels session-state artifacts written by this package.
 const Kind = "go-mlx/session-state"
 
+// errSnapshotNil is the sentinel returned when Export is invoked without
+// a KV snapshot. Hoisted to a package var so the nil-guard at the top
+// of Export does not allocate a fresh *Err on every call.
+var errSnapshotNil = core.NewError("artifact: KV snapshot is nil")
+
+// errResultFailed is the fallback sentinel returned by resultError when
+// a core.Result reports !OK but its Value is not an error. Hoisted to a
+// package var to avoid allocating on this rare-but-hot helper path.
+var errResultFailed = core.NewError("core result failed")
+
 // Options controls local model-state artifact export.
 type Options struct {
 	Model    string
@@ -78,7 +88,7 @@ func Export(ctx context.Context, snapshot *kv.Snapshot, opts Options) (*Record, 
 	default:
 	}
 	if snapshot == nil {
-		return nil, core.NewError("artifact: KV snapshot is nil")
+		return nil, errSnapshotNil
 	}
 	if opts.KVPath != "" {
 		if err := snapshot.Save(opts.KVPath); err != nil {
@@ -114,7 +124,12 @@ func Export(ctx context.Context, snapshot *kv.Snapshot, opts Options) (*Record, 
 		if !data.OK {
 			return nil, core.E("artifact.Export", "marshal record", resultError(data))
 		}
-		ref, err := opts.Store.Put(ctx, string(data.Value.([]byte)), state.PutOptions{
+		// JSONMarshalIndent returns a fresh buffer that nothing else
+		// references; AsString aliases it into the string Put requires
+		// without the extra copy a `string(...)` cast emits. The buffer
+		// stays alive via the alias because Put retains the string.
+		marshalled := data.Value.([]byte)
+		ref, err := opts.Store.Put(ctx, core.AsString(marshalled), state.PutOptions{
 			URI:    opts.URI,
 			Title:  opts.Title,
 			Kind:   opts.Kind,
@@ -137,5 +152,5 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errResultFailed
 }

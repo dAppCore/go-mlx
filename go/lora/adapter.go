@@ -8,6 +8,15 @@ import (
 	core "dappco.re/go"
 )
 
+// errAdapterPathRequired is the sentinel returned by Inspect when the
+// caller passes an empty adapter path. Hoisted to a package var so the
+// guard does not allocate on every Inspect call.
+var errAdapterPathRequired = core.NewError("mlx: LoRA adapter path is required")
+
+// errResultFailed is the fallback sentinel returned by resultError when
+// a core.Result reports !OK but its Value is not an error.
+var errResultFailed = core.NewError("core result failed")
+
 // AdapterInfo is the reproducible identity for an active inference adapter.
 type AdapterInfo struct {
 	Name       string   `json:"name,omitempty"`
@@ -49,15 +58,25 @@ func InspectAdapter(path string) (AdapterInfo, error) {
 //	info, err := lora.Inspect(stagedPath, originalPath)
 func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if path == "" {
-		return AdapterInfo{}, core.NewError("mlx: LoRA adapter path is required")
+		return AdapterInfo{}, errAdapterPathRequired
 	}
-	configPath := adapterConfigPath(path)
+	// HasSuffix is called by both adapterConfigPath and hashAdapter on the
+	// same path argument; compute it once and pass the result through the
+	// internal variants so the SIMD scan only runs once per Inspect.
+	isSafetensors := core.HasSuffix(path, ".safetensors")
+	configPath := adapterConfigPathPrecomputed(path, isSafetensors)
 	read := core.ReadFile(configPath)
 	if !read.OK {
 		return AdapterInfo{}, core.E("lora.Inspect", "read adapter_config.json", resultError(read))
 	}
+	// Cache the type assertion: read.Value is consumed once by the JSON
+	// unmarshal and once by hashAdapter — both expect []byte. The
+	// compiler treats each .([]byte) as an independent type-assert call,
+	// so caching saves the second assertion and its associated iface-table
+	// probe on every successful Inspect.
+	configBytes := read.Value.([]byte)
 	var cfg adapterConfigJSON
-	if result := core.JSONUnmarshal(read.Value.([]byte), &cfg); !result.OK {
+	if result := core.JSONUnmarshal(configBytes, &cfg); !result.OK {
 		return AdapterInfo{}, core.E("lora.Inspect", "parse adapter_config.json", resultError(result))
 	}
 	info := AdapterInfo{
@@ -74,24 +93,46 @@ func Inspect(path string, identityPath string) (AdapterInfo, error) {
 	if info.Alpha == 0 && info.Scale != 0 && info.Rank > 0 {
 		info.Alpha = info.Scale * float32(info.Rank)
 	}
-	info.Hash = hashAdapter(path, read.Value.([]byte))
+	info.Hash = hashAdapterPrecomputed(path, configBytes, isSafetensors)
 	return info, nil
 }
 
 func adapterConfigPath(path string) string {
-	if core.HasSuffix(path, ".safetensors") {
+	return adapterConfigPathPrecomputed(path, core.HasSuffix(path, ".safetensors"))
+}
+
+// adapterConfigPathPrecomputed is the precomputed-suffix variant of
+// adapterConfigPath; the Inspect hot path computes the .safetensors
+// suffix check once and threads the result through this helper.
+func adapterConfigPathPrecomputed(path string, isSafetensors bool) string {
+	if isSafetensors {
 		return core.PathJoin(core.PathDir(path), "adapter_config.json")
 	}
 	return core.PathJoin(path, "adapter_config.json")
 }
 
 func hashAdapter(path string, config []byte) string {
-	parts := []string{core.SHA256Hex(config)}
-	paths := []string{path}
-	if !core.HasSuffix(path, ".safetensors") {
+	return hashAdapterPrecomputed(path, config, core.HasSuffix(path, ".safetensors"))
+}
+
+// hashAdapterPrecomputed is the precomputed-suffix variant of
+// hashAdapter; the Inspect hot path computes the .safetensors suffix
+// check once and threads the result through this helper to avoid the
+// second SIMD scan.
+func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) string {
+	// Resolve weight paths first so we know the worst-case parts capacity
+	// (config hash + one per weight file). The directory branch always
+	// allocates a fresh slice from PathGlob; the file branch can skip the
+	// throwaway 1-elem slice the previous code allocated unconditionally.
+	var paths []string
+	if isSafetensors {
+		paths = []string{path}
+	} else {
 		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
+	parts := make([]string, 1, 1+len(paths))
+	parts[0] = core.SHA256Hex(config)
 	for _, weightPath := range paths {
 		read := core.ReadFile(weightPath)
 		if read.OK {
@@ -135,5 +176,5 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errResultFailed
 }

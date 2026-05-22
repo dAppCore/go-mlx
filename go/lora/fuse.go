@@ -16,6 +16,26 @@ const (
 	fuseOutputWeights  = "model.safetensors"
 )
 
+// Sentinel errors returned by fuse validation and orchestration paths.
+// Hoisted to package vars so each guard returns the shared instance
+// instead of allocating a fresh *core.Err per call — relevant both for
+// the always-fired validation guards in prepareFuse and the per-fuse
+// integrity checks downstream.
+var (
+	errFuseSourceRootRequired   = core.NewError("mlx: source pack root is required")
+	errFuseAdapterPathRequired  = core.NewError("mlx: LoRA adapter path is required")
+	errFuseOutputPathRequired   = core.NewError("mlx: fused model output path is required")
+	errFuseOutputNotPackDir     = core.NewError("mlx: fused output path must be a model-pack directory")
+	errFuseRequiresSafetensors  = core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
+	errFuseRankRequired         = core.NewError("mlx: LoRA adapter rank is required for fusion")
+	errFuseScaleRequired        = core.NewError("mlx: LoRA adapter scale is required for fusion")
+	errFuseOutputSameAsSource   = core.NewError("mlx: fused output path must differ from source model path")
+	errFuseOutputContainsWeight = core.NewError("mlx: fused output path already contains model weights")
+	errFuseNoAdapterSafetensors = core.NewError("mlx: no adapter safetensors found")
+	errFuseNoLoRATensorPairs    = core.NewError("mlx: no LoRA tensor pairs found")
+	errFuseNoBaseWeightFiles    = core.NewError("mlx: no base weight files available for LoRA fusion")
+)
+
 // FuseOptions configures pack-level LoRA fusion.
 //
 // SourcePack must be a validated, safetensors-format model pack; callers
@@ -69,19 +89,23 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		return fusePrepared{}, err
 	}
 	if opts.SourcePack.Root == "" {
-		return fusePrepared{}, core.NewError("mlx: source pack root is required")
+		return fusePrepared{}, errFuseSourceRootRequired
 	}
 	if opts.AdapterPath == "" {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter path is required")
+		return fusePrepared{}, errFuseAdapterPathRequired
 	}
 	if opts.OutputPath == "" {
-		return fusePrepared{}, core.NewError("mlx: fused model output path is required")
+		return fusePrepared{}, errFuseOutputPathRequired
 	}
-	if core.HasSuffix(core.Lower(opts.OutputPath), ".safetensors") || core.HasSuffix(core.Lower(opts.OutputPath), ".gguf") {
-		return fusePrepared{}, core.NewError("mlx: fused output path must be a model-pack directory")
+	// core.Lower allocates a fresh string only when uppercase chars are
+	// present; the previous code called it twice on the same input so
+	// any uppercase path paid for the allocation + scan twice. Hoist.
+	lowerOutputPath := core.Lower(opts.OutputPath)
+	if core.HasSuffix(lowerOutputPath, ".safetensors") || core.HasSuffix(lowerOutputPath, ".gguf") {
+		return fusePrepared{}, errFuseOutputNotPackDir
 	}
 	if opts.SourcePack.Format != pack.ModelPackFormatSafetensors {
-		return fusePrepared{}, core.NewError("mlx: LoRA pack fusion currently requires safetensors base weights")
+		return fusePrepared{}, errFuseRequiresSafetensors
 	}
 
 	adapter, err := Inspect(opts.AdapterPath, opts.AdapterPath)
@@ -89,14 +113,14 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		return fusePrepared{}, core.E("lora.FuseIntoPack", "inspect LoRA adapter", err)
 	}
 	if adapter.Rank <= 0 {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter rank is required for fusion")
+		return fusePrepared{}, errFuseRankRequired
 	}
 	if adapter.Scale == 0 && adapter.Alpha == 0 {
 		adapter.Alpha = float32(adapter.Rank) * 2
 		adapter.Scale = adapter.Alpha / float32(adapter.Rank)
 	}
 	if adapter.Scale == 0 {
-		return fusePrepared{}, core.NewError("mlx: LoRA adapter scale is required for fusion")
+		return fusePrepared{}, errFuseScaleRequired
 	}
 
 	output := opts.OutputPath
@@ -104,7 +128,7 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 		output = abs.Value.(string)
 	}
 	if samePath(opts.SourcePack.Root, output) {
-		return fusePrepared{}, core.NewError("mlx: fused output path must differ from source model path")
+		return fusePrepared{}, errFuseOutputSameAsSource
 	}
 	if err := ensureEmptyFuseWeightDestination(output); err != nil {
 		return fusePrepared{}, err
@@ -132,12 +156,19 @@ func ensureEmptyFuseWeightDestination(output string) error {
 	}
 	weights := append(core.PathGlob(core.PathJoin(output, "*.safetensors")), core.PathGlob(core.PathJoin(output, "*.gguf"))...)
 	if len(weights) > 0 {
-		return core.NewError("mlx: fused output path already contains model weights")
+		return errFuseOutputContainsWeight
 	}
 	return nil
 }
 
 func samePath(a, b string) bool {
+	// Fast path: identical strings cannot resolve to different absolutes,
+	// so skip the two PathAbs round-trips when the raw inputs already
+	// match. The fuse-self-fuse guard in prepareFuse fires this once per
+	// call and the SameAbsolute bench covers the equality path.
+	if a == b {
+		return true
+	}
 	absA := a
 	if resolved := core.PathAbs(a); resolved.OK {
 		absA = resolved.Value.(string)
@@ -150,8 +181,13 @@ func samePath(a, b string) bool {
 }
 
 func copyModelPackMetadata(sourceRoot, outputRoot string) error {
-	patterns := []string{"*.json", "*.model", "*.txt"}
-	seen := map[string]struct{}{}
+	patterns := [...]string{"*.json", "*.model", "*.txt"}
+	// Real qwen3 packs ship 6-8 metadata files, gemma4 closer to 10;
+	// presize the dedup set so the dominant first-pattern fill avoids
+	// the runtime map-growth cycle. Switch the patterns slice literal to
+	// a fixed-size array so the loop iterates without the throwaway
+	// per-call slice-header alloc.
+	seen := make(map[string]struct{}, 12)
 	for _, pattern := range patterns {
 		for _, sourcePath := range core.PathGlob(core.PathJoin(sourceRoot, pattern)) {
 			name := core.PathBase(sourcePath)
@@ -171,12 +207,15 @@ func copyModelPackMetadata(sourceRoot, outputRoot string) error {
 }
 
 func isModelWeightMetadataCopySkip(name string) bool {
+	// Contains(".safetensors") is a strict superset of HasSuffix(".safetensors"):
+	// any name ending in .safetensors necessarily contains the substring. The
+	// previous HasSuffix terms were dead under the OR — drop them and let the
+	// Contains checks carry both the suffix and the .safetensors.index.json
+	// case the copy filter is meant to skip.
 	lower := core.Lower(name)
 	return lower == FuseProvenanceFile ||
 		core.Contains(lower, ".safetensors") ||
-		core.Contains(lower, ".gguf") ||
-		core.HasSuffix(lower, ".safetensors") ||
-		core.HasSuffix(lower, ".gguf")
+		core.Contains(lower, ".gguf")
 }
 
 func copyLocalFile(sourcePath, destinationPath string) error {
@@ -197,7 +236,7 @@ func fuseAdapterWeightFiles(path string) ([]string, error) {
 	matches := core.PathGlob(core.PathJoin(path, "*.safetensors"))
 	slices.Sort(matches)
 	if len(matches) == 0 {
-		return nil, core.NewError("mlx: no adapter safetensors found")
+		return nil, errFuseNoAdapterSafetensors
 	}
 	return matches, nil
 }
@@ -324,7 +363,11 @@ func loadFuseAdapterWeights(path string) (map[string]*metal.Array, error) {
 }
 
 func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error) {
-	pairs := make(map[string]fusePair)
+	// Each fusePair binds exactly one lora_a + one lora_b tensor, so the
+	// final map size is at most len(weights)/2; presize to that ceiling
+	// to skip the runtime map-growth cycles a default-sized map would
+	// take while filling. Real qwen3 fuses populate 200-400 entries.
+	pairs := make(map[string]fusePair, len(weights)/2)
 	for name, tensor := range weights {
 		pairName, suffix, ok := fusePairName(name)
 		if !ok {
@@ -340,7 +383,7 @@ func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error
 		pairs[pairName] = pair
 	}
 	if len(pairs) == 0 {
-		return nil, core.NewError("mlx: no LoRA tensor pairs found")
+		return nil, errFuseNoLoRATensorPairs
 	}
 	for name, pair := range pairs {
 		if pair.MatrixA == nil || pair.MatrixB == nil {
@@ -352,12 +395,20 @@ func buildFusePairs(weights map[string]*metal.Array) (map[string]fusePair, error
 
 func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot string, pairs map[string]fusePair, scale float32) ([]string, []string, error) {
 	if len(sourceFiles) == 0 {
-		return nil, nil, core.NewError("mlx: no base weight files available for LoRA fusion")
+		return nil, nil, errFuseNoBaseWeightFiles
 	}
 
-	fusedPairs := map[string]struct{}{}
+	// Worst-case every pair gets fused; presize to len(pairs) so
+	// the dominant fill phase avoids the runtime map-growth path.
+	fusedPairs := make(map[string]struct{}, len(pairs))
 	weightFiles := make([]string, 0, len(sourceFiles))
 	fusedKeys := make([]string, 0, len(pairs))
+	// Hoist the sharded-mode decision out of the loop — len(sourceFiles)
+	// is loop-invariant, so the per-iter outputName branch was reading
+	// it on every shard. Single-shard fuses keep the canonical
+	// fuseOutputWeights basename; multi-shard fuses preserve the
+	// source-file basename for round-tripping.
+	multiShard := len(sourceFiles) > 1
 	for _, sourceFile := range sourceFiles {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -375,7 +426,7 @@ func fuseModelWeightFiles(ctx context.Context, sourceFiles []string, outputRoot 
 		fusedKeys = append(fusedKeys, shardFusedKeys...)
 
 		outputName := fuseOutputWeights
-		if len(sourceFiles) > 1 {
+		if multiShard {
 			outputName = core.PathBase(sourceFile)
 		}
 		weightPath := core.PathJoin(outputRoot, outputName)
