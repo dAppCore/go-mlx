@@ -11,7 +11,11 @@
 //	events := recorder.Events()
 package probe
 
-import "sync"
+import (
+	"sync"
+
+	core "dappco.re/go"
+)
 
 // Kind names the typed payload carried by a probe event.
 type Kind string
@@ -295,9 +299,9 @@ func CloneEvent(event Event) Event {
 	}
 	if event.Logits != nil {
 		logits := *event.Logits
-		logits.Shape = append([]int32(nil), event.Logits.Shape...)
-		logits.Top = append([]Logit(nil), event.Logits.Top...)
-		logits.Values = append([]float32(nil), event.Logits.Values...)
+		logits.Shape = core.SliceClone(event.Logits.Shape)
+		logits.Top = core.SliceClone(event.Logits.Top)
+		logits.Values = core.SliceClone(event.Logits.Values)
 		logits.Meta = cloneMeta(event.Logits.Meta)
 		out.Logits = &logits
 	}
@@ -307,8 +311,8 @@ func CloneEvent(event Event) Event {
 	}
 	if event.SelectedHeads != nil {
 		heads := *event.SelectedHeads
-		heads.Heads = append([]int(nil), event.SelectedHeads.Heads...)
-		heads.Scores = append([]float64(nil), event.SelectedHeads.Scores...)
+		heads.Heads = core.SliceClone(event.SelectedHeads.Heads)
+		heads.Scores = core.SliceClone(event.SelectedHeads.Scores)
 		out.SelectedHeads = &heads
 	}
 	if event.LayerCoherence != nil {
@@ -317,13 +321,13 @@ func CloneEvent(event Event) Event {
 	}
 	if event.RouterDecision != nil {
 		router := *event.RouterDecision
-		router.ExpertIDs = append([]int(nil), event.RouterDecision.ExpertIDs...)
-		router.Weights = append([]float32(nil), event.RouterDecision.Weights...)
+		router.ExpertIDs = core.SliceClone(event.RouterDecision.ExpertIDs)
+		router.Weights = core.SliceClone(event.RouterDecision.Weights)
 		out.RouterDecision = &router
 	}
 	if event.ExpertResidency != nil {
 		residency := *event.ExpertResidency
-		residency.ExpertIDs = append([]int(nil), event.ExpertResidency.ExpertIDs...)
+		residency.ExpertIDs = core.SliceClone(event.ExpertResidency.ExpertIDs)
 		out.ExpertResidency = &residency
 	}
 	if event.Residual != nil {
