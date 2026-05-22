@@ -1107,12 +1107,12 @@ func cloneKVHeads(src []HeadSnapshot) []HeadSnapshot {
 
 func cloneKVHead(src HeadSnapshot) HeadSnapshot {
 	return HeadSnapshot{
-		Key:        append([]float32(nil), src.Key...),
+		Key:        core.SliceClone(src.Key),
 		KeyDType:   src.KeyDType,
-		KeyBytes:   append([]byte(nil), src.KeyBytes...),
-		Value:      append([]float32(nil), src.Value...),
+		KeyBytes:   core.SliceClone(src.KeyBytes),
+		Value:      core.SliceClone(src.Value),
 		ValueDType: src.ValueDType,
-		ValueBytes: append([]byte(nil), src.ValueBytes...),
+		ValueBytes: core.SliceClone(src.ValueBytes),
 	}
 }
 
