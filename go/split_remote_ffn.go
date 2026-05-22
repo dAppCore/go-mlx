@@ -76,9 +76,10 @@ func (executor *RemoteSplitFFNExecutor) ForwardFFN(ctx context.Context, req Spli
 	if executor == nil {
 		return SplitFFNResult{}, core.NewError("mlx: remote split FFN executor is nil")
 	}
-	if core.Trim(executor.url) == "" {
-		return SplitFFNResult{}, core.NewError("mlx: remote split FFN endpoint URL is required")
-	}
+	// NewRemoteSplitFFNExecutor already trims + validates the URL and
+	// stores the trimmed form on the receiver. Re-running core.Trim on
+	// every ForwardFFN call walked the URL string each invocation for
+	// a guarantee the constructor had already proven; drop the loop.
 	payload := RemoteSplitFFNRequest{
 		EndpointID: executor.endpoint.ID,
 		Layer:      req.Layer,
