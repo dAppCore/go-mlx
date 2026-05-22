@@ -278,7 +278,12 @@ func recordTensorDelta(result *CompareResult, acc *compareAccumulator, opts Comp
 		acc.elements += delta.Elements
 		acc.sumAbs += delta.MeanAbsDelta * float64(delta.Elements)
 		acc.sumSq += delta.RMSDelta * delta.RMSDelta * float64(delta.Elements)
-		acc.maxAbs = math.Max(acc.maxAbs, delta.MaxAbsDelta)
+		// Inlined max — same reasoning as compareTensorRefs (math.Max is
+		// not an intrinsic; the upstream tensor diff scan guarantees
+		// finite values).
+		if delta.MaxAbsDelta > acc.maxAbs {
+			acc.maxAbs = delta.MaxAbsDelta
+		}
 	case CompareStatusUnchanged:
 		result.ComparedTensors++
 		result.UnchangedTensors++
