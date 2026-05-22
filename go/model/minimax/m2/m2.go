@@ -926,15 +926,18 @@ func routerBiasCandidates(spec TensorSpec, layer int) []string {
 }
 
 func sidecarCandidates(spec TensorSpec, weightName, sidecar string) []string {
-	names := []string{weightName}
+	names := make([]string, 0, 3+len(spec.Aliases))
+	names = append(names, weightName)
 	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
 		names = append(names, trimmed)
 	}
 	names = append(names, spec.Name)
 	names = append(names, spec.Aliases...)
+	dotSidecar := "." + sidecar
+	underscoreSidecar := "_" + sidecar
 	out := make([]string, 0, len(names)*3)
 	for _, name := range names {
-		out = append(out, name+"."+sidecar, trimWeightSuffix(name)+"."+sidecar, name+"_"+sidecar)
+		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
 	}
 	return out
 }
