@@ -150,25 +150,6 @@ func prepareFuse(ctx context.Context, opts FuseOptions) (fusePrepared, error) {
 	}, nil
 }
 
-// joinDirChildPattern concatenates a directory path with a relative
-// child segment, collapsing the duplicate separator when dir already
-// ends in '/'. Skips the filepath.Clean trip core.PathJoin takes; the
-// adapter / pack directory paths we feed in are already canonical
-// (PathAbs + MkdirAll output, or caller-supplied non-empty roots
-// validated upstream), so the only normalisation needed is the
-// trailing-slash collapse rule. An empty dir falls back to a bare
-// child segment to preserve PathJoin's "empty root = relative result"
-// semantics.
-func joinDirChildPattern(dir, child string) string {
-	if dir == "" {
-		return child
-	}
-	if dir[len(dir)-1] == '/' {
-		return dir + child
-	}
-	return dir + "/" + child
-}
-
 func ensureEmptyFuseWeightDestination(output string) error {
 	if stat := core.Stat(output); !stat.OK {
 		if core.IsNotExist(stat.Value.(error)) {

@@ -107,6 +107,29 @@ func adapterConfigPath(path string) string {
 // (matching filepath.Join's separator-collapse semantics).
 const adapterConfigSuffix = "/adapter_config.json"
 
+// joinDirChildPattern concatenates a directory path with a relative
+// child segment, collapsing the duplicate separator when dir already
+// ends in '/'. Skips the filepath.Clean trip core.PathJoin takes; the
+// adapter / pack directory paths we feed in are already canonical
+// (PathAbs + MkdirAll output, or caller-supplied non-empty roots
+// validated upstream), so the only normalisation needed is the
+// trailing-slash collapse rule. An empty dir falls back to a bare
+// child segment to preserve PathJoin's "empty root = relative result"
+// semantics.
+//
+// Lives in adapter.go (universal build) so both the cross-platform
+// hashAdapter path and the darwin/arm64-only fuse path can route
+// through it without duplication.
+func joinDirChildPattern(dir, child string) string {
+	if dir == "" {
+		return child
+	}
+	if dir[len(dir)-1] == '/' {
+		return dir + child
+	}
+	return dir + "/" + child
+}
+
 // adapterConfigPathPrecomputed is the precomputed-suffix variant of
 // adapterConfigPath; the Inspect hot path computes the .safetensors
 // suffix check once and threads the result through this helper.
@@ -150,7 +173,13 @@ func hashAdapterPrecomputed(path string, config []byte, isSafetensors bool) stri
 	if isSafetensors {
 		paths = []string{path}
 	} else {
-		paths = core.PathGlob(core.PathJoin(path, "*.safetensors"))
+		// joinDirChildPattern skips the filepath.Clean trip core.PathJoin
+		// would take — filepath.Glob handles trailing-slash / double-slash
+		// patterns identically, so the only normalisation needed is the
+		// "empty root = relative result" guard joinDirChildPattern already
+		// provides. Shaves the lazybuf alloc filepath.Clean unconditionally
+		// makes from the pattern build.
+		paths = core.PathGlob(joinDirChildPattern(path, "*.safetensors"))
 	}
 	slices.Sort(paths)
 	// Hash each input on the stack ([32]byte from core.SHA256), then
