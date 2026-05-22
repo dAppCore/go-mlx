@@ -210,8 +210,18 @@ type Bus struct {
 //	bus := probe.NewBus(sink1, sink2)
 func NewBus(sinks ...Sink) *Bus {
 	bus := &Bus{}
+	if len(sinks) == 0 {
+		return bus
+	}
+	// Build the initial sink slice directly — Add takes the mutex
+	// per call, so building N sinks via Add was N lock/unlock pairs
+	// before any caller could observe the bus. The constructor owns
+	// the only reference so the slice growth is safe lock-free.
+	bus.sinks = make([]Sink, 0, len(sinks))
 	for _, sink := range sinks {
-		bus.Add(sink)
+		if sink != nil {
+			bus.sinks = append(bus.sinks, sink)
+		}
 	}
 	return bus
 }
