@@ -13,6 +13,7 @@ package chaptersmoke
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	core "dappco.re/go"
@@ -399,7 +400,11 @@ func chapterName(index int, name string) string {
 	if core.Trim(name) != "" {
 		return name
 	}
-	return core.Sprintf("chapter-%d", index+1)
+	// Hand-built "chapter-N" — avoids Sprintf("%d") interface boxing.
+	buf := make([]byte, 0, 8+20)
+	buf = append(buf, "chapter-"...)
+	buf = strconv.AppendInt(buf, int64(index+1), 10)
+	return core.AsString(buf)
 }
 
 func storeFileName(kind string) string {
@@ -416,7 +421,7 @@ func bundleURI(index int, name string) string {
 func slug(index int, name string) string {
 	name = core.Lower(core.Trim(name))
 	if name == "" {
-		name = core.Sprintf("chapter-%d", index+1)
+		name = defaultChapterSlug(index)
 	}
 	builder := core.NewBuilder()
 	lastDash := false
@@ -440,9 +445,26 @@ func slug(index int, name string) string {
 		out = core.TrimSuffix(out, "-")
 	}
 	if out == "" {
-		out = core.Sprintf("chapter-%d", index+1)
+		out = defaultChapterSlug(index)
 	}
-	return core.Sprintf("%02d-%s", index+1, out)
+	// Hand-built "%02d-out" — avoids Sprintf parsing + interface boxing.
+	idx := index + 1
+	buf := make([]byte, 0, 3+len(out))
+	if idx < 10 {
+		buf = append(buf, '0')
+	}
+	buf = strconv.AppendInt(buf, int64(idx), 10)
+	buf = append(buf, '-')
+	buf = append(buf, out...)
+	return core.AsString(buf)
+}
+
+// defaultChapterSlug returns "chapter-N" without Sprintf boxing.
+func defaultChapterSlug(index int) string {
+	buf := make([]byte, 0, 8+20)
+	buf = append(buf, "chapter-"...)
+	buf = strconv.AppendInt(buf, int64(index+1), 10)
+	return core.AsString(buf)
 }
 
 func fileCount(dir string) int {
