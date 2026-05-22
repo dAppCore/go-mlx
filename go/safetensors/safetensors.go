@@ -7,7 +7,6 @@ import (
 	"encoding/binary"
 	stdio "io"
 	"math"
-	"sort"
 
 	core "dappco.re/go"
 )
@@ -48,6 +47,11 @@ func IndexFiles(paths []string) (Index, error) {
 		if err != nil {
 			return Index{}, err
 		}
+		if cap(index.Names) < len(index.Names)+len(shard.Names) {
+			grown := make([]string, len(index.Names), len(index.Names)+len(shard.Names))
+			copy(grown, index.Names)
+			index.Names = grown
+		}
 		for _, name := range shard.Names {
 			if _, ok := index.Tensors[name]; ok {
 				return Index{}, core.NewError("mlx: duplicate tensor in safetensors shards: " + name)
@@ -56,7 +60,7 @@ func IndexFiles(paths []string) (Index, error) {
 			index.Names = append(index.Names, name)
 		}
 	}
-	sort.Strings(index.Names)
+	core.SliceSort(index.Names)
 	return index, nil
 }
 
@@ -82,7 +86,11 @@ func ReadIndex(path string) (Index, error) {
 		return Index{}, resultError(result)
 	}
 
-	index := Index{Path: path, Tensors: map[string]TensorRef{}}
+	index := Index{
+		Path:    path,
+		Tensors: make(map[string]TensorRef, len(header)),
+		Names:   make([]string, 0, len(header)),
+	}
 	dataStart := int64(8 + headerLen)
 	for name, entry := range header {
 		if name == "__metadata__" {
@@ -95,7 +103,7 @@ func ReadIndex(path string) (Index, error) {
 		index.Tensors[name] = ref
 		index.Names = append(index.Names, name)
 	}
-	sort.Strings(index.Names)
+	core.SliceSort(index.Names)
 	return index, nil
 }
 
@@ -108,13 +116,13 @@ func RefFromHeader(path, name string, entry HeaderEntry, dataStart int64) (Tenso
 	if begin < 0 || end < begin {
 		return TensorRef{}, core.NewError("mlx: safetensors tensor offsets are invalid: " + name)
 	}
-	shape := make([]uint64, 0, len(entry.Shape))
+	shape := make([]uint64, len(entry.Shape))
 	elements := 1
-	for _, dim := range entry.Shape {
+	for i, dim := range entry.Shape {
 		if dim <= 0 {
 			return TensorRef{}, core.NewError("mlx: safetensors tensor has invalid shape: " + name)
 		}
-		shape = append(shape, uint64(dim))
+		shape[i] = uint64(dim)
 		elements *= int(dim)
 	}
 	return TensorRef{
@@ -236,6 +244,14 @@ func (r TensorReader) ReadFloat32Chunk(offset, count int) ([]float32, error) {
 }
 
 func DTypeByteSize(dtype string) (int, error) {
+	switch dtype {
+	case "F16", "BF16":
+		return 2, nil
+	case "F32":
+		return 4, nil
+	case "F64":
+		return 8, nil
+	}
 	switch core.Upper(dtype) {
 	case "F16", "BF16":
 		return 2, nil

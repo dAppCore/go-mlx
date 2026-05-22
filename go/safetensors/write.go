@@ -69,7 +69,7 @@ func WriteSubset(ctx context.Context, path string, refs []TensorRef) error {
 }
 
 func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error) {
-	byName := map[string]TensorRef{}
+	byName := make(map[string]TensorRef, len(refs))
 	names := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		if core.Trim(ref.Name) == "" {
@@ -91,12 +91,12 @@ func subsetHeader(refs []TensorRef) ([]TensorRef, map[string]HeaderEntry, error)
 	var offset int64
 	for _, name := range names {
 		ref := byName[name]
-		shape := make([]int64, 0, len(ref.Shape))
-		for _, dim := range ref.Shape {
+		shape := make([]int64, len(ref.Shape))
+		for i, dim := range ref.Shape {
 			if dim > uint64(maxInt64Value()) {
 				return nil, nil, core.NewError("mlx: safetensors subset tensor shape is too large: " + ref.Name)
 			}
-			shape = append(shape, int64(dim))
+			shape[i] = int64(dim)
 		}
 		header[name] = HeaderEntry{
 			DType:       core.Upper(ref.DType),
