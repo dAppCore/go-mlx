@@ -527,7 +527,7 @@ func GRPOSampleFromSFT(sample dataset.Sample) GRPOSample {
 	// scans the original form paid on every reasoning sample.
 	sample.Response = core.Trim(sample.Response)
 	// Extract the answer once and forward it to the reasoning step —
-	// extractGRPOReasoning would otherwise re-run the full meta-key
+	// the without-answer form would otherwise re-run the full meta-key
 	// sweep + line scan to recover the same value.
 	expected := ExtractGRPOExpectedAnswer(sample)
 	return GRPOSample{
@@ -583,10 +583,6 @@ func ExtractGRPOExpectedAnswer(sample dataset.Sample) string {
 		}
 	}
 	return ""
-}
-
-func extractGRPOReasoning(sample dataset.Sample) string {
-	return extractGRPOReasoningWithAnswer(sample, ExtractGRPOExpectedAnswer(sample))
 }
 
 // extractGRPOReasoningWithAnswer is the inner form that takes the

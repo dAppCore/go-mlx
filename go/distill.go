@@ -547,8 +547,9 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	var tokens int
 	// Scratch buffers reused across every masked token — vocab size is
 	// constant (shape-checked above), so three pre-allocated float64 slices
-	// replace the per-call make inside logSoftmaxTemperature. For a 32k
-	// vocab and 1000 tokens this skips ~2000 256KB allocations per call.
+	// replace per-token allocations inside logSoftmaxTemperatureInto +
+	// logSoftmaxAndProbTemperatureInto. For a 32k vocab and 1000 tokens
+	// this skips ~2000 256KB allocations per call.
 	// teacherProbScratch holds prob(x) = exp(log_prob(x)) computed once
 	// inside the log-softmax loop — the inner accumulator below would
 	// otherwise call math.Exp per element to recover it.
@@ -810,20 +811,6 @@ func validateDistillLogitShapes(teacher, student DistillLogits) error {
 		}
 	}
 	return nil
-}
-
-func logSoftmaxTemperature(logits []float32, temperature float64) ([]float64, error) {
-	if temperature <= 0 || math.IsNaN(temperature) || math.IsInf(temperature, 0) {
-		return nil, core.NewError("mlx: distillation temperature must be finite and positive")
-	}
-	if len(logits) == 0 {
-		return nil, core.NewError("mlx: distillation logits are empty")
-	}
-	scaled := make([]float64, len(logits))
-	if err := logSoftmaxTemperatureInto(logits, temperature, scaled); err != nil {
-		return nil, err
-	}
-	return scaled, nil
 }
 
 // logSoftmaxAndProbTemperatureInto writes both log_prob and prob for

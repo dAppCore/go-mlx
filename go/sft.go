@@ -618,8 +618,7 @@ func buildSFTExample(tok *Tokenizer, sample dataset.Sample, cfg SFTConfig) (sftE
 	// inputs[i] = int(seq[i]); targets[i] = int(seq[i+1]) — same length,
 	// shifted by one. Building both in a single index walk lets the loop
 	// amortise bounds-check elision across the two writes instead of
-	// paying once per int32ToIntSlice call (each of which performs its
-	// own range loop + int widening).
+	// paying for two separate range loops + int widenings.
 	n := len(seq) - 1
 	inputs := make([]int, n)
 	targets := make([]int, n)
@@ -667,14 +666,6 @@ func sftResultError(result core.Result) error {
 		return err
 	}
 	return core.NewError("core result failed")
-}
-
-func int32ToIntSlice(values []int32) []int {
-	out := make([]int, len(values))
-	for i, value := range values {
-		out[i] = int(value)
-	}
-	return out
 }
 
 func hasTrainingTarget(mask []float32) bool {

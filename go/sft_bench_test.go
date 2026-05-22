@@ -4,9 +4,8 @@
 // Per AX-11 — probe meta builds per gradient step (hundreds/thousands per
 // training run); SFTLoRAMetadata clone fires per checkpoint + per final
 // adapter save; sftBatchFromExamples runs once per accumulated batch
-// (one per BatchSize samples); int32ToIntSlice runs twice per example.
-// Pinning the alloc shape of these hot paths is the load-bearing AX
-// commitment of this file.
+// (one per BatchSize samples). Pinning the alloc shape of these hot
+// paths is the load-bearing AX commitment of this file.
 //
 // Run:    go test -bench='BenchmarkSFT' -benchmem -run='^$' ./go
 
@@ -23,7 +22,6 @@ var (
 	sftBenchSinkMap      map[string]string
 	sftBenchSinkLoRA     SFTLoRAMetadata
 	sftBenchSinkBatch    SFTBatch
-	sftBenchSinkInts     []int
 	sftBenchSinkExample  sftExample
 	sftBenchSinkStepName string
 	sftBenchSinkInt      int
@@ -119,20 +117,6 @@ func BenchmarkSFT_BatchFromExamples(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sftBenchSinkBatch = sftBatchFromExamples(examples)
-	}
-}
-
-// BenchmarkSFT_Int32ToIntSlice measures the per-example token width
-// conversion used twice on every buildSFTExample call.
-func BenchmarkSFT_Int32ToIntSlice(b *testing.B) {
-	values := make([]int32, 256)
-	for i := range values {
-		values[i] = int32(i)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		sftBenchSinkInts = int32ToIntSlice(values)
 	}
 }
 
