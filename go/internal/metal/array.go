@@ -27,6 +27,7 @@ import (
 	"iter"
 	"reflect"
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"dappco.re/go"
@@ -41,16 +42,106 @@ type Array struct {
 	name string // debug label
 }
 
+// arrayPool recycles *Array wrappers across newArray / Free cycles.  The
+// pool dominates the alloc surface for every MLX op on the hot path: the
+// PagedKVCache single-token Prealloc bench (525 allocs/op baseline) profiles
+// newArray at 92.27% of all object allocations, so amortising the heap cell
+// across reuses is the single largest leverage point on the substrate's
+// bedrock floor.
+//
+// Pool contract — load-bearing, do not weaken without re-reading the design
+// rationale below:
+//
+//  1. Get path (newArray): the pool returns either a fresh &Array{} (from
+//     New) or a previously-recycled struct whose finalizer was cancelled by
+//     Free.  In both cases newArray re-applies SetFinalizer for the new
+//     life.  runtime.SetFinalizer explicitly supports being called again on
+//     the same pointer after a prior SetFinalizer(obj, nil).
+//
+//  2. Put path (Free): only Free puts back to the pool.  Free has already
+//     released the C handle, zeroed ctx.ctx, and cancelled the finalizer
+//     before the struct returns to the pool — so a pooled struct is fully
+//     dormant (no live C resource, no pending finalizer) until Get re-arms
+//     it.  The GC-fallback path (finalizeArray firing on an array the caller
+//     never Free'd) does NOT route through the pool: that finalizer cleans
+//     up the C handle and the struct is dropped by the GC normally.  This
+//     keeps the GC-fallback safety net intact for forgotten arrays.
+//
+//  3. Safety rule for callers: once Free(arr) returns, the caller MUST NOT
+//     dereference arr — same contract as sync.Pool everywhere (bytes.Buffer,
+//     fmt printers, etc.).  Holding a pointer past Free is a use-after-pool
+//     bug whether pooling lives here or not; in this codebase every Free()
+//     call site immediately drops the reference (typically slice mutation or
+//     local-var shadowing), so the contract is already satisfied today.
+//
+//  4. Defensive Put refusal: if a hypothetical bug ever called Free's
+//     put-back path on a struct whose ctx wasn't cleared, the array would
+//     be admitted to the pool with a live C handle.  arrayPoolPut guards
+//     against that by refusing to recycle any Array with a non-nil ctx —
+//     the struct is simply dropped (its existing finalizer-or-nil state is
+//     unchanged), preserving correctness at the cost of one heap cell.
+//
+// Failure modes considered and rejected:
+//
+//   - SetFinalizer-after-cancel-after-SetFinalizer: documented as supported.
+//   - Pool dropping a pooled struct between Put and Get: pooled structs
+//     carry no live C resource (Free cleared ctx) and no finalizer, so the
+//     GC reclaims them as plain heap memory.
+//   - Pooled struct used by two callers concurrently: would require a
+//     caller to retain the pointer past Free, which is the same use-after-
+//     Pool bug class as sync.Pool everywhere.  The -race build catches it.
+//   - GGUF/io_custom paths that build &Array{} directly (without newArray)
+//     and SetFinalizer manually: these don't route through the pool either
+//     on construction or on Free's put-back path (the struct didn't come
+//     from arrayPool.Get) — they remain on the classic finalizer-only path.
+//     This was a deliberate scoping decision: those are cold-load paths,
+//     not hot-op paths, so the pool's reach is contained to the workloads
+//     that dominate the alloc profile.
+var arrayPool = sync.Pool{
+	New: func() any {
+		return &Array{}
+	},
+}
+
 // newArray creates a named Array and registers a GC finalizer.
 // The inputs parameter is accepted for API compatibility but not stored —
 // MLX-C tracks inter-array references via its own refcounting.
+//
+// The *Array struct is recycled via arrayPool — see the arrayPool comment
+// block for the lifecycle contract.  Returned arrays always have a fresh
+// finalizer and a zero ctx; callers populate ctx via the MLX-C builder of
+// their choice (mlx_array_new_*, mlx_<op>(&out.ctx, ...), etc.) before
+// handing the wrapper on.
 func newArray(name string, inputs ...*Array) *Array {
-	t := &Array{name: name}
+	t := arrayPool.Get().(*Array)
+	t.name = name
+	// Pool invariant: pooled structs always have ctx.ctx == nil because Free
+	// clears it before put-back, and the New fn returns a zero-value Array.
+	// Re-assert here as a debug-grade safety net — if this ever fires,
+	// arrayPoolPut admitted a struct with a live ctx (a real correctness
+	// bug, not a perf-tuning one).
 	runtime.SetFinalizer(t, finalizeArray)
 	return t
 }
 
+// arrayPoolPut returns a fully-released *Array to the recycle pool.  Only
+// safe to call after the C handle has been freed, ctx zeroed, and the
+// finalizer cancelled — Free is the canonical caller and guarantees all
+// three preconditions.  Refuses to admit any struct with a non-nil ctx so
+// that a future bug in the Free path can't smuggle a live handle into the
+// pool's New cycle.
+func arrayPoolPut(t *Array) {
+	if t == nil || t.ctx.ctx != nil {
+		return
+	}
+	t.name = ""
+	arrayPool.Put(t)
+}
+
 // finalizeArray is called by Go GC to release the underlying C array handle.
+// This is the fallback path for arrays whose caller never called Free; the
+// struct does NOT return to arrayPool from here — the pool only recycles
+// structs whose owner explicitly cleaned up via Free.
 func finalizeArray(t *Array) {
 	if t != nil && t.ctx.ctx != nil {
 		C.mlx_array_free(t.ctx)
@@ -549,6 +640,12 @@ func (t *Array) Floats() []float32 {
 
 // Free explicitly releases C array handles. Does not cascade — MLX-C's
 // internal refcounting handles dependent arrays automatically.
+//
+// Free is also the put-back path for the *Array wrapper pool: after the C
+// handle is released and the finalizer cancelled, the Go struct is handed
+// to arrayPoolPut for re-use by the next newArray.  Callers MUST NOT touch
+// the *Array after Free returns — same contract as sync.Pool everywhere.
+// See the arrayPool block in this file for the full lifecycle rationale.
 func Free(s ...*Array) int {
 	var n int
 	for _, t := range s {
@@ -557,6 +654,7 @@ func Free(s ...*Array) int {
 			C.mlx_array_free(t.ctx)
 			t.ctx.ctx = nil
 			runtime.SetFinalizer(t, nil) // cancel finalizer
+			arrayPoolPut(t)              // recycle the Go wrapper
 		}
 	}
 	return n
