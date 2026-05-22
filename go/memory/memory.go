@@ -213,28 +213,47 @@ func NewPlan(input Input) Plan {
 		plan.Notes = append(plan.Notes, "model quantization is below machine-class preference")
 	}
 	// Resolve the canonical architecture once and look up the
-	// profile registry exactly once for the whole NewPlan call.
-	// usesGenerationKVCache, applyArchitectureHints, and
-	// applyGenericMoEResidency all need the same profile lookup; the
-	// profile package clones the entry on every Lookup so caching
-	// here saves two clones (plus their child-slice allocations) per
-	// plan.
-	resolvedArch := modelArchitecture
+	// profile registry exactly once for the whole NewPlan call. The
+	// three downstream sites — applyArchitectureHints,
+	// applyGenericMoEResidency, and usesGenerationKVCache — used to
+	// each call profile.LookupArchitectureProfile, and the profile
+	// package clones the entry on every lookup. Caching here saves
+	// two clones (plus their child-slice allocations) per plan.
+	//
+	// The three sites had subtly different architecture precedence
+	// in the original code: applyArchitectureHints used
+	// modelArchitecture (ModelInfo > Pack), while
+	// applyGenericMoEResidency + usesGenerationKVCache used the
+	// Pack-precedence resolution (Pack > ModelInfo when both set).
+	// Resolve both forms and only fall back to a second lookup when
+	// the two strings differ; in the steady-state case where only
+	// one of ModelInfo/Pack is populated they agree and we get one
+	// lookup total.
+	hintsArch := modelArchitecture
+	packArch := modelArchitecture
 	if input.Pack != nil && input.Pack.Architecture != "" {
-		resolvedArch = input.Pack.Architecture
+		packArch = input.Pack.Architecture
 	}
-	resolvedProfile, profileFound := profile.LookupArchitectureProfile(resolvedArch)
-	var profilePtr *profile.ModelArchitectureProfile
-	if profileFound {
-		profilePtr = &resolvedProfile
+	hintsProfile, hintsFound := profile.LookupArchitectureProfile(hintsArch)
+	var hintsPtr *profile.ModelArchitectureProfile
+	if hintsFound {
+		hintsPtr = &hintsProfile
 	}
-	applyArchitectureHints(&plan, modelArchitecture, profilePtr)
+	packPtr := hintsPtr
+	if packArch != hintsArch {
+		if packProfile, ok := profile.LookupArchitectureProfile(packArch); ok {
+			packPtr = &packProfile
+		} else {
+			packPtr = nil
+		}
+	}
+	applyArchitectureHints(&plan, hintsArch, hintsPtr)
 	applyQuantizationHints(&plan)
-	applyGenericMoEResidency(&plan, input.Pack, profilePtr)
+	applyGenericMoEResidency(&plan, input.Pack, packPtr)
 	// Both KV-cache estimates use the same gating + shape — compute
 	// once, scale the element count for each mode. usesGenerationKV
 	// + kvEstimateShape used to run twice per plan.
-	if usesGenerationKVCacheWithProfile(input, profilePtr) && plan.ContextLength > 0 {
+	if usesGenerationKVCacheWithProfile(input, packPtr) && plan.ContextLength > 0 {
 		if layers, hidden := kvEstimateShape(input, plan.MachineClass); layers > 0 && hidden > 0 {
 			elements := uint64(plan.ContextLength) * uint64(layers) * uint64(hidden) * 2
 			plan.EstimatedKVCacheBytes = elements * 2 // FP16 = 2 bytes/element
