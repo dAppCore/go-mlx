@@ -572,14 +572,24 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 	writeBlockCacheHashString(hash, adapterHash)
 	writeBlockCacheHashString(hash, tokenizerHash)
 	writeBlockCacheHashString(hash, mode)
-	var scratch [4]byte
-	for _, token := range prefix {
-		value := uint32(token)
-		scratch[0] = byte(value)
-		scratch[1] = byte(value >> 8)
-		scratch[2] = byte(value >> 16)
-		scratch[3] = byte(value >> 24)
-		hash.Write(scratch[:])
+	// Batch up to 64 tokens (256 bytes) per Write call to amortise the
+	// hash.Hash interface dispatch over many tokens.
+	var scratch [256]byte
+	for start := 0; start < len(prefix); start += 64 {
+		end := start + 64
+		if end > len(prefix) {
+			end = len(prefix)
+		}
+		offset := 0
+		for _, token := range prefix[start:end] {
+			value := uint32(token)
+			scratch[offset] = byte(value)
+			scratch[offset+1] = byte(value >> 8)
+			scratch[offset+2] = byte(value >> 16)
+			scratch[offset+3] = byte(value >> 24)
+			offset += 4
+		}
+		hash.Write(scratch[:offset])
 	}
 	return core.HexEncode(hash.Sum(nil))
 }
