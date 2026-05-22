@@ -403,8 +403,8 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return nil, nil
 	}
-	k, v, owned := c.storageKV(k, v)
-	defer Free(owned...)
+	k, v, ownK, ownV := c.storageKVPair(k, v)
+	defer freeOwnedPair(ownK, ownV)
 	// Use Dim accessors (single cgo call, no slice alloc) instead of
 	// Shape() — the steady-state single-token decode loop hits this path
 	// hundreds of times per generation, and every fresh []int32 escapes
@@ -442,8 +442,12 @@ func (c *FixedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	start := c.offset
 
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, writeK, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(start + writeLen), kKeyDim})
-	c.values = SliceUpdateInplace(c.values, writeV, []int32{0, 0, int32(start), 0}, []int32{kBatch, kHeads, int32(start + writeLen), vValueDim})
+	// Use the FixedKVCache-specific 4D slice-update helper — stack-allocated
+	// cgo int arrays save three [4]C.int heap allocations per call versus
+	// the generic SliceUpdateInplace.  Two calls per Update × hundreds of
+	// tokens per decode loop.
+	c.keys = fixedKVCacheSliceUpdate4D(c.keys, writeK, kBatch, kHeads, int32(start), int32(start+writeLen), kKeyDim)
+	c.values = fixedKVCacheSliceUpdate4D(c.values, writeV, kBatch, kHeads, int32(start), int32(start+writeLen), vValueDim)
 	Free(oldK, oldV)
 
 	c.offset += seqLen
@@ -559,8 +563,8 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	if k == nil || v == nil || !k.Valid() || !v.Valid() {
 		return
 	}
-	k, v, owned := c.storageKV(k, v)
-	defer Free(owned...)
+	k, v, ownK, ownV := c.storageKVPair(k, v)
+	defer freeOwnedPair(ownK, ownV)
 	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return
 	}
@@ -574,8 +578,8 @@ func (c *FixedKVCache) replaceFromTail(k, v *Array) {
 	c.values = Zeros([]int32{kBatch, kHeads, int32(c.maxSize), vValueDim}, v.Dtype())
 	tailLen := min(kSeq, c.maxSize)
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace(c.keys, k, []int32{0, 0, 0, 0}, []int32{kBatch, kHeads, int32(tailLen), kKeyDim})
-	c.values = SliceUpdateInplace(c.values, v, []int32{0, 0, 0, 0}, []int32{kBatch, kHeads, int32(tailLen), vValueDim})
+	c.keys = fixedKVCacheSliceUpdate4D(c.keys, k, kBatch, kHeads, 0, int32(tailLen), kKeyDim)
+	c.values = fixedKVCacheSliceUpdate4D(c.values, v, kBatch, kHeads, 0, int32(tailLen), vValueDim)
 	Free(oldK, oldV)
 	c.batch, c.heads, c.keyDim, c.valueDim = kBatch, kHeads, kKeyDim, vValueDim
 	c.shapeCached = true
@@ -585,11 +589,12 @@ func (c *FixedKVCache) validState() (*Array, *Array) {
 	if c.keys == nil || c.values == nil || c.length <= 0 {
 		return nil, nil
 	}
-	// Cached dims are stable for the lifetime of c.keys / c.values — skip
-	// the per-call Array.Shape() allocations and read from the cache.
+	// Cached dims are stable for the lifetime of c.keys / c.values — use
+	// the stack-allocating fixedKVCacheSlice4D helper to skip both the
+	// Shape() []int32 allocs and Slice's three [4]C.int heap allocs.
 	if c.shapeCached {
-		return Slice(c.keys, []int32{0, 0, 0, 0}, []int32{c.batch, c.heads, int32(c.length), c.keyDim}),
-			Slice(c.values, []int32{0, 0, 0, 0}, []int32{c.batch, c.heads, int32(c.length), c.valueDim})
+		return fixedKVCacheSlice4D(c.keys, c.batch, c.heads, 0, int32(c.length), c.keyDim),
+			fixedKVCacheSlice4D(c.values, c.batch, c.heads, 0, int32(c.length), c.valueDim)
 	}
 	// Fallback for paths that bypass ensureShape (legacy / pre-cache state).
 	if c.keys.NumDims() < 4 || c.values.NumDims() < 4 {
@@ -688,6 +693,45 @@ func (c *FixedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 		return k, v, nil
 	}
 	return cacheStorageKV(k, v, c.storageDType)
+}
+
+// storageKVPair is the slice-free variant of storageKV.  Returns the dtype-
+// converted k', v' alongside the *Array handles to free (or nil if no
+// conversion was required).  Avoids the []*Array backing-array allocation
+// that cacheStorageKV does — important on the per-token decode loop where
+// every Update converts F32→F16 for the cache buffer.
+//
+//	convK, convV, ownK, ownV := c.storageKVPair(k, v)
+//	defer freeOwnedPair(ownK, ownV)
+func (c *FixedKVCache) storageKVPair(k, v *Array) (convK, convV, ownK, ownV *Array) {
+	if c == nil || !c.hasStorageDType {
+		return k, v, nil, nil
+	}
+	if DTypeByteSize(c.storageDType) <= 0 {
+		return k, v, nil, nil
+	}
+	convK, convV = k, v
+	if k != nil && k.Valid() && k.Dtype() != c.storageDType {
+		convK = AsType(k, c.storageDType)
+		ownK = convK
+	}
+	if v != nil && v.Valid() && v.Dtype() != c.storageDType {
+		convV = AsType(v, c.storageDType)
+		ownV = convV
+	}
+	return convK, convV, ownK, ownV
+}
+
+// freeOwnedPair releases the two slots from storageKVPair without an
+// intermediate []*Array.  A single call into the variadic Free with two
+// fixed args lets the compiler use a stack-allocated backing array.
+//
+//	defer freeOwnedPair(ownK, ownV)
+func freeOwnedPair(ownK, ownV *Array) {
+	if ownK == nil && ownV == nil {
+		return
+	}
+	Free(ownK, ownV)
 }
 
 // QuantizedKVCache stores cache tensors in int8 lanes and dequantizes them
