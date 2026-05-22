@@ -307,7 +307,7 @@ func quantizeGGUFTensor(tensor denseSafetensor, format QuantizeFormat) (ggufQuan
 	return ggufQuantizedTensor{
 		Name:  tensor.Name,
 		Type:  tensorType,
-		Shape: append([]uint64(nil), tensor.Shape...),
+		Shape: core.SliceClone(tensor.Shape),
 		Data:  data,
 	}, nil
 }
@@ -333,7 +333,7 @@ func buildStreamingGGUFQuantizedTensors(index safetensors.Index, format Quantize
 		tensors = append(tensors, ggufQuantizedTensor{
 			Name:  ref.Name,
 			Type:  tensorType,
-			Shape: append([]uint64(nil), ref.Shape...),
+			Shape: core.SliceClone(ref.Shape),
 			Size:  uint64(ref.Elements/blockSize) * uint64(bytesPerBlock),
 		})
 		refs = append(refs, ref)
@@ -713,15 +713,18 @@ func writeGGUFStringValue(file *core.OSFile, value string) error {
 	return err
 }
 
+// ggufPaddingZeros — package-level read-only zero buffer for writePadding.
+// 32 KiB chunk matches the original on-stack size; living at package scope
+// avoids a 32 KiB stack-frame allocation per writePadding call.
+var ggufPaddingZeros [32 * 1024]byte
+
 func writePadding(file *core.OSFile, n uint64) error {
-	const chunkSize = 32 * 1024
-	var zeros [chunkSize]byte
 	for n > 0 {
-		size := uint64(chunkSize)
+		size := uint64(len(ggufPaddingZeros))
 		if n < size {
 			size = n
 		}
-		if _, err := file.Write(zeros[:size]); err != nil {
+		if _, err := file.Write(ggufPaddingZeros[:size]); err != nil {
 			return err
 		}
 		n -= size
