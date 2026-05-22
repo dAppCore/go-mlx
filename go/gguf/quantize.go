@@ -448,30 +448,58 @@ func quantizeQ4_0(values []float32) []byte {
 		// Stack-allocated pack buffer instead of make([]byte, 16) per
 		// block — saves one heap alloc per 32 input floats.
 		var packed [16]byte
-		invScale := float32(0)
-		if scale != 0 {
-			invScale = 1 / scale
+		if scale == 0 {
+			// Zero-block fast path: q=0 → q+8=8 (Q4_0 stores
+			// (q+8) ∈ [0,15] unsigned). Both nibbles of each packed
+			// byte are 8, so the byte value is 0x88. Skips the
+			// per-element multiply + round + branch work.
+			for i := range packed {
+				packed[i] = 0x88
+			}
+			out = append(out, packed[:]...)
+			continue
 		}
-		for i, value := range block {
+		invScale := 1 / scale
+		// Split the i<16 branch out of the inner loop — two clean
+		// 16-iter loops let the back-end keep the lower-nibble writes
+		// (packed[i] = q) and upper-nibble OR-writes (packed[i-16] |=
+		// q<<4) on independent memory dependencies. Same total work,
+		// less branch overhead and a cleaner dep chain.
+		for i := 0; i < 16; i++ {
+			value := block[i]
+			scaled := value * invScale
 			var q int
-			if invScale != 0 {
-				// Round-half-away-from-zero in float32 — same optimisation
-				// as quantizeQ8_0. The +8 bias re-centres the signed
-				// quantised range into the [0,15] unsigned range Q4_0
-				// stores.
-				scaled := value * invScale
-				if scaled >= 0 {
-					q = int(scaled+0.5) + 8
-				} else {
-					q = int(scaled-0.5) + 8
-				}
-			}
-			q = clampInt(q, 0, 15)
-			if i < 16 {
-				packed[i] = byte(q)
+			// Round-half-away-from-zero in float32 — same optimisation
+			// as quantizeQ8_0. The +8 bias re-centres the signed
+			// quantised range into the [0,15] unsigned range Q4_0
+			// stores.
+			if scaled >= 0 {
+				q = int(scaled+0.5) + 8
 			} else {
-				packed[i-16] |= byte(q << 4)
+				q = int(scaled-0.5) + 8
 			}
+			if q < 0 {
+				q = 0
+			} else if q > 15 {
+				q = 15
+			}
+			packed[i] = byte(q)
+		}
+		for i := 16; i < 32; i++ {
+			value := block[i]
+			scaled := value * invScale
+			var q int
+			if scaled >= 0 {
+				q = int(scaled+0.5) + 8
+			} else {
+				q = int(scaled-0.5) + 8
+			}
+			if q < 0 {
+				q = 0
+			} else if q > 15 {
+				q = 15
+			}
+			packed[i-16] |= byte(q << 4)
 		}
 		out = append(out, packed[:]...)
 	}
