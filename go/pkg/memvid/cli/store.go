@@ -254,7 +254,11 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 		args = append(args, "--label", label)
 	}
 
-	out, err := s.runInput(ctx, []byte(text), args...)
+	// Zero-copy view of text — runInput passes the bytes through
+	// core.NewBuffer into cmd.Stdin which only reads from them. text
+	// outlives the synchronous cmd.Run inside defaultRunner, and the
+	// caller's payload is never mutated, so the view is safe.
+	out, err := s.runInput(ctx, core.AsBytes(text), args...)
 	if err != nil {
 		return memvid.ChunkRef{}, err
 	}
