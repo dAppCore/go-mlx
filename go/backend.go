@@ -833,9 +833,14 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+	// Index iteration — the range-and-copy form copied each
+	// inference.Message (two string headers = 32 bytes) into the loop
+	// variable before we rebuilt the metal.ChatMessage. Chat lists are
+	// rarely empty and skip-the-copy pays back for any non-trivial
+	// conversation history.
 	metalMessages := make([]metal.ChatMessage, len(messages))
-	for i, msg := range messages {
-		metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+	for i := range messages {
+		metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 	}
 	builder := core.NewBuilder()
 	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
@@ -1158,9 +1163,10 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i, msg := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		for i := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 		}
 		if generator, ok := m.model.(nativeChatChunkGenerator); ok {
 			for tok := range generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)) {
@@ -1211,9 +1217,10 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, parserHintFromModel(m))
+		// Index iteration — same rationale as Model.Chat above.
 		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i, msg := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: msg.Role, Content: msg.Content}
+		for i := range messages {
+			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
 		}
 		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)
