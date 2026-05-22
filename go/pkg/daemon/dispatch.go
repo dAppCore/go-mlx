@@ -195,12 +195,14 @@ func generateRequestFromRequest(req Request) GenerateRequest {
 	if prompt == "" {
 		prompt = req.Text
 	}
-	messages := make([]Message, len(req.Messages))
-	copy(messages, req.Messages)
+	// req.Messages is owned by the Dispatch caller and is not retained
+	// past backend.Generate's return (the native backend rebuilds into
+	// inference.Message via toMLXMessages). Pass the slice through —
+	// no defensive clone needed on the hot path.
 	return GenerateRequest{
 		Prompt:      prompt,
 		Model:       req.Model,
-		Messages:    messages,
+		Messages:    req.Messages,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
 	}
