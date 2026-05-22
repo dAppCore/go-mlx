@@ -933,17 +933,20 @@ func cpuSplitPackedDType(dtype string) bool {
 }
 
 func cpuSplitWeightCandidates(name string) []string {
-	candidates := []string{name}
 	if core.HasPrefix(name, "model.") {
 		suffix := core.TrimPrefix(name, "model.")
+		candidates := make([]string, 0, 5)
 		return append(candidates,
+			name,
 			"language_model."+name,
 			"language_model.model."+suffix,
 			"model.language_model."+suffix,
 			"model.language_model.model."+suffix,
 		)
 	}
+	candidates := make([]string, 0, 6)
 	return append(candidates,
+		name,
 		"model."+name,
 		"language_model."+name,
 		"language_model.model."+name,
