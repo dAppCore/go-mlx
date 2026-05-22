@@ -393,10 +393,37 @@ func inspectLocalMetadata(path string) (ModelMetadata, string, error) {
 }
 
 func resolveLocalMetadataRoot(path string) string {
-	snapshots := core.PathGlob(core.PathJoin(path, "snapshots", "*", "config.json"))
-	slices.Sort(snapshots)
-	if len(snapshots) > 0 {
-		return core.PathDir(snapshots[0])
+	// Replace filepath.Glob(path/snapshots/*/config.json) with a single
+	// ReadDir of path/snapshots. Glob runs a readdir then per-match stat
+	// *and* allocates the full match path strings plus an outer []string.
+	// ReadDir hands back DirEntry values; we pick the lexically-first
+	// directory name and let the caller's subsequent ReadFile of
+	// config.json surface a missing-file error if the snapshot is
+	// incomplete (same observable shape as the previous Glob miss path).
+	// For the dominant single-snapshot case this collapses the per-
+	// candidate Stat into a single PathJoin.
+	snapshotsDir := core.PathJoin(path, "snapshots")
+	read := core.ReadDir(core.DirFS(snapshotsDir), ".")
+	if read.OK {
+		entries, ok := read.Value.([]core.FsDirEntry)
+		if ok && len(entries) > 0 {
+			// Find the lexically-first directory entry. ReadDir on
+			// Darwin/Linux returns dirents in arbitrary order, so
+			// scan all entries and track the smallest valid name.
+			var winner string
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				name := entry.Name()
+				if winner == "" || name < winner {
+					winner = name
+				}
+			}
+			if winner != "" {
+				return core.PathJoin(snapshotsDir, winner)
+			}
+		}
 	}
 	// hasSuffixFold avoids allocating a lowered copy of the full path
 	// (paths can be long: ~/.cache/huggingface/hub/...) just to test a
@@ -430,49 +457,61 @@ func localModelID(inputPath, root string) string {
 	return core.PathBase(root)
 }
 
-// localModelFiles patterns: precomputed so the make([]string,...) literal
-// is not re-built per call. The path glob payload is the dominant cost
-// (one Path call + one glob syscall per pattern) so this is presentation
-// rather than a perf hot spot, but it keeps the call site allocation-free
-// for the iteration list itself.
-var localModelFilePatterns = []string{
-	"*.safetensors",
-	"*.gguf",
-	"*.bin",
-	"tokenizer.json",
-	"tokenizer_config.json",
-}
-
 func localModelFiles(root string) []ModelFile {
 	// Pre-size: a typical pack has 1-4 safetensors shards + tokenizer.json
 	// + tokenizer_config.json. 8 is a comfortable initial capacity that
 	// avoids growslice for almost every real model.
 	files := make([]ModelFile, 0, 8)
-	for _, pattern := range localModelFilePatterns {
-		for _, path := range core.PathGlob(core.PathJoin(root, pattern)) {
-			info := core.Stat(path)
-			var size uint64
-			if info.OK {
-				size = uint64(info.Value.(core.FsFileInfo).Size())
-			}
-			files = append(files, ModelFile{Name: core.PathBase(path), Size: size})
-		}
+	// One ReadDir against the snapshot directory beats five filepath.Glob
+	// passes (one per pattern). filepath.Glob does its own readdir per
+	// pattern + per-entry filepath.Match alloc; a single ReadDir + inline
+	// suffix/name match on the entries collapses the 5x readdir + 5x
+	// match slice into a single syscall and a tight per-entry branch.
+	read := core.ReadDir(core.DirFS(root), ".")
+	if !read.OK {
+		return files
 	}
-	// localModelFiles only ever sets ModelFile.Name (RFilename is empty).
-	// Compare directly on Name to skip the filename() firstNonEmpty hop
-	// inside the per-comparison lambda — sort.Less fires O(n log n) per
-	// call on a typical pack with 4-8 file entries.
-	slices.SortFunc(files, func(a, b ModelFile) int {
-		switch {
-		case a.Name < b.Name:
-			return -1
-		case a.Name > b.Name:
-			return 1
-		default:
-			return 0
+	entries, ok := read.Value.([]core.FsDirEntry)
+	if !ok {
+		return files
+	}
+	// core.ReadDir (via os.DirFS → os.ReadDir) already returns entries
+	// sorted by name. Filtering preserves order, so the resulting files
+	// slice is sorted by Name without a post-pass slices.SortFunc — the
+	// previous explicit sort was a stale carry-over from the multi-Glob
+	// shape where the per-pattern matches were appended in pattern order
+	// rather than alphabetical.
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-	})
+		name := entry.Name()
+		if !isLocalModelFileName(name) {
+			continue
+		}
+		var size uint64
+		if info, err := entry.Info(); err == nil {
+			size = uint64(info.Size())
+		}
+		files = append(files, ModelFile{Name: name, Size: size})
+	}
 	return files
+}
+
+// isLocalModelFileName reports whether name is one of the weight or
+// tokenizer file shapes localModelFiles surfaces. The previous form ran
+// five filepath.Glob passes; this inlined predicate replaces them with a
+// single suffix/equality check per ReadDir entry.
+func isLocalModelFileName(name string) bool {
+	switch name {
+	case "tokenizer.json", "tokenizer_config.json":
+		return true
+	}
+	// Suffix tests on the weight extensions. The most common shape is
+	// "*.safetensors" so put that first.
+	return hasSuffixFold(name, ".safetensors") ||
+		hasSuffixFold(name, ".gguf") ||
+		hasSuffixFold(name, ".bin")
 }
 
 func planFit(entry fitEntry, cfg FitConfig) FitPlan {
@@ -792,11 +831,29 @@ func estimateTrainingFit(config ModelConfig, plan FitPlan, memoryLimit uint64, r
 	fit.LoRAFeasible = plan.InferenceFits && (memoryLimit == 0 || totalWithLoRA <= memoryLimit)
 	fullTuneBytes := plan.WeightBytes*6 + plan.ExpectedKVBytes + plan.ExpectedRuntimeBytes
 	fit.FullFineTuneFeasible = plan.NativeLoadable && plan.QuantBits >= 16 && (memoryLimit == 0 || fullTuneBytes <= memoryLimit)
-	if !fit.LoRAFeasible {
-		fit.Notes = append(fit.Notes, "LoRA training estimate exceeds local working-set budget")
+	// Pre-count the notes so the result slice is allocated exactly once
+	// at the right capacity. The previous append-from-nil pattern paid a
+	// cap-1 alloc plus a cap-1→2 growslice when both notes fired. nil for
+	// the zero-note path keeps TrainingFit.Notes ungrown for the common
+	// case (CPU/MPS-clean models).
+	loraBudgetOver := !fit.LoRAFeasible
+	quantBelowDense := plan.QuantBits > 0 && plan.QuantBits < 16
+	count := 0
+	if loraBudgetOver {
+		count++
 	}
-	if plan.QuantBits > 0 && plan.QuantBits < 16 {
-		fit.Notes = append(fit.Notes, "full fine-tune requires dense trainable weights; quantized pack is LoRA-only")
+	if quantBelowDense {
+		count++
+	}
+	if count > 0 {
+		notes := make([]string, 0, count)
+		if loraBudgetOver {
+			notes = append(notes, "LoRA training estimate exceeds local working-set budget")
+		}
+		if quantBelowDense {
+			notes = append(notes, "full fine-tune requires dense trainable weights; quantized pack is LoRA-only")
+		}
+		fit.Notes = notes
 	}
 	return fit
 }
@@ -963,26 +1020,33 @@ func fitResultError(result core.Result) error {
 
 // info := mlx.InferJANG(meta)
 func InferJANG(meta ModelMetadata) *jang.Info {
-	// Build the lowercase "id tag1 tag2 file1 file2" haystack in one pass.
-	// Previously each tag + file Concat allocated a fresh string and Lower
-	// allocated again — 4+ allocs per tag/file. Now: one buf, lowercase
-	// inline, zero-copy return.
-	//
-	// We over-estimate the size by an upper-bound (use the longer of Name
-	// and RFilename per file) so we can do a single pass without resolving
-	// filename() twice per file. The buf will grow at most by 0-X bytes
-	// of slack, which is fine; the underlying array is heap-allocated
-	// either way.
+	// Fast-path classify before any heap work. inferJANGNeedlePresent
+	// scans the id / tags / filenames in-place for "jang" and "jangtq"
+	// tokens. The miss path (the dominant case across HF metadata)
+	// returns jangNone in zero allocs. The JANGTQ branch needs only the
+	// QuantizationConfig group size — no haystack scan — so we skip the
+	// lowercase-buffer build entirely for those packs.
 	id := firstNonEmpty(meta.ID, meta.ModelID)
-	// Fast path: scan each component case-insensitively for "jang". The
-	// vast majority of HF models have nothing JANG-related anywhere in
-	// id / tags / filenames — and the lowercase needle buffer is the
-	// only allocation in this function for the miss path. By scanning
-	// the original strings (no copy) first, the miss path returns nil
-	// in zero allocs.
-	if !inferJANGNeedlePresent(id, meta.Tags, meta.Files) {
+	presence := inferJANGNeedlePresent(id, meta.Tags, meta.Files)
+	switch presence {
+	case jangNone:
 		return nil
+	case jangTQ:
+		info := &jang.Info{
+			Profile:          "JANGTQ",
+			WeightFormat:     "mxtq",
+			Method:           "affine+mxtq",
+			GroupSize:        jangGroupSize(meta),
+			BitsDefault:      2,
+			RoutedExpertBits: 2,
+		}
+		info.Packed = jang.BuildPackedProfile(info)
+		return info
 	}
+	// jangBasic — need to scan the haystack for a specific profile name
+	// (jang_1l, jang_2s, etc.). Build the lowercase "id tag1 tag2
+	// file1 file2" haystack in one pass; the buffer is the only
+	// allocation specific to this branch.
 	size := len(id)
 	for _, tag := range meta.Tags {
 		size += 1 + len(tag)
@@ -1007,64 +1071,79 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 		buf = appendLowerASCII(buf, file.filename())
 	}
 	needle := core.AsString(buf)
-
-	switch {
-	case core.Contains(needle, "jangtq"):
-		info := &jang.Info{
-			Profile:          "JANGTQ",
-			WeightFormat:     "mxtq",
-			Method:           "affine+mxtq",
-			GroupSize:        jangGroupSize(meta),
-			BitsDefault:      2,
-			RoutedExpertBits: 2,
-		}
-		info.Packed = jang.BuildPackedProfile(info)
-		return info
-	case core.Contains(needle, "jang"):
-		profile := inferJANGProfileName(needle)
-		info := &jang.Info{
-			Profile:     profile,
-			GroupSize:   jangGroupSize(meta),
-			BitsDefault: firstPositive(jang.ProfileBits(profile), 0),
-		}
-		info.Packed = jang.BuildPackedProfile(info)
-		return info
-	default:
-		return nil
+	profile := inferJANGProfileName(needle)
+	info := &jang.Info{
+		Profile:     profile,
+		GroupSize:   jangGroupSize(meta),
+		BitsDefault: firstPositive(jang.ProfileBits(profile), 0),
 	}
+	info.Packed = jang.BuildPackedProfile(info)
+	return info
 }
 
-// inferJANGNeedlePresent reports whether any of the id / tags /
-// filenames contains the case-insensitive token "jang". Pure scan, no
-// allocations — used to gate the lowercase-buffer build inside
-// InferJANG. The miss path (the dominant case across HF metadata)
-// returns false and avoids the only allocation in the function.
-func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) bool {
-	if containsJANGFold(id) {
-		return true
+// JANG token-presence states. Returned by inferJANGNeedlePresent so
+// InferJANG can skip the lowercase-haystack build for the JANGTQ branch
+// (which doesn't need a haystack scan past detection).
+type jangPresence uint8
+
+const (
+	jangNone   jangPresence = 0
+	jangBasic  jangPresence = 1 // "jang" present, "jangtq" not
+	jangTQ     jangPresence = 2 // "jangtq" present (implies "jang")
+)
+
+// inferJANGNeedlePresent classifies the strongest JANG token present in
+// the id / tags / filenames in a single pass per component. Pure scan,
+// no allocations — used to gate the lowercase-buffer build inside
+// InferJANG. jangNone (the dominant case across HF metadata) returns in
+// zero allocs after a tight byte scan. jangTQ short-circuits the
+// haystack build downstream because the JANGTQ branch only needs the
+// QuantizationConfig group size, not a needle scan.
+func inferJANGNeedlePresent(id string, tags []string, files []ModelFile) jangPresence {
+	state := scanJANGFold(id)
+	if state == jangTQ {
+		return jangTQ
 	}
 	for _, tag := range tags {
-		if containsJANGFold(tag) {
-			return true
+		s := scanJANGFold(tag)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
 		}
 	}
 	for _, file := range files {
-		if containsJANGFold(file.Name) || containsJANGFold(file.RFilename) {
-			return true
+		s := scanJANGFold(file.Name)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
+		}
+		s = scanJANGFold(file.RFilename)
+		if s == jangTQ {
+			return jangTQ
+		}
+		if s > state {
+			state = s
 		}
 	}
-	return false
+	return state
 }
 
-// containsJANGFold reports whether s contains the case-insensitive
-// 4-byte token "jang". Specialised for this token so the inner walk is
-// a tight 4-byte compare with ASCII folding inlined.
-func containsJANGFold(s string) bool {
+// scanJANGFold reports the strongest JANG token present in s — jangTQ
+// when "jangtq" is found, jangBasic when only "jang" is found, jangNone
+// otherwise. Single ASCII byte scan with case folding inline. Per
+// starting position 'j', try the longer 6-byte "jangtq" match first;
+// fall back to 4-byte "jang". Returns early on jangTQ.
+func scanJANGFold(s string) jangPresence {
 	if len(s) < 4 {
-		return false
+		return jangNone
 	}
-	last := len(s) - 4
-	for i := 0; i <= last; i++ {
+	state := jangNone
+	last4 := len(s) - 4
+	for i := 0; i <= last4; i++ {
 		c0 := s[i]
 		if c0 >= 'A' && c0 <= 'Z' {
 			c0 += 'a' - 'A'
@@ -1090,11 +1169,29 @@ func containsJANGFold(s string) bool {
 		if c3 >= 'A' && c3 <= 'Z' {
 			c3 += 'a' - 'A'
 		}
-		if c3 == 'g' {
-			return true
+		if c3 != 'g' {
+			continue
 		}
+		// "jang" matched at i. Probe for the "tq" extension if there's
+		// room — jangtq is the strongest match.
+		if i+6 <= len(s) {
+			c4 := s[i+4]
+			if c4 >= 'A' && c4 <= 'Z' {
+				c4 += 'a' - 'A'
+			}
+			if c4 == 't' {
+				c5 := s[i+5]
+				if c5 >= 'A' && c5 <= 'Z' {
+					c5 += 'a' - 'A'
+				}
+				if c5 == 'q' {
+					return jangTQ
+				}
+			}
+		}
+		state = jangBasic
 	}
-	return false
+	return state
 }
 
 // appendLowerASCII appends s to dst with ASCII A-Z mapped to a-z. Non-ASCII
@@ -1307,7 +1404,95 @@ func normalizeKnownArchitecture(value string) string {
 	if !needsNormalisation(value) {
 		return matchKnownArchitecture(value)
 	}
+	// Folded-compare against the known canonical names BEFORE allocating
+	// the lowered buffer. The known arms all return string literals, so
+	// when the input maps to one of them we never need a normalised copy.
+	// Only fall through to normaliseArchString for the passthrough case
+	// (input doesn't match any arm), where we have to return the lowered
+	// form to preserve current semantics.
+	if matched := matchKnownArchitectureFolded(value); matched != "" {
+		return matched
+	}
 	return matchKnownArchitecture(normaliseArchString(value))
+}
+
+// matchKnownArchitectureFolded reports the canonical name for value when
+// its case+dash-folded form matches one of the known architecture keys.
+// Returns "" when no arm matches — caller must then allocate the lowered
+// form via normaliseArchString. Walks value once per candidate target
+// with ASCII case folding and '-'→'_' rewriting inline; no allocations.
+func matchKnownArchitectureFolded(value string) string {
+	// Trim leading/trailing ASCII whitespace.
+	start, end := 0, len(value)
+	for start < end {
+		c := value[start]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		start++
+	}
+	for end > start {
+		c := value[end-1]
+		if c != ' ' && c != '\t' && c != '\n' && c != '\r' {
+			break
+		}
+		end--
+	}
+	if start == end {
+		return ""
+	}
+	// Each target { folded-key, canonical-result }. Mirror the
+	// matchKnownArchitecture switch arms one-for-one.
+	switch {
+	case eqFolded(value, start, end, "qwen3_5"):
+		return "qwen3_next"
+	case eqFolded(value, start, end, "minimaxm2"),
+		eqFolded(value, start, end, "minimax_m2"):
+		return "minimax_m2"
+	case eqFolded(value, start, end, "mixtral"):
+		return "mixtral"
+	case eqFolded(value, start, end, "mistral"):
+		return "mistral"
+	case eqFolded(value, start, end, "phi"),
+		eqFolded(value, start, end, "phi3"),
+		eqFolded(value, start, end, "phi4"):
+		return "phi"
+	case eqFolded(value, start, end, "deepseek"),
+		eqFolded(value, start, end, "deepseek_v3"),
+		eqFolded(value, start, end, "deepseek_r1"):
+		return "deepseek"
+	case eqFolded(value, start, end, "gptoss"),
+		eqFolded(value, start, end, "gpt_oss"),
+		eqFolded(value, start, end, "gpt_oss_model"):
+		return "gpt_oss"
+	case eqFolded(value, start, end, "bert"):
+		return "bert"
+	case eqFolded(value, start, end, "bert_rerank"),
+		eqFolded(value, start, end, "bert_cross_encoder"):
+		return "bert_rerank"
+	}
+	return ""
+}
+
+// eqFolded reports whether value[start:end] equals target after ASCII
+// case folding and '-'→'_' rewriting. target must already be lowercased
+// and use '_' separators. Pure byte scan, no allocations.
+func eqFolded(value string, start, end int, target string) bool {
+	if end-start != len(target) {
+		return false
+	}
+	for i := 0; i < len(target); i++ {
+		c := value[start+i]
+		if c == '-' {
+			c = '_'
+		} else if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != target[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // normaliseArchString trims surrounding whitespace, lowercases ASCII, and
@@ -1391,70 +1576,113 @@ func architectureFromTransformersName(architecture string) string {
 	// Case-sensitive fast path first — the canonical HF transformers class
 	// names are PascalCase ("Qwen3ForCausalLM"). Avoids the Lower+Replace
 	// allocs for the common path.
-	switch {
-	case core.Contains(architecture, "Gemma4"):
-		return "gemma4_text"
-	case core.Contains(architecture, "Gemma3"):
-		return "gemma3"
-	case core.Contains(architecture, "Gemma2"):
-		return "gemma2"
-	case core.Contains(architecture, "Qwen3"):
-		// Qwen3 hits — disambiguate MoE / Next via compact form only here.
-		if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
-			return "qwen3_moe"
-		} else if core.Contains(compact, "qwen3next") {
-			return "qwen3_next"
-		}
-		return "qwen3"
-	case core.Contains(architecture, "Qwen2"):
-		return "qwen2"
-	case core.Contains(architecture, "Llama"):
-		return "llama"
-	case core.Contains(architecture, "MiniMaxM2"):
-		return "minimax_m2"
-	case core.Contains(architecture, "Mixtral"):
-		return "mixtral"
-	case core.Contains(architecture, "Mistral"):
-		return "mistral"
-	case core.Contains(architecture, "Phi"):
-		return "phi"
-	case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
-		return "deepseek"
-	case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
-		return "gpt_oss"
-	case core.Contains(architecture, "Bert") || core.Contains(architecture, "Roberta") || core.Contains(architecture, "Deberta"):
-		// Bert / Roberta / Deberta family — disambiguate rerank via compact.
-		compact := lowerNoSep(architecture)
-		if core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification") {
-			return "bert_rerank"
-		}
-		if core.Contains(architecture, "Bert") {
-			return "bert"
-		}
-		return ""
-	default:
-		// Unknown PascalCase shape — the only patterns the compact form
-		// matches all start with 'b' (bert/roberta/xlmroberta/debertav2)
-		// or 'q' (qwen3moe/qwen3next). If the input has neither (case-
-		// insensitively), the compact form can't match anything — return
-		// "" without paying for lowerNoSep's allocation.
-		if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
-			return ""
-		}
-		// Fall back to compact lower form so a few stragglers like
-		// "qwen3_moe" or "bert_for_sequence_classification" still
-		// classify when callers feed snake_case identifiers.
-		compact := lowerNoSep(architecture)
-		switch {
-		case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
-			return "bert_rerank"
-		case core.Contains(compact, "qwen3moe"):
-			return "qwen3_moe"
-		case core.Contains(compact, "qwen3next"):
-			return "qwen3_next"
-		}
+	//
+	// Dispatch via the first character so we run at most 3 Contains per
+	// call (the family check + any disambiguation), instead of walking up
+	// to 11 sequential Contains for less-common families like Bert. Most
+	// transformer class names share a single first character per family
+	// (Gemma*, Qwen*, Phi*, Bert*, etc.), so a first-byte switch is a
+	// reliable family selector.
+	if len(architecture) == 0 {
 		return ""
 	}
+	switch architecture[0] {
+	case 'G':
+		switch {
+		case core.Contains(architecture, "Gemma4"):
+			return "gemma4_text"
+		case core.Contains(architecture, "Gemma3"):
+			return "gemma3"
+		case core.Contains(architecture, "Gemma2"):
+			return "gemma2"
+		case core.Contains(architecture, "GptOss") || core.Contains(architecture, "GPTOSS"):
+			return "gpt_oss"
+		}
+	case 'Q':
+		switch {
+		case core.Contains(architecture, "Qwen3"):
+			// Qwen3 hits — disambiguate MoE / Next via compact form only here.
+			if compact := lowerNoSep(architecture); core.Contains(compact, "qwen3moe") {
+				return "qwen3_moe"
+			} else if core.Contains(compact, "qwen3next") {
+				return "qwen3_next"
+			}
+			return "qwen3"
+		case core.Contains(architecture, "Qwen2"):
+			return "qwen2"
+		}
+	case 'L':
+		if core.Contains(architecture, "Llama") {
+			return "llama"
+		}
+	case 'M':
+		switch {
+		case core.Contains(architecture, "MiniMaxM2"):
+			return "minimax_m2"
+		case core.Contains(architecture, "Mixtral"):
+			return "mixtral"
+		case core.Contains(architecture, "Mistral"):
+			return "mistral"
+		}
+	case 'P':
+		if core.Contains(architecture, "Phi") {
+			return "phi"
+		}
+	case 'D':
+		switch {
+		case core.Contains(architecture, "Deepseek") || core.Contains(architecture, "DeepSeek"):
+			return "deepseek"
+		case core.Contains(architecture, "Deberta"):
+			// Deberta family — disambiguate rerank via compact.
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "debertav2forsequenceclassification") {
+				return "bert_rerank"
+			}
+		}
+	case 'B':
+		if core.Contains(architecture, "Bert") {
+			// Bert family — disambiguate rerank via compact.
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "bertforsequenceclassification") {
+				return "bert_rerank"
+			}
+			return "bert"
+		}
+	case 'R':
+		if core.Contains(architecture, "Roberta") {
+			compact := lowerNoSep(architecture)
+			if core.Contains(compact, "robertaforsequenceclassification") {
+				return "bert_rerank"
+			}
+		}
+	case 'X':
+		// xlm-roberta is the only family starting with X we classify.
+		compact := lowerNoSep(architecture)
+		if core.Contains(compact, "xlmrobertaforsequenceclassification") {
+			return "bert_rerank"
+		}
+	}
+	// Unknown first-character shape — the only patterns the compact form
+	// matches all start with 'b' (bert/roberta/xlmroberta/debertav2) or
+	// 'q' (qwen3moe/qwen3next). If the input has neither (case-
+	// insensitively), the compact form can't match anything — return ""
+	// without paying for lowerNoSep's allocation.
+	if !hasASCIIByteFold(architecture, 'b') && !hasASCIIByteFold(architecture, 'q') {
+		return ""
+	}
+	// Fall back to compact lower form so a few stragglers like
+	// "qwen3_moe" or "bert_for_sequence_classification" still
+	// classify when callers feed snake_case identifiers.
+	compact := lowerNoSep(architecture)
+	switch {
+	case core.Contains(compact, "bertforsequenceclassification") || core.Contains(compact, "robertaforsequenceclassification") || core.Contains(compact, "xlmrobertaforsequenceclassification") || core.Contains(compact, "debertav2forsequenceclassification"):
+		return "bert_rerank"
+	case core.Contains(compact, "qwen3moe"):
+		return "qwen3_moe"
+	case core.Contains(compact, "qwen3next"):
+		return "qwen3_next"
+	}
+	return ""
 }
 
 // hasASCIIByteFold reports whether s contains b or B (where b is the
