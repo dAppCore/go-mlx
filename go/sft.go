@@ -230,6 +230,13 @@ func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBa
 
 	cfg = normalizeSFTConfig(cfg)
 	builder := newSFTBatchBuilder(cfg.BatchSize)
+	// Hoist a small per-call SFTConfig for buildSFTExample — it only
+	// reads MaxSeqLen + NoEOS and never mutates, so the same value is
+	// safe to share across every sample. Passing the full SFTConfig by
+	// value copied 18 fields (including embedded LoRAConfig with two
+	// []string slices) per sample; the narrowed struct strips that
+	// per-iteration copy. Mirrors BuildDatasetBatches's existing hoist.
+	exampleCfg := SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS}
 	for {
 		sample, ok, err := ds.Next()
 		if err != nil {
@@ -238,7 +245,7 @@ func BuildSFTBatches(tok *Tokenizer, ds dataset.Dataset, cfg SFTConfig) ([]SFTBa
 		if !ok {
 			break
 		}
-		example, usable, err := buildSFTExample(tok, sample, cfg)
+		example, usable, err := buildSFTExample(tok, sample, exampleCfg)
 		if err != nil {
 			return nil, err
 		}
@@ -790,6 +797,12 @@ func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, ds datas
 	if cfg.SequencePacking {
 		packer = newSFTStreamingPacker(cfg.MaxSeqLen, emit)
 	}
+	// Narrowed per-sample SFTConfig — buildSFTExample only reads
+	// MaxSeqLen + NoEOS so we strip the rest. Avoids copying the full
+	// SFTConfig (including embedded LoRAConfig with two []string
+	// slices) on every dataset row across every epoch. Same trick
+	// BuildDatasetBatches uses for the same call.
+	exampleCfg := SFTConfig{MaxSeqLen: cfg.MaxSeqLen, NoEOS: cfg.NoEOS}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -801,7 +814,7 @@ func (m *Model) runSFTDatasetEpoch(ctx context.Context, tok *Tokenizer, ds datas
 		if !ok {
 			break
 		}
-		example, usable, err := buildSFTExample(tok, sample, cfg)
+		example, usable, err := buildSFTExample(tok, sample, exampleCfg)
 		if err != nil {
 			return err
 		}
