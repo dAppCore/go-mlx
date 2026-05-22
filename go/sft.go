@@ -520,19 +520,20 @@ func (b *sftBatchBuilder) flush() {
 }
 
 func sftBatchFromExamples(examples []sftExample) SFTBatch {
+	n := len(examples)
 	batch := SFTBatch{
 		Batch: Batch{
-			Tokens:   make([][]int, 0, len(examples)),
-			Length:   make([]int, 0, len(examples)),
-			LossMask: make([][]float32, 0, len(examples)),
+			Tokens:   make([][]int, n),
+			Length:   make([]int, n),
+			LossMask: make([][]float32, n),
 		},
-		Targets: make([][]int, 0, len(examples)),
+		Targets: make([][]int, n),
 	}
-	for _, example := range examples {
-		batch.Batch.Tokens = append(batch.Batch.Tokens, append([]int(nil), example.inputs...))
-		batch.Batch.Length = append(batch.Batch.Length, len(example.inputs))
-		batch.Batch.LossMask = append(batch.Batch.LossMask, append([]float32(nil), example.mask...))
-		batch.Targets = append(batch.Targets, append([]int(nil), example.targets...))
+	for i, example := range examples {
+		batch.Batch.Tokens[i] = core.SliceClone(example.inputs)
+		batch.Batch.Length[i] = len(example.inputs)
+		batch.Batch.LossMask[i] = core.SliceClone(example.mask)
+		batch.Targets[i] = core.SliceClone(example.targets)
 	}
 	return batch
 }
