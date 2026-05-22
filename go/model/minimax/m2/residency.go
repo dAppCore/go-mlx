@@ -65,14 +65,14 @@ func PlanResidency(plan TensorPlan, memPlan memory.Plan, hotExpertIDs []int) mem
 		mode = memory.ExpertResidencyModePinned
 		hot = defaultHotExpertIDs(total, minPositive(hotLimit, total))
 	}
-	startup := append([]int(nil), hot...)
+	startup := core.SliceClone(hot)
 	return memory.ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    mode,
 		Architecture:            "minimax_m2",
 		TotalExperts:            total,
 		ExpertsPerToken:         perToken,
-		HotExpertIDs:            append([]int(nil), hot...),
+		HotExpertIDs:            core.SliceClone(hot),
 		StartupExpertIDs:        startup,
 		HotExperts:              hotLimit,
 		MaxResidentExperts:      residentLimit,
@@ -120,15 +120,19 @@ func NewResidencyManager(ctx context.Context, cfg ResidencyConfig) (*ResidencyMa
 	if policy.Enabled && cfg.Loader == nil {
 		return nil, core.NewError("mlx: expert residency requires loader for enabled policy")
 	}
+	residentHint := policy.MaxResidentExperts
+	if residentHint <= 0 {
+		residentHint = len(policy.StartupExpertIDs)
+	}
 	manager := &ResidencyManager{
 		layer:     cfg.Layer,
 		policy:    policy,
 		loader:    cfg.Loader,
 		probeSink: cfg.ProbeSink,
 		now:       cfg.now,
-		resident:  map[int]PackedExpertWeights{},
-		lastUsed:  map[int]int{},
-		hot:       map[int]bool{},
+		resident:  make(map[int]PackedExpertWeights, residentHint),
+		lastUsed:  make(map[int]int, residentHint),
+		hot:       make(map[int]bool, len(policy.StartupExpertIDs)),
 	}
 	if manager.now == nil {
 		manager.now = time.Now
@@ -229,7 +233,8 @@ func (manager *ResidencyManager) ensureCapacityFor(incoming int, requested []int
 	if limit <= 0 {
 		return nil
 	}
-	protected := map[int]bool{incoming: true}
+	protected := make(map[int]bool, 1+len(requested))
+	protected[incoming] = true
 	for _, expertID := range requested {
 		if _, ok := manager.resident[expertID]; ok {
 			protected[expertID] = true
@@ -303,7 +308,7 @@ func (manager *ResidencyManager) emitExpertResidencyProbe(action probe.ExpertRes
 		ExpertResidency: &probe.ExpertResidency{
 			Action:             action,
 			Layer:              manager.layer,
-			ExpertIDs:          append([]int(nil), expertIDs...),
+			ExpertIDs:          core.SliceClone(expertIDs),
 			ResidentExperts:    len(manager.resident),
 			MaxResidentExperts: manager.policy.MaxResidentExperts,
 			LoadedBytes:        loadedBytes,

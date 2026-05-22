@@ -266,18 +266,19 @@ func BuildTensorPlan(cfg Config, info *jang.Info) (TensorPlan, error) {
 // 62*256 expert specs up front.
 func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error) {
 	if layer < 0 || layer >= plan.Config.NumHiddenLayers {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 layer %d out of range", layer))
+		return nil, core.NewError(core.Concat("mlx: MiniMax M2 layer ", core.Itoa(layer), " out of range"))
 	}
 	if expert < 0 || expert >= plan.Config.NumLocalExperts {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 expert %d out of range", expert))
+		return nil, core.NewError(core.Concat("mlx: MiniMax M2 expert ", core.Itoa(expert), " out of range"))
 	}
+	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
 	specs := []TensorSpec{
 		plan.attentionSpec(layer, "q_proj", TensorRoleAttentionQ),
 		plan.attentionSpec(layer, "k_proj", TensorRoleAttentionK),
 		plan.attentionSpec(layer, "v_proj", TensorRoleAttentionV),
 		plan.attentionSpec(layer, "o_proj", TensorRoleAttentionO),
 		{
-			Name:  core.Sprintf("model.layers.%d.block_sparse_moe.gate.weight", layer),
+			Name:  core.Concat(layerPrefix, "block_sparse_moe.gate.weight"),
 			Role:  TensorRoleRouterGate,
 			Layer: layer,
 			Shape: []uint64{uint64(plan.Config.NumLocalExperts), uint64(plan.Config.HiddenSize)},
@@ -289,7 +290,7 @@ func (plan TensorPlan) LayerTensorSpecs(layer, expert int) ([]TensorSpec, error)
 	}
 	if plan.Config.UseRoutingBias {
 		specs = append(specs, TensorSpec{
-			Name:  core.Sprintf("model.layers.%d.block_sparse_moe.e_score_correction_bias", layer),
+			Name:  core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
 			Role:  TensorRoleRouterBias,
 			Layer: layer,
 			Shape: []uint64{uint64(plan.Config.NumLocalExperts)},
@@ -337,17 +338,21 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 		return nil, core.NewError("mlx: MiniMax M2 routing bias length does not match expert count")
 	}
 	decisions := make([]RouterDecision, 0, len(scores))
+	hasBias := len(bias) > 0
+	scoreFn := scoringFunc(cfg.ScoringFunc)
 	for tokenIndex, row := range scores {
 		if len(row) != cfg.NumLocalExperts {
 			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 routing row %d has %d scores, expected %d", tokenIndex, len(row), cfg.NumLocalExperts))
 		}
 		scored := make([]expertScore, 0, len(row))
-		for expertID, raw := range row {
-			value := raw
-			if len(bias) > 0 {
-				value += bias[expertID]
+		if hasBias {
+			for expertID, raw := range row {
+				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw + bias[expertID])})
 			}
-			scored = append(scored, expertScore{ID: expertID, Score: score(value, cfg.ScoringFunc)})
+		} else {
+			for expertID, raw := range row {
+				scored = append(scored, expertScore{ID: expertID, Score: scoreFn(raw)})
+			}
 		}
 		sort.SliceStable(scored, func(i, j int) bool {
 			if scored[i].Score == scored[j].Score {
@@ -355,11 +360,15 @@ func RouteTokens(cfg Config, scores [][]float32, bias []float32) ([]RouterDecisi
 			}
 			return scored[i].Score > scored[j].Score
 		})
-		decision := RouterDecision{TokenIndex: tokenIndex}
+		decision := RouterDecision{
+			TokenIndex: tokenIndex,
+			ExpertIDs:  make([]int, topK),
+			Weights:    make([]float32, topK),
+		}
 		total := float32(0)
 		for i := 0; i < topK; i++ {
-			decision.ExpertIDs = append(decision.ExpertIDs, scored[i].ID)
-			decision.Weights = append(decision.Weights, scored[i].Score)
+			decision.ExpertIDs[i] = scored[i].ID
+			decision.Weights[i] = scored[i].Score
 			total += scored[i].Score
 		}
 		if total > 0 {
@@ -387,7 +396,7 @@ func DispatchExperts(hidden [][]float32, decisions []RouterDecision, experts map
 			if expert == nil {
 				return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 dispatch missing expert %d", expertID))
 			}
-			result := expert(append([]float32(nil), hidden[decision.TokenIndex]...))
+			result := expert(core.SliceClone(hidden[decision.TokenIndex]))
 			if out[decision.TokenIndex] == nil {
 				out[decision.TokenIndex] = make([]float32, len(result))
 			}
@@ -512,7 +521,7 @@ func DequantizeJANGPackedProjection(tensor JANGPackedProjectionTensor) (DensePro
 	return DenseProjectionTensor{
 		Descriptor: tensor.Descriptor,
 		Weight:     weight,
-		Bias:       append([]float32(nil), tensor.Bias...),
+		Bias:       core.SliceClone(tensor.Bias),
 	}, nil
 }
 
@@ -565,25 +574,30 @@ func LoadRouter(plan TensorPlan, weightFiles []string, layer int) (RouterWeights
 
 // ProjectRouterScores computes hidden @ router.weight.T.
 func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32, error) {
-	if router.NumExperts <= 0 || router.HiddenSize <= 0 {
+	numExperts := router.NumExperts
+	hiddenSize := router.HiddenSize
+	if numExperts <= 0 || hiddenSize <= 0 {
 		return nil, core.NewError("mlx: MiniMax M2 router requires expert and hidden sizes")
 	}
-	if len(router.Weight) != router.NumExperts*router.HiddenSize {
-		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router weight length %d, expected %d", len(router.Weight), router.NumExperts*router.HiddenSize))
+	weight := router.Weight
+	if len(weight) != numExperts*hiddenSize {
+		return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router weight length %d, expected %d", len(weight), numExperts*hiddenSize))
 	}
 	out := make([][]float32, len(hidden))
 	for tokenIndex, row := range hidden {
-		if len(row) != router.HiddenSize {
-			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), router.HiddenSize))
+		if len(row) != hiddenSize {
+			return nil, core.NewError(core.Sprintf("mlx: MiniMax M2 router hidden row %d has %d values, expected %d", tokenIndex, len(row), hiddenSize))
 		}
-		scores := make([]float32, router.NumExperts)
-		for expertID := 0; expertID < router.NumExperts; expertID++ {
-			base := expertID * router.HiddenSize
+		scores := make([]float32, numExperts)
+		base := 0
+		for expertID := 0; expertID < numExperts; expertID++ {
+			expertWeights := weight[base : base+hiddenSize]
 			sum := float32(0)
-			for hiddenIndex, value := range row {
-				sum += value * router.Weight[base+hiddenIndex]
+			for i, w := range expertWeights {
+				sum += row[i] * w
 			}
 			scores[expertID] = sum
+			base += hiddenSize
 		}
 		out[tokenIndex] = scores
 	}
@@ -650,8 +664,8 @@ func RouterProbeEvents(layer int, tokenIDs []int32, decisions []RouterDecision) 
 			RouterDecision: &probe.RouterDecision{
 				Layer:     layer,
 				TokenID:   tokenID,
-				ExpertIDs: append([]int(nil), decision.ExpertIDs...),
-				Weights:   append([]float32(nil), decision.Weights...),
+				ExpertIDs: core.SliceClone(decision.ExpertIDs),
+				Weights:   core.SliceClone(decision.Weights),
 			},
 			Meta: map[string]string{"architecture": "minimax_m2"},
 		})
@@ -721,8 +735,8 @@ func resolveSkeletonTensor(index safetensors.Index, spec TensorSpec, candidates 
 		Role:         spec.Role,
 		Layer:        spec.Layer,
 		DType:        ref.DType,
-		Shape:        append([]uint64(nil), ref.Shape...),
-		LogicalShape: append([]uint64(nil), spec.Shape...),
+		Shape:        core.SliceClone(ref.Shape),
+		LogicalShape: core.SliceClone(spec.Shape),
 	}
 	if spec.Packed != nil {
 		if !packedDType(ref.DType) {
@@ -749,7 +763,7 @@ type expertScore struct {
 }
 
 func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRole) TensorSpec {
-	name := core.Sprintf("model.layers.%d.self_attn.%s.weight", layer, projection)
+	name := core.Concat("model.layers.", core.Itoa(layer), ".self_attn.", projection, ".weight")
 	qSize := firstPositive(plan.Config.NumAttentionHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
 	kvSize := firstPositive(plan.Config.NumKeyValueHeads*plan.Config.HeadDim, plan.Config.HiddenSize)
 	shape := []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.HiddenSize)}
@@ -777,21 +791,23 @@ func (plan TensorPlan) attentionSpec(layer int, projection string, role TensorRo
 func attentionAliases(layer int, projection string, role TensorRole) []string {
 	switch role {
 	case TensorRoleAttentionQ, TensorRoleAttentionK, TensorRoleAttentionV:
-		return []string{core.Sprintf("model.layers.%d.self_attn.qkv_proj.weight", layer)}
+		return []string{core.Concat("model.layers.", core.Itoa(layer), ".self_attn.qkv_proj.weight")}
 	default:
 		return nil
 	}
 }
 
 func (plan TensorPlan) expertSpec(layer, expert int, projection string, role TensorRole) TensorSpec {
-	name := core.Sprintf("model.layers.%d.block_sparse_moe.experts.%d.%s.weight", layer, expert, projection)
+	layerStr := core.Itoa(layer)
+	expertStr := core.Itoa(expert)
+	name := core.Concat("model.layers.", layerStr, ".block_sparse_moe.experts.", expertStr, ".", projection, ".weight")
 	shape := []uint64{uint64(plan.Config.IntermediateSize), uint64(plan.Config.HiddenSize)}
 	if projection == "down_proj" {
 		shape = []uint64{uint64(plan.Config.HiddenSize), uint64(plan.Config.IntermediateSize)}
 	}
 	spec := TensorSpec{
 		Name:    name,
-		Aliases: []string{core.Sprintf("model.layers.%d.mlp.experts.%d.%s.weight", layer, expert, projection)},
+		Aliases: []string{core.Concat("model.layers.", layerStr, ".mlp.experts.", expertStr, ".", projection, ".weight")},
 		Role:    role,
 		Layer:   layer,
 		Expert:  expert,
@@ -843,7 +859,11 @@ func findTensorSpec(specs []TensorSpec, role TensorRole) TensorSpec {
 }
 
 func decisionExpertIDs(decisions []RouterDecision) []int {
-	var ids []int
+	total := 0
+	for _, decision := range decisions {
+		total += len(decision.ExpertIDs)
+	}
+	ids := make([]int, 0, total)
 	for _, decision := range decisions {
 		ids = append(ids, decision.ExpertIDs...)
 	}
@@ -865,7 +885,7 @@ func packedExpertLoadedBytes(experts map[int]PackedExpertWeights) uint64 {
 }
 
 func uniqueExpertIDs(ids []int) []int {
-	seen := map[int]bool{}
+	seen := make(map[int]bool, len(ids))
 	out := make([]int, 0, len(ids))
 	for _, id := range ids {
 		if seen[id] {
@@ -879,7 +899,9 @@ func uniqueExpertIDs(ids []int) []int {
 }
 
 func packedWeightCandidates(spec TensorSpec) []string {
-	bases := append([]string{spec.Name}, spec.Aliases...)
+	bases := make([]string, 0, 1+len(spec.Aliases))
+	bases = append(bases, spec.Name)
+	bases = append(bases, spec.Aliases...)
 	out := make([]string, 0, len(bases)*4)
 	for _, base := range bases {
 		out = append(out, base, base+".packed", base+".qweight", trimWeightSuffix(base)+".qweight")
@@ -888,19 +910,27 @@ func packedWeightCandidates(spec TensorSpec) []string {
 }
 
 func routerGateCandidates(spec TensorSpec) []string {
-	out := append([]string{spec.Name}, spec.Aliases...)
-	if spec.Name != "" {
+	hasName := spec.Name != ""
+	extra := 0
+	if hasName {
+		extra = 1
+	}
+	out := make([]string, 0, 1+len(spec.Aliases)+extra)
+	out = append(out, spec.Name)
+	out = append(out, spec.Aliases...)
+	if hasName {
 		out = append(out, trimWeightSuffix(spec.Name)+".gate")
 	}
 	return out
 }
 
 func routerBiasCandidates(spec TensorSpec, layer int) []string {
+	layerPrefix := core.Concat("model.layers.", core.Itoa(layer), ".")
 	names := []string{
 		spec.Name,
-		core.Sprintf("model.layers.%d.block_sparse_moe.e_score_correction_bias", layer),
-		core.Sprintf("model.layers.%d.mlp.e_score_correction_bias", layer),
-		core.Sprintf("model.layers.%d.block_sparse_moe.gate.e_score_correction_bias", layer),
+		core.Concat(layerPrefix, "block_sparse_moe.e_score_correction_bias"),
+		core.Concat(layerPrefix, "mlp.e_score_correction_bias"),
+		core.Concat(layerPrefix, "block_sparse_moe.gate.e_score_correction_bias"),
 	}
 	names = append(names, spec.Aliases...)
 	out := make([]string, 0, len(names))
@@ -913,25 +943,30 @@ func routerBiasCandidates(spec TensorSpec, layer int) []string {
 }
 
 func sidecarCandidates(spec TensorSpec, weightName, sidecar string) []string {
-	names := []string{weightName}
+	names := make([]string, 0, 3+len(spec.Aliases))
+	names = append(names, weightName)
 	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
 		names = append(names, trimmed)
 	}
 	names = append(names, spec.Name)
 	names = append(names, spec.Aliases...)
+	dotSidecar := "." + sidecar
+	underscoreSidecar := "_" + sidecar
 	out := make([]string, 0, len(names)*3)
 	for _, name := range names {
-		out = append(out, name+"."+sidecar, trimWeightSuffix(name)+"."+sidecar, name+"_"+sidecar)
+		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
 	}
 	return out
 }
 
 func projectionBiasCandidates(spec TensorSpec, weightName string) []string {
-	names := []string{weightName, spec.Name}
+	names := make([]string, 0, 2+len(spec.Aliases))
+	names = append(names, weightName, spec.Name)
 	names = append(names, spec.Aliases...)
 	out := make([]string, 0, len(names)*3)
 	for _, name := range names {
-		out = append(out, trimWeightSuffix(name)+".bias", name+".proj_bias", trimWeightSuffix(name)+".proj_bias")
+		trimmed := trimWeightSuffix(name)
+		out = append(out, trimmed+".bias", name+".proj_bias", trimmed+".proj_bias")
 	}
 	return out
 }
@@ -953,8 +988,10 @@ func trimWeightSuffix(name string) string {
 	return name
 }
 
+var packedSuffixes = [...]string{".packed", ".qweight"}
+
 func trimPackedSuffix(name string) string {
-	for _, suffix := range []string{".packed", ".qweight"} {
+	for _, suffix := range packedSuffixes {
 		if core.HasSuffix(name, suffix) {
 			return name[:len(name)-len(suffix)]
 		}
@@ -995,13 +1032,24 @@ func dTypeBytes(dtype string) int {
 	}
 }
 
-func score(value float32, scoringFunc string) float32 {
-	switch core.Lower(scoringFunc) {
+// scoringFunc returns the per-value scoring closure selected once for a
+// router pass, hoisting the core.Lower(name) string transform out of the
+// per-token inner loop.
+func scoringFunc(name string) func(float32) float32 {
+	switch core.Lower(name) {
 	case "", "sigmoid":
-		return float32(1 / (1 + math.Exp(float64(-value))))
+		return sigmoidScore
 	default:
-		return value
+		return identityScore
 	}
+}
+
+func sigmoidScore(value float32) float32 {
+	return float32(1 / (1 + math.Exp(float64(-value))))
+}
+
+func identityScore(value float32) float32 {
+	return value
 }
 
 func sameUint64Slice(a, b []uint64) bool {
@@ -1071,10 +1119,10 @@ func ForwardLazyExpertLoadMetal(hidden [][]float32, load LazyExpertLoad) (Packed
 	}
 	return PackedLayerForwardResult{
 		Output:            output,
-		Decisions:         append([]RouterDecision(nil), load.Decisions...),
-		SelectedExpertIDs: append([]int(nil), load.SelectedExpertIDs...),
+		Decisions:         core.SliceClone(load.Decisions),
+		SelectedExpertIDs: core.SliceClone(load.SelectedExpertIDs),
 		LoadedPackedBytes: load.LoadedPackedBytes,
-		ProbeEvents:       append([]probe.Event(nil), load.ProbeEvents...),
+		ProbeEvents:       core.SliceClone(load.ProbeEvents),
 	}, nil
 }
 
