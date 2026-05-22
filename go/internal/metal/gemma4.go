@@ -51,9 +51,11 @@ type Gemma4TextConfig struct {
 	RopeParameters            map[string]RopeParams `json:"rope_parameters"`
 	LayerTypesInput           []string              `json:"layer_types"`
 
-	Quantization *QuantizationConfig `json:"-"`
-	VisionConfig *Gemma4VisionConfig `json:"-"`
-	LayerTypes   []string            `json:"-"`
+	Quantization                *QuantizationConfig `json:"-"`
+	VisionConfig                *Gemma4VisionConfig `json:"-"`
+	LayerTypes                  []string            `json:"-"`
+	EmbeddingScale              float32             `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
+	PerLayerInputEmbeddingScale float32             `json:"-"` // Computed: sqrt(hidden_size_per_layer_input); cached to skip per-token math.Sqrt
 }
 
 // RopeParams holds RoPE configuration for a single attention type.
@@ -645,7 +647,29 @@ func parseGemma4Config(data []byte) (*Gemma4TextConfig, error) {
 		return nil, core.E("gemma4.parseConfig", "layer_types shorter than num_hidden_layers", nil)
 	}
 	cfg.LayerTypes = cfg.LayerTypes[:cfg.NumHiddenLayers]
+	gemma4FinaliseEmbeddingScales(&cfg)
 	return &cfg, nil
+}
+
+// gemma4FinaliseEmbeddingScales caches sqrt(HiddenSize) and
+// sqrt(HiddenSizePerLayerInput) on the config so per-token forward
+// passes can skip the math.Sqrt + float32 narrowing entirely. Safe to
+// call multiple times — the loader re-invokes after inferring or
+// resetting HiddenSizePerLayerInput from weights.
+func gemma4FinaliseEmbeddingScales(cfg *Gemma4TextConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.HiddenSize > 0 {
+		cfg.EmbeddingScale = float32(math.Sqrt(float64(cfg.HiddenSize)))
+	} else {
+		cfg.EmbeddingScale = 0
+	}
+	if cfg.HiddenSizePerLayerInput > 0 {
+		cfg.PerLayerInputEmbeddingScale = float32(math.Sqrt(float64(cfg.HiddenSizePerLayerInput)))
+	} else {
+		cfg.PerLayerInputEmbeddingScale = 0
+	}
 }
 
 func validateGemma4QuantizationConfig(q *QuantizationConfig) error {
@@ -1512,6 +1536,9 @@ func LoadGemma4(modelPath string) (*Gemma4Model, error) {
 			cfg.HiddenSizePerLayerInput = 0
 		}
 	}
+	// Re-cache once HiddenSizePerLayerInput is finalised against the
+	// loaded weights — keeps cfg.PerLayerInputEmbeddingScale in sync.
+	gemma4FinaliseEmbeddingScales(cfg)
 
 	modelType := cfg.ModelType
 	if modelType == "" {
@@ -1762,8 +1789,7 @@ func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
 
 func (m *Gemma4Model) perLayerInputTensor(tokens, hidden *Array, B, L int32) *Array {
 	perLayer := m.EmbedTokensPerLayer.Forward(tokens)
-	scale := float32(math.Sqrt(float64(m.Cfg.HiddenSizePerLayerInput)))
-	scaled := MulScalar(perLayer, scale)
+	scaled := MulScalar(perLayer, m.Cfg.PerLayerInputEmbeddingScale)
 	Free(perLayer)
 	perLayer = gemma4NormalizePerLayerTensor(scaled, B, L, m.Cfg.NumHiddenLayers, m.Cfg.HiddenSizePerLayerInput)
 	if perLayer != scaled {
@@ -2177,8 +2203,7 @@ func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, 
 	}
 
 	h := m.EmbedTokens.Forward(tokens)
-	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
-	scaledH := MulScalar(h, embeddingScale)
+	scaledH := MulScalar(h, m.Cfg.EmbeddingScale)
 	Free(h)
 	h = scaledH
 	defer Free(h)
@@ -2252,8 +2277,7 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
-	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
-	scaledH := MulScalar(h, embeddingScale)
+	scaledH := MulScalar(h, m.Cfg.EmbeddingScale)
 	Free(h)
 	h = scaledH
 

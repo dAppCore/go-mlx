@@ -29,8 +29,9 @@ type TextConfig struct {
 	SlidingWindow         int32   `json:"sliding_window"`
 	SlidingWindowPattern  int32   `json:"sliding_window_pattern"`
 
-	Quantization *QuantizationConfig `json:"-"` // Parsed separately from top-level
-	Scale        float32             `json:"-"` // Computed: 1/sqrt(head_dim)
+	Quantization   *QuantizationConfig `json:"-"` // Parsed separately from top-level
+	Scale          float32             `json:"-"` // Computed: 1/sqrt(head_dim)
+	EmbeddingScale float32             `json:"-"` // Computed: sqrt(hidden_size); cached to skip per-token math.Sqrt
 }
 
 // GemmaModel is the Gemma 3 text model.
@@ -199,6 +200,9 @@ func parseConfig(data []byte) (*TextConfig, error) {
 	}
 	if cfg.ModelType == "" {
 		cfg.ModelType = "gemma3"
+	}
+	if cfg.HiddenSize > 0 {
+		cfg.EmbeddingScale = float32(math.Sqrt(float64(cfg.HiddenSize)))
 	}
 
 	return &cfg, nil
@@ -375,8 +379,7 @@ func (m *GemmaModel) ForwardMasked(tokens *Array, mask *Array, caches []Cache) *
 	B, L := shape[0], shape[1]
 
 	h := m.EmbedTokens.Forward(tokens)
-	embeddingScale := float32(math.Sqrt(float64(m.Cfg.HiddenSize)))
-	h2 := MulScalar(h, embeddingScale)
+	h2 := MulScalar(h, m.Cfg.EmbeddingScale)
 	Free(h)
 	h = h2
 

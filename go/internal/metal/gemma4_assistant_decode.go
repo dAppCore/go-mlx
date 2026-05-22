@@ -5,8 +5,6 @@
 package metal
 
 import (
-	"math"
-
 	core "dappco.re/go"
 )
 
@@ -123,7 +121,7 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	tokenValue := fromSingleInt32(lastToken)
 	tokenInput := Reshape(tokenValue, 1, 1)
 	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
-	scaledTokenEmbedding := MulScalar(tokenEmbedding, float32(math.Sqrt(float64(pair.Target.Cfg.HiddenSize))))
+	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
 	Free(tokenValue, tokenInput, tokenEmbedding)
 
 	backboneHidden, ownBackboneHidden, err := gemma4AssistantBackboneHidden(previousHidden, pair.Assistant.BackboneHiddenSize)
