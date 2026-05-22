@@ -10,6 +10,7 @@ package blockcache
 import (
 	"context"
 	"crypto/sha256"
+	"hash"
 	"sync"
 
 	core "dappco.re/go"
@@ -87,6 +88,7 @@ func New(cfg Config) *Service {
 	if cfg.BlockSize <= 0 {
 		cfg.BlockSize = DefaultBlockSize
 	}
+	cfg.DiskPath = core.Trim(cfg.DiskPath)
 	return &Service{
 		cfg:    cfg,
 		blocks: map[string]inference.CacheBlockRef{},
@@ -246,7 +248,7 @@ func (service *Service) requestTokens(req inference.CacheWarmRequest) ([]int32, 
 	if err != nil {
 		return nil, err
 	}
-	return append([]int32(nil), tokens...), nil
+	return core.SliceClone(tokens), nil
 }
 
 func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32, labels map[string]string) []inference.CacheBlockRef {
@@ -309,8 +311,8 @@ func (service *Service) statsLocked() inference.CacheStats {
 	if service.diskEnabled() {
 		stats.DiskBytes = service.diskBytesLocked()
 		stats.Labels["disk_path"] = service.cfg.DiskPath
-		stats.Labels["disk_blocks"] = core.Sprintf("%d", len(core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json"))))
-		stats.Labels["disk_corrupt"] = core.Sprintf("%d", service.diskCorrupt)
+		stats.Labels["disk_blocks"] = core.Itoa(len(core.PathGlob(core.PathJoin(service.cfg.DiskPath, "*.json"))))
+		stats.Labels["disk_corrupt"] = core.FormatUint(service.diskCorrupt, 10)
 	}
 	if service.stateStoreEnabled() {
 		stats.Labels["cold_store"] = "state"
@@ -326,7 +328,7 @@ func (service *Service) statsLocked() inference.CacheStats {
 }
 
 func (service *Service) diskEnabled() bool {
-	return service != nil && core.Trim(service.cfg.DiskPath) != ""
+	return service != nil && service.cfg.DiskPath != ""
 }
 
 func (service *Service) stateStoreEnabled() bool {
@@ -436,7 +438,7 @@ func (service *Service) writeDiskBlockLocked(ctx context.Context, ref inference.
 		StateRef: stateRef,
 	}
 	if stateRef == nil {
-		record.Tokens = append([]int32(nil), tokens...)
+		record.Tokens = core.SliceClone(tokens)
 	}
 	data := core.JSONMarshal(record)
 	if !data.OK {
@@ -461,7 +463,7 @@ func (service *Service) writeStateBlock(ctx context.Context, ref inference.Cache
 		Version:       diskVersion,
 		BlockID:       ref.ID,
 		Ref:           ref,
-		Tokens:        append([]int32(nil), tokens...),
+		Tokens:        core.SliceClone(tokens),
 		Encoding:      ref.Encoding,
 		CacheMode:     mode,
 		PayloadFormat: "token-prefix/int32-json",
@@ -570,27 +572,37 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 	writeBlockCacheHashString(hash, adapterHash)
 	writeBlockCacheHashString(hash, tokenizerHash)
 	writeBlockCacheHashString(hash, mode)
-	var scratch [4]byte
-	for _, token := range prefix {
-		value := uint32(token)
-		scratch[0] = byte(value)
-		scratch[1] = byte(value >> 8)
-		scratch[2] = byte(value >> 16)
-		scratch[3] = byte(value >> 24)
-		hash.Write(scratch[:])
+	// Batch up to 64 tokens (256 bytes) per Write call to amortise the
+	// hash.Hash interface dispatch over many tokens.
+	var scratch [256]byte
+	for start := 0; start < len(prefix); start += 64 {
+		end := start + 64
+		if end > len(prefix) {
+			end = len(prefix)
+		}
+		offset := 0
+		for _, token := range prefix[start:end] {
+			value := uint32(token)
+			scratch[offset] = byte(value)
+			scratch[offset+1] = byte(value >> 8)
+			scratch[offset+2] = byte(value >> 16)
+			scratch[offset+3] = byte(value >> 24)
+			offset += 4
+		}
+		hash.Write(scratch[:offset])
 	}
 	return core.HexEncode(hash.Sum(nil))
 }
 
-func writeBlockCacheHashString(hash interface{ Write([]byte) (int, error) }, value string) {
+func writeBlockCacheHashString(h hash.Hash, value string) {
 	var length [4]byte
 	n := uint32(len(value))
 	length[0] = byte(n)
 	length[1] = byte(n >> 8)
 	length[2] = byte(n >> 16)
 	length[3] = byte(n >> 24)
-	hash.Write(length[:])
-	hash.Write(core.AsBytes(value))
+	h.Write(length[:])
+	h.Write(core.AsBytes(value))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity
@@ -648,7 +660,7 @@ func cacheContextErr(ctx context.Context) error {
 }
 
 func cloneBlockCacheLabels(input map[string]string) map[string]string {
-	return cloneBlockCacheLabelsExtra(input, 0)
+	return core.MapClone(input)
 }
 
 func cloneBlockCacheLabelsExtra(input map[string]string, extra int) map[string]string {

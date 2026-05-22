@@ -114,7 +114,21 @@ func ArchitectureID(value string) string {
 	}
 }
 
+// builtinArchitectureProfilesData is the singleton backing list — built
+// once at package init, exposed through builtinArchitectureProfiles.
+// Callers must not mutate this slice or its entries; the public API
+// clones before returning.
+var builtinArchitectureProfilesData = []ModelArchitectureProfile{}
+
+func init() {
+	builtinArchitectureProfilesData = buildBuiltinArchitectureProfiles()
+}
+
 func builtinArchitectureProfiles() []ModelArchitectureProfile {
+	return builtinArchitectureProfilesData
+}
+
+func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 	return []ModelArchitectureProfile{
 		nativeProfile("gemma2", "gemma", "gemma", []string{"Gemma2ForCausalLM"}),
 		nativeProfile("gemma3", "gemma", "gemma", []string{"Gemma3ForCausalLM"}),
