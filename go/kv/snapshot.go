@@ -1140,13 +1140,15 @@ func HashSnapshot(snapshot *Snapshot) (string, error) {
 	if snapshot == nil {
 		return "", core.NewError("mlx: KV snapshot is nil")
 	}
-	cloned := snapshot.Clone()
-	normalizeSnapshot(cloned)
+	// bytesWithOptions is read-only — version derivation and token-offset
+	// defaulting are applied inline during encoding, so the defensive clone
+	// + normalize round-trip is pure waste. Direct encode is hash-stable
+	// because the writer always emits len(Tokens) when TokenOffset is zero.
 	opts := SaveOptions{}
-	if requiresNativeEncoding(cloned) {
+	if requiresNativeEncoding(snapshot) {
 		opts.KVEncoding = EncodingNative
 	}
-	data, err := cloned.bytesWithOptions(opts)
+	data, err := snapshot.bytesWithOptions(opts)
 	if err != nil {
 		return "", err
 	}
