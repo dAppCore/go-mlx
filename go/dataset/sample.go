@@ -47,7 +47,7 @@ type SliceDataset struct {
 //
 //	d := dataset.NewSliceDataset(samples)
 func NewSliceDataset(samples []Sample) *SliceDataset {
-	return &SliceDataset{samples: append([]Sample(nil), samples...)}
+	return &SliceDataset{samples: core.SliceClone(samples)}
 }
 
 // Next returns the next sample.
