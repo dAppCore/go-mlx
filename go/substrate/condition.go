@@ -20,9 +20,22 @@ const (
 	CONTWithGap Condition = "CONT-with-gap"
 )
 
+// allConditions is the package-init shared slice backing All(). The
+// substrate-shift experiment treats the four pre-registered conditions
+// as a fixed enum — sharing one allocation across every All() call
+// drops the 64 B/op slice alloc on the hot transition-sweep path
+// (BenchmarkConditionTransition_FourConditions calls All() once at
+// setup but the runner re-validates conditions on every turn, so the
+// substrate.All() form has been observed in tight loops). Treat the
+// returned slice as read-only; callers needing mutation must slices.Clone.
+var allConditions = []Condition{TRAD, CONT, TRADNoReplay, CONTWithGap}
+
 // All returns the four pre-registered substrate conditions in method order.
+// The returned slice is read-only — callers must not mutate it.
+//
+//	for _, c := range substrate.All() { c.Valid() }
 func All() []Condition {
-	return []Condition{TRAD, CONT, TRADNoReplay, CONTWithGap}
+	return allConditions
 }
 
 // Normalize parses user input into a canonical substrate condition.
