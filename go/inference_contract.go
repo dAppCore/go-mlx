@@ -714,8 +714,10 @@ func toInferenceEvalReport(report *eval.Report) *inference.EvalReport {
 
 func toInferenceQualityResults(checks []eval.QualityCheck) []inference.QualityProbeResult {
 	out := make([]inference.QualityProbeResult, len(checks))
-	for i, check := range checks {
-		out[i] = inference.QualityProbeResult{Name: check.Name, Passed: check.Pass, Score: check.Score, Text: check.Detail}
+	// Index iteration — eval.QualityCheck carries Name + Detail (string
+	// headers) + Pass + Score, ~48 B total. Skip the per-iter copy.
+	for i := range checks {
+		out[i] = inference.QualityProbeResult{Name: checks[i].Name, Passed: checks[i].Pass, Score: checks[i].Score, Text: checks[i].Detail}
 	}
 	return out
 }
