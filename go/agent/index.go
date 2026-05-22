@@ -31,7 +31,6 @@ var hashBufPool = sync.Pool{
 	},
 }
 
-
 const (
 	// StateIndexKind identifies a State-stored lookup index
 	// for named spans inside one or more KV block bundles.
