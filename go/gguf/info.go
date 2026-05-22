@@ -369,10 +369,16 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 	file := open.Value.(*core.OSFile)
 	defer file.Close()
 
+	// Wrap in a buffered reader — parseGGUF does hundreds of small fixed-
+	// width reads (8 / 4 / 12 bytes) per metadata entry + tensor. Without
+	// buffering each becomes its own syscall; with bufio (default 4 KiB)
+	// the read syscalls collapse to a handful for typical GGUF headers.
+	reader := core.NewBufReader(file)
+
 	// Single 20-byte read covers magic(4) + version(4) + tensorCount(8) + metadataCount(8).
 	// Reflect-free scratch — eliminates 4 binary.Read calls (+4 reflect allocs each).
 	var header [24]byte
-	if _, err := io.ReadFull(file, header[:24]); err != nil {
+	if _, err := io.ReadFull(reader, header[:24]); err != nil {
 		return nil, nil, core.Errorf("mlx: read gguf header: %w", err)
 	}
 	if core.AsString(header[:4]) != "GGUF" {
@@ -397,15 +403,15 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 
 	metadata := make(map[string]any, int(metadataCount))
 	for i := uint64(0); i < metadataCount; i++ {
-		key, err := readGGUFString(file, scratch[:])
+		key, err := readGGUFString(reader, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata key: %w", err)
 		}
-		if _, err := io.ReadFull(file, scratch[:4]); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata type: %w", err)
 		}
 		valueType := binary.LittleEndian.Uint32(scratch[:4])
-		value, err := readGGUFValue(file, valueType, scratch[:])
+		value, err := readGGUFValue(reader, valueType, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf metadata value for %q: %w", key, err)
 		}
@@ -414,24 +420,24 @@ func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
 
 	tensors := make([]ggufTensorInfo, tensorCount)
 	for i := uint64(0); i < tensorCount; i++ {
-		name, err := readGGUFString(file, scratch[:])
+		name, err := readGGUFString(reader, scratch[:])
 		if err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor name: %w", err)
 		}
-		if _, err := io.ReadFull(file, scratch[:4]); err != nil {
+		if _, err := io.ReadFull(reader, scratch[:4]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor ndim: %w", err)
 		}
 		ndim := binary.LittleEndian.Uint32(scratch[:4])
 		shape := make([]uint64, ndim)
 		for d := uint32(0); d < ndim; d++ {
-			if _, err := io.ReadFull(file, scratch[:8]); err != nil {
+			if _, err := io.ReadFull(reader, scratch[:8]); err != nil {
 				return nil, nil, core.Errorf("mlx: read gguf tensor dimension: %w", err)
 			}
 			shape[d] = binary.LittleEndian.Uint64(scratch[:8])
 		}
 		// tensorType(4) + offset(8) = 12 bytes in one read.
 		var trailer [12]byte
-		if _, err := io.ReadFull(file, trailer[:]); err != nil {
+		if _, err := io.ReadFull(reader, trailer[:]); err != nil {
 			return nil, nil, core.Errorf("mlx: read gguf tensor type/offset: %w", err)
 		}
 		tensors[i] = ggufTensorInfo{
