@@ -461,7 +461,11 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 		Quantizations: core.SliceClone(metalCapabilityQuantizations),
 		CacheModes:    core.SliceClone(metalCapabilityCacheModes),
 		Capabilities:  capabilities,
-		Labels:        map[string]string{"library": "go-mlx"},
+		// Single shared singleton — the value is the same constant on every
+		// call ({"library": "go-mlx"}) and consumers treat report.Labels as
+		// read-only (go-ml / go-ai never mutate it). Skips one map make +
+		// one map-bucket alloc per CapabilityReport (~80 B + 1 alloc).
+		Labels: metalCapabilityReportLabels,
 	}
 }
 
@@ -640,6 +644,12 @@ var (
 		string(memory.KVCacheModeKQ8VQ4),
 		string(memory.KVCacheModePaged),
 	}
+	// metalCapabilityReportLabels is the shared CapabilityReport.Labels
+	// payload — the value is the same constant on every call and
+	// downstream consumers (go-ml / go-ai) only read this field, so the
+	// single-allocation literal that used to fire per call now lives at
+	// package init. Saves ~80 B + 1 alloc per metalCapabilityReport call.
+	metalCapabilityReportLabels = map[string]string{"library": "go-mlx"}
 )
 
 func toInferenceProbeEvent(event metal.ProbeEvent) inference.ProbeEvent {
