@@ -355,6 +355,32 @@ var (
 	metalDeviceLabelMu    sync.Mutex
 )
 
+// metalRuntimeLabelsEntry caches the per-call runtimeLabels map for a
+// given device shape AND loadReady value. The map header itself (~80 B)
+// would otherwise allocate per call — the singleton-device contract +
+// boolLabel's two-string output means ≤ 2 distinct maps fit the entire
+// process lifetime. atomic.Pointer keeps the read path lock-free.
+type metalRuntimeLabelsEntry struct {
+	memorySize     uint64
+	workingSetSize uint64
+	loadReady      bool
+	labels         map[string]string
+}
+
+// metalRuntimeLabelsCache stores both the loadReady=true and loadReady=false
+// shapes side-by-side — at most one of each. Tests that swap the
+// metalCapabilityDeviceInfo hook with synthetic device shapes invalidate
+// both slots on the next call with the new tuple.
+type metalRuntimeLabelsCachePair struct {
+	loadReadyTrue  *metalRuntimeLabelsEntry
+	loadReadyFalse *metalRuntimeLabelsEntry
+}
+
+var (
+	metalRuntimeLabelsCache atomic.Pointer[metalRuntimeLabelsCachePair]
+	metalRuntimeLabelsMu    sync.Mutex
+)
+
 // metalDeviceLabelStrings returns the strconv.FormatUint outputs for
 // (memorySize, workingSetSize). The atomic single-slot cache hits on
 // every subsequent call with the same tuple — lock-free read path,
@@ -398,20 +424,88 @@ func metalDeviceLabelStringsSlow(memorySize, workingSetSize uint64) (string, str
 	return entry.memoryStr, entry.workingSetStr
 }
 
+// metalRuntimeLabels returns the per-Capability-Report Runtime.Labels map
+// for (memorySize, workingSetSize, loadReady). The result is a shared
+// singleton — consumers (go-ml fallback, go-ai providers) treat the field
+// as read-only so a shared map is safe. Lock-free atomic read on the hot
+// path; rare-path mutex only on miss.
+func metalRuntimeLabels(memoryBytesStr, workingSetBytesStr string, memorySize, workingSetSize uint64, loadReady bool) map[string]string {
+	if pair := metalRuntimeLabelsCache.Load(); pair != nil {
+		slot := pair.loadReadyTrue
+		if !loadReady {
+			slot = pair.loadReadyFalse
+		}
+		if slot != nil && slot.memorySize == memorySize && slot.workingSetSize == workingSetSize {
+			return slot.labels
+		}
+	}
+	return metalRuntimeLabelsSlow(memoryBytesStr, workingSetBytesStr, memorySize, workingSetSize, loadReady)
+}
+
+// metalRuntimeLabelsSlow is the cache-miss path. Builds the map under the
+// mutex; preserves the OTHER loadReady slot when present + still device-
+// matched, so a single (true) + single (false) call doesn't churn each
+// other out.
+func metalRuntimeLabelsSlow(memoryBytesStr, workingSetBytesStr string, memorySize, workingSetSize uint64, loadReady bool) map[string]string {
+	metalRuntimeLabelsMu.Lock()
+	defer metalRuntimeLabelsMu.Unlock()
+	if pair := metalRuntimeLabelsCache.Load(); pair != nil {
+		slot := pair.loadReadyTrue
+		if !loadReady {
+			slot = pair.loadReadyFalse
+		}
+		if slot != nil && slot.memorySize == memorySize && slot.workingSetSize == workingSetSize {
+			return slot.labels
+		}
+	}
+	labels := make(map[string]string, 3)
+	if memoryBytesStr != "" {
+		labels["memory_bytes"] = memoryBytesStr
+	}
+	if workingSetBytesStr != "" {
+		labels["working_set_bytes"] = workingSetBytesStr
+	}
+	labels["load_available"] = boolLabel(loadReady)
+	entry := &metalRuntimeLabelsEntry{
+		memorySize:     memorySize,
+		workingSetSize: workingSetSize,
+		loadReady:      loadReady,
+		labels:         labels,
+	}
+	// Preserve the other-loadReady slot if it still matches the same
+	// device — only invalidate when the device shape itself shifts.
+	pair := &metalRuntimeLabelsCachePair{}
+	if existing := metalRuntimeLabelsCache.Load(); existing != nil {
+		if loadReady {
+			pair.loadReadyFalse = existing.loadReadyFalse
+		} else {
+			pair.loadReadyTrue = existing.loadReadyTrue
+		}
+		// Drop the preserved slot if the device shape no longer matches.
+		if loadReady && pair.loadReadyFalse != nil &&
+			(pair.loadReadyFalse.memorySize != memorySize || pair.loadReadyFalse.workingSetSize != workingSetSize) {
+			pair.loadReadyFalse = nil
+		}
+		if !loadReady && pair.loadReadyTrue != nil &&
+			(pair.loadReadyTrue.memorySize != memorySize || pair.loadReadyTrue.workingSetSize != workingSetSize) {
+			pair.loadReadyTrue = nil
+		}
+	}
+	if loadReady {
+		pair.loadReadyTrue = entry
+	} else {
+		pair.loadReadyFalse = entry
+	}
+	metalRuntimeLabelsCache.Store(pair)
+	return labels
+}
+
 func metalCapabilityReport(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool) inference.CapabilityReport {
 	return metalCapabilityReportWithLoadReady(model, adapter, available, available)
 }
 
 func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter inference.AdapterIdentity, available bool, loadReady bool) inference.CapabilityReport {
 	device := metalCapabilityDeviceInfo(available)
-	// Pre-size for the three possible runtime labels (memory, working
-	// set, load_available). Drop the fmt-format-parser path in favour
-	// of strconv.FormatUint — same value, no interface-boxing of the
-	// uint64 arg + no fmt format-machinery overhead.
-	//
-	// The original len()==0 guard that nil'd the map was dead code —
-	// load_available is always set, so len ≥ 1 every call.
-	//
 	// Cache the per-DeviceInfo formatted strings — the device probe
 	// returns the same (MemorySize, WorkingSet) tuple for the whole
 	// process lifetime (the host doesn't grow RAM between calls). The
@@ -419,14 +513,12 @@ func metalCapabilityReportWithLoadReady(model inference.ModelIdentity, adapter i
 	// previously formatted strings, dropping 2 strconv allocs per
 	// CapabilityReport invocation when the cache hits.
 	memoryBytesStr, workingSetBytesStr := metalDeviceLabelStrings(device.MemorySize, device.MaxRecommendedWorkingSetSize)
-	runtimeLabels := make(map[string]string, 3)
-	if memoryBytesStr != "" {
-		runtimeLabels["memory_bytes"] = memoryBytesStr
-	}
-	if workingSetBytesStr != "" {
-		runtimeLabels["working_set_bytes"] = workingSetBytesStr
-	}
-	runtimeLabels["load_available"] = boolLabel(loadReady)
+	// Cache the whole runtimeLabels map per (device, loadReady) shape.
+	// Real callers see only 2 distinct shapes per process (loadReady=true
+	// and loadReady=false against the same singleton device), so the map
+	// header allocation (~80 B per call) collapses to a single one-time
+	// cost. metalRuntimeLabels is read-only — consumers don't mutate.
+	runtimeLabels := metalRuntimeLabels(memoryBytesStr, workingSetBytesStr, device.MemorySize, device.MaxRecommendedWorkingSetSize, loadReady)
 	// Pre-built static tails — see metalCapabilityFixedTail (loadReady=true)
 	// and metalCapabilityFixedTailMarked (loadReady=false, already passed
 	// through markMetalUnavailableCapabilities once at package init). The
