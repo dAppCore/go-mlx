@@ -324,8 +324,14 @@ func evalBatchTokenData(seqs [][]int, lengths []int32, maxLen int) []int32 {
 	for i, seq := range seqs {
 		limit := int(lengths[i])
 		base := i * maxLen
-		for j := 0; j < limit; j++ {
-			data[base+j] = int32(seq[j])
+		// Local slice + ranged limit lets the compiler hoist the per-iter
+		// bounds checks on data[base+j] and seq[j] — the previous form
+		// repeated data[base+j] with two-operand index, which the SSA
+		// pass treats as needing a fresh bounds check per write.
+		dst := data[base : base+limit : base+limit]
+		src := seq[:limit:limit]
+		for j := range dst {
+			dst[j] = int32(src[j])
 		}
 	}
 	return data
