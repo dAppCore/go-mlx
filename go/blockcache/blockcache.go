@@ -266,16 +266,30 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	adapterHash := firstNonEmptyString(service.cfg.AdapterHash, req.Adapter.Hash)
 	tokenizerHash := firstNonEmptyString(service.cfg.TokenizerHash, req.Labels["tokenizer_hash"])
 	refs := make([]inference.CacheBlockRef, 0, (len(tokens)+blockSize-1)/blockSize)
+	// Stream the SHA256 once across the cumulative prefix and emit a
+	// block ID at every boundary. sha256.Sum does not alter the hash
+	// state, so each Sum captures the digest of the prefix up to the
+	// current write position — identical to the previous per-block
+	// blockCacheID call but without re-hashing earlier tokens.
+	hash := sha256.New()
+	writeBlockCacheHashString(hash, modelHash)
+	writeBlockCacheHashString(hash, adapterHash)
+	writeBlockCacheHashString(hash, tokenizerHash)
+	writeBlockCacheHashString(hash, req.Mode)
+	var scratch [256]byte
+	var sumBuf [sha256.Size]byte
 	for start := 0; start < len(tokens); start += blockSize {
 		end := start + blockSize
 		if end > len(tokens) {
 			end = len(tokens)
 		}
+		writeBlockCacheTokens(hash, tokens[start:end], scratch[:])
+		digest := hash.Sum(sumBuf[:0])
 		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
 		refLabels["block_index"] = core.Itoa(len(refs))
 		refLabels["prefix_tokens"] = core.Itoa(end)
 		ref := inference.CacheBlockRef{
-			ID:            blockCacheID(modelHash, adapterHash, tokenizerHash, req.Mode, tokens[:end]),
+			ID:            core.HexEncode(digest),
 			Kind:          "prefix",
 			ModelHash:     modelHash,
 			AdapterHash:   adapterHash,
@@ -290,6 +304,28 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+// writeBlockCacheTokens encodes tokens as little-endian int32 bytes
+// into the supplied hash, batching up to 64 tokens (256 bytes) per
+// Write to amortise hash.Hash interface dispatch.
+func writeBlockCacheTokens(h hash.Hash, tokens []int32, scratch []byte) {
+	for start := 0; start < len(tokens); start += 64 {
+		end := start + 64
+		if end > len(tokens) {
+			end = len(tokens)
+		}
+		offset := 0
+		for _, token := range tokens[start:end] {
+			value := uint32(token)
+			scratch[offset] = byte(value)
+			scratch[offset+1] = byte(value >> 8)
+			scratch[offset+2] = byte(value >> 16)
+			scratch[offset+3] = byte(value >> 24)
+			offset += 4
+		}
+		h.Write(scratch[:offset])
+	}
 }
 
 func (service *Service) compatibilityLabels(req inference.CacheWarmRequest) map[string]string {
@@ -577,25 +613,8 @@ func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []i
 	writeBlockCacheHashString(hash, adapterHash)
 	writeBlockCacheHashString(hash, tokenizerHash)
 	writeBlockCacheHashString(hash, mode)
-	// Batch up to 64 tokens (256 bytes) per Write call to amortise the
-	// hash.Hash interface dispatch over many tokens.
 	var scratch [256]byte
-	for start := 0; start < len(prefix); start += 64 {
-		end := start + 64
-		if end > len(prefix) {
-			end = len(prefix)
-		}
-		offset := 0
-		for _, token := range prefix[start:end] {
-			value := uint32(token)
-			scratch[offset] = byte(value)
-			scratch[offset+1] = byte(value >> 8)
-			scratch[offset+2] = byte(value >> 16)
-			scratch[offset+3] = byte(value >> 24)
-			offset += 4
-		}
-		hash.Write(scratch[:offset])
-	}
+	writeBlockCacheTokens(hash, prefix, scratch[:])
 	return core.HexEncode(hash.Sum(nil))
 }
 
