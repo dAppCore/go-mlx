@@ -709,6 +709,16 @@ func copyModelSliceFile(sourceRoot, outputRoot, name string) error {
 	return nil
 }
 
+// modelSliceManifestWeightMap is the single-entry weight map every
+// slice manifest carries. Hoisting it to package init means
+// writeModelSliceManifest stops re-allocating the same one-key
+// `map[string]string{"model.safetensors": "selected tensors"}`
+// literal on every SliceModel commit — the map is read-only via
+// JSONMarshal so sharing the instance is safe.
+var modelSliceManifestWeightMap = map[string]string{
+	"model.safetensors": "selected tensors",
+}
+
 func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, tensors []string) error {
 	// The manifest aliases the caller's tensors slice and plan.Labels map
 	// directly — core.JSONMarshal only reads through them and the local
@@ -717,16 +727,14 @@ func writeModelSliceManifest(outputRoot string, plan inference.ModelSlicePlan, t
 	// commit path (one alloc per 8-byte string header per tensor + the
 	// labels map duplication, all discarded after Marshal).
 	manifest := modelSliceManifest{
-		Version: modelSliceManifestVersion,
-		Source:  plan.SourcePath,
-		Output:  plan.OutputPath,
-		Plan:    plan,
-		Weight:  "model.safetensors",
-		Tensors: tensors,
-		Labels:  plan.Labels,
-		WeightMap: map[string]string{
-			"model.safetensors": "selected tensors",
-		},
+		Version:   modelSliceManifestVersion,
+		Source:    plan.SourcePath,
+		Output:    plan.OutputPath,
+		Plan:      plan,
+		Weight:    "model.safetensors",
+		Tensors:   tensors,
+		Labels:    plan.Labels,
+		WeightMap: modelSliceManifestWeightMap,
 	}
 	encoded := core.JSONMarshal(manifest)
 	if !encoded.OK {
