@@ -435,8 +435,13 @@ func defaultRunner(ctx context.Context, input []byte, bin string, args ...string
 }
 
 func commandLooksNotFound(err error) bool {
-	var cmdErr *CommandError
-	if !core.As(err, &cmdErr) {
+	// Direct type assertion: this helper is only ever called with the
+	// error returned by Store.run/runInput — that's either *CommandError
+	// (unwrapped, freshly constructed) or a context error. errors.As
+	// walks the unwrap chain reflectively and boxes the type pointer,
+	// which costs an alloc per call; the type assertion is free.
+	cmdErr, ok := err.(*CommandError)
+	if !ok {
 		return false
 	}
 	// "was not found" contains "not found" — one needle is enough.
