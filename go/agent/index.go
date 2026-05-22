@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"hash"
 
 	core "dappco.re/go"
 	state "dappco.re/go/inference/state"
@@ -627,18 +628,19 @@ func indexEntryHash(entry StateIndexEntry) string {
 	return core.HexEncode(hash.Sum(nil))
 }
 
-func writeIndexHashString(hash interface{ Write([]byte) (int, error) }, value string) {
-	hash.Write(core.AsBytes(value))
+func writeIndexHashString(h hash.Hash, value string) {
+	h.Write(core.AsBytes(value))
 }
 
-func writeIndexHashInt(hash interface{ Write([]byte) (int, error) }, value int) {
-	writeIndexHashInt64(hash, int64(value))
+func writeIndexHashInt(h hash.Hash, value int) {
+	writeIndexHashInt64(h, int64(value))
 }
 
-func writeIndexHashInt64(hash interface{ Write([]byte) (int, error) }, value int64) {
+func writeIndexHashInt64(h hash.Hash, value int64) {
 	var buf [20]byte
 	if value == 0 {
-		hash.Write([]byte{'0'})
+		buf[0] = '0'
+		h.Write(buf[:1])
 		return
 	}
 	negative := value < 0
@@ -655,7 +657,7 @@ func writeIndexHashInt64(hash interface{ Write([]byte) (int, error) }, value int
 		i--
 		buf[i] = '-'
 	}
-	hash.Write(buf[i:])
+	h.Write(buf[i:])
 }
 
 func cloneIndexEntries(entries []StateIndexEntry) []StateIndexEntry {
