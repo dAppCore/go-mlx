@@ -534,10 +534,26 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	// replace the per-call make inside logSoftmaxTemperature. For a 32k
 	// vocab and 1000 tokens this skips ~2000 256KB allocations per call.
 	var teacherScratch, studentScratch []float64
+	// Hoist mask-empty once — distillMaskIncludes treats an empty mask as
+	// "all tokens included", so per-cell calls were wasted when the mask
+	// is absent or zero-length. maskRows is non-nil only when we need
+	// per-row inspection.
+	var maskRows [][]float32
+	if len(mask) > 0 {
+		maskRows = mask
+	}
 	for i := range teacher {
+		// Per-row mask access — fetch maskRow once, then per-column the
+		// check is a single len + element compare with no extra branches.
+		var maskRow []float32
+		if maskRows != nil && i < len(maskRows) {
+			maskRow = maskRows[i]
+		}
 		for j := range teacher[i] {
-			if !distillMaskIncludes(mask, i, j) {
-				continue
+			if maskRows != nil {
+				if maskRow == nil || j >= len(maskRow) || maskRow[j] <= 0 {
+					continue
+				}
 			}
 			vocab := len(teacher[i][j])
 			if cap(teacherScratch) < vocab {
