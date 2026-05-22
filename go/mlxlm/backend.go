@@ -756,7 +756,9 @@ func startMLXLMProcess(ctx context.Context, command string, args ...string) (*ml
 	syscall.CloseOnExec(stdoutRead)
 	syscall.CloseOnExec(stdoutWrite)
 
-	argv := append([]string{command}, args...)
+	argv := make([]string, 1+len(args))
+	argv[0] = command
+	copy(argv[1:], args)
 	pid, err := syscall.ForkExec(path, argv, &syscall.ProcAttr{
 		Env:   core.Environ(),
 		Files: []uintptr{uintptr(stdinRead), uintptr(stdoutWrite), uintptr(2)},
