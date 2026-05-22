@@ -370,12 +370,17 @@ func FuseIntoPack(ctx context.Context, opts FuseOptions) (*FuseResult, error) {
 	}
 
 	provenancePath := core.PathJoin(prepared.Output, FuseProvenanceFile)
+	// outputWeightFileNames maps PathBase across every weight shard; the
+	// first basename is also written into the provenance OutputWeight
+	// scalar. Build the slice once and reuse its first entry instead of
+	// running core.PathBase a second time on weightFiles[0].
+	outputWeightNames := outputWeightFileNames(weightFiles)
 	if err := writeFuseProvenance(provenancePath, FuseProvenance{
 		Version:         1,
 		SourceModel:     prepared.Model,
 		Adapter:         prepared.Adapter,
-		OutputWeight:    core.PathBase(weightFiles[0]),
-		OutputWeights:   outputWeightFileNames(weightFiles),
+		OutputWeight:    outputWeightNames[0],
+		OutputWeights:   outputWeightNames,
 		FusedWeightKeys: fusedKeys,
 		Labels:          opts.Labels,
 	}); err != nil {
