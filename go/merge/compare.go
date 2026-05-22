@@ -172,19 +172,27 @@ func validateComparePack(label string, pack mp.ModelPack) error {
 }
 
 func compareTensorRefs(ctx context.Context, base, tuned safetensors.TensorRef, chunkElements int) (TensorDelta, error) {
+	// Pre-check shape equality before cloning anything — when the shapes
+	// match (the common case), we clone once into baseShapeClone and
+	// share it for both BaseShape and Shape. When they differ we hit the
+	// early-return path with the tuned-shape clone too.
+	shapeMatch := sameUint64Slice(base.Shape, tuned.Shape) && base.Elements == tuned.Elements
+	baseShapeClone := cloneUint64s(base.Shape)
 	delta := TensorDelta{
 		Name:           base.Name,
 		BaseDType:      base.DType,
 		FineTunedDType: tuned.DType,
-		BaseShape:      cloneUint64s(base.Shape),
+		BaseShape:      baseShapeClone,
 		FineTunedShape: cloneUint64s(tuned.Shape),
 		Elements:       base.Elements,
 	}
-	if !sameUint64Slice(base.Shape, tuned.Shape) || base.Elements != tuned.Elements {
+	if !shapeMatch {
 		delta.Status = CompareStatusShapeMismatch
 		return delta, nil
 	}
-	delta.Shape = cloneUint64s(base.Shape)
+	// Reuse the base-shape clone for Shape — it's the same array of
+	// uint64s and TensorDelta does not mutate either field.
+	delta.Shape = baseShapeClone
 	if base.DType != tuned.DType {
 		delta.Status = CompareStatusDTypeMismatch
 		return delta, nil
@@ -289,16 +297,15 @@ func cloneCompareLabels(labels map[string]string) map[string]string {
 	if len(labels) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(labels))
-	for key, value := range labels {
-		out[key] = value
-	}
-	return out
+	// core.MapClone — substrate map-copy primitive; cuts the for-range loop
+	// to a single call and lets the runtime pick the optimal bulk copy.
+	return core.MapClone(labels)
 }
 
 func cloneUint64s(values []uint64) []uint64 {
 	if len(values) == 0 {
 		return nil
 	}
-	return append([]uint64(nil), values...)
+	// core.SliceClone — exact-cap clone, no growslice over-allocation.
+	return core.SliceClone(values)
 }
