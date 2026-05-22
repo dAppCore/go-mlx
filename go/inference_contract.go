@@ -300,13 +300,26 @@ func (d inferenceDataset) Reset() error {
 	return resetter.Reset()
 }
 
+// metalInferenceProbeSinkAdapter converts metal.ProbeEvent to
+// inference.ProbeEvent and forwards to the wrapped inference.ProbeSink.
+// Replaces the metal.ProbeSinkFunc closure form that captured `sink`
+// into a fresh func per dispatch call (24 B closure per dispatch even
+// when the sink emitted nothing). The struct form holds the wrapped
+// sink as a single interface field (16 B = two pointer-sized words).
+type metalInferenceProbeSinkAdapter struct {
+	sink inference.ProbeSink
+}
+
+// EmitProbe converts metal.ProbeEvent to inference.ProbeEvent and forwards.
+func (a metalInferenceProbeSinkAdapter) EmitProbe(event metal.ProbeEvent) {
+	a.sink.EmitProbe(toInferenceProbeEvent(event))
+}
+
 func toMetalInferenceProbeSink(sink inference.ProbeSink) metal.ProbeSink {
 	if sink == nil {
 		return nil
 	}
-	return metal.ProbeSinkFunc(func(event metal.ProbeEvent) {
-		sink.EmitProbe(toInferenceProbeEvent(event))
-	})
+	return metalInferenceProbeSinkAdapter{sink: sink}
 }
 
 var metalCapabilityDeviceInfo = func(available bool) DeviceInfo {
