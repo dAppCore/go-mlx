@@ -550,19 +550,44 @@ func kvAnalysisPositionDifferentiation(heads []HeadSnapshot, seqLen, headDim int
 		// Specialise headDim=1 — the inner k loop overhead is the
 		// dominant cost when the loop only runs once.
 		if headDim == 1 {
+			// Split the per-pair similarity check by sign of ai so the
+			// inner-loop locked compare is a direct compare-against-
+			// constant (no per-iter mul + cmp serial dep). For ai>0
+			// the condition (ai·aj < threshold) is equivalent to
+			// aj < threshold/ai; for ai<0 it flips because we divided
+			// by a negative. ai==0 short-circuits the whole row to
+			// locked = (seqLen-i-1) since dot ≡ 0 < threshold.
 			for i := 0; i < seqLen; i++ {
 				ai := scratch[i]
-				for j := i + 1; j < seqLen; j++ {
-					dot := ai * scratch[j]
-					totalSimilarity += dot
-					if dot < threshold {
-						locked++
+				remaining := seqLen - i - 1
+				switch {
+				case ai > 0:
+					invT := threshold / ai
+					var subSum float64
+					for j := i + 1; j < seqLen; j++ {
+						aj := scratch[j]
+						subSum += aj
+						if aj < invT {
+							locked++
+						}
 					}
+					totalSimilarity += ai * subSum
+				case ai < 0:
+					invT := threshold / ai
+					var subSum float64
+					for j := i + 1; j < seqLen; j++ {
+						aj := scratch[j]
+						subSum += aj
+						if aj > invT {
+							locked++
+						}
+					}
+					totalSimilarity += ai * subSum
+				default:
+					// ai == 0 → dot ≡ 0 for the rest of this row.
+					locked += remaining
 				}
 			}
-			// Pair count is the same for all-positions (no zero-norm
-			// short-circuit needed — zeroed rows are already handled
-			// by the all-zero scratch contents).
 			pairs += seqLen * (seqLen - 1) / 2
 			continue
 		}
