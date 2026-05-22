@@ -26,6 +26,13 @@ import (
 // load-bearing for the Index.Tensors map and Names slice); everything
 // else is parsed into scalars or carved from the shared slab.
 func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shapeSlab *[]uint64) error {
+	// Wrap the freshly-read headerBytes as an immutable string view
+	// (no copy). Tensor names are returned as substring views into
+	// this arena — one alloc for the entire header turns into N name
+	// strings that share underlying memory. Per the AsString contract
+	// the caller (ReadIndex) must not retain or mutate the source
+	// []byte after this call, which it does not.
+	arena := core.AsString(data)
 	p := jsonParser{data: data}
 	p.skipWS()
 	if !p.expect('{') {
@@ -58,7 +65,7 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 				return err
 			}
 		} else {
-			name := materialiseString(data, start, end, hasEsc)
+			name := nameFromSpan(arena, data, start, end, hasEsc)
 			if _, dup := idx.Tensors[name]; dup {
 				return core.NewError("mlx: duplicate tensor in safetensors header: " + name)
 			}
@@ -80,6 +87,19 @@ func parseHeaderInto(path string, data []byte, dataStart int64, idx *Index, shap
 			return core.NewError("mlx: safetensors header expected ',' or '}'")
 		}
 	}
+}
+
+// nameFromSpan returns a string view of a tensor name. For the common
+// case (no escape sequences in the name — true for every real-world
+// safetensors file) it is a zero-alloc substring slice of the arena.
+// Escaped names fall through to the slow path which allocates a fresh
+// string. Real safetensors writers never emit JSON escapes in tensor
+// names, so this path is effectively never hit on production headers.
+func nameFromSpan(arena string, data []byte, start, end int, hasEsc bool) string {
+	if !hasEsc {
+		return arena[start:end]
+	}
+	return materialiseString(data, start, end, hasEsc)
 }
 
 // _metadataKey is the literal bytes "__metadata__" — pre-stored to
