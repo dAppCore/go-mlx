@@ -883,7 +883,6 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 		HeadDim:      s.HeadDim,
 		Blocks:       make([]StateBlockRef, 0, expectedBlocks),
 	}
-	blockHashes := make([]string, 0, expectedBlocks)
 	err = s.walkBlocks(blockSize, false, func(block Block) (bool, error) {
 		ref, hash, payloadEncoding, payloadByteCount, reused, err := saveOrReuseKVSnapshotStateBlock(ctx, store, block, opts, encoding)
 		if err != nil {
@@ -892,7 +891,6 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 		if reused {
 			bundle.ReusedBlocks++
 		}
-		blockHashes = append(blockHashes, hash)
 		bundle.Blocks = append(bundle.Blocks, StateBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
@@ -908,7 +906,7 @@ func (s *Snapshot) SaveStateBlocks(ctx context.Context, store state.Writer, opts
 	if err != nil {
 		return nil, err
 	}
-	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle, blockHashes)
+	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle)
 	return bundle, nil
 }
 
@@ -947,7 +945,6 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 		BlockSize:  blockSize,
 		Blocks:     []StateBlockRef{},
 	}
-	blockHashes := []string{}
 	err = stream(func(block Block) (bool, error) {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -963,7 +960,6 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 			bundle.ReusedBlocks++
 		}
 		applyKVSnapshotStateBundleBlock(bundle, block)
-		blockHashes = append(blockHashes, hash)
 		bundle.Blocks = append(bundle.Blocks, StateBlockRef{
 			Index:            block.Index,
 			TokenStart:       block.TokenStart,
@@ -982,7 +978,7 @@ func SaveStateBlocksFromStream(ctx context.Context, store state.Writer, opts Sta
 	if err := ValidateStateBlockBundle(bundle); err != nil {
 		return nil, err
 	}
-	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle, blockHashes)
+	bundle.SnapshotHash = kvSnapshotStateBlockBundleHash(bundle)
 	return bundle, nil
 }
 
@@ -1022,7 +1018,7 @@ func applyKVSnapshotStateBundleBlock(bundle *StateBlockBundle, block Block) {
 	}
 }
 
-func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []string) string {
+func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle) string {
 	if bundle == nil {
 		return ""
 	}
@@ -1031,8 +1027,8 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 	// Each block hash is 64 hex chars + 1 separator; the head fields run ~80
 	// chars typical (architecture + 3 ints + encoding + 5 separators).
 	size := len(bundle.Architecture) + len(string(bundle.KVEncoding)) + 5*1 + 30
-	for _, hash := range blockHashes {
-		size += 1 + len(hash)
+	for _, ref := range bundle.Blocks {
+		size += 1 + len(ref.KVHash)
 	}
 	builder.Grow(size)
 	builder.WriteString(bundle.Architecture)
@@ -1048,9 +1044,9 @@ func kvSnapshotStateBlockBundleHash(bundle *StateBlockBundle, blockHashes []stri
 	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.TokenOffset), 10))
 	builder.WriteString("|")
 	builder.Write(strconv.AppendInt(scratch[:0], int64(bundle.BlockSize), 10))
-	for _, hash := range blockHashes {
+	for _, ref := range bundle.Blocks {
 		builder.WriteString("|")
-		builder.WriteString(hash)
+		builder.WriteString(ref.KVHash)
 	}
 	// SHA256HexString uses core.AsBytes under the hood — skips the
 	// []byte copy of the Builder.String() roundtrip on every block-
