@@ -124,37 +124,74 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 	return config, nil
 }
 
-// modelPackDirIndex caches presence of top-level filenames in the model
-// directory so downstream inspect steps can skip ReadFile for files
-// that aren't there. Built from the same single PathGlob the weight
-// inspector already runs, so this is opportunistic — no extra syscalls.
+// modelPackDirIndex caches presence of the specific optional-config
+// filenames the inspect pipeline probes downstream — built from the
+// same single PathGlob the weight inspector already runs, so this is
+// opportunistic and adds no extra syscall. The index records exactly
+// the six basenames we'd otherwise ReadFile-then-IsNotExist for, in
+// fixed bool fields, so populating + querying is zero-alloc.
 //
-// The index is a flat slice of basenames rather than a map: typical
-// model dirs hold 5-10 entries and the linear scan beats the map's
-// runtime.mapassign / hash cost at that size. The `populated` flag
-// lets callers distinguish "no listing available" (single-file
-// resolvedPath, dir.files=nil) from "listed but empty" (impossible in
-// practice, since the config.json check would have already failed).
+// The `populated` flag lets callers distinguish "no listing available"
+// (single-file resolvedPath) from "listed but file absent" — the
+// former falls through to the regular ReadFile probe so semantics for
+// the single-file entry path stay unchanged.
 type modelPackDirIndex struct {
-	root      string
-	files     []string
-	populated bool
+	populated         bool
+	jangConfig        bool
+	codebookConfig    bool
+	tokenizerConfig   bool
+	chatTemplateJinja bool
+	sentenceBert      bool
+	modulesJSON       bool
 }
 
 // has reports whether the named direct child of root is present in the
 // pre-fetched listing. Returns true if the index is empty (no listing
 // available) so callers fall through to the existing ReadFile probe —
-// the precise root-stat is preserved in that path.
+// the precise root-stat is preserved in that path. The name argument
+// is one of the six recognised optional-config filenames; anything
+// else returns true (let the caller perform the normal probe).
 func (d *modelPackDirIndex) has(name string) bool {
 	if d == nil || !d.populated {
 		return true
 	}
-	for _, f := range d.files {
-		if f == name {
-			return true
-		}
+	switch name {
+	case "jang_config.json":
+		return d.jangConfig
+	case "codebook_config.json":
+		return d.codebookConfig
+	case "tokenizer_config.json":
+		return d.tokenizerConfig
+	case "chat_template.jinja":
+		return d.chatTemplateJinja
+	case "sentence_bert_config.json":
+		return d.sentenceBert
+	case "modules.json":
+		return d.modulesJSON
 	}
-	return false
+	return true
+}
+
+// record marks the matching field when basename is one of the
+// recognised optional-config filenames; otherwise it's a no-op.
+func (d *modelPackDirIndex) record(basename string) {
+	if d == nil {
+		return
+	}
+	switch basename {
+	case "jang_config.json":
+		d.jangConfig = true
+	case "codebook_config.json":
+		d.codebookConfig = true
+	case "tokenizer_config.json":
+		d.tokenizerConfig = true
+	case "chat_template.jinja":
+		d.chatTemplateJinja = true
+	case "sentence_bert_config.json":
+		d.sentenceBert = true
+	case "modules.json":
+		d.modulesJSON = true
+	}
 }
 
 func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir *modelPackDirIndex) {
@@ -181,14 +218,10 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir 
 		// can't be there.
 		entries := core.PathGlob(core.PathJoin(root, "*"))
 		if dir != nil {
-			dir.root = root
 			dir.populated = true
-			dir.files = make([]string, 0, len(entries))
 		}
 		for _, path := range entries {
-			if dir != nil {
-				dir.files = append(dir.files, core.PathBase(path))
-			}
+			dir.record(core.PathBase(path))
 			switch {
 			case hasASCIIInsensitiveSuffix(path, ".safetensors"):
 				safetensors = append(safetensors, path)
