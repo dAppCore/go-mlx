@@ -344,11 +344,31 @@ func normalizeStoreKind(kind, path string) string {
 			return kind
 		}
 	}
-	lowerPath := core.Lower(path)
-	if core.HasSuffix(lowerPath, ".mp4") || core.HasSuffix(lowerPath, ".mv2") {
+	// Avoid lowering the entire path string just to check a 4-char
+	// suffix — inspect the last 4 bytes directly and ASCII-lower them.
+	if hasCaseInsensitiveSuffix(path, ".mp4") || hasCaseInsensitiveSuffix(path, ".mv2") {
 		return StoreCLI
 	}
 	return StoreFileLog
+}
+
+// hasCaseInsensitiveSuffix reports whether path ends with suffix using
+// ASCII-only case folding. Allocation-free.
+func hasCaseInsensitiveSuffix(path, suffix string) bool {
+	if len(path) < len(suffix) {
+		return false
+	}
+	tail := path[len(path)-len(suffix):]
+	for i := 0; i < len(suffix); i++ {
+		c := tail[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != suffix[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func validateStoreKind(kind string) error {
