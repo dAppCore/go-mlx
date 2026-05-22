@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"strconv"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -420,9 +421,9 @@ func foldedAgentMemorySleepOptions(opts agent.SleepOptions, checkpoint *agent.Sl
 		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_from_entry_uri", checkpoint.EntryURI)
 	}
 	if report != nil {
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "summary_bytes", core.Sprintf("%d", report.SummaryBytes))
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", core.Sprintf("%d", report.RecentTailBytes))
-		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", core.Sprintf("%d", report.FoldedPromptBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "summary_bytes", strconv.Itoa(report.SummaryBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "recent_tail_bytes", strconv.Itoa(report.RecentTailBytes))
+		opts.Meta = addAgentMemoryFoldMeta(opts.Meta, "folded_prompt_bytes", strconv.Itoa(report.FoldedPromptBytes))
 	}
 	opts.Labels = append([]string(nil), opts.Labels...)
 	opts.Labels = append(opts.Labels, "folded-state")
