@@ -475,6 +475,12 @@ func localModelFiles(root string) []ModelFile {
 	if !ok {
 		return files
 	}
+	// core.ReadDir (via os.DirFS → os.ReadDir) already returns entries
+	// sorted by name. Filtering preserves order, so the resulting files
+	// slice is sorted by Name without a post-pass slices.SortFunc — the
+	// previous explicit sort was a stale carry-over from the multi-Glob
+	// shape where the per-pattern matches were appended in pattern order
+	// rather than alphabetical.
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -489,20 +495,6 @@ func localModelFiles(root string) []ModelFile {
 		}
 		files = append(files, ModelFile{Name: name, Size: size})
 	}
-	// localModelFiles only ever sets ModelFile.Name (RFilename is empty).
-	// Compare directly on Name to skip the filename() firstNonEmpty hop
-	// inside the per-comparison lambda — sort.Less fires O(n log n) per
-	// call on a typical pack with 4-8 file entries.
-	slices.SortFunc(files, func(a, b ModelFile) int {
-		switch {
-		case a.Name < b.Name:
-			return -1
-		case a.Name > b.Name:
-			return 1
-		default:
-			return 0
-		}
-	})
 	return files
 }
 
