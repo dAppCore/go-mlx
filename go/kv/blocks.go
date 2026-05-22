@@ -40,6 +40,12 @@ const (
 	kvSnapshotStatePayloadJSONBase64 = "json-base64"
 )
 
+// kvSnapshotStateBlockDefaultLabels is the per-block label pair used
+// when the caller passes empty StateBlockOptions.Labels — shared
+// across blocks so the per-block PutOptions skips a slice allocation.
+// State stores treat PutOptions.Labels as read-only input.
+var kvSnapshotStateBlockDefaultLabels = []string{"go-mlx", "kv-snapshot-block"}
+
 // Block is one contiguous token range from a KV snapshot.
 type Block struct {
 	Index      int
@@ -1217,11 +1223,21 @@ func kvSnapshotStateBlockPutOptions(block Block, opts StateBlockOptions, hash, k
 	tags["block_index"] = indexStr
 	tags["token_start"] = core.Itoa(block.TokenStart)
 	tags["token_count"] = core.Itoa(block.TokenCount)
-	// Pre-size for the deterministic 2 appended labels — avoids the
-	// geometric-grow path on every per-block State save.
-	labels := make([]string, len(opts.Labels), len(opts.Labels)+2)
-	copy(labels, opts.Labels)
-	labels = append(labels, "go-mlx", "kv-snapshot-block")
+	// Skip the per-block labels make when the caller supplied no extra
+	// labels — the default two-element pair is identical across blocks,
+	// share a single package-global slice. State stores treat Labels as
+	// read-only input; mutating the returned PutOptions is contract-
+	// violating already.
+	var labels []string
+	if len(opts.Labels) == 0 {
+		labels = kvSnapshotStateBlockDefaultLabels
+	} else {
+		// Pre-size for the deterministic 2 appended labels — avoids the
+		// geometric-grow path on every per-block State save.
+		labels = make([]string, len(opts.Labels), len(opts.Labels)+2)
+		copy(labels, opts.Labels)
+		labels = append(labels, "go-mlx", "kv-snapshot-block")
+	}
 	baseURI := firstNonEmpty(opts.URI, "mlx://kv-snapshot-blocks")
 	// Direct string concatenation skips the fmt.Sprintf parse + format
 	// state machinery on every per-block save (~SaveStateBlocks fires once
