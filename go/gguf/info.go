@@ -265,7 +265,7 @@ func DiscoverModels(basePath string) []DiscoveredModel {
 	}
 
 	if stat := core.Stat(resolvedPath); stat.OK && !stat.Value.(core.FsFileInfo).IsDir() {
-		if core.HasSuffix(core.Lower(resolvedPath), ".gguf") {
+		if hasASCIIInsensitiveSuffix(resolvedPath, ".gguf") {
 			ggufInfo, err := ReadInfo(resolvedPath)
 			if err == nil {
 				return []DiscoveredModel{{
@@ -346,7 +346,10 @@ func probeDiscoveredModel(dir string) (DiscoveredModel, bool) {
 }
 
 func resolveGGUFFile(modelPath string) (string, error) {
-	if core.HasSuffix(core.Lower(modelPath), ".gguf") {
+	// Case-insensitive .gguf suffix check without allocating a lowered
+	// copy of modelPath. Real callers always pass lowercase paths, but
+	// stay lenient to the historical .GGUF spelling.
+	if hasASCIIInsensitiveSuffix(modelPath, ".gguf") {
 		return modelPath, nil
 	}
 
@@ -359,6 +362,31 @@ func resolveGGUFFile(modelPath string) (string, error) {
 	default:
 		return "", core.NewError("mlx: multiple .gguf files found")
 	}
+}
+
+// hasASCIIInsensitiveSuffix is a zero-alloc ASCII case-insensitive
+// HasSuffix. Used in cold-start path probes where allocating a lowered
+// copy of the input just to compare against a literal extension is
+// wasteful (a few hundred bytes per ReadInfo at the file-open boundary).
+func hasASCIIInsensitiveSuffix(s, suffix string) bool {
+	if len(s) < len(suffix) {
+		return false
+	}
+	si := len(s) - len(suffix)
+	for i := 0; i < len(suffix); i++ {
+		a := s[si+i]
+		b := suffix[i]
+		if a >= 'A' && a <= 'Z' {
+			a += 'a' - 'A'
+		}
+		if b >= 'A' && b <= 'Z' {
+			b += 'a' - 'A'
+		}
+		if a != b {
+			return false
+		}
+	}
+	return true
 }
 
 func parseGGUF(path string) (map[string]any, []ggufTensorInfo, error) {
