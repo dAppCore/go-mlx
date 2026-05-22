@@ -125,16 +125,16 @@ func (s *Snapshot) Clone() *Snapshot {
 	cloned := &Snapshot{
 		Version:       s.Version,
 		Architecture:  s.Architecture,
-		Tokens:        append([]int32(nil), s.Tokens...),
-		Generated:     append([]int32(nil), s.Generated...),
+		Tokens:        core.SliceClone(s.Tokens),
+		Generated:     core.SliceClone(s.Generated),
 		TokenOffset:   s.TokenOffset,
 		NumLayers:     s.NumLayers,
 		NumHeads:      s.NumHeads,
 		SeqLen:        s.SeqLen,
 		HeadDim:       s.HeadDim,
 		NumQueryHeads: s.NumQueryHeads,
-		LogitShape:    append([]int32(nil), s.LogitShape...),
-		Logits:        append([]float32(nil), s.Logits...),
+		LogitShape:    core.SliceClone(s.LogitShape),
+		Logits:        core.SliceClone(s.Logits),
 		Layers:        cloneKVLayers(s.Layers),
 	}
 	return cloned
