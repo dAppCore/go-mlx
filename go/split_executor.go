@@ -464,6 +464,10 @@ func (executor *SplitExecutor) Generate(ctx context.Context, prompt string, cfg 
 }
 
 func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNExecutor) SplitExecutorPlacement {
+	componentCount := len(inspection.Plan.Components)
+	missingCount := len(inspection.MissingRuntimeComponents)
+	localComponents := make([]inference.ModelComponent, len(inspection.Plan.Components))
+	copy(localComponents, inspection.Plan.Components)
 	plan := SplitExecutorPlacement{
 		SlicePath:              inspection.Path,
 		SourcePath:             inspection.SourcePath,
@@ -473,7 +477,9 @@ func buildSplitExecutorPlacement(inspection ModelSliceInspection, ffn SplitFFNEx
 		LocalTensorBytes:       inspection.LocalTensorBytes,
 		OffloadTensorBytes:     inspection.OffloadTensorBytes,
 		RetainedTensorRatio:    inspection.RetainedTensorRatio,
-		LocalComponents:        append([]inference.ModelComponent(nil), inspection.Plan.Components...),
+		LocalComponents:        localComponents,
+		AllPlacements:          make([]SplitComponentPlacement, 0, componentCount+missingCount),
+		RequiredPlacements:     make([]SplitComponentPlacement, 0, missingCount),
 	}
 	for _, component := range inspection.Plan.Components {
 		plan.AllPlacements = append(plan.AllPlacements, SplitComponentPlacement{
