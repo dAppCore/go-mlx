@@ -452,14 +452,19 @@ func localModelFiles(root string) []ModelFile {
 			files = append(files, ModelFile{Name: core.PathBase(path), Size: size})
 		}
 	}
+	// localModelFiles only ever sets ModelFile.Name (RFilename is empty).
+	// Compare directly on Name to skip the filename() firstNonEmpty hop
+	// inside the per-comparison lambda — sort.Less fires O(n log n) per
+	// call on a typical pack with 4-8 file entries.
 	slices.SortFunc(files, func(a, b ModelFile) int {
-		if a.filename() < b.filename() {
+		switch {
+		case a.Name < b.Name:
 			return -1
-		}
-		if a.filename() > b.filename() {
+		case a.Name > b.Name:
 			return 1
+		default:
+			return 0
 		}
-		return 0
 	})
 	return files
 }
