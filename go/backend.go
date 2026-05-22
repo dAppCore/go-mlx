@@ -1058,13 +1058,21 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 	if prefixTokens > bundle.TokenCount {
 		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixExceeds
 	}
-	refs := make([]kv.StateBlockRef, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
+	// Index iteration — kv.StateBlockRef carries two strings + a nested
+	// state.ChunkRef (multiple string fields) per entry, so range-and-
+	// copy materialises a non-trivial struct into the loop variable
+	// each step before append re-copies it into refs. Pull a pointer-
+	// aliased read off bundle.Blocks[i] for the gating fields and
+	// append the source entry directly when we keep it.
+	blocks := bundle.Blocks
+	refs := make([]kv.StateBlockRef, 0, len(blocks))
+	for i := range blocks {
+		tokenStart := blocks[i].TokenStart
+		if tokenStart >= prefixTokens {
 			break
 		}
-		refs = append(refs, ref)
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
+		refs = append(refs, blocks[i])
+		if tokenStart+blocks[i].TokenCount >= prefixTokens {
 			break
 		}
 	}
