@@ -421,20 +421,63 @@ func selectModelSliceTensorRefs(plan inference.ModelSlicePlan, index safetensors
 // dominate a per-layer sweep, so checking them first lets the common
 // per-layer tensors short-circuit before the embeddings / norms /
 // LM-head substring scans that won't match.
+//
+// projectionFamily memoisation: IsAttention / IsFFN / IsGate each fall
+// back to a modelSliceProjectionFamily byte-walk over `lower` when their
+// substring fast-paths miss. When mask has multiple of those bits set —
+// the typical full-attention + FFN slice — a non-matching tensor (norm,
+// embedding, LM-head) walks `_proj.` two or three times. Inlining the
+// substring fast-paths here and computing the family lazily via the
+// `famDone` sentinel keeps each tensor name to at most one byte-walk.
 func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) bool {
 	if mask.all {
 		return true
 	}
 	lower := core.Lower(name)
+	var fam projectionFamily
+	var famDone bool
+	if mask.attention {
+		if core.Contains(lower, "self_attn") ||
+			core.Contains(lower, "attention") ||
+			core.Contains(lower, ".attn.") {
+			return true
+		}
+		fam = modelSliceProjectionFamily(lower)
+		famDone = true
+		if fam&projAttention != 0 {
+			return true
+		}
+	}
+	if mask.ffn {
+		if core.Contains(lower, ".mlp.") ||
+			core.Contains(lower, "feed_forward") ||
+			core.Contains(lower, "ffn") {
+			return true
+		}
+		if !famDone {
+			fam = modelSliceProjectionFamily(lower)
+			famDone = true
+		}
+		if fam&projFFN != 0 {
+			return true
+		}
+	}
+	if mask.norms && modelSliceTensorIsNorm(lower) {
+		return true
+	}
+	if mask.gate {
+		if core.Contains(lower, ".gate.") {
+			return true
+		}
+		if !famDone {
+			fam = modelSliceProjectionFamily(lower)
+			famDone = true
+		}
+		if fam&projGate != 0 {
+			return true
+		}
+	}
 	switch {
-	case mask.attention && modelSliceTensorIsAttention(lower):
-		return true
-	case mask.ffn && modelSliceTensorIsFFN(lower):
-		return true
-	case mask.norms && modelSliceTensorIsNorm(lower):
-		return true
-	case mask.gate && modelSliceTensorIsGate(lower):
-		return true
 	case mask.experts && modelSliceTensorIsExpert(lower):
 		return true
 	case mask.router && modelSliceTensorIsRouter(lower):
@@ -445,9 +488,8 @@ func modelSliceIncludesTensorMask(mask modelSliceInclusionMask, name string) boo
 		return true
 	case mask.lmHead && modelSliceTensorIsLMHead(lower):
 		return true
-	default:
-		return false
 	}
+	return false
 }
 
 func modelSliceIncludesTensor(plan inference.ModelSlicePlan, name string) bool {
