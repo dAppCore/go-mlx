@@ -11,12 +11,9 @@ import (
 //
 //	value := firstNonEmpty(primary, fallback)
 func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		if core.Trim(value) != "" {
-			return value
+	for _, v := range values {
+		if v != "" && core.Trim(v) != "" {
+			return v
 		}
 	}
 	return ""
