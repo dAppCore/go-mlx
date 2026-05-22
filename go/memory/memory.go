@@ -626,13 +626,24 @@ func normalizeKnownArchitecture(value string) string {
 }
 
 func lowerASCII(s string) string {
-	b := []byte(s)
-	for i, c := range b {
+	// Fast path — most architecture identifiers are already lowercase
+	// after the first canonicalisation pass. Scan once; if there is
+	// nothing to convert, return the input unchanged to skip both the
+	// byte-slice allocation and the return-side string copy.
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		if c >= 'A' && c <= 'Z' {
+			b := []byte(s)
 			b[i] = c + ('a' - 'A')
+			for j := i + 1; j < len(b); j++ {
+				if b[j] >= 'A' && b[j] <= 'Z' {
+					b[j] += 'a' - 'A'
+				}
+			}
+			return string(b)
 		}
 	}
-	return string(b)
+	return s
 }
 
 func trimSpace(s string) string {
