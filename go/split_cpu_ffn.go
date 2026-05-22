@@ -541,9 +541,18 @@ func (executor *CPUSplitFFNExecutor) updatePeakResidentBytesLocked(bytes int64) 
 }
 
 func cpuSplitFFNLayerResidentBytes(layer cpuSplitFFNLayer) int64 {
-	var report CPUSplitFFNMemoryReport
-	report.addLayer(layer)
-	return report.ResidentBytes
+	bytes := int64(len(layer.norm)+len(layer.gateBias)+len(layer.upBias)+len(layer.downBias)) * cpuSplitFloat32Bytes
+	bytes += cpuSplitProjectionResidentBytes(layer.gate, layer.gatePacked)
+	bytes += cpuSplitProjectionResidentBytes(layer.up, layer.upPacked)
+	bytes += cpuSplitProjectionResidentBytes(layer.down, layer.downPacked)
+	return bytes
+}
+
+func cpuSplitProjectionResidentBytes(dense []float32, packed *cpuSplitPackedMatrix) int64 {
+	if packed != nil {
+		return int64(len(packed.packed)) + int64(len(packed.scales)+len(packed.biases))*cpuSplitFloat32Bytes
+	}
+	return int64(len(dense)) * cpuSplitFloat32Bytes
 }
 
 func (executor *CPUSplitFFNExecutor) estimateLayerMemory(layer int) (CPUSplitFFNMemoryReport, error) {
