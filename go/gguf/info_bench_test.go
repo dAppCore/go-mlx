@@ -61,6 +61,25 @@ func writeTestGGUFForBench(b *testing.B, path string, metadata []ggufMetaSpec, t
 			writeStr(typed)
 		case uint32:
 			write(typed)
+		case ggufArraySpec:
+			// Tokeniser-embedded vocab arrays — element type + length
+			// header, then each element framed as a GGUF value. Bench
+			// harness only needs the string-element path today (vocab),
+			// so other element types fail loudly rather than silently
+			// emit an under-cooked fixture.
+			write(typed.ElementType)
+			write(uint64(len(typed.Values)))
+			for _, item := range typed.Values {
+				switch elem := item.(type) {
+				case string:
+					if typed.ElementType != ValueTypeString {
+						b.Fatalf("bench fixture: string element with non-string element type %d", typed.ElementType)
+					}
+					writeStr(elem)
+				default:
+					b.Fatalf("bench fixture: unsupported array element type %T", item)
+				}
+			}
 		default:
 			b.Fatalf("unsupported value type %T", entry.Value)
 		}
@@ -169,6 +188,76 @@ func BenchmarkInfo_ReadInfo_VocabHeavy(b *testing.B) {
 	// the architecture-shape entries. Real Gemma 4 tokenisers push
 	// past 256k vocab entries — this bench is a conservative floor.
 	writeTestGGUFForBench(b, tmp, benchMetadata(200), benchTensors(50))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkInfo, benchSinkErr = ReadInfo(tmp)
+	}
+}
+
+// vocabTokens — generate N synthetic tokens with the shape of a real
+// BPE/SentencePiece vocab: most entries are 1-6 ASCII bytes, a
+// minority push past 16 bytes (Unicode-merged tokens). The point is
+// not byte-exact realism — it's giving the reader something that
+// stresses the per-element string-box / arena path the way a real
+// tokenizer.ggml.tokens array does.
+func vocabTokens(n int) []any {
+	out := make([]any, n)
+	for i := 0; i < n; i++ {
+		switch i % 7 {
+		case 0:
+			out[i] = "the"
+		case 1:
+			out[i] = "ing"
+		case 2:
+			out[i] = " a"
+		case 3:
+			out[i] = " the"
+		case 4:
+			out[i] = "Ġmodel"
+		case 5:
+			out[i] = "tion"
+		default:
+			// Slightly longer tail entry to push the average byte-length
+			// past the trivial-case so allocators don't all fall into
+			// the same size class.
+			out[i] = "▁synthetic_vocab_entry_" + intStr(i)
+		}
+	}
+	return out
+}
+
+func benchMetadataWithVocab(n int) []ggufMetaSpec {
+	base := benchMetadata(20)
+	return append(base, ggufMetaSpec{
+		Key:       "tokenizer.ggml.tokens",
+		ValueType: ggufValueTypeArray,
+		Value: ggufArraySpec{
+			ElementType: ValueTypeString,
+			Values:      vocabTokens(n),
+		},
+	})
+}
+
+// BenchmarkInfo_ReadInfo_TokeniserVocab — the W10-T target shape:
+// tokenizer-embedded gguf where the vocab array dominates header
+// parse cost. N=10000 covers smaller models; N=200000 covers the
+// Gemma 4 / Llama 4 class with 256k vocab. Pre-specialisation
+// baseline is dominated by the per-element `string` box into a
+// `[]any` slice — the specialisation returns `[]string` directly.
+func BenchmarkInfo_ReadInfo_TokeniserVocab_10k(b *testing.B) {
+	tmp := b.TempDir() + "/model.gguf"
+	writeTestGGUFForBench(b, tmp, benchMetadataWithVocab(10000), benchTensors(50))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		benchSinkInfo, benchSinkErr = ReadInfo(tmp)
+	}
+}
+
+func BenchmarkInfo_ReadInfo_TokeniserVocab_200k(b *testing.B) {
+	tmp := b.TempDir() + "/model.gguf"
+	writeTestGGUFForBench(b, tmp, benchMetadataWithVocab(200000), benchTensors(50))
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
