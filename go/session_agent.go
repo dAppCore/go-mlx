@@ -674,12 +674,57 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 		return nil
 	}
 	out := make([]string, 0, len(labels))
+	// Tiny-N fast path: a single label avoids the size-pass + Builder
+	// scaffolding (which only pays off when we have >=2 non-empty values
+	// to share a backing buffer). Direct `key + "=" + value` allocates
+	// once for the result string — same shape as the previous code,
+	// without the per-iteration count overhead.
+	if len(labels) == 1 {
+		for key, value := range labels {
+			if value == "" {
+				out = append(out, key)
+			} else {
+				out = append(out, key+"="+value)
+			}
+		}
+		return out
+	}
+	// Multi-entry path: build all "key=value" strings into a single
+	// backing buffer, then slice that buffer into the []string output.
+	// Saves one allocation per non-empty value vs the previous shape
+	// (which alloced a fresh string per concat). Two-pass: size first
+	// so the Builder buffer lands at the exact right capacity and the
+	// growth ladder (8 -> 16 -> 32 ...) never kicks in.
+	size := 0
+	for key, value := range labels {
+		if value == "" {
+			continue
+		}
+		size += len(key) + 1 + len(value)
+	}
+	if size == 0 {
+		// All-empty fast path — every entry aliases the map key.
+		for key := range labels {
+			out = append(out, key)
+		}
+		core.SliceSort(out)
+		return out
+	}
+	var builder core.Builder
+	builder.Grow(size)
 	for key, value := range labels {
 		if value == "" {
 			out = append(out, key)
 			continue
 		}
-		out = append(out, key+"="+value)
+		start := builder.Len()
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.WriteString(value)
+		// builder.String() returns the underlying buffer via unsafe —
+		// every Grow-bounded write leaves earlier slices pinned to the
+		// same backing memory, so it is safe to take a sub-slice here.
+		out = append(out, builder.String()[start:])
 	}
 	core.SliceSort(out)
 	return out
@@ -724,30 +769,80 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 		// idle-keepalive request shape).
 		return cloneStringMap(req.Metadata)
 	}
-	meta := req.Metadata
-	if meta == nil {
-		meta = make(map[string]string, extras)
-	} else {
-		dst := make(map[string]string, len(req.Metadata)+extras)
-		for k, v := range req.Metadata {
-			dst[k] = v
+	// Fast path: no user-supplied metadata. Every adapter/runtime key is
+	// fresh, so the addAgentMemoryMetadata 'meta[key] == ""' idempotence
+	// read is wasted work — direct writes shave one map-probe per non-
+	// empty field. Whitespace-only values still need to be filtered
+	// (preserving addAgentMemoryMetadata's Trim safety check) — fields
+	// like Adapter.Path can legitimately arrive as '   ' from upstream.
+	if req.Metadata == nil {
+		meta := make(map[string]string, extras)
+		if v := req.Adapter.Hash; v != "" && core.Trim(v) != "" {
+			meta["adapter_hash"] = v
 		}
-		meta = dst
+		if v := req.Adapter.Path; v != "" && core.Trim(v) != "" {
+			meta["adapter_path"] = v
+		}
+		if v := req.Adapter.Format; v != "" && core.Trim(v) != "" {
+			meta["adapter_format"] = v
+		}
+		if req.Adapter.Rank != 0 {
+			meta["adapter_rank"] = strconv.Itoa(req.Adapter.Rank)
+		}
+		if req.Adapter.Alpha != 0 {
+			meta["adapter_alpha"] = strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32)
+		}
+		if v := req.Runtime.Backend; v != "" && core.Trim(v) != "" {
+			meta["runtime_backend"] = v
+		}
+		if v := req.Runtime.Device; v != "" && core.Trim(v) != "" {
+			meta["runtime_device"] = v
+		}
+		if v := req.Runtime.CacheMode; v != "" && core.Trim(v) != "" {
+			meta["runtime_cache_mode"] = v
+		}
+		if v := req.Runtime.Version; v != "" && core.Trim(v) != "" {
+			meta["runtime_version"] = v
+		}
+		return meta
 	}
-	meta = addAgentMemoryMetadata(meta, "adapter_hash", req.Adapter.Hash)
-	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
-	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
-	if req.Adapter.Rank != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
+	dst := make(map[string]string, len(req.Metadata)+extras)
+	for k, v := range req.Metadata {
+		dst[k] = v
 	}
-	if req.Adapter.Alpha != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
+	// addAgentMemoryMetadata-equivalent inline writes — same idempotence
+	// rule (don't overwrite caller-supplied keys) but skip the function
+	// call. The Trim guard runs only for non-empty values (the counting
+	// loop above already filtered v=="" out of extras, so the && short-
+	// circuit makes Trim a one-time check per field).
+	if v := req.Adapter.Hash; v != "" && dst["adapter_hash"] == "" && core.Trim(v) != "" {
+		dst["adapter_hash"] = v
 	}
-	meta = addAgentMemoryMetadata(meta, "runtime_backend", req.Runtime.Backend)
-	meta = addAgentMemoryMetadata(meta, "runtime_device", req.Runtime.Device)
-	meta = addAgentMemoryMetadata(meta, "runtime_cache_mode", req.Runtime.CacheMode)
-	meta = addAgentMemoryMetadata(meta, "runtime_version", req.Runtime.Version)
-	return meta
+	if v := req.Adapter.Path; v != "" && dst["adapter_path"] == "" && core.Trim(v) != "" {
+		dst["adapter_path"] = v
+	}
+	if v := req.Adapter.Format; v != "" && dst["adapter_format"] == "" && core.Trim(v) != "" {
+		dst["adapter_format"] = v
+	}
+	if req.Adapter.Rank != 0 && dst["adapter_rank"] == "" {
+		dst["adapter_rank"] = strconv.Itoa(req.Adapter.Rank)
+	}
+	if req.Adapter.Alpha != 0 && dst["adapter_alpha"] == "" {
+		dst["adapter_alpha"] = strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32)
+	}
+	if v := req.Runtime.Backend; v != "" && dst["runtime_backend"] == "" && core.Trim(v) != "" {
+		dst["runtime_backend"] = v
+	}
+	if v := req.Runtime.Device; v != "" && dst["runtime_device"] == "" && core.Trim(v) != "" {
+		dst["runtime_device"] = v
+	}
+	if v := req.Runtime.CacheMode; v != "" && dst["runtime_cache_mode"] == "" && core.Trim(v) != "" {
+		dst["runtime_cache_mode"] = v
+	}
+	if v := req.Runtime.Version; v != "" && dst["runtime_version"] == "" && core.Trim(v) != "" {
+		dst["runtime_version"] = v
+	}
+	return dst
 }
 
 func addAgentMemoryMetadata(meta map[string]string, key, value string) map[string]string {

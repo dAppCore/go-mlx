@@ -204,6 +204,12 @@ func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
 	builder := core.NewBuilder()
+	// Pre-grow the Builder backing slice — generations typically produce
+	// hundreds of tokens of text. Skips the early 64 -> 128 -> 256 -> 512
+	// -> 1024 doubling sequence of internal slice reallocations during
+	// token streaming. Mirror of GenerateAndSleepAgentMemory's hint —
+	// the per-conversation cost is the same on both API entry points.
+	builder.Grow(1024)
 	for tok := range s.session.Generate(context.Background(), toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(sessionParserTokenText(s.tok, tok)))
 	}
@@ -265,20 +271,31 @@ func sessionParserControlToken(text string) bool {
 	if text == "" {
 		return false
 	}
-	return core.Contains(text, "<|channel>") ||
-		core.Contains(text, "<channel|>") ||
-		core.Contains(text, "<start_of_turn>") ||
-		core.Contains(text, "<end_of_turn>") ||
-		core.Contains(text, "<think>") ||
-		core.Contains(text, "</think>") ||
-		core.Contains(text, "<thinking>") ||
-		core.Contains(text, "</thinking>") ||
-		core.Contains(text, "<thought>") ||
-		core.Contains(text, "</thought>") ||
-		core.Contains(text, "<reasoning>") ||
-		core.Contains(text, "</reasoning>") ||
-		core.Contains(text, "<analysis>") ||
-		core.Contains(text, "</analysis>")
+	// Every control marker begins with '<'. A single byte-scan for the
+	// opening angle prunes the entire 14-pattern probe set on the dominant
+	// "ordinary token text" path. Tokens flow through this function once
+	// per emitted token during GenerateStream — the cheaper miss matters.
+	open := core.Index(text, "<")
+	if open < 0 {
+		return false
+	}
+	// Trim leading prefix that cannot contain a marker — the markers begin
+	// at the first '<', so further pattern scans only need the tail.
+	tail := text[open:]
+	return core.Contains(tail, "<|channel>") ||
+		core.Contains(tail, "<channel|>") ||
+		core.Contains(tail, "<start_of_turn>") ||
+		core.Contains(tail, "<end_of_turn>") ||
+		core.Contains(tail, "<think>") ||
+		core.Contains(tail, "</think>") ||
+		core.Contains(tail, "<thinking>") ||
+		core.Contains(tail, "</thinking>") ||
+		core.Contains(tail, "<thought>") ||
+		core.Contains(tail, "</thought>") ||
+		core.Contains(tail, "<reasoning>") ||
+		core.Contains(tail, "</reasoning>") ||
+		core.Contains(tail, "<analysis>") ||
+		core.Contains(tail, "</analysis>")
 }
 
 // CaptureKV copies the current retained KV cache tensors to CPU memory.
