@@ -226,10 +226,29 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if err := s.ready(); err != nil {
 		return memvid.ChunkRef{}, err
 	}
-	// 5 fixed flags + worst-case option flags (1 raw + 2 per uri/title/
-	// kind/track + 2 per tag + 2 per label). Pre-sized so subsequent
-	// appends never grow the backing array.
-	args := make([]string, 0, 14+2*(len(opts.Tags)+len(opts.Labels)))
+	// Exact-size args: previous form pre-sized to a worst-case of
+	// 14+2*(tags+labels) which over-allocated by 8 strings (128 B) on
+	// the no-opts path. Counting first costs ~5 ns of branch evaluation
+	// (already evaluated below) but lets `make` allocate exactly what's
+	// used, reducing GC pressure when Put is hot.
+	argc := 5 // "put", path, "--json", "--no-embedding", "--no-enrich"
+	if s.rawWrites {
+		argc++
+	}
+	if opts.URI != "" {
+		argc += 2
+	}
+	if opts.Title != "" {
+		argc += 2
+	}
+	if opts.Kind != "" {
+		argc += 2
+	}
+	if opts.Track != "" {
+		argc += 2
+	}
+	argc += 2 * (len(opts.Tags) + len(opts.Labels))
+	args := make([]string, 0, argc)
 	args = append(args, "put", s.path, "--json", "--no-embedding", "--no-enrich")
 	if s.rawWrites {
 		args = append(args, "--raw")
