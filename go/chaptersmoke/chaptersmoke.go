@@ -441,50 +441,64 @@ func bundleURI(index int, name string) string {
 
 func slug(index int, name string) string {
 	name = core.Lower(core.Trim(name))
-	if name == "" {
-		name = defaultChapterSlug(index)
+	// Hand-built "NN-body" — avoids Sprintf parsing + interface boxing AND
+	// the two-buffer hop the previous shape used (body slice → final buf).
+	// Walk the name once directly into the final buffer (positioned past
+	// the "NN-" prefix) so the only allocation is the returned string's
+	// backing array. Capacity reserves room for the "NN-chapter-N"
+	// fallback shape (idx ≤ 20 bytes via AppendInt) when the name walk
+	// yields zero kept bytes, so the empty-name path stays single-alloc.
+	idx := index + 1
+	bodyMax := len(name)
+	if fallback := 8 + 20; fallback > bodyMax {
+		bodyMax = fallback
 	}
-	// Build the slug body into a local []byte instead of a heap-allocated
-	// strings.Builder. Kept set is ASCII-only ([a-z0-9]); anything else
-	// folds to a single '-' (matches the original rune-loop semantics
-	// since UTF-8 continuation bytes are 0x80-0xBF, above 'z'). Track
-	// first/last kept positions inline so trimming dashes is a slice op
-	// rather than two TrimLeft/TrimRight passes.
-	body := make([]byte, 0, len(name))
+	buf := make([]byte, 0, 3+bodyMax)
+	if idx < 10 {
+		buf = append(buf, '0')
+	}
+	buf = strconv.AppendInt(buf, int64(idx), 10)
+	buf = append(buf, '-')
+	prefixEnd := len(buf)
+	// Kept set is ASCII-only ([a-z0-9]); anything else folds to a single
+	// '-' (matches the original rune-loop semantics since UTF-8
+	// continuation bytes are 0x80-0xBF, above 'z'). Track first/last kept
+	// offsets relative to prefixEnd so the dash-trim is a compact-in-place
+	// slice op rather than a second TrimLeft/TrimRight pass.
 	firstKept := -1
 	lastKept := -1
 	lastDash := false
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
-			body = append(body, c)
+			buf = append(buf, c)
+			rel := len(buf) - 1 - prefixEnd
 			if firstKept < 0 {
-				firstKept = len(body) - 1
+				firstKept = rel
 			}
-			lastKept = len(body) - 1
+			lastKept = rel
 			lastDash = false
 			continue
 		}
 		if !lastDash {
-			body = append(body, '-')
+			buf = append(buf, '-')
 			lastDash = true
 		}
 	}
-	var out string
 	if firstKept < 0 {
-		out = defaultChapterSlug(index)
-	} else {
-		out = core.AsString(body[firstKept : lastKept+1])
+		// No ASCII-kept bytes — emit the canonical "chapter-N" body
+		// straight into the existing buf rather than re-allocating a
+		// secondary string via defaultChapterSlug.
+		buf = append(buf[:prefixEnd], "chapter-"...)
+		buf = strconv.AppendInt(buf, int64(idx), 10)
+		return core.AsString(buf)
 	}
-	// Hand-built "%02d-out" — avoids Sprintf parsing + interface boxing.
-	idx := index + 1
-	buf := make([]byte, 0, 3+len(out))
-	if idx < 10 {
-		buf = append(buf, '0')
+	// Compact the kept range back to prefixEnd in place — drops any
+	// leading/trailing dash padding without a second allocation.
+	if firstKept != 0 || prefixEnd+lastKept+1 != len(buf) {
+		copy(buf[prefixEnd:], buf[prefixEnd+firstKept:prefixEnd+lastKept+1])
+		buf = buf[:prefixEnd+(lastKept+1-firstKept)]
 	}
-	buf = strconv.AppendInt(buf, int64(idx), 10)
-	buf = append(buf, '-')
-	buf = append(buf, out...)
 	return core.AsString(buf)
 }
 
