@@ -5,8 +5,6 @@
 package model
 
 import (
-	"sort"
-
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
@@ -240,8 +238,11 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir 
 			}
 		}
 	}
-	sort.Strings(safetensors)
-	sort.Strings(ggufs)
+	// PathGlob returns lexically sorted results (filepath.Glob spec),
+	// and the single-file entry paths above each hand us a 1-element
+	// slice. Bucketing preserves the sorted order so the explicit
+	// sort.Strings calls were redundant — drop them to skip the
+	// pdqsort interface boxing on every Inspect.
 	for _, path := range safetensors {
 		if info := core.Stat(path); info.OK {
 			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
@@ -725,8 +726,10 @@ func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool
 }
 
 func readSentenceTransformerPooling(root string) (string, bool) {
+	// PathGlob (filepath.Glob) returns lexically sorted results, so
+	// the explicit sort.Strings was redundant work on every embedding
+	// inspect.
 	paths := core.PathGlob(core.PathJoin(root, "*_Pooling", "config.json"))
-	sort.Strings(paths)
 	for _, path := range paths {
 		read := core.ReadFile(path)
 		if !read.OK {
