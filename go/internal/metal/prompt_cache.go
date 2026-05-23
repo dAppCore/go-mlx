@@ -1760,8 +1760,12 @@ func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, reques
 	if hasStorageDType {
 		cache = NewFixedKVCacheWithDType(maxSize, storageDType)
 	}
-	cache.keys = Zeros([]int32{kShape[0], kShape[1], int32(maxSize), kShape[3]}, keyPrefix.Dtype())
-	cache.values = Zeros([]int32{vShape[0], vShape[1], int32(maxSize), vShape[3]}, valuePrefix.Dtype())
+	// Zeros4 routes through the rank-4 scalar-pass cgo path — the
+	// per-call `[]int32{...}` literal escapes to heap because cgo's
+	// _cgoCheckPointer forces escape on the Go-side slice that Zeros
+	// takes (per [[feedback_cgo_stack_array_escapes_to_heap]]).
+	cache.keys = Zeros4(kShape[0], kShape[1], int32(maxSize), kShape[3], keyPrefix.Dtype())
+	cache.values = Zeros4(vShape[0], vShape[1], int32(maxSize), vShape[3], valuePrefix.Dtype())
 	oldK, oldV := cache.keys, cache.values
 	cache.keys = SliceUpdateInplace4(cache.keys, keyPrefix, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3])
 	cache.values = SliceUpdateInplace4(cache.values, valuePrefix, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3])

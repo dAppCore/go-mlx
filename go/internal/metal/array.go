@@ -32,6 +32,20 @@ static inline int mlx_zeros_inline(
     return mlx_zeros(res, shape_buf, shape_num, dtype, s);
 }
 
+// mlx_zeros_inline_4 is the rank-4 scalar-pass form — sister to
+// mlx_slice_inline_4 in slice.go. `Zeros([]int32{...})` escapes the
+// Go-side slice to heap via _cgoCheckPointer; passing the four dims
+// as register-passed scalars eliminates the slice literal entirely.
+// Used by prompt_cache restoreFixedCacheSnapshot (Gemma 4 fixed-cache
+// warm-restore golden path).
+static inline int mlx_zeros_inline_4(
+    mlx_array* res,
+    int32_t d0, int32_t d1, int32_t d2, int32_t d3,
+    mlx_dtype dtype, mlx_stream s) {
+    int shape_buf[4] = {(int)d0, (int)d1, (int)d2, (int)d3};
+    return mlx_zeros(res, shape_buf, 4, dtype, s);
+}
+
 // mlx_array_new_data_inline_i / _ll variants accept the caller's int32 (for
 // raw-tensor APIs) or long long (for Go-int variadic FromValues) shape slice
 // and copy into a 8-slot stack int buffer before forwarding.
@@ -310,6 +324,23 @@ func Zeros(shape []int32, dtype DType) *Array {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
 	}
 	C.mlx_zeros_inline(&tt.ctx, shapePtr, C.size_t(len(shape)), C.mlx_dtype(dtype), DefaultStream().ctx)
+	return tt
+}
+
+// Zeros4 is the rank-4 scalar-pass form of Zeros — sister to Slice4 in
+// slice.go. Per [[feedback_cgo_stack_array_escapes_to_heap]], the
+// `[]int32{...}` literal that Zeros takes escapes to the Go heap via
+// _cgoCheckPointer; passing the four dims as register-passed scalars
+// eliminates the slice literal entirely. Used by KV-cache restore
+// paths that need to materialise a maxSize-sized rank-4 buffer.
+//
+//	keys := metal.Zeros4(B, H, int32(maxSize), D, metal.DTypeBFloat16)
+func Zeros4(d0, d1, d2, d3 int32, dtype DType) *Array {
+	Init()
+	tt := newArray("ZEROS")
+	C.mlx_zeros_inline_4(&tt.ctx,
+		C.int32_t(d0), C.int32_t(d1), C.int32_t(d2), C.int32_t(d3),
+		C.mlx_dtype(dtype), DefaultStream().ctx)
 	return tt
 }
 
