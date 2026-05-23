@@ -116,16 +116,22 @@ func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt st
 	if maxTokens == 0 {
 		maxTokens = generateCfg.MaxTokens
 	}
-	// Share generateCfg by pointer across both modelDecodeGenerate calls
-	// — collapses the prior pair of by-value spills into one heap-resident
-	// GenerateConfig that both target + draft closures read from.
+	// Share generateCfg by pointer across both pooled generators — both
+	// target + draft acquire from modelDecodeGeneratorPool and point at
+	// the same heap-resident GenerateConfig. Direct acquire/release
+	// (defer) — a release-closure would re-allocate per call and undo
+	// the structurally-pooled win this lane lands.
+	target := acquireModelDecodeGenerator(m, &generateCfg)
+	defer releaseModelDecodeGenerator(target)
+	draftGen := acquireModelDecodeGenerator(draft, &generateCfg)
+	defer releaseModelDecodeGenerator(draftGen)
 	return decode.Speculative(ctx, decode.SpeculativeConfig{
 		Prompt:         prompt,
 		MaxTokens:      maxTokens,
 		DraftTokens:    cfg.DraftTokens,
 		GenerateConfig: decode.GenerateConfig{MaxTokens: maxTokens},
-		TargetGenerate: modelDecodeGenerate(m, &generateCfg),
-		DraftGenerate:  modelDecodeGenerate(draft, &generateCfg),
+		TargetGenerate: target,
+		DraftGenerate:  draftGen,
 	})
 }
 
