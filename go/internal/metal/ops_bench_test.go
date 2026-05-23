@@ -311,3 +311,63 @@ func BenchmarkAddScalar_1M(b *testing.B) {
 		Free(y)
 	}
 }
+
+// BenchmarkReshape1_Variadic / _Scalar measure the per-call alloc cost
+// of Reshape(arr, int32(n)) vs the W11-AC Reshape1(arr, n) primitive on
+// the rank-1 frontier. packQ4Cached pays this on every Q4 K/V Update
+// (Reshape(q, int32(n)) + Reshape(packed2D, int32(pairs))), unpackQ4 on
+// every dequant (Reshape(stacked, int32(flatLen))), maxAll on every
+// quantise-max boundary (Reshape(a, int32(n))). The variadic form
+// escapes the int32 to heap; the scalar form passes the dim in a
+// register and materialises the 1-element shape buffer on the C stack.
+func BenchmarkReshape1_Variadic(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1, 1024)
+	defer Free(a)
+	var n int32 = 1024
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape(a, n)
+		Free(r)
+	}
+}
+
+func BenchmarkReshape1_Scalar(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1, 1024)
+	defer Free(a)
+	var n int32 = 1024
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape1(a, n)
+		Free(r)
+	}
+}
+
+// BenchmarkReshape2_Variadic / _Scalar measure the per-call alloc cost
+// of Reshape(arr, int32(h), int32(w)) vs Reshape2(arr, h, w) on the
+// rank-2 [pairs, 2] view that packQ4Cached materialises on every Q4 K/V
+// Update.
+func BenchmarkReshape2_Variadic(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1024)
+	defer Free(a)
+	var h, w int32 = 512, 2
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape(a, h, w)
+		Free(r)
+	}
+}
+
+func BenchmarkReshape2_Scalar(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1024)
+	defer Free(a)
+	var h, w int32 = 512, 2
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape2(a, h, w)
+		Free(r)
+	}
+}

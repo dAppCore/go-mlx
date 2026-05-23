@@ -83,6 +83,31 @@ static inline int mlx_transpose_axes_inline_4(
     return mlx_transpose_axes(res, a, axes_buf, 4, s);
 }
 
+// mlx_reshape_inline_1 / mlx_reshape_inline_2 are the rank-1 / rank-2
+// scalar-pass forms of mlx_reshape_inline — completes the W11-AC
+// Reshape/Slice rank-1/2 scalar-pass family alongside Reshape and the
+// existing slice rank-4 variants. The Q4 quantise/dequantise paths
+// (packQ4Cached, unpackQ4, maxAll) currently call
+// `Reshape(arr, int32(n))` or `Reshape(arr, int32(pairs), int32(2))`
+// where the variadic []int32 escapes to heap on every call. Passing the
+// 1 or 2 register-passed scalars directly to MLX eliminates the slice
+// literal entirely. Same W10-J / W11-A pattern, lower rank.
+static inline int mlx_reshape_inline_1(
+    mlx_array* res, mlx_array a,
+    int32_t n,
+    mlx_stream s) {
+    int shape_buf[1] = {(int)n};
+    return mlx_reshape(res, a, shape_buf, 1, s);
+}
+
+static inline int mlx_reshape_inline_2(
+    mlx_array* res, mlx_array a,
+    int32_t h, int32_t w,
+    mlx_stream s) {
+    int shape_buf[2] = {(int)h, (int)w};
+    return mlx_reshape(res, a, shape_buf, 2, s);
+}
+
 // mlx_*_single_axis_inline materialise the single-element axis array on the
 // C stack so the per-call Go side stops allocating a 1-int slice.  Sum /
 // Mean each take a single int axis from the Go API; Softmax pins axis = -1
@@ -581,6 +606,38 @@ func Reshape(a *Array, shape ...int32) *Array {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
 	}
 	C.mlx_reshape_inline(&out.ctx, a.ctx, shapePtr, C.size_t(len(shape)), DefaultStream().ctx)
+	return out
+}
+
+// Reshape1 is the rank-1 scalar-pass form of Reshape — eliminates the
+// variadic-slice escape that `Reshape(arr, int32(n))` pays on every call.
+// Used by packQ4Cached's `Reshape(q, int32(n))` + `Reshape(packed2D,
+// int32(pairs))` and unpackQ4's `Reshape(stacked, int32(flatLen))` +
+// maxAll's `Reshape(a, int32(n))` — every Q4 K/V Update + every
+// quantise/maxAll boundary previously paid one slice escape per call.
+// Routes through mlx_reshape_inline_1 which materialises the 1-element
+// shape buffer on the C stack directly from the register-passed scalar.
+//
+//	flat := metal.Reshape1(q, int32(n))
+func Reshape1(a *Array, n int32) *Array {
+	out := newArray("RESHAPE", a)
+	C.mlx_reshape_inline_1(&out.ctx, a.ctx, C.int32_t(n), DefaultStream().ctx)
+	return out
+}
+
+// Reshape2 is the rank-2 scalar-pass form of Reshape — eliminates the
+// variadic-slice escape that `Reshape(arr, int32(h), int32(w))` pays on
+// every call. Used by packQ4Cached's `Reshape(padded, int32(pairs),
+// int32(2))` — the [pairs, 2] view that powers the low/high nibble
+// extraction. Routes through mlx_reshape_inline_2 which materialises the
+// 2-element shape buffer on the C stack directly from register-passed
+// scalars. W11-AC complement to Slice2 / SliceUpdateInplace2 on the
+// rank-2 frontier of the substrate.
+//
+//	paired := metal.Reshape2(padded, int32(pairs), 2)
+func Reshape2(a *Array, h, w int32) *Array {
+	out := newArray("RESHAPE", a)
+	C.mlx_reshape_inline_2(&out.ctx, a.ctx, C.int32_t(h), C.int32_t(w), DefaultStream().ctx)
 	return out
 }
 
