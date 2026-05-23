@@ -820,6 +820,7 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 	// Sum exact array count to size in one allocation. Hot path —
 	// Gemma 4 26-cache block-source restore yields ~100 arrays; the
 	// nil-slice realloc chain was load-bearing alloc cost.
+	// snapshotOffsets allocated lazily on the failure path only.
 	totalArrays := 0
 	for _, snapshot := range entry.caches {
 		totalArrays += snapshot.arrayCount()
@@ -828,9 +829,7 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 		totalArrays++
 	}
 	evalArrays := make([]*Array, 0, totalArrays)
-	snapshotOffsets := make([]int, 0, len(entry.caches))
 	for _, snapshot := range entry.caches {
-		snapshotOffsets = append(snapshotOffsets, len(evalArrays))
 		evalArrays = snapshot.appendArrays(evalArrays)
 	}
 	logitsIdx := -1
@@ -842,11 +841,15 @@ func (m *Model) newPromptCacheEntryFromKVBlocks(ctx context.Context, source KVSn
 		if i == logitsIdx {
 			return "logits"
 		}
-		ci := 0
-		for ci+1 < len(snapshotOffsets) && snapshotOffsets[ci+1] <= i {
-			ci++
+		base := 0
+		for ci := range entry.caches {
+			next := base + entry.caches[ci].arrayCount()
+			if next > i {
+				return core.Sprintf("cache[%d].state[%d]", ci, i-base)
+			}
+			base = next
 		}
-		return core.Sprintf("cache[%d].state[%d]", ci, i-snapshotOffsets[ci])
+		return core.Sprintf("cache[?].state[%d]", i)
 	}); err != nil {
 		entry.free()
 		return nil, err
@@ -1158,13 +1161,12 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 		cacheableTokens: len(tokens),
 		caches:          make([]cacheSnapshot, len(caches)),
 	}
-	// Per-snapshot array offsets — used only on the failure path of
-	// evalPromptCacheArrays to map array-index back to (cache, state).
-	// Pre-size based on snapshotCache yielding up to ~4 arrays per cache
-	// plus the 2 trailing logits/hidden entries; the closure stays cheap
-	// on the happy path because labelAt is never invoked.
+	// evalArrays pre-sized based on snapshotCache yielding up to ~4
+	// arrays per cache plus the 2 trailing logits/hidden entries.
+	// snapshotOffsets is allocated lazily on the failure path only —
+	// happy path no longer pays the `make([]int, 0, len(caches))` alloc
+	// (one save per snapshot/restore).
 	evalArrays := make([]*Array, 0, len(caches)*4+2)
-	snapshotOffsets := make([]int, 0, len(caches))
 	for i, cache := range caches {
 		snapshot, ok, err := snapshotCache(cache, len(tokens))
 		if err != nil {
@@ -1177,7 +1179,6 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 		}
 		entry.caches[i] = snapshot
 		entry.cacheableTokens = min(entry.cacheableTokens, snapshot.offset)
-		snapshotOffsets = append(snapshotOffsets, len(evalArrays))
 		evalArrays = snapshot.appendArrays(evalArrays)
 	}
 
@@ -1197,12 +1198,18 @@ func newPromptCacheEntryWithHidden(tokens []int32, caches []Cache, logits, hidde
 		if i == hiddenIdx {
 			return "hidden"
 		}
-		// Find the cache index by largest offset <= i.
-		ci := 0
-		for ci+1 < len(snapshotOffsets) && snapshotOffsets[ci+1] <= i {
-			ci++
+		// Recompute the cache index lazily on the failure path —
+		// happy path skipped this alloc entirely. Walk caches summing
+		// arrayCount until we cross i.
+		base := 0
+		for ci := range entry.caches {
+			next := base + entry.caches[ci].arrayCount()
+			if next > i {
+				return core.Sprintf("cache[%d].state[%d]", ci, i-base)
+			}
+			base = next
 		}
-		return core.Sprintf("cache[%d].state[%d]", ci, i-snapshotOffsets[ci])
+		return core.Sprintf("cache[?].state[%d]", i)
 	}); err != nil {
 		entry.free()
 		return nil, err
