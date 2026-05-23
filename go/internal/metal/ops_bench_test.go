@@ -256,3 +256,58 @@ func BenchmarkSqueeze_PerToken_VariadicArgs(b *testing.B) {
 		Free(s)
 	}
 }
+
+// BenchmarkMulScalar_PerToken / BenchmarkAddScalar_PerToken target the
+// W11-F inline-C bridge.  The legacy AddScalar / MulScalar implementation
+// is FromValue(s) + Add/Mul(a, scalar) + Free(scalar) — 3 cgo crossings
+// plus a Go-side *Array wrapper for the scalar.  The W11-F bridge
+// (mlx_add_scalar_inline / mlx_multiply_scalar_inline) materialises the
+// scalar mlx_array on the C stack, dispatches the op, and frees the
+// scalar before returning, collapsing the whole sequence into a single
+// cgo crossing.  Sites hit by gemma4 attention scale, embedding scale,
+// router scale, softcap, gemma4_vision rescaling, etc.  Per-token shape
+// is the embedding row (2048 ≈ Gemma 4 1B).
+func BenchmarkMulScalar_PerToken(b *testing.B) {
+	a := Zeros([]int32{1, 2048}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		y := MulScalar(a, 2.5)
+		Free(y)
+	}
+}
+
+func BenchmarkAddScalar_PerToken(b *testing.B) {
+	a := Zeros([]int32{1, 2048}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		y := AddScalar(a, 0.25)
+		Free(y)
+	}
+}
+
+// BenchmarkMulScalar_1M / BenchmarkAddScalar_1M include a Materialize
+// step so the Metal kernel time is part of the measurement — useful when
+// reasoning about the relative impact of the bridge vs the kernel cost.
+func BenchmarkMulScalar_1M(b *testing.B) {
+	a := RandomUniform(0, 1, []int32{1000000}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		y := MulScalar(a, 2.5)
+		Materialize(y)
+		Free(y)
+	}
+}
+
+func BenchmarkAddScalar_1M(b *testing.B) {
+	a := RandomUniform(0, 1, []int32{1000000}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		y := AddScalar(a, 0.25)
+		Materialize(y)
+		Free(y)
+	}
+}

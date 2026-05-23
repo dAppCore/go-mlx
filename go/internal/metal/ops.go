@@ -105,6 +105,32 @@ static inline int mlx_mean_single_axis_inline(
     return mlx_mean_axes(res, a, axes_buf, 1, keepdims, s);
 }
 
+// mlx_add_scalar_inline / mlx_multiply_scalar_inline collapse the
+// FromValue(s) + Add/Mul(a, scalar) + Free(scalar) sequence used by the
+// Go-side AddScalar / MulScalar into a single cgo crossing.  MLX does not
+// expose mlx_add_scalar / mlx_multiply_scalar primitives, so the scalar
+// mlx_array is created on the C frame, fed into the binary op, and freed
+// before return.  Net effect: 3 cgo crossings + 1 Go *Array wrapper for
+// the scalar collapse into 1 cgo crossing and 0 extra Go allocs.  Used by
+// every model file that scales / shifts / softcaps an activation tensor
+// (gemma3/4 attention scale, embedding scale, router scale, RoPE rescale,
+// gemma4_vision pixel rescale, LoRA delta scale, etc).
+static inline int mlx_add_scalar_inline(
+    mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
+    mlx_array sc = mlx_array_new_float32(scalar);
+    int rc = mlx_add(res, a, sc, s);
+    mlx_array_free(sc);
+    return rc;
+}
+
+static inline int mlx_multiply_scalar_inline(
+    mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
+    mlx_array sc = mlx_array_new_float32(scalar);
+    int rc = mlx_multiply(res, a, sc, s);
+    mlx_array_free(sc);
+    return rc;
+}
+
 */
 import "C"
 
@@ -140,11 +166,15 @@ func Add(a, b *Array) *Array {
 }
 
 // AddScalar returns a + scalar (broadcast).
+//
+// Routes through the mlx_add_scalar_inline bridge so the scalar mlx_array
+// is materialised on the C stack — single cgo crossing covers scalar
+// creation + binary op + scalar release.  Avoids the legacy FromValue +
+// Add + Free triple-crossing.
 func AddScalar(a *Array, s float32) *Array {
-	scalar := FromValue(s)
-	res := Add(a, scalar)
-	Free(scalar)
-	return res
+	out := newArray("ADD_SCALAR", a)
+	C.mlx_add_scalar_inline(&out.ctx, a.ctx, C.float(s), DefaultStream().ctx)
+	return out
 }
 
 // Mul returns element-wise a * b.
@@ -155,11 +185,15 @@ func Mul(a, b *Array) *Array {
 }
 
 // MulScalar returns a * scalar (broadcast).
+//
+// Routes through the mlx_multiply_scalar_inline bridge so the scalar
+// mlx_array is materialised on the C stack — single cgo crossing covers
+// scalar creation + binary op + scalar release.  Avoids the legacy
+// FromValue + Mul + Free triple-crossing.
 func MulScalar(a *Array, s float32) *Array {
-	scalar := FromValue(s)
-	res := Mul(a, scalar)
-	Free(scalar)
-	return res
+	out := newArray("MUL_SCALAR", a)
+	C.mlx_multiply_scalar_inline(&out.ctx, a.ctx, C.float(s), DefaultStream().ctx)
+	return out
 }
 
 // Divide returns element-wise a / b.
