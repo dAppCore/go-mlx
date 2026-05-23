@@ -12,6 +12,7 @@ package bundle
 
 import (
 	"context"
+	"crypto/sha256"
 	"strconv"
 
 	core "dappco.re/go"
@@ -427,19 +428,73 @@ func CheckCompatibility(info ModelInfo, b *Bundle) error {
 	return checkAdapterCompatibility(info.Adapter, b.Adapter)
 }
 
+// fileHashStreamThreshold gates the buffer-load vs streaming fast-path
+// inside FileHash. Files smaller than the threshold are slurped via
+// core.ReadFile (1 alloc of file_size), which is cheaper than the
+// stdlib `io.Copy` 32KB scratch path for sub-32KB inputs. Files at or
+// above the threshold are streamed, capping per-call allocation at
+// ~33KB regardless of file size — the dominant win on 1MB tokenizer
+// shards and 10MB+ LoRA adapter weights. Threshold sits at the
+// stdlib `io.Copy` default scratch size so the streaming path is only
+// chosen when its scratch is genuinely smaller than the file would be.
+const fileHashStreamThreshold = 32 * 1024
+
 // FileHash hashes an external file for strict bundle metadata.
 //
 //	hash, err := bundle.FileHash(path)
+//
+// Size-conditional: small files (<32KB chat-templates, license blobs)
+// load fully into memory and hash via `core.SHA256Hex` — cheaper than
+// the stdlib `io.Copy` scratch buffer for sub-32KB inputs. Large
+// files (≥32KB tokenizer shards, LoRA adapter weights) stream through
+// SHA-256 via a fixed scratch, capping per-call allocation at ~33KB
+// regardless of file size. Bit-exact with the legacy buffer-load path
+// for any size — see `TestFileHash_StreamMatchesBufferLoad_Good`.
+//
+// `crypto/sha256` is reached for directly here because the SPOR
+// `core.SHA256*` helpers operate on a complete []byte (i.e. the very
+// load-the-whole-file path we are eliminating on large files). A
+// streaming SHA-256 primitive belongs in `external/go/hash.go` — see
+// W10-AG forward note — but until that lands upstream the local fix
+// preserves bundle's streaming guarantee.
 func FileHash(path string) (string, error) {
-	read := core.ReadFile(path)
-	if !read.OK {
-		return "", core.E("bundle.FileHash", "read file", resultError(read))
+	info := core.Stat(path)
+	if !info.OK {
+		return "", core.E("bundle.FileHash", "stat file", resultError(info))
 	}
-	data, ok := read.Value.([]byte)
+	stat, ok := info.Value.(core.FsFileInfo)
 	if !ok {
-		return "", core.E("bundle.FileHash", "read file returned non-byte data", nil)
+		return "", core.E("bundle.FileHash", "stat returned non-fileinfo", nil)
 	}
-	return core.SHA256Hex(data), nil
+	if stat.Size() < fileHashStreamThreshold {
+		read := core.ReadFile(path)
+		if !read.OK {
+			return "", core.E("bundle.FileHash", "read file", resultError(read))
+		}
+		data, ok := read.Value.([]byte)
+		if !ok {
+			return "", core.E("bundle.FileHash", "read file returned non-byte data", nil)
+		}
+		return core.SHA256Hex(data), nil
+	}
+	opened := core.Open(path)
+	if !opened.OK {
+		return "", core.E("bundle.FileHash", "open file", resultError(opened))
+	}
+	file, ok := opened.Value.(*core.OSFile)
+	if !ok {
+		return "", core.E("bundle.FileHash", "open file returned non-file", nil)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if r := core.Copy(hasher, file); !r.OK {
+		return "", core.E("bundle.FileHash", "stream into hasher", resultError(r))
+	}
+	// Stack-resident digest scratch defeats hash.Sum's nil-path
+	// 32-byte heap alloc; HexEncode still allocates the 64-byte
+	// output string backing (unavoidable string return).
+	var sum [sha256.Size]byte
+	return core.HexEncode(hasher.Sum(sum[:0])), nil
 }
 
 // NormaliseTokenizer fills missing Tokenizer hash fields based on

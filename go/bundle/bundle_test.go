@@ -414,6 +414,46 @@ func TestFileHash_MissingFile_Bad(t *testing.T) {
 	}
 }
 
+// TestFileHash_StreamMatchesBufferLoad_Good — bit-exact parity check
+// against the legacy `core.ReadFile + core.SHA256Hex` path. The
+// streaming variant in FileHash MUST produce the same digest for any
+// file content, otherwise bundle metadata round-trips silently
+// regress across the version that flipped the impl.
+func TestFileHash_StreamMatchesBufferLoad_Good(t *testing.T) {
+	sizes := []int{
+		0,             // empty file — boundary
+		1,             // single byte — sub-block
+		63,            // sub-SHA256-block
+		64,            // exactly one SHA256 block
+		65,            // one block + remainder
+		1024,          // 1KB — small tokenizer
+		32*1024 - 1,   // just under stdlib io.Copy default scratch
+		32 * 1024,     // exactly stdlib io.Copy default scratch
+		32*1024 + 1,   // straddle stdlib scratch boundary
+		256 * 1024,    // 256KB
+		1024 * 1024,   // 1MB — representative tokenizer.json
+		3*1024*1024 + 7, // 3MB + 7 — non-aligned LoRA-scale
+	}
+	for _, n := range sizes {
+		path := core.PathJoin(t.TempDir(), "f.bin")
+		data := make([]byte, n)
+		for i := range data {
+			data[i] = byte(i * 31)
+		}
+		if result := core.WriteFile(path, data, 0o600); !result.OK {
+			t.Fatalf("WriteFile(%d): %s", n, result.Error())
+		}
+		streamed, err := FileHash(path)
+		if err != nil {
+			t.Fatalf("FileHash(%d): %v", n, err)
+		}
+		expected := core.SHA256Hex(data)
+		if streamed != expected {
+			t.Fatalf("FileHash(%d) parity mismatch:\n  stream=%q\n  buffer=%q", n, streamed, expected)
+		}
+	}
+}
+
 func TestStateURI_BothShapes_Good(t *testing.T) {
 	withSeg := StateURI(state.ChunkRef{ChunkID: 5, Segment: "/tmp/x.mp4"})
 	withoutSeg := StateURI(state.ChunkRef{ChunkID: 7})
