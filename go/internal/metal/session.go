@@ -1043,33 +1043,33 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 			}
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
-			cache, arrays, err := restoreQuantizedCacheSnapshot(snapshot, length, snapshot.offset)
+			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		if snapshot.mode == KVCacheModePaged {
-			cache, arrays, err := restorePagedCacheSnapshot(snapshot, length, snapshot.offset)
+			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		if snapshot.mode == KVCacheModeFixed {
-			cache, arrays, err := restoreFixedCacheSnapshot(snapshot, length, snapshot.offset, 0)
+			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset, 0)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		keys, err := copyCachePrefix(snapshot.keys, length)

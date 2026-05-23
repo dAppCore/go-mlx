@@ -365,3 +365,47 @@ func BenchmarkPromptCache_FixedCacheSnapshotRestore_RoundTrip(b *testing.B) {
 		freeCacheSnapshot(snap)
 	}
 }
+
+// 26-cache restore round trip — exercises the load-bearing
+// restorePromptCachesWithRequestFixedSize path that Gemma 4 warm-load
+// hits. W11-W switches it from the per-restore `[]*Array{...}` literal +
+// `append(.., arrays...)` chain to direct appendRestoreXxxCacheSnapshot
+// dispatch, dropping the intermediate slices.
+func BenchmarkPromptCache_RestoreFixedCaches_26_Gemma4(b *testing.B) {
+	const maxSize = 128
+	const prefixLen = 64
+	const cacheCount = 26
+	caches := make([]*FixedKVCache, cacheCount)
+	snapshots := make([]cacheSnapshot, cacheCount)
+	for i := range caches {
+		caches[i] = NewFixedKVCache(maxSize)
+	}
+	k, v := makeKV(prefixLen)
+	defer Free(k, v)
+	for _, c := range caches {
+		stateK, stateV := c.Update(k, v, prefixLen)
+		Free(stateK, stateV)
+	}
+	for i, c := range caches {
+		snap, ok, err := snapshotFixedCache(c, prefixLen)
+		if err != nil || !ok {
+			b.Fatalf("snapshotFixedCache[%d]: ok=%v err=%v", i, ok, err)
+		}
+		snapshots[i] = snap
+	}
+	defer func() {
+		for i := range caches {
+			freeCacheSnapshot(snapshots[i])
+			caches[i].Reset()
+		}
+	}()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		restored, err := restorePromptCachesWithRequestFixedSize(snapshots, prefixLen, maxSize)
+		if err != nil {
+			b.Fatalf("restorePromptCachesWithRequestFixedSize: %v", err)
+		}
+		freeCaches(restored)
+	}
+}

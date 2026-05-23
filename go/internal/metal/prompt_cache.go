@@ -1628,33 +1628,33 @@ func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 			continue
 		}
 		if requestFixedSize > 0 || snapshot.mode == KVCacheModeFixed {
-			cache, arrays, err := restoreFixedCacheSnapshot(snapshot, restoreLen, prefixLen, requestFixedSize)
+			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen, requestFixedSize)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
-			cache, arrays, err := restoreQuantizedCacheSnapshot(snapshot, restoreLen, prefixLen)
+			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		if snapshot.mode == KVCacheModePaged {
-			cache, arrays, err := restorePagedCacheSnapshot(snapshot, restoreLen, prefixLen)
+			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, restoreLen, prefixLen)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
 			}
 			caches[i] = cache
-			evalArrays = append(evalArrays, arrays...)
+			evalArrays = next
 			continue
 		}
 		keys, err := copyCachePrefix(snapshot.keys, restoreLen)
@@ -1695,7 +1695,20 @@ func restorePromptCachesWithRequestFixedSize(snapshots []cacheSnapshot, prefixLe
 	return caches, nil
 }
 
+// restoreFixedCacheSnapshot returns the restored cache + the eval-needed
+// arrays as a freshly-allocated slice. The hot path
+// restorePromptCachesWithRequestFixedSize uses appendRestoreFixedCacheSnapshot
+// instead to skip the intermediate `[]*Array{...}` literal that gets
+// immediately copied into the caller's evalArrays via `append(.., arrays...)`.
 func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int) (Cache, []*Array, error) {
+	cache, arrays, err := appendRestoreFixedCacheSnapshot(nil, snapshot, prefixLen, offset, requestFixedSize)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cache, arrays, nil
+}
+
+func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset, requestFixedSize int) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid fixed prefix length")
 	}
@@ -1772,10 +1785,19 @@ func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, reques
 	Free(oldK, oldV)
 	cache.offset = offset
 	cache.length = prefixLen
-	return cache, []*Array{cache.keys, cache.values}, nil
+	return cache, append(dst, cache.keys, cache.values), nil
 }
 
+// restoreQuantizedCacheSnapshot — see restoreFixedCacheSnapshot.
 func restoreQuantizedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+	cache, arrays, err := appendRestoreQuantizedCacheSnapshot(nil, snapshot, prefixLen, offset)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cache, arrays, nil
+}
+
+func appendRestoreQuantizedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid quantized prefix length")
 	}
@@ -1820,10 +1842,19 @@ func restoreQuantizedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int
 		keyBits:    keyBits,
 		valueBits:  valueBits,
 	}
-	return cache, []*Array{keys, values, keyScale, valueScale}, nil
+	return cache, append(dst, keys, values, keyScale, valueScale), nil
 }
 
+// restorePagedCacheSnapshot — see restoreFixedCacheSnapshot.
 func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+	cache, arrays, err := appendRestorePagedCacheSnapshot(nil, snapshot, prefixLen, offset)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cache, arrays, nil
+}
+
+func appendRestorePagedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
 	if prefixLen <= 0 {
 		return nil, nil, core.NewError("prompt cache: invalid paged prefix length")
 	}
@@ -1853,10 +1884,9 @@ func restorePagedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset int) (C
 		storageDType:    storageDType,
 		hasStorageDType: hasStorageDType,
 	}
-	arrays := make([]*Array, 0, len(kPages)+len(vPages))
-	arrays = append(arrays, kPages...)
-	arrays = append(arrays, vPages...)
-	return cache, arrays, nil
+	dst = append(dst, kPages...)
+	dst = append(dst, vPages...)
+	return cache, dst, nil
 }
 
 func restoreCacheStorageDType(snapshot cacheSnapshot) (DType, bool) {
