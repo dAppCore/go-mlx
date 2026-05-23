@@ -44,20 +44,15 @@ func quantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, gr
 
 	kernel := quantizedExpertIDMatVecKernel(meta, groupSize, bits)
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(meta.routes*meta.outDim*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg([]int32{int32(meta.routes), int32(meta.outDim)}, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, input, weight, scales, biases, expertIDs)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: meta.routes * meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		[]int32{int32(meta.routes), int32(meta.outDim)}, DTypeFloat32,
+		input, weight, scales, biases, expertIDs,
+	)
 	if err != nil {
 		return nil, core.E("mlx.quantizedExpertIDMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: quantized expert id matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 // quantizedExpertIDGELUGateUpMatVec computes GELU(gate) * up directly from a
@@ -74,20 +69,15 @@ func quantizedExpertIDGELUGateUpMatVec(input, weight, scales, biases, expertIDs 
 
 	kernel := quantizedExpertIDGELUGateUpMatVecKernel(meta, groupSize, bits)
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(meta.routes*(meta.outDim/2)*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg([]int32{int32(meta.routes), int32(meta.outDim / 2)}, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, input, weight, scales, biases, expertIDs)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: meta.routes * (meta.outDim / 2) * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		[]int32{int32(meta.routes), int32(meta.outDim / 2)}, DTypeFloat32,
+		input, weight, scales, biases, expertIDs,
+	)
 	if err != nil {
 		return nil, core.E("mlx.quantizedExpertIDGELUGateUpMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: quantized expert id gate/up matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 // quantizedExpertIDGELUSplitGateUpMatVec computes GELU(gate) * up directly
@@ -108,20 +98,15 @@ func quantizedExpertIDGELUSplitGateUpMatVec(input, gateWeight, gateScales, gateB
 
 	kernel := quantizedExpertIDGELUSplitGateUpMatVecKernel(gateMeta, groupSize, bits)
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(gateMeta.routes*gateMeta.outDim*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg([]int32{int32(gateMeta.routes), int32(gateMeta.outDim)}, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: gateMeta.routes * gateMeta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		[]int32{int32(gateMeta.routes), int32(gateMeta.outDim)}, DTypeFloat32,
+		input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs,
+	)
 	if err != nil {
 		return nil, core.E("mlx.quantizedExpertIDGELUSplitGateUpMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: quantized expert id split gate/up matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 // quantizedExpertIDWeightedMatVecSum computes the routed expert matvec for each
@@ -144,20 +129,15 @@ func quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, bia
 
 	kernel := quantizedExpertIDWeightedMatVecSumKernel(meta, groupSize, bits)
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(meta.outDim*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg([]int32{int32(meta.outDim)}, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, input, routeWeights, weight, scales, biases, expertIDs)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		[]int32{int32(meta.outDim)}, DTypeFloat32,
+		input, routeWeights, weight, scales, biases, expertIDs,
+	)
 	if err != nil {
 		return nil, core.E("mlx.quantizedExpertIDWeightedMatVecSum", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: quantized expert id weighted matvec sum returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 type quantizedExpertIDMatVecKernelKey struct {

@@ -20,21 +20,16 @@ func nativeGemma4FFNResidual(residual, local, expert, localNorm, expertNorm, com
 	}
 
 	kernel := nativeGemma4FFNResidualKernel(meta)
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(256, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(meta.outputShape[:], DTypeFloat32)
 
-	results, err := kernel.Apply(cfg, residual, local, expert, localNorm, expertNorm, combinedNorm)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: 256, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		meta.outputShape[:], DTypeFloat32,
+		residual, local, expert, localNorm, expertNorm, combinedNorm,
+	)
 	if err != nil {
 		return nil, true, core.E("mlx.nativeGemma4FFNResidual", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		Free(results...)
-		return nil, true, core.NewError(core.Sprintf("mlx: native Gemma 4 FFN residual returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], true, nil
+	return out, true, nil
 }
 
 type nativeGemma4FFNResidualMeta struct {

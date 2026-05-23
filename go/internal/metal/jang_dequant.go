@@ -30,20 +30,15 @@ out[elem] = float(q) * scales[group] + biases[group];`, bits, bits, (1<<bits)-1,
 	kernel := NewMetalKernel(core.Sprintf("jang_dequant_bits_%d_group_%d", bits, groupSize), []string{"packed", "scales", "biases"}, []string{"out"}, source, "", true, false)
 	defer kernel.Free()
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(elements, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(outputShape, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, packed, scales, biases)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: elements, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		outputShape, DTypeFloat32,
+		packed, scales, biases,
+	)
 	if err != nil {
 		return nil, core.E("mlx.DequantizeJANGPacked", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: JANG dequant kernel returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 // JANGPackedLinear computes input @ dequantized(weight).T plus optional bias.
@@ -111,20 +106,15 @@ out[elem] = sum%s;`, outDim, outDim, inDim, inDim, bits, bits, (1<<bits)-1, grou
 	kernel := NewMetalKernel(core.Sprintf("jang_packed_linear_fused_bits_%d_group_%d_bias_%t", bits, groupSize, bias != nil && bias.Valid()), inputNames, []string{"out"}, source, "", true, false)
 	defer kernel.Free()
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(rows*outDim, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(outShape, DTypeFloat32)
-
-	results, err := kernel.Apply(cfg, inputs...)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: rows * outDim, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		outShape, DTypeFloat32,
+		inputs...,
+	)
 	if err != nil {
 		return nil, core.E("mlx.JANGPackedLinearFused", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: JANG fused packed linear returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 func validateJANGPackedDequantInputs(packed, scales, biases *Array, outputShape []int32, groupSize, bits int) (int, error) {
