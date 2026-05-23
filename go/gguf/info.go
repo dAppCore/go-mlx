@@ -747,6 +747,35 @@ func readGGUFValue(reader io.Reader, valueType uint32, scratch []byte, strArena 
 		if length > maxGGUFCollectionEntries {
 			return nil, core.Errorf("gguf array length %d exceeds limit %d", length, maxGGUFCollectionEntries)
 		}
+		// Fast path for string-element arrays — the tokenizer.ggml.tokens
+		// case where a 200k+ entry vocab dominates header-parse cost.
+		// Returning []string directly avoids:
+		//   • per-element string→any interface box (one alloc + one
+		//     2-word interface header per entry)
+		//   • the wider per-element backing slot in []any vs []string
+		// metadataArrayLen already handles either shape, so internal
+		// callers stay correct; external assertions need a type switch
+		// (only the in-package roundtrip test still pattern-matched on
+		// []any — updated alongside this fast path).
+		if elementType == ValueTypeString {
+			values := make([]string, length)
+			for i := uint64(0); i < length; i++ {
+				var (
+					value string
+					err   error
+				)
+				if strArena != nil {
+					value, err = readStringIntoArena(reader, scratch, strArena)
+				} else {
+					value, err = readGGUFString(reader, scratch)
+				}
+				if err != nil {
+					return nil, err
+				}
+				values[i] = value
+			}
+			return values, nil
+		}
 		values := make([]any, length)
 		for i := uint64(0); i < length; i++ {
 			value, err := readGGUFValue(reader, elementType, scratch, strArena)
