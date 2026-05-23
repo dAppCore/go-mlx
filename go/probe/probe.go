@@ -393,9 +393,20 @@ func (r *Recorder) Events() []Event {
 	// EmitProbe against the read.
 	snapshot := r.events
 	r.mu.Unlock()
+	if len(snapshot) == 0 {
+		return nil
+	}
 	out := make([]Event, len(snapshot))
+	// Batch-allocate scratches for every event in a single slice — each
+	// snapshot[i] gets its own scratch slot to back its payload pointers,
+	// so the cloned events still don't alias each other. The previous
+	// shape allocated one heap-bound pointer per non-nil payload (Token,
+	// Logits, Entropy, ...) per event; with 128 events × ~5-11 pointer
+	// allocs that compounded to >700 allocs from payload pointers alone.
+	// One slice make absorbs them all.
+	scratches := make([]cloneScratch, len(snapshot))
 	for i := range snapshot {
-		out[i] = CloneEvent(snapshot[i])
+		out[i] = cloneEventInto(snapshot[i], &scratches[i])
 	}
 	return out
 }
@@ -404,6 +415,12 @@ func (r *Recorder) Events() []Event {
 // share immutable references downstream.
 //
 //	out := probe.CloneEvent(event)
+//
+// Each non-nil payload is cloned through its own pointer allocation so
+// the per-payload alloc cost matches the per-payload size. Callers that
+// batch many clones (Recorder.Events) should reach for cloneEventInto
+// with a pre-allocated []cloneScratch — there a single slice make
+// absorbs every payload-pointer allocation across the batch.
 func CloneEvent(event Event) Event {
 	out := event
 	if event.Token != nil {
@@ -461,6 +478,89 @@ func CloneEvent(event Event) Event {
 	if event.Training != nil {
 		training := *event.Training
 		out.Training = &training
+	}
+	out.Meta = cloneMeta(event.Meta)
+	return out
+}
+
+// cloneScratch holds every payload value inline so a single heap
+// allocation backs every payload pointer of a cloned Event. Used by
+// Recorder.Events to amortise per-event payload-pointer allocations
+// across a batch — one slice make backs N events' worth of payload
+// storage instead of paying ~5-11 individual pointer allocs per event.
+type cloneScratch struct {
+	token           Token
+	logits          Logits
+	entropy         Entropy
+	selectedHeads   HeadSelection
+	layerCoherence  LayerCoherence
+	routerDecision  RouterDecision
+	expertResidency ExpertResidency
+	residual        ResidualSummary
+	cache           CachePressure
+	memory          MemoryPressure
+	training        Training
+}
+
+// cloneEventInto deep-copies event into out, using scratch to back the
+// payload pointers. The caller owns scratch — typically one slot of a
+// pre-allocated []cloneScratch — so the returned Event's payload
+// pointers all alias storage inside scratch. Mutating out's payloads
+// only affects scratch (which the caller controls), never the source.
+func cloneEventInto(event Event, scratch *cloneScratch) Event {
+	out := event
+	if event.Token != nil {
+		scratch.token = *event.Token
+		out.Token = &scratch.token
+	}
+	if event.Logits != nil {
+		scratch.logits = *event.Logits
+		scratch.logits.Shape = core.SliceClone(scratch.logits.Shape)
+		scratch.logits.Top = core.SliceClone(scratch.logits.Top)
+		scratch.logits.Values = core.SliceClone(scratch.logits.Values)
+		scratch.logits.Meta = cloneMeta(scratch.logits.Meta)
+		out.Logits = &scratch.logits
+	}
+	if event.Entropy != nil {
+		scratch.entropy = *event.Entropy
+		out.Entropy = &scratch.entropy
+	}
+	if event.SelectedHeads != nil {
+		scratch.selectedHeads = *event.SelectedHeads
+		scratch.selectedHeads.Heads = core.SliceClone(scratch.selectedHeads.Heads)
+		scratch.selectedHeads.Scores = core.SliceClone(scratch.selectedHeads.Scores)
+		out.SelectedHeads = &scratch.selectedHeads
+	}
+	if event.LayerCoherence != nil {
+		scratch.layerCoherence = *event.LayerCoherence
+		out.LayerCoherence = &scratch.layerCoherence
+	}
+	if event.RouterDecision != nil {
+		scratch.routerDecision = *event.RouterDecision
+		scratch.routerDecision.ExpertIDs = core.SliceClone(scratch.routerDecision.ExpertIDs)
+		scratch.routerDecision.Weights = core.SliceClone(scratch.routerDecision.Weights)
+		out.RouterDecision = &scratch.routerDecision
+	}
+	if event.ExpertResidency != nil {
+		scratch.expertResidency = *event.ExpertResidency
+		scratch.expertResidency.ExpertIDs = core.SliceClone(scratch.expertResidency.ExpertIDs)
+		out.ExpertResidency = &scratch.expertResidency
+	}
+	if event.Residual != nil {
+		scratch.residual = *event.Residual
+		out.Residual = &scratch.residual
+	}
+	if event.Cache != nil {
+		scratch.cache = *event.Cache
+		out.Cache = &scratch.cache
+	}
+	if event.Memory != nil {
+		scratch.memory = *event.Memory
+		out.Memory = &scratch.memory
+	}
+	if event.Training != nil {
+		scratch.training = *event.Training
+		out.Training = &scratch.training
 	}
 	out.Meta = cloneMeta(event.Meta)
 	return out

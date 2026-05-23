@@ -54,15 +54,33 @@ type Service struct {
 	mu             sync.Mutex
 	cfg            Config
 	blockSizeLabel string
-	blocks         map[string]inference.CacheBlockRef
-	memoryBytes    uint64
-	hits           uint64
-	misses         uint64
-	cleared        uint64
-	evictions      uint64
-	diskCorrupt    uint64
-	diskLoaded     bool
+	// prefixTokenLabels caches the pre-rendered decimal string for the
+	// "prefix_tokens" label value at offsets blockSize, 2*blockSize,
+	// ... up to len(prefixTokenLabels). blockRefs reads this slice
+	// directly when end aligns to a multiple of blockSize, skipping a
+	// per-block core.Itoa heap allocation (Itoa(>99) allocates each
+	// call). Index 0 unused — entry i holds the string for end ==
+	// (i+1)*blockSize. Populated up-front in New so the slice is
+	// immutable after construction — concurrent blockRefs callers
+	// read it lock-free.
+	prefixTokenLabels []string
+	blocks            map[string]inference.CacheBlockRef
+	memoryBytes       uint64
+	hits              uint64
+	misses            uint64
+	cleared           uint64
+	evictions         uint64
+	diskCorrupt       uint64
+	diskLoaded        bool
 }
+
+// prefixTokenLabelCacheSize bounds how many aligned-end labels New
+// pre-renders. 32 covers prompts up to ~16384 tokens at BlockSize=512,
+// which is the typical prefill window. Beyond the cap, blockRefs
+// falls back to core.Itoa. Sized small so per-Service construction
+// stays sub-microsecond — pre-rendering 32 strings is amortised by
+// the first WarmCache that uses more than a single aligned block.
+const prefixTokenLabelCacheSize = 32
 
 type diskRecord struct {
 	Version  int                     `json:"version"`
@@ -91,10 +109,20 @@ func New(cfg Config) *Service {
 		cfg.BlockSize = DefaultBlockSize
 	}
 	cfg.DiskPath = core.Trim(cfg.DiskPath)
+	// Pre-render the aligned-end "prefix_tokens" label strings up-front
+	// so subsequent blockRefs calls can return them by reference
+	// without a per-block core.Itoa heap allocation. Real Services live
+	// the duration of a model registration and amortise the
+	// construction cost across many WarmCache calls.
+	prefixLabels := make([]string, prefixTokenLabelCacheSize+1)
+	for i := 1; i <= prefixTokenLabelCacheSize; i++ {
+		prefixLabels[i] = core.Itoa(i * cfg.BlockSize)
+	}
 	return &Service{
-		cfg:            cfg,
-		blockSizeLabel: core.Itoa(cfg.BlockSize),
-		blocks:         map[string]inference.CacheBlockRef{},
+		cfg:               cfg,
+		blockSizeLabel:    core.Itoa(cfg.BlockSize),
+		prefixTokenLabels: prefixLabels,
+		blocks:            map[string]inference.CacheBlockRef{},
 	}
 }
 
@@ -272,10 +300,13 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	// current write position — identical to the previous per-block
 	// blockCacheID call but without re-hashing earlier tokens.
 	hash := sha256.New()
-	writeBlockCacheHashString(hash, modelHash)
-	writeBlockCacheHashString(hash, adapterHash)
-	writeBlockCacheHashString(hash, tokenizerHash)
-	writeBlockCacheHashString(hash, req.Mode)
+	// Compose the four length-prefixed header strings into a single
+	// buffer and call hash.Write once. The previous shape called
+	// writeBlockCacheHashString four times, each leaking a stack
+	// [4]byte length-prefix slice into hash.Hash.Write — four heap
+	// allocations per blockRefs call. One pre-sized buffer keeps the
+	// per-call setup cost to a single alloc.
+	writeBlockCacheHeader(hash, modelHash, adapterHash, tokenizerHash, req.Mode)
 	var scratch [256]byte
 	var sumBuf [sha256.Size]byte
 	for start := 0; start < len(tokens); start += blockSize {
@@ -287,7 +318,7 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 		digest := hash.Sum(sumBuf[:0])
 		refLabels := cloneBlockCacheLabelsExtra(labels, 2)
 		refLabels["block_index"] = core.Itoa(len(refs))
-		refLabels["prefix_tokens"] = core.Itoa(end)
+		refLabels["prefix_tokens"] = service.prefixTokenLabel(end, blockSize)
 		ref := inference.CacheBlockRef{
 			ID:            core.HexEncode(digest),
 			Kind:          "prefix",
@@ -304,6 +335,44 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+// prefixTokenLabel returns the decimal string form of end. When end
+// aligns to a multiple of blockSize within the pre-rendered cache it
+// returns the cached string with no allocation; otherwise it falls
+// back to core.Itoa (the partial-final-block case, plus any end
+// beyond the cache cap).
+func (service *Service) prefixTokenLabel(end, blockSize int) string {
+	if blockSize <= 0 || end <= 0 || end%blockSize != 0 {
+		return core.Itoa(end)
+	}
+	index := end / blockSize
+	if index < len(service.prefixTokenLabels) {
+		return service.prefixTokenLabels[index]
+	}
+	return core.Itoa(end)
+}
+
+// writeBlockCacheHeader composes the four length-prefixed identity
+// strings into a single buffer and writes it once. Versus four
+// individual writeBlockCacheHashString calls, this collapses the
+// per-call stack [4]byte → interface escape pattern into one alloc.
+func writeBlockCacheHeader(h hash.Hash, model, adapter, tokenizer, mode string) {
+	total := 16 + len(model) + len(adapter) + len(tokenizer) + len(mode)
+	buf := make([]byte, 0, total)
+	buf = appendBlockCacheLenPrefixed(buf, model)
+	buf = appendBlockCacheLenPrefixed(buf, adapter)
+	buf = appendBlockCacheLenPrefixed(buf, tokenizer)
+	buf = appendBlockCacheLenPrefixed(buf, mode)
+	h.Write(buf)
+}
+
+// appendBlockCacheLenPrefixed appends a uint32 LE length prefix
+// followed by value to buf and returns the new buf.
+func appendBlockCacheLenPrefixed(buf []byte, value string) []byte {
+	n := uint32(len(value))
+	buf = append(buf, byte(n), byte(n>>8), byte(n>>16), byte(n>>24))
+	return append(buf, value...)
 }
 
 // writeBlockCacheTokens encodes tokens as little-endian int32 bytes
@@ -609,24 +678,10 @@ func (service *Service) diskBlockPath(id string) string {
 
 func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []int32) string {
 	hash := sha256.New()
-	writeBlockCacheHashString(hash, modelHash)
-	writeBlockCacheHashString(hash, adapterHash)
-	writeBlockCacheHashString(hash, tokenizerHash)
-	writeBlockCacheHashString(hash, mode)
+	writeBlockCacheHeader(hash, modelHash, adapterHash, tokenizerHash, mode)
 	var scratch [256]byte
 	writeBlockCacheTokens(hash, prefix, scratch[:])
 	return core.HexEncode(hash.Sum(nil))
-}
-
-func writeBlockCacheHashString(h hash.Hash, value string) {
-	var length [4]byte
-	n := uint32(len(value))
-	length[0] = byte(n)
-	length[1] = byte(n >> 8)
-	length[2] = byte(n >> 16)
-	length[3] = byte(n >> 24)
-	h.Write(length[:])
-	h.Write(core.AsBytes(value))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity

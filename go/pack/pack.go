@@ -173,6 +173,12 @@ func WithPackRequireChatTemplate(required bool) ModelPackOption {
 //
 //	cfg := pack.ApplyOptions(opts)
 func ApplyOptions(opts []ModelPackOption) ModelPackConfig {
+	// Fast-path the zero-opts case so cfg stays on the caller's stack
+	// frame. The for-loop body takes &cfg, which would otherwise force
+	// the compiler to heap-allocate cfg even when opts is empty.
+	if len(opts) == 0 {
+		return ModelPackConfig{RequireChatTemplate: true}
+	}
 	cfg := ModelPackConfig{RequireChatTemplate: true}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -224,18 +230,23 @@ func (p ModelPack) IssueSummary() string {
 		return "unknown"
 	}
 	total += 2 * (count - 1) // ", " separators
-	b := core.NewBuilder()
-	b.Grow(total)
+	// Build directly into a pre-sized byte slice and AsString the
+	// result — Builder's WriteString carries non-trivial dispatch per
+	// call and a strings.Builder still ends up doing the same
+	// unsafe-cast in String(). One make([]byte, 0, total) + AsString
+	// keeps the alloc count at one (the buffer itself) and avoids the
+	// per-WriteString interface overhead.
+	buf := make([]byte, 0, total)
 	first := true
 	for _, issue := range p.Issues {
 		if issue.Severity != ModelPackIssueError {
 			continue
 		}
 		if !first {
-			b.WriteString(", ")
+			buf = append(buf, ", "...)
 		}
 		first = false
-		b.WriteString(string(issue.Code))
+		buf = append(buf, issue.Code...)
 	}
-	return b.String()
+	return core.AsString(buf)
 }
