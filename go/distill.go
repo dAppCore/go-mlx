@@ -8,6 +8,7 @@ import (
 	"math"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	core "dappco.re/go"
@@ -530,30 +531,155 @@ func maybeRunDistillEval(ctx context.Context, runner DistillRunner, cfg DistillC
 	return nil
 }
 
+// distillProbeMetaPool recycles the per-step meta map fed to
+// probe.Sink.EmitProbe. The Sink contract requires synchronous clone
+// on any retention path (Recorder uses CloneEvent which deep-copies
+// the map), so by the time EmitProbe returns the map is no longer
+// referenced by the sink and is safe to return to the pool. The
+// map's value-set is the same seven keys on every iteration, so the
+// pool entries are warm with the right bucket-count from the second
+// step onwards.
+var distillProbeMetaPool = sync.Pool{
+	New: func() any {
+		m := make(map[string]string, 7)
+		return &m
+	},
+}
+
+// distillProbeTrainingPool recycles the per-step probe.Training
+// payload. Same Sink-contract argument as the meta pool: the sink
+// either copies-by-value into its own storage (Recorder via
+// CloneEvent), or it's an in-process listener that has finished
+// reading by the time EmitProbe returns.
+var distillProbeTrainingPool = sync.Pool{
+	New: func() any {
+		return &probe.Training{}
+	},
+}
+
+// distillTempStringCache holds the most recently formatted
+// temperature → string mapping. The temperature is per-config
+// invariant — every gradient step in a run sees the same value — so
+// caching by float64 bits skips strconv.FormatFloat's per-call
+// allocation on every step after the first. Uses atomic for the
+// cache cell so concurrent emits don't race (also matches the
+// lock-free read pattern eval.go uses for its per-call invariants).
+type distillTempCacheCell struct {
+	bits      uint64
+	formatted string
+}
+
+var distillTempStringCache atomic.Pointer[distillTempCacheCell]
+
+// distillLossScratchPool recycles the three vocab-sized float64
+// scratch buffers consumed by the per-token log-softmax + prob
+// accumulators in DistillationBatchLoss. Vocab is essentially
+// process-invariant (tokenizer-fixed), so pool entries warm to the
+// correct capacity after the first call and every subsequent
+// DistillationBatchLoss invocation lifts pre-sized buffers off the
+// pool instead of paying three vocab-sized makes per call. For a
+// 32k vocab that's 3 × 256KB = 768KB saved per call.
+//
+// Three separate pools rather than one wrapper struct — the buffers
+// are independent (no shared lifecycle), and a wrapper struct would
+// just add a pointer indirection per access on the hot per-token
+// loop without saving any pool churn.
+var (
+	distillTeacherScratchPool sync.Pool
+	distillTeacherProbPool    sync.Pool
+	distillStudentScratchPool sync.Pool
+)
+
+// distillGetFloat64Scratch returns a *[]float64 from the pool sized
+// to hold at least vocab elements. The pointer wrapper is stable
+// across grow — callers pass the same *[]float64 to the matching
+// pool.Put when done, which preserves any grown cap (no second
+// wrapper alloc per call). Pool entries pre-sized to the running
+// vocab amortise to zero per-call alloc cost across an entire
+// distillation run.
+//
+// Per W10-G *Array pool routing: wrap the slice header in *[]T so
+// sync.Pool retains a pointer (no per-Get/Put interface escape) and
+// any cap grow via `*ptr = make(...)` flows back into the pool on
+// the next Put.
+func distillGetFloat64Scratch(pool *sync.Pool, vocab int) *[]float64 {
+	if v := pool.Get(); v != nil {
+		ptr := v.(*[]float64)
+		if cap(*ptr) < vocab {
+			*ptr = make([]float64, vocab)
+		} else {
+			*ptr = (*ptr)[:vocab]
+		}
+		return ptr
+	}
+	buf := make([]float64, vocab)
+	return &buf
+}
+
+// distillPutScratchBuffers returns the three log-softmax scratch
+// pointers to their respective pools. Grouped helper so the multiple
+// error-return paths in DistillationBatchLoss stay one-liners
+// instead of three lines per terminus.
+func distillPutScratchBuffers(teacherPtr, teacherProbPtr, studentPtr *[]float64) {
+	if teacherPtr != nil {
+		distillTeacherScratchPool.Put(teacherPtr)
+	}
+	if teacherProbPtr != nil {
+		distillTeacherProbPool.Put(teacherProbPtr)
+	}
+	if studentPtr != nil {
+		distillStudentScratchPool.Put(studentPtr)
+	}
+}
+
+func formatDistillTemperature(temp float64) string {
+	bits := math.Float64bits(temp)
+	if cached := distillTempStringCache.Load(); cached != nil && cached.bits == bits {
+		return cached.formatted
+	}
+	formatted := strconv.FormatFloat(temp, 'f', 6, 64)
+	distillTempStringCache.Store(&distillTempCacheCell{bits: bits, formatted: formatted})
+	return formatted
+}
+
 func emitDistillProbe(cfg DistillConfig, result *DistillResult, loss *DistillLoss, cacheStatus string, epoch int) {
 	if cfg.ProbeSink == nil {
 		return
 	}
-	meta := make(map[string]string, 7)
+	metaPtr := distillProbeMetaPool.Get().(*map[string]string)
+	meta := *metaPtr
+	// Don't bother clear()-ing — every key is reassigned each call,
+	// so any stale value is overwritten before the map is read by the
+	// sink. Pool entries land here with their bucket array already
+	// warm (cap 8) from a previous iteration.
 	meta["distillation"] = "true"
 	meta["loss_kind"] = string(loss.Kind)
-	meta["temperature"] = strconv.FormatFloat(loss.Temperature, 'f', 6, 64)
+	meta["temperature"] = formatDistillTemperature(loss.Temperature)
 	meta["tokens"] = core.Itoa(loss.Tokens)
 	meta["teacher_cache"] = cacheStatus
 	meta["checkpoint_count"] = core.Itoa(len(result.Checkpoints))
 	meta["evaluation_count"] = core.Itoa(len(result.Evaluations))
+
+	training := distillProbeTrainingPool.Get().(*probe.Training)
+	training.Step = result.Metrics.Steps
+	training.Epoch = epoch
+	training.Loss = loss.Value
+	training.LearningRate = cfg.LearningRate
+
 	cfg.ProbeSink.EmitProbe(probe.Event{
-		Kind:  probe.KindTraining,
-		Phase: probe.PhaseTraining,
-		Step:  result.Metrics.Steps,
-		Meta:  meta,
-		Training: &probe.Training{
-			Step:         result.Metrics.Steps,
-			Epoch:        epoch,
-			Loss:         loss.Value,
-			LearningRate: cfg.LearningRate,
-		},
+		Kind:     probe.KindTraining,
+		Phase:    probe.PhaseTraining,
+		Step:     result.Metrics.Steps,
+		Meta:     meta,
+		Training: training,
 	})
+	// Public Sink contract — by the time EmitProbe returns, the sink
+	// has either consumed-by-value (in-process listener) or cloned
+	// (Recorder.EmitProbe → CloneEvent does a deep-copy of meta +
+	// Training). Either way the pool can take the map and pointer
+	// back without aliasing risk.
+	distillProbeTrainingPool.Put(training)
+	distillProbeMetaPool.Put(metaPtr)
 }
 
 // DistillationBatchLoss computes KL and soft cross-entropy over masked tokens.
@@ -588,7 +714,18 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 	// teacherProbScratch holds prob(x) = exp(log_prob(x)) computed once
 	// inside the log-softmax loop — the inner accumulator below would
 	// otherwise call math.Exp per element to recover it.
+	//
+	// The buffers themselves are now pooled across distillation calls —
+	// vocab is process-invariant (tokenizer-fixed), so pool entries hold
+	// the right cap from the first call onwards and DistillationBatchLoss
+	// itself amortises down to zero per-call alloc cost (3 × vocab × 8 B
+	// saved per call, e.g. ~768 KB for 32k vocab). Avoiding `defer` here
+	// is deliberate — a deferred Put closure heap-allocates the defer
+	// record on every call, which would re-introduce the alloc the pool
+	// is trying to eliminate. Pool puts run on the explicit return paths
+	// below (one per terminal branch).
 	var teacherScratch, teacherProbScratch, studentScratch []float64
+	var teacherScratchPtr, teacherProbPtr, studentScratchPtr *[]float64
 	// Hoist mask-empty once — an empty mask means "all tokens included",
 	// so per-cell calls were wasted when the mask is absent or zero-length.
 	// maskRows is non-nil only when we need per-row inspection.
@@ -634,17 +771,33 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 				sCell := sRow[j]
 				vocab := len(tCell)
 				if cap(teacherScratch) < vocab {
-					teacherScratch = make([]float64, vocab)
-					teacherProbScratch = make([]float64, vocab)
-					studentScratch = make([]float64, vocab)
+					// First-call cap grow (pool warm-up) or vocab-growth
+					// across the per-cell variation case. Lift the pool
+					// pointer once and grow in place — subsequent cap
+					// trips inside this call grow the existing pointer
+					// without re-Get'ing a fresh wrapper.
+					if teacherScratchPtr == nil {
+						teacherScratchPtr = distillGetFloat64Scratch(&distillTeacherScratchPool, vocab)
+						teacherProbPtr = distillGetFloat64Scratch(&distillTeacherProbPool, vocab)
+						studentScratchPtr = distillGetFloat64Scratch(&distillStudentScratchPool, vocab)
+					} else {
+						*teacherScratchPtr = make([]float64, vocab)
+						*teacherProbPtr = make([]float64, vocab)
+						*studentScratchPtr = make([]float64, vocab)
+					}
+					teacherScratch = *teacherScratchPtr
+					teacherProbScratch = *teacherProbPtr
+					studentScratch = *studentScratchPtr
 				}
 				teacherScratch = teacherScratch[:vocab]
 				teacherProbScratch = teacherProbScratch[:vocab]
 				studentScratch = studentScratch[:vocab]
 				if err := logSoftmaxAndProbInvTempInto(tCell, invTemp, teacherScratch, teacherProbScratch); err != nil {
+					distillPutScratchBuffers(teacherScratchPtr, teacherProbPtr, studentScratchPtr)
 					return DistillLoss{}, err
 				}
 				if err := logSoftmaxInvTempInto(sCell, invTemp, studentScratch); err != nil {
+					distillPutScratchBuffers(teacherScratchPtr, teacherProbPtr, studentScratchPtr)
 					return DistillLoss{}, err
 				}
 				// Teacher probabilities are already in teacherProbScratch —
@@ -670,17 +823,28 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			sCell := sRow[j]
 			vocab := len(tCell)
 			if cap(teacherScratch) < vocab {
-				teacherScratch = make([]float64, vocab)
-				teacherProbScratch = make([]float64, vocab)
-				studentScratch = make([]float64, vocab)
+				if teacherScratchPtr == nil {
+					teacherScratchPtr = distillGetFloat64Scratch(&distillTeacherScratchPool, vocab)
+					teacherProbPtr = distillGetFloat64Scratch(&distillTeacherProbPool, vocab)
+					studentScratchPtr = distillGetFloat64Scratch(&distillStudentScratchPool, vocab)
+				} else {
+					*teacherScratchPtr = make([]float64, vocab)
+					*teacherProbPtr = make([]float64, vocab)
+					*studentScratchPtr = make([]float64, vocab)
+				}
+				teacherScratch = *teacherScratchPtr
+				teacherProbScratch = *teacherProbPtr
+				studentScratch = *studentScratchPtr
 			}
 			teacherScratch = teacherScratch[:vocab]
 			teacherProbScratch = teacherProbScratch[:vocab]
 			studentScratch = studentScratch[:vocab]
 			if err := logSoftmaxAndProbInvTempInto(tCell, invTemp, teacherScratch, teacherProbScratch); err != nil {
+				distillPutScratchBuffers(teacherScratchPtr, teacherProbPtr, studentScratchPtr)
 				return DistillLoss{}, err
 			}
 			if err := logSoftmaxInvTempInto(sCell, invTemp, studentScratch); err != nil {
+				distillPutScratchBuffers(teacherScratchPtr, teacherProbPtr, studentScratchPtr)
 				return DistillLoss{}, err
 			}
 			for k, teacherProb := range teacherProbScratch {
@@ -690,6 +854,7 @@ func DistillationBatchLoss(teacher, student DistillLogits, mask [][]float32, cfg
 			tokens++
 		}
 	}
+	distillPutScratchBuffers(teacherScratchPtr, teacherProbPtr, studentScratchPtr)
 	if tokens == 0 {
 		return DistillLoss{}, errDistillNoMaskedTokens
 	}
