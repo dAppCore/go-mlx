@@ -6,8 +6,10 @@ package metal
 
 import (
 	"math"
+	"runtime"
 	"slices"
 	"sync"
+	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -209,10 +211,6 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	if logits == nil || !logits.Valid() {
 		return nil, core.NewError("mlx: logits are empty")
 	}
-	values := logits.Floats()
-	if len(values) == 0 {
-		return nil, core.NewError("mlx: logits are empty")
-	}
 
 	// Dedup + sort suppressTokens via pooled scratch so the inner loop can
 	// use binary search instead of a per-call map[int32]bool allocation
@@ -232,9 +230,36 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	slices.Sort(scratch)
 	suppressed := slices.Compact(scratch)
 
+	// Scan logits via a borrowed MLX-memory view rather than copying to a
+	// freshly-allocated Go []float32 (logits.Floats() does make([]float32, n)
+	// + per-element copy — ~1MB on a 258k Gemma vocab).  Argmax is read-only,
+	// no copy needed.  Dtype-convert via AsType if non-float32 so the view
+	// remains float32-typed.
+	src, converted, err := materialiseFloat32View(logits)
+	if err != nil {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, err
+	}
+	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil {
+		Free(converted)
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	view := unsafe.Slice(ptr, n)
+
 	bestID := int32(-1)
 	bestValue := float32(math.Inf(-1))
-	for id, value := range values {
+	for id, value := range view {
 		tokenID := int32(id)
 		if math.IsNaN(float64(value)) {
 			continue
@@ -247,6 +272,8 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 			bestValue = value
 		}
 	}
+	runtime.KeepAlive(src)
+	Free(converted)
 
 	*scratchPtr = scratch
 	suppressIDsScratch.Put(scratchPtr)
@@ -255,6 +282,29 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 		return nil, core.NewError("mlx: no finite unsuppressed logits available")
 	}
 	return fromSingleInt32(bestID), nil
+}
+
+// materialiseFloat32View returns a borrowed view-source for hostside scans of
+// a logits tensor.  Result.converted is non-nil iff a dtype conversion was
+// needed (caller must Free it after the scan finishes).
+func materialiseFloat32View(t *Array) (src, converted *Array, err error) {
+	src = t
+	if t.Dtype() != DTypeFloat32 {
+		converted = AsType(t, DTypeFloat32)
+		Materialize(converted)
+		src = converted
+	}
+	if !src.IsRowContiguous() {
+		c := Contiguous(src)
+		Materialize(c)
+		if converted != nil {
+			Free(converted)
+		}
+		converted = c
+		src = c
+	}
+	Materialize(src)
+	return src, converted, nil
 }
 
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
