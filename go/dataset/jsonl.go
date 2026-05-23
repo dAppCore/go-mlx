@@ -316,9 +316,17 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 	if len(messages) == 0 {
 		return Sample{}, false, nil
 	}
+	// The internal LoadJSONL path feeds MessagesToSample already-
+	// normalised Role values (appendMessagesFromOpenAI/ShareGPT both
+	// run chat.NormaliseRole before assembling the slice), so most
+	// scans hit the direct-compare fast path with zero NormaliseRole
+	// function-call overhead. NormaliseRole stays as the fallback for
+	// external callers passing un-normalised roles ("gpt", "bot",
+	// "MODEL") so the public contract is unchanged.
 	assistantIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if chat.NormaliseRole(messages[i].Role) == "assistant" {
+		role := messages[i].Role
+		if role == "assistant" || chat.NormaliseRole(role) == "assistant" {
 			assistantIdx = i
 			break
 		}
