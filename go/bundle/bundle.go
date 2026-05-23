@@ -248,6 +248,12 @@ func New(snapshot *kv.Snapshot, opts Options) (*Bundle, error) {
 // Save writes the bundle as stable indented JSON.
 //
 //	if err := b.Save(path); err != nil { … }
+//
+// The two-space indent is the human-debug contract: `Save` output is the
+// canonical artifact developers `cat` / diff during a session crash or a
+// bundle-shape audit. Switching this to compact JSON would break that
+// contract — use SaveCompact when disk footprint matters more than
+// readability (cold-storage, State-container packaging, archive tiers).
 func (b *Bundle) Save(path string) error {
 	if err := b.Validate(); err != nil {
 		return err
@@ -262,7 +268,32 @@ func (b *Bundle) Save(path string) error {
 	return nil
 }
 
-// Load reads a bundle saved by (*Bundle).Save.
+// SaveCompact writes the bundle as newlineless JSON for cold storage.
+//
+//	if err := b.SaveCompact(path); err != nil { … }
+//
+// Wire-identical to Save — same field order, same value encoding, same
+// `Load` round-trips both forms. The only difference is whitespace:
+// `Save` emits `{\n  "version": 1,\n  ...}` (~75% whitespace on a typical
+// bundle); `SaveCompact` emits `{"version":1,...}`. Pair with State
+// container packaging (.mp4 chunks embedding bundle headers) or any
+// archive tier where on-disk footprint dominates human-debug ergonomics.
+// Load auto-detects both — no SaveCompact-specific reader needed.
+func (b *Bundle) SaveCompact(path string) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	data := core.JSONMarshal(b)
+	if !data.OK {
+		return core.E("bundle.SaveCompact", "marshal bundle", resultError(data))
+	}
+	if result := core.WriteFile(path, data.Value.([]byte), 0o600); !result.OK {
+		return core.E("bundle.SaveCompact", "write bundle", resultError(result))
+	}
+	return nil
+}
+
+// Load reads a bundle saved by (*Bundle).Save or (*Bundle).SaveCompact.
 //
 //	b, err := bundle.Load(path)
 func Load(path string) (*Bundle, error) {
