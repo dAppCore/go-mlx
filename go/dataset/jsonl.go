@@ -324,11 +324,14 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 		}
 	}
 	if assistantIdx < 0 {
-		text := chat.Format(messages, chat.Config{
-			Architecture:       cfg.Architecture,
-			Template:           cfg.Template,
-			NoGenerationPrompt: true,
-		})
+		// Copy + tweak the supplied config rather than rebuilding from
+		// fields. The literal form duplicates the field list (drift risk
+		// when chat.Config gains a field) and forces the compiler to
+		// re-emit each field store; the copy is a single 24-byte stack
+		// move on arm64 (chat.Config is two strings + bool padded).
+		noPromptCfg := cfg
+		noPromptCfg.NoGenerationPrompt = true
+		text := chat.Format(messages, noPromptCfg)
 		return labelled(Sample{Text: text}, format), true, nil
 	}
 	// chat.Format only reads from its slice argument (verified: all
