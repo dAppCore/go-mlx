@@ -573,8 +573,14 @@ func normaliseRuntime(runtime Runtime) Runtime {
 }
 
 func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Adapter {
+	// Track whether TargetKeys was supplied by AdapterFromInfo — that path
+	// already SliceClones from info.TargetKeys, so the defensive clone at
+	// function-end would be a redundant second copy. Caller-supplied
+	// adapter.TargetKeys still aliases user-owned memory and must clone.
+	keysFromInfo := false
 	if AdapterEmpty(adapter) && !info.IsEmpty() {
 		adapter = AdapterFromInfo(info)
+		keysFromInfo = true
 	}
 	if adapter.Path == "" {
 		adapter.Path = adapterPath
@@ -621,7 +627,9 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 	if allEmpty {
 		adapter.Hash = ""
 	}
-	adapter.TargetKeys = core.SliceClone(adapter.TargetKeys)
+	if !keysFromInfo {
+		adapter.TargetKeys = core.SliceClone(adapter.TargetKeys)
+	}
 	return adapter
 }
 
