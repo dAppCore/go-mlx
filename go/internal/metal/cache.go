@@ -129,6 +129,13 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.ShapeInto(vShapeBuf[:0])[3]
 
+	// Hoist the per-call DefaultStream() lookup outside the four
+	// Slice4 / SliceUpdateInplace4 calls below (W11-AD).  Each lookup
+	// acquires defaultStreamOverrideMu.RLock and re-reads the cached
+	// device atomic — measurable lock-acquisition cost on the 512-token
+	// decode (2048 calls collapses to 512 lookups, one per Update).
+	stream := DefaultStream()
+
 	// Grow buffer if needed.
 	if c.keys == nil || (prev+seqLen) > c.keys.Dim(2) {
 		nSteps := (c.step + seqLen - 1) / c.step
@@ -138,8 +145,8 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		if c.keys != nil {
 			oldK, oldV := c.keys, c.values
 			if prev%c.step != 0 {
-				oldK = Slice4(oldK, 0, 0, 0, 0, B, H, int32(prev), Dk)
-				oldV = Slice4(oldV, 0, 0, 0, 0, B, H, int32(prev), Dv)
+				oldK = Slice4WithStream(oldK, 0, 0, 0, 0, B, H, int32(prev), Dk, stream)
+				oldV = Slice4WithStream(oldV, 0, 0, 0, 0, B, H, int32(prev), Dv, stream)
 				Free(c.keys, c.values)
 			}
 			c.keys = Concatenate([]*Array{oldK, newK}, 2)
@@ -152,12 +159,12 @@ func (c *KVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 
 	c.offset += seqLen
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace4(c.keys, k, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dk)
-	c.values = SliceUpdateInplace4(c.values, v, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dv)
+	c.keys = SliceUpdateInplace4WithStream(c.keys, k, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dk, stream)
+	c.values = SliceUpdateInplace4WithStream(c.values, v, 0, 0, int32(prev), 0, B, H, int32(c.offset), Dv, stream)
 	Free(oldK, oldV)
 
-	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.offset), Dk),
-		Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.offset), Dv)
+	return Slice4WithStream(c.keys, 0, 0, 0, 0, B, H, int32(c.offset), Dk, stream),
+		Slice4WithStream(c.values, 0, 0, 0, 0, B, H, int32(c.offset), Dv, stream)
 }
 
 func (c *KVCache) State() []*Array {
@@ -258,6 +265,12 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	// Hoist the per-call DefaultStream() lookup outside the Slice4 /
+	// SliceUpdateInplace4 calls below (W11-AD).  Both the past-cap and
+	// below-cap paths issue 2-4 Slice4-family calls; resolving the
+	// stream once collapses the RWMutex.RLock + atomic load to one.
+	stream := DefaultStream()
+
 	// Past-cap fast path: temporally drop-and-append.
 	//
 	// The previous ring layout did SliceUpdateInplace at idx (write step) then
@@ -268,16 +281,16 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// fresh buffer per K/V per token instead of two.
 	if c.keys != nil && c.idx >= c.maxSize {
 		oldK, oldV := c.keys, c.values
-		prefixK := Slice4(oldK, 0, 0, 1, 0, B, H, int32(c.maxSize), Dk)
-		prefixV := Slice4(oldV, 0, 0, 1, 0, B, H, int32(c.maxSize), Dv)
+		prefixK := Slice4WithStream(oldK, 0, 0, 1, 0, B, H, int32(c.maxSize), Dk, stream)
+		prefixV := Slice4WithStream(oldV, 0, 0, 1, 0, B, H, int32(c.maxSize), Dv, stream)
 		c.keys = Concatenate([]*Array{prefixK, k}, 2)
 		c.values = Concatenate([]*Array{prefixV, v}, 2)
 		Free(oldK, oldV, prefixK, prefixV)
 		c.offset++
 		// idx stays at maxSize — buffer is now full and temporally ordered.
 		// Return Slice views so caller Free() does not invalidate c.keys.
-		return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.maxSize), Dk),
-			Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.maxSize), Dv)
+		return Slice4WithStream(c.keys, 0, 0, 0, 0, B, H, int32(c.maxSize), Dk, stream),
+			Slice4WithStream(c.values, 0, 0, 0, 0, B, H, int32(c.maxSize), Dv, stream)
 	}
 
 	// Below cap: grow + write at temporal tail (same as legacy growth path).
@@ -303,8 +316,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// SliceUpdate (the IDEAS.md "good shape" pre-allocated buffer with
 	// offset indexing).
 	oldK, oldV := c.keys, c.values
-	c.keys = SliceUpdateInplace4(c.keys, k, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dk)
-	c.values = SliceUpdateInplace4(c.values, v, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dv)
+	c.keys = SliceUpdateInplace4WithStream(c.keys, k, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dk, stream)
+	c.values = SliceUpdateInplace4WithStream(c.values, v, 0, 0, int32(c.idx), 0, B, H, int32(c.idx+1), Dv, stream)
 	Free(oldK, oldV)
 
 	c.offset++
@@ -313,8 +326,8 @@ func (c *RotatingKVCache) updateInPlace(k, v *Array) (*Array, *Array) {
 	// Below cap the storage may extend past idx (pre-allocated headroom);
 	// return a view bounded to the valid window.
 	window := min(c.offset, c.maxSize)
-	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(window), Dk),
-		Slice4(c.values, 0, 0, 0, 0, B, H, int32(window), Dv)
+	return Slice4WithStream(c.keys, 0, 0, 0, 0, B, H, int32(window), Dk, stream),
+		Slice4WithStream(c.values, 0, 0, 0, 0, B, H, int32(window), Dv, stream)
 }
 
 func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array) {
@@ -330,12 +343,17 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	B, H, Dk := shape[0], shape[1], shape[3]
 	Dv := v.Shape()[3]
 
+	// One DefaultStream() resolution per Update covers the up-to-six
+	// Slice4 calls below (W11-AD).  Less hot than updateInPlace, but
+	// the saving is free given the variants already exist.
+	stream := DefaultStream()
+
 	// Compose the current temporally-ordered prefix (slots [0, idx)) with the
 	// incoming multi-token segment.
 	var prevK, prevV *Array
 	if c.keys != nil && c.keys.Valid() && c.idx > 0 {
-		prevK = Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk)
-		prevV = Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv)
+		prevK = Slice4WithStream(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk, stream)
+		prevV = Slice4WithStream(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv, stream)
 	}
 
 	var fullK, fullV *Array
@@ -356,18 +374,18 @@ func (c *RotatingKVCache) updateConcat(k, v *Array, seqLen int) (*Array, *Array)
 	if trim := full - c.maxSize; trim > 0 {
 		// Preserve the full multi-token prompt for the current attention pass,
 		// while storing only the bounded sliding window for future decode steps.
-		c.keys = Slice4(fullK, 0, 0, int32(trim), 0, B, H, int32(full), Dk)
-		c.values = Slice4(fullV, 0, 0, int32(trim), 0, B, H, int32(full), Dv)
+		c.keys = Slice4WithStream(fullK, 0, 0, int32(trim), 0, B, H, int32(full), Dk, stream)
+		c.values = Slice4WithStream(fullV, 0, 0, int32(trim), 0, B, H, int32(full), Dv, stream)
 		c.idx = int(c.keys.Shape()[2])
-		return Slice4(fullK, 0, 0, 0, 0, B, H, int32(full), Dk),
-			Slice4(fullV, 0, 0, 0, 0, B, H, int32(full), Dv)
+		return Slice4WithStream(fullK, 0, 0, 0, 0, B, H, int32(full), Dk, stream),
+			Slice4WithStream(fullV, 0, 0, 0, 0, B, H, int32(full), Dv, stream)
 	}
 
 	c.keys, c.values = fullK, fullV
 	c.idx = full
 	// Return Slice views so callers can Free them without destroying the cache.
-	return Slice4(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk),
-		Slice4(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv)
+	return Slice4WithStream(c.keys, 0, 0, 0, 0, B, H, int32(c.idx), Dk, stream),
+		Slice4WithStream(c.values, 0, 0, 0, 0, B, H, int32(c.idx), Dv, stream)
 }
 
 func (c *RotatingKVCache) orderedState() []*Array {
