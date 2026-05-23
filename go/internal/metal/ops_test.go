@@ -57,6 +57,82 @@ func TestOps_MulScalar_Good(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{3, 6, 9})
 }
 
+// TestOps_ScalarBridge_Parity locks the W11-F inline-C bridge result to
+// bit-exact equality with the legacy FromValue + binary-op + Free path so
+// a regression in the bridge would surface as a fast failure rather than
+// a silent kernel-divergence in some model file.  Mirrors how W10-A
+// validated Slice / SliceUpdateInplace inline-C against the prior cgo
+// triple-buffer slow path.
+func TestOps_ScalarBridge_Parity(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []float32
+		scalar float32
+	}{
+		{"small_pos", []float32{1, 2, 3, 4}, 2.5},
+		{"small_neg", []float32{1, -2, 3, -4}, -1.5},
+		{"zero_scalar", []float32{7, -1, 0.5, 9}, 0},
+		{"one_scalar", []float32{0.125, 0.25, 0.5, 1}, 1},
+		{"large_array", make([]float32, 2048), 0.7071},
+	}
+	for i := range cases[len(cases)-1].values {
+		cases[len(cases)-1].values[i] = float32(i)*0.001 - 1.0
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name+"/MulScalar", func(t *testing.T) {
+			// Bridge (current implementation).
+			a := FromValues(tc.values, int(len(tc.values)))
+			defer Free(a)
+			bridge := MulScalar(a, tc.scalar)
+			defer Free(bridge)
+			Materialize(bridge)
+
+			// Legacy two-step path.
+			scalar := FromValue(tc.scalar)
+			legacy := Mul(a, scalar)
+			Free(scalar)
+			defer Free(legacy)
+			Materialize(legacy)
+
+			bf, lf := bridge.Floats(), legacy.Floats()
+			if len(bf) != len(lf) {
+				t.Fatalf("length mismatch: bridge=%d legacy=%d", len(bf), len(lf))
+			}
+			for i := range bf {
+				if bf[i] != lf[i] {
+					t.Fatalf("bit divergence at i=%d: bridge=%v legacy=%v", i, bf[i], lf[i])
+				}
+			}
+		})
+
+		t.Run(tc.name+"/AddScalar", func(t *testing.T) {
+			a := FromValues(tc.values, int(len(tc.values)))
+			defer Free(a)
+			bridge := AddScalar(a, tc.scalar)
+			defer Free(bridge)
+			Materialize(bridge)
+
+			scalar := FromValue(tc.scalar)
+			legacy := Add(a, scalar)
+			Free(scalar)
+			defer Free(legacy)
+			Materialize(legacy)
+
+			bf, lf := bridge.Floats(), legacy.Floats()
+			if len(bf) != len(lf) {
+				t.Fatalf("length mismatch: bridge=%d legacy=%d", len(bf), len(lf))
+			}
+			for i := range bf {
+				if bf[i] != lf[i] {
+					t.Fatalf("bit divergence at i=%d: bridge=%v legacy=%v", i, bf[i], lf[i])
+				}
+			}
+		})
+	}
+}
+
 func TestOps_Divide_Good(t *testing.T) {
 	a := FromValues([]float32{10, 20, 30}, 3)
 	b := FromValues([]float32{2, 5, 10}, 3)
