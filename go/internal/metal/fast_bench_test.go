@@ -98,3 +98,38 @@ func BenchmarkSingleTokenCacheUpdate_Heads32_Cap4096_D128(b *testing.B) {
 		Free(updated)
 	}
 }
+
+// --- singleTokenCausalMask ---
+//
+// Per-layer causal mask build during decode. W11-Y measured this
+// surface to investigate caching the 0 / -1e9 scalars at package
+// scope (saving the per-call FromValue + Free pair), but the cached
+// variant regressed wall-clock by ~55 percent at both 512 and 4096
+// capacity — MLX's Where op pays measurable refcount-management
+// overhead when the same scalar arrays are aliased across many
+// invocations. Benches kept so the next visitor sees the surface
+// without needing to re-add coverage.
+
+func BenchmarkSingleTokenCausalMask_Cap512(b *testing.B) {
+	offset := FromValue(7)
+	defer Free(offset)
+	Materialize(offset)
+	b.ReportAllocs()
+	for b.Loop() {
+		mask := singleTokenCausalMask(512, offset)
+		Materialize(mask)
+		Free(mask)
+	}
+}
+
+func BenchmarkSingleTokenCausalMask_Cap4096(b *testing.B) {
+	offset := FromValue(123)
+	defer Free(offset)
+	Materialize(offset)
+	b.ReportAllocs()
+	for b.Loop() {
+		mask := singleTokenCausalMask(4096, offset)
+		Materialize(mask)
+		Free(mask)
+	}
+}
