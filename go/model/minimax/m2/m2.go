@@ -775,7 +775,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if err != nil {
 		return JANGPackedProjectionTensor{}, err
 	}
-	scaleRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "scales"))
+	scaleRef, _, ok := findSidecarRef(index, spec, weightName, "scales")
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing scales for " + spec.Name)
 	}
@@ -783,7 +783,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if err != nil {
 		return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read scales", err)
 	}
-	biasRef, _, ok := findSafetensorRef(index, sidecarCandidates(spec, weightName, "biases"))
+	biasRef, _, ok := findSidecarRef(index, spec, weightName, "biases")
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing biases for " + spec.Name)
 	}
@@ -1078,6 +1078,61 @@ func sidecarCandidates(spec *TensorSpec, weightName, sidecar string) []string {
 		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
 	}
 	return out
+}
+
+// findSidecarRef inlines the sidecarCandidates fan-out + findSafetensorRef
+// loop so common-case hits return before materialising the full candidate
+// slice. Sidecar resolution happens twice per packed projection (scales,
+// biases) and each layer×expert pass walks through many projections, so
+// shaving the slice + per-string-concat allocs adds up at model load. The
+// first-hit early return mirrors the production checkpoint shape where
+// weightName+"."+sidecar is the canonical layout — the alternatives only
+// fire for legacy or aliased checkpoints.
+//
+//	ref, name, ok := findSidecarRef(index, spec, weightName, "scales")
+func findSidecarRef(index safetensors.Index, spec *TensorSpec, weightName, sidecar string) (safetensors.TensorRef, string, bool) {
+	dot := "." + sidecar
+	underscore := "_" + sidecar
+	if ref, name, ok := trySidecarName(index, weightName, dot, underscore); ok {
+		return ref, name, true
+	}
+	if trimmed := trimPackedSuffix(weightName); trimmed != weightName {
+		if ref, name, ok := trySidecarName(index, trimmed, dot, underscore); ok {
+			return ref, name, true
+		}
+	}
+	if ref, name, ok := trySidecarName(index, spec.Name, dot, underscore); ok {
+		return ref, name, true
+	}
+	for _, alias := range spec.Aliases {
+		if ref, name, ok := trySidecarName(index, alias, dot, underscore); ok {
+			return ref, name, true
+		}
+	}
+	return safetensors.TensorRef{}, "", false
+}
+
+// trySidecarName probes the three sidecar-name shapes (name+dot,
+// trim(name)+dot, name+underscore) against the safetensors index and
+// returns on the first hit. Hoisted out of findSidecarRef so the call
+// is a plain function dispatch rather than a closure (which would
+// escape to the heap and undo the alloc win).
+func trySidecarName(index safetensors.Index, name, dot, underscore string) (safetensors.TensorRef, string, bool) {
+	candidate := name + dot
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	if trimmed := trimWeightSuffix(name); trimmed != name {
+		candidate = trimmed + dot
+		if ref, ok := index.Tensors[candidate]; ok {
+			return ref, candidate, true
+		}
+	}
+	candidate = name + underscore
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	return safetensors.TensorRef{}, "", false
 }
 
 func projectionBiasCandidates(spec *TensorSpec, weightName string) []string {

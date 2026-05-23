@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"dappco.re/go/mlx/probe"
+	"dappco.re/go/mlx/safetensors"
 )
 
 // BenchmarkRouteTokens exercises sigmoid scoring + top-k sort + renormalisation
@@ -223,6 +224,45 @@ func BenchmarkSidecarCandidates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = sidecarCandidates(&spec, weightName, "scales")
+	}
+}
+
+// BenchmarkFindSidecarRef_Hit measures the inline candidate-walk pattern
+// when the canonical weightName+"."+sidecar entry resolves first — the
+// production-load shape where checkpoints carry the standard layout. The
+// goal is to expose that the inline path avoids the allocation of the
+// transient candidate slice when the hit lands on the first probe.
+func BenchmarkFindSidecarRef_Hit(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
+	index := safetensors.Index{
+		Tensors: map[string]safetensors.TensorRef{
+			weightName + ".scales": {Name: weightName + ".scales", DType: "F32"},
+		},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = findSidecarRef(index, &spec, weightName, "scales")
+	}
+}
+
+// BenchmarkFindSidecarRef_Miss measures the worst case where every
+// candidate fails — exercises the full fan-out to confirm the inline
+// pattern doesn't regress against the slice-based predecessor on a
+// total-miss search.
+func BenchmarkFindSidecarRef_Miss(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
+	index := safetensors.Index{Tensors: map[string]safetensors.TensorRef{}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = findSidecarRef(index, &spec, weightName, "scales")
 	}
 }
 
