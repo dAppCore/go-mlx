@@ -673,11 +673,14 @@ func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profi
 	if profileHint == nil || !profileHint.MoE {
 		return
 	}
-	p := *profileHint
+	// Reach through the pointer for the single field we use rather
+	// than copying the whole 200-byte ModelArchitectureProfile struct
+	// onto the stack for one string read. The Plan-bound ID field is
+	// just the architecture name, not a clone of the profile.
 	plan.ExpertResidency = ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    ExpertResidencyModeLazy,
-		Architecture:            p.ID,
+		Architecture:            profileHint.ID,
 		MaxResidentExperts:      genericMoEResidentExpertLimit(plan.MachineClass),
 		PageInBatchSize:         1,
 		EvictionPolicy:          ExpertEvictionLRU,
