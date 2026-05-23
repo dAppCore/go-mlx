@@ -236,7 +236,11 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		}
 		return chapterError(report, err.Error())
 	}
-	counting := newCountingStore(reader.Store)
+	// Pre-size the unique-chunk dedup map to the bundle's block count so
+	// the Generate-time record() path avoids map-grow rehashes; the upper
+	// bound on unique chunks read during prefix restore is the block list
+	// itself.
+	counting := newCountingStoreHint(reader.Store, len(loadedBundle.Blocks))
 	restoreStart := time.Now()
 	generation, err := runner.Generate(ctx, counting, loadedBundle, loadedBundle.TokenCount, questionPrompt(chapter))
 	report.RestoreDuration = nonZeroDuration(time.Since(restoreStart))
@@ -611,7 +615,14 @@ type countingStore struct {
 }
 
 func newCountingStore(store state.Store) *countingStore {
-	return &countingStore{store: store, unique: map[int]struct{}{}}
+	return newCountingStoreHint(store, 0)
+}
+
+// newCountingStoreHint constructs a countingStore with the unique-chunk
+// dedup map pre-sized to expectedUnique. Callers that already know an upper
+// bound (e.g. bundle block count) use this to skip map-grow rehashes.
+func newCountingStoreHint(store state.Store, expectedUnique int) *countingStore {
+	return &countingStore{store: store, unique: make(map[int]struct{}, expectedUnique)}
 }
 
 func (s *countingStore) Get(ctx context.Context, chunkID int) (string, error) {
