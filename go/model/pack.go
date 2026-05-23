@@ -903,15 +903,19 @@ func finalizeModelPack(pack *mp.ModelPack) {
 		nativeRuntime = pack.ArchitectureProfile.NativeRuntime
 	}
 	chatOK := pack.HasChatTemplate || !requiresChat
+	// HasErrorIssue scans pack.Issues for any error-severity entry —
+	// cache it once so NativeLoadable + OK share one walk instead of
+	// duplicating the scan for every finalize call.
+	hasError := pack.HasErrorIssue()
 	pack.NativeLoadable = pack.SupportedArchitecture &&
 		nativeRuntime &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		chatOK &&
 		(pack.Format == mp.ModelPackFormatSafetensors || pack.Format == mp.ModelPackFormatGGUF) &&
-		!pack.HasErrorIssue()
+		!hasError
 	pack.RequiresPythonConversion = !pack.NativeLoadable
-	pack.OK = !pack.HasErrorIssue()
+	pack.OK = !hasError
 }
 
 // SupportsArchitecture reports whether the named architecture has a known
