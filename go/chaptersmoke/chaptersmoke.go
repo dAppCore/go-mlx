@@ -40,16 +40,23 @@ const (
 // the package's lifetime; callers compare via errors.Is when discrimination
 // is needed.
 var (
-	errGenerateRequired       = core.NewError("chaptersmoke: runner requires Generate callback")
-	errCaptureRequired        = core.NewError("chaptersmoke: runner requires Capture callback")
-	errNoChapters             = core.NewError("chaptersmoke: requires at least one chapter")
-	errUnsupportedStoreKind   = core.NewError("chaptersmoke: unsupported store kind")
-	errCoreResultFailed       = core.NewError("core result failed")
-	errChapterTextEmpty       = core.NewError("chaptersmoke: chapter text is empty")
-	errChapterQuestionEmpty   = core.NewError("chaptersmoke: chapter question is empty")
-	errChapterNoBlocks        = core.NewError("chaptersmoke: wrote no KV blocks")
-	errChapterEmptyFileStore  = core.NewError("chaptersmoke: wrote empty file store")
+	errGenerateRequired      = core.NewError("chaptersmoke: runner requires Generate callback")
+	errCaptureRequired       = core.NewError("chaptersmoke: runner requires Capture callback")
+	errNoChapters            = core.NewError("chaptersmoke: requires at least one chapter")
+	errUnsupportedStoreKind  = core.NewError("chaptersmoke: unsupported store kind")
+	errCoreResultFailed      = core.NewError("core result failed")
+	errChapterTextEmpty      = core.NewError("chaptersmoke: chapter text is empty")
+	errChapterQuestionEmpty  = core.NewError("chaptersmoke: chapter question is empty")
+	errChapterNoBlocks       = core.NewError("chaptersmoke: wrote no KV blocks")
+	errChapterEmptyFileStore = core.NewError("chaptersmoke: wrote empty file store")
 )
+
+// captureLabels is the shared label slice passed via kv.StateBlockOptions on
+// every Capture invocation — lifted to package scope so each chapter does
+// not allocate an identical literal. Downstream consumers treat opts.Labels
+// as read-only (the session_agent fold path explicitly clones before
+// appending), so a shared backing array is safe.
+var captureLabels = []string{"chapter-smoke", "state-kv"}
 
 // Runner is the small driver surface the chapter-smoke orchestration needs.
 // Both callbacks close over caller-supplied model state — chaptersmoke does
@@ -198,7 +205,7 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		BlockSize:  cfg.BlockSize,
 		KVEncoding: kv.EncodingNative,
 		URI:        core.TrimSuffix(report.BundleURI, "/bundle"),
-		Labels:     []string{"chapter-smoke", "state-kv"},
+		Labels:     captureLabels,
 	})
 	report.CaptureDuration = nonZeroDuration(time.Since(captureStart))
 	if err == nil {
