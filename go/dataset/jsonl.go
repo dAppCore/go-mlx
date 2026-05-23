@@ -195,7 +195,13 @@ func (d *JSONLDataset) Samples() []Sample {
 // is captured for the next row, saving one alloc per chat-shape row
 // over the lifetime of a LoadJSONL call. chat.Format does not retain
 // its messages argument, so the caller can safely reuse the buffer.
-func (r jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
+//
+// Pointer receiver — jsonRecord is 14 fields totalling ~256 bytes; the
+// value-receiver form was copying the whole struct into the callee's
+// frame on every row, ~256 KB of stack memmove across a 1000-row
+// corpus. The pointer is read-only inside the method (we never mutate
+// r.*), so the call-site semantics are identical.
+func (r *jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
 	if text := core.Trim(r.Text); text != "" {
 		return labelled(Sample{Text: text}, "text"), true, nil
 	}
