@@ -637,11 +637,25 @@ func ProjectRouterScores(hidden [][]float32, router RouterWeights) ([][]float32,
 		// loop (16 tokens × 256 experts × 3072 fma = 12M iters per call).
 		hiddenRow := row[:hiddenSize:hiddenSize]
 		base := 0
+		// hiddenSize is invariant across experts; precompute the unroll
+		// boundary once per token instead of recomputing per expert.
+		// 4-way accumulator unroll helps the compiler issue back-to-back
+		// FMAs on Apple Silicon (W8-A2 pattern); tail loop handles the
+		// hiddenSize % 4 remainder.
+		unrollEnd := hiddenSize - (hiddenSize % 4)
 		for expertID := 0; expertID < numExperts; expertID++ {
 			expertWeights := weight[base : base+hiddenSize : base+hiddenSize]
-			sum := float32(0)
-			for i, w := range expertWeights {
-				sum += hiddenRow[i] * w
+			var s0, s1, s2, s3 float32
+			i := 0
+			for ; i < unrollEnd; i += 4 {
+				s0 += hiddenRow[i] * expertWeights[i]
+				s1 += hiddenRow[i+1] * expertWeights[i+1]
+				s2 += hiddenRow[i+2] * expertWeights[i+2]
+				s3 += hiddenRow[i+3] * expertWeights[i+3]
+			}
+			sum := s0 + s1 + s2 + s3
+			for ; i < hiddenSize; i++ {
+				sum += hiddenRow[i] * expertWeights[i]
 			}
 			scores[expertID] = sum
 			base += hiddenSize
