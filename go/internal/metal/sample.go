@@ -213,17 +213,33 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	if len(values) == 0 {
 		return nil, core.NewError("mlx: logits are empty")
 	}
-	suppressed := make(map[int32]bool, len(suppressTokens))
+
+	// Dedup + sort suppressTokens via pooled scratch so the inner loop can
+	// use binary search instead of a per-call map[int32]bool allocation
+	// (the original cost ~16B/entry + 8 allocs on a Gemma-sized suppress
+	// list).  Per-token hot path — fires whenever the sampler tries a
+	// suppressed id and falls through the guard.
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(suppressTokens) {
+		scratch = make([]int32, 0, len(suppressTokens))
+	}
 	for _, id := range suppressTokens {
 		if id >= 0 {
-			suppressed[id] = true
+			scratch = append(scratch, id)
 		}
 	}
+	slices.Sort(scratch)
+	suppressed := slices.Compact(scratch)
+
 	bestID := int32(-1)
 	bestValue := float32(math.Inf(-1))
 	for id, value := range values {
 		tokenID := int32(id)
-		if suppressed[tokenID] || math.IsNaN(float64(value)) {
+		if math.IsNaN(float64(value)) {
+			continue
+		}
+		if _, ok := slices.BinarySearch(suppressed, tokenID); ok {
 			continue
 		}
 		if bestID < 0 || value > bestValue {
@@ -231,6 +247,10 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 			bestValue = value
 		}
 	}
+
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
+
 	if bestID < 0 {
 		return nil, core.NewError("mlx: no finite unsuppressed logits available")
 	}
