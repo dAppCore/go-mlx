@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -16,6 +17,43 @@ import (
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
+
+// Compile-time layout guard for the metal.ProbeLogit / probe.Logit
+// reinterpret cast in toRootProbeLogits. Both types carry int32 +
+// float32 + float64 with the same Go field ordering; the assertions
+// below break the build if either struct grows / shrinks / changes
+// field order, forcing a manual review of the unsafe cast.
+var _ [unsafe.Sizeof(metal.ProbeLogit{}) - unsafe.Sizeof(probe.Logit{})]byte
+var _ [unsafe.Sizeof(probe.Logit{}) - unsafe.Sizeof(metal.ProbeLogit{})]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.TokenID) - unsafe.Offsetof(probe.Logit{}.TokenID)]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.Logit) - unsafe.Offsetof(probe.Logit{}.Logit)]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.Probability) - unsafe.Offsetof(probe.Logit{}.Probability)]byte
+
+// Compile-time layout guard for the inference.Message / metal.ChatMessage
+// reinterpret cast in chatMessagesAsMetal. Both types are {Role string;
+// Content string} with the same field order; the assertions below break
+// the build if either struct ever changes.
+var _ [unsafe.Sizeof(inference.Message{}) - unsafe.Sizeof(metal.ChatMessage{})]byte
+var _ [unsafe.Sizeof(metal.ChatMessage{}) - unsafe.Sizeof(inference.Message{})]byte
+var _ [unsafe.Offsetof(inference.Message{}.Role) - unsafe.Offsetof(metal.ChatMessage{}.Role)]byte
+var _ [unsafe.Offsetof(inference.Message{}.Content) - unsafe.Offsetof(metal.ChatMessage{}.Content)]byte
+
+// chatMessagesAsMetal reinterprets a []inference.Message as
+// []metal.ChatMessage without copying. The compile-time guards above
+// pin the layout match — both structs carry {Role string; Content
+// string} with the same field order, so a pointer-cast yields a
+// valid metal-side slice. The receiving Chat / ChatChunks paths only
+// read from the slice (they format the messages into a prompt string
+// and return), so the borrow lifetime is bounded by the call. The
+// prior pattern allocated a fresh []metal.ChatMessage + per-message
+// struct copy on every call — for long histories the slice + copy
+// dominated the dispatch cost for Chat / ChatStream / ChatChunksStream.
+func chatMessagesAsMetal(messages []inference.Message) []metal.ChatMessage {
+	if len(messages) == 0 {
+		return nil
+	}
+	return unsafe.Slice((*metal.ChatMessage)(unsafe.Pointer(&messages[0])), len(messages))
+}
 
 type nativeModel interface {
 	ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter
@@ -501,18 +539,17 @@ func toRootProbeLogits(logits []metal.ProbeLogit) []probe.Logit {
 	if len(logits) == 0 {
 		return nil
 	}
+	// W8-A2 unsafe reinterpret — metal.ProbeLogit and probe.Logit have
+	// bit-identical layout (int32 TokenID + float32 Logit + float64
+	// Probability, with the same field order). The compile-time guard
+	// at the top of the file fires if either struct ever drifts. Cast
+	// the source slice header in-place, then `copy` does one memcpy
+	// instead of len(logits) per-field unpacks. Top-K is commonly
+	// 50-100 entries per probe event, emitted per-token when ProbeSink
+	// is enabled — every saved unpack compounds across the generation.
+	src := unsafe.Slice((*probe.Logit)(unsafe.Pointer(&logits[0])), len(logits))
 	out := make([]probe.Logit, len(logits))
-	// Index iteration — ProbeLogit is 3 fields (int32 + 2 float32 = 12 B).
-	// Marginal per-entry, but probe.Logits.Top can hold the full Top-K
-	// (commonly 50-100 entries per probe event), and probe events are
-	// emitted per-token when ProbeSink is enabled.
-	for i := range logits {
-		out[i] = probe.Logit{
-			TokenID:     logits[i].TokenID,
-			Logit:       logits[i].Logit,
-			Probability: logits[i].Probability,
-		}
-	}
+	copy(out, src)
 	return out
 }
 
@@ -633,6 +670,20 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 	return out
 }
 
+// toRootAdapterInfo shuffles an already-cloned metal AdapterInfo into the
+// root-facing lora.AdapterInfo. All four callers pass slices that the
+// metal side already cloned for caller isolation:
+//
+//   * toRootMetrics — metrics.Adapter comes from m.lastMetrics.Adapter
+//     which is assigned via metal.(*Model).Adapter() (cloneMetalAdapterInfo).
+//   * adapterFromNativeInfo + (*Model).Adapter — info.Adapter likewise
+//     comes from m.Info() → m.Adapter() which clones.
+//   * inference_contract.go — passes adapter.model.Adapter() directly.
+//
+// The previous core.SliceClone(info.TargetKeys) at this layer was a
+// redundant second clone — drops a 64 B / 1 alloc per call by sharing
+// the already-isolated slice with the root-side handle. Every Info() /
+// Metrics() / Adapter() read on a LoRA-loaded model fires this site.
 func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
 	return lora.AdapterInfo{
 		Name:       info.Name,
@@ -641,7 +692,7 @@ func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: core.SliceClone(info.TargetKeys),
+		TargetKeys: info.TargetKeys,
 	}
 }
 
@@ -1248,15 +1299,13 @@ func (m *Model) Chat(messages []inference.Message, opts ...GenerateOption) (stri
 	}
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-	// Index iteration — the range-and-copy form copied each
-	// inference.Message (two string headers = 32 bytes) into the loop
-	// variable before we rebuilt the metal.ChatMessage. Chat lists are
-	// rarely empty and skip-the-copy pays back for any non-trivial
-	// conversation history.
-	metalMessages := make([]metal.ChatMessage, len(messages))
-	for i := range messages {
-		metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
-	}
+	// chatMessagesAsMetal is a layout-guarded reinterpret of the input
+	// slice — inference.Message and metal.ChatMessage are bit-identical
+	// ({Role string; Content string} same field order). The receiving
+	// metal.Chat path only reads (it formats the slice into a prompt
+	// string and returns); the borrow lifetime is bounded by this call,
+	// so dropping the make+per-message copy is sound.
+	metalMessages := chatMessagesAsMetal(messages)
 	builder := core.NewBuilder()
 	// Pre-grow for MaxTokens × 4-byte average — same heuristic as the
 	// FilterThinkingTokens decoder and Model.Generate above.
@@ -1586,11 +1635,10 @@ func (m *Model) ChatChunksStream(ctx context.Context, messages []inference.Messa
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		// Index iteration — same rationale as Model.Chat above.
-		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
-		}
+		// chatMessagesAsMetal reinterprets in place — see Model.Chat for
+		// the layout-guard rationale. Borrow lifetime ends with this
+		// call into the chat-chunk generator path.
+		metalMessages := chatMessagesAsMetal(messages)
 		if generator, ok := m.model.(nativeChatChunkGenerator); ok {
 			for tok := range generator.ChatChunks(ctx, metalMessages, chunkBytes, toMetalGenerateConfig(cfg)) {
 				text := filter.Process(tok.Text)
@@ -1640,11 +1688,10 @@ func (m *Model) ChatStream(ctx context.Context, messages []inference.Message, op
 		}
 		cfg := applyGenerateOptions(opts)
 		filter := parser.NewProcessor(cfg.Thinking, m.hintForParser())
-		// Index iteration — same rationale as Model.Chat above.
-		metalMessages := make([]metal.ChatMessage, len(messages))
-		for i := range messages {
-			metalMessages[i] = metal.ChatMessage{Role: messages[i].Role, Content: messages[i].Content}
-		}
+		// chatMessagesAsMetal reinterprets in place — see Model.Chat for
+		// the layout-guard rationale. Borrow lifetime ends with the
+		// streaming m.model.Chat call drained below.
+		metalMessages := chatMessagesAsMetal(messages)
 		for tok := range m.model.Chat(ctx, metalMessages, toMetalGenerateConfig(cfg)) {
 			text := filter.Process(tok.Text)
 			if text == "" {
