@@ -429,6 +429,13 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 // `pairs` is read via low.Dim(0) (single cgo call) rather than low.Shape()[0]
 // (which allocates a fresh []int32 just to read one dim) — saves one heap
 // alloc per dequantise on the rare Q4 dequant path.
+//
+// Reshape1 / Slice1 replace the rank-1 variadic Reshape / Slice calls
+// (W11-AC): `Reshape(stacked, int32(flatLen))` paid one variadic-slice
+// escape per dequant, and `Slice(flat, []int32{0}, []int32{int32(n)})`
+// paid two more on the (rare) odd-length tail-trim. The final
+// `Reshape(signed, shape...)` keeps the variadic form because the shape
+// comes from the caller as a slice of arbitrary rank.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -448,12 +455,12 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	Free(lowE, highE)
 
 	flatLen := pairs * 2
-	flat := Reshape(stacked, int32(flatLen))
+	flat := Reshape1(stacked, int32(flatLen))
 	Free(stacked)
 
 	outU := flat
 	if flatLen > n {
-		outU = Slice(flat, []int32{0}, []int32{int32(n)})
+		outU = Slice1(flat, 0, int32(n))
 		Free(flat)
 	}
 
