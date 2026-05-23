@@ -764,7 +764,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 	if spec.Packed == nil {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing descriptor: " + spec.Name)
 	}
-	weightRef, weightName, ok := findSafetensorRef(index, packedWeightCandidates(spec))
+	weightRef, weightName, ok := findPackedWeightRef(index, spec)
 	if !ok {
 		return JANGPackedProjectionTensor{}, core.NewError("mlx: MiniMax M2 packed projection missing weight tensor: " + spec.Name)
 	}
@@ -1078,6 +1078,53 @@ func sidecarCandidates(spec *TensorSpec, weightName, sidecar string) []string {
 		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
 	}
 	return out
+}
+
+// findPackedWeightRef inlines the packedWeightCandidates fan-out +
+// findSafetensorRef loop so common-case hits return before materialising
+// the full candidate slice. Mirrors findSidecarRef for the canonical
+// weight tensor — the first probe is spec.Name itself, the canonical
+// production-checkpoint layout. resolveSkeletonTensor still routes
+// through packedWeightCandidates because the function-as-arg shape
+// there serves all skeleton roles uniformly; only loadPackedProjection
+// (the per-expert hot path) routes through this inline variant.
+//
+//	ref, name, ok := findPackedWeightRef(index, spec)
+func findPackedWeightRef(index safetensors.Index, spec *TensorSpec) (safetensors.TensorRef, string, bool) {
+	if ref, name, ok := tryPackedWeightName(index, spec.Name); ok {
+		return ref, name, true
+	}
+	for _, alias := range spec.Aliases {
+		if ref, name, ok := tryPackedWeightName(index, alias); ok {
+			return ref, name, true
+		}
+	}
+	return safetensors.TensorRef{}, "", false
+}
+
+// tryPackedWeightName probes the four packed-weight name shapes
+// (base, base+".packed", base+".qweight", trim(base)+".qweight")
+// against the safetensors index and returns on the first hit. Hoisted
+// out so the call stays a plain dispatch.
+func tryPackedWeightName(index safetensors.Index, base string) (safetensors.TensorRef, string, bool) {
+	if ref, ok := index.Tensors[base]; ok {
+		return ref, base, true
+	}
+	candidate := base + ".packed"
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	candidate = base + ".qweight"
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	if trimmed := trimWeightSuffix(base); trimmed != base {
+		candidate = trimmed + ".qweight"
+		if ref, ok := index.Tensors[candidate]; ok {
+			return ref, candidate, true
+		}
+	}
+	return safetensors.TensorRef{}, "", false
 }
 
 // findSidecarRef inlines the sidecarCandidates fan-out + findSafetensorRef

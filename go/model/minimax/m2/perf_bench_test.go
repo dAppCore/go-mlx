@@ -227,6 +227,41 @@ func BenchmarkSidecarCandidates(b *testing.B) {
 	}
 }
 
+// BenchmarkFindPackedWeightRef_Hit measures the inline weight-name walk
+// against the canonical-layout case where spec.Name resolves on the very
+// first probe. Mirrors BenchmarkFindSidecarRef_Hit for the loader's
+// other primary lookup.
+func BenchmarkFindPackedWeightRef_Hit(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	index := safetensors.Index{
+		Tensors: map[string]safetensors.TensorRef{
+			spec.Name: {Name: spec.Name, DType: "U8"},
+		},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = findPackedWeightRef(index, &spec)
+	}
+}
+
+// BenchmarkFindPackedWeightRef_Miss measures the full fan-out worst
+// case to confirm the inline pattern stays competitive on total-miss
+// searches.
+func BenchmarkFindPackedWeightRef_Miss(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	index := safetensors.Index{Tensors: map[string]safetensors.TensorRef{}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = findPackedWeightRef(index, &spec)
+	}
+}
+
 // BenchmarkFindSidecarRef_Hit measures the inline candidate-walk pattern
 // when the canonical weightName+"."+sidecar entry resolves first — the
 // production-load shape where checkpoints carry the standard layout. The
