@@ -673,14 +673,28 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 	if len(labels) == 0 {
 		return nil
 	}
-	// Build all "key=value" strings into a single backing buffer, then
-	// slice that buffer into the []string output. Saves one allocation
-	// per non-empty value vs the previous `key + "=" + value` concat
-	// (which alloced a fresh string per entry). The empty-value entries
-	// still alias the original map's key string for free.
-	//
-	// Two-pass: size first to land the Builder buffer at exactly the right
-	// capacity so the growth ladder (8 -> 16 -> 32 ...) never kicks in.
+	out := make([]string, 0, len(labels))
+	// Tiny-N fast path: a single label avoids the size-pass + Builder
+	// scaffolding (which only pays off when we have >=2 non-empty values
+	// to share a backing buffer). Direct `key + "=" + value` allocates
+	// once for the result string — same shape as the previous code,
+	// without the per-iteration count overhead.
+	if len(labels) == 1 {
+		for key, value := range labels {
+			if value == "" {
+				out = append(out, key)
+			} else {
+				out = append(out, key+"="+value)
+			}
+		}
+		return out
+	}
+	// Multi-entry path: build all "key=value" strings into a single
+	// backing buffer, then slice that buffer into the []string output.
+	// Saves one allocation per non-empty value vs the previous shape
+	// (which alloced a fresh string per concat). Two-pass: size first
+	// so the Builder buffer lands at the exact right capacity and the
+	// growth ladder (8 -> 16 -> 32 ...) never kicks in.
 	size := 0
 	for key, value := range labels {
 		if value == "" {
@@ -688,7 +702,6 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 		}
 		size += len(key) + 1 + len(value)
 	}
-	out := make([]string, 0, len(labels))
 	if size == 0 {
 		// All-empty fast path — every entry aliases the map key.
 		for key := range labels {
@@ -708,10 +721,9 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 		builder.WriteString(key)
 		builder.WriteByte('=')
 		builder.WriteString(value)
-		// Defer the slice into the buffer until after String() — we
-		// can't take addresses into a Builder mid-write because Grow
-		// may have to reallocate. Stash the byte-range and rebuild
-		// the string-header slice in one walk below.
+		// builder.String() returns the underlying buffer via unsafe —
+		// every Grow-bounded write leaves earlier slices pinned to the
+		// same backing memory, so it is safe to take a sub-slice here.
 		out = append(out, builder.String()[start:])
 	}
 	core.SliceSort(out)
