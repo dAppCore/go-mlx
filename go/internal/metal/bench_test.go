@@ -419,3 +419,86 @@ func BenchmarkHostUnsuppressedGreedyToken_Gemma(b *testing.B) {
 		Free(tok)
 	}
 }
+
+// BenchmarkInspectAttentionCache_Realistic exercises the host-side
+// inspectAttentionCache fan-out used by attention probes. Cache shape
+// [1, 32, 1024, 128] = 4M float32 = 16MB — the per-call copy that the
+// W11-R zero-copy view pattern eliminates.
+func BenchmarkInspectAttentionCache_Realistic(b *testing.B) {
+	cache := NewKVCache()
+	// [1, 32 heads, 1024 tokens, 128 head_dim] = 4_194_304 float32 = 16 MB
+	const heads, seqLen, headDim = 32, 1024, 128
+	size := 1 * heads * seqLen * headDim
+	data := make([]float32, size)
+	for i := range data {
+		data[i] = float32(i) * 0.0001
+	}
+	k := FromValues(data, 1, heads, seqLen, headDim)
+	v := FromValues(data, 1, heads, seqLen, headDim)
+	outK, outV := cache.Update(k, v, seqLen)
+	Materialize(outK, outV)
+	Detach(outK)
+	Detach(outV)
+	for b.Loop() {
+		snapshot, ok := inspectAttentionCache(cache, seqLen)
+		if !ok {
+			b.Fatal("inspectAttentionCache returned not-ok")
+		}
+		if snapshot.NumHeads != heads {
+			b.Fatalf("snapshot.NumHeads = %d, want %d", snapshot.NumHeads, heads)
+		}
+	}
+}
+
+// BenchmarkSummarizeProbeLogitsCompact_Gemma exercises the topK fan-out
+// used by ProbeLogits.  TopK = 8 by default, so the topValues.Floats()
+// candidate copies only 32 bytes per call, but the per-op alloc count
+// matters when probes fire per-decoded-token.
+func BenchmarkSummarizeProbeLogitsCompact_Gemma(b *testing.B) {
+	const vocab = 258885
+	values := make([]float32, vocab)
+	for i := range values {
+		values[i] = float32(i%1000) * 0.001
+	}
+	row := FromValues(values, 1, vocab)
+	Materialize(row)
+	shape := []int32{1, vocab}
+	for b.Loop() {
+		summary, _, err := summarizeProbeLogitsCompact(row, shape, vocab, defaultProbeTopK)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(summary.Top) != defaultProbeTopK {
+			b.Fatalf("len(Top) = %d, want %d", len(summary.Top), defaultProbeTopK)
+		}
+	}
+}
+
+// BenchmarkInspectKVCacheRange_Realistic exercises the per-block KV
+// snapshot fan-out used by KVSnapshot capture. Same 16MB cache slice
+// drives the kSliced.Floats() + vSliced.Floats() pair on the !RawKVOnly path.
+func BenchmarkInspectKVCacheRange_Realistic(b *testing.B) {
+	cache := NewKVCache()
+	const heads, seqLen, headDim = 32, 1024, 128
+	size := 1 * heads * seqLen * headDim
+	data := make([]float32, size)
+	for i := range data {
+		data[i] = float32(i) * 0.0001
+	}
+	k := FromValues(data, 1, heads, seqLen, headDim)
+	v := FromValues(data, 1, heads, seqLen, headDim)
+	outK, outV := cache.Update(k, v, seqLen)
+	Materialize(outK, outV)
+	Detach(outK)
+	Detach(outV)
+	opts := KVSnapshotCaptureOptions{}
+	for b.Loop() {
+		snapshot, ok := inspectKVCacheRangeWithOptions(cache, 0, seqLen, opts)
+		if !ok {
+			b.Fatal("inspectKVCacheRangeWithOptions returned not-ok")
+		}
+		if snapshot.NumHeads != heads {
+			b.Fatalf("snapshot.NumHeads = %d, want %d", snapshot.NumHeads, heads)
+		}
+	}
+}
