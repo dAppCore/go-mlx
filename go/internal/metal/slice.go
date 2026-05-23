@@ -70,6 +70,52 @@ static inline int mlx_slice_update_inline_4(
     int strides_buf[4] = {1, 1, 1, 1};
     return mlx_slice_update(res, a, upd, starts_buf, 4, ends_buf, 4, strides_buf, 4, s);
 }
+
+// mlx_slice_inline_2 / mlx_slice_update_inline_2 are the rank-2 scalar-pass
+// form — completes the W11-AC Reshape/Slice rank-2 family alongside Slice4.
+// packQ4Cached's `SliceAxis(paired, 1, 0, 1)` + `SliceAxis(paired, 1, 1, 2)`
+// (two calls per Q4 K/V Update) currently routes via SliceAxis which
+// allocates `make([]int32, ndim)` twice per call — ~4 slice heap allocs per
+// Q4 store. Passing the 4 register-passed scalars eliminates both the
+// SliceAxis materialisation and the inline-slice-literal escape entirely.
+// strides are implicitly 1 (matches the broader Slice* wrapper convention).
+static inline int mlx_slice_inline_2(
+    mlx_array* res, mlx_array a,
+    int32_t s0, int32_t s1,
+    int32_t e0, int32_t e1,
+    mlx_stream s) {
+    int starts_buf[2] = {(int)s0, (int)s1};
+    int ends_buf[2]   = {(int)e0, (int)e1};
+    int strides_buf[2] = {1, 1};
+    return mlx_slice(res, a, starts_buf, 2, ends_buf, 2, strides_buf, 2, s);
+}
+
+static inline int mlx_slice_update_inline_2(
+    mlx_array* res, mlx_array a, mlx_array upd,
+    int32_t s0, int32_t s1,
+    int32_t e0, int32_t e1,
+    mlx_stream s) {
+    int starts_buf[2] = {(int)s0, (int)s1};
+    int ends_buf[2]   = {(int)e0, (int)e1};
+    int strides_buf[2] = {1, 1};
+    return mlx_slice_update(res, a, upd, starts_buf, 2, ends_buf, 2, strides_buf, 2, s);
+}
+
+// mlx_slice_inline_1 is the rank-1 scalar-pass form — completes the
+// rank-1/2/4 scalar-pass slice trio. unpackQ4's tail-trim path
+// `Slice(flat, []int32{0}, []int32{int32(n)})` pays a two-slice-literal
+// escape on the (rare) odd-length Q4 dequant — eliminating it via Slice1
+// removes the residual the pack path's even-length norm leaves at the
+// dequant boundary. strides are implicitly 1.
+static inline int mlx_slice_inline_1(
+    mlx_array* res, mlx_array a,
+    int32_t s0, int32_t e0,
+    mlx_stream s) {
+    int starts_buf[1] = {(int)s0};
+    int ends_buf[1]   = {(int)e0};
+    int strides_buf[1] = {1};
+    return mlx_slice(res, a, starts_buf, 1, ends_buf, 1, strides_buf, 1, s);
+}
 */
 import "C"
 
@@ -196,5 +242,54 @@ func SliceUpdateInplace4WithStream(a, update *Array, s0, s1, s2, s3, e0, e1, e2,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
 		stream.ctx)
+	return out
+}
+
+// Slice2 is the rank-2 scalar-pass form of Slice — eliminates the four
+// `[]int32{...}` literal allocations that SliceAxis materialises on a
+// rank-2 input (`make([]int32, ndim)` twice) plus the variadic-slice
+// escape of any direct Slice([]int32{...}, []int32{...}) call site.
+// Used by packQ4Cached where `SliceAxis(paired, 1, 0, 1)` +
+// `SliceAxis(paired, 1, 1, 2)` previously paid ~4 slice heap allocs per
+// Q4 K/V store. strides are implicitly 1.
+//
+//	low  := metal.Slice2(paired, 0, 0, int32(pairs), 1)
+//	high := metal.Slice2(paired, 0, 1, int32(pairs), 2)
+func Slice2(a *Array, s0, s1, e0, e1 int32) *Array {
+	out := newArray("SLICE", a)
+	C.mlx_slice_inline_2(&out.ctx, a.ctx,
+		C.int32_t(s0), C.int32_t(s1),
+		C.int32_t(e0), C.int32_t(e1),
+		DefaultStream().ctx)
+	return out
+}
+
+// SliceUpdateInplace2 is the rank-2 scalar-pass form of SliceUpdateInplace.
+// See Slice2 for the rationale — pair-symmetry with Slice2 lets callers
+// reading + writing the same rank-2 region use the same scalar-pass shape
+// without per-call slice literals.
+//
+//	mat := metal.SliceUpdateInplace2(mat, patch, 0, 0, int32(h), int32(w))
+func SliceUpdateInplace2(a, update *Array, s0, s1, e0, e1 int32) *Array {
+	out := newArray("SLICE_UPDATE", a, update)
+	C.mlx_slice_update_inline_2(&out.ctx, a.ctx, update.ctx,
+		C.int32_t(s0), C.int32_t(s1),
+		C.int32_t(e0), C.int32_t(e1),
+		DefaultStream().ctx)
+	return out
+}
+
+// Slice1 is the rank-1 scalar-pass form of Slice — eliminates the two
+// `[]int32{...}` literal allocations that any rank-1 Slice call would
+// otherwise pay. Used by unpackQ4's odd-length tail-trim
+// `Slice(flat, []int32{0}, []int32{int32(n)})` so the dequant boundary
+// matches the pack path's scalar-pass shape. strides are implicitly 1.
+//
+//	trimmed := metal.Slice1(flat, 0, int32(n))
+func Slice1(a *Array, s0, e0 int32) *Array {
+	out := newArray("SLICE", a)
+	C.mlx_slice_inline_1(&out.ctx, a.ctx,
+		C.int32_t(s0), C.int32_t(e0),
+		DefaultStream().ctx)
 	return out
 }

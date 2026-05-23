@@ -311,3 +311,154 @@ func BenchmarkAddScalar_1M(b *testing.B) {
 		Free(y)
 	}
 }
+
+// BenchmarkReshape1_Variadic / _Scalar measure the per-call alloc cost
+// of Reshape(arr, int32(n)) vs the W11-AC Reshape1(arr, n) primitive on
+// the rank-1 frontier. packQ4Cached pays this on every Q4 K/V Update
+// (Reshape(q, int32(n)) + Reshape(packed2D, int32(pairs))), unpackQ4 on
+// every dequant (Reshape(stacked, int32(flatLen))), maxAll on every
+// quantise-max boundary (Reshape(a, int32(n))). The variadic form
+// escapes the int32 to heap; the scalar form passes the dim in a
+// register and materialises the 1-element shape buffer on the C stack.
+func BenchmarkReshape1_Variadic(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1, 1024)
+	defer Free(a)
+	var n int32 = 1024
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape(a, n)
+		Free(r)
+	}
+}
+
+func BenchmarkReshape1_Scalar(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1, 1024)
+	defer Free(a)
+	var n int32 = 1024
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape1(a, n)
+		Free(r)
+	}
+}
+
+// BenchmarkReshape2_Variadic / _Scalar measure the per-call alloc cost
+// of Reshape(arr, int32(h), int32(w)) vs Reshape2(arr, h, w) on the
+// rank-2 [pairs, 2] view that packQ4Cached materialises on every Q4 K/V
+// Update.
+func BenchmarkReshape2_Variadic(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1024)
+	defer Free(a)
+	var h, w int32 = 512, 2
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape(a, h, w)
+		Free(r)
+	}
+}
+
+func BenchmarkReshape2_Scalar(b *testing.B) {
+	data := make([]float32, 1024)
+	a := FromValues(data, 1024)
+	defer Free(a)
+	var h, w int32 = 512, 2
+	b.ReportAllocs()
+	for b.Loop() {
+		r := Reshape2(a, h, w)
+		Free(r)
+	}
+}
+
+// BenchmarkSlice1_Variadic / _Scalar measure the per-call alloc cost of
+// Slice(flat, []int32{0}, []int32{n}) vs Slice1(flat, 0, n) on the
+// rank-1 frontier — unpackQ4 tail-trim boundary.
+func BenchmarkSlice1_Variadic(b *testing.B) {
+	a := Zeros([]int32{1024}, DTypeFloat32)
+	defer Free(a)
+	starts := []int32{0}
+	ends := []int32{512}
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Slice(a, starts, ends)
+		Free(s)
+	}
+}
+
+func BenchmarkSlice1_Scalar(b *testing.B) {
+	a := Zeros([]int32{1024}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Slice1(a, 0, 512)
+		Free(s)
+	}
+}
+
+// BenchmarkSlice2_SliceAxis / _Variadic / _Scalar — SliceAxis is the
+// legacy path used by packQ4Cached (`SliceAxis(paired, 1, 0, 1)` +
+// `SliceAxis(paired, 1, 1, 2)` per Q4 K/V Update). SliceAxis allocates
+// `make([]int32, ndim)` twice per call so the rank-2 surface pays ~4
+// slice heap allocs per pack. Slice2 collapses both starts + ends into
+// register-passed scalars.
+func BenchmarkSlice2_SliceAxis(b *testing.B) {
+	a := Zeros([]int32{512, 2}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		s := SliceAxis(a, 1, 0, 1)
+		Free(s)
+	}
+}
+
+func BenchmarkSlice2_Variadic(b *testing.B) {
+	a := Zeros([]int32{512, 2}, DTypeFloat32)
+	defer Free(a)
+	starts := []int32{0, 0}
+	ends := []int32{512, 1}
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Slice(a, starts, ends)
+		Free(s)
+	}
+}
+
+func BenchmarkSlice2_Scalar(b *testing.B) {
+	a := Zeros([]int32{512, 2}, DTypeFloat32)
+	defer Free(a)
+	b.ReportAllocs()
+	for b.Loop() {
+		s := Slice2(a, 0, 0, 512, 1)
+		Free(s)
+	}
+}
+
+// BenchmarkSliceUpdateInplace2_Variadic / _Scalar mirror the rank-2
+// update pair-symmetry with Slice2.
+func BenchmarkSliceUpdateInplace2_Variadic(b *testing.B) {
+	a := Zeros([]int32{512, 2}, DTypeFloat32)
+	defer Free(a)
+	upd := Zeros([]int32{1, 2}, DTypeFloat32)
+	defer Free(upd)
+	starts := []int32{0, 0}
+	ends := []int32{1, 2}
+	b.ReportAllocs()
+	for b.Loop() {
+		s := SliceUpdateInplace(a, upd, starts, ends)
+		Free(s)
+	}
+}
+
+func BenchmarkSliceUpdateInplace2_Scalar(b *testing.B) {
+	a := Zeros([]int32{512, 2}, DTypeFloat32)
+	defer Free(a)
+	upd := Zeros([]int32{1, 2}, DTypeFloat32)
+	defer Free(upd)
+	b.ReportAllocs()
+	for b.Loop() {
+		s := SliceUpdateInplace2(a, upd, 0, 0, 1, 2)
+		Free(s)
+	}
+}

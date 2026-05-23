@@ -411,6 +411,109 @@ func TestOps_Reshape_Good(t *testing.T) {
 	floatSliceApprox(t, c.Floats(), []float32{1, 2, 3, 4, 5, 6})
 }
 
+// TestOps_Reshape1_Parity locks the W11-AC rank-1 scalar-pass primitive
+// to bit-exact equality with the variadic Reshape path so a regression
+// in the rank-1 inline-C wrapper surfaces as a fast failure rather than
+// a silent kernel divergence in the Q4 quantise/dequantise paths.
+// Mirrors how W11-F TestOps_ScalarBridge_Parity locks the scalar bridge.
+func TestOps_Reshape1_Parity(t *testing.T) {
+	cases := []struct {
+		name string
+		data []float32
+		n    int32
+	}{
+		{"small", []float32{1, 2, 3, 4, 5, 6}, 6},
+		{"single", []float32{42}, 1},
+		{"large", make([]float32, 1024), 1024},
+	}
+	for i := range cases[len(cases)-1].data {
+		cases[len(cases)-1].data[i] = float32(i)*0.001 - 0.5
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			a := FromValues(tc.data, len(tc.data))
+			defer Free(a)
+
+			scalar := Reshape1(a, tc.n)
+			defer Free(scalar)
+			Materialize(scalar)
+
+			variadic := Reshape(a, tc.n)
+			defer Free(variadic)
+			Materialize(variadic)
+
+			sf, vf := scalar.Floats(), variadic.Floats()
+			if len(sf) != len(vf) {
+				t.Fatalf("length mismatch: scalar=%d variadic=%d", len(sf), len(vf))
+			}
+			ss, vs := scalar.Shape(), variadic.Shape()
+			if len(ss) != 1 || ss[0] != tc.n {
+				t.Fatalf("scalar shape = %v, want [%d]", ss, tc.n)
+			}
+			if len(vs) != 1 || vs[0] != tc.n {
+				t.Fatalf("variadic shape = %v, want [%d]", vs, tc.n)
+			}
+			for i := range sf {
+				if sf[i] != vf[i] {
+					t.Fatalf("bit divergence at i=%d: scalar=%v variadic=%v", i, sf[i], vf[i])
+				}
+			}
+		})
+	}
+}
+
+// TestOps_Reshape2_Parity locks Reshape2 to bit-exact equality with the
+// variadic Reshape path for rank-2 — covers the packQ4Cached
+// [pairs, 2] view that drives the low/high nibble extraction.
+func TestOps_Reshape2_Parity(t *testing.T) {
+	cases := []struct {
+		name string
+		data []float32
+		h, w int32
+	}{
+		{"pairs_2", []float32{1, 2, 3, 4, 5, 6}, 3, 2},
+		{"row_vec", []float32{1, 2, 3, 4}, 1, 4},
+		{"col_vec", []float32{5, 6, 7, 8}, 4, 1},
+		{"square", make([]float32, 64), 8, 8},
+	}
+	for i := range cases[len(cases)-1].data {
+		cases[len(cases)-1].data[i] = float32(i) - 31.5
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			a := FromValues(tc.data, len(tc.data))
+			defer Free(a)
+
+			scalar := Reshape2(a, tc.h, tc.w)
+			defer Free(scalar)
+			Materialize(scalar)
+
+			variadic := Reshape(a, tc.h, tc.w)
+			defer Free(variadic)
+			Materialize(variadic)
+
+			ss, vs := scalar.Shape(), variadic.Shape()
+			if len(ss) != 2 || ss[0] != tc.h || ss[1] != tc.w {
+				t.Fatalf("scalar shape = %v, want [%d %d]", ss, tc.h, tc.w)
+			}
+			if len(vs) != 2 || vs[0] != tc.h || vs[1] != tc.w {
+				t.Fatalf("variadic shape = %v, want [%d %d]", vs, tc.h, tc.w)
+			}
+			sf, vf := scalar.Floats(), variadic.Floats()
+			if len(sf) != len(vf) {
+				t.Fatalf("length mismatch: scalar=%d variadic=%d", len(sf), len(vf))
+			}
+			for i := range sf {
+				if sf[i] != vf[i] {
+					t.Fatalf("bit divergence at i=%d: scalar=%v variadic=%v", i, sf[i], vf[i])
+				}
+			}
+		})
+	}
+}
+
 func TestOps_Transpose_Good(t *testing.T) {
 	// [[1 2 3], [4 5 6]] transposed -> shape [3 2]
 	a := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)

@@ -369,9 +369,16 @@ func packQ4(q *Array) *Array {
 // Element count is read via Size() (single cgo call into mlx_array_size)
 // rather than Shape() + walk — Shape() allocates a fresh []int32 per call
 // which would otherwise show up as one heap alloc per Q4 Update.
+//
+// Reshape1 / Reshape2 / Slice2 replace the variadic Reshape and SliceAxis
+// calls (W11-AC): the rank-1/2 scalar-pass primitives skip the variadic
+// []int32 escape on `Reshape(q, int32(n))` + `Reshape(padded, int32(pairs),
+// int32(2))` + `Reshape(packed2D, int32(pairs))`, and replace the
+// SliceAxis(paired,...) pair (which materialised `make([]int32, ndim)`
+// twice per call) with register-passed scalar slices.
 func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	n := q.Size()
-	flat := Reshape(q, int32(n))
+	flat := Reshape1(q, int32(n))
 	ownOffset := offsetI8 == nil
 	offset := offsetI8
 	if ownOffset {
@@ -394,10 +401,10 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	}
 
 	pairs := nP / 2
-	paired := Reshape(padded, int32(pairs), int32(2))
+	paired := Reshape2(padded, int32(pairs), 2)
 	Free(padded)
-	low := SliceAxis(paired, 1, 0, 1)
-	high := SliceAxis(paired, 1, 1, 2)
+	low := Slice2(paired, 0, 0, int32(pairs), 1)
+	high := Slice2(paired, 0, 1, int32(pairs), 2)
 	Free(paired)
 	ownShift := shiftU8 == nil
 	shift := shiftU8
@@ -406,7 +413,7 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	}
 	highShifted := LeftShift(high, shift)
 	packed2D := BitwiseOr(low, highShifted)
-	packed := Reshape(packed2D, int32(pairs))
+	packed := Reshape1(packed2D, int32(pairs))
 	Free(low, high, highShifted, packed2D)
 	if ownShift {
 		Free(shift)
@@ -422,6 +429,13 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 // `pairs` is read via low.Dim(0) (single cgo call) rather than low.Shape()[0]
 // (which allocates a fresh []int32 just to read one dim) — saves one heap
 // alloc per dequantise on the rare Q4 dequant path.
+//
+// Reshape1 / Slice1 replace the rank-1 variadic Reshape / Slice calls
+// (W11-AC): `Reshape(stacked, int32(flatLen))` paid one variadic-slice
+// escape per dequant, and `Slice(flat, []int32{0}, []int32{int32(n)})`
+// paid two more on the (rare) odd-length tail-trim. The final
+// `Reshape(signed, shape...)` keeps the variadic form because the shape
+// comes from the caller as a slice of arbitrary rank.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -441,12 +455,12 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	Free(lowE, highE)
 
 	flatLen := pairs * 2
-	flat := Reshape(stacked, int32(flatLen))
+	flat := Reshape1(stacked, int32(flatLen))
 	Free(stacked)
 
 	outU := flat
 	if flatLen > n {
-		outU = Slice(flat, []int32{0}, []int32{int32(n)})
+		outU = Slice1(flat, 0, int32(n))
 		Free(flat)
 	}
 
@@ -477,6 +491,12 @@ func cacheElementCount(shape []int32) int {
 // Element count is read via Size() + NumDims() (single cgo calls each)
 // rather than Shape() + cacheElementCount walk — Shape() would allocate a
 // fresh []int32 every call which is per-quantize, every Update.
+//
+// Reshape1 replaces `Reshape(a, int32(n))` (W11-AC): rank-1 scalar-pass
+// skips the variadic []int32 escape on every quantise-max boundary —
+// hit twice per Q4/Q8 cache Update (one each for K + V via
+// quantizeCacheArrayCached). This is the dominant per-token alloc
+// reduction on the Q8 cache path.
 func maxAll(a *Array) *Array {
 	if a.NumDims() == 0 {
 		return a.Clone()
@@ -485,7 +505,7 @@ func maxAll(a *Array) *Array {
 	if n == 0 {
 		return a.Clone()
 	}
-	flat := Reshape(a, int32(n))
+	flat := Reshape1(a, int32(n))
 	reduced := MaxAxis(flat, 0, false)
 	Free(flat)
 	return reduced
