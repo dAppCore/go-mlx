@@ -195,14 +195,12 @@ func NewPlan(input Input) Plan {
 		workingSet = deviceMemory
 	}
 	class := classForBytes(deviceMemory)
-	// Zero-init the Plan once and fill only the class-specific
-	// defaults in place. The previous form (`plan := baseClassPlan(class)`)
-	// returned a 480-byte struct by value and the caller-side memcpy
-	// became the single largest cost in NewPlan (~15% of CPU). Pushing
-	// the fill in-place lets the compiler skip both the return-slot
-	// init in baseClassPlan and the inbound memcpy.
-	var plan Plan
-	fillBaseClassPlan(&plan, class)
+	// Copy the matching pre-built per-class baseline. The previous
+	// fillBaseClassPlan(*Plan, Class) shape paid for both a 480-byte
+	// stack zero-init AND ~8 individual field writes per call; here
+	// a single memcpy from a compile-time-resolved global gives the
+	// runtime the freedom to SIMD-copy the whole struct in one shot.
+	plan := classDefaultPlans[classBaselineIndex(class)]
 	plan.MachineClass = class
 	plan.Architecture = input.Device.Architecture
 	plan.DeviceMemoryBytes = deviceMemory
@@ -341,85 +339,126 @@ func classForBytes(bytes uint64) Class {
 	}
 }
 
-// fillBaseClassPlan stamps the class-specific defaults onto a
-// zero-initialised Plan in place. Returning a Plan by value here
-// (the previous shape) was the single hottest line of NewPlan — a
-// 480-byte memcpy from baseClassPlan's return slot into the caller's
-// plan local — because the compiler couldn't elide the copy and the
-// Plan struct stores 30+ fields. Filling in place keeps the cost to
-// the ~9 field writes each class actually sets; the rest of the
-// struct stays at its (already-zero) defaults.
+// classDefaultPlans holds the immutable per-Class baseline used by
+// NewPlan. Each entry carries only the class-specific fields; every
+// other Plan field stays at its zero value. NewPlan dereferences the
+// matching entry and copies it into the caller's local — one memcpy
+// of 480 bytes is faster than the previous in-place fill (which paid
+// for the zero-init AND ~8 ordinary field writes per call) because
+// the runtime can use unrolled SIMD memcpy and the source is a
+// compile-time-resolved global.
 //
-// CachePolicy = KVCacheRotating on every populated branch, so it is
-// hoisted out of the switch. The Unknown/default branch falls
-// through with PromptCache disabled and PromptCacheMinTokens=0 — the
-// existing semantics for unknown classes.
-func fillBaseClassPlan(plan *Plan, class Class) {
-	plan.CachePolicy = KVCacheRotating
+// All populated classes use KVCacheRotating; the Unknown/default
+// fallback also lives here so the lookup never misses.
+var classDefaultPlans = [...]Plan{
+	indexClassApple16GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         8192,
+		CacheMode:             KVCacheModeKQ8VQ4,
+		BatchSize:             1,
+		PrefillChunkSize:      512,
+		ParallelSlots:         1,
+		PreferredQuantization: 4,
+	},
+	indexClassApple24GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         16384,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      768,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  4096,
+		PreferredQuantization: 4,
+	},
+	indexClassApple32GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         32768,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      1024,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  4096,
+		PreferredQuantization: 4,
+	},
+	indexClassApple64GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         65536,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             2,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 4,
+	},
+	indexClassApple96GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             4,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         2,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 8,
+	},
+	indexClassApple128GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             6,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         2,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 8,
+	},
+	indexClassUnknown: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      1024,
+		ParallelSlots:         defaultLocalParallelSlots,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 4,
+	},
+}
+
+// classBaselineIndex maps a Class to its slot in classDefaultPlans.
+// Inlined into NewPlan so the lookup is a single switch + array
+// index (~3 ns) instead of a function call plus per-field-write.
+func classBaselineIndex(class Class) int {
 	switch class {
 	case ClassApple16GB:
-		plan.ContextLength = 8192
-		plan.CacheMode = KVCacheModeKQ8VQ4
-		plan.BatchSize = 1
-		plan.PrefillChunkSize = 512
-		plan.ParallelSlots = 1
-		plan.PreferredQuantization = 4
+		return indexClassApple16GB
 	case ClassApple24GB:
-		plan.ContextLength = 16384
-		plan.CacheMode = KVCacheModeQ8
-		plan.BatchSize = 1
-		plan.PrefillChunkSize = 768
-		plan.ParallelSlots = 1
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = 4096
-		plan.PreferredQuantization = 4
+		return indexClassApple24GB
 	case ClassApple32GB:
-		plan.ContextLength = 32768
-		plan.CacheMode = KVCacheModeQ8
-		plan.BatchSize = 1
-		plan.PrefillChunkSize = 1024
-		plan.ParallelSlots = 1
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = 4096
-		plan.PreferredQuantization = 4
+		return indexClassApple32GB
 	case ClassApple64GB:
-		plan.ContextLength = 65536
-		plan.CacheMode = KVCacheModePaged
-		plan.BatchSize = 2
-		plan.PrefillChunkSize = 4096
-		plan.ParallelSlots = 1
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
-		plan.PreferredQuantization = 4
+		return indexClassApple64GB
 	case ClassApple96GB:
-		plan.ContextLength = defaultLocalContextLength
-		plan.CacheMode = KVCacheModePaged
-		plan.BatchSize = 4
-		plan.PrefillChunkSize = 4096
-		plan.ParallelSlots = 2
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
-		plan.PreferredQuantization = 8
+		return indexClassApple96GB
 	case ClassApple128GB:
-		plan.ContextLength = defaultLocalContextLength
-		plan.CacheMode = KVCacheModePaged
-		plan.BatchSize = 6
-		plan.PrefillChunkSize = 4096
-		plan.ParallelSlots = 2
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
-		plan.PreferredQuantization = 8
+		return indexClassApple128GB
 	default:
-		plan.ContextLength = defaultLocalContextLength
-		plan.CacheMode = KVCacheModeQ8
-		plan.BatchSize = 1
-		plan.PrefillChunkSize = 1024
-		plan.ParallelSlots = defaultLocalParallelSlots
-		plan.PromptCache = true
-		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
-		plan.PreferredQuantization = 4
+		return indexClassUnknown
 	}
 }
+
+const (
+	indexClassApple16GB = iota
+	indexClassApple24GB
+	indexClassApple32GB
+	indexClassApple64GB
+	indexClassApple96GB
+	indexClassApple128GB
+	indexClassUnknown
+)
 
 func estimateKVCacheBytes(plan Plan, input Input, mode KVCacheMode) uint64 {
 	return estimateKVCacheBytesWithProfile(plan, input, mode, nil)
