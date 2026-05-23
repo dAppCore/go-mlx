@@ -307,6 +307,65 @@ func materialiseFloat32View(t *Array) (src, converted *Array, err error) {
 	return src, converted, nil
 }
 
+// materialiseFloat32ViewFast returns a borrowed []float32 view of arr plus a
+// cleanup func that the caller MUST defer.  The view is tied to arr via
+// runtime.KeepAlive inside cleanup, so callers do not need their own KeepAlive.
+//
+// Fast-path: when arr is already DTypeFloat32 + row-contiguous, the helper
+// skips every internal Materialize cgo crossing — the legacy
+// materialiseFloat32View calls Materialize on src unconditionally at the end,
+// even when dtype + layout already match.  At ~30-60 ns per cgo crossing,
+// dropping that one Materialize shifts the zero-copy threshold from ~1KB down
+// to a few hundred bytes (the dtype + contiguity check is ~5-10 ns).
+//
+// Slow-path: when arr needs dtype conversion or contiguity copy, the helper
+// falls through to materialiseFloat32View — same ceremony, same overhead.
+//
+//	view, cleanup, err := materialiseFloat32ViewFast(logits)
+//	if err != nil { return err }
+//	defer cleanup()
+//	bestID := argmax(view)
+func materialiseFloat32ViewFast(arr *Array) ([]float32, func(), error) {
+	if arr.Dtype() == DTypeFloat32 && arr.IsRowContiguous() {
+		// Fast-path: dtype + layout already match.  Skip Materialize entirely
+		// — the only invariant the caller needs is a valid float32 backing
+		// store, which the dtype+contiguity check already proves.
+		n := arr.Size()
+		if n == 0 {
+			return nil, func() {}, nil
+		}
+		ptr := (*float32)(rawArrayDataPointer(arr))
+		if ptr == nil {
+			return nil, func() {}, core.NewError("mlx: array data pointer is nil")
+		}
+		view := unsafe.Slice(ptr, n)
+		cleanup := func() { runtime.KeepAlive(arr) }
+		return view, cleanup, nil
+	}
+	// Slow-path: fall through to the legacy helper.  AsType / Contiguous
+	// crossings are unavoidable when dtype or layout doesn't match.
+	src, converted, err := materialiseFloat32View(arr)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		return nil, func() {}, nil
+	}
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil {
+		Free(converted)
+		return nil, func() {}, core.NewError("mlx: array data pointer is nil")
+	}
+	view := unsafe.Slice(ptr, n)
+	cleanup := func() {
+		runtime.KeepAlive(src)
+		Free(converted)
+	}
+	return view, cleanup, nil
+}
+
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
 	for _, suppressed := range suppressTokens {
 		if id == suppressed {
