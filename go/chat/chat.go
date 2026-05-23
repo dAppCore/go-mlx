@@ -49,7 +49,9 @@ func Format(messages []Message, cfg Config) string {
 
 func formatGemma(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 34, 22))
+	// Gemma writes fixed "user" / "model" tags — role is not emitted
+	// per-message, so the capacity calc skips role overhead.
+	builder.Grow(chatFormatCapacity(messages, 34, 22, false))
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
 		switch role {
@@ -71,7 +73,7 @@ func formatGemma(messages []Message, cfg Config) string {
 
 func formatGemma4(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 17, 37) + len("<bos>"))
+	builder.Grow(chatFormatCapacity(messages, 17, 37, true) + len("<bos>"))
 	builder.WriteString("<bos>")
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
@@ -97,7 +99,7 @@ func formatGemma4(messages []Message, cfg Config) string {
 
 func formatQwen(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 24, 23))
+	builder.Grow(chatFormatCapacity(messages, 24, 23, true))
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
 		if role == "" {
@@ -117,7 +119,7 @@ func formatQwen(messages []Message, cfg Config) string {
 
 func formatLlama(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 52, 43) + len("<|begin_of_text|>"))
+	builder.Grow(chatFormatCapacity(messages, 52, 43, true) + len("<|begin_of_text|>"))
 	builder.WriteString("<|begin_of_text|>")
 	for _, msg := range messages {
 		role := normaliseRole(msg.Role)
@@ -137,8 +139,14 @@ func formatLlama(messages []Message, cfg Config) string {
 }
 
 func formatPlain(messages []Message, cfg Config) string {
+	// Plain has no generation prompt suffix — the historic
+	// builder.WriteString("") tail was a no-op that still cost
+	// a function call + length branch per Format(). The cfg arg
+	// is retained to keep the formatX signatures uniform.
+	_ = cfg
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 1, 0))
+	// Plain emits only the content + "\n" per message — no role.
+	builder.Grow(chatFormatCapacity(messages, 1, 0, false))
 	for _, msg := range messages {
 		if msg.Content == "" {
 			continue
@@ -146,16 +154,29 @@ func formatPlain(messages []Message, cfg Config) string {
 		builder.WriteString(msg.Content)
 		builder.WriteString("\n")
 	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("")
-	}
 	return builder.String()
 }
 
-func chatFormatCapacity(messages []Message, perMessageOverhead, generationPromptOverhead int) int {
+// maxNormalisedRoleLen is len("assistant") — the longest role string
+// any template ever writes after normaliseRole expands aliases. Used
+// in place of len(msg.Role) when sizing the Builder so aliased roles
+// (gpt/bot/model → assistant) cannot under-allocate and trigger a
+// silent realloc.
+const maxNormalisedRoleLen = 9
+
+func chatFormatCapacity(messages []Message, perMessageOverhead, generationPromptOverhead int, writesRole bool) int {
+	// Templates that emit role per-message must reserve up to
+	// maxNormalisedRoleLen — using len(msg.Role) would under-allocate
+	// when normaliseRole expands aliases (gpt→assistant, etc) and
+	// trigger a silent Builder realloc. Templates that don't emit
+	// role skip the term entirely.
+	roleOverhead := 0
+	if writesRole {
+		roleOverhead = maxNormalisedRoleLen
+	}
 	total := generationPromptOverhead
 	for _, msg := range messages {
-		total += len(msg.Content) + perMessageOverhead + len(msg.Role)
+		total += len(msg.Content) + perMessageOverhead + roleOverhead
 	}
 	return total
 }
@@ -169,6 +190,29 @@ func TemplateName(cfg Config) string {
 }
 
 func templateName(cfg Config) string {
+	// Canonical fast path. cfg fields almost always arrive as exact
+	// string literals from caller code — no Trim/Lower work needed.
+	// Skip into the slow path only when an explicit Template is set
+	// (rare; Architecture is the common dispatch field) or when the
+	// Architecture isn't a known canonical id.
+	if cfg.Template == "" {
+		switch cfg.Architecture {
+		case "":
+			return ""
+		case "gemma4", "gemma4_text":
+			return "gemma4"
+		case "gemma", "gemma2", "gemma3", "gemma3_text":
+			return "gemma"
+		case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next", "qwen3_6", "qwen3_6_moe":
+			return "qwen"
+		case "llama", "llama3", "llama4":
+			return "llama"
+		}
+	}
+	return templateNameSlow(cfg)
+}
+
+func templateNameSlow(cfg Config) string {
 	template := core.Lower(core.Trim(cfg.Template))
 	if template != "" {
 		return template
@@ -196,7 +240,24 @@ func NormaliseRole(role string) string {
 }
 
 func normaliseRole(role string) string {
-	switch core.Lower(core.Trim(role)) {
+	// Canonical fast path. The common Format flow (bench, every wire
+	// handler that built its messages with the canonical role names)
+	// hits this — no Lower/Trim/switch table walk needed, and the
+	// branch is small enough to inline into the caller.
+	switch role {
+	case "user", "assistant", "system":
+		return role
+	}
+	return normaliseRoleSlow(role)
+}
+
+func normaliseRoleSlow(role string) string {
+	// Capture the canonicalised role once — the previous default
+	// branch re-ran core.Lower(core.Trim(role)), doubling the work
+	// for unknown roles (the common case once a wire handler passes
+	// through any non-canonical custom role).
+	r := core.Lower(core.Trim(role))
+	switch r {
 	case "human", "user":
 		return "user"
 	case "gpt", "bot", "assistant", "model":
@@ -204,6 +265,6 @@ func normaliseRole(role string) string {
 	case "system":
 		return "system"
 	default:
-		return core.Lower(core.Trim(role))
+		return r
 	}
 }
