@@ -933,20 +933,41 @@ func adapterIdentityLabels(name string, scale float32) map[string]string {
 	return labels
 }
 
+// commonQuantizationLabels caches the "%d-bit" strconv+concat output for
+// the PreferredQuantization values memory.PlanMemory actually emits today
+// (memory/memory.go bakes 4 and 8 across all machine classes). Cache hit
+// drops 2 allocs (strconv heap alloc + concat heap alloc, ~16 B) per
+// toInferenceMemoryPlan call. Fallback path keeps the original
+// strconv.Itoa + "-bit" concat for any future expansion.
+var commonQuantizationLabels = map[int]string{
+	2:  "2-bit",
+	3:  "3-bit",
+	4:  "4-bit",
+	5:  "5-bit",
+	6:  "6-bit",
+	8:  "8-bit",
+	16: "16-bit",
+}
+
 func toInferenceMemoryPlan(plan memory.Plan) inference.MemoryPlan {
+	// Cached label lookup — strconv.Itoa + "-bit" concat is two heap allocs
+	// per call (digit buffer + concat result); the four PlanMemory tables
+	// in memory.go only emit 4 and 8, so cache hit rate is ~100% in the
+	// field. Fall through to the original formatter for any future value.
+	quant, ok := commonQuantizationLabels[plan.PreferredQuantization]
+	if !ok {
+		quant = strconv.Itoa(plan.PreferredQuantization) + "-bit"
+	}
 	return inference.MemoryPlan{
 		MachineClass:      string(plan.MachineClass),
 		DeviceMemoryBytes: plan.DeviceMemoryBytes,
 		ContextLength:     plan.ContextLength,
 		BatchSize:         plan.BatchSize,
 		CacheMode:         string(plan.CacheMode),
-		// Plain strconv + concat — skip the fmt format-parser path that
-		// boxes the int + walks the format string for one int and one
-		// literal suffix. strconv.Itoa hits the digit-emit loop direct.
-		Quantization:     strconv.Itoa(plan.PreferredQuantization) + "-bit",
-		KVCacheBytes:     plan.EstimatedKVCacheModeBytes,
-		TrainingFeasible: plan.MachineClass != memory.ClassApple16GB,
-		Notes:            core.SliceClone(plan.Notes),
+		Quantization:      quant,
+		KVCacheBytes:      plan.EstimatedKVCacheModeBytes,
+		TrainingFeasible:  plan.MachineClass != memory.ClassApple16GB,
+		Notes:             core.SliceClone(plan.Notes),
 	}
 }
 
