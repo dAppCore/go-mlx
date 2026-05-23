@@ -82,7 +82,7 @@ func TestBenchModelDecodeGenerate_ReturnsTokenMetrics_Good(t *testing.T) {
 	}}
 	model := &Model{model: native}
 
-	result, err := benchModelDecodeGenerate(model)(context.Background(), "prompt", decode.GenerateConfig{MaxTokens: 2})
+	result, err := benchModelDecodeGenerate(model).Generate(context.Background(), "prompt", decode.GenerateConfig{MaxTokens: 2})
 	if err != nil {
 		t.Fatalf("benchModelDecodeGenerate() error = %v", err)
 	}

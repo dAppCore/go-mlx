@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"dappco.re/go/mlx/blockcache"
+	"sync"
 	"time"
 
 	core "dappco.re/go"
@@ -388,20 +389,31 @@ func modelBenchSpeculativeDecode(model, draft *Model) func(context.Context, benc
 		draftModel = model
 	}
 	// Hoist the bench-side base GenerateConfig to runner-construction
-	// scope — both modelDecodeGenerate legs share the same defaults on
-	// every dispatch, so a per-runner heap allocation replaces the per-
-	// dispatch pair of benchModelDecodeGenerate calls that each spilled
-	// a fresh GenerateConfig of their own.
+	// scope — both pooled-generator legs share the same defaults on every
+	// dispatch, so a per-runner heap allocation replaces the per-dispatch
+	// pair of generator constructions that each spilled a fresh
+	// GenerateConfig of their own.
 	base := DefaultGenerateConfig()
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
+		// Acquire two pooled generators (one per leg) — decode.Speculative
+		// invokes draft then target sequentially, so a single shared
+		// instance would also be correct, but a dedicated pair keeps the
+		// shape symmetric with PromptLookup and tolerant of a future
+		// concurrent-decode driver. Release is direct (defer) — no
+		// release-closure, which would re-allocate per call and drown
+		// the win we're harvesting here.
+		target := acquireModelDecodeGenerator(model, &base)
+		defer releaseModelDecodeGenerator(target)
+		draftGen := acquireModelDecodeGenerator(draftModel, &base)
+		defer releaseModelDecodeGenerator(draftGen)
 		result, err := decode.Speculative(ctx, decode.SpeculativeConfig{
 			Prompt:         cfg.Prompt,
 			MaxTokens:      cfg.MaxTokens,
 			DraftTokens:    cfg.SpeculativeDraftTokens,
 			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
-			TargetGenerate: modelDecodeGenerate(model, &base),
-			DraftGenerate:  modelDecodeGenerate(draftModel, &base),
+			TargetGenerate: target,
+			DraftGenerate:  draftGen,
 		})
 		if err != nil {
 			report.Error = err.Error()
@@ -439,10 +451,10 @@ func modelBenchSpeculativePairDecode(pair *SpeculativePair) func(context.Context
 
 func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
 	// Hoist the bench-side base GenerateConfig to runner-construction
-	// scope — the prompt-lookup dispatch path calls modelDecodeGenerate
-	// once per invocation; pulling DefaultGenerateConfig() out of the
-	// per-call hot loop trades the per-dispatch spill for one allocation
-	// captured by the outer runner closure.
+	// scope — the prompt-lookup dispatch path acquires one pooled
+	// generator per invocation; pulling DefaultGenerateConfig() out of
+	// the per-call hot loop trades the per-dispatch spill for one
+	// allocation captured by the outer runner closure.
 	base := DefaultGenerateConfig()
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
@@ -454,11 +466,15 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 		for i, id := range cfg.PromptLookupTokens {
 			lookupTokens[i] = decode.Token{ID: id}
 		}
+		// Direct pool acquire/release — releasing via a returned closure
+		// would re-allocate per call and undo the structurally-pooled win.
+		target := acquireModelDecodeGenerator(model, &base)
+		defer releaseModelDecodeGenerator(target)
 		result, err := decode.PromptLookup(ctx, decode.PromptLookupConfig{
 			Prompt:         cfg.Prompt,
 			MaxTokens:      cfg.MaxTokens,
 			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
-			TargetGenerate: modelDecodeGenerate(model, &base),
+			TargetGenerate: target,
 			LookupTokens:   lookupTokens,
 		})
 		if err != nil {
@@ -512,41 +528,95 @@ func decodeTokensPerSecond(tokens int, duration time.Duration) float64 {
 	return float64(tokens) / duration.Seconds()
 }
 
-func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
+// benchModelDecodeGenerate constructs a non-pooled generator for callers
+// (tests / one-off scripts) that want the per-call default config without
+// owning the lifetime. The pooled acquire/release flow is what production
+// dispatch uses (modelBenchSpeculativeDecode / modelBenchPromptLookupDecode
+// / speculative.GenerateSpeculative); this entry point exists so a
+// straight-line test can `g.Generate(ctx, prompt, cfg)` without touching
+// the pool.
+func benchModelDecodeGenerate(model *Model) decode.Generator {
 	base := DefaultGenerateConfig()
-	return modelDecodeGenerate(model, &base)
+	return &modelDecodeGenerator{model: model, base: &base}
 }
 
-// modelDecodeGenerate accepts the shared base config by pointer so the
-// caller controls its lifetime — both legs of decode.Speculative
-// (target + draft) point at the same GenerateConfig instance, collapsing
-// the prior two by-value spills into one. The closure now captures two
-// 8-byte pointers (model + base), keeping the closure storage compact
-// and removing the moved-to-heap step on the 152-byte GenerateConfig.
-func modelDecodeGenerate(model *Model, base *GenerateConfig) decode.GenerateFunc {
-	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
-		if model == nil || model.model == nil {
-			return decode.Generation{}, errModelDecodeNil
-		}
-		generateCfg := *base
-		if cfg.MaxTokens > 0 {
-			generateCfg.MaxTokens = cfg.MaxTokens
-		}
-		// Pre-size tokens to MaxTokens — speculative/prompt-lookup decode
-		// caps emitted tokens at MaxTokens, so a single make() avoids the
-		// per-token append-grow doubling on every decoded step.
-		tokens := make([]decode.Token, 0, generateCfg.MaxTokens)
-		for token := range model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
-			tokens = append(tokens, decode.Token{
-				ID:   token.ID,
-				Text: token.Text,
-			})
-		}
-		if err := model.model.Err(); err != nil {
-			return decode.Generation{}, err
-		}
-		return decode.Generation{Tokens: tokens, Text: decode.TokensText(tokens)}, nil
+// modelDecodeGenerator is the pooled-struct shape that implements
+// decode.Generator on a pointer receiver. Two fields, both pointers
+// (model + base) — the per-call closure is gone, so the only allocation
+// that remains for the decode hot path is the one decode.Speculative /
+// decode.PromptLookup pays inside its own acceptance machinery.
+//
+// Concurrency: decode.Speculative invokes draft then target sequentially
+// (see external/go-inference/go/decode/decode.go:Speculative — single
+// goroutine, draft Generate returns before target Generate is dispatched).
+// decode.PromptLookup is single-Generate. So a generator instance is
+// never invoked from two goroutines at once on any current decode path.
+// If a future decode driver fan-outs Generate calls concurrently, each
+// goroutine MUST acquire its own pool entry — base is shared by pointer
+// so callers must treat it as read-only post-acquire (the Generate body
+// dereferences `*g.base` into a local copy before mutating).
+type modelDecodeGenerator struct {
+	model *Model
+	base  *GenerateConfig
+}
+
+// modelDecodeGeneratorPool recycles *modelDecodeGenerator across decode
+// dispatches. Steady-state allocation count drops from "one closure per
+// call" to "zero after the pool warms" because the struct itself is
+// reused; the previous shape allocated a fresh closure object on every
+// acquire-equivalent entry.
+var modelDecodeGeneratorPool = sync.Pool{
+	New: func() any { return &modelDecodeGenerator{} },
+}
+
+// acquireModelDecodeGenerator rents a generator from the pool and parks
+// the (model, base) pair on it. Returning the struct pointer directly
+// (rather than a release closure) is the load-bearing detail: any closure
+// returned here would heap-allocate per call and drown the pooled-struct
+// win. Callers pair this with a defer releaseModelDecodeGenerator(g).
+func acquireModelDecodeGenerator(model *Model, base *GenerateConfig) *modelDecodeGenerator {
+	g := modelDecodeGeneratorPool.Get().(*modelDecodeGenerator)
+	g.model = model
+	g.base = base
+	return g
+}
+
+// releaseModelDecodeGenerator zeros the captured fields (so a stale model
+// pointer does not keep a closed Model alive past its lifetime) and puts
+// the struct back in the pool. Callers must not touch g after release.
+func releaseModelDecodeGenerator(g *modelDecodeGenerator) {
+	if g == nil {
+		return
 	}
+	g.model = nil
+	g.base = nil
+	modelDecodeGeneratorPool.Put(g)
+}
+
+// Generate satisfies decode.Generator. Pointer receiver so the pool can
+// hand back stored *modelDecodeGenerator values without per-call boxing.
+func (g *modelDecodeGenerator) Generate(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
+	if g.model == nil || g.model.model == nil {
+		return decode.Generation{}, errModelDecodeNil
+	}
+	generateCfg := *g.base
+	if cfg.MaxTokens > 0 {
+		generateCfg.MaxTokens = cfg.MaxTokens
+	}
+	// Pre-size tokens to MaxTokens — speculative/prompt-lookup decode
+	// caps emitted tokens at MaxTokens, so a single make() avoids the
+	// per-token append-grow doubling on every decoded step.
+	tokens := make([]decode.Token, 0, generateCfg.MaxTokens)
+	for token := range g.model.model.Generate(ctx, prompt, toMetalGenerateConfig(generateCfg)) {
+		tokens = append(tokens, decode.Token{
+			ID:   token.ID,
+			Text: token.Text,
+		})
+	}
+	if err := g.model.model.Err(); err != nil {
+		return decode.Generation{}, err
+	}
+	return decode.Generation{Tokens: tokens, Text: decode.TokensText(tokens)}, nil
 }
 
 func benchStateStorePath(cfg bench.Config) (string, error) {
