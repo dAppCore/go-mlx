@@ -5,7 +5,6 @@
 package metal
 
 import (
-	"container/heap"
 	"slices"
 	"sync"
 
@@ -72,33 +71,77 @@ type bpeCandidate struct {
 	rightVersion uint32
 }
 
+// bpeCandidateHeap is a min-heap of bpeCandidate ordered by (rank
+// ascending, left ascending). The original implementation satisfied
+// container/heap.Interface, which forced every Push to box a candidate
+// into `any` (one alloc per push) and every Pop to type-assert back —
+// pushDirect / popDirect below replace that path with direct typed
+// sift-up / sift-down operations on the underlying slice.
 type bpeCandidateHeap []bpeCandidate
 
 func (h bpeCandidateHeap) Len() int {
 	return len(h)
 }
 
-func (h bpeCandidateHeap) Less(i, j int) bool {
-	if h[i].rank != h[j].rank {
-		return h[i].rank < h[j].rank
+// pushDirect appends c to the heap and sifts it up. Bypasses
+// container/heap.Push's `x any` interface boxing — that boxing forces
+// every bpeCandidate to escape to the heap (one alloc per push), and
+// bpeMerge does ~2N pushes per call. The version-stale-discard
+// correctness invariant is preserved (the less ordering — rank then
+// left — is identical to the prior heap.Interface path; the wrapper
+// just emits the same up-sift without the interface dispatch).
+func (h *bpeCandidateHeap) pushDirect(c bpeCandidate) {
+	*h = append(*h, c)
+	// sift-up
+	s := *h
+	i := len(s) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		// Inline of Less(i, parent): rank then left.
+		if s[i].rank < s[parent].rank ||
+			(s[i].rank == s[parent].rank && s[i].left < s[parent].left) {
+			s[i], s[parent] = s[parent], s[i]
+			i = parent
+			continue
+		}
+		break
 	}
-	return h[i].left < h[j].left
 }
 
-func (h bpeCandidateHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *bpeCandidateHeap) Push(x any) {
-	*h = append(*h, x.(bpeCandidate))
-}
-
-func (h *bpeCandidateHeap) Pop() any {
-	old := *h
-	n := len(old)
-	item := old[n-1]
-	*h = old[:n-1]
-	return item
+// popDirect removes and returns the minimum candidate. Bypasses
+// heap.Pop's `any` return-type boxing.
+func (h *bpeCandidateHeap) popDirect() bpeCandidate {
+	s := *h
+	n := len(s) - 1
+	s[0], s[n] = s[n], s[0]
+	// sift-down on s[:n]
+	i := 0
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		smallest := left
+		right := left + 1
+		if right < n {
+			// right < left?
+			if s[right].rank < s[left].rank ||
+				(s[right].rank == s[left].rank && s[right].left < s[left].left) {
+				smallest = right
+			}
+		}
+		// smallest < i?
+		if s[smallest].rank < s[i].rank ||
+			(s[smallest].rank == s[i].rank && s[smallest].left < s[i].left) {
+			s[i], s[smallest] = s[smallest], s[i]
+			i = smallest
+			continue
+		}
+		break
+	}
+	out := s[n]
+	*h = s[:n]
+	return out
 }
 
 // tokenizerJSON is the HuggingFace tokenizer.json format.
@@ -392,6 +435,33 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 	return
 }
 
+// bpeMergePushPair inlines the prior pushPair closure as a free
+// function. The closure version captured nodes + candidates + t which
+// forced the closure (and its captured slice headers / map) to escape
+// to heap on every bpeMerge call. The free-function version takes the
+// state explicitly + uses pushDirect to bypass container/heap's `any`
+// interface boxing — one alloc per push eliminated.
+func bpeMergePushPair(nodes []bpeNode, candidates *bpeCandidateHeap, ranks map[mergeKey]int, left int) {
+	if left < 0 || left >= len(nodes) || !nodes[left].alive {
+		return
+	}
+	right := nodes[left].next
+	if right < 0 || right >= len(nodes) || !nodes[right].alive {
+		return
+	}
+	rank, ok := ranks[mergeKey{a: nodes[left].token, b: nodes[right].token}]
+	if !ok {
+		return
+	}
+	candidates.pushDirect(bpeCandidate{
+		rank:         rank,
+		left:         left,
+		right:        right,
+		leftVersion:  nodes[left].version,
+		rightVersion: nodes[right].version,
+	})
+}
+
 // bpeMerge applies BPE merges to a sequence of symbols until no more merges apply.
 // Uses the standard algorithm: repeatedly find the lowest-rank adjacent pair and merge it.
 func (t *Tokenizer) bpeMerge(symbols []string) []string {
@@ -411,33 +481,14 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 	nodes[len(nodes)-1].next = -1
 
 	candidates := make(bpeCandidateHeap, 0, len(nodes)-1)
-	pushPair := func(left int) {
-		if left < 0 || left >= len(nodes) || !nodes[left].alive {
-			return
-		}
-		right := nodes[left].next
-		if right < 0 || right >= len(nodes) || !nodes[right].alive {
-			return
-		}
-		rank, ok := t.mergeRanks[mergeKey{a: nodes[left].token, b: nodes[right].token}]
-		if !ok {
-			return
-		}
-		heap.Push(&candidates, bpeCandidate{
-			rank:         rank,
-			left:         left,
-			right:        right,
-			leftVersion:  nodes[left].version,
-			rightVersion: nodes[right].version,
-		})
-	}
 	for i := 0; i < len(nodes)-1; i++ {
-		pushPair(i)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, i)
 	}
-	heap.Init(&candidates)
+	// pushDirect maintains heap invariant on each insert — no separate
+	// heap.Init pass needed.
 
 	for candidates.Len() > 0 {
-		candidate := heap.Pop(&candidates).(bpeCandidate)
+		candidate := candidates.popDirect()
 		left, right := candidate.left, candidate.right
 		if left < 0 || right < 0 || left >= len(nodes) || right >= len(nodes) {
 			continue
@@ -461,8 +512,8 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 			nodes[next].prev = left
 		}
 
-		pushPair(nodes[left].prev)
-		pushPair(left)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, nodes[left].prev)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, left)
 	}
 
 	merged := symbols[:0]
