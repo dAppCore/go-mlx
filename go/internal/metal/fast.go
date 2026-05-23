@@ -17,7 +17,6 @@ import "C"
 import (
 	"runtime"
 	"sync"
-	"unsafe"
 
 	"dappco.re/go"
 )
@@ -129,16 +128,28 @@ func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, sca
 	return out
 }
 
+// SDPA mode strings are the only three values ever passed to
+// mlx_fast_scaled_dot_product_attention's mask_mode argument:
+// "" (default), "causal", and "array". Allocate the corresponding
+// C strings once at package load and reuse them for every call —
+// the MLX C wrapper copies the string into its op-tree on each
+// invocation, so the cached strings are read-only and never
+// freed. Drops the per-call C.CString / defer C.free pair that
+// every SDPA call was paying out of the decode hot path.
+var (
+	sdpaModeDefault = C.CString("")
+	sdpaModeCausal  = C.CString("causal")
+	sdpaModeArray   = C.CString("array")
+)
+
 // ScaledDotProductAttention computes attention using a fused Metal kernel.
 //
 //	out := metal.ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1) // causal when seqLen > 1
 func ScaledDotProductAttention(query, key, value *Array, scale float32, causal bool) *Array {
-	mode := ""
+	cMode := sdpaModeDefault
 	if causal {
-		mode = "causal"
+		cMode = sdpaModeCausal
 	}
-	cMode := C.CString(mode)
-	defer C.free(unsafe.Pointer(cMode))
 
 	maskArr := C.mlx_array_new()
 	defer C.mlx_array_free(maskArr)
@@ -161,6 +172,21 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 var scorePagesPool = sync.Pool{
 	New: func() any {
 		buf := make([]*Array, 0, 16)
+		return &buf
+	},
+}
+
+// nativePagedCtxPool is a sync.Pool of *[]C.mlx_array slices used by
+// nativePagedSingleTokenAttention to hand a contiguous run of mlx_array
+// handles across the cgo boundary without paying two C.calloc/C.free
+// trips per decode step. The native wrapper consumes the buffer
+// synchronously, so the slice can be returned to the pool once the cgo
+// call returns, the same way W11-T pools scorePages. The 16-capacity
+// matches typical PagedKVCache page counts during decode; larger page
+// counts grow the backing array and the pool reuses the grown slot.
+var nativePagedCtxPool = sync.Pool{
+	New: func() any {
+		buf := make([]C.mlx_array, 0, 16)
 		return &buf
 	},
 }
@@ -235,35 +261,59 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 		return nil, false, nil
 	}
 	pageCount := len(keyPages)
-	keyPtr := (*C.mlx_array)(C.calloc(C.size_t(pageCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-	valuePtr := (*C.mlx_array)(C.calloc(C.size_t(pageCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-	if keyPtr == nil || valuePtr == nil {
-		if keyPtr != nil {
-			C.free(unsafe.Pointer(keyPtr))
-		}
-		if valuePtr != nil {
-			C.free(unsafe.Pointer(valuePtr))
-		}
-		return nil, true, core.NewError("mlx.nativePagedSingleTokenAttention: allocate C page buffers failed")
-	}
-	defer C.free(unsafe.Pointer(keyPtr))
-	defer C.free(unsafe.Pointer(valuePtr))
 
-	keys := unsafe.Slice(keyPtr, pageCount)
-	values := unsafe.Slice(valuePtr, pageCount)
+	// Pooled C-pointer scratch — the native wrapper copies the
+	// page-handle run synchronously, so the slice goes back into
+	// nativePagedCtxPool once the cgo call returns. This removes
+	// the 2 × C.calloc / C.free trips per decode step that the
+	// SDPAPaged_*_Pages benches still show as the residual cost.
+	keysBufPtr := nativePagedCtxPool.Get().(*[]C.mlx_array)
+	valuesBufPtr := nativePagedCtxPool.Get().(*[]C.mlx_array)
+	keysBuf := *keysBufPtr
+	valuesBuf := *valuesBufPtr
+	if cap(keysBuf) < pageCount {
+		keysBuf = make([]C.mlx_array, pageCount)
+	} else {
+		keysBuf = keysBuf[:pageCount]
+	}
+	if cap(valuesBuf) < pageCount {
+		valuesBuf = make([]C.mlx_array, pageCount)
+	} else {
+		valuesBuf = valuesBuf[:pageCount]
+	}
 	for i := 0; i < pageCount; i++ {
 		if keyPages[i] == nil || valuePages[i] == nil || !keyPages[i].Valid() || !valuePages[i].Valid() {
+			// Restore pool slot before bailing out (no growth survives the
+			// abort branch beyond the local re-slicing).
+			keysBuf = keysBuf[:0]
+			valuesBuf = valuesBuf[:0]
+			*keysBufPtr = keysBuf
+			*valuesBufPtr = valuesBuf
+			nativePagedCtxPool.Put(keysBufPtr)
+			nativePagedCtxPool.Put(valuesBufPtr)
 			return nil, false, nil
 		}
-		keys[i] = keyPages[i].ctx
-		values[i] = valuePages[i].ctx
+		keysBuf[i] = keyPages[i].ctx
+		valuesBuf[i] = valuePages[i].ctx
 	}
 
 	out := newArray("NATIVE_PAGED_ATTENTION", query)
-	rc := C.go_mlx_native_paged_single_token_attention(&out.ctx, query.ctx, keyPtr, valuePtr, C.int(pageCount), C.float(scale), DefaultStream().ctx)
+	rc := C.go_mlx_native_paged_single_token_attention(&out.ctx, query.ctx, &keysBuf[0], &valuesBuf[0], C.int(pageCount), C.float(scale), DefaultStream().ctx)
 	runtime.KeepAlive(query)
 	runtime.KeepAlive(keyPages)
 	runtime.KeepAlive(valuePages)
+	runtime.KeepAlive(keysBuf)
+	runtime.KeepAlive(valuesBuf)
+
+	// Reset to zero length and put back the (possibly grown) slice so
+	// subsequent calls reuse the same backing array.
+	keysBuf = keysBuf[:0]
+	valuesBuf = valuesBuf[:0]
+	*keysBufPtr = keysBuf
+	*valuesBufPtr = valuesBuf
+	nativePagedCtxPool.Put(keysBufPtr)
+	nativePagedCtxPool.Put(valuesBufPtr)
+
 	if rc != 0 {
 		Free(out)
 		if err := lastError(); err != nil {
@@ -307,13 +357,10 @@ func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *
 //
 //	out := metal.ScaledDotProductAttentionWithMask(q, k, v, batchMask, cfg.Scale)
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
-	cMode := C.CString("array")
-	defer C.free(unsafe.Pointer(cMode))
-
 	sinksArr := C.mlx_array_new()
 	defer C.mlx_array_free(sinksArr)
 
 	out := newArray("FAST_SDPA", query, key, value, mask)
-	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, mask.ctx, sinksArr, DefaultStream().ctx)
+	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx)
 	return out
 }
