@@ -146,27 +146,55 @@ func SliceUpdateInplace(a, update *Array, starts, ends []int32) *Array {
 // directly from register-passed scalars. Used by KV cache update paths
 // where `[]int32{0,0,prev,0}, []int32{B,H,offset,D}` previously paid two
 // heap allocs per call site (and most cache.go sites have 2-4 such pairs).
+// Resolves the default stream on every call — hot loops that issue several
+// Slice4 calls back-to-back should hoist the stream out via Slice4WithStream.
 //
 //	kFull := metal.Slice4(kCache, 0,0,0,0, B,H,int32(offset),D)
 func Slice4(a *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32) *Array {
+	return Slice4WithStream(a, s0, s1, s2, s3, e0, e1, e2, e3, DefaultStream())
+}
+
+// Slice4WithStream is the stream-passing sibling of Slice4 — accepts a
+// pre-resolved stream so per-token loops can hoist the DefaultStream()
+// lookup (RWMutex.RLock+RUnlock + cached-device atomic load) outside the
+// loop. Mirrors the W10/W11 fixedKVCacheSlice4D pattern: KVCache.Update
+// issues four Slice4-family calls per token; resolving the stream once
+// per Update collapses those four lookups to one.
+//
+//	stream := metal.DefaultStream()
+//	kFull := metal.Slice4WithStream(kCache, 0,0,0,0, B,H,int32(offset),D, stream)
+func Slice4WithStream(a *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32, stream *Stream) *Array {
 	out := newArray("SLICE", a)
 	C.mlx_slice_inline_4(&out.ctx, a.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
-		DefaultStream().ctx)
+		stream.ctx)
 	return out
 }
 
 // SliceUpdateInplace4 is the rank-4 scalar-pass form of SliceUpdateInplace.
 // See Slice4 for the rationale — KV cache append paths construct
-// []int32{0,0,prev,0}, []int32{B,H,offset,D} on every Update call.
+// []int32{0,0,prev,0}, []int32{B,H,offset,D} on every Update call.  Hot
+// loops should prefer SliceUpdateInplace4WithStream to hoist the per-call
+// DefaultStream() lookup.
 //
 //	kBuf := metal.SliceUpdateInplace4(kBuf, k, 0,0,int32(prev),0, B,H,int32(offset),D)
 func SliceUpdateInplace4(a, update *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32) *Array {
+	return SliceUpdateInplace4WithStream(a, update, s0, s1, s2, s3, e0, e1, e2, e3, DefaultStream())
+}
+
+// SliceUpdateInplace4WithStream is the stream-passing sibling of
+// SliceUpdateInplace4 — accepts a pre-resolved stream so the KVCache.Update
+// hot path can resolve the default stream once per Update instead of once
+// per slice-update call.  Mirrors fixedKVCacheSliceUpdate4D.
+//
+//	stream := metal.DefaultStream()
+//	kBuf := metal.SliceUpdateInplace4WithStream(kBuf, k, 0,0,int32(prev),0, B,H,int32(offset),D, stream)
+func SliceUpdateInplace4WithStream(a, update *Array, s0, s1, s2, s3, e0, e1, e2, e3 int32, stream *Stream) *Array {
 	out := newArray("SLICE_UPDATE", a, update)
 	C.mlx_slice_update_inline_4(&out.ctx, a.ctx, update.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
 		C.int32_t(e0), C.int32_t(e1), C.int32_t(e2), C.int32_t(e3),
-		DefaultStream().ctx)
+		stream.ctx)
 	return out
 }
