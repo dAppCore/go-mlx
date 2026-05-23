@@ -148,8 +148,14 @@ extern "C" mlx_array go_mlx_array_new_pinned_strided_data(
     size_t view_offset,
     mlx_dtype dtype,
     mlx_stream stream,
-    void* payload,
+    uintptr_t payload_id,
     void (*dtor)(void*)) {
+  // payload_id is an opaque uintptr token from the Go side (a counter,
+  // not a pointer) — we widen it to void* here because that is what
+  // mlx_array_new_data_managed_payload + the dtor expect. Keeping it as
+  // uintptr_t in the Go-visible signature lets `go vet`'s unsafeptr
+  // check see this is not a Go pointer crossing the boundary.
+  void* payload = reinterpret_cast<void*>(payload_id);
   auto release_payload = [&]() {
     if (dtor != nullptr && payload != nullptr) {
       dtor(payload);

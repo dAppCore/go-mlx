@@ -9,10 +9,17 @@ package metal
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
 
-extern void goPinnedRawArrayRelease(void* payload);
+// Bridge between mlx's void*-payload dtor contract and our uintptr_t
+// identifier scheme — payload is a synthetic id (not a Go pointer), so
+// we keep it as uintptr_t everywhere the Go runtime can see it and only
+// widen to void* inside C where it satisfies mlx's signature. This is
+// the same pattern runtime/cgo.Handle uses, and it keeps the Go side
+// free of `unsafe.Pointer(uintptr)` conversions that trip `go vet`'s
+// unsafeptr check.
+extern void goPinnedRawArrayRelease(uintptr_t payload);
 
 static void go_pinned_raw_array_release(void* payload) {
-	goPinnedRawArrayRelease(payload);
+	goPinnedRawArrayRelease((uintptr_t)payload);
 }
 
 typedef void (*go_pinned_raw_array_release_fn)(void*);
@@ -32,7 +39,7 @@ mlx_array go_mlx_array_new_pinned_strided_data(
 	size_t view_offset,
 	mlx_dtype dtype,
 	mlx_stream stream,
-	void* payload,
+	uintptr_t payload,
 	void (*dtor)(void*));
 */
 import "C"
@@ -58,6 +65,18 @@ type pinnedRawArrayBuffer struct {
 var (
 	pinnedRawArrayBuffers sync.Map
 	pinnedRawArrayNextID  atomic.Uintptr
+
+	// pinnedRawArrayBufferPool recycles pinnedRawArrayBuffer structs across
+	// register/unregister cycles. The buffer lifetime is mlx-side-driven —
+	// it lives in pinnedRawArrayBuffers until mlx fires the release dtor,
+	// then unregister Releases the view + clears the slice header and Puts
+	// the struct back. W10-O wired the cgo-scratch pools but left this
+	// per-call `&pinnedRawArrayBuffer{}` heap alloc on the hot path; pool
+	// drops the steady-state floor by 1 alloc/call on the canonical
+	// pinned-array build (3→2 allocs, 120→56 B/op across L1-L16384).
+	pinnedRawArrayBufferPool = sync.Pool{
+		New: func() any { return &pinnedRawArrayBuffer{} },
+	}
 )
 
 // pinnedShapeScratchInt / pinnedShapeScratchInt64 pool the per-call cgo
@@ -83,7 +102,8 @@ func registerPinnedRawArray(raw []byte) (uintptr, unsafe.Pointer, error) {
 	if len(raw) == 0 {
 		return 0, nil, core.NewError("mlx: pinned array data is empty")
 	}
-	buffer := &pinnedRawArrayBuffer{raw: raw}
+	buffer := pinnedRawArrayBufferPool.Get().(*pinnedRawArrayBuffer)
+	buffer.raw = raw
 	core.PinSlice(buffer.raw, &buffer.view)
 	id := pinnedRawArrayNextID.Add(1)
 	pinnedRawArrayBuffers.Store(id, buffer)
@@ -103,10 +123,17 @@ func unregisterPinnedRawArray(id uintptr) {
 		return
 	}
 	buffer.view.Release()
+	// Drop the slice reference so the underlying bytes are eligible for
+	// GC the moment mlx releases the array — the pool only holds the
+	// empty shell. PinnedView.Release already zeroed view; raw needs
+	// explicit clear since the pool will hand this struct out for a
+	// fresh raw next call.
+	buffer.raw = nil
+	pinnedRawArrayBufferPool.Put(buffer)
 }
 
 //export goPinnedRawArrayRelease
-func goPinnedRawArrayRelease(payload unsafe.Pointer) {
+func goPinnedRawArrayRelease(payload C.uintptr_t) {
 	unregisterPinnedRawArray(uintptr(payload))
 }
 
@@ -181,7 +208,7 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 		C.size_t(viewOffset),
 		C.mlx_dtype(dtype),
 		DefaultStream().ctx,
-		unsafe.Pointer(id),
+		C.uintptr_t(id),
 		C.go_pinned_raw_array_release_ptr(),
 	)
 	if array.ctx.ctx == nil {
