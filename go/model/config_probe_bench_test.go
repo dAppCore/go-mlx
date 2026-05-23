@@ -352,3 +352,21 @@ func BenchmarkModel_ParseConfigProbe_BertRerank(b *testing.B) {
 		probeSinkProbe = &probe
 	}
 }
+
+// Multi-architecture variant — vision-text models often list 2-4
+// architectures (e.g. Gemma4 with separate vision/text/audio heads).
+// The pre-sized slice path saves the append growth here.
+var configMultiArch = []byte(`{"model_type":"gemma4","architectures":["Gemma4ForCausalLM","Gemma4ForConditionalGeneration","Gemma4VisionModel","Gemma4ForAudio"],"vocab_size":262144,"hidden_size":2304}`)
+
+func BenchmarkModel_ParseConfigProbe_MultiArch(b *testing.B) {
+	data := configMultiArch
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var probe modelConfigProbe
+		if r := core.JSONUnmarshal(data, &probe); !r.OK {
+			b.Fatalf("JSONUnmarshal: %v", r.Value)
+		}
+		probeSinkProbe = &probe
+	}
+}
