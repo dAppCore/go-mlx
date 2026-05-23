@@ -17,7 +17,6 @@ import "C"
 import (
 	"runtime"
 	"sync"
-	"unsafe"
 
 	"dappco.re/go"
 )
@@ -129,16 +128,28 @@ func RoPEWithOffsetArray(x *Array, dims int, traditional bool, base float32, sca
 	return out
 }
 
+// SDPA mode strings are the only three values ever passed to
+// mlx_fast_scaled_dot_product_attention's mask_mode argument:
+// "" (default), "causal", and "array". Allocate the corresponding
+// C strings once at package load and reuse them for every call —
+// the MLX C wrapper copies the string into its op-tree on each
+// invocation, so the cached strings are read-only and never
+// freed. Drops the per-call C.CString / defer C.free pair that
+// every SDPA call was paying out of the decode hot path.
+var (
+	sdpaModeDefault = C.CString("")
+	sdpaModeCausal  = C.CString("causal")
+	sdpaModeArray   = C.CString("array")
+)
+
 // ScaledDotProductAttention computes attention using a fused Metal kernel.
 //
 //	out := metal.ScaledDotProductAttention(q, k, v, cfg.Scale, L > 1) // causal when seqLen > 1
 func ScaledDotProductAttention(query, key, value *Array, scale float32, causal bool) *Array {
-	mode := ""
+	cMode := sdpaModeDefault
 	if causal {
-		mode = "causal"
+		cMode = sdpaModeCausal
 	}
-	cMode := C.CString(mode)
-	defer C.free(unsafe.Pointer(cMode))
 
 	maskArr := C.mlx_array_new()
 	defer C.mlx_array_free(maskArr)
@@ -346,13 +357,10 @@ func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *
 //
 //	out := metal.ScaledDotProductAttentionWithMask(q, k, v, batchMask, cfg.Scale)
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
-	cMode := C.CString("array")
-	defer C.free(unsafe.Pointer(cMode))
-
 	sinksArr := C.mlx_array_new()
 	defer C.mlx_array_free(sinksArr)
 
 	out := newArray("FAST_SDPA", query, key, value, mask)
-	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, mask.ctx, sinksArr, DefaultStream().ctx)
+	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx)
 	return out
 }
