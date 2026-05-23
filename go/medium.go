@@ -63,7 +63,20 @@ func mediumModelRoot(modelPath string) string {
 	cleaned := cleanMediumPath(modelPath)
 	switch {
 	case core.HasSuffix(cleaned, ".gguf"), core.HasSuffix(cleaned, ".safetensors"):
-		return cleanMediumPath(core.PathDir(cleaned))
+		// core.PathDir on a slash-clean input (which `cleaned` always
+		// is — cleanMediumPath returned it) yields another slash-clean
+		// prefix with no leading/trailing whitespace. Re-running
+		// cleanMediumPath on that output is dead work: Trim has nothing
+		// to strip, and CleanPath would walk the byte array a second
+		// time only to produce the identical string. The "." → ""
+		// remap is preserved because PathDir already returns "." when
+		// the input has no separator, and we surface that via the
+		// switch on the literal "." below.
+		dir := core.PathDir(cleaned)
+		if dir == "." {
+			return ""
+		}
+		return dir
 	default:
 		return cleaned
 	}
