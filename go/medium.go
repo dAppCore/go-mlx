@@ -132,7 +132,15 @@ func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) er
 		relative := mediumRelativePath(sourceRoot, sourcePath)
 		destinationPath := destinationRoot
 		if relative != "" {
-			destinationPath = core.PathJoin(destinationRoot, fromSlashPath(relative))
+			// destinationRoot comes from MkdirTemp (no trailing
+			// separator); relative is slash-clean from
+			// mediumRelativePath; their OS-native concat is already
+			// clean, so filepath.Join's Clean step is dead work
+			// against the same invariant exploited by walkMedium's
+			// per-entry concat. Use the compile-time-constant
+			// PathSeparator so the Windows back-slash path stays
+			// correct without dispatching through filepath.Join.
+			destinationPath = destinationRoot + string(core.PathSeparator) + fromSlashPath(relative)
 		}
 		if entry.IsDir() {
 			if r := core.MkdirAll(destinationPath, 0o755); !r.OK {
