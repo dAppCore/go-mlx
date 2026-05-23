@@ -204,6 +204,12 @@ func (s *ModelSession) Generate(opts ...GenerateOption) (string, error) {
 	cfg := applyGenerateOptions(opts)
 	filter := parser.NewProcessor(cfg.Thinking, parserHint(s.info))
 	builder := core.NewBuilder()
+	// Pre-grow the Builder backing slice — generations typically produce
+	// hundreds of tokens of text. Skips the early 64 -> 128 -> 256 -> 512
+	// -> 1024 doubling sequence of internal slice reallocations during
+	// token streaming. Mirror of GenerateAndSleepAgentMemory's hint —
+	// the per-conversation cost is the same on both API entry points.
+	builder.Grow(1024)
 	for tok := range s.session.Generate(context.Background(), toMetalGenerateConfig(cfg)) {
 		builder.WriteString(filter.Process(sessionParserTokenText(s.tok, tok)))
 	}
