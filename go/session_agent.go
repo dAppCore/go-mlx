@@ -772,17 +772,18 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 	// Fast path: no user-supplied metadata. Every adapter/runtime key is
 	// fresh, so the addAgentMemoryMetadata 'meta[key] == ""' idempotence
 	// read is wasted work — direct writes shave one map-probe per non-
-	// empty field. Trim safety still applies via the pre-check; the
-	// counting loop above already filtered empty values out of extras.
+	// empty field. Whitespace-only values still need to be filtered
+	// (preserving addAgentMemoryMetadata's Trim safety check) — fields
+	// like Adapter.Path can legitimately arrive as '   ' from upstream.
 	if req.Metadata == nil {
 		meta := make(map[string]string, extras)
-		if v := req.Adapter.Hash; v != "" {
+		if v := req.Adapter.Hash; v != "" && core.Trim(v) != "" {
 			meta["adapter_hash"] = v
 		}
-		if v := req.Adapter.Path; v != "" {
+		if v := req.Adapter.Path; v != "" && core.Trim(v) != "" {
 			meta["adapter_path"] = v
 		}
-		if v := req.Adapter.Format; v != "" {
+		if v := req.Adapter.Format; v != "" && core.Trim(v) != "" {
 			meta["adapter_format"] = v
 		}
 		if req.Adapter.Rank != 0 {
@@ -791,16 +792,16 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 		if req.Adapter.Alpha != 0 {
 			meta["adapter_alpha"] = strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32)
 		}
-		if v := req.Runtime.Backend; v != "" {
+		if v := req.Runtime.Backend; v != "" && core.Trim(v) != "" {
 			meta["runtime_backend"] = v
 		}
-		if v := req.Runtime.Device; v != "" {
+		if v := req.Runtime.Device; v != "" && core.Trim(v) != "" {
 			meta["runtime_device"] = v
 		}
-		if v := req.Runtime.CacheMode; v != "" {
+		if v := req.Runtime.CacheMode; v != "" && core.Trim(v) != "" {
 			meta["runtime_cache_mode"] = v
 		}
-		if v := req.Runtime.Version; v != "" {
+		if v := req.Runtime.Version; v != "" && core.Trim(v) != "" {
 			meta["runtime_version"] = v
 		}
 		return meta
@@ -809,19 +810,38 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 	for k, v := range req.Metadata {
 		dst[k] = v
 	}
-	dst = addAgentMemoryMetadata(dst, "adapter_hash", req.Adapter.Hash)
-	dst = addAgentMemoryMetadata(dst, "adapter_path", req.Adapter.Path)
-	dst = addAgentMemoryMetadata(dst, "adapter_format", req.Adapter.Format)
-	if req.Adapter.Rank != 0 {
-		dst = addAgentMemoryMetadata(dst, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
+	// addAgentMemoryMetadata-equivalent inline writes — same idempotence
+	// rule (don't overwrite caller-supplied keys) but skip the function
+	// call. The Trim guard runs only for non-empty values (the counting
+	// loop above already filtered v=="" out of extras, so the && short-
+	// circuit makes Trim a one-time check per field).
+	if v := req.Adapter.Hash; v != "" && dst["adapter_hash"] == "" && core.Trim(v) != "" {
+		dst["adapter_hash"] = v
 	}
-	if req.Adapter.Alpha != 0 {
-		dst = addAgentMemoryMetadata(dst, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
+	if v := req.Adapter.Path; v != "" && dst["adapter_path"] == "" && core.Trim(v) != "" {
+		dst["adapter_path"] = v
 	}
-	dst = addAgentMemoryMetadata(dst, "runtime_backend", req.Runtime.Backend)
-	dst = addAgentMemoryMetadata(dst, "runtime_device", req.Runtime.Device)
-	dst = addAgentMemoryMetadata(dst, "runtime_cache_mode", req.Runtime.CacheMode)
-	dst = addAgentMemoryMetadata(dst, "runtime_version", req.Runtime.Version)
+	if v := req.Adapter.Format; v != "" && dst["adapter_format"] == "" && core.Trim(v) != "" {
+		dst["adapter_format"] = v
+	}
+	if req.Adapter.Rank != 0 && dst["adapter_rank"] == "" {
+		dst["adapter_rank"] = strconv.Itoa(req.Adapter.Rank)
+	}
+	if req.Adapter.Alpha != 0 && dst["adapter_alpha"] == "" {
+		dst["adapter_alpha"] = strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32)
+	}
+	if v := req.Runtime.Backend; v != "" && dst["runtime_backend"] == "" && core.Trim(v) != "" {
+		dst["runtime_backend"] = v
+	}
+	if v := req.Runtime.Device; v != "" && dst["runtime_device"] == "" && core.Trim(v) != "" {
+		dst["runtime_device"] = v
+	}
+	if v := req.Runtime.CacheMode; v != "" && dst["runtime_cache_mode"] == "" && core.Trim(v) != "" {
+		dst["runtime_cache_mode"] = v
+	}
+	if v := req.Runtime.Version; v != "" && dst["runtime_version"] == "" && core.Trim(v) != "" {
+		dst["runtime_version"] = v
+	}
 	return dst
 }
 
