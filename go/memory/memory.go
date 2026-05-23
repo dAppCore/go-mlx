@@ -280,7 +280,11 @@ func NewPlan(input Input) Plan {
 			hintsPtr = packPtr
 		}
 	}
-	if hintsPtr == nil {
+	// Skip the lookups entirely when both architecture strings are
+	// empty — NoPack/Device-only plans have no architecture to look
+	// up and the registry would return (nil, false) for empty input
+	// anyway. Saves two function calls per cold-start plan.
+	if hintsPtr == nil && hintsArch != "" {
 		if hintsProfile, hintsFound := profile.LookupArchitectureProfileRef(hintsArch); hintsFound {
 			hintsPtr = hintsProfile
 			if packArch == hintsArch {
@@ -288,7 +292,7 @@ func NewPlan(input Input) Plan {
 			}
 		}
 	}
-	if packPtr == nil && packArch != hintsArch {
+	if packPtr == nil && packArch != hintsArch && packArch != "" {
 		if packProfile, ok := profile.LookupArchitectureProfileRef(packArch); ok {
 			packPtr = packProfile
 		}
@@ -556,7 +560,11 @@ func applyArchitectureHints(plan *Plan, architecture string, profileHint *profil
 	var normalized string
 	if profileHint != nil {
 		normalized = profileHint.ID
-	} else {
+	} else if architecture != "" {
+		// Empty architecture short-circuit — NoPack plans hit this
+		// path with arch="" on every call. Avoid the normalize jump
+		// for a guaranteed-empty result, which would no-op through the
+		// switch anyway.
 		normalized = normalizeKnownArchitecture(architecture)
 	}
 	switch normalized {
