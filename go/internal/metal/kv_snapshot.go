@@ -7,8 +7,6 @@ package metal
 import (
 	"context"
 	"iter"
-	"runtime"
-	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -461,34 +459,30 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 		}, true
 	}
 
-	// W11-X: borrow MLX-memory views rather than copying the full K and V
-	// cache slices into fresh Go []float32 buffers (Floats() does
+	// W11-X / W11-AE: borrow MLX-memory views rather than copying the full
+	// K and V cache slices into fresh Go []float32 buffers (Floats() does
 	// make + per-element copy — on a realistic 32-head/1024-token/128-dim
 	// cache that was 16MB × 2 = 32MB / 2 allocs per call).  Per-head Key
 	// and Value buffers are copied into independent slices via the loop
 	// below, so the borrowed views end at function return.
-	kSrc, kConverted, err := materialiseFloat32View(kSliced)
+	// W11-AE: kSliced/vSliced were Eval'd above, so the fast-path skips
+	// the final Materialize crossing when dtype + layout already match.
+	kFlat, kFlatCleanup, err := materialiseFloat32ViewFast(kSliced)
 	if err != nil {
 		Free(kSliced, vSliced)
 		return kvCacheSnapshot{}, false
 	}
-	vSrc, vConverted, err := materialiseFloat32View(vSliced)
+	defer kFlatCleanup()
+	vFlat, vFlatCleanup, err := materialiseFloat32ViewFast(vSliced)
 	if err != nil {
-		Free(kConverted)
 		Free(kSliced, vSliced)
 		return kvCacheSnapshot{}, false
 	}
-	kN := kSrc.Size()
-	vN := vSrc.Size()
-	kPtr := (*float32)(rawArrayDataPointer(kSrc))
-	vPtr := (*float32)(rawArrayDataPointer(vSrc))
-	if kPtr == nil || vPtr == nil || kN == 0 || vN == 0 {
-		Free(kConverted, vConverted)
+	defer vFlatCleanup()
+	if len(kFlat) == 0 || len(vFlat) == 0 {
 		Free(kSliced, vSliced)
 		return kvCacheSnapshot{}, false
 	}
-	kFlat := unsafe.Slice(kPtr, kN)
-	vFlat := unsafe.Slice(vPtr, vN)
 
 	blockLen := end - start
 	heads := make([]KVHeadSnapshot, numHeads)
@@ -515,9 +509,6 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 			Value:      append([]float32(nil), vFlat[valueStart:valueEnd]...),
 		}
 	}
-	runtime.KeepAlive(kSrc)
-	runtime.KeepAlive(vSrc)
-	Free(kConverted, vConverted)
 	Free(kSliced, vSliced)
 
 	return kvCacheSnapshot{

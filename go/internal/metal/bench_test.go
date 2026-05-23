@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"runtime"
 	"testing"
 )
 
@@ -502,3 +503,81 @@ func BenchmarkInspectKVCacheRange_Realistic(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkMaterialiseFloat32View_Slow_NB sizes the legacy helper across the
+// realistic tensor-size range — characterises the cgo Materialize crossing
+// cost as a function of payload bytes.  Compare against the
+// BenchmarkMaterialiseFloat32ViewFast_FastPath_NB series to read off the
+// crossover threshold.
+func benchMaterialiseSlow(b *testing.B, n int) {
+	b.Helper()
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = float32(i)
+	}
+	arr := FromValues(values, 1, n)
+	Materialize(arr)
+	defer Free(arr)
+	for b.Loop() {
+		src, converted, err := materialiseFloat32View(arr)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = src.Size()
+		runtime.KeepAlive(src)
+		Free(converted)
+	}
+}
+
+func benchMaterialiseFast(b *testing.B, n int) {
+	b.Helper()
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = float32(i)
+	}
+	arr := FromValues(values, 1, n)
+	Materialize(arr)
+	defer Free(arr)
+	for b.Loop() {
+		view, cleanup, err := materialiseFloat32ViewFast(arr)
+		if err != nil {
+			b.Fatal(err)
+		}
+		_ = len(view)
+		cleanup()
+	}
+}
+
+// benchFloats sizes the legacy *Array.Floats() copy at the same size points
+// so the fast-path crossover threshold can be read off directly.
+func benchFloats(b *testing.B, n int) {
+	b.Helper()
+	values := make([]float32, n)
+	for i := range values {
+		values[i] = float32(i)
+	}
+	arr := FromValues(values, 1, n)
+	Materialize(arr)
+	defer Free(arr)
+	for b.Loop() {
+		out := arr.Floats()
+		_ = len(out)
+	}
+}
+
+func BenchmarkMaterialiseFloat32View_Floats_128B(b *testing.B)  { benchFloats(b, 32) }
+func BenchmarkMaterialiseFloat32View_Floats_1KB(b *testing.B)   { benchFloats(b, 256) }
+func BenchmarkMaterialiseFloat32View_Floats_10KB(b *testing.B)  { benchFloats(b, 2560) }
+func BenchmarkMaterialiseFloat32View_Floats_100KB(b *testing.B) { benchFloats(b, 25600) }
+func BenchmarkMaterialiseFloat32View_Floats_1MB(b *testing.B)   { benchFloats(b, 262144) }
+
+func BenchmarkMaterialiseFloat32View_Slow_128B(b *testing.B)    { benchMaterialiseSlow(b, 32) }
+func BenchmarkMaterialiseFloat32View_Slow_1KB(b *testing.B)     { benchMaterialiseSlow(b, 256) }
+func BenchmarkMaterialiseFloat32View_Slow_10KB(b *testing.B)    { benchMaterialiseSlow(b, 2560) }
+func BenchmarkMaterialiseFloat32View_Slow_100KB(b *testing.B)   { benchMaterialiseSlow(b, 25600) }
+func BenchmarkMaterialiseFloat32View_Slow_1MB(b *testing.B)     { benchMaterialiseSlow(b, 262144) }
+func BenchmarkMaterialiseFloat32ViewFast_128B(b *testing.B)     { benchMaterialiseFast(b, 32) }
+func BenchmarkMaterialiseFloat32ViewFast_1KB(b *testing.B)      { benchMaterialiseFast(b, 256) }
+func BenchmarkMaterialiseFloat32ViewFast_10KB(b *testing.B)     { benchMaterialiseFast(b, 2560) }
+func BenchmarkMaterialiseFloat32ViewFast_100KB(b *testing.B)    { benchMaterialiseFast(b, 25600) }
+func BenchmarkMaterialiseFloat32ViewFast_1MB(b *testing.B)      { benchMaterialiseFast(b, 262144) }

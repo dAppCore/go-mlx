@@ -6,7 +6,9 @@ package metal
 
 import (
 	"math"
+	"runtime"
 	"testing"
+	"unsafe"
 )
 
 func TestSample_Greedy_Good(t *testing.T) {
@@ -847,5 +849,155 @@ func TestSample_MinPSampler_Sample_Ugly(t *testing.T) {
 	}
 	if variant != "Ugly" {
 		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+// TestMaterialiseFloat32ViewFast_FastPath_Good asserts that the fast-path
+// (already DTypeFloat32 + row-contiguous) yields a view bit-exact to the
+// underlying tensor data — no Materialize crossing, no dtype conversion.
+func TestMaterialiseFloat32ViewFast_FastPath_Good(t *testing.T) {
+	coverageTokens := "materialiseFloat32ViewFast"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	values := []float32{0.1, -0.2, 3.14, -42, 1e-6, 1e6, math.MaxFloat32, -math.MaxFloat32}
+	arr := FromValues(values, 1, len(values))
+	Materialize(arr) // pre-materialise so backing store exists
+	defer Free(arr)
+
+	if !arr.IsRowContiguous() {
+		t.Fatalf("test pre-condition: arr must be row-contiguous, got !IsRowContiguous")
+	}
+	if arr.Dtype() != DTypeFloat32 {
+		t.Fatalf("test pre-condition: arr must be DTypeFloat32, got %v", arr.Dtype())
+	}
+
+	view, cleanup, err := materialiseFloat32ViewFast(arr)
+	if err != nil {
+		t.Fatalf("materialiseFloat32ViewFast: %v", err)
+	}
+	defer cleanup()
+
+	if len(view) != len(values) {
+		t.Fatalf("view len = %d, want %d", len(view), len(values))
+	}
+	for i, want := range values {
+		if view[i] != want {
+			t.Errorf("view[%d] = %v, want %v (bit-exact required)", i, view[i], want)
+		}
+	}
+}
+
+// TestMaterialiseFloat32ViewFast_SlowPathDtype_Good asserts parity with the
+// legacy helper when arr is non-float32 — fall-through path must produce a
+// bit-exact view via AsType + Materialize.
+func TestMaterialiseFloat32ViewFast_SlowPathDtype_Good(t *testing.T) {
+	coverageTokens := "materialiseFloat32ViewFast"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	// Build a float32 array, then AsType to float16 to force the slow path.
+	values := []float32{1, 2, 3, 4, 5, 6, 7, 8}
+	src := FromValues(values, 1, len(values))
+	Materialize(src)
+	defer Free(src)
+	f16 := AsType(src, DTypeFloat16)
+	Materialize(f16)
+	defer Free(f16)
+
+	view, cleanup, err := materialiseFloat32ViewFast(f16)
+	if err != nil {
+		t.Fatalf("materialiseFloat32ViewFast (slow): %v", err)
+	}
+	defer cleanup()
+
+	if len(view) != len(values) {
+		t.Fatalf("view len = %d, want %d", len(view), len(values))
+	}
+	// float16 -> float32 round-trip is exact for these small integers
+	for i, want := range values {
+		if view[i] != want {
+			t.Errorf("view[%d] = %v, want %v (float16 round-trip exact for ints)", i, view[i], want)
+		}
+	}
+}
+
+// TestMaterialiseFloat32ViewFast_LegacyParity_Good asserts the fast-path
+// helper produces bit-exact output vs the legacy materialiseFloat32View on
+// the same input.  Identical contract = safe migration.
+func TestMaterialiseFloat32ViewFast_LegacyParity_Good(t *testing.T) {
+	coverageTokens := "materialiseFloat32ViewFast"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	values := make([]float32, 1024)
+	for i := range values {
+		values[i] = float32(i)*0.001 - 0.5
+	}
+	arr := FromValues(values, 1, len(values))
+	Materialize(arr)
+	defer Free(arr)
+
+	fastView, fastCleanup, err := materialiseFloat32ViewFast(arr)
+	if err != nil {
+		t.Fatalf("fast: %v", err)
+	}
+	defer fastCleanup()
+
+	slowSrc, slowConverted, err := materialiseFloat32View(arr)
+	if err != nil {
+		t.Fatalf("slow: %v", err)
+	}
+	defer Free(slowConverted)
+	slowN := slowSrc.Size()
+	slowPtr := (*float32)(rawArrayDataPointer(slowSrc))
+	slowView := unsafe.Slice(slowPtr, slowN)
+	defer runtime.KeepAlive(slowSrc)
+
+	if len(fastView) != len(slowView) {
+		t.Fatalf("len mismatch: fast=%d slow=%d", len(fastView), len(slowView))
+	}
+	for i := range fastView {
+		if fastView[i] != slowView[i] {
+			t.Errorf("parity[%d]: fast=%v slow=%v", i, fastView[i], slowView[i])
+		}
+	}
+}
+
+// TestMaterialiseFloat32ViewFast_NonContiguous_Ugly asserts that a sliced
+// (and so potentially non-contiguous) view falls through to the slow path and
+// still produces correct float32 data — the dtype + contiguity gate must
+// route non-contiguous tensors to materialiseFloat32View without panic.
+func TestMaterialiseFloat32ViewFast_NonContiguous_Ugly(t *testing.T) {
+	coverageTokens := "materialiseFloat32ViewFast"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	// 2x4 then slice a non-row-aligned axis to force a non-contiguous view.
+	values := []float32{
+		0, 1, 2, 3,
+		4, 5, 6, 7,
+	}
+	arr := FromValues(values, 2, 4)
+	Materialize(arr)
+	defer Free(arr)
+	sliced := SliceAxis(arr, -1, 1, 3) // shape [2, 2] — strided view
+	Materialize(sliced)
+	defer Free(sliced)
+
+	view, cleanup, err := materialiseFloat32ViewFast(sliced)
+	if err != nil {
+		t.Fatalf("non-contig: %v", err)
+	}
+	defer cleanup()
+
+	want := []float32{1, 2, 5, 6}
+	if len(view) != len(want) {
+		t.Fatalf("view len = %d, want %d", len(view), len(want))
+	}
+	for i, w := range want {
+		if view[i] != w {
+			t.Errorf("view[%d] = %v, want %v", i, view[i], w)
+		}
 	}
 }
