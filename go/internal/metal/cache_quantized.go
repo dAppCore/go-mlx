@@ -364,9 +364,12 @@ func packQ4(q *Array) *Array {
 // shift) supplied by the caller — letting the QuantizedKVCache reuse one
 // pair across every Q4 Update rather than allocating fresh MLX scalars per
 // call. Pass nil for both to fall back to per-call allocation.
+//
+// Element count is read via Size() (single cgo call into mlx_array_size)
+// rather than Shape() + walk — Shape() allocates a fresh []int32 per call
+// which would otherwise show up as one heap alloc per Q4 Update.
 func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
-	shape := q.Shape()
-	n := cacheElementCount(shape)
+	n := q.Size()
 	flat := Reshape(q, int32(n))
 	ownOffset := offsetI8 == nil
 	offset := offsetI8
@@ -414,6 +417,10 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 // array of the original shape. The implementation reshapes pair-wise after
 // extracting the low/high nibbles, replacing the previous PutAlongAxis +
 // gather indices with structural ops only.
+//
+// `pairs` is read via low.Dim(0) (single cgo call) rather than low.Shape()[0]
+// (which allocates a fresh []int32 just to read one dim) — saves one heap
+// alloc per dequantise on the rare Q4 dequant path.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -425,7 +432,7 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	high := RightShift(packed, shift)
 	Free(mask, shift)
 
-	pairs := int(low.Shape()[0])
+	pairs := low.Dim(0)
 	lowE := ExpandDims(low, 1)
 	highE := ExpandDims(high, 1)
 	Free(low, high)
@@ -465,12 +472,15 @@ func cacheElementCount(shape []int32) int {
 // The implementation flattens to 1-D (zero-copy reshape) then reduces in a
 // single MaxAxis call, replacing the prior N-axis iterative reduction which
 // materialised one intermediate per dimension.
+//
+// Element count is read via Size() + NumDims() (single cgo calls each)
+// rather than Shape() + cacheElementCount walk — Shape() would allocate a
+// fresh []int32 every call which is per-quantize, every Update.
 func maxAll(a *Array) *Array {
-	shape := a.Shape()
-	if len(shape) == 0 {
+	if a.NumDims() == 0 {
 		return a.Clone()
 	}
-	n := cacheElementCount(shape)
+	n := a.Size()
 	if n == 0 {
 		return a.Clone()
 	}
