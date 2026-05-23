@@ -35,6 +35,42 @@ static inline int mlx_fast_metal_kernel_apply_inline(
     mlx_vector_array_free(inputVec);
     return rc;
 }
+
+// mlx_fast_metal_kernel_apply_one_inline pushes the single-output extraction
+// across the same cgo crossing as apply.  12 of 14 production MetalKernel
+// callers (expert_id_matvec, dense_matvec, gemma4_ffn_residual, jang_dequant,
+// codebook_vq, dense gemma4 router) declare exactly one output via
+// AddOutputArg and immediately index results[0].  Folding the
+// mlx_vector_array_size + mlx_vector_array_get pair into the same C frame as
+// the kernel apply eliminates two more cgo crossings per call and lets Go
+// drop the []*Array result slice (no heap escape, no len()-1 ceremony).
+//
+// Returns: rc from mlx_fast_metal_kernel_apply (0 on success); on success the
+// output count is written to *count and (if count==1) the first array handle
+// is moved into *out.  Caller checks count==1 to confirm single-output before
+// using *out; mismatched output arity reports the actual count for diagnostics.
+static inline int mlx_fast_metal_kernel_apply_one_inline(
+    mlx_array* out, size_t* count, mlx_vector_array* res,
+    mlx_fast_metal_kernel kernel,
+    const mlx_array* inputs, size_t input_num,
+    mlx_fast_metal_kernel_config config,
+    mlx_stream s) {
+    mlx_vector_array inputVec = mlx_vector_array_new();
+    for (size_t i = 0; i < input_num; ++i) {
+        mlx_vector_array_append_value(inputVec, inputs[i]);
+    }
+    int rc = mlx_fast_metal_kernel_apply(res, kernel, inputVec, config, s);
+    mlx_vector_array_free(inputVec);
+    if (rc != 0) {
+        *count = 0;
+        return rc;
+    }
+    *count = mlx_vector_array_size(*res);
+    if (*count == 1) {
+        mlx_vector_array_get(out, *res, 0);
+    }
+    return 0;
+}
 */
 import "C"
 
@@ -150,8 +186,14 @@ func (k *MetalKernel) Free() {
 // is freed between uses so the holder always returns to the pool with a
 // nil ctx, ready for the next caller's mlx_fast_metal_kernel_apply to
 // either reuse or allocate the underlying std::vector.
+//
+// The count field is the output-count slot for the ApplyOne fast path —
+// the inline-C wrapper writes the kernel's output count there, allowing
+// the per-call `var count C.size_t` (which escapes via cgo &count) to
+// move into the pooled holder and avoid the heap allocation.
 type metalKernelOutputVecHolder struct {
-	vec C.mlx_vector_array
+	vec   C.mlx_vector_array
+	count C.size_t
 }
 
 var metalKernelOutputVecPool = sync.Pool{
@@ -256,6 +298,90 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		results[i] = out
 	}
 	return results, nil
+}
+
+// ApplyOne is the single-output fast path for MetalKernel.Apply.  Returns the
+// kernel's sole output without allocating a []*Array slice or making the
+// separate mlx_vector_array_size + mlx_vector_array_get cgo crossings — the
+// inline-C wrapper extracts result[0] in the same frame as the apply.
+//
+// 12 of 14 production callers (expert_id matvec, dense_matvec,
+// gemma4_ffn_residual, jang_dequant, codebook_vq, gemma4_router_topk single-
+// output path) declare exactly one output via AddOutputArg and immediately
+// pull results[0]; ApplyOne replaces that pattern at zero alloc cost.
+//
+// Returns an error if the kernel produces 0 or >1 outputs — caller mismatch
+// against the cfg.AddOutputArg declaration is surfaced rather than silently
+// swallowed.
+//
+//	out, err := kernel.ApplyOne(cfg, input, weight, scales, biases, expertIDs)
+//	if err != nil { return err }
+func (k *MetalKernel) ApplyOne(config *MetalKernelConfig, inputs ...*Array) (*Array, error) {
+	if k == nil || k.ctx.ctx == nil {
+		return nil, core.E("mlx.MetalKernel.ApplyOne", "kernel handle is nil", nil)
+	}
+	if config == nil || config.ctx.ctx == nil {
+		return nil, core.E("mlx.MetalKernel.ApplyOne", "kernel config handle is nil", nil)
+	}
+	for i, a := range inputs {
+		if a == nil || !a.Valid() {
+			return nil, core.E("mlx.MetalKernel.ApplyOne", core.Sprintf("input %d handle is nil", i), nil)
+		}
+	}
+
+	holder := metalKernelOutputVecPool.Get().(*metalKernelOutputVecHolder)
+	defer func() {
+		C.mlx_vector_array_free(holder.vec)
+		holder.vec.ctx = nil
+		metalKernelOutputVecPool.Put(holder)
+	}()
+
+	var inputsPtr *C.mlx_array
+	var bufPtr *[]C.mlx_array
+	nInputs := len(inputs)
+	if nInputs > 0 {
+		if nInputs <= metalKernelInputScratchRank {
+			bufPtr = metalKernelInputScratch.Get().(*[]C.mlx_array)
+			buf := (*bufPtr)[:nInputs]
+			for i, a := range inputs {
+				buf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&buf[0]))
+		} else {
+			heapBuf := make([]C.mlx_array, nInputs)
+			for i, a := range inputs {
+				heapBuf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&heapBuf[0]))
+		}
+	}
+
+	out := newArray("METAL_KERNEL")
+	// holder.count is the output-count slot — pooled so the &count cgo pass
+	// does not force a per-call heap allocation.
+	rc := C.mlx_fast_metal_kernel_apply_one_inline(
+		&out.ctx, &holder.count, &holder.vec, k.ctx,
+		inputsPtr, C.size_t(nInputs), config.ctx,
+		DefaultStream().ctx,
+	)
+	if bufPtr != nil {
+		metalKernelInputScratch.Put(bufPtr)
+	}
+	if rc != 0 {
+		if err := lastError(); err != nil {
+			return nil, err
+		}
+		return nil, core.E("mlx.MetalKernel.ApplyOne", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)
+	}
+	if holder.count != 1 {
+		// Free the output vector handles so MLX does not leak the
+		// arrays the caller cannot reach.  The holder.vec defer above
+		// already frees the underlying vector itself; we just need to
+		// avoid returning a partially-initialised out handle.
+		return nil, core.E("mlx.MetalKernel.ApplyOne",
+			core.Sprintf("expected 1 output, got %d", int(holder.count)), nil)
+	}
+	return out, nil
 }
 
 // MetalKernelConfig holds dispatch parameters for a custom Metal kernel:
