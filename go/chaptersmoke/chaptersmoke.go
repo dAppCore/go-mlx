@@ -435,8 +435,22 @@ func storeFileName(kind string) string {
 	return "state-kv-chapters.mvlog"
 }
 
+const (
+	bundleURIPrefix = "mlx://state-chapter-smoke/"
+	bundleURISuffix = "/bundle"
+)
+
 func bundleURI(index int, name string) string {
-	return "mlx://state-chapter-smoke/" + slug(index, name) + "/bundle"
+	// Single allocation — append the slug body straight into a buffer
+	// already carrying the URI prefix, then append the "/bundle" suffix.
+	// Avoids the extra string-concat alloc the prior shape required.
+	name = core.Lower(core.Trim(name))
+	bodyMax := slugBodyCapHint(name)
+	buf := make([]byte, 0, len(bundleURIPrefix)+3+bodyMax+len(bundleURISuffix))
+	buf = append(buf, bundleURIPrefix...)
+	buf = appendSlugBody(buf, index, name)
+	buf = append(buf, bundleURISuffix...)
+	return core.AsString(buf)
 }
 
 func slug(index int, name string) string {
@@ -446,14 +460,30 @@ func slug(index int, name string) string {
 	// Walk the name once directly into the final buffer (positioned past
 	// the "NN-" prefix) so the only allocation is the returned string's
 	// backing array. Capacity reserves room for the "NN-chapter-N"
-	// fallback shape (idx ≤ 20 bytes via AppendInt) when the name walk
-	// yields zero kept bytes, so the empty-name path stays single-alloc.
-	idx := index + 1
+	// fallback shape when the name walk yields zero kept bytes, so the
+	// empty-name path stays single-alloc.
+	buf := make([]byte, 0, 3+slugBodyCapHint(name))
+	buf = appendSlugBody(buf, index, name)
+	return core.AsString(buf)
+}
+
+// slugBodyCapHint returns the upper-bound body length appendSlugBody can
+// produce — covers both the walked-name path (one byte per name byte at
+// worst) and the "chapter-N" fallback path (≤ 28 bytes).
+func slugBodyCapHint(name string) int {
 	bodyMax := len(name)
 	if fallback := 8 + 20; fallback > bodyMax {
 		bodyMax = fallback
 	}
-	buf := make([]byte, 0, 3+bodyMax)
+	return bodyMax
+}
+
+// appendSlugBody writes the canonical "NN-body" slug fragment into buf and
+// returns the extended slice. Caller is expected to have lowered + trimmed
+// name and pre-grown buf's capacity via slugBodyCapHint when single-alloc
+// behaviour matters.
+func appendSlugBody(buf []byte, index int, name string) []byte {
+	idx := index + 1
 	if idx < 10 {
 		buf = append(buf, '0')
 	}
@@ -487,11 +517,10 @@ func slug(index int, name string) string {
 	}
 	if firstKept < 0 {
 		// No ASCII-kept bytes — emit the canonical "chapter-N" body
-		// straight into the existing buf rather than re-allocating a
+		// straight into the existing buf rather than allocating a
 		// secondary string via defaultChapterSlug.
 		buf = append(buf[:prefixEnd], "chapter-"...)
-		buf = strconv.AppendInt(buf, int64(idx), 10)
-		return core.AsString(buf)
+		return strconv.AppendInt(buf, int64(idx), 10)
 	}
 	// Compact the kept range back to prefixEnd in place — drops any
 	// leading/trailing dash padding without a second allocation.
@@ -499,7 +528,7 @@ func slug(index int, name string) string {
 		copy(buf[prefixEnd:], buf[prefixEnd+firstKept:prefixEnd+lastKept+1])
 		buf = buf[:prefixEnd+(lastKept+1-firstKept)]
 	}
-	return core.AsString(buf)
+	return buf
 }
 
 // defaultChapterSlug returns "chapter-N" without Sprintf boxing.
