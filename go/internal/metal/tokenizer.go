@@ -309,11 +309,54 @@ func (t *Tokenizer) normalizeSentencePieceSegment(segment string) string {
 	if segment == "" {
 		return ""
 	}
-	normalized := core.Replace(segment, " ", "▁")
-	if t.addPrefixSpace && !core.HasPrefix(normalized, "▁") {
-		normalized = "▁" + normalized
+	// Decide upfront whether we need the leading ▁ prefix. The original
+	// code called Replace first (allocating a new string), then checked
+	// the result for "▁" prefix, then prefixed it (a SECOND alloc). Both
+	// can be merged into a single Builder pass:
+	//
+	//   - Count spaces to compute exact output size (▁ is 3 bytes, ' ' is
+	//     1, so each space adds 2 bytes to the output length).
+	//   - Decide prefix decision up front: needs ▁ iff addPrefixSpace AND
+	//     the segment's first byte is not the ▁-leader (E2). The latter
+	//     test is a single byte compare instead of HasPrefix walking 3.
+	//   - If no work needed (no spaces, no prefix), return segment as-is
+	//     — zero allocations, the input string passes through directly.
+	needPrefix := t.addPrefixSpace
+	if needPrefix && segment[0] == 0xE2 && len(segment) >= 3 &&
+		segment[1] == 0x96 && segment[2] == 0x81 {
+		needPrefix = false
 	}
-	return normalized
+
+	// Count spaces — also tells us if Replace work is needed.
+	spaces := 0
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == ' ' {
+			spaces++
+		}
+	}
+
+	if !needPrefix && spaces == 0 {
+		return segment
+	}
+
+	// Output size known exactly: prefix (3) + segment + 2 per space.
+	outLen := len(segment) + 2*spaces
+	if needPrefix {
+		outLen += 3
+	}
+	buf := make([]byte, 0, outLen)
+	if needPrefix {
+		buf = append(buf, 0xE2, 0x96, 0x81)
+	}
+	for i := 0; i < len(segment); i++ {
+		b := segment[i]
+		if b == ' ' {
+			buf = append(buf, 0xE2, 0x96, 0x81)
+			continue
+		}
+		buf = append(buf, b)
+	}
+	return core.AsString(buf)
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
