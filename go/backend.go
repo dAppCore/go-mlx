@@ -5,6 +5,7 @@ package mlx
 import (
 	"context"
 	"iter"
+	"unsafe"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference"
@@ -16,6 +17,17 @@ import (
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
+
+// Compile-time layout guard for the metal.ProbeLogit / probe.Logit
+// reinterpret cast in toRootProbeLogits. Both types carry int32 +
+// float32 + float64 with the same Go field ordering; the assertions
+// below break the build if either struct grows / shrinks / changes
+// field order, forcing a manual review of the unsafe cast.
+var _ [unsafe.Sizeof(metal.ProbeLogit{}) - unsafe.Sizeof(probe.Logit{})]byte
+var _ [unsafe.Sizeof(probe.Logit{}) - unsafe.Sizeof(metal.ProbeLogit{})]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.TokenID) - unsafe.Offsetof(probe.Logit{}.TokenID)]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.Logit) - unsafe.Offsetof(probe.Logit{}.Logit)]byte
+var _ [unsafe.Offsetof(metal.ProbeLogit{}.Probability) - unsafe.Offsetof(probe.Logit{}.Probability)]byte
 
 type nativeModel interface {
 	ApplyLoRA(metal.LoRAConfig) *metal.LoRAAdapter
@@ -501,18 +513,17 @@ func toRootProbeLogits(logits []metal.ProbeLogit) []probe.Logit {
 	if len(logits) == 0 {
 		return nil
 	}
+	// W8-A2 unsafe reinterpret — metal.ProbeLogit and probe.Logit have
+	// bit-identical layout (int32 TokenID + float32 Logit + float64
+	// Probability, with the same field order). The compile-time guard
+	// at the top of the file fires if either struct ever drifts. Cast
+	// the source slice header in-place, then `copy` does one memcpy
+	// instead of len(logits) per-field unpacks. Top-K is commonly
+	// 50-100 entries per probe event, emitted per-token when ProbeSink
+	// is enabled — every saved unpack compounds across the generation.
+	src := unsafe.Slice((*probe.Logit)(unsafe.Pointer(&logits[0])), len(logits))
 	out := make([]probe.Logit, len(logits))
-	// Index iteration — ProbeLogit is 3 fields (int32 + 2 float32 = 12 B).
-	// Marginal per-entry, but probe.Logits.Top can hold the full Top-K
-	// (commonly 50-100 entries per probe event), and probe events are
-	// emitted per-token when ProbeSink is enabled.
-	for i := range logits {
-		out[i] = probe.Logit{
-			TokenID:     logits[i].TokenID,
-			Logit:       logits[i].Logit,
-			Probability: logits[i].Probability,
-		}
-	}
+	copy(out, src)
 	return out
 }
 
