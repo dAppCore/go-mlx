@@ -183,13 +183,16 @@ func (s *Store) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) 
 	if err != nil {
 		return memvid.Chunk{}, err
 	}
-	id := int(view.Frame.ID)
-	if id != chunkID {
-		id = chunkID
-	}
+	// chunkID is the caller's authority — view.Frame.ID is what the
+	// store happens to have returned, but the contract is "the chunk
+	// you asked for". If they disagree the store is wrong, not the
+	// caller; carry the asked-for ID through to the Chunk.Ref so
+	// downstream code matches the user's mental model. (The frame
+	// offset still carries view.Frame.ID — that's the on-disk seek
+	// hint, separate concern.)
 	return memvid.Chunk{
 		Ref: memvid.ChunkRef{
-			ChunkID:        id,
+			ChunkID:        chunkID,
 			FrameOffset:    view.Frame.ID,
 			HasFrameOffset: true,
 			Codec:          memvid.CodecQRVideo,
@@ -223,10 +226,29 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if err := s.ready(); err != nil {
 		return memvid.ChunkRef{}, err
 	}
-	// 5 fixed flags + worst-case option flags (1 raw + 2 per uri/title/
-	// kind/track + 2 per tag + 2 per label). Pre-sized so subsequent
-	// appends never grow the backing array.
-	args := make([]string, 0, 14+2*(len(opts.Tags)+len(opts.Labels)))
+	// Exact-size args: previous form pre-sized to a worst-case of
+	// 14+2*(tags+labels) which over-allocated by 8 strings (128 B) on
+	// the no-opts path. Counting first costs ~5 ns of branch evaluation
+	// (already evaluated below) but lets `make` allocate exactly what's
+	// used, reducing GC pressure when Put is hot.
+	argc := 5 // "put", path, "--json", "--no-embedding", "--no-enrich"
+	if s.rawWrites {
+		argc++
+	}
+	if opts.URI != "" {
+		argc += 2
+	}
+	if opts.Title != "" {
+		argc += 2
+	}
+	if opts.Kind != "" {
+		argc += 2
+	}
+	if opts.Track != "" {
+		argc += 2
+	}
+	argc += 2 * (len(opts.Tags) + len(opts.Labels))
+	args := make([]string, 0, argc)
 	args = append(args, "put", s.path, "--json", "--no-embedding", "--no-enrich")
 	if s.rawWrites {
 		args = append(args, "--raw")
@@ -243,8 +265,21 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if opts.Track != "" {
 		args = append(args, "--track", opts.Track)
 	}
-	if len(opts.Tags) > 0 {
-		keys := make([]string, 0, len(opts.Tags))
+	if n := len(opts.Tags); n > 0 {
+		// W10-AG-style stack-buffer fast path: tags ≤ 16 (the realistic
+		// caller pattern) sort into a stack-allocated array, no heap
+		// alloc for the keys slice. Slice-of-array is the canonical Go
+		// idiom that keeps the backing array on the stack while
+		// providing slice semantics for slices.Sort. Falls back to make
+		// for unusual >16-tag callers. Saves 1 alloc + 16-128 B per
+		// Put on the common path.
+		var keys []string
+		if n <= 16 {
+			var stack [16]string
+			keys = stack[:0:n]
+		} else {
+			keys = make([]string, 0, n)
+		}
 		for key := range opts.Tags {
 			keys = append(keys, key)
 		}
@@ -363,9 +398,10 @@ func (s *Store) viewURI(ctx context.Context, uri string) (viewResponse, error) {
 }
 
 func (s *Store) view(ctx context.Context, selector string, value string, chunkID int) (viewResponse, error) {
-	if err := s.ready(); err != nil {
-		return viewResponse{}, err
-	}
+	// No explicit ready() check — s.run() below calls runInput which
+	// already does it. Removing the duplicate trims 2 core.Trim calls
+	// per view() (path + bin) plus the nil-store check. Material on
+	// Search's per-hit fan-out (N view() calls per query).
 	out, err := s.run(ctx, "view", s.path, selector, value, "--json")
 	if err != nil {
 		if commandLooksNotFound(err) {
