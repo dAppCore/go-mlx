@@ -250,6 +250,25 @@ func BenchmarkBackend_ToRootMetrics_Simple(b *testing.B) {
 	}
 }
 
+func BenchmarkBackend_ToRootMetrics_LoRA(b *testing.B) {
+	metrics := metal.Metrics{
+		PromptTokens:        128,
+		GeneratedTokens:     64,
+		PrefillTokensPerSec: 1000.0,
+		DecodeTokensPerSec:  100.0,
+		Adapter: metal.AdapterInfo{
+			Name:       "probe-lora",
+			Path:       "/models/lora.safetensors",
+			TargetKeys: []string{"q_proj", "k_proj", "v_proj", "o_proj"},
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkRootMetrics = toRootMetrics(metrics)
+	}
+}
+
 // --- chatMessagesAsMetal (W10-AN) ---
 // Per-Chat call shuffler from []inference.Message to []metal.ChatMessage.
 // W10-AN replaced a make + per-message copy with a layout-guarded
