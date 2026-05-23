@@ -797,7 +797,7 @@ func loadPackedProjection(index safetensors.Index, spec *TensorSpec) (JANGPacked
 		Scales:     scales,
 		Biases:     biases,
 	}
-	if projBiasRef, _, ok := findSafetensorRef(index, projectionBiasCandidates(spec, weightName)); ok {
+	if projBiasRef, _, ok := findProjectionBiasRef(index, spec, weightName); ok {
 		tensor.Bias, err = safetensors.ReadRefValues(projBiasRef)
 		if err != nil {
 			return JANGPackedProjectionTensor{}, core.E("minimax_m2.packed_projection", "read projection bias", err)
@@ -1078,6 +1078,55 @@ func sidecarCandidates(spec *TensorSpec, weightName, sidecar string) []string {
 		out = append(out, name+dotSidecar, trimWeightSuffix(name)+dotSidecar, name+underscoreSidecar)
 	}
 	return out
+}
+
+// findProjectionBiasRef inlines the projectionBiasCandidates fan-out +
+// findSafetensorRef loop. Projection bias is typically absent for
+// MiniMax M2 packed experts, so the common case is a full miss — but
+// the per-projection path still pays for the candidate slice every
+// time. The inline path lets us skip the slice + per-string-concat
+// allocs on every load whether the bias resolves or not (a miss only
+// walks the existence-check probes; a hit returns immediately).
+//
+//	ref, name, ok := findProjectionBiasRef(index, spec, weightName)
+func findProjectionBiasRef(index safetensors.Index, spec *TensorSpec, weightName string) (safetensors.TensorRef, string, bool) {
+	if ref, name, ok := tryProjectionBiasName(index, weightName); ok {
+		return ref, name, true
+	}
+	if spec.Name != weightName {
+		if ref, name, ok := tryProjectionBiasName(index, spec.Name); ok {
+			return ref, name, true
+		}
+	}
+	for _, alias := range spec.Aliases {
+		if ref, name, ok := tryProjectionBiasName(index, alias); ok {
+			return ref, name, true
+		}
+	}
+	return safetensors.TensorRef{}, "", false
+}
+
+// tryProjectionBiasName probes the three projection-bias name shapes
+// (trim(name)+".bias", name+".proj_bias", trim(name)+".proj_bias")
+// against the safetensors index and returns on the first hit. Hoisted
+// out so the call stays a plain dispatch.
+func tryProjectionBiasName(index safetensors.Index, name string) (safetensors.TensorRef, string, bool) {
+	trimmed := trimWeightSuffix(name)
+	candidate := trimmed + ".bias"
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	candidate = name + ".proj_bias"
+	if ref, ok := index.Tensors[candidate]; ok {
+		return ref, candidate, true
+	}
+	if trimmed != name {
+		candidate = trimmed + ".proj_bias"
+		if ref, ok := index.Tensors[candidate]; ok {
+			return ref, candidate, true
+		}
+	}
+	return safetensors.TensorRef{}, "", false
 }
 
 // findPackedWeightRef inlines the packedWeightCandidates fan-out +

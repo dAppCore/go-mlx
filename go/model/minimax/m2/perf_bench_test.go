@@ -227,6 +227,23 @@ func BenchmarkSidecarCandidates(b *testing.B) {
 	}
 }
 
+// BenchmarkFindProjectionBiasRef_Miss measures the inline projection-bias
+// walk against the typical case where the optional bias is absent — the
+// full fan-out runs but no candidate slice is built. This is the dominant
+// shape at MiniMax M2 load (projection bias is rare).
+func BenchmarkFindProjectionBiasRef_Miss(b *testing.B) {
+	spec := TensorSpec{
+		Name:    "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight",
+		Aliases: []string{"model.layers.0.mlp.experts.7.gate_proj.weight"},
+	}
+	weightName := "model.layers.0.block_sparse_moe.experts.7.gate_proj.weight.packed"
+	index := safetensors.Index{Tensors: map[string]safetensors.TensorRef{}}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, _ = findProjectionBiasRef(index, &spec, weightName)
+	}
+}
+
 // BenchmarkFindPackedWeightRef_Hit measures the inline weight-name walk
 // against the canonical-layout case where spec.Name resolves on the very
 // first probe. Mirrors BenchmarkFindSidecarRef_Hit for the loader's
