@@ -272,10 +272,13 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 	// current write position — identical to the previous per-block
 	// blockCacheID call but without re-hashing earlier tokens.
 	hash := sha256.New()
-	writeBlockCacheHashString(hash, modelHash)
-	writeBlockCacheHashString(hash, adapterHash)
-	writeBlockCacheHashString(hash, tokenizerHash)
-	writeBlockCacheHashString(hash, req.Mode)
+	// Compose the four length-prefixed header strings into a single
+	// buffer and call hash.Write once. The previous shape called
+	// writeBlockCacheHashString four times, each leaking a stack
+	// [4]byte length-prefix slice into hash.Hash.Write — four heap
+	// allocations per blockRefs call. One pre-sized buffer keeps the
+	// per-call setup cost to a single alloc.
+	writeBlockCacheHeader(hash, modelHash, adapterHash, tokenizerHash, req.Mode)
 	var scratch [256]byte
 	var sumBuf [sha256.Size]byte
 	for start := 0; start < len(tokens); start += blockSize {
@@ -304,6 +307,28 @@ func (service *Service) blockRefs(req inference.CacheWarmRequest, tokens []int32
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+// writeBlockCacheHeader composes the four length-prefixed identity
+// strings into a single buffer and writes it once. Versus four
+// individual writeBlockCacheHashString calls, this collapses the
+// per-call stack [4]byte → interface escape pattern into one alloc.
+func writeBlockCacheHeader(h hash.Hash, model, adapter, tokenizer, mode string) {
+	total := 16 + len(model) + len(adapter) + len(tokenizer) + len(mode)
+	buf := make([]byte, 0, total)
+	buf = appendBlockCacheLenPrefixed(buf, model)
+	buf = appendBlockCacheLenPrefixed(buf, adapter)
+	buf = appendBlockCacheLenPrefixed(buf, tokenizer)
+	buf = appendBlockCacheLenPrefixed(buf, mode)
+	h.Write(buf)
+}
+
+// appendBlockCacheLenPrefixed appends a uint32 LE length prefix
+// followed by value to buf and returns the new buf.
+func appendBlockCacheLenPrefixed(buf []byte, value string) []byte {
+	n := uint32(len(value))
+	buf = append(buf, byte(n), byte(n>>8), byte(n>>16), byte(n>>24))
+	return append(buf, value...)
 }
 
 // writeBlockCacheTokens encodes tokens as little-endian int32 bytes
@@ -609,24 +634,10 @@ func (service *Service) diskBlockPath(id string) string {
 
 func blockCacheID(modelHash, adapterHash, tokenizerHash, mode string, prefix []int32) string {
 	hash := sha256.New()
-	writeBlockCacheHashString(hash, modelHash)
-	writeBlockCacheHashString(hash, adapterHash)
-	writeBlockCacheHashString(hash, tokenizerHash)
-	writeBlockCacheHashString(hash, mode)
+	writeBlockCacheHeader(hash, modelHash, adapterHash, tokenizerHash, mode)
 	var scratch [256]byte
 	writeBlockCacheTokens(hash, prefix, scratch[:])
 	return core.HexEncode(hash.Sum(nil))
-}
-
-func writeBlockCacheHashString(h hash.Hash, value string) {
-	var length [4]byte
-	n := uint32(len(value))
-	length[0] = byte(n)
-	length[1] = byte(n >> 8)
-	length[2] = byte(n >> 16)
-	length[3] = byte(n >> 24)
-	h.Write(length[:])
-	h.Write(core.AsBytes(value))
 }
 
 // HashModelParts returns a stable SHA-256 hex hash of the supplied identity
