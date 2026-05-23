@@ -545,9 +545,22 @@ func buildModel(snapshot *kv.Snapshot, opts Options) Model {
 		ContextLength: src.ContextLength,
 	}
 	// Hand-built hash payload — avoids 4× Sprintf("%d") boxing and a
-	// 7-arg Join intermediate slice. Capacity sized for typical
-	// model.Path + Architecture strings plus 4 small integer fields.
-	buf := make([]byte, 0, len(model.Name)+len(model.Path)+len(model.Architecture)+48)
+	// 7-arg Join intermediate slice. Stack-buffer fast-path: dynamic
+	// `make([]byte, 0, n)` heap-allocates even when escape analysis says
+	// the buffer does not escape (size is unknown at compile time, so the
+	// compiler can't reserve stack space). A fixed-size stack array slid
+	// into via `stackBuf[:0]` IS stack-allocated. The buf is consumed
+	// in-function via `HashString(core.AsString(buf))` and never escapes,
+	// so the stack fast-path is safe; the `make` fallback covers oversized
+	// model.Name / model.Path / model.Architecture inputs.
+	var stackBuf [256]byte
+	needed := len(model.Name) + len(model.Path) + len(model.Architecture) + 48
+	var buf []byte
+	if needed <= len(stackBuf) {
+		buf = stackBuf[:0]
+	} else {
+		buf = make([]byte, 0, needed)
+	}
 	buf = append(buf, model.Name...)
 	buf = append(buf, '\n')
 	buf = append(buf, model.Path...)
@@ -602,7 +615,19 @@ func buildAdapter(adapter Adapter, adapterPath string, info lora.AdapterInfo) Ad
 		for _, key := range adapter.TargetKeys {
 			keyBytes += len(key)
 		}
-		buf := make([]byte, 0, len(adapter.Name)+len(adapter.Path)+keyBytes+keyCommas+48)
+		// Stack-buffer fast-path — see buildModel for the rationale on why
+		// `make([]byte, 0, n)` heap-allocates despite escape analysis saying
+		// no-escape. Typical LoRA adapter hash payloads (Name + Path +
+		// 4 target keys × 8 chars + scalars) land well under 256 bytes;
+		// oversized inputs fall back to the heap `make`.
+		var stackBuf [256]byte
+		needed := len(adapter.Name) + len(adapter.Path) + keyBytes + keyCommas + 48
+		var buf []byte
+		if needed <= len(stackBuf) {
+			buf = stackBuf[:0]
+		} else {
+			buf = make([]byte, 0, needed)
+		}
 		buf = append(buf, adapter.Name...)
 		buf = append(buf, '\n')
 		buf = append(buf, adapter.Path...)
