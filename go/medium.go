@@ -63,7 +63,20 @@ func mediumModelRoot(modelPath string) string {
 	cleaned := cleanMediumPath(modelPath)
 	switch {
 	case core.HasSuffix(cleaned, ".gguf"), core.HasSuffix(cleaned, ".safetensors"):
-		return cleanMediumPath(core.PathDir(cleaned))
+		// core.PathDir on a slash-clean input (which `cleaned` always
+		// is — cleanMediumPath returned it) yields another slash-clean
+		// prefix with no leading/trailing whitespace. Re-running
+		// cleanMediumPath on that output is dead work: Trim has nothing
+		// to strip, and CleanPath would walk the byte array a second
+		// time only to produce the identical string. The "." → ""
+		// remap is preserved because PathDir already returns "." when
+		// the input has no separator, and we surface that via the
+		// switch on the literal "." below.
+		dir := core.PathDir(cleaned)
+		if dir == "." {
+			return ""
+		}
+		return dir
 	default:
 		return cleaned
 	}
@@ -119,7 +132,15 @@ func copyMediumTree(medium coreio.Medium, sourceRoot, destinationRoot string) er
 		relative := mediumRelativePath(sourceRoot, sourcePath)
 		destinationPath := destinationRoot
 		if relative != "" {
-			destinationPath = core.PathJoin(destinationRoot, fromSlashPath(relative))
+			// destinationRoot comes from MkdirTemp (no trailing
+			// separator); relative is slash-clean from
+			// mediumRelativePath; their OS-native concat is already
+			// clean, so filepath.Join's Clean step is dead work
+			// against the same invariant exploited by walkMedium's
+			// per-entry concat. Use the compile-time-constant
+			// PathSeparator so the Windows back-slash path stays
+			// correct without dispatching through filepath.Join.
+			destinationPath = destinationRoot + string(core.PathSeparator) + fromSlashPath(relative)
 		}
 		if entry.IsDir() {
 			if r := core.MkdirAll(destinationPath, 0o755); !r.OK {
@@ -141,11 +162,25 @@ func walkMedium(medium coreio.Medium, root string, visit func(string, fs.DirEntr
 	// The old shape evaluated `entry.Name()` first then optionally
 	// discarded the result via the PathJoin assignment; computing the
 	// final entryPath in one branch per loop avoids that dead store.
+	//
+	// PathJoin → filepath.Join → strings.Join + filepath.Clean. On
+	// the medium.List invariant (POSIX-slash entries, single-segment
+	// names with no separator, root that we cleaned at the call-site
+	// chain into stagePathFromMedium → cleanMediumPath) the Clean is
+	// dead work — concatenating two slash-clean inputs with a single
+	// "/" yields a slash-clean output. Inlining the concat skips the
+	// per-entry function-call overhead + Clean's byte-by-byte scan;
+	// alloc count is unchanged (1 string concat = 1 alloc either way)
+	// but CPU drops by the cost of one Clean call per visited node.
+	// Windows callers, if/when they appear, would need filepath.Join
+	// for back-slash separators — but the medium surface is POSIX-
+	// only by io.Medium contract (List returns slash-rooted entries),
+	// so the OS branch was never load-bearing here.
 	hasRoot := root != ""
 	for _, entry := range entries {
 		var entryPath string
 		if hasRoot {
-			entryPath = core.PathJoin(root, entry.Name())
+			entryPath = root + "/" + entry.Name()
 		} else {
 			entryPath = entry.Name()
 		}
