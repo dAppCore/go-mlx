@@ -195,7 +195,14 @@ func NewPlan(input Input) Plan {
 		workingSet = deviceMemory
 	}
 	class := classForBytes(deviceMemory)
-	plan := baseClassPlan(class)
+	// Zero-init the Plan once and fill only the class-specific
+	// defaults in place. The previous form (`plan := baseClassPlan(class)`)
+	// returned a 480-byte struct by value and the caller-side memcpy
+	// became the single largest cost in NewPlan (~15% of CPU). Pushing
+	// the fill in-place lets the compiler skip both the return-slot
+	// init in baseClassPlan and the inbound memcpy.
+	var plan Plan
+	fillBaseClassPlan(&plan, class)
 	plan.MachineClass = class
 	plan.Architecture = input.Device.Architecture
 	plan.DeviceMemoryBytes = deviceMemory
@@ -334,92 +341,83 @@ func classForBytes(bytes uint64) Class {
 	}
 }
 
-func baseClassPlan(class Class) Plan {
+// fillBaseClassPlan stamps the class-specific defaults onto a
+// zero-initialised Plan in place. Returning a Plan by value here
+// (the previous shape) was the single hottest line of NewPlan — a
+// 480-byte memcpy from baseClassPlan's return slot into the caller's
+// plan local — because the compiler couldn't elide the copy and the
+// Plan struct stores 30+ fields. Filling in place keeps the cost to
+// the ~9 field writes each class actually sets; the rest of the
+// struct stays at its (already-zero) defaults.
+//
+// CachePolicy = KVCacheRotating on every populated branch, so it is
+// hoisted out of the switch. The Unknown/default branch falls
+// through with PromptCache disabled and PromptCacheMinTokens=0 — the
+// existing semantics for unknown classes.
+func fillBaseClassPlan(plan *Plan, class Class) {
+	plan.CachePolicy = KVCacheRotating
 	switch class {
 	case ClassApple16GB:
-		return Plan{
-			ContextLength:         8192,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeKQ8VQ4,
-			BatchSize:             1,
-			PrefillChunkSize:      512,
-			ParallelSlots:         1,
-			PromptCache:           false,
-			PromptCacheMinTokens:  0,
-			PreferredQuantization: 4,
-		}
+		plan.ContextLength = 8192
+		plan.CacheMode = KVCacheModeKQ8VQ4
+		plan.BatchSize = 1
+		plan.PrefillChunkSize = 512
+		plan.ParallelSlots = 1
+		plan.PreferredQuantization = 4
 	case ClassApple24GB:
-		return Plan{
-			ContextLength:         16384,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      768,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
+		plan.ContextLength = 16384
+		plan.CacheMode = KVCacheModeQ8
+		plan.BatchSize = 1
+		plan.PrefillChunkSize = 768
+		plan.ParallelSlots = 1
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = 4096
+		plan.PreferredQuantization = 4
 	case ClassApple32GB:
-		return Plan{
-			ContextLength:         32768,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
+		plan.ContextLength = 32768
+		plan.CacheMode = KVCacheModeQ8
+		plan.BatchSize = 1
+		plan.PrefillChunkSize = 1024
+		plan.ParallelSlots = 1
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = 4096
+		plan.PreferredQuantization = 4
 	case ClassApple64GB:
-		return Plan{
-			ContextLength:         65536,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             2,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
+		plan.ContextLength = 65536
+		plan.CacheMode = KVCacheModePaged
+		plan.BatchSize = 2
+		plan.PrefillChunkSize = 4096
+		plan.ParallelSlots = 1
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
+		plan.PreferredQuantization = 4
 	case ClassApple96GB:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             4,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
+		plan.ContextLength = defaultLocalContextLength
+		plan.CacheMode = KVCacheModePaged
+		plan.BatchSize = 4
+		plan.PrefillChunkSize = 4096
+		plan.ParallelSlots = 2
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
+		plan.PreferredQuantization = 8
 	case ClassApple128GB:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             6,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
+		plan.ContextLength = defaultLocalContextLength
+		plan.CacheMode = KVCacheModePaged
+		plan.BatchSize = 6
+		plan.PrefillChunkSize = 4096
+		plan.ParallelSlots = 2
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
+		plan.PreferredQuantization = 8
 	default:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         defaultLocalParallelSlots,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
+		plan.ContextLength = defaultLocalContextLength
+		plan.CacheMode = KVCacheModeQ8
+		plan.BatchSize = 1
+		plan.PrefillChunkSize = 1024
+		plan.ParallelSlots = defaultLocalParallelSlots
+		plan.PromptCache = true
+		plan.PromptCacheMinTokens = defaultPromptCacheMinTokens
+		plan.PreferredQuantization = 4
 	}
 }
 
