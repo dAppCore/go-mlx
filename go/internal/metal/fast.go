@@ -16,6 +16,7 @@ import "C"
 
 import (
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"dappco.re/go"
@@ -152,6 +153,18 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 // ScaledDotProductAttentionPaged computes decode-time attention over K/V pages
 // without concatenating the cached K/V tensors. It is intended for non-causal
 // single-token decode; prefill and masked paths should use the fused kernels.
+// scorePagesPool reuses the per-page score *Array buffer used by
+// ScaledDotProductAttentionPaged.  The slice is drained before the call
+// returns, so it can go back to the pool without ABA hazards.  This converts
+// the 1 alloc / N×8 bytes per multi-page SDPA call (136B/1alloc at 16 pages,
+// the SDPAPaged_16Pages residual) into a pool Get/Put amortised across calls.
+var scorePagesPool = sync.Pool{
+	New: func() any {
+		buf := make([]*Array, 0, 16)
+		return &buf
+	},
+}
+
 func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array, scale float32) *Array {
 	if len(keyPages) == 0 || len(keyPages) != len(valuePages) {
 		return nil
@@ -160,7 +173,11 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 		return ScaledDotProductAttention(query, keyPages[0], valuePages[0], scale, false)
 	}
 
-	scorePages := make([]*Array, 0, len(keyPages))
+	scorePagesPtr := scorePagesPool.Get().(*[]*Array)
+	scorePages := (*scorePagesPtr)[:0]
+	if cap(scorePages) < len(keyPages) {
+		scorePages = make([]*Array, 0, len(keyPages))
+	}
 	var globalMax *Array
 	for _, key := range keyPages {
 		keyT := Transpose4(key, 0, 1, 3, 2)
@@ -181,7 +198,6 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 		}
 		scorePages = append(scorePages, score)
 	}
-	defer Free(scorePages...)
 
 	var denom *Array
 	var weighted *Array
@@ -205,6 +221,12 @@ func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array,
 	}
 	out := Divide(weighted, denom)
 	Free(globalMax, denom, weighted)
+	Free(scorePages...)
+	// Reset to zero length and return the (possibly grown) slice header to the
+	// pool so subsequent calls reuse the same backing array.
+	scorePages = scorePages[:0]
+	*scorePagesPtr = scorePages
+	scorePagesPool.Put(scorePagesPtr)
 	return out
 }
 

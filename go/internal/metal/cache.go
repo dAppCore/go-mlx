@@ -904,11 +904,14 @@ type PagedKVCache struct {
 	visibleOwnedScratch []*Array
 	// Scratch buffers for K/V shape readouts — Dim() into these from inside
 	// appendPagesPrealloc/Concat instead of calling Shape() which allocates a
-	// new []int32 every time.  The slices are passed down to helpers within
-	// the same call frame (canAppendToLastPage, append* helpers, cachePageView)
-	// and never retained beyond the Update.
-	kShapeScratch []int32
-	vShapeScratch []int32
+	// new []int32 every time.  Backed by fixed [4]int32 arrays embedded in
+	// the cache struct — kShapeScratchArr[:] yields a slice referencing the
+	// field directly, eliminating the per-cache []int32 heap allocation.
+	// (rank 4 is the only KV-cache shape rank in use.)  The slices are
+	// passed down to helpers within the same call frame (canAppendToLastPage,
+	// append* helpers, cachePageView) and never retained beyond the Update.
+	kShapeScratchArr [4]int32
+	vShapeScratchArr [4]int32
 	materializedLength  int
 	storageDType        DType
 	hasStorageDType     bool
@@ -1004,9 +1007,16 @@ func resolvePagedKVPageSize(maxSize, requested int) int {
 			pageSize = hyperLongPagedKVPageSize
 		}
 	}
-	if parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE")), 10, 64); parsed.OK {
-		if value := int(parsed.Value.(int64)); value > 0 {
-			pageSize = value
+	// Short-circuit the parse when the gate is unset.  In production the env
+	// var is almost always empty; core.ParseInt("", ...) allocates a
+	// strconv.syntaxError struct every time, which profiled to >90% of allocs
+	// inside NewPagedKVCache.  Per-decode-stream cache creation pays this once,
+	// per per-iter cache bench it dominates the alloc surface.
+	if gate := core.Trim(RuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE")); gate != "" {
+		if parsed := core.ParseInt(gate, 10, 64); parsed.OK {
+			if value := int(parsed.Value.(int64)); value > 0 {
+				pageSize = value
+			}
 		}
 	}
 	if pageSize <= 0 {
@@ -1196,8 +1206,8 @@ func (c *PagedKVCache) Reset() {
 	c.visibleKScratch = nil
 	c.visibleVScratch = nil
 	c.visibleOwnedScratch = nil
-	c.kShapeScratch = nil
-	c.vShapeScratch = nil
+	// kShapeScratchArr / vShapeScratchArr are fixed [4]int32 arrays — no
+	// nil-out needed (their slots get overwritten on next populateShapeScratch).
 	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
@@ -1399,25 +1409,19 @@ func (c *PagedKVCache) populateShapeScratch(k, v *Array) (kShape, vShape []int32
 	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return nil, nil, false
 	}
-	if cap(c.kShapeScratch) < 4 {
-		c.kShapeScratch = make([]int32, 4)
-	} else {
-		c.kShapeScratch = c.kShapeScratch[:4]
-	}
-	if cap(c.vShapeScratch) < 4 {
-		c.vShapeScratch = make([]int32, 4)
-	} else {
-		c.vShapeScratch = c.vShapeScratch[:4]
-	}
-	c.kShapeScratch[0] = int32(k.Dim(0))
-	c.kShapeScratch[1] = int32(k.Dim(1))
-	c.kShapeScratch[2] = int32(k.Dim(2))
-	c.kShapeScratch[3] = int32(k.Dim(3))
-	c.vShapeScratch[0] = int32(v.Dim(0))
-	c.vShapeScratch[1] = int32(v.Dim(1))
-	c.vShapeScratch[2] = int32(v.Dim(2))
-	c.vShapeScratch[3] = int32(v.Dim(3))
-	return c.kShapeScratch, c.vShapeScratch, true
+	// Per-field assignment into the embedded [4]int32 array — no heap alloc
+	// on the cold path (the slice header is on the stack and points at the
+	// cache field).  Avoids the runtime.wbZero overhead a struct-literal
+	// assignment would pay.
+	c.kShapeScratchArr[0] = int32(k.Dim(0))
+	c.kShapeScratchArr[1] = int32(k.Dim(1))
+	c.kShapeScratchArr[2] = int32(k.Dim(2))
+	c.kShapeScratchArr[3] = int32(k.Dim(3))
+	c.vShapeScratchArr[0] = int32(v.Dim(0))
+	c.vShapeScratchArr[1] = int32(v.Dim(1))
+	c.vShapeScratchArr[2] = int32(v.Dim(2))
+	c.vShapeScratchArr[3] = int32(v.Dim(3))
+	return c.kShapeScratchArr[:], c.vShapeScratchArr[:], true
 }
 
 func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
@@ -1472,12 +1476,12 @@ func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []in
 	last := len(c.kPages) - 1
 	writeStart := c.pageLen(last)
 	oldK, oldV := c.kPages[last], c.vPages[last]
-	// pagedSliceUpdate4D consolidates the three [4]C.int cgo allocations of
-	// SliceUpdateInplace into a single 12-element make — 2 makes per token
-	// vs 6 for the generic helper.
-	stream := DefaultStream()
-	c.kPages[last] = pagedSliceUpdate4D(oldK, pieceK, kShape[0], kShape[1], int32(writeStart), int32(writeStart+take), kShape[3], stream)
-	c.vPages[last] = pagedSliceUpdate4D(oldV, pieceV, vShape[0], vShape[1], int32(writeStart), int32(writeStart+take), vShape[3], stream)
+	// SliceUpdateInplace4 materialises the three [4]C.int slice/end/stride
+	// buffers on the C stack via mlx_slice_update_inline_4 — zero Go-side
+	// cgo-int allocation per call.  Supersedes the W10-G pagedSliceUpdate4D
+	// pool which paid one *[]C.int interface boxing per Get/Put cycle.
+	c.kPages[last] = SliceUpdateInplace4(oldK, pieceK, 0, 0, int32(writeStart), 0, kShape[0], kShape[1], int32(writeStart+take), kShape[3])
+	c.vPages[last] = SliceUpdateInplace4(oldV, pieceV, 0, 0, int32(writeStart), 0, vShape[0], vShape[1], int32(writeStart+take), vShape[3])
 	c.pageLens[last] = writeStart + take
 	c.recordPageShape(kShape, vShape)
 	Free(oldK, oldV)
@@ -1492,11 +1496,14 @@ func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []in
 func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32, start, take int) {
 	pieceK, ownedK := cachePageView(k, kShape, start, take, int(kShape[2]))
 	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
-	pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, k.Dtype())
-	pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, v.Dtype())
-	stream := DefaultStream()
-	updatedK := pagedSliceUpdate4D(pageK, pieceK, kShape[0], kShape[1], 0, int32(take), kShape[3], stream)
-	updatedV := pagedSliceUpdate4D(pageV, pieceV, vShape[0], vShape[1], 0, int32(take), vShape[3], stream)
+	// Zeros4 supersedes the []int32{...} literal — passing the 4 dims as
+	// scalars eliminates the per-call slice escape to heap (two per call:
+	// K shape + V shape).
+	pageK := Zeros4(kShape[0], kShape[1], int32(c.pageSize), kShape[3], k.Dtype())
+	pageV := Zeros4(vShape[0], vShape[1], int32(c.pageSize), vShape[3], v.Dtype())
+	// SliceUpdateInplace4: stack-buffer cgo-ints, no pool overhead.
+	updatedK := SliceUpdateInplace4(pageK, pieceK, 0, 0, 0, 0, kShape[0], kShape[1], int32(take), kShape[3])
+	updatedV := SliceUpdateInplace4(pageV, pieceV, 0, 0, 0, 0, vShape[0], vShape[1], int32(take), vShape[3])
 	c.kPages = append(c.kPages, updatedK)
 	c.vPages = append(c.vPages, updatedV)
 	c.pageLens = append(c.pageLens, take)
@@ -1566,8 +1573,9 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	tailK := Slice4(oldK, 0, 0, int32(tokens), 0, kShape[0], kShape[1], int32(pageLen), kShape[3])
 	tailV := Slice4(oldV, 0, 0, int32(tokens), 0, vShape[0], vShape[1], int32(pageLen), vShape[3])
 	if pagedKVPreallocEnabled() {
-		pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, oldK.Dtype())
-		pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, oldV.Dtype())
+		// Zeros4: scalar-pass dims, no slice escape (W11-A pattern).
+		pageK := Zeros4(kShape[0], kShape[1], int32(c.pageSize), kShape[3], oldK.Dtype())
+		pageV := Zeros4(vShape[0], vShape[1], int32(c.pageSize), vShape[3], oldV.Dtype())
 		c.kPages[0] = SliceUpdateInplace4(pageK, tailK, 0, 0, 0, 0, kShape[0], kShape[1], int32(newLen), kShape[3])
 		c.vPages[0] = SliceUpdateInplace4(pageV, tailV, 0, 0, 0, 0, vShape[0], vShape[1], int32(newLen), vShape[3])
 		Free(pageK, pageV)
@@ -1644,9 +1652,10 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 	// Fast path: when the cached pageShape is set we know batch/heads/dim for
 	// the K and V sides, and the storage seq-length is c.pageSize for prealloc
 	// pages or pageLens[i] for concat pages.  This lets us skip the per-call
-	// page.Shape() allocation and decide Slice vs Clone using cached info, and
-	// route through pagedSlice4D which consolidates the three cgo-int slice
-	// allocations of metal.Slice into a single make.
+	// page.Shape() allocation and decide Slice vs Clone using cached info.
+	// Slice4 materialises the cgo-int starts/ends/strides on the C stack via
+	// mlx_slice_inline_4 (W11-A) — supersedes the W10-G pagedSlice4D pool
+	// which paid one *[]C.int Get/Put per call.
 	if c.pageShape.set && length > 0 {
 		if isK, ok := c.identifyPage(page, i); ok {
 			storage := length
@@ -1656,11 +1665,10 @@ func (c *PagedKVCache) visiblePage(page *Array, i int) *Array {
 			if length >= storage {
 				return page.Clone()
 			}
-			stream := DefaultStream()
 			if isK {
-				return pagedSlice4D(page, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim, stream)
+				return Slice4(page, 0, 0, 0, 0, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim)
 			}
-			return pagedSlice4D(page, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim, stream)
+			return Slice4(page, 0, 0, 0, 0, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim)
 		}
 	}
 	shape := page.Shape()
@@ -1681,8 +1689,9 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 	// Fast path: avoid page.Shape() when the cached pageShape is set.  Storage
 	// is c.pageSize for prealloc pages; for concat pages the page is fully
 	// filled (length == pageLens[i] == shape[2]) so borrow returns the page
-	// directly without slicing.  Routes the slice via pagedSlice4D (one cgo-int
-	// make instead of three) when a partial view is needed.
+	// directly without slicing.  Slice4 materialises the cgo-int starts/ends/
+	// strides on the C stack via mlx_slice_inline_4 (W11-A) — supersedes the
+	// W10-G pagedSlice4D pool which paid one *[]C.int Get/Put per call.
 	if c.pageShape.set && length > 0 {
 		if isK, ok := c.identifyPage(page, i); ok {
 			storage := length
@@ -1692,11 +1701,10 @@ func (c *PagedKVCache) borrowVisiblePage(page *Array, i int) (*Array, bool) {
 			if length >= storage {
 				return page, false
 			}
-			stream := DefaultStream()
 			if isK {
-				return pagedSlice4D(page, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim, stream), true
+				return Slice4(page, 0, 0, 0, 0, c.pageShape.kBatch, c.pageShape.kHeads, int32(length), c.pageShape.kDim), true
 			}
-			return pagedSlice4D(page, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim, stream), true
+			return Slice4(page, 0, 0, 0, 0, c.pageShape.vBatch, c.pageShape.vHeads, int32(length), c.pageShape.vDim), true
 		}
 	}
 	shape := page.Shape()

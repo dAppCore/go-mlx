@@ -32,6 +32,18 @@ static inline int mlx_zeros_inline(
     return mlx_zeros(res, shape_buf, shape_num, dtype, s);
 }
 
+// mlx_zeros_inline_4 is the rank-4 scalar-pass form — eliminates the
+// []int32{...} literal allocation by passing the 4 dims as scalars.  KV
+// cache page-grow paths construct []int32{B,H,pageSize,D} on every new-page
+// call; passing the four register-passed scalars eliminates the slice
+// literal escape entirely.  Same W11-A pattern as mlx_slice_inline_4.
+static inline int mlx_zeros_inline_4(
+    mlx_array* res, int32_t s0, int32_t s1, int32_t s2, int32_t s3,
+    mlx_dtype dtype, mlx_stream s) {
+    int shape_buf[4] = {(int)s0, (int)s1, (int)s2, (int)s3};
+    return mlx_zeros(res, shape_buf, 4, dtype, s);
+}
+
 // mlx_array_new_data_inline_i / _ll variants accept the caller's int32 (for
 // raw-tensor APIs) or long long (for Go-int variadic FromValues) shape slice
 // and copy into a 8-slot stack int buffer before forwarding.
@@ -310,6 +322,23 @@ func Zeros(shape []int32, dtype DType) *Array {
 		shapePtr = (*C.int32_t)(unsafe.Pointer(&shape[0]))
 	}
 	C.mlx_zeros_inline(&tt.ctx, shapePtr, C.size_t(len(shape)), C.mlx_dtype(dtype), DefaultStream().ctx)
+	return tt
+}
+
+// Zeros4 is the rank-4 scalar-pass form of Zeros — eliminates the
+// []int32{...} literal allocation that escapes to heap on every call.
+// Routes through mlx_zeros_inline_4 which materialises the shape buffer on
+// the C stack directly from register-passed scalars.  Used by PagedKVCache
+// page-grow path where []int32{B,H,pageSize,D} previously paid one slice
+// escape per Zeros call (two per appendNewPagePrealloc — K + V).
+//
+//	page := metal.Zeros4(B, H, int32(pageSize), D, dtype)
+func Zeros4(s0, s1, s2, s3 int32, dtype DType) *Array {
+	Init()
+	tt := newArray("ZEROS")
+	C.mlx_zeros_inline_4(&tt.ctx,
+		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
+		C.mlx_dtype(dtype), DefaultStream().ctx)
 	return tt
 }
 
