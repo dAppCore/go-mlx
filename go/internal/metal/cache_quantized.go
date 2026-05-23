@@ -203,9 +203,13 @@ func (c *QuantizedKVCache) storeQuantized(k, v *Array) {
 	c.valueDtype = v.Dtype()
 	keyMax, keyMin, eps := c.ensureKeyScalars()
 	packOff, packSh := c.ensurePackScalars(c.keyBits, c.valueBits)
-	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps, packOff, packSh)
+	// Reuse the cache's shape backing across Updates — quantizeCacheArrayCached
+	// will ShapeInto the passed buffer when its cap matches the source's
+	// NumDims, skipping the per-call `[]int32` heap alloc that the previous
+	// `append([]int32(nil), a.Shape()...)` pattern paid on every token.
+	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps, packOff, packSh, c.keyShape)
 	valueMax, valueMin, _ := c.ensureValueScalars()
-	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps, packOff, packSh)
+	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps, packOff, packSh, c.valueShape)
 	Free(oldK, oldV, oldKS, oldVS)
 }
 
@@ -274,7 +278,7 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 	maxBound := FromValue(maxValue)
 	minValue := FromValue(-maxValue)
 	defer Free(eps, maxBound, minValue)
-	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps, nil, nil)
+	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps, nil, nil, nil)
 }
 
 // quantizeCacheArrayCached is quantizeCacheArray with the bits-derived
@@ -283,8 +287,21 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 // in the hot path. The caller owns eps/maxBound/minValue lifetime; pass
 // nil for packOffsetI8/packShiftU8 to fall back to allocating them inside
 // packQ4 (used by the non-cached entry point above).
-func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps, packOffsetI8, packShiftU8 *Array) (*Array, *Array, []int32) {
-	shape := append([]int32(nil), a.Shape()...)
+//
+// shapeBuf, when non-nil with sufficient cap, receives the source's shape
+// via ShapeInto — letting the QuantizedKVCache reuse its keyShape /
+// valueShape backing array across every Update and skip the per-call
+// `[]int32` heap alloc that the previous `append([]int32(nil), ...)`
+// pattern paid. Pass nil to fall back to allocating a fresh slice (used
+// by snapshot paths in prompt_cache.go that need an independent copy).
+func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps, packOffsetI8, packShiftU8 *Array, shapeBuf []int32) (*Array, *Array, []int32) {
+	ndim := a.NumDims()
+	var shape []int32
+	if cap(shapeBuf) >= ndim {
+		shape = a.ShapeInto(shapeBuf[:0])
+	} else {
+		shape = append([]int32(nil), a.Shape()...)
+	}
 	abs := Abs(a)
 	maxAbs := maxAll(abs)
 	clampedAbs := Maximum(maxAbs, eps)
