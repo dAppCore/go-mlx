@@ -647,13 +647,12 @@ func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPac
 	if pack == nil {
 		return
 	}
+	// inspectModelPackArchitecture already resolved + cached the
+	// profile pointer (or left it nil for unsupported architectures);
+	// consult it directly rather than re-entering
+	// LookupArchitectureProfileRef which would just repeat the same
+	// negative lookup on every unsupported pack.
 	arch := pack.ArchitectureProfile
-	if arch == nil && pack.Architecture != "" {
-		if resolved, ok := profile.LookupArchitectureProfileRef(pack.Architecture); ok {
-			pack.ArchitectureProfile = resolved
-			arch = resolved
-		}
-	}
 	if arch == nil {
 		return
 	}
