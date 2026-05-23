@@ -383,16 +383,16 @@ func formatReasoningResponse(thinking, solution string) string {
 	return thinking + "\n\n" + solution
 }
 
-// firstNonEmpty returns the first value with a non-empty trimmed form,
-// already trimmed. Callers were universally trimming the result a
-// second time before use; returning the trimmed value eliminates the
-// duplicate Trim per row.
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := core.Trim(value); trimmed != "" {
-			return trimmed
-		}
+// firstNonEmpty returns the first of (a, b) with a non-empty trimmed
+// form, already trimmed. All callers pass exactly two strings, so the
+// fixed-arity form skips the variadic []string materialisation and
+// the range loop overhead the prior `...string` form carried. Callers
+// were universally trimming the result a second time before use;
+// returning the trimmed value eliminates the duplicate Trim per row.
+func firstNonEmpty(a, b string) string {
+	if trimmed := core.Trim(a); trimmed != "" {
+		return trimmed
 	}
-	return ""
+	return core.Trim(b)
 }
 
