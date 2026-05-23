@@ -176,6 +176,13 @@ const (
 	defaultLocalContextLength   = 131072
 	defaultLocalParallelSlots   = 1
 	defaultPromptCacheMinTokens = 2048
+	// planNotesPresizedCap is the headroom NewPlan reserves on
+	// plan.Notes when a Pack/ModelInfo is supplied. The hottest plans
+	// emit 1-4 notes (context cap, model-quant warning, architecture
+	// hint, MoE residency, optional JANGTQ note). Reserving 4 fits the
+	// common case in a single 64-byte slice backing array and saves
+	// 1-2 slice-grow allocs per plan.
+	planNotesPresizedCap = 4
 )
 
 // NewPlan chooses opinionated local inference settings from measured memory.
@@ -198,6 +205,23 @@ func NewPlan(input Input) Plan {
 	plan.WiredLimitBytes = percentBytes(workingSet, 75)
 
 	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture, modelWeightBytes := modelHints(input)
+	// Pre-size the Notes slice once when a Pack is supplied with an
+	// architecture string — that is the path through applyArchitectureHints
+	// + applyGenericMoEResidency + (possibly) applyQuantizationHints that
+	// emits 2-3 notes per plan on top of the optional context-cap +
+	// model-quant warning. Pre-sizing collapses the slice-grow chain
+	// (cap 1 → 2 → 4) into a single 4-element backing array, saving 1-2
+	// grow allocs per Pack plan and pushing MiniMax M2 + Qwen3-MoE
+	// plans down a full tier in alloc count.
+	//
+	// ModelInfo-only with architecture is left on the natural path —
+	// it typically emits a single architecture note (no MoE/JANGTQ/etc),
+	// and a 4-cap pre-allocation would be ~3x oversized for one entry.
+	// No-Pack/no-ModelInfo plans (the cold-start NoPack benches) stay
+	// at zero allocs as before.
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		plan.Notes = make([]string, 0, planNotesPresizedCap)
+	}
 	if modelContext > 0 && modelContext < plan.ContextLength {
 		plan.ContextLength = modelContext
 		plan.Notes = append(plan.Notes, "context capped by model metadata")
