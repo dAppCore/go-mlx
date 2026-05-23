@@ -137,6 +137,11 @@ func formatLlama(messages []Message, cfg Config) string {
 }
 
 func formatPlain(messages []Message, cfg Config) string {
+	// Plain has no generation prompt suffix — the historic
+	// builder.WriteString("") tail was a no-op that still cost
+	// a function call + length branch per Format(). The cfg arg
+	// is retained to keep the formatX signatures uniform.
+	_ = cfg
 	builder := core.NewBuilder()
 	builder.Grow(chatFormatCapacity(messages, 1, 0))
 	for _, msg := range messages {
@@ -145,9 +150,6 @@ func formatPlain(messages []Message, cfg Config) string {
 		}
 		builder.WriteString(msg.Content)
 		builder.WriteString("\n")
-	}
-	if !cfg.NoGenerationPrompt {
-		builder.WriteString("")
 	}
 	return builder.String()
 }
