@@ -7,6 +7,8 @@ package metal
 import (
 	"context"
 	"iter"
+	"runtime"
+	"unsafe"
 
 	core "dappco.re/go"
 )
@@ -443,14 +445,9 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 	vRaw := vSliced.RawBytes()
 	kNativeShape := append([]int32(nil), kSliced.Shape()...)
 	vNativeShape := append([]int32(nil), vSliced.Shape()...)
-	var kFlat, vFlat []float32
-	if !opts.RawKVOnly {
-		kFlat = kSliced.Floats()
-		vFlat = vSliced.Floats()
-	}
-	Free(kSliced, vSliced)
 
 	if opts.RawKVOnly {
+		Free(kSliced, vSliced)
 		return kvCacheSnapshot{
 			NumHeads:   numHeads,
 			HeadDim:    headDim,
@@ -464,6 +461,35 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 		}, true
 	}
 
+	// W11-X: borrow MLX-memory views rather than copying the full K and V
+	// cache slices into fresh Go []float32 buffers (Floats() does
+	// make + per-element copy — on a realistic 32-head/1024-token/128-dim
+	// cache that was 16MB × 2 = 32MB / 2 allocs per call).  Per-head Key
+	// and Value buffers are copied into independent slices via the loop
+	// below, so the borrowed views end at function return.
+	kSrc, kConverted, err := materialiseFloat32View(kSliced)
+	if err != nil {
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+	vSrc, vConverted, err := materialiseFloat32View(vSliced)
+	if err != nil {
+		Free(kConverted)
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+	kN := kSrc.Size()
+	vN := vSrc.Size()
+	kPtr := (*float32)(rawArrayDataPointer(kSrc))
+	vPtr := (*float32)(rawArrayDataPointer(vSrc))
+	if kPtr == nil || vPtr == nil || kN == 0 || vN == 0 {
+		Free(kConverted, vConverted)
+		Free(kSliced, vSliced)
+		return kvCacheSnapshot{}, false
+	}
+	kFlat := unsafe.Slice(kPtr, kN)
+	vFlat := unsafe.Slice(vPtr, vN)
+
 	blockLen := end - start
 	heads := make([]KVHeadSnapshot, numHeads)
 	keyStride := blockLen * headDim
@@ -475,23 +501,24 @@ func inspectKVCacheRangeWithOptions(cache Cache, start, end int, opts KVSnapshot
 		keyEnd := keyStart + keyStride
 		valueStart := h * valueStride
 		valueEnd := valueStart + valueStride
-		if !opts.RawKVOnly && (keyEnd > len(kFlat) || valueEnd > len(vFlat)) {
+		if keyEnd > len(kFlat) || valueEnd > len(vFlat) {
 			break
 		}
 		keyHeadDType, keyHeadBytes := kvSnapshotHeadRaw(kRaw, kDType, h*keyRawStride, keyRawStride)
 		valueHeadDType, valueHeadBytes := kvSnapshotHeadRaw(vRaw, vDType, h*valueRawStride, valueRawStride)
-		head := KVHeadSnapshot{
+		heads[h] = KVHeadSnapshot{
 			KeyDType:   keyHeadDType,
 			KeyBytes:   keyHeadBytes,
 			ValueDType: valueHeadDType,
 			ValueBytes: valueHeadBytes,
+			Key:        append([]float32(nil), kFlat[keyStart:keyEnd]...),
+			Value:      append([]float32(nil), vFlat[valueStart:valueEnd]...),
 		}
-		if !opts.RawKVOnly {
-			head.Key = append([]float32(nil), kFlat[keyStart:keyEnd]...)
-			head.Value = append([]float32(nil), vFlat[valueStart:valueEnd]...)
-		}
-		heads[h] = head
 	}
+	runtime.KeepAlive(kSrc)
+	runtime.KeepAlive(vSrc)
+	Free(kConverted, vConverted)
+	Free(kSliced, vSliced)
 
 	return kvCacheSnapshot{
 		NumHeads: numHeads,

@@ -7,9 +7,11 @@ package metal
 import (
 	"context"
 	"iter"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
+	"unsafe"
 
 	"dappco.re/go"
 )
@@ -1139,8 +1141,24 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 		return attentionCacheSnapshot{}, false
 	}
 
-	flat := kSliced.Floats() // len = 1 * H * validLen * D
-	Free(kSliced)
+	// W11-X: borrow an MLX-memory view rather than copying the full
+	// [1, H, L, D] K-tensor into a fresh Go []float32 (Floats() does
+	// make + per-element copy — ~16MB on a 32-head/1024-token/128-dim
+	// cache).  Per-head slices are copied into independent buffers via
+	// the loop below, so the borrowed view ends at function return.
+	src, converted, err := materialiseFloat32View(kSliced)
+	if err != nil {
+		Free(kSliced)
+		return attentionCacheSnapshot{}, false
+	}
+	n := src.Size()
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil || n == 0 {
+		Free(converted)
+		Free(kSliced)
+		return attentionCacheSnapshot{}, false
+	}
+	flat := unsafe.Slice(ptr, n) // len = 1 * H * validLen * D
 
 	keys := make([][]float32, numHeads)
 	stride := validLen * headDim
@@ -1154,6 +1172,9 @@ func inspectAttentionCache(cache Cache, seqLen int) (attentionCacheSnapshot, boo
 		copy(head, flat[start:end])
 		keys[h] = head
 	}
+	runtime.KeepAlive(src)
+	Free(converted)
+	Free(kSliced)
 
 	return attentionCacheSnapshot{
 		NumHeads: numHeads,
