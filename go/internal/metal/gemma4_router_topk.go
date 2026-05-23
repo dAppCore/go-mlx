@@ -37,15 +37,11 @@ func nativeGemma4RouterMatVecScores(input *Array, proj *Linear) (*Array, bool, e
 	cfg.SetThreadGroup(256, 1, 1)
 	cfg.AddOutputArg([]int32{1, 1, int32(meta.outDim)}, DTypeFloat32)
 
-	results, err := kernel.Apply(cfg, input, proj.Weight, proj.Scales, proj.Biases)
+	out, err := kernel.ApplyOne(cfg, input, proj.Weight, proj.Scales, proj.Biases)
 	if err != nil {
 		return nil, true, core.E("mlx.nativeGemma4RouterMatVecScores", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		Free(results...)
-		return nil, true, core.NewError(core.Sprintf("mlx: native Gemma 4 router matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], true, nil
+	return out, true, nil
 }
 
 type nativeGemma4RouterMatVecMeta struct {

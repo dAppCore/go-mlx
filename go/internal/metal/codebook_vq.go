@@ -49,14 +49,11 @@ out[elem] = sum%s;`, outDim, outDim, inDim, inDim, codeDim, codeDim, codebookSiz
 	cfg.SetThreadGroup(256, 1, 1)
 	cfg.AddOutputArg(codebookVQOutputShape(input.Shape(), weightShape[0]), DTypeFloat32)
 
-	results, err := kernel.Apply(cfg, inputs...)
+	out, err := kernel.ApplyOne(cfg, inputs...)
 	if err != nil {
 		return nil, core.E("mlx.CodebookVQMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		return nil, core.NewError(core.Sprintf("mlx: codebook VQ matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], nil
+	return out, nil
 }
 
 func validateCodebookVQMatVecInputs(input, codes, codebook, bias *Array, weightShape []int32, codeDim int) error {

@@ -43,15 +43,11 @@ func quantizedDenseMatVec(input *Array, linear *Linear) (*Array, bool, error) {
 	cfg.SetThreadGroup(256, 1, 1)
 	cfg.AddOutputArg(meta.outputShape[:], DTypeFloat32)
 
-	results, err := kernel.Apply(cfg, input, linear.Weight, linear.Scales, linear.Biases)
+	out, err := kernel.ApplyOne(cfg, input, linear.Weight, linear.Scales, linear.Biases)
 	if err != nil {
 		return nil, true, core.E("mlx.quantizedDenseMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		Free(results...)
-		return nil, true, core.NewError(core.Sprintf("mlx: quantized dense matvec returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], true, nil
+	return out, true, nil
 }
 
 func quantizedDenseGELUSplitGateUpMatVec(input *Array, gate, up *Linear) (*Array, bool, error) {
@@ -74,15 +70,11 @@ func quantizedDenseGELUSplitGateUpMatVec(input *Array, gate, up *Linear) (*Array
 	cfg.SetThreadGroup(256, 1, 1)
 	cfg.AddOutputArg(gateMeta.outputShape[:], DTypeFloat32)
 
-	results, err := kernel.Apply(cfg, input, gate.Weight, gate.Scales, gate.Biases, up.Weight, up.Scales, up.Biases)
+	out, err := kernel.ApplyOne(cfg, input, gate.Weight, gate.Scales, gate.Biases, up.Weight, up.Scales, up.Biases)
 	if err != nil {
 		return nil, true, core.E("mlx.quantizedDenseGELUSplitGateUpMatVec", "apply Metal kernel", err)
 	}
-	if len(results) != 1 {
-		Free(results...)
-		return nil, true, core.NewError(core.Sprintf("mlx: quantized dense split gate/up returned %d outputs, expected 1", len(results)))
-	}
-	return results[0], true, nil
+	return out, true, nil
 }
 
 type quantizedDenseMatVecMeta struct {
