@@ -1048,13 +1048,18 @@ func appendPagedCacheSnapshotPiece(dst *cacheSnapshot, last int, keyPage, valueP
 }
 
 func slicePagedCacheSnapshotPiece(keyPage, valuePage *Array, start, take int) (*Array, *Array) {
-	kShape := keyPage.Shape()
-	vShape := valuePage.Shape()
+	// Rank-4 KV pages — Slice4 routes through the scalar-pass cgo path,
+	// avoiding the two `[]int32{...}` heap allocs per call site that
+	// generic Slice pays. ShapeInto into stack scratch keeps the dim
+	// lookup alloc-free.
+	var kBuf, vBuf [maxTensorRank]int32
+	kShape := keyPage.ShapeInto(kBuf[:0])
+	vShape := valuePage.ShapeInto(vBuf[:0])
 	if len(kShape) < 4 || len(vShape) < 4 {
 		return keyPage.Clone(), valuePage.Clone()
 	}
-	return Slice(keyPage, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(start + take), kShape[3]}),
-		Slice(valuePage, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(start + take), vShape[3]})
+	return Slice4(keyPage, 0, 0, int32(start), 0, kShape[0], kShape[1], int32(start+take), kShape[3]),
+		Slice4(valuePage, 0, 0, int32(start), 0, vShape[0], vShape[1], int32(start+take), vShape[3])
 }
 
 func cacheSnapshotFloatArrays(snapshot cacheSnapshot) (*Array, *Array, error) {
@@ -1301,7 +1306,13 @@ func copyCachePrefix(array *Array, tokenLen int) (*Array, error) {
 	if array == nil || !array.Valid() {
 		return nil, core.NewError("prompt cache: invalid cache array")
 	}
-	shape := array.Shape()
+	// Hot path — called once per K and once per V per cache during
+	// restorePromptCachesWithRequestFixedSize. Gemma 4 26-cache restore
+	// hits this ~52 times. ShapeInto + Slice4 swap a heap-allocated
+	// shape slice + two `[]int32{...}` literals for stack scratch + a
+	// scalar-pass cgo path.
+	var shapeBuf [maxTensorRank]int32
+	shape := array.ShapeInto(shapeBuf[:0])
 	if len(shape) < 4 {
 		return Copy(array), nil
 	}
@@ -1310,7 +1321,7 @@ func copyCachePrefix(array *Array, tokenLen int) (*Array, error) {
 	}
 	prefix := array
 	if int(shape[2]) != tokenLen {
-		prefix = Slice(array, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(tokenLen), shape[3]})
+		prefix = Slice4(array, 0, 0, 0, 0, shape[0], shape[1], int32(tokenLen), shape[3])
 		defer Free(prefix)
 	}
 	return Copy(prefix), nil
@@ -1424,8 +1435,12 @@ func pageCacheArrays(keys, values *Array, pageSize int) ([]*Array, []*Array, boo
 	if keys == nil || values == nil || !keys.Valid() || !values.Valid() {
 		return nil, nil, false, core.NewError("prompt cache: invalid page source arrays")
 	}
-	kShape := keys.Shape()
-	vShape := values.Shape()
+	// ShapeInto stack scratch + Slice4 scalar-pass — paging walks the
+	// sequence in pageSize chunks, so the loop multiplies the per-call
+	// alloc savings by ceil(seqLen/pageSize).
+	var kBuf, vBuf [maxTensorRank]int32
+	kShape := keys.ShapeInto(kBuf[:0])
+	vShape := values.ShapeInto(vBuf[:0])
 	if len(kShape) < 4 || len(vShape) < 4 {
 		return []*Array{Copy(keys)}, []*Array{Copy(values)}, false, nil
 	}
@@ -1443,8 +1458,8 @@ func pageCacheArrays(keys, values *Array, pageSize int) ([]*Array, []*Array, boo
 	vPages := make([]*Array, 0, (seqLen+pageSize-1)/pageSize)
 	for start := 0; start < seqLen; start += pageSize {
 		end := min(seqLen, start+pageSize)
-		kPage := Slice(keys, []int32{0, 0, int32(start), 0}, []int32{kShape[0], kShape[1], int32(end), kShape[3]})
-		vPage := Slice(values, []int32{0, 0, int32(start), 0}, []int32{vShape[0], vShape[1], int32(end), vShape[3]})
+		kPage := Slice4(keys, 0, 0, int32(start), 0, kShape[0], kShape[1], int32(end), kShape[3])
+		vPage := Slice4(values, 0, 0, int32(start), 0, vShape[0], vShape[1], int32(end), vShape[3])
 		kPages = append(kPages, kPage)
 		vPages = append(vPages, vPage)
 	}
@@ -1502,7 +1517,10 @@ func viewPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*A
 }
 
 func viewPagePrefix(page *Array, tokenLen int) (*Array, error) {
-	shape := page.Shape()
+	// ShapeInto + Slice4 — viewPagedCachePrefix loops over visible pages
+	// during paged restore and calls this per page per K and V.
+	var shapeBuf [maxTensorRank]int32
+	shape := page.ShapeInto(shapeBuf[:0])
 	if len(shape) < 4 {
 		return page.Clone(), nil
 	}
@@ -1512,7 +1530,7 @@ func viewPagePrefix(page *Array, tokenLen int) (*Array, error) {
 	if tokenLen == int(shape[2]) {
 		return page.Clone(), nil
 	}
-	return Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(tokenLen), shape[3]}), nil
+	return Slice4(page, 0, 0, 0, 0, shape[0], shape[1], int32(tokenLen), shape[3]), nil
 }
 
 func copyPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*Array, error) {
@@ -1566,7 +1584,10 @@ func copyPagedCachePrefix(kPages, vPages []*Array, tokenLen int) ([]*Array, []*A
 }
 
 func copyPagePrefix(page *Array, tokenLen int) (*Array, error) {
-	shape := page.Shape()
+	// ShapeInto + Slice4 — copyPagedCachePrefix calls this per visible
+	// page per K and V on the cold-restore (non-zero-copy) paged path.
+	var shapeBuf [maxTensorRank]int32
+	shape := page.ShapeInto(shapeBuf[:0])
 	if len(shape) < 4 {
 		return Copy(page), nil
 	}
@@ -1575,7 +1596,7 @@ func copyPagePrefix(page *Array, tokenLen int) (*Array, error) {
 	}
 	prefix := page
 	if tokenLen != int(shape[2]) {
-		prefix = Slice(page, []int32{0, 0, 0, 0}, []int32{shape[0], shape[1], int32(tokenLen), shape[3]})
+		prefix = Slice4(page, 0, 0, 0, 0, shape[0], shape[1], int32(tokenLen), shape[3])
 		defer Free(prefix)
 	}
 	return Copy(prefix), nil
@@ -1703,8 +1724,14 @@ func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, reques
 		return nil, nil, err
 	}
 
-	kShape := keyPrefix.Shape()
-	vShape := valuePrefix.Shape()
+	// ShapeInto stack scratch + SliceUpdateInplace4 — golden-path fixed
+	// cache restore (Gemma 4 prefill warm-restore lives here). Per call:
+	// previously paid 2 heap allocs for shape slices + 4 for the slice
+	// literals fed into SliceUpdateInplace. Now zero alloc shape, zero
+	// alloc dispatch.
+	var kBuf, vBuf [maxTensorRank]int32
+	kShape := keyPrefix.ShapeInto(kBuf[:0])
+	vShape := valuePrefix.ShapeInto(vBuf[:0])
 	if len(kShape) < 4 || len(vShape) < 4 {
 		Free(keyPrefix, valuePrefix)
 		return nil, nil, core.NewError("prompt cache: fixed cache restore requires rank-4 tensors")
@@ -1731,8 +1758,8 @@ func restoreFixedCacheSnapshot(snapshot cacheSnapshot, prefixLen, offset, reques
 	cache.keys = Zeros([]int32{kShape[0], kShape[1], int32(maxSize), kShape[3]}, keyPrefix.Dtype())
 	cache.values = Zeros([]int32{vShape[0], vShape[1], int32(maxSize), vShape[3]}, valuePrefix.Dtype())
 	oldK, oldV := cache.keys, cache.values
-	cache.keys = SliceUpdateInplace(cache.keys, keyPrefix, []int32{0, 0, 0, 0}, []int32{kShape[0], kShape[1], int32(prefixLen), kShape[3]})
-	cache.values = SliceUpdateInplace(cache.values, valuePrefix, []int32{0, 0, 0, 0}, []int32{vShape[0], vShape[1], int32(prefixLen), vShape[3]})
+	cache.keys = SliceUpdateInplace4(cache.keys, keyPrefix, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3])
+	cache.values = SliceUpdateInplace4(cache.values, valuePrefix, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3])
 	Free(oldK, oldV)
 	cache.offset = offset
 	cache.length = prefixLen
