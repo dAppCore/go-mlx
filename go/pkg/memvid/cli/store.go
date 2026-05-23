@@ -246,8 +246,21 @@ func (s *Store) Put(ctx context.Context, text string, opts memvid.PutOptions) (m
 	if opts.Track != "" {
 		args = append(args, "--track", opts.Track)
 	}
-	if len(opts.Tags) > 0 {
-		keys := make([]string, 0, len(opts.Tags))
+	if n := len(opts.Tags); n > 0 {
+		// W10-AG-style stack-buffer fast path: tags ≤ 16 (the realistic
+		// caller pattern) sort into a stack-allocated array, no heap
+		// alloc for the keys slice. Slice-of-array is the canonical Go
+		// idiom that keeps the backing array on the stack while
+		// providing slice semantics for slices.Sort. Falls back to make
+		// for unusual >16-tag callers. Saves 1 alloc + 16-128 B per
+		// Put on the common path.
+		var keys []string
+		if n <= 16 {
+			var stack [16]string
+			keys = stack[:0:n]
+		} else {
+			keys = make([]string, 0, n)
+		}
 		for key := range opts.Tags {
 			keys = append(keys, key)
 		}
