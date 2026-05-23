@@ -44,7 +44,7 @@ func BuildDatasetBatches(tok *Tokenizer, ds dataset.Dataset, cfg dataset.BatchCo
 			return nil, err
 		}
 		if usable {
-			packer.add(example)
+			packer.add(&example)
 		}
 	}
 	packer.finish()
@@ -65,22 +65,16 @@ type datasetPacker struct {
 }
 
 func newDatasetPacker(maxSeqLen int, builder *sftBatchBuilder) *datasetPacker {
-	p := &datasetPacker{maxSeqLen: maxSeqLen, builder: builder}
-	// When maxSeqLen is known, p.current can never grow past it — packer
-	// flushes the moment another row would overflow. Pre-allocate the
-	// staging buffers at maxSeqLen capacity so the per-add appends never
-	// trigger reallocation. Re-allocated to fresh maxSeqLen after each
-	// flush() so the builder owns the previous backing array.
-	if maxSeqLen > 0 {
-		p.current.inputs = make([]int, 0, maxSeqLen)
-		p.current.targets = make([]int, 0, maxSeqLen)
-		p.current.mask = make([]float32, 0, maxSeqLen)
-	}
-	return p
+	// Lazy first-add allocation — see add() for the why. Upfront
+	// pre-sizing is wasted work for the NoPack path (newDatasetPacker
+	// is unreachable, but kept symmetric with sftStreamingPacker) and
+	// would force a second per-flush allocation pair every time the
+	// previous flush handed staging to the builder.
+	return &datasetPacker{maxSeqLen: maxSeqLen, builder: builder}
 }
 
-func (p *datasetPacker) add(example sftExample) {
-	if p == nil || p.builder == nil {
+func (p *datasetPacker) add(example *sftExample) {
+	if p == nil || p.builder == nil || example == nil {
 		return
 	}
 	if len(example.inputs) == 0 {
@@ -103,6 +97,21 @@ func (p *datasetPacker) add(example sftExample) {
 		srcTargets = srcTargets[start:]
 		srcMask = srcMask[start:]
 	}
+	// First add into an empty accumulator: pre-size to maxSeqLen (when
+	// known) so the doubling cascade across subsequent appends collapses
+	// into a single allocation per accumulator field. Inputs + Targets
+	// share one 2*maxSeqLen-wide backing — they're both []int of the
+	// same maximum length and never grow past maxSeqLen (caller flushes
+	// when adding would overflow). Carving two cap-maxSeqLen views out
+	// of the shared backing drops one allocation per first-add. Mask
+	// stays separate (different element type). Mirrors the pattern
+	// established in sftStreamingPacker.add.
+	if p.maxSeqLen > 0 && cap(p.current.inputs) == 0 {
+		intBacking := make([]int, 2*p.maxSeqLen)
+		p.current.inputs = intBacking[:0:p.maxSeqLen]
+		p.current.targets = intBacking[p.maxSeqLen : p.maxSeqLen : 2*p.maxSeqLen]
+		p.current.mask = make([]float32, 0, p.maxSeqLen)
+	}
 	p.current.inputs = append(p.current.inputs, srcInputs...)
 	p.current.targets = append(p.current.targets, srcTargets...)
 	p.current.mask = append(p.current.mask, srcMask...)
@@ -118,24 +127,16 @@ func (p *datasetPacker) flush() {
 	if p == nil || p.builder == nil || len(p.current.inputs) == 0 {
 		return
 	}
-	// Hand the builder a fully-sized clone — len is known so each make
-	// allocates exactly once instead of going through append grow stages.
-	n := len(p.current.inputs)
-	inputs := make([]int, n)
-	copy(inputs, p.current.inputs)
-	targets := make([]int, n)
-	copy(targets, p.current.targets)
-	mask := make([]float32, n)
-	copy(mask, p.current.mask)
-	p.builder.add(sftExample{
-		inputs:  inputs,
-		targets: targets,
-		mask:    mask,
-	})
-	// Truncate staging buffers in place — the cloned slices above are
-	// what the builder now owns, so the original backing arrays are
-	// still ours and ready for the next pack cycle without a fresh make.
-	p.current.inputs = p.current.inputs[:0]
-	p.current.targets = p.current.targets[:0]
-	p.current.mask = p.current.mask[:0]
+	// Hand the builder p.current's backing arrays directly — the
+	// immediately-following p.current = sftExample{} drops our last
+	// reference to them, so the builder is the sole owner. The previous
+	// form cloned all three slices then nuked the originals, paying three
+	// copy()-sized memory writes per flush (up to maxSeqLen elements
+	// each). The next add() re-allocates fresh buffers via the
+	// cap(p.current.inputs) == 0 branch, same allocation count as the
+	// previous in-place truncate-and-reuse path. Mirrors the ownership
+	// flip already in sftStreamingPacker.flush.
+	example := p.current
+	p.current = sftExample{}
+	p.builder.add(example)
 }
