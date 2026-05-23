@@ -369,9 +369,16 @@ func packQ4(q *Array) *Array {
 // Element count is read via Size() (single cgo call into mlx_array_size)
 // rather than Shape() + walk — Shape() allocates a fresh []int32 per call
 // which would otherwise show up as one heap alloc per Q4 Update.
+//
+// Reshape1 / Reshape2 / Slice2 replace the variadic Reshape and SliceAxis
+// calls (W11-AC): the rank-1/2 scalar-pass primitives skip the variadic
+// []int32 escape on `Reshape(q, int32(n))` + `Reshape(padded, int32(pairs),
+// int32(2))` + `Reshape(packed2D, int32(pairs))`, and replace the
+// SliceAxis(paired,...) pair (which materialised `make([]int32, ndim)`
+// twice per call) with register-passed scalar slices.
 func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	n := q.Size()
-	flat := Reshape(q, int32(n))
+	flat := Reshape1(q, int32(n))
 	ownOffset := offsetI8 == nil
 	offset := offsetI8
 	if ownOffset {
@@ -394,10 +401,10 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	}
 
 	pairs := nP / 2
-	paired := Reshape(padded, int32(pairs), int32(2))
+	paired := Reshape2(padded, int32(pairs), 2)
 	Free(padded)
-	low := SliceAxis(paired, 1, 0, 1)
-	high := SliceAxis(paired, 1, 1, 2)
+	low := Slice2(paired, 0, 0, int32(pairs), 1)
+	high := Slice2(paired, 0, 1, int32(pairs), 2)
 	Free(paired)
 	ownShift := shiftU8 == nil
 	shift := shiftU8
@@ -406,7 +413,7 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	}
 	highShifted := LeftShift(high, shift)
 	packed2D := BitwiseOr(low, highShifted)
-	packed := Reshape(packed2D, int32(pairs))
+	packed := Reshape1(packed2D, int32(pairs))
 	Free(low, high, highShifted, packed2D)
 	if ownShift {
 		Free(shift)
