@@ -1248,8 +1248,13 @@ func pagedOwnedExcept(owned []*Array, k, v *Array) []*Array {
 }
 
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
-	k, v, owned := c.storageKV(k, v)
-	defer Free(owned...)
+	// Slice-free storage conversion mirroring FixedKVCache.storageKVPair —
+	// avoids the per-Update `make([]*Array, 0, 2)` from cacheStorageKV when
+	// k/v are already in the storage dtype (the steady-state case after
+	// warmup).  freeOwnedPair handles the cleanup without a variadic Free
+	// over a backing slice.
+	k, v, ownK, ownV := c.storageKVPair(k, v)
+	defer freeOwnedPair(ownK, ownV)
 	if pagedKVPreallocEnabled() {
 		return c.appendPagesPrealloc(k, v, seqLen)
 	}
@@ -1261,6 +1266,30 @@ func (c *PagedKVCache) storageKV(k, v *Array) (*Array, *Array, []*Array) {
 		return k, v, nil
 	}
 	return cacheStorageKV(k, v, c.storageDType)
+}
+
+// storageKVPair is the slice-free variant of storageKV.  Returns the dtype-
+// converted k', v' alongside the *Array handles to free (or nil if no
+// conversion was required).  Avoids the per-call `make([]*Array, 0, 2)`
+// that cacheStorageKV does — appendPages fires every Update, so on long
+// decodes this is a per-token saving.
+func (c *PagedKVCache) storageKVPair(k, v *Array) (convK, convV, ownK, ownV *Array) {
+	if c == nil || !c.hasStorageDType {
+		return k, v, nil, nil
+	}
+	if DTypeByteSize(c.storageDType) <= 0 {
+		return k, v, nil, nil
+	}
+	convK, convV = k, v
+	if k != nil && k.Valid() && k.Dtype() != c.storageDType {
+		convK = AsType(k, c.storageDType)
+		ownK = convK
+	}
+	if v != nil && v.Valid() && v.Dtype() != c.storageDType {
+		convV = AsType(v, c.storageDType)
+		ownV = convV
+	}
+	return convK, convV, ownK, ownV
 }
 
 func cacheStorageKV(k, v *Array, dtype DType) (*Array, *Array, []*Array) {
@@ -1875,11 +1904,19 @@ func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 	if maxSize <= 0 || k == nil || v == nil {
 		return k, v
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 || int(kShape[2]) <= maxSize {
+	// Reach for NumDims + Dim before paying the two Shape() heap allocs —
+	// the common return path (length <= maxSize) needs neither shape.
+	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return k, v
 	}
+	kSeq := int(k.Dim(2))
+	if kSeq <= maxSize {
+		return k, v
+	}
+	// Past cap: now we need the full dims for the Slice4 calls.
+	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	kShape := k.ShapeInto(kShapeBuf[:0])
+	vShape := v.ShapeInto(vShapeBuf[:0])
 	start := int(kShape[2]) - maxSize
 	return Slice4(k, 0, 0, int32(start), 0, kShape[0], kShape[1], kShape[2], kShape[3]),
 		Slice4(v, 0, 0, int32(start), 0, vShape[0], vShape[1], vShape[2], vShape[3])

@@ -55,8 +55,9 @@ func NewQuantizedKVCache(maxSize, keyBits, valueBits int) *QuantizedKVCache {
 }
 
 func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
-	shape := k.Shape()
-	if len(shape) < 4 {
+	// NumDims() is a single cgo read whereas Shape() allocates a fresh
+	// []int32 — and we only need to gate the rank-4 path below.
+	if k.NumDims() < 4 {
 		fullK := k.Clone()
 		fullV := v.Clone()
 		c.storeQuantized(fullK, fullV)
@@ -203,9 +204,13 @@ func (c *QuantizedKVCache) storeQuantized(k, v *Array) {
 	c.valueDtype = v.Dtype()
 	keyMax, keyMin, eps := c.ensureKeyScalars()
 	packOff, packSh := c.ensurePackScalars(c.keyBits, c.valueBits)
-	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps, packOff, packSh)
+	// Reuse the cache's shape backing across Updates — quantizeCacheArrayCached
+	// will ShapeInto the passed buffer when its cap matches the source's
+	// NumDims, skipping the per-call `[]int32` heap alloc that the previous
+	// `append([]int32(nil), a.Shape()...)` pattern paid on every token.
+	c.keys, c.keyScale, c.keyShape = quantizeCacheArrayCached(k, c.keyBits, keyMax, keyMin, eps, packOff, packSh, c.keyShape)
 	valueMax, valueMin, _ := c.ensureValueScalars()
-	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps, packOff, packSh)
+	c.values, c.valueScale, c.valueShape = quantizeCacheArrayCached(v, c.valueBits, valueMax, valueMin, eps, packOff, packSh, c.valueShape)
 	Free(oldK, oldV, oldKS, oldVS)
 }
 
@@ -274,7 +279,7 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 	maxBound := FromValue(maxValue)
 	minValue := FromValue(-maxValue)
 	defer Free(eps, maxBound, minValue)
-	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps, nil, nil)
+	return quantizeCacheArrayCached(a, bits, maxBound, minValue, eps, nil, nil, nil)
 }
 
 // quantizeCacheArrayCached is quantizeCacheArray with the bits-derived
@@ -283,8 +288,21 @@ func quantizeCacheArray(a *Array, bits int) (*Array, *Array, []int32) {
 // in the hot path. The caller owns eps/maxBound/minValue lifetime; pass
 // nil for packOffsetI8/packShiftU8 to fall back to allocating them inside
 // packQ4 (used by the non-cached entry point above).
-func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps, packOffsetI8, packShiftU8 *Array) (*Array, *Array, []int32) {
-	shape := append([]int32(nil), a.Shape()...)
+//
+// shapeBuf, when non-nil with sufficient cap, receives the source's shape
+// via ShapeInto — letting the QuantizedKVCache reuse its keyShape /
+// valueShape backing array across every Update and skip the per-call
+// `[]int32` heap alloc that the previous `append([]int32(nil), ...)`
+// pattern paid. Pass nil to fall back to allocating a fresh slice (used
+// by snapshot paths in prompt_cache.go that need an independent copy).
+func quantizeCacheArrayCached(a *Array, bits int, maxBound, minValue, eps, packOffsetI8, packShiftU8 *Array, shapeBuf []int32) (*Array, *Array, []int32) {
+	ndim := a.NumDims()
+	var shape []int32
+	if cap(shapeBuf) >= ndim {
+		shape = a.ShapeInto(shapeBuf[:0])
+	} else {
+		shape = append([]int32(nil), a.Shape()...)
+	}
 	abs := Abs(a)
 	maxAbs := maxAll(abs)
 	clampedAbs := Maximum(maxAbs, eps)
@@ -347,9 +365,12 @@ func packQ4(q *Array) *Array {
 // shift) supplied by the caller — letting the QuantizedKVCache reuse one
 // pair across every Q4 Update rather than allocating fresh MLX scalars per
 // call. Pass nil for both to fall back to per-call allocation.
+//
+// Element count is read via Size() (single cgo call into mlx_array_size)
+// rather than Shape() + walk — Shape() allocates a fresh []int32 per call
+// which would otherwise show up as one heap alloc per Q4 Update.
 func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
-	shape := q.Shape()
-	n := cacheElementCount(shape)
+	n := q.Size()
 	flat := Reshape(q, int32(n))
 	ownOffset := offsetI8 == nil
 	offset := offsetI8
@@ -397,6 +418,10 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 // array of the original shape. The implementation reshapes pair-wise after
 // extracting the low/high nibbles, replacing the previous PutAlongAxis +
 // gather indices with structural ops only.
+//
+// `pairs` is read via low.Dim(0) (single cgo call) rather than low.Shape()[0]
+// (which allocates a fresh []int32 just to read one dim) — saves one heap
+// alloc per dequantise on the rare Q4 dequant path.
 func unpackQ4(packed *Array, shape []int32) *Array {
 	n := cacheElementCount(shape)
 	if n == 0 {
@@ -408,7 +433,7 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	high := RightShift(packed, shift)
 	Free(mask, shift)
 
-	pairs := int(low.Shape()[0])
+	pairs := low.Dim(0)
 	lowE := ExpandDims(low, 1)
 	highE := ExpandDims(high, 1)
 	Free(low, high)
@@ -448,12 +473,15 @@ func cacheElementCount(shape []int32) int {
 // The implementation flattens to 1-D (zero-copy reshape) then reduces in a
 // single MaxAxis call, replacing the prior N-axis iterative reduction which
 // materialised one intermediate per dimension.
+//
+// Element count is read via Size() + NumDims() (single cgo calls each)
+// rather than Shape() + cacheElementCount walk — Shape() would allocate a
+// fresh []int32 every call which is per-quantize, every Update.
 func maxAll(a *Array) *Array {
-	shape := a.Shape()
-	if len(shape) == 0 {
+	if a.NumDims() == 0 {
 		return a.Clone()
 	}
-	n := cacheElementCount(shape)
+	n := a.Size()
 	if n == 0 {
 		return a.Clone()
 	}
