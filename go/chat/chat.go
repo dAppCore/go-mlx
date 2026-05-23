@@ -217,6 +217,18 @@ func NormaliseRole(role string) string {
 }
 
 func normaliseRole(role string) string {
+	// Canonical fast path. The common Format flow (bench, every wire
+	// handler that built its messages with the canonical role names)
+	// hits this — no Lower/Trim/switch table walk needed, and the
+	// branch is small enough to inline into the caller.
+	switch role {
+	case "user", "assistant", "system":
+		return role
+	}
+	return normaliseRoleSlow(role)
+}
+
+func normaliseRoleSlow(role string) string {
 	// Capture the canonicalised role once — the previous default
 	// branch re-ran core.Lower(core.Trim(role)), doubling the work
 	// for unknown roles (the common case once a wire handler passes
