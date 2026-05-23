@@ -37,13 +37,11 @@ func quantizedDenseMatVec(input *Array, linear *Linear) (*Array, bool, error) {
 	}
 	kernel := quantizedDenseMatVecKernel(meta, linear.GroupSize, linear.Bits)
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(meta.outDim*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(meta.outputShape[:], DTypeFloat32)
-
-	out, err := kernel.ApplyOne(cfg, input, linear.Weight, linear.Scales, linear.Biases)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		meta.outputShape[:], DTypeFloat32,
+		input, linear.Weight, linear.Scales, linear.Biases,
+	)
 	if err != nil {
 		return nil, true, core.E("mlx.quantizedDenseMatVec", "apply Metal kernel", err)
 	}
@@ -64,13 +62,12 @@ func quantizedDenseGELUSplitGateUpMatVec(input *Array, gate, up *Linear) (*Array
 	}
 
 	kernel := quantizedDenseGELUSplitGateUpMatVecKernel(gateMeta, gate.GroupSize, gate.Bits)
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(gateMeta.outDim*32, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(gateMeta.outputShape[:], DTypeFloat32)
 
-	out, err := kernel.ApplyOne(cfg, input, gate.Weight, gate.Scales, gate.Biases, up.Weight, up.Scales, up.Biases)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: gateMeta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		gateMeta.outputShape[:], DTypeFloat32,
+		input, gate.Weight, gate.Scales, gate.Biases, up.Weight, up.Scales, up.Biases,
+	)
 	if err != nil {
 		return nil, true, core.E("mlx.quantizedDenseGELUSplitGateUpMatVec", "apply Metal kernel", err)
 	}

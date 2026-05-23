@@ -43,13 +43,11 @@ out[elem] = sum%s;`, outDim, outDim, inDim, inDim, codeDim, codeDim, codebookSiz
 	kernel := NewMetalKernel(core.Sprintf("codebook_vq_matvec_dim_%d_bias_%t", codeDim, hasBias), inputNames, []string{"out"}, source, "", true, false)
 	defer kernel.Free()
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(rows*outDim, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(codebookVQOutputShape(input.Shape(), weightShape[0]), DTypeFloat32)
-
-	out, err := kernel.ApplyOne(cfg, inputs...)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: rows * outDim, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		codebookVQOutputShape(input.Shape(), weightShape[0]), DTypeFloat32,
+		inputs...,
+	)
 	if err != nil {
 		return nil, core.E("mlx.CodebookVQMatVec", "apply Metal kernel", err)
 	}

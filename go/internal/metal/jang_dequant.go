@@ -30,13 +30,11 @@ out[elem] = float(q) * scales[group] + biases[group];`, bits, bits, (1<<bits)-1,
 	kernel := NewMetalKernel(core.Sprintf("jang_dequant_bits_%d_group_%d", bits, groupSize), []string{"packed", "scales", "biases"}, []string{"out"}, source, "", true, false)
 	defer kernel.Free()
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(elements, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(outputShape, DTypeFloat32)
-
-	out, err := kernel.ApplyOne(cfg, packed, scales, biases)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: elements, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		outputShape, DTypeFloat32,
+		packed, scales, biases,
+	)
 	if err != nil {
 		return nil, core.E("mlx.DequantizeJANGPacked", "apply Metal kernel", err)
 	}
@@ -108,13 +106,11 @@ out[elem] = sum%s;`, outDim, outDim, inDim, inDim, bits, bits, (1<<bits)-1, grou
 	kernel := NewMetalKernel(core.Sprintf("jang_packed_linear_fused_bits_%d_group_%d_bias_%t", bits, groupSize, bias != nil && bias.Valid()), inputNames, []string{"out"}, source, "", true, false)
 	defer kernel.Free()
 
-	cfg := NewMetalKernelConfig()
-	defer cfg.Free()
-	cfg.SetGrid(rows*outDim, 1, 1)
-	cfg.SetThreadGroup(256, 1, 1)
-	cfg.AddOutputArg(outShape, DTypeFloat32)
-
-	out, err := kernel.ApplyOne(cfg, inputs...)
+	out, err := kernel.DispatchOne(
+		MetalKernelGrid{GridX: rows * outDim, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		outShape, DTypeFloat32,
+		inputs...,
+	)
 	if err != nil {
 		return nil, core.E("mlx.JANGPackedLinearFused", "apply Metal kernel", err)
 	}
