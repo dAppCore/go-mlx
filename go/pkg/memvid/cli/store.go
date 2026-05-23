@@ -183,13 +183,16 @@ func (s *Store) Resolve(ctx context.Context, chunkID int) (memvid.Chunk, error) 
 	if err != nil {
 		return memvid.Chunk{}, err
 	}
-	id := int(view.Frame.ID)
-	if id != chunkID {
-		id = chunkID
-	}
+	// chunkID is the caller's authority — view.Frame.ID is what the
+	// store happens to have returned, but the contract is "the chunk
+	// you asked for". If they disagree the store is wrong, not the
+	// caller; carry the asked-for ID through to the Chunk.Ref so
+	// downstream code matches the user's mental model. (The frame
+	// offset still carries view.Frame.ID — that's the on-disk seek
+	// hint, separate concern.)
 	return memvid.Chunk{
 		Ref: memvid.ChunkRef{
-			ChunkID:        id,
+			ChunkID:        chunkID,
 			FrameOffset:    view.Frame.ID,
 			HasFrameOffset: true,
 			Codec:          memvid.CodecQRVideo,
