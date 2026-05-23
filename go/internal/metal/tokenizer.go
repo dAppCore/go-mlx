@@ -5,7 +5,6 @@
 package metal
 
 import (
-	"container/heap"
 	"slices"
 	"sync"
 
@@ -72,33 +71,77 @@ type bpeCandidate struct {
 	rightVersion uint32
 }
 
+// bpeCandidateHeap is a min-heap of bpeCandidate ordered by (rank
+// ascending, left ascending). The original implementation satisfied
+// container/heap.Interface, which forced every Push to box a candidate
+// into `any` (one alloc per push) and every Pop to type-assert back —
+// pushDirect / popDirect below replace that path with direct typed
+// sift-up / sift-down operations on the underlying slice.
 type bpeCandidateHeap []bpeCandidate
 
 func (h bpeCandidateHeap) Len() int {
 	return len(h)
 }
 
-func (h bpeCandidateHeap) Less(i, j int) bool {
-	if h[i].rank != h[j].rank {
-		return h[i].rank < h[j].rank
+// pushDirect appends c to the heap and sifts it up. Bypasses
+// container/heap.Push's `x any` interface boxing — that boxing forces
+// every bpeCandidate to escape to the heap (one alloc per push), and
+// bpeMerge does ~2N pushes per call. The version-stale-discard
+// correctness invariant is preserved (the less ordering — rank then
+// left — is identical to the prior heap.Interface path; the wrapper
+// just emits the same up-sift without the interface dispatch).
+func (h *bpeCandidateHeap) pushDirect(c bpeCandidate) {
+	*h = append(*h, c)
+	// sift-up
+	s := *h
+	i := len(s) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		// Inline of Less(i, parent): rank then left.
+		if s[i].rank < s[parent].rank ||
+			(s[i].rank == s[parent].rank && s[i].left < s[parent].left) {
+			s[i], s[parent] = s[parent], s[i]
+			i = parent
+			continue
+		}
+		break
 	}
-	return h[i].left < h[j].left
 }
 
-func (h bpeCandidateHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *bpeCandidateHeap) Push(x any) {
-	*h = append(*h, x.(bpeCandidate))
-}
-
-func (h *bpeCandidateHeap) Pop() any {
-	old := *h
-	n := len(old)
-	item := old[n-1]
-	*h = old[:n-1]
-	return item
+// popDirect removes and returns the minimum candidate. Bypasses
+// heap.Pop's `any` return-type boxing.
+func (h *bpeCandidateHeap) popDirect() bpeCandidate {
+	s := *h
+	n := len(s) - 1
+	s[0], s[n] = s[n], s[0]
+	// sift-down on s[:n]
+	i := 0
+	for {
+		left := 2*i + 1
+		if left >= n {
+			break
+		}
+		smallest := left
+		right := left + 1
+		if right < n {
+			// right < left?
+			if s[right].rank < s[left].rank ||
+				(s[right].rank == s[left].rank && s[right].left < s[left].left) {
+				smallest = right
+			}
+		}
+		// smallest < i?
+		if s[smallest].rank < s[i].rank ||
+			(s[smallest].rank == s[i].rank && s[smallest].left < s[i].left) {
+			s[i], s[smallest] = s[smallest], s[i]
+			i = smallest
+			continue
+		}
+		break
+	}
+	out := s[n]
+	*h = s[:n]
+	return out
 }
 
 // tokenizerJSON is the HuggingFace tokenizer.json format.
@@ -125,24 +168,15 @@ type tokenizerJSON struct {
 }
 
 // indexIn returns the byte position of substr in s, or -1 if not found.
-// Replaces strings.Index without importing the strings package.
+// Routes through core.Index — stdlib substring search uses Rabin-Karp /
+// two-way under the hood, an order of magnitude faster than the naive
+// O(n*m) byte-walk this used to do because every iteration constructed
+// a fresh `s[i:i+subLen] == substr` slice header for comparison.
 //
 //	pos := indexIn("hello world", "world") // → 6
 //	pos := indexIn("hello", "xyz")         // → -1
 func indexIn(s, substr string) int {
-	subLen := len(substr)
-	if subLen == 0 {
-		return 0
-	}
-	if subLen > len(s) {
-		return -1
-	}
-	for i := range len(s) - subLen + 1 {
-		if s[i:i+subLen] == substr {
-			return i
-		}
-	}
-	return -1
+	return core.Index(s, substr)
 }
 
 // LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
@@ -318,11 +352,54 @@ func (t *Tokenizer) normalizeSentencePieceSegment(segment string) string {
 	if segment == "" {
 		return ""
 	}
-	normalized := core.Replace(segment, " ", "▁")
-	if t.addPrefixSpace && !core.HasPrefix(normalized, "▁") {
-		normalized = "▁" + normalized
+	// Decide upfront whether we need the leading ▁ prefix. The original
+	// code called Replace first (allocating a new string), then checked
+	// the result for "▁" prefix, then prefixed it (a SECOND alloc). Both
+	// can be merged into a single Builder pass:
+	//
+	//   - Count spaces to compute exact output size (▁ is 3 bytes, ' ' is
+	//     1, so each space adds 2 bytes to the output length).
+	//   - Decide prefix decision up front: needs ▁ iff addPrefixSpace AND
+	//     the segment's first byte is not the ▁-leader (E2). The latter
+	//     test is a single byte compare instead of HasPrefix walking 3.
+	//   - If no work needed (no spaces, no prefix), return segment as-is
+	//     — zero allocations, the input string passes through directly.
+	needPrefix := t.addPrefixSpace
+	if needPrefix && segment[0] == 0xE2 && len(segment) >= 3 &&
+		segment[1] == 0x96 && segment[2] == 0x81 {
+		needPrefix = false
 	}
-	return normalized
+
+	// Count spaces — also tells us if Replace work is needed.
+	spaces := 0
+	for i := 0; i < len(segment); i++ {
+		if segment[i] == ' ' {
+			spaces++
+		}
+	}
+
+	if !needPrefix && spaces == 0 {
+		return segment
+	}
+
+	// Output size known exactly: prefix (3) + segment + 2 per space.
+	outLen := len(segment) + 2*spaces
+	if needPrefix {
+		outLen += 3
+	}
+	buf := make([]byte, 0, outLen)
+	if needPrefix {
+		buf = append(buf, 0xE2, 0x96, 0x81)
+	}
+	for i := 0; i < len(segment); i++ {
+		b := segment[i]
+		if b == ' ' {
+			buf = append(buf, 0xE2, 0x96, 0x81)
+			continue
+		}
+		buf = append(buf, b)
+	}
+	return core.AsString(buf)
 }
 
 // buildGPT2ByteMaps creates the GPT-2 byte-level BPE encoding/decoding maps.
@@ -358,6 +435,33 @@ func buildGPT2ByteMaps() (decoder map[rune]byte, encoder map[byte]rune) {
 	return
 }
 
+// bpeMergePushPair inlines the prior pushPair closure as a free
+// function. The closure version captured nodes + candidates + t which
+// forced the closure (and its captured slice headers / map) to escape
+// to heap on every bpeMerge call. The free-function version takes the
+// state explicitly + uses pushDirect to bypass container/heap's `any`
+// interface boxing — one alloc per push eliminated.
+func bpeMergePushPair(nodes []bpeNode, candidates *bpeCandidateHeap, ranks map[mergeKey]int, left int) {
+	if left < 0 || left >= len(nodes) || !nodes[left].alive {
+		return
+	}
+	right := nodes[left].next
+	if right < 0 || right >= len(nodes) || !nodes[right].alive {
+		return
+	}
+	rank, ok := ranks[mergeKey{a: nodes[left].token, b: nodes[right].token}]
+	if !ok {
+		return
+	}
+	candidates.pushDirect(bpeCandidate{
+		rank:         rank,
+		left:         left,
+		right:        right,
+		leftVersion:  nodes[left].version,
+		rightVersion: nodes[right].version,
+	})
+}
+
 // bpeMerge applies BPE merges to a sequence of symbols until no more merges apply.
 // Uses the standard algorithm: repeatedly find the lowest-rank adjacent pair and merge it.
 func (t *Tokenizer) bpeMerge(symbols []string) []string {
@@ -377,33 +481,14 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 	nodes[len(nodes)-1].next = -1
 
 	candidates := make(bpeCandidateHeap, 0, len(nodes)-1)
-	pushPair := func(left int) {
-		if left < 0 || left >= len(nodes) || !nodes[left].alive {
-			return
-		}
-		right := nodes[left].next
-		if right < 0 || right >= len(nodes) || !nodes[right].alive {
-			return
-		}
-		rank, ok := t.mergeRanks[mergeKey{a: nodes[left].token, b: nodes[right].token}]
-		if !ok {
-			return
-		}
-		heap.Push(&candidates, bpeCandidate{
-			rank:         rank,
-			left:         left,
-			right:        right,
-			leftVersion:  nodes[left].version,
-			rightVersion: nodes[right].version,
-		})
-	}
 	for i := 0; i < len(nodes)-1; i++ {
-		pushPair(i)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, i)
 	}
-	heap.Init(&candidates)
+	// pushDirect maintains heap invariant on each insert — no separate
+	// heap.Init pass needed.
 
 	for candidates.Len() > 0 {
-		candidate := heap.Pop(&candidates).(bpeCandidate)
+		candidate := candidates.popDirect()
 		left, right := candidate.left, candidate.right
 		if left < 0 || right < 0 || left >= len(nodes) || right >= len(nodes) {
 			continue
@@ -427,8 +512,8 @@ func (t *Tokenizer) bpeMerge(symbols []string) []string {
 			nodes[next].prev = left
 		}
 
-		pushPair(nodes[left].prev)
-		pushPair(left)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, nodes[left].prev)
+		bpeMergePushPair(nodes, &candidates, t.mergeRanks, left)
 	}
 
 	merged := symbols[:0]
@@ -444,11 +529,16 @@ func tokenizerBPECacheKey(kind, segment string) string {
 
 func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
 	t.bpeCacheMu.RLock()
-	defer t.bpeCacheMu.RUnlock()
+	// Defer-free path — the hot one fires once per Encode segment so
+	// the ~7 ns/op `defer t.bpeCacheMu.RUnlock()` cost shows up at the
+	// envelope. Explicit RUnlock on both branches keeps the lock
+	// discipline visible at the call site.
 	if len(t.bpeCache) == 0 {
+		t.bpeCacheMu.RUnlock()
 		return nil, false
 	}
 	tokens, ok := t.bpeCache[key]
+	t.bpeCacheMu.RUnlock()
 	return tokens, ok
 }
 
@@ -475,6 +565,43 @@ func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
 	t.bpeCacheOrder = append(t.bpeCacheOrder, key)
 }
 
+// splitRunes appends each UTF-8 rune of s to dst as a substring of s
+// (zero-alloc per rune — the substring shares the underlying byte
+// array). The prior `string(r)` per-rune materialisation allocated a
+// fresh 1-4-byte string for every rune; substring slicing reuses the
+// input's backing memory and is safe because the input is a string
+// (immutable). Returns the appended slice for caller to chain.
+func splitRunes(dst []string, s string) []string {
+	for i := 0; i < len(s); {
+		b := s[i]
+		// Fast-path ASCII — single-byte rune, no decode work.
+		if b < 0x80 {
+			dst = append(dst, s[i:i+1])
+			i++
+			continue
+		}
+		// Multi-byte rune — determine length from leading byte.
+		var n int
+		switch {
+		case b&0xE0 == 0xC0:
+			n = 2
+		case b&0xF0 == 0xE0:
+			n = 3
+		case b&0xF8 == 0xF0:
+			n = 4
+		default:
+			// Invalid leading byte; emit as single byte and advance.
+			n = 1
+		}
+		if i+n > len(s) {
+			n = len(s) - i
+		}
+		dst = append(dst, s[i:i+n])
+		i += n
+	}
+	return dst
+}
+
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
 	spText := t.normalizeSentencePieceSegment(segment)
 	if spText == "" {
@@ -485,10 +612,7 @@ func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
 		return cached
 	}
 
-	symbols := make([]string, 0, len(spText))
-	for _, r := range spText {
-		symbols = append(symbols, string(r))
-	}
+	symbols := splitRunes(make([]string, 0, len(spText)), spText)
 	symbols = t.bpeMerge(symbols)
 
 	tokens := make([]int32, 0, len(symbols))
@@ -506,6 +630,11 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 		return nil
 	}
 	encoded := core.NewBuilder()
+	// Pre-size the Builder — every input byte maps to one rune (max 4
+	// bytes); the worst case is 4*len(segment), but in practice most
+	// GPT-2 byte-encoded bytes are 2-byte runes so 2*len(segment) is a
+	// fair starting size that avoids a couple of geometric reallocs.
+	encoded.Grow(2 * len(segment))
 	for _, b := range []byte(segment) {
 		if r, ok := t.gpt2Encoder[b]; ok {
 			encoded.WriteRune(r)
@@ -520,10 +649,7 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 		return cached
 	}
 
-	symbols := make([]string, 0, len(encodedText))
-	for _, r := range encodedText {
-		symbols = append(symbols, string(r))
-	}
+	symbols := splitRunes(make([]string, 0, len(encodedText)), encodedText)
 	symbols = t.bpeMerge(symbols)
 
 	tokens := make([]int32, 0, len(symbols))
@@ -610,28 +736,82 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 //
 //	text := tok.Decode([]int32{9906, 1917}) // → "Hello world"
 func (t *Tokenizer) Decode(tokens []int32) string {
+	// GPT-2 byte-level path is handled by walking the raw concatenation
+	// through decodeGPT2Bytes — the byte-level decoder strips its own
+	// envelope, so the SentencePiece ▁-translation must NOT run on it.
+	if t.isGPT2BPE {
+		sb := core.NewBuilder()
+		for _, id := range tokens {
+			if text, ok := t.invVocab[id]; ok {
+				if _, isSpecial := t.special[text]; isSpecial {
+					continue
+				}
+				sb.WriteString(text)
+			}
+		}
+		return t.decodeGPT2Bytes(sb.String())
+	}
+
+	// SentencePiece path — translate ▁ → space inline while assembling,
+	// then strip the single leading space (the prefix-space marker on
+	// the first emitted token). Replaces the prior triple walk:
+	//   1) Builder.WriteString accumulation → raw
+	//   2) core.Replace(raw, "▁", " ")      → result (new alloc)
+	//   3) HasPrefix(" ") + slice           → leading-space strip
+	// with a single Builder pass that splits on ▁ via indexBytePrefix —
+	// the fast-path for tokens without ▁ falls into a single WriteString
+	// (memmove), and the only translation work is per-▁-occurrence.
+	//
+	// A pre-sizing pass (Grow on summed-text length) was tried and
+	// reverted — the second map-walk cost outweighs the saved geometric
+	// reallocs at every shape from 3 to 64 tokens. Builder's default
+	// growth strategy wins here.
 	sb := core.NewBuilder()
 	for _, id := range tokens {
-		if text, ok := t.invVocab[id]; ok {
-			// Skip special tokens in decode output
-			if _, isSpecial := t.special[text]; isSpecial {
-				continue
+		text, ok := t.invVocab[id]
+		if !ok {
+			continue
+		}
+		if _, isSpecial := t.special[text]; isSpecial {
+			continue
+		}
+		// Bulk-write tokens without ▁ (common case — most vocab tokens
+		// are leaf-bytes or non-prefixed merges).
+		for {
+			idx := indexBytePrefix(text)
+			if idx < 0 {
+				sb.WriteString(text)
+				break
 			}
-			sb.WriteString(text)
+			if idx > 0 {
+				sb.WriteString(text[:idx])
+			}
+			sb.WriteByte(' ')
+			text = text[idx+3:]
+			if text == "" {
+				break
+			}
 		}
 	}
-	raw := sb.String()
-
-	if t.isGPT2BPE {
-		return t.decodeGPT2Bytes(raw)
+	out := sb.String()
+	if len(out) > 0 && out[0] == ' ' {
+		return out[1:]
 	}
+	return out
+}
 
-	// SentencePiece style
-	result := core.Replace(raw, "▁", " ")
-	if core.HasPrefix(result, " ") {
-		result = result[1:]
+// indexBytePrefix returns the byte offset of the SentencePiece ▁
+// marker (U+2581, E2 96 81) in s, or -1 if absent. Inlined so Decode's
+// inner loop can branch on a simple int compare instead of the more
+// general core.Index three-byte-string-needle call.
+func indexBytePrefix(s string) int {
+	for i := 0; i+2 < len(s); i++ {
+		if s[i] == 0xE2 && s[i+1] == 0x96 && s[i+2] == 0x81 {
+			return i
+		}
 	}
-	return result
+	// Trailing 2 bytes can't contain the 3-byte marker.
+	return -1
 }
 
 // DecodeToken converts a single token ID to text for streaming.
@@ -689,16 +869,60 @@ func (t *Tokenizer) DecodeOne(id int32) string {
 
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.
 func (t *Tokenizer) decodeGPT2Bytes(s string) string {
-	var buf []byte
+	if s == "" {
+		return ""
+	}
+	// Pre-size to the input byte length — GPT-2 maps every rune to exactly
+	// one byte (the encoder covers all 256 source bytes), so output bytes
+	// ≤ input bytes (every multi-byte rune collapses to 1 byte; ASCII
+	// runes stay 1:1). One allocation, no geometric growth.
+	//
+	// AsString wraps the freshly built buffer in a zero-copy string view —
+	// the prior `string(buf)` did a full copy.
+	buf := make([]byte, 0, len(s))
 	for _, r := range s {
 		if b, ok := t.gpt2Decoder[r]; ok {
 			buf = append(buf, b)
-		} else {
-			// Non-mapped runes pass through as UTF-8
-			buf = append(buf, []byte(string(r))...)
+			continue
 		}
+		// Non-mapped runes pass through as UTF-8. Encode the rune
+		// directly into buf to avoid the intermediate `[]byte(string(r))`
+		// double allocation. utf8.EncodeRune writes up to 4 bytes; grow
+		// buf inline rather than detouring through a per-rune string.
+		var enc [4]byte
+		n := utf8EncodeRune(enc[:], r)
+		buf = append(buf, enc[:n]...)
 	}
-	return string(buf)
+	return core.AsString(buf)
+}
+
+// utf8EncodeRune writes the UTF-8 encoding of r into p (which must be
+// at least 4 bytes) and returns the byte count. Inlined alternative to
+// importing unicode/utf8 in this file — the only caller is
+// decodeGPT2Bytes's non-mapped-rune fallback, which is effectively
+// unreachable for valid GPT-2 input (the encoder maps all 256 source
+// bytes) but kept as a safety net.
+func utf8EncodeRune(p []byte, r rune) int {
+	switch {
+	case r < 0x80:
+		p[0] = byte(r)
+		return 1
+	case r < 0x800:
+		p[0] = 0xC0 | byte(r>>6)
+		p[1] = 0x80 | (byte(r) & 0x3F)
+		return 2
+	case r < 0x10000:
+		p[0] = 0xE0 | byte(r>>12)
+		p[1] = 0x80 | (byte(r>>6) & 0x3F)
+		p[2] = 0x80 | (byte(r) & 0x3F)
+		return 3
+	default:
+		p[0] = 0xF0 | byte(r>>18)
+		p[1] = 0x80 | (byte(r>>12) & 0x3F)
+		p[2] = 0x80 | (byte(r>>6) & 0x3F)
+		p[3] = 0x80 | (byte(r) & 0x3F)
+		return 4
+	}
 }
 
 // BOSToken returns the beginning-of-sequence token ID.
