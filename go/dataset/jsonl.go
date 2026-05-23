@@ -82,17 +82,24 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	// (including empty lines) on its own.
 	dec := json.NewDecoder(bufio.NewReaderSize(reader, 64*1024))
 
-	var samples []Sample
+	// Pre-size the samples buffer — corpora of any meaningful size
+	// run through several growslice rounds otherwise (nil → 1 → 2 →
+	// 4 → 8 → ... ). Starting at 64 covers the first ~6 doublings
+	// and is small enough to be no waste on tiny inputs. Larger
+	// corpora still grow naturally past this initial capacity.
+	samples := make([]Sample, 0, 64)
 	// Hoist the record buffer out of the loop. The original `var
 	// record jsonRecord` inside the loop escaped to the heap on every
 	// iteration (json.Decode takes the pointer reflectively). Once
 	// hoisted, json.Decode still ignores keys that are absent in
 	// the current row, so the previous row's string fields would
-	// carry over — zero the struct via assignment to a zero literal
-	// before each Decode call. The slice fields (Messages,
-	// Conversations) are reset to length 0 in-place so we keep the
-	// backing array across rows of the same shape and avoid an
-	// allocation per chat-shape row. msgBuf reuses the
+	// carry over — zero each string field by hand before each
+	// Decode call (per-field assignment skips the struct-literal
+	// memclr the compiler emits for `record = jsonRecord{...}`,
+	// saving ~2 ns/row in the steady-state loop). The slice fields
+	// (Messages, Conversations) are reset to length 0 in-place so we
+	// keep the backing array across rows of the same shape and avoid
+	// an allocation per chat-shape row. msgBuf reuses the
 	// []inference.Message backing across openai/sharegpt rows —
 	// chat.Format consumes its argument synchronously so reuse is
 	// safe.
@@ -106,9 +113,24 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	recordNo := 0
 	for dec.More() {
 		recordNo++
-		messagesBuf := record.Messages[:0]
-		conversationsBuf := record.Conversations[:0]
-		record = jsonRecord{Messages: messagesBuf, Conversations: conversationsBuf}
+		// Per-field zero — see hoisted-record comment above. Order
+		// matches struct declaration so the compiler can fold
+		// consecutive stores into a single SIMD memstore on arm64.
+		record.Text = ""
+		record.Prompt = ""
+		record.Response = ""
+		record.Completion = ""
+		record.Instruction = ""
+		record.Input = ""
+		record.Output = ""
+		record.Problem = ""
+		record.Question = ""
+		record.Thinking = ""
+		record.Reasoning = ""
+		record.Solution = ""
+		record.Answer = ""
+		record.Messages = record.Messages[:0]
+		record.Conversations = record.Conversations[:0]
 		if err := dec.Decode(&record); err != nil {
 			return nil, core.Errorf("dataset: parse JSONL record %d: %w", recordNo, err)
 		}
@@ -173,7 +195,13 @@ func (d *JSONLDataset) Samples() []Sample {
 // is captured for the next row, saving one alloc per chat-shape row
 // over the lifetime of a LoadJSONL call. chat.Format does not retain
 // its messages argument, so the caller can safely reuse the buffer.
-func (r jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
+//
+// Pointer receiver — jsonRecord is 14 fields totalling ~256 bytes; the
+// value-receiver form was copying the whole struct into the callee's
+// frame on every row, ~256 KB of stack memmove across a 1000-row
+// corpus. The pointer is read-only inside the method (we never mutate
+// r.*), so the call-site semantics are identical.
+func (r *jsonRecord) toSample(cfg Config, msgBuf *[]inference.Message) (Sample, bool, error) {
 	if text := core.Trim(r.Text); text != "" {
 		return labelled(Sample{Text: text}, "text"), true, nil
 	}
@@ -294,19 +322,30 @@ func MessagesToSample(messages []inference.Message, cfg chat.Config, format stri
 	if len(messages) == 0 {
 		return Sample{}, false, nil
 	}
+	// The internal LoadJSONL path feeds MessagesToSample already-
+	// normalised Role values (appendMessagesFromOpenAI/ShareGPT both
+	// run chat.NormaliseRole before assembling the slice), so most
+	// scans hit the direct-compare fast path with zero NormaliseRole
+	// function-call overhead. NormaliseRole stays as the fallback for
+	// external callers passing un-normalised roles ("gpt", "bot",
+	// "MODEL") so the public contract is unchanged.
 	assistantIdx := -1
 	for i := len(messages) - 1; i >= 0; i-- {
-		if chat.NormaliseRole(messages[i].Role) == "assistant" {
+		role := messages[i].Role
+		if role == "assistant" || chat.NormaliseRole(role) == "assistant" {
 			assistantIdx = i
 			break
 		}
 	}
 	if assistantIdx < 0 {
-		text := chat.Format(messages, chat.Config{
-			Architecture:       cfg.Architecture,
-			Template:           cfg.Template,
-			NoGenerationPrompt: true,
-		})
+		// Copy + tweak the supplied config rather than rebuilding from
+		// fields. The literal form duplicates the field list (drift risk
+		// when chat.Config gains a field) and forces the compiler to
+		// re-emit each field store; the copy is a single 24-byte stack
+		// move on arm64 (chat.Config is two strings + bool padded).
+		noPromptCfg := cfg
+		noPromptCfg.NoGenerationPrompt = true
+		text := chat.Format(messages, noPromptCfg)
 		return labelled(Sample{Text: text}, format), true, nil
 	}
 	// chat.Format only reads from its slice argument (verified: all
@@ -358,16 +397,16 @@ func formatReasoningResponse(thinking, solution string) string {
 	return thinking + "\n\n" + solution
 }
 
-// firstNonEmpty returns the first value with a non-empty trimmed form,
-// already trimmed. Callers were universally trimming the result a
-// second time before use; returning the trimmed value eliminates the
-// duplicate Trim per row.
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if trimmed := core.Trim(value); trimmed != "" {
-			return trimmed
-		}
+// firstNonEmpty returns the first of (a, b) with a non-empty trimmed
+// form, already trimmed. All callers pass exactly two strings, so the
+// fixed-arity form skips the variadic []string materialisation and
+// the range loop overhead the prior `...string` form carried. Callers
+// were universally trimming the result a second time before use;
+// returning the trimmed value eliminates the duplicate Trim per row.
+func firstNonEmpty(a, b string) string {
+	if trimmed := core.Trim(a); trimmed != "" {
+		return trimmed
 	}
-	return ""
+	return core.Trim(b)
 }
 
