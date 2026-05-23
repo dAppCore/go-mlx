@@ -55,7 +55,7 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	}
 	inspectModelPackJANG(&pack, root, &dir)
 	inspectModelPackCodebook(&pack, root, &dir)
-	inspectModelPackTokenizer(&pack, root)
+	inspectModelPackTokenizer(&pack, root, &dir)
 	// Architecture resolution happens BEFORE chat-template inspection so
 	// the latter can read pack.ArchitectureProfile directly instead of
 	// re-entering profile.LookupArchitectureProfile twice (one each for
@@ -127,19 +127,25 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 // modelPackDirIndex caches presence of the specific optional-config
 // filenames the inspect pipeline probes downstream — built from the
 // same single PathGlob the weight inspector already runs, so this is
-// opportunistic and adds no extra syscall. The index records exactly
-// the six basenames we'd otherwise ReadFile-then-IsNotExist for, in
-// fixed bool fields, so populating + querying is zero-alloc.
+// opportunistic and adds no extra syscall. The index records the seven
+// basenames we'd otherwise ReadFile-then-IsNotExist for, in fixed bool
+// fields, so populating + querying is zero-alloc.
 //
 // The `populated` flag lets callers distinguish "no listing available"
 // (single-file resolvedPath) from "listed but file absent" — the
 // former falls through to the regular ReadFile probe so semantics for
 // the single-file entry path stay unchanged.
+//
+// tokenizer.json is included so inspectModelPackTokenizer can skip a
+// ReadFile + IsNotExist round-trip when the model directory has no
+// tokenizer — the missing-tokenizer error path runs on every Inspect
+// against a partial download or weights-only pack.
 type modelPackDirIndex struct {
 	populated         bool
 	jangConfig        bool
 	codebookConfig    bool
 	tokenizerConfig   bool
+	tokenizerJSON     bool
 	chatTemplateJinja bool
 	sentenceBert      bool
 	modulesJSON       bool
@@ -149,7 +155,7 @@ type modelPackDirIndex struct {
 // pre-fetched listing. Returns true if the index is empty (no listing
 // available) so callers fall through to the existing ReadFile probe —
 // the precise root-stat is preserved in that path. The name argument
-// is one of the six recognised optional-config filenames; anything
+// is one of the seven recognised optional-config filenames; anything
 // else returns true (let the caller perform the normal probe).
 func (d *modelPackDirIndex) has(name string) bool {
 	if d == nil || !d.populated {
@@ -162,6 +168,8 @@ func (d *modelPackDirIndex) has(name string) bool {
 		return d.codebookConfig
 	case "tokenizer_config.json":
 		return d.tokenizerConfig
+	case "tokenizer.json":
+		return d.tokenizerJSON
 	case "chat_template.jinja":
 		return d.chatTemplateJinja
 	case "sentence_bert_config.json":
@@ -185,6 +193,8 @@ func (d *modelPackDirIndex) record(basename string) {
 		d.codebookConfig = true
 	case "tokenizer_config.json":
 		d.tokenizerConfig = true
+	case "tokenizer.json":
+		d.tokenizerJSON = true
 	case "chat_template.jinja":
 		d.chatTemplateJinja = true
 	case "sentence_bert_config.json":
@@ -432,8 +442,17 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 	return &cloned
 }
 
-func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
+func inspectModelPackTokenizer(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
+	// Skip the syscall + Result alloc when the directory listing the
+	// weight inspector already gathered shows no tokenizer.json — the
+	// MissingTokenizer issue path is the same shape either way, just
+	// without an open()-returns-ENOENT round trip on every Inspect of
+	// a weights-only or partial-download model pack.
+	if !dir.has("tokenizer.json") {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
+		return
+	}
 	// Single I/O round-trip: ReadFile already surfaces a stat-shaped
 	// "does not exist" via core.IsNotExist, so the prior explicit Stat
 	// was a duplicate syscall (and a duplicate Result alloc) on every
