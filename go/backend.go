@@ -670,6 +670,20 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 	return out
 }
 
+// toRootAdapterInfo shuffles an already-cloned metal AdapterInfo into the
+// root-facing lora.AdapterInfo. All four callers pass slices that the
+// metal side already cloned for caller isolation:
+//
+//   * toRootMetrics — metrics.Adapter comes from m.lastMetrics.Adapter
+//     which is assigned via metal.(*Model).Adapter() (cloneMetalAdapterInfo).
+//   * adapterFromNativeInfo + (*Model).Adapter — info.Adapter likewise
+//     comes from m.Info() → m.Adapter() which clones.
+//   * inference_contract.go — passes adapter.model.Adapter() directly.
+//
+// The previous core.SliceClone(info.TargetKeys) at this layer was a
+// redundant second clone — drops a 64 B / 1 alloc per call by sharing
+// the already-isolated slice with the root-side handle. Every Info() /
+// Metrics() / Adapter() read on a LoRA-loaded model fires this site.
 func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
 	return lora.AdapterInfo{
 		Name:       info.Name,
@@ -678,7 +692,7 @@ func toRootAdapterInfo(info metal.AdapterInfo) lora.AdapterInfo {
 		Rank:       info.Rank,
 		Alpha:      info.Alpha,
 		Scale:      info.Scale,
-		TargetKeys: core.SliceClone(info.TargetKeys),
+		TargetKeys: info.TargetKeys,
 	}
 }
 
