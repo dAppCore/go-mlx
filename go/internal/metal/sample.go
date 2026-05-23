@@ -344,6 +344,10 @@ func (k TopKSampler) Sample(logits *Array) *Array {
 	// Slice the indices beyond top-k
 	mask := SliceAxis(maskIdx, -1, int32(k), int32(lastDim))
 	Free(maskIdx)
+	// W11-R: inline the -inf scalar into PutAlongAxis via a scalar-shape
+	// FromValue; PutAlongAxis broadcasts.  Cannot collapse further without
+	// an MLX put_along_axis_scalar bridge — the FromValue cost is a single
+	// rank-0 alloc which is at floor for this op.
 	inf := FromValue(float32(math.Inf(-1)))
 	res := PutAlongAxis(logits, mask, inf, -1)
 	Free(mask, inf)
@@ -372,25 +376,26 @@ func (p TopP) Sample(logits *Array) *Array {
 
 	// Mask in sorted space: keep tokens where cumprob (excluding current) <= threshold
 	shiftedCum := Subtract(cumProbs, sortedProbs)
-	threshold := FromValue(float32(p))
-	inf := FromValue(float32(math.Inf(-1)))
-	zero := FromValue(float32(0))
 
-	gt := Greater(shiftedCum, threshold)
-	sortedMask := Where(gt, inf, zero)
-	Free(gt, inf, zero, threshold, shiftedCum, cumProbs, sortedProbs)
+	// W11-R: inline the scalar compare + scalar/scalar where into single cgo
+	// crossings.  Was 3× FromValue + Greater + Where + 3× Free; now
+	// greaterScalar + whereScalarScalar (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt := greaterScalar(shiftedCum, float32(p))
+	sortedMask := whereScalarScalar(gt, float32(math.Inf(-1)), 0)
+	Free(gt, shiftedCum, cumProbs, sortedProbs)
 
 	// Scatter mask back to original positions
 	emptyMask := Zeros(logits.Shape(), DTypeFloat32)
 	mask := PutAlongAxis(emptyMask, sortIdx, sortedMask, -1)
 	Free(emptyMask, sortIdx, sortedMask)
 
-	// Apply mask: -inf where excluded, original logit where kept
-	zeroArr := FromValue(float32(0))
-	gt0 := Greater(zeroArr, mask)
-	inf2 := FromValue(float32(math.Inf(-1)))
-	res := Where(gt0, inf2, logits)
-	Free(zeroArr, gt0, inf2, mask, probs)
+	// W11-R: replace zeroArr + Greater(zeroArr, mask) + inf2 + Where(gt0, inf2, logits)
+	// with scalarGreater + whereScalarArray (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt0 := scalarGreater(0, mask)
+	res := whereScalarArray(gt0, float32(math.Inf(-1)), logits)
+	Free(gt0, mask, probs)
 
 	return res
 }
@@ -413,10 +418,10 @@ func (p MinPSampler) Sample(logits *Array) *Array {
 	threshold := MulScalar(maxProb, float32(p))
 	Free(maxProb)
 
-	// Mask tokens below threshold
-	inf := FromValue(float32(math.Inf(-1)))
+	// W11-R: inline the scalar -inf into the where call — replaces FromValue
+	// + Where + Free(scalar) triple with a single cgo crossing.
 	gt := Greater(threshold, probs)
-	mask := Where(gt, inf, logits)
-	Free(probs, threshold, inf, gt)
+	mask := whereScalarArray(gt, float32(math.Inf(-1)), logits)
+	Free(probs, threshold, gt)
 	return mask
 }

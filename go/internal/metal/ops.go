@@ -131,6 +131,66 @@ static inline int mlx_multiply_scalar_inline(
     return rc;
 }
 
+// mlx_greater_scalar_inline collapses FromValue(scalar) + Greater(a, scalar)
+// + Free(scalar) into a single cgo crossing — used by the sampler hot path
+// (TopP threshold compare, MinP threshold compare) where the right-hand side
+// of Greater is a per-call float32 constant.
+static inline int mlx_greater_scalar_inline(
+    mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
+    mlx_array sc = mlx_array_new_float32(scalar);
+    int rc = mlx_greater(res, a, sc, s);
+    mlx_array_free(sc);
+    return rc;
+}
+
+// mlx_scalar_greater_inline = scalar > a (reversed operand order).  Used by
+// MinPSampler.Sample where the scalar threshold is the left-hand side of the
+// comparison.  Same single-cgo-crossing rationale as greater_scalar.
+static inline int mlx_scalar_greater_inline(
+    mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
+    mlx_array sc = mlx_array_new_float32(scalar);
+    int rc = mlx_greater(res, sc, a, s);
+    mlx_array_free(sc);
+    return rc;
+}
+
+// mlx_subtract_scalar_inline = a - scalar — broadcast subtract of a per-call
+// constant.  Currently unused but the symmetric of add_scalar; lands here so
+// TopP-style "shift then compare" idioms stay one-call.
+static inline int mlx_subtract_scalar_inline(
+    mlx_array* res, mlx_array a, float scalar, mlx_stream s) {
+    mlx_array sc = mlx_array_new_float32(scalar);
+    int rc = mlx_subtract(res, a, sc, s);
+    mlx_array_free(sc);
+    return rc;
+}
+
+// mlx_where_scalar_scalar_inline = where(condition, a_scalar, b_scalar) —
+// collapses the FromValue+FromValue+Where+Free×2 sequence used by TopP /
+// TopKSampler masking ("set to -inf where excluded, else 0") into a single
+// cgo crossing.  Both scalars are materialised on the C frame.
+static inline int mlx_where_scalar_scalar_inline(
+    mlx_array* res, mlx_array cond, float a_scalar, float b_scalar, mlx_stream s) {
+    mlx_array a_sc = mlx_array_new_float32(a_scalar);
+    mlx_array b_sc = mlx_array_new_float32(b_scalar);
+    int rc = mlx_where(res, cond, a_sc, b_sc, s);
+    mlx_array_free(a_sc);
+    mlx_array_free(b_sc);
+    return rc;
+}
+
+// mlx_where_scalar_array_inline = where(condition, a_scalar, b) — collapses
+// FromValue(a_scalar) + Where + Free(a_scalar) for the "mask with constant,
+// pass-through otherwise" idiom used by the final TopP / MinP mask-apply
+// step ("set to -inf where excluded, original logit otherwise").
+static inline int mlx_where_scalar_array_inline(
+    mlx_array* res, mlx_array cond, float a_scalar, mlx_array b, mlx_stream s) {
+    mlx_array a_sc = mlx_array_new_float32(a_scalar);
+    int rc = mlx_where(res, cond, a_sc, b, s);
+    mlx_array_free(a_sc);
+    return rc;
+}
+
 */
 import "C"
 
@@ -742,6 +802,53 @@ func Round(a *Array) *Array {
 func Greater(a, b *Array) *Array {
 	out := newArray("GREATER", a, b)
 	C.mlx_greater(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// greaterScalar returns element-wise a > scalar.
+//
+// Routes through mlx_greater_scalar_inline — single cgo crossing covers
+// scalar creation + comparison + scalar release.  Used by the sampler
+// per-token hot path (TopP threshold compare) where the rhs is a Go
+// float32 constant.
+func greaterScalar(a *Array, scalar float32) *Array {
+	out := newArray("GREATER_SCALAR", a)
+	C.mlx_greater_scalar_inline(&out.ctx, a.ctx, C.float(scalar), DefaultStream().ctx)
+	return out
+}
+
+// whereScalarScalar returns element-wise where(cond, a_scalar, b_scalar).
+//
+// Routes through mlx_where_scalar_scalar_inline — single cgo crossing covers
+// both scalar creations + ternary select + both scalar releases.  Used by
+// the sampler per-token hot path (TopP mask-build: -inf where excluded,
+// else 0).
+func whereScalarScalar(cond *Array, aScalar, bScalar float32) *Array {
+	out := newArray("WHERE_SCALAR_SCALAR", cond)
+	C.mlx_where_scalar_scalar_inline(&out.ctx, cond.ctx, C.float(aScalar), C.float(bScalar), DefaultStream().ctx)
+	return out
+}
+
+// whereScalarArray returns element-wise where(cond, a_scalar, b).
+//
+// Routes through mlx_where_scalar_array_inline — single cgo crossing covers
+// scalar creation + ternary select + scalar release.  Used by the sampler
+// per-token hot path (TopP / MinP mask-apply: -inf where excluded, original
+// logit otherwise).
+func whereScalarArray(cond *Array, aScalar float32, b *Array) *Array {
+	out := newArray("WHERE_SCALAR_ARRAY", cond, b)
+	C.mlx_where_scalar_array_inline(&out.ctx, cond.ctx, C.float(aScalar), b.ctx, DefaultStream().ctx)
+	return out
+}
+
+// scalarGreater returns element-wise scalar > a (reversed operand order).
+//
+// Routes through mlx_scalar_greater_inline — single cgo crossing covers
+// scalar creation + comparison + scalar release.  Used by MinPSampler
+// where the threshold scalar is the LHS of the comparison.
+func scalarGreater(scalar float32, a *Array) *Array {
+	out := newArray("SCALAR_GREATER", a)
+	C.mlx_scalar_greater_inline(&out.ctx, a.ctx, C.float(scalar), DefaultStream().ctx)
 	return out
 }
 
