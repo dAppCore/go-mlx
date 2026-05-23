@@ -1221,19 +1221,32 @@ func attentionQueryHeads(model InternalModel) int {
 	return 0
 }
 
+// repeatPenaltyScratch is a pooled []int32 buffer reused for history dedup
+// inside applyRepeatPenalty.  Sampling fires once per emitted token, so
+// recycling the dedup scratch eliminates the map+slice allocation pair on
+// the per-token hot path.  Capacity grows as needed and stays in the pool.
+var repeatPenaltyScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 0, 64)
+		return &buf
+	},
+}
+
 // applyRepeatPenalty modifies logits to discourage repeated tokens.
 // For each unique token ID in history: positive logits are divided by penalty,
 // negative logits are multiplied by penalty. Both make the token less likely.
 func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array {
-	// Deduplicate history to get unique token IDs.
-	seen := make(map[int32]bool, len(history))
-	var indices []int32
-	for _, id := range history {
-		if !seen[id] {
-			seen[id] = true
-			indices = append(indices, id)
-		}
+	// Deduplicate history via pooled scratch slice — sort + compact beats
+	// map[int32]bool for the typical history sizes (≤256 tokens) and avoids
+	// the per-call map allocation that dominated B/op.
+	scratchPtr := repeatPenaltyScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(history) {
+		scratch = make([]int32, 0, len(history))
 	}
+	scratch = append(scratch, history...)
+	slices.Sort(scratch)
+	indices := slices.Compact(scratch)
 
 	idx := FromValues(indices, 1, len(indices))
 	gathered := TakeAlongAxis(logits, idx, -1)
@@ -1251,6 +1264,11 @@ func applyRepeatPenalty(logits *Array, history []int32, penalty float32) *Array 
 
 	res := PutAlongAxis(logits, idx, penalised, -1)
 	Free(idx, gathered, zero, invPenalty, penaltyVal, penalised)
+
+	// Return the scratch buffer to the pool — FromValues has copied the
+	// indices into MLX-owned memory already.
+	*scratchPtr = scratch
+	repeatPenaltyScratch.Put(scratchPtr)
 	return res
 }
 
