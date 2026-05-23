@@ -246,12 +246,16 @@ func attachGemma4AssistantDraftToTarget(target nativeModel, draftPath string) (*
 func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4AssistantGenerateResult) decode.Result {
 	emitted := len(result.Tokens)
 	tokens := make([]decode.Token, emitted)
-	// Index iteration — the range form copied each metal.Token (ID +
-	// Text string header) into the loop var before we rebuilt the
-	// decode.Token; reading via result.Tokens[i] skips that intermediate
-	// copy when emitted is large (long generations are the hot path).
-	for i := range result.Tokens {
-		tokens[i] = decode.Token{ID: result.Tokens[i].ID, Text: result.Tokens[i].Text}
+	// Per-field assignment — the prior `decode.Token{ID, Text}` literal
+	// emitted redundant zero writes to the Value field (the struct
+	// literal zeroes every field then overwrites named ones), then a
+	// runtime.wbZero call for the string header before the write-barrier
+	// copy. makeslice already zeroes the destination, so writing only
+	// ID + Text directly skips the zero work on long generations.
+	src := result.Tokens
+	for i := range src {
+		tokens[i].ID = src[i].ID
+		tokens[i].Text = src[i].Text
 	}
 	var acceptanceRate float64
 	if result.DraftTokens > 0 {
