@@ -6,9 +6,22 @@ package metal
 
 import (
 	"math"
+	"slices"
+	"sync"
 
 	core "dappco.re/go"
 )
+
+// suppressIDsScratch is a pooled []int32 buffer reused for dedup +
+// validity-filter inside suppressTokenLogits and hostUnsuppressedGreedyToken.
+// These fire per-token when the suppression guard activates, so eliminating
+// the map[int32]bool + slice growth pair pays back across the generation.
+var suppressIDsScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 0, 64)
+		return &buf
+	},
+}
 
 // Sampler transforms logits into a sampled token index.
 //
@@ -62,18 +75,29 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 		return logits.Clone()
 	}
 	lastDim := logits.Dim(logits.NumDims() - 1)
-	valid := make([]int32, 0, len(ids))
-	seen := map[int32]bool{}
+
+	// Build the valid + deduped id set via pooled scratch — replaces
+	// per-call map[int32]bool + slice growth.  Filter pass appends only
+	// in-range non-negative ids, then sort+compact removes duplicates.
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(ids) {
+		scratch = make([]int32, 0, len(ids))
+	}
 	for _, id := range ids {
-		if id < 0 || int(id) >= lastDim || seen[id] {
+		if id < 0 || int(id) >= lastDim {
 			continue
 		}
-		seen[id] = true
-		valid = append(valid, id)
+		scratch = append(scratch, id)
 	}
-	if len(valid) == 0 {
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
 		return logits.Clone()
 	}
+	slices.Sort(scratch)
+	valid := slices.Compact(scratch)
+
 	idx := FromValues(valid, 1, len(valid))
 	inf := FromValue(float32(math.Inf(-1)))
 	if dtype := logits.Dtype(); dtype != DTypeFloat32 {
@@ -83,6 +107,10 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	}
 	res := PutAlongAxis(logits, idx, inf, -1)
 	Free(idx, inf)
+
+	// FromValues has copied valid into MLX memory, scratch is safe to recycle.
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
 	return res
 }
 
