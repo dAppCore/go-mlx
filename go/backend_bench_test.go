@@ -12,6 +12,7 @@ package mlx
 import (
 	"testing"
 
+	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/lora"
@@ -20,14 +21,15 @@ import (
 
 // Sinks defeat compiler DCE.
 var (
-	backendBenchSinkMetalCfg     metal.GenerateConfig
-	backendBenchSinkMetalSink    metal.ProbeSink
-	backendBenchSinkHint         parser.Hint
-	backendBenchSinkProbeLogits  []probe.Logit
-	backendBenchSinkProbeEvent   probe.Event
-	backendBenchSinkRootMetrics  Metrics
-	backendBenchSinkRootToken    Token
-	backendBenchSinkRootAdapter  lora.AdapterInfo
+	backendBenchSinkMetalCfg      metal.GenerateConfig
+	backendBenchSinkMetalSink     metal.ProbeSink
+	backendBenchSinkHint          parser.Hint
+	backendBenchSinkProbeLogits   []probe.Logit
+	backendBenchSinkProbeEvent    probe.Event
+	backendBenchSinkRootMetrics   Metrics
+	backendBenchSinkRootToken     Token
+	backendBenchSinkRootAdapter   lora.AdapterInfo
+	backendBenchSinkChatMessages  []metal.ChatMessage
 )
 
 // noopProbeSink is a minimal probe.Sink that drops every event — used by
@@ -245,5 +247,35 @@ func BenchmarkBackend_ToRootMetrics_Simple(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		backendBenchSinkRootMetrics = toRootMetrics(metrics)
+	}
+}
+
+// --- chatMessagesAsMetal (W10-AN) ---
+// Per-Chat call shuffler from []inference.Message to []metal.ChatMessage.
+// W10-AN replaced a make + per-message copy with a layout-guarded
+// unsafe.Slice reinterpret — the bench surfaces the cost going from
+// O(N) struct copy + 1 alloc to 0 / 0.
+
+func BenchmarkBackend_ChatMessagesAsMetal_Short(b *testing.B) {
+	messages := []inference.Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "What is the capital of France?"},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkChatMessages = chatMessagesAsMetal(messages)
+	}
+}
+
+func BenchmarkBackend_ChatMessagesAsMetal_Long(b *testing.B) {
+	messages := make([]inference.Message, 20)
+	for i := range messages {
+		messages[i] = inference.Message{Role: "user", Content: "turn"}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkChatMessages = chatMessagesAsMetal(messages)
 	}
 }
