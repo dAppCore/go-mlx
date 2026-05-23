@@ -35,6 +35,22 @@ const (
 	StoreCLI = "cli"
 )
 
+// Sentinel errors — lifted to package scope so repeated validation paths do
+// not allocate a fresh *Err on every Run() call. Messages are stable across
+// the package's lifetime; callers compare via errors.Is when discrimination
+// is needed.
+var (
+	errGenerateRequired       = core.NewError("chaptersmoke: runner requires Generate callback")
+	errCaptureRequired        = core.NewError("chaptersmoke: runner requires Capture callback")
+	errNoChapters             = core.NewError("chaptersmoke: requires at least one chapter")
+	errUnsupportedStoreKind   = core.NewError("chaptersmoke: unsupported store kind")
+	errCoreResultFailed       = core.NewError("core result failed")
+	errChapterTextEmpty       = core.NewError("chaptersmoke: chapter text is empty")
+	errChapterQuestionEmpty   = core.NewError("chaptersmoke: chapter question is empty")
+	errChapterNoBlocks        = core.NewError("chaptersmoke: wrote no KV blocks")
+	errChapterEmptyFileStore  = core.NewError("chaptersmoke: wrote empty file store")
+)
+
 // Runner is the small driver surface the chapter-smoke orchestration needs.
 // Both callbacks close over caller-supplied model state — chaptersmoke does
 // not import mlx and never sees its types directly.
@@ -122,13 +138,13 @@ func Run(ctx context.Context, runner Runner, cfg Config) (*Report, error) {
 		return nil, err
 	}
 	if runner.Generate == nil {
-		return nil, core.NewError("chaptersmoke: runner requires Generate callback")
+		return nil, errGenerateRequired
 	}
 	if runner.Capture == nil {
-		return nil, core.NewError("chaptersmoke: runner requires Capture callback")
+		return nil, errCaptureRequired
 	}
 	if len(cfg.Chapters) == 0 {
-		return nil, core.NewError("chaptersmoke: requires at least one chapter")
+		return nil, errNoChapters
 	}
 	storeDir, storePath, err := storePaths(cfg)
 	if err != nil {
@@ -164,10 +180,10 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 		BundleURI: bundleURI(index, chapter.Name),
 	}
 	if core.Trim(chapter.Text) == "" {
-		return chapterError(report, "chaptersmoke: chapter text is empty")
+		return chapterFault(report, errChapterTextEmpty)
 	}
 	if core.Trim(chapter.Question) == "" {
-		return chapterError(report, "chaptersmoke: chapter question is empty")
+		return chapterFault(report, errChapterQuestionEmpty)
 	}
 
 	store, err := openWriteStore(ctx, cfg, report.StorePath, index)
@@ -200,10 +216,10 @@ func runChapter(ctx context.Context, runner Runner, cfg Config, storePath string
 	report.StoreBytes = fileSize(report.StorePath)
 	report.PrefixTokensRestored = bundle.TokenCount
 	if report.TotalBlocks == 0 {
-		return chapterError(report, "chaptersmoke: wrote no KV blocks")
+		return chapterFault(report, errChapterNoBlocks)
 	}
 	if report.StoreBytes <= 0 {
-		return chapterError(report, "chaptersmoke: wrote empty file store")
+		return chapterFault(report, errChapterEmptyFileStore)
 	}
 
 	reopenStart := time.Now()
@@ -379,7 +395,7 @@ func validateStoreKind(kind string) error {
 	case StoreFileLog, StoreCLI:
 		return nil
 	default:
-		return core.NewError("chaptersmoke: unsupported store kind")
+		return errUnsupportedStoreKind
 	}
 }
 
@@ -417,6 +433,15 @@ func answerPlausible(answer string, expected []string) bool {
 func chapterError(report ChapterReport, message string) (ChapterReport, error) {
 	report.Error = message
 	return report, core.NewError(message)
+}
+
+// chapterFault is the sentinel-friendly sibling of chapterError. Callers
+// pass a pre-built error (typically a lifted package-level sentinel) and
+// chapterFault writes its message into the report without a second *Err
+// allocation.
+func chapterFault(report ChapterReport, err error) (ChapterReport, error) {
+	report.Error = err.Error()
+	return report, err
 }
 
 func chapterName(index int, name string) string {
@@ -576,7 +601,7 @@ func resultError(result core.Result) error {
 	if err, ok := result.Value.(error); ok {
 		return err
 	}
-	return core.NewError("core result failed")
+	return errCoreResultFailed
 }
 
 type countingStore struct {
