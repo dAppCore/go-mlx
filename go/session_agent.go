@@ -769,30 +769,60 @@ func agentMemoryMetadataFromInference(req inference.AgentMemorySleepRequest) map
 		// idle-keepalive request shape).
 		return cloneStringMap(req.Metadata)
 	}
-	meta := req.Metadata
-	if meta == nil {
-		meta = make(map[string]string, extras)
-	} else {
-		dst := make(map[string]string, len(req.Metadata)+extras)
-		for k, v := range req.Metadata {
-			dst[k] = v
+	// Fast path: no user-supplied metadata. Every adapter/runtime key is
+	// fresh, so the addAgentMemoryMetadata 'meta[key] == ""' idempotence
+	// read is wasted work — direct writes shave one map-probe per non-
+	// empty field. Trim safety still applies via the pre-check; the
+	// counting loop above already filtered empty values out of extras.
+	if req.Metadata == nil {
+		meta := make(map[string]string, extras)
+		if v := req.Adapter.Hash; v != "" {
+			meta["adapter_hash"] = v
 		}
-		meta = dst
+		if v := req.Adapter.Path; v != "" {
+			meta["adapter_path"] = v
+		}
+		if v := req.Adapter.Format; v != "" {
+			meta["adapter_format"] = v
+		}
+		if req.Adapter.Rank != 0 {
+			meta["adapter_rank"] = strconv.Itoa(req.Adapter.Rank)
+		}
+		if req.Adapter.Alpha != 0 {
+			meta["adapter_alpha"] = strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32)
+		}
+		if v := req.Runtime.Backend; v != "" {
+			meta["runtime_backend"] = v
+		}
+		if v := req.Runtime.Device; v != "" {
+			meta["runtime_device"] = v
+		}
+		if v := req.Runtime.CacheMode; v != "" {
+			meta["runtime_cache_mode"] = v
+		}
+		if v := req.Runtime.Version; v != "" {
+			meta["runtime_version"] = v
+		}
+		return meta
 	}
-	meta = addAgentMemoryMetadata(meta, "adapter_hash", req.Adapter.Hash)
-	meta = addAgentMemoryMetadata(meta, "adapter_path", req.Adapter.Path)
-	meta = addAgentMemoryMetadata(meta, "adapter_format", req.Adapter.Format)
+	dst := make(map[string]string, len(req.Metadata)+extras)
+	for k, v := range req.Metadata {
+		dst[k] = v
+	}
+	dst = addAgentMemoryMetadata(dst, "adapter_hash", req.Adapter.Hash)
+	dst = addAgentMemoryMetadata(dst, "adapter_path", req.Adapter.Path)
+	dst = addAgentMemoryMetadata(dst, "adapter_format", req.Adapter.Format)
 	if req.Adapter.Rank != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
+		dst = addAgentMemoryMetadata(dst, "adapter_rank", strconv.Itoa(req.Adapter.Rank))
 	}
 	if req.Adapter.Alpha != 0 {
-		meta = addAgentMemoryMetadata(meta, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
+		dst = addAgentMemoryMetadata(dst, "adapter_alpha", strconv.FormatFloat(float64(req.Adapter.Alpha), 'g', -1, 32))
 	}
-	meta = addAgentMemoryMetadata(meta, "runtime_backend", req.Runtime.Backend)
-	meta = addAgentMemoryMetadata(meta, "runtime_device", req.Runtime.Device)
-	meta = addAgentMemoryMetadata(meta, "runtime_cache_mode", req.Runtime.CacheMode)
-	meta = addAgentMemoryMetadata(meta, "runtime_version", req.Runtime.Version)
-	return meta
+	dst = addAgentMemoryMetadata(dst, "runtime_backend", req.Runtime.Backend)
+	dst = addAgentMemoryMetadata(dst, "runtime_device", req.Runtime.Device)
+	dst = addAgentMemoryMetadata(dst, "runtime_cache_mode", req.Runtime.CacheMode)
+	dst = addAgentMemoryMetadata(dst, "runtime_version", req.Runtime.Version)
+	return dst
 }
 
 func addAgentMemoryMetadata(meta map[string]string, key, value string) map[string]string {
