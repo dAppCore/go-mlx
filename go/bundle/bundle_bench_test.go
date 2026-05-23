@@ -350,6 +350,42 @@ func BenchmarkBundle_FileHash_64KB(b *testing.B) {
 	}
 }
 
+// 1MB — representative tokenizer.json (tokenizer + chat-template + merges).
+func BenchmarkBundle_FileHash_1MB(b *testing.B) {
+	path := core.JoinPath(b.TempDir(), "file.bin")
+	data := make([]byte, 1024*1024)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if r := core.WriteFile(path, data, 0o644); !r.OK {
+		b.Fatalf("WriteFile: %v", r.Value)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkString, bundleSinkErr = FileHash(path)
+	}
+}
+
+// 10MB — representative LoRA adapter shard / large vocab tokenizer.
+// (100MB scale gated behind the 1MB bench because hash bandwidth is
+// linear past this point — alloc-side win flattens by 1MB.)
+func BenchmarkBundle_FileHash_10MB(b *testing.B) {
+	path := core.JoinPath(b.TempDir(), "file.bin")
+	data := make([]byte, 10*1024*1024)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if r := core.WriteFile(path, data, 0o644); !r.OK {
+		b.Fatalf("WriteFile: %v", r.Value)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkString, bundleSinkErr = FileHash(path)
+	}
+}
+
 // --- SAMIFromKV — visualisation summary, runs per New + per dashboard tick ---
 
 func BenchmarkBundle_SAMIFromKV_512Tokens(b *testing.B) {
