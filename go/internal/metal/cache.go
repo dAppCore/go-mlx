@@ -904,11 +904,14 @@ type PagedKVCache struct {
 	visibleOwnedScratch []*Array
 	// Scratch buffers for K/V shape readouts — Dim() into these from inside
 	// appendPagesPrealloc/Concat instead of calling Shape() which allocates a
-	// new []int32 every time.  The slices are passed down to helpers within
-	// the same call frame (canAppendToLastPage, append* helpers, cachePageView)
-	// and never retained beyond the Update.
-	kShapeScratch []int32
-	vShapeScratch []int32
+	// new []int32 every time.  Backed by fixed [4]int32 arrays embedded in
+	// the cache struct — kShapeScratchArr[:] yields a slice referencing the
+	// field directly, eliminating the per-cache []int32 heap allocation.
+	// (rank 4 is the only KV-cache shape rank in use.)  The slices are
+	// passed down to helpers within the same call frame (canAppendToLastPage,
+	// append* helpers, cachePageView) and never retained beyond the Update.
+	kShapeScratchArr [4]int32
+	vShapeScratchArr [4]int32
 	materializedLength  int
 	storageDType        DType
 	hasStorageDType     bool
@@ -1196,8 +1199,8 @@ func (c *PagedKVCache) Reset() {
 	c.visibleKScratch = nil
 	c.visibleVScratch = nil
 	c.visibleOwnedScratch = nil
-	c.kShapeScratch = nil
-	c.vShapeScratch = nil
+	// kShapeScratchArr / vShapeScratchArr are fixed [4]int32 arrays — no
+	// nil-out needed (their slots get overwritten on next populateShapeScratch).
 	c.preallocStorage = false
 	c.offset = 0
 	c.length = 0
@@ -1370,25 +1373,19 @@ func (c *PagedKVCache) populateShapeScratch(k, v *Array) (kShape, vShape []int32
 	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return nil, nil, false
 	}
-	if cap(c.kShapeScratch) < 4 {
-		c.kShapeScratch = make([]int32, 4)
-	} else {
-		c.kShapeScratch = c.kShapeScratch[:4]
-	}
-	if cap(c.vShapeScratch) < 4 {
-		c.vShapeScratch = make([]int32, 4)
-	} else {
-		c.vShapeScratch = c.vShapeScratch[:4]
-	}
-	c.kShapeScratch[0] = int32(k.Dim(0))
-	c.kShapeScratch[1] = int32(k.Dim(1))
-	c.kShapeScratch[2] = int32(k.Dim(2))
-	c.kShapeScratch[3] = int32(k.Dim(3))
-	c.vShapeScratch[0] = int32(v.Dim(0))
-	c.vShapeScratch[1] = int32(v.Dim(1))
-	c.vShapeScratch[2] = int32(v.Dim(2))
-	c.vShapeScratch[3] = int32(v.Dim(3))
-	return c.kShapeScratch, c.vShapeScratch, true
+	// Per-field assignment into the embedded [4]int32 array — no heap alloc
+	// on the cold path (the slice header is on the stack and points at the
+	// cache field).  Avoids the runtime.wbZero overhead a struct-literal
+	// assignment would pay.
+	c.kShapeScratchArr[0] = int32(k.Dim(0))
+	c.kShapeScratchArr[1] = int32(k.Dim(1))
+	c.kShapeScratchArr[2] = int32(k.Dim(2))
+	c.kShapeScratchArr[3] = int32(k.Dim(3))
+	c.vShapeScratchArr[0] = int32(v.Dim(0))
+	c.vShapeScratchArr[1] = int32(v.Dim(1))
+	c.vShapeScratchArr[2] = int32(v.Dim(2))
+	c.vShapeScratchArr[3] = int32(v.Dim(3))
+	return c.kShapeScratchArr[:], c.vShapeScratchArr[:], true
 }
 
 func (c *PagedKVCache) canAppendToLastPage(kShape, vShape []int32) bool {
