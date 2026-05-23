@@ -176,6 +176,13 @@ const (
 	defaultLocalContextLength   = 131072
 	defaultLocalParallelSlots   = 1
 	defaultPromptCacheMinTokens = 2048
+	// planNotesPresizedCap is the headroom NewPlan reserves on
+	// plan.Notes when a Pack/ModelInfo is supplied. The hottest plans
+	// emit 1-4 notes (context cap, model-quant warning, architecture
+	// hint, MoE residency, optional JANGTQ note). Reserving 4 fits the
+	// common case in a single 64-byte slice backing array and saves
+	// 1-2 slice-grow allocs per plan.
+	planNotesPresizedCap = 4
 )
 
 // NewPlan chooses opinionated local inference settings from measured memory.
@@ -188,7 +195,12 @@ func NewPlan(input Input) Plan {
 		workingSet = deviceMemory
 	}
 	class := classForBytes(deviceMemory)
-	plan := baseClassPlan(class)
+	// Copy the matching pre-built per-class baseline. The previous
+	// fillBaseClassPlan(*Plan, Class) shape paid for both a 480-byte
+	// stack zero-init AND ~8 individual field writes per call; here
+	// a single memcpy from a compile-time-resolved global gives the
+	// runtime the freedom to SIMD-copy the whole struct in one shot.
+	plan := classDefaultPlans[classBaselineIndex(class)]
 	plan.MachineClass = class
 	plan.Architecture = input.Device.Architecture
 	plan.DeviceMemoryBytes = deviceMemory
@@ -198,6 +210,23 @@ func NewPlan(input Input) Plan {
 	plan.WiredLimitBytes = percentBytes(workingSet, 75)
 
 	modelContext, modelQuant, modelQuantType, modelQuantFamily, modelArchitecture, modelWeightBytes := modelHints(input)
+	// Pre-size the Notes slice once when a Pack is supplied with an
+	// architecture string — that is the path through applyArchitectureHints
+	// + applyGenericMoEResidency + (possibly) applyQuantizationHints that
+	// emits 2-3 notes per plan on top of the optional context-cap +
+	// model-quant warning. Pre-sizing collapses the slice-grow chain
+	// (cap 1 → 2 → 4) into a single 4-element backing array, saving 1-2
+	// grow allocs per Pack plan and pushing MiniMax M2 + Qwen3-MoE
+	// plans down a full tier in alloc count.
+	//
+	// ModelInfo-only with architecture is left on the natural path —
+	// it typically emits a single architecture note (no MoE/JANGTQ/etc),
+	// and a 4-cap pre-allocation would be ~3x oversized for one entry.
+	// No-Pack/no-ModelInfo plans (the cold-start NoPack benches) stay
+	// at zero allocs as before.
+	if input.Pack != nil && input.Pack.Architecture != "" {
+		plan.Notes = make([]string, 0, planNotesPresizedCap)
+	}
 	if modelContext > 0 && modelContext < plan.ContextLength {
 		plan.ContextLength = modelContext
 		plan.Notes = append(plan.Notes, "context capped by model metadata")
@@ -251,7 +280,11 @@ func NewPlan(input Input) Plan {
 			hintsPtr = packPtr
 		}
 	}
-	if hintsPtr == nil {
+	// Skip the lookups entirely when both architecture strings are
+	// empty — NoPack/Device-only plans have no architecture to look
+	// up and the registry would return (nil, false) for empty input
+	// anyway. Saves two function calls per cold-start plan.
+	if hintsPtr == nil && hintsArch != "" {
 		if hintsProfile, hintsFound := profile.LookupArchitectureProfileRef(hintsArch); hintsFound {
 			hintsPtr = hintsProfile
 			if packArch == hintsArch {
@@ -259,7 +292,7 @@ func NewPlan(input Input) Plan {
 			}
 		}
 	}
-	if packPtr == nil && packArch != hintsArch {
+	if packPtr == nil && packArch != hintsArch && packArch != "" {
 		if packProfile, ok := profile.LookupArchitectureProfileRef(packArch); ok {
 			packPtr = packProfile
 		}
@@ -310,94 +343,126 @@ func classForBytes(bytes uint64) Class {
 	}
 }
 
-func baseClassPlan(class Class) Plan {
+// classDefaultPlans holds the immutable per-Class baseline used by
+// NewPlan. Each entry carries only the class-specific fields; every
+// other Plan field stays at its zero value. NewPlan dereferences the
+// matching entry and copies it into the caller's local — one memcpy
+// of 480 bytes is faster than the previous in-place fill (which paid
+// for the zero-init AND ~8 ordinary field writes per call) because
+// the runtime can use unrolled SIMD memcpy and the source is a
+// compile-time-resolved global.
+//
+// All populated classes use KVCacheRotating; the Unknown/default
+// fallback also lives here so the lookup never misses.
+var classDefaultPlans = [...]Plan{
+	indexClassApple16GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         8192,
+		CacheMode:             KVCacheModeKQ8VQ4,
+		BatchSize:             1,
+		PrefillChunkSize:      512,
+		ParallelSlots:         1,
+		PreferredQuantization: 4,
+	},
+	indexClassApple24GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         16384,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      768,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  4096,
+		PreferredQuantization: 4,
+	},
+	indexClassApple32GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         32768,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      1024,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  4096,
+		PreferredQuantization: 4,
+	},
+	indexClassApple64GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         65536,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             2,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         1,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 4,
+	},
+	indexClassApple96GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             4,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         2,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 8,
+	},
+	indexClassApple128GB: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModePaged,
+		BatchSize:             6,
+		PrefillChunkSize:      4096,
+		ParallelSlots:         2,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 8,
+	},
+	indexClassUnknown: {
+		CachePolicy:           KVCacheRotating,
+		ContextLength:         defaultLocalContextLength,
+		CacheMode:             KVCacheModeQ8,
+		BatchSize:             1,
+		PrefillChunkSize:      1024,
+		ParallelSlots:         defaultLocalParallelSlots,
+		PromptCache:           true,
+		PromptCacheMinTokens:  defaultPromptCacheMinTokens,
+		PreferredQuantization: 4,
+	},
+}
+
+// classBaselineIndex maps a Class to its slot in classDefaultPlans.
+// Inlined into NewPlan so the lookup is a single switch + array
+// index (~3 ns) instead of a function call plus per-field-write.
+func classBaselineIndex(class Class) int {
 	switch class {
 	case ClassApple16GB:
-		return Plan{
-			ContextLength:         8192,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeKQ8VQ4,
-			BatchSize:             1,
-			PrefillChunkSize:      512,
-			ParallelSlots:         1,
-			PromptCache:           false,
-			PromptCacheMinTokens:  0,
-			PreferredQuantization: 4,
-		}
+		return indexClassApple16GB
 	case ClassApple24GB:
-		return Plan{
-			ContextLength:         16384,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      768,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
+		return indexClassApple24GB
 	case ClassApple32GB:
-		return Plan{
-			ContextLength:         32768,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  4096,
-			PreferredQuantization: 4,
-		}
+		return indexClassApple32GB
 	case ClassApple64GB:
-		return Plan{
-			ContextLength:         65536,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             2,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         1,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
+		return indexClassApple64GB
 	case ClassApple96GB:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             4,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
+		return indexClassApple96GB
 	case ClassApple128GB:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModePaged,
-			BatchSize:             6,
-			PrefillChunkSize:      4096,
-			ParallelSlots:         2,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 8,
-		}
+		return indexClassApple128GB
 	default:
-		return Plan{
-			ContextLength:         defaultLocalContextLength,
-			CachePolicy:           KVCacheRotating,
-			CacheMode:             KVCacheModeQ8,
-			BatchSize:             1,
-			PrefillChunkSize:      1024,
-			ParallelSlots:         defaultLocalParallelSlots,
-			PromptCache:           true,
-			PromptCacheMinTokens:  defaultPromptCacheMinTokens,
-			PreferredQuantization: 4,
-		}
+		return indexClassUnknown
 	}
 }
+
+const (
+	indexClassApple16GB = iota
+	indexClassApple24GB
+	indexClassApple32GB
+	indexClassApple64GB
+	indexClassApple96GB
+	indexClassApple128GB
+	indexClassUnknown
+)
 
 func estimateKVCacheBytes(plan Plan, input Input, mode KVCacheMode) uint64 {
 	return estimateKVCacheBytesWithProfile(plan, input, mode, nil)
@@ -495,7 +560,11 @@ func applyArchitectureHints(plan *Plan, architecture string, profileHint *profil
 	var normalized string
 	if profileHint != nil {
 		normalized = profileHint.ID
-	} else {
+	} else if architecture != "" {
+		// Empty architecture short-circuit — NoPack plans hit this
+		// path with arch="" on every call. Avoid the normalize jump
+		// for a guaranteed-empty result, which would no-op through the
+		// switch anyway.
 		normalized = normalizeKnownArchitecture(architecture)
 	}
 	switch normalized {
@@ -649,11 +718,14 @@ func applyGenericMoEResidency(plan *Plan, pack *mp.ModelPack, profileHint *profi
 	if profileHint == nil || !profileHint.MoE {
 		return
 	}
-	p := *profileHint
+	// Reach through the pointer for the single field we use rather
+	// than copying the whole 200-byte ModelArchitectureProfile struct
+	// onto the stack for one string read. The Plan-bound ID field is
+	// just the architecture name, not a clone of the profile.
 	plan.ExpertResidency = ExpertResidencyPlan{
 		Enabled:                 true,
 		Mode:                    ExpertResidencyModeLazy,
-		Architecture:            p.ID,
+		Architecture:            profileHint.ID,
 		MaxResidentExperts:      genericMoEResidentExpertLimit(plan.MachineClass),
 		PageInBatchSize:         1,
 		EvictionPolicy:          ExpertEvictionLRU,

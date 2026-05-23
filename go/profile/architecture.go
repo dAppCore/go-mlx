@@ -81,6 +81,22 @@ func LookupArchitectureProfile(value string) (ModelArchitectureProfile, bool) {
 // clone is pure overhead. Callers that need to mutate the result
 // must use LookupArchitectureProfile.
 func LookupArchitectureProfileRef(value string) (*ModelArchitectureProfile, bool) {
+	if value == "" {
+		return nil, false
+	}
+	// Fast path — most hot-path callers (memory.NewPlan with a
+	// caller-managed Pack.Architecture, planFit walking pre-resolved
+	// architecture IDs, model/pack inspectors using normalised IDs)
+	// pass strings that are already canonical and registered in the
+	// index. Probe the index directly first; on a hit we skip the full
+	// ArchitectureID pipeline (Trim + transformersName scan + normalize
+	// + compact), which spends 1-2 allocs canonicalising strings that
+	// are already canonical. On a miss, fall through to the full
+	// resolver so caps/dashes/dots/Transformers-name variants still
+	// resolve correctly.
+	if idx, ok := builtinArchitectureProfileIndex[value]; ok {
+		return &builtinArchitectureProfilesData[idx], true
+	}
 	id := ArchitectureID(value)
 	if id == "" {
 		return nil, false
