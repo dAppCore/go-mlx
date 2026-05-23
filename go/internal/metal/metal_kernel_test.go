@@ -986,6 +986,62 @@ out[elem] = a[elem] + b[elem];`
 	}
 }
 
+// TestMetalKernel_DispatchOne_Parity_Good verifies the DispatchOne fast path
+// returns bit-identical results to the ApplyOne+cfg sequence for a
+// single-output kernel.  Guards against the inline-C dispatch_one wrapper
+// diverging from the cfg-driven dispatch sequence (config_new + set_grid +
+// set_thread_group + add_output_arg + apply + config_free).
+func TestMetalKernel_DispatchOne_Parity_Good(t *testing.T) {
+	coverageTokens := "MetalKernel DispatchOne parity"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	source := `uint elem = thread_position_in_grid.x;
+out[elem] = a[elem] + b[elem];`
+
+	kernel := NewMetalKernel("test_dispatch_one_parity", []string{"a", "b"}, []string{"out"}, source, "", true, false)
+	defer kernel.Free()
+
+	a := FromValues([]float32{1, 2, 3, 4, 5, 6, 7, 8}, 8)
+	b := FromValues([]float32{10, 20, 30, 40, 50, 60, 70, 80}, 8)
+	defer Free(a, b)
+	Materialize(a, b)
+
+	// ApplyOne path (the previous-best dispatch).
+	cfg := NewMetalKernelConfig()
+	defer cfg.Free()
+	cfg.SetGrid(a.Size(), 1, 1)
+	cfg.SetThreadGroup(256, 1, 1)
+	cfg.AddOutputArg(a.Shape(), a.Dtype())
+
+	prev, err := kernel.ApplyOne(cfg, a, b)
+	if err != nil {
+		t.Fatalf("ApplyOne failed: %v", err)
+	}
+	defer Free(prev)
+	Materialize(prev)
+	applyOneOut := prev.Floats()
+
+	// DispatchOne path — no cfg ceremony, all C-side.
+	out, err := kernel.DispatchOne(MetalKernelGrid{GridX: a.Size(), GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+		a.Shape(), a.Dtype(), a, b)
+	if err != nil {
+		t.Fatalf("DispatchOne failed: %v", err)
+	}
+	defer Free(out)
+	Materialize(out)
+	dispatchOneOut := out.Floats()
+
+	if len(dispatchOneOut) != len(applyOneOut) {
+		t.Fatalf("length mismatch: DispatchOne=%d, ApplyOne=%d", len(dispatchOneOut), len(applyOneOut))
+	}
+	for i := range dispatchOneOut {
+		if dispatchOneOut[i] != applyOneOut[i] {
+			t.Errorf("[%d] DispatchOne=%g ApplyOne=%g (bit-exact mismatch)", i, dispatchOneOut[i], applyOneOut[i])
+		}
+	}
+}
+
 // TestMetalKernel_ApplyOne_MultiOutput_Bad confirms ApplyOne rejects kernels
 // that emit more than one output rather than silently dropping the rest.
 func TestMetalKernel_ApplyOne_MultiOutput_Bad(t *testing.T) {

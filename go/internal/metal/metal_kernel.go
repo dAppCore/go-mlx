@@ -71,6 +71,55 @@ static inline int mlx_fast_metal_kernel_apply_one_inline(
     }
     return 0;
 }
+
+// mlx_fast_metal_kernel_dispatch_one_inline collapses the entire kernel
+// dispatch — fresh config creation, grid + thread-group + single output-arg
+// configuration, apply + single-output extract, config free — into a single
+// cgo crossing.  Every production single-output MetalKernel caller in this
+// package follows the same pattern (fresh cfg per call, no reuse): 6 cgo
+// crossings (config_new + set_grid + set_thread_group + add_output_arg +
+// apply + config_free) collapse into 1.
+//
+// shape_in must point to an int32 array (in Go terms []int32 / []C.int32_t);
+// shape_num is its length.  shape_buf is materialised on the C stack from
+// shape_in to convert int32 → int as MLX's add_output_arg expects.  shape_num
+// is bounded by the metal-kernel rank cap (8); larger ranks reject early on
+// the Go side.
+static inline int mlx_fast_metal_kernel_dispatch_one_inline(
+    mlx_array* out, size_t* count, mlx_vector_array* res,
+    mlx_fast_metal_kernel kernel,
+    int grid_x, int grid_y, int grid_z,
+    int tg_x, int tg_y, int tg_z,
+    const int32_t* shape_in, size_t shape_num, mlx_dtype dtype,
+    const mlx_array* inputs, size_t input_num,
+    mlx_stream s) {
+    mlx_fast_metal_kernel_config cfg = mlx_fast_metal_kernel_config_new();
+    mlx_fast_metal_kernel_config_set_grid(cfg, grid_x, grid_y, grid_z);
+    mlx_fast_metal_kernel_config_set_thread_group(cfg, tg_x, tg_y, tg_z);
+    if (shape_num == 0) {
+        mlx_fast_metal_kernel_config_add_output_arg(cfg, NULL, 0, dtype);
+    } else {
+        int shape_buf[8];
+        for (size_t i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
+        mlx_fast_metal_kernel_config_add_output_arg(cfg, shape_buf, shape_num, dtype);
+    }
+    mlx_vector_array inputVec = mlx_vector_array_new();
+    for (size_t i = 0; i < input_num; ++i) {
+        mlx_vector_array_append_value(inputVec, inputs[i]);
+    }
+    int rc = mlx_fast_metal_kernel_apply(res, kernel, inputVec, cfg, s);
+    mlx_vector_array_free(inputVec);
+    mlx_fast_metal_kernel_config_free(cfg);
+    if (rc != 0) {
+        *count = 0;
+        return rc;
+    }
+    *count = mlx_vector_array_size(*res);
+    if (*count == 1) {
+        mlx_vector_array_get(out, *res, 0);
+    }
+    return 0;
+}
 */
 import "C"
 
@@ -298,6 +347,107 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		results[i] = out
 	}
 	return results, nil
+}
+
+// metalKernelGrid bundles grid + thread-group dimensions for the
+// DispatchOne fast path.  Pairing the six ints keeps the call signature
+// readable and prevents accidental swap between the two triples.
+//
+//	g := metal.MetalKernelGrid{GridX: n, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1}
+type MetalKernelGrid struct {
+	GridX, GridY, GridZ int
+	TGX, TGY, TGZ       int
+}
+
+// DispatchOne is the all-in-one single-output dispatch path that obsoletes
+// the (NewMetalKernelConfig + SetGrid + SetThreadGroup + AddOutputArg +
+// ApplyOne + cfg.Free) call sequence.  Every single-output MetalKernel caller
+// in this package follows the same pattern of a fresh cfg per call with no
+// reuse; DispatchOne collapses the entire dispatch into a single cgo
+// crossing via mlx_fast_metal_kernel_dispatch_one_inline.
+//
+// The MetalKernelConfig Go wrapper escapes to heap on every NewMetalKernelConfig
+// call (the SetFinalizer triple plus the embedded C handle force it onto the
+// heap regardless of escape analysis).  DispatchOne removes the wrapper
+// entirely from the per-call path — the C config handle is born and freed
+// inside the inline wrapper, leaving zero Go-side allocs on the dispatch frame.
+//
+// Per-call cgo savings on the expert_id_matvec hot path (5 inputs, 1 output):
+//   Before DispatchOne: 7 crossings (config_new, set_grid, set_thread_group,
+//     add_output_arg, apply_one_inline, free, holder free)
+//   After DispatchOne:  2 crossings (dispatch_one_inline, holder free)
+//
+//	out, err := kernel.DispatchOne(metal.MetalKernelGrid{GridX: n, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
+//	    outShape, metal.DTypeFloat32, input, weight, scales, biases, expertIDs)
+func (k *MetalKernel) DispatchOne(g MetalKernelGrid, outShape []int32, dtype DType, inputs ...*Array) (*Array, error) {
+	if k == nil || k.ctx.ctx == nil {
+		return nil, core.E("mlx.MetalKernel.DispatchOne", "kernel handle is nil", nil)
+	}
+	if len(outShape) > maxTensorRank {
+		return nil, core.E("mlx.MetalKernel.DispatchOne",
+			core.Sprintf("output shape rank %d exceeds maxTensorRank %d", len(outShape), maxTensorRank), nil)
+	}
+	for i, a := range inputs {
+		if a == nil || !a.Valid() {
+			return nil, core.E("mlx.MetalKernel.DispatchOne", core.Sprintf("input %d handle is nil", i), nil)
+		}
+	}
+
+	holder := metalKernelOutputVecPool.Get().(*metalKernelOutputVecHolder)
+	defer func() {
+		C.mlx_vector_array_free(holder.vec)
+		holder.vec.ctx = nil
+		metalKernelOutputVecPool.Put(holder)
+	}()
+
+	var inputsPtr *C.mlx_array
+	var bufPtr *[]C.mlx_array
+	nInputs := len(inputs)
+	if nInputs > 0 {
+		if nInputs <= metalKernelInputScratchRank {
+			bufPtr = metalKernelInputScratch.Get().(*[]C.mlx_array)
+			buf := (*bufPtr)[:nInputs]
+			for i, a := range inputs {
+				buf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&buf[0]))
+		} else {
+			heapBuf := make([]C.mlx_array, nInputs)
+			for i, a := range inputs {
+				heapBuf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&heapBuf[0]))
+		}
+	}
+
+	var shapePtr *C.int32_t
+	if len(outShape) > 0 {
+		shapePtr = (*C.int32_t)(unsafe.Pointer(&outShape[0]))
+	}
+
+	out := newArray("METAL_KERNEL")
+	rc := C.mlx_fast_metal_kernel_dispatch_one_inline(
+		&out.ctx, &holder.count, &holder.vec, k.ctx,
+		C.int(g.GridX), C.int(g.GridY), C.int(g.GridZ),
+		C.int(g.TGX), C.int(g.TGY), C.int(g.TGZ),
+		shapePtr, C.size_t(len(outShape)), C.mlx_dtype(dtype),
+		inputsPtr, C.size_t(nInputs),
+		DefaultStream().ctx,
+	)
+	if bufPtr != nil {
+		metalKernelInputScratch.Put(bufPtr)
+	}
+	if rc != 0 {
+		if err := lastError(); err != nil {
+			return nil, err
+		}
+		return nil, core.E("mlx.MetalKernel.DispatchOne", core.Sprintf("kernel apply failed (rc=%d)", rc), nil)
+	}
+	if holder.count != 1 {
+		return nil, core.E("mlx.MetalKernel.DispatchOne",
+			core.Sprintf("expected 1 output, got %d", int(holder.count)), nil)
+	}
+	return out, nil
 }
 
 // ApplyOne is the single-output fast path for MetalKernel.Apply.  Returns the
