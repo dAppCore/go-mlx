@@ -9,10 +9,17 @@ package metal
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
 
-extern void goPinnedRawArrayRelease(void* payload);
+// Bridge between mlx's void*-payload dtor contract and our uintptr_t
+// identifier scheme — payload is a synthetic id (not a Go pointer), so
+// we keep it as uintptr_t everywhere the Go runtime can see it and only
+// widen to void* inside C where it satisfies mlx's signature. This is
+// the same pattern runtime/cgo.Handle uses, and it keeps the Go side
+// free of `unsafe.Pointer(uintptr)` conversions that trip `go vet`'s
+// unsafeptr check.
+extern void goPinnedRawArrayRelease(uintptr_t payload);
 
 static void go_pinned_raw_array_release(void* payload) {
-	goPinnedRawArrayRelease(payload);
+	goPinnedRawArrayRelease((uintptr_t)payload);
 }
 
 typedef void (*go_pinned_raw_array_release_fn)(void*);
@@ -32,7 +39,7 @@ mlx_array go_mlx_array_new_pinned_strided_data(
 	size_t view_offset,
 	mlx_dtype dtype,
 	mlx_stream stream,
-	void* payload,
+	uintptr_t payload,
 	void (*dtor)(void*));
 */
 import "C"
@@ -106,7 +113,7 @@ func unregisterPinnedRawArray(id uintptr) {
 }
 
 //export goPinnedRawArrayRelease
-func goPinnedRawArrayRelease(payload unsafe.Pointer) {
+func goPinnedRawArrayRelease(payload C.uintptr_t) {
 	unregisterPinnedRawArray(uintptr(payload))
 }
 
@@ -181,7 +188,7 @@ func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewSt
 		C.size_t(viewOffset),
 		C.mlx_dtype(dtype),
 		DefaultStream().ctx,
-		unsafe.Pointer(id),
+		C.uintptr_t(id),
 		C.go_pinned_raw_array_release_ptr(),
 	)
 	if array.ctx.ctx == nil {
