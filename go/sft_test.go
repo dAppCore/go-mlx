@@ -45,9 +45,12 @@ func (t fakeSFTTokenizer) TokenID(text string) (int32, bool) {
 }
 
 func (t fakeSFTTokenizer) IDToken(id int32) string { return core.Sprintf("%d", id) }
-func (t fakeSFTTokenizer) BOS() int32              { return 0 }
-func (t fakeSFTTokenizer) EOS() int32              { return t.eos }
-func (t fakeSFTTokenizer) HasBOSToken() bool       { return false }
+func (t fakeSFTTokenizer) DecodeOne(id int32) string {
+	return t.Decode([]int32{id})
+}
+func (t fakeSFTTokenizer) BOS() int32        { return 0 }
+func (t fakeSFTTokenizer) EOS() int32        { return t.eos }
+func (t fakeSFTTokenizer) HasBOSToken() bool { return false }
 
 func TestSFTSliceDataset_Reset_Good(t *testing.T) {
 	dataset := dataset.NewSliceDataset([]dataset.Sample{

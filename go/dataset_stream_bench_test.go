@@ -75,9 +75,12 @@ func (t datasetStreamBenchTokenizer) TokenID(text string) (int32, bool) {
 }
 
 func (t datasetStreamBenchTokenizer) IDToken(id int32) string { return core.Sprintf("%d", id) }
-func (t datasetStreamBenchTokenizer) BOS() int32              { return 0 }
-func (t datasetStreamBenchTokenizer) EOS() int32              { return t.eos }
-func (t datasetStreamBenchTokenizer) HasBOSToken() bool       { return false }
+func (t datasetStreamBenchTokenizer) DecodeOne(id int32) string {
+	return t.Decode([]int32{id})
+}
+func (t datasetStreamBenchTokenizer) BOS() int32        { return 0 }
+func (t datasetStreamBenchTokenizer) EOS() int32        { return t.eos }
+func (t datasetStreamBenchTokenizer) HasBOSToken() bool { return false }
 
 const (
 	datasetStreamBenchPrompt   = "user:summarise the following passage"
