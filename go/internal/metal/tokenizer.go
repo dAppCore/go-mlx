@@ -655,6 +655,38 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 	return core.Replace(text, "▁", " ")
 }
 
+// DecodeOne mirrors Decode([]int32{id}) semantics for a single token without
+// allocating a one-element slice header at the call site. The hot path is the
+// root-package Tokenizer.IDToken wrapper, which fires once per emitted
+// generation token. Direct vocab lookup + leading-space strip replaces the
+// allocation + Builder + final string() path that Decode([]int32{id}) would
+// take.
+//
+//	text := tok.DecodeOne(1917) // → "world" (leading SP space stripped)
+func (t *Tokenizer) DecodeOne(id int32) string {
+	text, ok := t.invVocab[id]
+	if !ok {
+		return ""
+	}
+	if _, isSpecial := t.special[text]; isSpecial {
+		return ""
+	}
+
+	if t.isGPT2BPE {
+		return t.decodeGPT2Bytes(text)
+	}
+
+	// SentencePiece: replace ▁ with space, then strip a single leading space
+	// to match Decode([]int32{id}) exactly. A solo "▁" therefore returns ""
+	// — the root wrapper substitutes a bare space for that case from its
+	// inverse-vocab fallback.
+	result := core.Replace(text, "▁", " ")
+	if core.HasPrefix(result, " ") {
+		return result[1:]
+	}
+	return result
+}
+
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.
 func (t *Tokenizer) decodeGPT2Bytes(s string) string {
 	var buf []byte

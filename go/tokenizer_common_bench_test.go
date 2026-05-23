@@ -39,6 +39,11 @@ type benchFakeTokenizer struct {
 
 func (f *benchFakeTokenizer) Encode(string) []int32 { return f.ids }
 func (f *benchFakeTokenizer) Decode([]int32) string { return f.text }
+func (f *benchFakeTokenizer) DecodeOne(int32) string {
+	// Mirror Decode: the wrapper's IDToken takes whatever DecodeOne returns
+	// when non-empty, so for "PlainToken" benches we return the seeded text.
+	return f.text
+}
 func (f *benchFakeTokenizer) TokenID(string) (int32, bool) {
 	return f.tokenID, f.tokenIDOK
 }
@@ -180,6 +185,19 @@ func BenchmarkTokenizerCommon_IDToken_PlainToken(b *testing.B) {
 
 func BenchmarkTokenizerCommon_IDToken_EmptyToken(b *testing.B) {
 	tok := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: ""}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tokenizerBenchSinkString = tok.IDToken(42)
+	}
+}
+
+// SentencePiece bare-space token — IDToken returns "▁" from invVocab, the
+// DecodeOne fast path returns "" (single "▁" strips to ""), the wrapper falls
+// through to the `raw == "▁"` substitution and returns " ". Verifies the
+// fallback substitution still fires on the no-allocation path.
+func BenchmarkTokenizerCommon_IDToken_SentencePieceSpace(b *testing.B) {
+	tok := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: "▁", text: ""}}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

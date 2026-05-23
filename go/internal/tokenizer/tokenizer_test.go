@@ -371,6 +371,34 @@ func TestTokenizer_DecodeToken_Unknown_Bad(t *testing.T) {
 	}
 }
 
+// DecodeOne mirrors Decode([]int32{id}) — verify byte-exact equivalence on
+// regular, SentencePiece-prefixed, special, and unknown ids. This is the
+// contract IDToken depends on for its no-allocation fast path.
+func TestTokenizer_DecodeOne_MatchesDecodeSingle_Good(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	cases := []struct {
+		name string
+		id   int32
+	}{
+		{"regular_he", 5},
+		{"regular_ll", 6},
+		{"sentencepiece_h", 7},
+		{"special_bos", 100},
+		{"special_eos", 101},
+		{"unknown_high", 9999},
+	}
+	for _, c := range cases {
+		want := tok.Decode([]int32{c.id})
+		got := tok.DecodeOne(c.id)
+		if got != want {
+			t.Errorf("DecodeOne(%s id=%d) = %q, want %q (Decode parity)",
+				c.name, c.id, got, want)
+		}
+	}
+}
+
 func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 	got := FormatGemmaPrompt("What is 2+2?")
 	want := "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"

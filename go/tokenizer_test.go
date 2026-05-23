@@ -218,6 +218,7 @@ type fakeRawTokenizer struct {
 
 func (t fakeRawTokenizer) Encode(string) []int32        { return []int32{7} }
 func (t fakeRawTokenizer) Decode([]int32) string        { return "" }
+func (t fakeRawTokenizer) DecodeOne(int32) string       { return "" }
 func (t fakeRawTokenizer) TokenID(string) (int32, bool) { return 0, false }
 func (t fakeRawTokenizer) IDToken(int32) string         { return t.raw }
 func (t fakeRawTokenizer) BOS() int32                   { return 0 }

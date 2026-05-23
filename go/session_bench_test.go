@@ -115,6 +115,34 @@ func BenchmarkSession_SessionParserTokenText_NilTokenizer(b *testing.B) {
 	}
 }
 
+// With a non-nil tokenizer, sessionParserTokenText fires Tokenizer.IDToken
+// per emitted token to detect control markers (<start_of_turn>, <think>, ...).
+// IDToken used to heap-allocate a single-element []int32 wrapping the id; the
+// DecodeOne path eliminates that allocation on the steady-state generation
+// hot path.
+func BenchmarkSession_SessionParserTokenText_PlainToken(b *testing.B) {
+	wrap := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: "hello", text: "hello"}}
+	tok := metal.Token{ID: 42, Text: "hello"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionBenchSinkText = sessionParserTokenText(wrap, tok)
+	}
+}
+
+// Control-marker token — the IDToken lookup matches a sentinel and the wrapper
+// substitutes the decoded form. Same hot path; verifies the bench fixture
+// covers the "decoded text is preserved" branch as well as the empty branch.
+func BenchmarkSession_SessionParserTokenText_ControlToken(b *testing.B) {
+	wrap := &Tokenizer{tok: &benchFakeTokenizer{idTokenStr: "<start_of_turn>", text: "<start_of_turn>"}}
+	tok := metal.Token{ID: 42, Text: "<start_of_turn>"}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		sessionBenchSinkText = sessionParserTokenText(wrap, tok)
+	}
+}
+
 // --- NewSession via fakeNativeModel ---
 // Measures the wrap cost: type assertion + Info() copy + struct init.
 

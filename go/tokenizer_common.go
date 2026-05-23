@@ -7,6 +7,10 @@ import core "dappco.re/go"
 type tokenizerImpl interface {
 	Encode(string) []int32
 	Decode([]int32) string
+	// DecodeOne mirrors Decode([]int32{id}) semantics for a single ID
+	// without forcing the caller to allocate a one-element slice header.
+	// Hot path: Tokenizer.IDToken fires per emitted generation token.
+	DecodeOne(int32) string
 	TokenID(string) (int32, bool)
 	IDToken(int32) string
 	BOS() int32
@@ -86,7 +90,11 @@ func (t *Tokenizer) IDToken(id int32) string {
 	if raw == "" {
 		return ""
 	}
-	if decoded := t.tok.Decode([]int32{id}); decoded != "" {
+	// DecodeOne sidesteps the per-call []int32{id} heap escape that the
+	// interface-boxed Decode([]int32{id}) path forced — sessionParserTokenText
+	// fires this wrapper once per emitted generation token, so a 1-allocs/op
+	// → 0-allocs/op flip lands as steady-state pressure relief.
+	if decoded := t.tok.DecodeOne(id); decoded != "" {
 		return decoded
 	}
 	if raw == "▁" {
