@@ -673,13 +673,46 @@ func agentMemoryLabelsFromInference(labels map[string]string) []string {
 	if len(labels) == 0 {
 		return nil
 	}
+	// Build all "key=value" strings into a single backing buffer, then
+	// slice that buffer into the []string output. Saves one allocation
+	// per non-empty value vs the previous `key + "=" + value` concat
+	// (which alloced a fresh string per entry). The empty-value entries
+	// still alias the original map's key string for free.
+	//
+	// Two-pass: size first to land the Builder buffer at exactly the right
+	// capacity so the growth ladder (8 -> 16 -> 32 ...) never kicks in.
+	size := 0
+	for key, value := range labels {
+		if value == "" {
+			continue
+		}
+		size += len(key) + 1 + len(value)
+	}
 	out := make([]string, 0, len(labels))
+	if size == 0 {
+		// All-empty fast path — every entry aliases the map key.
+		for key := range labels {
+			out = append(out, key)
+		}
+		core.SliceSort(out)
+		return out
+	}
+	var builder core.Builder
+	builder.Grow(size)
 	for key, value := range labels {
 		if value == "" {
 			out = append(out, key)
 			continue
 		}
-		out = append(out, key+"="+value)
+		start := builder.Len()
+		builder.WriteString(key)
+		builder.WriteByte('=')
+		builder.WriteString(value)
+		// Defer the slice into the buffer until after String() — we
+		// can't take addresses into a Builder mid-write because Grow
+		// may have to reallocate. Stash the byte-range and rebuild
+		// the string-header slice in one walk below.
+		out = append(out, builder.String()[start:])
 	}
 	core.SliceSort(out)
 	return out
