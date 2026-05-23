@@ -119,6 +119,87 @@ func BenchmarkBundle_Save_Typical(b *testing.B) {
 	}
 }
 
+// SaveCompact — newlineless variant for cold storage. Time delta vs Save
+// is small (one fewer per-element whitespace write); the win is on-disk
+// size (~75% smaller on typical bundles). See parity test for the live
+// disk-size assertion.
+func BenchmarkBundle_SaveCompact_Typical(b *testing.B) {
+	snap := benchBundleSnapshot(512, 8)
+	bundle, err := New(snap, Options{Model: "qwen3", Source: ModelInfo{Architecture: "qwen3", NumLayers: 8}})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkErr = bundle.SaveCompact(core.JoinPath(dir, "state.bundle.json"))
+	}
+}
+
+// SaveCompact_Small — under 256 bytes of metadata. Whitespace ratio is
+// lower here, so the disk-size delta narrows; useful as a floor.
+func BenchmarkBundle_SaveCompact_Small(b *testing.B) {
+	snap := benchBundleSnapshot(64, 2)
+	bundle, err := New(snap, Options{Model: "qwen3-0.6b", Source: ModelInfo{Architecture: "qwen3", NumLayers: 2}})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkErr = bundle.SaveCompact(core.JoinPath(dir, "state.bundle.json"))
+	}
+}
+
+// SaveCompact_Large — qwen3-class shape (2048 tokens × 28 layers).
+// Largest whitespace surface; expect the strongest size reduction.
+func BenchmarkBundle_SaveCompact_Large(b *testing.B) {
+	snap := benchBundleSnapshot(2048, 28)
+	bundle, err := New(snap, Options{Model: "qwen3", Source: ModelInfo{Architecture: "qwen3", NumLayers: 28}})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkErr = bundle.SaveCompact(core.JoinPath(dir, "state.bundle.json"))
+	}
+}
+
+// Save_Small / Save_Large — sibling Save coverage so the bench output
+// shows the indented-vs-compact delta at each shape (Small / Typical
+// already lives above / Large).
+func BenchmarkBundle_Save_Small(b *testing.B) {
+	snap := benchBundleSnapshot(64, 2)
+	bundle, err := New(snap, Options{Model: "qwen3-0.6b", Source: ModelInfo{Architecture: "qwen3", NumLayers: 2}})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkErr = bundle.Save(core.JoinPath(dir, "state.bundle.json"))
+	}
+}
+
+func BenchmarkBundle_Save_Large(b *testing.B) {
+	snap := benchBundleSnapshot(2048, 28)
+	bundle, err := New(snap, Options{Model: "qwen3", Source: ModelInfo{Architecture: "qwen3", NumLayers: 28}})
+	if err != nil {
+		b.Fatalf("New: %v", err)
+	}
+	dir := b.TempDir()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bundleSinkErr = bundle.Save(core.JoinPath(dir, "state.bundle.json"))
+	}
+}
+
 func BenchmarkBundle_Load_Typical(b *testing.B) {
 	snap := benchBundleSnapshot(512, 8)
 	bundle, err := New(snap, Options{Model: "qwen3", Source: ModelInfo{Architecture: "qwen3", NumLayers: 8}})

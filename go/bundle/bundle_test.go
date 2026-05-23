@@ -132,6 +132,136 @@ func TestNew_NilSnapshot_Bad(t *testing.T) {
 	}
 }
 
+// TestSaveCompact_RoundTripParity_Good verifies that SaveCompact emits
+// wire-identical content to Save (after whitespace strip), Load handles
+// both, and the loaded bundles are structurally identical. Compact must
+// also be smaller on disk.
+//
+// Uses a realistic (512-token / 8-layer) snapshot rather than the tiny
+// 2-token bundleTestSnapshot — the whitespace-ratio gate only holds on
+// shapes large enough to swamp the fixed-cost JSON header. The 2-token
+// shape gets ~35% reduction (mostly header), the 512/8 shape gets ~90%
+// which matches the W10-AG forward note's 75.7% expectation comfortably.
+func TestSaveCompact_RoundTripParity_Good(t *testing.T) {
+	// Build a representative snapshot: 512 tokens × 8 layers — the
+	// "typical" Save benchmark shape. This isolates Save's per-element
+	// whitespace overhead from the fixed JSON envelope.
+	tokenCount, numLayers := 512, 8
+	tokens := make([]int32, tokenCount)
+	headKey := make([]float32, tokenCount)
+	headValue := make([]float32, tokenCount)
+	for i := range tokenCount {
+		tokens[i] = int32(i + 1)
+		headKey[i] = float32(i)
+		headValue[i] = float32(i + 1000)
+	}
+	layers := make([]kv.LayerSnapshot, numLayers)
+	for i := range layers {
+		layers[i] = kv.LayerSnapshot{
+			Layer: i, CacheIndex: i,
+			Heads: []kv.HeadSnapshot{{Key: headKey, Value: headValue}},
+		}
+	}
+	snapshot := &kv.Snapshot{
+		Version: kv.SnapshotVersion, Architecture: "qwen3",
+		Tokens: tokens, TokenOffset: tokenCount,
+		NumLayers: numLayers, NumHeads: 1, SeqLen: tokenCount,
+		HeadDim: 1, NumQueryHeads: 1, Layers: layers,
+	}
+	b, err := New(snapshot, Options{
+		Model:     "qwen3",
+		ModelPath: "/models/qwen3",
+		Source: ModelInfo{
+			Architecture: "qwen3", NumLayers: numLayers,
+			VocabSize: 1000, QuantBits: 4, ContextLength: 40960,
+		},
+		Prompt:  "stable context",
+		Runtime: Runtime{Name: "go-mlx", Version: "dev", Platform: "darwin/arm64"},
+		Sampler: Sampler{MaxTokens: 32, Temperature: 0.2, TopK: 4, RepeatPenalty: 1.1},
+		Meta:    map[string]string{"suite": "beta"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	dir := t.TempDir()
+	indentedPath := core.PathJoin(dir, "indented.bundle.json")
+	compactPath := core.PathJoin(dir, "compact.bundle.json")
+	if err := b.Save(indentedPath); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	if err := b.SaveCompact(compactPath); err != nil {
+		t.Fatalf("SaveCompact() error = %v", err)
+	}
+	// Disk size: compact must be materially smaller. Gate at 70%
+	// reduction — W10-AG observed 75.7% from MarshalIndent's
+	// `appendNewline`. Below 70% on a realistic-shape bundle means
+	// either the shape regressed or compact isn't actually compact.
+	indentedBytes := core.ReadFile(indentedPath)
+	if !indentedBytes.OK {
+		t.Fatalf("ReadFile(indented) error = %v", indentedBytes.Value)
+	}
+	compactBytes := core.ReadFile(compactPath)
+	if !compactBytes.OK {
+		t.Fatalf("ReadFile(compact) error = %v", compactBytes.Value)
+	}
+	indentedSize := len(indentedBytes.Value.([]byte))
+	compactSize := len(compactBytes.Value.([]byte))
+	if compactSize >= indentedSize {
+		t.Fatalf("SaveCompact size = %d, Save size = %d — compact must be smaller", compactSize, indentedSize)
+	}
+	saved := float64(indentedSize-compactSize) / float64(indentedSize) * 100
+	if saved < 70 {
+		t.Fatalf("SaveCompact saved %.1f%% (%d → %d bytes) — gate is 70%% on realistic shape", saved, indentedSize, compactSize)
+	}
+	t.Logf("SaveCompact saved %.1f%% (%d → %d bytes)", saved, indentedSize, compactSize)
+
+	// Both forms must Load cleanly to structurally identical bundles.
+	loadedIndented, err := Load(indentedPath)
+	if err != nil {
+		t.Fatalf("Load(indented) error = %v", err)
+	}
+	loadedCompact, err := Load(compactPath)
+	if err != nil {
+		t.Fatalf("Load(compact) error = %v", err)
+	}
+	if loadedIndented.KVHash != loadedCompact.KVHash {
+		t.Fatalf("KVHash mismatch: indented=%q compact=%q", loadedIndented.KVHash, loadedCompact.KVHash)
+	}
+	if loadedIndented.Version != loadedCompact.Version || loadedIndented.Kind != loadedCompact.Kind {
+		t.Fatalf("version/kind mismatch: indented=%d/%q compact=%d/%q",
+			loadedIndented.Version, loadedIndented.Kind,
+			loadedCompact.Version, loadedCompact.Kind)
+	}
+	if loadedIndented.Model.Hash != loadedCompact.Model.Hash {
+		t.Fatalf("Model.Hash mismatch: indented=%q compact=%q", loadedIndented.Model.Hash, loadedCompact.Model.Hash)
+	}
+	if loadedIndented.Meta["suite"] != loadedCompact.Meta["suite"] {
+		t.Fatalf("Meta mismatch: indented=%v compact=%v", loadedIndented.Meta, loadedCompact.Meta)
+	}
+	// Wire parity — re-marshalling both forms compact must produce the same
+	// bytes. This locks in the "same wire shape, just no whitespace" claim.
+	reIndented := core.JSONMarshal(loadedIndented)
+	if !reIndented.OK {
+		t.Fatalf("re-marshal(indented) error = %v", reIndented.Value)
+	}
+	reCompact := core.JSONMarshal(loadedCompact)
+	if !reCompact.OK {
+		t.Fatalf("re-marshal(compact) error = %v", reCompact.Value)
+	}
+	if string(reIndented.Value.([]byte)) != string(reCompact.Value.([]byte)) {
+		t.Fatal("indented and compact round-trips produced divergent wire bytes")
+	}
+}
+
+// TestSaveCompact_Validate_Bad ensures SaveCompact applies the same
+// Validate gate as Save (no path that bypasses bundle integrity).
+func TestSaveCompact_Validate_Bad(t *testing.T) {
+	b := &Bundle{Version: 0, Kind: Kind}
+	if err := b.SaveCompact(core.PathJoin(t.TempDir(), "bad.json")); err == nil {
+		t.Fatal("SaveCompact(bad) error = nil, want validate error")
+	}
+}
+
 func TestSnapshotFromState_Good(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	snapshot := bundleTestSnapshot()
