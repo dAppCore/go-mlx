@@ -491,6 +491,12 @@ func cacheElementCount(shape []int32) int {
 // Element count is read via Size() + NumDims() (single cgo calls each)
 // rather than Shape() + cacheElementCount walk — Shape() would allocate a
 // fresh []int32 every call which is per-quantize, every Update.
+//
+// Reshape1 replaces `Reshape(a, int32(n))` (W11-AC): rank-1 scalar-pass
+// skips the variadic []int32 escape on every quantise-max boundary —
+// hit twice per Q4/Q8 cache Update (one each for K + V via
+// quantizeCacheArrayCached). This is the dominant per-token alloc
+// reduction on the Q8 cache path.
 func maxAll(a *Array) *Array {
 	if a.NumDims() == 0 {
 		return a.Clone()
@@ -499,7 +505,7 @@ func maxAll(a *Array) *Array {
 	if n == 0 {
 		return a.Clone()
 	}
-	flat := Reshape(a, int32(n))
+	flat := Reshape1(a, int32(n))
 	reduced := MaxAxis(flat, 0, false)
 	Free(flat)
 	return reduced
