@@ -601,28 +601,82 @@ func (t *Tokenizer) encodeGPT2(text string) []int32 {
 //
 //	text := tok.Decode([]int32{9906, 1917}) // → "Hello world"
 func (t *Tokenizer) Decode(tokens []int32) string {
+	// GPT-2 byte-level path is handled by walking the raw concatenation
+	// through decodeGPT2Bytes — the byte-level decoder strips its own
+	// envelope, so the SentencePiece ▁-translation must NOT run on it.
+	if t.isGPT2BPE {
+		sb := core.NewBuilder()
+		for _, id := range tokens {
+			if text, ok := t.invVocab[id]; ok {
+				if _, isSpecial := t.special[text]; isSpecial {
+					continue
+				}
+				sb.WriteString(text)
+			}
+		}
+		return t.decodeGPT2Bytes(sb.String())
+	}
+
+	// SentencePiece path — translate ▁ → space inline while assembling,
+	// then strip the single leading space (the prefix-space marker on
+	// the first emitted token). Replaces the prior triple walk:
+	//   1) Builder.WriteString accumulation → raw
+	//   2) core.Replace(raw, "▁", " ")      → result (new alloc)
+	//   3) HasPrefix(" ") + slice           → leading-space strip
+	// with a single Builder pass that splits on ▁ via indexBytePrefix —
+	// the fast-path for tokens without ▁ falls into a single WriteString
+	// (memmove), and the only translation work is per-▁-occurrence.
+	//
+	// A pre-sizing pass (Grow on summed-text length) was tried and
+	// reverted — the second map-walk cost outweighs the saved geometric
+	// reallocs at every shape from 3 to 64 tokens. Builder's default
+	// growth strategy wins here.
 	sb := core.NewBuilder()
 	for _, id := range tokens {
-		if text, ok := t.invVocab[id]; ok {
-			// Skip special tokens in decode output
-			if _, isSpecial := t.special[text]; isSpecial {
-				continue
+		text, ok := t.invVocab[id]
+		if !ok {
+			continue
+		}
+		if _, isSpecial := t.special[text]; isSpecial {
+			continue
+		}
+		// Bulk-write tokens without ▁ (common case — most vocab tokens
+		// are leaf-bytes or non-prefixed merges).
+		for {
+			idx := indexBytePrefix(text)
+			if idx < 0 {
+				sb.WriteString(text)
+				break
 			}
-			sb.WriteString(text)
+			if idx > 0 {
+				sb.WriteString(text[:idx])
+			}
+			sb.WriteByte(' ')
+			text = text[idx+3:]
+			if text == "" {
+				break
+			}
 		}
 	}
-	raw := sb.String()
-
-	if t.isGPT2BPE {
-		return t.decodeGPT2Bytes(raw)
+	out := sb.String()
+	if len(out) > 0 && out[0] == ' ' {
+		return out[1:]
 	}
+	return out
+}
 
-	// SentencePiece style
-	result := core.Replace(raw, "▁", " ")
-	if core.HasPrefix(result, " ") {
-		result = result[1:]
+// indexBytePrefix returns the byte offset of the SentencePiece ▁
+// marker (U+2581, E2 96 81) in s, or -1 if absent. Inlined so Decode's
+// inner loop can branch on a simple int compare instead of the more
+// general core.Index three-byte-string-needle call.
+func indexBytePrefix(s string) int {
+	for i := 0; i+2 < len(s); i++ {
+		if s[i] == 0xE2 && s[i+1] == 0x96 && s[i+2] == 0x81 {
+			return i
+		}
 	}
-	return result
+	// Trailing 2 bytes can't contain the 3-byte marker.
+	return -1
 }
 
 // DecodeToken converts a single token ID to text for streaming.
