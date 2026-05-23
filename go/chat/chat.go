@@ -190,6 +190,29 @@ func TemplateName(cfg Config) string {
 }
 
 func templateName(cfg Config) string {
+	// Canonical fast path. cfg fields almost always arrive as exact
+	// string literals from caller code — no Trim/Lower work needed.
+	// Skip into the slow path only when an explicit Template is set
+	// (rare; Architecture is the common dispatch field) or when the
+	// Architecture isn't a known canonical id.
+	if cfg.Template == "" {
+		switch cfg.Architecture {
+		case "":
+			return ""
+		case "gemma4", "gemma4_text":
+			return "gemma4"
+		case "gemma", "gemma2", "gemma3", "gemma3_text":
+			return "gemma"
+		case "qwen", "qwen2", "qwen3", "qwen3_moe", "qwen3_next", "qwen3_6", "qwen3_6_moe":
+			return "qwen"
+		case "llama", "llama3", "llama4":
+			return "llama"
+		}
+	}
+	return templateNameSlow(cfg)
+}
+
+func templateNameSlow(cfg Config) string {
 	template := core.Lower(core.Trim(cfg.Template))
 	if template != "" {
 		return template
