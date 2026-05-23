@@ -387,6 +387,12 @@ func modelBenchSpeculativeDecode(model, draft *Model) func(context.Context, benc
 	if draftModel == nil {
 		draftModel = model
 	}
+	// Hoist the bench-side base GenerateConfig to runner-construction
+	// scope — both modelDecodeGenerate legs share the same defaults on
+	// every dispatch, so a per-runner heap allocation replaces the per-
+	// dispatch pair of benchModelDecodeGenerate calls that each spilled
+	// a fresh GenerateConfig of their own.
+	base := DefaultGenerateConfig()
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
 		result, err := decode.Speculative(ctx, decode.SpeculativeConfig{
@@ -394,8 +400,8 @@ func modelBenchSpeculativeDecode(model, draft *Model) func(context.Context, benc
 			MaxTokens:      cfg.MaxTokens,
 			DraftTokens:    cfg.SpeculativeDraftTokens,
 			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
-			TargetGenerate: benchModelDecodeGenerate(model),
-			DraftGenerate:  benchModelDecodeGenerate(draftModel),
+			TargetGenerate: modelDecodeGenerate(model, &base),
+			DraftGenerate:  modelDecodeGenerate(draftModel, &base),
 		})
 		if err != nil {
 			report.Error = err.Error()
@@ -432,6 +438,12 @@ func modelBenchSpeculativePairDecode(pair *SpeculativePair) func(context.Context
 }
 
 func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Config) bench.DecodeOptimisationReport {
+	// Hoist the bench-side base GenerateConfig to runner-construction
+	// scope — the prompt-lookup dispatch path calls modelDecodeGenerate
+	// once per invocation; pulling DefaultGenerateConfig() out of the
+	// per-call hot loop trades the per-dispatch spill for one allocation
+	// captured by the outer runner closure.
+	base := DefaultGenerateConfig()
 	return func(ctx context.Context, cfg bench.Config) bench.DecodeOptimisationReport {
 		report := bench.DecodeOptimisationReport{Attempted: true}
 		if len(cfg.PromptLookupTokens) == 0 {
@@ -446,7 +458,7 @@ func modelBenchPromptLookupDecode(model *Model) func(context.Context, bench.Conf
 			Prompt:         cfg.Prompt,
 			MaxTokens:      cfg.MaxTokens,
 			GenerateConfig: decode.GenerateConfig{MaxTokens: cfg.MaxTokens},
-			TargetGenerate: benchModelDecodeGenerate(model),
+			TargetGenerate: modelDecodeGenerate(model, &base),
 			LookupTokens:   lookupTokens,
 		})
 		if err != nil {
@@ -501,15 +513,22 @@ func decodeTokensPerSecond(tokens int, duration time.Duration) float64 {
 }
 
 func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
-	return modelDecodeGenerate(model, DefaultGenerateConfig())
+	base := DefaultGenerateConfig()
+	return modelDecodeGenerate(model, &base)
 }
 
-func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc {
+// modelDecodeGenerate accepts the shared base config by pointer so the
+// caller controls its lifetime — both legs of decode.Speculative
+// (target + draft) point at the same GenerateConfig instance, collapsing
+// the prior two by-value spills into one. The closure now captures two
+// 8-byte pointers (model + base), keeping the closure storage compact
+// and removing the moved-to-heap step on the 152-byte GenerateConfig.
+func modelDecodeGenerate(model *Model, base *GenerateConfig) decode.GenerateFunc {
 	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
 		if model == nil || model.model == nil {
 			return decode.Generation{}, errModelDecodeNil
 		}
-		generateCfg := base
+		generateCfg := *base
 		if cfg.MaxTokens > 0 {
 			generateCfg.MaxTokens = cfg.MaxTokens
 		}
