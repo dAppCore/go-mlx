@@ -235,6 +235,11 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	// + per-element copy — ~1MB on a 258k Gemma vocab).  Argmax is read-only,
 	// no copy needed.  Dtype-convert via AsType if non-float32 so the view
 	// remains float32-typed.
+	//
+	// Stays on the legacy materialiseFloat32View helper rather than the
+	// W11-AE fast-path because callers may pass lazy (un-Eval'd) logits —
+	// the slow-path's final Materialize covers that case; the fast-path
+	// requires the caller to pre-evaluate.
 	src, converted, err := materialiseFloat32View(logits)
 	if err != nil {
 		*scratchPtr = scratch
@@ -311,17 +316,25 @@ func materialiseFloat32View(t *Array) (src, converted *Array, err error) {
 // cleanup func that the caller MUST defer.  The view is tied to arr via
 // runtime.KeepAlive inside cleanup, so callers do not need their own KeepAlive.
 //
+// CONTRACT: the caller MUST have already evaluated arr (via Eval or
+// Materialize) before calling.  The fast-path deliberately skips the
+// Materialize crossing that the legacy materialiseFloat32View pays
+// unconditionally — accessing the raw float32 backing store of an un-Eval'd
+// array segfaults.  Callers that may receive lazy tensors should stay on the
+// legacy helper.
+//
 // Fast-path: when arr is already DTypeFloat32 + row-contiguous, the helper
 // skips every internal Materialize cgo crossing — the legacy
 // materialiseFloat32View calls Materialize on src unconditionally at the end,
 // even when dtype + layout already match.  At ~30-60 ns per cgo crossing,
 // dropping that one Materialize shifts the zero-copy threshold from ~1KB down
-// to a few hundred bytes (the dtype + contiguity check is ~5-10 ns).
+// to ~128B (and likely lower for smaller tensors).
 //
 // Slow-path: when arr needs dtype conversion or contiguity copy, the helper
 // falls through to materialiseFloat32View — same ceremony, same overhead.
 //
-//	view, cleanup, err := materialiseFloat32ViewFast(logits)
+//	if err := Eval(arr); err != nil { return err }
+//	view, cleanup, err := materialiseFloat32ViewFast(arr)
 //	if err != nil { return err }
 //	defer cleanup()
 //	bestID := argmax(view)
