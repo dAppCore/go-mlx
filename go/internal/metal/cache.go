@@ -1007,9 +1007,16 @@ func resolvePagedKVPageSize(maxSize, requested int) int {
 			pageSize = hyperLongPagedKVPageSize
 		}
 	}
-	if parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE")), 10, 64); parsed.OK {
-		if value := int(parsed.Value.(int64)); value > 0 {
-			pageSize = value
+	// Short-circuit the parse when the gate is unset.  In production the env
+	// var is almost always empty; core.ParseInt("", ...) allocates a
+	// strconv.syntaxError struct every time, which profiled to >90% of allocs
+	// inside NewPagedKVCache.  Per-decode-stream cache creation pays this once,
+	// per per-iter cache bench it dominates the alloc surface.
+	if gate := core.Trim(RuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE")); gate != "" {
+		if parsed := core.ParseInt(gate, 10, 64); parsed.OK {
+			if value := int(parsed.Value.(int64)); value > 0 {
+				pageSize = value
+			}
 		}
 	}
 	if pageSize <= 0 {
