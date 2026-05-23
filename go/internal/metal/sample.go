@@ -6,9 +6,24 @@ package metal
 
 import (
 	"math"
+	"runtime"
+	"slices"
+	"sync"
+	"unsafe"
 
 	core "dappco.re/go"
 )
+
+// suppressIDsScratch is a pooled []int32 buffer reused for dedup +
+// validity-filter inside suppressTokenLogits and hostUnsuppressedGreedyToken.
+// These fire per-token when the suppression guard activates, so eliminating
+// the map[int32]bool + slice growth pair pays back across the generation.
+var suppressIDsScratch = sync.Pool{
+	New: func() any {
+		buf := make([]int32, 0, 64)
+		return &buf
+	},
+}
 
 // Sampler transforms logits into a sampled token index.
 //
@@ -62,18 +77,29 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 		return logits.Clone()
 	}
 	lastDim := logits.Dim(logits.NumDims() - 1)
-	valid := make([]int32, 0, len(ids))
-	seen := map[int32]bool{}
+
+	// Build the valid + deduped id set via pooled scratch — replaces
+	// per-call map[int32]bool + slice growth.  Filter pass appends only
+	// in-range non-negative ids, then sort+compact removes duplicates.
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(ids) {
+		scratch = make([]int32, 0, len(ids))
+	}
 	for _, id := range ids {
-		if id < 0 || int(id) >= lastDim || seen[id] {
+		if id < 0 || int(id) >= lastDim {
 			continue
 		}
-		seen[id] = true
-		valid = append(valid, id)
+		scratch = append(scratch, id)
 	}
-	if len(valid) == 0 {
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
 		return logits.Clone()
 	}
+	slices.Sort(scratch)
+	valid := slices.Compact(scratch)
+
 	idx := FromValues(valid, 1, len(valid))
 	inf := FromValue(float32(math.Inf(-1)))
 	if dtype := logits.Dtype(); dtype != DTypeFloat32 {
@@ -83,6 +109,10 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	}
 	res := PutAlongAxis(logits, idx, inf, -1)
 	Free(idx, inf)
+
+	// FromValues has copied valid into MLX memory, scratch is safe to recycle.
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
 	return res
 }
 
@@ -181,21 +211,60 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 	if logits == nil || !logits.Valid() {
 		return nil, core.NewError("mlx: logits are empty")
 	}
-	values := logits.Floats()
-	if len(values) == 0 {
-		return nil, core.NewError("mlx: logits are empty")
+
+	// Dedup + sort suppressTokens via pooled scratch so the inner loop can
+	// use binary search instead of a per-call map[int32]bool allocation
+	// (the original cost ~16B/entry + 8 allocs on a Gemma-sized suppress
+	// list).  Per-token hot path — fires whenever the sampler tries a
+	// suppressed id and falls through the guard.
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(suppressTokens) {
+		scratch = make([]int32, 0, len(suppressTokens))
 	}
-	suppressed := make(map[int32]bool, len(suppressTokens))
 	for _, id := range suppressTokens {
 		if id >= 0 {
-			suppressed[id] = true
+			scratch = append(scratch, id)
 		}
 	}
+	slices.Sort(scratch)
+	suppressed := slices.Compact(scratch)
+
+	// Scan logits via a borrowed MLX-memory view rather than copying to a
+	// freshly-allocated Go []float32 (logits.Floats() does make([]float32, n)
+	// + per-element copy — ~1MB on a 258k Gemma vocab).  Argmax is read-only,
+	// no copy needed.  Dtype-convert via AsType if non-float32 so the view
+	// remains float32-typed.
+	src, converted, err := materialiseFloat32View(logits)
+	if err != nil {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, err
+	}
+	n := src.Size()
+	if n == 0 {
+		Free(converted)
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ptr := (*float32)(rawArrayDataPointer(src))
+	if ptr == nil {
+		Free(converted)
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	view := unsafe.Slice(ptr, n)
+
 	bestID := int32(-1)
 	bestValue := float32(math.Inf(-1))
-	for id, value := range values {
+	for id, value := range view {
 		tokenID := int32(id)
-		if suppressed[tokenID] || math.IsNaN(float64(value)) {
+		if math.IsNaN(float64(value)) {
+			continue
+		}
+		if _, ok := slices.BinarySearch(suppressed, tokenID); ok {
 			continue
 		}
 		if bestID < 0 || value > bestValue {
@@ -203,10 +272,39 @@ func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array,
 			bestValue = value
 		}
 	}
+	runtime.KeepAlive(src)
+	Free(converted)
+
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
+
 	if bestID < 0 {
 		return nil, core.NewError("mlx: no finite unsuppressed logits available")
 	}
 	return fromSingleInt32(bestID), nil
+}
+
+// materialiseFloat32View returns a borrowed view-source for hostside scans of
+// a logits tensor.  Result.converted is non-nil iff a dtype conversion was
+// needed (caller must Free it after the scan finishes).
+func materialiseFloat32View(t *Array) (src, converted *Array, err error) {
+	src = t
+	if t.Dtype() != DTypeFloat32 {
+		converted = AsType(t, DTypeFloat32)
+		Materialize(converted)
+		src = converted
+	}
+	if !src.IsRowContiguous() {
+		c := Contiguous(src)
+		Materialize(c)
+		if converted != nil {
+			Free(converted)
+		}
+		converted = c
+		src = c
+	}
+	Materialize(src)
+	return src, converted, nil
 }
 
 func tokenIDSuppressed(id int32, suppressTokens []int32) bool {
@@ -246,6 +344,10 @@ func (k TopKSampler) Sample(logits *Array) *Array {
 	// Slice the indices beyond top-k
 	mask := SliceAxis(maskIdx, -1, int32(k), int32(lastDim))
 	Free(maskIdx)
+	// W11-R: inline the -inf scalar into PutAlongAxis via a scalar-shape
+	// FromValue; PutAlongAxis broadcasts.  Cannot collapse further without
+	// an MLX put_along_axis_scalar bridge — the FromValue cost is a single
+	// rank-0 alloc which is at floor for this op.
 	inf := FromValue(float32(math.Inf(-1)))
 	res := PutAlongAxis(logits, mask, inf, -1)
 	Free(mask, inf)
@@ -274,25 +376,26 @@ func (p TopP) Sample(logits *Array) *Array {
 
 	// Mask in sorted space: keep tokens where cumprob (excluding current) <= threshold
 	shiftedCum := Subtract(cumProbs, sortedProbs)
-	threshold := FromValue(float32(p))
-	inf := FromValue(float32(math.Inf(-1)))
-	zero := FromValue(float32(0))
 
-	gt := Greater(shiftedCum, threshold)
-	sortedMask := Where(gt, inf, zero)
-	Free(gt, inf, zero, threshold, shiftedCum, cumProbs, sortedProbs)
+	// W11-R: inline the scalar compare + scalar/scalar where into single cgo
+	// crossings.  Was 3× FromValue + Greater + Where + 3× Free; now
+	// greaterScalar + whereScalarScalar (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt := greaterScalar(shiftedCum, float32(p))
+	sortedMask := whereScalarScalar(gt, float32(math.Inf(-1)), 0)
+	Free(gt, shiftedCum, cumProbs, sortedProbs)
 
 	// Scatter mask back to original positions
 	emptyMask := Zeros(logits.Shape(), DTypeFloat32)
 	mask := PutAlongAxis(emptyMask, sortIdx, sortedMask, -1)
 	Free(emptyMask, sortIdx, sortedMask)
 
-	// Apply mask: -inf where excluded, original logit where kept
-	zeroArr := FromValue(float32(0))
-	gt0 := Greater(zeroArr, mask)
-	inf2 := FromValue(float32(math.Inf(-1)))
-	res := Where(gt0, inf2, logits)
-	Free(zeroArr, gt0, inf2, mask, probs)
+	// W11-R: replace zeroArr + Greater(zeroArr, mask) + inf2 + Where(gt0, inf2, logits)
+	// with scalarGreater + whereScalarArray (2 cgo crossings, 0 Go-side scalar
+	// *Array wrappers).
+	gt0 := scalarGreater(0, mask)
+	res := whereScalarArray(gt0, float32(math.Inf(-1)), logits)
+	Free(gt0, mask, probs)
 
 	return res
 }
@@ -315,10 +418,10 @@ func (p MinPSampler) Sample(logits *Array) *Array {
 	threshold := MulScalar(maxProb, float32(p))
 	Free(maxProb)
 
-	// Mask tokens below threshold
-	inf := FromValue(float32(math.Inf(-1)))
+	// W11-R: inline the scalar -inf into the where call — replaces FromValue
+	// + Where + Free(scalar) triple with a single cgo crossing.
 	gt := Greater(threshold, probs)
-	mask := Where(gt, inf, logits)
-	Free(probs, threshold, inf, gt)
+	mask := whereScalarArray(gt, float32(math.Inf(-1)), logits)
+	Free(probs, threshold, gt)
 	return mask
 }

@@ -345,3 +345,77 @@ func BenchmarkSampler_Full_TopP09_MinP01_TopK50(b *testing.B) {
 		Materialize(tok)
 	}
 }
+
+// BenchmarkSampler_MinP01_Temp1 isolates min-p path which uses Softmax + MaxAxis
+// + MulScalar + Greater(scalar) + Where.  Targets W11-R inline-Greater opportunity.
+func BenchmarkSampler_MinP01_Temp1(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
+	Materialize(logits)
+	s := newSampler(1.0, 0, 0.1, 0)
+	for b.Loop() {
+		tok := s.Sample(logits)
+		Materialize(tok)
+	}
+}
+
+// BenchmarkSampler_Temperature_PerToken isolates pure Temperature.Sample —
+// already routes through MulScalar (W11-F).  Useful as floor reference.
+func BenchmarkSampler_Temperature_PerToken(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
+	Materialize(logits)
+	s := Temperature(0.7)
+	for b.Loop() {
+		y := s.Sample(logits)
+		Materialize(y)
+	}
+}
+
+// BenchmarkSampler_SuppressedGreedy_Gemma exercises the suppressedGreedy
+// fast-path used by the Gemma assistant when only suppression is configured.
+// Triggers suppressTokenLogits scalar FromValue (-inf) on each call.
+func BenchmarkSampler_SuppressedGreedy_Gemma(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
+	Materialize(logits)
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105}
+	s := newSamplerWithSuppression(0, 0, 0, 0, suppress)
+	for b.Loop() {
+		tok := s.Sample(logits)
+		Materialize(tok)
+	}
+}
+
+// BenchmarkApplyRepeatPenalty_Hist64 exercises applyRepeatPenalty with a
+// realistic 64-token history.  Targets W10-V scratch pool + W11-R FromValue
+// crossings (zero / invPenalty / penaltyVal).
+func BenchmarkApplyRepeatPenalty_Hist64(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 32000}, DTypeFloat32)
+	Materialize(logits)
+	hist := make([]int32, 64)
+	for i := range hist {
+		hist[i] = int32(i * 17 % 32000)
+	}
+	for b.Loop() {
+		y := applyRepeatPenalty(logits, hist, 1.1)
+		Materialize(y)
+	}
+}
+
+// BenchmarkHostUnsuppressedGreedyToken_Gemma exercises the Gemma-sized
+// host-side fallback that allocates suppressed map every call.  Stress on
+// W10-V map elimination.
+func BenchmarkHostUnsuppressedGreedyToken_Gemma(b *testing.B) {
+	values := make([]float32, 258885)
+	values[0] = 100
+	values[123] = 10
+	logits := FromValues(values, 1, len(values))
+	Materialize(logits)
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	for b.Loop() {
+		tok, err := hostUnsuppressedGreedyToken(logits, suppress)
+		if err != nil {
+			b.Fatal(err)
+		}
+		Materialize(tok)
+		Free(tok)
+	}
+}
