@@ -7,6 +7,34 @@ package metal
 /*
 #include <stdlib.h>
 #include "mlx/c/mlx.h"
+
+// mlx_fast_metal_kernel_apply_inline collapses the
+// (mlx_vector_array_new + N×mlx_vector_array_append_value + mlx_fast_metal_kernel_apply + mlx_vector_array_free)
+// sequence into a single cgo crossing.  MLX's vector_array constructor + per-element
+// append + free were each separate cgo entries; for a tiny MoE kernel call with
+// 5 inputs that's 7 cgo crossings before the actual apply.  This wrapper takes a
+// caller-owned mlx_array handle array (typically stack-allocated on Go side via
+// the 8-slot scratch pool) and runs the whole sequence C-side, returning the rc
+// from mlx_fast_metal_kernel_apply.  outVec is left to the caller — the per-call
+// holder pool already pins it without allocation.
+//
+// Net effect on the expert_id matvec hot path (N=5 inputs, 1 output):
+//   before: 11 cgo crossings (new + 5×append + free + apply + size + get)
+//   after:  4 cgo crossings (apply_inline + size + get + holder.vec free)
+static inline int mlx_fast_metal_kernel_apply_inline(
+    mlx_vector_array* res,
+    mlx_fast_metal_kernel kernel,
+    const mlx_array* inputs, size_t input_num,
+    mlx_fast_metal_kernel_config config,
+    mlx_stream s) {
+    mlx_vector_array inputVec = mlx_vector_array_new();
+    for (size_t i = 0; i < input_num; ++i) {
+        mlx_vector_array_append_value(inputVec, inputs[i]);
+    }
+    int rc = mlx_fast_metal_kernel_apply(res, kernel, inputVec, config, s);
+    mlx_vector_array_free(inputVec);
+    return rc;
+}
 */
 import "C"
 
@@ -132,6 +160,27 @@ var metalKernelOutputVecPool = sync.Pool{
 	},
 }
 
+// metalKernelInputScratchRank caps the pooled input-handle scratch buffer used
+// by Apply. Every current MetalKernel caller in this package passes between 1
+// and 9 input arrays (expert_id_matvec tops out at 8 quantization factor sets;
+// gemma4_ffn_residual passes 6).  Sized at 16 to comfortably cover that plus
+// future split-quantization layouts.  Callers exceeding the cap fall back to a
+// heap-allocated buffer.
+const metalKernelInputScratchRank = 16
+
+// metalKernelInputScratch is a sync.Pool of fixed-arity C.mlx_array buffers used
+// by Apply as a handle-conversion scratch for mlx_fast_metal_kernel_apply_inline.
+// The cgo trampoline forces any Go pointer passed across the boundary to escape,
+// so a stack array does not actually stay on the stack; pooling lets us amortise
+// the allocation across calls and keep the per-call alloc count at zero on the
+// fast path.  Each entry is *[]C.mlx_array (16 slots).
+var metalKernelInputScratch = sync.Pool{
+	New: func() any {
+		buf := make([]C.mlx_array, metalKernelInputScratchRank)
+		return &buf
+	},
+}
+
 // Apply executes the kernel with the given configuration and input arrays.
 // Returns the output arrays produced by the kernel.
 //
@@ -151,12 +200,6 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		}
 	}
 
-	inputVec := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(inputVec)
-	for _, a := range inputs {
-		C.mlx_vector_array_append_value(inputVec, a.ctx)
-	}
-
 	// Pooled holder pins the outputVec struct so taking its address for the
 	// mlx_fast_metal_kernel_apply out-parameter does not allocate a fresh
 	// 16-byte Go cell each call. mlx_fast_metal_kernel_apply lazily
@@ -169,7 +212,34 @@ func (k *MetalKernel) Apply(config *MetalKernelConfig, inputs ...*Array) ([]*Arr
 		metalKernelOutputVecPool.Put(holder)
 	}()
 
-	rc := C.mlx_fast_metal_kernel_apply(&holder.vec, k.ctx, inputVec, config.ctx, DefaultStream().ctx)
+	// Marshal input handles into a pooled fixed-arity scratch buffer and let
+	// the inline-C wrapper materialise the input mlx_vector_array C-side. This
+	// collapses (new + N×append + apply + free) into one cgo crossing — on the
+	// 5-input expert_id matvec path, 7 cgo crossings become 1.
+	var inputsPtr *C.mlx_array
+	var bufPtr *[]C.mlx_array
+	nInputs := len(inputs)
+	if nInputs > 0 {
+		if nInputs <= metalKernelInputScratchRank {
+			bufPtr = metalKernelInputScratch.Get().(*[]C.mlx_array)
+			buf := (*bufPtr)[:nInputs]
+			for i, a := range inputs {
+				buf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&buf[0]))
+		} else {
+			heapBuf := make([]C.mlx_array, nInputs)
+			for i, a := range inputs {
+				heapBuf[i] = a.ctx
+			}
+			inputsPtr = (*C.mlx_array)(unsafe.Pointer(&heapBuf[0]))
+		}
+	}
+
+	rc := C.mlx_fast_metal_kernel_apply_inline(&holder.vec, k.ctx, inputsPtr, C.size_t(nInputs), config.ctx, DefaultStream().ctx)
+	if bufPtr != nil {
+		metalKernelInputScratch.Put(bufPtr)
+	}
 	if rc != 0 {
 		if err := lastError(); err != nil {
 			return nil, err
