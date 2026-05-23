@@ -1904,11 +1904,19 @@ func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 	if maxSize <= 0 || k == nil || v == nil {
 		return k, v
 	}
-	kShape := k.Shape()
-	vShape := v.Shape()
-	if len(kShape) < 4 || len(vShape) < 4 || int(kShape[2]) <= maxSize {
+	// Reach for NumDims + Dim before paying the two Shape() heap allocs —
+	// the common return path (length <= maxSize) needs neither shape.
+	if k.NumDims() < 4 || v.NumDims() < 4 {
 		return k, v
 	}
+	kSeq := int(k.Dim(2))
+	if kSeq <= maxSize {
+		return k, v
+	}
+	// Past cap: now we need the full dims for the Slice4 calls.
+	var kShapeBuf, vShapeBuf [maxTensorRank]int32
+	kShape := k.ShapeInto(kShapeBuf[:0])
+	vShape := v.ShapeInto(vShapeBuf[:0])
 	start := int(kShape[2]) - maxSize
 	return Slice4(k, 0, 0, int32(start), 0, kShape[0], kShape[1], kShape[2], kShape[3]),
 		Slice4(v, 0, 0, int32(start), 0, vShape[0], vShape[1], vShape[2], vShape[3])
