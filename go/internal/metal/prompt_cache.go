@@ -452,12 +452,13 @@ func prefillSequenceLength(tokens *Array) int {
 	if tokens == nil || !tokens.Valid() {
 		return 0
 	}
-	shape := tokens.Shape()
-	switch {
-	case len(shape) >= 2:
-		return int(shape[1])
-	case len(shape) == 1:
-		return int(shape[0])
+	// NumDims() + Dim(i) is the alloc-free shape read — Shape()
+	// allocates the dim slice just to be indexed twice here.
+	switch n := tokens.NumDims(); {
+	case n >= 2:
+		return int(tokens.Dim(1))
+	case n == 1:
+		return int(tokens.Dim(0))
 	default:
 		return 0
 	}
@@ -1097,19 +1098,23 @@ func validateCacheSnapshotConcat(left, right *Array) error {
 	if left == nil || right == nil || !left.Valid() || !right.Valid() {
 		return core.NewError("prompt cache: invalid cache concat arrays")
 	}
-	leftShape := left.Shape()
-	rightShape := right.Shape()
-	if len(leftShape) != len(rightShape) {
+	// Compare dims dim-by-dim from NumDims() — avoids the two Shape()
+	// heap allocs that this validator paid per call on the block-source
+	// restore path (called once per paged-page append, once per non-
+	// paged block merge).
+	leftRank := left.NumDims()
+	rightRank := right.NumDims()
+	if leftRank != rightRank {
 		return core.NewError("prompt cache: cache block rank mismatch")
 	}
-	if len(leftShape) < 3 {
+	if leftRank < 3 {
 		return nil
 	}
-	for i := range leftShape {
+	for i := 0; i < leftRank; i++ {
 		if i == 2 {
 			continue
 		}
-		if leftShape[i] != rightShape[i] {
+		if left.Dim(i) != right.Dim(i) {
 			return core.NewError("prompt cache: cache block shape mismatch")
 		}
 	}
