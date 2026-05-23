@@ -529,11 +529,16 @@ func tokenizerBPECacheKey(kind, segment string) string {
 
 func (t *Tokenizer) cachedBPETokens(key string) ([]int32, bool) {
 	t.bpeCacheMu.RLock()
-	defer t.bpeCacheMu.RUnlock()
+	// Defer-free path — the hot one fires once per Encode segment so
+	// the ~7 ns/op `defer t.bpeCacheMu.RUnlock()` cost shows up at the
+	// envelope. Explicit RUnlock on both branches keeps the lock
+	// discipline visible at the call site.
 	if len(t.bpeCache) == 0 {
+		t.bpeCacheMu.RUnlock()
 		return nil, false
 	}
 	tokens, ok := t.bpeCache[key]
+	t.bpeCacheMu.RUnlock()
 	return tokens, ok
 }
 
