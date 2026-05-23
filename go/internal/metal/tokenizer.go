@@ -560,6 +560,43 @@ func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
 	t.bpeCacheOrder = append(t.bpeCacheOrder, key)
 }
 
+// splitRunes appends each UTF-8 rune of s to dst as a substring of s
+// (zero-alloc per rune — the substring shares the underlying byte
+// array). The prior `string(r)` per-rune materialisation allocated a
+// fresh 1-4-byte string for every rune; substring slicing reuses the
+// input's backing memory and is safe because the input is a string
+// (immutable). Returns the appended slice for caller to chain.
+func splitRunes(dst []string, s string) []string {
+	for i := 0; i < len(s); {
+		b := s[i]
+		// Fast-path ASCII — single-byte rune, no decode work.
+		if b < 0x80 {
+			dst = append(dst, s[i:i+1])
+			i++
+			continue
+		}
+		// Multi-byte rune — determine length from leading byte.
+		var n int
+		switch {
+		case b&0xE0 == 0xC0:
+			n = 2
+		case b&0xF0 == 0xE0:
+			n = 3
+		case b&0xF8 == 0xF0:
+			n = 4
+		default:
+			// Invalid leading byte; emit as single byte and advance.
+			n = 1
+		}
+		if i+n > len(s) {
+			n = len(s) - i
+		}
+		dst = append(dst, s[i:i+n])
+		i += n
+	}
+	return dst
+}
+
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
 	spText := t.normalizeSentencePieceSegment(segment)
 	if spText == "" {
@@ -570,10 +607,7 @@ func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
 		return cached
 	}
 
-	symbols := make([]string, 0, len(spText))
-	for _, r := range spText {
-		symbols = append(symbols, string(r))
-	}
+	symbols := splitRunes(make([]string, 0, len(spText)), spText)
 	symbols = t.bpeMerge(symbols)
 
 	tokens := make([]int32, 0, len(symbols))
@@ -591,6 +625,11 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 		return nil
 	}
 	encoded := core.NewBuilder()
+	// Pre-size the Builder — every input byte maps to one rune (max 4
+	// bytes); the worst case is 4*len(segment), but in practice most
+	// GPT-2 byte-encoded bytes are 2-byte runes so 2*len(segment) is a
+	// fair starting size that avoids a couple of geometric reallocs.
+	encoded.Grow(2 * len(segment))
 	for _, b := range []byte(segment) {
 		if r, ok := t.gpt2Encoder[b]; ok {
 			encoded.WriteRune(r)
@@ -605,10 +644,7 @@ func (t *Tokenizer) encodeGPT2Segment(segment string) []int32 {
 		return cached
 	}
 
-	symbols := make([]string, 0, len(encodedText))
-	for _, r := range encodedText {
-		symbols = append(symbols, string(r))
-	}
+	symbols := splitRunes(make([]string, 0, len(encodedText)), encodedText)
 	symbols = t.bpeMerge(symbols)
 
 	tokens := make([]int32, 0, len(symbols))

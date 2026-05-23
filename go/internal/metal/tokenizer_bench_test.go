@@ -353,3 +353,39 @@ func BenchmarkTokenizer_decodeGPT2Bytes(b *testing.B) {
 		_ = tok.decodeGPT2Bytes(s)
 	}
 }
+
+// --- encodeSentencePieceSegment bench (cache-miss path) ---------------
+
+func BenchmarkTokenizer_encodeSentencePieceSegment_CacheMiss(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		// Clear cache to force the BPE walk; uses a unique key each
+		// iteration's bpeCache state to keep miss-path coverage honest.
+		tok.bpeCache = nil
+		_ = tok.encodeSentencePieceSegment("hello world")
+	}
+}
+
+func BenchmarkTokenizer_encodeSentencePieceSegment_CacheHit(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	// Prime the cache.
+	_ = tok.encodeSentencePieceSegment("hello world")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = tok.encodeSentencePieceSegment("hello world")
+	}
+}
+
+// --- encodeGPT2Segment bench (cache-miss path) ------------------------
+
+func BenchmarkTokenizer_encodeGPT2Segment_CacheMiss(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	tok.isGPT2BPE = true
+	tok.gpt2Decoder, tok.gpt2Encoder = buildGPT2ByteMaps()
+	b.ReportAllocs()
+	for b.Loop() {
+		tok.bpeCache = nil
+		_ = tok.encodeGPT2Segment("hello world")
+	}
+}
