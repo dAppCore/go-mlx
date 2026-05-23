@@ -282,3 +282,130 @@ func BenchmarkPromptCache_PrefillCacheStateArrays_26Caches_Gemma4(b *testing.B) 
 		c.Reset()
 	}
 }
+
+// --- copyCachePrefix — golden-path warm-restore per-K and per-V hit ---
+//
+// Wave 11 (W11-W): copyCachePrefix is the hot inner of
+// restorePromptCachesWithRequestFixedSize — called twice per restored
+// cache (K and V). The W11-W swap dropped Shape() heap alloc + two
+// `[]int32{...}` literals fed into Slice() to stack scratch + Slice4
+// scalar-pass. Bench at the cache-tape sizes that the warm-restore
+// substrate sees in production.
+
+// 4k prefix copy — covers same-length fast path (no Slice op).
+func BenchmarkPromptCache_CopyCachePrefix_4k_FullLen(b *testing.B) {
+	const B, H, L, D = 1, 8, 4096, 64
+	tape := RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
+	defer Free(tape)
+	Materialize(tape)
+	b.ReportAllocs()
+	for b.Loop() {
+		out, err := copyCachePrefix(tape, L)
+		if err != nil {
+			b.Fatalf("copyCachePrefix: %v", err)
+		}
+		Materialize(out)
+		Free(out)
+	}
+}
+
+// 32k tape, 4k prefix — covers the slice-then-copy path that warm
+// restore actually walks when re-installing a saved prefix into a
+// larger pre-allocated buffer.
+func BenchmarkPromptCache_CopyCachePrefix_32kTape_4kPrefix(b *testing.B) {
+	const B, H, L, D = 1, 8, 32768, 64
+	tape := RandomUniform(0, 1, []int32{B, H, L, D}, DTypeFloat32)
+	defer Free(tape)
+	Materialize(tape)
+	b.ReportAllocs()
+	for b.Loop() {
+		out, err := copyCachePrefix(tape, 4096)
+		if err != nil {
+			b.Fatalf("copyCachePrefix: %v", err)
+		}
+		Materialize(out)
+		Free(out)
+	}
+}
+
+// --- snapshotFixedCache → restoreFixedCacheSnapshot — golden-path round trip ---
+//
+// Fixed-cache restore is the W11-W primary target (Gemma 4 warm-load).
+// snapshotFixedCache copies the prefix out of the on-device buffer;
+// restoreFixedCacheSnapshot allocates a maxSize buffer and writes the
+// prefix back in. Both touch SliceUpdateInplace4 / Slice4 after W11-W.
+
+func BenchmarkPromptCache_FixedCacheSnapshotRestore_RoundTrip(b *testing.B) {
+	const maxSize = 512
+	const prefixLen = 256
+	cache := NewFixedKVCache(maxSize)
+	defer cache.Reset()
+	k, v := makeKV(prefixLen)
+	defer Free(k, v)
+	stateK, stateV := cache.Update(k, v, prefixLen)
+	Free(stateK, stateV)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		snap, ok, err := snapshotFixedCache(cache, prefixLen)
+		if err != nil || !ok {
+			b.Fatalf("snapshotFixedCache: ok=%v err=%v", ok, err)
+		}
+		restored, arrays, err := restoreFixedCacheSnapshot(snap, prefixLen, prefixLen, maxSize)
+		if err != nil {
+			freeCacheSnapshot(snap)
+			b.Fatalf("restoreFixedCacheSnapshot: %v", err)
+		}
+		if err := Eval(arrays...); err != nil {
+			freeCaches([]Cache{restored})
+			freeCacheSnapshot(snap)
+			b.Fatalf("Eval: %v", err)
+		}
+		freeCaches([]Cache{restored})
+		freeCacheSnapshot(snap)
+	}
+}
+
+// 26-cache restore round trip — exercises the load-bearing
+// restorePromptCachesWithRequestFixedSize path that Gemma 4 warm-load
+// hits. W11-W switches it from the per-restore `[]*Array{...}` literal +
+// `append(.., arrays...)` chain to direct appendRestoreXxxCacheSnapshot
+// dispatch, dropping the intermediate slices.
+func BenchmarkPromptCache_RestoreFixedCaches_26_Gemma4(b *testing.B) {
+	const maxSize = 128
+	const prefixLen = 64
+	const cacheCount = 26
+	caches := make([]*FixedKVCache, cacheCount)
+	snapshots := make([]cacheSnapshot, cacheCount)
+	for i := range caches {
+		caches[i] = NewFixedKVCache(maxSize)
+	}
+	k, v := makeKV(prefixLen)
+	defer Free(k, v)
+	for _, c := range caches {
+		stateK, stateV := c.Update(k, v, prefixLen)
+		Free(stateK, stateV)
+	}
+	for i, c := range caches {
+		snap, ok, err := snapshotFixedCache(c, prefixLen)
+		if err != nil || !ok {
+			b.Fatalf("snapshotFixedCache[%d]: ok=%v err=%v", i, ok, err)
+		}
+		snapshots[i] = snap
+	}
+	defer func() {
+		for i := range caches {
+			freeCacheSnapshot(snapshots[i])
+			caches[i].Reset()
+		}
+	}()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		restored, err := restorePromptCachesWithRequestFixedSize(snapshots, prefixLen, maxSize)
+		if err != nil {
+			b.Fatalf("restorePromptCachesWithRequestFixedSize: %v", err)
+		}
+		freeCaches(restored)
+	}
+}
