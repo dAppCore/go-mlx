@@ -636,9 +636,20 @@ func TestParseGGUF_MetadataRoundTrip_Good(t *testing.T) {
 	if value, ok := metadata["general.use_mlock"].(bool); !ok || !value {
 		t.Fatalf("general.use_mlock = %#v", metadata["general.use_mlock"])
 	}
-	tokens, ok := metadata["tokenizer.ggml.tokens"].([]any)
-	if !ok || len(tokens) != 2 || tokens[1] != "<eos>" {
-		t.Fatalf("tokens = %#v", metadata["tokenizer.ggml.tokens"])
+	// String-element arrays land as []string via the readGGUFValue
+	// fast path; non-string element types stay []any. metadataString
+	// at index 1 gives the same view whichever concrete type backs it.
+	switch tokens := metadata["tokenizer.ggml.tokens"].(type) {
+	case []string:
+		if len(tokens) != 2 || tokens[1] != "<eos>" {
+			t.Fatalf("tokens ([]string) = %#v", tokens)
+		}
+	case []any:
+		if len(tokens) != 2 || tokens[1] != "<eos>" {
+			t.Fatalf("tokens ([]any) = %#v", tokens)
+		}
+	default:
+		t.Fatalf("tokens unexpected type %T: %#v", tokens, tokens)
 	}
 	if len(tensors) != 1 || len(tensors[0].Shape) != 2 || tensors[0].Shape[0] != 256 || tensors[0].Offset != 0 {
 		t.Fatalf("tensors = %+v", tensors)
