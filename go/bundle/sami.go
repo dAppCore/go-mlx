@@ -65,8 +65,14 @@ func SAMIFromKV(snapshot *kv.Snapshot, analysis *kv.Analysis, opts SAMIOptions) 
 	keyLen := len(layerKey)
 	valueLen := len(layerValue)
 	alignLen := len(layerAlign)
-	layerCoherence := make([]float64, numLayers)
-	layerCross := make([]float64, numLayers)
+	// Single backing alloc for both layer arrays — typical dashboard tick
+	// runs SAMIFromKV per visualisation frame with precomputed analysis,
+	// so trimming 2 allocs → 1 + 1 reslice saves a malloc per frame.
+	// 3-arg slice expression caps capacity so consumer-side append doesn't
+	// reach across into the sibling slice.
+	buf := make([]float64, 2*numLayers)
+	layerCoherence := buf[:numLayers:numLayers]
+	layerCross := buf[numLayers : 2*numLayers : 2*numLayers]
 	// Split into hot in-bounds prefix and fallback tail. The common case
 	// is keyLen == valueLen == alignLen == numLayers — in that case the
 	// tail loop runs zero iterations and the prefix loop has no per-
