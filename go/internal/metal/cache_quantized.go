@@ -55,8 +55,9 @@ func NewQuantizedKVCache(maxSize, keyBits, valueBits int) *QuantizedKVCache {
 }
 
 func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
-	shape := k.Shape()
-	if len(shape) < 4 {
+	// NumDims() is a single cgo read whereas Shape() allocates a fresh
+	// []int32 — and we only need to gate the rank-4 path below.
+	if k.NumDims() < 4 {
 		fullK := k.Clone()
 		fullV := v.Clone()
 		c.storeQuantized(fullK, fullV)
