@@ -359,7 +359,18 @@ func summarizeProbeLogitsCompact(row *Array, shape []int32, vocabSize, topK int)
 	}
 
 	topIDs := topIndices.Ints()
-	topLogits := topValues.Floats()
+	// W11-AE: borrow an MLX-memory view rather than copying topValues into a
+	// fresh Go []float32 (Floats() makes a topK-length buffer + per-element
+	// copy + 2× cgo Materialize crossings — ~320 ns / 129 B at topK=8).  The
+	// fast-path skips Materialize entirely because TakeAlongAxis preserves
+	// dtype + the pre-Eval pass guarantees a valid float32 backing store.
+	// W11-X rejected this site against the slow-path helper (270 ns floor);
+	// the new fast-path floor (~170 ns) inverts the verdict.
+	topLogits, topLogitsCleanup, err := materialiseFloat32ViewFast(topValues)
+	if err != nil {
+		return ProbeLogits{}, ProbeEntropy{}, core.E("probe.logits", "compact-view", err)
+	}
+	defer topLogitsCleanup()
 
 	summary := ProbeLogits{
 		Shape:      append([]int32(nil), shape...),
