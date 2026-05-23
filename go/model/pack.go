@@ -5,8 +5,6 @@
 package model
 
 import (
-	"sort"
-
 	core "dappco.re/go"
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/quant/codebook"
@@ -55,7 +53,7 @@ func Inspect(modelPath string, opts ...mp.ModelPackOption) (mp.ModelPack, error)
 	}
 	inspectModelPackJANG(&pack, root, &dir)
 	inspectModelPackCodebook(&pack, root, &dir)
-	inspectModelPackTokenizer(&pack, root)
+	inspectModelPackTokenizer(&pack, root, &dir)
 	// Architecture resolution happens BEFORE chat-template inspection so
 	// the latter can read pack.ArchitectureProfile directly instead of
 	// re-entering profile.LookupArchitectureProfile twice (one each for
@@ -127,19 +125,25 @@ func inspectModelPackConfig(pack *mp.ModelPack, root string) (*modelConfigProbe,
 // modelPackDirIndex caches presence of the specific optional-config
 // filenames the inspect pipeline probes downstream — built from the
 // same single PathGlob the weight inspector already runs, so this is
-// opportunistic and adds no extra syscall. The index records exactly
-// the six basenames we'd otherwise ReadFile-then-IsNotExist for, in
-// fixed bool fields, so populating + querying is zero-alloc.
+// opportunistic and adds no extra syscall. The index records the seven
+// basenames we'd otherwise ReadFile-then-IsNotExist for, in fixed bool
+// fields, so populating + querying is zero-alloc.
 //
 // The `populated` flag lets callers distinguish "no listing available"
 // (single-file resolvedPath) from "listed but file absent" — the
 // former falls through to the regular ReadFile probe so semantics for
 // the single-file entry path stay unchanged.
+//
+// tokenizer.json is included so inspectModelPackTokenizer can skip a
+// ReadFile + IsNotExist round-trip when the model directory has no
+// tokenizer — the missing-tokenizer error path runs on every Inspect
+// against a partial download or weights-only pack.
 type modelPackDirIndex struct {
 	populated         bool
 	jangConfig        bool
 	codebookConfig    bool
 	tokenizerConfig   bool
+	tokenizerJSON     bool
 	chatTemplateJinja bool
 	sentenceBert      bool
 	modulesJSON       bool
@@ -149,7 +153,7 @@ type modelPackDirIndex struct {
 // pre-fetched listing. Returns true if the index is empty (no listing
 // available) so callers fall through to the existing ReadFile probe —
 // the precise root-stat is preserved in that path. The name argument
-// is one of the six recognised optional-config filenames; anything
+// is one of the seven recognised optional-config filenames; anything
 // else returns true (let the caller perform the normal probe).
 func (d *modelPackDirIndex) has(name string) bool {
 	if d == nil || !d.populated {
@@ -162,6 +166,8 @@ func (d *modelPackDirIndex) has(name string) bool {
 		return d.codebookConfig
 	case "tokenizer_config.json":
 		return d.tokenizerConfig
+	case "tokenizer.json":
+		return d.tokenizerJSON
 	case "chat_template.jinja":
 		return d.chatTemplateJinja
 	case "sentence_bert_config.json":
@@ -185,6 +191,8 @@ func (d *modelPackDirIndex) record(basename string) {
 		d.codebookConfig = true
 	case "tokenizer_config.json":
 		d.tokenizerConfig = true
+	case "tokenizer.json":
+		d.tokenizerJSON = true
 	case "chat_template.jinja":
 		d.chatTemplateJinja = true
 	case "sentence_bert_config.json":
@@ -230,8 +238,11 @@ func inspectModelPackWeights(pack *mp.ModelPack, resolvedPath, root string, dir 
 			}
 		}
 	}
-	sort.Strings(safetensors)
-	sort.Strings(ggufs)
+	// PathGlob returns lexically sorted results (filepath.Glob spec),
+	// and the single-file entry paths above each hand us a 1-element
+	// slice. Bucketing preserves the sorted order so the explicit
+	// sort.Strings calls were redundant — drop them to skip the
+	// pdqsort interface boxing on every Inspect.
 	for _, path := range safetensors {
 		if info := core.Stat(path); info.OK {
 			pack.WeightBytes += uint64(info.Value.(core.FsFileInfo).Size())
@@ -432,8 +443,17 @@ func cloneGGUFQuantizationInfo(info gguf.QuantizationInfo) *gguf.QuantizationInf
 	return &cloned
 }
 
-func inspectModelPackTokenizer(pack *mp.ModelPack, root string) {
+func inspectModelPackTokenizer(pack *mp.ModelPack, root string, dir *modelPackDirIndex) {
 	tokenizerPath := core.PathJoin(root, "tokenizer.json")
+	// Skip the syscall + Result alloc when the directory listing the
+	// weight inspector already gathered shows no tokenizer.json — the
+	// MissingTokenizer issue path is the same shape either way, just
+	// without an open()-returns-ENOENT round trip on every Inspect of
+	// a weights-only or partial-download model pack.
+	if !dir.has("tokenizer.json") {
+		pack.AddIssue(mp.ModelPackIssueError, mp.ModelPackIssueMissingTokenizer, "tokenizer.json is required", tokenizerPath)
+		return
+	}
 	// Single I/O round-trip: ReadFile already surfaces a stat-shaped
 	// "does not exist" via core.IsNotExist, so the prior explicit Stat
 	// was a duplicate syscall (and a duplicate Result alloc) on every
@@ -628,13 +648,12 @@ func inspectModelPackTaskProfiles(pack *mp.ModelPack, root string, dir *modelPac
 	if pack == nil {
 		return
 	}
+	// inspectModelPackArchitecture already resolved + cached the
+	// profile pointer (or left it nil for unsupported architectures);
+	// consult it directly rather than re-entering
+	// LookupArchitectureProfileRef which would just repeat the same
+	// negative lookup on every unsupported pack.
 	arch := pack.ArchitectureProfile
-	if arch == nil && pack.Architecture != "" {
-		if resolved, ok := profile.LookupArchitectureProfileRef(pack.Architecture); ok {
-			pack.ArchitectureProfile = resolved
-			arch = resolved
-		}
-	}
 	if arch == nil {
 		return
 	}
@@ -707,8 +726,10 @@ func readSentenceBertMaxSequence(root string, dir *modelPackDirIndex) (int, bool
 }
 
 func readSentenceTransformerPooling(root string) (string, bool) {
+	// PathGlob (filepath.Glob) returns lexically sorted results, so
+	// the explicit sort.Strings was redundant work on every embedding
+	// inspect.
 	paths := core.PathGlob(core.PathJoin(root, "*_Pooling", "config.json"))
-	sort.Strings(paths)
 	for _, path := range paths {
 		read := core.ReadFile(path)
 		if !read.OK {
@@ -903,15 +924,19 @@ func finalizeModelPack(pack *mp.ModelPack) {
 		nativeRuntime = pack.ArchitectureProfile.NativeRuntime
 	}
 	chatOK := pack.HasChatTemplate || !requiresChat
+	// HasErrorIssue scans pack.Issues for any error-severity entry —
+	// cache it once so NativeLoadable + OK share one walk instead of
+	// duplicating the scan for every finalize call.
+	hasError := pack.HasErrorIssue()
 	pack.NativeLoadable = pack.SupportedArchitecture &&
 		nativeRuntime &&
 		pack.ConfigPath != "" &&
 		pack.HasTokenizer &&
 		chatOK &&
 		(pack.Format == mp.ModelPackFormatSafetensors || pack.Format == mp.ModelPackFormatGGUF) &&
-		!pack.HasErrorIssue()
+		!hasError
 	pack.RequiresPythonConversion = !pack.NativeLoadable
-	pack.OK = !pack.HasErrorIssue()
+	pack.OK = !hasError
 }
 
 // SupportsArchitecture reports whether the named architecture has a known
