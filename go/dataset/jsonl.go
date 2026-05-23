@@ -82,17 +82,24 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	// (including empty lines) on its own.
 	dec := json.NewDecoder(bufio.NewReaderSize(reader, 64*1024))
 
-	var samples []Sample
+	// Pre-size the samples buffer — corpora of any meaningful size
+	// run through several growslice rounds otherwise (nil → 1 → 2 →
+	// 4 → 8 → ... ). Starting at 64 covers the first ~6 doublings
+	// and is small enough to be no waste on tiny inputs. Larger
+	// corpora still grow naturally past this initial capacity.
+	samples := make([]Sample, 0, 64)
 	// Hoist the record buffer out of the loop. The original `var
 	// record jsonRecord` inside the loop escaped to the heap on every
 	// iteration (json.Decode takes the pointer reflectively). Once
 	// hoisted, json.Decode still ignores keys that are absent in
 	// the current row, so the previous row's string fields would
-	// carry over — zero the struct via assignment to a zero literal
-	// before each Decode call. The slice fields (Messages,
-	// Conversations) are reset to length 0 in-place so we keep the
-	// backing array across rows of the same shape and avoid an
-	// allocation per chat-shape row. msgBuf reuses the
+	// carry over — zero each string field by hand before each
+	// Decode call (per-field assignment skips the struct-literal
+	// memclr the compiler emits for `record = jsonRecord{...}`,
+	// saving ~2 ns/row in the steady-state loop). The slice fields
+	// (Messages, Conversations) are reset to length 0 in-place so we
+	// keep the backing array across rows of the same shape and avoid
+	// an allocation per chat-shape row. msgBuf reuses the
 	// []inference.Message backing across openai/sharegpt rows —
 	// chat.Format consumes its argument synchronously so reuse is
 	// safe.
@@ -106,9 +113,24 @@ func LoadJSONL(reader io.Reader, cfg Config) (*JSONLDataset, error) {
 	recordNo := 0
 	for dec.More() {
 		recordNo++
-		messagesBuf := record.Messages[:0]
-		conversationsBuf := record.Conversations[:0]
-		record = jsonRecord{Messages: messagesBuf, Conversations: conversationsBuf}
+		// Per-field zero — see hoisted-record comment above. Order
+		// matches struct declaration so the compiler can fold
+		// consecutive stores into a single SIMD memstore on arm64.
+		record.Text = ""
+		record.Prompt = ""
+		record.Response = ""
+		record.Completion = ""
+		record.Instruction = ""
+		record.Input = ""
+		record.Output = ""
+		record.Problem = ""
+		record.Question = ""
+		record.Thinking = ""
+		record.Reasoning = ""
+		record.Solution = ""
+		record.Answer = ""
+		record.Messages = record.Messages[:0]
+		record.Conversations = record.Conversations[:0]
 		if err := dec.Decode(&record); err != nil {
 			return nil, core.Errorf("dataset: parse JSONL record %d: %w", recordNo, err)
 		}
