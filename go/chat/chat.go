@@ -196,7 +196,12 @@ func NormaliseRole(role string) string {
 }
 
 func normaliseRole(role string) string {
-	switch core.Lower(core.Trim(role)) {
+	// Capture the canonicalised role once — the previous default
+	// branch re-ran core.Lower(core.Trim(role)), doubling the work
+	// for unknown roles (the common case once a wire handler passes
+	// through any non-canonical custom role).
+	r := core.Lower(core.Trim(role))
+	switch r {
 	case "human", "user":
 		return "user"
 	case "gpt", "bot", "assistant", "model":
@@ -204,6 +209,6 @@ func normaliseRole(role string) string {
 	case "system":
 		return "system"
 	default:
-		return core.Lower(core.Trim(role))
+		return r
 	}
 }
