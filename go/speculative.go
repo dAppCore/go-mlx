@@ -116,13 +116,16 @@ func (m *Model) GenerateSpeculative(ctx context.Context, draft *Model, prompt st
 	if maxTokens == 0 {
 		maxTokens = generateCfg.MaxTokens
 	}
+	// Share generateCfg by pointer across both modelDecodeGenerate calls
+	// — collapses the prior pair of by-value spills into one heap-resident
+	// GenerateConfig that both target + draft closures read from.
 	return decode.Speculative(ctx, decode.SpeculativeConfig{
 		Prompt:         prompt,
 		MaxTokens:      maxTokens,
 		DraftTokens:    cfg.DraftTokens,
 		GenerateConfig: decode.GenerateConfig{MaxTokens: maxTokens},
-		TargetGenerate: modelDecodeGenerate(m, generateCfg),
-		DraftGenerate:  modelDecodeGenerate(draft, generateCfg),
+		TargetGenerate: modelDecodeGenerate(m, &generateCfg),
+		DraftGenerate:  modelDecodeGenerate(draft, &generateCfg),
 	})
 }
 

@@ -501,15 +501,22 @@ func decodeTokensPerSecond(tokens int, duration time.Duration) float64 {
 }
 
 func benchModelDecodeGenerate(model *Model) decode.GenerateFunc {
-	return modelDecodeGenerate(model, DefaultGenerateConfig())
+	base := DefaultGenerateConfig()
+	return modelDecodeGenerate(model, &base)
 }
 
-func modelDecodeGenerate(model *Model, base GenerateConfig) decode.GenerateFunc {
+// modelDecodeGenerate accepts the shared base config by pointer so the
+// caller controls its lifetime — both legs of decode.Speculative
+// (target + draft) point at the same GenerateConfig instance, collapsing
+// the prior two by-value spills into one. The closure now captures two
+// 8-byte pointers (model + base), keeping the closure storage compact
+// and removing the moved-to-heap step on the 152-byte GenerateConfig.
+func modelDecodeGenerate(model *Model, base *GenerateConfig) decode.GenerateFunc {
 	return func(ctx context.Context, prompt string, cfg decode.GenerateConfig) (decode.Generation, error) {
 		if model == nil || model.model == nil {
 			return decode.Generation{}, errModelDecodeNil
 		}
-		generateCfg := base
+		generateCfg := *base
 		if cfg.MaxTokens > 0 {
 			generateCfg.MaxTokens = cfg.MaxTokens
 		}
