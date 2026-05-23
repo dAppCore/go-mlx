@@ -398,9 +398,10 @@ func (s *Store) viewURI(ctx context.Context, uri string) (viewResponse, error) {
 }
 
 func (s *Store) view(ctx context.Context, selector string, value string, chunkID int) (viewResponse, error) {
-	if err := s.ready(); err != nil {
-		return viewResponse{}, err
-	}
+	// No explicit ready() check — s.run() below calls runInput which
+	// already does it. Removing the duplicate trims 2 core.Trim calls
+	// per view() (path + bin) plus the nil-store check. Material on
+	// Search's per-hit fan-out (N view() calls per query).
 	out, err := s.run(ctx, "view", s.path, selector, value, "--json")
 	if err != nil {
 		if commandLooksNotFound(err) {
