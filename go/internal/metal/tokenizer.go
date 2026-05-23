@@ -125,24 +125,15 @@ type tokenizerJSON struct {
 }
 
 // indexIn returns the byte position of substr in s, or -1 if not found.
-// Replaces strings.Index without importing the strings package.
+// Routes through core.Index — stdlib substring search uses Rabin-Karp /
+// two-way under the hood, an order of magnitude faster than the naive
+// O(n*m) byte-walk this used to do because every iteration constructed
+// a fresh `s[i:i+subLen] == substr` slice header for comparison.
 //
 //	pos := indexIn("hello world", "world") // → 6
 //	pos := indexIn("hello", "xyz")         // → -1
 func indexIn(s, substr string) int {
-	subLen := len(substr)
-	if subLen == 0 {
-		return 0
-	}
-	if subLen > len(s) {
-		return -1
-	}
-	for i := range len(s) - subLen + 1 {
-		if s[i:i+subLen] == substr {
-			return i
-		}
-	}
-	return -1
+	return core.Index(s, substr)
 }
 
 // LoadTokenizer reads a tokenizer.json file and creates a Tokenizer.
