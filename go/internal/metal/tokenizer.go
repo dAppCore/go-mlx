@@ -734,16 +734,60 @@ func (t *Tokenizer) DecodeOne(id int32) string {
 
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.
 func (t *Tokenizer) decodeGPT2Bytes(s string) string {
-	var buf []byte
+	if s == "" {
+		return ""
+	}
+	// Pre-size to the input byte length — GPT-2 maps every rune to exactly
+	// one byte (the encoder covers all 256 source bytes), so output bytes
+	// ≤ input bytes (every multi-byte rune collapses to 1 byte; ASCII
+	// runes stay 1:1). One allocation, no geometric growth.
+	//
+	// AsString wraps the freshly built buffer in a zero-copy string view —
+	// the prior `string(buf)` did a full copy.
+	buf := make([]byte, 0, len(s))
 	for _, r := range s {
 		if b, ok := t.gpt2Decoder[r]; ok {
 			buf = append(buf, b)
-		} else {
-			// Non-mapped runes pass through as UTF-8
-			buf = append(buf, []byte(string(r))...)
+			continue
 		}
+		// Non-mapped runes pass through as UTF-8. Encode the rune
+		// directly into buf to avoid the intermediate `[]byte(string(r))`
+		// double allocation. utf8.EncodeRune writes up to 4 bytes; grow
+		// buf inline rather than detouring through a per-rune string.
+		var enc [4]byte
+		n := utf8EncodeRune(enc[:], r)
+		buf = append(buf, enc[:n]...)
 	}
-	return string(buf)
+	return core.AsString(buf)
+}
+
+// utf8EncodeRune writes the UTF-8 encoding of r into p (which must be
+// at least 4 bytes) and returns the byte count. Inlined alternative to
+// importing unicode/utf8 in this file — the only caller is
+// decodeGPT2Bytes's non-mapped-rune fallback, which is effectively
+// unreachable for valid GPT-2 input (the encoder maps all 256 source
+// bytes) but kept as a safety net.
+func utf8EncodeRune(p []byte, r rune) int {
+	switch {
+	case r < 0x80:
+		p[0] = byte(r)
+		return 1
+	case r < 0x800:
+		p[0] = 0xC0 | byte(r>>6)
+		p[1] = 0x80 | (byte(r) & 0x3F)
+		return 2
+	case r < 0x10000:
+		p[0] = 0xE0 | byte(r>>12)
+		p[1] = 0x80 | (byte(r>>6) & 0x3F)
+		p[2] = 0x80 | (byte(r) & 0x3F)
+		return 3
+	default:
+		p[0] = 0xF0 | byte(r>>18)
+		p[1] = 0x80 | (byte(r>>12) & 0x3F)
+		p[2] = 0x80 | (byte(r>>6) & 0x3F)
+		p[3] = 0x80 | (byte(r) & 0x3F)
+		return 4
+	}
 }
 
 // BOSToken returns the beginning-of-sequence token ID.
