@@ -1463,8 +1463,11 @@ func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []in
 func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32, start, take int) {
 	pieceK, ownedK := cachePageView(k, kShape, start, take, int(kShape[2]))
 	pieceV, ownedV := cachePageView(v, vShape, start, take, int(vShape[2]))
-	pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, k.Dtype())
-	pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, v.Dtype())
+	// Zeros4 supersedes the []int32{...} literal — passing the 4 dims as
+	// scalars eliminates the per-call slice escape to heap (two per call:
+	// K shape + V shape).
+	pageK := Zeros4(kShape[0], kShape[1], int32(c.pageSize), kShape[3], k.Dtype())
+	pageV := Zeros4(vShape[0], vShape[1], int32(c.pageSize), vShape[3], v.Dtype())
 	// SliceUpdateInplace4: stack-buffer cgo-ints, no pool overhead.
 	updatedK := SliceUpdateInplace4(pageK, pieceK, 0, 0, 0, 0, kShape[0], kShape[1], int32(take), kShape[3])
 	updatedV := SliceUpdateInplace4(pageV, pieceV, 0, 0, 0, 0, vShape[0], vShape[1], int32(take), vShape[3])
@@ -1537,8 +1540,9 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 	tailK := Slice4(oldK, 0, 0, int32(tokens), 0, kShape[0], kShape[1], int32(pageLen), kShape[3])
 	tailV := Slice4(oldV, 0, 0, int32(tokens), 0, vShape[0], vShape[1], int32(pageLen), vShape[3])
 	if pagedKVPreallocEnabled() {
-		pageK := Zeros([]int32{kShape[0], kShape[1], int32(c.pageSize), kShape[3]}, oldK.Dtype())
-		pageV := Zeros([]int32{vShape[0], vShape[1], int32(c.pageSize), vShape[3]}, oldV.Dtype())
+		// Zeros4: scalar-pass dims, no slice escape (W11-A pattern).
+		pageK := Zeros4(kShape[0], kShape[1], int32(c.pageSize), kShape[3], oldK.Dtype())
+		pageV := Zeros4(vShape[0], vShape[1], int32(c.pageSize), vShape[3], oldV.Dtype())
 		c.kPages[0] = SliceUpdateInplace4(pageK, tailK, 0, 0, 0, 0, kShape[0], kShape[1], int32(newLen), kShape[3])
 		c.vPages[0] = SliceUpdateInplace4(pageV, tailV, 0, 0, 0, 0, vShape[0], vShape[1], int32(newLen), vShape[3])
 		Free(pageK, pageV)
