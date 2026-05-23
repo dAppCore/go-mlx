@@ -415,6 +415,12 @@ func (r *Recorder) Events() []Event {
 // share immutable references downstream.
 //
 //	out := probe.CloneEvent(event)
+//
+// Each non-nil payload is cloned through its own pointer allocation so
+// the per-payload alloc cost matches the per-payload size. Callers that
+// batch many clones (Recorder.Events) should reach for cloneEventInto
+// with a pre-allocated []cloneScratch — there a single slice make
+// absorbs every payload-pointer allocation across the batch.
 func CloneEvent(event Event) Event {
 	out := event
 	if event.Token != nil {
