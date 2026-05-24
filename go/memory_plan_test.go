@@ -76,6 +76,41 @@ func TestMemoryPlan_M3Ultra96GB_Good(t *testing.T) {
 	}
 }
 
+func TestMemoryPlan_ExplicitDefaultContextSurvivesPlannerClamp_Good(t *testing.T) {
+	coverageTokens := "ExplicitDefaultContext SurvivesPlannerClamp"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	plan := memory.Plan{ContextLength: 32768}
+	cfg := applyLoadOptions([]LoadOption{
+		WithContextLength(DefaultLocalContextLength),
+		WithMemoryPlan(plan),
+	})
+
+	got := applyMemoryPlanToLoadConfig("", cfg)
+
+	if got.ContextLength != DefaultLocalContextLength {
+		t.Fatalf("ContextLength = %d, want explicit default-length context %d", got.ContextLength, DefaultLocalContextLength)
+	}
+}
+
+func TestMemoryPlan_ImplicitDefaultContextCanUsePlannerClamp_Good(t *testing.T) {
+	coverageTokens := "ImplicitDefaultContext PlannerClamp"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	plan := memory.Plan{ContextLength: 32768}
+	cfg := applyLoadOptions([]LoadOption{
+		WithMemoryPlan(plan),
+	})
+
+	got := applyMemoryPlanToLoadConfig("", cfg)
+
+	if got.ContextLength != 32768 {
+		t.Fatalf("ContextLength = %d, want implicit default clamped by planner", got.ContextLength)
+	}
+}
+
 func TestMemoryPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {
 	plan := PlanMemory(MemoryPlanInput{
 		Device: DeviceInfo{

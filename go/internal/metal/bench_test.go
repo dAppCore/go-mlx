@@ -381,6 +381,24 @@ func BenchmarkSampler_TopKThenTopP_Vocab262k(b *testing.B) {
 	}
 }
 
+func BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	b.ResetTimer()
+	for b.Loop() {
+		tok := s.Sample(logits)
+		if err := Eval(tok); err != nil {
+			Free(tok)
+			b.Fatalf("Eval(sample): %v", err)
+		}
+		Free(tok)
+	}
+}
+
 func BenchmarkSampler_CompiledTopKThenTopP_Vocab262k(b *testing.B) {
 	b.ReportAllocs()
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)

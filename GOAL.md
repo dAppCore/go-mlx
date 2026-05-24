@@ -132,6 +132,22 @@ go-mlx's `3960`. Effective visible turn throughput is close but still behind:
 `75.103` versus llama.cpp's `76.898` wall-visible tok/s (`2.33%` gap). This is
 the current production-path evidence row, not final acceptance.
 
+Context planning correction, 2026-05-24: the row above still exposed a hidden
+planner clamp. `WithContextLength(131072)` used the same value as the package
+default, so the auto memory plan could silently restore the actual Metal K/V
+cache cap to the planner's `32768` row while the CLI load report still printed
+`131072`. `WithContextLength` now marks the context as explicit, and
+`applyMemoryPlanToLoadConfig` only clamps implicit defaults. The smoke report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-context-explicit-smoke.json`
+confirms `max_global_capacity=131072`, `max_local_capacity=512`, no fixed
+caches, and `local_window_leaked=false`. The short request-context trace
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-explicit-context-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+crosses the old `32768` cap and records `2/2` turns, `33728` final live tokens,
+`1069` generated/visible tokens, `88.085` raw decode tok/s, `78.883` effective
+turn tok/s, `9.711 GB` active-plus-cache, `3.151 GiB` RSS,
+`max_global_tokens=33726`, and `max_global_capacity=131072`. This removes the
+hidden context cutoff; it does not close the llama.cpp raw-decode gap.
+
 Runtime correction, 2026-05-24: the rejected paged full-K/V materialise owner
 path has now been physically retired from the runtime, not merely left unused
 by benchmark flags. `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE` is no longer a

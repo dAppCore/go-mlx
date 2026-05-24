@@ -144,7 +144,7 @@ func applyMemoryPlanToLoadConfig(modelPath string, cfg LoadConfig) LoadConfig {
 	default:
 		return cfg
 	}
-	if plan.ContextLength > 0 && (cfg.ContextLength == 0 || cfg.ContextLength == DefaultLocalContextLength) {
+	if plan.ContextLength > 0 && !cfg.contextLengthExplicit && (cfg.ContextLength == 0 || cfg.ContextLength == DefaultLocalContextLength) {
 		cfg.ContextLength = plan.ContextLength
 	}
 	if plan.ParallelSlots > 0 && (cfg.ParallelSlots == 0 || cfg.ParallelSlots == DefaultLocalParallelSlots) {

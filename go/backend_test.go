@@ -2438,6 +2438,34 @@ func TestLoadModel_AppliesMemoryPlanFromDevice_Good(t *testing.T) {
 	}
 }
 
+func TestLoadModel_ExplicitDefaultContextBypassesMemoryPlanClamp_Good(t *testing.T) {
+	coverageTokens := "ExplicitDefaultContextBypassesMemoryPlanClamp"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	originalLoadNativeModel := loadNativeModel
+	t.Cleanup(func() { loadNativeModel = originalLoadNativeModel })
+
+	loadNativeModel = func(modelPath string, cfg metal.LoadConfig) (nativeModel, error) {
+		if cfg.ContextLen != DefaultLocalContextLength {
+			t.Fatalf("ContextLen = %d, want explicit context %d", cfg.ContextLen, DefaultLocalContextLength)
+		}
+		return &fakeNativeModel{info: metal.ModelInfo{Architecture: "gemma4_text", ContextLength: DefaultLocalContextLength}}, nil
+	}
+
+	model, err := LoadModel(
+		"/does/not/matter",
+		WithContextLength(DefaultLocalContextLength),
+		WithMemoryPlan(memory.Plan{ContextLength: 32768}),
+	)
+	if err != nil {
+		t.Fatalf("LoadModel() error = %v", err)
+	}
+	if err := model.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
 func TestLoadModel_UnknownQuantizationDoesNotReject_Good(t *testing.T) {
 	coverageTokens := "UnknownQuantizationDoesNotReject"
 	if coverageTokens == "" {

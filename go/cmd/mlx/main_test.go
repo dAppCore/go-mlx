@@ -1987,9 +1987,9 @@ func TestStateRampProfileDefaultCompactionThresholdUsesModelContext_Good(t *test
 	if got != mlx.ProductionLaneHyperLongContextLength {
 		t.Fatalf("default compaction threshold = %d, want model context window", got)
 	}
-	opts.CompactionThresholdTokens = 64000
-	if got := stateRampProfileDefaultCompactionThreshold(opts, mlx.ModelInfo{ContextLength: mlx.ProductionLaneHyperLongContextLength}); got != 64000 {
-		t.Fatalf("explicit compaction threshold = %d, want 64000", got)
+	opts.CompactionThresholdTokens = 90000
+	if got := stateRampProfileDefaultCompactionThreshold(opts, mlx.ModelInfo{ContextLength: mlx.ProductionLaneHyperLongContextLength}); got != 90000 {
+		t.Fatalf("explicit compaction threshold = %d, want 90000", got)
 	}
 }
 
@@ -2104,7 +2104,7 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 	summary := summariseStateRampProfileTurns(time.Second, 30000, []stateRampProfileTurn{
 		{
 			Index:               1,
-			TokensAfterGenerate: 65000,
+			TokensAfterGenerate: 91000,
 			VisibleTokens:       512,
 			Metrics: mlx.Metrics{
 				GeneratedTokens: 512,
@@ -2113,7 +2113,7 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 		},
 		{
 			Index:               2,
-			TokensAfterGenerate: 78000,
+			TokensAfterGenerate: 97000,
 			VisibleTokens:       160,
 			OutputIssues:        []string{"visible_chat_control_token"},
 			Metrics: mlx.Metrics{
@@ -2123,7 +2123,7 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 		},
 		{
 			Index:               3,
-			TokensAfterGenerate: 83000,
+			TokensAfterGenerate: 99000,
 			VisibleTokens:       142,
 			OutputIssues:        []string{"visible_prompt_analysis"},
 			Metrics: mlx.Metrics{

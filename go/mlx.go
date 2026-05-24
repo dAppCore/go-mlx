@@ -435,26 +435,27 @@ func applyGenerateOptions(opts []GenerateOption) GenerateConfig {
 
 // LoadConfig holds root-package model loading parameters.
 type LoadConfig struct {
-	ContextLength        int
-	ParallelSlots        int
-	PromptCache          bool
-	PromptCacheMinTokens int
-	Quantization         int
-	Gemma4SlidingWindow  int
-	Device               string
-	AdapterPath          string
-	Medium               coreio.Medium
-	AutoMemoryPlan       bool
-	MemoryPlan           *memory.Plan
-	CachePolicy          memory.KVCachePolicy
-	CacheMode            memory.KVCacheMode
-	BatchSize            int
-	PrefillChunkSize     int
-	ExpectedQuantization int
-	MemoryLimitBytes     uint64
-	CacheLimitBytes      uint64
-	WiredLimitBytes      uint64
-	SplitInference       *inference.SplitInferencePlan
+	ContextLength         int
+	ParallelSlots         int
+	PromptCache           bool
+	PromptCacheMinTokens  int
+	Quantization          int
+	Gemma4SlidingWindow   int
+	Device                string
+	AdapterPath           string
+	Medium                coreio.Medium
+	AutoMemoryPlan        bool
+	MemoryPlan            *memory.Plan
+	CachePolicy           memory.KVCachePolicy
+	CacheMode             memory.KVCacheMode
+	BatchSize             int
+	PrefillChunkSize      int
+	ExpectedQuantization  int
+	MemoryLimitBytes      uint64
+	CacheLimitBytes       uint64
+	WiredLimitBytes       uint64
+	SplitInference        *inference.SplitInferencePlan
+	contextLengthExplicit bool
 }
 
 // DefaultLoadConfig returns sensible defaults for root-package loading.
@@ -475,7 +476,10 @@ type LoadOption func(*LoadConfig)
 
 // WithContextLength bounds the KV cache to the given context window.
 func WithContextLength(n int) LoadOption {
-	return func(c *LoadConfig) { c.ContextLength = n }
+	return func(c *LoadConfig) {
+		c.ContextLength = n
+		c.contextLengthExplicit = n > 0
+	}
 }
 
 // WithGemma4SlidingWindow caps Gemma 4 local sliding-window attention layers
