@@ -266,6 +266,15 @@ proves the JSON surface: a 4-token retained turn records `95.495 tok/s`,
 event summaries for `paged_kv.fast_concat.local` (`max_pages=2`,
 `max_tokens=512`) and `paged_kv.fast_concat.global` (`max_pages=2`,
 `max_tokens=1568`).
+Negative trace result, same date: disabling local-window fast concat and routing
+local multi-page decode through `ScaledDotProductAttentionPaged` removed
+`paged_kv.fast_concat.local` from the trace, but it was slower and did not
+improve memory at the `100k` boundary. The report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-100k-boundary-global-fastconcat-only-seed240524-go-mlx-gemma4-e2b-4bit-g1024.json`
+recorded `55.059 tok/s` raw decode versus the previous `63.247 tok/s`, with
+`prefetch_logits` rising to `12.487 ms/token`. Keep local fast concat in the
+current paged path; the next decode work should stay at the logits/materialise
+boundary or a fused native paged-attention path, not a local concat removal.
 
 Strict eval-boundary cleanup, 2026-05-24: `Model.Generate` and retained
 `ModelSession.Generate` now detach the evaluated logits array at the same

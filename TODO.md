@@ -8,6 +8,8 @@ container path real instead of a smoke-test packer.
 Active optimisation work must stay on the paged retained-State path. Do not use
 the archived 64Ki threshold branch or fixed Gemma 4 K/V lane for current
 benchmarks unless the user explicitly asks to reproduce old diagnostic rows.
+The CLI regression suite now includes a literal `64 * 1024` context request to
+prove that value is not a cache-family switch.
 
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 

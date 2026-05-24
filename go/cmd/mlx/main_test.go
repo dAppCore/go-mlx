@@ -865,6 +865,7 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 	}{
 		{name: "normal", contextLen: mlx.ProductionLaneContextLength},
 		{name: "opencode", contextLen: mlx.ProductionLaneLongContextLength},
+		{name: "archived_threshold", contextLen: 64 * 1024},
 		{name: "workflow_target", contextLen: 100000},
 		{name: "model_window", contextLen: mlx.ProductionLaneHyperLongContextLength},
 	} {
