@@ -998,6 +998,18 @@ improved from `2165 ns/op`, `18528 B/op`, `2 allocs/op` to `96.87 ns/op`,
 decode fix; it keeps warm State restore closer to the intended streaming
 layout before the pinned/mmap handoff work.
 
+Latest fixed-cache restore delta: fixed-cache snapshots already own exact
+prefix arrays, but `appendRestoreFixedCacheSnapshot` was copying those arrays
+through `cacheSnapshotFloatArrays` and then copying the prefix again into the
+restored fixed cache. The fixed-cache branch now borrows the snapshot arrays for
+the source read and only performs the destination-prefix copy; the same restore
+also hoists the default stream through `Zeros4WithStream` and
+`SliceUpdateInplace4WithStream`. The focused 26-cache Gemma 4 restore run moved
+from `452718 ns/op`, `4171 B/op`, `54 allocs/op` to `419152 ns/op`,
+`4171 B/op`, `54 allocs/op`; repeated runs remain noisy under MLX eval
+(`428445` to `466049 ns/op`), so treat this as a small fixed-cache restore
+cleanup, not a benchmark acceptance row.
+
 Current open gates:
 
 - [x] Retained State can wake, append, generate, and report wall/decode/append,

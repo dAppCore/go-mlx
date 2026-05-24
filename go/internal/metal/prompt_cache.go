@@ -1782,11 +1782,13 @@ func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 		return nil, nil, core.NewError("prompt cache: fixed cache capacity is smaller than prefix")
 	}
 
-	keys, values, err := cacheSnapshotFloatArrays(snapshot)
+	keys, values, releaseFloatArrays, err := cacheSnapshotFloatArraysForFixedRestore(snapshot)
 	if err != nil {
 		return nil, nil, err
 	}
-	defer Free(keys, values)
+	if releaseFloatArrays {
+		defer Free(keys, values)
+	}
 
 	keyPrefix, err := copyCachePrefix(keys, prefixLen)
 	if err != nil {
@@ -1829,19 +1831,31 @@ func appendRestoreFixedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 	if hasStorageDType {
 		cache = NewFixedKVCacheWithDType(maxSize, storageDType)
 	}
+	stream := DefaultStream()
 	// Zeros4 routes through the rank-4 scalar-pass cgo path — the
 	// per-call `[]int32{...}` literal escapes to heap because cgo's
 	// _cgoCheckPointer forces escape on the Go-side slice that Zeros
 	// takes (per [[feedback_cgo_stack_array_escapes_to_heap]]).
-	cache.keys = Zeros4(kShape[0], kShape[1], int32(maxSize), kShape[3], keyPrefix.Dtype())
-	cache.values = Zeros4(vShape[0], vShape[1], int32(maxSize), vShape[3], valuePrefix.Dtype())
+	cache.keys = Zeros4WithStream(kShape[0], kShape[1], int32(maxSize), kShape[3], keyPrefix.Dtype(), stream)
+	cache.values = Zeros4WithStream(vShape[0], vShape[1], int32(maxSize), vShape[3], valuePrefix.Dtype(), stream)
 	oldK, oldV := cache.keys, cache.values
-	cache.keys = SliceUpdateInplace4(cache.keys, keyPrefix, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3])
-	cache.values = SliceUpdateInplace4(cache.values, valuePrefix, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3])
+	cache.keys = SliceUpdateInplace4WithStream(cache.keys, keyPrefix, 0, 0, 0, 0, kShape[0], kShape[1], int32(prefixLen), kShape[3], stream)
+	cache.values = SliceUpdateInplace4WithStream(cache.values, valuePrefix, 0, 0, 0, 0, vShape[0], vShape[1], int32(prefixLen), vShape[3], stream)
 	Free(oldK, oldV)
 	cache.offset = offset
 	cache.length = prefixLen
 	return cache, append(dst, cache.keys, cache.values), nil
+}
+
+func cacheSnapshotFloatArraysForFixedRestore(snapshot cacheSnapshot) (*Array, *Array, bool, error) {
+	if snapshot.mode == KVCacheModeFixed {
+		if snapshot.keys == nil || snapshot.values == nil {
+			return nil, nil, false, core.NewError("prompt cache: invalid fixed cache snapshot")
+		}
+		return snapshot.keys, snapshot.values, false, nil
+	}
+	keys, values, err := cacheSnapshotFloatArrays(snapshot)
+	return keys, values, true, err
 }
 
 // restoreQuantizedCacheSnapshot — see restoreFixedCacheSnapshot.

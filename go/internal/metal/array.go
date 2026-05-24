@@ -334,11 +334,18 @@ func Zeros(shape []int32, dtype DType) *Array {
 //
 //	page := metal.Zeros4(B, H, int32(pageSize), D, dtype)
 func Zeros4(s0, s1, s2, s3 int32, dtype DType) *Array {
+	return Zeros4WithStream(s0, s1, s2, s3, dtype, DefaultStream())
+}
+
+// Zeros4WithStream is the stream-passing sibling of Zeros4. Use it in hot
+// restore/update loops that already issue several ops on the same stream so
+// they do not repeatedly resolve DefaultStream.
+func Zeros4WithStream(s0, s1, s2, s3 int32, dtype DType, stream *Stream) *Array {
 	Init()
 	tt := newArray("ZEROS")
 	C.mlx_zeros_inline_4(&tt.ctx,
 		C.int32_t(s0), C.int32_t(s1), C.int32_t(s2), C.int32_t(s3),
-		C.mlx_dtype(dtype), DefaultStream().ctx)
+		C.mlx_dtype(dtype), stream.ctx)
 	return tt
 }
 

@@ -228,6 +228,21 @@ func TestArray_Zeros_Int32_Good(t *testing.T) {
 	}
 }
 
+func TestArray_Zeros4WithStream_Good(t *testing.T) {
+	a := Zeros4WithStream(1, 2, 3, 4, DTypeFloat32, DefaultStream())
+	Materialize(a)
+
+	if a.Dtype() != DTypeFloat32 {
+		t.Errorf("dtype = %v, want float32", a.Dtype())
+	}
+	if shape := a.Shape(); len(shape) != 4 || shape[0] != 1 || shape[1] != 2 || shape[2] != 3 || shape[3] != 4 {
+		t.Errorf("shape = %v, want [1 2 3 4]", shape)
+	}
+	if a.Size() != 24 {
+		t.Errorf("size = %d, want 24", a.Size())
+	}
+}
+
 // --- Shape and metadata ---
 
 func TestArray_Shape3D_Good(t *testing.T) {
