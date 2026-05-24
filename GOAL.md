@@ -91,10 +91,10 @@ resulting container stores the compact marker metadata in the JSON head
 (`kind=go-mlx/state-kv`, folded index
 `mlx://state-ramp/fold/1779612942781065000/folded/index`) and the raw `.mvlog`
 State log as the binary tail. The smoke packed `81,857,007` State payload bytes
-into an `81,857,631` byte `.kv` file. This is a format proof, not the final
-streaming path: the current Enchantrix API still accepts `Payload []byte`, so
-large production packs need the streaming `trix` helpers requested in
-`TODO.md` before this becomes the hot 100k-token State path.
+into an `81,857,631` byte `.kv` file. The first format proof used the old
+in-memory `Payload []byte` helper; the current code path now uses the streaming
+`trix.EncodeStream` / `ReadHeaderInfo` helpers so production packs do not load
+the full State payload into a Go slice.
 Follow-up direct `.kv` wake now works as a bridge:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-continuity-onefile-kv-wake.json`
 ran `state-wake-profile -marker-file
@@ -112,10 +112,24 @@ materialized the `.kv` binary tail to a temporary State file, opened it with
 confirmed the temp payload was removed after wake, restored the same `206`
 folded prefix tokens, appended `204` prompt tokens, and generated `32` visible
 tokens at `104.801 tok/s` decode. This is now relocatable at the filestore API
-level while preserving strict segment validation; it is still a bridge rather
-than the final zero-copy path because Enchantrix still decodes the full payload
-into memory. The content caveat remains: this short wake output is
-prompt-analysis text, so it is format/continuity evidence only.
+level while preserving strict segment validation.
+
+Code update, same date: `state-wake-profile -marker-file <session.kv>` now
+supersedes the temp-materialized bridge. It reads the Trix header only, passes
+`state_store_payload_offset` and `state_store_payload_bytes` through the CLI
+report/config, and opens the `.kv` file itself with
+`filestore.OpenRegionWithSegmentAlias`. The State refs keep their original
+`.mvlog` segment as an alias, but payload reads map to
+`payload_offset + frame_offset` inside the container and the embedded region is
+read-only. Focused tests cover aliased refs, physical refs, wrong-segment
+rejection, URI lookup, and write rejection, and the broad Go lane passes on
+`go1.26.3`. The new region benchmarks record `7016 ns/op` for 64 KiB
+`ResolveRefBytes`, `658.8 ns/op` for a 1000-record 64-byte ref read, and
+`4.346 ms/op` for a 10k-record region open. Remaining production work is the
+true zero-copy/mmap/pinned handoff from this payload window into MLX-ready
+State vectors.
+The content caveat remains: the short wake output is prompt-analysis text, so
+this is format/continuity evidence only.
 
 ### Methodology Correction
 

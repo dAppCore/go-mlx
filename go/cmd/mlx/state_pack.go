@@ -38,9 +38,11 @@ type statePackReport struct {
 }
 
 type stateWakeProfileMarkerSource struct {
-	Marker       stateRampFoldMarker
-	SegmentAlias string
-	Cleanup      func()
+	Marker        stateRampFoldMarker
+	SegmentAlias  string
+	PayloadOffset int64
+	PayloadBytes  int64
+	Cleanup       func()
 }
 
 func runStatePackCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -233,23 +235,17 @@ func stateKVContainerMarkerSourceFromFile(containerPath string) (stateWakeProfil
 	if err != nil {
 		return stateWakeProfileMarkerSource{}, err
 	}
-	if _, err := file.Seek(info.PayloadOffset, io.SeekStart); err != nil {
-		return stateWakeProfileMarkerSource{}, err
-	}
 	marker, err := stateKVContainerMarkerFromHeader(info.Header, info.PayloadBytes)
 	if err != nil {
 		return stateWakeProfileMarkerSource{}, err
 	}
 	segmentAlias := marker.StorePath
-	statePath, cleanup, err := stateKVContainerMaterializeState(containerPath, file, info.PayloadBytes)
-	if err != nil {
-		return stateWakeProfileMarkerSource{}, err
-	}
-	marker.StorePath = statePath
+	marker.StorePath = containerPath
 	return stateWakeProfileMarkerSource{
-		Marker:       marker,
-		SegmentAlias: segmentAlias,
-		Cleanup:      cleanup,
+		Marker:        marker,
+		SegmentAlias:  segmentAlias,
+		PayloadOffset: info.PayloadOffset,
+		PayloadBytes:  info.PayloadBytes,
 	}, nil
 }
 
@@ -303,48 +299,4 @@ func stateKVHeaderInt64(header map[string]interface{}, key string) int64 {
 	default:
 		return 0
 	}
-}
-
-func stateKVContainerMaterializeState(containerPath string, payload io.Reader, payloadBytes int64) (string, func(), error) {
-	dirResult := core.MkdirTemp("", "go-mlx-state-kv-*")
-	if !dirResult.OK {
-		return "", nil, dirResult.Value.(error)
-	}
-	dir := dirResult.Value.(string)
-	name := core.PathBase(containerPath)
-	if ext := core.PathExt(name); ext != "" {
-		name = core.TrimSuffix(name, ext)
-	}
-	if name == "" {
-		name = "state"
-	}
-	statePath := core.PathJoin(dir, name+".mvlog")
-	fileResult := core.OpenFile(statePath, core.O_CREATE|core.O_TRUNC|core.O_WRONLY, 0o600)
-	if !fileResult.OK {
-		core.RemoveAll(dir)
-		return "", nil, fileResult.Value.(error)
-	}
-	file := fileResult.Value.(*core.OSFile)
-	var copyErr error
-	written := int64(0)
-	if payloadBytes > 0 {
-		written, copyErr = io.Copy(file, io.LimitReader(payload, payloadBytes))
-	} else {
-		written, copyErr = io.Copy(file, payload)
-	}
-	if closeErr := file.Close(); copyErr == nil {
-		copyErr = closeErr
-	}
-	if copyErr != nil {
-		core.RemoveAll(dir)
-		return "", nil, copyErr
-	}
-	if payloadBytes > 0 && written != payloadBytes {
-		core.RemoveAll(dir)
-		return "", nil, core.Errorf("State KV payload copied %d bytes, want %d", written, payloadBytes)
-	}
-	cleanup := func() {
-		core.RemoveAll(dir)
-	}
-	return statePath, cleanup, nil
 }

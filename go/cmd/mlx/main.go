@@ -484,20 +484,22 @@ type stateRampProfileOptions struct {
 }
 
 type stateWakeProfileOptions struct {
-	StateStorePath         string                    `json:"state_store_path,omitempty"`
-	StateStoreSegmentAlias string                    `json:"state_store_segment_alias,omitempty"`
-	IndexURI               string                    `json:"index_uri,omitempty"`
-	Prompt                 string                    `json:"prompt,omitempty"`
-	ChatTemplate           string                    `json:"chat_template,omitempty"`
-	EnableThinking         bool                      `json:"enable_thinking,omitempty"`
-	MaxTokens              int                       `json:"max_tokens,omitempty"`
-	Temperature            float64                   `json:"temperature,omitempty"`
-	TopP                   float64                   `json:"top_p,omitempty"`
-	TopK                   int                       `json:"top_k,omitempty"`
-	RepeatPenalty          float64                   `json:"repeat_penalty,omitempty"`
-	SuppressEOS            bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput          bool                      `json:"include_output,omitempty"`
-	SafetyLimits           driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	StateStorePath          string                    `json:"state_store_path,omitempty"`
+	StateStoreSegmentAlias  string                    `json:"state_store_segment_alias,omitempty"`
+	StateStorePayloadOffset int64                     `json:"state_store_payload_offset,omitempty"`
+	StateStorePayloadBytes  int64                     `json:"state_store_payload_bytes,omitempty"`
+	IndexURI                string                    `json:"index_uri,omitempty"`
+	Prompt                  string                    `json:"prompt,omitempty"`
+	ChatTemplate            string                    `json:"chat_template,omitempty"`
+	EnableThinking          bool                      `json:"enable_thinking,omitempty"`
+	MaxTokens               int                       `json:"max_tokens,omitempty"`
+	Temperature             float64                   `json:"temperature,omitempty"`
+	TopP                    float64                   `json:"top_p,omitempty"`
+	TopK                    int                       `json:"top_k,omitempty"`
+	RepeatPenalty           float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS             bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput           bool                      `json:"include_output,omitempty"`
+	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateRampProfileReport struct {
@@ -658,32 +660,34 @@ type stateRampFoldMarker struct {
 }
 
 type stateWakeProfileReport struct {
-	Version           int                       `json:"version"`
-	ModelPath         string                    `json:"model_path"`
-	LoadDuration      time.Duration             `json:"load_duration,omitempty"`
-	Load              *tuneProfileLoadSettings  `json:"load,omitempty"`
-	StateStorePath    string                    `json:"state_store_path"`
-	StateStoreAlias   string                    `json:"state_store_segment_alias,omitempty"`
-	IndexURI          string                    `json:"index_uri"`
-	PromptBytes       int                       `json:"prompt_bytes"`
-	PromptTokens      int                       `json:"prompt_tokens,omitempty"`
-	ChatTemplate      string                    `json:"chat_template,omitempty"`
-	EnableThinking    bool                      `json:"enable_thinking,omitempty"`
-	MaxTokens         int                       `json:"max_tokens"`
-	Temperature       float64                   `json:"temperature,omitempty"`
-	TopP              float64                   `json:"top_p,omitempty"`
-	TopK              int                       `json:"top_k,omitempty"`
-	RepeatPenalty     float64                   `json:"repeat_penalty,omitempty"`
-	SuppressEOS       bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput     bool                      `json:"include_output,omitempty"`
-	SafetyLimits      driverProfileSafetyLimits `json:"safety_limits,omitempty"`
-	RuntimeGates      map[string]string         `json:"runtime_gates,omitempty"`
-	StoreOpenDuration time.Duration             `json:"store_open_duration,omitempty"`
-	WakeDuration      time.Duration             `json:"wake_duration,omitempty"`
-	Wake              *agent.WakeReport         `json:"wake,omitempty"`
-	Turn              *stateRampProfileTurn     `json:"turn,omitempty"`
-	EstimatedEnergy   *stateWakeProfileEnergy   `json:"estimated_energy,omitempty"`
-	Error             string                    `json:"error,omitempty"`
+	Version                 int                       `json:"version"`
+	ModelPath               string                    `json:"model_path"`
+	LoadDuration            time.Duration             `json:"load_duration,omitempty"`
+	Load                    *tuneProfileLoadSettings  `json:"load,omitempty"`
+	StateStorePath          string                    `json:"state_store_path"`
+	StateStoreAlias         string                    `json:"state_store_segment_alias,omitempty"`
+	StateStorePayloadOffset int64                     `json:"state_store_payload_offset,omitempty"`
+	StateStorePayloadBytes  int64                     `json:"state_store_payload_bytes,omitempty"`
+	IndexURI                string                    `json:"index_uri"`
+	PromptBytes             int                       `json:"prompt_bytes"`
+	PromptTokens            int                       `json:"prompt_tokens,omitempty"`
+	ChatTemplate            string                    `json:"chat_template,omitempty"`
+	EnableThinking          bool                      `json:"enable_thinking,omitempty"`
+	MaxTokens               int                       `json:"max_tokens"`
+	Temperature             float64                   `json:"temperature,omitempty"`
+	TopP                    float64                   `json:"top_p,omitempty"`
+	TopK                    int                       `json:"top_k,omitempty"`
+	RepeatPenalty           float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS             bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput           bool                      `json:"include_output,omitempty"`
+	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	RuntimeGates            map[string]string         `json:"runtime_gates,omitempty"`
+	StoreOpenDuration       time.Duration             `json:"store_open_duration,omitempty"`
+	WakeDuration            time.Duration             `json:"wake_duration,omitempty"`
+	Wake                    *agent.WakeReport         `json:"wake,omitempty"`
+	Turn                    *stateRampProfileTurn     `json:"turn,omitempty"`
+	EstimatedEnergy         *stateWakeProfileEnergy   `json:"estimated_energy,omitempty"`
+	Error                   string                    `json:"error,omitempty"`
 }
 
 type stateWakeProfileEnergy struct {
@@ -3989,6 +3993,8 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 	var markerCleanup func()
 	stateStoreSegmentAlias := ""
+	stateStorePayloadOffset := int64(0)
+	stateStorePayloadBytes := int64(0)
 	if core.Trim(*markerFile) != "" {
 		markerSource, err := stateWakeProfileMarkerSourceFromFile(*markerFile)
 		if err != nil {
@@ -4006,6 +4012,8 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 			*indexURI = markerSource.Marker.IndexURI
 		}
 		stateStoreSegmentAlias = markerSource.SegmentAlias
+		stateStorePayloadOffset = markerSource.PayloadOffset
+		stateStorePayloadBytes = markerSource.PayloadBytes
 	}
 	if core.Trim(*stateStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: state store path is required\n", cliName()))
@@ -4096,19 +4104,21 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 
 	report, err := runStateWakeProfileGuarded(ctx, fs.Arg(0), loadOptions, stateWakeProfileOptions{
-		StateStorePath:         core.Trim(*stateStorePath),
-		StateStoreSegmentAlias: core.Trim(stateStoreSegmentAlias),
-		IndexURI:               core.Trim(*indexURI),
-		Prompt:                 *prompt,
-		ChatTemplate:           *chatTemplate,
-		EnableThinking:         *enableThinking,
-		MaxTokens:              *maxTokens,
-		Temperature:            *temperature,
-		TopP:                   *topP,
-		TopK:                   *topK,
-		RepeatPenalty:          *repeatPenalty,
-		SuppressEOS:            *suppressEOS,
-		IncludeOutput:          *includeOutput,
+		StateStorePath:          core.Trim(*stateStorePath),
+		StateStoreSegmentAlias:  core.Trim(stateStoreSegmentAlias),
+		StateStorePayloadOffset: stateStorePayloadOffset,
+		StateStorePayloadBytes:  stateStorePayloadBytes,
+		IndexURI:                core.Trim(*indexURI),
+		Prompt:                  *prompt,
+		ChatTemplate:            *chatTemplate,
+		EnableThinking:          *enableThinking,
+		MaxTokens:               *maxTokens,
+		Temperature:             *temperature,
+		TopP:                    *topP,
+		TopK:                    *topK,
+		RepeatPenalty:           *repeatPenalty,
+		SuppressEOS:             *suppressEOS,
+		IncludeOutput:           *includeOutput,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -4128,21 +4138,23 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &stateWakeProfileReport{
-				Version:         1,
-				ModelPath:       fs.Arg(0),
-				StateStorePath:  core.Trim(*stateStorePath),
-				StateStoreAlias: core.Trim(stateStoreSegmentAlias),
-				IndexURI:        core.Trim(*indexURI),
-				PromptBytes:     len(*prompt),
-				ChatTemplate:    *chatTemplate,
-				EnableThinking:  *enableThinking,
-				MaxTokens:       *maxTokens,
-				Temperature:     *temperature,
-				TopP:            *topP,
-				TopK:            *topK,
-				RepeatPenalty:   *repeatPenalty,
-				SuppressEOS:     *suppressEOS,
-				IncludeOutput:   *includeOutput,
+				Version:                 1,
+				ModelPath:               fs.Arg(0),
+				StateStorePath:          core.Trim(*stateStorePath),
+				StateStoreAlias:         core.Trim(stateStoreSegmentAlias),
+				StateStorePayloadOffset: stateStorePayloadOffset,
+				StateStorePayloadBytes:  stateStorePayloadBytes,
+				IndexURI:                core.Trim(*indexURI),
+				PromptBytes:             len(*prompt),
+				ChatTemplate:            *chatTemplate,
+				EnableThinking:          *enableThinking,
+				MaxTokens:               *maxTokens,
+				Temperature:             *temperature,
+				TopP:                    *topP,
+				TopK:                    *topK,
+				RepeatPenalty:           *repeatPenalty,
+				SuppressEOS:             *suppressEOS,
+				IncludeOutput:           *includeOutput,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -4248,22 +4260,24 @@ func runStateWakeProfileGuarded(ctx context.Context, modelPath string, loadOptio
 func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateWakeProfileOptions) (*stateWakeProfileReport, error) {
 	opts = normalizeStateWakeProfileOptions(opts)
 	report := &stateWakeProfileReport{
-		Version:         1,
-		ModelPath:       modelPath,
-		StateStorePath:  opts.StateStorePath,
-		StateStoreAlias: opts.StateStoreSegmentAlias,
-		IndexURI:        opts.IndexURI,
-		PromptBytes:     len(opts.Prompt),
-		EnableThinking:  opts.EnableThinking,
-		MaxTokens:       opts.MaxTokens,
-		Temperature:     opts.Temperature,
-		TopP:            opts.TopP,
-		TopK:            opts.TopK,
-		RepeatPenalty:   opts.RepeatPenalty,
-		SuppressEOS:     opts.SuppressEOS,
-		IncludeOutput:   opts.IncludeOutput,
-		SafetyLimits:    opts.SafetyLimits,
-		RuntimeGates:    driverProfileRuntimeGates(),
+		Version:                 1,
+		ModelPath:               modelPath,
+		StateStorePath:          opts.StateStorePath,
+		StateStoreAlias:         opts.StateStoreSegmentAlias,
+		StateStorePayloadOffset: opts.StateStorePayloadOffset,
+		StateStorePayloadBytes:  opts.StateStorePayloadBytes,
+		IndexURI:                opts.IndexURI,
+		PromptBytes:             len(opts.Prompt),
+		EnableThinking:          opts.EnableThinking,
+		MaxTokens:               opts.MaxTokens,
+		Temperature:             opts.Temperature,
+		TopP:                    opts.TopP,
+		TopK:                    opts.TopK,
+		RepeatPenalty:           opts.RepeatPenalty,
+		SuppressEOS:             opts.SuppressEOS,
+		IncludeOutput:           opts.IncludeOutput,
+		SafetyLimits:            opts.SafetyLimits,
+		RuntimeGates:            driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -4296,7 +4310,9 @@ func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptio
 
 	openStart := time.Now()
 	var store *statefile.Store
-	if opts.StateStoreSegmentAlias != "" {
+	if opts.StateStorePayloadOffset > 0 || opts.StateStorePayloadBytes > 0 {
+		store, err = statefile.OpenRegionWithSegmentAlias(ctx, opts.StateStorePath, opts.StateStorePayloadOffset, opts.StateStorePayloadBytes, opts.StateStoreSegmentAlias)
+	} else if opts.StateStoreSegmentAlias != "" {
 		store, err = statefile.OpenWithSegmentAlias(ctx, opts.StateStorePath, opts.StateStoreSegmentAlias)
 	} else {
 		store, err = statefile.Open(ctx, opts.StateStorePath)
