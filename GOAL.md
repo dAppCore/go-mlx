@@ -95,6 +95,20 @@ no `GO_MLX_FIXED_GEMMA4_CACHE_SIZE`. Its cache profile records
 `max_global_capacity=32768`, and `local_window_leaked=false`; short smoke
 decode is `110.531 tok/s`. This is a default-path correction, not production
 acceptance, and the next real comparator run must use this paged-only default.
+The first full request-context retry after this correction wrote
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-default-paged-drainfix-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+but did not produce timing evidence because `metal.LoadAndInit` reported
+`mlx: no usable Metal device available`; keep it as a gate-selection/error
+record only. While investigating that retry, the profile stream cancellation
+path was corrected: `driver-profile`, `state-ramp-profile`, and
+`chapter-profile` now cancel generation on live-memory/repetition/end-marker
+guards but continue draining the token channel until the generator closes
+before reading `model.Metrics()`. This prevents stale prompt/generated-token
+counts, cache profiles, and memory figures in failed or guarded turns. Verified
+with `TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good`,
+`go test ./go/cmd/mlx -run 'TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics|TestDriverProfileGeneration_ChatModeDoesNotStartRawStream|TestRunCommand_StateRampProfileTargetShapeStaysPaged' -count=1`,
+`go test ./go/cmd/mlx -bench='BenchmarkStateRampProfile|BenchmarkDriverProfile' -benchmem -run='^$'`,
+and `env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/codex-go-mlx-cache go test ./go/... -count=1`.
 
 Superseded fixed-cache diagnostic, 2026-05-24: the `65536` context boundary was
 removed as a cache-family switch, but the intermediate fix still used fixed K/V

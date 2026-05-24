@@ -1696,6 +1696,7 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 	currentLine := ""
 	lastLine := ""
 	repeatedLineCount := 0
+	draining := false
 	if opts.PromptChunkBytes > 0 && opts.Chat {
 		tokenStream = model.ChatChunksStream(generationCtx, []inference.Message{{Role: "user", Content: opts.Prompt}}, opts.PromptChunkBytes, generateOptions...)
 	} else if opts.PromptChunkBytes > 0 {
@@ -1706,6 +1707,9 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 		tokenStream = model.GenerateStream(generationCtx, opts.Prompt, generateOptions...)
 	}
 	for token := range tokenStream {
+		if draining {
+			continue
+		}
 		if firstToken == 0 {
 			firstToken = bench.NonZeroDuration(time.Since(start))
 		}
@@ -1718,7 +1722,8 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 			if err := driverProfileMetricsSafetyError(core.Sprintf("run %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
 				probeErr = err
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 			if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 				repeatedTokenCount = 0
@@ -1732,7 +1737,8 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 				if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
 					probeErr = core.NewError(core.Sprintf("driver-profile: run %d sampled token %d for %d consecutive tokens", index, token.ID, repeatedTokenCount))
 					cancelGeneration()
-					break
+					draining = true
+					continue
 				}
 			}
 		}
@@ -1743,7 +1749,8 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 			if line, count, ok := profileObserveRepeatedLineFragment(token.Text, &currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
 				lineErr = core.NewError(core.Sprintf("driver-profile: run %d repeated visible line %q for %d consecutive lines", index, line, count))
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 		}
 	}
@@ -3695,7 +3702,11 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	currentLine := ""
 	lastLine := ""
 	repeatedLineCount := 0
+	draining := false
 	for token := range session.GenerateStream(generationCtx, generateOptions...) {
+		if draining {
+			continue
+		}
 		if firstToken == 0 {
 			firstToken = bench.NonZeroDuration(time.Since(start))
 		}
@@ -3709,7 +3720,8 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 			if err := driverProfileMetricsSafetyError(core.Sprintf("state-ramp-profile turn %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
 				probeErr = err
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 			if opts.SafetyLimits.RepeatedTokenLoopLimit <= 0 {
 				repeatedTokenCount = 0
@@ -3721,7 +3733,8 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 				if repeatedTokenCount >= opts.SafetyLimits.RepeatedTokenLoopLimit {
 					probeErr = core.NewError(core.Sprintf("state-ramp-profile: turn %d sampled token %d for %d consecutive tokens", index, token.ID, repeatedTokenCount))
 					cancelGeneration()
-					break
+					draining = true
+					continue
 				}
 			}
 		}
@@ -3729,7 +3742,8 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 			if line, count, ok := profileObserveRepeatedLineFragment(token.Text, &currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
 				lineErr = core.NewError(core.Sprintf("state-ramp-profile: turn %d repeated visible line %q for %d consecutive lines", index, line, count))
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 		}
 	}
@@ -5902,7 +5916,11 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 			cancelGeneration()
 		}
 	}))
+	draining := false
 	for token := range generationSession.GenerateStream(generationCtx, generateOptions...) {
+		if draining {
+			continue
+		}
 		if firstToken == 0 {
 			firstToken = bench.NonZeroDuration(time.Since(start))
 		}
@@ -5912,24 +5930,28 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 			if outputStream.Write(token.Text) {
 				endMarkerSeen = true
 				cancelGeneration()
+				draining = true
 				continue
 			}
 			if err := outputStream.Err(); err != nil {
 				outputErr = err
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 		}
 		if chapterProfileObserveEndMarker(&endMarkerWindow, token.Text) {
 			endMarkerSeen = true
 			cancelGeneration()
+			draining = true
 			continue
 		}
 		if lineErr == nil {
 			if line, count, ok := profileObserveRepeatedLineFragment(token.Text, &currentLine, &lastLine, &repeatedLineCount, opts.SafetyLimits.RepeatedLineLoopLimit); ok {
 				lineErr = core.NewError(core.Sprintf("chapter-profile: chapter %d repeated visible line %q for %d consecutive lines", chapter, line, count))
 				cancelGeneration()
-				break
+				draining = true
+				continue
 			}
 		}
 	}

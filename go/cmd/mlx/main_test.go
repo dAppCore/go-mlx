@@ -4037,17 +4037,44 @@ type fakeDriverProfileModel struct {
 	chatChunkBytes    int
 	chatChunkMessages []inference.Message
 	metrics           mlx.Metrics
+	streamTokens      []mlx.Token
+	delayedMetrics    mlx.Metrics
+	metricsReady      chan struct{}
 	lastConfig        mlx.GenerateConfig
 }
 
-func (m *fakeDriverProfileModel) GenerateStream(_ context.Context, _ string, opts ...mlx.GenerateOption) <-chan mlx.Token {
+func (m *fakeDriverProfileModel) GenerateStream(ctx context.Context, _ string, opts ...mlx.GenerateOption) <-chan mlx.Token {
 	m.generateCalls++
 	m.lastConfig = mlx.DefaultGenerateConfig()
 	for _, opt := range opts {
 		opt(&m.lastConfig)
 	}
 	ch := make(chan mlx.Token)
-	close(ch)
+	if len(m.streamTokens) == 0 {
+		close(ch)
+		return ch
+	}
+	go func() {
+		defer close(ch)
+		closeMetrics := func(delay bool) {
+			if m.metricsReady == nil {
+				return
+			}
+			if delay {
+				time.Sleep(20 * time.Millisecond)
+			}
+			close(m.metricsReady)
+		}
+		for _, token := range m.streamTokens {
+			select {
+			case <-ctx.Done():
+				closeMetrics(true)
+				return
+			case ch <- token:
+			}
+		}
+		closeMetrics(false)
+	}()
 	return ch
 }
 
@@ -4094,7 +4121,16 @@ func (m *fakeDriverProfileModel) ChatStream(_ context.Context, _ []inference.Mes
 	return ch
 }
 
-func (m *fakeDriverProfileModel) Metrics() mlx.Metrics { return m.metrics }
+func (m *fakeDriverProfileModel) Metrics() mlx.Metrics {
+	if m.metricsReady != nil {
+		select {
+		case <-m.metricsReady:
+			return m.delayedMetrics
+		default:
+		}
+	}
+	return m.metrics
+}
 
 func (m *fakeDriverProfileModel) Err() error { return nil }
 
@@ -4121,6 +4157,39 @@ func TestDriverProfileGeneration_ChatModeDoesNotStartRawStream_Good(t *testing.T
 	summary := summariseDriverProfileRuns([]driverProfileRun{run})
 	if summary.RestoreAvgDuration != 5*time.Millisecond || summary.RestoreMinDuration != 5*time.Millisecond || summary.RestoreMaxDuration != 5*time.Millisecond {
 		t.Fatalf("summary restore timings = %+v, want 5ms restore", summary)
+	}
+}
+
+func TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good(t *testing.T) {
+	ready := make(chan struct{})
+	model := &fakeDriverProfileModel{
+		metrics:        mlx.Metrics{GeneratedTokens: 1, DecodeTokensPerSec: 10},
+		delayedMetrics: mlx.Metrics{GeneratedTokens: 2, DecodeTokensPerSec: 42},
+		metricsReady:   ready,
+		streamTokens: []mlx.Token{
+			{ID: 7, Text: "a"},
+			{ID: 7, Text: "b"},
+			{ID: 8, Text: "ignored"},
+		},
+	}
+
+	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
+		Prompt:        "hello",
+		MaxTokens:     3,
+		IncludeOutput: true,
+		SafetyLimits: driverProfileSafetyLimits{
+			RepeatedTokenLoopLimit: 2,
+		},
+	})
+
+	if run.Metrics.GeneratedTokens != 2 || run.Metrics.DecodeTokensPerSec != 42 {
+		t.Fatalf("metrics = %+v, want finalized delayed metrics after stream drain", run.Metrics)
+	}
+	if run.VisibleTokens != 2 || run.Output != "a" {
+		t.Fatalf("run output = tokens:%d text:%q, want cancellation token counted and drained tail ignored", run.VisibleTokens, run.Output)
+	}
+	if !core.Contains(run.Error, "sampled token 7 for 2 consecutive tokens") {
+		t.Fatalf("run error = %q, want repeated-token cancellation", run.Error)
 	}
 }
 
