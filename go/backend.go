@@ -605,8 +605,9 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	if totalNative > 0 {
 		nativeSlab = make([]NativePhaseTrace, totalNative)
 	}
-	// Index iteration — metal.TokenPhaseTrace is ~144 B (16 duration
-	// + Step int + FinalToken bool + NativeEvents slice header).
+	// Index iteration — metal.TokenPhaseTrace is ~168 B (16 duration
+	// + Step int + TokenID int32 + TokenText string + FinalToken bool
+	// + NativeEvents slice header).
 	// metal.NativePhaseTrace is ~48 B (string + duration + string).
 	// TraceTokenPhases emits ONE phase trace per decoded token, so for
 	// long generations the range form was copying many KB of struct
@@ -630,6 +631,8 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 		}
 		out[i] = TokenPhaseTrace{
 			Step:                phase.Step,
+			TokenID:             phase.TokenID,
+			TokenText:           phase.TokenText,
 			FinalToken:          phase.FinalToken,
 			TotalDuration:       phase.TotalDuration,
 			LogitsDuration:      phase.LogitsDuration,

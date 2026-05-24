@@ -1236,6 +1236,9 @@ func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
 	if phases[0].Step != 0 || phases[1].Step != 1 {
 		t.Fatalf("phase steps = %+v, want ordered step traces", phases)
 	}
+	if phases[0].TokenID != 0 || phases[0].TokenText != "x" || phases[1].TokenID != 0 || phases[1].TokenText != "x" {
+		t.Fatalf("phase sampled tokens = %+v, want token id/text captured", phases)
+	}
 	if phases[0].ForwardDuration <= 0 {
 		t.Fatalf("first phase forward duration = %s, want next-token forward timing", phases[0].ForwardDuration)
 	}

@@ -173,6 +173,8 @@ type Metrics struct {
 // TokenPhaseTrace reports the coarse decode-loop cost for one generated token.
 type TokenPhaseTrace struct {
 	Step                int                `json:"step"`
+	TokenID             int32              `json:"token_id"`
+	TokenText           string             `json:"token_text,omitempty"`
 	FinalToken          bool               `json:"final_token,omitempty"`
 	TotalDuration       time.Duration      `json:"total_duration,omitempty"`
 	LogitsDuration      time.Duration      `json:"logits_duration,omitempty"`
@@ -641,15 +643,15 @@ func applyLoadOptions(opts []LoadOption) LoadConfig {
 // a fresh error value; reusing a single instance per message keeps the
 // rare path alloc-free and preserves errors.Is comparability.
 var (
-	errMlxContextLengthNegative      = core.NewError("mlx: context length must be >= 0")
-	errMlxGemma4SlidingWindowNeg     = core.NewError("mlx: Gemma 4 sliding window must be >= 0")
-	errMlxParallelSlotsNegative      = core.NewError("mlx: parallel slots must be >= 0")
-	errMlxPromptCacheMinTokensNeg    = core.NewError("mlx: prompt cache minimum tokens must be >= 0")
-	errMlxQuantizationNegative       = core.NewError("mlx: quantization bits must be >= 0")
-	errMlxBatchSizeNegative          = core.NewError("mlx: batch size must be >= 0")
-	errMlxPrefillChunkSizeNegative   = core.NewError("mlx: prefill chunk size must be >= 0")
-	errMlxExpectedQuantizationNeg    = core.NewError("mlx: expected quantization bits must be >= 0")
-	errMlxSplitInferenceRemotePlan   = core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
+	errMlxContextLengthNegative    = core.NewError("mlx: context length must be >= 0")
+	errMlxGemma4SlidingWindowNeg   = core.NewError("mlx: Gemma 4 sliding window must be >= 0")
+	errMlxParallelSlotsNegative    = core.NewError("mlx: parallel slots must be >= 0")
+	errMlxPromptCacheMinTokensNeg  = core.NewError("mlx: prompt cache minimum tokens must be >= 0")
+	errMlxQuantizationNegative     = core.NewError("mlx: quantization bits must be >= 0")
+	errMlxBatchSizeNegative        = core.NewError("mlx: batch size must be >= 0")
+	errMlxPrefillChunkSizeNegative = core.NewError("mlx: prefill chunk size must be >= 0")
+	errMlxExpectedQuantizationNeg  = core.NewError("mlx: expected quantization bits must be >= 0")
+	errMlxSplitInferenceRemotePlan = core.NewError("mlx: split inference execution is planned; remote FFN/expert execution is not wired yet")
 )
 
 func normalizeLoadConfig(cfg LoadConfig) (LoadConfig, error) {

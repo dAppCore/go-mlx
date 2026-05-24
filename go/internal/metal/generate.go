@@ -77,6 +77,8 @@ type Metrics struct {
 // TokenPhaseTrace reports coarse timing buckets for one decode-loop token.
 type TokenPhaseTrace struct {
 	Step                int                `json:"step"`
+	TokenID             int32              `json:"token_id"`
+	TokenText           string             `json:"token_text,omitempty"`
 	FinalToken          bool               `json:"final_token,omitempty"`
 	TotalDuration       time.Duration      `json:"total_duration,omitempty"`
 	LogitsDuration      time.Duration      `json:"logits_duration,omitempty"`
@@ -808,6 +810,8 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 			text := m.tokenizer.DecodeToken(id)
 			if tracePhases {
+				phase.TokenID = id
+				phase.TokenText = text
 				phase.DecodeTextDuration = time.Since(phaseLast)
 				phaseLast = time.Now()
 			}

@@ -11,6 +11,7 @@ RETAINED_SYSTEM_PROMPT = (
 )
 
 REPEATED_TABLE_CELL_LOOP_LIMIT = 24
+REPEATED_TABLE_ROW_LABEL_LOOP_LIMIT = 6
 
 
 def gemma4_initial_prompt(context_prompt: str, enable_thinking: bool, explicit_bos: bool = True) -> str:
@@ -81,6 +82,8 @@ def output_issues(text: str) -> list[str]:
         issues.append("visible_fence_only")
     if repeated_table_cell_output(text):
         issues.append("visible_repeated_table_cell")
+    if repeated_table_row_label_output(text):
+        issues.append("visible_repeated_table_row_label")
     if text.startswith("```"):
         issues.append("visible_code_fence_prefix")
     prompt_markers = (
@@ -144,6 +147,35 @@ def repeated_table_cell_output(text: str) -> bool:
         if counts[cell] >= REPEATED_TABLE_CELL_LOOP_LIMIT:
             return True
     return False
+
+
+def repeated_table_row_label_output(text: str) -> bool:
+    if "|" not in text:
+        return False
+    counts: dict[str, int] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = line.split("|")
+        if len(cells) < 3:
+            continue
+        label = normalise_table_cell(cells[1])
+        if not label or len(label) > 32 or table_separator_cell(label):
+            continue
+        counts[label] = counts.get(label, 0) + 1
+        if counts[label] >= REPEATED_TABLE_ROW_LABEL_LOOP_LIMIT:
+            return True
+    return False
+
+
+def normalise_table_cell(cell: str) -> str:
+    cell = cell.strip().lower()
+    while cell.startswith("**"):
+        cell = cell[2:].strip()
+    while cell.endswith("**"):
+        cell = cell[:-2].strip()
+    return cell
 
 
 def table_separator_cell(cell: str) -> bool:

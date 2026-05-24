@@ -433,6 +433,7 @@ const (
 	profileDefaultRepeatedLineLoopLimit           = 24
 	profileDefaultRepeatedSentenceLoopLimit       = 4
 	profileRepeatedTableCellLoopLimit             = 24
+	profileRepeatedTableRowLabelLoopLimit         = 6
 	profileFragmentedSentenceMinCount             = 12
 	profileFragmentedSentenceRatio                = 0.35
 	chapterProfileEndMarker                       = "[[END_CHAPTER]]"
@@ -554,6 +555,8 @@ type stateRampProfileReport struct {
 	Seed                         uint64                    `json:"seed,omitempty"`
 	SeedSet                      bool                      `json:"seed_set,omitempty"`
 	SuppressEOS                  bool                      `json:"suppress_eos,omitempty"`
+	StopTokenIDs                 []int32                   `json:"stop_token_ids,omitempty"`
+	SuppressTokenIDs             []int32                   `json:"suppress_token_ids,omitempty"`
 	IncludeOutput                bool                      `json:"include_output,omitempty"`
 	TraceTokenPhases             bool                      `json:"trace_token_phases,omitempty"`
 	FoldOnExhaustion             bool                      `json:"fold_on_exhaustion,omitempty"`
@@ -2793,6 +2796,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		report.Error = err.Error()
 		return report, err
 	}
+	report.StopTokenIDs, report.SuppressTokenIDs = chapterProfileTemplateTokenControls(opts.ChatTemplate, tok)
 	sourceTokens, err := tok.Encode(opts.Prompt)
 	if err != nil {
 		report.Error = err.Error()
@@ -3262,6 +3266,9 @@ func stateRampProfileOutputIssues(output string) []string {
 	if _, _, ok := stateRampProfileRepeatedTableCellOutput(text); ok {
 		issues = append(issues, "visible_repeated_table_cell")
 	}
+	if _, _, ok := stateRampProfileRepeatedTableRowLabelOutput(text); ok {
+		issues = append(issues, "visible_repeated_table_row_label")
+	}
 	if core.HasPrefix(text, "```") {
 		issues = append(issues, "visible_code_fence_prefix")
 	}
@@ -3331,6 +3338,43 @@ func stateRampProfileRepeatedTableCellOutput(text string) (string, int, bool) {
 		}
 	}
 	return "", 0, false
+}
+
+func stateRampProfileRepeatedTableRowLabelOutput(text string) (string, int, bool) {
+	if !core.Contains(text, "|") {
+		return "", 0, false
+	}
+	counts := map[string]int{}
+	for _, line := range core.Split(text, "\n") {
+		line = core.Trim(line)
+		if !core.HasPrefix(line, "|") {
+			continue
+		}
+		cells := core.Split(line, "|")
+		if len(cells) < 3 {
+			continue
+		}
+		label := normaliseStateRampTableRowLabel(cells[1])
+		if label == "" || len(label) > 32 || stateRampProfileTableSeparatorCell(label) {
+			continue
+		}
+		counts[label]++
+		if counts[label] >= profileRepeatedTableRowLabelLoopLimit {
+			return label, counts[label], true
+		}
+	}
+	return "", 0, false
+}
+
+func normaliseStateRampTableRowLabel(label string) string {
+	label = core.Trim(core.Lower(label))
+	for core.HasPrefix(label, "**") {
+		label = core.Trim(core.TrimPrefix(label, "**"))
+	}
+	for core.HasSuffix(label, "**") {
+		label = core.Trim(core.TrimSuffix(label, "**"))
+	}
+	return label
 }
 
 func stateRampProfileTableSeparatorCell(cell string) bool {
@@ -3563,6 +3607,12 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	turn.SampledTokenIDs = sampledTokenIDs
 	turn.SampledTokenTexts = sampledTokenTexts
 	turn.Metrics = model.Metrics()
+	if opts.TraceTokenPhases {
+		if phaseIDs, phaseTexts := stateRampProfileSampledTokensFromPhases(turn.Metrics.TokenPhases, 32); len(phaseIDs) > 0 {
+			turn.SampledTokenIDs = phaseIDs
+			turn.SampledTokenTexts = phaseTexts
+		}
+	}
 	turn.DriverOverheadDuration = driverRunOverhead(turn.Duration, turn.Metrics)
 	turn.TokensAfterGenerate = turn.Metrics.PromptTokens + turn.Metrics.GeneratedTokens
 	visibleOutput := stateRampProfileVisibleOutput(opts.ChatTemplate, builder.String())
@@ -3626,6 +3676,20 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		}
 	}
 	return turn
+}
+
+func stateRampProfileSampledTokensFromPhases(phases []mlx.TokenPhaseTrace, limit int) ([]int32, []string) {
+	if limit <= 0 || len(phases) == 0 {
+		return nil, nil
+	}
+	count := min(limit, len(phases))
+	ids := make([]int32, 0, count)
+	texts := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		ids = append(ids, phases[i].TokenID)
+		texts = append(texts, phases[i].TokenText)
+	}
+	return ids, texts
 }
 
 func stateRampProfileApplyVisibleTokenFloor(turn *stateRampProfileTurn, opts stateRampProfileOptions) {
@@ -6020,11 +6084,17 @@ func chapterProfileTemplateTokenControls(template string, tok *mlx.Tokenizer) ([
 		return nil, nil
 	}
 	stopTokens := []int32{}
+	for _, text := range []string{
+		"<eos>",
+		"<turn|>",
+		"<|tool_response>",
+	} {
+		if id, ok := tok.TokenID(text); ok {
+			stopTokens = appendUniqueInt32(stopTokens, id)
+		}
+	}
 	if eos := tok.EOS(); eos > 0 {
 		stopTokens = appendUniqueInt32(stopTokens, eos)
-	}
-	if id, ok := tok.TokenID("<turn|>"); ok {
-		stopTokens = appendUniqueInt32(stopTokens, id)
 	}
 	suppressTokens := []int32{}
 	for _, text := range []string{

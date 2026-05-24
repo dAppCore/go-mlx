@@ -417,7 +417,7 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 	defer session.resetState()
 
 	var got []Token
-	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, StopTokens: []int32{0}}) {
+	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, StopTokens: []int32{0}, TraceTokenPhases: true}) {
 		got = append(got, token)
 	}
 	if session.Err() != nil {
@@ -434,6 +434,10 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 	}
 	if metrics := model.LastMetrics(); metrics.GeneratedTokens != 0 {
 		t.Fatalf("GeneratedTokens = %d, want stop token excluded", metrics.GeneratedTokens)
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 1 || phases[0].TokenID != 0 || phases[0].TokenText != "<turn|>" || !phases[0].FinalToken {
+		t.Fatalf("TokenPhases = %+v, want withheld stop token diagnostic", phases)
 	}
 }
 
@@ -464,6 +468,9 @@ func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 	phases := model.LastMetrics().TokenPhases
 	if len(phases) != 1 {
 		t.Fatalf("TokenPhases len = %d, want one phase; phases=%+v", len(phases), phases)
+	}
+	if phases[0].TokenID != 0 || phases[0].TokenText != "x" {
+		t.Fatalf("phase sampled token = %+v, want token id/text captured", phases[0])
 	}
 	if phases[0].TotalDuration <= 0 || phases[0].ForwardDuration <= 0 || phases[0].SampleEvalDuration <= 0 {
 		t.Fatalf("phase = %+v, want retained-session total, forward, and eval timings", phases[0])

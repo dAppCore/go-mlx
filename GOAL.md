@@ -186,6 +186,35 @@ silently returning empty memory fields. Verification:
 and a local probe check returning
 `PermissionError: [Errno 1] Operation not permitted: 'ps'`.
 
+Latest Gemma 4 stop-template finding, 2026-05-24: the literal retained/direct
+prompt wrappers still match the local `chat_template.jinja`, but the retained
+harness stop set did not match the model metadata. The local MLX pack declares
+top-level `eos_token_id` as `[1, 106, 50]`, mapping to `<eos>`, `<turn|>`,
+and `<|tool_response>`. go-mlx previously stopped only on `<turn|>` and
+suppressed `<|tool_response>` as a forbidden visible control token. The
+State/chapter token controls now stop on all three model-declared Gemma 4 EOS
+markers and only suppress non-stop control/template tokens. Trace token phases
+also record `token_id` / `token_text`, so an immediate no-visible-output turn
+can identify the sampled stop token instead of leaving `sampled_token_ids`
+empty. Diagnostic evidence:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-after-stopset-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+replays the seeded direct row's first turn and records sampled token `1`
+(`<eos>`, empty decoded text) as the final token after `30,954` live tokens.
+That means the older seeded direct row was not clean product evidence: it let
+an empty EOS token flow into retained state instead of treating the turn as a
+natural model stop. The same patch also tags the no-seed turn-7 repeated
+`| **Verdict** | ... |` table-row stutter as
+`visible_repeated_table_row_label`; the no-seed diagnostic remains rejected by
+turn `10` `empty_visible_output`. Verification:
+`go test ./go/cmd/mlx -run 'TestStateRampProfile(OutputIssues|Summary_OutputIssueCounts)|TestChapterProfileTemplateTokenControlsGemma4UsesAllModelStops' -count=1`,
+`go test ./go/internal/metal -run 'TestModel_Generate_TraceTokenPhases|TestModelSession_Generate_(TraceTokenPhases|StopTokenDoesNotAdvanceRetainedState)' -count=1`,
+`go test ./go/... -count=1`,
+`go test ./go/cmd/mlx -bench 'BenchmarkStateRampProfileOutputIssues_FullResponse' -benchmem -run '^$' -count=3`
+(`2872-2877 ns/op`, `192 B/op`, `1 alloc/op`),
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`,
+`git diff --check`, and
+`go build -o /private/tmp/go-mlx-goal/bin/lthn-mlx ./go/cmd/mlx`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

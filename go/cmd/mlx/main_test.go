@@ -31,6 +31,25 @@ const cliTokenizerJSON = `{
   ]
 }`
 
+const cliGemma4TokenizerJSON = `{
+  "model": {
+    "type": "BPE",
+    "vocab": {"h":0,"e":1,"l":2,"o":3,"▁":4,"he":5,"ll":6},
+    "merges": ["h e", "l l"],
+    "byte_fallback": false
+  },
+  "added_tokens": [
+    {"id": 0, "content": "<pad>", "special": true},
+    {"id": 1, "content": "<eos>", "special": true},
+    {"id": 2, "content": "<bos>", "special": true},
+    {"id": 3, "content": "<unk>", "special": true},
+    {"id": 4, "content": "<mask>", "special": true},
+    {"id": 50, "content": "<|tool_response>", "special": true},
+    {"id": 105, "content": "<|turn>", "special": true},
+    {"id": 106, "content": "<turn|>", "special": true}
+  ]
+}`
+
 func writeCLIPackFile(t *testing.T, path string, data string) {
 	t.Helper()
 	if result := core.WriteFile(path, []byte(data), 0o644); !result.OK {
@@ -1445,6 +1464,46 @@ func TestStateRampProfileOutputIssuesRejectsRepeatedTableCell_Good(t *testing.T)
 	issues = stateRampProfileOutputIssues("| runner | speed |\n| --- | ---: |\n| go-mlx | 1.0x |\n| llama.cpp | 1.1x |")
 	if core.SliceContains(issues, "visible_repeated_table_cell") {
 		t.Fatalf("issues = %v, want normal compact table allowed", issues)
+	}
+}
+
+func TestStateRampProfileOutputIssuesRejectsRepeatedTableRowLabel_Good(t *testing.T) {
+	builder := core.NewBuilder()
+	for i := 0; i < profileRepeatedTableRowLabelLoopLimit; i++ {
+		builder.WriteString("| **Verdict** | repeated table row label |\n")
+	}
+
+	issues := stateRampProfileOutputIssues(builder.String())
+	if !core.SliceContains(issues, "visible_repeated_table_row_label") {
+		t.Fatalf("issues = %v, want visible_repeated_table_row_label", issues)
+	}
+	issues = stateRampProfileOutputIssues("| runner | speed |\n| --- | ---: |\n| go-mlx | 1.0x |\n| llama.cpp | 1.1x |")
+	if core.SliceContains(issues, "visible_repeated_table_row_label") {
+		t.Fatalf("issues = %v, want normal compact table allowed", issues)
+	}
+}
+
+func TestChapterProfileTemplateTokenControlsGemma4UsesAllModelStops_Good(t *testing.T) {
+	dir := t.TempDir()
+	path := core.PathJoin(dir, "tokenizer.json")
+	writeCLIPackFile(t, path, cliGemma4TokenizerJSON)
+	tok, err := mlx.LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+
+	stops, suppress := chapterProfileTemplateTokenControls("gemma4", tok)
+
+	for _, want := range []int32{1, 106, 50} {
+		if !containsInt32(stops, want) {
+			t.Fatalf("stop tokens = %v, want Gemma 4 EOS marker %d", stops, want)
+		}
+		if containsInt32(suppress, want) {
+			t.Fatalf("suppress tokens = %v, should not suppress stop token %d", suppress, want)
+		}
+	}
+	if !containsInt32(suppress, 105) {
+		t.Fatalf("suppress tokens = %v, want opening turn marker suppressed", suppress)
 	}
 }
 
