@@ -1307,6 +1307,15 @@ func TestRunCommand_StateWakeProfileJSON_Good(t *testing.T) {
 			SuppressEOS:    cfg.SuppressEOS,
 			IncludeOutput:  cfg.IncludeOutput,
 			WakeDuration:   90 * time.Millisecond,
+			StoreOpenMemoryDelta: &stateWakeMemoryDelta{
+				GoTotalAllocDeltaBytes:    128,
+				ProcessResidentDeltaBytes: 64,
+			},
+			WakeMemoryDelta: &stateWakeMemoryDelta{
+				GoTotalAllocDeltaBytes:    4096,
+				GoMallocsDelta:            12,
+				ProcessResidentDeltaBytes: 2048,
+			},
 			Wake: &agent.WakeReport{
 				IndexURI:        cfg.IndexURI,
 				PrefixTokens:    677,
@@ -1375,10 +1384,57 @@ func TestRunCommand_StateWakeProfileJSON_Good(t *testing.T) {
 		`"decode_tokens_per_sec": 64`,
 		`"total_joules": 210`,
 		`"effective_tokens_per_sec":`,
+		`"store_open_memory_delta":`,
+		`"wake_memory_delta":`,
+		`"go_total_alloc_delta_bytes": 4096`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
+	}
+}
+
+func TestStateWakeMemoryDeltaBetween_Good(t *testing.T) {
+	before := stateWakeMemorySample{
+		goHeapAllocBytes:     4096,
+		goHeapObjects:        30,
+		goTotalAllocBytes:    8192,
+		goMallocs:            100,
+		goFrees:              40,
+		activeMemoryBytes:    20_000,
+		cacheMemoryBytes:     4_000,
+		peakMemoryBytes:      50_000,
+		processVirtualBytes:  100_000,
+		processResidentBytes: 20_000,
+		processPeakResident:  25_000,
+	}
+	after := stateWakeMemorySample{
+		goHeapAllocBytes:     2048,
+		goHeapObjects:        25,
+		goTotalAllocBytes:    12288,
+		goMallocs:            112,
+		goFrees:              47,
+		activeMemoryBytes:    24_000,
+		cacheMemoryBytes:     2_000,
+		peakMemoryBytes:      55_000,
+		processVirtualBytes:  98_000,
+		processResidentBytes: 21_024,
+		processPeakResident:  27_000,
+	}
+
+	delta := stateWakeMemoryDeltaBetween(before, after)
+
+	if delta.GoHeapAllocDeltaBytes != -2048 || delta.GoHeapObjectsDelta != -5 {
+		t.Fatalf("go heap delta = %d/%d, want -2048/-5", delta.GoHeapAllocDeltaBytes, delta.GoHeapObjectsDelta)
+	}
+	if delta.GoTotalAllocDeltaBytes != 4096 || delta.GoMallocsDelta != 12 || delta.GoFreesDelta != 7 {
+		t.Fatalf("go monotonic deltas = alloc:%d malloc:%d free:%d, want 4096/12/7", delta.GoTotalAllocDeltaBytes, delta.GoMallocsDelta, delta.GoFreesDelta)
+	}
+	if delta.ActiveMemoryDeltaBytes != 4000 || delta.CacheMemoryDeltaBytes != -2000 || delta.PeakMemoryDeltaBytes != 5000 {
+		t.Fatalf("MLX deltas = active:%d cache:%d peak:%d, want 4000/-2000/5000", delta.ActiveMemoryDeltaBytes, delta.CacheMemoryDeltaBytes, delta.PeakMemoryDeltaBytes)
+	}
+	if delta.ProcessVirtualDeltaBytes != -2000 || delta.ProcessResidentDeltaBytes != 1024 || delta.ProcessPeakResidentDeltaBytes != 2000 {
+		t.Fatalf("process deltas = virtual:%d resident:%d peak:%d, want -2000/1024/2000", delta.ProcessVirtualDeltaBytes, delta.ProcessResidentDeltaBytes, delta.ProcessPeakResidentDeltaBytes)
 	}
 }
 

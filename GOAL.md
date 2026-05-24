@@ -216,6 +216,29 @@ records `3515 ns/op`, `56 B/op`, `2 allocs/op` versus the copy path at
 `4206595 ns/op`, `8390354 B/op`, `3 allocs/op`. This is a State restore and
 zero-copy layout win, not a raw decode acceptance row.
 
+Latest packed-State wake proof, 2026-05-24: `state-wake-profile` now records
+phase-local Go heap, MLX allocator, and process-memory deltas for store open
+and wake. A same-state real wake comparison uses the existing folded C014
+state, `658` prefix tokens, `3` native State blocks, `context=32768`,
+`cache-mode=paged`, `max_tokens=64`, `temperature=1.0`, `top_p=0.95`, and
+`top_k=64`. The raw `.mvlog` report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-wake-memorydelta-mvlog-c014-g64.json`
+records `441.854083ms` wake, `49,452,400` wake-phase Go allocation bytes,
+`2,580` wake mallocs, `23` generated/visible tokens, `104.87698882223789`
+decode tok/s, and `759.881874ms` wake-plus-turn wall. The packed `.kv` report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-wake-memorydelta-kv-c014-g64.json`
+opens the same State log as a Trix payload window at offset `705` with
+`440,038,885` payload bytes and records `339.639375ms` wake, `157,344`
+wake-phase Go allocation bytes, `2,635` wake mallocs, `23` generated/visible
+tokens, `105.74402704288552` decode tok/s, and `653.837375ms`
+wake-plus-turn wall. Interpretation: the packed `.kv` region path cuts the
+wake heap allocation by about `99.68%`, saves `102.214708ms` of wake time, and
+does not regress decode on this short continuation. Process RSS is effectively
+neutral in this pair (`3,712,368,640` bytes for `.mvlog` versus
+`3,712,090,112` bytes for `.kv`), while store-open still allocates about
+`481 MB` in both paths, exposing the next State-file hot path: index/store
+open hydration rather than KV block wake itself.
+
 While investigating that retry, the profile stream cancellation
 path was corrected: `driver-profile`, `state-ramp-profile`, and
 `chapter-profile` now cancel generation on live-memory/repetition/end-marker

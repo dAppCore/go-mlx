@@ -8,6 +8,7 @@ import (
 	"io"
 	"iter"
 	"os/signal"
+	"runtime"
 	"sort"
 	"sync"
 	"syscall"
@@ -724,11 +725,41 @@ type stateWakeProfileReport struct {
 	SafetyLimits            driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 	RuntimeGates            map[string]string         `json:"runtime_gates,omitempty"`
 	StoreOpenDuration       time.Duration             `json:"store_open_duration,omitempty"`
+	StoreOpenMemoryDelta    *stateWakeMemoryDelta     `json:"store_open_memory_delta,omitempty"`
 	WakeDuration            time.Duration             `json:"wake_duration,omitempty"`
+	WakeMemoryDelta         *stateWakeMemoryDelta     `json:"wake_memory_delta,omitempty"`
 	Wake                    *agent.WakeReport         `json:"wake,omitempty"`
 	Turn                    *stateRampProfileTurn     `json:"turn,omitempty"`
 	EstimatedEnergy         *stateWakeProfileEnergy   `json:"estimated_energy,omitempty"`
 	Error                   string                    `json:"error,omitempty"`
+}
+
+type stateWakeMemoryDelta struct {
+	GoHeapAllocDeltaBytes         int64  `json:"go_heap_alloc_delta_bytes"`
+	GoHeapObjectsDelta            int64  `json:"go_heap_objects_delta"`
+	GoTotalAllocDeltaBytes        uint64 `json:"go_total_alloc_delta_bytes"`
+	GoMallocsDelta                uint64 `json:"go_mallocs_delta"`
+	GoFreesDelta                  uint64 `json:"go_frees_delta"`
+	ActiveMemoryDeltaBytes        int64  `json:"active_memory_delta_bytes"`
+	CacheMemoryDeltaBytes         int64  `json:"cache_memory_delta_bytes"`
+	PeakMemoryDeltaBytes          int64  `json:"peak_memory_delta_bytes"`
+	ProcessVirtualDeltaBytes      int64  `json:"process_virtual_delta_bytes"`
+	ProcessResidentDeltaBytes     int64  `json:"process_resident_delta_bytes"`
+	ProcessPeakResidentDeltaBytes int64  `json:"process_peak_resident_delta_bytes"`
+}
+
+type stateWakeMemorySample struct {
+	goHeapAllocBytes     uint64
+	goHeapObjects        uint64
+	goTotalAllocBytes    uint64
+	goMallocs            uint64
+	goFrees              uint64
+	activeMemoryBytes    uint64
+	cacheMemoryBytes     uint64
+	peakMemoryBytes      uint64
+	processVirtualBytes  uint64
+	processResidentBytes uint64
+	processPeakResident  uint64
 }
 
 type stateWakeProfileEnergy struct {
@@ -4864,6 +4895,7 @@ func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptio
 		return report, err
 	}
 
+	openMemory := stateWakeMemoryNow()
 	openStart := time.Now()
 	var store *statefile.Store
 	if opts.StateStorePayloadOffset > 0 || opts.StateStorePayloadBytes > 0 {
@@ -4874,15 +4906,18 @@ func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptio
 		store, err = statefile.Open(ctx, opts.StateStorePath)
 	}
 	report.StoreOpenDuration = bench.NonZeroDuration(time.Since(openStart))
+	report.StoreOpenMemoryDelta = stateWakeMemoryDeltaBetween(openMemory, stateWakeMemoryNow())
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
 	}
 	defer store.Close()
 
+	wakeMemory := stateWakeMemoryNow()
 	wakeStart := time.Now()
 	session, wake, err := model.WakeAgentMemory(ctx, store, agent.WakeOptions{IndexURI: opts.IndexURI})
 	report.WakeDuration = bench.NonZeroDuration(time.Since(wakeStart))
+	report.WakeMemoryDelta = stateWakeMemoryDeltaBetween(wakeMemory, stateWakeMemoryNow())
 	report.Wake = wake
 	if err != nil {
 		report.Error = err.Error()
@@ -4988,6 +5023,64 @@ func estimateStateWakeProfileEnergy(report *stateWakeProfileReport, powerWatts f
 	}
 	energy.WakeJoules = durationJoules(report.WakeDuration, powerWatts)
 	return energy
+}
+
+func stateWakeMemoryNow() stateWakeMemorySample {
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	process := metal.GetProcessMemory()
+	return stateWakeMemorySample{
+		goHeapAllocBytes:     stats.HeapAlloc,
+		goHeapObjects:        stats.HeapObjects,
+		goTotalAllocBytes:    stats.TotalAlloc,
+		goMallocs:            stats.Mallocs,
+		goFrees:              stats.Frees,
+		activeMemoryBytes:    metal.GetActiveMemory(),
+		cacheMemoryBytes:     metal.GetCacheMemory(),
+		peakMemoryBytes:      metal.GetPeakMemory(),
+		processVirtualBytes:  process.VirtualMemoryBytes,
+		processResidentBytes: process.ResidentMemoryBytes,
+		processPeakResident:  process.PeakResidentMemoryBytes,
+	}
+}
+
+func stateWakeMemoryDeltaBetween(before, after stateWakeMemorySample) *stateWakeMemoryDelta {
+	return &stateWakeMemoryDelta{
+		GoHeapAllocDeltaBytes:         stateWakeSignedDelta(after.goHeapAllocBytes, before.goHeapAllocBytes),
+		GoHeapObjectsDelta:            stateWakeSignedDelta(after.goHeapObjects, before.goHeapObjects),
+		GoTotalAllocDeltaBytes:        stateWakeUnsignedDelta(after.goTotalAllocBytes, before.goTotalAllocBytes),
+		GoMallocsDelta:                stateWakeUnsignedDelta(after.goMallocs, before.goMallocs),
+		GoFreesDelta:                  stateWakeUnsignedDelta(after.goFrees, before.goFrees),
+		ActiveMemoryDeltaBytes:        stateWakeSignedDelta(after.activeMemoryBytes, before.activeMemoryBytes),
+		CacheMemoryDeltaBytes:         stateWakeSignedDelta(after.cacheMemoryBytes, before.cacheMemoryBytes),
+		PeakMemoryDeltaBytes:          stateWakeSignedDelta(after.peakMemoryBytes, before.peakMemoryBytes),
+		ProcessVirtualDeltaBytes:      stateWakeSignedDelta(after.processVirtualBytes, before.processVirtualBytes),
+		ProcessResidentDeltaBytes:     stateWakeSignedDelta(after.processResidentBytes, before.processResidentBytes),
+		ProcessPeakResidentDeltaBytes: stateWakeSignedDelta(after.processPeakResident, before.processPeakResident),
+	}
+}
+
+func stateWakeUnsignedDelta(after, before uint64) uint64 {
+	if after < before {
+		return 0
+	}
+	return after - before
+}
+
+func stateWakeSignedDelta(after, before uint64) int64 {
+	const maxInt64 = uint64(1<<63 - 1)
+	if after >= before {
+		delta := after - before
+		if delta > maxInt64 {
+			return int64(maxInt64)
+		}
+		return int64(delta)
+	}
+	delta := before - after
+	if delta > maxInt64 {
+		return -int64(maxInt64)
+	}
+	return -int64(delta)
 }
 
 func printStateWakeProfileSummary(stdout io.Writer, report *stateWakeProfileReport) {

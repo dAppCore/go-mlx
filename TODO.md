@@ -104,8 +104,12 @@ canonical segment alias. This removes the temporary `.mvlog` materialisation
 step while preserving strict segment validation. Raw State block loading now
 uses borrowed bytes first, so native KV tensor slices parsed from a `.kv` region
 can flow into the existing pinned MLX array restore path without a per-block
-heap copy. The remaining production work is tightening the store/session
-lifetime contract and proving it on a real retained-state wake benchmark.
+heap copy. The first real retained wake proof is now recorded in `GOAL.md`:
+the packed `.kv` wake cut wake-phase Go heap allocation from about `49.45 MB`
+to `157 KB` while keeping decode flat on the same 658-token folded state.
+The remaining production work is tightening the store/session lifetime contract
+and reducing the store-open/index hydration allocation that still appears before
+the block-load win.
 
 ## P1 - Enchantrix `pkg/trix`: no default transforms for State KV
 
@@ -181,5 +185,7 @@ header-only wake. The current wake path uses the `.kv` payload offset directly
 through `OpenRegionWithSegmentAlias`, so it no longer creates a temporary
 `.mvlog` copy. Raw State block payloads are now borrowed from the mmap-backed
 region where the platform supports it and are handed into the existing pinned
-MLX array restore path. The next proof point is a real `.kv` wake run that
-records lower block-load allocations/RSS without regressing decode.
+MLX array restore path. The next proof point is no longer "does `.kv` wake
+without copying blocks"; it does. The next useful target is the earlier
+store-open/index hydration path, which still allocates heavily before wake can
+use the mmap-backed State blocks.
