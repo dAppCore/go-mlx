@@ -196,6 +196,19 @@ keeps the fast lane paged (`fixed_caches=0`, `paged_caches=15`,
 bottleneck and keeps the next optimisation pointed at logits/forward graph
 materialisation, not any archived 64Ki/fixed-cache lane.
 
+Strict eval-boundary cleanup, 2026-05-24: `Model.Generate` and retained
+`ModelSession.Generate` now detach the evaluated logits array at the same
+per-token boundary as the K/V caches after `Eval(next)` materialises the
+sampled token. This follows the IDEAS.md graph-bloat guidance: the current
+token's logits graph should not stay attached while the next one-token graph is
+being built. This is a production-path graph-lifetime correction, not a new
+acceptance row. The tiny retained-session smoke
+`/private/tmp/go-mlx-goal/reports/2026-05-24-detach-logits-boundary-smoke.json`
+is only a runtime sanity check; it records paged K/V (`fixed_caches=0`,
+`paged_caches=15`), `max_local_capacity=512`, `max_global_capacity=131072`,
+and `local_window_leaked=false`. The next performance proof still needs the
+matched request-context retained run against llama.cpp.
+
 Default seed correction, 2026-05-24: the production lane and local profile
 commands now use `mlx.DefaultNewSessionText` as the default prompt instead of
 the old synthetic "retained model state" question. This lines up

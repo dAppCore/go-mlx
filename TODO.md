@@ -230,3 +230,9 @@ over three non-final tokens, while dirty-cache prefetch costs only `9.124 us`.
 Treat that as attribution evidence only because trace mode uses split
 `EvalAsync` calls for measurement; production generation still uses the
 combined prefetch call and must stay paged/no-fixed/no-64Ki-cutoff.
+
+The per-token eval boundary now detaches logits together with caches after the
+sampled token is materialised. That should reduce graph lifetime pressure while
+preserving the paged retained-State semantics. The next useful measurement is a
+matched 30k request-context retained run versus the llama.cpp anchor, not a
+small max-token smoke.

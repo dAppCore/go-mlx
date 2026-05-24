@@ -813,8 +813,9 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 			}
 			// Eval(next) also materialises the lazy decode forward that produced
-			// logits for this token, so detach caches at this boundary.
-			detachCaches(caches)
+			// logits for this token, so detach logits and caches at this
+			// boundary before building the next one-token graph.
+			detachEvalState(logits, caches)
 			if generationClearCacheEnabled() {
 				if interval := generationClearCacheInterval(); interval > 0 && (i+1)%interval == 0 {
 					ClearCache()

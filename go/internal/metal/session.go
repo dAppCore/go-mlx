@@ -586,7 +586,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 				phaseLast = time.Now()
 			}
 		}
-		detachCaches(s.caches)
+		detachEvalState(s.logits, s.caches)
 		if tracePhases {
 			phase.DetachDuration = time.Since(phaseLast)
 			phaseLast = time.Now()
