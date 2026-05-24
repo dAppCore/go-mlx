@@ -78,6 +78,52 @@ same-shape pair and uses less RSS, but llama.cpp is still `1.300x` faster on
 raw decode and returns more visible content in roughly the same wall time.
 This is useful retained-State evidence, not production acceptance.
 
+Fresh seeded request-context refresh after retiring the 70k default,
+2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-100k-seed240524-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+and
+`/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-request-context-100k-seed240524-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`
+use the same opencode request-context fixture, `30k` seed, `10` turns,
+`1024` max-token budget, `seed=240524`, Gemma 4 thinking prompt, Gemma 4 stop
+strings, `temperature=1.0`, `top_p=0.95`, `top_k=64`, and target `100000`.
+The real request-context material only grows the live state to `49153` tokens
+on the go-mlx row and `54616` on the llama.cpp row after ten turns, so this is
+the primary interactive 10-turn comparison, not the 100k stress proof. go-mlx
+completes `10/10` turns, generates `4733` visible tokens, records `74.732s`
+wall, `87.420` raw decode tok/s, `75.821` effective turn tok/s,
+`2.957x` retained-vs-replay speedup, `7.473 kJ`, `9.548 GiB`
+active-plus-cache, `3.156 GiB` RSS, and `573.604 GiB` virtual memory, with
+`fixed_caches=0`, `paged_caches=15`, `max_local_capacity=512`,
+`max_global_capacity=131072`, and `local_window_leaked=false`. llama.cpp
+Q4_K_M completes `10/10`, generates `10196` predicted tokens but only `5613`
+visible tokens, records `118.432s` wall, `105.988` raw decode tok/s,
+`47.394` visible wall tok/s, `11.843 kJ`, `4.736 GiB` RSS, `427.515 GiB`
+virtual memory, and no output-quality flags or visible control markers. The
+important reading is split: go-mlx is `1.585x` faster on wall/energy and
+`1.336x` faster on total visible-token wall throughput for the same retained
+workflow, but llama.cpp is still `1.212x` faster on raw decode. The raw decode
+gap remains a real optimisation target; the retained-State wall win should not
+be used to hide it.
+
+Fresh 100k retained-State stress proof, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-to100k-seed240524-go-mlx-gemma4-e2b-4bit-opencode-30k-g1024.json`
+removes the turn cap and lets the same request-context fixture repeat until
+the live state crosses `100000` tokens. It completes `41/41` turns without
+failure, reaches `100205` live tokens, appends `58786` tokens, generates
+`11337` visible tokens, records `200.882s` wall, `78.251` raw decode tok/s,
+`60.075` effective turn tok/s, `3.348` minutes retained wall versus a
+`24.588` minute replay estimate, `7.344x` retained-vs-replay speedup, and
+`127.443 kJ` estimated energy saved at `100 W`. The final cache profile still
+shows paged/no-fixed state with `max_local_capacity=512`,
+`max_global_tokens=100203`, `max_global_capacity=131072`, `fixed_caches=0`,
+`paged_caches=15`, and `local_window_leaked=false`. Memory stays bounded in
+resident terms at `3.158 GiB` RSS and `9.548 GiB` active-plus-cache, while
+virtual reservation grows to `960.783 GiB`; treat that virtual reservation as
+the next memory-accounting item to watch, not as proof of active RAM growth.
+There is one `visible_prompt_analysis` output issue, so the row is a strong
+state/memory proof and replay-savings proof, but not final production
+acceptance.
+
 Current no-cutoff paged-State correction, 2026-05-24: fixed Gemma 4 K/V is no
 longer a default fast-lane gate. `driver-profile`, `chapter-profile`, and
 `state-ramp-profile` now stay on paged K/V by default, and
