@@ -1895,14 +1895,11 @@ func loadRawKVSnapshotStateBlockWithOptions(ctx context.Context, store state.Sto
 }
 
 func loadRawStateBlockPayload(ctx context.Context, store state.Store, ref StateBlockRef) ([]byte, error) {
-	chunk, err := state.ResolveRefBytes(ctx, store, stateBlockChunkRef(ref))
+	chunk, err := state.BorrowRefBytes(ctx, store, stateBlockChunkRef(ref))
 	if err != nil {
 		return nil, core.E("LoadFromStateBlocks", "resolve raw State block", err)
 	}
 	data := chunk.Data
-	if len(data) == 0 && chunk.Text != "" {
-		data = []byte(chunk.Text)
-	}
 	if ref.PayloadByteCount > 0 && len(data) != ref.PayloadByteCount {
 		return nil, errRawBlockPayloadLenMismatch
 	}

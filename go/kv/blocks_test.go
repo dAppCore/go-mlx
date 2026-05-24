@@ -489,6 +489,67 @@ func TestKVSnapshotStateBlocks_Good_SaveNativeRawOnlyToFileStore(t *testing.T) {
 	}
 }
 
+func TestKVSnapshotStateBlocks_Good_LoadNativeRawOnlyFromRegionStore(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	sourcePath := core.PathJoin(dir, "kv-blocks.mvlog")
+	containerPath := core.PathJoin(dir, "session.kv")
+	store, err := filestore.Create(ctx, sourcePath)
+	if err != nil {
+		t.Fatalf("filestore.Create() error = %v", err)
+	}
+	snapshot := kvSnapshotBlocksTestSnapshot()
+	head := &snapshot.Layers[0].Heads[0]
+	for _, value := range head.Key {
+		head.KeyBytes = appendUint16LE(head.KeyBytes, float32ToFloat16(value))
+	}
+	for _, value := range head.Value {
+		head.ValueBytes = appendUint16LE(head.ValueBytes, uint16(math.Float32bits(value)>>16))
+	}
+	head.Key = nil
+	head.Value = nil
+	head.KeyDType = "float16"
+	head.ValueDType = "bfloat16"
+
+	bundle, err := snapshot.SaveStateBlocks(ctx, store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingNative,
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(region source) error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("filestore.Close() error = %v", err)
+	}
+	read := core.ReadFile(sourcePath)
+	if !read.OK {
+		t.Fatalf("ReadFile(source) error = %s", read.Error())
+	}
+	prefix := []byte("KVST-region-head")
+	payload := read.Value.([]byte)
+	container := append(append(append([]byte(nil), prefix...), payload...), []byte("tail")...)
+	if write := core.WriteFile(containerPath, container, 0o600); !write.OK {
+		t.Fatalf("WriteFile(container) error = %s", write.Error())
+	}
+
+	region, err := filestore.OpenRegionWithSegmentAlias(ctx, containerPath, int64(len(prefix)), int64(len(payload)), sourcePath)
+	if err != nil {
+		t.Fatalf("OpenRegionWithSegmentAlias() error = %v", err)
+	}
+	defer region.Close()
+	loaded, err := LoadFromStateBlocksWithOptions(ctx, region, bundle, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadFromStateBlocksWithOptions(region raw-only) error = %v", err)
+	}
+	loadedHead := loaded.Layers[0].Heads[0]
+	if len(loadedHead.Key) != 0 || len(loadedHead.Value) != 0 {
+		t.Fatalf("loaded region float32 key/value lengths = %d/%d, want raw-only", len(loadedHead.Key), len(loadedHead.Value))
+	}
+	if len(loadedHead.KeyBytes) != 16 || len(loadedHead.ValueBytes) != 16 {
+		t.Fatalf("loaded region raw bytes = %d/%d, want file-backed native bytes", len(loadedHead.KeyBytes), len(loadedHead.ValueBytes))
+	}
+}
+
 func TestKVSnapshotStateBlocks_Good_UsesStreamingBinaryWriter(t *testing.T) {
 	store := &streamRecordingStateStore{store: state.NewInMemoryStore(nil)}
 	snapshot := kvSnapshotBlocksTestSnapshot()

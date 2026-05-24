@@ -128,6 +128,20 @@ rejection, URI lookup, and write rejection, and the broad Go lane passes on
 `4.346 ms/op` for a 10k-record region open. Remaining production work is the
 true zero-copy/mmap/pinned handoff from this payload window into MLX-ready
 State vectors.
+
+Second code update, same date: go-inference dev `41a48af` now exposes
+`BorrowBytes` / `BorrowRefBytes` and the read-only filestore region path
+services borrows from an mmap of the embedded `.kv` State payload. `go-mlx` raw
+State block loading now asks for borrowed bytes first, so native-encoded KV
+tensor slices parsed from a `.kv` wake can flow into the existing
+`core.PinnedView` / `mlx_array_new_data` restore path without the old per-block
+heap copy. The
+focused region benchmark now records `BorrowRefBytes` at `29.71 ns/op`,
+`0 B/op`, `0 allocs/op` for 64 KiB blocks versus copied `ResolveRefBytes` at
+`6666 ns/op`, `65536 B/op`, `1 alloc/op`; the 1000-record 64-byte row is
+`31.61 ns/op`, `0 B/op`, `0 allocs/op` versus `650.2 ns/op`, `64 B/op`,
+`1 alloc/op`.
+
 The content caveat remains: the short wake output is prompt-analysis text, so
 this is format/continuity evidence only.
 

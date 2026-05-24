@@ -61,10 +61,12 @@ Acceptance:
 ## P0 - go-inference `state/filestore`: relocatable segment aliases and embedded regions
 
 Status: segment aliases were pushed to `external/go-inference` dev at
-`303e835` as `OpenWithSegmentAlias(ctx, path, canonicalSegment)`. The local
-dev branch now also adds the read-only embedded-region path
+`303e835` as `OpenWithSegmentAlias(ctx, path, canonicalSegment)`. Embedded
+regions were pushed at `e1ce07a`, and mapped borrowed chunks at `41a48af`. The
+current dev branch now has the read-only embedded-region path
 `OpenRegionWithSegmentAlias(ctx, path, payloadOffset, payloadBytes,
-canonicalSegment)`.
+canonicalSegment)` plus borrowed byte reads via `BorrowBytes` /
+`BorrowRefBytes`.
 
 The current file-backed State store validates `ChunkRef.Segment` against the
 opened store path. That is correct for safety, but a `.kv` container extracted
@@ -76,6 +78,7 @@ The safe alias/open options are:
 ```go
 func OpenWithSegmentAlias(ctx context.Context, path string, canonicalSegment string) (*Store, error)
 func OpenRegionWithSegmentAlias(ctx context.Context, path string, payloadOffset int64, payloadBytes int64, canonicalSegment string) (*Store, error)
+func BorrowRefBytes(ctx context.Context, store Store, ref ChunkRef) (BorrowedChunk, error)
 ```
 
 Acceptance:
@@ -89,6 +92,8 @@ Acceptance:
   reading from `payloadOffset + frame_offset` inside the `.kv` container.
 - Region mode is read-only so a wake from a packed State file cannot append
   chunks into the middle of a container.
+- Region borrows are mmap-backed on Darwin/Linux/BSD targets and fall back to a
+  copy where mmap is unavailable, keeping the public State contract portable.
 - The store still writes new refs using the physical path unless an explicit
   write-segment option is also provided.
 
@@ -96,9 +101,11 @@ Current go-mlx bridge: direct `.kv` wake reads the Trix header without touching
 the payload, opens the `.kv` file itself as a read-only State region using the
 payload offset and byte length, and keeps the original `state_store_path` as the
 canonical segment alias. This removes the temporary `.mvlog` materialisation
-step while preserving strict segment validation. It is still not the final
-zero-copy/mmap shape because the State payload is read through the filestore
-region API rather than mapped into pinned MLX-ready memory.
+step while preserving strict segment validation. Raw State block loading now
+uses borrowed bytes first, so native KV tensor slices parsed from a `.kv` region
+can flow into the existing pinned MLX array restore path without a per-block
+heap copy. The remaining production work is tightening the store/session
+lifetime contract and proving it on a real retained-state wake benchmark.
 
 ## P1 - Enchantrix `pkg/trix`: no default transforms for State KV
 
@@ -172,5 +179,7 @@ Acceptance:
 That bridge proves the JSON-head/binary-tail format with streaming pack and
 header-only wake. The current wake path uses the `.kv` payload offset directly
 through `OpenRegionWithSegmentAlias`, so it no longer creates a temporary
-`.mvlog` copy. The remaining production step is mmap plus pinned view/MLX array
-handoff so the payload window can become a zero-copy State vector source.
+`.mvlog` copy. Raw State block payloads are now borrowed from the mmap-backed
+region where the platform supports it and are handed into the existing pinned
+MLX array restore path. The next proof point is a real `.kv` wake run that
+records lower block-load allocations/RSS without regressing decode.
