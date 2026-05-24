@@ -258,6 +258,30 @@ next canonical runtime report set is regenerated:
   launch needs the same unsandboxed Metal access as other model runs; direct
   dry-run/material generation works without it. Treat this as a reproducible
   content-coherence corpus harness, not as runner-anchor parity.
+- `2026-05-24-c014-metaphor-seasons-seed20260524` compact-at-turn-5 book run:
+  `scripts/state_book_from_phase0.py --compact-after-turn 5 --pack-compact-state`
+  now exercises a two-process retained-State book shape. Stage 1 generated
+  chapters `1`-`5`, compacted on the scheduled turn boundary, wrote
+  `/private/tmp/go-mlx-goal/book-runs-compact/2026-05-24-c014-metaphor-seasons-seed20260524.compact.mvlog`,
+  and packed it into a `482M` `.kv`. Stage 2 then started from
+  `-wake-marker-file ...compact.kv` and generated chapters `6`-`10`; the wake
+  used `folded-prefill`, read `1490` compacted prefix tokens, opened the
+  embedded State region in `54.3515ms`, and completed the wake in `580.137ms`.
+  The combined book is
+  `/private/tmp/go-mlx-goal/books-compact/2026-05-24-c014-metaphor-seasons-seed20260524.md`.
+  Stage 1 recorded `5/5` turns, `2562` visible tokens, `96.248 tok/s` decode,
+  `93.604 tok/s` effective turn throughput, `10.074 GiB` active-plus-cache,
+  about `3.165 GiB` RSS, and `495.826 GB` virtual. Stage 2 recorded `5/5`
+  turns, `4136` visible tokens, `101.191 tok/s` decode, `99.412 tok/s`
+  effective turn throughput, but a poor `34.776 GiB` active-plus-cache,
+  about `4.688 GiB` RSS, and `543.264 GB` virtual. Mechanically this proves
+  a chapter-5 compact marker can cross a `.kv` process boundary and still
+  finish chapter 10. Do not promote it to book-quality acceptance yet:
+  chapters `6`-`10` leaked visible prompt-analysis scaffolding before the
+  chapter text. The retained-turn prompt was tightened afterwards to stop
+  forcing creative material into engineering-analysis mode, and the output
+  issue detector now flags `this is an engineering session`, `seed prompt to
+  preserve`, and checklist/plan scaffolds as `visible_prompt_analysis`.
 - `2026-05-24-default-after-native-sliding-reject-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
   current no-floor default retained-State row after rejecting native fixed
   sliding attention as a production default. It completes `10/10` retained

@@ -976,6 +976,60 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileWakeMarker_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	var gotCfg stateRampProfileOptions
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		gotCfg = cfg
+		return &stateRampProfileReport{
+			Version:            1,
+			ModelPath:          modelPath,
+			WakeMarkerFile:     cfg.WakeMarkerFile,
+			WakeStateStorePath: cfg.WakeStateStorePath,
+			WakeIndexURI:       cfg.WakeIndexURI,
+			Summary: stateRampProfileSummary{
+				SuccessfulTurns: 1,
+			},
+		}, nil
+	}
+	dir := t.TempDir()
+	markerPath := core.PathJoin(dir, "marker.json")
+	writeCLIPackFile(t, markerPath, `{
+  "fold": {
+    "compact_marker": {
+      "store_path": "/tmp/session.mvlog",
+      "index_uri": "mlx://state/folded/index",
+      "entry_uri": "mlx://state/folded",
+      "bundle_uri": "mlx://state/folded/bundle",
+      "token_count": 1234
+    }
+  }
+}`)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-wake-marker-file", markerPath, "-target-tokens", "4096", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if gotCfg.WakeMarkerFile != markerPath || gotCfg.WakeStateStorePath != "/tmp/session.mvlog" || gotCfg.WakeIndexURI != "mlx://state/folded/index" {
+		t.Fatalf("wake cfg = %+v, want marker-derived store/index", gotCfg)
+	}
+	if gotCfg.StartTokens != 1234 {
+		t.Fatalf("start tokens = %d, want marker token count", gotCfg.StartTokens)
+	}
+	for _, want := range []string{
+		`"wake_marker_file": "` + markerPath + `"`,
+		`"wake_state_store_path": "/tmp/session.mvlog"`,
+		`"wake_index_uri": "mlx://state/folded/index"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
@@ -1224,7 +1278,7 @@ func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 }
 
 func TestStateRampProfileOutputIssues_Good(t *testing.T) {
-	issues := stateRampProfileOutputIssues("The user is asking me for a result.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
+	issues := stateRampProfileOutputIssues("The user is asking me for a result. This is an engineering session.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
 
 	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
 		if !core.SliceContains(issues, want) {
@@ -1260,7 +1314,7 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 		"</turn_material>",
 		"Honour any requested output length before stopping.",
 		"Do not continue or complete the reference excerpts.",
-		"Do not explain what the user is asking",
+		"Do not explain, classify, plan, checklist, or restate",
 		"Treat historical sign-off language as evidence to verify, not as current truth",
 		"Prefer the unresolved risk and next validation step over a completion claim.",
 		"<turn|>\n<|turn>model\n",
@@ -1285,6 +1339,14 @@ func TestStateRampProfileTurnPromptVisibleFloor_Good(t *testing.T) {
 	}
 	if !core.Contains(prompt, "Answer the user request from the turn material now") {
 		t.Fatalf("prompt = %q, want normal reference-turn instruction", prompt)
+	}
+	if core.Contains(prompt, "answer as the engineer") {
+		t.Fatalf("prompt = %q, should not force creative/book turns into engineering-analysis mode", prompt)
+	}
+	for _, rejected := range []string{"Do not explain, classify, plan, checklist, or restate", "write only the requested output"} {
+		if !core.Contains(prompt, rejected) {
+			t.Fatalf("prompt = %q, want anti-analysis guard %q", prompt, rejected)
+		}
 	}
 }
 
@@ -1471,6 +1533,51 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
 		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
+	}
+}
+
+func TestStateRampProfileScheduledFold_Good(t *testing.T) {
+	opts := stateRampProfileOptions{
+		TargetTokens:         2000,
+		FoldAfterTurns:       2,
+		CompactionTailTokens: 128,
+	}
+	if stateRampProfileScheduledFoldReached(1, opts) {
+		t.Fatal("scheduled fold fired before requested turn")
+	}
+	if !stateRampProfileScheduledFoldReached(2, opts) {
+		t.Fatal("scheduled fold did not fire at requested turn")
+	}
+
+	summary := summariseStateRampProfileTurns(time.Second, 900, []stateRampProfileTurn{
+		{
+			Index:               1,
+			TokensAfterGenerate: 950,
+			VisibleTokens:       10,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 10,
+				DecodeDuration:  time.Second,
+			},
+		},
+		{
+			Index:               2,
+			TokensAfterGenerate: 1000,
+			VisibleTokens:       10,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 10,
+				DecodeDuration:  time.Second,
+			},
+		},
+	}, opts)
+
+	if !summary.FoldedStateRequired || summary.FoldAfterTurns != 2 {
+		t.Fatalf("scheduled fold summary = %+v, want fold after turn 2", summary)
+	}
+	if summary.ContextExhausted {
+		t.Fatalf("context exhausted = true, want scheduled fold below token threshold")
+	}
+	if !core.Contains(summary.CompactionReason, "scheduled compact boundary") {
+		t.Fatalf("compaction reason = %q, want scheduled boundary", summary.CompactionReason)
 	}
 }
 

@@ -448,39 +448,46 @@ const defaultStateRampFoldContinuePrompt = "Return exactly one sentence starting
 	"Do not mention instructions, analysis, reasoning, plans, uncertainty, or report structure."
 
 type stateRampProfileOptions struct {
-	Prompt                    string                    `json:"prompt,omitempty"`
-	AppendPrompt              string                    `json:"append_prompt,omitempty"`
-	AppendTurnDelimiter       string                    `json:"append_turn_delimiter,omitempty"`
-	ChatTemplate              string                    `json:"chat_template,omitempty"`
-	EnableThinking            bool                      `json:"enable_thinking,omitempty"`
-	StartTokens               int                       `json:"start_tokens,omitempty"`
-	TargetTokens              int                       `json:"target_tokens,omitempty"`
-	CompactionThresholdTokens int                       `json:"compaction_threshold_tokens,omitempty"`
-	CompactionTailTokens      int                       `json:"compaction_tail_tokens,omitempty"`
-	AppendTokens              int                       `json:"append_tokens,omitempty"`
-	TurnMaxTokens             int                       `json:"turn_max_tokens,omitempty"`
-	TurnMinTokens             int                       `json:"turn_min_tokens,omitempty"`
-	TurnMinTokensPolicy       string                    `json:"turn_min_tokens_policy,omitempty"`
-	Turns                     int                       `json:"turns,omitempty"`
-	Temperature               float64                   `json:"temperature,omitempty"`
-	TopP                      float64                   `json:"top_p,omitempty"`
-	TopK                      int                       `json:"top_k,omitempty"`
-	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
-	Seed                      uint64                    `json:"seed,omitempty"`
-	SeedSet                   bool                      `json:"seed_set,omitempty"`
-	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput             bool                      `json:"include_output,omitempty"`
-	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
-	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
-	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
-	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
-	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
-	FoldSummary               string                    `json:"-"`
-	FoldRecentTail            string                    `json:"-"`
-	FoldPrefillChunkBytes     int                       `json:"fold_prefill_chunk_bytes,omitempty"`
-	FoldContinuePrompt        string                    `json:"-"`
-	FoldContinueMaxTokens     int                       `json:"fold_continue_max_tokens,omitempty"`
-	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	Prompt                      string                    `json:"prompt,omitempty"`
+	AppendPrompt                string                    `json:"append_prompt,omitempty"`
+	AppendTurnDelimiter         string                    `json:"append_turn_delimiter,omitempty"`
+	WakeMarkerFile              string                    `json:"wake_marker_file,omitempty"`
+	WakeStateStorePath          string                    `json:"wake_state_store_path,omitempty"`
+	WakeStateStoreSegmentAlias  string                    `json:"wake_state_store_segment_alias,omitempty"`
+	WakeStateStorePayloadOffset int64                     `json:"wake_state_store_payload_offset,omitempty"`
+	WakeStateStorePayloadBytes  int64                     `json:"wake_state_store_payload_bytes,omitempty"`
+	WakeIndexURI                string                    `json:"wake_index_uri,omitempty"`
+	ChatTemplate                string                    `json:"chat_template,omitempty"`
+	EnableThinking              bool                      `json:"enable_thinking,omitempty"`
+	StartTokens                 int                       `json:"start_tokens,omitempty"`
+	TargetTokens                int                       `json:"target_tokens,omitempty"`
+	CompactionThresholdTokens   int                       `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens        int                       `json:"compaction_tail_tokens,omitempty"`
+	FoldAfterTurns              int                       `json:"fold_after_turns,omitempty"`
+	AppendTokens                int                       `json:"append_tokens,omitempty"`
+	TurnMaxTokens               int                       `json:"turn_max_tokens,omitempty"`
+	TurnMinTokens               int                       `json:"turn_min_tokens,omitempty"`
+	TurnMinTokensPolicy         string                    `json:"turn_min_tokens_policy,omitempty"`
+	Turns                       int                       `json:"turns,omitempty"`
+	Temperature                 float64                   `json:"temperature,omitempty"`
+	TopP                        float64                   `json:"top_p,omitempty"`
+	TopK                        int                       `json:"top_k,omitempty"`
+	RepeatPenalty               float64                   `json:"repeat_penalty,omitempty"`
+	Seed                        uint64                    `json:"seed,omitempty"`
+	SeedSet                     bool                      `json:"seed_set,omitempty"`
+	SuppressEOS                 bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput               bool                      `json:"include_output,omitempty"`
+	TraceTokenPhases            bool                      `json:"trace_token_phases,omitempty"`
+	FoldOnExhaustion            bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldOnDegradation           bool                      `json:"fold_on_degradation,omitempty"`
+	DegradationMinConsecutive   int                       `json:"degradation_min_consecutive_turns,omitempty"`
+	FoldStorePath               string                    `json:"fold_store_path,omitempty"`
+	FoldSummary                 string                    `json:"-"`
+	FoldRecentTail              string                    `json:"-"`
+	FoldPrefillChunkBytes       int                       `json:"fold_prefill_chunk_bytes,omitempty"`
+	FoldContinuePrompt          string                    `json:"-"`
+	FoldContinueMaxTokens       int                       `json:"fold_continue_max_tokens,omitempty"`
+	SafetyLimits                driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateWakeProfileOptions struct {
@@ -503,52 +510,62 @@ type stateWakeProfileOptions struct {
 }
 
 type stateRampProfileReport struct {
-	Version                   int                       `json:"version"`
-	ModelPath                 string                    `json:"model_path"`
-	LoadDuration              time.Duration             `json:"load_duration,omitempty"`
-	PromptBytes               int                       `json:"prompt_bytes"`
-	AppendPromptBytes         int                       `json:"append_prompt_bytes,omitempty"`
-	ChatTemplate              string                    `json:"chat_template,omitempty"`
-	EnableThinking            bool                      `json:"enable_thinking,omitempty"`
-	SourceTokens              int                       `json:"source_tokens,omitempty"`
-	AppendSourceTokens        int                       `json:"append_source_tokens,omitempty"`
-	AppendTurnSections        int                       `json:"append_turn_sections,omitempty"`
-	StartTokens               int                       `json:"start_tokens"`
-	TargetTokens              int                       `json:"target_tokens"`
-	CompactionThresholdTokens int                       `json:"compaction_threshold_tokens,omitempty"`
-	CompactionTailTokens      int                       `json:"compaction_tail_tokens,omitempty"`
-	AppendTokens              int                       `json:"append_tokens"`
-	TurnMaxTokens             int                       `json:"turn_max_tokens"`
-	TurnMinTokens             int                       `json:"turn_min_tokens,omitempty"`
-	TurnMinTokensPolicy       string                    `json:"turn_min_tokens_policy,omitempty"`
-	RequestedTurns            int                       `json:"requested_turns,omitempty"`
-	Temperature               float64                   `json:"temperature,omitempty"`
-	TopP                      float64                   `json:"top_p,omitempty"`
-	TopK                      int                       `json:"top_k,omitempty"`
-	RepeatPenalty             float64                   `json:"repeat_penalty,omitempty"`
-	Seed                      uint64                    `json:"seed,omitempty"`
-	SeedSet                   bool                      `json:"seed_set,omitempty"`
-	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput             bool                      `json:"include_output,omitempty"`
-	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
-	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
-	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
-	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
-	FoldStorePath             string                    `json:"fold_store_path,omitempty"`
-	FoldSummaryBytes          int                       `json:"fold_summary_bytes,omitempty"`
-	FoldRecentTailBytes       int                       `json:"fold_recent_tail_bytes,omitempty"`
-	FoldPrefillChunkBytes     int                       `json:"fold_prefill_chunk_bytes,omitempty"`
-	FoldContinueMaxTokens     int                       `json:"fold_continue_max_tokens,omitempty"`
-	SafetyLimits              driverProfileSafetyLimits `json:"safety_limits,omitempty"`
-	RuntimeGates              map[string]string         `json:"runtime_gates,omitempty"`
-	Load                      *tuneProfileLoadSettings  `json:"load,omitempty"`
-	InitialPrefillDuration    time.Duration             `json:"initial_prefill_duration,omitempty"`
-	InitialPrefillTokens      int                       `json:"initial_prefill_tokens,omitempty"`
-	Turns                     []stateRampProfileTurn    `json:"turns,omitempty"`
-	Summary                   stateRampProfileSummary   `json:"summary"`
-	Fold                      *stateRampProfileFold     `json:"fold,omitempty"`
-	EstimatedEnergy           *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
-	Error                     string                    `json:"error,omitempty"`
+	Version                      int                       `json:"version"`
+	ModelPath                    string                    `json:"model_path"`
+	LoadDuration                 time.Duration             `json:"load_duration,omitempty"`
+	PromptBytes                  int                       `json:"prompt_bytes"`
+	AppendPromptBytes            int                       `json:"append_prompt_bytes,omitempty"`
+	WakeMarkerFile               string                    `json:"wake_marker_file,omitempty"`
+	WakeStateStorePath           string                    `json:"wake_state_store_path,omitempty"`
+	WakeStateStoreAlias          string                    `json:"wake_state_store_segment_alias,omitempty"`
+	WakeStateStorePayloadOffset  int64                     `json:"wake_state_store_payload_offset,omitempty"`
+	WakeStateStorePayloadBytes   int64                     `json:"wake_state_store_payload_bytes,omitempty"`
+	WakeIndexURI                 string                    `json:"wake_index_uri,omitempty"`
+	ChatTemplate                 string                    `json:"chat_template,omitempty"`
+	EnableThinking               bool                      `json:"enable_thinking,omitempty"`
+	SourceTokens                 int                       `json:"source_tokens,omitempty"`
+	AppendSourceTokens           int                       `json:"append_source_tokens,omitempty"`
+	AppendTurnSections           int                       `json:"append_turn_sections,omitempty"`
+	StartTokens                  int                       `json:"start_tokens"`
+	TargetTokens                 int                       `json:"target_tokens"`
+	CompactionThresholdTokens    int                       `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens         int                       `json:"compaction_tail_tokens,omitempty"`
+	FoldAfterTurns               int                       `json:"fold_after_turns,omitempty"`
+	AppendTokens                 int                       `json:"append_tokens"`
+	TurnMaxTokens                int                       `json:"turn_max_tokens"`
+	TurnMinTokens                int                       `json:"turn_min_tokens,omitempty"`
+	TurnMinTokensPolicy          string                    `json:"turn_min_tokens_policy,omitempty"`
+	RequestedTurns               int                       `json:"requested_turns,omitempty"`
+	Temperature                  float64                   `json:"temperature,omitempty"`
+	TopP                         float64                   `json:"top_p,omitempty"`
+	TopK                         int                       `json:"top_k,omitempty"`
+	RepeatPenalty                float64                   `json:"repeat_penalty,omitempty"`
+	Seed                         uint64                    `json:"seed,omitempty"`
+	SeedSet                      bool                      `json:"seed_set,omitempty"`
+	SuppressEOS                  bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput                bool                      `json:"include_output,omitempty"`
+	TraceTokenPhases             bool                      `json:"trace_token_phases,omitempty"`
+	FoldOnExhaustion             bool                      `json:"fold_on_exhaustion,omitempty"`
+	FoldOnDegradation            bool                      `json:"fold_on_degradation,omitempty"`
+	DegradationMinConsecutive    int                       `json:"degradation_min_consecutive_turns,omitempty"`
+	FoldStorePath                string                    `json:"fold_store_path,omitempty"`
+	FoldSummaryBytes             int                       `json:"fold_summary_bytes,omitempty"`
+	FoldRecentTailBytes          int                       `json:"fold_recent_tail_bytes,omitempty"`
+	FoldPrefillChunkBytes        int                       `json:"fold_prefill_chunk_bytes,omitempty"`
+	FoldContinueMaxTokens        int                       `json:"fold_continue_max_tokens,omitempty"`
+	SafetyLimits                 driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	RuntimeGates                 map[string]string         `json:"runtime_gates,omitempty"`
+	Load                         *tuneProfileLoadSettings  `json:"load,omitempty"`
+	InitialPrefillDuration       time.Duration             `json:"initial_prefill_duration,omitempty"`
+	InitialPrefillTokens         int                       `json:"initial_prefill_tokens,omitempty"`
+	InitialWakeStoreOpenDuration time.Duration             `json:"initial_wake_store_open_duration,omitempty"`
+	InitialWakeDuration          time.Duration             `json:"initial_wake_duration,omitempty"`
+	InitialWake                  *agent.WakeReport         `json:"initial_wake,omitempty"`
+	Turns                        []stateRampProfileTurn    `json:"turns,omitempty"`
+	Summary                      stateRampProfileSummary   `json:"summary"`
+	Fold                         *stateRampProfileFold     `json:"fold,omitempty"`
+	EstimatedEnergy              *stateRampProfileEnergy   `json:"estimated_energy,omitempty"`
+	Error                        string                    `json:"error,omitempty"`
 }
 
 type stateRampProfileTurn struct {
@@ -613,6 +630,7 @@ type stateRampProfileSummary struct {
 	FoldedStateRequired        bool                              `json:"folded_state_required,omitempty"`
 	CompactionThresholdTokens  int                               `json:"compaction_threshold_tokens,omitempty"`
 	CompactionTailTokens       int                               `json:"compaction_tail_tokens,omitempty"`
+	FoldAfterTurns             int                               `json:"fold_after_turns,omitempty"`
 	CompactionReason           string                            `json:"compaction_reason,omitempty"`
 }
 
@@ -2222,12 +2240,16 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
 	appendFile := fs.String("append-file", "", "read appended turn material from a file")
 	appendTurnDelimiter := fs.String("append-turn-delimiter", "", "split appended material into whole turn sections using this delimiter instead of fixed token offsets")
+	wakeMarkerFile := fs.String("wake-marker-file", "", "start the ramp by waking this State compact marker or .kv container instead of prefilling the seed prompt")
+	wakeStateStorePath := fs.String("wake-state-store", "", "existing append-only State file to wake before ramp turns")
+	wakeIndexURI := fs.String("wake-index-uri", "", "State index URI to wake before ramp turns")
 	chatTemplate := fs.String("chat-template", "", "chat template override for retained turns: gemma4, gemma, qwen, llama, or plain")
 	enableThinking := fs.Bool("enable-thinking", false, "enable Gemma 4 thinking control token in the retained state ramp prompts")
 	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
 	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses target tokens")
 	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
+	foldAfterTurns := fs.Int("fold-after-turn", 0, "scheduled turn boundary that requires a folded State; 0 disables scheduled folding")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
 	turnMinTokens := fs.Int("turn-min-tokens", 0, "debug-only visible token annotation threshold; 0 disables the annotation")
@@ -2298,6 +2320,28 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		fs.Usage()
 		return 2
 	}
+	wakeStateStoreSegmentAlias := ""
+	wakeStateStorePayloadOffset := int64(0)
+	wakeStateStorePayloadBytes := int64(0)
+	if core.Trim(*wakeMarkerFile) != "" {
+		markerSource, err := stateWakeProfileMarkerSourceFromFile(*wakeMarkerFile)
+		if err != nil {
+			core.Print(stderr, "%s state-ramp-profile: wake marker file: %v", cliName(), err)
+			return 1
+		}
+		if core.Trim(*wakeStateStorePath) == "" {
+			*wakeStateStorePath = markerSource.Marker.StorePath
+		}
+		if core.Trim(*wakeIndexURI) == "" {
+			*wakeIndexURI = markerSource.Marker.IndexURI
+		}
+		if !visitedFlags["start-tokens"] && markerSource.Marker.TokenCount > 0 {
+			*startTokens = markerSource.Marker.TokenCount
+		}
+		wakeStateStoreSegmentAlias = markerSource.SegmentAlias
+		wakeStateStorePayloadOffset = markerSource.PayloadOffset
+		wakeStateStorePayloadBytes = markerSource.PayloadBytes
+	}
 	if core.Trim(*promptFile) != "" {
 		read := core.ReadFile(*promptFile)
 		if !read.OK {
@@ -2347,6 +2391,10 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 	if *compactionTailTokens < 0 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction tail tokens must be >= 0\n", cliName()))
+		return 2
+	}
+	if *foldAfterTurns < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold after turn must be >= 0\n", cliName()))
 		return 2
 	}
 	if *appendTokens < 1 {
@@ -2401,8 +2449,20 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
 	}
+	if *foldAfterTurns > 0 {
+		*foldOnExhaustion = true
+	}
 	if (*foldOnExhaustion || *foldOnDegradation) && core.Trim(*foldStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when folding is enabled\n", cliName()))
+		return 2
+	}
+	wakeRequested := core.Trim(*wakeStateStorePath) != "" || core.Trim(*wakeIndexURI) != ""
+	if wakeRequested && core.Trim(*wakeStateStorePath) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: wake state store path is required\n", cliName()))
+		return 2
+	}
+	if wakeRequested && core.Trim(*wakeIndexURI) == "" {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: wake index URI is required\n", cliName()))
 		return 2
 	}
 	if *foldPrefillChunkBytes < 0 {
@@ -2458,38 +2518,45 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 
 	report, err := runStateRampProfileGuarded(ctx, fs.Arg(0), loadOptions, stateRampProfileOptions{
-		Prompt:                    *prompt,
-		AppendPrompt:              *appendPrompt,
-		AppendTurnDelimiter:       *appendTurnDelimiter,
-		ChatTemplate:              *chatTemplate,
-		EnableThinking:            *enableThinking,
-		StartTokens:               *startTokens,
-		TargetTokens:              *targetTokens,
-		CompactionThresholdTokens: *compactionThresholdTokens,
-		CompactionTailTokens:      *compactionTailTokens,
-		AppendTokens:              *appendTokens,
-		TurnMaxTokens:             *turnMaxTokens,
-		TurnMinTokens:             *turnMinTokens,
-		TurnMinTokensPolicy:       *turnMinTokensPolicy,
-		Turns:                     *turns,
-		Temperature:               *temperature,
-		TopP:                      *topP,
-		TopK:                      *topK,
-		RepeatPenalty:             *repeatPenalty,
-		Seed:                      *seed,
-		SeedSet:                   visitedFlags["seed"],
-		SuppressEOS:               *suppressEOS,
-		IncludeOutput:             *includeOutput,
-		TraceTokenPhases:          *traceTokenPhases,
-		FoldOnExhaustion:          *foldOnExhaustion,
-		FoldOnDegradation:         *foldOnDegradation,
-		DegradationMinConsecutive: *degradationMinConsecutive,
-		FoldStorePath:             core.Trim(*foldStorePath),
-		FoldSummary:               *foldSummary,
-		FoldRecentTail:            *foldRecentTail,
-		FoldPrefillChunkBytes:     *foldPrefillChunkBytes,
-		FoldContinuePrompt:        *foldContinuePrompt,
-		FoldContinueMaxTokens:     *foldContinueMaxTokens,
+		Prompt:                      *prompt,
+		AppendPrompt:                *appendPrompt,
+		AppendTurnDelimiter:         *appendTurnDelimiter,
+		WakeMarkerFile:              core.Trim(*wakeMarkerFile),
+		WakeStateStorePath:          core.Trim(*wakeStateStorePath),
+		WakeStateStoreSegmentAlias:  core.Trim(wakeStateStoreSegmentAlias),
+		WakeStateStorePayloadOffset: wakeStateStorePayloadOffset,
+		WakeStateStorePayloadBytes:  wakeStateStorePayloadBytes,
+		WakeIndexURI:                core.Trim(*wakeIndexURI),
+		ChatTemplate:                *chatTemplate,
+		EnableThinking:              *enableThinking,
+		StartTokens:                 *startTokens,
+		TargetTokens:                *targetTokens,
+		CompactionThresholdTokens:   *compactionThresholdTokens,
+		CompactionTailTokens:        *compactionTailTokens,
+		FoldAfterTurns:              *foldAfterTurns,
+		AppendTokens:                *appendTokens,
+		TurnMaxTokens:               *turnMaxTokens,
+		TurnMinTokens:               *turnMinTokens,
+		TurnMinTokensPolicy:         *turnMinTokensPolicy,
+		Turns:                       *turns,
+		Temperature:                 *temperature,
+		TopP:                        *topP,
+		TopK:                        *topK,
+		RepeatPenalty:               *repeatPenalty,
+		Seed:                        *seed,
+		SeedSet:                     visitedFlags["seed"],
+		SuppressEOS:                 *suppressEOS,
+		IncludeOutput:               *includeOutput,
+		TraceTokenPhases:            *traceTokenPhases,
+		FoldOnExhaustion:            *foldOnExhaustion,
+		FoldOnDegradation:           *foldOnDegradation,
+		DegradationMinConsecutive:   *degradationMinConsecutive,
+		FoldStorePath:               core.Trim(*foldStorePath),
+		FoldSummary:                 *foldSummary,
+		FoldRecentTail:              *foldRecentTail,
+		FoldPrefillChunkBytes:       *foldPrefillChunkBytes,
+		FoldContinuePrompt:          *foldContinuePrompt,
+		FoldContinueMaxTokens:       *foldContinueMaxTokens,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -2510,37 +2577,44 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &stateRampProfileReport{
-				Version:                   1,
-				ModelPath:                 fs.Arg(0),
-				PromptBytes:               len(*prompt),
-				AppendPromptBytes:         len(*appendPrompt),
-				AppendTurnSections:        0,
-				ChatTemplate:              *chatTemplate,
-				EnableThinking:            *enableThinking,
-				StartTokens:               *startTokens,
-				TargetTokens:              *targetTokens,
-				CompactionThresholdTokens: *compactionThresholdTokens,
-				CompactionTailTokens:      *compactionTailTokens,
-				AppendTokens:              *appendTokens,
-				TurnMaxTokens:             *turnMaxTokens,
-				TurnMinTokens:             *turnMinTokens,
-				TurnMinTokensPolicy:       *turnMinTokensPolicy,
-				RequestedTurns:            *turns,
-				Temperature:               *temperature,
-				TopP:                      *topP,
-				TopK:                      *topK,
-				RepeatPenalty:             *repeatPenalty,
-				SuppressEOS:               *suppressEOS,
-				IncludeOutput:             *includeOutput,
-				TraceTokenPhases:          *traceTokenPhases,
-				FoldOnExhaustion:          *foldOnExhaustion,
-				FoldOnDegradation:         *foldOnDegradation,
-				DegradationMinConsecutive: *degradationMinConsecutive,
-				FoldStorePath:             core.Trim(*foldStorePath),
-				FoldSummaryBytes:          len(*foldSummary),
-				FoldRecentTailBytes:       len(*foldRecentTail),
-				FoldPrefillChunkBytes:     *foldPrefillChunkBytes,
-				FoldContinueMaxTokens:     *foldContinueMaxTokens,
+				Version:                     1,
+				ModelPath:                   fs.Arg(0),
+				PromptBytes:                 len(*prompt),
+				AppendPromptBytes:           len(*appendPrompt),
+				AppendTurnSections:          0,
+				WakeMarkerFile:              core.Trim(*wakeMarkerFile),
+				WakeStateStorePath:          core.Trim(*wakeStateStorePath),
+				WakeStateStoreAlias:         core.Trim(wakeStateStoreSegmentAlias),
+				WakeStateStorePayloadOffset: wakeStateStorePayloadOffset,
+				WakeStateStorePayloadBytes:  wakeStateStorePayloadBytes,
+				WakeIndexURI:                core.Trim(*wakeIndexURI),
+				ChatTemplate:                *chatTemplate,
+				EnableThinking:              *enableThinking,
+				StartTokens:                 *startTokens,
+				TargetTokens:                *targetTokens,
+				CompactionThresholdTokens:   *compactionThresholdTokens,
+				CompactionTailTokens:        *compactionTailTokens,
+				FoldAfterTurns:              *foldAfterTurns,
+				AppendTokens:                *appendTokens,
+				TurnMaxTokens:               *turnMaxTokens,
+				TurnMinTokens:               *turnMinTokens,
+				TurnMinTokensPolicy:         *turnMinTokensPolicy,
+				RequestedTurns:              *turns,
+				Temperature:                 *temperature,
+				TopP:                        *topP,
+				TopK:                        *topK,
+				RepeatPenalty:               *repeatPenalty,
+				SuppressEOS:                 *suppressEOS,
+				IncludeOutput:               *includeOutput,
+				TraceTokenPhases:            *traceTokenPhases,
+				FoldOnExhaustion:            *foldOnExhaustion,
+				FoldOnDegradation:           *foldOnDegradation,
+				DegradationMinConsecutive:   *degradationMinConsecutive,
+				FoldStorePath:               core.Trim(*foldStorePath),
+				FoldSummaryBytes:            len(*foldSummary),
+				FoldRecentTailBytes:         len(*foldRecentTail),
+				FoldPrefillChunkBytes:       *foldPrefillChunkBytes,
+				FoldContinueMaxTokens:       *foldContinueMaxTokens,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -2590,39 +2664,46 @@ func runStateRampProfileGuarded(ctx context.Context, modelPath string, loadOptio
 func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateRampProfileOptions) (*stateRampProfileReport, error) {
 	opts = normalizeStateRampProfileOptions(opts)
 	report := &stateRampProfileReport{
-		Version:                   1,
-		ModelPath:                 modelPath,
-		PromptBytes:               len(opts.Prompt),
-		AppendPromptBytes:         len(opts.AppendPrompt),
-		EnableThinking:            opts.EnableThinking,
-		StartTokens:               opts.StartTokens,
-		TargetTokens:              opts.TargetTokens,
-		CompactionThresholdTokens: opts.CompactionThresholdTokens,
-		CompactionTailTokens:      opts.CompactionTailTokens,
-		AppendTokens:              opts.AppendTokens,
-		TurnMaxTokens:             opts.TurnMaxTokens,
-		TurnMinTokens:             opts.TurnMinTokens,
-		TurnMinTokensPolicy:       opts.TurnMinTokensPolicy,
-		RequestedTurns:            opts.Turns,
-		Temperature:               opts.Temperature,
-		TopP:                      opts.TopP,
-		TopK:                      opts.TopK,
-		RepeatPenalty:             opts.RepeatPenalty,
-		Seed:                      opts.Seed,
-		SeedSet:                   opts.SeedSet,
-		SuppressEOS:               opts.SuppressEOS,
-		IncludeOutput:             opts.IncludeOutput,
-		TraceTokenPhases:          opts.TraceTokenPhases,
-		FoldOnExhaustion:          opts.FoldOnExhaustion,
-		FoldOnDegradation:         opts.FoldOnDegradation,
-		DegradationMinConsecutive: opts.DegradationMinConsecutive,
-		FoldStorePath:             opts.FoldStorePath,
-		FoldSummaryBytes:          len(opts.FoldSummary),
-		FoldRecentTailBytes:       len(opts.FoldRecentTail),
-		FoldPrefillChunkBytes:     opts.FoldPrefillChunkBytes,
-		FoldContinueMaxTokens:     opts.FoldContinueMaxTokens,
-		SafetyLimits:              opts.SafetyLimits,
-		RuntimeGates:              driverProfileRuntimeGates(),
+		Version:                     1,
+		ModelPath:                   modelPath,
+		PromptBytes:                 len(opts.Prompt),
+		AppendPromptBytes:           len(opts.AppendPrompt),
+		WakeMarkerFile:              opts.WakeMarkerFile,
+		WakeStateStorePath:          opts.WakeStateStorePath,
+		WakeStateStoreAlias:         opts.WakeStateStoreSegmentAlias,
+		WakeStateStorePayloadOffset: opts.WakeStateStorePayloadOffset,
+		WakeStateStorePayloadBytes:  opts.WakeStateStorePayloadBytes,
+		WakeIndexURI:                opts.WakeIndexURI,
+		EnableThinking:              opts.EnableThinking,
+		StartTokens:                 opts.StartTokens,
+		TargetTokens:                opts.TargetTokens,
+		CompactionThresholdTokens:   opts.CompactionThresholdTokens,
+		CompactionTailTokens:        opts.CompactionTailTokens,
+		FoldAfterTurns:              opts.FoldAfterTurns,
+		AppendTokens:                opts.AppendTokens,
+		TurnMaxTokens:               opts.TurnMaxTokens,
+		TurnMinTokens:               opts.TurnMinTokens,
+		TurnMinTokensPolicy:         opts.TurnMinTokensPolicy,
+		RequestedTurns:              opts.Turns,
+		Temperature:                 opts.Temperature,
+		TopP:                        opts.TopP,
+		TopK:                        opts.TopK,
+		RepeatPenalty:               opts.RepeatPenalty,
+		Seed:                        opts.Seed,
+		SeedSet:                     opts.SeedSet,
+		SuppressEOS:                 opts.SuppressEOS,
+		IncludeOutput:               opts.IncludeOutput,
+		TraceTokenPhases:            opts.TraceTokenPhases,
+		FoldOnExhaustion:            opts.FoldOnExhaustion,
+		FoldOnDegradation:           opts.FoldOnDegradation,
+		DegradationMinConsecutive:   opts.DegradationMinConsecutive,
+		FoldStorePath:               opts.FoldStorePath,
+		FoldSummaryBytes:            len(opts.FoldSummary),
+		FoldRecentTailBytes:         len(opts.FoldRecentTail),
+		FoldPrefillChunkBytes:       opts.FoldPrefillChunkBytes,
+		FoldContinueMaxTokens:       opts.FoldContinueMaxTokens,
+		SafetyLimits:                opts.SafetyLimits,
+		RuntimeGates:                driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -2675,32 +2756,70 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 	}
 	report.AppendSourceTokens = countStateRampAppendSourceTokens(appendSourceTokens, appendTurnSections)
 	report.AppendTurnSections = len(appendTurnSections)
-	session, err := model.NewSession()
-	if err != nil {
-		report.Error = err.Error()
-		return report, err
+	var wakeStore *statefile.Store
+	var session *mlx.ModelSession
+	initialSetupDuration := time.Duration(0)
+	currentTokens := 0
+	if opts.WakeStateStorePath != "" || opts.WakeIndexURI != "" {
+		openStart := time.Now()
+		if opts.WakeStateStorePayloadOffset > 0 || opts.WakeStateStorePayloadBytes > 0 {
+			wakeStore, err = statefile.OpenRegionWithSegmentAlias(ctx, opts.WakeStateStorePath, opts.WakeStateStorePayloadOffset, opts.WakeStateStorePayloadBytes, opts.WakeStateStoreSegmentAlias)
+		} else if opts.WakeStateStoreSegmentAlias != "" {
+			wakeStore, err = statefile.OpenWithSegmentAlias(ctx, opts.WakeStateStorePath, opts.WakeStateStoreSegmentAlias)
+		} else {
+			wakeStore, err = statefile.Open(ctx, opts.WakeStateStorePath)
+		}
+		report.InitialWakeStoreOpenDuration = bench.NonZeroDuration(time.Since(openStart))
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		defer wakeStore.Close()
+		wakeStart := time.Now()
+		session, report.InitialWake, err = model.WakeAgentMemory(ctx, wakeStore, agent.WakeOptions{IndexURI: opts.WakeIndexURI})
+		report.InitialWakeDuration = bench.NonZeroDuration(time.Since(wakeStart))
+		initialSetupDuration = report.InitialWakeDuration
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		if report.InitialWake != nil {
+			currentTokens = report.InitialWake.PrefixTokens
+			report.InitialPrefillTokens = currentTokens
+		}
+		if err := driverProfileMetricsSafetyError("initial wake", model.Metrics(), opts.SafetyLimits); err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+	} else {
+		session, err = model.NewSession()
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		seedTokens, err := stateRampProfileSeedTokens(tok, sourceTokens, opts)
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		prefillStart := time.Now()
+		err = session.PrefillTokens(ctx, seedTokens)
+		report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
+		report.InitialPrefillTokens = len(seedTokens)
+		initialSetupDuration = report.InitialPrefillDuration
+		if err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		if err := driverProfileMetricsSafetyError("initial prefill", model.Metrics(), opts.SafetyLimits); err != nil {
+			report.Error = err.Error()
+			return report, err
+		}
+		currentTokens = len(seedTokens)
 	}
 	defer session.Close()
 
-	seedTokens, err := stateRampProfileSeedTokens(tok, sourceTokens, opts)
-	if err != nil {
-		report.Error = err.Error()
-		return report, err
-	}
-	prefillStart := time.Now()
-	err = session.PrefillTokens(ctx, seedTokens)
-	report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
-	report.InitialPrefillTokens = len(seedTokens)
-	if err != nil {
-		report.Error = err.Error()
-		return report, err
-	}
-	if err := driverProfileMetricsSafetyError("initial prefill", model.Metrics(), opts.SafetyLimits); err != nil {
-		report.Error = err.Error()
-		return report, err
-	}
-
-	currentTokens := len(seedTokens)
+	initialTokens := currentTokens
 	sourceOffset := 0
 	consecutiveContentIssues := 0
 	var firstErr error
@@ -2730,11 +2849,14 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		if turn.Error != "" && stateRampProfileTurnErrorFatal(turn, opts) {
 			break
 		}
+		if stateRampProfileScheduledFoldReached(turnIndex, opts) {
+			break
+		}
 		if stateRampProfileDegradationFoldReached(consecutiveContentIssues, opts) {
 			break
 		}
 	}
-	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns, opts)
+	report.Summary = summariseStateRampProfileTurns(initialSetupDuration, initialTokens, report.Turns, opts)
 	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
 		report.Fold = stateRampProfileFoldExhausted(ctx, model, session, report, opts)
 		annotateStateRampProfileFoldDurations(report)
@@ -2752,6 +2874,10 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampProfileOptions {
 	opts.Prompt = core.Trim(opts.Prompt)
 	opts.AppendPrompt = core.Trim(opts.AppendPrompt)
+	opts.WakeMarkerFile = core.Trim(opts.WakeMarkerFile)
+	opts.WakeStateStorePath = core.Trim(opts.WakeStateStorePath)
+	opts.WakeStateStoreSegmentAlias = core.Trim(opts.WakeStateStoreSegmentAlias)
+	opts.WakeIndexURI = core.Trim(opts.WakeIndexURI)
 	if opts.Prompt == "" {
 		opts.Prompt = "Answer in one short sentence: why does retained model state matter?"
 	}
@@ -2766,6 +2892,9 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	if opts.CompactionTailTokens < 0 {
 		opts.CompactionTailTokens = 0
+	}
+	if opts.FoldAfterTurns < 0 {
+		opts.FoldAfterTurns = 0
 	}
 	if opts.AppendTokens <= 0 {
 		opts.AppendTokens = 8192
@@ -3010,10 +3139,10 @@ func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (
 	if prompt == "" {
 		return
 	}
-	builder.WriteString("Use the retained project context and the new turn material below. Answer the user request directly. Treat any code or document excerpts as reference material, not as text to continue.\n\n")
+	builder.WriteString("Use the retained context and the new turn material below. Produce only the requested answer or artefact. Treat any code, document, prompt, or prior-output excerpts as reference material, not as text to continue.\n\n")
 	builder.WriteString("<turn_material>\n")
 	builder.WriteString(prompt)
-	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Do not explain what the user is asking; answer as the engineer doing the work. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
+	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Do not explain, classify, plan, checklist, or restate what the user is asking; write only the requested output. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
 }
 
 func stateRampProfileVisibleOutput(template, output string) string {
@@ -3030,7 +3159,14 @@ func stateRampProfileOutputIssues(output string) []string {
 	if core.Contains(text, "<|channel>") || core.Contains(text, "<channel|>") || core.Contains(text, "<turn|>") || core.Contains(text, "<|turn>") {
 		issues = append(issues, "visible_chat_control_token")
 	}
-	if core.Contains(lower, "the user is asking") || core.Contains(lower, "the user's prompt") || core.Contains(lower, "the instruction is to") {
+	if core.Contains(lower, "the user is asking") ||
+		core.Contains(lower, "the user's prompt") ||
+		core.Contains(lower, "the instruction is to") ||
+		core.Contains(lower, "this is an engineering session") ||
+		core.Contains(lower, "the core instruction is to") ||
+		core.Contains(lower, "seed prompt to preserve") ||
+		core.Contains(lower, "constraint checklist") ||
+		core.Contains(lower, "execution plan") {
 		issues = append(issues, "visible_prompt_analysis")
 	}
 	if core.Contains(lower, "self-correction") || core.Contains(lower, "self correction") || core.Contains(lower, "i need to act as if") {
@@ -3360,6 +3496,10 @@ func stateRampProfileDegradationFoldReached(consecutiveContentIssues int, opts s
 	return consecutiveContentIssues >= minConsecutive
 }
 
+func stateRampProfileScheduledFoldReached(turnIndex int, opts stateRampProfileOptions) bool {
+	return opts.FoldAfterTurns > 0 && turnIndex >= opts.FoldAfterTurns
+}
+
 func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn, opts stateRampProfileOptions) stateRampProfileSummary {
 	summary := stateRampProfileSummary{
 		InitialPrefillTokens: initialTokens,
@@ -3495,6 +3635,7 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		return summary.NativeEventDetails[i].Duration > summary.NativeEventDetails[j].Duration
 	})
 	annotateStateRampProfileContentDegradation(&summary, turns, opts)
+	annotateStateRampProfileScheduledFold(&summary, opts)
 	annotateStateRampProfileContextLifecycle(&summary, opts)
 	return summary
 }
@@ -3544,6 +3685,20 @@ func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary
 			summary.CompactionReason = summary.ContentDegradationReason
 		}
 		return
+	}
+}
+
+func annotateStateRampProfileScheduledFold(summary *stateRampProfileSummary, opts stateRampProfileOptions) {
+	if summary == nil || opts.FoldAfterTurns <= 0 {
+		return
+	}
+	if summary.SuccessfulTurns < opts.FoldAfterTurns {
+		return
+	}
+	summary.FoldedStateRequired = true
+	summary.FoldAfterTurns = opts.FoldAfterTurns
+	if summary.CompactionReason == "" {
+		summary.CompactionReason = core.Sprintf("scheduled compact boundary reached after turn %d; checkpoint, summarise, and prefill a folded state before appending more turns", opts.FoldAfterTurns)
 	}
 }
 
@@ -3715,6 +3870,17 @@ func stateRampProfileFoldSummary(report *stateRampProfileReport, opts stateRampP
 			report.Summary.FinalStateTokens,
 			report.Summary.ContentDegradationTurn,
 			report.Summary.ContentDegradationStreak,
+			report.Summary.AppendedTokens,
+			report.Summary.GeneratedTokens,
+			report.Summary.DecodeTokensPerSecAverage,
+			report.Summary.EffectiveTurnTokensPerSec,
+		)
+	}
+	if report.Summary.FoldAfterTurns > 0 {
+		return core.Sprintf(
+			"The previous retained state was intentionally compacted after turn %d at %d live tokens. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the earlier chapters.",
+			report.Summary.FoldAfterTurns,
+			report.Summary.FinalStateTokens,
 			report.Summary.AppendedTokens,
 			report.Summary.GeneratedTokens,
 			report.Summary.DecodeTokensPerSecAverage,
