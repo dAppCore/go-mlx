@@ -215,6 +215,25 @@ turn `10` `empty_visible_output`. Verification:
 `git diff --check`, and
 `go build -o /private/tmp/go-mlx-goal/bin/lthn-mlx ./go/cmd/mlx`.
 
+Comparator stop-policy follow-up: the Python comparator harnesses now import
+the same Gemma 4 stop/suppress token contract from `scripts/state_ramp_prompts.py`.
+`GEMMA4_STOP_TOKEN_TEXTS` is `("<eos>", "<turn|>",
+"<|tool_response>")`, resolving to `[1, 106, 50]` on the local
+`mlx-community/gemma-4-e2b-it-4bit` tokenizer. `mlx_lm` no longer logit-biases
+token `50` as suppressed while also loading the tokenizer with the model's EOS
+list, and the llama.cpp server harness now sends the full stop-string list
+instead of only `"<turn|>"`. Both comparator harnesses also mark empty visible
+output as `empty_visible_output` rather than counting a zero-content stop as a
+successful turn. Verification:
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/mlx_lm_opencode_workflow_bench.py scripts/llamacpp_opencode_workflow_bench.py`,
+local tokenizer helper check resolving stop IDs to `[1, 106, 50]` and proving
+`50` is excluded from suppress IDs, and a row-label detector check returning
+`['visible_repeated_table_row_label']`. A live one-turn `mlx_lm` rerun was not
+accepted as evidence because the current Homebrew/Python path imports a broken
+`mlx_lm` install (`ModuleNotFoundError: No module named 'mlx.utils'`); rerun
+the comparator from the repaired parity environment before promoting a new
+external row.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

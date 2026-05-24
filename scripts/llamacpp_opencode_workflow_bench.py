@@ -12,7 +12,9 @@ from urllib.parse import urlparse
 from transformers import AutoTokenizer
 
 from state_ramp_prompts import (
+    GEMMA4_STOP_TOKEN_TEXTS,
     gemma4_initial_prompt,
+    gemma4_stop_token_ids,
     gemma4_turn_prompt,
     issue_counts,
     output_issues as prompt_output_issues,
@@ -102,6 +104,18 @@ def memory_probe_error(memory):
     return memory.get("probe_error", "")
 
 
+def token_id(tokenizer, text):
+    convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+    if convert is not None:
+        value = convert(text)
+        if isinstance(value, int) and value >= 0:
+            return value
+    ids = encode(tokenizer, text)
+    if len(ids) == 1:
+        return int(ids[0])
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-url", default="http://127.0.0.1:18081")
@@ -149,6 +163,7 @@ def main():
     )
 
     health = request_json(args.base_url, "/health", None, timeout=30)
+    stop_ids = gemma4_stop_token_ids(lambda text: token_id(tokenizer, text))
     cumulative_prompt = seed_prompt
     current_tokens = len(seed_tokens)
     close_suffix = "<turn|>\n"
@@ -172,7 +187,7 @@ def main():
             "repeat_penalty": args.repeat_penalty,
             "cache_prompt": True,
             "stream": False,
-            "stop": ["<turn|>"],
+            "stop": list(GEMMA4_STOP_TOKEN_TEXTS),
         }
         start = time.perf_counter()
         response = request_json(args.base_url, "/completion", payload)
@@ -197,6 +212,9 @@ def main():
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
         output_issues = prompt_output_issues(visible)
         error = ""
+        if not visible.strip():
+            output_issues.append("empty_visible_output")
+            error = f"llama.cpp opencode workflow: turn {index} produced no visible output"
         if below_min:
             output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
             if args.turn_min_tokens_policy == "fail":
@@ -204,8 +222,8 @@ def main():
                     f"llama.cpp opencode workflow: turn {index} produced {visible_tokens} "
                     f"visible tokens, below requested visible-token debug floor {args.turn_min_tokens}"
                 )
-            if error and first_error is None:
-                first_error = error
+        if error and first_error is None:
+            first_error = error
         turns.append(
             {
                 "index": index,
@@ -257,6 +275,8 @@ def main():
             "append_file": args.append_file,
             "append_turn_delimiter": args.append_turn_delimiter,
             "turn_prompt_mode": args.turn_prompt_mode,
+            "stop_token_texts": list(GEMMA4_STOP_TOKEN_TEXTS),
+            "stop_token_ids": stop_ids,
             "prompt_bytes": len(prompt_text.encode("utf-8")),
             "append_prompt_bytes": len(append_text.encode("utf-8")),
             "source_tokens": len(source_tokens),

@@ -13,6 +13,37 @@ RETAINED_SYSTEM_PROMPT = (
 REPEATED_TABLE_CELL_LOOP_LIMIT = 24
 REPEATED_TABLE_ROW_LABEL_LOOP_LIMIT = 6
 
+GEMMA4_STOP_TOKEN_TEXTS = (
+    "<eos>",
+    "<turn|>",
+    "<|tool_response>",
+)
+
+GEMMA4_SUPPRESS_TOKEN_TEXTS = (
+    "<pad>",
+    "<bos>",
+    "<unk>",
+    "<mask>",
+    "<|tool>",
+    "<tool|>",
+    "<|tool_call>",
+    "<tool_call|>",
+    "<|tool_response>",
+    "<tool_response|>",
+    '<|"|>',
+    "<|think|>",
+    "<|channel>",
+    "<channel|>",
+    "<|turn>",
+    "<|image>",
+    "<|audio>",
+    "<|image|>",
+    "<|audio|>",
+    "<image|>",
+    "<audio|>",
+    "<|video|>",
+)
+
 
 def gemma4_initial_prompt(context_prompt: str, enable_thinking: bool, explicit_bos: bool = True) -> str:
     parts = []
@@ -68,6 +99,29 @@ def visible_text(text: str) -> str:
         _channel, after = rest.split("<channel|>", 1)
         text = before + after
     return text.strip()
+
+
+def gemma4_token_ids(token_id_func, texts: tuple[str, ...]) -> list[int]:
+    ids: list[int] = []
+    for text in texts:
+        ident = token_id_func(text)
+        if ident is None or ident in ids:
+            continue
+        ids.append(int(ident))
+    return ids
+
+
+def gemma4_stop_token_ids(token_id_func) -> list[int]:
+    return gemma4_token_ids(token_id_func, GEMMA4_STOP_TOKEN_TEXTS)
+
+
+def gemma4_suppress_token_ids(token_id_func, stop_ids: list[int] | None = None) -> list[int]:
+    stops = set(stop_ids or [])
+    return [
+        ident
+        for ident in gemma4_token_ids(token_id_func, GEMMA4_SUPPRESS_TOKEN_TEXTS)
+        if ident not in stops
+    ]
 
 
 def output_issues(text: str) -> list[str]:

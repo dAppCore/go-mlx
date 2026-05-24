@@ -16,7 +16,10 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load_model, load_tokenizer
 
 from state_ramp_prompts import (
+    GEMMA4_STOP_TOKEN_TEXTS,
     gemma4_initial_prompt,
+    gemma4_stop_token_ids,
+    gemma4_suppress_token_ids,
     gemma4_turn_prompt,
     issue_counts,
     output_issues as prompt_output_issues,
@@ -147,34 +150,8 @@ def main():
     cache = make_prompt_cache(model, args.max_kv_size)
     prefill_seconds = prefill_tokens(model, cache, seed_tokens, args.prefill_step_size)
 
-    suppress_ids = []
-    for text in (
-        "<pad>",
-        "<bos>",
-        "<unk>",
-        "<mask>",
-        "<|tool>",
-        "<tool|>",
-        "<|tool_call>",
-        "<tool_call|>",
-        "<|tool_response>",
-        "<tool_response|>",
-        '<|"|>',
-        "<|think|>",
-        "<|channel>",
-        "<channel|>",
-        "<|turn>",
-        "<|image>",
-        "<|audio>",
-        "<|image|>",
-        "<|audio|>",
-        "<image|>",
-        "<audio|>",
-        "<|video|>",
-    ):
-        ident = token_id(tokenizer, text)
-        if ident is not None:
-            suppress_ids.append(ident)
+    stop_ids = gemma4_stop_token_ids(lambda text: token_id(tokenizer, text))
+    suppress_ids = gemma4_suppress_token_ids(lambda text: token_id(tokenizer, text), stop_ids)
     logit_bias = {ident: -1e9 for ident in suppress_ids}
     processors = make_logits_processors(logit_bias=logit_bias) if logit_bias else None
     sampler = make_sampler(args.temperature, args.top_p, 0.0, top_k=args.top_k)
@@ -235,6 +212,9 @@ def main():
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
         output_issues = prompt_output_issues(visible)
         error = ""
+        if not visible.strip():
+            output_issues.append("empty_visible_output")
+            error = f"mlx_lm opencode workflow: turn {index} produced no visible output"
         if below_min:
             output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
             if args.turn_min_tokens_policy == "fail":
@@ -242,8 +222,8 @@ def main():
                     f"mlx_lm opencode workflow: turn {index} produced {visible_tokens} "
                     f"visible tokens, below requested visible-token debug floor {args.turn_min_tokens}"
                 )
-            if error and first_error is None:
-                first_error = error
+        if error and first_error is None:
+            first_error = error
         turns.append(
             {
                 "index": index,
@@ -294,6 +274,9 @@ def main():
         "append_file": args.append_file,
         "append_turn_delimiter": args.append_turn_delimiter,
         "turn_prompt_mode": args.turn_prompt_mode,
+        "stop_token_texts": list(GEMMA4_STOP_TOKEN_TEXTS),
+        "stop_token_ids": stop_ids,
+        "suppress_token_ids": suppress_ids,
         "prompt_bytes": len(prompt_text.encode("utf-8")),
         "append_prompt_bytes": len(append_text.encode("utf-8")),
         "source_tokens": len(source_tokens),
