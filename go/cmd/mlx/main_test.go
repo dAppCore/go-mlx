@@ -3432,6 +3432,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 		`"context_length": 4096`,
@@ -3446,7 +3447,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
 			t.Fatalf("stdout = %q, should exclude rejected gate %s", stdout.String(), rejected)

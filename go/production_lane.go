@@ -70,6 +70,7 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateNativeRouterTopK,
 	Gemma4FastRuntimeGateFixedGemma4Cache,
 	Gemma4FastRuntimeGateFixedGemma4SharedMask,
+	Gemma4FastRuntimeGateFixedGemma4Sliding,
 	Gemma4FastRuntimeGateDirectGreedyToken,
 	Gemma4FastRuntimeGateGenerationStream,
 	Gemma4FastRuntimeGateAsyncDecodePrefetch,

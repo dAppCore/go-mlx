@@ -64,6 +64,7 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateNativeRouterTopK,
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateDirectGreedyToken,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateAsyncDecodePrefetch,
@@ -77,7 +78,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateNativeFixedSliding,
 	} {
 		if seen[rejected] {
@@ -111,8 +111,8 @@ func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLongKeepsFixed_Goo
 			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for hyper-long context", gates, want)
 		}
 	}
-	if seen[Gemma4FastRuntimeGateFixedGemma4Sliding] || seen[Gemma4FastRuntimeGateNativeFixedSliding] {
-		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, context helper should not inject long-context-only gates", gates)
+	if !seen[Gemma4FastRuntimeGateFixedGemma4Sliding] || seen[Gemma4FastRuntimeGateNativeFixedSliding] {
+		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, want fixed sliding bound and no native fixed sliding", gates)
 	}
 }
 
