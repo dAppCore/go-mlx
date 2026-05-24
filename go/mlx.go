@@ -214,6 +214,7 @@ type TokenPhaseTrace struct {
 	YieldDuration       time.Duration      `json:"yield_duration,omitempty"`
 	NextInputDuration   time.Duration      `json:"next_input_duration,omitempty"`
 	ForwardDuration     time.Duration      `json:"forward_duration,omitempty"`
+	PrefetchDuration    time.Duration      `json:"prefetch_duration,omitempty"`
 	MaterializeDuration time.Duration      `json:"materialize_duration,omitempty"`
 	DetachDuration      time.Duration      `json:"detach_duration,omitempty"`
 	CacheProbeDuration  time.Duration      `json:"cache_probe_duration,omitempty"`

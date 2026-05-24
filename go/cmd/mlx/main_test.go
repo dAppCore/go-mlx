@@ -2192,6 +2192,7 @@ func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 					{
 						TotalDuration:      10 * time.Millisecond,
 						ForwardDuration:    8 * time.Millisecond,
+						PrefetchDuration:   time.Millisecond,
 						SampleEvalDuration: time.Millisecond,
 						NativeEvents: []mlx.NativePhaseTrace{
 							{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond},
@@ -2200,6 +2201,7 @@ func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 					{
 						TotalDuration:      20 * time.Millisecond,
 						ForwardDuration:    18 * time.Millisecond,
+						PrefetchDuration:   time.Millisecond,
 						SampleEvalDuration: time.Millisecond,
 						NativeEvents: []mlx.NativePhaseTrace{
 							{Name: "gemma4.layer.01.attention", Duration: 3 * time.Millisecond},
@@ -4692,12 +4694,14 @@ func TestDriverProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 				{
 					TotalDuration:      10 * time.Millisecond,
 					ForwardDuration:    8 * time.Millisecond,
+					PrefetchDuration:   time.Millisecond,
 					SampleEvalDuration: time.Millisecond,
 					OtherDuration:      time.Millisecond,
 				},
 				{
 					TotalDuration:      20 * time.Millisecond,
 					ForwardDuration:    18 * time.Millisecond,
+					PrefetchDuration:   time.Millisecond,
 					SampleEvalDuration: time.Millisecond,
 					OtherDuration:      time.Millisecond,
 				},

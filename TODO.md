@@ -197,3 +197,11 @@ Do not reintroduce the old `65536`/65k context boundary or any production
 fixed-cache default while chasing this. Context size can select chunking and
 overflow/compact limits, but it must not select a different K/V family or
 invent a fixed-cache budget for benchmark convenience.
+
+Current retained decode evidence: the real async prefetch runtime gate and the
+new `prefetch` token-phase bucket prove the old large `other` bucket is the
+async next-logits materialisation boundary. On the 2026-05-24 two-turn
+request-context trace, `prefetch` averages about `6.33 ms/token`, while
+`sample_eval` is about `3.28 ms/token` and `forward` about `1.56 ms/token`.
+The next optimisation should target that MLX graph/eval boundary directly
+without changing the paged retained-State semantics.

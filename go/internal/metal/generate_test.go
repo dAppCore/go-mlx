@@ -1318,6 +1318,21 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	if err := Eval(out); err != nil {
 		t.Fatalf("Eval after asyncDecodePrefetch() error = %v", err)
 	}
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 2 || phases[0].PrefetchDuration <= 0 {
+		t.Fatalf("TokenPhases = %+v, want async next-token prefetch duration", phases)
+	}
 }
 
 func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {

@@ -218,6 +218,25 @@ records `3515 ns/op`, `56 B/op`, `2 allocs/op` versus the copy path at
 `4206595 ns/op`, `8390354 B/op`, `3 allocs/op`. This is a State restore and
 zero-copy layout win, not a raw decode acceptance row.
 
+Latest retained decode phase correction, 2026-05-24: the accepted
+`GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH=1` fast-lane gate is now a real runtime
+gate for both `Model.Generate` and retained `ModelSession.Generate`, not only a
+reported CLI setting. The follow-up trace
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-prefetchbucket-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+adds an explicit `prefetch` token-phase bucket around the async next-logits
+materialisation boundary. It completes the same two-turn request-context shape
+with `33728` final live tokens, `1069` visible/generated tokens,
+`88.95376383688955 tok/s` raw decode, `79.58783725070474` effective turn
+tok/s, `9710538338` active-plus-cache bytes, `3382902784` RSS bytes, no fixed
+Gemma 4 caches, `max_local_tokens=512`, `max_global_capacity=131072`, and
+`local_window_leaked=false`. The phase breakdown is now explicit: `prefetch`
+averages `6332038 ns/token`, `sample_eval` averages `3278816 ns/token`,
+`forward` averages `1560206 ns/token`, and the old catch-all `other` bucket
+collapses to `2563 ns/token`. This proves the next decode target is not hidden
+Go bookkeeping; it is the async MLX next-logits dispatch/materialisation
+boundary that IDEAS.md calls the graph-compiler/eval-boundary problem. This is
+instrumentation plus corrected gate behaviour, not final production acceptance.
+
 Latest packed-State wake proof, 2026-05-24: `state-wake-profile` now records
 phase-local Go heap, MLX allocator, and process-memory deltas for store open
 and wake. A same-state real wake comparison uses the existing folded C014

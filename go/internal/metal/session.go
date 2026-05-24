@@ -641,6 +641,10 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			s.err = err
 			return
 		}
+		if tracePhases {
+			phase.PrefetchDuration = time.Since(phaseLast)
+			phaseLast = time.Now()
+		}
 		if cfg.RepeatPenalty > 1.0 {
 			history = append(history, id)
 		}

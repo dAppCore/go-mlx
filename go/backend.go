@@ -636,7 +636,7 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	if totalNative > 0 {
 		nativeSlab = make([]NativePhaseTrace, totalNative)
 	}
-	// Index iteration — metal.TokenPhaseTrace is ~168 B (16 duration
+	// Index iteration — metal.TokenPhaseTrace is ~176 B (17 duration
 	// + Step int + TokenID int32 + TokenText string + FinalToken bool
 	// + NativeEvents slice header).
 	// metal.NativePhaseTrace is ~48 B (string + duration + string).
@@ -675,6 +675,7 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 			YieldDuration:       phase.YieldDuration,
 			NextInputDuration:   phase.NextInputDuration,
 			ForwardDuration:     phase.ForwardDuration,
+			PrefetchDuration:    phase.PrefetchDuration,
 			MaterializeDuration: phase.MaterializeDuration,
 			DetachDuration:      phase.DetachDuration,
 			CacheProbeDuration:  phase.CacheProbeDuration,

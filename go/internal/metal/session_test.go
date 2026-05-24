@@ -547,7 +547,7 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	}
 	defer session.resetState()
 
-	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
+	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, TraceTokenPhases: true}) {
 	}
 	if session.Err() != nil {
 		t.Fatalf("Generate() error = %v", session.Err())
@@ -557,6 +557,10 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	}
 	if err := Eval(session.logits); err != nil {
 		t.Fatalf("Eval prefetched session logits: %v", err)
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 1 || phases[0].PrefetchDuration <= 0 {
+		t.Fatalf("TokenPhases = %+v, want retained-session async prefetch duration", phases)
 	}
 }
 
