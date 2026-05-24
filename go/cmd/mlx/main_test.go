@@ -1180,6 +1180,25 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileFoldAfterTurnRemoved_Bad(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
+		t.Fatal("runStateRampProfile called for removed fold-after-turn flag")
+		return nil, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-after-turn", "5", "/models/demo"}, stdout, stderr)
+
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !core.Contains(stderr.String(), "flag provided but not defined: -fold-after-turn") {
+		t.Fatalf("stderr = %q, want removed flag validation", stderr.String())
+	}
+}
+
 func TestRunCommand_StateRampProfileDegradationMinConsecutiveValidation_Bad(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
@@ -1800,51 +1819,6 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
 		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
-	}
-}
-
-func TestStateRampProfileScheduledFold_Good(t *testing.T) {
-	opts := stateRampProfileOptions{
-		TargetTokens:         2000,
-		FoldAfterTurns:       2,
-		CompactionTailTokens: 128,
-	}
-	if stateRampProfileScheduledFoldReached(1, opts) {
-		t.Fatal("scheduled fold fired before requested turn")
-	}
-	if !stateRampProfileScheduledFoldReached(2, opts) {
-		t.Fatal("scheduled fold did not fire at requested turn")
-	}
-
-	summary := summariseStateRampProfileTurns(time.Second, 900, []stateRampProfileTurn{
-		{
-			Index:               1,
-			TokensAfterGenerate: 950,
-			VisibleTokens:       10,
-			Metrics: mlx.Metrics{
-				GeneratedTokens: 10,
-				DecodeDuration:  time.Second,
-			},
-		},
-		{
-			Index:               2,
-			TokensAfterGenerate: 1000,
-			VisibleTokens:       10,
-			Metrics: mlx.Metrics{
-				GeneratedTokens: 10,
-				DecodeDuration:  time.Second,
-			},
-		},
-	}, opts)
-
-	if !summary.FoldedStateRequired || summary.FoldAfterTurns != 2 {
-		t.Fatalf("scheduled fold summary = %+v, want fold after turn 2", summary)
-	}
-	if summary.ContextExhausted {
-		t.Fatalf("context exhausted = true, want scheduled fold below token threshold")
-	}
-	if !core.Contains(summary.CompactionReason, "scheduled compact boundary") {
-		t.Fatalf("compaction reason = %q, want scheduled boundary", summary.CompactionReason)
 	}
 }
 

@@ -471,7 +471,6 @@ type stateRampProfileOptions struct {
 	TargetTokens                int                       `json:"target_tokens,omitempty"`
 	CompactionThresholdTokens   int                       `json:"compaction_threshold_tokens,omitempty"`
 	CompactionTailTokens        int                       `json:"compaction_tail_tokens,omitempty"`
-	FoldAfterTurns              int                       `json:"fold_after_turns,omitempty"`
 	AppendTokens                int                       `json:"append_tokens,omitempty"`
 	TurnMaxTokens               int                       `json:"turn_max_tokens,omitempty"`
 	TurnMinTokens               int                       `json:"turn_min_tokens,omitempty"`
@@ -542,7 +541,6 @@ type stateRampProfileReport struct {
 	TargetTokens                 int                       `json:"target_tokens"`
 	CompactionThresholdTokens    int                       `json:"compaction_threshold_tokens,omitempty"`
 	CompactionTailTokens         int                       `json:"compaction_tail_tokens,omitempty"`
-	FoldAfterTurns               int                       `json:"fold_after_turns,omitempty"`
 	AppendTokens                 int                       `json:"append_tokens"`
 	TurnMaxTokens                int                       `json:"turn_max_tokens"`
 	TurnMinTokens                int                       `json:"turn_min_tokens,omitempty"`
@@ -651,7 +649,6 @@ type stateRampProfileSummary struct {
 	FoldedStateRequired        bool                              `json:"folded_state_required,omitempty"`
 	CompactionThresholdTokens  int                               `json:"compaction_threshold_tokens,omitempty"`
 	CompactionTailTokens       int                               `json:"compaction_tail_tokens,omitempty"`
-	FoldAfterTurns             int                               `json:"fold_after_turns,omitempty"`
 	CompactionReason           string                            `json:"compaction_reason,omitempty"`
 }
 
@@ -2275,7 +2272,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
 	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses target tokens")
 	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
-	foldAfterTurns := fs.Int("fold-after-turn", 0, "scheduled turn boundary that requires a folded State; 0 disables scheduled folding")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
 	turnMinTokens := fs.Int("turn-min-tokens", 0, "debug-only visible token annotation threshold; 0 disables the annotation")
@@ -2431,10 +2427,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction tail tokens must be >= 0\n", cliName()))
 		return 2
 	}
-	if *foldAfterTurns < 0 {
-		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold after turn must be >= 0\n", cliName()))
-		return 2
-	}
 	if *appendTokens < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: append tokens must be >= 1\n", cliName()))
 		return 2
@@ -2486,9 +2478,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *degradationMinConsecutive < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
-	}
-	if *foldAfterTurns > 0 {
-		*foldOnExhaustion = true
 	}
 	if (*foldOnExhaustion || *foldOnDegradation) && core.Trim(*foldStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when folding is enabled\n", cliName()))
@@ -2585,7 +2574,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		TargetTokens:                *targetTokens,
 		CompactionThresholdTokens:   *compactionThresholdTokens,
 		CompactionTailTokens:        *compactionTailTokens,
-		FoldAfterTurns:              *foldAfterTurns,
 		AppendTokens:                *appendTokens,
 		TurnMaxTokens:               *turnMaxTokens,
 		TurnMinTokens:               *turnMinTokens,
@@ -2649,7 +2637,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				TargetTokens:                *targetTokens,
 				CompactionThresholdTokens:   *compactionThresholdTokens,
 				CompactionTailTokens:        *compactionTailTokens,
-				FoldAfterTurns:              *foldAfterTurns,
 				AppendTokens:                *appendTokens,
 				TurnMaxTokens:               *turnMaxTokens,
 				TurnMinTokens:               *turnMinTokens,
@@ -2738,7 +2725,6 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		TargetTokens:                opts.TargetTokens,
 		CompactionThresholdTokens:   opts.CompactionThresholdTokens,
 		CompactionTailTokens:        opts.CompactionTailTokens,
-		FoldAfterTurns:              opts.FoldAfterTurns,
 		AppendTokens:                opts.AppendTokens,
 		TurnMaxTokens:               opts.TurnMaxTokens,
 		TurnMinTokens:               opts.TurnMinTokens,
@@ -2916,9 +2902,6 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		if turn.Error != "" && stateRampProfileTurnErrorFatal(turn, opts) {
 			break
 		}
-		if stateRampProfileScheduledFoldReached(turnIndex, opts) {
-			break
-		}
 		if stateRampProfileDegradationFoldReached(consecutiveContentIssues, opts) {
 			break
 		}
@@ -2959,9 +2942,6 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	if opts.CompactionTailTokens < 0 {
 		opts.CompactionTailTokens = 0
-	}
-	if opts.FoldAfterTurns < 0 {
-		opts.FoldAfterTurns = 0
 	}
 	if opts.AppendTokens <= 0 {
 		opts.AppendTokens = 8192
@@ -3732,10 +3712,6 @@ func stateRampProfileDegradationFoldReached(consecutiveContentIssues int, opts s
 	return consecutiveContentIssues >= minConsecutive
 }
 
-func stateRampProfileScheduledFoldReached(turnIndex int, opts stateRampProfileOptions) bool {
-	return opts.FoldAfterTurns > 0 && turnIndex >= opts.FoldAfterTurns
-}
-
 func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn, opts stateRampProfileOptions) stateRampProfileSummary {
 	summary := stateRampProfileSummary{
 		InitialPrefillTokens: initialTokens,
@@ -3880,7 +3856,6 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		return summary.NativeEventDetails[i].Duration > summary.NativeEventDetails[j].Duration
 	})
 	annotateStateRampProfileContentDegradation(&summary, turns, opts)
-	annotateStateRampProfileScheduledFold(&summary, opts)
 	annotateStateRampProfileContextLifecycle(&summary, opts)
 	return summary
 }
@@ -3930,20 +3905,6 @@ func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary
 			summary.CompactionReason = summary.ContentDegradationReason
 		}
 		return
-	}
-}
-
-func annotateStateRampProfileScheduledFold(summary *stateRampProfileSummary, opts stateRampProfileOptions) {
-	if summary == nil || opts.FoldAfterTurns <= 0 {
-		return
-	}
-	if summary.SuccessfulTurns < opts.FoldAfterTurns {
-		return
-	}
-	summary.FoldedStateRequired = true
-	summary.FoldAfterTurns = opts.FoldAfterTurns
-	if summary.CompactionReason == "" {
-		summary.CompactionReason = core.Sprintf("scheduled compact boundary reached after turn %d; checkpoint, summarise, and prefill a folded state before appending more turns", opts.FoldAfterTurns)
 	}
 }
 
@@ -4197,17 +4158,6 @@ func stateRampProfileFoldSummary(report *stateRampProfileReport, opts stateRampP
 			report.Summary.FinalStateTokens,
 			report.Summary.ContentDegradationTurn,
 			report.Summary.ContentDegradationStreak,
-			report.Summary.AppendedTokens,
-			report.Summary.GeneratedTokens,
-			report.Summary.DecodeTokensPerSecAverage,
-			report.Summary.EffectiveTurnTokensPerSec,
-		)
-	}
-	if report.Summary.FoldAfterTurns > 0 {
-		return core.Sprintf(
-			"The previous retained state was intentionally compacted after turn %d at %d live tokens. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the earlier chapters.",
-			report.Summary.FoldAfterTurns,
-			report.Summary.FinalStateTokens,
 			report.Summary.AppendedTokens,
 			report.Summary.GeneratedTokens,
 			report.Summary.DecodeTokensPerSecAverage,

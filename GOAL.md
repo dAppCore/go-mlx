@@ -530,10 +530,12 @@ next canonical runtime report set is regenerated:
   launch needs the same unsandboxed Metal access as other model runs; direct
   dry-run/material generation works without it. Treat this as a reproducible
   content-coherence corpus harness, not as runner-anchor parity.
-- `2026-05-24-c014-metaphor-seasons-seed20260524` compact-at-turn-5 book run:
-  `scripts/state_book_from_phase0.py --compact-after-turn 5 --pack-compact-state`
-  now exercises a two-process retained-State book shape. Stage 1 generated
-  chapters `1`-`5`, compacted on the scheduled turn boundary, wrote
+- Historical `2026-05-24-c014-metaphor-seasons-seed20260524` two-stage book
+  detour is retained only as R&D evidence. The fixed-turn compact trigger has
+  been removed from the runner and book harness: compaction is an
+  overflow/degradation tool for the user-defined context window, not a benchmark
+  interval or session-close action. That removed detour generated chapters
+  `1`-`5`, compacted at its fixed test boundary, wrote
   `/private/tmp/go-mlx-goal/book-runs-compact/2026-05-24-c014-metaphor-seasons-seed20260524.compact.mvlog`,
   and packed it into a `482M` `.kv`. Stage 2 then started from
   `-wake-marker-file ...compact.kv` and generated chapters `6`-`10`; the wake
