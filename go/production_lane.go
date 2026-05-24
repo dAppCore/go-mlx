@@ -74,8 +74,6 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGatePagedDecodeFastConcat,
 }
 
-var longContextGemma4FastRuntimeGates = []string{}
-
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
 	Name             string `json:"name"`
@@ -119,23 +117,4 @@ func DefaultProductionLane() ProductionLane {
 // slice is immutable after package init; treat it as read-only.
 func DefaultGemma4FastRuntimeGates() []string {
 	return defaultGemma4FastRuntimeGates
-}
-
-// Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
-// requested context length. Context length alone must not switch cache
-// families: retained workflows stay on paged K/V by default, and fixed Gemma 4
-// K/V remains an explicit diagnostic opt-in.
-//
-// Same read-only contract as DefaultGemma4FastRuntimeGates — the shared
-// package-init singletons are returned directly.
-func Gemma4FastRuntimeGatesForContext(_ int) []string {
-	return defaultGemma4FastRuntimeGates
-}
-
-// LongContextGemma4FastRuntimeGates returns gates that are accepted only for
-// opencode-sized long-context Gemma 4 diagnostics.
-//
-// Read-only contract — see DefaultGemma4FastRuntimeGates.
-func LongContextGemma4FastRuntimeGates() []string {
-	return longContextGemma4FastRuntimeGates
 }

@@ -1235,17 +1235,11 @@ func applyGemma4FastLaneDefaults(
 		if promptChunkBytes != nil && !visited["prompt-chunk-bytes"] {
 			*promptChunkBytes = mlx.ProductionLaneLongContextPromptChunkBytes
 		}
-		for _, gate := range mlx.LongContextGemma4FastRuntimeGates() {
-			if driverProfileRuntimeGateValue(gate) != "" {
-				continue
-			}
-			restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
-		}
 		if driverProfileRuntimeGateValue("GO_MLX_KV_CACHE_DTYPE") == "" {
 			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneRetainedKVCacheDType))
 		}
 	}
-	for _, gate := range mlx.Gemma4FastRuntimeGatesForContext(resolvedContext) {
+	for _, gate := range mlx.DefaultGemma4FastRuntimeGates() {
 		if driverProfileRuntimeGateValue(gate) != "" {
 			continue
 		}

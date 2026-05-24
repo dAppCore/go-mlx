@@ -1,11 +1,11 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
 // Benchmarks for production-lane descriptor builders. Per AX-11 — the
-// DefaultProductionLane + Gemma4FastRuntimeGates* helpers are queried
-// per dispatch by the agentic driver to determine what gates apply to
-// the requested context length. The cost is dominated by the per-call
-// shared read-only gate slice — important to know because some callers
-// query these on every prompt, not just at boot.
+// DefaultProductionLane + DefaultGemma4FastRuntimeGates helpers are queried
+// per dispatch by the agentic driver. Context length must not select a
+// different gate family. The cost is dominated by the per-call shared
+// read-only gate slice — important to know because some callers query these
+// on every prompt, not just at boot.
 //
 // Run:    go test -bench='BenchmarkProdLane' -benchmem -run='^$' ./go
 
@@ -38,50 +38,5 @@ func BenchmarkProdLane_DefaultGemma4FastRuntimeGates(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		prodLaneBenchSinkGates = DefaultGemma4FastRuntimeGates()
-	}
-}
-
-// --- LongContextGemma4FastRuntimeGates — currently empty by default.
-// Documents the minimum-cost helper floor for this family.
-
-func BenchmarkProdLane_LongContextGemma4FastRuntimeGates(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		prodLaneBenchSinkGates = LongContextGemma4FastRuntimeGates()
-	}
-}
-
-// --- Gemma4FastRuntimeGatesForContext — context-agnostic gate resolver.
-// Context length must not rewrite the accepted fast gate set.
-
-func BenchmarkProdLane_GatesForContext_DefaultBranch(b *testing.B) {
-	// 4096 is the production driver default — hits the short-circuit
-	// path that just returns DefaultGemma4FastRuntimeGates() verbatim.
-	contextLength := ProductionLaneContextLength
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		prodLaneBenchSinkGates = Gemma4FastRuntimeGatesForContext(contextLength)
-	}
-}
-
-func BenchmarkProdLane_GatesForContext_LongContextBranch(b *testing.B) {
-	// 32768 is the opencode-sized retained workflow target.
-	contextLength := ProductionLaneLongContextLength
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		prodLaneBenchSinkGates = Gemma4FastRuntimeGatesForContext(contextLength)
-	}
-}
-
-func BenchmarkProdLane_GatesForContext_HyperLongBranch(b *testing.B) {
-	// 131072 is the stress ceiling and must not rewrite the fast gate set.
-	contextLength := ProductionLaneHyperLongContextLength
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		prodLaneBenchSinkGates = Gemma4FastRuntimeGatesForContext(contextLength)
 	}
 }
