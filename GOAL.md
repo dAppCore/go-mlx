@@ -193,6 +193,23 @@ and `go test ./go/internal/metal ./go/cmd/mlx ./go`. Hot-path check:
 `BenchmarkPagedKVCache_UpdateBorrowedPages_To128` reports `1185060 ns/op`,
 `40 B/op`, `5 allocs/op` on Apple M3 Ultra after the deletion.
 
+Latest pinned State restore cleanup, 2026-05-24: the contiguous
+`fromPinnedRawBytes` path no longer routes through the strided/mdspan wrapper
+when the State page view exactly matches its storage layout. It now calls a
+dedicated `go_mlx_array_new_pinned_data` bridge that validates one shape and
+hands the pinned Go buffer directly to `mlx_array_new_data_managed_payload`;
+`fromPinnedRawBytesStrided` still owns the C++23 mdspan subview path. Focused
+verification: `go test ./go/internal/metal -run
+'TestPinnedArray|TestRuntimeGate|TestPagedKVCache'` and
+`go test ./go/internal/metal -run '^$' -bench
+'BenchmarkPinnedArray_(NewFromGoSlice|VsCopyPath|Strided|PinSlice|ShapeElementCount|ContiguousStrides)'
+-benchmem -benchtime=200ms`. The canonical pinned KV rows improve from the
+previous same-machine band of about `3.9-5.1us/op` to `2.9-3.7us/op` while
+staying at `56 B/op`; `BenchmarkPinnedArray_VsCopyPath_PinnedRaw_L4096`
+records `3515 ns/op`, `56 B/op`, `2 allocs/op` versus the copy path at
+`4206595 ns/op`, `8390354 B/op`, `3 allocs/op`. This is a State restore and
+zero-copy layout win, not a raw decode acceptance row.
+
 While investigating that retry, the profile stream cancellation
 path was corrected: `driver-profile`, `state-ramp-profile`, and
 `chapter-profile` now cancel generation on live-memory/repetition/end-marker

@@ -237,3 +237,54 @@ extern "C" mlx_array go_mlx_array_new_pinned_strided_data(
     return mlx_array_empty;
   }
 }
+
+extern "C" mlx_array go_mlx_array_new_pinned_data(
+    void* data,
+    size_t byte_count,
+    const int* shape,
+    int dim,
+    mlx_dtype dtype,
+    uintptr_t payload_id,
+    void (*dtor)(void*)) {
+  void* payload = reinterpret_cast<void*>(payload_id);
+  auto release_payload = [&]() {
+    if (dtor != nullptr && payload != nullptr) {
+      dtor(payload);
+      payload = nullptr;
+    }
+  };
+
+  try {
+    if (data == nullptr || byte_count == 0) {
+      release_payload();
+      mlx_error("mlx: pinned array data is empty");
+      return mlx_array_empty;
+    }
+    size_t item_size = mlx_dtype_size(dtype);
+    if (item_size == 0 || byte_count % item_size != 0) {
+      release_payload();
+      mlx_error("mlx: pinned array byte length does not match dtype");
+      return mlx_array_empty;
+    }
+
+    size_t elements = 0;
+    if (!shape_elements(shape, dim, &elements) || elements * item_size != byte_count) {
+      release_payload();
+      mlx_error("mlx: pinned array shape does not match byte length");
+      return mlx_array_empty;
+    }
+
+    mlx_array base = mlx_array_new_data_managed_payload(
+        data, shape, dim, dtype, payload, dtor);
+    if (base.ctx == nullptr) {
+      release_payload();
+      return mlx_array_empty;
+    }
+    payload = nullptr;
+    return base;
+  } catch (const std::exception& e) {
+    release_payload();
+    mlx_error(e.what());
+    return mlx_array_empty;
+  }
+}

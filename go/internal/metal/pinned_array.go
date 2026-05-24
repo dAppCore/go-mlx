@@ -41,6 +41,15 @@ mlx_array go_mlx_array_new_pinned_strided_data(
 	mlx_stream stream,
 	uintptr_t payload,
 	void (*dtor)(void*));
+
+mlx_array go_mlx_array_new_pinned_data(
+	void* data,
+	size_t byte_count,
+	const int* shape,
+	int dim,
+	mlx_dtype dtype,
+	uintptr_t payload,
+	void (*dtor)(void*));
 */
 import "C"
 
@@ -138,13 +147,49 @@ func goPinnedRawArrayRelease(payload C.uintptr_t) {
 }
 
 func fromPinnedRawBytes(raw []byte, shape []int, dtype DType) (*Array, error) {
-	// Borrow stride scratch from the pool to avoid a per-call `make([]int64,
-	// rank)` for the canonical contiguous case (KV restore hot path).
-	stridesPtr := pinnedStrideScratchInt64.Get().(*[]int64)
-	defer pinnedStrideScratchInt64.Put(stridesPtr)
-	strides := (*stridesPtr)[:len(shape):cap(*stridesPtr)]
-	contiguousStridesInto(strides, shape)
-	return fromPinnedRawBytesStrided(raw, shape, shape, strides, 0, dtype)
+	Init()
+	if len(shape) == 0 {
+		return nil, core.NewError("mlx: pinned array requires shape")
+	}
+	byteSize := DTypeByteSize(dtype)
+	storageElements, ok := shapeElementCount(shape)
+	if byteSize <= 0 || !ok || storageElements*byteSize != len(raw) {
+		return nil, core.NewError("mlx: pinned array byte length does not match shape")
+	}
+	shapePtr := pinnedShapeScratchInt.Get().(*[]C.int)
+	defer pinnedShapeScratchInt.Put(shapePtr)
+	cShape := (*shapePtr)[:len(shape):cap(*shapePtr)]
+	for i, dim := range shape {
+		if dim <= 0 {
+			return nil, core.NewError("mlx: pinned array shape is invalid")
+		}
+		cShape[i] = C.int(dim)
+	}
+
+	id, ptr, err := registerPinnedRawArray(raw)
+	if err != nil {
+		return nil, err
+	}
+	array := newArray("PINNED_RAW")
+	array.ctx = C.go_mlx_array_new_pinned_data(
+		ptr,
+		C.size_t(len(raw)),
+		unsafe.SliceData(cShape),
+		C.int(len(cShape)),
+		C.mlx_dtype(dtype),
+		C.uintptr_t(id),
+		C.go_pinned_raw_array_release_ptr(),
+	)
+	if array.ctx.ctx == nil {
+		unregisterPinnedRawArray(id)
+		if err := lastError(); err != nil {
+			return nil, err
+		}
+		return nil, core.NewError("mlx: pinned array data creation failed")
+	}
+	runtime.KeepAlive(raw)
+	runtime.KeepAlive(cShape)
+	return array, nil
 }
 
 func fromPinnedRawBytesStrided(raw []byte, storageShape, viewShape []int, viewStrides []int64, viewOffset int, dtype DType) (*Array, error) {
