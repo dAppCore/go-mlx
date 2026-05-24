@@ -2363,10 +2363,10 @@ stuffing convention.
   folded State wake, and `kv.LoadPrefixTokensFromStateBlocksWithOptions` loads
   only token IDs for folded prefill so mixed block shapes cannot fail K/V
   assembly during compaction wake. `state-ramp-profile` exposes the same
-  production handoff through `-fold-on-exhaustion`: it writes the exhausted
-  checkpoint and folded State to an explicit store, wakes the folded State with
-  `restore_strategy=folded-prefill`, and records the optional folded
-  wake/continue turn in the benchmark report.
+  production handoff when an explicit fold store is supplied and the live state
+  reaches the context exhaustion threshold: it writes the exhausted checkpoint
+  and folded State, wakes the folded State with `restore_strategy=folded-prefill`,
+  and records the optional folded wake/continue turn in the benchmark report.
 - [x] Reuse the current seed plus text memory when the operator does not want a
   new state file. `TestProjectSeed_PlanContinuationModes_Good` verifies
   `ProjectSeedReuseCurrent` avoids a sleep request and keeps the current seed

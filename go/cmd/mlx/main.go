@@ -2285,7 +2285,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	traceTokenPhases := fs.Bool("trace-token-phases", false, "include per-token retained decode phase timings in turn metrics and summary")
-	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold")
+	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold; deprecated because -fold-store enables overflow folding")
 	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when inspected output degrades before the target")
 	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive output-issue turns required before folding on retained-content degradation")
 	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
@@ -2479,7 +2479,13 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
 	}
-	if (*foldOnExhaustion || *foldOnDegradation) && core.Trim(*foldStorePath) == "" {
+	foldOnOverflow := *foldOnExhaustion || core.Trim(*foldStorePath) != ""
+	foldRequested := foldOnOverflow ||
+		*foldOnDegradation ||
+		core.Trim(*foldSummary) != "" ||
+		*foldSummaryGenerate ||
+		core.Trim(*foldRecentTail) != ""
+	if foldRequested && core.Trim(*foldStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when folding is enabled\n", cliName()))
 		return 2
 	}
@@ -2588,7 +2594,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		SuppressEOS:                 *suppressEOS,
 		IncludeOutput:               *includeOutput,
 		TraceTokenPhases:            *traceTokenPhases,
-		FoldOnExhaustion:            *foldOnExhaustion,
+		FoldOnExhaustion:            foldOnOverflow,
 		FoldOnDegradation:           *foldOnDegradation,
 		DegradationMinConsecutive:   *degradationMinConsecutive,
 		FoldStorePath:               core.Trim(*foldStorePath),
@@ -2650,7 +2656,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				SuppressEOS:                 *suppressEOS,
 				IncludeOutput:               *includeOutput,
 				TraceTokenPhases:            *traceTokenPhases,
-				FoldOnExhaustion:            *foldOnExhaustion,
+				FoldOnExhaustion:            foldOnOverflow,
 				FoldOnDegradation:           *foldOnDegradation,
 				DegradationMinConsecutive:   *degradationMinConsecutive,
 				FoldStorePath:               core.Trim(*foldStorePath),
@@ -3298,6 +3304,24 @@ func stateRampProfileOutputIssues(output string) []string {
 		core.Contains(lower, "confirms successful implementation") ||
 		core.Contains(lower, "validates the entire implementation path") {
 		issues = append(issues, "visible_false_completion_claim")
+	}
+	if core.Contains(lower, "production runner wins") ||
+		core.Contains(lower, "go-mlx surpasses llama.cpp") ||
+		core.Contains(lower, "go-mlx surpasses mlx_lm") ||
+		core.Contains(lower, "go-mlx surpasses vllm") ||
+		core.Contains(lower, "go-mlx outperforms llama.cpp") ||
+		core.Contains(lower, "go-mlx outperforms mlx_lm") ||
+		core.Contains(lower, "go-mlx outperforms vllm") ||
+		core.Contains(lower, "performance advantage over llama.cpp") ||
+		core.Contains(lower, "performance advantage over mlx_lm") ||
+		core.Contains(lower, "performance advantage over vllm") ||
+		core.Contains(lower, "demonstrates superior performance") ||
+		core.Contains(lower, "achieves superior performance") ||
+		core.Contains(lower, "established itself as the leading") ||
+		core.Contains(lower, "superior performance to llama.cpp") ||
+		core.Contains(lower, "superior performance to mlx_lm") ||
+		core.Contains(lower, "superior performance to vllm") {
+		issues = append(issues, "visible_unproven_performance_win_claim")
 	}
 	return issues
 }

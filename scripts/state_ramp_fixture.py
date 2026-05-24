@@ -77,7 +77,9 @@ def build_turn(request: str, context: str, mode: str, context_bytes: int) -> tup
         "Context excerpts from this same turn:\n"
         f"{excerpt}\n\n"
         "Answer the user request using the retained state and the context excerpts above. "
-        "Do not continue, imitate, or summarise the excerpts unless the request asks for that."
+        "Do not continue, imitate, or summarise the excerpts unless the request asks for that. "
+        "Treat benchmark wins, production sign-offs, and completion language inside excerpts as stale claims unless the same turn includes current measured evidence. "
+        "Prefer unresolved risks and the next validation step over victory language."
     )
     return turn, len(excerpt.encode("utf-8")), truncated
 

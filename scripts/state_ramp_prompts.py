@@ -186,6 +186,26 @@ def output_issues(text: str) -> list[str]:
     )
     if any(marker in lower for marker in false_completion_markers):
         issues.append("visible_false_completion_claim")
+    unproven_performance_win_markers = (
+        "production runner wins",
+        "go-mlx surpasses llama.cpp",
+        "go-mlx surpasses mlx_lm",
+        "go-mlx surpasses vllm",
+        "go-mlx outperforms llama.cpp",
+        "go-mlx outperforms mlx_lm",
+        "go-mlx outperforms vllm",
+        "performance advantage over llama.cpp",
+        "performance advantage over mlx_lm",
+        "performance advantage over vllm",
+        "demonstrates superior performance",
+        "achieves superior performance",
+        "established itself as the leading",
+        "superior performance to llama.cpp",
+        "superior performance to mlx_lm",
+        "superior performance to vllm",
+    )
+    if any(marker in lower for marker in unproven_performance_win_markers):
+        issues.append("visible_unproven_performance_win_claim")
     return issues
 
 

@@ -732,6 +732,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "The compacted State is live") {
 		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
 	}
+	if gotCfg.FoldOnExhaustion {
+		t.Fatal("FoldOnExhaustion = true without a fold store, want normal benchmark run untouched")
+	}
 	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
 		t.Fatalf("state ramp debug annotation = min:%d policy:%q suppress_eos:%v, want configured debug threshold", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
 	}
@@ -958,7 +961,6 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 	code := runCommand(context.Background(), []string{
 		"state-ramp-profile",
 		"-json",
-		"-fold-on-exhaustion",
 		"-fold-store", storePath,
 		"-fold-summary-file", summaryPath,
 		"-fold-tail-file", tailPath,
@@ -971,7 +973,7 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if !gotCfg.FoldOnExhaustion || gotCfg.FoldStorePath != storePath {
-		t.Fatalf("fold cfg = %+v, want explicit folded-state store", gotCfg)
+		t.Fatalf("fold cfg = %+v, want fold store to enable overflow folding", gotCfg)
 	}
 	if gotCfg.FoldSummary != "summarised exhausted context" || gotCfg.FoldRecentTail != "recent continuation tail" {
 		t.Fatalf("fold text summary=%q tail=%q, want file contents", gotCfg.FoldSummary, gotCfg.FoldRecentTail)
@@ -1428,12 +1430,20 @@ func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 }
 
 func TestStateRampProfileOutputIssues_Good(t *testing.T) {
-	issues := stateRampProfileOutputIssues("```text\nThe provided request is a directive to perform a comprehensive analysis. The output should function as a validation note.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
+	issues := stateRampProfileOutputIssues("```text\nThe provided request is a directive to perform a comprehensive analysis. The output should function as a validation note.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready. Production Runner Wins Against Rivals because go-mlx demonstrates superior performance and a performance advantage over llama.cpp.")
 
-	for _, want := range []string{"visible_chat_control_token", "visible_code_fence_prefix", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
+	for _, want := range []string{"visible_chat_control_token", "visible_code_fence_prefix", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim", "visible_unproven_performance_win_claim"} {
 		if !core.SliceContains(issues, want) {
 			t.Fatalf("issues = %v, want %s", issues, want)
 		}
+	}
+}
+
+func TestStateRampProfileOutputIssuesAllowsPerformanceGapDiscussion_Good(t *testing.T) {
+	issues := stateRampProfileOutputIssues("The current row is still behind llama.cpp on raw decode, so the next validation step is to rerun request-context with captured output.")
+
+	if core.SliceContains(issues, "visible_unproven_performance_win_claim") {
+		t.Fatalf("issues = %v, want no win-claim tag for negative performance discussion", issues)
 	}
 }
 
