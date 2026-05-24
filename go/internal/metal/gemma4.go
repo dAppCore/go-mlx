@@ -238,6 +238,15 @@ func (kv sharedKV) clone() sharedKV {
 	return out
 }
 
+func moveSharedKV(kv *sharedKV) sharedKV {
+	if kv == nil {
+		return sharedKV{}
+	}
+	out := *kv
+	*kv = sharedKV{}
+	return out
+}
+
 func clonePagedKVState(state PagedKVState) PagedKVState {
 	out := PagedKVState{Length: state.Length}
 	if len(state.Keys) == 0 || len(state.Keys) != len(state.Values) {
@@ -2460,7 +2469,7 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 		h = nextH
 		if m.PreviousKVs[i] == int32(i) || !prevAvailable {
 			if sharedSources[i] {
-				intermediates[i] = kv.clone()
+				intermediates[i] = moveSharedKV(&kv)
 			}
 			kv.free()
 		}

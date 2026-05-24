@@ -43,24 +43,30 @@ but the current request-context comparator below no longer leaks visible
 control markers.
 
 Latest request-context parity row, 2026-05-24:
-`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-current-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-sharedkv-move-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
 and
 `/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-request-context-memory-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`
 use the same `30k` seed, `10` retained request-context turns, `1024`
 max-token budget, Gemma 4 stop strings, `temperature=1.0`, `top_p=0.95`, and
 `top_k=64`. go-mlx completes `10/10` turns, reaches `48712` live tokens,
-generates `4292` visible tokens, records `71.728s` retained wall, `84.002`
-raw decode tok/s, `72.271` effective turn tok/s, `3.044x` retained-vs-replay
-speedup, `7.173 kJ` estimated energy at `100 W`, `9.948 GB`
-active-plus-cache, `3.155 GiB` RSS, and `568.232 GiB` process virtual
-reservation with no output-quality flags. The memory-capable llama.cpp
+generates `4292` visible tokens, records `71.334s` retained wall, `84.633`
+raw decode tok/s, `72.744` effective turn tok/s, `3.054x` retained-vs-replay
+speedup, `7.133 kJ` estimated energy at `100 W`, `9.947 GB`
+active-plus-cache, `3.153 GiB` RSS, and `568.218 GiB` process virtual
+reservation with no output-quality flags. This row includes the same-forward
+shared-KV ownership move, replacing the previous owner-layer clone into
+`intermediates` with a move so shared Gemma 4 layers consume the exact same
+K/V handles during the current token. Against the previous clone-based
+request-context row, the same output count improves raw decode by `0.751%`,
+effective turn throughput by `0.654%`, wall by `0.549%`, and estimated energy
+by `39.391 J` at `100 W`. The memory-capable llama.cpp
 Q4_K_M anchor completes `10/10`, reaches `50037` live tokens, generates
 `5617` tokens / `5607` visible tokens, records `72.915s` wall, `109.997`
 raw decode tok/s from llama.cpp timings, `76.898` wall-visible tok/s,
 `7.291 kJ`, `4.331 GiB` RSS, and `427.141 GiB` virtual, with no control-marker
 leak but one `visible_prompt_analysis` flag on turn 1. Interpretation: go-mlx
-is `1.187s` / `1.63%` faster on wall and estimated energy in this single
-same-shape pair and uses less RSS, but llama.cpp is still `1.309x` faster on
+is `1.581s` / `2.17%` faster on wall and estimated energy in this single
+same-shape pair and uses less RSS, but llama.cpp is still `1.300x` faster on
 raw decode and returns more visible content in roughly the same wall time.
 This is useful retained-State evidence, not production acceptance.
 
@@ -587,7 +593,10 @@ next canonical runtime report set is regenerated:
   detour is retained only as R&D evidence. The fixed-turn compact trigger has
   been removed from the runner and book harness: compaction is an
   overflow/degradation tool for the user-defined context window, not a benchmark
-  interval or session-close action. That removed detour generated chapters
+  interval or session-close action. The deprecated `-fold-on-exhaustion` switch
+  has also been removed; providing `-fold-store` is enough to enable the old
+  overflow behaviour when the live window reaches its threshold. That removed
+  detour generated chapters
   `1`-`5`, compacted at its fixed test boundary, wrote
   `/private/tmp/go-mlx-goal/book-runs-compact/2026-05-24-c014-metaphor-seasons-seed20260524.compact.mvlog`,
   and packed it into a `482M` `.kv`. Stage 2 then started from
@@ -1320,7 +1329,7 @@ Current open gates:
       thinking-channel leakage reported side by side rather than used to hide
       the speed result.
 - [ ] Raw decode is within the acceptable calibration band. The current gap is
-      `1.309x` versus llama.cpp on the fresh memory-capable request-context
+      `1.300x` versus llama.cpp on the fresh memory-capable request-context
       retained row, so this remains the primary code gap even though go-mlx
       narrowly wins wall/energy on that single pair.
 - [ ] The default CLI path uses the fastest safe settings without requiring

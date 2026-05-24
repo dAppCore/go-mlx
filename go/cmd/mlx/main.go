@@ -486,7 +486,6 @@ type stateRampProfileOptions struct {
 	SuppressEOS                 bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput               bool                      `json:"include_output,omitempty"`
 	TraceTokenPhases            bool                      `json:"trace_token_phases,omitempty"`
-	FoldOnExhaustion            bool                      `json:"fold_on_exhaustion,omitempty"`
 	FoldOnDegradation           bool                      `json:"fold_on_degradation,omitempty"`
 	DegradationMinConsecutive   int                       `json:"degradation_min_consecutive_turns,omitempty"`
 	FoldStorePath               string                    `json:"fold_store_path,omitempty"`
@@ -558,7 +557,6 @@ type stateRampProfileReport struct {
 	SuppressTokenIDs             []int32                   `json:"suppress_token_ids,omitempty"`
 	IncludeOutput                bool                      `json:"include_output,omitempty"`
 	TraceTokenPhases             bool                      `json:"trace_token_phases,omitempty"`
-	FoldOnExhaustion             bool                      `json:"fold_on_exhaustion,omitempty"`
 	FoldOnDegradation            bool                      `json:"fold_on_degradation,omitempty"`
 	DegradationMinConsecutive    int                       `json:"degradation_min_consecutive_turns,omitempty"`
 	FoldStorePath                string                    `json:"fold_store_path,omitempty"`
@@ -2286,7 +2284,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	traceTokenPhases := fs.Bool("trace-token-phases", false, "include per-token retained decode phase timings in turn metrics and summary")
-	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold/window; deprecated because -fold-store enables overflow folding")
 	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when inspected output degrades before the target")
 	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive output-issue turns required before folding on retained-content degradation")
 	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
@@ -2480,8 +2477,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
 	}
-	foldRequested := *foldOnExhaustion ||
-		*foldOnDegradation ||
+	foldRequested := *foldOnDegradation ||
 		core.Trim(*foldSummary) != "" ||
 		*foldSummaryGenerate ||
 		core.Trim(*foldRecentTail) != ""
@@ -2594,7 +2590,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		SuppressEOS:                 *suppressEOS,
 		IncludeOutput:               *includeOutput,
 		TraceTokenPhases:            *traceTokenPhases,
-		FoldOnExhaustion:            *foldOnExhaustion,
 		FoldOnDegradation:           *foldOnDegradation,
 		DegradationMinConsecutive:   *degradationMinConsecutive,
 		FoldStorePath:               core.Trim(*foldStorePath),
@@ -2656,7 +2651,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				SuppressEOS:                 *suppressEOS,
 				IncludeOutput:               *includeOutput,
 				TraceTokenPhases:            *traceTokenPhases,
-				FoldOnExhaustion:            *foldOnExhaustion,
 				FoldOnDegradation:           *foldOnDegradation,
 				DegradationMinConsecutive:   *degradationMinConsecutive,
 				FoldStorePath:               core.Trim(*foldStorePath),
@@ -2746,7 +2740,6 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		SuppressEOS:                 opts.SuppressEOS,
 		IncludeOutput:               opts.IncludeOutput,
 		TraceTokenPhases:            opts.TraceTokenPhases,
-		FoldOnExhaustion:            opts.FoldOnExhaustion,
 		FoldOnDegradation:           opts.FoldOnDegradation,
 		DegradationMinConsecutive:   opts.DegradationMinConsecutive,
 		FoldStorePath:               opts.FoldStorePath,
@@ -4038,7 +4031,7 @@ func stateRampProfileShouldRunFold(summary stateRampProfileSummary, opts stateRa
 	if !summary.FoldedStateRequired {
 		return false
 	}
-	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
+	if opts.FoldOnDegradation {
 		return true
 	}
 	return summary.ContextExhausted && core.Trim(opts.FoldStorePath) != ""

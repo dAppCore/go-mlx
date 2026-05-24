@@ -1917,6 +1917,35 @@ func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_SharedKVMoveTransfersOwnerWithoutClone_Good(t *testing.T) {
+	coverageTokens := "SharedKV MoveTransfersOwnerWithoutClone"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	k, v := makeSingleTokenKVShape(1, 2, 4)
+	defer Free(k, v)
+
+	cache := NewPagedKVCache(0, 2)
+	pages := cache.UpdateBorrowedPages(k, v, 1)
+	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	retained := moveSharedKV(&kv)
+	defer cache.Reset()
+	defer retained.free()
+
+	if kv.hasState() || kv.hasPages() {
+		t.Fatal("moved sharedKV source still owns state")
+	}
+	if !retained.hasPages() {
+		t.Fatal("moved sharedKV lost paged state")
+	}
+	if len(retained.Pages.Owned) != len(pages.Owned) {
+		t.Fatalf("moved owned page handles = %d, want %d", len(retained.Pages.Owned), len(pages.Owned))
+	}
+	if len(retained.Pages.Keys) == 0 || retained.Pages.Keys[0] != pages.Keys[0] {
+		t.Fatal("moved sharedKV cloned or replaced borrowed page handles")
+	}
+}
+
 func TestGemma4_NewCache_SharedLayers_Good(t *testing.T) {
 	model := &Gemma4Model{
 		Cfg: &Gemma4TextConfig{

@@ -499,6 +499,29 @@ func BenchmarkSharedKV_ClonePagedBorrowed_8Pages(b *testing.B) {
 	cache.Reset()
 }
 
+func BenchmarkSharedKV_MovePagedBorrowed_8Pages(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for i := 0; i < 2048; i++ {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	pages := cache.BorrowedPageState()
+	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	b.ReportAllocs()
+	for b.Loop() {
+		source := kv
+		retained := moveSharedKV(&source)
+		source.free()
+		_ = retained.hasState()
+	}
+	cache.Reset()
+}
+
 // --- KV cache state access (no Update — pure reads) ---
 
 func BenchmarkKVCache_StateAccess_After128(b *testing.B) {

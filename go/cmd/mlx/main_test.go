@@ -732,9 +732,6 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "The compacted State is live") {
 		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
 	}
-	if gotCfg.FoldOnExhaustion {
-		t.Fatal("FoldOnExhaustion = true without a fold store, want normal benchmark run untouched")
-	}
 	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
 		t.Fatalf("state ramp debug annotation = min:%d policy:%q suppress_eos:%v, want configured debug threshold", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
 	}
@@ -924,7 +921,6 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 		return &stateRampProfileReport{
 			Version:                   1,
 			ModelPath:                 modelPath,
-			FoldOnExhaustion:          cfg.FoldOnExhaustion,
 			FoldStorePath:             cfg.FoldStorePath,
 			FoldSummaryBytes:          len(cfg.FoldSummary),
 			FoldRecentTailBytes:       len(cfg.FoldRecentTail),
@@ -972,7 +968,7 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if gotCfg.FoldOnExhaustion || gotCfg.FoldStorePath != storePath {
+	if gotCfg.FoldStorePath != storePath {
 		t.Fatalf("fold cfg = %+v, want fold store available without forcing exhaustion fold", gotCfg)
 	}
 	if gotCfg.FoldSummary != "summarised exhausted context" || gotCfg.FoldRecentTail != "recent continuation tail" {
@@ -1005,7 +1001,6 @@ func TestRunCommand_StateRampProfileFoldSummaryGenerate_Good(t *testing.T) {
 		return &stateRampProfileReport{
 			Version:                1,
 			ModelPath:              modelPath,
-			FoldOnExhaustion:       cfg.FoldOnExhaustion,
 			FoldStorePath:          cfg.FoldStorePath,
 			FoldSummaryGenerate:    cfg.FoldSummaryGenerate,
 			FoldSummaryPromptBytes: len(cfg.FoldSummaryPrompt),
@@ -1035,7 +1030,6 @@ func TestRunCommand_StateRampProfileFoldSummaryGenerate_Good(t *testing.T) {
 	code := runCommand(context.Background(), []string{
 		"state-ramp-profile",
 		"-json",
-		"-fold-on-exhaustion",
 		"-fold-store", storePath,
 		"-fold-summary-generate",
 		"-fold-summary-prompt-file", promptPath,
@@ -1171,7 +1165,7 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-exhaustion", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-degradation", "/models/demo"}, stdout, stderr)
 
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -1188,7 +1182,7 @@ func TestRunCommand_StateRampProfileTurnForcedCompactionRemoved_Bad(t *testing.T
 		t.Fatal("runStateRampProfile called for removed fixed-turn compaction flag")
 		return nil, nil
 	}
-	for _, flagName := range []string{"fold-after-turn", "compact-after-turn"} {
+	for _, flagName := range []string{"fold-after-turn", "compact-after-turn", "fold-on-exhaustion"} {
 		t.Run(flagName, func(t *testing.T) {
 			stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
@@ -1942,8 +1936,8 @@ func TestStateRampProfileShouldRunFold_OverflowStoreWithoutForce_Good(t *testing
 	if stateRampProfileShouldRunFold(stateRampProfileSummary{}, stateRampProfileOptions{FoldStorePath: "/tmp/state.mvlog"}) {
 		t.Fatal("fold store below context window ran compaction")
 	}
-	if !stateRampProfileShouldRunFold(exhausted, stateRampProfileOptions{FoldOnExhaustion: true}) {
-		t.Fatal("explicit exhaustion fold no longer runs")
+	if stateRampProfileShouldRunFold(exhausted, stateRampProfileOptions{}) {
+		t.Fatal("overflow compaction ran without a fold store")
 	}
 }
 
