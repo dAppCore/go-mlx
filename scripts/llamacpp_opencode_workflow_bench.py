@@ -80,17 +80,26 @@ def process_memory(pid):
             stderr=subprocess.DEVNULL,
             text=True,
         )
-    except OSError:
-        return {}
+    except OSError as exc:
+        return {"probe_error": f"{type(exc).__name__}: {exc}"}
     if result.returncode != 0:
-        return {}
+        stderr = result.stderr.strip() if result.stderr else ""
+        return {"probe_error": f"ps exited {result.returncode}: {stderr}"}
     fields = result.stdout.strip().split()
     if len(fields) < 2:
-        return {}
+        return {"probe_error": "ps output did not include rss and vsz fields"}
     return {
         "rss_bytes": int(fields[0]) * 1024,
         "vsz_bytes": int(fields[1]) * 1024,
     }
+
+
+def memory_probe_available(memory):
+    return bool(memory.get("rss_bytes") or memory.get("vsz_bytes"))
+
+
+def memory_probe_error(memory):
+    return memory.get("probe_error", "")
 
 
 def main():
@@ -177,7 +186,7 @@ def main():
         cumulative_prompt = request_prompt + content + close_suffix
         current_tokens += len(turn_tokens) + predicted + len(close_tokens)
         mem = process_memory(args.server_pid)
-        if mem.get("rss_bytes", 0) > peak_memory.get("rss_bytes", 0):
+        if memory_probe_available(mem) and mem.get("rss_bytes", 0) > peak_memory.get("rss_bytes", 0):
             peak_memory = mem
         visible_tokens = len(encode(tokenizer, visible))
         control_marker_count = (
@@ -233,7 +242,7 @@ def main():
     prompt_seconds = sum(float(turn["timings"].get("prompt_ms", 0) or 0) for turn in turns) / 1000.0
     decode_seconds = sum(float(turn["timings"].get("predicted_ms", 0) or 0) for turn in turns) / 1000.0
     decode_tps = generated / decode_seconds if decode_seconds > 0 else 0.0
-    memory_available = bool(peak_memory)
+    memory_available = memory_probe_available(peak_memory)
     report = {
         "runner": "llama.cpp server",
         "model": args.model,
@@ -282,6 +291,7 @@ def main():
             "peak_process_rss_bytes": peak_memory.get("rss_bytes", 0),
             "peak_process_vsz_bytes": peak_memory.get("vsz_bytes", 0),
             "process_memory_probe_available": memory_available,
+            "process_memory_probe_error": "" if memory_available else memory_probe_error(peak_memory),
             "control_marker_count": sum(turn["control_marker_count"] for turn in turns),
             "output_issue_turns": sum(1 for turn in turns if turn["output_issues"]),
             "output_issue_counts": issue_counts(turns),

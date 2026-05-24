@@ -163,6 +163,29 @@ Verification:
 (`3097-3194 ns/op`, `192 B/op`, `1 alloc/op`), `go test ./go/... -count=1`,
 `git diff --check`, and `go build -o /private/tmp/go-mlx-goal/bin/lthn-mlx ./go/cmd/mlx`.
 
+Aligned llama.cpp direct-mode anchor, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-direct-after-quality-gemma4-e2b-q4km-opencode-delimited-30k-to-70k-r10-g1024.json`
+was run against the same prompt files, `30k -> 70k`, `10` turns, `1024`
+token budget, sampling, direct Gemma 4 turn wrapper, and shared output-quality
+detector. The row completed `10/10` clean turns with `0` output-issue turns,
+`7586` generated tokens, `7576` visible tokens, `64119` final live tokens,
+`104.894s` wall, `104.462 tok/s` decode from llama.cpp timings,
+`72.226` wall visible tok/s, `31.647s` prompt/cache work, and `10489.356 J`
+at the normalised `100 W` estimate. This shows the direct-mode table-cell loop
+is not a generic prompt-shape failure: llama.cpp answered the same turn `7` as
+prose and did not trip `visible_repeated_table_cell`. Against the go-mlx
+direct row above, llama.cpp is `1.270x` faster on raw decode, while go-mlx is
+`1.102x` faster on retained total wall for this row; because go-mlx turn `7`
+is quality-rejected, that wall comparison is diagnostic only. The llama.cpp
+script's internal `ps` memory probe is blocked by this sandbox, so the JSON
+records unavailable memory; external `ps` polling during the run observed RSS
+climbing to about `5.005 GB` and VSZ to about `448.343 GB`. The harness now
+records the memory probe error explicitly on future sandboxed runs instead of
+silently returning empty memory fields. Verification:
+`python3 -m py_compile scripts/llamacpp_opencode_workflow_bench.py scripts/state_ramp_prompts.py scripts/mlx_lm_opencode_workflow_bench.py`
+and a local probe check returning
+`PermissionError: [Errno 1] Operation not permitted: 'ps'`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing
