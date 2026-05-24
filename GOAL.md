@@ -176,6 +176,19 @@ turn tok/s, `9.711 GB` active-plus-cache, `3.151 GiB` RSS,
 `max_global_tokens=33726`, and `max_global_capacity=131072`. This removes the
 hidden context cutoff; it does not close the llama.cpp raw-decode gap.
 
+Trace attribution update, 2026-05-24: `TraceTokenPhases` now splits async
+prefetch into diagnostic `prefetch_logits` and `prefetch_cache` buckets while
+leaving the production, non-trace prefetch path as one combined call. The smoke
+report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-trace-prefetch-split-smoke.json`
+keeps the fast lane paged (`fixed_caches=0`, `paged_caches=15`,
+`local_window_leaked=false`, `context_length=4096`) and records
+`prefetch_logits` as effectively the whole prefetch cost (`16.597 ms` of
+`16.618 ms` across three non-final tokens), with dirty-cache prefetch only
+`9.124 us`. That rules out the dirty K/V handoff as the current decode
+bottleneck and keeps the next optimisation pointed at logits/forward graph
+materialisation, not any archived 64Ki/fixed-cache lane.
+
 Default seed correction, 2026-05-24: the production lane and local profile
 commands now use `mlx.DefaultNewSessionText` as the default prompt instead of
 the old synthetic "retained model state" question. This lines up

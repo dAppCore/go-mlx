@@ -636,7 +636,7 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	if totalNative > 0 {
 		nativeSlab = make([]NativePhaseTrace, totalNative)
 	}
-	// Index iteration — metal.TokenPhaseTrace is ~176 B (17 duration
+	// Index iteration — metal.TokenPhaseTrace is ~192 B (19 duration
 	// + Step int + TokenID int32 + TokenText string + FinalToken bool
 	// + NativeEvents slice header).
 	// metal.NativePhaseTrace is ~48 B (string + duration + string).
@@ -661,26 +661,28 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 			nativeOffset = end
 		}
 		out[i] = TokenPhaseTrace{
-			Step:                phase.Step,
-			TokenID:             phase.TokenID,
-			TokenText:           phase.TokenText,
-			FinalToken:          phase.FinalToken,
-			TotalDuration:       phase.TotalDuration,
-			LogitsDuration:      phase.LogitsDuration,
-			SampleDuration:      phase.SampleDuration,
-			SampleEvalDuration:  phase.SampleEvalDuration,
-			TokenReadDuration:   phase.TokenReadDuration,
-			DecodeTextDuration:  phase.DecodeTextDuration,
-			ProbeTokenDuration:  phase.ProbeTokenDuration,
-			YieldDuration:       phase.YieldDuration,
-			NextInputDuration:   phase.NextInputDuration,
-			ForwardDuration:     phase.ForwardDuration,
-			PrefetchDuration:    phase.PrefetchDuration,
-			MaterializeDuration: phase.MaterializeDuration,
-			DetachDuration:      phase.DetachDuration,
-			CacheProbeDuration:  phase.CacheProbeDuration,
-			OtherDuration:       phase.OtherDuration,
-			NativeEvents:        phaseNative,
+			Step:                   phase.Step,
+			TokenID:                phase.TokenID,
+			TokenText:              phase.TokenText,
+			FinalToken:             phase.FinalToken,
+			TotalDuration:          phase.TotalDuration,
+			LogitsDuration:         phase.LogitsDuration,
+			SampleDuration:         phase.SampleDuration,
+			SampleEvalDuration:     phase.SampleEvalDuration,
+			TokenReadDuration:      phase.TokenReadDuration,
+			DecodeTextDuration:     phase.DecodeTextDuration,
+			ProbeTokenDuration:     phase.ProbeTokenDuration,
+			YieldDuration:          phase.YieldDuration,
+			NextInputDuration:      phase.NextInputDuration,
+			ForwardDuration:        phase.ForwardDuration,
+			PrefetchDuration:       phase.PrefetchDuration,
+			PrefetchLogitsDuration: phase.PrefetchLogitsDuration,
+			PrefetchCacheDuration:  phase.PrefetchCacheDuration,
+			MaterializeDuration:    phase.MaterializeDuration,
+			DetachDuration:         phase.DetachDuration,
+			CacheProbeDuration:     phase.CacheProbeDuration,
+			OtherDuration:          phase.OtherDuration,
+			NativeEvents:           phaseNative,
 		}
 	}
 	return out

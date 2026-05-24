@@ -218,3 +218,12 @@ sampler-only microbench but regressed the real retained trace to `81.338 tok/s`
 and left `sample_eval` around `3.37 ms/token`. The next optimisation should
 still target the larger MLX graph/eval boundary directly without changing the
 paged retained-State semantics.
+
+Trace-only split timing now separates async prefetch into `prefetch_logits` and
+`prefetch_cache`. The tiny 2026-05-24 smoke at
+`/private/tmp/go-mlx-goal/reports/2026-05-24-trace-prefetch-split-smoke.json`
+shows `prefetch_logits` carries `16.597 ms` of the `16.618 ms` prefetch total
+over three non-final tokens, while dirty-cache prefetch costs only `9.124 us`.
+Treat that as attribution evidence only because trace mode uses split
+`EvalAsync` calls for measurement; production generation still uses the
+combined prefetch call and must stay paged/no-fixed/no-64Ki-cutoff.

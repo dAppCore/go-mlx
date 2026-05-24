@@ -562,6 +562,9 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	if len(phases) != 1 || phases[0].PrefetchDuration <= 0 {
 		t.Fatalf("TokenPhases = %+v, want retained-session async prefetch duration", phases)
 	}
+	if phases[0].PrefetchLogitsDuration <= 0 || phases[0].PrefetchCacheDuration != 0 {
+		t.Fatalf("TokenPhases = %+v, want retained-session logits-only prefetch split for cacheless model", phases)
+	}
 }
 
 func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {

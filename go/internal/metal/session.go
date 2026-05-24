@@ -638,12 +638,21 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		// Model.Generate; prefetching logits plus the dirty K/V handles keeps
 		// the next sample step from inheriting the whole decode graph without
 		// re-evaluating every historical page.
-		if err := asyncDecodePrefetchWithCaches("ModelSession.Generate", i, "session next logits and dirty KV", s.logits, s.caches); err != nil {
-			s.err = err
+		var prefetchTimings asyncDecodePrefetchTimings
+		var prefetchErr error
+		if tracePhases {
+			prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("ModelSession.Generate", i, "session next logits and dirty KV", s.logits, s.caches)
+		} else {
+			prefetchErr = asyncDecodePrefetchWithCaches("ModelSession.Generate", i, "session next logits and dirty KV", s.logits, s.caches)
+		}
+		if prefetchErr != nil {
+			s.err = prefetchErr
 			return
 		}
 		if tracePhases {
 			phase.PrefetchDuration = time.Since(phaseLast)
+			phase.PrefetchLogitsDuration = prefetchTimings.Logits
+			phase.PrefetchCacheDuration = prefetchTimings.Cache
 			phaseLast = time.Now()
 		}
 		if cfg.RepeatPenalty > 1.0 {

@@ -78,26 +78,28 @@ type Metrics struct {
 
 // TokenPhaseTrace reports coarse timing buckets for one decode-loop token.
 type TokenPhaseTrace struct {
-	Step                int                `json:"step"`
-	TokenID             int32              `json:"token_id"`
-	TokenText           string             `json:"token_text,omitempty"`
-	FinalToken          bool               `json:"final_token,omitempty"`
-	TotalDuration       time.Duration      `json:"total_duration,omitempty"`
-	LogitsDuration      time.Duration      `json:"logits_duration,omitempty"`
-	SampleDuration      time.Duration      `json:"sample_duration,omitempty"`
-	SampleEvalDuration  time.Duration      `json:"sample_eval_duration,omitempty"`
-	TokenReadDuration   time.Duration      `json:"token_read_duration,omitempty"`
-	DecodeTextDuration  time.Duration      `json:"decode_text_duration,omitempty"`
-	ProbeTokenDuration  time.Duration      `json:"probe_token_duration,omitempty"`
-	YieldDuration       time.Duration      `json:"yield_duration,omitempty"`
-	NextInputDuration   time.Duration      `json:"next_input_duration,omitempty"`
-	ForwardDuration     time.Duration      `json:"forward_duration,omitempty"`
-	PrefetchDuration    time.Duration      `json:"prefetch_duration,omitempty"`
-	MaterializeDuration time.Duration      `json:"materialize_duration,omitempty"`
-	DetachDuration      time.Duration      `json:"detach_duration,omitempty"`
-	CacheProbeDuration  time.Duration      `json:"cache_probe_duration,omitempty"`
-	OtherDuration       time.Duration      `json:"other_duration,omitempty"`
-	NativeEvents        []NativePhaseTrace `json:"native_events,omitempty"`
+	Step                   int                `json:"step"`
+	TokenID                int32              `json:"token_id"`
+	TokenText              string             `json:"token_text,omitempty"`
+	FinalToken             bool               `json:"final_token,omitempty"`
+	TotalDuration          time.Duration      `json:"total_duration,omitempty"`
+	LogitsDuration         time.Duration      `json:"logits_duration,omitempty"`
+	SampleDuration         time.Duration      `json:"sample_duration,omitempty"`
+	SampleEvalDuration     time.Duration      `json:"sample_eval_duration,omitempty"`
+	TokenReadDuration      time.Duration      `json:"token_read_duration,omitempty"`
+	DecodeTextDuration     time.Duration      `json:"decode_text_duration,omitempty"`
+	ProbeTokenDuration     time.Duration      `json:"probe_token_duration,omitempty"`
+	YieldDuration          time.Duration      `json:"yield_duration,omitempty"`
+	NextInputDuration      time.Duration      `json:"next_input_duration,omitempty"`
+	ForwardDuration        time.Duration      `json:"forward_duration,omitempty"`
+	PrefetchDuration       time.Duration      `json:"prefetch_duration,omitempty"`
+	PrefetchLogitsDuration time.Duration      `json:"prefetch_logits_duration,omitempty"`
+	PrefetchCacheDuration  time.Duration      `json:"prefetch_cache_duration,omitempty"`
+	MaterializeDuration    time.Duration      `json:"materialize_duration,omitempty"`
+	DetachDuration         time.Duration      `json:"detach_duration,omitempty"`
+	CacheProbeDuration     time.Duration      `json:"cache_probe_duration,omitempty"`
+	OtherDuration          time.Duration      `json:"other_duration,omitempty"`
+	NativeEvents           []NativePhaseTrace `json:"native_events,omitempty"`
 }
 
 // NativePhaseTrace reports a gated native materialisation event inside a
@@ -940,12 +942,21 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				Free(oldLogits)
 				logits = nil
 				directNext = nextToken
-				if err := asyncDecodePrefetchWithCaches("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches); err != nil {
-					m.lastErr = err
+				var prefetchTimings asyncDecodePrefetchTimings
+				var prefetchErr error
+				if tracePhases {
+					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches)
+				} else {
+					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches)
+				}
+				if prefetchErr != nil {
+					m.lastErr = prefetchErr
 					return
 				}
 				if tracePhases {
 					phase.PrefetchDuration = time.Since(phaseLast)
+					phase.PrefetchLogitsDuration = prefetchTimings.Logits
+					phase.PrefetchCacheDuration = prefetchTimings.Cache
 					phaseLast = time.Now()
 				}
 			} else {
@@ -971,12 +982,21 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 				Free(oldLogits)
 				logits = nextLogits
-				if err := asyncDecodePrefetchWithCaches("Model.Generate", i, "next logits and dirty KV", logits, caches); err != nil {
-					m.lastErr = err
+				var prefetchTimings asyncDecodePrefetchTimings
+				var prefetchErr error
+				if tracePhases {
+					prefetchTimings, prefetchErr = asyncDecodePrefetchWithCachesTrace("Model.Generate", i, "next logits and dirty KV", logits, caches)
+				} else {
+					prefetchErr = asyncDecodePrefetchWithCaches("Model.Generate", i, "next logits and dirty KV", logits, caches)
+				}
+				if prefetchErr != nil {
+					m.lastErr = prefetchErr
 					return
 				}
 				if tracePhases {
 					phase.PrefetchDuration = time.Since(phaseLast)
+					phase.PrefetchLogitsDuration = prefetchTimings.Logits
+					phase.PrefetchCacheDuration = prefetchTimings.Cache
 					phaseLast = time.Now()
 				}
 			}
@@ -1066,6 +1086,11 @@ func asyncDecodePrefetchFor(scope string, step int, label string, out *Array) er
 	return asyncDecodePrefetchArraysFor(scope, step, label, out)
 }
 
+type asyncDecodePrefetchTimings struct {
+	Logits time.Duration
+	Cache  time.Duration
+}
+
 func asyncDecodePrefetchWithCaches(scope string, step int, label string, out *Array, caches []Cache) error {
 	if !asyncDecodePrefetchEnabled() {
 		return nil
@@ -1084,6 +1109,33 @@ func asyncDecodePrefetchWithCaches(scope string, step int, label string, out *Ar
 	return asyncDecodePrefetchArraysFor(scope, step, label, outputs...)
 }
 
+func asyncDecodePrefetchWithCachesTrace(scope string, step int, label string, out *Array, caches []Cache) (asyncDecodePrefetchTimings, error) {
+	var timings asyncDecodePrefetchTimings
+	if !asyncDecodePrefetchEnabled() {
+		return timings, nil
+	}
+	if out != nil && out.Valid() {
+		start := time.Now()
+		if err := asyncDecodePrefetchArraysFor(scope, step, label+" logits", out); err != nil {
+			return timings, err
+		}
+		timings.Logits = nonZeroTraceDuration(time.Since(start))
+	}
+	var stack [64]*Array
+	dirty := stack[:0]
+	for _, cache := range caches {
+		dirty = appendCacheDirtyState(dirty, cache)
+	}
+	if len(dirty) > 0 {
+		start := time.Now()
+		if err := asyncDecodePrefetchArraysFor(scope, step, label+" dirty KV", dirty...); err != nil {
+			return timings, err
+		}
+		timings.Cache = nonZeroTraceDuration(time.Since(start))
+	}
+	return timings, nil
+}
+
 func asyncDecodePrefetchArraysFor(scope string, step int, label string, outputs ...*Array) error {
 	if !asyncDecodePrefetchEnabled() || len(outputs) == 0 {
 		return nil
@@ -1095,6 +1147,13 @@ func asyncDecodePrefetchArraysFor(scope string, step int, label string, outputs 
 		return core.E(scope, core.Sprintf("async prefetch %s step %d", label, step), err)
 	}
 	return nil
+}
+
+func nonZeroTraceDuration(d time.Duration) time.Duration {
+	if d <= 0 {
+		return time.Nanosecond
+	}
+	return d
 }
 
 func appendTokenPhaseTrace(phases []TokenPhaseTrace, phase TokenPhaseTrace, start time.Time) []TokenPhaseTrace {

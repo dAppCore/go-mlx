@@ -1319,6 +1319,20 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 		t.Fatalf("Eval after asyncDecodePrefetch() error = %v", err)
 	}
 
+	cache := NewPagedKVCache(0, 2)
+	defer cache.Reset()
+	k, v := makeSingleTokenKV(1)
+	defer Free(k, v)
+	state := cache.UpdateBorrowedPages(k, v, 1)
+	state.Free()
+	timings, err := asyncDecodePrefetchWithCachesTrace("Model.Generate", 0, "test split", out, []Cache{cache})
+	if err != nil {
+		t.Fatalf("asyncDecodePrefetchWithCachesTrace() error = %v", err)
+	}
+	if timings.Logits <= 0 || timings.Cache <= 0 {
+		t.Fatalf("async prefetch timings = %+v, want logits and dirty-cache timing", timings)
+	}
+
 	inner := &boundedGenerateModel{}
 	model := &Model{
 		model:     inner,
@@ -1332,6 +1346,9 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	phases := model.LastMetrics().TokenPhases
 	if len(phases) != 2 || phases[0].PrefetchDuration <= 0 {
 		t.Fatalf("TokenPhases = %+v, want async next-token prefetch duration", phases)
+	}
+	if phases[0].PrefetchLogitsDuration <= 0 || phases[0].PrefetchCacheDuration != 0 {
+		t.Fatalf("first phase prefetch split = %+v, want logits-only split for cacheless model", phases[0])
 	}
 }
 
