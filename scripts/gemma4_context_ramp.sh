@@ -11,8 +11,6 @@ PROMPT_FILE="${GO_MLX_PROMPT_FILE:-$ROOT/README.md}"
 PROMPT_SUFFIX="${GO_MLX_PROMPT_SUFFIX:-}"
 PROMPT_SUFFIX_FILE="${GO_MLX_PROMPT_SUFFIX_FILE:-}"
 OUT_DIR="${GO_MLX_OUT_DIR:-$ROOT/docs/runtime}"
-GOWORK_PATH="${GO_MLX_GOWORK:-$ROOT/go.work}"
-GOCACHE_PATH="${GOCACHE:-/private/tmp/codex-go-mlx-cache}"
 METALLIB_PATH="${MLX_METALLIB_PATH:-$ROOT/dist/lib/mlx.metallib}"
 POWER_WATTS="${GO_MLX_POWER_WATTS:-100}"
 MAX_TOKENS="${GO_MLX_RAMP_MAX_TOKENS:-128}"
@@ -20,11 +18,11 @@ RUNS="${GO_MLX_RAMP_RUNS:-3}"
 DATE_STAMP="${GO_MLX_DATE_STAMP:-$(date +%F)}"
 STEPS="${GO_MLX_RAMP_STEPS:-1:4096 4:16384 8:32768 13:32768 24:131072 46:131072}"
 
-mkdir -p "$OUT_DIR" "$GOCACHE_PATH"
+mkdir -p "$OUT_DIR"
 
 if [[ ! -x "$BIN" ]]; then
   echo "missing executable: $BIN" >&2
-  echo "build it with: (cd $ROOT/go && env GOWORK=$GOWORK_PATH GOCACHE=$GOCACHE_PATH MLX_METALLIB_PATH=$METALLIB_PATH go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx/)" >&2
+  echo "build it with: (cd $ROOT && go build -trimpath -o bin/lthn-mlx ./go/cmd/mlx)" >&2
   exit 2
 fi
 
@@ -52,8 +50,6 @@ for step in $STEPS; do
 
   echo "context ramp: repeat=$repeat context=$context max_tokens=$MAX_TOKENS runs=$RUNS"
   env \
-    GOWORK="$GOWORK_PATH" \
-    GOCACHE="$GOCACHE_PATH" \
     MLX_METALLIB_PATH="$METALLIB_PATH" \
     "$BIN" driver-profile \
       -report-file "$artifact" \
