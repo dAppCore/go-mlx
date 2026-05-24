@@ -147,6 +147,44 @@ func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate FixedGemma4ZeroOverrideWins"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	oldCache := enableFixedGemma4Cache
+	oldSliding := enableFixedGemma4SlidingCacheBound
+	oldShared := enableFixedGemma4SharedMask
+	oldNativeSliding := enableNativeFixedSlidingAttention
+	enableFixedGemma4Cache = true
+	enableFixedGemma4SlidingCacheBound = true
+	enableFixedGemma4SharedMask = true
+	enableNativeFixedSlidingAttention = true
+	t.Cleanup(func() {
+		enableFixedGemma4Cache = oldCache
+		enableFixedGemma4SlidingCacheBound = oldSliding
+		enableFixedGemma4SharedMask = oldShared
+		enableNativeFixedSlidingAttention = oldNativeSliding
+	})
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "0"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "0"))
+
+	if fixedGemma4CacheEnabled() {
+		t.Fatal("fixedGemma4CacheEnabled() = true, want runtime 0 to override package env")
+	}
+	if fixedGemma4SlidingCacheBoundEnabled() {
+		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true, want runtime 0 to override package env")
+	}
+	if fixedGemma4SharedMaskEnabled() {
+		t.Fatal("fixedGemma4SharedMaskEnabled() = true, want runtime 0 to override package env")
+	}
+	if nativeFixedSlidingAttentionEnabled() {
+		t.Fatal("nativeFixedSlidingAttentionEnabled() = true, want runtime 0 to override package env")
+	}
+}
+
 func TestRuntimeGate_KnownNativeFixedSlidingAttention_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownNativeFixedSlidingAttention"
 	if coverageTokens == "" {

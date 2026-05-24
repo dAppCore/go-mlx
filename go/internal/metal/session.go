@@ -435,13 +435,19 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	totalStart := time.Now()
 	ResetPeakMemory()
 	sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+	defer closeSampler(sampler)
 	earlySuppressTokens := cfg.SuppressTokens
 	earlySampler := sampler
+	earlySamplerDistinct := false
 	if cfg.MinTokensBeforeStop > 0 {
 		earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, s.model.tokenizer)
 		if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
 			earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+			earlySamplerDistinct = true
 		}
+	}
+	if earlySamplerDistinct {
+		defer closeSampler(earlySampler)
 	}
 	promptLen := len(s.tokens)
 	if s.tokenOffset > promptLen {

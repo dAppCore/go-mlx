@@ -195,6 +195,7 @@ func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
 	logits := FromValues([]float32{100, 1, 2, 3}, 1, 4)
 	defer Free(logits)
 	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	defer closeSampler(s)
 	for range 10 {
 		token := s.Sample(logits)
 		if err := Eval(token); err != nil {
@@ -369,6 +370,7 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
+	defer closeSampler(s)
 	c, ok := s.(topKTopPChain)
 	if !ok {
 		t.Fatalf("newSamplerWithSuppression returned %T, want topKTopPChain", s)
@@ -382,8 +384,8 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	if len(c.prefix) != 1 {
 		t.Fatalf("len(prefix) = %d, want 1", len(c.prefix))
 	}
-	if _, ok := c.prefix[0].(SuppressTokensSampler); !ok {
-		t.Fatalf("prefix[0] = %T, want SuppressTokensSampler", c.prefix[0])
+	if _, ok := c.prefix[0].(*SuppressTokensSampler); !ok {
+		t.Fatalf("prefix[0] = %T, want *SuppressTokensSampler", c.prefix[0])
 	}
 }
 

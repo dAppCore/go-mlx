@@ -631,13 +631,19 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
 		sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+		defer closeSampler(sampler)
 		earlySuppressTokens := cfg.SuppressTokens
 		earlySampler := sampler
+		earlySamplerDistinct := false
 		if cfg.MinTokensBeforeStop > 0 {
 			earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, m.tokenizer)
 			if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
 				earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+				earlySamplerDistinct = true
 			}
+		}
+		if earlySamplerDistinct {
+			defer closeSampler(earlySampler)
 		}
 		var genCount int
 		var firstTokenDuration time.Duration

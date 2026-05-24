@@ -858,11 +858,13 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	}
 }
 
-func TestRunCommand_StateRampProfileFixedCacheDoesNotInventSize_Good(t *testing.T) {
+func TestRunCommand_StateRampProfileFastLaneIgnoresFixedCacheEnv_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
 	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
-	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "65536")
 	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
 		return &stateRampProfileReport{
 			Version:      1,
@@ -888,11 +890,15 @@ func TestRunCommand_StateRampProfileFixedCacheDoesNotInventSize_Good(t *testing.
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if !core.Contains(stdout.String(), `"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`) {
-		t.Fatalf("stdout = %q, want explicit diagnostic fixed-cache gate recorded", stdout.String())
-	}
-	if core.Contains(stdout.String(), `"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`) {
-		t.Fatalf("stdout = %q, should not invent a fixed-cache size for state-ramp", stdout.String())
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should ignore ambient fixed-cache env %s in the fast lane", stdout.String(), rejected)
+		}
 	}
 }
 
@@ -3640,6 +3646,45 @@ func TestRunCommand_DriverProfileFastGemma4LaneHyperLongContextStaysPaged_Good(t
 	}
 	if core.Contains(stdout.String(), `"GO_MLX_PAGED_KV_PAGE_SIZE":`) {
 		t.Fatalf("stdout = %q, should use code default page size without context-cutoff env", stdout.String())
+	}
+}
+
+func TestRunCommand_DriverProfileFastGemma4LaneIgnoresFixedCacheEnv_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "65536")
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		return &driverProfileReport{
+			Version:          1,
+			ModelPath:        modelPath,
+			PromptBytes:      len(cfg.Prompt),
+			PromptChunkBytes: cfg.PromptChunkBytes,
+			MaxTokens:        cfg.MaxTokens,
+			RuntimeGates:     driverProfileRuntimeGates(),
+			Summary: driverProfileSummary{
+				SuccessfulRuns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"driver-profile", "-json", "-fast-gemma4-lane", "-context", "131072", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should ignore ambient fixed-cache env %s in the fast lane", stdout.String(), rejected)
+		}
 	}
 }
 

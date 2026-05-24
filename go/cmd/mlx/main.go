@@ -1221,7 +1221,7 @@ func applyGemma4FastLaneDefaults(
 	if contextLen != nil {
 		resolvedContext = *contextLen
 	}
-	restores := []func(){}
+	restores := disableGemma4FixedCacheFastLaneDefaults(visited)
 	fixedCacheDisabled := driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) == "0"
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		if prefillChunkSize != nil && !visited["prefill-chunk-size"] {
@@ -1251,6 +1251,28 @@ func applyGemma4FastLaneDefaults(
 			continue
 		}
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
+	}
+	return restores
+}
+
+func disableGemma4FixedCacheFastLaneDefaults(visited map[string]bool) []func() {
+	restores := []func(){}
+	for _, gate := range []struct {
+		flag string
+		env  string
+	}{
+		{"fixed-gemma4-cache", mlx.Gemma4FastRuntimeGateFixedGemma4Cache},
+		{"fixed-gemma4-sliding-cache-bound", mlx.Gemma4FastRuntimeGateFixedGemma4Sliding},
+		{"fixed-gemma4-shared-mask", mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask},
+		{"native-fixed-sliding-attention", mlx.Gemma4FastRuntimeGateNativeFixedSliding},
+	} {
+		if visited[gate.flag] {
+			continue
+		}
+		restores = append(restores, setDriverProfileRuntimeGate(gate.env, "0"))
+	}
+	if !visited["fixed-gemma4-cache"] {
+		restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "0"))
 	}
 	return restores
 }

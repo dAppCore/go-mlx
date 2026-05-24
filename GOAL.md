@@ -108,6 +108,24 @@ smoke
 records `paged_caches=15`, `fixed_caches=0`, `local_window_leaked=false`, and
 `114.939 tok/s` decode.
 
+Follow-up sticky-env guard, 2026-05-24: the fast lane now actively writes
+runtime `0` overrides for `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE`,
+`GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND`,
+`GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK`,
+`GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION`, and
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE` unless an explicit fixed-cache diagnostic CLI
+flag is present. The native fixed Gemma 4 helpers also let runtime `0`
+override package-init env values, so a sticky shell env can no longer silently
+turn a paged production run back into the old fixed-cache threshold path.
+Regression coverage:
+`go test ./go/internal/metal -run 'TestRuntimeGate_FixedGemma4ZeroOverrideWins|TestSample_(NewSamplerWithSuppression|NewSamplerWithSuppressionBeforeTopPTopK|SuppressTokenLogits|SuppressTokenLogitsThenTopPTopK|SuppressionGuard)'`,
+`go test ./go/cmd/mlx -run 'TestRunCommand_(StateRampProfileFastLaneIgnoresFixedCacheEnv|StateRampProfileTargetShapeStaysPaged|DriverProfileFastGemma4LaneIgnoresFixedCacheEnv|DriverProfileFastGemma4LaneHyperLongContextStaysPaged|DriverProfileFastGemma4LaneLongContextDefaults)'`,
+and `go test ./go/internal/metal ./go/cmd/mlx ./go` all pass. The related
+suppress-token sampler cache benchmark records
+`BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k` at `3 allocs/op` and
+about `27 B/op`, down from the prior suppress-path `5 allocs/op` / `139 B/op`
+shape.
+
 Latest paged/no-fixed request-context row after removing hidden fixed-budget
 synthesis, 2026-05-24:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-default-paged-after-budget-removal-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`

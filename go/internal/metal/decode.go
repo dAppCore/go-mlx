@@ -161,14 +161,32 @@ func compiledGemma4LayerEnabled() bool {
 }
 
 func fixedGemma4CacheEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE") {
+	case "0":
+		return false
+	case "1":
+		return true
+	}
 	return enableFixedGemma4Cache || fixedGemma4CacheRuntimeEnabled()
 }
 
 func fixedGemma4SlidingCacheBoundEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND") {
+	case "0":
+		return false
+	case "1":
+		return true
+	}
 	return enableFixedGemma4SlidingCacheBound || fixedGemma4SlidingCacheBoundRuntimeEnabled()
 }
 
 func fixedGemma4SharedMaskEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK") {
+	case "0":
+		return false
+	case "1":
+		return true
+	}
 	return enableFixedGemma4SharedMask || fixedGemma4SharedMaskRuntimeEnabled()
 }
 
@@ -193,6 +211,12 @@ func nativeGemma4ResidualNormEnabled() bool {
 }
 
 func nativeFixedSlidingAttentionEnabled() bool {
+	switch RuntimeGateValue("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION") {
+	case "0":
+		return false
+	case "1":
+		return true
+	}
 	return enableNativeFixedSlidingAttention || nativeFixedSlidingAttentionRuntimeEnabled()
 }
 

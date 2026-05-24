@@ -2282,7 +2282,9 @@ func (m *Gemma4Model) forwardGreedyTokenWithSuppressionArray(tokens *Array, mask
 	var out *Array
 	if len(suppressTokens) > 0 {
 		var err error
-		out, err = sampleTokenWithSuppressionGuard(logits, newSamplerWithSuppression(0, 0, 0, 0, suppressTokens), suppressTokens)
+		sampler := newSamplerWithSuppression(0, 0, 0, 0, suppressTokens)
+		out, err = sampleTokenWithSuppressionGuard(logits, sampler, suppressTokens)
+		closeSampler(sampler)
 		if err != nil {
 			core.Error("mlx: Gemma 4 suppressed greedy fallback failed; falling back to unsuppressed argmax", "error", err)
 			Free(out)

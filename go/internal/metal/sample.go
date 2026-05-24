@@ -34,6 +34,16 @@ type Sampler interface {
 	Sample(logits *Array) *Array
 }
 
+type samplerCloser interface {
+	Close()
+}
+
+func closeSampler(s Sampler) {
+	if closer, ok := s.(samplerCloser); ok {
+		closer.Close()
+	}
+}
+
 // newSampler creates a composable sampler chain from the given parameters.
 // Order: Temperature -> TopK -> TopP -> MinP -> categorical sample.
 //
@@ -53,7 +63,7 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 		samplers = append(samplers, Temperature(temp))
 	}
 	if len(suppressTokens) > 0 {
-		samplers = append(samplers, SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
+		samplers = append(samplers, &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
 	}
 	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
 		return topKTopPChain{
@@ -146,6 +156,12 @@ func (c chain) Sample(logits *Array) *Array {
 	return res
 }
 
+func (c chain) Close() {
+	for _, s := range c {
+		closeSampler(s)
+	}
+}
+
 // topKTopPChain samples from a bounded candidate set. It matches the common
 // llama.cpp-style order used by the Gemma 4 production lane: temperature and
 // suppression first, then top-k candidate selection, then top-p within those
@@ -171,6 +187,10 @@ func (c topKTopPChain) Sample(logits *Array) *Array {
 		Free(curr)
 	}
 	return token
+}
+
+func (c topKTopPChain) Close() {
+	closeSampler(c.prefix)
 }
 
 func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
@@ -219,11 +239,99 @@ func (s suppressedGreedy) Sample(logits *Array) *Array {
 }
 
 type SuppressTokensSampler struct {
-	tokens []int32
+	tokens  []int32
+	idx     *Array
+	inf     *Array
+	lastDim int
+	dtype   DType
 }
 
-func (s SuppressTokensSampler) Sample(logits *Array) *Array {
-	return suppressTokenLogits(logits, s.tokens)
+func (s *SuppressTokensSampler) Sample(logits *Array) *Array {
+	if s == nil {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	return s.suppress(logits)
+}
+
+func (s *SuppressTokensSampler) Close() {
+	if s == nil {
+		return
+	}
+	Free(s.idx, s.inf)
+	s.idx = nil
+	s.inf = nil
+	s.lastDim = 0
+	s.dtype = 0
+}
+
+func (s *SuppressTokensSampler) suppress(logits *Array) *Array {
+	if logits == nil || len(s.tokens) == 0 {
+		if logits == nil {
+			return nil
+		}
+		return logits.Clone()
+	}
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if !s.ensureCache(lastDim, logits.Dtype()) {
+		return logits.Clone()
+	}
+	return PutAlongAxis(logits, s.idx, s.inf, -1)
+}
+
+func (s *SuppressTokensSampler) ensureCache(lastDim int, dtype DType) bool {
+	if lastDim <= 0 {
+		s.Close()
+		return false
+	}
+	if s.idx != nil && s.inf != nil && s.lastDim == lastDim && s.dtype == dtype {
+		return true
+	}
+	s.Close()
+
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(s.tokens) {
+		scratch = make([]int32, 0, len(s.tokens))
+	}
+	for _, id := range s.tokens {
+		if id < 0 || int(id) >= lastDim {
+			continue
+		}
+		scratch = append(scratch, id)
+	}
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return false
+	}
+	slices.Sort(scratch)
+	valid := slices.Compact(scratch)
+
+	idx := FromValues(valid, 1, len(valid))
+	inf := FromValue(float32(math.Inf(-1)))
+	if dtype != DTypeFloat32 {
+		cast := AsType(inf, dtype)
+		Free(inf)
+		inf = cast
+	}
+	if err := Eval(idx, inf); err != nil {
+		Free(idx, inf)
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return false
+	}
+	Detach(idx, inf)
+	s.idx = idx
+	s.inf = inf
+	s.lastDim = lastDim
+	s.dtype = dtype
+
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
+	return true
 }
 
 type sampleTokenTimings struct {

@@ -388,6 +388,7 @@ func BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k(b *testing.B) {
 	Materialize(logits)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
 	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer closeSampler(s)
 	b.ResetTimer()
 	for b.Loop() {
 		tok := s.Sample(logits)
@@ -451,9 +452,11 @@ func BenchmarkSampler_SuppressedGreedy_Gemma(b *testing.B) {
 	Materialize(logits)
 	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 50, 51, 52, 98, 100, 101, 105}
 	s := newSamplerWithSuppression(0, 0, 0, 0, suppress)
+	defer closeSampler(s)
 	for b.Loop() {
 		tok := s.Sample(logits)
 		Materialize(tok)
+		Free(tok)
 	}
 }
 
