@@ -6,10 +6,10 @@ This file is the short upstream request list for making the State `.kv`
 container path real instead of a smoke-test packer.
 
 Active optimisation work must stay on the paged retained-State path. Do not use
-the archived 64Ki threshold branch or fixed Gemma 4 K/V lane for current
-benchmarks unless the user explicitly asks to reproduce old diagnostic rows.
-The CLI regression suite now includes a literal `64 * 1024` context request to
-prove that value is not a cache-family switch.
+context-length cutoffs or fixed Gemma 4 K/V lanes for current benchmarks unless
+the user explicitly asks to reproduce old diagnostic rows. Runtime and tests
+should describe accepted contexts by the real workflow shape: 32k opencode
+seeds, 100k retained-State growth, or the model window.
 
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 
@@ -231,7 +231,7 @@ shows `prefetch_logits` carries `16.597 ms` of the `16.618 ms` prefetch total
 over three non-final tokens, while dirty-cache prefetch costs only `9.124 us`.
 Treat that as attribution evidence only because trace mode uses split
 `EvalAsync` calls for measurement; production generation still uses the
-combined prefetch call and must stay paged/no-fixed/no-64Ki-cutoff.
+combined prefetch call and must stay paged/no-fixed/no-context-cutoff.
 
 The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while
@@ -242,5 +242,5 @@ there. Follow-up probes rejected native paged attention and forced single-token
 last-logits defaults for the production lane: both failed to improve the
 10-turn retained workflow. The next optimisation should aim at a fused
 logits/materialisation boundary or sampler/eval fusion, not at reviving
-fixed-cache, native paged attention, forced last-logits, or 64Ki-family
+fixed-cache, native paged attention, forced last-logits, or context-cutoff
 behaviour.

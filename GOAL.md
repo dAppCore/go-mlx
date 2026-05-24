@@ -36,17 +36,19 @@ The current q4 retained-State lane works, but the production benchmark lane is
 not accepted. The production path is paged retained State with no fixed-cache
 default and no arbitrary context-family switch. Do not reintroduce a
 context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
-acceptance. Do not use the old 64Ki threshold branch as a current optimisation
-or comparator lane; historical rows that mention it are archive evidence only.
-Likewise, do not use the older `30k`-to-`70k`/rough-`65k` retained lane as the
-default benchmark target. Runnable harness defaults should use the production
-`100k` stress target or the model context window, with shorter rows labelled as
-smoke or archive evidence.
+acceptance. Historical threshold rows are archive evidence only. Likewise, do
+not use older partial retained lanes as the default benchmark target. Runnable
+harness defaults should use the production `100k` stress target or the model
+context window, with shorter rows labelled as smoke or archive evidence.
+Code correction, 2026-05-25: the active CLI regression suite no longer carries
+the archived threshold value as a named context case or script guard. Guards
+should assert the invariant directly: paged retained State, no fixed cache, and
+no context-derived cache-family switch.
 Code correction, 2026-05-24: profile commands no longer call a
 `disableGemma4FixedCacheRuntimeGates` shim. Fixed-cache and fixed-wide
 diagnostic env names are ignored as ambient profile input unless an explicit
 in-process override sets them, so the production path does not touch the old
-fixed-cache/64Ki family at all.
+fixed-cache family at all.
 Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx is still
 behind llama.cpp on raw decode. The retained workflow wall-time comparison is
 useful, but must be read with visible output counts, output-quality flags, and
@@ -158,7 +160,7 @@ acceptance, and the next real comparator run must use this paged-only default.
 Follow-up cutoff correction: `state-ramp-profile` no longer treats an unarmed
 compaction threshold as the live-token stop condition. The benchmark target now
 drives retained turn growth unless a fold store is configured, so a stale or
-diagnostic threshold cannot truncate K/V at an imaginary `65k` boundary.
+diagnostic threshold cannot truncate K/V at an arbitrary context boundary.
 Overflow compaction still stops at the configured threshold when a fold store is
 present, preserving the operator-driven compact path without making it a
 benchmark default.
@@ -249,7 +251,7 @@ keeps the fast lane paged (`fixed_caches=0`, `paged_caches=15`,
 `16.618 ms` across three non-final tokens), with dirty-cache prefetch only
 `9.124 us`. That rules out the dirty K/V handoff as the current decode
 bottleneck and keeps the next optimisation pointed at logits/forward graph
-materialisation, not any archived 64Ki/fixed-cache lane.
+materialisation, not any archived context-cutoff or fixed-cache lane.
 Follow-up trace attribution, 2026-05-24: native event capture is now armed by
 `-trace-token-phases` without requiring a `GO_MLX_*` environment variable. The
 expensive forced-eval trace remains behind `GO_MLX_TRACE_FORWARD_EVAL=1`, but

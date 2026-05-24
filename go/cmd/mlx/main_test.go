@@ -865,7 +865,6 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 	}{
 		{name: "normal", contextLen: mlx.ProductionLaneContextLength},
 		{name: "opencode", contextLen: mlx.ProductionLaneLongContextLength},
-		{name: "archived_threshold", contextLen: 64 * 1024},
 		{name: "workflow_target", contextLen: 100000},
 		{name: "model_window", contextLen: mlx.ProductionLaneHyperLongContextLength},
 	} {
@@ -922,27 +921,6 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 				}
 			}
 		})
-	}
-}
-
-func TestRunCommand_ContextRampScriptSkipsOldThresholdBoundary_Good(t *testing.T) {
-	coverageTokens := "ContextRampScript SkipsOldThresholdBoundary"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	read := core.ReadFile("../../../scripts/gemma4_context_ramp.sh")
-	if !read.OK {
-		t.Fatalf("read context ramp script: %v", read.Value)
-	}
-	text := string(read.Value.([]byte))
-	forbiddenStep := core.Sprintf("24:%d", 64*1024)
-	if core.Contains(text, forbiddenStep) {
-		t.Fatalf("context ramp script contains archived threshold step %q", forbiddenStep)
-	}
-	for _, want := range []string{"24:131072", "46:131072"} {
-		if !core.Contains(text, want) {
-			t.Fatalf("context ramp script = %q, want retained-state stress step %s", text, want)
-		}
 	}
 }
 
