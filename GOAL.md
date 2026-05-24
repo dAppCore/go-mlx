@@ -45,8 +45,11 @@ Latest prompt-contract note: do not promote output token-count floors into
 acceptance criteria. If a fixture does not give the model enough real turn
 content to continue for ten turns, that is a fixture failure, not a model or
 runtime result. `scripts/state_ramp_fixture.py` now records structural fixture
-facts only (`section_count`, `unique_request_count`, dropped bytes, extraction
-status) and no longer derives a recommended token floor. The new
+facts (`section_count`, `unique_request_count`, dropped bytes, extraction
+status, and retained context-excerpt bytes) and no longer derives a recommended
+token floor. It can write either a thin `request-only` diagnostic stream or a
+bounded `request-context` stream that keeps same-turn context excerpts without
+reintroducing the old undifferentiated raw dump shape. The new
 `scripts/gemma4_prompt_contract.py` compares the retained Gemma 4 seed plus
 append-turn helpers against the local `chat_template.jinja` through
 `AutoTokenizer.apply_chat_template(...)`; reference, direct, and direct plus
@@ -273,15 +276,19 @@ diagnostic artefacts:
 and
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-simpleturn-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-4k-r1-g1024.json`.
 
-Clean request-only retained fixture, 2026-05-24: `scripts/state_ramp_fixture.py`
-now builds an explicit request-only append stream from noisy opencode delimited
-material and writes metadata showing what was removed. The current fixture
-`/private/tmp/go-mlx-goal/opencode-turns-request-only.txt` extracts `10` actual
-user requests from `94,877` bytes of old mixed request/GOAL chunks, leaving
-`1,955` bytes of request material and recording a recommended
-`700` visible-token lower bound from the prompts. The same retained `30k`
-state run against that fixture completes `10/10` turns with no control/fence/
-loop detector issues:
+Clean fixture correction, 2026-05-24: `scripts/state_ramp_fixture.py` can now
+build either a thin `request-only` append stream or a bounded `request-context`
+append stream from noisy opencode delimited material. The `request-only`
+fixture is useful as a prompt-contract diagnostic, but it is not accepted
+production material because it reduces `94,877` bytes of old mixed request/GOAL
+chunks to `1,955` bytes of directives and can starve later turns of real
+context. The new
+`/private/tmp/go-mlx-goal/opencode-turns-request-context.txt` fixture extracts
+the same `10` user requests while retaining up to `4096` bytes of same-turn
+context per section; its metadata records `43,620` output bytes,
+`39,445` context-excerpt bytes, and `8` truncated context sections. The prior
+retained `30k` request-only state run completed `10/10` turns with no
+control/fence/loop detector issues:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-only-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
 records `36,667` final live tokens, `556` appended tokens, `6,091` generated
 and visible tokens, `87.8565 tok/s` raw decode, `86.9605` effective turn
@@ -290,14 +297,14 @@ tok/s, `82.249s` wall, `9.863 GB` active-plus-cache, `3.387 GB` peak RSS, and
 `/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-request-only-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`
 records `10/10` turns, `39,501` final live tokens, `8,925` generated tokens,
 `8,914` visible tokens, `111.760 tok/s` raw decode from llama.cpp timings,
-`96.107` wall visible tok/s, and `92.751s` wall. This is still diagnostic, not
-production acceptance: go-mlx is `1.128x` faster by wall time and saves about
-`11.32%` wall-energy at the normalised `100 W`, but llama.cpp is `1.272x`
-faster on raw decode and `1.105x` faster on wall-visible throughput, and
-go-mlx turns `3` through `10` all fall below the fixture's requested
-`700`-token lower bound while llama.cpp has no under-length turns. The next
-accepted row must run the clean fixture with the explicit `700` visible-token
-floor marked or enforced, not only with generic output detectors.
+`96.107` wall visible tok/s, and `92.751s` wall. This row remains diagnostic,
+not production acceptance: go-mlx is `1.128x` faster by wall time and saves
+about `11.32%` wall-energy at the normalised `100 W`, but llama.cpp is
+`1.272x` faster on raw decode and `1.105x` faster on wall-visible throughput.
+Do not rescue or reject this row with a visible-token floor. The next accepted
+row should use the richer `request-context` fixture, captured output, the shared
+content-quality detectors, and a short human-readable note on whether each turn
+actually answered its request.
 
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
