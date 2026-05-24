@@ -71,6 +71,7 @@ type Metrics struct {
 	PromptCacheHitTokens       int
 	PromptCacheMissTokens      int
 	PromptCacheRestoreDuration time.Duration
+	CacheProfile               *CacheProfile
 	TokenPhases                []TokenPhaseTrace
 	Adapter                    AdapterInfo
 }
@@ -659,6 +660,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
 				ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 				ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
+				CacheProfile:               modelCacheProfile(m.model, caches),
 				TokenPhases:                tokenPhases,
 				Adapter:                    m.Adapter(),
 			}

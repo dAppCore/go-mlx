@@ -166,8 +166,36 @@ type Metrics struct {
 	PromptCacheHitTokens       int               `json:"prompt_cache_hit_tokens,omitempty"`
 	PromptCacheMissTokens      int               `json:"prompt_cache_miss_tokens,omitempty"`
 	PromptCacheRestoreDuration time.Duration     `json:"prompt_cache_restore_duration,omitempty"`
+	CacheProfile               *CacheProfile     `json:"cache_profile,omitempty"`
 	TokenPhases                []TokenPhaseTrace `json:"token_phases,omitempty"`
 	Adapter                    lora.AdapterInfo  `json:"adapter,omitempty"`
+}
+
+// CacheProfile reports the model/cache topology observed after a generation
+// turn. Gemma 4 uses this to prove local sliding caches stay bounded while
+// global owner layers carry the retained long-context state.
+type CacheProfile struct {
+	Architecture       string `json:"architecture,omitempty"`
+	TotalCaches        int    `json:"total_caches"`
+	LocalCaches        int    `json:"local_caches"`
+	GlobalCaches       int    `json:"global_caches"`
+	SharedLayers       int    `json:"shared_layers"`
+	LocalWindowTokens  int    `json:"local_window_tokens"`
+	MaxLocalTokens     int    `json:"max_local_tokens"`
+	MaxLocalCapacity   int    `json:"max_local_capacity"`
+	MaxGlobalTokens    int    `json:"max_global_tokens"`
+	MaxGlobalCapacity  int    `json:"max_global_capacity"`
+	MaxCacheTokens     int    `json:"max_cache_tokens"`
+	MaxCacheCapacity   int    `json:"max_cache_capacity"`
+	MaxProcessedTokens int    `json:"max_processed_tokens"`
+	FullCaches         int    `json:"full_caches"`
+	RotatingCaches     int    `json:"rotating_caches"`
+	FixedCaches        int    `json:"fixed_caches"`
+	PagedCaches        int    `json:"paged_caches"`
+	QuantizedCaches    int    `json:"quantized_caches"`
+	UnknownCaches      int    `json:"unknown_caches"`
+	UnboundedCaches    int    `json:"unbounded_caches"`
+	LocalWindowLeaked  bool   `json:"local_window_leaked"`
 }
 
 // TokenPhaseTrace reports the coarse decode-loop cost for one generated token.

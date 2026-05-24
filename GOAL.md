@@ -106,6 +106,16 @@ effective turn tok/s, `3.212x` retained-vs-replay speedup estimate,
 RSS, and `508.693 GiB` virtual reservation. Against the previous paged
 request-context row, this recovers about `11%` raw decode and about `5.17s`
 wall time while cutting process virtual reservation by about `59.5 GiB`.
+Follow-up instrumentation now adds `metrics.cache_profile` to both one-shot and
+retained generation reports. For Gemma 4 it records local-cache count,
+global-owner count, shared-layer count, sliding-window tokens, max local/global
+tokens, max local/global capacity, cache kind counts, max processed tokens, and
+`local_window_leaked`. This makes the IDEAS.md local-layer leakage hypothesis
+directly falsifiable in `state-ramp-profile` JSON instead of inferred from RSS
+or raw tok/s. The hook is measured at `81.30 ns/op`, `176 B/op`, `1 alloc/op`
+for the fixed Gemma 4 topology walk and root metrics conversion with a cache
+profile at `171.4 ns/op`, `176 B/op`, `1 alloc/op`; the existing no-profile
+root metrics path remains `31.04 ns/op`, `0 B/op`, `0 allocs/op`.
 
 Latest request-context token-phase trace, 2026-05-24:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-current-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`

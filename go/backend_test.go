@@ -1880,6 +1880,17 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 				GeneratedTokens:   5,
 				PeakMemoryBytes:   1024,
 				ActiveMemoryBytes: 512,
+				CacheProfile: &metal.CacheProfile{
+					Architecture:       "gemma4_text",
+					TotalCaches:        6,
+					LocalCaches:        5,
+					GlobalCaches:       1,
+					SharedLayers:       2,
+					LocalWindowTokens:  512,
+					MaxLocalTokens:     512,
+					MaxGlobalTokens:    4000,
+					MaxProcessedTokens: 4000,
+				},
 			},
 		},
 	}
@@ -1893,6 +1904,9 @@ func TestModelMetricsAndModelType_Good(t *testing.T) {
 	}
 	if metrics.PeakMemoryBytes != 1024 || metrics.ActiveMemoryBytes != 512 {
 		t.Fatalf("Metrics() memory = %+v, want peak=1024 active=512", metrics)
+	}
+	if metrics.CacheProfile == nil || metrics.CacheProfile.LocalCaches != 5 || metrics.CacheProfile.GlobalCaches != 1 || metrics.CacheProfile.LocalWindowLeaked {
+		t.Fatalf("Metrics() cache profile = %+v, want bounded Gemma 4 local/global topology", metrics.CacheProfile)
 	}
 }
 

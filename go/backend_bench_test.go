@@ -311,6 +311,34 @@ func BenchmarkBackend_ToRootMetrics_LoRA(b *testing.B) {
 	}
 }
 
+func BenchmarkBackend_ToRootMetrics_CacheProfile(b *testing.B) {
+	metrics := metal.Metrics{
+		PromptTokens:        30000,
+		GeneratedTokens:     1024,
+		PrefillTokensPerSec: 1800.0,
+		DecodeTokensPerSec:  94.0,
+		CacheProfile: &metal.CacheProfile{
+			Architecture:       "gemma4_text",
+			TotalCaches:        6,
+			LocalCaches:        5,
+			GlobalCaches:       1,
+			SharedLayers:       2,
+			LocalWindowTokens:  512,
+			MaxLocalTokens:     512,
+			MaxLocalCapacity:   512,
+			MaxGlobalTokens:    48712,
+			MaxGlobalCapacity:  71040,
+			MaxProcessedTokens: 48712,
+			FixedCaches:        6,
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		backendBenchSinkRootMetrics = toRootMetrics(metrics)
+	}
+}
+
 // --- chatMessagesAsMetal (W10-AN) ---
 // Per-Chat call shuffler from []inference.Message to []metal.ChatMessage.
 // W10-AN replaced a make + per-message copy with a layout-guarded

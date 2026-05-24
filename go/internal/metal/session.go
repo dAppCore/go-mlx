@@ -473,6 +473,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
 			ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 			ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
+			CacheProfile:               modelCacheProfile(s.model.model, s.caches),
 			TokenPhases:                tokenPhases,
 		}
 		if s.prefillDuration > 0 {

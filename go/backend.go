@@ -582,8 +582,38 @@ func toRootMetrics(metrics metal.Metrics) Metrics {
 		PromptCacheHitTokens:       metrics.PromptCacheHitTokens,
 		PromptCacheMissTokens:      metrics.PromptCacheMissTokens,
 		PromptCacheRestoreDuration: metrics.PromptCacheRestoreDuration,
+		CacheProfile:               toRootCacheProfile(metrics.CacheProfile),
 		TokenPhases:                toRootTokenPhaseTraces(metrics.TokenPhases),
 		Adapter:                    toRootAdapterInfo(metrics.Adapter),
+	}
+}
+
+func toRootCacheProfile(profile *metal.CacheProfile) *CacheProfile {
+	if profile == nil {
+		return nil
+	}
+	return &CacheProfile{
+		Architecture:       profile.Architecture,
+		TotalCaches:        profile.TotalCaches,
+		LocalCaches:        profile.LocalCaches,
+		GlobalCaches:       profile.GlobalCaches,
+		SharedLayers:       profile.SharedLayers,
+		LocalWindowTokens:  profile.LocalWindowTokens,
+		MaxLocalTokens:     profile.MaxLocalTokens,
+		MaxLocalCapacity:   profile.MaxLocalCapacity,
+		MaxGlobalTokens:    profile.MaxGlobalTokens,
+		MaxGlobalCapacity:  profile.MaxGlobalCapacity,
+		MaxCacheTokens:     profile.MaxCacheTokens,
+		MaxCacheCapacity:   profile.MaxCacheCapacity,
+		MaxProcessedTokens: profile.MaxProcessedTokens,
+		FullCaches:         profile.FullCaches,
+		RotatingCaches:     profile.RotatingCaches,
+		FixedCaches:        profile.FixedCaches,
+		PagedCaches:        profile.PagedCaches,
+		QuantizedCaches:    profile.QuantizedCaches,
+		UnknownCaches:      profile.UnknownCaches,
+		UnboundedCaches:    profile.UnboundedCaches,
+		LocalWindowLeaked:  profile.LocalWindowLeaked,
 	}
 }
 
