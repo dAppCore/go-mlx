@@ -3045,10 +3045,14 @@ func stateRampProfileLiveTokenLimitReached(currentTokens int, opts stateRampProf
 
 func stateRampProfileLiveTokenLimit(opts stateRampProfileOptions) int {
 	limit := opts.TargetTokens
-	if opts.CompactionThresholdTokens > 0 && (limit <= 0 || opts.CompactionThresholdTokens < limit) {
+	if stateRampProfileCompactionStopArmed(opts) && opts.CompactionThresholdTokens > 0 && (limit <= 0 || opts.CompactionThresholdTokens < limit) {
 		limit = opts.CompactionThresholdTokens
 	}
 	return limit
+}
+
+func stateRampProfileCompactionStopArmed(opts stateRampProfileOptions) bool {
+	return core.Trim(opts.FoldStorePath) != ""
 }
 
 func stateRampProfileDefaultCompactionThreshold(opts stateRampProfileOptions, info mlx.ModelInfo) int {

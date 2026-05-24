@@ -100,6 +100,13 @@ no `GO_MLX_FIXED_GEMMA4_CACHE_SIZE`. Its cache profile records
 `max_global_capacity=32768`, and `local_window_leaked=false`; short smoke
 decode is `110.531 tok/s`. This is a default-path correction, not production
 acceptance, and the next real comparator run must use this paged-only default.
+Follow-up cutoff correction: `state-ramp-profile` no longer treats an unarmed
+compaction threshold as the live-token stop condition. The benchmark target now
+drives retained turn growth unless a fold store is configured, so a stale or
+diagnostic threshold cannot truncate K/V at an imaginary `65k` boundary.
+Overflow compaction still stops at the configured threshold when a fold store is
+present, preserving the operator-driven compact path without making it a
+benchmark default.
 The first full request-context retry after this correction wrote
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-default-paged-drainfix-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
 but did not produce timing evidence because `metal.LoadAndInit` reported

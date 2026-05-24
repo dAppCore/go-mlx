@@ -1979,7 +1979,7 @@ func TestStateRampProfileTurnAppendSourceDelimitedNearTarget_Good(t *testing.T) 
 	}
 }
 
-func TestStateRampProfileTurnAppendSourceFixedCompactionThreshold_Good(t *testing.T) {
+func TestStateRampProfileTurnAppendSourceDoesNotUseUnarmedCompactionThreshold_Good(t *testing.T) {
 	_, _, count := stateRampProfileTurnAppendSource(
 		[]int32{1, 2, 3, 4, 5},
 		nil,
@@ -1993,8 +1993,28 @@ func TestStateRampProfileTurnAppendSourceFixedCompactionThreshold_Good(t *testin
 		},
 	)
 
+	if count != 200 {
+		t.Fatalf("count=%d, want benchmark append target without unarmed compaction cutoff", count)
+	}
+}
+
+func TestStateRampProfileTurnAppendSourceFoldStoreArmsCompactionThreshold_Good(t *testing.T) {
+	_, _, count := stateRampProfileTurnAppendSource(
+		[]int32{1, 2, 3, 4, 5},
+		nil,
+		0,
+		950,
+		1,
+		stateRampProfileOptions{
+			AppendTokens:              200,
+			TargetTokens:              2000,
+			CompactionThresholdTokens: 1000,
+			FoldStorePath:             "/tmp/state.mvlog",
+		},
+	)
+
 	if count != 50 {
-		t.Fatalf("count=%d, want fixed append capped at compaction threshold", count)
+		t.Fatalf("count=%d, want overflow fold store to cap append at compaction threshold", count)
 	}
 }
 
@@ -2061,6 +2081,7 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 		CompactionThresholdTokens: 1000,
 		CompactionTailTokens:      128,
 		Turns:                     10,
+		FoldStorePath:             "/tmp/state.mvlog",
 	}
 	if !shouldRunStateRampTurn(1, 999, opts) {
 		t.Fatal("turn before compaction threshold does not run")

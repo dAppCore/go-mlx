@@ -200,7 +200,10 @@ and sampler.
 Do not reintroduce any arbitrary context boundary or production fixed-cache
 default while chasing this. Context size can select chunking and
 overflow/compact limits, but it must not select a different K/V family or
-invent a fixed-cache budget for benchmark convenience.
+invent a fixed-cache budget for benchmark convenience. The overflow/compact
+threshold must also stay unarmed during ordinary benchmarks: retained growth is
+limited by the requested target unless a fold store is configured for explicit
+overflow compaction.
 
 Current retained decode evidence: the real async prefetch runtime gate and the
 new `prefetch` token-phase bucket prove the old large `other` bucket is the
