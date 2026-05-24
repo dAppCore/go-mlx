@@ -332,6 +332,32 @@ next canonical runtime report set is regenerated:
   high-water compact detour. Do not promote this row as final content quality:
   stage-1 visible prompt analysis still appears in the artefact and stage-2
   distractor pressure remains stronger than desired.
+- Lemma-family book research, same date: the book harness now has an opt-in
+  direct turn mode (`state-ramp-profile -turn-prompt-mode direct`, exposed as
+  `scripts/state_book_from_phase0.py --turn-prompt-mode direct`) so creative
+  turns can use the native chat wrapper without the reference-material scaffold
+  that smaller models may copy. While checking the `lthn/LEM-Gemma3-1B` zero
+  output, the native Gemma chat formatter was corrected to match the model's
+  `chat_template.jinja`: emit the BOS marker and fold a leading system message
+  into the first user turn instead of creating consecutive user turns. The
+  fixed template did not make the `C001_STORY_PERSPECTIVE` retained-book smoke
+  generate visible output: it still stops at turn 1 with
+  `empty_visible_output`, `0` generated tokens, about `5.84 GB`
+  active-plus-cache, and about `3.00 GB` RSS. A neutral warm-state probe on the
+  same model does generate normally (`109` visible tokens at `60.154 tok/s`,
+  about `5.24 GB` active-plus-cache), so the 0-token book stop is
+  seed/context-sensitive model behaviour rather than a general loader or chat
+  template failure. The local `lthn/lemer-lite` q4 Gemma 4-family snapshot is
+  the first readable Lemma-family retained book pass: the 10-turn direct run at
+  `/private/tmp/go-mlx-goal/book-runs-lemer-lite-direct/2026-05-24-c001-story-perspective-seed2026052404.json`
+  produced the readable book
+  `/private/tmp/go-mlx-goal/books-lemer-lite-direct/2026-05-24-c001-story-perspective-seed2026052404.md`
+  with `10/10` successful turns, `3139` generated/visible tokens,
+  `100.508 tok/s` decode, `97.003 tok/s` effective turn throughput, `7999`
+  initial prefill tokens, `13156` final live tokens, `8.995 GB`
+  active-plus-cache, and about `3.05 GB` RSS. Content preserves the lighthouse,
+  light, and deep-ocean signal arc across all ten turns, with distractors
+  acting mostly as pressure rather than replacing the plot.
 - `2026-05-24-default-after-native-sliding-reject-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
   current no-floor default retained-State row after rejecting native fixed
   sliding attention as a production default. It completes `10/10` retained

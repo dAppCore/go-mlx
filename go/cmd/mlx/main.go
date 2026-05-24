@@ -456,6 +456,7 @@ type stateRampProfileOptions struct {
 	PromptSet                   bool                      `json:"-"`
 	AppendPrompt                string                    `json:"append_prompt,omitempty"`
 	AppendTurnDelimiter         string                    `json:"append_turn_delimiter,omitempty"`
+	TurnPromptMode              string                    `json:"turn_prompt_mode,omitempty"`
 	WakeMarkerFile              string                    `json:"wake_marker_file,omitempty"`
 	WakeStateStorePath          string                    `json:"wake_state_store_path,omitempty"`
 	WakeStateStoreSegmentAlias  string                    `json:"wake_state_store_segment_alias,omitempty"`
@@ -534,6 +535,7 @@ type stateRampProfileReport struct {
 	SourceTokens                 int                       `json:"source_tokens,omitempty"`
 	AppendSourceTokens           int                       `json:"append_source_tokens,omitempty"`
 	AppendTurnSections           int                       `json:"append_turn_sections,omitempty"`
+	TurnPromptMode               string                    `json:"turn_prompt_mode,omitempty"`
 	StartTokens                  int                       `json:"start_tokens"`
 	TargetTokens                 int                       `json:"target_tokens"`
 	CompactionThresholdTokens    int                       `json:"compaction_threshold_tokens,omitempty"`
@@ -2257,6 +2259,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
 	appendFile := fs.String("append-file", "", "read appended turn material from a file")
 	appendTurnDelimiter := fs.String("append-turn-delimiter", "", "split appended material into whole turn sections using this delimiter instead of fixed token offsets")
+	turnPromptMode := fs.String("turn-prompt-mode", "reference", "turn prompt shape: reference wraps material, direct sends the turn text inside the chat template")
 	wakeMarkerFile := fs.String("wake-marker-file", "", "start the ramp by waking this State compact marker or .kv container instead of prefilling the seed prompt")
 	wakeStateStorePath := fs.String("wake-state-store", "", "existing append-only State file to wake before ramp turns")
 	wakeIndexURI := fs.String("wake-index-uri", "", "State index URI to wake before ramp turns")
@@ -2563,6 +2566,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		PromptSet:                   visitedFlags["prompt"] || visitedFlags["prompt-file"],
 		AppendPrompt:                *appendPrompt,
 		AppendTurnDelimiter:         *appendTurnDelimiter,
+		TurnPromptMode:              *turnPromptMode,
 		WakeMarkerFile:              core.Trim(*wakeMarkerFile),
 		WakeStateStorePath:          core.Trim(*wakeStateStorePath),
 		WakeStateStoreSegmentAlias:  core.Trim(wakeStateStoreSegmentAlias),
@@ -2644,6 +2648,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				TurnMaxTokens:               *turnMaxTokens,
 				TurnMinTokens:               *turnMinTokens,
 				TurnMinTokensPolicy:         *turnMinTokensPolicy,
+				TurnPromptMode:              *turnPromptMode,
 				RequestedTurns:              *turns,
 				Temperature:                 *temperature,
 				TopP:                        *topP,
@@ -2732,6 +2737,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		TurnMaxTokens:               opts.TurnMaxTokens,
 		TurnMinTokens:               opts.TurnMinTokens,
 		TurnMinTokensPolicy:         opts.TurnMinTokensPolicy,
+		TurnPromptMode:              opts.TurnPromptMode,
 		RequestedTurns:              opts.Turns,
 		Temperature:                 opts.Temperature,
 		TopP:                        opts.TopP,
@@ -2795,7 +2801,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		appendText = opts.Prompt
 		report.AppendPromptBytes = len(appendText)
 	}
-	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking, opts.TurnMinTokens)
+	appendSourceTokens, appendTurnSections, err := stateRampProfileAppendSources(tok, appendText, opts.AppendTurnDelimiter, opts.ChatTemplate, opts.EnableThinking, opts.TurnMinTokens, opts.TurnPromptMode)
 	if err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -2966,6 +2972,13 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	if opts.TurnMinTokensPolicy != "mark" && opts.TurnMinTokensPolicy != "fail" {
 		opts.TurnMinTokensPolicy = "mark"
 	}
+	opts.TurnPromptMode = core.Lower(core.Trim(opts.TurnPromptMode))
+	if opts.TurnPromptMode == "" {
+		opts.TurnPromptMode = "reference"
+	}
+	if opts.TurnPromptMode != "reference" && opts.TurnPromptMode != "direct" {
+		opts.TurnPromptMode = "reference"
+	}
 	if opts.DegradationMinConsecutive <= 0 {
 		opts.DegradationMinConsecutive = 2
 	}
@@ -3134,7 +3147,16 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 		builder.WriteString("Ready.<turn|>\n")
 		return builder.String()
 	case "gemma":
-		return "<start_of_turn>user\n" + contextPrompt + "\n\n" + defaultStateRampRetainedSystemPrompt + "<end_of_turn>\n<start_of_turn>model\nReady.<end_of_turn>\n"
+		builder := core.NewBuilder()
+		builder.Grow(len(contextPrompt) + len(defaultStateRampRetainedSystemPrompt) + 96)
+		builder.WriteString("<bos><start_of_turn>user\n")
+		builder.WriteString(defaultStateRampRetainedSystemPrompt)
+		if contextPrompt != "" {
+			builder.WriteString("\n\n")
+			builder.WriteString(contextPrompt)
+		}
+		builder.WriteString("<end_of_turn>\n<start_of_turn>model\nReady.<end_of_turn>\n")
+		return builder.String()
 	case "qwen":
 		return "<|im_start|>system\n" + defaultStateRampRetainedSystemPrompt + "\n\n" + contextPrompt + "<|im_end|>\n<|im_start|>assistant\nReady.<|im_end|>\n"
 	case "llama":
@@ -3145,14 +3167,30 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 }
 
 func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool, minVisibleTokens ...int) string {
+	return stateRampProfileTurnPromptWithMode(template, prompt, enableThinking, "reference", minVisibleTokens...)
+}
+
+func stateRampProfileDirectTurnPrompt(template, prompt string, enableThinking bool) string {
+	return stateRampProfileTurnPromptWithMode(template, prompt, enableThinking, "direct")
+}
+
+func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking bool, mode string, minVisibleTokens ...int) string {
 	prompt = core.Trim(prompt)
+	mode = core.Lower(core.Trim(mode))
+	if mode != "direct" {
+		mode = "reference"
+	}
+	turnText := prompt
+	if mode == "reference" {
+		turnText = stateRampProfileReferenceTurn(prompt, minVisibleTokens...)
+	}
 	_ = minVisibleTokens
 	switch template {
 	case "gemma4":
 		builder := core.NewBuilder()
-		builder.Grow(len(prompt) + 512)
+		builder.Grow(len(turnText) + 256)
 		builder.WriteString("<|turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString(turnText)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		if !enableThinking {
 			builder.WriteString("<|channel>thought\n<channel|>")
@@ -3160,27 +3198,27 @@ func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool, mi
 		return builder.String()
 	case "gemma":
 		builder := core.NewBuilder()
-		builder.Grow(len(prompt) + 512)
+		builder.Grow(len(turnText) + 128)
 		builder.WriteString("<start_of_turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString(turnText)
 		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
 		return builder.String()
 	case "qwen":
 		builder := core.NewBuilder()
-		builder.Grow(len(prompt) + 512)
+		builder.Grow(len(turnText) + 128)
 		builder.WriteString("<|im_start|>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString(turnText)
 		builder.WriteString("<|im_end|>\n<|im_start|>assistant\n")
 		return builder.String()
 	case "llama":
 		builder := core.NewBuilder()
-		builder.Grow(len(prompt) + 512)
+		builder.Grow(len(turnText) + 128)
 		builder.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
-		writeStateRampProfileReferenceTurn(builder, prompt)
+		builder.WriteString(turnText)
 		builder.WriteString("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
 		return builder.String()
 	default:
-		return stateRampProfileReferenceTurn(prompt)
+		return turnText
 	}
 }
 
@@ -3266,7 +3304,7 @@ func stateRampProfileAssistantCloseSuffix(template string) string {
 	return chapterProfileAssistantHistorySuffix(template, "")
 }
 
-func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool, minVisibleTokens int) ([]int32, [][]int32, error) {
+func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template string, enableThinking bool, minVisibleTokens int, turnPromptMode string) ([]int32, [][]int32, error) {
 	if tok == nil {
 		return nil, nil, core.NewError("state-ramp-profile: model tokenizer is nil")
 	}
@@ -3288,7 +3326,7 @@ func stateRampProfileAppendSources(tok *mlx.Tokenizer, text, delimiter, template
 			continue
 		}
 		if !stateRampProfilePlainTemplate(template) {
-			section = stateRampProfileTurnPrompt(template, section, enableThinking, minVisibleTokens)
+			section = stateRampProfileTurnPromptWithMode(template, section, enableThinking, turnPromptMode, minVisibleTokens)
 		}
 		tokens, err := tok.Encode(section)
 		if err != nil {
@@ -5338,7 +5376,17 @@ func chapterProfileInitialPrompt(template, contextPrompt, premise string, totalC
 		builder.WriteString(chapterProfileAssistantVisiblePrefill(template, 1, enableThinking))
 		return builder.String()
 	case "gemma":
-		return "<start_of_turn>user\n" + contextPrompt + "\n\n" + first + "<end_of_turn>\n<start_of_turn>model\n"
+		builder := core.NewBuilder()
+		contextPrompt = core.Trim(contextPrompt)
+		builder.Grow(len(contextPrompt) + len(first) + 64)
+		builder.WriteString("<bos><start_of_turn>user\n")
+		if contextPrompt != "" {
+			builder.WriteString(contextPrompt)
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(first)
+		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
+		return builder.String()
 	case "qwen":
 		return "<|im_start|>system\n" + contextPrompt + "<|im_end|>\n<|im_start|>user\n" + first + "<|im_end|>\n<|im_start|>assistant\n"
 	case "llama":

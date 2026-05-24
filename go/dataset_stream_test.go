@@ -75,7 +75,7 @@ func TestFormatChatMessages_ModelTemplates_Good(t *testing.T) {
 		t.Fatalf("gemma template = %q", gemma)
 	}
 	gemma3 := chat.Format(messages, chat.Config{Architecture: "gemma3_text"})
-	if gemma3 != "<start_of_turn>user\nsys<end_of_turn>\n<start_of_turn>user\nhi<end_of_turn>\n<start_of_turn>model\n" {
+	if gemma3 != "<bos><start_of_turn>user\nsys\n\nhi<end_of_turn>\n<start_of_turn>model\n" {
 		t.Fatalf("gemma3 template = %q", gemma3)
 	}
 	llama := chat.Format([]inference.Message{{Role: "user", Content: "hi"}}, chat.Config{Architecture: "llama"})

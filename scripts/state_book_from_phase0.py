@@ -336,6 +336,8 @@ def build_command(
         str(turns if turns is not None else args.turns),
         "-chat-template",
         args.chat_template,
+        "-turn-prompt-mode",
+        args.turn_prompt_mode,
         "-context",
         str(args.context),
         "-cache-mode",
@@ -434,6 +436,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--append-tokens", type=int, default=2000)
     parser.add_argument("--turn-max-tokens", type=int, default=2048)
     parser.add_argument("--chat-template", default="gemma4")
+    parser.add_argument("--turn-prompt-mode", default="reference", choices=("reference", "direct"))
     parser.add_argument("--context", type=int, default=32768)
     parser.add_argument("--cache-mode", default="paged")
     parser.add_argument("--power-watts", type=float, default=100.0)

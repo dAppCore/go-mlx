@@ -349,6 +349,14 @@ func (t *Tokenizer) storeBPETokens(key string, tokens []int32) {
 	t.bpeCacheOrder = append(t.bpeCacheOrder, key)
 }
 
+func (t *Tokenizer) shouldPrependBOS(text string) bool {
+	if !t.hasBOS {
+		return false
+	}
+	bosText := t.invVocab[t.bosToken]
+	return bosText == "" || !core.HasPrefix(text, bosText)
+}
+
 func (t *Tokenizer) encodeSentencePieceSegment(segment string) []int32 {
 	spText := normalizeSentencePieceSegment(segment)
 	if spText == "" {
@@ -419,7 +427,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 	}
 
 	tokens := make([]int32, 0, len(text)+1)
-	if t.hasBOS {
+	if t.shouldPrependBOS(text) {
 		tokens = append(tokens, t.bosToken)
 	}
 
@@ -447,7 +455,7 @@ func (t *Tokenizer) Encode(text string) []int32 {
 // encodeGPT2 encodes text using GPT-2 byte-level BPE.
 func (t *Tokenizer) encodeGPT2(text string) []int32 {
 	tokens := make([]int32, 0, len(text)+1)
-	if t.hasBOS {
+	if t.shouldPrependBOS(text) {
 		tokens = append(tokens, t.bosToken)
 	}
 
@@ -598,5 +606,5 @@ func (t *Tokenizer) IDToken(id int32) string {
 
 // FormatGemmaPrompt applies the Gemma 3 chat template.
 func FormatGemmaPrompt(prompt string) string {
-	return core.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
+	return core.Sprintf("<bos><start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
 }

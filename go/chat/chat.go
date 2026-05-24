@@ -51,17 +51,29 @@ func formatGemma(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
 	// Gemma writes fixed "user" / "model" tags — role is not emitted
 	// per-message, so the capacity calc skips role overhead.
-	builder.Grow(chatFormatCapacity(messages, 34, 22, false))
-	for _, msg := range messages {
+	builder.Grow(chatFormatCapacity(messages, 34, 22, false) + len("<bos>"))
+	builder.WriteString("<bos>")
+	firstUserPrefix := ""
+	start := 0
+	if len(messages) > 0 && normaliseRole(messages[0].Role) == "system" {
+		firstUserPrefix = core.Trim(messages[0].Content)
+		start = 1
+	}
+	for _, msg := range messages[start:] {
 		role := normaliseRole(msg.Role)
 		switch role {
 		case "assistant":
 			builder.WriteString("<start_of_turn>model\n")
-			builder.WriteString(msg.Content)
+			builder.WriteString(core.Trim(msg.Content))
 			builder.WriteString("<end_of_turn>\n")
 		case "system", "user":
 			builder.WriteString("<start_of_turn>user\n")
-			builder.WriteString(msg.Content)
+			if firstUserPrefix != "" {
+				builder.WriteString(firstUserPrefix)
+				builder.WriteString("\n\n")
+				firstUserPrefix = ""
+			}
+			builder.WriteString(core.Trim(msg.Content))
 			builder.WriteString("<end_of_turn>\n")
 		}
 	}

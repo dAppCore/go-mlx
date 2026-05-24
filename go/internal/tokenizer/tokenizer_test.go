@@ -203,6 +203,22 @@ func TestTokenizer_Encode_Good(t *testing.T) {
 	}
 }
 
+func TestTokenizer_EncodeExplicitBOSDoesNotDuplicate_Good(t *testing.T) {
+	path := writeTestTokenizer(t)
+	tok, _ := LoadTokenizer(path)
+
+	tokens := tok.Encode("<bos>hello")
+	if len(tokens) < 2 {
+		t.Fatalf("Encode explicit BOS = %v, want BOS plus content", tokens)
+	}
+	if tokens[0] != tok.BOSToken() {
+		t.Fatalf("first token = %d, want BOS (%d)", tokens[0], tok.BOSToken())
+	}
+	if tokens[1] == tok.BOSToken() {
+		t.Fatalf("Encode duplicated explicit BOS: %v", tokens)
+	}
+}
+
 func TestTokenizer_Encode_MultiWordSentencePiece_Good(t *testing.T) {
 	path := writeTestTokenizer(t)
 	tok, _ := LoadTokenizer(path)
@@ -401,7 +417,7 @@ func TestTokenizer_DecodeOne_MatchesDecodeSingle_Good(t *testing.T) {
 
 func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 	got := FormatGemmaPrompt("What is 2+2?")
-	want := "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
+	want := "<bos><start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
 	if got != want {
 		t.Errorf("FormatGemmaPrompt = %q, want %q", got, want)
 	}

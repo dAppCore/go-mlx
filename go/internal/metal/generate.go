@@ -1541,14 +1541,28 @@ func yieldChatTextChunks(yield func(string) bool, text string, chunkBytes int) b
 
 func formatGemmaChat(messages []ChatMessage) string {
 	builder := core.NewBuilder()
-	for _, msg := range messages {
-		switch msg.Role {
-		case "system":
-			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
-		case "user":
-			builder.WriteString("<start_of_turn>user\n" + msg.Content + "<end_of_turn>\n")
-		case "assistant":
-			builder.WriteString("<start_of_turn>model\n" + msg.Content + "<end_of_turn>\n")
+	builder.WriteString("<bos>")
+	firstUserPrefix := ""
+	start := 0
+	if len(messages) > 0 && core.Lower(core.Trim(messages[0].Role)) == "system" {
+		firstUserPrefix = core.Trim(messages[0].Content)
+		start = 1
+	}
+	for _, msg := range messages[start:] {
+		switch core.Lower(core.Trim(msg.Role)) {
+		case "system", "user", "human":
+			builder.WriteString("<start_of_turn>user\n")
+			if firstUserPrefix != "" {
+				builder.WriteString(firstUserPrefix)
+				builder.WriteString("\n\n")
+				firstUserPrefix = ""
+			}
+			builder.WriteString(core.Trim(msg.Content))
+			builder.WriteString("<end_of_turn>\n")
+		case "assistant", "model":
+			builder.WriteString("<start_of_turn>model\n")
+			builder.WriteString(core.Trim(msg.Content))
+			builder.WriteString("<end_of_turn>\n")
 		}
 	}
 	builder.WriteString("<start_of_turn>model\n")
@@ -1556,14 +1570,32 @@ func formatGemmaChat(messages []ChatMessage) string {
 }
 
 func formatGemmaChatChunks(messages []ChatMessage, chunkBytes int, yield func(string) bool) {
-	for _, msg := range messages {
-		switch msg.Role {
-		case "system", "user":
-			if !yield("<start_of_turn>user\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<end_of_turn>\n") {
+	if !yield("<bos>") {
+		return
+	}
+	firstUserPrefix := ""
+	start := 0
+	if len(messages) > 0 && core.Lower(core.Trim(messages[0].Role)) == "system" {
+		firstUserPrefix = core.Trim(messages[0].Content)
+		start = 1
+	}
+	for _, msg := range messages[start:] {
+		switch core.Lower(core.Trim(msg.Role)) {
+		case "system", "user", "human":
+			if !yield("<start_of_turn>user\n") {
 				return
 			}
-		case "assistant":
-			if !yield("<start_of_turn>model\n") || !yieldChatTextChunks(yield, msg.Content, chunkBytes) || !yield("<end_of_turn>\n") {
+			if firstUserPrefix != "" {
+				if !yieldChatTextChunks(yield, firstUserPrefix, chunkBytes) || !yield("\n\n") {
+					return
+				}
+				firstUserPrefix = ""
+			}
+			if !yieldChatTextChunks(yield, core.Trim(msg.Content), chunkBytes) || !yield("<end_of_turn>\n") {
+				return
+			}
+		case "assistant", "model":
+			if !yield("<start_of_turn>model\n") || !yieldChatTextChunks(yield, core.Trim(msg.Content), chunkBytes) || !yield("<end_of_turn>\n") {
 				return
 			}
 		}

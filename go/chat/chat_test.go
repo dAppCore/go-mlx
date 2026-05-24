@@ -12,6 +12,9 @@ func TestFormat_GemmaTemplate_Good(t *testing.T) {
 		{Role: "user", Content: "hi"},
 		{Role: "assistant", Content: "hello"},
 	}, Config{Architecture: "gemma3"})
+	if !strings.HasPrefix(got, "<bos>") {
+		t.Fatalf("missing bos: %q", got)
+	}
 	if !strings.Contains(got, "<start_of_turn>user\nhi") {
 		t.Fatalf("missing user turn: %q", got)
 	}
@@ -20,6 +23,17 @@ func TestFormat_GemmaTemplate_Good(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "<start_of_turn>model\n") {
 		t.Fatalf("missing generation prompt: %q", got)
+	}
+}
+
+func TestFormat_GemmaTemplateFoldsSystemIntoFirstUser_Good(t *testing.T) {
+	got := Format([]Message{
+		{Role: "system", Content: " sys "},
+		{Role: "user", Content: " hi "},
+	}, Config{Architecture: "gemma3_text"})
+	want := "<bos><start_of_turn>user\nsys\n\nhi<end_of_turn>\n<start_of_turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma system fold = %q, want %q", got, want)
 	}
 }
 

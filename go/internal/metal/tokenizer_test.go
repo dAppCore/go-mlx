@@ -570,7 +570,7 @@ func TestTokenizer_DecodeOne_MatchesDecodeSingle_Good(t *testing.T) {
 
 func TestTokenizer_FormatGemmaPrompt_Good(t *testing.T) {
 	got := FormatGemmaPrompt("What is 2+2?")
-	want := "<start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
+	want := "<bos><start_of_turn>user\nWhat is 2+2?<end_of_turn>\n<start_of_turn>model\n"
 	if got != want {
 		t.Errorf("FormatGemmaPrompt = %q, want %q", got, want)
 	}

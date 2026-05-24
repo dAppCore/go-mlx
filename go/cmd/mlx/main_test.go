@@ -1438,6 +1438,43 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileTurnPromptDirectGemma_Good(t *testing.T) {
+	prompt := stateRampProfileDirectTurnPrompt("gemma", "Write Chapter 2 only.", false)
+
+	for _, want := range []string{
+		"<start_of_turn>user\n",
+		"Write Chapter 2 only.",
+		"<end_of_turn>\n<start_of_turn>model\n",
+	} {
+		if !core.Contains(prompt, want) {
+			t.Fatalf("prompt = %q, want %q", prompt, want)
+		}
+	}
+	for _, rejected := range []string{
+		"reference material",
+		"<turn_material>",
+		"Answer the user request from the turn material now",
+	} {
+		if core.Contains(prompt, rejected) {
+			t.Fatalf("prompt = %q, should not contain wrapper text %q", prompt, rejected)
+		}
+	}
+}
+
+func TestStateRampProfileInitialPromptGemmaMatchesModelTemplate_Good(t *testing.T) {
+	prompt := stateRampProfileInitialPrompt("gemma", "Seed arc", false)
+
+	if !core.HasPrefix(prompt, "<bos><start_of_turn>user\n") {
+		t.Fatalf("prompt = %q, want Gemma BOS user turn", prompt)
+	}
+	if !core.Contains(prompt, defaultStateRampRetainedSystemPrompt+"\n\nSeed arc<end_of_turn>") {
+		t.Fatalf("prompt = %q, want system text folded before first user seed", prompt)
+	}
+	if !core.HasSuffix(prompt, "<start_of_turn>model\nReady.<end_of_turn>\n") {
+		t.Fatalf("prompt = %q, want ready assistant history turn", prompt)
+	}
+}
+
 func TestStateRampProfileTurnPromptVisibleFloor_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "Review the latest turn.", false, 256)
 

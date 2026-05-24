@@ -1556,11 +1556,39 @@ func TestModel_FormatChat_Gemma2UsesGemmaTemplate_Good(t *testing.T) {
 		{Role: "assistant", Content: "Hi"},
 	})
 
-	want := "<start_of_turn>user\nHello<end_of_turn>\n" +
+	want := "<bos><start_of_turn>user\nHello<end_of_turn>\n" +
 		"<start_of_turn>model\nHi<end_of_turn>\n" +
 		"<start_of_turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChat_GemmaFoldsSystemIntoFirstUser_Good(t *testing.T) {
+	model := &Model{modelType: "gemma3_text"}
+
+	got := model.formatChat([]ChatMessage{
+		{Role: "system", Content: " sys "},
+		{Role: "user", Content: " hi "},
+	})
+	want := "<bos><start_of_turn>user\nsys\n\nhi<end_of_turn>\n<start_of_turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChatChunks_GemmaMatchesFormattedPrompt_Good(t *testing.T) {
+	model := &Model{modelType: "gemma3_text"}
+	messages := []ChatMessage{
+		{Role: "system", Content: "abc"},
+		{Role: "user", Content: "defghi"},
+		{Role: "assistant", Content: "jkl"},
+	}
+
+	got := core.Join("", collectChatChunks(model.formatChatChunks(messages, 3))...)
+	want := model.formatChat(messages)
+	if got != want {
+		t.Fatalf("joined gemma chat chunks = %q, want %q", got, want)
 	}
 }
 

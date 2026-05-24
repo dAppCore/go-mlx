@@ -956,5 +956,5 @@ func (t *Tokenizer) IDToken(id int32) string {
 
 // FormatGemmaPrompt applies the Gemma 3 chat template.
 func FormatGemmaPrompt(prompt string) string {
-	return core.Sprintf("<start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
+	return core.Sprintf("<bos><start_of_turn>user\n%s<end_of_turn>\n<start_of_turn>model\n", prompt)
 }
