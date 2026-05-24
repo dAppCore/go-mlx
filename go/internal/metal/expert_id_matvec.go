@@ -44,9 +44,10 @@ func quantizedExpertIDMatVec(input, weight, scales, biases, expertIDs *Array, gr
 
 	kernel := quantizedExpertIDMatVecKernel(meta, groupSize, bits)
 
+	outShape := [2]int32{int32(meta.routes), int32(meta.outDim)}
 	out, err := kernel.DispatchOne(
 		MetalKernelGrid{GridX: meta.routes * meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
-		[]int32{int32(meta.routes), int32(meta.outDim)}, DTypeFloat32,
+		outShape[:], DTypeFloat32,
 		input, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
@@ -69,9 +70,10 @@ func quantizedExpertIDGELUGateUpMatVec(input, weight, scales, biases, expertIDs 
 
 	kernel := quantizedExpertIDGELUGateUpMatVecKernel(meta, groupSize, bits)
 
+	outShape := [2]int32{int32(meta.routes), int32(meta.outDim / 2)}
 	out, err := kernel.DispatchOne(
 		MetalKernelGrid{GridX: meta.routes * (meta.outDim / 2) * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
-		[]int32{int32(meta.routes), int32(meta.outDim / 2)}, DTypeFloat32,
+		outShape[:], DTypeFloat32,
 		input, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
@@ -98,9 +100,10 @@ func quantizedExpertIDGELUSplitGateUpMatVec(input, gateWeight, gateScales, gateB
 
 	kernel := quantizedExpertIDGELUSplitGateUpMatVecKernel(gateMeta, groupSize, bits)
 
+	outShape := [2]int32{int32(gateMeta.routes), int32(gateMeta.outDim)}
 	out, err := kernel.DispatchOne(
 		MetalKernelGrid{GridX: gateMeta.routes * gateMeta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
-		[]int32{int32(gateMeta.routes), int32(gateMeta.outDim)}, DTypeFloat32,
+		outShape[:], DTypeFloat32,
 		input, gateWeight, gateScales, gateBiases, upWeight, upScales, upBiases, expertIDs,
 	)
 	if err != nil {
@@ -129,9 +132,10 @@ func quantizedExpertIDWeightedMatVecSum(input, routeWeights, weight, scales, bia
 
 	kernel := quantizedExpertIDWeightedMatVecSumKernel(meta, groupSize, bits)
 
+	outShape := [1]int32{int32(meta.outDim)}
 	out, err := kernel.DispatchOne(
 		MetalKernelGrid{GridX: meta.outDim * 32, GridY: 1, GridZ: 1, TGX: 256, TGY: 1, TGZ: 1},
-		[]int32{int32(meta.outDim)}, DTypeFloat32,
+		outShape[:], DTypeFloat32,
 		input, routeWeights, weight, scales, biases, expertIDs,
 	)
 	if err != nil {
@@ -719,4 +723,3 @@ func quantizedExpertIDMatVecInputBase(meta quantizedExpertIDMatVecMeta) string {
 	}
 	return core.Sprintf("route * uint(%d)", meta.inDim)
 }
-

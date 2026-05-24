@@ -383,11 +383,11 @@ func (s *Snapshot) sliceBlockInternal(start, end, baseOffset int, final bool, cl
 		}
 		localStart := overlapStart - windowStart
 		localEnd := overlapEnd - windowStart
-		keyLayerBytes, keyLayerShape, err := sliceKVSnapshotLayerRawTensor(layer.KeyBytes, layer.KeyDType, layer.KeyShape, localStart, localEnd)
+		keyLayerBytes, keyLayerShape, err := sliceKVSnapshotLayerRawTensorOpt(layer.KeyBytes, layer.KeyDType, layer.KeyShape, localStart, localEnd, cloneSlices)
 		if err != nil {
 			return nil, core.E("Snapshot.SplitBlocks", "slice native layer key tensor", err)
 		}
-		valueLayerBytes, valueLayerShape, err := sliceKVSnapshotLayerRawTensor(layer.ValueBytes, layer.ValueDType, layer.ValueShape, localStart, localEnd)
+		valueLayerBytes, valueLayerShape, err := sliceKVSnapshotLayerRawTensorOpt(layer.ValueBytes, layer.ValueDType, layer.ValueShape, localStart, localEnd, cloneSlices)
 		if err != nil {
 			return nil, core.E("Snapshot.SplitBlocks", "slice native layer value tensor", err)
 		}
@@ -627,6 +627,15 @@ func sliceKVSnapshotRawTensorOpt(raw []byte, dtype string, start, end, seqLen, v
 }
 
 func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, start, end int) ([]byte, []int32, error) {
+	return sliceKVSnapshotLayerRawTensorOpt(raw, dtype, shape, start, end, true)
+}
+
+// sliceKVSnapshotLayerRawTensorOpt slices a native layer slab. clone=false can
+// return a borrowed sub-view only when the requested sequence range is
+// physically contiguous in the [B,H,L,D] row-major storage; for Gemma-style
+// single K/V head slabs this keeps SaveStateBlocks from copying every block
+// before the State writer immediately serialises it.
+func sliceKVSnapshotLayerRawTensorOpt(raw []byte, dtype string, shape []int32, start, end int, clone bool) ([]byte, []int32, error) {
 	if len(raw) == 0 {
 		return nil, nil, nil
 	}
@@ -642,9 +651,16 @@ func sliceKVSnapshotLayerRawTensor(raw []byte, dtype string, shape []int32, star
 		return nil, nil, errLayerRawByteLenMismatch
 	}
 	take := end - start
+	rowBytes := take * D * bytesPerValue
+	if !clone && B*H == 1 {
+		begin := start * D * bytesPerValue
+		finish := begin + rowBytes
+		outShape := core.SliceClone(shape)
+		outShape[2] = int32(take)
+		return raw[begin:finish:finish], outShape, nil
+	}
 	out := make([]byte, B*H*take*D*bytesPerValue)
 	dst := 0
-	rowBytes := take * D * bytesPerValue
 	for b := range B {
 		for h := range H {
 			src := (((b*H+h)*L + start) * D) * bytesPerValue
@@ -715,6 +731,22 @@ func preSizeAssembledRawBytes(assembled *Snapshot, blocks []Block) {
 		return
 	}
 	for layerIndex := range assembled.Layers {
+		var layerKeyTotal, layerValueTotal int
+		for _, block := range blocks {
+			if block.Snapshot == nil || layerIndex >= len(block.Snapshot.Layers) {
+				continue
+			}
+			srcLayer := block.Snapshot.Layers[layerIndex]
+			layerKeyTotal += len(srcLayer.KeyBytes)
+			layerValueTotal += len(srcLayer.ValueBytes)
+		}
+		dstLayer := &assembled.Layers[layerIndex]
+		if layerKeyTotal > 0 {
+			dstLayer.KeyBytes = make([]byte, 0, layerKeyTotal)
+		}
+		if layerValueTotal > 0 {
+			dstLayer.ValueBytes = make([]byte, 0, layerValueTotal)
+		}
 		for headIndex := range assembled.Layers[layerIndex].Heads {
 			var keyTotal, valueTotal int
 			for _, block := range blocks {
@@ -881,6 +913,11 @@ func appendKVSnapshotLayerRawBlock(dstDType *string, dstBytes *[]byte, dstShape 
 		return errLayerRawByteLenMismatch
 	}
 	totalLen := oldLen + L
+	if B*H == 1 {
+		*dstBytes = append(*dstBytes, raw...)
+		(*dstShape)[2] = int32(totalLen)
+		return nil
+	}
 	merged := make([]byte, B*H*totalLen*D*bytesPerValue)
 	oldRowBytes := oldLen * D * bytesPerValue
 	newRowBytes := L * D * bytesPerValue
@@ -1496,12 +1533,19 @@ func preSizeAssembledRawBytesFromFirst(assembled *Snapshot, first *Snapshot, blo
 			continue
 		}
 		firstLayer := first.Layers[layerIndex]
+		dstLayer := &assembled.Layers[layerIndex]
+		if keyCap := len(firstLayer.KeyBytes) * blockCount; keyCap > 0 {
+			dstLayer.KeyBytes = make([]byte, 0, keyCap)
+		}
+		if valueCap := len(firstLayer.ValueBytes) * blockCount; valueCap > 0 {
+			dstLayer.ValueBytes = make([]byte, 0, valueCap)
+		}
 		for headIndex := range assembled.Layers[layerIndex].Heads {
 			if headIndex >= len(firstLayer.Heads) {
 				continue
 			}
 			firstHead := firstLayer.Heads[headIndex]
-			dstHead := &assembled.Layers[layerIndex].Heads[headIndex]
+			dstHead := &dstLayer.Heads[headIndex]
 			if keyCap := len(firstHead.KeyBytes) * blockCount; keyCap > 0 {
 				dstHead.KeyBytes = make([]byte, 0, keyCap)
 			}

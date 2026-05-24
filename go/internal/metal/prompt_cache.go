@@ -273,7 +273,7 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 	if len(tokens) == 0 {
 		return nil, core.NewError("Model.Generate: empty prompt after tokenisation")
 	}
-	chunkSize := m.prefillChunkSize
+	chunkSize := m.effectivePrefillChunkSize(caches)
 	if chunkSize > 0 && len(tokens) > chunkSize {
 		var logits *Array
 		for start := 0; start < len(tokens); start += chunkSize {
@@ -305,6 +305,39 @@ func (m *Model) prefillTokenBlock(ctx context.Context, tokens []int32, caches []
 		maybeClearGenerationCache()
 	}
 	return logits, err
+}
+
+func (m *Model) effectivePrefillChunkSize(caches []Cache) int {
+	chunkSize := 0
+	if m != nil {
+		chunkSize = m.prefillChunkSize
+	}
+	limit := gemma4FixedSlidingPrefillChunkLimit(m, caches)
+	if limit > 0 && (chunkSize <= 0 || chunkSize > limit) {
+		return limit
+	}
+	return chunkSize
+}
+
+func gemma4FixedSlidingPrefillChunkLimit(m *Model, caches []Cache) int {
+	if m == nil || len(caches) == 0 {
+		return 0
+	}
+	gemma, ok := m.model.(*Gemma4Model)
+	if !ok || gemma == nil || gemma.Cfg == nil || gemma.Cfg.SlidingWindow <= 0 {
+		return 0
+	}
+	limit := int(gemma.Cfg.SlidingWindow)
+	for _, cache := range caches {
+		fixed, ok := cache.(*FixedKVCache)
+		if !ok || fixed == nil || fixed.maxSize <= 0 {
+			continue
+		}
+		if limit <= 0 || fixed.maxSize < limit {
+			limit = fixed.maxSize
+		}
+	}
+	return limit
 }
 
 func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, caches []Cache) error {
@@ -416,7 +449,7 @@ func cacheStateArraysForDetach(caches []Cache) []*Array {
 }
 
 func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {
-	if m != nil && m.useLastTokenLogitsPrefill(tokens, mask) {
+	if m != nil && m.useLastTokenLogitsPrefill(tokens, mask, caches) {
 		if lastModel, ok := m.model.(LastTokenLogitsModel); ok {
 			return lastModel.ForwardLastTokenLogits(tokens, mask, caches), true
 		}
@@ -427,13 +460,14 @@ func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cach
 	return m.model.Forward(tokens, caches), false
 }
 
-func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array) bool {
+func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array, caches []Cache) bool {
 	if m == nil {
 		return false
 	}
+	force := false
 	switch core.Lower(core.Trim(core.Env("GO_MLX_ENABLE_LAST_LOGITS_PREFILL"))) {
 	case "1", "true", "yes", "on":
-		return true
+		force = true
 	case "0", "false", "no", "off":
 		return false
 	}
@@ -444,8 +478,23 @@ func (m *Model) useLastTokenLogitsPrefill(tokens *Array, mask *Array) bool {
 		return false
 	}
 	seqLen := prefillSequenceLength(tokens)
+	if seqLen > 1 && cachesHaveTokenState(caches) {
+		return false
+	}
+	if force {
+		return true
+	}
 	minTokens := lastTokenPrefillMinTokens()
 	return minTokens > 0 && seqLen >= minTokens
+}
+
+func cachesHaveTokenState(caches []Cache) bool {
+	for _, cache := range caches {
+		if cache != nil && (cache.Len() > 0 || cache.Offset() > 0) {
+			return true
+		}
+	}
+	return false
 }
 
 func prefillSequenceLength(tokens *Array) int {
@@ -1893,6 +1942,63 @@ func appendRestorePagedCacheSnapshot(dst []*Array, snapshot cacheSnapshot, prefi
 	}
 	dst = append(dst, kPages...)
 	dst = append(dst, vPages...)
+	return cache, dst, nil
+}
+
+func canTransferPagedCacheSnapshot(snapshot cacheSnapshot, prefixLen int) bool {
+	return snapshot.mode == KVCacheModePaged &&
+		prefixLen > 0 &&
+		snapshot.length == prefixLen &&
+		len(snapshot.kPages) > 0 &&
+		len(snapshot.kPages) == len(snapshot.vPages)
+}
+
+func appendRestorePagedCacheSnapshotTransfer(dst []*Array, snapshot *cacheSnapshot, prefixLen, offset int) (Cache, []*Array, error) {
+	if snapshot == nil {
+		return nil, nil, core.NewError("prompt cache: missing paged cache snapshot")
+	}
+	if !canTransferPagedCacheSnapshot(*snapshot, prefixLen) {
+		return appendRestorePagedCacheSnapshot(dst, *snapshot, prefixLen, offset)
+	}
+	for i := range snapshot.kPages {
+		keyPage := snapshot.kPages[i]
+		valuePage := snapshot.vPages[i]
+		if keyPage == nil || valuePage == nil || !keyPage.Valid() || !valuePage.Valid() {
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page")
+		}
+		keyLen := pagedArrayLen(keyPage)
+		if keyLen <= 0 || pagedArrayLen(valuePage) != keyLen {
+			return nil, nil, core.NewError("prompt cache: invalid paged cache page length")
+		}
+	}
+	if offset <= 0 {
+		offset = prefixLen
+	}
+	pageSize := snapshot.step
+	if pageSize <= 0 {
+		pageSize = defaultPagedKVPageSize
+	}
+	storageDType, hasStorageDType := restoreCacheStorageDType(*snapshot)
+	if hasStorageDType {
+		castOwnedCachePages(snapshot.kPages, snapshot.vPages, storageDType)
+	}
+	kPages := snapshot.kPages
+	vPages := snapshot.vPages
+	cache := &PagedKVCache{
+		kPages:          kPages,
+		vPages:          vPages,
+		pageLens:        pagedPageLensForPages(kPages, prefixLen),
+		offset:          offset,
+		length:          prefixLen,
+		maxSize:         snapshot.maxSize,
+		pageSize:        pageSize,
+		storageDType:    storageDType,
+		hasStorageDType: hasStorageDType,
+	}
+	dst = append(dst, kPages...)
+	dst = append(dst, vPages...)
+	snapshot.kPages = nil
+	snapshot.vPages = nil
 	return cache, dst, nil
 }
 

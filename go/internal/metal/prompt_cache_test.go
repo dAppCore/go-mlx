@@ -784,12 +784,13 @@ func TestPromptCache_RestoreFromKVBlocksAcceptsNativeLayerRawOnly_Good(t *testin
 	}
 }
 
-func TestPromptCache_RestoreFromKVBlocksCoalescesPagedPages_Good(t *testing.T) {
-	coverageTokens := "PromptCache RestoreFromKVBlocksCoalescesPagedPages"
+func TestPromptCache_RestoreFromKVBlocksLegacyCoalescesPagedPages_Good(t *testing.T) {
+	coverageTokens := "PromptCache RestoreFromKVBlocksLegacyCoalescesPagedPages"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0"))
 
 	model := &Model{
 		model:                &fakePagedModel{numLayers: 1, pageSize: 4},
@@ -844,7 +845,8 @@ func TestPromptCache_RestoreFromKVBlocksZeroCopyPagedRestore_Good(t *testing.T) 
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "1"))
+	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", ""))
 
 	model := &Model{
 		model:                &fakePagedModel{numLayers: 1, pageSize: 4},

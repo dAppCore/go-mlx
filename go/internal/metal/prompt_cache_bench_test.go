@@ -23,7 +23,10 @@ package metal
 // separate fixture-loading harness (covered by smaller surface
 // benches in this file's "prefill helpers" section).
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // --- longestTokenPrefix (token-prefix scan) ---
 
@@ -407,5 +410,88 @@ func BenchmarkPromptCache_RestoreFixedCaches_26_Gemma4(b *testing.B) {
 			b.Fatalf("restorePromptCachesWithRequestFixedSize: %v", err)
 		}
 		freeCaches(restored)
+	}
+}
+
+func BenchmarkPromptCache_RestoreKVBlocks_ZeroCopyPaged_8x512(b *testing.B) {
+	benchmarkPromptCacheRestoreKVBlocksPaged(b, "1")
+}
+
+func BenchmarkPromptCache_RestoreKVBlocks_LegacyCoalescedPaged_8x512(b *testing.B) {
+	benchmarkPromptCacheRestoreKVBlocksPaged(b, "0")
+}
+
+func benchmarkPromptCacheRestoreKVBlocksPaged(b *testing.B, zeroCopyGate string) {
+	requireMetalRuntime(b)
+	restore := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", zeroCopyGate)
+	defer restore()
+
+	const (
+		blockCount     = 8
+		tokensPerBlock = 512
+		pageSize       = 1024
+	)
+	model := &Model{
+		model:                &fakePagedModel{numLayers: 1, pageSize: pageSize},
+		modelType:            "fake",
+		promptCacheEnabled:   true,
+		promptCacheMinTokens: 1,
+	}
+	source := benchmarkKVSnapshotBlockSource(blockCount, tokensPerBlock)
+	b.ReportAllocs()
+	for b.Loop() {
+		if err := model.RestorePromptCacheFromKVBlocks(context.Background(), source); err != nil {
+			b.Fatalf("RestorePromptCacheFromKVBlocks: %v", err)
+		}
+		model.ClearPromptCache()
+	}
+}
+
+func benchmarkKVSnapshotBlockSource(blockCount, tokensPerBlock int) KVSnapshotBlockSource {
+	snapshots := make([]*KVSnapshot, blockCount)
+	for blockIndex := range snapshots {
+		tokenStart := blockIndex * tokensPerBlock
+		tokens := make([]int32, tokensPerBlock)
+		values := make([]float32, tokensPerBlock)
+		for i := range tokens {
+			value := tokenStart + i + 1
+			tokens[i] = int32(value)
+			values[i] = float32(value)
+		}
+		raw := f32Bytes(values)
+		snapshots[blockIndex] = &KVSnapshot{
+			Version:      KVSnapshotVersion,
+			Architecture: "fake",
+			Tokens:       tokens,
+			TokenOffset:  tokenStart + tokensPerBlock,
+			NumLayers:    1,
+			NumHeads:     1,
+			SeqLen:       tokensPerBlock,
+			HeadDim:      1,
+			Layers: []KVLayerSnapshot{{
+				Layer:      0,
+				CacheIndex: 0,
+				KeyDType:   DTypeFloat32,
+				KeyBytes:   raw,
+				KeyShape:   []int32{1, 1, int32(tokensPerBlock), 1},
+				ValueDType: DTypeFloat32,
+				ValueBytes: raw,
+				ValueShape: []int32{1, 1, int32(tokensPerBlock), 1},
+			}},
+		}
+	}
+	return KVSnapshotBlockSource{
+		TokenCount:   blockCount * tokensPerBlock,
+		PrefixTokens: blockCount * tokensPerBlock,
+		BlockCount:   blockCount,
+		Load: func(_ context.Context, index int) (KVSnapshotBlock, error) {
+			snapshot := snapshots[index]
+			return KVSnapshotBlock{
+				Index:      index,
+				TokenStart: index * tokensPerBlock,
+				TokenCount: tokensPerBlock,
+				Snapshot:   snapshot,
+			}, nil
+		},
 	}
 }

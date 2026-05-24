@@ -20,7 +20,7 @@ Review the retained-state benchmark and identify the exact point where
 long-context content quality stops matching the runner parity target. Include
 the concrete memory metric, decode speed, and next validation step.`
 
-func BenchmarkStateRampProfileTurnPrompt_Gemma4VisibleFloor(b *testing.B) {
+func BenchmarkStateRampProfileTurnPrompt_Gemma4DebugThreshold(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		benchStateRampStringSink = stateRampProfileTurnPrompt("gemma4", benchStateRampTurnMaterial, false, 256)
@@ -37,7 +37,7 @@ func BenchmarkStateRampProfileVisibleOutput_Gemma4LongThoughtBlock(b *testing.B)
 }
 
 func BenchmarkStateRampProfileOutputIssues_FullResponse(b *testing.B) {
-	output := "The retained run is not yet production-ready because turn 17 fell below the floor.\n\n" +
+	output := "The retained run is not yet production-ready because turn 17 leaked a visible control token.\n\n" +
 		"The next validation step is to fold the State and resume from the compacted summary."
 
 	b.ReportAllocs()
@@ -102,10 +102,58 @@ func BenchmarkSummariseStateRampProfileTurns_LongRamp(b *testing.B) {
 		TargetTokens:              100000,
 		CompactionThresholdTokens: 100000,
 		CompactionTailTokens:      8192,
-		TurnMinTokens:             256,
-		TurnMinTokensPolicy:       "mark",
 		FoldOnDegradation:         true,
 		DegradationMinConsecutive: 2,
+	}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchStateRampSummarySink = summariseStateRampProfileTurns(30*time.Second, 30000, turns, opts)
+	}
+}
+
+func BenchmarkSummariseStateRampProfileTurns_LongRampWithTrace(b *testing.B) {
+	turns := make([]stateRampProfileTurn, 100)
+	for i := range turns {
+		turns[i] = stateRampProfileTurn{
+			Index:               i + 1,
+			AppendedTokens:      2048,
+			TokensAfterAppend:   30000 + ((i + 1) * 2048),
+			TokensAfterGenerate: 31024 + ((i + 1) * 2048),
+			AppendDuration:      300 * time.Millisecond,
+			Duration:            10 * time.Second,
+			VisibleTokens:       1024,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 1024,
+				DecodeDuration:  10 * time.Second,
+				TokenPhases: []mlx.TokenPhaseTrace{
+					{
+						TotalDuration:      11 * time.Millisecond,
+						ForwardDuration:    9 * time.Millisecond,
+						SampleEvalDuration: time.Millisecond,
+						NativeEvents: []mlx.NativePhaseTrace{
+							{Name: "gemma4.layer.00.attention", Duration: 3 * time.Millisecond},
+							{Name: "gemma4.layer.00.ffn", Duration: 2 * time.Millisecond},
+						},
+					},
+					{
+						TotalDuration:      12 * time.Millisecond,
+						ForwardDuration:    10 * time.Millisecond,
+						SampleEvalDuration: time.Millisecond,
+						NativeEvents: []mlx.NativePhaseTrace{
+							{Name: "gemma4.layer.01.attention", Duration: 4 * time.Millisecond},
+							{Name: "gemma4.layer.01.ffn_router", Duration: time.Millisecond},
+						},
+					},
+				},
+			},
+		}
+	}
+	opts := stateRampProfileOptions{
+		TargetTokens:              100000,
+		CompactionThresholdTokens: 100000,
+		CompactionTailTokens:      8192,
+		TraceTokenPhases:          true,
 	}
 
 	b.ReportAllocs()

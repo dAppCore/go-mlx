@@ -718,6 +718,31 @@ func TestFixedKVCache_ReplaceFixedFromNativeBorrowed_Good(t *testing.T) {
 	}
 }
 
+func TestFixedKVCache_ReplaceFixedFromNativeBorrowedRetiresPrevious_Good(t *testing.T) {
+	coverageTokens := "FixedKVCache ReplaceFixedFromNativeBorrowedRetiresPrevious"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewFixedKVCache(4)
+	c.keys = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	c.values = Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	keys := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	values := Zeros([]int32{1, 1, 4, 2}, DTypeFloat32)
+	defer c.Reset()
+
+	state := c.ReplaceFixedFromNativeBorrowed(keys, values, 1)
+	if state.Keys != keys || state.Values != values {
+		t.Fatalf("state = %+v, want replacement handles", state)
+	}
+	if len(c.retired) != 2 {
+		t.Fatalf("retired handles = %d, want previous K/V retained until next eval boundary", len(c.retired))
+	}
+	c.ensureShape(1, 1, 2, 2, DTypeFloat32, DTypeFloat32)
+	if len(c.retired) != 0 {
+		t.Fatalf("retired handles = %d, want released on next cache entry", len(c.retired))
+	}
+}
+
 func TestKVCache_Reset_ReleasesState_Good(t *testing.T) {
 	c := NewKVCache()
 	k, v := makeKV(2)

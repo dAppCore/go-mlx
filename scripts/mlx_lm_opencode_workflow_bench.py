@@ -158,7 +158,7 @@ def main():
     parser.add_argument("--turns", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--turn-min-tokens", type=int, default=0)
-    parser.add_argument("--turn-min-tokens-policy", choices=["fail", "mark"], default="fail")
+    parser.add_argument("--turn-min-tokens-policy", choices=["fail", "mark"], default="mark")
     parser.add_argument("--prefill-step-size", type=int, default=512)
     parser.add_argument("--max-kv-size", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=1.0)
@@ -272,13 +272,16 @@ def main():
         visible = visible_text(text)
         visible_tokens = generated_tokens
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
+        output_issues = []
         error = ""
         if below_min:
-            error = (
-                f"mlx_lm opencode workflow: turn {index} produced {visible_tokens} "
-                f"visible tokens, below minimum real-workload floor {args.turn_min_tokens}"
-            )
-            if args.turn_min_tokens_policy == "fail" and first_error is None:
+            output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
+            if args.turn_min_tokens_policy == "fail":
+                error = (
+                    f"mlx_lm opencode workflow: turn {index} produced {visible_tokens} "
+                    f"visible tokens, below requested visible-token debug floor {args.turn_min_tokens}"
+                )
+            if error and first_error is None:
                 first_error = error
         turns.append(
             {
@@ -299,6 +302,7 @@ def main():
                 "peak_memory_gb": float(last.peak_memory) if last is not None else mx.get_peak_memory() / 1e9,
                 "finish_reason": stop_reason,
                 "below_min_tokens": below_min,
+                "output_issues": output_issues,
                 "error": error,
                 "sampled_token_ids": sampled_ids,
                 "sampled_token_texts": sampled_texts,

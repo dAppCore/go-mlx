@@ -269,10 +269,17 @@ func (m *Model) snapshotKVCachesWithOptions(tokens []int32, caches []Cache, opts
 }
 
 func (m *Model) kvBlockBoundaries(blockSize, seqLen int, caches []Cache) []int {
-	seen := map[int]bool{0: true, seqLen: true}
-	for next := blockSize; next < seqLen; next += blockSize {
-		seen[next] = true
+	expected := 2
+	if blockSize > 0 {
+		expected += seqLen / blockSize
 	}
+	expected += len(caches)
+	boundaries := make([]int, 0, expected)
+	boundaries = append(boundaries, 0)
+	for next := blockSize; next < seqLen; next += blockSize {
+		boundaries = append(boundaries, next)
+	}
+	boundaries = append(boundaries, seqLen)
 	for _, cache := range caches {
 		if cache == nil {
 			continue
@@ -281,14 +288,24 @@ func (m *Model) kvBlockBoundaries(blockSize, seqLen int, caches []Cache) []int {
 		if windowLen <= 0 || windowLen >= seqLen {
 			continue
 		}
-		seen[seqLen-windowLen] = true
+		boundaries = kvBlockBoundaryInsert(boundaries, seqLen-windowLen)
 	}
-	boundaries := make([]int, 0, len(seen))
-	for boundary := range seen {
-		boundaries = append(boundaries, boundary)
-	}
-	core.SliceSort(boundaries)
 	return boundaries
+}
+
+func kvBlockBoundaryInsert(boundaries []int, v int) []int {
+	for i, boundary := range boundaries {
+		if boundary == v {
+			return boundaries
+		}
+		if boundary > v {
+			boundaries = append(boundaries, 0)
+			copy(boundaries[i+1:], boundaries[i:])
+			boundaries[i] = v
+			return boundaries
+		}
+	}
+	return append(boundaries, v)
 }
 
 func (m *Model) snapshotKVCacheBlockWithOptions(tokens []int32, caches []Cache, baseOffset, start, end int, final bool, opts KVSnapshotCaptureOptions, logits *Array) (*KVSnapshot, error) {

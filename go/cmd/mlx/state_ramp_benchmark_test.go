@@ -13,6 +13,7 @@ var (
 	stateRampBenchmarkString string
 	stateRampBenchmarkTokens []int32
 	stateRampBenchmarkReport stateRampProfileSummary
+	stateRampBenchmarkInt    int
 )
 
 func benchmarkStateRampMaterial() string {
@@ -63,6 +64,24 @@ func BenchmarkRepeatedStateRampTokens_Append4096Wrapped(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		stateRampBenchmarkTokens = repeatedStateRampTokens(source, len(source)-128, 4096)
+	}
+}
+
+func BenchmarkForEachRepeatedStateRampTokenSpan_Append4096Wrapped(b *testing.B) {
+	source := make([]int32, 27303)
+	for i := range source {
+		source[i] = int32(i % 262144)
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		total := 0
+		if _, err := forEachRepeatedStateRampTokenSpan(source, len(source)-128, 4096, func(tokens []int32) error {
+			total += len(tokens)
+			return nil
+		}); err != nil {
+			b.Fatalf("forEachRepeatedStateRampTokenSpan: %v", err)
+		}
+		stateRampBenchmarkInt = total
 	}
 }
 

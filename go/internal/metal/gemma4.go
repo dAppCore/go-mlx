@@ -192,11 +192,12 @@ type Gemma4Experts struct {
 }
 
 type sharedKV struct {
-	Keys   *Array
-	Values *Array
-	Pages  PagedKVState
-	Offset int
-	Fixed  bool
+	Keys     *Array
+	Values   *Array
+	Pages    PagedKVState
+	Offset   int
+	Fixed    bool
+	Borrowed bool
 }
 
 func (kv sharedKV) hasState() bool {
@@ -216,8 +217,46 @@ func (kv sharedKV) hasPages() bool {
 }
 
 func (kv sharedKV) free() {
-	Free(kv.Keys, kv.Values)
+	if !kv.Borrowed {
+		Free(kv.Keys, kv.Values)
+	}
 	kv.Pages.Free()
+}
+
+func (kv sharedKV) clone() sharedKV {
+	out := sharedKV{
+		Offset: kv.Offset,
+		Fixed:  kv.Fixed,
+	}
+	if kv.Keys != nil && kv.Keys.Valid() {
+		out.Keys = kv.Keys.Clone()
+	}
+	if kv.Values != nil && kv.Values.Valid() {
+		out.Values = kv.Values.Clone()
+	}
+	out.Pages = clonePagedKVState(kv.Pages)
+	return out
+}
+
+func clonePagedKVState(state PagedKVState) PagedKVState {
+	out := PagedKVState{Length: state.Length}
+	if len(state.Keys) == 0 || len(state.Keys) != len(state.Values) {
+		return out
+	}
+	out.Keys = make([]*Array, len(state.Keys))
+	out.Values = make([]*Array, len(state.Values))
+	out.Owned = make([]*Array, 0, len(state.Keys)+len(state.Values))
+	for i := range state.Keys {
+		if state.Keys[i] != nil && state.Keys[i].Valid() {
+			out.Keys[i] = state.Keys[i].Clone()
+			out.Owned = append(out.Owned, out.Keys[i])
+		}
+		if state.Values[i] != nil && state.Values[i].Valid() {
+			out.Values[i] = state.Values[i].Clone()
+			out.Owned = append(out.Owned, out.Values[i])
+		}
+	}
+	return out
 }
 
 func gemma4ValidKV(k, v *Array) bool {
@@ -1788,22 +1827,26 @@ func gemma4NormalizePerLayerTensor(x *Array, batchSize, seqLen, numLayers, hidde
 }
 
 func (m *Gemma4Model) computePerLayerInputs(tokens, hidden *Array) []*Array {
+	// Stack-allocated shape scratch — per-token decode hot path. Calling
+	// tokens.Shape() twice paid two []int32 heap allocs (24 B/op each).
+	var tokShapeBuf [maxTensorRank]int32
+	tokShape := tokens.ShapeInto(tokShapeBuf[:0])
+	B, L := tokShape[0], tokShape[1]
+	combined := m.computePerLayerInputTensor(tokens, hidden, B, L)
+	return m.splitPerLayerInputTensor(combined)
+}
+
+func (m *Gemma4Model) computePerLayerInputTensor(tokens, hidden *Array, B, L int32) *Array {
 	if disableGemma4PerLayerInputs {
 		return nil
 	}
 	if m.EmbedTokensPerLayer == nil || m.PerLayerModelProj == nil || m.PerLayerProjNorm == nil || m.PerLayerProjNormScaled == nil {
 		return nil
 	}
-	// Stack-allocated shape scratch — per-token decode hot path. Calling
-	// tokens.Shape() twice paid two []int32 heap allocs (24 B/op each).
-	var tokShapeBuf [maxTensorRank]int32
-	tokShape := tokens.ShapeInto(tokShapeBuf[:0])
-	B, L := tokShape[0], tokShape[1]
 	if combined, ok := m.compiledPerLayerInputTensor(tokens, hidden); ok {
-		return m.splitPerLayerInputTensor(combined)
+		return combined
 	}
-	combined := m.perLayerInputTensor(tokens, hidden, B, L)
-	return m.splitPerLayerInputTensor(combined)
+	return m.perLayerInputTensor(tokens, hidden, B, L)
 }
 
 func (m *Gemma4Model) perLayerInputTensor(tokens, hidden *Array, B, L int32) *Array {
@@ -1840,11 +1883,17 @@ func (m *Gemma4Model) splitPerLayerInputTensor(combined *Array) []*Array {
 	defer Free(combined)
 
 	perLayerInputs := make([]*Array, m.Cfg.NumHiddenLayers)
-	// Hoist the Squeeze axes slice out of the per-layer loop.  Squeeze is
-	// variadic and the substrate takes &axes[0] for the cgo inline call,
-	// so each `Squeeze(sliced, 2)` inside the loop body would heap-allocate
-	// a fresh `[]int{2}`.  One layer-2 squeeze per layer × 26 layers ==
-	// 26 allocs/token; with the hoist this becomes 1 alloc/forward.
+	var shapeBuf [maxTensorRank]int32
+	shape := combined.ShapeInto(shapeBuf[:0])
+	if len(shape) == 4 {
+		for i := range m.Cfg.NumHiddenLayers {
+			perLayerInputs[i] = m.perLayerInputForLayer(combined, shape[0], shape[1], i)
+		}
+		return perLayerInputs
+	}
+
+	// Generic fallback for malformed or legacy shapes. The normal Gemma 4 path
+	// is rank-4 and should use the allocation-free Slice4/Reshape3 helper above.
 	squeezeAxis2 := []int{2}
 	for i := range m.Cfg.NumHiddenLayers {
 		sliced := SliceAxis(combined, 2, i, i+1)
@@ -1852,6 +1901,22 @@ func (m *Gemma4Model) splitPerLayerInputTensor(combined *Array) []*Array {
 		Free(sliced)
 	}
 	return perLayerInputs
+}
+
+func (m *Gemma4Model) perLayerInputForLayer(combined *Array, B, L, layer int32) *Array {
+	if combined == nil || !combined.Valid() || layer < 0 || layer >= m.Cfg.NumHiddenLayers {
+		return nil
+	}
+	if combined.NumDims() != 4 {
+		sliced := SliceAxis(combined, 2, layer, layer+1)
+		out := Reshape3(sliced, B, L, m.Cfg.HiddenSizePerLayerInput)
+		Free(sliced)
+		return out
+	}
+	sliced := Slice4(combined, 0, 0, layer, 0, B, L, layer+1, m.Cfg.HiddenSizePerLayerInput)
+	out := Reshape3(sliced, B, L, m.Cfg.HiddenSizePerLayerInput)
+	Free(sliced)
+	return out
 }
 
 func (m *Gemma4Model) compiledPerLayerInputTensor(tokens, hidden *Array) (_ *Array, ok bool) {
@@ -2177,11 +2242,15 @@ func (m *Gemma4Model) ForwardGreedyToken(tokens *Array, mask *Array, caches []Ca
 // ForwardGreedyTokenWithSuppression runs the same greedy decode path while
 // masking chat-template and modality token IDs before argmax.
 func (m *Gemma4Model) ForwardGreedyTokenWithSuppression(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array {
-	return m.forwardGreedyToken(tokens, mask, caches, suppressTokens)
+	return m.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, nil)
 }
 
 func (m *Gemma4Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) *Array {
-	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches, suppressTokens); ok {
+	return m.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, nil)
+}
+
+func (m *Gemma4Model) forwardGreedyTokenWithSuppressionArray(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32, suppress *Array) *Array {
+	if out, ok, err := m.forwardNativeFixedGreedyToken(tokens, mask, caches, suppress, suppressTokens); ok {
 		if err == nil {
 			traceNativeMaterialize("gemma4.model.greedy_token", out)
 			return out
@@ -2192,7 +2261,7 @@ func (m *Gemma4Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Ca
 	h = gemma4LastSequenceHidden(h, L)
 	h = gemma4ProjectionHidden(h)
 	h = gemma4ContiguousHidden(h)
-	if out, ok, err := nativeLastTokenGreedyToken(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, suppressTokens...); ok {
+	if out, ok, err := nativeLastTokenGreedyTokenWithArray(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, suppress, suppressTokens...); ok {
 		if err == nil {
 			Free(h)
 			return out
@@ -2217,7 +2286,7 @@ func (m *Gemma4Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Ca
 	return out
 }
 
-func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) (*Array, bool, error) {
+func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, caches []Cache, suppress *Array, suppressTokens []int32) (*Array, bool, error) {
 	if !nativeGemma4ModelGreedyEnabled() || mask != nil || tokens == nil || !tokens.Valid() {
 		return nil, false, nil
 	}
@@ -2241,7 +2310,7 @@ func (m *Gemma4Model) forwardNativeFixedGreedyToken(tokens *Array, mask *Array, 
 	fixedMasks := newFixedGemma4AttentionMaskSet(shape[0], shape[1], nil)
 	defer fixedMasks.Free()
 
-	return nativeGemma4FixedGreedyToken(h, perLayerInputs, caches, m, fixedMasks, suppressTokens...)
+	return nativeGemma4FixedGreedyTokenWithArray(h, perLayerInputs, caches, m, fixedMasks, suppress, suppressTokens...)
 }
 
 func gemma4LastSequenceHidden(h *Array, seqLen int32) *Array {
@@ -2312,12 +2381,15 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 	Free(h)
 	h = scaledH
 
-	perLayerInputs := m.computePerLayerInputs(tokens, h)
-	defer Free(perLayerInputs...)
+	perLayerInputTensor := m.computePerLayerInputTensor(tokens, h, B, L)
+	defer Free(perLayerInputTensor)
 
 	var ownedMasks []*Array
-	runtimeMasks := newGemma4RuntimeMaskCache()
-	defer runtimeMasks.Free()
+	var runtimeMasks *gemma4RuntimeMaskCache
+	if L > 1 {
+		runtimeMasks = newGemma4RuntimeMaskCache()
+		defer runtimeMasks.Free()
+	}
 	fixedMasks := newFixedGemma4AttentionMaskSet(B, L, mask)
 	defer fixedMasks.Free()
 	fullMask := mask
@@ -2336,7 +2408,30 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 	}
 	defer Free(ownedMasks...)
 
-	intermediates := make([]sharedKV, len(m.Layers))
+	var stackIntermediates [64]sharedKV
+	var intermediates []sharedKV
+	var stackSharedSources [64]bool
+	var sharedSources []bool
+	if len(m.Layers) <= len(stackIntermediates) {
+		intermediates = stackIntermediates[:len(m.Layers)]
+		sharedSources = stackSharedSources[:len(m.Layers)]
+	} else {
+		intermediates = make([]sharedKV, len(m.Layers))
+		sharedSources = make([]bool, len(m.Layers))
+	}
+	for i, prevIdx := range m.PreviousKVs {
+		if i >= len(sharedSources) {
+			break
+		}
+		if prevIdx != int32(i) && prevIdx >= 0 && prevIdx < int32(len(sharedSources)) {
+			sharedSources[prevIdx] = true
+		}
+	}
+	defer func() {
+		for _, kv := range intermediates {
+			kv.free()
+		}
+	}()
 	for i, layer := range m.Layers {
 		var prev sharedKV
 		if prevIdx := m.PreviousKVs[i]; prevIdx != int32(i) && prevIdx >= 0 && prevIdx < int32(len(intermediates)) {
@@ -2355,25 +2450,21 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 			layerMask = slidingMask
 		}
 
-		var pli *Array
-		if len(perLayerInputs) > i {
-			pli = perLayerInputs[i]
-		}
+		pli := m.perLayerInputForLayer(perLayerInputTensor, B, L, int32(i))
 
 		fixedMask := fixedMasks.ForLayer(cache, prev)
+		prevAvailable := prev.hasState()
 		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask, runtimeMasks)
+		Free(pli)
 		Free(h)
 		h = nextH
-		intermediates[i] = kv
-	}
-	defer func() {
-		for i, kv := range intermediates {
-			if m.PreviousKVs[i] != int32(i) {
-				continue
+		if m.PreviousKVs[i] == int32(i) || !prevAvailable {
+			if sharedSources[i] {
+				intermediates[i] = kv.clone()
 			}
 			kv.free()
 		}
-	}()
+	}
 	return h, B, L
 }
 
@@ -2398,14 +2489,14 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 			l.traceNativeMaterialize(traceEnabled, "compiled_layer", out)
 			return out, kv
 		}
-		core.Error("mlx: compiled Gemma 4 decode layer failed; falling back to Go graph", "error", err)
+		core.Error("mlx: compiled Gemma 4 decode layer failed; falling back to Go graph", "layer", l.LayerIdx, "type", l.LayerType, "error", err)
 	}
 	if out, kv, ok, err := nativeGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
 		if err == nil {
 			l.traceNativeMaterialize(traceEnabled, "native_layer", out)
 			return out, kv
 		}
-		core.Error("mlx: native Gemma 4 decode layer failed; falling back to Go graph", "error", err)
+		core.Error("mlx: native Gemma 4 decode layer failed; falling back to Go graph", "layer", l.LayerIdx, "type", l.LayerType, "error", err)
 	}
 
 	residual := x
@@ -2643,28 +2734,39 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 					var nativeOut, nativeKeys, nativeValues *Array
 					var ok bool
 					var err error
+					var offsetArray *Array
 					if fixed.Offset()+int(L) <= fixed.maxSize {
-						offsetArray := FromValue(offset)
-						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSingleTokenAttention(q, state.Keys, state.Values, k, v, offsetArray, fixedMask, a.Scale)
-						Free(offsetArray)
+						offsetArray = FromValue(offset)
+						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSingleTokenAttention(q, state.Keys, state.Values, k, v, offsetArray, nil, a.Scale)
 					} else if nativeFixedSlidingAttentionEnabled() && fixed.length >= fixed.maxSize {
 						shiftIndices, lastIndex := fixed.slidingUpdateInputs()
 						nativeOut, nativeKeys, nativeValues, ok, err = nativeFixedSlidingSingleTokenAttention(q, state.Keys, state.Values, k, v, shiftIndices, lastIndex, a.Scale)
 					}
-					if ok {
-						fixedState := fixed.ReplaceFixedFromNativeBorrowed(nativeKeys, nativeValues, int(L))
-						if gemma4ValidKV(fixedState.Keys, fixedState.Values) && nativeOut != nil && nativeOut.Valid() {
-							kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}
-							out = nativeOut
-							Free(oldK, oldV)
-						} else {
-							core.Error("mlx: native fixed owner attention returned invalid K/V state; falling back to Go graph")
-							Free(nativeOut)
-							fixedState.Free()
-						}
-					} else if err != nil {
+					if err != nil {
 						core.Error("mlx: native fixed owner attention failed; falling back to Go graph", "error", err)
+						Free(nativeOut, nativeKeys, nativeValues)
+						nativeOut, nativeKeys, nativeValues = nil, nil, nil
+						ok = false
 					}
+					if ok {
+						if err := validateGemma4LayerOutputShapes("mlx.nativeFixedSingleTokenAttention", q, nativeOut, nativeKeys, nativeValues, state.Keys, state.Values, true, true); err == nil {
+							fixedState := fixed.ReplaceFixedFromNativeBorrowed(nativeKeys, nativeValues, int(L))
+							if gemma4ValidKV(fixedState.Keys, fixedState.Values) {
+								kv = sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}
+								out = nativeOut
+								fixed.RetireAfterNextEval(oldK, oldV, q, offsetArray)
+								q = nil
+								offsetArray = nil
+							} else {
+								core.Error("mlx: native fixed attention updated cache without valid K/V state; falling back to Go graph")
+								Free(nativeOut)
+							}
+						} else {
+							core.Error("mlx: native fixed owner attention returned invalid K/V state; falling back to Go graph", "error", err)
+							Free(nativeOut, nativeKeys, nativeValues)
+						}
+					}
+					Free(offsetArray)
 				}
 			}
 			if out == nil {

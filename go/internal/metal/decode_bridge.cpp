@@ -1,12 +1,16 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
 #include <cstdlib>
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <map>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1153,6 +1157,129 @@ mlx::core::array paged_single_token_attention_impl(
   return mlx::core::divide(weighted.value(), denom.value());
 }
 
+using PagedAttentionCompileKey =
+    std::tuple<int, int, int, int, int, int, int, int, int, int>;
+
+const std::function<ArrayVector(const ArrayVector&)>&
+compiled_paged_single_token_attention(
+    int page_count,
+    int query_heads,
+    int key_heads,
+    int value_heads,
+    int page_tokens,
+    int head_dim,
+    int dtype_id) {
+  if (page_count < 2 || query_heads <= 0 || key_heads <= 0 ||
+      value_heads <= 0 || page_tokens <= 0 || head_dim <= 0 ||
+      query_heads % key_heads != 0 || query_heads % value_heads != 0) {
+    throw std::runtime_error("mlx: compiled paged attention signature is invalid");
+  }
+  const PagedAttentionCompileKey key{
+      page_count,
+      query_heads,
+      key_heads,
+      value_heads,
+      query_heads / key_heads,
+      query_heads / value_heads,
+      page_tokens,
+      head_dim,
+      dtype_id,
+      0};
+  static std::mutex mu;
+  static std::map<PagedAttentionCompileKey, std::function<ArrayVector(const ArrayVector&)>> cache;
+  std::lock_guard<std::mutex> lock(mu);
+  auto found = cache.find(key);
+  if (found != cache.end()) {
+    return found->second;
+  }
+  const int key_repeat = query_heads / key_heads;
+  const int value_repeat = query_heads / value_heads;
+  auto fn = mlx::core::compile(
+      [page_count, key_repeat, value_repeat](const ArrayVector& inputs) -> ArrayVector {
+        if (inputs.size() != static_cast<size_t>(2 + (page_count * 2))) {
+          throw std::runtime_error("mlx: compiled paged attention inputs are invalid");
+        }
+        const auto& query = inputs[0];
+        const auto& scale = inputs[1];
+
+        ArrayVector score_pages;
+        score_pages.reserve(static_cast<size_t>(page_count));
+        std::optional<mlx::core::array> global_max;
+        for (int i = 0; i < page_count; i++) {
+          auto key = inputs[2 + static_cast<size_t>(i)];
+          if (key.ndim() != 4 || query.ndim() != 4) {
+            throw std::runtime_error("mlx: compiled paged attention expects rank-4 tensors");
+          }
+          if (key_repeat > 1) {
+            key = repeat_kv(key, key_repeat);
+          }
+
+          auto key_t = mlx::core::transpose(key, {0, 1, 3, 2});
+          auto score = mlx::core::matmul(query, key_t);
+          score = mlx::core::multiply(score, scale);
+          auto page_max = mlx::core::max(score, -1, true);
+          if (global_max.has_value()) {
+            global_max = mlx::core::maximum(global_max.value(), page_max);
+          } else {
+            global_max = page_max;
+          }
+          score_pages.push_back(score);
+        }
+
+        std::optional<mlx::core::array> denom;
+        std::optional<mlx::core::array> weighted;
+        for (int i = 0; i < page_count; i++) {
+          auto value = inputs[2 + static_cast<size_t>(page_count + i)];
+          if (value.ndim() != 4 || query.ndim() != 4) {
+            throw std::runtime_error("mlx: compiled paged value tensors must be rank-4");
+          }
+          if (value_repeat > 1) {
+            value = repeat_kv(value, value_repeat);
+          }
+
+          auto shifted = mlx::core::subtract(score_pages[i], global_max.value());
+          auto exp_score = mlx::core::exp(shifted);
+          auto page_denom = mlx::core::sum(exp_score, -1, true);
+          auto page_weighted = mlx::core::matmul(exp_score, value);
+          if (denom.has_value()) {
+            denom = mlx::core::add(denom.value(), page_denom);
+            weighted = mlx::core::add(weighted.value(), page_weighted);
+          } else {
+            denom = page_denom;
+            weighted = page_weighted;
+          }
+        }
+        return {mlx::core::divide(weighted.value(), denom.value())};
+      },
+      true);
+  auto inserted = cache.emplace(key, std::move(fn));
+  return inserted.first->second;
+}
+
+bool paged_single_token_attention_uniform_shape(
+    const mlx::core::array& query,
+    const ArrayVector& keys,
+    const ArrayVector& values) {
+  if (query.ndim() != 4 || keys.empty() || keys.size() != values.size()) {
+    return false;
+  }
+  const auto key_shape = keys[0].shape();
+  const auto value_shape = values[0].shape();
+  if (key_shape.size() != 4 || value_shape.size() != 4 ||
+      key_shape[0] != query.shape(0) ||
+      key_shape[3] != query.shape(3) ||
+      value_shape[0] != query.shape(0) ||
+      value_shape[3] != query.shape(3)) {
+    return false;
+  }
+  for (size_t i = 0; i < keys.size(); i++) {
+    if (keys[i].shape() != key_shape || values[i].shape() != value_shape) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool fixed_wide_matmul_attention_enabled() {
   const char* value = std::getenv("GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION");
   return value != nullptr && std::string(value) == "1";
@@ -1341,7 +1468,13 @@ mlx::core::array gemma4_ffn_residual_graph(
       1e-6f);
 }
 
-ArrayVector gemma4_decode_layer_impl_with_state(
+struct Gemma4DecodeLayerOutput {
+  mlx::core::array hidden;
+  std::optional<mlx::core::array> keys;
+  std::optional<mlx::core::array> values;
+};
+
+Gemma4DecodeLayerOutput gemma4_decode_layer_impl_with_state(
     const go_mlx_gemma4_layer_args& args,
     const mlx::core::array& x,
     const mlx::core::array& prev_keys,
@@ -1398,12 +1531,6 @@ ArrayVector gemma4_decode_layer_impl_with_state(
             args.num_key_value_heads * args.head_dim,
             1},
         0);
-    k = mlx::core::fast::rms_norm(
-        k,
-        get_required(args.k_norm, "k_norm"),
-        1e-6f);
-    k = apply_gemma4_rope(k, args, offset);
-
     mlx::core::array v = k;
     if (!args.use_k_eq_v) {
       auto v_proj = layer_linear_quantized(
@@ -1424,6 +1551,11 @@ ArrayVector gemma4_decode_layer_impl_with_state(
               1},
           0);
     }
+    k = mlx::core::fast::rms_norm(
+        k,
+        get_required(args.k_norm, "k_norm"),
+        1e-6f);
+    k = apply_gemma4_rope(k, args, offset);
     v = mlx::core::fast::rms_norm(v, std::nullopt, 1e-6f);
     if (args.fixed_kv) {
       keys = single_token_cache_update(prev_keys, k, offset);
@@ -1519,17 +1651,21 @@ ArrayVector gemma4_decode_layer_impl_with_state(
       get_required(args.layer_scalar, "layer_scalar"));
 
   if (args.owns_kv) {
-    return {h_next, *keys, *values};
+    return {h_next, std::move(*keys), std::move(*values)};
   }
-  return {h_next};
+  return {h_next, std::nullopt, std::nullopt};
 }
 
 ArrayVector gemma4_decode_layer_impl(const go_mlx_gemma4_layer_args& args) {
-  return gemma4_decode_layer_impl_with_state(
+  auto outputs = gemma4_decode_layer_impl_with_state(
       args,
       get_required(args.x, "x"),
       get_required(args.prev_keys, "prev_keys"),
       get_required(args.prev_values, "prev_values"));
+  if (args.owns_kv) {
+    return {std::move(outputs.hidden), std::move(*outputs.keys), std::move(*outputs.values)};
+  }
+  return {std::move(outputs.hidden)};
 }
 
 struct Gemma4LayerState {
@@ -1566,7 +1702,14 @@ mlx::core::array gemma4_fixed_greedy_token_impl(
   }
 
   auto h = get_required(model_args.hidden, "hidden");
-  std::vector<Gemma4LayerState> states(static_cast<size_t>(model_args.layer_count));
+  constexpr int kGemma4StackLayerStates = 64;
+  std::array<Gemma4LayerState, kGemma4StackLayerStates> stack_states;
+  std::vector<Gemma4LayerState> heap_states;
+  Gemma4LayerState* states = stack_states.data();
+  if (model_args.layer_count > kGemma4StackLayerStates) {
+    heap_states.resize(static_cast<size_t>(model_args.layer_count));
+    states = heap_states.data();
+  }
   for (int i = 0; i < model_args.layer_count; i++) {
     auto layer_args = model_args.layers[i];
     const auto kv_path = gemma4_kv_path(layer_args);
@@ -1576,12 +1719,12 @@ mlx::core::array gemma4_fixed_greedy_token_impl(
       case Gemma4KVPath::Shared: {
         const int prev = model_args.previous_kvs[i];
         if (prev < 0 || prev >= i ||
-            !states[static_cast<size_t>(prev)].keys.has_value() ||
-            !states[static_cast<size_t>(prev)].values.has_value()) {
+            !states[prev].keys.has_value() ||
+            !states[prev].values.has_value()) {
           throw std::runtime_error("mlx: Gemma 4 model greedy shared KV owner is invalid");
         }
-        prev_keys = *states[static_cast<size_t>(prev)].keys;
-        prev_values = *states[static_cast<size_t>(prev)].values;
+        prev_keys = *states[prev].keys;
+        prev_values = *states[prev].values;
         break;
       }
       case Gemma4KVPath::Owner:
@@ -1596,22 +1739,22 @@ mlx::core::array gemma4_fixed_greedy_token_impl(
         h,
         prev_keys,
         prev_values);
-    h = outputs[0];
+    h = std::move(outputs.hidden);
     if (layer_args.owns_kv) {
-      if (outputs.size() != 3) {
+      if (!outputs.keys.has_value() || !outputs.values.has_value()) {
         throw std::runtime_error("mlx: Gemma 4 model greedy owner layer returned invalid KV outputs");
       }
-      states[static_cast<size_t>(i)].keys = std::move(outputs[1]);
-      states[static_cast<size_t>(i)].values = std::move(outputs[2]);
+      states[i].keys = std::move(*outputs.keys);
+      states[i].values = std::move(*outputs.values);
     }
   }
 
   for (int i = 0; i < model_args.layer_count; i++) {
-    if (!states[static_cast<size_t>(i)].keys.has_value()) {
+    if (!states[i].keys.has_value()) {
       continue;
     }
-    mlx_array_set_(new_keys[i], std::move(*states[static_cast<size_t>(i)].keys));
-    mlx_array_set_(new_values[i], std::move(*states[static_cast<size_t>(i)].values));
+    mlx_array_set_(new_keys[i], std::move(*states[i].keys));
+    mlx_array_set_(new_values[i], std::move(*states[i].values));
   }
 
   auto normed = mlx::core::fast::rms_norm(
@@ -1907,12 +2050,38 @@ extern "C" int go_mlx_native_paged_single_token_attention(
       keys.push_back(mlx_array_get_(key_pages[i]));
       values.push_back(mlx_array_get_(value_pages[i]));
     }
-    auto output = paged_single_token_attention_impl(
-        mlx_array_get_(query),
-        keys,
-        values,
-        scale);
-    mlx_array_set_(*out, std::move(output));
+    auto query_array = mlx_array_get_(query);
+    if (page_count == 1) {
+      auto output = paged_single_token_attention_impl(
+          query_array,
+          keys,
+          values,
+          scale);
+      mlx_array_set_(*out, std::move(output));
+    } else if (paged_single_token_attention_uniform_shape(query_array, keys, values)) {
+      ArrayVector inputs;
+      inputs.reserve(static_cast<size_t>(2 + (page_count * 2)));
+      inputs.push_back(query_array);
+      inputs.emplace_back(scale, query_array.dtype());
+      inputs.insert(inputs.end(), keys.begin(), keys.end());
+      inputs.insert(inputs.end(), values.begin(), values.end());
+      auto outputs = compiled_paged_single_token_attention(
+          page_count,
+          query_array.shape(1),
+          keys[0].shape(1),
+          values[0].shape(1),
+          keys[0].shape(2),
+          query_array.shape(3),
+          static_cast<int>(query_array.dtype().val()))(inputs);
+      mlx_array_set_(*out, std::move(outputs[0]));
+    } else {
+      auto output = paged_single_token_attention_impl(
+          query_array,
+          keys,
+          values,
+          scale);
+      mlx_array_set_(*out, std::move(output));
+    }
   } catch (std::exception& e) {
     mlx_error(e.what());
     return 1;

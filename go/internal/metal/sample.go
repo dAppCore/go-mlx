@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 	"unsafe"
 
 	core "dappco.re/go"
@@ -34,7 +35,7 @@ type Sampler interface {
 }
 
 // newSampler creates a composable sampler chain from the given parameters.
-// Order: Temperature -> TopP -> TopK -> MinP -> categorical sample.
+// Order: Temperature -> TopK -> TopP -> MinP -> categorical sample.
 //
 //	s := newSampler(0, 0, 0, 0)        // greedy (temp=0)
 //	s := newSampler(0.7, 0.9, 0, 40)   // top-p + top-k + temperature
@@ -53,6 +54,13 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 	}
 	if len(suppressTokens) > 0 {
 		samplers = append(samplers, SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
+	}
+	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
+		return topKTopPChain{
+			prefix: chain(samplers),
+			topK:   topK,
+			topP:   topP,
+		}
 	}
 	if topP > 0 && topP < 1 {
 		samplers = append(samplers, TopP(topP))
@@ -138,6 +146,58 @@ func (c chain) Sample(logits *Array) *Array {
 	return res
 }
 
+// topKTopPChain samples from a bounded candidate set. It matches the common
+// llama.cpp-style order used by the Gemma 4 production lane: temperature and
+// suppression first, then top-k candidate selection, then top-p within those
+// candidates. That avoids sorting the full 256k-token Gemma vocabulary for
+// every sampled token when top_k is already small.
+type topKTopPChain struct {
+	prefix chain
+	topK   int
+	topP   float32
+}
+
+func (c topKTopPChain) Sample(logits *Array) *Array {
+	curr := logits
+	for _, s := range c.prefix {
+		next := s.Sample(curr)
+		if curr != logits {
+			Free(curr)
+		}
+		curr = next
+	}
+	token := sampleTopKTopPToken(curr, c.topK, c.topP)
+	if curr != logits {
+		Free(curr)
+	}
+	return token
+}
+
+func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || topK <= 0 || topK >= lastDim {
+		filtered := TopP(topP).Sample(logits)
+		token := RandomCategorical(filtered)
+		Free(filtered)
+		return token
+	}
+
+	neg := Negative(logits)
+	partitioned := Argpartition(neg, topK-1, -1)
+	Free(neg)
+	topIndices := SliceAxis(partitioned, -1, 0, int32(topK))
+	Free(partitioned)
+
+	topLogits := TakeAlongAxis(logits, topIndices, -1)
+	filtered := TopP(topP).Sample(topLogits)
+	localToken := RandomCategorical(filtered)
+	localTokenExpanded := ExpandDims(localToken, -1)
+	globalToken2D := TakeAlongAxis(topIndices, localTokenExpanded, -1)
+	globalToken := Reshape1(globalToken2D, 1)
+	Free(topIndices, topLogits, filtered, localToken, localTokenExpanded, globalToken2D)
+	return globalToken
+}
+
 // greedy returns the argmax token (deterministic, no sampling).
 //
 //	greedy{}.Sample(logits) // picks the single most likely token
@@ -166,45 +226,108 @@ func (s SuppressTokensSampler) Sample(logits *Array) *Array {
 	return suppressTokenLogits(logits, s.tokens)
 }
 
+type sampleTokenTimings struct {
+	Build     time.Duration
+	Eval      time.Duration
+	TokenRead time.Duration
+}
+
 func sampleTokenWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32) (*Array, error) {
+	next, _, _, err := sampleTokenIDWithSuppressionGuard(logits, sampler, suppressTokens, false)
+	return next, err
+}
+
+func sampleTokenIDWithSuppressionGuard(logits *Array, sampler Sampler, suppressTokens []int32, trace bool) (*Array, int32, sampleTokenTimings, error) {
+	var timings sampleTokenTimings
+
+	buildStart := sampleTokenTimingStart(trace)
 	next := sampler.Sample(logits)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+
+	evalStart := sampleTokenTimingStart(trace)
 	if err := Eval(next); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
 		Free(next)
-		return nil, err
+		return nil, 0, timings, err
 	}
-	if !tokenIDSuppressed(int32(next.Int()), suppressTokens) {
-		return next, nil
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	readStart := sampleTokenTimingStart(trace)
+	id := int32(next.Int())
+	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+	if !tokenIDSuppressed(id, suppressTokens) {
+		return next, id, timings, nil
 	}
 	Free(next)
+
+	buildStart = sampleTokenTimingStart(trace)
 	filtered := suppressTokenLogits(logits, suppressTokens)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
+
+	evalStart = sampleTokenTimingStart(trace)
 	if err := Eval(filtered); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
 		Free(filtered)
-		return nil, err
+		return nil, 0, timings, err
 	}
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	buildStart = sampleTokenTimingStart(trace)
 	next = greedy{}.Sample(filtered)
+	sampleTokenTimingAdd(trace, &timings.Build, buildStart)
 	Free(filtered)
+
+	evalStart = sampleTokenTimingStart(trace)
 	if err := Eval(next); err != nil {
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
 		Free(next)
-		return nil, err
+		return nil, 0, timings, err
 	}
-	if tokenIDSuppressed(int32(next.Int()), suppressTokens) {
+	sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+	readStart = sampleTokenTimingStart(trace)
+	id = int32(next.Int())
+	sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+	if tokenIDSuppressed(id, suppressTokens) {
 		Free(next)
+		buildStart = sampleTokenTimingStart(trace)
 		next, err := hostUnsuppressedGreedyToken(logits, suppressTokens)
+		sampleTokenTimingAdd(trace, &timings.Build, buildStart)
 		if err != nil {
-			return nil, err
+			return nil, 0, timings, err
 		}
+
+		evalStart = sampleTokenTimingStart(trace)
 		if err := Eval(next); err != nil {
+			sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
 			Free(next)
-			return nil, err
+			return nil, 0, timings, err
 		}
-		if !tokenIDSuppressed(int32(next.Int()), suppressTokens) {
-			return next, nil
+		sampleTokenTimingAdd(trace, &timings.Eval, evalStart)
+
+		readStart = sampleTokenTimingStart(trace)
+		id = int32(next.Int())
+		sampleTokenTimingAdd(trace, &timings.TokenRead, readStart)
+		if !tokenIDSuppressed(id, suppressTokens) {
+			return next, id, timings, nil
 		}
-		id := int32(next.Int())
 		Free(next)
-		return nil, core.NewError(core.Sprintf("mlx: sampler returned suppressed token %d after suppression guard", id))
+		return nil, 0, timings, core.NewError(core.Sprintf("mlx: sampler returned suppressed token %d after suppression guard", id))
 	}
-	return next, nil
+	return next, id, timings, nil
+}
+
+func sampleTokenTimingStart(trace bool) time.Time {
+	if !trace {
+		return time.Time{}
+	}
+	return time.Now()
+}
+
+func sampleTokenTimingAdd(trace bool, total *time.Duration, start time.Time) {
+	if trace {
+		*total += time.Since(start)
+	}
 }
 
 func hostUnsuppressedGreedyToken(logits *Array, suppressTokens []int32) (*Array, error) {

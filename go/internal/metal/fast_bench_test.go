@@ -16,6 +16,21 @@ import (
 	"testing"
 )
 
+func resetMLXBenchMemoryCounters() {
+	ClearCache()
+	ResetPeakMemory()
+}
+
+func reportMLXBenchMemory(b *testing.B) {
+	active := GetActiveMemory()
+	cache := GetCacheMemory()
+	peak := GetPeakMemory()
+	b.ReportMetric(float64(active), "mlx_active_B")
+	b.ReportMetric(float64(cache), "mlx_cache_B")
+	b.ReportMetric(float64(active+cache), "mlx_active_cache_B")
+	b.ReportMetric(float64(peak), "mlx_peak_B")
+}
+
 // --- nativePagedSingleTokenAttention ---
 //
 // Decode-step native paged attention. Each invocation crosses cgo with a
@@ -32,6 +47,7 @@ func benchNativePagedSingleToken(b *testing.B, pageCount int, pageSize int32) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -45,6 +61,7 @@ func benchNativePagedSingleToken(b *testing.B, pageCount int, pageSize int32) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 func BenchmarkNativePagedSingleToken_2Pages_Page256(b *testing.B) {

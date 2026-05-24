@@ -669,9 +669,13 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 
 		var history []int32 // for repeat penalty
 		var directNext *Array
+		var suppressTokensArray *Array
+		if len(cfg.SuppressTokens) > 0 && directGreedyTokenEnabled() {
+			suppressTokensArray = suppressTokenArray(cfg.SuppressTokens)
+		}
 
 		defer func() {
-			Free(logits, directNext)
+			Free(logits, directNext, suppressTokensArray)
 		}()
 
 		for i := range cfg.MaxTokens {
@@ -691,6 +695,8 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 
 			var next *Array
+			var sampledID int32
+			sampledIDSet := false
 			nextEvaluated := false
 			if directNext != nil {
 				next = directNext
@@ -740,15 +746,19 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 
 				var sampleErr error
-				next, sampleErr = sampleTokenWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens)
+				var sampleTimings sampleTokenTimings
+				next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens, tracePhases)
 				if sampleErr != nil {
 					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), sampleErr)
 					Free(lastPos)
 					return
 				}
+				sampledIDSet = true
 				nextEvaluated = true
 				if tracePhases {
-					phase.SampleDuration = time.Since(phaseLast)
+					phase.SampleDuration = sampleTimings.Build
+					phase.SampleEvalDuration = sampleTimings.Eval
+					phase.TokenReadDuration += sampleTimings.TokenRead
 					phaseLast = time.Now()
 				}
 				Free(lastPos)
@@ -759,10 +769,10 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 					Free(next)
 					return
 				}
-			}
-			if tracePhases {
-				phase.SampleEvalDuration = time.Since(phaseLast)
-				phaseLast = time.Now()
+				if tracePhases {
+					phase.SampleEvalDuration += time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
 			}
 			// Eval(next) also materialises the lazy decode forward that produced
 			// logits for this token, so detach caches at this boundary.
@@ -785,12 +795,17 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				phaseLast = time.Now()
 			}
 
-			id := int32(next.Int())
-			if tracePhases {
-				phase.TokenReadDuration = time.Since(phaseLast)
-				phaseLast = time.Now()
+			id := sampledID
+			if !sampledIDSet {
+				id = int32(next.Int())
+				if tracePhases {
+					phase.TokenReadDuration += time.Since(phaseLast)
+					phaseLast = time.Now()
+				}
 			}
-			history = append(history, id)
+			if cfg.RepeatPenalty > 1.0 {
+				history = append(history, id)
+			}
 			text := m.tokenizer.DecodeToken(id)
 			if tracePhases {
 				phase.DecodeTextDuration = time.Since(phaseLast)
@@ -857,7 +872,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				if tracePhases {
 					resetNativePhaseTraceEvents()
 				}
-				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, cfg.SuppressTokens)
+				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, cfg.SuppressTokens, suppressTokensArray)
 				if tracePhases {
 					phase.ForwardDuration = time.Since(phaseLast)
 					phase.NativeEvents = takeNativePhaseTraceEvents()
@@ -937,8 +952,15 @@ func suppressedGreedyTokenAvailable(model InternalModel) bool {
 	return ok
 }
 
-func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32) (*Array, bool) {
+type borrowedSuppressedGreedyTokenModel interface {
+	forwardGreedyTokenWithSuppressionArray(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32, suppress *Array) *Array
+}
+
+func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, suppressTokens []int32, suppress *Array) (*Array, bool) {
 	if len(suppressTokens) > 0 {
+		if greedyModel, ok := m.model.(borrowedSuppressedGreedyTokenModel); ok {
+			return greedyModel.forwardGreedyTokenWithSuppressionArray(tokens, mask, caches, suppressTokens, suppress), true
+		}
 		greedyModel, ok := m.model.(SuppressedGreedyTokenModel)
 		if !ok {
 			return nil, false
@@ -953,11 +975,18 @@ func (m *Model) forwardGreedyToken(tokens *Array, mask *Array, caches []Cache, s
 }
 
 func asyncDecodePrefetch(step int, label string, out *Array) error {
+	return asyncDecodePrefetchFor("Model.Generate", step, label, out)
+}
+
+func asyncDecodePrefetchFor(scope string, step int, label string, out *Array) error {
 	if !enableAsyncDecodePrefetch || out == nil || !out.Valid() {
 		return nil
 	}
 	if err := EvalAsync(out); err != nil {
-		return core.E("Model.Generate", core.Sprintf("async prefetch %s step %d", label, step), err)
+		if core.Trim(scope) == "" {
+			scope = "Model.Generate"
+		}
+		return core.E(scope, core.Sprintf("async prefetch %s step %d", label, step), err)
 	}
 	return nil
 }
@@ -1377,7 +1406,7 @@ func fixedGemma4CacheSize(maxSize, requestSize int) int {
 	if maxSize <= 0 {
 		return maxSize
 	}
-	parsed := core.ParseInt(core.Trim(core.Env("GO_MLX_FIXED_GEMMA4_CACHE_SIZE")), 10, 64)
+	parsed := core.ParseInt(core.Trim(RuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE")), 10, 64)
 	if parsed.OK {
 		size := int(parsed.Value.(int64))
 		if size > 0 {

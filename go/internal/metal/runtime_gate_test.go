@@ -78,6 +78,12 @@ func TestRuntimeGate_KnownZeroCopyPagedRestore_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
+	t.Setenv("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
+	restoreDefault := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "")
+	t.Cleanup(restoreDefault)
+	if !zeroCopyPagedRestoreRuntimeEnabled() {
+		t.Fatal("zeroCopyPagedRestoreRuntimeEnabled() default = false, want true")
+	}
 	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE", "0")
 	t.Cleanup(restoreOff)
 	if zeroCopyPagedRestoreRuntimeEnabled() {
@@ -155,6 +161,23 @@ func TestRuntimeGate_KnownFixedGemma4SlidingCacheBound_Good(t *testing.T) {
 	t.Cleanup(restoreOn)
 	if !fixedGemma4SlidingCacheBoundRuntimeEnabled() {
 		t.Fatal("fixedGemma4SlidingCacheBoundRuntimeEnabled() = false, want true")
+	}
+}
+
+func TestRuntimeGate_KnownNativeFixedSlidingAttention_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownNativeFixedSlidingAttention"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "0")
+	t.Cleanup(restoreOff)
+	if nativeFixedSlidingAttentionRuntimeEnabled() {
+		t.Fatal("nativeFixedSlidingAttentionRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "1")
+	t.Cleanup(restoreOn)
+	if !nativeFixedSlidingAttentionRuntimeEnabled() {
+		t.Fatal("nativeFixedSlidingAttentionRuntimeEnabled() = false, want true")
 	}
 }
 

@@ -464,6 +464,41 @@ func BenchmarkPagedKVCache_UpdateBorrowedPages_To128(b *testing.B) {
 	}
 }
 
+func BenchmarkSharedKV_CloneFixedBorrowed_Gemma4LocalWindow_L512(b *testing.B) {
+	keys := RandomUniform(-1, 1, []int32{1, 8, 512, 64}, DTypeFloat16)
+	values := RandomUniform(-1, 1, []int32{1, 8, 512, 64}, DTypeFloat16)
+	defer Free(keys, values)
+	Materialize(keys, values)
+
+	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
+	b.ReportAllocs()
+	for b.Loop() {
+		retained := kv.clone()
+		retained.free()
+	}
+}
+
+func BenchmarkSharedKV_ClonePagedBorrowed_8Pages(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for i := 0; i < 2048; i++ {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	pages := cache.BorrowedPageState()
+	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	b.ReportAllocs()
+	for b.Loop() {
+		retained := kv.clone()
+		retained.free()
+	}
+	cache.Reset()
+}
+
 // --- KV cache state access (no Update — pure reads) ---
 
 func BenchmarkKVCache_StateAccess_After128(b *testing.B) {

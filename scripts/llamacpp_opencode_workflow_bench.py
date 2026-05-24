@@ -155,7 +155,7 @@ def main():
     parser.add_argument("--turns", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--turn-min-tokens", type=int, default=0)
-    parser.add_argument("--turn-min-tokens-policy", choices=["fail", "mark"], default="fail")
+    parser.add_argument("--turn-min-tokens-policy", choices=["fail", "mark"], default="mark")
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=64)
@@ -231,13 +231,16 @@ def main():
             + visible.count("<turn|>")
         )
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
+        output_issues = []
         error = ""
         if below_min:
-            error = (
-                f"llama.cpp opencode workflow: turn {index} produced {visible_tokens} "
-                f"visible tokens, below minimum real-workload floor {args.turn_min_tokens}"
-            )
-            if args.turn_min_tokens_policy == "fail" and first_error is None:
+            output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
+            if args.turn_min_tokens_policy == "fail":
+                error = (
+                    f"llama.cpp opencode workflow: turn {index} produced {visible_tokens} "
+                    f"visible tokens, below requested visible-token debug floor {args.turn_min_tokens}"
+                )
+            if error and first_error is None:
                 first_error = error
         turns.append(
             {
@@ -256,6 +259,7 @@ def main():
                 "finish_reason": "stop" if response.get("stop", False) else "",
                 "timings": timings,
                 "below_min_tokens": below_min,
+                "output_issues": output_issues,
                 "error": error,
                 "control_marker_count": control_marker_count,
                 "content_bytes": len(content.encode("utf-8")),

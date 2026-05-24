@@ -347,6 +347,40 @@ func BenchmarkSampler_Full_TopP09_MinP01_TopK50(b *testing.B) {
 	}
 }
 
+func BenchmarkSampler_LegacyTopPThenTopK_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	s := chain{Temperature(1.0), TopP(0.95), TopKSampler(64)}
+	b.ResetTimer()
+	for b.Loop() {
+		tok := s.Sample(logits)
+		if err := Eval(tok); err != nil {
+			Free(tok)
+			b.Fatalf("Eval(sample): %v", err)
+		}
+		Free(tok)
+	}
+}
+
+func BenchmarkSampler_TopKThenTopP_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	s := newSampler(1.0, 0.95, 0, 64)
+	b.ResetTimer()
+	for b.Loop() {
+		tok := s.Sample(logits)
+		if err := Eval(tok); err != nil {
+			Free(tok)
+			b.Fatalf("Eval(sample): %v", err)
+		}
+		Free(tok)
+	}
+}
+
 // BenchmarkSampler_MinP01_Temp1 isolates min-p path which uses Softmax + MaxAxis
 // + MulScalar + Greater(scalar) + Where.  Targets W11-R inline-Greater opportunity.
 func BenchmarkSampler_MinP01_Temp1(b *testing.B) {
@@ -571,13 +605,13 @@ func BenchmarkMaterialiseFloat32View_Floats_10KB(b *testing.B)  { benchFloats(b,
 func BenchmarkMaterialiseFloat32View_Floats_100KB(b *testing.B) { benchFloats(b, 25600) }
 func BenchmarkMaterialiseFloat32View_Floats_1MB(b *testing.B)   { benchFloats(b, 262144) }
 
-func BenchmarkMaterialiseFloat32View_Slow_128B(b *testing.B)    { benchMaterialiseSlow(b, 32) }
-func BenchmarkMaterialiseFloat32View_Slow_1KB(b *testing.B)     { benchMaterialiseSlow(b, 256) }
-func BenchmarkMaterialiseFloat32View_Slow_10KB(b *testing.B)    { benchMaterialiseSlow(b, 2560) }
-func BenchmarkMaterialiseFloat32View_Slow_100KB(b *testing.B)   { benchMaterialiseSlow(b, 25600) }
-func BenchmarkMaterialiseFloat32View_Slow_1MB(b *testing.B)     { benchMaterialiseSlow(b, 262144) }
-func BenchmarkMaterialiseFloat32ViewFast_128B(b *testing.B)     { benchMaterialiseFast(b, 32) }
-func BenchmarkMaterialiseFloat32ViewFast_1KB(b *testing.B)      { benchMaterialiseFast(b, 256) }
-func BenchmarkMaterialiseFloat32ViewFast_10KB(b *testing.B)     { benchMaterialiseFast(b, 2560) }
-func BenchmarkMaterialiseFloat32ViewFast_100KB(b *testing.B)    { benchMaterialiseFast(b, 25600) }
-func BenchmarkMaterialiseFloat32ViewFast_1MB(b *testing.B)      { benchMaterialiseFast(b, 262144) }
+func BenchmarkMaterialiseFloat32View_Slow_128B(b *testing.B)  { benchMaterialiseSlow(b, 32) }
+func BenchmarkMaterialiseFloat32View_Slow_1KB(b *testing.B)   { benchMaterialiseSlow(b, 256) }
+func BenchmarkMaterialiseFloat32View_Slow_10KB(b *testing.B)  { benchMaterialiseSlow(b, 2560) }
+func BenchmarkMaterialiseFloat32View_Slow_100KB(b *testing.B) { benchMaterialiseSlow(b, 25600) }
+func BenchmarkMaterialiseFloat32View_Slow_1MB(b *testing.B)   { benchMaterialiseSlow(b, 262144) }
+func BenchmarkMaterialiseFloat32ViewFast_128B(b *testing.B)   { benchMaterialiseFast(b, 32) }
+func BenchmarkMaterialiseFloat32ViewFast_1KB(b *testing.B)    { benchMaterialiseFast(b, 256) }
+func BenchmarkMaterialiseFloat32ViewFast_10KB(b *testing.B)   { benchMaterialiseFast(b, 2560) }
+func BenchmarkMaterialiseFloat32ViewFast_100KB(b *testing.B)  { benchMaterialiseFast(b, 25600) }
+func BenchmarkMaterialiseFloat32ViewFast_1MB(b *testing.B)    { benchMaterialiseFast(b, 262144) }

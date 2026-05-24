@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"math"
 
 	core "dappco.re/go"
 	"dappco.re/go/inference/bench"
@@ -81,8 +82,8 @@ func fromMlxMetrics(m Metrics) bench.GenerationMetrics {
 		PrefillDuration:            m.PrefillDuration,
 		DecodeDuration:             m.DecodeDuration,
 		TotalDuration:              m.TotalDuration,
-		PrefillTokensPerSec:        m.PrefillTokensPerSec,
-		DecodeTokensPerSec:         m.DecodeTokensPerSec,
+		PrefillTokensPerSec:        finiteMetricFloat64(m.PrefillTokensPerSec),
+		DecodeTokensPerSec:         finiteMetricFloat64(m.DecodeTokensPerSec),
 		PeakMemoryBytes:            m.PeakMemoryBytes,
 		ActiveMemoryBytes:          m.ActiveMemoryBytes,
 		PromptCacheHits:            m.PromptCacheHits,
@@ -91,6 +92,13 @@ func fromMlxMetrics(m Metrics) bench.GenerationMetrics {
 		PromptCacheMissTokens:      m.PromptCacheMissTokens,
 		PromptCacheRestoreDuration: m.PromptCacheRestoreDuration,
 	}
+}
+
+func finiteMetricFloat64(value float64) float64 {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+	return value
 }
 
 // modelInfoToBench converts an mlx.ModelInfo into bench.Info.

@@ -83,14 +83,14 @@ static inline int mlx_transpose_axes_inline_4(
     return mlx_transpose_axes(res, a, axes_buf, 4, s);
 }
 
-// mlx_reshape_inline_1 / mlx_reshape_inline_2 are the rank-1 / rank-2
+// mlx_reshape_inline_1 / mlx_reshape_inline_2 / mlx_reshape_inline_3 are the rank-1 / rank-2 / rank-3
 // scalar-pass forms of mlx_reshape_inline — completes the W11-AC
-// Reshape/Slice rank-1/2 scalar-pass family alongside Reshape and the
+// Reshape/Slice rank-1/2/3 scalar-pass family alongside Reshape and the
 // existing slice rank-4 variants. The Q4 quantise/dequantise paths
 // (packQ4Cached, unpackQ4, maxAll) currently call
 // `Reshape(arr, int32(n))` or `Reshape(arr, int32(pairs), int32(2))`
 // where the variadic []int32 escapes to heap on every call. Passing the
-// 1 or 2 register-passed scalars directly to MLX eliminates the slice
+// 1, 2, or 3 register-passed scalars directly to MLX eliminates the slice
 // literal entirely. Same W10-J / W11-A pattern, lower rank.
 static inline int mlx_reshape_inline_1(
     mlx_array* res, mlx_array a,
@@ -106,6 +106,14 @@ static inline int mlx_reshape_inline_2(
     mlx_stream s) {
     int shape_buf[2] = {(int)h, (int)w};
     return mlx_reshape(res, a, shape_buf, 2, s);
+}
+
+static inline int mlx_reshape_inline_3(
+    mlx_array* res, mlx_array a,
+    int32_t d0, int32_t d1, int32_t d2,
+    mlx_stream s) {
+    int shape_buf[3] = {(int)d0, (int)d1, (int)d2};
+    return mlx_reshape(res, a, shape_buf, 3, s);
 }
 
 // mlx_*_single_axis_inline materialise the single-element axis array on the
@@ -638,6 +646,15 @@ func Reshape1(a *Array, n int32) *Array {
 func Reshape2(a *Array, h, w int32) *Array {
 	out := newArray("RESHAPE", a)
 	C.mlx_reshape_inline_2(&out.ctx, a.ctx, C.int32_t(h), C.int32_t(w), DefaultStream().ctx)
+	return out
+}
+
+// Reshape3 is the rank-3 scalar-pass form of Reshape — eliminates the
+// variadic-slice escape that `Reshape(arr, d0, d1, d2)` pays in per-layer
+// Gemma 4 PLE view streaming.
+func Reshape3(a *Array, d0, d1, d2 int32) *Array {
+	out := newArray("RESHAPE", a)
+	C.mlx_reshape_inline_3(&out.ctx, a.ctx, C.int32_t(d0), C.int32_t(d1), C.int32_t(d2), DefaultStream().ctx)
 	return out
 }
 

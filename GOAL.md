@@ -33,14 +33,730 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
 ## Current Status: Active Parity Gap; Production Path Not Yet Accepted
 
 The current q4 retained-State lane works, but the production benchmark lane is
-not accepted. Fresh 2026-05-21 evidence after the latest Go hot-path pass still
-shows that go-mlx is materially behind llama.cpp on raw decode. The wall-time
-comparison is useful but must be read with the known llama.cpp thinking-channel
-skew: that anchor generated leaked thinking-channel content, so its generated
-and visible token counts are inflated relative to the intended answer stream.
+not accepted. Fresh 2026-05-24 evidence after the bounded fixed-cache
+state-ramp default shows a real decode recovery, but go-mlx is still behind
+llama.cpp on raw decode. The retained workflow wall-time comparison is useful,
+but must be read with the known llama.cpp thinking/control-channel skew: the
+llama.cpp anchor emits an orphan `<channel|>` marker in every visible turn and
+consumes the full `1024` token budget each time, so its generated and visible
+token counts are inflated relative to the intended answer stream.
+
+Latest local code note: a Gemma 4 shared-KV lifetime bug was fixed after the
+native fixed-cache path could hand cache-owned K/V handles to shared layers and
+later treat those handles as caller-owned intermediate state. The fix retains
+only owner K/V handles that are read by later shared layers and marks native
+fixed-cache handles as borrowed. A short rebuilt `driver-profile` smoke now
+passes without the previous layer-6 shared-KV panic; treat it as a regression
+guard, not a production benchmark row.
+
+Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
+the append-only State log it claims to be. Folding opens an existing `.mvlog`
+and appends checkpoint/folded records instead of truncating it; only a missing
+path is created. Fold reports now include `fold.store_action` plus
+`fold.compact_marker.{store_path,index_uri,entry_uri,bundle_uri,token_count}`
+so the next process can wake from the same State file and compact marker.
+`state-wake-profile -marker-file <state-ramp-report.json>` now reads either the
+full ramp report or a standalone marker JSON, fills `-state-store` and
+`-index-uri` from the marker when they are not explicitly supplied, and keeps
+older reports usable by falling back to `fold.folded.index_uri`. This is a
+code-path guard for cross-session continuity; it still needs a fresh end-to-end
+retained run before being promoted to production benchmark evidence. The next
+storage R&D step is a segment-aware State resolver where one compact marker can
+live in a small main index file while referenced State blocks live in other
+`.mvlog` segment files.
+
+One-file cross-session continuity smoke, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-continuity-onefile-ramp.json`
+folded a small `512 -> 700` retained state into
+`/private/tmp/go-mlx-goal/state-continuity-onefile-20260524-smoke.mvlog`
+(`78M`), emitted compact marker
+`mlx://state-ramp/fold/1779612942781065000/folded/index`, and confirmed both
+checkpoint and folded refs used that same `.mvlog` segment. A separate process
+then ran
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-continuity-onefile-wake.json`
+with `state-wake-profile -marker-file <ramp-report>` and no manual
+`-state-store`/`-index-uri`; it resolved the same State file, woke `206`
+folded prefix tokens with `restore_strategy=folded-prefill`, and generated
+`32` visible tokens at `95.790 tok/s`. Treat this as proof that one-file
+compact markers survive a process boundary and can seed session 2 from session
+1's State log. Do not promote it to content-quality evidence: the wake output
+was marked `visible_prompt_analysis`, so the prompt/template still needs a
+product-quality follow-up.
+
+State `.kv` container bridge, 2026-05-24:
+`state-pack -marker-file <ramp-report> -output
+/private/tmp/go-mlx-goal/state-continuity-onefile-20260524-smoke.kv` now uses
+`forge.lthn.ai/Snider/Enchantrix/pkg/trix` directly with magic `KVST`. The
+resulting container stores the compact marker metadata in the JSON head
+(`kind=go-mlx/state-kv`, folded index
+`mlx://state-ramp/fold/1779612942781065000/folded/index`) and the raw `.mvlog`
+State log as the binary tail. The smoke packed `81,857,007` State payload bytes
+into an `81,857,631` byte `.kv` file. This is a format proof, not the final
+streaming path: the current Enchantrix API still accepts `Payload []byte`, so
+large production packs need the streaming `trix` helpers requested in
+`TODO.md` before this becomes the hot 100k-token State path.
+Follow-up direct `.kv` wake now works as a bridge:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-continuity-onefile-kv-wake.json`
+ran `state-wake-profile -marker-file
+/private/tmp/go-mlx-goal/state-continuity-onefile-20260524-smoke.kv` and no
+manual `-state-store`/`-index-uri`. The wake resolved the folded index from the
+Trix header, opened the State segment at
+`/private/tmp/go-mlx-goal/state-continuity-onefile-20260524-smoke.mvlog`, read
+`206` folded prefix tokens with `restore_strategy=folded-prefill`, appended
+`204` prompt tokens, and generated `32` visible tokens at `104.331 tok/s`
+decode. The next rebuild replaced path restoration with an opt-in
+go-inference filestore segment alias:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-continuity-onefile-kv-wake-alias.json`
+materialized the `.kv` binary tail to a temporary State file, opened it with
+`state_store_segment_alias=/private/tmp/go-mlx-goal/state-continuity-onefile-20260524-smoke.mvlog`,
+confirmed the temp payload was removed after wake, restored the same `206`
+folded prefix tokens, appended `204` prompt tokens, and generated `32` visible
+tokens at `104.801 tok/s` decode. This is now relocatable at the filestore API
+level while preserving strict segment validation; it is still a bridge rather
+than the final zero-copy path because Enchantrix still decodes the full payload
+into memory. The content caveat remains: this short wake output is
+prompt-analysis text, so it is format/continuity evidence only.
+
+### Methodology Correction
+
+Do not use arbitrary visible-token floors as benchmark acceptance criteria.
+`-turn-min-tokens` and `-chapter-min-tokens` are debug guards for catching
+broken decoders or empty output only; rows that were judged by a `256`, `512`,
+`768`, or similar minimum visible-token floor are diagnostic, not production
+sign-off evidence. Natural model stops are valid if the content is non-empty,
+not a repeated-token loop, not a control/thinking-channel leak, and coherent
+for the supplied prompt.
+
+The production comparison must be one default runner path versus external
+runner anchors on the same natural workload. Record wall time, prefill/append
+time, raw decode, active MLX memory, MLX allocator cache, active-plus-cache,
+process RSS/virtual memory, generated/visible token counts, stop reason, and a
+short content note. Do not add new env gates or CLI switches to make a row pass;
+temporary diagnostics must either be promoted into the default path or removed.
+
+Memory is a cost curve, not a standalone win condition. A higher active
+footprint during live inference is acceptable when it is bounded, explained, and
+buying retained-State wall time, especially if it is a fixed full-context cost
+around the model plus cache. The memory blockers are runaway growth, duplicate
+K/V materialisation, allocator-cache pressure that hides real active use, and
+virtual-memory explosions that make long agent sessions fragile.
 
 Fresh working evidence lives under `/private/tmp/go-mlx-goal/reports/` until the
 next canonical runtime report set is regenerated:
+
+- `2026-05-24-state-kv-warm-after-kv-slab.json`: rebuilt `lthn-mlx` smoke after
+  making default zero-copy paged State restore explicit and tightening native
+  layer-slab State assembly for single-head slabs. This is not production
+  acceptance because the baseline README prompt naturally stops after one token,
+  but it confirms the current default State path still works and writes clean
+  JSON: `6` State blocks, `2765` restored/avoided prompt tokens, `238920119`
+  State-store bytes, `108.517ms` State K/V restore, `8.469x` restore speedup
+  over the measured `918.985ms` prefill, `102.649 tok/s` warmed decode for the
+  `256` token State-KV generation leg, `3420202578` bytes active MLX memory
+  (`3.185 GiB`), and `3491881978` bytes peak MLX memory (`3.252 GiB`).
+  External process polling during the run observed about `3.82 GiB` RSS and
+  `459 GB` virtual reservation, roughly `100 GB` below the earlier problematic
+  virtual-reservation class. Treat this
+  as a default-path smoke and memory-direction check, not a same-shape runner
+  comparison.
+- `2026-05-24` in-process State restore micro evidence: session-owned paged
+  cache restore now transfers locally owned page arrays into the live
+  `PagedKVCache` instead of cloning them and then freeing the streamed entry.
+  `BenchmarkSession_RestorePagedCaches_Copy_8x512` measured `11439 ns/op`,
+  `950 B/op`, `22 allocs/op`; `BenchmarkSession_RestorePagedCaches_Transfer_8x512`
+  measured `7965 ns/op`, `944 B/op`, `28 allocs/op`. This is a narrow ownership
+  benchmark, not a runner score, but it validates the wake/fork State path is
+  removing a Metal-array copy where page ownership is local.
+- `2026-05-24-state-kv-warm-transfer-smoke-ctx32768.json`: rebuilt
+  `lthn-mlx` smoke after the paged-State transfer path and fixed-sliding
+  Gemma 4 prefill chunk cap. The first attempt with the default `4096`
+  context was correctly rejected as an invalid restore shape because the
+  prompt was `4960` tokens, so this row uses `-context 32768`. It completes a
+  full `256` token generation without the previous chunked-prefill panic:
+  `4960` prompt tokens, `11` State blocks, `172670094` State-store bytes,
+  `20.157x` restore speedup, `4960` prompt tokens avoided,
+  `105.215 tok/s` State-warmed decode, `105.124 tok/s` baseline decode,
+  `7273829970` bytes active MLX memory, and `7333642190` bytes peak MLX
+  memory in the warmed leg. Treat this as a holistic State-path regression
+  guard for prompt sizes above the old default context, not as a same-shape
+  llama.cpp comparison.
+- `2026-05-24-state-ramp-lighthouse-distractor-c10.json`: retained-State
+  coherence proof-of-work using a `10000` token seed arc and `10` later turns
+  that each carried a different distractor prompt for entropy. The first
+  entropy attempt was rejected as a prompt-shape failure because the model
+  treated each distractor as the new chapter topic; the tightened row makes the
+  seed arc explicit as the only plot and marks distractors as imagery/style
+  pressure only. The accepted row completes `10/10` turns, `1781` generated and
+  visible tokens, `14088` final live tokens, `95.563 tok/s` average decode,
+  `89.370 tok/s` effective turn throughput, `23.529s` total turn wall time,
+  `7.468 GiB` peak MLX memory, `10.209 GiB` active-plus-cache, about
+  `3.163 GiB` process RSS, and `507.893 GB` process virtual reservation. Most
+  importantly, chapter 10 resolves the original lighthouse keeper, signalling
+  light, and deep-ocean presence instead of drifting into the final island
+  distractor. The readable book artefact is
+  `/private/tmp/go-mlx-goal/books/2026-05-24-lighthouse-signal.md`. Treat this
+  as content-coherence evidence for retained State under distractor entropy,
+  not as a llama.cpp comparison row.
+- `scripts/state_book_from_phase0.py`: repeatable retained-State book generator
+  for `/Users/snider/Code/lthn/LEM/training/lem/creative/phase0.json`. It picks
+  one seed prompt as the only book arc, picks random distractor prompts for
+  later chapters, writes replayable seed/turn material, runs
+  `state-ramp-profile`, and extracts a readable `book.md` from the JSON report.
+  Dry-run validation with `--random-seed 4242` writes deterministic material and
+  the exact command without launching MLX. A short escalated Metal smoke with
+  the same seed completed `3/3` turns for `C027_STORY_INHERITANCE` at
+  `100.310 tok/s` decode and `97.622 tok/s` effective turn throughput, writing
+  `/private/tmp/go-mlx-goal/books/2026-05-24-c027-story-inheritance-seed4242.md`.
+  A full random `10`-chapter run with `--random-seed 20260524` picked
+  `C014_METAPHOR_SEASONS`, completed `10/10` turns, `3071` visible tokens,
+  `16004` final live tokens, `95.384 tok/s` decode, `91.085 tok/s` effective
+  turn throughput, `10.048 GiB` active-plus-cache, and about `3.180 GiB`
+  process RSS, writing
+  `/private/tmp/go-mlx-goal/books/2026-05-24-c014-metaphor-seasons-seed20260524.md`.
+  The script now also supports `--count N` batch generation with per-book
+  deterministic seeds and an append-only `manifest.jsonl` for later collation;
+  `--dry-run --count 2 --random-seed 9000 --turns 2` wrote two distinct
+  seed/distractor material sets and manifest rows under
+  `/private/tmp/go-mlx-goal/book-runs-batch-dry/` and
+  `/private/tmp/go-mlx-goal/books-batch-dry/` without launching MLX. A real
+  batch mechanics smoke with `--count 2 --random-seed 9100 --turns 2` then wrote
+  two actual `book.md` files and manifest rows under
+  `/private/tmp/go-mlx-goal/books-batch-smoke/`: `C003_FICTION_MEMORY` completed
+  `2/2` turns at `102.367 tok/s` decode and `99.694 tok/s` effective turn
+  throughput, and `C048_FICTION_MIRROR` completed `2/2` turns at
+  `102.565 tok/s` decode and `99.963 tok/s` effective turn throughput. This
+  smoke used only `512` generated tokens per turn to validate batch output
+  plumbing, so do not promote it to performance evidence. The nested Python
+  launch needs the same unsandboxed Metal access as other model runs; direct
+  dry-run/material generation works without it. Treat this as a reproducible
+  content-coherence corpus harness, not as runner-anchor parity.
+- `2026-05-24-default-after-native-sliding-reject-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  current no-floor default retained-State row after rejecting native fixed
+  sliding attention as a production default. It completes `10/10` retained
+  turns from a `30000` token first context, `63971` final live tokens, `27943`
+  appended tokens, `6000` generated/visible tokens, `95.053s` workload wall
+  time, `16.974s` append time, `91.146 tok/s` raw decode, `72.456 tok/s`
+  effective turn throughput, `2450.267 tok/s` first prefill, `1646.264 tok/s`
+  average append/prefill, `4.756 GiB` peak MLX memory, `9.365 GiB`
+  active-plus-cache, about `3.168 GiB` process RSS, `535.504 GiB` process
+  virtual reservation, and `9505.252 J` estimated at `100 W`. The runtime gate
+  capture intentionally does not include
+  `GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION`; the explicit diagnostic gate
+  is retained for R&D only. Content is non-empty and coherent, but the first
+  turn still exposes visible self-correction/plan scaffolding, so this row is a
+  clean performance/default-path row rather than final product-quality sign-off.
+  The same small repro shape proves why the native sliding helper is rejected:
+  the default fast lane succeeds at `109.8 tok/s` decode in
+  `2026-05-24-diagnostic-state-ramp-2k-to-5k-g16-default-after-native-sliding-reject.json`,
+  while the same run with native fixed sliding enabled fails at decode step `0`
+  with `mlx.lastError: expected a non-empty mlx_array`. Explicit runtime-gate
+  `0` values now win over fast-lane defaults so single-gate diagnostics can be
+  isolated without disabling the whole lane.
+- `2026-05-24-default-native-linear-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  current rebuilt default retained-State run after promoting
+  `GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC=1` into the fast lane. This is the best
+  current primary interactive row: `10/10` retained turns from a `30000` token
+  first context, `63671` final live tokens, `28363` appended tokens, `5280`
+  visible/generated tokens, `84.311s` workload wall time, `16.060s` append
+  time, `92.057 tok/s` raw decode, `71.911 tok/s` effective turn throughput,
+  `4.517 GiB` peak MLX memory, `6.031 GiB` cache memory, `3.165 GiB` process
+  RSS, and `8431.112 J` estimated at `100 W`. Treat process RSS as an
+  incomplete memory figure for this runner: the comparable active footprint is
+  the MLX allocator pressure, with active-plus-cache around `10.247 GiB`. Versus
+  the fresh same-shape llama.cpp anchor below, llama.cpp still leads raw decode
+  (`103.143 / 92.057 = 1.120x`), while go-mlx wins workload wall time
+  (`84.311s` versus `129.275s`) and estimated energy at the normalised
+  `100 W` draw. Memory is not a go-mlx win: llama-server was observed by
+  external `ps` at about `5.25 GiB` RSS at the end of the run, while go-mlx
+  reports about `10.247 GiB` active-plus-cache. The comparison is still not a
+  production sign-off because llama.cpp leaks control/thinking channel text and
+  consumes more of the `1024` token budget than the intended go-mlx answer
+  stream.
+- `state-ramp-profile -trace-token-phases`: retained-State workflow traces can
+  now carry the same per-token phase and native-event buckets that
+  `driver-profile` already exposed. This is instrumentation for the real
+  repeated-workflow lane, not a decode-speed claim: the focused tests pass, and
+  `BenchmarkSummariseStateRampProfileTurns_LongRampWithTrace` measures
+  `12509 ns/op`, `816 B/op`, and `12 allocs/op` after replacing native-event
+  string splitting with a prefix/dot scan. The no-trace long-ramp summary stays
+  allocation-free at `3597 ns/op`, `0 B/op`, `0 allocs/op`. Use this flag on
+  future 30k-to-70k and 30k-to-100k retained runs when diagnosing whether
+  long-context time is still hidden in lazy MLX materialisation, but keep it
+  out of default production rows unless a trace row is explicitly requested.
+- `2026-05-24-state-ramp-trace-session-phases-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  first full retained-State trace row after teaching `ModelSession.Generate` to
+  retain `TokenPhases` in `model.Metrics()`. It completes the same `30k` to
+  `70k` opencode-shaped workload at `10/10` turns, `64558` final live tokens,
+  `27943` appended tokens, `6587` generated/visible tokens, `102.121s` total
+  wall, `17.056s` append time, `90.447 tok/s` raw decode,
+  `73.269 tok/s` effective turn throughput, `4.401 GiB` peak MLX memory,
+  `9.361 GiB` active-plus-cache, about `3.184 GiB` process RSS, and
+  `10212.052 J` estimated at `100 W`. The trace has `6596` per-token phase
+  samples. The dominant bucket is `sample` at `60.180s` total and `9.124ms`
+  average per token, followed by `forward` at `12.398s` total and `1.880ms`
+  average; text decode, yield, token read, and reporting are microsecond-scale.
+  For retained stochastic turns this `sample` bucket includes the lazy logits
+  materialisation plus top-k/top-p sampling, so the next raw-decode target is
+  still MLX eval/sampling graph work, not Go output handling. Native-event
+  buckets remain empty unless `GO_MLX_TRACE_FORWARD_EVAL=1` is also enabled.
+- `2026-05-24-state-ramp-trace-split-sample-eval-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`:
+  follow-up smoke row after splitting retained stochastic trace accounting so
+  sampler graph build, `Eval` materialisation, and sampled-token readback are
+  no longer collapsed into one `sample` bucket. This is not a benchmark row; it
+  is a one-turn instrumentation check over the same `30k` seed and
+  opencode-delimited append stream. It completed `1/1` turn at `32123` final
+  live tokens, `1024` generated tokens, `95.228 tok/s` raw decode, and
+  `90.303 tok/s` effective turn throughput. The split shows `sample_eval` as
+  the real dominant bucket at `8.824s` total / `8.618ms` per token, `forward`
+  graph construction at `1.856s` total / `1.812ms` per token, and sampler graph
+  build at only `43.466ms` total / `42.447us` per token. This confirms the
+  earlier full-row `sample` finding was MLX lazy materialisation pressure, not
+  Go string/output handling or sampler-construction overhead. A focused
+  sampler-only microbench reinforces the same conclusion:
+  `BenchmarkSampler_TopKThenTopP_Vocab262k` is only `529389 ns/op`,
+  `24 B/op`, and `3 allocs/op` on the current machine, versus
+  `997718 ns/op` for the rejected legacy full-vocab top-p-then-top-k order.
+  The retained `8.6ms/token` bucket is therefore model/logit graph evaluation
+  flowing through the sampled token, not the bounded top-k/top-p sampler by
+  itself.
+- `2026-05-24-state-ramp-session-async-control-seed240524-suppresseos-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+  and
+  `2026-05-24-state-ramp-session-async-prefetch-seed240524-suppresseos-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`:
+  retained-session eval-boundary A/B after wiring `ModelSession.Generate` into
+  the existing `GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH` path. The seeded,
+  EOS-suppressed one-turn shape generated the same `1024` tokens in both rows.
+  Async prefetch improved raw decode from `93.577 tok/s` to `96.152 tok/s`,
+  effective turn throughput from `88.831 tok/s` to `91.191 tok/s`, wall from
+  `23.772s` to `23.483s`, and estimated energy at `100 W` from `2377.210 J`
+  to `2348.262 J`. Trace attribution moved the materialisation wait out of
+  `sample_eval`: `sample_eval` fell from `8.640ms/token` to `3.278ms/token`,
+  while the async wait showed up in `other` at `5.234ms/token`. This is a real
+  retained-session boundary improvement, not sampler math.
+- `2026-05-24-state-ramp-current-control-seed240524-suppresseos-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`
+  and
+  `2026-05-24-state-ramp-current-async-default-seed240524-suppresseos-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  same-binary, same-seed, no-trace full retained workflow check over `10`
+  turns. Both rows completed `10/10` turns with identical `63456` final live
+  tokens, `27903` appended tokens, and `5526` generated/visible tokens. Async
+  retained prefetch improved raw decode from `90.481 tok/s` to
+  `91.964 tok/s`, effective turn throughput from `70.731 tok/s` to
+  `71.674 tok/s`, wall from `90.371s` to `89.343s`, and estimated energy at
+  `100 W` from `9037.052 J` to `8934.274 J`. Active-plus-cache also edged down
+  from `9.719 GiB` to `9.669 GiB`. This is now promoted into
+  `DefaultGemma4FastRuntimeGates()` as
+  `GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH=1`; the rebuilt default smoke
+  `2026-05-24-state-ramp-default-async-promoted-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+  confirms the gate appears without an env override and completes the seeded
+  `1024` token turn at `95.894 tok/s` raw decode, `90.937 tok/s` effective
+  turn throughput, and `2346.068 J` estimated energy.
+- `2026-05-24-state-ramp-default-repeat-history-cleanup-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`:
+  rebuilt `lthn-mlx` after aligning retained `ModelSession.Generate` with
+  `Model.Generate` so repeat-penalty history is not copied or appended when
+  `repeat_penalty=1`. The same seeded, EOS-suppressed default one-turn smoke
+  completes `1024` generated tokens at `96.403 tok/s` raw decode,
+  `91.383 tok/s` effective turn throughput, `23.537s` wall time, and
+  `2353.682 J` estimated at `100 W`, with
+  `9716531922` bytes active-plus-cache and `492307447808` bytes process
+  virtual reservation. Treat this as a small hot-path hygiene/regression row:
+  it removes avoidable per-token slice growth in the default sampling shape,
+  but the wall/energy result is within the existing async smoke noise band and
+  does not change the open llama.cpp decode gap.
+- Host-side retained append now streams wrapped repeated-source spans into
+  `ModelSession.AppendTokens` instead of first building a copied token slice.
+  The focused benchmark records the old wrapped helper at `3378 ns/op`,
+  `16384 B/op`, `1 alloc/op`, while
+  `BenchmarkForEachRepeatedStateRampTokenSpan_Append4096Wrapped` records
+  `4.504 ns/op`, `0 B/op`, and `0 allocs/op`. The rebuilt default delimited
+  smoke
+  `2026-05-24-state-ramp-default-streamed-append-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+  remains clean at `95.712 tok/s` raw decode, `90.765 tok/s` effective turn
+  throughput, `23.512s` wall time, `2351.161 J` estimated at `100 W`,
+  `9670627890` bytes active-plus-cache, and `492284395520` bytes process
+  virtual reservation. This is a lower-memory/lower-power host-path cleanup
+  for wrapped-source long ramps; it is not claimed as a Metal decode fix.
+- Gemma 4 per-layer input views now stream from the combined PLE/projection
+  tensor one layer at a time instead of prebuilding and retaining all layer
+  views for the forward pass. The first version used generic `SliceAxis` and
+  was correctly rejected by the benchmark as allocation-neutral/noisy. The
+  corrected path uses rank-specific `Slice4` plus the new scalar-pass
+  `Reshape3`: the current
+  `BenchmarkPLE_PerLayerInputViewsSplitAll_Graph` rerun records
+  `27063 ns/op`, `833 B/op`, and `52 allocs/op`, while
+  `BenchmarkPLE_PerLayerInputViewsStreamed_Graph` records `21354 ns/op`,
+  `0 B/op`, and `0 allocs/op`. The retained all-views splitter now uses the
+  same scalar view helper and records `22471 ns/op`, `208 B/op`, and
+  `1 alloc/op` in `BenchmarkPLE_SplitPerLayerInputTensor_Graph`. Focused
+  Gemma 4 PLE correctness tests pass.
+  The rebuilt seeded one-turn retained smoke
+  `2026-05-24-state-ramp-default-ple-slice4-streamed-view-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+  completes `1024` generated/visible tokens at `95.936 tok/s` raw decode,
+  `90.967 tok/s` effective turn throughput, `23.577s` wall time, and
+  `2357.747 J` estimated at `100 W`, with `9640460118` bytes
+  active-plus-cache and `492263161856` bytes process virtual reservation.
+  The full corrected `10`-turn retained workflow row
+  `2026-05-24-state-ramp-default-ple-slice4-streamed-view-c10-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`
+  completes `10/10` turns, `63456` final live tokens, `27903` appended tokens,
+  and `5526` generated/visible tokens at `92.472 tok/s` raw decode,
+  `72.025 tok/s` effective turn throughput, `88.930s` wall time, and
+  `8892.954 J` estimated at `100 W`, with `10235431210` bytes
+  active-plus-cache and `576399851520` bytes process virtual reservation.
+  This is accepted as cumulative streaming/lifetime cleanup: it keeps the
+  workflow inside the healthy `90+ tok/s` band and improves the retained
+  effective throughput slightly versus the earlier native-linear row, but its
+  memory movement is neutral/noisy rather than a standalone memory win.
+- The `30k` to `100k` retained build-up now has a current folded-State
+  lifecycle row after the PLE view cleanup and hyper-long default correction.
+  The first same-binary folded probe,
+  `2026-05-24-state-ramp-default-ple-slice4-delimited-folded-30k-to-100k-g1024.json`,
+  is retained as the rejected A/B: the state-ramp path had re-enabled full
+  fixed Gemma 4 cache for the `100k` target, reached only `67040` live tokens
+  after `11` successful turns, and then failed the active-memory guard on turn
+  `12` (`92261571038 > 92261063065` bytes). Process RSS stayed bounded around
+  `3404316672` bytes, but the fixed-cache active allocator spike prevented
+  fold handoff.
+  The default path now keeps hyper-long state-ramp runs on paged fp16 K/V
+  instead of auto-enabling fixed cache above the `65536` long-form ceiling;
+  manual `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE` override remains a diagnostic
+  option. The rebuilt default folded row
+  `2026-05-24-state-ramp-default-paged-after-fixed-threshold-30k-to-100k-folded-g1024.json`
+  completes with no error: `23/23` retained turns, `103187` final live tokens,
+  `63973` appended tokens, `9148` generated/visible tokens, `77.509 tok/s`
+  raw decode, `56.692 tok/s` effective turn throughput, `173.735s` wall time,
+  and `17373.509 J` estimated at `100 W`. Peak MLX memory is
+  `3930481958` bytes, active MLX is `3391510954` bytes, active-plus-cache is
+  `10040041690` bytes, process virtual reservation is `761543933952` bytes,
+  and process RSS is `3390570496` bytes. The fold lifecycle writes
+  `/private/tmp/go-mlx-goal/state-fold-2026-05-24-default-paged-30k-to-100k.mvlog`
+  (`920M`), checkpoints `103188` tokens, folds to a `175` token compacted
+  state in `1.074s`, wakes it in `73.821ms`, and continues for `298` tokens at
+  `107.889 tok/s`. This closes the immediate 60k-ish retained-memory cliff in
+  the default path.
+  The follow-up replay-estimate instrumentation first reproduced the old bad
+  path in a smaller shape:
+  `2026-05-24-state-ramp-replay-estimate-smoke-10k-to-20k-g1024.json` crossed
+  the `20k` fold threshold with auto fixed-cache defaults still enabled and
+  failed the active-memory guard on turn `3`
+  (`92351224286 > 92261063065` bytes). The state-ramp fast lane now no longer
+  injects fixed-cache gates at all; fixed cache remains an explicit diagnostic
+  or `driver-profile` path, not a retained/folded-State default.
+  The corrected smoke
+  `2026-05-24-state-ramp-replay-estimate-smoke-paged-10k-to-20k-g1024.json`
+  then completes `3/3` turns at `94.636 tok/s` raw decode,
+  `85.506 tok/s` effective turn throughput, `39.645s` wall time, `3.206 GB`
+  peak MLX active memory, about `3.285 GB` RSS, and emits a same-binary replay
+  estimate of `48.867s` one-shot wall versus `39.645s` retained wall
+  (`1.23x` retained speedup, `922.196 J` saved at `100 W`).
+  The current full folded row with emitted replay estimates,
+  `2026-05-24-state-ramp-current-paged-replay-estimate-30k-to-100k-folded-g1024.json`,
+  completes `23/23` retained turns, `103187` final live tokens, `63973`
+  appended tokens, `9148` generated/visible tokens, `77.778 tok/s` raw decode,
+  `56.839 tok/s` effective turn throughput, and `173.173s` retained wall time.
+  It reports `55535708706ns` retained setup (`30k` seed prefill plus retained
+  appends) versus `757459197525ns` replay-prefill estimate and
+  `875096629732ns` one-shot/replay wall estimate. The retained path therefore
+  saves `701.923s`, is `5.053x` faster than same-binary replayed prefill, and
+  saves an estimated `70192.349 J` at the labelled `100 W` assumption. Memory
+  stays bounded in the useful sense: `3930481958` bytes peak MLX active,
+  `10040111834` bytes active-plus-cache, `3388882944` bytes RSS, and
+  `762191462400` bytes virtual reservation. The fold store is
+  `/private/tmp/go-mlx-goal/state-fold-2026-05-24-current-paged-replay-estimate-30k-to-100k.mvlog`
+  (`920M`), checkpoints `103188` tokens, folds to `175` tokens in `1.056s`,
+  wakes in `73.678ms`, and continues for `282` visible tokens at
+  `109.547 tok/s`. The retained `77.778 tok/s` raw decode and `56.839 tok/s`
+  effective-turn figures exclude the fold lifecycle. Compact itself took
+  `1.056165625s`; the full folded handoff was `3.800255584s` after adding
+  wake, continue-append, and continue-generation. New reports now emit
+  `fold.lifecycle_duration` and
+  `fold.retained_total_with_lifecycle_duration` so the compaction cost stays
+  explicit instead of being folded into decode throughput.
+- `2026-05-24-state-ramp-model-greedy-smoke-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`
+  and
+  `2026-05-24-state-ramp-model-greedy-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  current-binary retest with `GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY=1`
+  present in the runtime-gate map. These rows are now recorded as
+  inconclusive, not as model-wrapper speed evidence: `state-ramp-profile` uses
+  retained stochastic sampling (`temperature=1.0`, `top_p=0.95`, `top_k=64`),
+  and `ModelSession.Generate` therefore does not enter the direct greedy/model
+  greedy token path. The one-turn row completes at `95.570 tok/s` and the full
+  `30k` to `70k` row completes `10/10` turns at `91.065 tok/s` raw decode,
+  `72.022 tok/s` effective turn throughput, `5871` generated/visible tokens,
+  `93.746s` wall, and `10.049 GiB` active-plus-cache. Treat the deltas versus
+  the default trace row as normal sampled-output variance and answer-length
+  skew, not as a production default signal. The real retained decode target
+  remains the sampled logits/materialisation path.
+- `2026-05-24-state-ramp-native-events-split-smoke-go-mlx-gemma4-e2b-4bit-opencode-30k-r1-g64.json`:
+  diagnostic-only retained-State native-event trace with
+  `GO_MLX_TRACE_FORWARD_EVAL=1` after the sampler/eval split above. Forced
+  intermediate materialisation slows the one-turn run to `24.135 tok/s`, so do
+  not compare it as a production speed row. Its value is attribution: the
+  hidden `sample_eval` bucket drops to `56.725ms` total / `0.886ms` per token,
+  while `forward` rises to `2.590s` total / `40.467ms` per token. Ranked native
+  buckets over `64` generated tokens are attention first (`738.598ms` over
+  `2240` events), then layer output (`620.715ms`), FFN (`599.815ms`), and
+  attention residual (`448.256ms`). This confirms the retained path is still
+  eval/materialisation-bound at the Gemma 4 layer graph, not blocked on sampler
+  graph construction, token readback, decode text, or yield overhead.
+- `2026-05-24-state-ramp-native-event-details-go-mlx-gemma4-e2b-4bit-opencode-30k-r1-g64.json`:
+  follow-up diagnostic after adding `summary.native_event_details` to retained
+  State and driver profile reports. The coarse `native_events` buckets stay
+  intact, while the new exact-name summary ranks `140` layer/event buckets
+  without external `jq` scraping. The one-turn trace is diagnostic-only
+  (`23.176 tok/s` under forced materialisation), but it identifies the current
+  E2B attention target precisely: the largest exact events are
+  `gemma4.layer.00.output` at `33.706ms`, then full-attention owner layers
+  `04`, `14`, `09`, `19`, `24`, `29`, and `34` at about `28.701ms` to
+  `32.694ms` over `64` generated tokens. That matches the Gemma 4 config's
+  `4+5n` full-attention interleave and keeps the next implementation target on
+  full/global owner attention materialisation and layer-output graph boundaries,
+  not local sliding-mask construction or sampler work. The no-trace summary
+  benchmark remains allocation-free; the trace-summary benchmark intentionally
+  grows to `16008 ns/op`, `1224 B/op`, `18 allocs/op` because it preserves
+  exact event names for diagnostics only.
+- `2026-05-24-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024-paged-no-fixed-clearcache.json`:
+  diagnostic retained-State run with `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=0` and
+  generation clear-cache enabled. This proves the coherent paged retained path
+  still works on current code, but it is not yet the production answer:
+  `10/10` turns, `66879` final live tokens, `28323` appended tokens, `8530`
+  generated/visible tokens, `135.156s` workload wall time, `79.985 tok/s` raw
+  decode, `68.932 tok/s` effective turn throughput, `3.434 GiB` peak MLX
+  memory, `3.153 GiB` active MLX memory, `6.214 GiB` MLX cache memory, about
+  `9.367 GiB` active-plus-cache, `3.179 GiB` process RSS, and `13515.578 J`
+  estimated at `100 W`. Compared with the fixed-cache row, paged/no-fixed is
+  memory-safer in active allocations but slower and still carries high allocator
+  cache pressure. Treat this as confirmation that the next real win is true
+  pinned State-page decode over local sliding tails plus global owner pages, not
+  merely disabling fixed caches.
+- `2026-05-24-fresh-llamacpp-gemma4-e2b-q4km-opencode-delimited-30k-to-70k-r10-g1024.json`:
+  fresh llama.cpp server anchor against the same opencode-delimited prompt
+  shape, excluding server startup from workload timing just as the go-mlx row
+  excludes `load_duration`. Server startup to listen was about `1.50s`.
+  The workload records `10/10` turns, `67190` final live tokens, `27303`
+  appended tokens, `9867` generated tokens, `9865` visible tokens,
+  `129.275s` wall time, `103.143 tok/s` raw decode from llama.cpp timings,
+  `76.310` visible tok/s by wall, `32.948s` prompt work, `12927.452 J` at
+  `100 W`, and `10` leaked control markers. The Python harness could not call
+  `ps` from inside the sandbox, so its JSON process-memory fields are empty;
+  external polling during the run observed llama-server RSS rising to about
+  `5.25 GiB`.
+- `2026-05-24-default-native-linear-go-mlx-gemma4-e2b-4bit-opencode-30k-to-100k-r10-g1024.json`:
+  stress-only fixed-token append run with `8192` appended tokens per turn. It
+  reproduced the suspected `60k`-`70k` memory bend without OOMing: the run
+  reached `72155` live tokens on turn 5, held process RSS near `3.158 GiB`,
+  but aborted on the live stream safety guard when MLX active memory spiked to
+  `13033167410` bytes over the `12 GiB` cap. Treat this as evidence that the
+  next optimisation target is transient MLX graph/cache lifetime or append
+  materialisation under large append chunks, not resident process runaway.
+- `2026-05-24-default-fixed-cache-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  superseded rebuilt `lthn-mlx` retained-State run after making hyper-long
+  `state-ramp-profile` use a bounded Gemma 4 fixed cache by default; `10/10`
+  retained turns from a `30000` token first context, `64696` final live tokens,
+  `28363` appended tokens, `6305` visible/generated tokens, `99.556s`
+  workload wall time, `16.047s` append time, `86.949 tok/s` raw decode,
+  `71.189 tok/s` effective turn throughput, `3.160 GiB` process RSS, and
+  `9955.593 J` estimated at `100 W`. Runtime gates include
+  `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=1`,
+  `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND=1`,
+  `GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK=1`, and
+  `GO_MLX_FIXED_GEMMA4_CACHE_SIZE=70000`. It recovered about `11.8%` raw
+  decode at the time, but is now replaced by the native-linear default row
+  above. Historical visible-token floor pass/fail wording on neighbouring rows
+  is now treated as debug-only evidence.
+- `2026-05-24-sampler-only-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
+  diagnostic run after changing sampled generation to apply top-k before top-p
+  when both are configured. The matching hot-path benchmark
+  `BenchmarkSampler_(LegacyTopPThenTopK|TopKThenTopP)_Vocab262k` records
+  `1015783 ns/op` for the previous full-vocab top-p path versus
+  `539522 ns/op` for top-k-then-top-p, with both paths at `24 B/op` and
+  `3 allocs/op`. The retained workflow records `64526` final live tokens,
+  `28363` appended tokens, `6136` visible/generated tokens, `95.457s` wall
+  time, `89.483 tok/s` raw decode, `72.535 tok/s` effective turn throughput,
+  `3.160 GiB` process RSS, and `9545.749 J` estimated at `100 W`. Treat this
+  as a valid local optimisation delta, not a production-accepted row; the
+  historical `256` visible-token floor on this row is now classified as a debug
+  guard, not a scientific acceptance criterion.
+- `2026-05-24-diagnostic-greedy-output-rmsnorm-sampler.json` and
+  `2026-05-24-diagnostic-greedy-output-sampler-only.json`: rejected Gemma 4
+  RMSNorm `(1 + weight)` pre-fold for the local `mlx-community` E2B 4bit
+  snapshot. Adding `1` to every Gemma 4 norm scale kept speed flat but made
+  temperature-zero output collapse into token noise. Inspecting the checkpoint
+  showed direct-scale-looking norm tensors at load time
+  (`input_layernorm.weight` values such as `6.625..83`, `q_norm.weight` around
+  `0.984`), so `precomputeGemma4ScaledWeights` remains a direct copy for this
+  MLX checkpoint family. This is a correctness guard against blindly applying
+  the zero-centred Gemma 3 rule to already-converted Gemma 4 MLX weights.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128.json`
+  and `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-fixed.json`:
+  focused decode traces against a `51242` token prompt and `128` generated
+  tokens. The paged hyper-long default measured `79.177 tok/s`; token phase
+  timing showed `12.628ms` average token time with `11.142ms` in
+  `sample_eval`, confirming the bottleneck is lazy MLX graph materialisation,
+  not Go token/text handling. Enabling bounded fixed cache plus the sliding
+  local-window cap measured `90.952 tok/s`, reducing average `sample_eval` to
+  `9.396ms` and confirming the paged hyper-long cache layout was a decode
+  slowdown. The current sampler-only build keeps the same temperature-zero
+  shape at `90.556 tok/s`; non-final token phases average `11.098ms`, with
+  `9.558ms` in lazy forward materialisation and `1.511ms` in next-token graph
+  construction. This keeps the next raw-decode target on collapsing or
+  compiling the per-token Gemma 4 forward graph, not on driver text handling or
+  sampler allocations.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-default-post-keqv.json`:
+  fresh rebuilt default trace after the compiled/native guard fixes below;
+  `128/128` generated tokens, `51242` prompt tokens, `90.347 tok/s` raw decode,
+  `2379.488 tok/s` prefill, `22.952s` total time including prefill,
+  `3.164 GiB` process RSS, `4.650 GiB` peak MLX memory, and `5.778 GiB`
+  reported cache memory. This is consistent with the previous fixed-cache
+  default trace and confirms the stability guards did not regress the accepted
+  default lane.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-default-after-full-gate.json`:
+  current rebuilt default after the per-layer full-attention safety gate;
+  `128/128` generated tokens, `51242` prompt tokens, `90.453 tok/s` raw decode,
+  `2373.521 tok/s` prefill, `23.043s` total time including prefill, and
+  `3.167 GiB` process RSS. Token phases still place almost all steady decode
+  time in lazy MLX materialisation (`9.426ms` average `sample_eval`, which is
+  `Eval(next)` materialising the forward graph in the greedy path), so the raw
+  parity target remains graph/eval-boundary work rather than driver text or
+  sampler allocation work.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g512-borrowed-suppress.json`:
+  rebuilt after the direct-greedy suppression tensor was made generation-local
+  instead of per-token and single-token Gemma 4 decode stopped allocating an
+  unused runtime mask cache / heap `sharedKV` scratch. The longer trace
+  generates `512/512` tokens from the same `51242` token prompt at
+  `90.554 tok/s`, `2377.046 tok/s` prefill, `27.249s` total wall time,
+  `3.157 GiB` process RSS, and empty stderr. The focused benchmark pair
+  `BenchmarkDecodeLoop_LastTokenGreedySuppressed_(FreshArray|BorrowedArray)`
+  records `233154 ns/op`, `72 B/op`, `2 allocs/op` for the old per-token
+  suppress-array path versus `223576 ns/op`, `0 B/op`, `0 allocs/op` for the
+  borrowed-array path. Keep the patch for long-output allocation pressure, but
+  do not count it as a raw decode parity fix: token phases remain dominated by
+  lazy forward materialisation at `9.427ms` average `sample_eval`.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g32-native-events-borrowed-suppress.json`:
+  diagnostic-only `GO_MLX_TRACE_FORWARD_EVAL=1` rerun after the same cleanup.
+  Forced materialisation slows decode to `24.172 tok/s`, but moves the hidden
+  lazy work into the `forward` bucket and ranks the current evaluated graph
+  costs as attention first (`396.509ms` over `1085` events), then layer output
+  (`310.796ms`), FFN (`296.605ms`), and attention residual (`220.893ms`). This
+  reconfirms the next material speed path is a fused/model-level Gemma 4
+  forward boundary or attention/FFN kernel work, not more Go-side sampler or
+  token text allocation cleanup.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g512-default-native-linear-rerun.json`:
+  accepted local decode improvement after promoting
+  `GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC=1` into the Gemma 4 fast default gates
+  and guarding the custom q4/q8 matvec kernels against partial final
+  threadgroups. The rebuilt default lane report includes the native-linear
+  gate without passing `-native-linear-matvec` explicitly and records `512/512`
+  generated tokens from the `51242` token prompt at `91.650 tok/s`,
+  `2375.876 tok/s` prefill, `27.154s` total time including prefill,
+  `5.279 GiB` peak MLX memory, `5.788 GiB` cache memory, and `3.181 GiB`
+  process RSS. The first default trace after changing the kernel source,
+  `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g512-default-native-linear.json`,
+  measured only `87.875 tok/s` because token step 1 paid a one-time custom
+  Metal kernel materialisation cost; the immediate rerun recovered to the
+  accepted row above. Keep the gate as a decode win for warmed agent
+  processes, but account for first-use kernel compilation in cold-start wall
+  reports.
+- Rejected construction-path probes after the borrowed suppression cleanup:
+  an inline fixed-mask lookup cache measured a nice synthetic reuse path
+  (`BenchmarkAttention_FixedMaskSet_ReuseInline` at `6.217 ns/op`,
+  `0 B/op`, `0 allocs/op`), but the real `51242` prompt / `512` token trace
+  regressed to `89.840 tok/s` and `1.632ms` average forward construction, so it
+  was reverted. Hoisting the native fixed-attention scale scalar into a
+  borrowed model array was also rejected before a real trace:
+  `BenchmarkDecodeLoop_FixedSingleTokenAttention_FreshScale` measured
+  `244653 ns/op` while the borrowed-scale variant measured `248218 ns/op`, both
+  at `0 B/op`; this confirms the current `FromValue(scale)` path is not an
+  allocation issue worth promoting.
+- Additional rejected decode probes from the native-linear sweep:
+  reusing the same Go `Array` wrapper for Gemma 4 K=V instead of cloning the
+  raw K projection passed focused Metal tests but regressed the real
+  `51242` prompt / `512` token trace to `88.747 tok/s`, so it was reverted.
+  `-native-gemma4-fixed-owner-attention -native-gemma4-fixed-owner-attention-residual`
+  measured `88.7 tok/s` on a `256` token probe and remains off. The narrower
+  `-native-gemma4-attention-o-matvec` probe measured `89.7 tok/s` at `512`
+  tokens, which is not enough to promote over the broader native-linear gate.
+  The native-linear promotion is covered by
+  `TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good`,
+  `TestDenseMatVec_NativeMLPMatchesGoGraph_Good`, and the production-gate
+  tests; the dense matvec tests now compare the custom kernels against a CPU
+  q4 affine reference so tiny MLX fallback-kernel availability cannot mask
+  custom-kernel regressions.
+- Expert-ID native dispatch shape cleanup: the MoE helper path now passes
+  stack-backed output-shape arrays into `MetalKernel.DispatchOne` instead of
+  per-call slice literals. This does not remove the remaining tiny dispatch
+  allocation (`8 B/op` on matvec/split gate-up and `4 B/op` on weighted sum),
+  so it is not the evaluated-graph parity fix. It is still a valid local
+  hot-path cleanup: same-session `BenchmarkExpertIDMatVec_Q4_Gemma4_26B`
+  improved from `202203 ns/op` to `182995 ns/op`,
+  `BenchmarkExpertIDMatVec_Q4_Tiny` from `180817` to `159975`,
+  `BenchmarkExpertIDGELUSplitGateUpMatVec_Q4_Tiny` from `175390` to `164880`,
+  and `BenchmarkExpertIDWeightedMatVecSum_Q4_Tiny` from `173990` to `147444`.
+  Focused expert-ID correctness tests pass. Treat this as 26B MoE helper
+  hygiene, not an E2B retained decode win.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-native-model-greedy-keqv.json`:
+  model-level native greedy diagnostic after fixing Gemma 4 K=V handling in
+  the compiled/native layer graph. It completes cleanly at `89.235 tok/s` for
+  `128/128` generated tokens, but it is not faster than the default path. The
+  follow-up
+  `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-native-model-greedy-pinner.json`
+  moves its per-token C/Go argument buffers to normal-layer-count
+  stack-backed scratch pinned with `runtime.Pinner` and reuses the borrowed
+  suppression tensor; the real Metal tests pass and the diagnostic improves to
+  `90.174 tok/s`, but it still trails the default `90.453 tok/s` control.
+  The later retained-State rows that set
+  `GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY=1` are not valid evidence for this
+  wrapper because retained `state-ramp-profile` uses stochastic sampling, so
+  `ModelSession.Generate` never enters the greedy-token shortcut. Keep this as
+  a driver-profile-only greedy diagnostic unless a true greedy retained lane is
+  explicitly being tested.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-compiled-keqv.json`:
+  per-layer compiled decode remains rejected. The K=V graph mismatch was fixed,
+  output and K/V shape guards were added, and the previous panic path now fails
+  as a controlled empty-logits report after 4 generated tokens instead of
+  corrupting cache state. Do not use `-compiled-gemma4-layer` for acceptance
+  until the full local/global head-dim and eval-boundary semantics are fixed.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-native-layer-gated2.json`:
+  per-layer native decode remains rejected. The paged-cache boundary now skips
+  before CGO when no valid page exists, removing the missing-`prev_keys` class
+  from that path, but the opt-in layer wrapper still hits Gemma 4 local/global
+  head-dimension mismatches such as `(1,1,256)` versus `(1,1,512)`. Do not
+  promote `-native-gemma4-layer` / `-native-gemma4-moe-layer` as defaults.
+- `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g32-native-layer-layerlog.json`,
+  `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-native-layer-full-skip.json`,
+  and
+  `2026-05-24-decode-trace-go-mlx-gemma4-e2b-4bit-opencode-p51k-g128-compiled-layer-full-skip.json`:
+  the layer-log trace identifies the first bad opt-in native layer as Gemma 4
+  layer `9`, type `full_attention`, with the real E2B split
+  `(head_dim=256, global_head_dim=512)`. The per-layer native/compiled wrappers
+  now skip those full-attention global-head-dim layers before CGO; the guard is
+  covered by `TestDecode_gemma4PerLayerDecodeLayerUnavailableReason_Good` and
+  `BenchmarkGemma4PerLayerDecodeLayerUnavailableReason_FullGlobal`
+  (`1.486 ns/op`, `0 B/op`, `0 allocs/op`). The opt-in lanes now complete
+  instead of panicking or empty-logit aborting, but they are slower than the
+  default: native-layer full-skip records `68.464 tok/s` and compiled-layer
+  full-skip records `63.364 tok/s` on the same `51242` prompt / `128` generated
+  token diagnostic. This is a safety and evidence fix only, not a production
+  speed path.
+- `2026-05-23-current-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`: fresh
+  rebuilt `lthn-mlx` retained-State run against
+  `mlx-community/gemma-4-e2b-it-4bit`; `10` retained turns from a `30000` token
+  first context, `63323` final live tokens, `28363` appended tokens, `4931`
+  visible/generated tokens, `91.224s` workload wall time excluding `1.176s`
+  model load, `16.426s` append time, `2635.838 tok/s` initial prefill,
+  `1726.700 tok/s` retained append, `77.761 tok/s` raw decode,
+  `61.759 tok/s` effective turn throughput, `3.142 GiB` process RSS, and
+  `9122.440 J` estimated at `100 W`. This is a fresh wall/energy win over the
+  same llama.cpp harness, but it is not an accepted production row because it
+  predates the current default lane and used a historical `256` visible-token
+  debug floor.
+- `2026-05-23-current-llamacpp-gemma4-e2b-q4km-opencode-r10-g1024.json`:
+  fresh llama.cpp server anchor against
+  `gemma-4-E2B-it-Q4_K_M.gguf`; `10/10` turns, `67563` final live tokens,
+  `27303` appended tokens, `10240` generated tokens, `10238` visible tokens,
+  `133.629s` workload wall time after the server was already healthy,
+  `34.162s` prompt time, `98.807s` decode time, `103.636 tok/s` raw decode,
+  `76.615` visible tok/s wall throughput, and `13362.879 J` estimated at
+  `100 W`. This row remains the raw decode anchor, but not a clean
+  answer-volume anchor: every turn contains a visible orphan `<channel|>`
+  marker and uses the full generation budget.
 
 - `2026-05-21-after-hotpaths-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
   `10` retained turns from a `30000` token first context, `64178` final live
@@ -50,28 +766,28 @@ next canonical runtime report set is regenerated:
   `10189.769 J` estimated at `100 W`.
 - `2026-05-21-cache-pageview-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
   diagnostic run after reducing paged K/V append churn; `9` turns ok and `1`
-  below the visible-token floor, `63640` final live tokens, `28363` appended
+  debug visible-token annotation, `63640` final live tokens, `28363` appended
   tokens, `5249` visible/generated tokens, `94.851s` wall time, `16.096s`
   append time, `77.495 tok/s` raw decode, `62.607 tok/s` effective turn
   throughput, `3523 MB` process RSS, and `9485.066 J` estimated at `100 W`.
   This row is useful for local delta tracking but is not an accepted production
-  row because one turn missed the visible-token floor.
+  row because it predates the corrected natural-output methodology.
 - `2026-05-21-cache-shape-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
   diagnostic run after caching paged K/V page layout metadata; `10/10` retained
   turns, `63973` final live tokens, `28363` appended tokens, `5582`
   visible/generated tokens, `99.460s` wall time, `16.162s` append time,
   `77.221 tok/s` raw decode, `63.107 tok/s` effective turn throughput,
   `3529 MB` process RSS, and `9945.972 J` estimated at `100 W`. This row
-  restores a clean floor pass after the bookkeeping cleanup but still does not
-  close raw decode.
+  restores the expected output shape after the bookkeeping cleanup but still
+  does not close raw decode.
 - `2026-05-21-cache-scratch-go-mlx-gemma4-e2b-4bit-opencode-r10-g1024.json`:
   diagnostic run after reusing borrowed page-state slice backing arrays; `8`
-  turns ok and `2` below the visible-token floor, `62963` final live tokens,
+  turns ok and `2` debug visible-token annotations, `62963` final live tokens,
   `28363` appended tokens, `4571` visible/generated tokens, `85.298s` wall
   time, `16.031s` append time, `78.521 tok/s` raw decode, `61.554 tok/s`
   effective turn throughput, `3510 MB` process RSS, and `8529.827 J`
-  estimated at `100 W`. This is the current fastest raw-decode diagnostic in
-  this local sequence, but the failed floor means it is not a production row.
+  estimated at `100 W`. This is a useful historical local diagnostic, not a
+  production row under the corrected natural-output methodology.
 - `2026-05-21-current-llamacpp-gemma4-e2b-q4km-opencode-r10-g1024.json`:
   `10/10` llama.cpp turns, `67563` final live tokens, `27303` appended tokens,
   `10240` generated tokens, `10237` visible tokens, `131.912s` wall time,
@@ -82,13 +798,16 @@ next canonical runtime report set is regenerated:
   baseline.
 
 Interpretation: go-mlx's wall time is lower in these pairs and the llama.cpp
-extra output is expected because that comparator leaked thinking-channel text.
-Do not reject the retained-State wall-time angle on token count alone. The
-remaining hard speed gap is raw decode: go-mlx is still about `1.34x` behind
-llama.cpp (`105.486 / 78.521`). That is not a small calibration delta, and it
-cannot be treated as a production pass. The next optimisation target is the
-native decode/eval boundary and long-context attention layout described in
-`IDEAS.md`, not more short-output benchmark rows.
+extra output is expected because that comparator leaked thinking/control-channel
+text. Do not reject the retained-State wall-time angle on token count alone:
+the fresh 2026-05-24 default workload finished `34.073s` faster than the
+2026-05-23 llama.cpp anchor (`25.50%` less wall time and estimated energy at
+the same `100 W` assumption) while producing a clean `10/10` go-mlx row. The
+remaining hard speed gap is raw decode: go-mlx is still about `1.19x` behind
+llama.cpp (`103.636 / 86.949`). That is no longer the earlier `1.33x` gap, but
+it is still too large to treat as a raw-decode production pass. The next
+optimisation target is the native decode/eval boundary and long-context
+attention layout described in `IDEAS.md`, not more short-output benchmark rows.
 
 Latest local microbenchmark delta: `BenchmarkPagedKVCache_AppendSingleTokenPageConcat_128`
 improved from about `53168 B/op` and `3833 allocs/op` to `17472 B/op` and
@@ -113,14 +832,18 @@ Current open gates:
       thinking-channel leakage reported side by side rather than used to hide
       the speed result.
 - [ ] Raw decode is within the acceptable calibration band. The current gap is
-      `1.36x` versus llama.cpp, so this remains the primary code gap.
+      `1.19x` versus llama.cpp on the clean retained row, so this remains the
+      primary code gap.
 - [ ] The default CLI path uses the fastest safe settings without requiring
       hidden extra flags.
 - [ ] Long-output story/book turns remain coherent with `max_tokens` in the
       thousands, not only diagnostic `128` token outputs.
-- [ ] The `30k` to `100k` warm build-up and folded-State lifecycle are rerun
+- [x] The `30k` to `100k` warm build-up and folded-State lifecycle are rerun
       after the decode/eval-boundary fixes and compared against one-shot/replay
-      behaviour.
+      behaviour. The retained folded lifecycle now passes on the default paged
+      hyper-long path and the current report emits same-binary replay estimates:
+      retained wall `173.173s` versus `875.097s` replay estimate, a `5.053x`
+      retained speedup and `70192.349 J` estimated saved at `100 W`.
 - [ ] The seven `mlx-community` Gemma 4 E2B formats (`mxfp4`, `mxfp8`, `4bit`,
       `5bit`, `6bit`, `8bit`, `bf16`) are listed with go-mlx support status and
       llama.cpp anchors where a comparable GGUF quant exists.
@@ -292,8 +1015,8 @@ enough:
 | Rejected E2B 100k cache-only chunk prefill diagnostic | A go-mlx diagnostic now exists behind `GO_MLX_ENABLE_CACHE_ONLY_CHUNK_PREFILL=1` that evaluates cache state only for intermediate prefill chunks and delays logits materialisation until the final chunk, matching the broad MLX-LM prefill shape more closely. On the same 100k/1024x10 workload it improves cold prefill from `157.168s` / `642.657 tok/s` to `116.210s` / `869.159 tok/s`, but the run fails `10/10` on the repeated-sentence quality guard and decode remains around `43.8 tok/s`. The summed failed diagnostic wall time is `365.468s`, still far behind the `mlx_lm` cached row, so this path is gated off by default and remains R&D evidence only. See `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-cacheonly-prefill-r46-ctx131072-g1024-r10-energy100w.json` |
 | Rejected E2B model-native fp16/rotating 128Ki diagnostic | The local `mlx-community/gemma-4-e2b-it-4bit` config declares `text_config.max_position_embeddings=131072`, i.e. the model's `128Ki` cap, so the 100k prompt diagnostics are under the model limit. The model-native `fp16`/rotating cache path is safe at `28548` prompt tokens (`4.702 GB` active MLX) and `52677` prompt tokens (`6.199 GB` active MLX), including when the context ceiling is set to `131072`. It then fails the `12 GiB` active guard around the `80k` prompt-token shape at `28808918294` active bytes, and fails the 100k shape at `64794744442` active bytes. Smaller `256`-token prefill chunks worsen the 80k failure to `51768088226` active bytes; rotating cache copy-detach and full-attention layer eval-boundary diagnostics were flat and removed from source. This rejects model-native `fp16`/rotating as the 100k production shortcut; the viable target remains a fused paged/global-attention or zero-copy state layout. See `docs/runtime/2026-05-20-long-context-gap-diagnosis.md` |
 | Current E2B 100k vLLM Metal attempt | The configured vLLM Metal runner (`vllm 0.20.0+cpu` with the Metal plugin active) was launched from `/private/tmp` with `vllm bench latency --max-model-len 131072 --input-len 100935 --output-len 1024 --batch-size 1 --num-iters 1 --num-iters-warmup 0`. It reaches `MLX device set to: Device(gpu, 0)` and enables chunked prefill at `16384`, then fails during MLX-LM strict model load on the same Gemma 4 shared-K/V extra parameter class. No latency JSON is written, so this remains a documented compatibility failure rather than a throughput datapoint. See `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stdout` and `docs/runtime/2026-05-20-vllm-metal-gemma4-e2b-4bit-100k-latency-p100935-g1024.stderr` |
-| Current E2B 100k retained 10-chapter book pass | `chapter-profile` now renders the Gemma 4 chat template directly for retained sessions, strips thinking before appending assistant history, and accepts a natural model stop once the visible-token floor and quality guards pass while still rejecting max-token exhaustion before a chapter marker. The current E2B q4 100k book run uses `context=131072`, `prompt_repeat=46`, `chapters=10`, `chapter_max_tokens=8192`, `chapter_min_tokens=768`, thinking enabled, `temperature=1.0`, `top_p=0.95`, and `top_k=64`. It records `10/10` successful turns, `11425` generated/visible tokens, chapter visible lengths from `979` to `1484`, `482.081s` wall time, `41.442 tok/s` average decode, `578.182 tok/s` average prefill, `4.261 GiB` peak MLX active memory, `5.771 GiB` peak process RSS, `6.546 GiB` process peak RSS, `953.339 GiB` process virtual reservation, and `48208.084 J` at the normalised `100 W` estimate, with empty stderr. The stricter `chapter_min_tokens=1024` probe is rejected but informative: chapter 2 improved from `803` to `936` visible tokens after the paragraph prompt fix but still naturally stopped below the strict floor. See `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md` and the captured markdown at `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-book.md` |
-| Benchmark safety correction | The later 10-chapter full-book attempt invalidated the assumption that short retained-story smokes and post-run metrics were enough. E2B fresh-history runs degenerated into repeated tokens, and one run was killed by the OS before writing a complete report. `chapter-profile` now records `safety_limits`, derives default resident limits from the resolved memory plan plus a `30%` active-memory headroom for live-eval allocator transients, checks memory after load, during token streaming, after prefill, and after each turn, accepts natural model stops only after the real-workload floor is satisfied, rejects max-token-truncated chapters before they can become accepted story context, cancels repeated sampled suppressed-token loops from the probe callback, rejects empty visible Gemma 4 turns, repeated visible lines/sentences, fragmented visible output, and meta-planning/outline output, exposes JSON-visible `repeat_penalty`, captures profile panics as JSON errors, and carries process virtual/resident peaks in the summary. `driver-profile` now has the same JSON-visible active/RSS memory guards, live stream memory checks, repeated sampled-token cancellation, sampled-token evidence, quality guards, panic capture, and failed-run memory retention; process virtual memory is recorded by default and enforced only when explicitly capped because absolute MLX virtual address-space reservation produced false failures on the paged 100k lane. The sampler now suppresses banned tokens before top-p/top-k so dominant special tokens cannot collapse sampling back to token `0`. See `docs/runtime/2026-05-20-chapter-profile-safety.md`. The raw compact 10-heading book at `docs/runtime/2026-05-20-go-mlx-gemma4-26b-a4b-q4-raw-unaccepted-c10-g128-rp105-book.md` remains explicitly not accepted benchmark evidence; the current accepted E2B 100k book evidence is recorded separately in `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md` |
+| Current E2B 100k retained 10-chapter book pass | `chapter-profile` now renders the Gemma 4 chat template directly for retained sessions, strips thinking before appending assistant history, records natural model stops, and rejects max-token exhaustion before a chapter marker. The current E2B q4 100k book run uses `context=131072`, `prompt_repeat=46`, `chapters=10`, `chapter_max_tokens=8192`, `chapter_min_tokens=768`, thinking enabled, `temperature=1.0`, `top_p=0.95`, and `top_k=64`. It records `10/10` successful turns, `11425` generated/visible tokens, chapter visible lengths from `979` to `1484`, `482.081s` wall time, `41.442 tok/s` average decode, `578.182 tok/s` average prefill, `4.261 GiB` peak MLX active memory, `5.771 GiB` peak process RSS, `6.546 GiB` process peak RSS, `953.339 GiB` process virtual reservation, and `48208.084 J` at the normalised `100 W` estimate, with empty stderr. The stricter `chapter_min_tokens=1024` probe is debug-only: chapter 2 improved from `803` to `936` visible tokens after the paragraph prompt fix but still naturally stopped below that artificial threshold. See `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md` and the captured markdown at `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-current-realbook-ctx131072-c10-g8192-min768-naturalstop-thinking-book.md` |
+| Benchmark safety correction | The later 10-chapter full-book attempt invalidated the assumption that short retained-story smokes and post-run metrics were enough. E2B fresh-history runs degenerated into repeated tokens, and one run was killed by the OS before writing a complete report. `chapter-profile` now records `safety_limits`, derives default resident limits from the resolved memory plan plus a `30%` active-memory headroom for live-eval allocator transients, checks memory after load, during token streaming, after prefill, and after each turn, rejects max-token-truncated chapters before they can become accepted story context, cancels repeated sampled suppressed-token loops from the probe callback, rejects empty visible Gemma 4 turns, repeated visible lines/sentences, fragmented visible output, and meta-planning/outline output, exposes JSON-visible `repeat_penalty`, captures profile panics as JSON errors, and carries process virtual/resident peaks in the summary. Visible-token floors are debug guards only, not content-quality proof. `driver-profile` now has the same JSON-visible active/RSS memory guards, live stream memory checks, repeated sampled-token cancellation, sampled-token evidence, quality guards, panic capture, and failed-run memory retention; process virtual memory is recorded by default and enforced only when explicitly capped because absolute MLX virtual address-space reservation produced false failures on the paged 100k lane. The sampler now suppresses banned tokens before top-p/top-k so dominant special tokens cannot collapse sampling back to token `0`. See `docs/runtime/2026-05-20-chapter-profile-safety.md`. The raw compact 10-heading book at `docs/runtime/2026-05-20-go-mlx-gemma4-26b-a4b-q4-raw-unaccepted-c10-g128-rp105-book.md` remains explicitly not accepted benchmark evidence; the current accepted E2B 100k book evidence is recorded separately in `docs/runtime/2026-05-20-gemma4-e2b-current-100k-realwork.md` |
 | Current C006 report-file full-book artifact | `chapter-profile` now accepts `-report-file` so long-form JSON evidence can be written directly by the runner instead of depending on shell redirection. The current C006 poetry/mathematics book run uses `mlx-community/gemma-4-e2b-it-4bit`, `context=131072`, `chapters=10`, `chapter_max_tokens=8192`, `chapter_min_tokens=512`, thinking enabled, `temperature=1.0`, `top_p=0.95`, `top_k=64`, `cache_mode=paged`, and a normalised `100 W` power estimate. It records `10/10` successful turns, `8201` generated/visible tokens, chapter visible lengths from `668` to `1351`, `105.947s` wall time, `80.343 tok/s` average decode, `2676.126 tok/s` average prefill, `3.396 GB` active MLX memory, `3.611 GB` process RSS, `638.946 GB` process virtual reservation, and `10594.699 J` estimated energy. Operator review accepted the prompt/template path because the final chapter ended with the requested silence and stayed on point, so this is the accepted default small-model continuation lane. The stricter report-file neighbour with `chapter_min_tokens=640` failed only because chapter 8 naturally stopped at `563` visible tokens; no OOM, repeated-token, or max-token-truncation failure occurred. See `docs/runtime/2026-05-20-gemma4-e2b-c006-report-file-book.md`, `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-energy100w.json`, and `docs/runtime/2026-05-20-go-mlx-gemma4-e2b-4bit-c006-book-ctx131072-c10-g8192-min512-thinking-current-book.md` |
 | Current production benchmark index | `docs/runtime/2026-05-20-production-benchmark-index.md` is the canonical replay map for the current E2B production lane. It lists the shared-full-K/V go-mlx 100k retained workflow, accepted 100k book, accepted C006 continuation book, current `mlx_lm` cached winner, current llama.cpp cached server anchor, current llama.cpp cold calibration, vLLM Metal load failure, seven-format E2B go-mlx matrix, and external per-quant rows. The same-shape runner-anchor gate is now closed, but the index does not close production: it explicitly keeps the remaining long-context runner gap and runtime-fragment cleanup as open work |
 | Current E2B seven-format go-mlx matrix refresh | `docs/runtime/2026-05-20-gemma4-e2b-quant-matrix.md` reruns all seven local `mlx-community` E2B formats with `driver-profile -report-file`, `README.md` through the Gemma 4 chat template, `2205` prompt tokens, `context=32768`, paged cache, `prefill_chunk_size=512`, `3x128` generated tokens, hidden output, and `100 W` normalised energy. The raw go-mlx side is now replay-grade: `4bit` records `107.914 tok/s`, `5bit` `76.489`, `6bit` `73.411`, `8bit` `78.326`, `bf16` `27.703`, `mxfp4` `84.282`, and `mxfp8` `74.631`. MXFP4 initially crashed in the host suppressed-token fallback; `Array.Floats()` now materialises lazy float32 arrays before `mlx_array_data_float32`, and the rerun completes. External rows are recorded separately |
@@ -678,7 +1401,10 @@ agentic workflow win.
   decode value before the next sampling read. It is neutral rather than useful:
   the 3-run target rerun averaged `46.233006105790245 tok/s`, effectively the
   default paged-cache band, because the loop has little CPU-side work to overlap
-  with Metal execution. It remains disabled by default. The next cache probe
+  with Metal execution. That old non-session driver-profile result was later
+  superseded for retained `ModelSession.Generate` by the seeded state-ramp rows
+  above, where the same existing gate produced a measurable full-workflow win
+  and was promoted into the Gemma 4 fast lane. The next cache probe
   attacked the local cache mismatch where go-mlx concatenated the last
   paged K/V block on every decode token. `GO_MLX_ENABLE_PAGED_KV_PREALLOC=1`
   keeps pages at fixed capacity and updates visible slices instead. It was

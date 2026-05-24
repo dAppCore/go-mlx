@@ -494,6 +494,7 @@ func (c *RotatingKVCache) Detach() {
 type FixedKVCache struct {
 	keys, values              *Array
 	slidingIndices, lastIndex *Array
+	retired                   []*Array
 	storageDType              DType
 	hasStorageDType           bool
 	offset                    int
@@ -649,6 +650,7 @@ func (c *FixedKVCache) overflowAttentionContext(fullK, fullV *Array) (*Array, *A
 }
 
 func (c *FixedKVCache) ensureShape(batch, heads, keyDim, valueDim int32, keyType, valueType DType) {
+	c.releaseRetired()
 	// Steady-state fast path: trust the cached dims rather than allocating
 	// fresh []int32 via Array.Shape() on every Update.
 	if c.shapeCached && c.keys != nil && c.values != nil &&
@@ -779,7 +781,7 @@ func (c *FixedKVCache) BorrowedFixedState() FixedKVState {
 }
 
 func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVState {
-	Free(c.keys, c.values)
+	c.retireAfterNextEval(c.keys, c.values)
 	c.keys = k
 	c.values = v
 	c.offset += seqLen
@@ -791,7 +793,7 @@ func (c *FixedKVCache) ReplaceFixedFromNative(k, v *Array, seqLen int) FixedKVSt
 }
 
 func (c *FixedKVCache) ReplaceFixedFromNativeBorrowed(k, v *Array, seqLen int) FixedKVState {
-	Free(c.keys, c.values)
+	c.retireAfterNextEval(c.keys, c.values)
 	c.keys = k
 	c.values = v
 	c.offset += seqLen
@@ -836,6 +838,7 @@ func (c *FixedKVCache) Len() int    { return c.length }
 
 func (c *FixedKVCache) Reset() {
 	Free(c.keys, c.values, c.slidingIndices, c.lastIndex)
+	c.releaseRetired()
 	c.keys = nil
 	c.values = nil
 	c.slidingIndices = nil
@@ -843,6 +846,29 @@ func (c *FixedKVCache) Reset() {
 	c.offset = 0
 	c.length = 0
 	c.shapeCached = false
+}
+
+func (c *FixedKVCache) RetireAfterNextEval(arrays ...*Array) {
+	c.retireAfterNextEval(arrays...)
+}
+
+func (c *FixedKVCache) retireAfterNextEval(arrays ...*Array) {
+	if c == nil || len(arrays) == 0 {
+		return
+	}
+	for _, arr := range arrays {
+		if arr != nil && arr.Valid() {
+			c.retired = append(c.retired, arr)
+		}
+	}
+}
+
+func (c *FixedKVCache) releaseRetired() {
+	if c == nil || len(c.retired) == 0 {
+		return
+	}
+	Free(c.retired...)
+	c.retired = nil
 }
 
 func (c *FixedKVCache) Detach() {
@@ -928,15 +954,15 @@ type PagedKVCache struct {
 	// (rank 4 is the only KV-cache shape rank in use.)  The slices are
 	// passed down to helpers within the same call frame (canAppendToLastPage,
 	// append* helpers, cachePageView) and never retained beyond the Update.
-	kShapeScratchArr [4]int32
-	vShapeScratchArr [4]int32
-	materializedLength  int
-	storageDType        DType
-	hasStorageDType     bool
-	offset              int
-	length              int
-	maxSize             int
-	pageSize            int
+	kShapeScratchArr   [4]int32
+	vShapeScratchArr   [4]int32
+	materializedLength int
+	storageDType       DType
+	hasStorageDType    bool
+	offset             int
+	length             int
+	maxSize            int
+	pageSize           int
 	// preallocStorage is true when pages have storage = c.pageSize (prealloc
 	// path); false when storage equals the actual fill length (concat path).
 	// Set lazily on first page append; cleared on Reset.  Used by visiblePage
@@ -1947,4 +1973,3 @@ func cacheTail(k, v *Array, maxSize int) (*Array, *Array) {
 	return Slice4(k, 0, 0, int32(start), 0, kShape[0], kShape[1], kShape[2], kShape[3]),
 		Slice4(v, 0, 0, int32(start), 0, vShape[0], vShape[1], vShape[2], vShape[3])
 }
-

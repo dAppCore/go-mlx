@@ -59,12 +59,14 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateExpertIDFused,
 		Gemma4FastRuntimeGateSortedExpertPrefill,
 		Gemma4FastRuntimeGateNativeMLPMatVec,
+		Gemma4FastRuntimeGateNativeLinearMatVec,
 		Gemma4FastRuntimeGateNativeRouterMatVec,
 		Gemma4FastRuntimeGateNativeRouterTopK,
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateDirectGreedyToken,
 		Gemma4FastRuntimeGateGenerationStream,
+		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	} {
 		if !seen[want] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, missing %s", gates, want)
@@ -74,8 +76,8 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC",
 		Gemma4FastRuntimeGateFixedGemma4Sliding,
+		Gemma4FastRuntimeGateNativeFixedSliding,
 	} {
 		if seen[rejected] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, should exclude rejected gate %s", gates, rejected)
@@ -100,12 +102,13 @@ func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLong_Good(t *testi
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateFixedGemma4Sliding,
+		Gemma4FastRuntimeGateNativeFixedSliding,
 	} {
 		if seen[rejected] {
 			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, should exclude %s for hyper-long context", gates, rejected)
 		}
 	}
-	if !seen[Gemma4FastRuntimeGateGenerationStream] || !seen[Gemma4FastRuntimeGateExpertIDMatVec] || !seen[Gemma4FastRuntimeGatePagedDecodeFastConcat] {
+	if !seen[Gemma4FastRuntimeGateGenerationStream] || !seen[Gemma4FastRuntimeGateAsyncDecodePrefetch] || !seen[Gemma4FastRuntimeGateExpertIDMatVec] || !seen[Gemma4FastRuntimeGatePagedDecodeFastConcat] {
 		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing non-fixed fast gates", gates)
 	}
 }
@@ -120,6 +123,7 @@ func TestProductionLane_Gemma4FastRuntimeGatesForContext_LongFormKeepsFixed_Good
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateGenerationStream,
+		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	} {
 		if !seen[want] {
 			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for long-form context", gates, want)

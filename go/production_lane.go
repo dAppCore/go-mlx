@@ -2,7 +2,6 @@
 
 package mlx
 
-
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
 	// driver-profile benchmark artefacts.
@@ -52,13 +51,16 @@ const (
 	Gemma4FastRuntimeGateExpertIDFused         = "GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION"
 	Gemma4FastRuntimeGateSortedExpertPrefill   = "GO_MLX_ENABLE_SORTED_EXPERT_PREFILL"
 	Gemma4FastRuntimeGateNativeMLPMatVec       = "GO_MLX_ENABLE_NATIVE_MLP_MATVEC"
+	Gemma4FastRuntimeGateNativeLinearMatVec    = "GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC"
 	Gemma4FastRuntimeGateNativeRouterMatVec    = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC"
 	Gemma4FastRuntimeGateNativeRouterTopK      = "GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK"
 	Gemma4FastRuntimeGateFixedGemma4Cache      = "GO_MLX_ENABLE_FIXED_GEMMA4_CACHE"
 	Gemma4FastRuntimeGateFixedGemma4Sliding    = "GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND"
 	Gemma4FastRuntimeGateFixedGemma4SharedMask = "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK"
+	Gemma4FastRuntimeGateNativeFixedSliding    = "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION"
 	Gemma4FastRuntimeGateDirectGreedyToken     = "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN"
 	Gemma4FastRuntimeGateGenerationStream      = "GO_MLX_ENABLE_GENERATION_STREAM"
+	Gemma4FastRuntimeGateAsyncDecodePrefetch   = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
 	Gemma4FastRuntimeGatePagedDecodeFastConcat = "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT"
 )
 
@@ -67,12 +69,14 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateExpertIDFused,
 	Gemma4FastRuntimeGateSortedExpertPrefill,
 	Gemma4FastRuntimeGateNativeMLPMatVec,
+	Gemma4FastRuntimeGateNativeLinearMatVec,
 	Gemma4FastRuntimeGateNativeRouterMatVec,
 	Gemma4FastRuntimeGateNativeRouterTopK,
 	Gemma4FastRuntimeGateFixedGemma4Cache,
 	Gemma4FastRuntimeGateFixedGemma4SharedMask,
 	Gemma4FastRuntimeGateDirectGreedyToken,
 	Gemma4FastRuntimeGateGenerationStream,
+	Gemma4FastRuntimeGateAsyncDecodePrefetch,
 }
 
 var longContextGemma4FastRuntimeGates = []string{

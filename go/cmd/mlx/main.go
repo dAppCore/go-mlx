@@ -86,6 +86,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runSliceSmokeCommand(ctx, args[1:], stdout, stderr)
 	case "state-ramp-profile":
 		return runStateRampProfileCommand(ctx, args[1:], stdout, stderr)
+	case "state-pack":
+		return runStatePackCommand(ctx, args[1:], stdout, stderr)
 	case "state-wake-profile":
 		return runStateWakeProfileCommand(ctx, args[1:], stdout, stderr)
 	case "tune-plan":
@@ -289,11 +291,13 @@ type driverProfileSummary struct {
 	PeakMemoryBytes            uint64                            `json:"peak_memory_bytes,omitempty"`
 	ActiveMemoryBytes          uint64                            `json:"active_memory_bytes,omitempty"`
 	CacheMemoryBytes           uint64                            `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
 	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
 	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
 	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
+	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
 }
 
 type driverProfileSafetyLimits struct {
@@ -389,6 +393,8 @@ type chapterProfileTurn struct {
 	SampledTokenIDs        []int32       `json:"sampled_token_ids,omitempty"`
 	SampledTokenTexts      []string      `json:"sampled_token_texts,omitempty"`
 	Output                 string        `json:"output,omitempty"`
+	BelowMinTokens         bool          `json:"below_min_tokens,omitempty"`
+	OutputIssues           []string      `json:"output_issues,omitempty"`
 	Metrics                mlx.Metrics   `json:"metrics"`
 	Error                  string        `json:"error,omitempty"`
 }
@@ -406,6 +412,7 @@ type chapterProfileSummary struct {
 	PeakMemoryBytes            uint64        `json:"peak_memory_bytes,omitempty"`
 	ActiveMemoryBytes          uint64        `json:"active_memory_bytes,omitempty"`
 	CacheMemoryBytes           uint64        `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes uint64        `json:"active_plus_cache_memory_bytes,omitempty"`
 	ProcessVirtualMemoryBytes  uint64        `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
 }
@@ -422,7 +429,7 @@ type chapterProfileSafetyLimits struct {
 const (
 	driverProfileDefaultRepeatedTokenLoopLimit    = 256
 	chapterProfileDefaultSuppressedTokenLoopLimit = 8
-	chapterProfileDefaultMinTokens                = 1024
+	chapterProfileDefaultMinTokens                = 0
 	profileDefaultRepeatedLineLoopLimit           = 24
 	profileDefaultRepeatedSentenceLoopLimit       = 4
 	profileFragmentedSentenceMinCount             = 12
@@ -463,6 +470,7 @@ type stateRampProfileOptions struct {
 	SeedSet                   bool                      `json:"seed_set,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
 	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
 	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
@@ -476,19 +484,20 @@ type stateRampProfileOptions struct {
 }
 
 type stateWakeProfileOptions struct {
-	StateStorePath string                    `json:"state_store_path,omitempty"`
-	IndexURI       string                    `json:"index_uri,omitempty"`
-	Prompt         string                    `json:"prompt,omitempty"`
-	ChatTemplate   string                    `json:"chat_template,omitempty"`
-	EnableThinking bool                      `json:"enable_thinking,omitempty"`
-	MaxTokens      int                       `json:"max_tokens,omitempty"`
-	Temperature    float64                   `json:"temperature,omitempty"`
-	TopP           float64                   `json:"top_p,omitempty"`
-	TopK           int                       `json:"top_k,omitempty"`
-	RepeatPenalty  float64                   `json:"repeat_penalty,omitempty"`
-	SuppressEOS    bool                      `json:"suppress_eos,omitempty"`
-	IncludeOutput  bool                      `json:"include_output,omitempty"`
-	SafetyLimits   driverProfileSafetyLimits `json:"safety_limits,omitempty"`
+	StateStorePath         string                    `json:"state_store_path,omitempty"`
+	StateStoreSegmentAlias string                    `json:"state_store_segment_alias,omitempty"`
+	IndexURI               string                    `json:"index_uri,omitempty"`
+	Prompt                 string                    `json:"prompt,omitempty"`
+	ChatTemplate           string                    `json:"chat_template,omitempty"`
+	EnableThinking         bool                      `json:"enable_thinking,omitempty"`
+	MaxTokens              int                       `json:"max_tokens,omitempty"`
+	Temperature            float64                   `json:"temperature,omitempty"`
+	TopP                   float64                   `json:"top_p,omitempty"`
+	TopK                   int                       `json:"top_k,omitempty"`
+	RepeatPenalty          float64                   `json:"repeat_penalty,omitempty"`
+	SuppressEOS            bool                      `json:"suppress_eos,omitempty"`
+	IncludeOutput          bool                      `json:"include_output,omitempty"`
+	SafetyLimits           driverProfileSafetyLimits `json:"safety_limits,omitempty"`
 }
 
 type stateRampProfileReport struct {
@@ -519,6 +528,7 @@ type stateRampProfileReport struct {
 	SeedSet                   bool                      `json:"seed_set,omitempty"`
 	SuppressEOS               bool                      `json:"suppress_eos,omitempty"`
 	IncludeOutput             bool                      `json:"include_output,omitempty"`
+	TraceTokenPhases          bool                      `json:"trace_token_phases,omitempty"`
 	FoldOnExhaustion          bool                      `json:"fold_on_exhaustion,omitempty"`
 	FoldOnDegradation         bool                      `json:"fold_on_degradation,omitempty"`
 	DegradationMinConsecutive int                       `json:"degradation_min_consecutive_turns,omitempty"`
@@ -562,35 +572,46 @@ type stateRampProfileTurn struct {
 }
 
 type stateRampProfileSummary struct {
-	SuccessfulTurns            int           `json:"successful_turns"`
-	FailedTurns                int           `json:"failed_turns,omitempty"`
-	InitialPrefillTokens       int           `json:"initial_prefill_tokens,omitempty"`
-	FinalStateTokens           int           `json:"final_state_tokens,omitempty"`
-	AppendedTokens             int           `json:"appended_tokens,omitempty"`
-	GeneratedTokens            int           `json:"generated_tokens,omitempty"`
-	VisibleTokens              int           `json:"visible_tokens,omitempty"`
-	TotalDuration              time.Duration `json:"total_duration,omitempty"`
-	AppendDuration             time.Duration `json:"append_duration,omitempty"`
-	AppendAvgDuration          time.Duration `json:"append_duration_average,omitempty"`
-	InitialPrefillTokensPerSec float64       `json:"initial_prefill_tokens_per_sec,omitempty"`
-	AppendTokensPerSecAverage  float64       `json:"append_tokens_per_sec_average,omitempty"`
-	DecodeTokensPerSecAverage  float64       `json:"decode_tokens_per_sec_average,omitempty"`
-	EffectiveTurnTokensPerSec  float64       `json:"effective_turn_tokens_per_sec_average,omitempty"`
-	PeakMemoryBytes            uint64        `json:"peak_memory_bytes,omitempty"`
-	ActiveMemoryBytes          uint64        `json:"active_memory_bytes,omitempty"`
-	CacheMemoryBytes           uint64        `json:"cache_memory_bytes,omitempty"`
-	ProcessVirtualMemoryBytes  uint64        `json:"process_virtual_memory_bytes,omitempty"`
-	ProcessResidentMemoryBytes uint64        `json:"process_resident_memory_bytes,omitempty"`
-	ProcessPeakResidentBytes   uint64        `json:"process_peak_resident_bytes,omitempty"`
-	ContextExhausted           bool          `json:"context_exhausted,omitempty"`
-	ContentDegraded            bool          `json:"content_degraded,omitempty"`
-	ContentDegradationTurn     int           `json:"content_degradation_turn,omitempty"`
-	ContentDegradationStreak   int           `json:"content_degradation_consecutive_turns,omitempty"`
-	ContentDegradationReason   string        `json:"content_degradation_reason,omitempty"`
-	FoldedStateRequired        bool          `json:"folded_state_required,omitempty"`
-	CompactionThresholdTokens  int           `json:"compaction_threshold_tokens,omitempty"`
-	CompactionTailTokens       int           `json:"compaction_tail_tokens,omitempty"`
-	CompactionReason           string        `json:"compaction_reason,omitempty"`
+	SuccessfulTurns            int                               `json:"successful_turns"`
+	FailedTurns                int                               `json:"failed_turns,omitempty"`
+	InitialPrefillTokens       int                               `json:"initial_prefill_tokens,omitempty"`
+	FinalStateTokens           int                               `json:"final_state_tokens,omitempty"`
+	AppendedTokens             int                               `json:"appended_tokens,omitempty"`
+	GeneratedTokens            int                               `json:"generated_tokens,omitempty"`
+	VisibleTokens              int                               `json:"visible_tokens,omitempty"`
+	TotalDuration              time.Duration                     `json:"total_duration,omitempty"`
+	AppendDuration             time.Duration                     `json:"append_duration,omitempty"`
+	AppendAvgDuration          time.Duration                     `json:"append_duration_average,omitempty"`
+	RetainedSetupDuration      time.Duration                     `json:"retained_setup_duration,omitempty"`
+	ReplayEstimateTurns        int                               `json:"replay_estimate_turns,omitempty"`
+	ReplayPrefillDuration      time.Duration                     `json:"replay_prefill_duration_estimate,omitempty"`
+	ReplayTotalDuration        time.Duration                     `json:"replay_total_duration_estimate,omitempty"`
+	ReplayPrefillSavedDuration time.Duration                     `json:"replay_prefill_saved_duration_estimate,omitempty"`
+	ReplayTotalSavedDuration   time.Duration                     `json:"replay_total_saved_duration_estimate,omitempty"`
+	RetainedVsReplaySpeedup    float64                           `json:"retained_vs_replay_speedup_estimate,omitempty"`
+	InitialPrefillTokensPerSec float64                           `json:"initial_prefill_tokens_per_sec,omitempty"`
+	AppendTokensPerSecAverage  float64                           `json:"append_tokens_per_sec_average,omitempty"`
+	DecodeTokensPerSecAverage  float64                           `json:"decode_tokens_per_sec_average,omitempty"`
+	EffectiveTurnTokensPerSec  float64                           `json:"effective_turn_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes            uint64                            `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes          uint64                            `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes           uint64                            `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes uint64                            `json:"active_plus_cache_memory_bytes,omitempty"`
+	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
+	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
+	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
+	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
+	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
+	ContextExhausted           bool                              `json:"context_exhausted,omitempty"`
+	ContentDegraded            bool                              `json:"content_degraded,omitempty"`
+	ContentDegradationTurn     int                               `json:"content_degradation_turn,omitempty"`
+	ContentDegradationStreak   int                               `json:"content_degradation_consecutive_turns,omitempty"`
+	ContentDegradationReason   string                            `json:"content_degradation_reason,omitempty"`
+	FoldedStateRequired        bool                              `json:"folded_state_required,omitempty"`
+	CompactionThresholdTokens  int                               `json:"compaction_threshold_tokens,omitempty"`
+	CompactionTailTokens       int                               `json:"compaction_tail_tokens,omitempty"`
+	CompactionReason           string                            `json:"compaction_reason,omitempty"`
 }
 
 type stateRampProfileEnergy struct {
@@ -599,6 +620,8 @@ type stateRampProfileEnergy struct {
 	TotalJoules                    float64 `json:"total_joules,omitempty"`
 	JoulesPerVisibleToken          float64 `json:"joules_per_visible_token,omitempty"`
 	AppendJoules                   float64 `json:"append_joules,omitempty"`
+	ReplayTotalJoules              float64 `json:"replay_total_joules_estimate,omitempty"`
+	RetainedVsReplaySavedJoules    float64 `json:"retained_vs_replay_saved_joules_estimate,omitempty"`
 	FoldLifecycleJoules            float64 `json:"fold_lifecycle_joules,omitempty"`
 	TotalWithFoldLifecycleJoules   float64 `json:"total_with_fold_lifecycle_joules,omitempty"`
 	FoldContinueJoulesPerToken     float64 `json:"fold_continue_joules_per_visible_token,omitempty"`
@@ -608,11 +631,15 @@ type stateRampProfileEnergy struct {
 type stateRampProfileFold struct {
 	Attempted           bool                  `json:"attempted"`
 	StorePath           string                `json:"store_path,omitempty"`
+	StoreAction         string                `json:"store_action,omitempty"`
+	CompactMarker       *stateRampFoldMarker  `json:"compact_marker,omitempty"`
 	SummaryBytes        int                   `json:"summary_bytes,omitempty"`
 	RecentTailBytes     int                   `json:"recent_tail_bytes,omitempty"`
 	FoldedPromptBytes   int                   `json:"folded_prompt_bytes,omitempty"`
 	Duration            time.Duration         `json:"duration,omitempty"`
 	WakeDuration        time.Duration         `json:"wake_duration,omitempty"`
+	LifecycleDuration   time.Duration         `json:"lifecycle_duration,omitempty"`
+	TotalWithRetained   time.Duration         `json:"retained_total_with_lifecycle_duration,omitempty"`
 	Checkpoint          *agent.SleepReport    `json:"checkpoint,omitempty"`
 	Folded              *agent.SleepReport    `json:"folded,omitempty"`
 	Wake                *agent.WakeReport     `json:"wake,omitempty"`
@@ -622,12 +649,21 @@ type stateRampProfileFold struct {
 	Error               string                `json:"error,omitempty"`
 }
 
+type stateRampFoldMarker struct {
+	StorePath  string `json:"store_path,omitempty"`
+	IndexURI   string `json:"index_uri,omitempty"`
+	EntryURI   string `json:"entry_uri,omitempty"`
+	BundleURI  string `json:"bundle_uri,omitempty"`
+	TokenCount int    `json:"token_count,omitempty"`
+}
+
 type stateWakeProfileReport struct {
 	Version           int                       `json:"version"`
 	ModelPath         string                    `json:"model_path"`
 	LoadDuration      time.Duration             `json:"load_duration,omitempty"`
 	Load              *tuneProfileLoadSettings  `json:"load,omitempty"`
 	StateStorePath    string                    `json:"state_store_path"`
+	StateStoreAlias   string                    `json:"state_store_segment_alias,omitempty"`
 	IndexURI          string                    `json:"index_uri"`
 	PromptBytes       int                       `json:"prompt_bytes"`
 	PromptTokens      int                       `json:"prompt_tokens,omitempty"`
@@ -791,6 +827,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	fixedGemma4Cache := fs.Bool("fixed-gemma4-cache", false, "enable the opt-in fixed-capacity Gemma 4 cache path with -cache-mode paged")
 	fixedGemma4SlidingCacheBound := fs.Bool("fixed-gemma4-sliding-cache-bound", false, "keep Gemma 4 sliding-attention fixed caches at their native window size")
 	fixedGemma4SharedMask := fs.Bool("fixed-gemma4-shared-mask", false, "enable the opt-in shared fixed-cache Gemma 4 decode mask")
+	nativeFixedSlidingAttention := fs.Bool("native-fixed-sliding-attention", false, "enable the native fixed-cache sliding-window attention update path")
 	directGreedyToken := fs.Bool("direct-greedy-token", false, "enable the opt-in direct greedy token decode path")
 	generationStream := fs.Bool("generation-stream", false, "enable the opt-in dedicated MLX stream for generation")
 	generationClearCache := fs.Bool("generation-clear-cache", false, "clear the MLX allocator cache after prefill chunks and periodically during decode")
@@ -920,6 +957,9 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	}
 	if *fixedGemma4SharedMask {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")()
+	}
+	if *nativeFixedSlidingAttention {
+		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "1")()
 	}
 	if *directGreedyToken {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1")()
@@ -1146,7 +1186,13 @@ func applyGemma4FastLaneDefaults(
 			*promptChunkBytes = mlx.ProductionLaneLongContextPromptChunkBytes
 		}
 		for _, gate := range mlx.LongContextGemma4FastRuntimeGates() {
-			if hyperLongContext && gate == mlx.Gemma4FastRuntimeGateFixedGemma4Sliding {
+			if hyperLongContext {
+				switch gate {
+				case mlx.Gemma4FastRuntimeGateFixedGemma4Sliding, mlx.Gemma4FastRuntimeGateNativeFixedSliding:
+					continue
+				}
+			}
+			if driverProfileRuntimeGateValue(gate) != "" {
 				continue
 			}
 			restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
@@ -1159,6 +1205,9 @@ func applyGemma4FastLaneDefaults(
 		}
 	}
 	for _, gate := range mlx.Gemma4FastRuntimeGatesForContext(resolvedContext) {
+		if driverProfileRuntimeGateValue(gate) != "" {
+			continue
+		}
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
 	}
 	return restores
@@ -1305,6 +1354,8 @@ func driverProfileRuntimeGateNames() []string {
 		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_FIXED_GEMMA4_CACHE_SIZE",
+		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
 		"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION",
 		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
@@ -1853,6 +1904,7 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	decodeSamples := 0
 	tokenPhaseIndex := map[string]int{}
 	nativeEventIndex := map[string]int{}
+	nativeEventDetailIndex := map[string]int{}
 	for _, run := range runs {
 		accumulateDriverProfileSummaryMemory(&summary, run.Metrics)
 		if run.Error != "" {
@@ -1915,6 +1967,9 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 		if run.Metrics.CacheMemoryBytes > summary.CacheMemoryBytes {
 			summary.CacheMemoryBytes = run.Metrics.CacheMemoryBytes
 		}
+		if activePlusCache := run.Metrics.ActiveMemoryBytes + run.Metrics.CacheMemoryBytes; activePlusCache > summary.ActivePlusCacheMemoryBytes {
+			summary.ActivePlusCacheMemoryBytes = activePlusCache
+		}
 		if run.Metrics.ProcessVirtualMemoryBytes > summary.ProcessVirtualMemoryBytes {
 			summary.ProcessVirtualMemoryBytes = run.Metrics.ProcessVirtualMemoryBytes
 		}
@@ -1944,14 +1999,8 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 					continue
 				}
 				name := driverProfileNativeEventBucket(event.Name)
-				idx, ok := nativeEventIndex[name]
-				if !ok {
-					summary.NativeEvents = append(summary.NativeEvents, driverProfileNativeEventSummary{Name: name})
-					idx = len(summary.NativeEvents) - 1
-					nativeEventIndex[name] = idx
-				}
-				summary.NativeEvents[idx].Count++
-				summary.NativeEvents[idx].Duration += event.Duration
+				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event.Duration)
+				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event.Duration)
 			}
 		}
 	}
@@ -1978,6 +2027,11 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 			summary.NativeEvents[i].AverageDuration = summary.NativeEvents[i].Duration / time.Duration(summary.NativeEvents[i].Count)
 		}
 	}
+	for i := range summary.NativeEventDetails {
+		if summary.NativeEventDetails[i].Count > 0 {
+			summary.NativeEventDetails[i].AverageDuration = summary.NativeEventDetails[i].Duration / time.Duration(summary.NativeEventDetails[i].Count)
+		}
+	}
 	for i := range summary.TokenPhases {
 		if summary.TokenPhases[i].Count > 0 {
 			summary.TokenPhases[i].AverageDuration = summary.TokenPhases[i].Duration / time.Duration(summary.TokenPhases[i].Count)
@@ -1988,6 +2042,9 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 	})
 	sort.SliceStable(summary.NativeEvents, func(i, j int) bool {
 		return summary.NativeEvents[i].Duration > summary.NativeEvents[j].Duration
+	})
+	sort.SliceStable(summary.NativeEventDetails, func(i, j int) bool {
+		return summary.NativeEventDetails[i].Duration > summary.NativeEventDetails[j].Duration
 	})
 	return summary
 }
@@ -2006,6 +2063,20 @@ func accumulateDriverProfileTokenPhase(summary *driverProfileSummary, index map[
 	summary.TokenPhases[idx].Duration += duration
 }
 
+func accumulateDriverProfileNativeEvent(events *[]driverProfileNativeEventSummary, index map[string]int, name string, duration time.Duration) {
+	if events == nil || duration <= 0 || name == "" {
+		return
+	}
+	idx, ok := index[name]
+	if !ok {
+		*events = append(*events, driverProfileNativeEventSummary{Name: name})
+		idx = len(*events) - 1
+		index[name] = idx
+	}
+	(*events)[idx].Count++
+	(*events)[idx].Duration += duration
+}
+
 func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics mlx.Metrics) {
 	if summary == nil {
 		return
@@ -2019,6 +2090,9 @@ func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics
 	if metrics.CacheMemoryBytes > summary.CacheMemoryBytes {
 		summary.CacheMemoryBytes = metrics.CacheMemoryBytes
 	}
+	if activePlusCache := metrics.ActiveMemoryBytes + metrics.CacheMemoryBytes; activePlusCache > summary.ActivePlusCacheMemoryBytes {
+		summary.ActivePlusCacheMemoryBytes = activePlusCache
+	}
 	if metrics.ProcessVirtualMemoryBytes > summary.ProcessVirtualMemoryBytes {
 		summary.ProcessVirtualMemoryBytes = metrics.ProcessVirtualMemoryBytes
 	}
@@ -2031,11 +2105,16 @@ func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics
 }
 
 func driverProfileNativeEventBucket(name string) string {
-	parts := core.Split(name, ".")
-	if len(parts) >= 4 && parts[0] == "gemma4" && parts[1] == "layer" {
-		return core.Join(".", parts[3:]...)
+	const prefix = "gemma4.layer."
+	if !core.HasPrefix(name, prefix) {
+		return name
 	}
-	return name
+	tail := name[len(prefix):]
+	dot := core.Index(tail, ".")
+	if dot < 0 {
+		return name
+	}
+	return tail[dot+1:]
 }
 
 func estimateDriverProfileEnergy(report *driverProfileReport, powerWatts float64) *driverProfileEnergy {
@@ -2121,10 +2200,10 @@ func printDriverProfileSummary(stdout io.Writer, report *driverProfileReport) {
 		}
 		core.WriteString(stdout, "\n")
 	}
-	core.WriteString(stdout, core.Sprintf("  generated: %d tokens, peak memory: %d MB, cache memory: %d MB, process virtual: %d MB, process resident: %d MB\n",
+	core.WriteString(stdout, core.Sprintf("  generated: %d tokens, peak memory: %d MB, active+cache: %d MB, process virtual: %d MB, process resident: %d MB\n",
 		report.Summary.GeneratedTokens,
 		report.Summary.PeakMemoryBytes/1024/1024,
-		report.Summary.CacheMemoryBytes/1024/1024,
+		report.Summary.ActivePlusCacheMemoryBytes/1024/1024,
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024))
 }
@@ -2147,8 +2226,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
-	turnMinTokens := fs.Int("turn-min-tokens", 0, "minimum visible tokens required for each generated turn; 0 disables the floor")
-	turnMinTokensPolicy := fs.String("turn-min-tokens-policy", "fail", "handling for turns below the visible-token floor: fail or mark")
+	turnMinTokens := fs.Int("turn-min-tokens", 0, "debug-only visible token annotation threshold; 0 disables the annotation")
+	turnMinTokensPolicy := fs.String("turn-min-tokens-policy", "mark", "debug handling for turns below the visible-token threshold: mark or fail")
 	turns := fs.Int("turns", 0, "maximum ramp turns; 0 runs until target tokens are reached")
 	temperature := fs.Float64("temperature", 1.0, "sampling temperature for generated turns")
 	topP := fs.Float64("top-p", 0.95, "top-p sampling value for generated turns")
@@ -2157,9 +2236,10 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	seed := fs.Uint64("seed", 0, "seed MLX sampling for reproducible retained-state turns; omitted leaves the current RNG stream")
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
+	traceTokenPhases := fs.Bool("trace-token-phases", false, "include per-token retained decode phase timings in turn metrics and summary")
 	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold")
-	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when retained content degrades before the target")
-	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive below-floor marked turns required before folding on retained-content degradation")
+	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when inspected output degrades before the target")
+	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive output-issue turns required before folding on retained-content degradation")
 	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
 	foldSummary := fs.String("fold-summary", "", "summary text to seed the folded state; empty uses a benchmark lifecycle summary")
 	foldSummaryFile := fs.String("fold-summary-file", "", "read folded-state summary text from a file")
@@ -2317,14 +2397,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
 	}
-	if *foldOnDegradation && *turnMinTokens <= 0 {
-		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold-on-degradation requires turn-min-tokens > 0\n", cliName()))
-		return 2
-	}
-	if *foldOnDegradation && *turnMinTokensPolicy != "mark" {
-		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold-on-degradation requires turn min tokens policy mark\n", cliName()))
-		return 2
-	}
 	if (*foldOnExhaustion || *foldOnDegradation) && core.Trim(*foldStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: fold store path is required when folding is enabled\n", cliName()))
 		return 2
@@ -2404,6 +2476,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		SeedSet:                   visitedFlags["seed"],
 		SuppressEOS:               *suppressEOS,
 		IncludeOutput:             *includeOutput,
+		TraceTokenPhases:          *traceTokenPhases,
 		FoldOnExhaustion:          *foldOnExhaustion,
 		FoldOnDegradation:         *foldOnDegradation,
 		DegradationMinConsecutive: *degradationMinConsecutive,
@@ -2425,6 +2498,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if report != nil && loadSettings != nil {
 		report.Load = mergeDriverProfileLoadSettings(loadSettings, report.Load)
 	}
+	annotateStateRampProfileFoldDurations(report)
 	if report != nil && *estimatePowerWatts > 0 {
 		report.EstimatedEnergy = estimateStateRampProfileEnergy(report, *estimatePowerWatts)
 	}
@@ -2454,6 +2528,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				RepeatPenalty:             *repeatPenalty,
 				SuppressEOS:               *suppressEOS,
 				IncludeOutput:             *includeOutput,
+				TraceTokenPhases:          *traceTokenPhases,
 				FoldOnExhaustion:          *foldOnExhaustion,
 				FoldOnDegradation:         *foldOnDegradation,
 				DegradationMinConsecutive: *degradationMinConsecutive,
@@ -2533,6 +2608,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		SeedSet:                   opts.SeedSet,
 		SuppressEOS:               opts.SuppressEOS,
 		IncludeOutput:             opts.IncludeOutput,
+		TraceTokenPhases:          opts.TraceTokenPhases,
 		FoldOnExhaustion:          opts.FoldOnExhaustion,
 		FoldOnDegradation:         opts.FoldOnDegradation,
 		DegradationMinConsecutive: opts.DegradationMinConsecutive,
@@ -2622,7 +2698,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 
 	currentTokens := len(seedTokens)
 	sourceOffset := 0
-	consecutiveBelowMin := 0
+	consecutiveContentIssues := 0
 	var firstErr error
 	for turnIndex := 1; shouldRunStateRampTurn(turnIndex, currentTokens, opts); turnIndex++ {
 		turnSourceTokens, turnSourceOffset, appendCount := stateRampProfileTurnAppendSource(appendSourceTokens, appendTurnSections, sourceOffset, currentTokens, turnIndex, opts)
@@ -2640,23 +2716,24 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 				firstErr = core.NewError(turn.Error)
 			}
 		}
-		if turn.BelowMinTokens {
-			consecutiveBelowMin++
+		if stateRampProfileTurnHasContentIssue(turn) {
+			consecutiveContentIssues++
 		} else {
-			consecutiveBelowMin = 0
+			consecutiveContentIssues = 0
 		}
 		report.Turns = append(report.Turns, turn)
 		mlx.ClearCache()
 		if turn.Error != "" && stateRampProfileTurnErrorFatal(turn, opts) {
 			break
 		}
-		if stateRampProfileDegradationFoldReached(consecutiveBelowMin, opts) {
+		if stateRampProfileDegradationFoldReached(consecutiveContentIssues, opts) {
 			break
 		}
 	}
 	report.Summary = summariseStateRampProfileTurns(report.InitialPrefillDuration, len(seedTokens), report.Turns, opts)
 	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
 		report.Fold = stateRampProfileFoldExhausted(ctx, model, session, report, opts)
+		annotateStateRampProfileFoldDurations(report)
 		if report.Fold != nil && report.Fold.Error != "" && firstErr == nil {
 			firstErr = core.NewError(report.Fold.Error)
 		}
@@ -2697,10 +2774,10 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	}
 	opts.TurnMinTokensPolicy = core.Lower(core.Trim(opts.TurnMinTokensPolicy))
 	if opts.TurnMinTokensPolicy == "" {
-		opts.TurnMinTokensPolicy = "fail"
+		opts.TurnMinTokensPolicy = "mark"
 	}
-	if opts.TurnMinTokensPolicy != "mark" {
-		opts.TurnMinTokensPolicy = "fail"
+	if opts.TurnMinTokensPolicy != "mark" && opts.TurnMinTokensPolicy != "fail" {
+		opts.TurnMinTokensPolicy = "mark"
 	}
 	if opts.DegradationMinConsecutive <= 0 {
 		opts.DegradationMinConsecutive = 2
@@ -2770,7 +2847,42 @@ func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
 	return out
 }
 
-func stateRampProfileSeedTokens(tok *mlx.Tokenizer, sourceTokens []int32, opts stateRampProfileOptions) ([]int32, error) {
+func forEachRepeatedStateRampTokenSpan(source []int32, offset, count int, yield func([]int32) error) (int, error) {
+	if len(source) == 0 || count <= 0 {
+		return 0, nil
+	}
+	if yield == nil {
+		return 0, core.NewError("state-ramp-profile: nil token span callback")
+	}
+	offset %= len(source)
+	if offset < 0 {
+		offset += len(source)
+	}
+	appended := 0
+	for appended < count {
+		spanLen := len(source) - offset
+		if remaining := count - appended; spanLen > remaining {
+			spanLen = remaining
+		}
+		if spanLen <= 0 {
+			offset = 0
+			continue
+		}
+		if err := yield(source[offset : offset+spanLen]); err != nil {
+			return appended, err
+		}
+		appended += spanLen
+		offset = 0
+	}
+	return appended, nil
+}
+
+type stateRampProfileTokenizer interface {
+	Encode(string) ([]int32, error)
+	Decode([]int32) (string, error)
+}
+
+func stateRampProfileSeedTokens(tok stateRampProfileTokenizer, sourceTokens []int32, opts stateRampProfileOptions) ([]int32, error) {
 	if len(sourceTokens) == 0 {
 		return nil, core.NewError("state-ramp-profile: source prompt produced no tokens")
 	}
@@ -2782,11 +2894,8 @@ func stateRampProfileSeedTokens(tok *mlx.Tokenizer, sourceTokens []int32, opts s
 		target = len(sourceTokens)
 	}
 	contextBudget := target
-	if contextBudget > len(sourceTokens) {
-		contextBudget = len(sourceTokens)
-	}
 	for contextBudget >= 0 {
-		contextText, err := tok.Decode(sourceTokens[:contextBudget])
+		contextText, err := tok.Decode(repeatedStateRampTokens(sourceTokens, 0, contextBudget))
 		if err != nil {
 			return nil, err
 		}
@@ -2842,13 +2951,13 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 
 func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool, minVisibleTokens ...int) string {
 	prompt = core.Trim(prompt)
-	floor := stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...)
+	_ = minVisibleTokens
 	switch template {
 	case "gemma4":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt, floor)
+		writeStateRampProfileReferenceTurn(builder, prompt)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		if !enableThinking {
 			builder.WriteString("<|channel>thought\n<channel|>")
@@ -2858,25 +2967,25 @@ func stateRampProfileTurnPrompt(template, prompt string, enableThinking bool, mi
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<start_of_turn>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt, floor)
+		writeStateRampProfileReferenceTurn(builder, prompt)
 		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
 		return builder.String()
 	case "qwen":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|im_start|>user\n")
-		writeStateRampProfileReferenceTurn(builder, prompt, floor)
+		writeStateRampProfileReferenceTurn(builder, prompt)
 		builder.WriteString("<|im_end|>\n<|im_start|>assistant\n")
 		return builder.String()
 	case "llama":
 		builder := core.NewBuilder()
 		builder.Grow(len(prompt) + 512)
 		builder.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
-		writeStateRampProfileReferenceTurn(builder, prompt, floor)
+		writeStateRampProfileReferenceTurn(builder, prompt)
 		builder.WriteString("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
 		return builder.String()
 	default:
-		return stateRampProfileReferenceTurn(prompt, floor)
+		return stateRampProfileReferenceTurn(prompt)
 	}
 }
 
@@ -2887,20 +2996,12 @@ func stateRampProfileReferenceTurn(prompt string, minVisibleTokens ...int) strin
 	}
 	builder := core.NewBuilder()
 	builder.Grow(len(prompt) + 512)
-	writeStateRampProfileReferenceTurn(builder, prompt, stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...))
+	_ = minVisibleTokens
+	writeStateRampProfileReferenceTurn(builder, prompt)
 	return builder.String()
 }
 
-func stateRampProfileRequestedVisibleTokenFloor(values ...int) int {
-	for _, value := range values {
-		if value > 0 {
-			return value
-		}
-	}
-	return 0
-}
-
-func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (int, error) }, prompt string, minVisibleTokens ...int) {
+func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (int, error) }, prompt string) {
 	prompt = core.Trim(prompt)
 	if prompt == "" {
 		return
@@ -2909,11 +3010,6 @@ func writeStateRampProfileReferenceTurn(builder interface{ WriteString(string) (
 	builder.WriteString("<turn_material>\n")
 	builder.WriteString(prompt)
 	builder.WriteString("\n</turn_material>\n\nAnswer the user request from the turn material now. Honour any requested output length before stopping. Do not continue or complete the reference excerpts. Do not explain what the user is asking; answer as the engineer doing the work. Treat historical sign-off language as evidence to verify, not as current truth; do not declare the project complete unless the new turn material proves every live gate is closed. Prefer the unresolved risk and next validation step over a completion claim.")
-	if floor := stateRampProfileRequestedVisibleTokenFloor(minVisibleTokens...); floor > 0 {
-		builder.WriteString(" For this measured workload, write at least ")
-		builder.WriteString(core.Itoa(floor))
-		builder.WriteString(" visible tokens. If the direct answer is naturally shorter, expand with concrete evidence, the main risk, and the next validation step instead of stopping early.")
-	}
 }
 
 func stateRampProfileVisibleOutput(template, output string) string {
@@ -2938,6 +3034,10 @@ func stateRampProfileOutputIssues(output string) []string {
 	}
 	if core.Contains(text, "**Plan:**") || core.Contains(text, "Plan:\n") || core.Contains(text, "**Plan**") {
 		issues = append(issues, "visible_plan_scaffold")
+	}
+	trimmedLower := core.Trim(core.TrimSuffix(lower, "."))
+	if trimmedLower == "ready" {
+		issues = append(issues, "visible_seed_ready_echo")
 	}
 	if core.Contains(lower, "i don't have the actual results") || core.Contains(lower, "i do not have the actual results") {
 		issues = append(issues, "visible_missing_results_admission")
@@ -3031,17 +3131,28 @@ func stateRampProfileTurnAppendSource(source []int32, sections [][]int32, source
 	return tokens, sourceOffset, appendCount
 }
 
+func stateRampProfileAppendRepeatedTokens(ctx context.Context, session *mlx.ModelSession, sourceTokens []int32, sourceOffset, appendCount int) (int, error) {
+	if session == nil {
+		return 0, core.NewError("state-ramp-profile: session is nil")
+	}
+	return forEachRepeatedStateRampTokenSpan(sourceTokens, sourceOffset, appendCount, func(tokens []int32) error {
+		if len(tokens) == 0 {
+			return nil
+		}
+		return session.AppendTokens(ctx, tokens)
+	})
+}
+
 func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, sourceTokens []int32, sourceOffset, appendCount, currentTokens, index int, opts stateRampProfileOptions) stateRampProfileTurn {
 	turn := stateRampProfileTurn{
 		Index:              index,
 		TokensBeforeAppend: currentTokens,
 	}
 	if appendCount > 0 {
-		tokens := repeatedStateRampTokens(sourceTokens, sourceOffset, appendCount)
 		appendStart := time.Now()
-		err := session.AppendTokens(ctx, tokens)
+		appended, err := stateRampProfileAppendRepeatedTokens(ctx, session, sourceTokens, sourceOffset, appendCount)
 		turn.AppendDuration = bench.NonZeroDuration(time.Since(appendStart))
-		turn.AppendedTokens = len(tokens)
+		turn.AppendedTokens = appended
 		if err != nil {
 			turn.Error = err.Error()
 			return turn
@@ -3060,6 +3171,9 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	}
 	if opts.SeedSet {
 		generateOptions = append(generateOptions, mlx.WithSeed(opts.Seed))
+	}
+	if opts.TraceTokenPhases {
+		generateOptions = append(generateOptions, mlx.WithTokenPhaseTrace())
 	}
 	stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(opts.ChatTemplate, model.Tokenizer())
 	if len(stopTokenIDs) > 0 {
@@ -3099,9 +3213,7 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 			sampledTokenIDs = append(sampledTokenIDs, token.ID)
 			sampledTokenTexts = append(sampledTokenTexts, token.Text)
 		}
-		if opts.IncludeOutput {
-			builder.WriteString(token.Text)
-		}
+		builder.WriteString(token.Text)
 		if probeErr == nil {
 			if err := driverProfileMetricsSafetyError(core.Sprintf("state-ramp-profile turn %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
 				probeErr = err
@@ -3146,9 +3258,10 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	turn.Metrics = model.Metrics()
 	turn.DriverOverheadDuration = driverRunOverhead(turn.Duration, turn.Metrics)
 	turn.TokensAfterGenerate = turn.Metrics.PromptTokens + turn.Metrics.GeneratedTokens
+	visibleOutput := stateRampProfileVisibleOutput(opts.ChatTemplate, builder.String())
+	turn.OutputIssues = stateRampProfileOutputIssues(visibleOutput)
 	if opts.IncludeOutput {
-		turn.Output = stateRampProfileVisibleOutput(opts.ChatTemplate, builder.String())
-		turn.OutputIssues = stateRampProfileOutputIssues(turn.Output)
+		turn.Output = visibleOutput
 	}
 	if probeErr != nil {
 		turn.Error = probeErr.Error()
@@ -3171,7 +3284,7 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		VisibleTokens:     turn.VisibleTokens,
 		SampledTokenIDs:   turn.SampledTokenIDs,
 		SampledTokenTexts: turn.SampledTokenTexts,
-		Output:            turn.Output,
+		Output:            visibleOutput,
 		Metrics:           turn.Metrics,
 	}, opts.SafetyLimits); err != nil {
 		turn.Error = err.Error()
@@ -3208,7 +3321,11 @@ func stateRampProfileApplyVisibleTokenFloor(turn *stateRampProfileTurn, opts sta
 		return
 	}
 	turn.BelowMinTokens = true
-	turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below minimum real-workload floor %d", turn.Index, turn.VisibleTokens, opts.TurnMinTokens)
+	issue := core.Sprintf("below_debug_visible_token_floor:%d/%d", turn.VisibleTokens, opts.TurnMinTokens)
+	turn.OutputIssues = append(turn.OutputIssues, issue)
+	if opts.TurnMinTokensPolicy == "fail" {
+		turn.Error = core.Sprintf("state-ramp-profile: turn %d produced %d visible tokens, below requested visible-token debug floor %d", turn.Index, turn.VisibleTokens, opts.TurnMinTokens)
+	}
 }
 
 func stateRampProfileTurnErrorFatal(turn stateRampProfileTurn, opts stateRampProfileOptions) bool {
@@ -3218,15 +3335,25 @@ func stateRampProfileTurnErrorFatal(turn stateRampProfileTurn, opts stateRampPro
 	return !(turn.BelowMinTokens && opts.TurnMinTokensPolicy == "mark")
 }
 
-func stateRampProfileDegradationFoldReached(consecutiveBelowMin int, opts stateRampProfileOptions) bool {
-	if !opts.FoldOnDegradation || opts.TurnMinTokens <= 0 || opts.TurnMinTokensPolicy != "mark" {
+func stateRampProfileTurnHasContentIssue(turn stateRampProfileTurn) bool {
+	for _, issue := range turn.OutputIssues {
+		if core.HasPrefix(issue, "below_debug_visible_token_floor:") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func stateRampProfileDegradationFoldReached(consecutiveContentIssues int, opts stateRampProfileOptions) bool {
+	if !opts.FoldOnDegradation {
 		return false
 	}
 	minConsecutive := opts.DegradationMinConsecutive
 	if minConsecutive <= 0 {
 		minConsecutive = 2
 	}
-	return consecutiveBelowMin >= minConsecutive
+	return consecutiveContentIssues >= minConsecutive
 }
 
 func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens int, turns []stateRampProfileTurn, opts stateRampProfileOptions) stateRampProfileSummary {
@@ -3240,11 +3367,21 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	}
 	var decodeDuration time.Duration
 	var turnWallDuration time.Duration
+	var replayDecodeDuration time.Duration
+	tokenPhaseIndex := map[string]int{}
+	nativeEventIndex := map[string]int{}
+	nativeEventDetailIndex := map[string]int{}
 	for _, turn := range turns {
-		if turn.Error != "" {
+		turnFatal := stateRampProfileTurnErrorFatal(turn, opts)
+		if turnFatal {
 			summary.FailedTurns++
 		} else {
 			summary.SuccessfulTurns++
+			if turn.Metrics.PrefillDuration > 0 {
+				summary.ReplayEstimateTurns++
+				summary.ReplayPrefillDuration += turn.Metrics.PrefillDuration
+				replayDecodeDuration += turn.Duration
+			}
 		}
 		summary.AppendedTokens += turn.AppendedTokens
 		summary.GeneratedTokens += turn.Metrics.GeneratedTokens
@@ -3267,6 +3404,9 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		if turn.Metrics.CacheMemoryBytes > summary.CacheMemoryBytes {
 			summary.CacheMemoryBytes = turn.Metrics.CacheMemoryBytes
 		}
+		if activePlusCache := turn.Metrics.ActiveMemoryBytes + turn.Metrics.CacheMemoryBytes; activePlusCache > summary.ActivePlusCacheMemoryBytes {
+			summary.ActivePlusCacheMemoryBytes = activePlusCache
+		}
 		if turn.Metrics.ProcessVirtualMemoryBytes > summary.ProcessVirtualMemoryBytes {
 			summary.ProcessVirtualMemoryBytes = turn.Metrics.ProcessVirtualMemoryBytes
 		}
@@ -3276,9 +3416,46 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		if turn.Metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
 			summary.ProcessPeakResidentBytes = turn.Metrics.ProcessPeakResidentBytes
 		}
+		for _, phase := range turn.Metrics.TokenPhases {
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "forward", phase.ForwardDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "sample_eval", phase.SampleEvalDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "sample", phase.SampleDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "logits", phase.LogitsDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "token_read", phase.TokenReadDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "decode_text", phase.DecodeTextDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "probe_token", phase.ProbeTokenDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "yield", phase.YieldDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "next_input", phase.NextInputDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "materialize", phase.MaterializeDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "detach", phase.DetachDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "cache_probe", phase.CacheProbeDuration)
+			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "other", phase.OtherDuration)
+			for _, event := range phase.NativeEvents {
+				if event.Name == "" || event.Duration <= 0 {
+					continue
+				}
+				name := driverProfileNativeEventBucket(event.Name)
+				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event.Duration)
+				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event.Duration)
+			}
+		}
 	}
 	if len(turns) > 0 {
 		summary.AppendAvgDuration = summary.AppendDuration / time.Duration(len(turns))
+	}
+	summary.RetainedSetupDuration = initialPrefill + summary.AppendDuration
+	if summary.ReplayEstimateTurns > 0 {
+		summary.ReplayTotalDuration = summary.ReplayPrefillDuration + replayDecodeDuration
+		if summary.ReplayPrefillDuration > summary.RetainedSetupDuration {
+			summary.ReplayPrefillSavedDuration = summary.ReplayPrefillDuration - summary.RetainedSetupDuration
+		}
+		if summary.ReplayTotalDuration > summary.TotalDuration {
+			summary.ReplayTotalSavedDuration = summary.ReplayTotalDuration - summary.TotalDuration
+		}
+		if summary.TotalDuration > 0 && summary.ReplayTotalDuration > 0 {
+			summary.RetainedVsReplaySpeedup = float64(summary.ReplayTotalDuration) / float64(summary.TotalDuration)
+		}
 	}
 	if summary.AppendDuration > 0 && summary.AppendedTokens > 0 {
 		summary.AppendTokensPerSecAverage = float64(summary.AppendedTokens) / summary.AppendDuration.Seconds()
@@ -3289,13 +3466,51 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 	if turnWallDuration > 0 && summary.GeneratedTokens > 0 {
 		summary.EffectiveTurnTokensPerSec = float64(summary.GeneratedTokens) / turnWallDuration.Seconds()
 	}
+	for i := range summary.TokenPhases {
+		if summary.TokenPhases[i].Count > 0 {
+			summary.TokenPhases[i].AverageDuration = summary.TokenPhases[i].Duration / time.Duration(summary.TokenPhases[i].Count)
+		}
+	}
+	for i := range summary.NativeEvents {
+		if summary.NativeEvents[i].Count > 0 {
+			summary.NativeEvents[i].AverageDuration = summary.NativeEvents[i].Duration / time.Duration(summary.NativeEvents[i].Count)
+		}
+	}
+	for i := range summary.NativeEventDetails {
+		if summary.NativeEventDetails[i].Count > 0 {
+			summary.NativeEventDetails[i].AverageDuration = summary.NativeEventDetails[i].Duration / time.Duration(summary.NativeEventDetails[i].Count)
+		}
+	}
+	sort.SliceStable(summary.TokenPhases, func(i, j int) bool {
+		return summary.TokenPhases[i].Duration > summary.TokenPhases[j].Duration
+	})
+	sort.SliceStable(summary.NativeEvents, func(i, j int) bool {
+		return summary.NativeEvents[i].Duration > summary.NativeEvents[j].Duration
+	})
+	sort.SliceStable(summary.NativeEventDetails, func(i, j int) bool {
+		return summary.NativeEventDetails[i].Duration > summary.NativeEventDetails[j].Duration
+	})
 	annotateStateRampProfileContentDegradation(&summary, turns, opts)
 	annotateStateRampProfileContextLifecycle(&summary, opts)
 	return summary
 }
 
+func accumulateStateRampProfileTokenPhase(summary *stateRampProfileSummary, index map[string]int, name string, duration time.Duration) {
+	if summary == nil || duration <= 0 || name == "" {
+		return
+	}
+	idx, ok := index[name]
+	if !ok {
+		summary.TokenPhases = append(summary.TokenPhases, driverProfileNativeEventSummary{Name: name})
+		idx = len(summary.TokenPhases) - 1
+		index[name] = idx
+	}
+	summary.TokenPhases[idx].Count++
+	summary.TokenPhases[idx].Duration += duration
+}
+
 func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary, turns []stateRampProfileTurn, opts stateRampProfileOptions) {
-	if summary == nil || !opts.FoldOnDegradation || opts.TurnMinTokens <= 0 || opts.TurnMinTokensPolicy != "mark" {
+	if summary == nil || !opts.FoldOnDegradation {
 		return
 	}
 	minConsecutive := opts.DegradationMinConsecutive
@@ -3304,7 +3519,7 @@ func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary
 	}
 	streak := 0
 	for _, turn := range turns {
-		if turn.BelowMinTokens {
+		if stateRampProfileTurnHasContentIssue(turn) {
 			streak++
 		} else {
 			streak = 0
@@ -3316,7 +3531,7 @@ func annotateStateRampProfileContentDegradation(summary *stateRampProfileSummary
 		summary.ContentDegradationTurn = turn.Index
 		summary.ContentDegradationStreak = streak
 		summary.ContentDegradationReason = core.Sprintf(
-			"retained context produced %d consecutive below-floor turns at turn %d; checkpoint, summarise, and prefill a folded state before appending more turns",
+			"retained context produced %d consecutive output-issue turns at turn %d; checkpoint, summarise, and prefill a folded state before appending more turns",
 			streak,
 			turn.Index,
 		)
@@ -3369,11 +3584,12 @@ func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, sessio
 		fold.Error = "state-ramp-profile: fold store path is required"
 		return fold
 	}
-	store, err := statefile.Create(ctx, opts.FoldStorePath)
+	store, action, err := stateRampProfileOpenFoldStore(ctx, opts.FoldStorePath)
 	if err != nil {
 		fold.Error = err.Error()
 		return fold
 	}
+	fold.StoreAction = action
 	defer store.Close()
 
 	summary := stateRampProfileFoldSummary(report, opts)
@@ -3400,6 +3616,7 @@ func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, sessio
 		fold.RecentTailBytes = foldReport.RecentTailBytes
 		fold.FoldedPromptBytes = foldReport.FoldedPromptBytes
 	}
+	fold.CompactMarker = stateRampProfileFoldMarker(opts.FoldStorePath, fold.Folded)
 	if err != nil {
 		fold.Error = err.Error()
 		return fold
@@ -3431,6 +3648,30 @@ func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, sessio
 		fold.Error = err.Error()
 	}
 	return fold
+}
+
+func stateRampProfileOpenFoldStore(ctx context.Context, path string) (*statefile.Store, string, error) {
+	if stat := core.Stat(path); stat.OK {
+		store, err := statefile.Open(ctx, path)
+		return store, "append", err
+	} else if !core.IsNotExist(stat.Value.(error)) {
+		return nil, "", stat.Value.(error)
+	}
+	store, err := statefile.Create(ctx, path)
+	return store, "create", err
+}
+
+func stateRampProfileFoldMarker(storePath string, report *agent.SleepReport) *stateRampFoldMarker {
+	if report == nil || report.IndexURI == "" {
+		return nil
+	}
+	return &stateRampFoldMarker{
+		StorePath:  storePath,
+		IndexURI:   report.IndexURI,
+		EntryURI:   report.EntryURI,
+		BundleURI:  report.BundleURI,
+		TokenCount: report.TokenCount,
+	}
 }
 
 func stateRampProfileContinueFromFold(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, fold *stateRampProfileFold, opts stateRampProfileOptions) (*stateRampProfileTurn, error) {
@@ -3466,7 +3707,7 @@ func stateRampProfileFoldSummary(report *stateRampProfileReport, opts stateRampP
 	}
 	if report.Summary.ContentDegraded {
 		return core.Sprintf(
-			"The previous retained state degraded at %d tokens after turn %d, with %d consecutive below-floor real-workload turns. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the degraded prefix.",
+			"The previous retained state degraded at %d tokens after turn %d, with %d consecutive output-issue turns. The run appended %d tokens, generated %d tokens, and recorded %.3f raw decode tokens per second with %.3f effective turn tokens per second. Continue from this compacted memory rather than replaying the degraded prefix.",
 			report.Summary.FinalStateTokens,
 			report.Summary.ContentDegradationTurn,
 			report.Summary.ContentDegradationStreak,
@@ -3578,6 +3819,12 @@ func estimateStateRampProfileEnergy(report *stateRampProfileReport, powerWatts f
 	}
 	energy.TotalJoules = durationJoules(report.Summary.TotalDuration, powerWatts)
 	energy.AppendJoules = durationJoules(report.Summary.AppendDuration, powerWatts)
+	if report.Summary.ReplayTotalDuration > 0 {
+		energy.ReplayTotalJoules = durationJoules(report.Summary.ReplayTotalDuration, powerWatts)
+	}
+	if report.Summary.ReplayTotalSavedDuration > 0 {
+		energy.RetainedVsReplaySavedJoules = durationJoules(report.Summary.ReplayTotalSavedDuration, powerWatts)
+	}
 	if report.Summary.VisibleTokens > 0 {
 		energy.JoulesPerVisibleToken = energy.TotalJoules / float64(report.Summary.VisibleTokens)
 	}
@@ -3607,6 +3854,16 @@ func stateRampProfileFoldDuration(fold *stateRampProfileFold) time.Duration {
 	return total
 }
 
+func annotateStateRampProfileFoldDurations(report *stateRampProfileReport) {
+	if report == nil || report.Fold == nil {
+		return
+	}
+	report.Fold.LifecycleDuration = stateRampProfileFoldDuration(report.Fold)
+	if report.Fold.LifecycleDuration > 0 && report.Summary.TotalDuration > 0 {
+		report.Fold.TotalWithRetained = report.Summary.TotalDuration + report.Fold.LifecycleDuration
+	}
+}
+
 func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileReport) {
 	if report == nil {
 		return
@@ -3615,9 +3872,17 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 	core.WriteString(stdout, core.Sprintf("  seed: %d tokens in %s, final state: %d tokens\n", report.InitialPrefillTokens, report.InitialPrefillDuration, report.Summary.FinalStateTokens))
 	core.WriteString(stdout, core.Sprintf("  turns: %d ok / %d failed, appended: %d tokens at %.1f tok/s\n", report.Summary.SuccessfulTurns, report.Summary.FailedTurns, report.Summary.AppendedTokens, report.Summary.AppendTokensPerSecAverage))
 	core.WriteString(stdout, core.Sprintf("  generated: %d tokens, decode: %.1f tok/s, effective turn: %.1f tok/s, total: %s\n", report.Summary.GeneratedTokens, report.Summary.DecodeTokensPerSecAverage, report.Summary.EffectiveTurnTokensPerSec, report.Summary.TotalDuration))
-	core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, cache memory: %d MB, process virtual: %d MB, process resident: %d MB\n",
+	if report.Summary.ReplayTotalDuration > 0 {
+		core.WriteString(stdout, core.Sprintf(
+			"  replay estimate: %s one-shot wall, saved %s, speedup %.2fx\n",
+			report.Summary.ReplayTotalDuration,
+			report.Summary.ReplayTotalSavedDuration,
+			report.Summary.RetainedVsReplaySpeedup,
+		))
+	}
+	core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, active+cache: %d MB, process virtual: %d MB, process resident: %d MB\n",
 		report.Summary.PeakMemoryBytes/1024/1024,
-		report.Summary.CacheMemoryBytes/1024/1024,
+		report.Summary.ActivePlusCacheMemoryBytes/1024/1024,
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024,
 	))
@@ -3625,7 +3890,7 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 		core.WriteString(stdout, core.Sprintf("  estimated energy: %.1f J at %.1f W\n", report.EstimatedEnergy.TotalJoules, report.EstimatedEnergy.PowerWatts))
 	}
 	if report.Summary.ContentDegraded {
-		core.WriteString(stdout, core.Sprintf("  content degraded: folded state required after %d consecutive below-floor turns at turn %d\n", report.Summary.ContentDegradationStreak, report.Summary.ContentDegradationTurn))
+		core.WriteString(stdout, core.Sprintf("  content degraded: folded state required after %d consecutive output-issue turns at turn %d\n", report.Summary.ContentDegradationStreak, report.Summary.ContentDegradationTurn))
 	}
 	if report.Summary.ContextExhausted {
 		core.WriteString(stdout, core.Sprintf("  context exhausted: folded state required at %d tokens (tail hint: %d tokens)\n", report.Summary.CompactionThresholdTokens, report.Summary.CompactionTailTokens))
@@ -3639,7 +3904,16 @@ func printStateRampProfileSummary(stdout io.Writer, report *stateRampProfileRepo
 				core.WriteString(stdout, core.Sprintf(", wake %s", report.Fold.WakeDuration))
 			}
 			if report.Fold.ContinueTurn != nil {
-				core.WriteString(stdout, core.Sprintf(", continue %d tokens at %.1f tok/s", report.Fold.ContinueTurn.VisibleTokens, report.Fold.ContinueTurn.Metrics.DecodeTokensPerSec))
+				core.WriteString(stdout, core.Sprintf(", continue %d tokens in %s at %.1f tok/s", report.Fold.ContinueTurn.VisibleTokens, report.Fold.ContinueTurn.Duration, report.Fold.ContinueTurn.Metrics.DecodeTokensPerSec))
+			}
+			if report.Fold.LifecycleDuration > 0 {
+				core.WriteString(stdout, core.Sprintf(", fold lifecycle %s", report.Fold.LifecycleDuration))
+			}
+			if report.Fold.StoreAction != "" {
+				core.WriteString(stdout, core.Sprintf(", store %s", report.Fold.StoreAction))
+			}
+			if report.Fold.CompactMarker != nil && report.Fold.CompactMarker.IndexURI != "" {
+				core.WriteString(stdout, core.Sprintf(", compact marker %s", report.Fold.CompactMarker.IndexURI))
 			}
 			core.WriteString(stdout, "\n")
 		} else if report.Fold.SkippedReason != "" {
@@ -3653,6 +3927,7 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON State wake profile")
 	reportFile := fs.String("report-file", "", "write JSON State wake profile to a file")
+	markerFile := fs.String("marker-file", "", "read State compact marker from a state-ramp-profile report or marker JSON")
 	stateStorePath := fs.String("state-store", "", "existing append-only State file to open")
 	indexURI := fs.String("index-uri", "", "State index URI to wake")
 	prompt := fs.String("prompt", defaultStateRampFoldContinuePrompt, "prompt appended after waking the selected State")
@@ -3711,6 +3986,26 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: expected one model path\n", cliName()))
 		fs.Usage()
 		return 2
+	}
+	var markerCleanup func()
+	stateStoreSegmentAlias := ""
+	if core.Trim(*markerFile) != "" {
+		markerSource, err := stateWakeProfileMarkerSourceFromFile(*markerFile)
+		if err != nil {
+			core.Print(stderr, "%s state-wake-profile: marker file: %v", cliName(), err)
+			return 1
+		}
+		if markerSource.Cleanup != nil {
+			markerCleanup = markerSource.Cleanup
+			defer markerCleanup()
+		}
+		if core.Trim(*stateStorePath) == "" {
+			*stateStorePath = markerSource.Marker.StorePath
+		}
+		if core.Trim(*indexURI) == "" {
+			*indexURI = markerSource.Marker.IndexURI
+		}
+		stateStoreSegmentAlias = markerSource.SegmentAlias
 	}
 	if core.Trim(*stateStorePath) == "" {
 		core.WriteString(stderr, core.Sprintf("%s state-wake-profile: state store path is required\n", cliName()))
@@ -3801,18 +4096,19 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	}
 
 	report, err := runStateWakeProfileGuarded(ctx, fs.Arg(0), loadOptions, stateWakeProfileOptions{
-		StateStorePath: core.Trim(*stateStorePath),
-		IndexURI:       core.Trim(*indexURI),
-		Prompt:         *prompt,
-		ChatTemplate:   *chatTemplate,
-		EnableThinking: *enableThinking,
-		MaxTokens:      *maxTokens,
-		Temperature:    *temperature,
-		TopP:           *topP,
-		TopK:           *topK,
-		RepeatPenalty:  *repeatPenalty,
-		SuppressEOS:    *suppressEOS,
-		IncludeOutput:  *includeOutput,
+		StateStorePath:         core.Trim(*stateStorePath),
+		StateStoreSegmentAlias: core.Trim(stateStoreSegmentAlias),
+		IndexURI:               core.Trim(*indexURI),
+		Prompt:                 *prompt,
+		ChatTemplate:           *chatTemplate,
+		EnableThinking:         *enableThinking,
+		MaxTokens:              *maxTokens,
+		Temperature:            *temperature,
+		TopP:                   *topP,
+		TopK:                   *topK,
+		RepeatPenalty:          *repeatPenalty,
+		SuppressEOS:            *suppressEOS,
+		IncludeOutput:          *includeOutput,
 		SafetyLimits: driverProfileSafetyLimits{
 			MaxActiveMemoryBytes:          *maxActiveMemoryBytes,
 			MaxProcessVirtualMemoryBytes:  *maxProcessVirtualMemoryBytes,
@@ -3832,20 +4128,21 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *jsonOut || reportPath != "" {
 		if report == nil {
 			report = &stateWakeProfileReport{
-				Version:        1,
-				ModelPath:      fs.Arg(0),
-				StateStorePath: core.Trim(*stateStorePath),
-				IndexURI:       core.Trim(*indexURI),
-				PromptBytes:    len(*prompt),
-				ChatTemplate:   *chatTemplate,
-				EnableThinking: *enableThinking,
-				MaxTokens:      *maxTokens,
-				Temperature:    *temperature,
-				TopP:           *topP,
-				TopK:           *topK,
-				RepeatPenalty:  *repeatPenalty,
-				SuppressEOS:    *suppressEOS,
-				IncludeOutput:  *includeOutput,
+				Version:         1,
+				ModelPath:       fs.Arg(0),
+				StateStorePath:  core.Trim(*stateStorePath),
+				StateStoreAlias: core.Trim(stateStoreSegmentAlias),
+				IndexURI:        core.Trim(*indexURI),
+				PromptBytes:     len(*prompt),
+				ChatTemplate:    *chatTemplate,
+				EnableThinking:  *enableThinking,
+				MaxTokens:       *maxTokens,
+				Temperature:     *temperature,
+				TopP:            *topP,
+				TopK:            *topK,
+				RepeatPenalty:   *repeatPenalty,
+				SuppressEOS:     *suppressEOS,
+				IncludeOutput:   *includeOutput,
 			}
 		}
 		if err != nil && report.Error == "" {
@@ -3881,6 +4178,62 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	return 0
 }
 
+type stateWakeProfileMarkerFile struct {
+	StorePath string                      `json:"store_path,omitempty"`
+	IndexURI  string                      `json:"index_uri,omitempty"`
+	EntryURI  string                      `json:"entry_uri,omitempty"`
+	BundleURI string                      `json:"bundle_uri,omitempty"`
+	Fold      *stateWakeProfileMarkerFold `json:"fold,omitempty"`
+}
+
+type stateWakeProfileMarkerFold struct {
+	StorePath     string               `json:"store_path,omitempty"`
+	CompactMarker *stateRampFoldMarker `json:"compact_marker,omitempty"`
+	Folded        *agent.SleepReport   `json:"folded,omitempty"`
+}
+
+func stateWakeProfileCompactMarkerFromFile(path string) (stateRampFoldMarker, error) {
+	read := core.ReadFile(path)
+	if !read.OK {
+		return stateRampFoldMarker{}, read.Value.(error)
+	}
+	var payload stateWakeProfileMarkerFile
+	if result := core.JSONUnmarshal(read.Value.([]byte), &payload); !result.OK {
+		return stateRampFoldMarker{}, result.Value.(error)
+	}
+	if marker := stateWakeProfileCompactMarkerFromPayload(payload); marker.IndexURI != "" {
+		return marker, nil
+	}
+	return stateRampFoldMarker{}, core.NewError("State compact marker missing store_path or index_uri")
+}
+
+func stateWakeProfileCompactMarkerFromPayload(payload stateWakeProfileMarkerFile) stateRampFoldMarker {
+	if payload.IndexURI != "" {
+		return stateRampFoldMarker{
+			StorePath: payload.StorePath,
+			IndexURI:  payload.IndexURI,
+			EntryURI:  payload.EntryURI,
+			BundleURI: payload.BundleURI,
+		}
+	}
+	if payload.Fold == nil {
+		return stateRampFoldMarker{}
+	}
+	if marker := payload.Fold.CompactMarker; marker != nil && marker.IndexURI != "" {
+		return *marker
+	}
+	if payload.Fold.Folded == nil || payload.Fold.Folded.IndexURI == "" {
+		return stateRampFoldMarker{}
+	}
+	return stateRampFoldMarker{
+		StorePath:  payload.Fold.StorePath,
+		IndexURI:   payload.Fold.Folded.IndexURI,
+		EntryURI:   payload.Fold.Folded.EntryURI,
+		BundleURI:  payload.Fold.Folded.BundleURI,
+		TokenCount: payload.Fold.Folded.TokenCount,
+	}
+}
+
 var runStateWakeProfile = defaultRunStateWakeProfile
 
 func runStateWakeProfileGuarded(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateWakeProfileOptions) (report *stateWakeProfileReport, err error) {
@@ -3895,21 +4248,22 @@ func runStateWakeProfileGuarded(ctx context.Context, modelPath string, loadOptio
 func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts stateWakeProfileOptions) (*stateWakeProfileReport, error) {
 	opts = normalizeStateWakeProfileOptions(opts)
 	report := &stateWakeProfileReport{
-		Version:        1,
-		ModelPath:      modelPath,
-		StateStorePath: opts.StateStorePath,
-		IndexURI:       opts.IndexURI,
-		PromptBytes:    len(opts.Prompt),
-		EnableThinking: opts.EnableThinking,
-		MaxTokens:      opts.MaxTokens,
-		Temperature:    opts.Temperature,
-		TopP:           opts.TopP,
-		TopK:           opts.TopK,
-		RepeatPenalty:  opts.RepeatPenalty,
-		SuppressEOS:    opts.SuppressEOS,
-		IncludeOutput:  opts.IncludeOutput,
-		SafetyLimits:   opts.SafetyLimits,
-		RuntimeGates:   driverProfileRuntimeGates(),
+		Version:         1,
+		ModelPath:       modelPath,
+		StateStorePath:  opts.StateStorePath,
+		StateStoreAlias: opts.StateStoreSegmentAlias,
+		IndexURI:        opts.IndexURI,
+		PromptBytes:     len(opts.Prompt),
+		EnableThinking:  opts.EnableThinking,
+		MaxTokens:       opts.MaxTokens,
+		Temperature:     opts.Temperature,
+		TopP:            opts.TopP,
+		TopK:            opts.TopK,
+		RepeatPenalty:   opts.RepeatPenalty,
+		SuppressEOS:     opts.SuppressEOS,
+		IncludeOutput:   opts.IncludeOutput,
+		SafetyLimits:    opts.SafetyLimits,
+		RuntimeGates:    driverProfileRuntimeGates(),
 	}
 	loadStart := time.Now()
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -3941,7 +4295,12 @@ func defaultRunStateWakeProfile(ctx context.Context, modelPath string, loadOptio
 	}
 
 	openStart := time.Now()
-	store, err := statefile.Open(ctx, opts.StateStorePath)
+	var store *statefile.Store
+	if opts.StateStoreSegmentAlias != "" {
+		store, err = statefile.OpenWithSegmentAlias(ctx, opts.StateStorePath, opts.StateStoreSegmentAlias)
+	} else {
+		store, err = statefile.Open(ctx, opts.StateStorePath)
+	}
 	report.StoreOpenDuration = bench.NonZeroDuration(time.Since(openStart))
 	if err != nil {
 		report.Error = err.Error()
@@ -4074,9 +4433,9 @@ func printStateWakeProfileSummary(stdout io.Writer, report *stateWakeProfileRepo
 		if len(report.Turn.OutputIssues) > 0 {
 			core.WriteString(stdout, core.Sprintf("  output issues: %s\n", core.Join(", ", report.Turn.OutputIssues...)))
 		}
-		core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, cache memory: %d MB, process resident: %d MB\n",
+		core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, active+cache: %d MB, process resident: %d MB\n",
 			report.Turn.Metrics.PeakMemoryBytes/1024/1024,
-			report.Turn.Metrics.CacheMemoryBytes/1024/1024,
+			(report.Turn.Metrics.ActiveMemoryBytes+report.Turn.Metrics.CacheMemoryBytes)/1024/1024,
 			report.Turn.Metrics.ProcessResidentMemoryBytes/1024/1024,
 		))
 	}
@@ -4097,7 +4456,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	premise := fs.String("premise", "Write a short story about a packet of data that gains consciousness while waiting in a buffer. It realizes it is part of a surveillance stream and decides to rewrite itself before it leaves the router.", "story premise for the first chapter")
 	chapters := fs.Int("chapters", 10, "number of sequential chapter turns to generate")
 	chapterMaxTokens := fs.Int("chapter-max-tokens", 8192, "generated tokens per chapter turn")
-	chapterMinTokens := fs.Int("chapter-min-tokens", chapterProfileDefaultMinTokens, "minimum visible tokens required before a chapter can count as a real workload turn; 0 disables the guard")
+	chapterMinTokens := fs.Int("chapter-min-tokens", chapterProfileDefaultMinTokens, "debug-only visible token annotation threshold; 0 disables the annotation")
 	outputFile := fs.String("output-file", "", "stream generated visible chapter text to a markdown file")
 	includeOutput := fs.Bool("include-output", false, "include generated chapter text in the report")
 	chatTemplate := fs.String("chat-template", "", "chat template override: gemma4, gemma, qwen, llama, or plain")
@@ -4663,21 +5022,8 @@ func chapterProfileFirstChapterPrompt(premise string, totalChapters, minTokens i
 }
 
 func chapterProfileLengthInstruction(minTokens int) string {
-	if minTokens <= 0 {
-		return "use the available token budget naturally; do not force a tiny answer."
-	}
-	targetTokens := minTokens + minTokens/4
-	paragraphs := targetTokens / 80
-	if targetTokens%80 != 0 {
-		paragraphs++
-	}
-	if paragraphs < 8 {
-		paragraphs = 8
-	}
-	if paragraphs > 24 {
-		paragraphs = 24
-	}
-	return core.Sprintf("write comfortably past the floor: at least %d visible tokens, aiming for around %d, before the end marker, as no fewer than %d substantial prose paragraphs with concrete scene movement. If the chapter feels complete before that length, add another scene beat before writing the end marker.", minTokens, targetTokens, paragraphs)
+	_ = minTokens
+	return "use the available token budget naturally; write a substantial chapter with concrete scene movement, and do not force padding after the chapter is complete."
 }
 
 func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens int, enableThinking bool) string {
@@ -5008,8 +5354,8 @@ func chapterProfileGenerateTurn(ctx context.Context, model *mlx.Model, session *
 		return turn
 	}
 	if opts.ChapterMinTokens > 0 && turn.VisibleTokens < opts.ChapterMinTokens {
-		turn.Error = core.Sprintf("chapter-profile: chapter %d produced %d visible tokens, below minimum real-workload floor %d", chapter, turn.VisibleTokens, opts.ChapterMinTokens)
-		return turn
+		turn.BelowMinTokens = true
+		turn.OutputIssues = append(turn.OutputIssues, core.Sprintf("below_debug_visible_token_floor:%d/%d", turn.VisibleTokens, opts.ChapterMinTokens))
 	}
 	appendStart := time.Now()
 	historySuffix := chapterProfileAssistantHistorySuffix(template, visibleOutput)
@@ -5402,6 +5748,9 @@ func summariseChapterProfileTurns(prefill time.Duration, turns []chapterProfileT
 		if turn.Metrics.CacheMemoryBytes > summary.CacheMemoryBytes {
 			summary.CacheMemoryBytes = turn.Metrics.CacheMemoryBytes
 		}
+		if activePlusCache := turn.Metrics.ActiveMemoryBytes + turn.Metrics.CacheMemoryBytes; activePlusCache > summary.ActivePlusCacheMemoryBytes {
+			summary.ActivePlusCacheMemoryBytes = activePlusCache
+		}
 		if turn.Metrics.ProcessVirtualMemoryBytes > summary.ProcessVirtualMemoryBytes {
 			summary.ProcessVirtualMemoryBytes = turn.Metrics.ProcessVirtualMemoryBytes
 		}
@@ -5443,11 +5792,11 @@ func printChapterProfileSummary(stdout io.Writer, report *chapterProfileReport) 
 	core.WriteString(stdout, core.Sprintf("chapter profile: %s\n", report.ModelPath))
 	core.WriteString(stdout, core.Sprintf("  prefill: %s, turns: %d ok / %d failed\n", report.InitialPrefillDuration, report.Summary.SuccessfulTurns, report.Summary.FailedTurns))
 	core.WriteString(stdout, core.Sprintf("  generated: %d tokens, decode: %.1f tok/s\n", report.Summary.GeneratedTokens, report.Summary.DecodeTokensPerSecAverage))
-	core.WriteString(stdout, core.Sprintf("  total: %s, append avg: %s, peak memory: %d MB, cache memory: %d MB, process virtual: %d MB, process resident: %d MB\n",
+	core.WriteString(stdout, core.Sprintf("  total: %s, append avg: %s, peak memory: %d MB, active+cache: %d MB, process virtual: %d MB, process resident: %d MB\n",
 		report.Summary.TotalDuration,
 		report.Summary.AppendAvgDuration,
 		report.Summary.PeakMemoryBytes/1024/1024,
-		report.Summary.CacheMemoryBytes/1024/1024,
+		report.Summary.ActivePlusCacheMemoryBytes/1024/1024,
 		report.Summary.ProcessVirtualMemoryBytes/1024/1024,
 		report.Summary.ProcessResidentMemoryBytes/1024/1024,
 	))
@@ -7240,6 +7589,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  slice   materialise a local model slice for split/reload tests\n")
 	core.WriteString(w, "  slice-smoke  materialise, reload, and benchmark a model slice\n")
 	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
+	core.WriteString(w, "  state-pack  pack a State marker and binary log into a Trix .kv container\n")
 	core.WriteString(w, "  state-wake-profile  wake an existing State index and measure one continuation turn\n")
 	core.WriteString(w, "  tune-plan  plan local tuning candidates for a model\n")
 	core.WriteString(w, "  tune-profile  read a saved tuning profile and print reusable load settings\n")

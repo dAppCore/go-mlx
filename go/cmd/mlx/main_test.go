@@ -678,6 +678,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 			TopK:                      cfg.TopK,
 			RepeatPenalty:             cfg.RepeatPenalty,
 			SuppressEOS:               cfg.SuppressEOS,
+			TraceTokenPhases:          cfg.TraceTokenPhases,
+			RuntimeGates:              driverProfileRuntimeGates(),
 			InitialPrefillDuration:    30 * time.Second,
 			InitialPrefillTokens:      30000,
 			Turns:                     turns,
@@ -688,7 +690,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	writeCLIPackFile(t, appendPath, "Review the changed files and explain the highest-risk performance regression.")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-turn-min-tokens-policy", "mark", "-suppress-eos", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-append-file", appendPath, "-append-turn-delimiter", "---TURN---", "-chat-template", "gemma4", "-enable-thinking", "-turn-min-tokens", "512", "-turn-min-tokens-policy", "mark", "-suppress-eos", "-trace-token-phases", "-estimate-power-watts", "100", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -712,7 +714,10 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
 	}
 	if gotCfg.TurnMinTokens != 512 || gotCfg.TurnMinTokensPolicy != "mark" || !gotCfg.SuppressEOS {
-		t.Fatalf("state ramp real-workload guards = min:%d policy:%q suppress_eos:%v, want configured floor", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
+		t.Fatalf("state ramp debug annotation = min:%d policy:%q suppress_eos:%v, want configured debug threshold", gotCfg.TurnMinTokens, gotCfg.TurnMinTokensPolicy, gotCfg.SuppressEOS)
+	}
+	if !gotCfg.TraceTokenPhases {
+		t.Fatalf("TraceTokenPhases = false, want retained turn phase tracing")
 	}
 	if gotCfg.Temperature != 1.0 || gotCfg.TopP != 0.95 || gotCfg.TopK != 64 || gotCfg.RepeatPenalty != 1.0 {
 		t.Fatalf("state ramp sampling = temp:%f top_p:%f top_k:%d repeat:%f, want Gemma 4 defaults", gotCfg.Temperature, gotCfg.TopP, gotCfg.TopK, gotCfg.RepeatPenalty)
@@ -734,15 +739,99 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"top_p": 0.95`,
 		`"top_k": 64`,
 		`"suppress_eos": true`,
+		`"trace_token_phases": true`,
+		`"retained_setup_duration": 32000000000`,
+		`"replay_estimate_turns": 1`,
+		`"replay_prefill_duration_estimate": 32000000000`,
+		`"replay_total_duration_estimate": 42000000000`,
 		`"append_tokens_per_sec_average": 4096`,
 		`"decode_tokens_per_sec_average": 102.4`,
 		`"effective_turn_tokens_per_sec_average":`,
+		`"active_plus_cache_memory_bytes": 9663676416`,
 		`"final_state_tokens": 39216`,
 		`"total_joules": 4200`,
 		`"append_joules": 200`,
+		`"replay_total_joules_estimate": 4200`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should not contain hyper-long fixed-cache default %s", stdout.String(), rejected)
+		}
+	}
+}
+
+func TestRunCommand_StateRampProfileFixedCacheEnvOverride_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "0")
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		return &stateRampProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			TargetTokens: cfg.TargetTokens,
+			RuntimeGates: driverProfileRuntimeGates(),
+			Summary: stateRampProfileSummary{
+				SuccessfulTurns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should not contain %s", stdout.String(), rejected)
+		}
+	}
+}
+
+func TestRunCommand_StateRampProfileLongFormPagedDefault_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		return &stateRampProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			TargetTokens: cfg.TargetTokens,
+			RuntimeGates: driverProfileRuntimeGates(),
+			Summary: stateRampProfileSummary{
+				SuccessfulTurns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-target-tokens", "65536", "/models/demo"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, rejected := range []string{
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
+		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+	} {
+		if core.Contains(stdout.String(), rejected) {
+			t.Fatalf("stdout = %q, should not contain state-ramp fixed-cache default %s", stdout.String(), rejected)
 		}
 	}
 }
@@ -906,7 +995,7 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 }
 
-func TestRunCommand_StateRampProfileFoldDegradationValidation_Bad(t *testing.T) {
+func TestRunCommand_StateRampProfileDegradationMinConsecutiveValidation_Bad(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
 	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
@@ -915,13 +1004,13 @@ func TestRunCommand_StateRampProfileFoldDegradationValidation_Bad(t *testing.T) 
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-degradation", "-fold-store", "/tmp/state.mvlog", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-on-degradation", "-degradation-min-consecutive-turns", "0", "-fold-store", "/tmp/state.mvlog", "/models/demo"}, stdout, stderr)
 
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !core.Contains(stderr.String(), "fold-on-degradation requires turn-min-tokens > 0") {
-		t.Fatalf("stderr = %q, want degradation fold floor validation", stderr.String())
+	if !core.Contains(stderr.String(), "degradation min consecutive turns must be >= 1") {
+		t.Fatalf("stderr = %q, want degradation min consecutive validation", stderr.String())
 	}
 }
 
@@ -1028,6 +1117,93 @@ func TestRunCommand_StateWakeProfileJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateWakeProfileMarkerFile_Good(t *testing.T) {
+	originalRun := runStateWakeProfile
+	t.Cleanup(func() { runStateWakeProfile = originalRun })
+	var gotCfg stateWakeProfileOptions
+	runStateWakeProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateWakeProfileOptions) (*stateWakeProfileReport, error) {
+		gotCfg = cfg
+		return &stateWakeProfileReport{
+			Version:        1,
+			ModelPath:      modelPath,
+			StateStorePath: cfg.StateStorePath,
+			IndexURI:       cfg.IndexURI,
+			MaxTokens:      cfg.MaxTokens,
+			Wake: &agent.WakeReport{
+				IndexURI:        cfg.IndexURI,
+				PrefixTokens:    175,
+				RestoreStrategy: "folded-prefill",
+			},
+			Turn: &stateRampProfileTurn{
+				VisibleTokens: 8,
+				Metrics: mlx.Metrics{
+					GeneratedTokens:    8,
+					DecodeDuration:     time.Second,
+					DecodeTokensPerSec: 8,
+				},
+			},
+		}, nil
+	}
+	dir := t.TempDir()
+	markerPath := core.PathJoin(dir, "ramp-report.json")
+	writeCLIPackFile(t, markerPath, `{
+  "fold": {
+    "compact_marker": {
+      "store_path": "/tmp/session-1.mvlog",
+      "index_uri": "mlx://state-ramp/fold/1/folded/index",
+      "entry_uri": "mlx://state-ramp/fold/1/folded",
+      "bundle_uri": "mlx://state-ramp/fold/1/folded/bundle",
+      "token_count": 175
+    }
+  }
+}`)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-wake-profile",
+		"-json",
+		"-marker-file", markerPath,
+		"-max-tokens", "64",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.StateStorePath != "/tmp/session-1.mvlog" || gotCfg.IndexURI != "mlx://state-ramp/fold/1/folded/index" {
+		t.Fatalf("wake cfg state/index = %q/%q, want marker values", gotCfg.StateStorePath, gotCfg.IndexURI)
+	}
+	for _, want := range []string{
+		`"state_store_path": "/tmp/session-1.mvlog"`,
+		`"index_uri": "mlx://state-ramp/fold/1/folded/index"`,
+		`"max_tokens": 64`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestStateWakeProfileCompactMarkerFromPayload_FoldedFallback_Good(t *testing.T) {
+	payload := stateWakeProfileMarkerFile{
+		Fold: &stateWakeProfileMarkerFold{
+			StorePath: "/tmp/older-report.mvlog",
+			Folded: &agent.SleepReport{
+				IndexURI:   "mlx://older/folded/index",
+				EntryURI:   "mlx://older/folded",
+				BundleURI:  "mlx://older/folded/bundle",
+				TokenCount: 99,
+			},
+		},
+	}
+
+	marker := stateWakeProfileCompactMarkerFromPayload(payload)
+
+	if marker.StorePath != "/tmp/older-report.mvlog" || marker.IndexURI != "mlx://older/folded/index" || marker.TokenCount != 99 {
+		t.Fatalf("marker = %+v, want folded fallback", marker)
+	}
+}
+
 func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 	originalRun := runStateWakeProfile
 	t.Cleanup(func() { runStateWakeProfile = originalRun })
@@ -1065,6 +1241,14 @@ func TestStateRampProfileOutputIssuesAllowsNegativeReadiness_Good(t *testing.T) 
 	}
 }
 
+func TestStateRampProfileOutputIssuesRejectsReadyEcho_Good(t *testing.T) {
+	issues := stateRampProfileOutputIssues("Ready.")
+
+	if !core.SliceContains(issues, "visible_seed_ready_echo") {
+		t.Fatalf("issues = %v, want visible_seed_ready_echo", issues)
+	}
+}
+
 func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "User turn 3: Inspect the report.\n\n\treturn mem_", false)
 
@@ -1091,13 +1275,16 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 func TestStateRampProfileTurnPromptVisibleFloor_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "Review the latest turn.", false, 256)
 
-	for _, want := range []string{
+	for _, rejected := range []string{
 		"write at least 256 visible tokens",
-		"expand with concrete evidence, the main risk, and the next validation step",
+		"expand with concrete evidence",
 	} {
-		if !core.Contains(prompt, want) {
-			t.Fatalf("prompt = %q, want %q", prompt, want)
+		if core.Contains(prompt, rejected) {
+			t.Fatalf("prompt = %q, should not contain debug-floor steering %q", prompt, rejected)
 		}
+	}
+	if !core.Contains(prompt, "Answer the user request from the turn material now") {
+		t.Fatalf("prompt = %q, want normal reference-turn instruction", prompt)
 	}
 }
 
@@ -1106,6 +1293,36 @@ func TestStateRampProfileVisibleOutputGemma4_Good(t *testing.T) {
 
 	if output != "Visible beforeVisible after" {
 		t.Fatalf("output = %q, want visible Gemma 4 content only", output)
+	}
+}
+
+func TestForEachRepeatedStateRampTokenSpanWrapped_Good(t *testing.T) {
+	source := []int32{1, 2, 3, 4}
+	var got []int32
+	spans := 0
+
+	count, err := forEachRepeatedStateRampTokenSpan(source, 3, 6, func(tokens []int32) error {
+		spans++
+		got = append(got, tokens...)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("forEachRepeatedStateRampTokenSpan() error = %v", err)
+	}
+	if count != 6 {
+		t.Fatalf("count = %d, want 6", count)
+	}
+	if spans != 3 {
+		t.Fatalf("spans = %d, want 3 wrapped spans", spans)
+	}
+	want := []int32{4, 1, 2, 3, 4, 1}
+	if len(got) != len(want) {
+		t.Fatalf("got = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -1166,10 +1383,10 @@ func TestStateRampProfileTurnAppendSourceFixedCompactionThreshold_Good(t *testin
 func TestStateRampProfileTurnErrorFatal_Good(t *testing.T) {
 	turn := stateRampProfileTurn{Error: "short turn", BelowMinTokens: true}
 	if stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
-		t.Fatal("below-floor turn with mark policy is fatal")
+		t.Fatal("debug-floor turn with mark policy is fatal")
 	}
 	if !stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "fail"}) {
-		t.Fatal("below-floor turn with fail policy is non-fatal")
+		t.Fatal("debug-floor turn with fail policy is non-fatal")
 	}
 	if !stateRampProfileTurnErrorFatal(stateRampProfileTurn{Error: "loop"}, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
 		t.Fatal("non-floor error with mark policy is non-fatal")
@@ -1179,19 +1396,17 @@ func TestStateRampProfileTurnErrorFatal_Good(t *testing.T) {
 func TestStateRampProfileDegradationFoldReached_Good(t *testing.T) {
 	opts := stateRampProfileOptions{
 		FoldOnDegradation:         true,
-		TurnMinTokens:             256,
-		TurnMinTokensPolicy:       "mark",
 		DegradationMinConsecutive: 2,
 	}
 	if stateRampProfileDegradationFoldReached(1, opts) {
-		t.Fatal("single below-floor turn triggered degradation fold")
+		t.Fatal("single output-issue turn triggered degradation fold")
 	}
 	if !stateRampProfileDegradationFoldReached(2, opts) {
-		t.Fatal("two consecutive below-floor turns did not trigger degradation fold")
+		t.Fatal("two consecutive output-issue turns did not trigger degradation fold")
 	}
-	opts.TurnMinTokensPolicy = "fail"
+	opts.FoldOnDegradation = false
 	if stateRampProfileDegradationFoldReached(2, opts) {
-		t.Fatal("fail policy triggered degradation fold")
+		t.Fatal("disabled degradation fold still triggered")
 	}
 }
 
@@ -1206,16 +1421,19 @@ func TestStateRampProfileApplyVisibleTokenFloorPreservesClosedTurn_Good(t *testi
 	stateRampProfileApplyVisibleTokenFloor(&turn, stateRampProfileOptions{TurnMinTokens: 256, TurnMinTokensPolicy: "mark"})
 
 	if !turn.BelowMinTokens {
-		t.Fatal("below-floor turn was not marked")
+		t.Fatal("debug-floor turn was not marked")
 	}
 	if turn.TurnCloseTokens != 2 || turn.TokensAfterGenerate != 1024 {
 		t.Fatalf("turn close state changed: %+v", turn)
 	}
-	if !core.Contains(turn.Error, "turn 7 produced 12 visible tokens") {
-		t.Fatalf("error = %q, want below-floor detail", turn.Error)
+	if turn.Error != "" {
+		t.Fatalf("error = %q, want mark-only debug annotation", turn.Error)
+	}
+	if len(turn.OutputIssues) != 1 || turn.OutputIssues[0] != "below_debug_visible_token_floor:12/256" {
+		t.Fatalf("output issues = %v, want debug token-floor annotation", turn.OutputIssues)
 	}
 	if stateRampProfileTurnErrorFatal(turn, stateRampProfileOptions{TurnMinTokensPolicy: "mark"}) {
-		t.Fatal("marked below-floor closed turn is fatal")
+		t.Fatal("marked debug-floor closed turn is fatal")
 	}
 }
 
@@ -1256,13 +1474,111 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileSummary_ReplayEstimate_Good(t *testing.T) {
+	turns := []stateRampProfileTurn{
+		{
+			Index:          1,
+			AppendDuration: time.Second,
+			Duration:       2 * time.Second,
+			VisibleTokens:  10,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:   10,
+				PrefillDuration:   5 * time.Second,
+				DecodeDuration:    2 * time.Second,
+				ActiveMemoryBytes: 1024,
+			},
+		},
+		{
+			Index:          2,
+			AppendDuration: time.Second,
+			Duration:       2 * time.Second,
+			VisibleTokens:  10,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 10,
+				PrefillDuration: 9 * time.Second,
+				DecodeDuration:  2 * time.Second,
+			},
+		},
+	}
+
+	summary := summariseStateRampProfileTurns(4*time.Second, 1000, turns, stateRampProfileOptions{TargetTokens: 2000})
+
+	if summary.RetainedSetupDuration != 6*time.Second {
+		t.Fatalf("retained setup = %s, want 6s", summary.RetainedSetupDuration)
+	}
+	if summary.ReplayEstimateTurns != 2 || summary.ReplayPrefillDuration != 14*time.Second {
+		t.Fatalf("replay estimate turns=%d prefill=%s, want 2 turns and 14s", summary.ReplayEstimateTurns, summary.ReplayPrefillDuration)
+	}
+	if summary.ReplayTotalDuration != 18*time.Second {
+		t.Fatalf("replay total = %s, want 18s", summary.ReplayTotalDuration)
+	}
+	if summary.ReplayPrefillSavedDuration != 8*time.Second || summary.ReplayTotalSavedDuration != 8*time.Second {
+		t.Fatalf("replay savings = prefill:%s total:%s, want 8s/8s", summary.ReplayPrefillSavedDuration, summary.ReplayTotalSavedDuration)
+	}
+	if summary.RetainedVsReplaySpeedup < 1.79 || summary.RetainedVsReplaySpeedup > 1.81 {
+		t.Fatalf("replay speedup = %f, want 1.8", summary.RetainedVsReplaySpeedup)
+	}
+}
+
+func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
+	summary := summariseStateRampProfileTurns(time.Second, 1000, []stateRampProfileTurn{
+		{
+			Index:         1,
+			VisibleTokens: 2,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 2,
+				DecodeDuration:  30 * time.Millisecond,
+				TokenPhases: []mlx.TokenPhaseTrace{
+					{
+						TotalDuration:      10 * time.Millisecond,
+						ForwardDuration:    8 * time.Millisecond,
+						SampleEvalDuration: time.Millisecond,
+						NativeEvents: []mlx.NativePhaseTrace{
+							{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond},
+						},
+					},
+					{
+						TotalDuration:      20 * time.Millisecond,
+						ForwardDuration:    18 * time.Millisecond,
+						SampleEvalDuration: time.Millisecond,
+						NativeEvents: []mlx.NativePhaseTrace{
+							{Name: "gemma4.layer.01.attention", Duration: 3 * time.Millisecond},
+							{Name: "gemma4.layer.01.ffn_router", Duration: time.Millisecond},
+						},
+					},
+				},
+			},
+		},
+	}, stateRampProfileOptions{TargetTokens: 2000})
+
+	if len(summary.TokenPhases) < 3 {
+		t.Fatalf("token phases = %+v, want total/forward/sample_eval buckets", summary.TokenPhases)
+	}
+	if summary.TokenPhases[0].Name != "total" || summary.TokenPhases[0].Duration != 30*time.Millisecond || summary.TokenPhases[0].AverageDuration != 15*time.Millisecond {
+		t.Fatalf("total phase = %+v, want 30ms total and 15ms average", summary.TokenPhases[0])
+	}
+	if summary.TokenPhases[1].Name != "forward" || summary.TokenPhases[1].Duration != 26*time.Millisecond || summary.TokenPhases[1].AverageDuration != 13*time.Millisecond {
+		t.Fatalf("forward phase = %+v, want 26ms total and 13ms average", summary.TokenPhases[1])
+	}
+	if len(summary.NativeEvents) != 2 {
+		t.Fatalf("native events = %+v, want attention and router buckets", summary.NativeEvents)
+	}
+	if summary.NativeEvents[0].Name != "attention" || summary.NativeEvents[0].Duration != 5*time.Millisecond || summary.NativeEvents[0].AverageDuration != 2500*time.Microsecond {
+		t.Fatalf("attention events = %+v, want combined attention bucket", summary.NativeEvents[0])
+	}
+	if len(summary.NativeEventDetails) != 3 {
+		t.Fatalf("native event details = %+v, want three layer-level events", summary.NativeEventDetails)
+	}
+	if summary.NativeEventDetails[0].Name != "gemma4.layer.01.attention" || summary.NativeEventDetails[0].Duration != 3*time.Millisecond {
+		t.Fatalf("native event detail[0] = %+v, want layer 01 attention first", summary.NativeEventDetails[0])
+	}
+}
+
 func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 	opts := stateRampProfileOptions{
 		TargetTokens:              100000,
 		CompactionThresholdTokens: 100000,
 		CompactionTailTokens:      8192,
-		TurnMinTokens:             256,
-		TurnMinTokensPolicy:       "mark",
 		FoldOnDegradation:         true,
 		DegradationMinConsecutive: 2,
 	}
@@ -1280,8 +1596,7 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 			Index:               2,
 			TokensAfterGenerate: 78000,
 			VisibleTokens:       160,
-			BelowMinTokens:      true,
-			Error:               "below floor",
+			OutputIssues:        []string{"visible_chat_control_token"},
 			Metrics: mlx.Metrics{
 				GeneratedTokens: 160,
 				DecodeDuration:  time.Second,
@@ -1291,8 +1606,7 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 			Index:               3,
 			TokensAfterGenerate: 83000,
 			VisibleTokens:       142,
-			BelowMinTokens:      true,
-			Error:               "below floor",
+			OutputIssues:        []string{"visible_prompt_analysis"},
 			Metrics: mlx.Metrics{
 				GeneratedTokens: 142,
 				DecodeDuration:  time.Second,
@@ -1309,8 +1623,8 @@ func TestStateRampProfileContentDegradationLifecycle_Good(t *testing.T) {
 	if summary.ContentDegradationTurn != 3 || summary.ContentDegradationStreak != 2 {
 		t.Fatalf("degradation = turn:%d streak:%d, want turn 3 streak 2", summary.ContentDegradationTurn, summary.ContentDegradationStreak)
 	}
-	if !core.Contains(summary.CompactionReason, "below-floor turns") {
-		t.Fatalf("compaction reason = %q, want below-floor degradation reason", summary.CompactionReason)
+	if !core.Contains(summary.CompactionReason, "output-issue turns") {
+		t.Fatalf("compaction reason = %q, want output-issue degradation reason", summary.CompactionReason)
 	}
 }
 
@@ -1327,6 +1641,77 @@ func TestStateRampProfileFoldBody_Good(t *testing.T) {
 	} {
 		if !core.Contains(body, want) {
 			t.Fatalf("body = %q, want %q", body, want)
+		}
+	}
+}
+
+func TestStateRampProfileFoldDurations_Good(t *testing.T) {
+	report := &stateRampProfileReport{
+		Summary: stateRampProfileSummary{
+			TotalDuration: 10 * time.Second,
+		},
+		Fold: &stateRampProfileFold{
+			Duration:     time.Second,
+			WakeDuration: 2 * time.Second,
+			ContinueTurn: &stateRampProfileTurn{
+				AppendDuration: 3 * time.Second,
+				Duration:       4 * time.Second,
+			},
+		},
+	}
+
+	annotateStateRampProfileFoldDurations(report)
+
+	if report.Fold.LifecycleDuration != 10*time.Second {
+		t.Fatalf("fold lifecycle = %s, want 10s", report.Fold.LifecycleDuration)
+	}
+	if report.Fold.TotalWithRetained != 20*time.Second {
+		t.Fatalf("retained total with fold = %s, want 20s", report.Fold.TotalWithRetained)
+	}
+}
+
+func TestPrintStateRampProfileSummary_FoldLifecycle_Good(t *testing.T) {
+	report := &stateRampProfileReport{
+		ModelPath: "model",
+		Summary: stateRampProfileSummary{
+			SuccessfulTurns:            1,
+			GeneratedTokens:            16,
+			DecodeTokensPerSecAverage:  8,
+			EffectiveTurnTokensPerSec:  4,
+			TotalDuration:              4 * time.Second,
+			CompactionThresholdTokens:  100,
+			CompactionTailTokens:       16,
+			ContextExhausted:           true,
+			ActivePlusCacheMemoryBytes: 1024,
+		},
+		Fold: &stateRampProfileFold{
+			Attempted:         true,
+			StorePath:         "state.mvlog",
+			StoreAction:       "append",
+			CompactMarker:     &stateRampFoldMarker{IndexURI: "mlx://state/folded/index"},
+			Duration:          time.Second,
+			WakeDuration:      2 * time.Second,
+			LifecycleDuration: 6 * time.Second,
+			ContinueTurn: &stateRampProfileTurn{
+				VisibleTokens: 4,
+				Duration:      3 * time.Second,
+				Metrics: mlx.Metrics{
+					DecodeTokensPerSec: 1.25,
+				},
+			},
+		},
+	}
+	out := core.NewBuffer()
+
+	printStateRampProfileSummary(out, report)
+
+	for _, want := range []string{
+		"generated: 16 tokens, decode: 8.0 tok/s",
+		"folded state: state.mvlog in 1s, wake 2s, continue 4 tokens in 3s at 1.2 tok/s, fold lifecycle 6s",
+		"store append, compact marker mlx://state/folded/index",
+	} {
+		if !core.Contains(out.String(), want) {
+			t.Fatalf("summary output = %q, want %q", out.String(), want)
 		}
 	}
 }
@@ -1688,7 +2073,6 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	}
 	for _, want := range []string{
 		`"chapter_max_tokens": 8192`,
-		`"chapter_min_tokens": 1024`,
 		`"prompt_chunk_bytes": 4096`,
 		`"context_length": 65536`,
 		`"cache_mode": "paged"`,
@@ -1700,6 +2084,9 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
+	}
+	if core.Contains(stdout.String(), `"chapter_min_tokens":`) {
+		t.Fatalf("stdout = %q, should not include a default chapter token floor", stdout.String())
 	}
 }
 
@@ -1875,11 +2262,11 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 	if !core.Contains(prompt, "Begin exactly with \"Chapter 2:\"") {
 		t.Fatalf("prompt = %q, want direct chapter-start instruction", prompt)
 	}
-	if !core.Contains(prompt, "at least 1024 visible tokens") {
-		t.Fatalf("prompt = %q, want real-workload length instruction", prompt)
+	if core.Contains(prompt, "at least 1024 visible tokens") {
+		t.Fatalf("prompt = %q, should not contain debug-floor steering", prompt)
 	}
-	if !core.Contains(prompt, "no fewer than 16 substantial prose paragraphs") {
-		t.Fatalf("prompt = %q, want concrete longform structure instruction", prompt)
+	if !core.Contains(prompt, "write a substantial chapter with concrete scene movement") {
+		t.Fatalf("prompt = %q, want natural longform instruction", prompt)
 	}
 	if !core.Contains(prompt, chapterProfileEndMarker) {
 		t.Fatalf("prompt = %q, want chapter end marker instruction", prompt)
@@ -2540,6 +2927,7 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION": "1"`,
 		`"GO_MLX_ENABLE_SORTED_EXPERT_PREFILL": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_MLP_MATVEC": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
@@ -2558,7 +2946,6 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC": "1"`,
-		`"GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 	} {
 		if core.Contains(stdout.String(), rejected) {
@@ -2861,6 +3248,7 @@ func TestRunCommand_DriverProfileGemma4DecodeGateFlags_Good(t *testing.T) {
 		"-fixed-gemma4-cache",
 		"-fixed-gemma4-sliding-cache-bound",
 		"-fixed-gemma4-shared-mask",
+		"-native-fixed-sliding-attention",
 		"-direct-greedy-token",
 		"-generation-stream",
 		"/models/demo",
@@ -2877,6 +3265,7 @@ func TestRunCommand_DriverProfileGemma4DecodeGateFlags_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
+		`"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION": "1"`,
 		`"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN": "1"`,
 		`"GO_MLX_ENABLE_GENERATION_STREAM": "1"`,
 	} {
@@ -3462,6 +3851,12 @@ func TestDriverProfileSummary_NativeEventBuckets_Good(t *testing.T) {
 	}
 	if summary.NativeEvents[2].Name != "custom.event" || summary.NativeEvents[2].Duration != time.Millisecond {
 		t.Fatalf("custom summary = %+v, want original event name", summary.NativeEvents[2])
+	}
+	if len(summary.NativeEventDetails) != 4 {
+		t.Fatalf("native event details = %+v, want four exact event buckets", summary.NativeEventDetails)
+	}
+	if summary.NativeEventDetails[0].Name != "gemma4.layer.01.attention" || summary.NativeEventDetails[0].Duration != 4*time.Millisecond {
+		t.Fatalf("native event detail[0] = %+v, want exact layer attention bucket", summary.NativeEventDetails[0])
 	}
 }
 

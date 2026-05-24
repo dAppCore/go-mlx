@@ -122,6 +122,7 @@ int go_mlx_compiled_fixed_sliding_single_token_attention(
 import "C"
 
 import (
+	"runtime"
 	"unsafe"
 
 	"dappco.re/go"
@@ -192,7 +193,7 @@ func nativeGemma4ResidualNormEnabled() bool {
 }
 
 func nativeFixedSlidingAttentionEnabled() bool {
-	return enableNativeFixedSlidingAttention
+	return enableNativeFixedSlidingAttention || nativeFixedSlidingAttentionRuntimeEnabled()
 }
 
 func cArray(a *Array) C.mlx_array {
@@ -306,13 +307,25 @@ func nativeLastTokenOutputAvailable(hidden, normWeight *Array, output *Linear, e
 }
 
 func nativeLastTokenGreedyToken(hidden, normWeight *Array, output *Linear, eps float32, suppressTokens ...int32) (*Array, bool, error) {
+	return nativeLastTokenGreedyTokenWithArray(hidden, normWeight, output, eps, nil, suppressTokens...)
+}
+
+func nativeLastTokenGreedyTokenWithArray(hidden, normWeight *Array, output *Linear, eps float32, suppress *Array, suppressTokens ...int32) (*Array, bool, error) {
 	if !nativeLastTokenGreedyTokenAvailable(hidden, normWeight, output, eps) {
 		return nil, false, nil
 	}
 	out := newArray("FAST_LAST_TOKEN_GREEDY", hidden, normWeight, output.Weight, output.Scales, output.Biases)
 	var rc C.int
-	suppress := suppressTokenArray(suppressTokens)
-	defer Free(suppress)
+	ownsSuppress := false
+	if len(suppressTokens) == 0 {
+		suppress = nil
+	} else if suppress == nil || !suppress.Valid() {
+		suppress = suppressTokenArray(suppressTokens)
+		ownsSuppress = true
+	}
+	if ownsSuppress {
+		defer Free(suppress)
+	}
 	if output.Scales != nil {
 		if suppress != nil {
 			rc = C.go_mlx_compiled_q4_g64_last_token_suppressed(
@@ -539,12 +552,20 @@ func nativeGemma4FixedOwnerAttentionBlock(x *Array, fixed *FixedKVCache, fixedMa
 		}
 		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
 	}
-	if !out.Valid() || !newKeys.Valid() || !newValues.Valid() {
+	if err := validateGemma4LayerOutputs("mlx.nativeGemma4FixedOwnerAttentionBlock", []*Array{out, newKeys, newValues}, true); err != nil {
 		Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", "native wrapper returned invalid outputs", nil)
+		return nil, sharedKV{}, true, err
+	}
+	if err := validateGemma4LayerOutputShapes("mlx.nativeGemma4FixedOwnerAttentionBlock", x, out, newKeys, newValues, state.Keys, state.Values, true, true); err != nil {
+		Free(out, newKeys, newValues)
+		return nil, sharedKV{}, true, err
 	}
 	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
-	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}, true, nil
+	if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
+		Free(out)
+		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionBlock", "native wrapper updated cache without valid K/V state", nil)
+	}
+	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
 }
 
 func nativeGemma4FixedOwnerAttentionResidualBlock(residual, x *Array, fixed *FixedKVCache, fixedMask *Array, attn *Gemma4Attention, postAttnNorm *Array, cfg *Gemma4TextConfig) (*Array, sharedKV, bool, error) {
@@ -573,12 +594,20 @@ func nativeGemma4FixedOwnerAttentionResidualBlock(residual, x *Array, fixed *Fix
 		}
 		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", core.Sprintf("native wrapper failed (rc=%d)", rc), nil)
 	}
-	if !out.Valid() || !newKeys.Valid() || !newValues.Valid() {
+	if err := validateGemma4LayerOutputs("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", []*Array{out, newKeys, newValues}, true); err != nil {
 		Free(out, newKeys, newValues)
-		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", "native wrapper returned invalid outputs", nil)
+		return nil, sharedKV{}, true, err
+	}
+	if err := validateGemma4LayerOutputShapes("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", residual, out, newKeys, newValues, state.Keys, state.Values, true, true); err != nil {
+		Free(out, newKeys, newValues)
+		return nil, sharedKV{}, true, err
 	}
 	fixedState := fixed.ReplaceFixedFromNativeBorrowed(newKeys, newValues, 1)
-	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true}, true, nil
+	if !gemma4ValidKV(fixedState.Keys, fixedState.Values) {
+		Free(out)
+		return nil, sharedKV{}, true, core.E("mlx.nativeGemma4FixedOwnerAttentionResidualBlock", "native wrapper updated cache without valid K/V state", nil)
+	}
+	return out, sharedKV{Keys: fixedState.Keys, Values: fixedState.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
 }
 
 func nativeGemma4FixedOwnerAttentionArgs(x, residual, keyCache, valueCache, offset, scale, fixedMask *Array, attn *Gemma4Attention, postAttnNorm *Array, cfg *Gemma4TextConfig) C.go_mlx_gemma4_fixed_attention_args {
@@ -673,11 +702,11 @@ func nativeGemma4FixedOwnerAttentionResidualBlockAvailable(residual, x *Array, f
 }
 
 func nativeFixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset, mask *Array, scale float32) (*Array, *Array, *Array, bool, error) {
+	scaleArray := FromValue(scale)
+	defer Free(scaleArray)
 	if !nativeFixedSingleTokenAttentionAvailable(query, keyCache, valueCache, key, value, offset, mask) {
 		return nil, nil, nil, false, nil
 	}
-	scaleArray := FromValue(scale)
-	defer Free(scaleArray)
 	outInputs := []*Array{query, keyCache, valueCache, key, value, offset, scaleArray}
 	hasMask := C.int(0)
 	if mask != nil && mask.Valid() {
@@ -844,10 +873,12 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 		case *PagedKVCache:
 			offset = cache.Offset()
 			pageState = cache.PageState()
-			if len(pageState.Keys) == 1 && len(pageState.Values) == 1 {
-				prevKeys = pageState.Keys[0]
-				prevValues = pageState.Values[0]
+			if len(pageState.Keys) != 1 || len(pageState.Values) != 1 {
+				pageState.Free()
+				return nil, sharedKV{}, false, nil
 			}
+			prevKeys = pageState.Keys[0]
+			prevValues = pageState.Values[0]
 			defer pageState.Free()
 		case *FixedKVCache:
 			offset = cache.Offset()
@@ -872,6 +903,9 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 			return nil, sharedKV{}, false, nil
 		}
 	}
+	if prevKeys == nil || prevValues == nil || !prevKeys.Valid() || !prevValues.Valid() {
+		return nil, sharedKV{}, false, nil
+	}
 
 	out := newArray("FAST_GEMMA4_DECODE_LAYER", x, prevKeys, prevValues, perLayerInput)
 	newK := newArray("FAST_GEMMA4_DECODE_LAYER_K", x)
@@ -887,56 +921,117 @@ func nativeGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLaye
 	}
 
 	if ownsKV {
+		if err := validateGemma4LayerOutputs("mlx.nativeGemma4DecodeLayer", []*Array{out, newK, newV}, true); err != nil {
+			Free(out, newK, newV)
+			return nil, sharedKV{}, true, err
+		}
+		if err := validateGemma4LayerOutputShapes("mlx.nativeGemma4DecodeLayer", x, out, newK, newV, prevKeys, prevValues, true, fixedKV); err != nil {
+			Free(out, newK, newV)
+			return nil, sharedKV{}, true, err
+		}
 		if fixedKV {
 			fixed, _ := c.(*FixedKVCache)
 			state := fixed.ReplaceFixedFromNativeBorrowed(newK, newV, int(L))
-			return out, sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true}, true, nil
+			return out, sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
 		}
 		paged, _ := c.(*PagedKVCache)
 		pages := paged.ReplaceSinglePageFromNative(newK, newV, int(L))
 		return out, sharedKV{Pages: pages, Offset: offset}, true, nil
+	}
+	if err := validateGemma4LayerOutputs("mlx.nativeGemma4DecodeLayer", []*Array{out}, false); err != nil {
+		Free(out, newK, newV)
+		return nil, sharedKV{}, true, err
+	}
+	if err := validateGemma4LayerOutputShapes("mlx.nativeGemma4DecodeLayer", x, out, nil, nil, prevKeys, prevValues, false, fixedKV); err != nil {
+		Free(out, newK, newV)
+		return nil, sharedKV{}, true, err
 	}
 	Free(newK, newV)
 	return out, prev, true, nil
 }
 
 func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppressTokens ...int32) (*Array, bool, error) {
+	return nativeGemma4FixedGreedyTokenWithArray(h, perLayerInputs, caches, model, fixedMasks, nil, suppressTokens...)
+}
+
+func nativeGemma4FixedGreedyTokenWithArray(h *Array, perLayerInputs []*Array, caches []Cache, model *Gemma4Model, fixedMasks *fixedGemma4AttentionMaskSet, suppress *Array, suppressTokens ...int32) (*Array, bool, error) {
 	if reason := nativeGemma4FixedGreedyTokenUnavailableReason(h, perLayerInputs, caches, model, fixedMasks); reason != "" {
 		traceNativeSkip("gemma4.model.greedy_token.skip", reason)
 		return nil, false, nil
 	}
 
 	layerCount := len(model.Layers)
-	layerArgsPtr := (*C.go_mlx_gemma4_layer_args)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.go_mlx_gemma4_layer_args{}))))
-	previousKVsPtr := (*C.int)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.int(0)))))
-	newKCtxPtr := (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-	newVCtxPtr := (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
-	if layerArgsPtr == nil || previousKVsPtr == nil || newKCtxPtr == nil || newVCtxPtr == nil {
-		if layerArgsPtr != nil {
-			C.free(unsafe.Pointer(layerArgsPtr))
+	var layerArgsStack [64]C.go_mlx_gemma4_layer_args
+	var previousKVsStack [64]C.int
+	var newKCtxStack [64]C.mlx_array
+	var newVCtxStack [64]C.mlx_array
+	var layerArgs []C.go_mlx_gemma4_layer_args
+	var previousKVs []C.int
+	var newKCtx []C.mlx_array
+	var newVCtx []C.mlx_array
+	var layerArgsPtr *C.go_mlx_gemma4_layer_args
+	var previousKVsPtr *C.int
+	var newKCtxPtr *C.mlx_array
+	var newVCtxPtr *C.mlx_array
+	var cgoPinner runtime.Pinner
+	defer cgoPinner.Unpin()
+	if layerCount <= len(layerArgsStack) {
+		layerArgs = layerArgsStack[:layerCount]
+		previousKVs = previousKVsStack[:layerCount]
+		newKCtx = newKCtxStack[:layerCount]
+		newVCtx = newVCtxStack[:layerCount]
+		layerArgsPtr = &layerArgs[0]
+		previousKVsPtr = &previousKVs[0]
+		newKCtxPtr = &newKCtx[0]
+		newVCtxPtr = &newVCtx[0]
+		cgoPinner.Pin(layerArgsPtr)
+		cgoPinner.Pin(previousKVsPtr)
+		cgoPinner.Pin(newKCtxPtr)
+		cgoPinner.Pin(newVCtxPtr)
+	} else {
+		layerArgsPtr = (*C.go_mlx_gemma4_layer_args)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.go_mlx_gemma4_layer_args{}))))
+		previousKVsPtr = (*C.int)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.int(0)))))
+		newKCtxPtr = (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
+		newVCtxPtr = (*C.mlx_array)(C.calloc(C.size_t(layerCount), C.size_t(unsafe.Sizeof(C.mlx_array{}))))
+		if layerArgsPtr == nil || previousKVsPtr == nil || newKCtxPtr == nil || newVCtxPtr == nil {
+			if layerArgsPtr != nil {
+				C.free(unsafe.Pointer(layerArgsPtr))
+			}
+			if previousKVsPtr != nil {
+				C.free(unsafe.Pointer(previousKVsPtr))
+			}
+			if newKCtxPtr != nil {
+				C.free(unsafe.Pointer(newKCtxPtr))
+			}
+			if newVCtxPtr != nil {
+				C.free(unsafe.Pointer(newVCtxPtr))
+			}
+			return nil, true, core.NewError("mlx.nativeGemma4FixedGreedyToken: allocate C argument buffers failed")
 		}
-		if previousKVsPtr != nil {
-			C.free(unsafe.Pointer(previousKVsPtr))
-		}
-		if newKCtxPtr != nil {
-			C.free(unsafe.Pointer(newKCtxPtr))
-		}
-		if newVCtxPtr != nil {
-			C.free(unsafe.Pointer(newVCtxPtr))
-		}
-		return nil, true, core.NewError("mlx.nativeGemma4FixedGreedyToken: allocate C argument buffers failed")
+		defer C.free(unsafe.Pointer(layerArgsPtr))
+		defer C.free(unsafe.Pointer(previousKVsPtr))
+		defer C.free(unsafe.Pointer(newKCtxPtr))
+		defer C.free(unsafe.Pointer(newVCtxPtr))
+		layerArgs = unsafe.Slice(layerArgsPtr, layerCount)
+		previousKVs = unsafe.Slice(previousKVsPtr, layerCount)
+		newKCtx = unsafe.Slice(newKCtxPtr, layerCount)
+		newVCtx = unsafe.Slice(newVCtxPtr, layerCount)
 	}
-	defer C.free(unsafe.Pointer(layerArgsPtr))
-	defer C.free(unsafe.Pointer(previousKVsPtr))
-	defer C.free(unsafe.Pointer(newKCtxPtr))
-	defer C.free(unsafe.Pointer(newVCtxPtr))
-	layerArgs := unsafe.Slice(layerArgsPtr, layerCount)
-	previousKVs := unsafe.Slice(previousKVsPtr, layerCount)
-	newKCtx := unsafe.Slice(newKCtxPtr, layerCount)
-	newVCtx := unsafe.Slice(newVCtxPtr, layerCount)
-	fixedByLayer := make([]*FixedKVCache, layerCount)
-	states := make([]FixedKVState, layerCount)
-	offsets := make([]int, layerCount)
+	var fixedByLayerStack [64]*FixedKVCache
+	var statesStack [64]FixedKVState
+	var offsetsStack [64]int
+	var fixedByLayer []*FixedKVCache
+	var states []FixedKVState
+	var offsets []int
+	if layerCount <= len(statesStack) {
+		fixedByLayer = fixedByLayerStack[:layerCount]
+		states = statesStack[:layerCount]
+		offsets = offsetsStack[:layerCount]
+	} else {
+		fixedByLayer = make([]*FixedKVCache, layerCount)
+		states = make([]FixedKVState, layerCount)
+		offsets = make([]int, layerCount)
+	}
 	defer func() {
 		for i := range states {
 			states[i].Free()
@@ -972,7 +1067,7 @@ func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Ca
 			}
 			prevKeys, prevValues = state.Keys, state.Values
 			offset = offsets[prevIdx]
-			prev = sharedKV{Keys: prevKeys, Values: prevValues, Offset: offset, Fixed: true}
+			prev = sharedKV{Keys: prevKeys, Values: prevValues, Offset: offset, Fixed: true, Borrowed: true}
 		}
 		var perLayerInput *Array
 		if perLayerInputs != nil {
@@ -994,8 +1089,16 @@ func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Ca
 		output_biases:    cArray(model.Output.Biases),
 		output_quantized: 0,
 	}
-	suppress := suppressTokenArray(suppressTokens)
-	defer Free(suppress)
+	ownsSuppress := false
+	if len(suppressTokens) == 0 {
+		suppress = nil
+	} else if suppress == nil || !suppress.Valid() {
+		suppress = suppressTokenArray(suppressTokens)
+		ownsSuppress = true
+	}
+	if ownsSuppress {
+		defer Free(suppress)
+	}
 	if suppress != nil {
 		args.suppress_token_ids = suppress.ctx
 		args.has_suppress_token_ids = 1
@@ -1003,6 +1106,7 @@ func nativeGemma4FixedGreedyToken(h *Array, perLayerInputs []*Array, caches []Ca
 	if model.Output.Scales != nil && model.Output.Scales.Valid() {
 		args.output_quantized = 1
 	}
+	cgoPinner.Pin(&args)
 	rc := C.go_mlx_gemma4_fixed_greedy_token(
 		&out.ctx,
 		newKCtxPtr,
@@ -1227,25 +1331,101 @@ func compiledGemma4DecodeLayer(x *Array, c Cache, B, L int32, mask *Array, perLa
 		}
 		return nil, sharedKV{}, true, callErr
 	}
-	if ownsKV {
-		if len(outs) != 3 {
-			Free(outs...)
-			return nil, sharedKV{}, true, core.E("mlx.compiledGemma4DecodeLayer", "owner closure returned invalid outputs", nil)
+	if err := validateGemma4LayerOutputs("mlx.compiledGemma4DecodeLayer", outs, ownsKV); err != nil {
+		*failed = true
+		if *slot != nil {
+			(*slot).Free()
+			*slot = nil
 		}
+		Free(outs...)
+		return nil, sharedKV{}, true, err
+	}
+	if err := validateGemma4LayerOutputShapes("mlx.compiledGemma4DecodeLayer", x, outs[0], outputAt(outs, 1), outputAt(outs, 2), prevKeys, prevValues, ownsKV, fixedKV); err != nil {
+		*failed = true
+		if *slot != nil {
+			(*slot).Free()
+			*slot = nil
+		}
+		Free(outs...)
+		return nil, sharedKV{}, true, err
+	}
+	if ownsKV {
 		if fixedKV {
 			fixed, _ := c.(*FixedKVCache)
 			state := fixed.ReplaceFixedFromNativeBorrowed(outs[1], outs[2], int(L))
-			return outs[0], sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true}, true, nil
+			return outs[0], sharedKV{Keys: state.Keys, Values: state.Values, Offset: offset, Fixed: true, Borrowed: true}, true, nil
 		}
 		paged, _ := c.(*PagedKVCache)
 		pages := paged.ReplaceSinglePageFromNative(outs[1], outs[2], int(L))
 		return outs[0], sharedKV{Pages: pages, Offset: offset}, true, nil
 	}
-	if len(outs) != 1 {
-		Free(outs...)
-		return nil, sharedKV{}, true, core.E("mlx.compiledGemma4DecodeLayer", "shared closure returned invalid outputs", nil)
-	}
 	return outs[0], prev, true, nil
+}
+
+func validateGemma4LayerOutputs(name string, outs []*Array, ownsKV bool) error {
+	want := 1
+	if ownsKV {
+		want = 3
+	}
+	if len(outs) != want {
+		return core.E(name, core.Sprintf("returned %d outputs, want %d", len(outs), want), nil)
+	}
+	for i, out := range outs {
+		if out == nil || !out.Valid() {
+			return core.E(name, core.Sprintf("returned invalid output %d", i), nil)
+		}
+	}
+	return nil
+}
+
+func outputAt(outs []*Array, i int) *Array {
+	if i < 0 || i >= len(outs) {
+		return nil
+	}
+	return outs[i]
+}
+
+func validateGemma4LayerOutputShapes(name string, x, out, newK, newV, prevKeys, prevValues *Array, ownsKV, fixedKV bool) error {
+	if !sameArrayShape(out, x) {
+		return core.E(name, "returned output shape does not match input hidden shape", nil)
+	}
+	if !ownsKV {
+		return nil
+	}
+	if newK == nil || newV == nil || prevKeys == nil || prevValues == nil ||
+		newK.NumDims() != 4 || newV.NumDims() != 4 || prevKeys.NumDims() != 4 || prevValues.NumDims() != 4 {
+		return core.E(name, "returned K/V shape is not rank-4", nil)
+	}
+	if newK.Dim(0) != prevKeys.Dim(0) || newK.Dim(1) != prevKeys.Dim(1) || newK.Dim(3) != prevKeys.Dim(3) ||
+		newV.Dim(0) != prevValues.Dim(0) || newV.Dim(1) != prevValues.Dim(1) || newV.Dim(3) != prevValues.Dim(3) {
+		return core.E(name, "returned K/V shape is incompatible with previous cache", nil)
+	}
+	if fixedKV {
+		if newK.Dim(2) != prevKeys.Dim(2) || newV.Dim(2) != prevValues.Dim(2) {
+			return core.E(name, "returned fixed K/V cache does not preserve capacity", nil)
+		}
+		return nil
+	}
+	if newK.Dim(2) <= 0 || newV.Dim(2) <= 0 {
+		return core.E(name, "returned paged K/V cache has empty sequence dimension", nil)
+	}
+	return nil
+}
+
+func sameArrayShape(left, right *Array) bool {
+	if left == nil || right == nil || !left.Valid() || !right.Valid() {
+		return false
+	}
+	dims := left.NumDims()
+	if dims != right.NumDims() {
+		return false
+	}
+	for i := 0; i < dims; i++ {
+		if left.Dim(i) != right.Dim(i) {
+			return false
+		}
+	}
+	return true
 }
 
 func callCompiledGemma4DecodeLayer(compiled *CompiledFunc, inputs ...*Array) (outs []*Array, err error) {
@@ -1369,16 +1549,23 @@ func gemma4AttentionGraph(x, prevKeys, prevValues, offset, fixedMask *Array, att
 		Free(kProj)
 		k := Transpose(kReshaped, 0, 2, 1, 3)
 		Free(kReshaped)
+
+		var v *Array
+		if attn.UseKEqV {
+			v = k.Clone()
+		} else {
+			vProj := attn.VProj.Forward(x)
+			vReshaped := Reshape(vProj, B, L, attn.NKVHeads, attn.HeadDim)
+			Free(vProj)
+			v = Transpose(vReshaped, 0, 2, 1, 3)
+			Free(vReshaped)
+		}
+
 		oldK := k
 		k = RMSNorm(k, attn.KNormScaled, cfg.RMSNormEps)
 		Free(oldK)
 		k = gemma4ApplyRoPEDynamic(attn, k, offset)
 
-		vProj := attn.VProj.Forward(x)
-		vReshaped := Reshape(vProj, B, L, attn.NKVHeads, attn.HeadDim)
-		Free(vProj)
-		v := Transpose(vReshaped, 0, 2, 1, 3)
-		Free(vReshaped)
 		vNormed := RMSNormNoScale(v, cfg.RMSNormEps)
 		Free(v)
 		v = vNormed
@@ -1605,6 +1792,10 @@ func nativeGemma4DecodeLayerAvailable(x *Array, c Cache, B, L int32, mask *Array
 		traceNativeSkip(nativeGemma4LayerSkipTraceName(layer), reason)
 		return false
 	}
+	if reason := gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg); reason != "" {
+		traceNativeSkip(nativeGemma4LayerSkipTraceName(layer), reason)
+		return false
+	}
 	return true
 }
 
@@ -1707,6 +1898,22 @@ func gemma4DecodeLayerCommonUnavailableReason(x *Array, B, L int32, mask *Array,
 	return ""
 }
 
+func gemma4PerLayerDecodeLayerUnavailableReason(layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) string {
+	if layer == nil || layer.Attention == nil || cfg == nil {
+		return ""
+	}
+	if layer.LayerType != "full_attention" {
+		return ""
+	}
+	if cfg.HeadDim <= 0 || cfg.GlobalHeadDim <= 0 || cfg.GlobalHeadDim == cfg.HeadDim {
+		return ""
+	}
+	if layer.Attention.HeadDim == cfg.GlobalHeadDim {
+		return "full-attention global head dim requires model-level native boundary"
+	}
+	return ""
+}
+
 func nativeGemma4LayerSkipTraceName(layer *Gemma4DecoderLayer) string {
 	if layer == nil {
 		return "gemma4.layer.unknown.native_layer.skip"
@@ -1716,6 +1923,9 @@ func nativeGemma4LayerSkipTraceName(layer *Gemma4DecoderLayer) string {
 
 func gemma4CompiledDecodeLayerBoundaryAvailable(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, layer *Gemma4DecoderLayer, cfg *Gemma4TextConfig) bool {
 	if !gemma4DecodeLayerCommonAvailable(x, B, L, mask, perLayerInput, layer, cfg) {
+		return false
+	}
+	if gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg) != "" {
 		return false
 	}
 	if gemma4PagedDecodeLayerBoundaryAvailable(c, L, prev) {

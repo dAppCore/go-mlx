@@ -361,3 +361,56 @@ func BenchmarkDecodeLoop_SuppressTokenArray_256(b *testing.B) {
 		Free(array)
 	}
 }
+
+func BenchmarkDecodeLoop_LastTokenGreedySuppressed_FreshArray(b *testing.B) {
+	hidden := RandomUniform(-1, 1, []int32{1, 1, 64}, DTypeFloat32)
+	normWeight := RandomUniform(0.9, 1.1, []int32{64}, DTypeFloat32)
+	outputWeight := RandomUniform(-0.05, 0.05, []int32{1024, 64}, DTypeFloat32)
+	output := NewLinear(outputWeight, nil)
+	suppressTokens := make([]int32, 16)
+	for i := range suppressTokens {
+		suppressTokens[i] = int32(i)
+	}
+	defer Free(hidden, normWeight, outputWeight)
+	Materialize(hidden, normWeight, outputWeight)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		tok, ok, err := nativeLastTokenGreedyToken(hidden, normWeight, output, 1e-6, suppressTokens...)
+		if err != nil {
+			b.Fatalf("nativeLastTokenGreedyToken: %v", err)
+		}
+		if !ok {
+			b.Fatal("nativeLastTokenGreedyToken unavailable")
+		}
+		Materialize(tok)
+		Free(tok)
+	}
+}
+
+func BenchmarkDecodeLoop_LastTokenGreedySuppressed_BorrowedArray(b *testing.B) {
+	hidden := RandomUniform(-1, 1, []int32{1, 1, 64}, DTypeFloat32)
+	normWeight := RandomUniform(0.9, 1.1, []int32{64}, DTypeFloat32)
+	outputWeight := RandomUniform(-0.05, 0.05, []int32{1024, 64}, DTypeFloat32)
+	output := NewLinear(outputWeight, nil)
+	suppressTokens := make([]int32, 16)
+	for i := range suppressTokens {
+		suppressTokens[i] = int32(i)
+	}
+	suppress := suppressTokenArray(suppressTokens)
+	defer Free(hidden, normWeight, outputWeight, suppress)
+	Materialize(hidden, normWeight, outputWeight, suppress)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		tok, ok, err := nativeLastTokenGreedyTokenWithArray(hidden, normWeight, output, 1e-6, suppress, suppressTokens...)
+		if err != nil {
+			b.Fatalf("nativeLastTokenGreedyTokenWithArray: %v", err)
+		}
+		if !ok {
+			b.Fatal("nativeLastTokenGreedyTokenWithArray unavailable")
+		}
+		Materialize(tok)
+		Free(tok)
+	}
+}

@@ -396,6 +396,76 @@ func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
 	}
 }
 
+func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
+	coverageTokens := "ModelSession Generate TraceTokenPhases"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := &Model{
+		model:     &boundedGenerateModel{},
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{1},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, TraceTokenPhases: true}) {
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	phases := model.LastMetrics().TokenPhases
+	if len(phases) != 1 {
+		t.Fatalf("TokenPhases len = %d, want one phase; phases=%+v", len(phases), phases)
+	}
+	if phases[0].TotalDuration <= 0 || phases[0].ForwardDuration <= 0 || phases[0].SampleEvalDuration <= 0 {
+		t.Fatalf("phase = %+v, want retained-session total, forward, and eval timings", phases[0])
+	}
+}
+
+func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
+	coverageTokens := "ModelSession Generate AsyncDecodePrefetch"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	old := enableAsyncDecodePrefetch
+	enableAsyncDecodePrefetch = true
+	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{1},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1}) {
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want one retained-session advance", inner.forwardCalls)
+	}
+	if err := Eval(session.logits); err != nil {
+		t.Fatalf("Eval prefetched session logits: %v", err)
+	}
+}
+
 func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
 	coverageTokens := "ModelSession Generate RequiresGenerationState"
 	if coverageTokens == "" {
@@ -568,5 +638,56 @@ func TestSessionKVSnapshot_RestoreUsesPagedTemplate_Good(t *testing.T) {
 	}
 	if restoredCache.Len() != 5 || len(restoredCache.kPages) != 3 {
 		t.Fatalf("restored len/pages = %d/%d, want 5/3", restoredCache.Len(), len(restoredCache.kPages))
+	}
+}
+
+func TestSessionKVSnapshot_RestoreTransfersPagedPages_Good(t *testing.T) {
+	coverageTokens := "SessionKVSnapshot RestoreTransfersPagedPages"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	snapshot := &KVSnapshot{
+		Version:     KVSnapshotVersion,
+		Tokens:      []int32{1, 2, 3, 4},
+		TokenOffset: 4,
+		SeqLen:      4,
+		HeadDim:     1,
+		Layers: []KVLayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			Heads: []KVHeadSnapshot{{
+				Key:   []float32{1, 2, 3, 4},
+				Value: []float32{5, 6, 7, 8},
+			}},
+		}},
+	}
+
+	layerSnapshot, err := cacheSnapshotFromKVLayer(snapshot, snapshot.Layers[0], NewPagedKVCache(0, 2))
+	if err != nil {
+		t.Fatalf("cacheSnapshotFromKVLayer() error = %v", err)
+	}
+	if layerSnapshot.mode != KVCacheModePaged || len(layerSnapshot.kPages) != 2 {
+		freeCacheSnapshots([]cacheSnapshot{layerSnapshot})
+		t.Fatalf("layer snapshot mode/pages = %q/%d, want paged physical state", layerSnapshot.mode, len(layerSnapshot.kPages))
+	}
+	firstK := layerSnapshot.kPages[0]
+	firstV := layerSnapshot.vPages[0]
+	snapshots := []cacheSnapshot{layerSnapshot}
+	restored, err := restoreSessionCachesTransferringPaged(snapshots)
+	if err != nil {
+		freeCacheSnapshots(snapshots)
+		t.Fatalf("restoreSessionCachesTransferringPaged() error = %v", err)
+	}
+	defer freeCaches(restored)
+	if len(snapshots[0].kPages) != 0 || len(snapshots[0].vPages) != 0 {
+		t.Fatalf("transferred snapshot pages = %d/%d, want 0/0", len(snapshots[0].kPages), len(snapshots[0].vPages))
+	}
+	restoredCache, ok := restored[0].(*PagedKVCache)
+	if !ok {
+		t.Fatalf("restored cache = %T, want *PagedKVCache", restored[0])
+	}
+	if len(restoredCache.kPages) != 2 || restoredCache.kPages[0] != firstK || restoredCache.vPages[0] != firstV {
+		t.Fatalf("restored pages were not transferred")
 	}
 }

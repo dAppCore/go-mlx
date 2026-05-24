@@ -209,6 +209,24 @@ func TestSample_NewSamplerWithSuppression_Good(t *testing.T) {
 	}
 }
 
+func TestSample_TopKTopPChainMapsGlobalToken_Good(t *testing.T) {
+	coverageTokens := "TopKTopPChain MapsGlobalToken"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{0, 1, 100, 80}, 1, 4)
+	defer Free(logits)
+	s := newSampler(1.0, 0.5, 0, 2)
+	token := s.Sample(logits)
+	defer Free(token)
+	if err := Eval(token); err != nil {
+		t.Fatalf("Eval(sample) error = %v", err)
+	}
+	if got := token.Int(); got != 2 {
+		t.Fatalf("sample = %d, want global token 2", got)
+	}
+}
+
 type fixedTokenSampler struct {
 	id int32
 }
@@ -351,24 +369,24 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
-	c, ok := s.(chain)
+	c, ok := s.(topKTopPChain)
 	if !ok {
-		t.Fatalf("newSamplerWithSuppression returned %T, want chain", s)
+		t.Fatalf("newSamplerWithSuppression returned %T, want topKTopPChain", s)
 	}
-	if len(c) != 4 {
-		t.Fatalf("len(chain) = %d, want 4", len(c))
+	if c.topK != 3 {
+		t.Fatalf("topK = %d, want 3", c.topK)
 	}
-	if _, ok := c[0].(Temperature); !ok {
-		t.Fatalf("chain[0] = %T, want Temperature", c[0])
+	if c.topP != 0.95 {
+		t.Fatalf("topP = %f, want 0.95", c.topP)
 	}
-	if _, ok := c[1].(SuppressTokensSampler); !ok {
-		t.Fatalf("chain[1] = %T, want SuppressTokensSampler", c[1])
+	if len(c.prefix) != 2 {
+		t.Fatalf("len(prefix) = %d, want 2", len(c.prefix))
 	}
-	if _, ok := c[2].(TopP); !ok {
-		t.Fatalf("chain[2] = %T, want TopP", c[2])
+	if _, ok := c.prefix[0].(Temperature); !ok {
+		t.Fatalf("prefix[0] = %T, want Temperature", c.prefix[0])
 	}
-	if _, ok := c[3].(TopKSampler); !ok {
-		t.Fatalf("chain[3] = %T, want TopKSampler", c[3])
+	if _, ok := c.prefix[1].(SuppressTokensSampler); !ok {
+		t.Fatalf("prefix[1] = %T, want SuppressTokensSampler", c.prefix[1])
 	}
 }
 

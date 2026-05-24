@@ -40,6 +40,39 @@ func BenchmarkLoadPrefixTokensFromStateBlocks_MixedWindowThreeBlocks(b *testing.
 	}
 }
 
+func BenchmarkLoadPrefixFromStateBlocks_NativeLayerSingleHeadSlabThreeBlocks(b *testing.B) {
+	ctx := context.Background()
+	store, bundle := benchmarkNativeLayerSlabStateBlocksFixture(b)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		snapshot, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, bundle.TokenCount, LoadOptions{RawKVOnly: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		stateBlocksBenchmarkSnapshot = snapshot
+	}
+}
+
+func BenchmarkSaveStateBlocks_NativeLayerSingleHeadSlabThreeBlocks(b *testing.B) {
+	ctx := context.Background()
+	snapshot := benchmarkNativeLayerSlabSnapshot(1536, 1, 64)
+	opts := StateBlockOptions{
+		BlockSize:  512,
+		KVEncoding: EncodingNative,
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		store := state.NewInMemoryStore(nil)
+		bundle, err := snapshot.SaveStateBlocks(ctx, store, opts)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(bundle.Blocks) != 3 {
+			b.Fatalf("blocks = %d, want 3", len(bundle.Blocks))
+		}
+	}
+}
+
 func benchmarkStateBlocksFixture(tb testing.TB) (state.Store, *StateBlockBundle) {
 	tb.Helper()
 	store := state.NewInMemoryStore(nil)
@@ -50,6 +83,23 @@ func benchmarkStateBlocksFixture(tb testing.TB) (state.Store, *StateBlockBundle)
 	})
 	if err != nil {
 		tb.Fatalf("SaveStateBlocks() error = %v", err)
+	}
+	if len(bundle.Blocks) != 3 {
+		tb.Fatalf("blocks = %d, want 3", len(bundle.Blocks))
+	}
+	return store, bundle
+}
+
+func benchmarkNativeLayerSlabStateBlocksFixture(tb testing.TB) (state.Store, *StateBlockBundle) {
+	tb.Helper()
+	store := state.NewInMemoryStore(nil)
+	snapshot := benchmarkNativeLayerSlabSnapshot(1536, 1, 64)
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
+		BlockSize:  512,
+		KVEncoding: EncodingNative,
+	})
+	if err != nil {
+		tb.Fatalf("SaveStateBlocks(native layer slab) error = %v", err)
 	}
 	if len(bundle.Blocks) != 3 {
 		tb.Fatalf("blocks = %d, want 3", len(bundle.Blocks))
@@ -100,5 +150,43 @@ func benchmarkStateBlocksSnapshot(tokenCount, localWindow int) *Snapshot {
 				}},
 			},
 		},
+	}
+}
+
+func benchmarkNativeLayerSlabSnapshot(tokenCount, heads, headDim int) *Snapshot {
+	tokens := make([]int32, tokenCount)
+	B, H, L, D := 1, heads, tokenCount, headDim
+	bytesPerValue := 2
+	slabBytes := B * H * L * D * bytesPerValue
+	keyBytes := make([]byte, slabBytes)
+	valueBytes := make([]byte, slabBytes)
+	for i := range tokenCount {
+		tokens[i] = int32(i + 1)
+	}
+	for i := range keyBytes {
+		keyBytes[i] = byte(i)
+		valueBytes[i] = byte(i + 17)
+	}
+	return &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        tokens,
+		TokenOffset:   tokenCount,
+		NumLayers:     1,
+		NumHeads:      heads,
+		SeqLen:        tokenCount,
+		HeadDim:       headDim,
+		NumQueryHeads: heads,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "float16",
+			KeyBytes:   keyBytes,
+			KeyShape:   []int32{int32(B), int32(H), int32(L), int32(D)},
+			ValueDType: "float16",
+			ValueBytes: valueBytes,
+			ValueShape: []int32{int32(B), int32(H), int32(L), int32(D)},
+			Heads:      make([]HeadSnapshot, heads),
+		}},
 	}
 }

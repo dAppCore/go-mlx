@@ -636,6 +636,53 @@ func TestDecode_nativeFixedSlidingSingleTokenAttention_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestDecode_nativeFixedSlidingSingleTokenAttentionGemma4E2BShape_Good(t *testing.T) {
+	target := "nativeFixedSlidingSingleTokenAttention Gemma4E2BShape"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	const B, QH, KVH, window, D int32 = 1, 8, 1, 512, 256
+	query := RandomUniform(-0.5, 0.5, []int32{B, QH, 1, D}, DTypeBFloat16)
+	keyCache := RandomUniform(-0.5, 0.5, []int32{B, KVH, window, D}, DTypeBFloat16)
+	valueCache := RandomUniform(-0.5, 0.5, []int32{B, KVH, window, D}, DTypeBFloat16)
+	key := RandomUniform(-0.5, 0.5, []int32{B, KVH, 1, D}, DTypeBFloat16)
+	value := RandomUniform(-0.5, 0.5, []int32{B, KVH, 1, D}, DTypeBFloat16)
+	shiftIndices := FromValues(func() []int32 {
+		out := make([]int32, window)
+		for i := int32(0); i < window; i++ {
+			next := i + 1
+			if next >= window {
+				next = window - 1
+			}
+			out[i] = next
+		}
+		return out
+	}(), int(window))
+	lastIndex := FromValue(int(window - 1))
+	defer Free(query, keyCache, valueCache, key, value, shiftIndices, lastIndex)
+	Materialize(query, keyCache, valueCache, key, value, shiftIndices, lastIndex)
+
+	got, gotKeys, gotValues, ok, err := nativeFixedSlidingSingleTokenAttention(query, keyCache, valueCache, key, value, shiftIndices, lastIndex, 0.0625)
+	if err != nil {
+		t.Fatalf("nativeFixedSlidingSingleTokenAttention(E2B shape) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativeFixedSlidingSingleTokenAttention(E2B shape) ok = false, want true")
+	}
+	defer Free(got, gotKeys, gotValues)
+	if err := Eval(got, gotKeys, gotValues); err != nil {
+		t.Fatalf("Eval(E2B shape) error = %v", err)
+	}
+	if !got.Valid() || !gotKeys.Valid() || !gotValues.Valid() {
+		t.Fatalf("nativeFixedSlidingSingleTokenAttention(E2B shape) returned invalid outputs: out=%v keys=%v values=%v", got.Valid(), gotKeys.Valid(), gotValues.Valid())
+	}
+	if got.Dim(1) != int(QH) || gotKeys.Dim(2) != int(window) || gotValues.Dim(2) != int(window) {
+		t.Fatalf("E2B shape outputs = out heads:%d key window:%d value window:%d, want heads:%d window:%d", got.Dim(1), gotKeys.Dim(2), gotValues.Dim(2), QH, window)
+	}
+}
+
 func TestDecode_nativeResidualNormAdd_Good(t *testing.T) {
 	target := "nativeResidualNormAdd"
 	if target == "" {
@@ -1272,6 +1319,28 @@ func TestDecode_nativeGemma4DecodeLayer_Bad(t *testing.T) {
 	}
 }
 
+func TestDecode_nativeGemma4DecodeLayer_EmptyPagedCacheBad(t *testing.T) {
+	target := "nativeGemma4DecodeLayer empty paged cache"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	oldNative := enableNativeGemma4Layer
+	enableNativeGemma4Layer = true
+	t.Cleanup(func() { enableNativeGemma4Layer = oldNative })
+
+	layer := testGemma4NativeLayer()
+	cfg := testGemma4NativeLayerConfig()
+	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	perLayer := FromValues([]float32{0.1, 0.2}, 1, 1, 2)
+	defer Free(input, perLayer)
+	defer freeTestGemma4NativeLayer(layer)
+
+	if _, _, ok, err := nativeGemma4DecodeLayer(input, NewPagedKVCache(0, 2), 1, 1, nil, perLayer, sharedKV{}, layer, cfg, nil); ok || err != nil {
+		t.Fatalf("nativeGemma4DecodeLayer(empty paged cache) = ok %v err %v, want unsupported without error", ok, err)
+	}
+}
+
 func TestDecode_nativeGemma4DecodeLayer_MoEGateOffBad(t *testing.T) {
 	target := "nativeGemma4DecodeLayer MoE gate"
 	if target == "" {
@@ -1682,6 +1751,55 @@ func TestDecode_compiledGemma4DecodeLayer_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestDecode_compiledGemma4DecodeLayer_UseKEqVGood(t *testing.T) {
+	target := "compiledGemma4DecodeLayer UseKEqV"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	oldNative, oldCompiled := enableNativeGemma4Layer, enableCompiledGemma4Layer
+	enableNativeGemma4Layer, enableCompiledGemma4Layer = false, false
+	t.Cleanup(func() {
+		enableNativeGemma4Layer, enableCompiledGemma4Layer = oldNative, oldCompiled
+	})
+
+	layer := testGemma4NativeLayer()
+	Free(layer.Attention.VProj.Weight)
+	layer.Attention.VProj = &Linear{}
+	layer.Attention.UseKEqV = true
+	cfg := testGemma4NativeLayerConfig()
+	input := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	perLayer := FromValues([]float32{0.1, 0.2}, 1, 1, 2)
+	prevK := FromValues([]float32{0.05, 0.1}, 1, 1, 1, 2)
+	prevV := FromValues([]float32{0.2, -0.1}, 1, 1, 1, 2)
+	defer Free(input, perLayer, prevK, prevV)
+	defer freeTestGemma4NativeLayer(layer)
+
+	wantInput := input.Clone()
+	wantPerLayer := perLayer.Clone()
+	wantPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
+	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil)
+	defer Free(wantInput, wantPerLayer, want)
+
+	enableCompiledGemma4Layer = true
+	gotInput := input.Clone()
+	gotPerLayer := perLayer.Clone()
+	gotPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
+	got, _, ok, err := compiledGemma4DecodeLayer(gotInput, nil, 1, 1, nil, gotPerLayer, gotPrev, layer, cfg, nil)
+	if err != nil {
+		t.Fatalf("compiledGemma4DecodeLayer(UseKEqV) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("compiledGemma4DecodeLayer(UseKEqV) ok = false, want true")
+	}
+	defer Free(gotInput, gotPerLayer, got)
+
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval(compiled UseKEqV layer outputs) error = %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestDecode_compiledGemma4DecodeLayer_FixedCacheGood(t *testing.T) {
 	target := "compiledGemma4DecodeLayer fixed cache"
 	if target == "" {
@@ -1865,6 +1983,139 @@ func TestDecode_compiledGemma4DecodeLayer_Bad(t *testing.T) {
 
 	if _, _, ok, err := compiledGemma4DecodeLayer(input, NewPagedKVCache(0, 2), 1, 1, nil, perLayer, sharedKV{}, layer, cfg, nil); ok || err != nil {
 		t.Fatalf("compiledGemma4DecodeLayer(gate off) = ok %v err %v, want unsupported without error", ok, err)
+	}
+}
+
+func TestDecode_gemma4PerLayerDecodeLayerUnavailableReason_Good(t *testing.T) {
+	target := "gemma4PerLayerDecodeLayerUnavailableReason"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+
+	cfg := &Gemma4TextConfig{HeadDim: 256, GlobalHeadDim: 512}
+	layer := &Gemma4DecoderLayer{
+		LayerType: "full_attention",
+		Attention: &Gemma4Attention{HeadDim: 512},
+	}
+	const want = "full-attention global head dim requires model-level native boundary"
+	if got := gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg); got != want {
+		t.Fatalf("gemma4PerLayerDecodeLayerUnavailableReason(full global) = %q, want %q", got, want)
+	}
+
+	layer.LayerType = "sliding_attention"
+	if got := gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg); got != "" {
+		t.Fatalf("gemma4PerLayerDecodeLayerUnavailableReason(sliding) = %q, want empty", got)
+	}
+
+	layer.LayerType = "full_attention"
+	cfg.GlobalHeadDim = cfg.HeadDim
+	if got := gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg); got != "" {
+		t.Fatalf("gemma4PerLayerDecodeLayerUnavailableReason(equal dims) = %q, want empty", got)
+	}
+
+	if got := gemma4PerLayerDecodeLayerUnavailableReason(nil, cfg); got != "" {
+		t.Fatalf("gemma4PerLayerDecodeLayerUnavailableReason(nil layer) = %q, want empty", got)
+	}
+}
+
+func BenchmarkGemma4PerLayerDecodeLayerUnavailableReason_FullGlobal(b *testing.B) {
+	cfg := &Gemma4TextConfig{HeadDim: 256, GlobalHeadDim: 512}
+	layer := &Gemma4DecoderLayer{
+		LayerType: "full_attention",
+		Attention: &Gemma4Attention{HeadDim: 512},
+	}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if gemma4PerLayerDecodeLayerUnavailableReason(layer, cfg) == "" {
+			b.Fatal("expected per-layer full-attention boundary to be unavailable")
+		}
+	}
+}
+
+func TestDecode_validateGemma4LayerOutputs_Good(t *testing.T) {
+	target := "validateGemma4LayerOutputs"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	out := FromValue(float32(1))
+	key := FromValue(float32(2))
+	value := FromValue(float32(3))
+	defer Free(out, key, value)
+
+	if err := validateGemma4LayerOutputs("test", []*Array{out}, false); err != nil {
+		t.Fatalf("validateGemma4LayerOutputs(shared) error = %v", err)
+	}
+	if err := validateGemma4LayerOutputs("test", []*Array{out, key, value}, true); err != nil {
+		t.Fatalf("validateGemma4LayerOutputs(owner) error = %v", err)
+	}
+}
+
+func TestDecode_validateGemma4LayerOutputs_Bad(t *testing.T) {
+	target := "validateGemma4LayerOutputs"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+
+	if err := validateGemma4LayerOutputs("test", nil, false); err == nil {
+		t.Fatal("validateGemma4LayerOutputs(nil shared) error = nil, want error")
+	}
+	if err := validateGemma4LayerOutputs("test", []*Array{nil}, false); err == nil {
+		t.Fatal("validateGemma4LayerOutputs(nil array) error = nil, want error")
+	}
+	if err := validateGemma4LayerOutputs("test", []*Array{{}}, false); err == nil {
+		t.Fatal("validateGemma4LayerOutputs(invalid array) error = nil, want error")
+	}
+	if err := validateGemma4LayerOutputs("test", []*Array{{}}, true); err == nil {
+		t.Fatal("validateGemma4LayerOutputs(owner short outputs) error = nil, want error")
+	}
+}
+
+func TestDecode_validateGemma4LayerOutputShapes_Good(t *testing.T) {
+	target := "validateGemma4LayerOutputShapes"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	out := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	prevK := FromValues(float32Fill(8, 0.1), 1, 1, 4, 2)
+	prevV := FromValues(float32Fill(8, 0.2), 1, 1, 4, 2)
+	newK := FromValues(float32Fill(8, 0.3), 1, 1, 4, 2)
+	newV := FromValues(float32Fill(8, 0.4), 1, 1, 4, 2)
+	defer Free(x, out, prevK, prevV, newK, newV)
+
+	if err := validateGemma4LayerOutputShapes("test", x, out, newK, newV, prevK, prevV, true, true); err != nil {
+		t.Fatalf("validateGemma4LayerOutputShapes(fixed owner) error = %v", err)
+	}
+	if err := validateGemma4LayerOutputShapes("test", x, out, nil, nil, prevK, prevV, false, true); err != nil {
+		t.Fatalf("validateGemma4LayerOutputShapes(shared) error = %v", err)
+	}
+}
+
+func TestDecode_validateGemma4LayerOutputShapes_Bad(t *testing.T) {
+	target := "validateGemma4LayerOutputShapes"
+	if target == "" {
+		t.Fatalf("missing coverage target for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
+	out := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
+	badOut := FromValues([]float32{0.5, 0.25}, 1, 2, 1)
+	prevK := FromValues(float32Fill(8, 0.1), 1, 1, 4, 2)
+	prevV := FromValues(float32Fill(8, 0.2), 1, 1, 4, 2)
+	shortK := FromValues([]float32{0.3, 0.4}, 1, 1, 1, 2)
+	shortV := FromValues([]float32{0.5, 0.6}, 1, 1, 1, 2)
+	defer Free(x, out, badOut, prevK, prevV, shortK, shortV)
+
+	if err := validateGemma4LayerOutputShapes("test", x, badOut, nil, nil, prevK, prevV, false, true); err == nil {
+		t.Fatal("validateGemma4LayerOutputShapes(bad output shape) error = nil, want error")
+	}
+	if err := validateGemma4LayerOutputShapes("test", x, out, shortK, shortV, prevK, prevV, true, true); err == nil {
+		t.Fatal("validateGemma4LayerOutputShapes(short fixed K/V) error = nil, want error")
 	}
 }
 

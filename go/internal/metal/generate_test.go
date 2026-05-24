@@ -934,6 +934,26 @@ func (m *directGreedyGenerateModel) Tokenizer() *Tokenizer               { retur
 func (m *directGreedyGenerateModel) ModelType() string                   { return "direct-greedy-generate-test" }
 func (m *directGreedyGenerateModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
 
+type borrowedSuppressedGreedyGenerateModel struct {
+	directGreedyGenerateModel
+	borrowedSuppressedGreedyCalls int
+	borrowedSuppress              *Array
+	borrowedSuppressReused        bool
+}
+
+func (m *borrowedSuppressedGreedyGenerateModel) forwardGreedyTokenWithSuppressionArray(_ *Array, _ *Array, _ []Cache, _ []int32, suppress *Array) *Array {
+	m.borrowedSuppressedGreedyCalls++
+	if suppress != nil && suppress.Valid() {
+		if m.borrowedSuppress == nil {
+			m.borrowedSuppress = suppress
+			m.borrowedSuppressReused = true
+		} else if m.borrowedSuppress != suppress {
+			m.borrowedSuppressReused = false
+		}
+	}
+	return FromValues([]int32{1}, 1)
+}
+
 func TestModel_PrefillTokenBlock_ChunksByPlanner_Good(t *testing.T) {
 	coverageTokens := "PrefillTokenBlock ChunksByPlanner"
 	if coverageTokens == "" {
@@ -1027,6 +1047,60 @@ func TestModel_PrefillTokenBlock_EvaluatesIntermediateChunksCacheOnly_Good(t *te
 	}
 	if got := logits.Shape(); len(got) != 2 || got[0] != 1 || got[1] != 2 {
 		t.Fatalf("logits shape = %v, want [1 2]", got)
+	}
+}
+
+func TestModel_PrefillTokenBlock_UsesFullForwardForMultiTokenCachedChunk_Good(t *testing.T) {
+	coverageTokens := "PrefillTokenBlock UsesFullForwardForMultiTokenCachedChunk"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	t.Setenv("GO_MLX_ENABLE_LAST_LOGITS_PREFILL", "1")
+
+	inner := &cacheOnlyChunkPrefillModel{}
+	caches := inner.NewCache()
+	model := &Model{model: inner, prefillChunkSize: 2}
+	logits, err := model.prefillTokenBlock(t.Context(), []int32{1, 2, 3, 4, 5}, caches)
+	if err != nil {
+		t.Fatalf("prefillTokenBlock() error = %v", err)
+	}
+	defer Free(logits)
+	defer freeCaches(caches)
+
+	if got, want := inner.fullLens, []int{2}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("full forward chunk lengths = %v, want %v", got, want)
+	}
+	if got, want := inner.lastLens, []int{2, 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("last-logits chunk lengths = %v, want %v", got, want)
+	}
+	if caches[0].Offset() != 5 {
+		t.Fatalf("cache offset = %d, want 5", caches[0].Offset())
+	}
+}
+
+func TestModel_EffectivePrefillChunkSizeCapsGemma4FixedSlidingCache_Good(t *testing.T) {
+	coverageTokens := "EffectivePrefillChunkSize CapsGemma4FixedSlidingCache"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{
+		model: &Gemma4Model{
+			Cfg: &Gemma4TextConfig{SlidingWindow: 512},
+		},
+		prefillChunkSize: 4096,
+	}
+	caches := []Cache{NewFixedKVCache(512), NewKVCache()}
+	if got := model.effectivePrefillChunkSize(caches); got != 512 {
+		t.Fatalf("effectivePrefillChunkSize = %d, want 512", got)
+	}
+	model.prefillChunkSize = 0
+	if got := model.effectivePrefillChunkSize(caches); got != 512 {
+		t.Fatalf("effectivePrefillChunkSize(default) = %d, want 512", got)
+	}
+	model.prefillChunkSize = 256
+	if got := model.effectivePrefillChunkSize(caches); got != 256 {
+		t.Fatalf("effectivePrefillChunkSize(small explicit) = %d, want 256", got)
 	}
 }
 
@@ -1400,6 +1474,45 @@ func TestModel_Generate_UsesSuppressedDirectGreedyToken_Good(t *testing.T) {
 	}
 	if inner.suppressedGreedyCalls != 1 {
 		t.Fatalf("ForwardGreedyTokenWithSuppression calls = %d, want one direct decode call", inner.suppressedGreedyCalls)
+	}
+}
+
+func TestModel_Generate_UsesBorrowedSuppressionArray_Good(t *testing.T) {
+	coverageTokens := "Generate UsesBorrowedSuppressionArray"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+	old := enableDirectGreedyToken
+	enableDirectGreedyToken = true
+	t.Cleanup(func() { enableDirectGreedyToken = old })
+
+	inner := &borrowedSuppressedGreedyGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x", 1: "y"}},
+	}
+	var got []Token
+	for token := range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{
+		MaxTokens:      3,
+		SuppressTokens: []int32{0},
+	}) {
+		got = append(got, token)
+	}
+	if model.Err() != nil {
+		t.Fatalf("Generate() error = %v", model.Err())
+	}
+	if len(got) != 3 || got[0].ID != 1 || got[1].ID != 1 || got[2].ID != 1 {
+		t.Fatalf("tokens = %+v, want IDs [1 1 1]", got)
+	}
+	if inner.borrowedSuppressedGreedyCalls != 2 {
+		t.Fatalf("borrowed suppression calls = %d, want two direct decode calls", inner.borrowedSuppressedGreedyCalls)
+	}
+	if inner.borrowedSuppress == nil || !inner.borrowedSuppressReused {
+		t.Fatalf("borrowed suppress array reused = %v ptr=%p, want one valid reused array", inner.borrowedSuppressReused, inner.borrowedSuppress)
+	}
+	if inner.suppressedGreedyCalls != 0 {
+		t.Fatalf("ForwardGreedyTokenWithSuppression calls = %d, want borrowed array path", inner.suppressedGreedyCalls)
 	}
 }
 

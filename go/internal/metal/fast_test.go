@@ -346,6 +346,50 @@ func TestFast_NativePagedSingleTokenAttentionBroadcastsSingleKVHead_Good(t *test
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestFast_NativePagedSingleTokenAttentionVariableTailMatchesGoPaged_Good(t *testing.T) {
+	coverageTokens := "NativePagedSingleTokenAttention VariableTailMatchesGoPaged"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	q := FromValues([]float32{
+		1, 0,
+		0, 1,
+		1, 1,
+		-1, 1,
+	}, 1, 4, 1, 2)
+	kWarm1 := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
+	kWarm2 := FromValues([]float32{1, 1, -1, 0}, 1, 1, 2, 2)
+	vWarm1 := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)
+	vWarm2 := FromValues([]float32{5, 5, -2, 1}, 1, 1, 2, 2)
+	kTail := FromValues([]float32{1, 1}, 1, 1, 1, 2)
+	vTail := FromValues([]float32{7, -3}, 1, 1, 1, 2)
+	defer Free(q, kWarm1, kWarm2, vWarm1, vWarm2, kTail, vTail)
+
+	scale := float32(1.0 / math.Sqrt(2.0))
+	warm, ok, err := nativePagedSingleTokenAttention(q, []*Array{kWarm1, kWarm2}, []*Array{vWarm1, vWarm2}, scale)
+	if err != nil {
+		t.Fatalf("nativePagedSingleTokenAttention() warm error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativePagedSingleTokenAttention() warm ok = false, want true")
+	}
+	Free(warm)
+
+	got, ok, err := nativePagedSingleTokenAttention(q, []*Array{kWarm1, kTail}, []*Array{vWarm1, vTail}, scale)
+	if err != nil {
+		t.Fatalf("nativePagedSingleTokenAttention() variable-tail error = %v", err)
+	}
+	if !ok {
+		t.Fatal("nativePagedSingleTokenAttention() variable-tail ok = false, want true")
+	}
+	want := ScaledDotProductAttentionPaged(q, []*Array{kWarm1, kTail}, []*Array{vWarm1, vTail}, scale)
+	defer Free(got, want)
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval native/go paged variable-tail attention: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestFast_ScaledDotProductAttentionPagedBroadcastsSingleKVHead_Good(t *testing.T) {
 	coverageTokens := "ScaledDotProductAttentionPaged BroadcastsSingleKVHead"
 	if coverageTokens == "" {

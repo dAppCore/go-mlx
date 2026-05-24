@@ -178,6 +178,9 @@ func quantizedDenseMatVecKernel(meta quantizedDenseMatVecMeta, groupSize, bits i
 	}
 
 	source := core.Sprintf(`uint out_col = thread_position_in_grid.x / 32u;
+if (out_col >= uint(%d)) {
+	return;
+}
 uint lane = thread_index_in_simdgroup;
 float sum = 0.0f;
 for (uint pack_col = lane; pack_col < uint(%d); pack_col += 32u) {
@@ -197,6 +200,7 @@ sum = simd_sum(sum);
 if (lane == 0u) {
 	out[out_col] = sum;
 }`,
+		meta.outDim,
 		meta.packedIn,
 		meta.packedIn,
 		meta.packFactor,
@@ -239,6 +243,9 @@ func quantizedDenseGELUSplitGateUpMatVecKernel(meta quantizedDenseMatVecMeta, gr
 	}
 
 	source := core.Sprintf(`uint out_col = thread_position_in_grid.x / 32u;
+if (out_col >= uint(%d)) {
+	return;
+}
 uint lane = thread_index_in_simdgroup;
 float gate_sum = 0.0f;
 float up_sum = 0.0f;
@@ -267,6 +274,7 @@ if (lane == 0u) {
 	float gelu = 0.5f * gate_sum * (1.0f + tanh(0.7978845608028654f * (gate_sum + 0.044715f * gate_cube)));
 	out[out_col] = gelu * up_sum;
 }`,
+		meta.outDim,
 		meta.packedIn,
 		meta.packedIn,
 		meta.packedIn,

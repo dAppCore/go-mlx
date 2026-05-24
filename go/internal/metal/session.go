@@ -441,7 +441,11 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	}
 	genCount := 0
 	var firstTokenDuration time.Duration
-	history := append([]int32(nil), s.generated...)
+	var history []int32
+	if cfg.RepeatPenalty > 1.0 {
+		history = append([]int32(nil), s.generated...)
+	}
+	var tokenPhases []TokenPhaseTrace
 	emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, len(s.generated), -1, s.caches)
 	emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
@@ -461,6 +465,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			ProcessVirtualMemoryBytes:  processMemory.VirtualMemoryBytes,
 			ProcessResidentMemoryBytes: processMemory.ResidentMemoryBytes,
 			ProcessPeakResidentBytes:   processMemory.PeakResidentMemoryBytes,
+			TokenPhases:                tokenPhases,
 		}
 		if s.prefillDuration > 0 {
 			metrics.PrefillTokensPerSec = float64(promptLen) / s.prefillDuration.Seconds()
@@ -472,6 +477,14 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	}()
 
 	for i := range cfg.MaxTokens {
+		tracePhases := cfg.TraceTokenPhases
+		var phaseStart, phaseLast time.Time
+		var phase TokenPhaseTrace
+		if tracePhases {
+			phaseStart = time.Now()
+			phaseLast = phaseStart
+			phase = TokenPhaseTrace{Step: i}
+		}
 		select {
 		case <-ctx.Done():
 			s.err = ctx.Err()
@@ -480,6 +493,8 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		}
 
 		var next *Array
+		var sampledID int32
+		sampledIDSet := false
 		nextEvaluated := false
 		if nativeGreedyDecodeAvailable(cfg, history, s.logits) {
 			var err error
@@ -487,6 +502,10 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			if err != nil {
 				s.err = core.E("ModelSession.Generate", core.Sprintf("native greedy decode step %d", i), err)
 				return
+			}
+			if tracePhases {
+				phase.LogitsDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
 			}
 		} else {
 			lastPos, err := lastTokenLogits(s.logits)
@@ -500,20 +519,38 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 				lastPos = applyRepeatPenalty(lastPos, history, cfg.RepeatPenalty)
 				Free(oldLastPos)
 			}
+			if tracePhases {
+				phase.LogitsDuration = time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 			if err := emitProbeLogits(cfg.ProbeSink, ProbePhaseDecode, i, lastPos); err != nil {
 				s.err = core.E("ModelSession.Generate", core.Sprintf("probe logits step %d", i), err)
 				Free(lastPos)
 				return
 			}
+			if tracePhases && cfg.ProbeSink != nil {
+				phase.CacheProbeDuration += time.Since(phaseLast)
+			}
+			if tracePhases {
+				phaseLast = time.Now()
+			}
 
 			var sampleErr error
-			next, sampleErr = sampleTokenWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens)
+			var sampleTimings sampleTokenTimings
+			next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens, tracePhases)
 			Free(lastPos)
 			if sampleErr != nil {
 				s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), sampleErr)
 				return
 			}
+			sampledIDSet = true
 			nextEvaluated = true
+			if tracePhases {
+				phase.SampleDuration = sampleTimings.Build
+				phase.SampleEvalDuration = sampleTimings.Eval
+				phase.TokenReadDuration += sampleTimings.TokenRead
+				phaseLast = time.Now()
+			}
 		}
 		if !nextEvaluated {
 			if err := Eval(next); err != nil {
@@ -521,23 +558,73 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 				Free(next)
 				return
 			}
+			if tracePhases {
+				phase.SampleEvalDuration += time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
 		}
 		detachCaches(s.caches)
-		id := int32(next.Int())
+		if tracePhases {
+			phase.DetachDuration = time.Since(phaseLast)
+			phaseLast = time.Now()
+		}
+		id := sampledID
+		if !sampledIDSet {
+			id = int32(next.Int())
+			if tracePhases {
+				phase.TokenReadDuration += time.Since(phaseLast)
+				phaseLast = time.Now()
+			}
+		}
 		Free(next)
 		text := s.model.tokenizer.DecodeToken(id)
+		if tracePhases {
+			phase.DecodeTextDuration = time.Since(phaseLast)
+			phaseLast = time.Now()
+		}
 		emitProbeToken(cfg.ProbeSink, ProbePhaseDecode, i, id, text, promptLen, len(s.generated)+1)
+		if tracePhases {
+			phase.ProbeTokenDuration = time.Since(phaseLast)
+			phaseLast = time.Now()
+		}
 
 		stop := s.model.tokenizer.HasEOSToken() && id == s.model.tokenizer.EOSToken()
 		stop = stop || slices.Contains(cfg.StopTokens, id)
+		if tracePhases {
+			resetNativePhaseTraceEvents()
+		}
 		if err := s.advanceTokenLocked(ctx, id, i); err != nil {
 			s.err = err
 			return
 		}
-		history = append(history, id)
+		if tracePhases {
+			phase.ForwardDuration = time.Since(phaseLast)
+			phase.NativeEvents = takeNativePhaseTraceEvents()
+			phaseLast = time.Now()
+		}
+		// Retained sessions use the same lazy next-logits boundary as
+		// Model.Generate; prefetching here keeps the next sample step from
+		// inheriting the whole decode graph when the existing gate is enabled.
+		if err := asyncDecodePrefetchFor("ModelSession.Generate", i, "session next logits", s.logits); err != nil {
+			s.err = err
+			return
+		}
+		if cfg.RepeatPenalty > 1.0 {
+			history = append(history, id)
+		}
 		emitProbeCachePressure(cfg.ProbeSink, ProbePhaseDecode, promptLen, len(s.generated), i, s.caches)
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhaseDecode, i)
+		if tracePhases && cfg.ProbeSink != nil {
+			phase.CacheProbeDuration += time.Since(phaseLast)
+		}
+		if tracePhases {
+			phaseLast = time.Now()
+		}
 		if stop {
+			if tracePhases {
+				phase.FinalToken = true
+				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+			}
 			return
 		}
 
@@ -546,7 +633,15 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			firstTokenDuration = time.Since(totalStart)
 		}
 		if !yield(Token{ID: id, Text: text}) {
+			if tracePhases {
+				phase.FinalToken = true
+				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+			}
 			return
+		}
+		if tracePhases {
+			phase.YieldDuration = time.Since(phaseLast)
+			tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
 		}
 	}
 }
@@ -783,7 +878,7 @@ func (s *ModelSession) restoreKVBlocksLocked(ctx context.Context, source KVSnaps
 		return err
 	}
 	defer entry.free()
-	caches, err := restoreSessionCaches(entry.caches)
+	caches, err := restoreSessionCachesTransferringPaged(entry.caches)
 	if err != nil {
 		return err
 	}
@@ -880,7 +975,7 @@ func (s *ModelSession) forkLocked() (*ModelSession, error) {
 		}
 		snapshots[i] = snapshot
 	}
-	caches, err := restoreSessionCaches(snapshots)
+	caches, err := restoreSessionCachesTransferringPaged(snapshots)
 	if err != nil {
 		freeCacheSnapshots(snapshots)
 		return nil, core.E("ModelSession.Fork", "restore cache", err)
@@ -1033,17 +1128,30 @@ func snapshotSessionCache(cache Cache) (cacheSnapshot, bool, error) {
 }
 
 func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
+	return restoreSessionCachesWithPagedTransfer(snapshots, false)
+}
+
+func restoreSessionCachesTransferringPaged(snapshots []cacheSnapshot) ([]Cache, error) {
+	return restoreSessionCachesWithPagedTransfer(snapshots, true)
+}
+
+func restoreSessionCachesWithPagedTransfer(snapshots []cacheSnapshot, transferPaged bool) ([]Cache, error) {
 	caches := make([]Cache, len(snapshots))
-	var evalArrays []*Array
-	for i, snapshot := range snapshots {
-		length := snapshotCacheLength(snapshot)
+	totalArrays := 0
+	for i := range snapshots {
+		totalArrays += snapshots[i].arrayCount()
+	}
+	evalArrays := make([]*Array, 0, totalArrays)
+	for i := range snapshots {
+		snapshot := &snapshots[i]
+		length := snapshotCacheLength(*snapshot)
 		if snapshot.keys == nil || snapshot.values == nil || length <= 0 {
 			if snapshot.mode != KVCacheModePaged {
 				continue
 			}
 		}
 		if snapshot.mode == KVCacheModeQ8 || snapshot.mode == KVCacheModeKQ8VQ4 {
-			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset)
+			cache, next, err := appendRestoreQuantizedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
@@ -1053,7 +1161,16 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 			continue
 		}
 		if snapshot.mode == KVCacheModePaged {
-			cache, next, err := appendRestorePagedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset)
+			var (
+				cache Cache
+				next  []*Array
+				err   error
+			)
+			if transferPaged && canTransferPagedCacheSnapshot(*snapshot, length) {
+				cache, next, err = appendRestorePagedCacheSnapshotTransfer(evalArrays, snapshot, length, snapshot.offset)
+			} else {
+				cache, next, err = appendRestorePagedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset)
+			}
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
@@ -1063,7 +1180,7 @@ func restoreSessionCaches(snapshots []cacheSnapshot) ([]Cache, error) {
 			continue
 		}
 		if snapshot.mode == KVCacheModeFixed {
-			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, snapshot, length, snapshot.offset, 0)
+			cache, next, err := appendRestoreFixedCacheSnapshot(evalArrays, *snapshot, length, snapshot.offset, 0)
 			if err != nil {
 				freeCaches(caches)
 				return nil, err
@@ -1190,7 +1307,7 @@ func (m *Model) restoreKVCachesFromSnapshot(snapshot *KVSnapshot) ([]Cache, erro
 			return nil, core.E("ModelSession.RestoreKV", core.Sprintf("missing cache %d", i), nil)
 		}
 	}
-	caches, err := restoreSessionCaches(snapshots)
+	caches, err := restoreSessionCachesTransferringPaged(snapshots)
 	freeCacheSnapshots(snapshots)
 	return caches, err
 }
@@ -1351,11 +1468,13 @@ func kvLayerNativeSlabArrays(layer KVLayerSnapshot) (*Array, *Array, int, error)
 	if keySeqLen != valueSeqLen || keyShape[0] != valueShape[0] || keyShape[1] != valueShape[1] {
 		return nil, nil, 0, errSnapshotNativeKVShapesDiffer
 	}
-	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToInts(keyShape), layer.KeyDType)
+	var keyShapeBuf [maxTensorRank]int
+	keyArray, err := fromPinnedRawBytes(layer.KeyBytes, int32ShapeToIntsInto(keyShapeBuf[:0], keyShape), layer.KeyDType)
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	valueArray, err := fromPinnedRawBytes(layer.ValueBytes, int32ShapeToInts(valueShape), layer.ValueDType)
+	var valueShapeBuf [maxTensorRank]int
+	valueArray, err := fromPinnedRawBytes(layer.ValueBytes, int32ShapeToIntsInto(valueShapeBuf[:0], valueShape), layer.ValueDType)
 	if err != nil {
 		Free(keyArray)
 		return nil, nil, 0, err
@@ -1372,18 +1491,16 @@ func validateKVLayerNativeSlab(raw []byte, dtype DType, shape []int32) ([]int32,
 		return nil, 0, errUnsupportedDtype
 	}
 	count := 1
-	out := make([]int32, len(shape))
-	for i, dim := range shape {
+	for _, dim := range shape {
 		if dim <= 0 {
 			return nil, 0, errInvalidShape
 		}
-		out[i] = dim
 		count *= int(dim)
 	}
 	if count*byteSize != len(raw) {
 		return nil, 0, errByteLenShape
 	}
-	return out, int(out[2]), nil
+	return shape, int(shape[2]), nil
 }
 
 func int32ShapeToInts(shape []int32) []int {
@@ -1392,6 +1509,13 @@ func int32ShapeToInts(shape []int32) []int {
 		out[i] = int(dim)
 	}
 	return out
+}
+
+func int32ShapeToIntsInto(dst []int, shape []int32) []int {
+	for _, dim := range shape {
+		dst = append(dst, int(dim))
+	}
+	return dst
 }
 
 func inferSnapshotLayerCacheShape(heads []KVHeadSnapshot, globalSeqLen, fallbackHeadDim int) (int, int, int, error) {

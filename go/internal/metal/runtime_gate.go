@@ -37,6 +37,7 @@ var (
 	runtimeGateFixedGemma4Cache                     atomic.Bool
 	runtimeGateFixedGemma4SlidingCacheBound         atomic.Bool
 	runtimeGateFixedGemma4SharedMask                atomic.Bool
+	runtimeGateNativeFixedSlidingAttention          atomic.Bool
 	runtimeGateDirectGreedyToken                    atomic.Bool
 	runtimeGateNativeGemma4FixedOwnerAttention      atomic.Bool
 	runtimeGateNativeGemma4FixedOwnerAttentionResid atomic.Bool
@@ -126,6 +127,7 @@ func refreshKnownRuntimeGates() {
 		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
 		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
 		"GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
@@ -182,6 +184,8 @@ func refreshKnownRuntimeGate(name string) {
 		runtimeGateFixedGemma4SlidingCacheBound.Store(enabled)
 	case "GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":
 		runtimeGateFixedGemma4SharedMask.Store(enabled)
+	case "GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION":
+		runtimeGateNativeFixedSlidingAttention.Store(enabled)
 	case "GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN":
 		runtimeGateDirectGreedyToken.Store(enabled)
 	case "GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION":
@@ -197,7 +201,11 @@ func refreshKnownRuntimeGate(name string) {
 	case "GO_MLX_ENABLE_GENERATION_CLEAR_CACHE":
 		runtimeGateGenerationClearCache.Store(enabled)
 	case "GO_MLX_ENABLE_ZERO_COPY_PAGED_RESTORE":
-		runtimeGateZeroCopyPagedRestore.Store(enabled)
+		// The retained State path is streaming-first. Keep the legacy
+		// coalescing path available for regression comparison with an
+		// explicit 0, but do not require an enable flag for the production
+		// zero-copy restore.
+		runtimeGateZeroCopyPagedRestore.Store(RuntimeGateValue(name) != "0")
 	}
 }
 
@@ -242,6 +250,10 @@ func fixedGemma4SlidingCacheBoundRuntimeEnabled() bool {
 }
 
 func fixedGemma4SharedMaskRuntimeEnabled() bool { return runtimeGateFixedGemma4SharedMask.Load() }
+
+func nativeFixedSlidingAttentionRuntimeEnabled() bool {
+	return runtimeGateNativeFixedSlidingAttention.Load()
+}
 
 func directGreedyTokenRuntimeEnabled() bool { return runtimeGateDirectGreedyToken.Load() }
 

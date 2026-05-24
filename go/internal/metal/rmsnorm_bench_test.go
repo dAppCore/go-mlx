@@ -213,11 +213,11 @@ func BenchmarkRMSNorm_QKNorm_Prefill_8heads_seq512_D128(b *testing.B) {
 
 // --- Zero-centered weight scaling pattern ---
 
-// Note: Gemma 4 zero-centered weights are pre-folded at model load
-// (see precomputeGemma4ScaledWeights). This bench measures the
-// hypothetical un-baked path: if the (1+w) compute were per-call,
-// it'd cost an extra AddScalar before each RMSNorm. We bench the
-// add+norm together for comparison against the baked single-call.
+// Note: this bench measures the hypothetical un-baked zero-centred path: if
+// the (1+w) compute were per-call, it'd cost an extra AddScalar before each
+// RMSNorm. Current mlx-community Gemma 4 checkpoints expose direct-scale norm
+// weights to this loader, so precomputeGemma4ScaledWeights keeps the scale as
+// loaded.
 func BenchmarkRMSNorm_ZeroCenteredAddThenNorm_Decode(b *testing.B) {
 	x := RandomUniform(0, 1, []int32{1, 2048}, DTypeFloat32)
 	w := RandomUniform(0, 1, []int32{2048}, DTypeFloat32)

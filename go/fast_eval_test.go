@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -282,6 +283,16 @@ func TestFromMlxMetrics_CopiesFields_Good(t *testing.T) {
 	}
 	if out.PromptCacheRestoreDuration != 5*time.Millisecond {
 		t.Fatalf("restore duration = %v", out.PromptCacheRestoreDuration)
+	}
+}
+
+func TestFromMlxMetrics_DropsNonFiniteRates_Ugly(t *testing.T) {
+	out := fromMlxMetrics(Metrics{
+		PrefillTokensPerSec: math.Inf(1),
+		DecodeTokensPerSec:  math.NaN(),
+	})
+	if out.PrefillTokensPerSec != 0 || out.DecodeTokensPerSec != 0 {
+		t.Fatalf("rates = %+v, want non-finite rates clamped to 0", out)
 	}
 }
 

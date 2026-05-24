@@ -47,6 +47,7 @@ func BenchmarkSDPAPaged_SinglePage_Page512_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -54,6 +55,7 @@ func BenchmarkSDPAPaged_SinglePage_Page512_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 // --- Multi-page paged decode ---
@@ -68,6 +70,7 @@ func BenchmarkSDPAPaged_2Pages_Page256_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -75,6 +78,7 @@ func BenchmarkSDPAPaged_2Pages_Page256_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 func BenchmarkSDPAPaged_4Pages_Page256_Q1_D128(b *testing.B) {
@@ -87,6 +91,7 @@ func BenchmarkSDPAPaged_4Pages_Page256_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -94,6 +99,7 @@ func BenchmarkSDPAPaged_4Pages_Page256_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 func BenchmarkSDPAPaged_8Pages_Page256_Q1_D128(b *testing.B) {
@@ -106,6 +112,7 @@ func BenchmarkSDPAPaged_8Pages_Page256_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -113,6 +120,7 @@ func BenchmarkSDPAPaged_8Pages_Page256_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 func BenchmarkSDPAPaged_16Pages_Page256_Q1_D128(b *testing.B) {
@@ -125,6 +133,7 @@ func BenchmarkSDPAPaged_16Pages_Page256_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -132,6 +141,7 @@ func BenchmarkSDPAPaged_16Pages_Page256_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 // --- Page-size sweep ---
@@ -146,6 +156,7 @@ func BenchmarkSDPAPaged_8Pages_Page512_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -153,6 +164,7 @@ func BenchmarkSDPAPaged_8Pages_Page512_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }
 
 func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128(b *testing.B) {
@@ -165,6 +177,7 @@ func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128(b *testing.B) {
 	all := append([]*Array{q}, keys...)
 	all = append(all, values...)
 	Materialize(all...)
+	resetMLXBenchMemoryCounters()
 	scale := float32(1.0 / math.Sqrt(float64(D)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -172,4 +185,5 @@ func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128(b *testing.B) {
 		Materialize(y)
 		Free(y)
 	}
+	reportMLXBenchMemory(b)
 }

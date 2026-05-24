@@ -14,7 +14,7 @@ import (
 	coreio "dappco.re/go/io"
 )
 
-func requireMetalRuntime(t *testing.T) {
+func requireMetalRuntime(t testing.TB) {
 	t.Helper()
 	if core.Getenv("GO_MLX_RUN_METAL_TESTS") != "1" {
 		t.Skip("set GO_MLX_RUN_METAL_TESTS=1 to enable Metal runtime tests")
@@ -832,6 +832,41 @@ func TestGemma4_CompiledPerLayerInputsMatchesGoGraph_Good(t *testing.T) {
 	}
 }
 
+func TestGemma4_PerLayerInputForLayerMatchesSplit_Good(t *testing.T) {
+	coverageTokens := "PerLayerInputForLayer MatchesSplit"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	m := &Gemma4Model{
+		Cfg: &Gemma4TextConfig{
+			HiddenSizePerLayerInput: 2,
+			NumHiddenLayers:         3,
+		},
+	}
+	combined := FromValues([]float32{
+		0.1, 0.2,
+		0.3, 0.4,
+		0.5, 0.6,
+	}, 1, 1, 3, 2)
+	defer Free(combined)
+
+	split := m.splitPerLayerInputTensor(combined.Clone())
+	defer Free(split...)
+	if len(split) != int(m.Cfg.NumHiddenLayers) {
+		t.Fatalf("split layer count = %d, want %d", len(split), m.Cfg.NumHiddenLayers)
+	}
+	for i := range split {
+		streamed := m.perLayerInputForLayer(combined, 1, 1, int32(i))
+		if streamed == nil || !streamed.Valid() {
+			t.Fatalf("streamed layer %d is invalid", i)
+		}
+		floatSliceApprox(t, streamed.Floats(), split[i].Floats())
+		Free(streamed)
+	}
+}
+
 func TestGemma4_PerLayerEmbeddingRetainedLazy_Good(t *testing.T) {
 	coverageTokens := "PerLayerEmbedding RetainedLazy"
 	if coverageTokens == "" {
@@ -982,9 +1017,17 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 	weight := FromValues([]float32{0.125, 2.5}, 2)
 	defer Free(weight)
 	model := &Gemma4Model{
-		Norm: &RMSNormModule{Weight: weight},
+		Norm:             &RMSNormModule{Weight: weight},
+		PerLayerProjNorm: &RMSNormModule{Weight: weight},
 		Layers: []*Gemma4DecoderLayer{{
-			InputNorm: &RMSNormModule{Weight: weight},
+			InputNorm:             &RMSNormModule{Weight: weight},
+			PostAttnNorm:          &RMSNormModule{Weight: weight},
+			PreFFNorm:             &RMSNormModule{Weight: weight},
+			PostFFNorm:            &RMSNormModule{Weight: weight},
+			PreFFNorm2:            &RMSNormModule{Weight: weight},
+			PostFFNorm1:           &RMSNormModule{Weight: weight},
+			PostFFNorm2:           &RMSNormModule{Weight: weight},
+			PostPerLayerInputNorm: &RMSNormModule{Weight: weight},
 			Attention: &Gemma4Attention{
 				QNorm: &RMSNormModule{Weight: weight},
 				KNorm: &RMSNormModule{Weight: weight},
@@ -992,15 +1035,50 @@ func TestGemma4_PrecomputeNormWeightsUsesDirectScale_Good(t *testing.T) {
 		}},
 	}
 	precomputeGemma4ScaledWeights(model)
-	defer Free(model.NormScaled, model.Layers[0].InputNormScaled, model.Layers[0].Attention.QNormScaled, model.Layers[0].Attention.KNormScaled)
+	layer := model.Layers[0]
+	defer Free(
+		model.NormScaled,
+		model.PerLayerProjNormScaled,
+		layer.InputNormScaled,
+		layer.PostAttnNormScaled,
+		layer.PreFFNormScaled,
+		layer.PostFFNormScaled,
+		layer.PreFFNorm2Scaled,
+		layer.PostFFNorm1Scaled,
+		layer.PostFFNorm2Scaled,
+		layer.PostPerLayerInputNormScaled,
+		layer.Attention.QNormScaled,
+		layer.Attention.KNormScaled,
+	)
 
-	if err := Eval(model.NormScaled, model.Layers[0].InputNormScaled, model.Layers[0].Attention.QNormScaled, model.Layers[0].Attention.KNormScaled); err != nil {
+	if err := Eval(
+		model.NormScaled,
+		model.PerLayerProjNormScaled,
+		layer.InputNormScaled,
+		layer.PostAttnNormScaled,
+		layer.PreFFNormScaled,
+		layer.PostFFNormScaled,
+		layer.PreFFNorm2Scaled,
+		layer.PostFFNorm1Scaled,
+		layer.PostFFNorm2Scaled,
+		layer.PostPerLayerInputNormScaled,
+		layer.Attention.QNormScaled,
+		layer.Attention.KNormScaled,
+	); err != nil {
 		t.Fatalf("Eval scaled norm weights: %v", err)
 	}
 	floatSliceApprox(t, model.NormScaled.Floats(), []float32{0.125, 2.5})
-	floatSliceApprox(t, model.Layers[0].InputNormScaled.Floats(), []float32{0.125, 2.5})
-	floatSliceApprox(t, model.Layers[0].Attention.QNormScaled.Floats(), []float32{0.125, 2.5})
-	floatSliceApprox(t, model.Layers[0].Attention.KNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, model.PerLayerProjNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.InputNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PostAttnNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PreFFNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PostFFNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PreFFNorm2Scaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PostFFNorm1Scaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PostFFNorm2Scaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.PostPerLayerInputNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.Attention.QNormScaled.Floats(), []float32{0.125, 2.5})
+	floatSliceApprox(t, layer.Attention.KNormScaled.Floats(), []float32{0.125, 2.5})
 }
 
 func TestGemma4_ProportionalRoPEFreqsMatchesHFDefinition_Good(t *testing.T) {
@@ -1773,6 +1851,69 @@ func TestGemma4_SharedKVInvalidPages_Bad(t *testing.T) {
 	}
 	if kv.hasState() {
 		t.Fatal("invalid pages should not count as usable K/V state")
+	}
+}
+
+func TestGemma4_SharedKVBorrowedFreePreservesFixedState_Good(t *testing.T) {
+	coverageTokens := "SharedKV BorrowedFreePreservesFixedState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	keys := FromValues([]float32{1, 2}, 1, 1, 1, 2)
+	values := FromValues([]float32{3, 4}, 1, 1, 1, 2)
+	defer Free(keys, values)
+
+	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
+	kv.free()
+
+	if !keys.Valid() || !values.Valid() {
+		t.Fatal("borrowed sharedKV.free invalidated cache-owned fixed K/V handles")
+	}
+}
+
+func TestGemma4_SharedKVCloneRetainsBorrowedFixedState_Good(t *testing.T) {
+	coverageTokens := "SharedKV CloneRetainsBorrowedFixedState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	keys := FromValues([]float32{1, 2}, 1, 1, 1, 2)
+	values := FromValues([]float32{3, 4}, 1, 1, 1, 2)
+	kv := sharedKV{Keys: keys, Values: values, Fixed: true, Borrowed: true}
+
+	retained := kv.clone()
+	kv.free()
+	Free(keys, values)
+	defer retained.free()
+
+	if !retained.hasState() {
+		t.Fatal("retained sharedKV clone lost fixed K/V handles after original cache wrappers were freed")
+	}
+	if retained.Borrowed {
+		t.Fatal("retained sharedKV clone should own its ref-counted handles")
+	}
+}
+
+func TestGemma4_SharedKVCloneRetainsBorrowedPagedState_Good(t *testing.T) {
+	coverageTokens := "SharedKV CloneRetainsBorrowedPagedState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	k, v := makeSingleTokenKVShape(1, 2, 4)
+	defer Free(k, v)
+
+	cache := NewPagedKVCache(0, 2)
+	pages := cache.UpdateBorrowedPages(k, v, 1)
+	kv := sharedKV{Pages: pages, Offset: cache.Offset()}
+	retained := kv.clone()
+	kv.free()
+	cache.Reset()
+	defer retained.free()
+
+	if !retained.hasPages() {
+		t.Fatal("retained sharedKV clone lost paged K/V handles after source cache reset")
+	}
+	if len(retained.Pages.Owned) != 2 {
+		t.Fatalf("retained owned page handles = %d, want 2", len(retained.Pages.Owned))
 	}
 }
 

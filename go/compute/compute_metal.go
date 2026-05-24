@@ -111,6 +111,9 @@ func (base *bufferbase) readLocked() ([]byte, error) {
 	if err := base.session.syncLocked(); err != nil {
 		return nil, err
 	}
+	if err := metal.Eval(base.array); err != nil {
+		return nil, computeWrap(ComputeErrorInternal, "read_buffer", "", "", "compute buffer readback eval failed", err)
+	}
 	return base.array.Bytes(), nil
 }
 
