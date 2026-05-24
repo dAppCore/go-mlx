@@ -376,18 +376,19 @@ func LoadModel(modelPath string, opts ...LoadOption) (*Model, error) {
 
 func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 	return metal.GenerateConfig{
-		MaxTokens:        cfg.MaxTokens,
-		Temperature:      cfg.Temperature,
-		TopK:             cfg.TopK,
-		TopP:             cfg.TopP,
-		MinP:             cfg.MinP,
-		Seed:             cfg.Seed,
-		SeedSet:          cfg.SeedSet,
-		StopTokens:       cfg.StopTokens,
-		SuppressTokens:   cfg.SuppressTokens,
-		RepeatPenalty:    cfg.RepeatPenalty,
-		ProbeSink:        toMetalProbeSink(cfg.ProbeSink),
-		TraceTokenPhases: cfg.TraceTokenPhases,
+		MaxTokens:           cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		TopK:                cfg.TopK,
+		TopP:                cfg.TopP,
+		MinP:                cfg.MinP,
+		Seed:                cfg.Seed,
+		SeedSet:             cfg.SeedSet,
+		StopTokens:          cfg.StopTokens,
+		SuppressTokens:      cfg.SuppressTokens,
+		MinTokensBeforeStop: cfg.MinTokensBeforeStop,
+		RepeatPenalty:       cfg.RepeatPenalty,
+		ProbeSink:           toMetalProbeSink(cfg.ProbeSink),
+		TraceTokenPhases:    cfg.TraceTokenPhases,
 	}
 }
 

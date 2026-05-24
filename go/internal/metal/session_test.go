@@ -441,6 +441,52 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 	}
 }
 
+func TestModelSession_Generate_MinTokensBeforeStopSuppressesFirstStop_Good(t *testing.T) {
+	coverageTokens := "ModelSession Generate MinTokensBeforeStopSuppressesFirstStop"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "<turn|>", 1: "x"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{7},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	var got []Token
+	for token := range session.Generate(context.Background(), GenerateConfig{
+		MaxTokens:           1,
+		StopTokens:          []int32{0},
+		MinTokensBeforeStop: 1,
+		TraceTokenPhases:    true,
+	}) {
+		got = append(got, token)
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if len(got) != 1 || got[0].ID != 1 || got[0].Text != "x" {
+		t.Fatalf("generated tokens = %+v, want first non-stop token", got)
+	}
+	if inner.forwardCalls != 1 {
+		t.Fatalf("Forward calls = %d, want retained-state advance after non-stop token", inner.forwardCalls)
+	}
+	if len(session.tokens) != 2 || session.tokens[1] != 1 {
+		t.Fatalf("session tokens = %v, want generated token retained", session.tokens)
+	}
+	if metrics := model.LastMetrics(); metrics.GeneratedTokens != 1 {
+		t.Fatalf("GeneratedTokens = %d, want first non-stop token counted", metrics.GeneratedTokens)
+	}
+}
+
 func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 	coverageTokens := "ModelSession Generate TraceTokenPhases"
 	if coverageTokens == "" {

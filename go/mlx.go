@@ -259,20 +259,21 @@ type ModelInfo struct {
 
 // GenerateConfig holds generation parameters for the RFC-style root API.
 type GenerateConfig struct {
-	MaxTokens        int
-	Temperature      float32
-	TopK             int
-	TopP             float32
-	MinP             float32
-	Seed             uint64
-	SeedSet          bool
-	ReturnLogits     bool
-	StopTokens       []int32
-	SuppressTokens   []int32
-	RepeatPenalty    float32
-	ProbeSink        probe.Sink
-	TraceTokenPhases bool
-	Thinking         parser.Config
+	MaxTokens           int
+	Temperature         float32
+	TopK                int
+	TopP                float32
+	MinP                float32
+	Seed                uint64
+	SeedSet             bool
+	ReturnLogits        bool
+	StopTokens          []int32
+	SuppressTokens      []int32
+	MinTokensBeforeStop int
+	RepeatPenalty       float32
+	ProbeSink           probe.Sink
+	TraceTokenPhases    bool
+	Thinking            parser.Config
 }
 
 // DefaultGenerateConfig returns sensible defaults for root-package generation.
@@ -351,6 +352,12 @@ func WithStopTokens(ids ...int32) GenerateOption {
 // WithSuppressTokens masks token IDs out of the sampling distribution.
 func WithSuppressTokens(ids ...int32) GenerateOption {
 	return func(c *GenerateConfig) { c.SuppressTokens = ids }
+}
+
+// WithMinTokensBeforeStop masks stop tokens until n real tokens have been
+// emitted, then restores normal stop behaviour.
+func WithMinTokensBeforeStop(n int) GenerateOption {
+	return func(c *GenerateConfig) { c.MinTokensBeforeStop = n }
 }
 
 // WithRepeatPenalty sets the repetition penalty.

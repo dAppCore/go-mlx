@@ -70,6 +70,11 @@ func ExampleWithStopTokens() {
 	// Output: WithStopTokens
 }
 
+func ExampleWithMinTokensBeforeStop() {
+	core.Println("WithMinTokensBeforeStop")
+	// Output: WithMinTokensBeforeStop
+}
+
 func ExampleWithRepeatPenalty() {
 	core.Println("WithRepeatPenalty")
 	// Output: WithRepeatPenalty

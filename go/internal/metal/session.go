@@ -435,6 +435,14 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	totalStart := time.Now()
 	ResetPeakMemory()
 	sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+	earlySuppressTokens := cfg.SuppressTokens
+	earlySampler := sampler
+	if cfg.MinTokensBeforeStop > 0 {
+		earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, s.model.tokenizer)
+		if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
+			earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+		}
+	}
 	promptLen := len(s.tokens)
 	if s.tokenOffset > promptLen {
 		promptLen = s.tokenOffset
@@ -496,7 +504,15 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		var sampledID int32
 		sampledIDSet := false
 		nextEvaluated := false
-		if nativeGreedyDecodeAvailable(cfg, history, s.logits) {
+		stepCfg := cfg
+		stepSampler := sampler
+		stepSuppressTokens := cfg.SuppressTokens
+		if generationStopSuppressionActive(genCount, cfg) {
+			stepCfg.SuppressTokens = earlySuppressTokens
+			stepSampler = earlySampler
+			stepSuppressTokens = earlySuppressTokens
+		}
+		if nativeGreedyDecodeAvailable(stepCfg, history, s.logits) {
 			var err error
 			next, err = nativeGreedyDecodeToken(s.logits)
 			if err != nil {
@@ -537,7 +553,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 
 			var sampleErr error
 			var sampleTimings sampleTokenTimings
-			next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens, tracePhases)
+			next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
 			Free(lastPos)
 			if sampleErr != nil {
 				s.err = core.E("ModelSession.Generate", core.Sprintf("sample step %d", i), sampleErr)

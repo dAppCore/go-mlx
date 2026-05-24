@@ -1932,6 +1932,22 @@ func TestStateRampProfileContextLifecycle_TargetBelowWindowDoesNotFold_Good(t *t
 	}
 }
 
+func TestStateRampProfileShouldRunFold_OverflowStoreWithoutForce_Good(t *testing.T) {
+	exhausted := stateRampProfileSummary{
+		ContextExhausted:    true,
+		FoldedStateRequired: true,
+	}
+	if !stateRampProfileShouldRunFold(exhausted, stateRampProfileOptions{FoldStorePath: "/tmp/state.mvlog"}) {
+		t.Fatal("fold store at exhausted context did not run overflow compaction")
+	}
+	if stateRampProfileShouldRunFold(stateRampProfileSummary{}, stateRampProfileOptions{FoldStorePath: "/tmp/state.mvlog"}) {
+		t.Fatal("fold store below context window ran compaction")
+	}
+	if !stateRampProfileShouldRunFold(exhausted, stateRampProfileOptions{FoldOnExhaustion: true}) {
+		t.Fatal("explicit exhaustion fold no longer runs")
+	}
+}
+
 func TestStateRampProfileDefaultCompactionThresholdUsesModelContext_Good(t *testing.T) {
 	opts := stateRampProfileOptions{TargetTokens: 100000}
 

@@ -134,7 +134,7 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 	//
 	// Scalar-local capture (instead of capturing the whole cfg struct)
 	// keeps the closure capture set narrow: capturing the full
-	// GenerateConfig would pin a heap copy of all 14 fields (~144 B
+	// GenerateConfig would pin a heap copy of all 15 fields (~144 B
 	// including the Thinking parser.Config + two slice headers + the
 	// ProbeSink interface), so for chapter-smoke's common Minimum-form
 	// cfg (just MaxTokens + Temperature) the closure heap footprint
@@ -145,6 +145,7 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 	topP := cfg.TopP
 	minP := cfg.MinP
 	stopTokens := cfg.StopTokens
+	minTokensBeforeStop := cfg.MinTokensBeforeStop
 	repeatPenalty := cfg.RepeatPenalty
 	probeSink := cfg.ProbeSink
 	apply := func(c *GenerateConfig) {
@@ -165,6 +166,9 @@ func stateKVChapterGenerateOptions(cfg GenerateConfig) []GenerateOption {
 			// only read from StopTokens, never mutate in place,
 			// so aliasing the receiver lifetime is safe.
 			c.StopTokens = stopTokens
+		}
+		if minTokensBeforeStop > 0 {
+			c.MinTokensBeforeStop = minTokensBeforeStop
 		}
 		if repeatPenalty > 0 {
 			c.RepeatPenalty = repeatPenalty

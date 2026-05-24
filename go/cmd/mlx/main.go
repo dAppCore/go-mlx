@@ -2920,7 +2920,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		}
 	}
 	report.Summary = summariseStateRampProfileTurns(initialSetupDuration, initialTokens, report.Turns, opts)
-	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
+	if stateRampProfileShouldRunFold(report.Summary, opts) {
 		report.Fold = stateRampProfileFoldExhausted(ctx, model, session, report, opts)
 		annotateStateRampProfileFoldDurations(report)
 		if report.Fold != nil && report.Fold.Error != "" && firstErr == nil {
@@ -3623,6 +3623,9 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	if len(stopTokenIDs) > 0 {
 		generateOptions = append(generateOptions, mlx.WithStopTokens(stopTokenIDs...))
 	}
+	if len(stopTokenIDs) > 0 && !opts.SuppressEOS {
+		generateOptions = append(generateOptions, mlx.WithMinTokensBeforeStop(1))
+	}
 	if len(suppressTokenIDs) > 0 {
 		generateOptions = append(generateOptions, mlx.WithSuppressTokens(suppressTokenIDs...))
 	}
@@ -4030,6 +4033,16 @@ func annotateStateRampProfileContextLifecycle(summary *stateRampProfileSummary, 
 	summary.ContextExhausted = true
 	summary.FoldedStateRequired = true
 	summary.CompactionReason = "live state reached the compaction threshold; checkpoint, summarise, and prefill a folded state from durable summary plus recent tail before appending more turns"
+}
+
+func stateRampProfileShouldRunFold(summary stateRampProfileSummary, opts stateRampProfileOptions) bool {
+	if !summary.FoldedStateRequired {
+		return false
+	}
+	if opts.FoldOnExhaustion || opts.FoldOnDegradation {
+		return true
+	}
+	return summary.ContextExhausted && core.Trim(opts.FoldStorePath) != ""
 }
 
 func stateRampProfileFoldExhausted(ctx context.Context, model *mlx.Model, session *mlx.ModelSession, report *stateRampProfileReport, opts stateRampProfileOptions) *stateRampProfileFold {

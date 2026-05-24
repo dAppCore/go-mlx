@@ -504,6 +504,39 @@ func TestApiCommon_WithStopTokens_Ugly(t *testing.T) {
 	}
 }
 
+func TestApiCommon_WithMinTokensBeforeStop_Good(t *testing.T) {
+	target := "WithMinTokensBeforeStop"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithMinTokensBeforeStop_Bad(t *testing.T) {
+	target := "WithMinTokensBeforeStop"
+	variant := "Bad"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Bad" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
+func TestApiCommon_WithMinTokensBeforeStop_Ugly(t *testing.T) {
+	target := "WithMinTokensBeforeStop"
+	variant := "Ugly"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Ugly" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+}
+
 func TestApiCommon_WithRepeatPenalty_Good(t *testing.T) {
 	target := "WithRepeatPenalty"
 	variant := "Good"
@@ -1004,6 +1037,7 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithLogits(),
 		WithReturnLogits(),
 		WithStopTokens(1, 2),
+		WithMinTokensBeforeStop(1),
 		WithRepeatPenalty(1.1),
 		WithTokenPhaseTrace(),
 	})
@@ -1018,6 +1052,9 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.StopTokens, []int32{1, 2}) {
 		t.Fatalf("stop tokens = %v", cfg.StopTokens)
+	}
+	if cfg.MinTokensBeforeStop != 1 {
+		t.Fatalf("MinTokensBeforeStop = %d, want 1", cfg.MinTokensBeforeStop)
 	}
 	if cfg.RepeatPenalty != 1.1 {
 		t.Fatalf("repeat penalty = %f, want 1.1", cfg.RepeatPenalty)

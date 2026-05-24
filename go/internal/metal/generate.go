@@ -35,18 +35,19 @@ const defaultGenerationClearCacheInterval = 256
 
 // GenerateConfig holds generation parameters.
 type GenerateConfig struct {
-	MaxTokens        int
-	Temperature      float32
-	TopK             int
-	TopP             float32
-	MinP             float32
-	Seed             uint64
-	SeedSet          bool
-	StopTokens       []int32
-	SuppressTokens   []int32
-	RepeatPenalty    float32
-	ProbeSink        ProbeSink
-	TraceTokenPhases bool
+	MaxTokens           int
+	Temperature         float32
+	TopK                int
+	TopP                float32
+	MinP                float32
+	Seed                uint64
+	SeedSet             bool
+	StopTokens          []int32
+	SuppressTokens      []int32
+	MinTokensBeforeStop int
+	RepeatPenalty       float32
+	ProbeSink           ProbeSink
+	TraceTokenPhases    bool
 }
 
 // Metrics holds performance metrics from the last inference operation.
@@ -629,6 +630,14 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
 		sampler := newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, cfg.SuppressTokens)
+		earlySuppressTokens := cfg.SuppressTokens
+		earlySampler := sampler
+		if cfg.MinTokensBeforeStop > 0 {
+			earlySuppressTokens = generationStopSuppressionTokens(cfg.SuppressTokens, cfg.StopTokens, m.tokenizer)
+			if len(earlySuppressTokens) != len(cfg.SuppressTokens) {
+				earlySampler = newSamplerWithSuppression(cfg.Temperature, cfg.TopP, cfg.MinP, cfg.TopK, earlySuppressTokens)
+			}
+		}
 		var genCount int
 		var firstTokenDuration time.Duration
 		var tokenPhases []TokenPhaseTrace
@@ -675,9 +684,13 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		if len(cfg.SuppressTokens) > 0 && directGreedyTokenEnabled() {
 			suppressTokensArray = suppressTokenArray(cfg.SuppressTokens)
 		}
+		var earlySuppressTokensArray *Array
+		if len(earlySuppressTokens) > 0 && len(earlySuppressTokens) != len(cfg.SuppressTokens) && directGreedyTokenEnabled() {
+			earlySuppressTokensArray = suppressTokenArray(earlySuppressTokens)
+		}
 
 		defer func() {
-			Free(logits, directNext, suppressTokensArray)
+			Free(logits, directNext, suppressTokensArray, earlySuppressTokensArray)
 		}()
 
 		for i := range cfg.MaxTokens {
@@ -700,6 +713,14 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			var sampledID int32
 			sampledIDSet := false
 			nextEvaluated := false
+			stepCfg := cfg
+			stepSampler := sampler
+			stepSuppressTokens := cfg.SuppressTokens
+			if generationStopSuppressionActive(genCount, cfg) {
+				stepCfg.SuppressTokens = earlySuppressTokens
+				stepSampler = earlySampler
+				stepSuppressTokens = earlySuppressTokens
+			}
 			if directNext != nil {
 				next = directNext
 				directNext = nil
@@ -707,7 +728,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 					phase.LogitsDuration = time.Since(phaseLast)
 					phaseLast = time.Now()
 				}
-			} else if nativeGreedyDecodeAvailable(cfg, history, logits) {
+			} else if nativeGreedyDecodeAvailable(stepCfg, history, logits) {
 				var err error
 				next, err = nativeGreedyDecodeToken(logits)
 				if err != nil {
@@ -749,7 +770,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 
 				var sampleErr error
 				var sampleTimings sampleTokenTimings
-				next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, sampler, cfg.SuppressTokens, tracePhases)
+				next, sampledID, sampleTimings, sampleErr = sampleTokenIDWithSuppressionGuard(lastPos, stepSampler, stepSuppressTokens, tracePhases)
 				if sampleErr != nil {
 					m.lastErr = core.E("Model.Generate", core.Sprintf("sample step %d", i), sampleErr)
 					Free(lastPos)
@@ -872,11 +893,21 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 
 			oldLogits := logits
-			if directGreedyTokenAvailable(cfg, history, m.model) {
+			nextCfg := cfg
+			nextSuppressTokens := cfg.SuppressTokens
+			nextSuppressTokensArray := suppressTokensArray
+			if generationStopSuppressionActive(genCount, cfg) {
+				nextCfg.SuppressTokens = earlySuppressTokens
+				nextSuppressTokens = earlySuppressTokens
+				if earlySuppressTokensArray != nil {
+					nextSuppressTokensArray = earlySuppressTokensArray
+				}
+			}
+			if directGreedyTokenAvailable(nextCfg, history, m.model) {
 				if tracePhases {
 					resetNativePhaseTraceEvents()
 				}
-				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, cfg.SuppressTokens, suppressTokensArray)
+				nextToken, _ := m.forwardGreedyToken(nextInput, nil, caches, nextSuppressTokens, nextSuppressTokensArray)
 				if tracePhases {
 					phase.ForwardDuration = time.Since(phaseLast)
 					phase.NativeEvents = takeNativePhaseTraceEvents()
@@ -949,6 +980,31 @@ func directGreedyTokenAvailable(cfg GenerateConfig, history []int32, model Inter
 		cfg.TopK == 0 &&
 		(len(cfg.SuppressTokens) == 0 || suppressedGreedyTokenAvailable(model)) &&
 		(cfg.RepeatPenalty <= 1 || len(history) == 0)
+}
+
+func generationStopSuppressionActive(generated int, cfg GenerateConfig) bool {
+	return cfg.MinTokensBeforeStop > 0 && generated < cfg.MinTokensBeforeStop
+}
+
+func generationStopSuppressionTokens(base, stop []int32, tokenizer *Tokenizer) []int32 {
+	out := base
+	if tokenizer != nil && tokenizer.HasEOSToken() {
+		out = appendUniqueSuppressionToken(out, tokenizer.EOSToken(), base)
+	}
+	for _, id := range stop {
+		out = appendUniqueSuppressionToken(out, id, base)
+	}
+	return out
+}
+
+func appendUniqueSuppressionToken(out []int32, id int32, base []int32) []int32 {
+	if slices.Contains(out, id) {
+		return out
+	}
+	if len(out) == len(base) {
+		out = append([]int32(nil), out...)
+	}
+	return append(out, id)
 }
 
 func suppressedGreedyTokenAvailable(model InternalModel) bool {

@@ -1660,6 +1660,7 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 		WithMinP(0.05),
 		WithSeed(123),
 		WithStopTokens(4, 5),
+		WithMinTokensBeforeStop(1),
 		WithRepeatPenalty(1.2),
 	) {
 	}
@@ -1688,6 +1689,9 @@ func TestModelGenerateStream_ForwardsOptions_Good(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg.StopTokens, []int32{4, 5}) {
 		t.Fatalf("StopTokens = %v, want [4 5]", cfg.StopTokens)
+	}
+	if cfg.MinTokensBeforeStop != 1 {
+		t.Fatalf("MinTokensBeforeStop = %d, want 1", cfg.MinTokensBeforeStop)
 	}
 }
 
