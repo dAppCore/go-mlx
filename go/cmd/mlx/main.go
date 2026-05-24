@@ -434,6 +434,7 @@ const (
 	profileDefaultRepeatedSentenceLoopLimit       = 4
 	profileRepeatedTableCellLoopLimit             = 24
 	profileRepeatedTableRowLabelLoopLimit         = 6
+	profileRepeatedShortLineCycleLimit            = 24
 	profileFragmentedSentenceMinCount             = 12
 	profileFragmentedSentenceRatio                = 0.35
 	chapterProfileEndMarker                       = "[[END_CHAPTER]]"
@@ -2789,6 +2790,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		return report, err
 	}
 	report.StopTokenIDs, report.SuppressTokenIDs = chapterProfileTemplateTokenControls(opts.ChatTemplate, tok)
+	report.SuppressTokenIDs = stateRampProfileEffectiveSuppressTokenIDs(report.SuppressTokenIDs, report.StopTokenIDs, tok, opts.SuppressEOS)
 	sourceTokens, err := tok.Encode(opts.Prompt)
 	if err != nil {
 		report.Error = err.Error()
@@ -3255,6 +3257,9 @@ func stateRampProfileOutputIssues(output string) []string {
 	if _, _, ok := stateRampProfileRepeatedTableRowLabelOutput(text); ok {
 		issues = append(issues, "visible_repeated_table_row_label")
 	}
+	if _, ok := stateRampProfileRepeatedShortLineCycleOutput(text); ok {
+		issues = append(issues, "visible_repeated_short_line_cycle")
+	}
 	if core.HasPrefix(text, "```") {
 		issues = append(issues, "visible_code_fence_prefix")
 	}
@@ -3379,6 +3384,74 @@ func normaliseStateRampTableRowLabel(label string) string {
 		label = core.Trim(core.TrimSuffix(label, "**"))
 	}
 	return label
+}
+
+func stateRampProfileRepeatedShortLineCycleOutput(text string) (int, bool) {
+	run := 0
+	var symbols [4]string
+	symbolCount := 0
+	for start := 0; start <= len(text); {
+		end := start
+		for end < len(text) && text[end] != '\n' {
+			end++
+		}
+		line := core.Trim(text[start:end])
+		if !stateRampProfileShortCycleLine(line) {
+			run = 0
+			symbols = [4]string{}
+			symbolCount = 0
+			if end >= len(text) {
+				break
+			}
+			start = end + 1
+			continue
+		}
+		found := false
+		for i := 0; i < symbolCount; i++ {
+			if symbols[i] == line {
+				found = true
+				break
+			}
+		}
+		if !found {
+			if symbolCount == len(symbols) {
+				run = 0
+				symbols = [4]string{}
+				symbolCount = 0
+			}
+			symbols[symbolCount] = line
+			symbolCount++
+		}
+		run++
+		if run >= profileRepeatedShortLineCycleLimit {
+			return run, true
+		}
+		if end >= len(text) {
+			break
+		}
+		start = end + 1
+	}
+	return 0, false
+}
+
+func stateRampProfileShortCycleLine(line string) bool {
+	if line == "" || len(line) > 4 {
+		return false
+	}
+	for _, r := range line {
+		if r > 127 {
+			return false
+		}
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return false
+		}
+		switch r {
+		case '"', '\'', '`', '(', ')', '[', ']', '{', '}', '<', '>', '.', ',', ';', ':', '-', '_', '*', '/', '\\', '|', '!', '?':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func stateRampProfileTableSeparatorCell(cell string) bool {
@@ -3531,18 +3604,12 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 		generateOptions = append(generateOptions, mlx.WithTokenPhaseTrace())
 	}
 	stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(opts.ChatTemplate, model.Tokenizer())
+	suppressTokenIDs = stateRampProfileEffectiveSuppressTokenIDs(suppressTokenIDs, stopTokenIDs, model.Tokenizer(), opts.SuppressEOS)
 	if len(stopTokenIDs) > 0 {
 		generateOptions = append(generateOptions, mlx.WithStopTokens(stopTokenIDs...))
 	}
 	if len(suppressTokenIDs) > 0 {
 		generateOptions = append(generateOptions, mlx.WithSuppressTokens(suppressTokenIDs...))
-	}
-	if opts.SuppressEOS {
-		if tok := model.Tokenizer(); tok != nil {
-			if eosID, ok := tok.TokenID("<eos>"); ok {
-				generateOptions = append(generateOptions, mlx.WithSuppressTokens(eosID))
-			}
-		}
 	}
 	generationCtx := ctx
 	if generationCtx == nil {
@@ -6102,6 +6169,25 @@ func chapterProfileTemplateTokenControls(template string, tok *mlx.Tokenizer) ([
 		suppressTokens = appendUniqueInt32(suppressTokens, id)
 	}
 	return stopTokens, suppressTokens
+}
+
+func stateRampProfileEffectiveSuppressTokenIDs(base, stop []int32, tok *mlx.Tokenizer, suppressEOS bool) []int32 {
+	if !suppressEOS {
+		return base
+	}
+	out := append([]int32(nil), base...)
+	for _, id := range stop {
+		out = appendUniqueInt32(out, id)
+	}
+	if tok != nil {
+		if id, ok := tok.TokenID("<eos>"); ok {
+			out = appendUniqueInt32(out, id)
+		}
+		if eos := tok.EOS(); eos > 0 {
+			out = appendUniqueInt32(out, eos)
+		}
+	}
+	return out
 }
 
 func appendUniqueInt32(values []int32, value int32) []int32 {

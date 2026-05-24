@@ -306,6 +306,24 @@ row should use the richer `request-context` fixture, captured output, the shared
 content-quality detectors, and a short human-readable note on whether each turn
 actually answered its request.
 
+Suppress-EOS diagnostic follow-up, same date: `-suppress-eos` now suppresses
+the full effective Gemma 4 EOS/stop list instead of only the literal `<eos>`
+token. The request-context trace
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-suppresseos-eoslist-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+shows the runtime suppress list includes `[1, 106, 50]` and the two-turn run no
+longer fails with immediate empty output. This is not an accepted product row:
+forcing all stop markers drove both turns into a repeated short-line
+quote/paren cycle at the token budget. `state-ramp-profile` and the Python
+comparator detector now tag that shape as
+`visible_repeated_short_line_cycle`, so a forced-stop diagnostic cannot look
+clean simply because it produced 1024 visible tokens. Verification:
+`go test ./go/cmd/mlx -run 'Test(StateRampProfileEffectiveSuppressTokenIDsIncludesGemma4EOSList|ChapterProfileTemplateTokenControlsGemma4UsesAllModelStops|StateRampProfileOutputIssues)' -count=1`,
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py scripts/state_ramp_fixture.py`,
+Python reclassification of the trace returning
+`[['visible_repeated_short_line_cycle'], ['visible_repeated_short_line_cycle']]`,
+and `go test ./go/cmd/mlx -bench 'BenchmarkStateRampProfileOutputIssues_FullResponse' -benchmem -run '^$' -count=3`
+(`3571-3659 ns/op`, `192 B/op`, `1 alloc/op`).
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

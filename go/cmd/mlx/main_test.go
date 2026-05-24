@@ -1512,6 +1512,32 @@ func TestStateRampProfileOutputIssuesRejectsRepeatedTableRowLabel_Good(t *testin
 	}
 }
 
+func TestStateRampProfileOutputIssuesRejectsRepeatedShortLineCycle_Good(t *testing.T) {
+	builder := core.NewBuilder()
+	builder.WriteString("The prose answer finishes, then the forced EOS suppression falls into punctuation.\n")
+	for i := 0; i < profileRepeatedShortLineCycleLimit; i++ {
+		if i%2 == 0 {
+			builder.WriteString("\"")
+		} else {
+			builder.WriteString(")")
+		}
+		builder.WriteString("\n")
+	}
+
+	issues := stateRampProfileOutputIssues(builder.String())
+	if !core.SliceContains(issues, "visible_repeated_short_line_cycle") {
+		t.Fatalf("issues = %v, want visible_repeated_short_line_cycle", issues)
+	}
+	issues = stateRampProfileOutputIssues("A terse but valid answer.\nNo.\nNo.\nNo.")
+	if core.SliceContains(issues, "visible_repeated_short_line_cycle") {
+		t.Fatalf("issues = %v, want repeated words not treated as punctuation cycle", issues)
+	}
+	issues = stateRampProfileOutputIssues("Punctuation list:\n!\n?\n.\n,\n;\n:")
+	if core.SliceContains(issues, "visible_repeated_short_line_cycle") {
+		t.Fatalf("issues = %v, want varied punctuation list allowed", issues)
+	}
+}
+
 func TestChapterProfileTemplateTokenControlsGemma4UsesAllModelStops_Good(t *testing.T) {
 	dir := t.TempDir()
 	path := core.PathJoin(dir, "tokenizer.json")
@@ -1534,6 +1560,38 @@ func TestChapterProfileTemplateTokenControlsGemma4UsesAllModelStops_Good(t *test
 	if !containsInt32(suppress, 105) {
 		t.Fatalf("suppress tokens = %v, want opening turn marker suppressed", suppress)
 	}
+}
+
+func TestStateRampProfileEffectiveSuppressTokenIDsIncludesGemma4EOSList_Good(t *testing.T) {
+	dir := t.TempDir()
+	path := core.PathJoin(dir, "tokenizer.json")
+	writeCLIPackFile(t, path, cliGemma4TokenizerJSON)
+	tok, err := mlx.LoadTokenizer(path)
+	if err != nil {
+		t.Fatalf("LoadTokenizer: %v", err)
+	}
+	stops, suppress := chapterProfileTemplateTokenControls("gemma4", tok)
+
+	got := stateRampProfileEffectiveSuppressTokenIDs(suppress, stops, tok, true)
+
+	for _, want := range []int32{0, 1, 2, 50, 105, 106} {
+		if !containsInt32(got, want) {
+			t.Fatalf("effective suppress tokens = %v, want %d", got, want)
+		}
+	}
+	if countInt32(got, 1) != 1 || countInt32(got, 106) != 1 || countInt32(got, 50) != 1 {
+		t.Fatalf("effective suppress tokens = %v, want de-duplicated EOS markers", got)
+	}
+}
+
+func countInt32(values []int32, needle int32) int {
+	count := 0
+	for _, value := range values {
+		if value == needle {
+			count++
+		}
+	}
+	return count
 }
 
 func TestStateRampProfileSummary_OutputIssueCounts_Good(t *testing.T) {

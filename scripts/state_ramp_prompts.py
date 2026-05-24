@@ -12,6 +12,7 @@ RETAINED_SYSTEM_PROMPT = (
 
 REPEATED_TABLE_CELL_LOOP_LIMIT = 24
 REPEATED_TABLE_ROW_LABEL_LOOP_LIMIT = 6
+REPEATED_SHORT_LINE_CYCLE_LIMIT = 24
 
 GEMMA4_STOP_TOKEN_TEXTS = (
     "<eos>",
@@ -138,6 +139,8 @@ def output_issues(text: str) -> list[str]:
         issues.append("visible_repeated_table_cell")
     if repeated_table_row_label_output(text):
         issues.append("visible_repeated_table_row_label")
+    if repeated_short_line_cycle_output(text):
+        issues.append("visible_repeated_short_line_cycle")
     if text.startswith("```"):
         issues.append("visible_code_fence_prefix")
     prompt_markers = (
@@ -250,6 +253,33 @@ def normalise_table_cell(cell: str) -> str:
     while cell.endswith("**"):
         cell = cell[:-2].strip()
     return cell
+
+
+def repeated_short_line_cycle_output(text: str) -> bool:
+    run = 0
+    symbols: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not short_cycle_line(line):
+            run = 0
+            symbols = set()
+            continue
+        symbols.add(line)
+        if len(symbols) > 4:
+            run = 1
+            symbols = {line}
+            continue
+        run += 1
+        if run >= REPEATED_SHORT_LINE_CYCLE_LIMIT:
+            return True
+    return False
+
+
+def short_cycle_line(line: str) -> bool:
+    if not line or len(line) > 4:
+        return False
+    allowed = set("\"'`()[]{}<>.,;:-_*/\\|!?")
+    return all(char in allowed for char in line)
 
 
 def table_separator_cell(cell: str) -> bool:
