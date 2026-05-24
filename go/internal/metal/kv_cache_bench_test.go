@@ -370,6 +370,26 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize64_To512(b *testing.B) {
 	}
 }
 
+func BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	b.ReportAllocs()
+	for b.Loop() {
+		cache := NewPagedKVCache(512, 512)
+		for i := 0; i < 1024; i++ {
+			state := cache.UpdateBorrowedPages(k, v, 1)
+			state.Free()
+		}
+		if len(cache.kPages) != 1 || len(cache.vPages) != 1 {
+			b.Fatalf("page count = %d/%d, want one K/V page", len(cache.kPages), len(cache.vPages))
+		}
+		if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+			b.Fatalf("Eval dirty compacted state: %v", err)
+		}
+		cache.Reset()
+	}
+}
+
 // Prealloc on — should reduce per-page allocations.
 func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
 	restore := SetRuntimeGate("GO_MLX_ENABLE_PAGED_KV_PREALLOC", "1")

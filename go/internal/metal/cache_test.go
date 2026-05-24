@@ -429,6 +429,44 @@ func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) 
 	}
 }
 
+func TestPagedKVCache_SlidingWindowStaysSinglePage_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache SlidingWindowStaysSinglePage"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	cache := NewPagedKVCache(4, 4)
+	defer cache.Reset()
+	prefixK, prefixV := makeKV(4)
+	defer Free(prefixK, prefixV)
+	state := cache.UpdateBorrowedPages(prefixK, prefixV, 4)
+	state.Free()
+	nextK, nextV := makeSingleTokenKV(9)
+	defer Free(nextK, nextV)
+
+	state = cache.UpdateBorrowedPages(nextK, nextV, 1)
+	defer state.Free()
+	raw := cache.State()
+
+	if cache.Len() != 4 || cache.Offset() != 5 {
+		t.Fatalf("cache len/offset = %d/%d, want 4/5", cache.Len(), cache.Offset())
+	}
+	if len(state.Keys) != 1 || len(state.Values) != 1 {
+		t.Fatalf("borrowed pages = %d/%d, want one K/V page", len(state.Keys), len(state.Values))
+	}
+	if len(raw) != 2 || raw[0].Shape()[2] != 4 || raw[1].Shape()[2] != 4 {
+		t.Fatalf("raw page state = %+v, want one 4-token K page and one 4-token V page", raw)
+	}
+	dirty := cache.AppendDirtyState(nil)
+	if len(dirty) != 2 {
+		t.Fatalf("dirty state len = %d, want compacted K/V pages", len(dirty))
+	}
+	if err := Eval(state.Keys[0], state.Values[0], dirty[0], dirty[1]); err != nil {
+		t.Fatalf("Eval compacted sliding state: %v", err)
+	}
+}
+
 func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache StoresRequestedDType"
 	if coverageTokens == "" {

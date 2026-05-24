@@ -1101,6 +1101,7 @@ func (c *PagedKVCache) UpdatePages(k, v *Array, seqLen int) PagedKVState {
 	c.offset += added
 	c.length += added
 	c.trimToMaxSize()
+	c.compactSingleWindowPages()
 	return c.PageState()
 }
 
@@ -1113,6 +1114,7 @@ func (c *PagedKVCache) UpdateBorrowedPages(k, v *Array, seqLen int) PagedKVState
 	c.offset += added
 	c.length += added
 	c.trimToMaxSize()
+	c.compactSingleWindowPages()
 	return c.BorrowedPageState()
 }
 
@@ -1608,6 +1610,67 @@ func (c *PagedKVCache) trimToMaxSize() {
 	if c.length > c.maxSize {
 		c.length = c.maxSize
 	}
+}
+
+func (c *PagedKVCache) compactSingleWindowPages() {
+	if c.maxSize <= 0 || c.pageSize <= 0 || c.maxSize > c.pageSize || c.length <= 0 {
+		return
+	}
+	if len(c.kPages) <= 1 || len(c.kPages) != len(c.vPages) {
+		return
+	}
+	n := len(c.kPages)
+	if cap(c.visibleKScratch) < n {
+		c.visibleKScratch = make([]*Array, n)
+	} else {
+		c.visibleKScratch = c.visibleKScratch[:n]
+	}
+	if cap(c.visibleVScratch) < n {
+		c.visibleVScratch = make([]*Array, n)
+	} else {
+		c.visibleVScratch = c.visibleVScratch[:n]
+	}
+	if cap(c.visibleOwnedScratch) < 2*n {
+		c.visibleOwnedScratch = make([]*Array, 0, 2*n)
+	} else {
+		c.visibleOwnedScratch = c.visibleOwnedScratch[:0]
+	}
+	kPages, vPages, owned := c.visibleKScratch, c.visibleVScratch, c.visibleOwnedScratch
+	for i := range c.kPages {
+		kPage, kOwned := c.borrowVisiblePage(c.kPages[i], i)
+		vPage, vOwned := c.borrowVisiblePage(c.vPages[i], i)
+		kPages[i], vPages[i] = kPage, vPage
+		if kOwned {
+			owned = append(owned, kPage)
+		}
+		if vOwned {
+			owned = append(owned, vPage)
+		}
+	}
+	c.visibleOwnedScratch = owned
+	fullK, fullV := concatenatePagedState(kPages, vPages)
+	Free(owned...)
+	if fullK == nil || fullV == nil || !fullK.Valid() || !fullV.Valid() {
+		Free(fullK, fullV)
+		return
+	}
+	oldK, oldV := c.kPages, c.vPages
+	Free(oldK...)
+	Free(oldV...)
+	clear(oldK)
+	clear(oldV)
+	c.kPages = oldK[:1]
+	c.vPages = oldV[:1]
+	c.kPages[0] = fullK
+	c.vPages[0] = fullV
+	if cap(c.pageLens) == 0 {
+		c.pageLens = make([]int, 1)
+	} else {
+		c.pageLens = c.pageLens[:1]
+	}
+	c.pageLens[0] = c.length
+	c.recordPageShape(fullK.Shape(), fullV.Shape())
+	c.markDirtyState(fullK, fullV)
 }
 
 func (c *PagedKVCache) trimFirstPage(tokens int) {
