@@ -259,6 +259,32 @@ diagnostic artefacts:
 and
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-simpleturn-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-4k-r1-g1024.json`.
 
+Clean request-only retained fixture, 2026-05-24: `scripts/state_ramp_fixture.py`
+now builds an explicit request-only append stream from noisy opencode delimited
+material and writes metadata showing what was removed. The current fixture
+`/private/tmp/go-mlx-goal/opencode-turns-request-only.txt` extracts `10` actual
+user requests from `94,877` bytes of old mixed request/GOAL chunks, leaving
+`1,955` bytes of request material and recording a recommended
+`700` visible-token lower bound from the prompts. The same retained `30k`
+state run against that fixture completes `10/10` turns with no control/fence/
+loop detector issues:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-only-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+records `36,667` final live tokens, `556` appended tokens, `6,091` generated
+and visible tokens, `87.8565 tok/s` raw decode, `86.9605` effective turn
+tok/s, `82.249s` wall, `9.863 GB` active-plus-cache, `3.387 GB` peak RSS, and
+`2.373x` retained-vs-replay speedup. The aligned llama.cpp Q4_K_M row
+`/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-request-only-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`
+records `10/10` turns, `39,501` final live tokens, `8,925` generated tokens,
+`8,914` visible tokens, `111.760 tok/s` raw decode from llama.cpp timings,
+`96.107` wall visible tok/s, and `92.751s` wall. This is still diagnostic, not
+production acceptance: go-mlx is `1.128x` faster by wall time and saves about
+`11.32%` wall-energy at the normalised `100 W`, but llama.cpp is `1.272x`
+faster on raw decode and `1.105x` faster on wall-visible throughput, and
+go-mlx turns `3` through `10` all fall below the fixture's requested
+`700`-token lower bound while llama.cpp has no under-length turns. The next
+accepted row must run the clean fixture with the explicit `700` visible-token
+floor marked or enforced, not only with generic output detectors.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing
@@ -1207,7 +1233,7 @@ Current open gates:
       thinking-channel leakage reported side by side rather than used to hide
       the speed result.
 - [ ] Raw decode is within the acceptable calibration band. The current gap is
-      `1.19x` versus llama.cpp on the clean retained row, so this remains the
+      `1.27x` versus llama.cpp on the clean request-only retained row, so this remains the
       primary code gap.
 - [ ] The default CLI path uses the fastest safe settings without requiring
       hidden extra flags.
