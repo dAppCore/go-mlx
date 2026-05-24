@@ -56,6 +56,23 @@ func TestRuntimeGate_KnownGenerationStream_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_KnownAsyncDecodePrefetch_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate KnownAsyncDecodePrefetch"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
+	t.Cleanup(restoreOff)
+	if asyncDecodePrefetchRuntimeEnabled() {
+		t.Fatal("asyncDecodePrefetchRuntimeEnabled() = true, want false")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1")
+	t.Cleanup(restoreOn)
+	if !asyncDecodePrefetchRuntimeEnabled() {
+		t.Fatal("asyncDecodePrefetchRuntimeEnabled() = false, want true")
+	}
+}
+
 func TestRuntimeGate_KnownGenerationClearCache_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownGenerationClearCache"
 	if coverageTokens == "" {

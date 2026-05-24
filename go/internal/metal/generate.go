@@ -502,6 +502,10 @@ func generationStreamEnabled() bool {
 	return enableGenerationStream || generationStreamRuntimeEnabled()
 }
 
+func asyncDecodePrefetchEnabled() bool {
+	return enableAsyncDecodePrefetch || asyncDecodePrefetchRuntimeEnabled()
+}
+
 func generationClearCacheEnabled() bool {
 	return generationClearCacheRuntimeEnabled()
 }
@@ -1047,7 +1051,7 @@ func asyncDecodePrefetch(step int, label string, out *Array) error {
 }
 
 func asyncDecodePrefetchFor(scope string, step int, label string, out *Array) error {
-	if !enableAsyncDecodePrefetch || out == nil || !out.Valid() {
+	if !asyncDecodePrefetchEnabled() || out == nil || !out.Valid() {
 		return nil
 	}
 	if err := EvalAsync(out); err != nil {

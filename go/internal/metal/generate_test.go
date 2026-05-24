@@ -1320,6 +1320,27 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	}
 }
 
+func TestModel_Generate_AsyncDecodePrefetchRuntimeGate_Good(t *testing.T) {
+	coverageTokens := "Generate AsyncDecodePrefetchRuntimeGate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	old := enableAsyncDecodePrefetch
+	enableAsyncDecodePrefetch = false
+	t.Cleanup(func() { enableAsyncDecodePrefetch = old })
+
+	restoreOff := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "0")
+	t.Cleanup(restoreOff)
+	if asyncDecodePrefetchEnabled() {
+		t.Fatal("asyncDecodePrefetchEnabled() = true, want runtime gate off")
+	}
+	restoreOn := SetRuntimeGate("GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH", "1")
+	t.Cleanup(restoreOn)
+	if !asyncDecodePrefetchEnabled() {
+		t.Fatal("asyncDecodePrefetchEnabled() = false, want runtime gate on")
+	}
+}
+
 func TestModel_Generate_AsyncDecodePrefetch_Bad(t *testing.T) {
 	coverageTokens := "Generate AsyncDecodePrefetch"
 	if coverageTokens == "" {
