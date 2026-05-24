@@ -22,7 +22,6 @@ from pathlib import Path
 
 DEFAULT_DELIMITER = "---TURN---"
 USER_TURN_RE = re.compile(r"^user\s+turn\s+(\d+)\s*:\s*(.*)$", re.IGNORECASE)
-TOKEN_RANGE_RE = re.compile(r"\b(?:write|produce)\s+(\d+)\s+to\s+(\d+)\s+tokens?\b", re.IGNORECASE)
 
 
 @dataclass
@@ -32,8 +31,6 @@ class SectionMeta:
     output_bytes: int
     dropped_bytes: int
     extracted_request: bool
-    requested_min_tokens: int
-    requested_max_tokens: int
     request: str
 
 
@@ -54,13 +51,6 @@ def extract_request(section: str) -> tuple[str, bool]:
     return "", False
 
 
-def requested_token_range(request: str) -> tuple[int, int]:
-    match = TOKEN_RANGE_RE.search(request)
-    if not match:
-        return 0, 0
-    return int(match.group(1)), int(match.group(2))
-
-
 def build_request_only_fixture(sections: list[str]) -> tuple[list[str], list[SectionMeta]]:
     output: list[str] = []
     meta: list[SectionMeta] = []
@@ -68,7 +58,6 @@ def build_request_only_fixture(sections: list[str]) -> tuple[list[str], list[Sec
         request, extracted = extract_request(section)
         if not request:
             continue
-        requested_min, requested_max = requested_token_range(request)
         output.append(request)
         source_bytes = len(section.encode("utf-8"))
         output_bytes = len(request.encode("utf-8"))
@@ -79,8 +68,6 @@ def build_request_only_fixture(sections: list[str]) -> tuple[list[str], list[Sec
                 output_bytes=output_bytes,
                 dropped_bytes=max(0, source_bytes - output_bytes),
                 extracted_request=extracted,
-                requested_min_tokens=requested_min,
-                requested_max_tokens=requested_max,
                 request=request,
             )
         )
@@ -96,7 +83,6 @@ def write_meta(path: Path, source: Path, output: Path, delimiter: str, sections:
     path.parent.mkdir(parents=True, exist_ok=True)
     total_source = sum(section.source_bytes for section in sections)
     total_output = sum(section.output_bytes for section in sections)
-    requested_mins = [section.requested_min_tokens for section in sections if section.requested_min_tokens > 0]
     path.write_text(
         json.dumps(
             {
@@ -109,7 +95,8 @@ def write_meta(path: Path, source: Path, output: Path, delimiter: str, sections:
                 "source_bytes": total_source,
                 "output_bytes": total_output,
                 "dropped_bytes": max(0, total_source - total_output),
-                "recommended_turn_min_tokens": min(requested_mins) if requested_mins else 0,
+                "all_sections_extracted_request": all(section.extracted_request for section in sections),
+                "unique_request_count": len({section.request for section in sections}),
             },
             indent=2,
             sort_keys=True,

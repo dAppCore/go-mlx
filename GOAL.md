@@ -41,6 +41,20 @@ llama.cpp anchor emits an orphan `<channel|>` marker in every visible turn and
 consumes the full `1024` token budget each time, so its generated and visible
 token counts are inflated relative to the intended answer stream.
 
+Latest prompt-contract note: do not promote output token-count floors into
+acceptance criteria. If a fixture does not give the model enough real turn
+content to continue for ten turns, that is a fixture failure, not a model or
+runtime result. `scripts/state_ramp_fixture.py` now records structural fixture
+facts only (`section_count`, `unique_request_count`, dropped bytes, extraction
+status) and no longer derives a recommended token floor. The new
+`scripts/gemma4_prompt_contract.py` compares the retained Gemma 4 seed plus
+append-turn helpers against the local `chat_template.jinja` through
+`AutoTokenizer.apply_chat_template(...)`; reference, direct, and direct plus
+thinking mode all matched byte-for-byte against the local
+`mlx-community/gemma-4-e2b-it-4bit` snapshot. Current short/early-stop rows
+should therefore be investigated as fixture/content quality, sampling/state,
+or runtime behaviour, not as a live Gemma 4 chat-template mismatch.
+
 Latest local code note: a Gemma 4 shared-KV lifetime bug was fixed after the
 native fixed-cache path could hand cache-owned K/V handles to shared layers and
 later treat those handles as caller-owned intermediate state. The fix retains
