@@ -237,9 +237,10 @@ The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while
 preserving the paged retained-State semantics. The matched 30k request-context
 retained run and the uncapped 100k stress proof are now recorded in `GOAL.md`;
-the next useful measurement is a 100k boundary trace with the new paged-concat
-native event details enabled by `-trace-token-phases`, so the report shows
-whether `paged_kv.fast_concat.{global,local}` is firing on the slow tokens and
-how many pages/tokens each concat view covers. That keeps the next optimisation
-aimed at the logits/materialisation boundary instead of reviving fixed-cache or
-64Ki-family behaviour.
+the 100k boundary trace with paged-concat native event details is also recorded
+there. Follow-up probes rejected native paged attention and forced single-token
+last-logits defaults for the production lane: both failed to improve the
+10-turn retained workflow. The next optimisation should aim at a fused
+logits/materialisation boundary or sampler/eval fusion, not at reviving
+fixed-cache, native paged attention, forced last-logits, or 64Ki-family
+behaviour.

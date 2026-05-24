@@ -275,6 +275,21 @@ recorded `55.059 tok/s` raw decode versus the previous `63.247 tok/s`, with
 `prefetch_logits` rising to `12.487 ms/token`. Keep local fast concat in the
 current paged path; the next decode work should stay at the logits/materialise
 boundary or a fused native paged-attention path, not a local concat removal.
+Two related gate probes were rejected before changing defaults. First,
+`GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION=1` looked useful in microbenchmarks
+(`BenchmarkNativePagedSingleToken_8Pages_Page256` around `339 us/op` versus
+`BenchmarkSDPAPaged_8Pages_Page256_Q1_D128` around `409 us/op`), but the real
+30k retained turn regressed to `42.745 tok/s` in
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-native-paged-attention-enabled-seed240524-go-mlx-gemma4-e2b-4bit.json`
+because `prefetch_logits` rose to `18.550 ms/token`. Second, forcing the
+last-token logits path for single-token cached decode helped the one-turn smoke
+slightly (`90.922 tok/s` default experiment versus `89.801 tok/s` disabled),
+but the 10-turn request-context control was neutral to slightly worse:
+`86.069 tok/s` and `74.795` effective tok/s in
+`2026-05-24-state-ramp-request-context-single-token-last-logits-default-seed240524-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+versus `86.230 tok/s` and `74.909` effective tok/s with
+`GO_MLX_ENABLE_LAST_LOGITS_PREFILL=0`. Keep both out of the production default
+until a fused logits/materialisation change proves a 10-turn workflow win.
 
 Strict eval-boundary cleanup, 2026-05-24: `Model.Generate` and retained
 `ModelSession.Generate` now detach the evaluated logits array at the same
