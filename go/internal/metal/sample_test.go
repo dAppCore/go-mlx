@@ -379,14 +379,26 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	if c.topP != 0.95 {
 		t.Fatalf("topP = %f, want 0.95", c.topP)
 	}
-	if len(c.prefix) != 2 {
-		t.Fatalf("len(prefix) = %d, want 2", len(c.prefix))
+	if len(c.prefix) != 1 {
+		t.Fatalf("len(prefix) = %d, want 1", len(c.prefix))
 	}
-	if _, ok := c.prefix[0].(Temperature); !ok {
-		t.Fatalf("prefix[0] = %T, want Temperature", c.prefix[0])
+	if _, ok := c.prefix[0].(SuppressTokensSampler); !ok {
+		t.Fatalf("prefix[0] = %T, want SuppressTokensSampler", c.prefix[0])
 	}
-	if _, ok := c.prefix[1].(SuppressTokensSampler); !ok {
-		t.Fatalf("prefix[1] = %T, want SuppressTokensSampler", c.prefix[1])
+}
+
+func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
+	coverageTokens := "NewSampler SkipsUnitTemperature"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	s := newSampler(1.0, 0.95, 0, 64)
+	c, ok := s.(topKTopPChain)
+	if !ok {
+		t.Fatalf("newSampler returned %T, want topKTopPChain", s)
+	}
+	if len(c.prefix) != 0 {
+		t.Fatalf("len(prefix) = %d, want no no-op Temperature sampler", len(c.prefix))
 	}
 }
 

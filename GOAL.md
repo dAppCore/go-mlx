@@ -216,6 +216,22 @@ not ordinary Go-side token sampling. This keeps the next optimisation target
 on a stable/fused one-token graph boundary and KV slotting, not CLI streaming,
 string handling, or visible-output accounting.
 
+Follow-up sampler cleanup, 2026-05-24: the standard production sampling
+configuration uses `temperature=1.0`, `top_p=0.95`, and `top_k=64`. The sampler
+builder no longer inserts a `Temperature(1.0)` node before top-k/top-p because
+that full-vocab `MulScalar(logits, 1)` is mathematically a no-op. Focused
+bench evidence on the Gemma-sized vocab moves
+`BenchmarkSampler_TopKThenTopP_Vocab262k` from `548272 ns/op`, `24 B/op`,
+`3 allocs/op` to `512250 ns/op`, `24 B/op`, `3 allocs/op` (`~6.6%` faster).
+The matched two-turn retained trace at
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-unit-temp-skip-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+keeps the same `1322` generated/visible tokens, no output-quality issues, and
+bounded paged/no-fixed gates; it records `88.145` raw decode tok/s versus
+`88.033` for the prior trace, `80.521` effective turn tok/s versus `80.451`,
+and `9.758ms` average `sample_eval` versus `9.787ms`. This is a correct
+production-path cleanup, not enough to close the llama.cpp raw-decode gap by
+itself.
+
 Latest prompt-contract note: do not promote output token-count floors into
 acceptance criteria. If a fixture does not give the model enough real turn
 content to continue for ten turns, that is a fixture failure, not a model or

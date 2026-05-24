@@ -49,7 +49,7 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 		return suppressedGreedy{tokens: append([]int32(nil), suppressTokens...)}
 	}
 	samplers := make([]Sampler, 0, 4)
-	if temp > 0 {
+	if temp > 0 && temp != 1 {
 		samplers = append(samplers, Temperature(temp))
 	}
 	if len(suppressTokens) > 0 {
