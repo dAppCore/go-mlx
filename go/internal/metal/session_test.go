@@ -396,6 +396,47 @@ func TestModelSession_Generate_GoodUsesLazyNativeGreedyState(t *testing.T) {
 	}
 }
 
+func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *testing.T) {
+	coverageTokens := "ModelSession Generate StopTokenDoesNotAdvanceRetainedState"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	inner := &boundedGenerateModel{}
+	model := &Model{
+		model:     inner,
+		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "<turn|>"}},
+	}
+	session := &ModelSession{
+		model:       model,
+		logits:      Zeros([]int32{1, 1, 2}, DTypeFloat32),
+		tokens:      []int32{1},
+		tokenOffset: 1,
+	}
+	defer session.resetState()
+
+	var got []Token
+	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, StopTokens: []int32{0}}) {
+		got = append(got, token)
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if len(got) != 0 {
+		t.Fatalf("generated tokens = %+v, want stop token withheld from visible stream", got)
+	}
+	if inner.forwardCalls != 0 {
+		t.Fatalf("Forward calls = %d, want no retained-state advance for stop token", inner.forwardCalls)
+	}
+	if len(session.tokens) != 1 || session.tokens[0] != 1 || session.tokenOffset != 1 {
+		t.Fatalf("session tokens=%v offset=%d, want original retained state only", session.tokens, session.tokenOffset)
+	}
+	if metrics := model.LastMetrics(); metrics.GeneratedTokens != 0 {
+		t.Fatalf("GeneratedTokens = %d, want stop token excluded", metrics.GeneratedTokens)
+	}
+}
+
 func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 	coverageTokens := "ModelSession Generate TraceTokenPhases"
 	if coverageTokens == "" {

@@ -175,7 +175,6 @@ def main():
     processors = make_logits_processors(logit_bias=logit_bias) if logit_bias else None
     sampler = make_sampler(args.temperature, args.top_p, 0.0, top_k=args.top_k)
     turn_stop_id = token_id(tokenizer, "<turn|>")
-    close_tokens = encode(tokenizer, "<turn|>\n")
 
     turns = []
     current_tokens = len(seed_tokens)
@@ -192,6 +191,7 @@ def main():
         sampled_ids = []
         sampled_texts = []
         stop_reason = None
+        turn_stop_seen = False
         for response in stream_generate(
             model,
             tokenizer,
@@ -211,6 +211,7 @@ def main():
                 sampled_ids.append(int(response.token))
                 sampled_texts.append(response.text)
             if turn_stop_id is not None and int(response.token) == turn_stop_id:
+                turn_stop_seen = True
                 stop_reason = "turn"
                 break
         duration = time.perf_counter() - turn_start
@@ -220,6 +221,8 @@ def main():
         generation_tps = float(last.generation_tps) if last is not None else 0.0
         if stop_reason is None and last is not None:
             stop_reason = last.finish_reason
+        close_text = "\n" if turn_stop_seen else "<turn|>\n"
+        close_tokens = encode(tokenizer, close_text)
         close_seconds = prefill_tokens(model, cache, close_tokens, args.prefill_step_size)
         current_tokens += len(turn_tokens) + generated_tokens + len(close_tokens)
         text = "".join(output_parts)

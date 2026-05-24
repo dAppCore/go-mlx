@@ -590,6 +590,13 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 
 		stop := s.model.tokenizer.HasEOSToken() && id == s.model.tokenizer.EOSToken()
 		stop = stop || slices.Contains(cfg.StopTokens, id)
+		if stop {
+			if tracePhases {
+				phase.FinalToken = true
+				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
+			}
+			return
+		}
 		if tracePhases {
 			resetNativePhaseTraceEvents()
 		}
@@ -620,14 +627,6 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		if tracePhases {
 			phaseLast = time.Now()
 		}
-		if stop {
-			if tracePhases {
-				phase.FinalToken = true
-				tokenPhases = appendTokenPhaseTrace(tokenPhases, phase, phaseStart)
-			}
-			return
-		}
-
 		genCount++
 		if firstTokenDuration == 0 {
 			firstTokenDuration = time.Since(totalStart)

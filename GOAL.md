@@ -74,6 +74,24 @@ same-workload benchmark skew before the next llama.cpp rerun. Verification:
 `python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`
 and `go test ./go/cmd/mlx -run 'TestStateRampProfileTurnPromptGemma4|TestStateRampProfileInitialPrompt' -count=1`.
 
+Latest retained chat-template note: stop-token handling was still capable of
+double-closing Gemma 4 assistant turns. `ModelSession.Generate` sampled
+`<turn|>` as a stop token, advanced that token into retained KV state, then
+`state-ramp-profile` appended the normal assistant close suffix
+`<turn|>\n`, leaving `<turn|><turn|>\n` in live history. Retained sessions now
+match the non-session generator: sampled EOS/stop tokens are withheld from the
+visible stream and do not advance retained state, so callers append exactly one
+template close suffix. The `mlx_lm` comparator was also tightened for the same
+stateful-cache shape: when `stream_generate` has already consumed `<turn|>`,
+the harness appends only the newline continuation instead of a second turn
+marker. The checked BOS difference is not promoted as a bug: `llama-tokenize`
+auto-adds BOS for the local Q4_K_M GGUF, so the llama.cpp comparator should not
+also inject a literal `<bos>` unless tokenisation is forced with `--no-bos`.
+Verification:
+`go test ./go/internal/metal -run 'TestModelSession_Generate_(StopTokenDoesNotAdvanceRetainedState|GoodUsesLazyNativeGreedyState|TraceTokenPhases|AsyncDecodePrefetch)' -count=1`,
+`go test ./go/cmd/mlx -run 'TestStateRampProfileTurnPromptGemma4|TestStateRampProfileInitialPrompt|TestRunCommand_DriverProfileFastGemma4Lane' -count=1`,
+and `python3 -m py_compile scripts/mlx_lm_opencode_workflow_bench.py scripts/llamacpp_opencode_workflow_bench.py scripts/state_ramp_prompts.py`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing
