@@ -132,6 +132,16 @@ and
 `go test ./go/cmd/mlx -bench 'BenchmarkStateRampProfileOutputIssues_FullResponse' -benchmem -run '^$' -count=3`
 (`2878-2892 ns/op`, `192 B/op`, `1 alloc/op`).
 
+Comparator prompt-mode parity note: Go `state-ramp-profile` already exposes
+`-turn-prompt-mode reference|direct`, and the Python `mlx_lm` / llama.cpp
+opencode harnesses now expose the same flag through the shared
+`gemma4_turn_prompt(..., mode)` helper. This is required before the next
+quality-focused rerun: if the reference wrapper keeps eliciting prompt-analysis
+or fenced-output artefacts, the direct mode can be tested against all runners
+without changing any other benchmark dimension. Verification:
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`
+and a local direct/reference prompt render check.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

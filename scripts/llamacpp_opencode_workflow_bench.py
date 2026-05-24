@@ -36,13 +36,13 @@ def initial_seed_prompt(tokenizer, source_tokens, start_tokens, enable_thinking,
     raise RuntimeError("could not fit chat-wrapped seed prompt")
 
 
-def append_sections(tokenizer, append_text, delimiter, enable_thinking):
+def append_sections(tokenizer, append_text, delimiter, enable_thinking, turn_prompt_mode):
     sections = []
     for raw in append_text.split(delimiter):
         section = raw.strip()
         if not section:
             continue
-        prompt = gemma4_turn_prompt(section, enable_thinking)
+        prompt = gemma4_turn_prompt(section, enable_thinking, turn_prompt_mode)
         tokens = encode(tokenizer, prompt)
         if tokens:
             sections.append((prompt, tokens))
@@ -103,6 +103,7 @@ def main():
     parser.add_argument("--append-file", required=True)
     parser.add_argument("--report-file", default="")
     parser.add_argument("--append-turn-delimiter", default="---TURN---")
+    parser.add_argument("--turn-prompt-mode", choices=["reference", "direct"], default="reference")
     parser.add_argument("--start-tokens", type=int, default=30000)
     parser.add_argument("--target-tokens", type=int, default=70000)
     parser.add_argument("--turns", type=int, default=10)
@@ -135,6 +136,7 @@ def main():
         append_text,
         args.append_turn_delimiter,
         args.enable_thinking,
+        args.turn_prompt_mode,
     )
 
     health = request_json(args.base_url, "/health", None, timeout=30)
@@ -245,6 +247,7 @@ def main():
             "prompt_file": args.prompt_file,
             "append_file": args.append_file,
             "append_turn_delimiter": args.append_turn_delimiter,
+            "turn_prompt_mode": args.turn_prompt_mode,
             "prompt_bytes": len(prompt_text.encode("utf-8")),
             "append_prompt_bytes": len(append_text.encode("utf-8")),
             "source_tokens": len(source_tokens),

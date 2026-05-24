@@ -48,9 +48,11 @@ def reference_turn(prompt: str) -> str:
     )
 
 
-def gemma4_turn_prompt(prompt: str, enable_thinking: bool) -> str:
+def gemma4_turn_prompt(prompt: str, enable_thinking: bool, mode: str = "reference") -> str:
     _ = enable_thinking
-    return "".join(["<|turn>user\n", reference_turn(prompt), "<turn|>\n<|turn>model\n"])
+    mode = (mode or "reference").strip().lower()
+    turn_text = prompt.strip() if mode == "direct" else reference_turn(prompt)
+    return "".join(["<|turn>user\n", turn_text, "<turn|>\n<|turn>model\n"])
 
 
 def visible_text(text: str) -> str:
