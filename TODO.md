@@ -5,6 +5,10 @@
 This file is the short upstream request list for making the State `.kv`
 container path real instead of a smoke-test packer.
 
+Active optimisation work must stay on the paged retained-State path. Do not use
+the archived 64Ki threshold branch or fixed Gemma 4 K/V lane for current
+benchmarks unless the user explicitly asks to reproduce old diagnostic rows.
+
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 
 Status: landed on Enchantrix branch `dev/go-mlx-trix-stream` at `14d89c2`;

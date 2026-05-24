@@ -36,13 +36,15 @@ The current q4 retained-State lane works, but the production benchmark lane is
 not accepted. The production path is paged retained State with no fixed-cache
 default and no arbitrary context-family switch. Do not reintroduce a
 context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
-acceptance. Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx
-is still behind llama.cpp on raw decode. The retained workflow wall-time
-comparison is useful, but must be read with visible output counts,
-output-quality flags, and memory figures beside the speed numbers rather than
-using any one metric as a rescue. The old llama.cpp control-channel leakage
-remains relevant to historical rows, but the current request-context comparator
-below no longer leaks visible control markers.
+acceptance. Do not use the old 64Ki threshold branch as a current optimisation
+or comparator lane; historical rows that mention it are archive evidence only.
+Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx is still
+behind llama.cpp on raw decode. The retained workflow wall-time comparison is
+useful, but must be read with visible output counts, output-quality flags, and
+memory figures beside the speed numbers rather than using any one metric as a
+rescue. The old llama.cpp control-channel leakage remains relevant to
+historical rows, but the current request-context comparator below no longer
+leaks visible control markers.
 
 Latest request-context parity row, 2026-05-24:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-sharedkv-move-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
@@ -318,9 +320,9 @@ with `TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good`,
 and `env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOCACHE=/private/tmp/codex-go-mlx-cache go test ./go/... -count=1`.
 Follow-up correction, 2026-05-24: `state-ramp-profile` no longer synthesises
 `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` from target tokens, compaction threshold, or
-context window. Fixed Gemma 4 K/V remains a manual diagnostic opt-in only; the
-production state-ramp lane must stay paged/no-fixed unless an operator supplies
-explicit fixed-cache settings for an isolated experiment.
+context window. The current optimisation lane does not use fixed Gemma 4 K/V;
+profile and benchmark work must stay paged/no-fixed unless the user explicitly
+asks to reproduce an archived diagnostic.
 
 Superseded fixed-cache diagnostic, 2026-05-24: the `65536` context boundary was
 removed as a cache-family switch, but the intermediate fix still used fixed K/V
