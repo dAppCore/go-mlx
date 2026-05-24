@@ -45,8 +45,27 @@ func TestFormat_Gemma4Template_Good(t *testing.T) {
 	if !strings.Contains(got, "<|turn>user\nhi<turn|>") {
 		t.Fatalf("missing trimmed user turn: %q", got)
 	}
-	if !strings.HasSuffix(got, "<|turn>model\n<|channel>thought\n<channel|>") {
+	if !strings.HasSuffix(got, "<|turn>model\n") {
 		t.Fatalf("missing generation prompt: %q", got)
+	}
+}
+
+func TestFormat_Gemma4TemplateThinking_Good(t *testing.T) {
+	got := Format([]Message{{Role: "user", Content: "hi"}}, Config{Architecture: "gemma4_text", EnableThinking: true})
+	want := "<bos><|turn>system\n<|think|>\n<turn|>\n<|turn>user\nhi<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma4 thinking template = %q, want %q", got, want)
+	}
+}
+
+func TestFormat_Gemma4TemplateStripsAssistantThoughtHistory_Good(t *testing.T) {
+	got := Format([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "<|channel>thought\nprivate<channel|>visible"},
+	}, Config{Architecture: "gemma4_text", NoGenerationPrompt: true})
+	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\nvisible<turn|>\n"
+	if got != want {
+		t.Fatalf("Gemma4 assistant thought strip = %q, want %q", got, want)
 	}
 }
 
@@ -128,6 +147,7 @@ func TestNormaliseRole_Aliases_Good(t *testing.T) {
 		"bot":       "assistant",
 		"Assistant": "assistant",
 		"model":     "assistant",
+		"developer": "system",
 		"system":    "system",
 		"unknown":   "unknown",
 		"":          "",

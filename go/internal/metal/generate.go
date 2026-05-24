@@ -1612,6 +1612,7 @@ func formatGemma4Chat(messages []ChatMessage) string {
 		switch role {
 		case "assistant", "model":
 			role = "model"
+			content = stripGemma4Thinking(content)
 		case "developer", "system":
 			role = "system"
 		case "human", "user":
@@ -1622,7 +1623,6 @@ func formatGemma4Chat(messages []ChatMessage) string {
 		builder.WriteString("<|turn>" + role + "\n" + content + "<turn|>\n")
 	}
 	builder.WriteString("<|turn>model\n")
-	builder.WriteString("<|channel>thought\n<channel|>")
 	return builder.String()
 }
 
@@ -1636,6 +1636,7 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(s
 		switch role {
 		case "assistant", "model":
 			role = "model"
+			content = stripGemma4Thinking(content)
 		case "developer", "system":
 			role = "system"
 		case "human", "user":
@@ -1650,7 +1651,26 @@ func formatGemma4ChatChunks(messages []ChatMessage, chunkBytes int, yield func(s
 	if !yield("<|turn>model\n") {
 		return
 	}
-	yield("<|channel>thought\n<channel|>")
+}
+
+func stripGemma4Thinking(text string) string {
+	if text == "" || !core.Contains(text, "<|channel>") {
+		return core.Trim(text)
+	}
+	out := core.NewBuilder()
+	for {
+		parts := core.SplitN(text, "<|channel>", 2)
+		out.WriteString(parts[0])
+		if len(parts) != 2 {
+			break
+		}
+		after := core.SplitN(parts[1], "<channel|>", 2)
+		if len(after) != 2 {
+			break
+		}
+		text = after[1]
+	}
+	return core.Trim(out.String())
 }
 
 func formatQwenChat(messages []ChatMessage) string {

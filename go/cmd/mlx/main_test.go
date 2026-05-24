@@ -1430,11 +1430,13 @@ func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 		"Treat historical sign-off language as evidence to verify, not as current truth",
 		"Prefer the unresolved risk and next validation step over a completion claim.",
 		"<turn|>\n<|turn>model\n",
-		"<|channel>thought\n<channel|>",
 	} {
 		if !core.Contains(prompt, want) {
 			t.Fatalf("prompt = %q, want %q", prompt, want)
 		}
+	}
+	if core.Contains(prompt, "<|channel>thought\n<channel|>") {
+		t.Fatalf("prompt = %q, should match native Gemma 4 generation prompt without synthetic thought channel", prompt)
 	}
 }
 
@@ -2512,8 +2514,8 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 	if !core.Contains(prompt, "<|turn>model\n") {
 		t.Fatalf("prompt = %q, want Gemma 4 generation prompt", prompt)
 	}
-	if !core.Contains(prompt, "<|turn>model\n<|channel>thought\n<channel|>") {
-		t.Fatalf("prompt = %q, want disabled-thinking empty thought channel before visible text", prompt)
+	if !core.Contains(prompt, "<|turn>model\nChapter 2:") {
+		t.Fatalf("prompt = %q, want native Gemma 4 generation prompt followed by chapter prefill", prompt)
 	}
 	if !core.Contains(prompt, "Begin exactly with \"Chapter 2:\"") {
 		t.Fatalf("prompt = %q, want direct chapter-start instruction", prompt)
@@ -2527,7 +2529,10 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 	if !core.Contains(prompt, chapterProfileEndMarker) {
 		t.Fatalf("prompt = %q, want chapter end marker instruction", prompt)
 	}
-	if !core.Contains(prompt, "<|channel>thought\n<channel|>Chapter 2:") {
+	if core.Contains(prompt, "<|channel>thought\n<channel|>") {
+		t.Fatalf("prompt = %q, should not inject synthetic empty thought channel", prompt)
+	}
+	if !core.Contains(prompt, "<|turn>model\nChapter 2:") {
 		t.Fatalf("prompt = %q, want chapter heading assistant prefill", prompt)
 	}
 	if !core.Contains(prompt, "Do not resolve or conclude the story yet") {
@@ -2538,11 +2543,11 @@ func TestChapterProfileGemma4TemplateNoThinking_Good(t *testing.T) {
 func TestChapterProfileGemma4InitialTemplateNoThinking_Good(t *testing.T) {
 	prompt := chapterProfileInitialPrompt("gemma4", "", "packet premise", 10, 1024, false)
 
-	if !core.Contains(prompt, "<|turn>model\n<|channel>thought\n<channel|>") {
-		t.Fatalf("prompt = %q, want disabled-thinking empty thought channel before visible text", prompt)
+	if !core.Contains(prompt, "<|turn>model\nPreamble:\n") {
+		t.Fatalf("prompt = %q, want native Gemma 4 generation prompt followed by preamble prefill", prompt)
 	}
-	if !core.Contains(prompt, "<|channel>thought\n<channel|>Preamble:\n") {
-		t.Fatalf("prompt = %q, want preamble assistant prefill", prompt)
+	if core.Contains(prompt, "<|channel>thought\n<channel|>") {
+		t.Fatalf("prompt = %q, should not inject synthetic empty thought channel", prompt)
 	}
 	if !core.Contains(prompt, chapterProfileEndMarker) {
 		t.Fatalf("prompt = %q, want chapter end marker instruction", prompt)

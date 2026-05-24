@@ -56,8 +56,6 @@ def gemma4_initial_prompt(context_prompt, enable_thinking):
     parts.append(RETAINED_SYSTEM_PROMPT + "\n\n")
     parts.append(context_prompt.strip())
     parts.append("<turn|>\n<|turn>model\n")
-    if not enable_thinking:
-        parts.append("<|channel>thought\n<channel|>")
     parts.append("Ready.<turn|>\n")
     return "".join(parts)
 
@@ -81,8 +79,6 @@ def reference_turn(prompt):
 
 def gemma4_turn_prompt(prompt, enable_thinking):
     parts = ["<|turn>user\n", reference_turn(prompt), "<turn|>\n<|turn>model\n"]
-    if not enable_thinking:
-        parts.append("<|channel>thought\n<channel|>")
     return "".join(parts)
 
 

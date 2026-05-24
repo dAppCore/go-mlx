@@ -49,6 +49,19 @@ fixed-cache handles as borrowed. A short rebuilt `driver-profile` smoke now
 passes without the previous layer-6 shared-KV panic; treat it as a regression
 guard, not a production benchmark row.
 
+Latest prompt-template note: the Gemma 4 native prompt renderers were tightened
+against the local model `chat_template.jinja`. `add_generation_prompt` is now
+rendered as `<|turn>model\n` only; go-mlx no longer pre-seeds a synthetic empty
+`<|channel>thought\n<channel|>` block for no-thinking mode. The Gemma 4
+formatter also strips thought-channel content from assistant history before it
+is replayed into a fresh prompt. This removes a real chat-template diff that
+could bias short/zero visible-output probes and makes llama.cpp thinking leakage
+an external comparator issue rather than a go-mlx prompt shape. Verification:
+`go test ./go/... -count=1`, `git diff --check`,
+`go test ./go/chat -bench 'BenchmarkChat_Format_Gemma4_5Turns|BenchmarkChat_TemplateName|BenchmarkChat_NormaliseRole' -benchmem -run '^$'`
+(`BenchmarkChat_Format_Gemma4_5Turns`: `300.2 ns/op`, `2304 B/op`,
+`1 alloc/op`), and focused state/chapter Gemma 4 prompt tests.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

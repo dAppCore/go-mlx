@@ -3141,9 +3141,6 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 		builder.WriteString("\n\n")
 		builder.WriteString(contextPrompt)
 		builder.WriteString("<turn|>\n<|turn>model\n")
-		if !enableThinking {
-			builder.WriteString("<|channel>thought\n<channel|>")
-		}
 		builder.WriteString("Ready.<turn|>\n")
 		return builder.String()
 	case "gemma":
@@ -3192,9 +3189,6 @@ func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking 
 		builder.WriteString("<|turn>user\n")
 		builder.WriteString(turnText)
 		builder.WriteString("<turn|>\n<|turn>model\n")
-		if !enableThinking {
-			builder.WriteString("<|channel>thought\n<channel|>")
-		}
 		return builder.String()
 	case "gemma":
 		builder := core.NewBuilder()
@@ -5370,9 +5364,6 @@ func chapterProfileInitialPrompt(template, contextPrompt, premise string, totalC
 		builder.WriteString(core.Trim(first))
 		builder.WriteString("<turn|>\n")
 		builder.WriteString("<|turn>model\n")
-		if !enableThinking {
-			builder.WriteString("<|channel>thought\n<channel|>")
-		}
 		builder.WriteString(chapterProfileAssistantVisiblePrefill(template, 1, enableThinking))
 		return builder.String()
 	case "gemma":
@@ -5423,9 +5414,6 @@ func chapterProfileNextPrompt(template string, chapter, totalChapters, minTokens
 		builder.WriteString("<|turn>user\n")
 		builder.WriteString(prompt)
 		builder.WriteString("<turn|>\n<|turn>model\n")
-		if !enableThinking {
-			builder.WriteString("<|channel>thought\n<channel|>")
-		}
 		builder.WriteString(chapterProfileAssistantVisiblePrefill(template, chapter, enableThinking))
 		return builder.String()
 	case "gemma":

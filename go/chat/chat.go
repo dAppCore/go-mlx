@@ -26,6 +26,7 @@ type Config struct {
 	Architecture       string
 	Template           string
 	NoGenerationPrompt bool
+	EnableThinking     bool
 }
 
 // Format applies a native model-family chat template.
@@ -85,28 +86,86 @@ func formatGemma(messages []Message, cfg Config) string {
 
 func formatGemma4(messages []Message, cfg Config) string {
 	builder := core.NewBuilder()
-	builder.Grow(chatFormatCapacity(messages, 17, 37, true) + len("<bos>"))
+	builder.Grow(chatFormatCapacity(messages, 17, 13, true) + len("<bos>"))
 	builder.WriteString("<bos>")
-	for _, msg := range messages {
-		role := normaliseRole(msg.Role)
-		switch role {
-		case "assistant":
-			role = "model"
-		case "system", "user":
-		default:
+
+	start := 0
+	if cfg.EnableThinking || gemma4InitialSystemRole(messages) {
+		builder.WriteString("<|turn>system\n")
+		if cfg.EnableThinking {
+			builder.WriteString("<|think|>\n")
+		}
+		if len(messages) > 0 {
+			role := gemma4Role(messages[0].Role)
+			if role == "system" {
+				builder.WriteString(core.Trim(messages[0].Content))
+				start = 1
+			}
+		}
+		builder.WriteString("<turn|>\n")
+	}
+
+	for _, msg := range messages[start:] {
+		role := gemma4Role(msg.Role)
+		if role == "" {
 			continue
+		}
+		content := core.Trim(msg.Content)
+		if role == "model" {
+			content = stripGemma4Thinking(content)
 		}
 		builder.WriteString("<|turn>")
 		builder.WriteString(role)
 		builder.WriteString("\n")
-		builder.WriteString(core.Trim(msg.Content))
+		builder.WriteString(content)
 		builder.WriteString("<turn|>\n")
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
-		builder.WriteString("<|channel>thought\n<channel|>")
 	}
 	return builder.String()
+}
+
+func gemma4InitialSystemRole(messages []Message) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	return gemma4Role(messages[0].Role) == "system"
+}
+
+func gemma4Role(role string) string {
+	switch normaliseRole(role) {
+	case "assistant":
+		return "model"
+	case "system":
+		return "system"
+	case "developer":
+		return "system"
+	case "user":
+		return "user"
+	default:
+		return ""
+	}
+}
+
+func stripGemma4Thinking(text string) string {
+	if text == "" || !core.Contains(text, "<|channel>") {
+		return core.Trim(text)
+	}
+	out := core.NewBuilder()
+	for {
+		parts := core.SplitN(text, "<|channel>", 2)
+		out.WriteString(parts[0])
+		if len(parts) != 2 {
+			break
+		}
+		after := core.SplitN(parts[1], "<channel|>", 2)
+		if len(after) != 2 {
+			break
+		}
+		text = after[1]
+	}
+	return core.Trim(out.String())
 }
 
 func formatQwen(messages []Message, cfg Config) string {
@@ -274,7 +333,7 @@ func normaliseRoleSlow(role string) string {
 		return "user"
 	case "gpt", "bot", "assistant", "model":
 		return "assistant"
-	case "system":
+	case "system", "developer":
 		return "system"
 	default:
 		return r

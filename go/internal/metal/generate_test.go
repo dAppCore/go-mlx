@@ -1610,7 +1610,24 @@ func TestModel_FormatChat_Gemma4UsesModelTemplate_Good(t *testing.T) {
 		"<|turn>user\nHello<turn|>\n" +
 		"<|turn>model\nHi<turn|>\n" +
 		"<|turn>user\nAgain<turn|>\n" +
-		"<|turn>model\n<|channel>thought\n<channel|>"
+		"<|turn>model\n"
+	if got != want {
+		t.Fatalf("formatChat() = %q, want %q", got, want)
+	}
+}
+
+func TestModel_FormatChat_Gemma4StripsAssistantThoughtHistory_Good(t *testing.T) {
+	coverageTokens := "FormatChat Gemma4StripsAssistantThoughtHistory"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	model := &Model{modelType: "gemma4_text"}
+
+	got := model.formatChat([]ChatMessage{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "<|channel>thought\nprivate<channel|>Visible"},
+	})
+	want := "<bos><|turn>user\nHello<turn|>\n<|turn>model\nVisible<turn|>\n<|turn>model\n"
 	if got != want {
 		t.Fatalf("formatChat() = %q, want %q", got, want)
 	}
