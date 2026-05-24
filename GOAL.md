@@ -42,6 +42,11 @@ Likewise, do not use the older `30k`-to-`70k`/rough-`65k` retained lane as the
 default benchmark target. Runnable harness defaults should use the production
 `100k` stress target or the model context window, with shorter rows labelled as
 smoke or archive evidence.
+Code correction, 2026-05-24: profile commands no longer call a
+`disableGemma4FixedCacheRuntimeGates` shim. Fixed-cache and fixed-wide
+diagnostic env names are ignored as ambient profile input unless an explicit
+in-process override sets them, so the production path does not touch the old
+fixed-cache/64Ki family at all.
 Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx is still
 behind llama.cpp on raw decode. The retained workflow wall-time comparison is
 useful, but must be read with visible output counts, output-quality flags, and

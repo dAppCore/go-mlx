@@ -923,9 +923,6 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
-	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
-		defer restore()
-	}
 	fastLaneEnabled := driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, *profilePath)
 	if fastLaneEnabled {
 		for _, restore := range applyGemma4FastLaneDefaults(
@@ -1227,7 +1224,7 @@ func applyGemma4FastLaneDefaults(
 	if contextLen != nil {
 		resolvedContext = *contextLen
 	}
-	restores := disableGemma4FixedCacheRuntimeGates()
+	restores := []func(){}
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		if prefillChunkSize != nil && !visited["prefill-chunk-size"] {
 			*prefillChunkSize = mlx.ProductionLaneLongContextPrefillChunkSize
@@ -1245,26 +1242,6 @@ func applyGemma4FastLaneDefaults(
 		}
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
 	}
-	return restores
-}
-
-func disableGemma4FixedCacheRuntimeGates() []func() {
-	restores := []func(){}
-	for _, gate := range []string{
-		mlx.Gemma4FastRuntimeGateFixedGemma4Cache,
-		mlx.Gemma4FastRuntimeGateFixedGemma4Sliding,
-		mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask,
-		mlx.Gemma4FastRuntimeGateNativeFixedSliding,
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
-		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
-		"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
-		"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION",
-		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
-	} {
-		restores = append(restores, setDriverProfileRuntimeGate(gate, "0"))
-	}
-	restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "0"))
 	return restores
 }
 
@@ -1436,7 +1413,29 @@ func driverProfileRuntimeGateValue(name string) string {
 		return core.Trim(value)
 	}
 	driverProfileRuntimeGateOverrides.RUnlock()
+	if driverProfileRuntimeGateIgnoresAmbientEnv(name) {
+		return ""
+	}
 	return core.Trim(core.Env(name))
+}
+
+func driverProfileRuntimeGateIgnoresAmbientEnv(name string) bool {
+	switch name {
+	case mlx.Gemma4FastRuntimeGateFixedGemma4Cache,
+		mlx.Gemma4FastRuntimeGateFixedGemma4Sliding,
+		mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		mlx.Gemma4FastRuntimeGateNativeFixedSliding,
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
+		"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
+		"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":
+		return true
+	default:
+		return false
+	}
 }
 
 func driverProfileRuntimeGates() map[string]string {
@@ -2348,9 +2347,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
-	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
-		defer restore()
-	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -4562,9 +4558,6 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
-	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
-		defer restore()
-	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -5163,9 +5156,6 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
-	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
-		defer restore()
-	}
 	if *fastGemma4Lane {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -7990,9 +7980,6 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
-	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
-		defer restore()
-	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, *profilePath) {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,

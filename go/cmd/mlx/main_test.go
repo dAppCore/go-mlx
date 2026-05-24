@@ -3373,14 +3373,14 @@ func TestDriverProfileRuntimeGates_RecordsEnabledNativeGate_Good(t *testing.T) {
 	if gates["GO_MLX_ENABLE_EXPERT_ID_MATVEC"] != "1" {
 		t.Fatalf("runtime gates = %+v, want expert-id gate", gates)
 	}
-	if gates["GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION"] != "1" {
-		t.Fatalf("runtime gates = %+v, want wide SDPA gate", gates)
-	}
-	if gates["GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION"] != "1" {
-		t.Fatalf("runtime gates = %+v, want wide matmul gate", gates)
-	}
-	if gates["GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE"] != "1" {
-		t.Fatalf("runtime gates = %+v, want row cache update gate", gates)
+	for _, rejected := range []string{
+		"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
+	} {
+		if _, ok := gates[rejected]; ok {
+			t.Fatalf("runtime gates = %+v, should ignore ambient fixed diagnostic gate %s", gates, rejected)
+		}
 	}
 	if _, ok := gates["GO_MLX_ENABLE_NATIVE_MLP_GELU"]; ok {
 		t.Fatalf("runtime gates = %+v, disabled gate should be omitted", gates)
