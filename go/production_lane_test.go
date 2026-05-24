@@ -27,8 +27,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if lane.IncludeOutput || !lane.TraceTokenPhases {
 		t.Fatalf("profile reporting = include_output:%v trace:%v, want hidden output plus token phase trace", lane.IncludeOutput, lane.TraceTokenPhases)
 	}
-	if !core.Contains(lane.Prompt, "retained model state") {
-		t.Fatalf("Prompt = %q, want retained-state production prompt", lane.Prompt)
+	if lane.Prompt != DefaultNewSessionText || !core.Contains(lane.Prompt, "Lemma") {
+		t.Fatalf("Prompt = %q, want Lemma new-session default", lane.Prompt)
 	}
 }
 

@@ -720,6 +720,9 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.AppendTurnDelimiter != "---TURN---" {
 		t.Fatalf("append delimiter = %q, want configured delimiter", gotCfg.AppendTurnDelimiter)
 	}
+	if gotCfg.Prompt != mlx.DefaultNewSessionText {
+		t.Fatalf("state ramp default prompt = %q, want Lemma new-session default", gotCfg.Prompt)
+	}
 	if gotCfg.ChatTemplate != "gemma4" || !gotCfg.EnableThinking {
 		t.Fatalf("chat template = %q thinking=%v, want Gemma 4 thinking prompts", gotCfg.ChatTemplate, gotCfg.EnableThinking)
 	}
@@ -3486,7 +3489,9 @@ func TestRunCommand_DriverProfileFastGemma4LaneFlag_Good(t *testing.T) {
 func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	originalRun := runDriverProfile
 	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotCfg driverProfileOptions
 	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotCfg = cfg
 		return &driverProfileReport{
 			Version:      1,
 			ModelPath:    modelPath,
@@ -3504,6 +3509,9 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.Prompt != mlx.DefaultNewSessionText {
+		t.Fatalf("driver profile default prompt = %q, want Lemma new-session default", gotCfg.Prompt)
 	}
 	for _, want := range []string{
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,

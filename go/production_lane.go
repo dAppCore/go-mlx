@@ -104,7 +104,7 @@ func DefaultProductionLane() ProductionLane {
 		ContextLength:    ProductionLaneContextLength,
 		MaxTokens:        ProductionLaneMaxTokens,
 		Runs:             ProductionLaneRuns,
-		Prompt:           "Answer in one short sentence: why does retained model state matter?",
+		Prompt:           DefaultNewSessionText,
 		IncludeOutput:    false,
 		TraceTokenPhases: true,
 	}

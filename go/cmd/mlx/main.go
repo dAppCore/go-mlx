@@ -447,10 +447,12 @@ type chapterProfileEnergy struct {
 	JoulesPerToken float64 `json:"joules_per_visible_token,omitempty"`
 }
 
+const defaultRetainedProfilePrompt = mlx.DefaultNewSessionText
+
 const defaultStateRampFoldContinuePrompt = "Return exactly one sentence starting with `The compacted State is live; next action:` and name this action: diagnose late-turn long-context content degradation before raising the stress target. " +
 	"Do not mention instructions, analysis, reasoning, plans, uncertainty, or report structure."
 
-const defaultStateRampRetainedSystemPrompt = mlx.DefaultNewSessionText
+const defaultStateRampRetainedSystemPrompt = defaultRetainedProfilePrompt
 
 const defaultStateRampFoldSummaryPrompt = "Write a durable continuation brief for a fresh folded State. Output 8 to 12 concise bullets, not prose. Preserve the original user task or seed story arc, hard constraints, required style or structure, named entities, unresolved threads, what has already happened, the current emotional/logical state, and the exact next continuation point. If the task is a book or story, state what must be resolved in the final chapter and what must not replace the main arc. Do not include prompt analysis, planning, uncertainty, implementation notes, or a checklist label."
 
@@ -832,7 +834,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	jsonOut := fs.Bool("json", false, "print JSON driver profile")
 	reportFile := fs.String("report-file", "", "write JSON driver profile to a file")
 	profilePath := fs.String("profile", "", "saved tuning profile to apply before loading the model")
-	prompt := fs.String("prompt", "Answer in one short sentence: why does retained model state matter?", "prompt/question to run")
+	prompt := fs.String("prompt", defaultRetainedProfilePrompt, "prompt/question to run")
 	promptFile := fs.String("prompt-file", "", "read prompt/question text from a file")
 	promptSuffix := fs.String("prompt-suffix", "", "append one final task after any repeated prompt context")
 	promptSuffixFile := fs.String("prompt-suffix-file", "", "read final prompt/task suffix text from a file")
@@ -1520,7 +1522,7 @@ func mergeDriverProfileLoadSettings(primary, resolved *tuneProfileLoadSettings) 
 func normalizeDriverProfileOptions(opts driverProfileOptions) driverProfileOptions {
 	opts.Prompt = core.Trim(opts.Prompt)
 	if opts.Prompt == "" {
-		opts.Prompt = "Answer in one short sentence: why does retained model state matter?"
+		opts.Prompt = defaultRetainedProfilePrompt
 	}
 	if opts.PromptRepeat <= 0 {
 		opts.PromptRepeat = 1
@@ -2271,7 +2273,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON state ramp profile")
 	reportFile := fs.String("report-file", "", "write JSON state ramp profile to a file")
-	prompt := fs.String("prompt", "Answer in one short sentence: why does retained model state matter?", "source text to repeat into the warm and appended state")
+	prompt := fs.String("prompt", defaultRetainedProfilePrompt, "source text to repeat into the warm and appended state")
 	promptFile := fs.String("prompt-file", "", "read source text from a file")
 	appendPrompt := fs.String("append-prompt", "", "source text for appended turn material; defaults to the seed prompt")
 	appendFile := fs.String("append-file", "", "read appended turn material from a file")
@@ -2948,7 +2950,7 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	opts.WakeStateStoreSegmentAlias = core.Trim(opts.WakeStateStoreSegmentAlias)
 	opts.WakeIndexURI = core.Trim(opts.WakeIndexURI)
 	if opts.Prompt == "" && !opts.PromptSet {
-		opts.Prompt = "Answer in one short sentence: why does retained model state matter?"
+		opts.Prompt = defaultRetainedProfilePrompt
 	}
 	if opts.StartTokens < 0 || (opts.StartTokens == 0 && opts.Prompt != "") {
 		opts.StartTokens = 30000

@@ -148,6 +148,19 @@ turn tok/s, `9.711 GB` active-plus-cache, `3.151 GiB` RSS,
 `max_global_tokens=33726`, and `max_global_capacity=131072`. This removes the
 hidden context cutoff; it does not close the llama.cpp raw-decode gap.
 
+Default seed correction, 2026-05-24: the production lane and local profile
+commands now use `mlx.DefaultNewSessionText` as the default prompt instead of
+the old synthetic "retained model state" question. This lines up
+`DefaultProductionLane`, `driver-profile`, and `state-ramp-profile` with the
+Lemma new-session seed already used by the shared comparator scripts while
+preserving explicit prompt overrides and the explicit empty-seed state-ramp
+path. Verification: `go test ./go -run
+'TestProductionLane_DefaultGemma4E2B|TestDefaultLemmaNewSessionText'`,
+`go test ./go/cmd/mlx -run
+'TestRunCommand_(StateRampProfileJSON|DriverProfileFastGemma4LaneDefault|StateRampProfileExplicitEmptySeedPrompt)'`,
+and a grep check showing the old retained-state question is absent from the
+production lane and CLI default sources.
+
 Runtime correction, 2026-05-24: the rejected paged full-K/V materialise owner
 path has now been physically retired from the runtime, not merely left unused
 by benchmark flags. `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE` is no longer a
