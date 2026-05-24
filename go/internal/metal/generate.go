@@ -940,7 +940,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				Free(oldLogits)
 				logits = nil
 				directNext = nextToken
-				if err := asyncDecodePrefetch(i, "direct greedy token", directNext); err != nil {
+				if err := asyncDecodePrefetchWithCaches("Model.Generate", i, "direct greedy token and dirty KV", directNext, caches); err != nil {
 					m.lastErr = err
 					return
 				}
@@ -971,7 +971,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				}
 				Free(oldLogits)
 				logits = nextLogits
-				if err := asyncDecodePrefetch(i, "next logits", logits); err != nil {
+				if err := asyncDecodePrefetchWithCaches("Model.Generate", i, "next logits and dirty KV", logits, caches); err != nil {
 					m.lastErr = err
 					return
 				}
@@ -1063,7 +1063,32 @@ func asyncDecodePrefetchFor(scope string, step int, label string, out *Array) er
 	if !asyncDecodePrefetchEnabled() || out == nil || !out.Valid() {
 		return nil
 	}
-	if err := EvalAsync(out); err != nil {
+	return asyncDecodePrefetchArraysFor(scope, step, label, out)
+}
+
+func asyncDecodePrefetchWithCaches(scope string, step int, label string, out *Array, caches []Cache) error {
+	if !asyncDecodePrefetchEnabled() {
+		return nil
+	}
+	var stack [64]*Array
+	outputs := stack[:0]
+	if out != nil && out.Valid() {
+		outputs = append(outputs, out)
+	}
+	for _, cache := range caches {
+		outputs = appendCacheDirtyState(outputs, cache)
+	}
+	if len(outputs) == 0 {
+		return nil
+	}
+	return asyncDecodePrefetchArraysFor(scope, step, label, outputs...)
+}
+
+func asyncDecodePrefetchArraysFor(scope string, step int, label string, outputs ...*Array) error {
+	if !asyncDecodePrefetchEnabled() || len(outputs) == 0 {
+		return nil
+	}
+	if err := EvalAsync(outputs...); err != nil {
 		if core.Trim(scope) == "" {
 			scope = "Model.Generate"
 		}

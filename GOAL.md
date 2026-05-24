@@ -237,6 +237,34 @@ Go bookkeeping; it is the async MLX next-logits dispatch/materialisation
 boundary that IDEAS.md calls the graph-compiler/eval-boundary problem. This is
 instrumentation plus corrected gate behaviour, not final production acceptance.
 
+Latest dirty-KV prefetch correction, 2026-05-24: retained decode now evaluates
+the next logits together with only the K/V cache arrays touched by the most
+recent token update. This follows the IDEAS.md eval-boundary guidance without
+falling back to `PagedKVCache.AppendState`, which would re-evaluate every
+historical page on every decode step. `PagedKVCache.AppendDirtyState` is covered
+by `TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good` and the hot-path
+benchmark records `BenchmarkPagedKVCache_AppendDirtyState_After128_PageSize256`
+at `3.793 ns/op`, `0 B/op`, `0 allocs/op`, versus the same prepared full-state
+access row at `4.787 ns/op`, `0 B/op`, `0 allocs/op`. The same two-turn traced
+request-context shape writes
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-dirtykv-prefetch-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`;
+with identical `33728` final live tokens and `1069` visible/generated tokens,
+raw decode moves from `88.95376383688955` to `89.38593825405013 tok/s`, and
+effective turn throughput moves from `79.58783725070474` to
+`79.91675301645665 tok/s`. The full 10-turn retained workflow writes
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-dirtykv-prefetch-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`;
+with the same `48712` final live tokens and `4292` visible/generated tokens as
+the shared-KV baseline, raw decode improves from `84.63319127288695` to
+`86.1254434039376 tok/s` (`+1.763%`), effective throughput improves from
+`72.743662496295` to `73.83925639591638 tok/s` (`+1.506%`), wall time drops by
+`0.967560791s`, and estimated energy drops by `96.7560791 J` at `100 W`.
+Active-plus-cache memory is essentially flat (`+917560` bytes), RSS is
+`+20398080` bytes, fixed caches remain absent, `paged_caches=15`,
+`max_local_tokens=512`, `max_global_capacity=131072`, and
+`local_window_leaked=false`. This is a small accepted production-path decode
+win, not the final llama.cpp parity closure; the next target remains the larger
+MLX graph/materialisation cost inside the `prefetch` and `sample_eval` buckets.
+
 Latest packed-State wake proof, 2026-05-24: `state-wake-profile` now records
 phase-local Go heap, MLX allocator, and process-memory deltas for store open
 and wake. A same-state real wake comparison uses the existing folded C014

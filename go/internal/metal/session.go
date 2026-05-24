@@ -635,9 +635,10 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 			phaseLast = time.Now()
 		}
 		// Retained sessions use the same lazy next-logits boundary as
-		// Model.Generate; prefetching here keeps the next sample step from
-		// inheriting the whole decode graph when the existing gate is enabled.
-		if err := asyncDecodePrefetchFor("ModelSession.Generate", i, "session next logits", s.logits); err != nil {
+		// Model.Generate; prefetching logits plus the dirty K/V handles keeps
+		// the next sample step from inheriting the whole decode graph without
+		// re-evaluating every historical page.
+		if err := asyncDecodePrefetchWithCaches("ModelSession.Generate", i, "session next logits and dirty KV", s.logits, s.caches); err != nil {
 			s.err = err
 			return
 		}

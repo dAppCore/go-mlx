@@ -558,6 +558,25 @@ func BenchmarkPagedKVCache_StateAccess_After128_PageSize256(b *testing.B) {
 	cache.Reset()
 }
 
+func BenchmarkPagedKVCache_AppendDirtyState_After128_PageSize256(b *testing.B) {
+	k, v := makeSingleTokenKVShape(1, 8, 64)
+	defer Free(k, v)
+	cache := NewPagedKVCache(0, 256)
+	for i := 0; i < 128; i++ {
+		state := cache.UpdateBorrowedPages(k, v, 1)
+		state.Free()
+	}
+	if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+		b.Fatalf("Eval dirty state: %v", err)
+	}
+	dst := make([]*Array, 0, 8)
+	b.ReportAllocs()
+	for b.Loop() {
+		dst = cache.AppendDirtyState(dst[:0])
+	}
+	cache.Reset()
+}
+
 // --- Detach cost (post-Eval break-graph-references step) ---
 
 // Folded into KVCache_Append loops via the per-iter Reset path — a

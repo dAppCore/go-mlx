@@ -248,6 +248,47 @@ func TestPagedKVCache_UpdatePagesKeepsBlocks_Good(t *testing.T) {
 	}
 }
 
+func TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache AppendDirtyStateOnlyRecentPage"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	c := NewPagedKVCache(0, 2)
+	k, v := makeSingleTokenKV(1)
+	defer Free(k, v)
+
+	state := c.UpdateBorrowedPages(k, v, 1)
+	state.Free()
+	dirty := c.AppendDirtyState(nil)
+	if len(dirty) != 2 || dirty[0] != c.kPages[0] || dirty[1] != c.vPages[0] {
+		t.Fatalf("dirty state after first append = %+v, want first page K/V only", dirty)
+	}
+
+	nextK, nextV := makeSingleTokenKV(2)
+	defer Free(nextK, nextV)
+	nextState := c.UpdateBorrowedPages(nextK, nextV, 1)
+	nextState.Free()
+	dirty = c.AppendDirtyState(dirty[:0])
+	if len(dirty) != 2 || dirty[0] != c.kPages[0] || dirty[1] != c.vPages[0] {
+		t.Fatalf("dirty state after same-page append = %+v, want updated first page K/V only", dirty)
+	}
+	if len(c.State()) != 2 {
+		t.Fatalf("full state length = %d, want one K/V page pair", len(c.State()))
+	}
+
+	newPageK, newPageV := makeSingleTokenKV(3)
+	defer Free(newPageK, newPageV)
+	newPageState := c.UpdateBorrowedPages(newPageK, newPageV, 1)
+	newPageState.Free()
+	dirty = c.AppendDirtyState(dirty[:0])
+	if len(c.kPages) != 2 || len(dirty) != 2 || dirty[0] != c.kPages[1] || dirty[1] != c.vPages[1] {
+		t.Fatalf("dirty state after new page = %+v, pages=%d, want newest page K/V only", dirty, len(c.kPages))
+	}
+	if len(c.State()) != 4 {
+		t.Fatalf("full state length = %d, want two K/V page pairs", len(c.State()))
+	}
+}
+
 func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache BorrowedPageStateAvoidsFullPageClones"
 	if coverageTokens == "" {

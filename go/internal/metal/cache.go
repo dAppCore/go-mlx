@@ -65,6 +65,10 @@ type stateAppender interface {
 	AppendState(dst []*Array) []*Array
 }
 
+type dirtyStateAppender interface {
+	AppendDirtyState(dst []*Array) []*Array
+}
+
 // appendCacheState appends a cache's live state arrays into dst. Prefers
 // AppendState (alloc-free) when implemented; falls back to State() copy.
 func appendCacheState(dst []*Array, c Cache) []*Array {
@@ -80,6 +84,16 @@ func appendCacheState(dst []*Array, c Cache) []*Array {
 		}
 	}
 	return dst
+}
+
+func appendCacheDirtyState(dst []*Array, c Cache) []*Array {
+	if c == nil {
+		return dst
+	}
+	if a, ok := c.(dirtyStateAppender); ok {
+		return a.AppendDirtyState(dst)
+	}
+	return appendCacheState(dst, c)
 }
 
 func cacheReadState(cache Cache) (state []*Array, owned []*Array) {
@@ -965,6 +979,9 @@ type PagedKVCache struct {
 	// to skip page.Shape() allocations — the cached pageShape + this flag
 	// fully describe the slice/clone branch without a per-call cgo Shape().
 	preallocStorage bool
+	dirtyStateLen   int
+	dirtyStateAll   bool
+	dirtyState      [8]*Array
 }
 
 type pagedKVPageShape struct {
@@ -1100,6 +1117,7 @@ func (c *PagedKVCache) UpdateBorrowedPages(k, v *Array, seqLen int) PagedKVState
 }
 
 func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) PagedKVState {
+	c.resetDirtyState()
 	Free(c.kPages...)
 	Free(c.vPages...)
 	c.kPages = []*Array{k}
@@ -1108,6 +1126,7 @@ func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) Page
 	c.recordPageShape(k.Shape(), v.Shape())
 	c.offset += seqLen
 	c.length += seqLen
+	c.markDirtyState(k, v)
 	return c.PageState()
 }
 
@@ -1194,6 +1213,22 @@ func (c *PagedKVCache) AppendState(dst []*Array) []*Array {
 	return dst
 }
 
+// AppendDirtyState appends only the cache arrays touched by the most recent
+// update. Decode-time graph-boundary prefetch uses this so long-context paged
+// caches do not re-evaluate every historical page on each token.
+func (c *PagedKVCache) AppendDirtyState(dst []*Array) []*Array {
+	if c.dirtyStateAll {
+		return c.AppendState(dst)
+	}
+	for i := 0; i < c.dirtyStateLen; i++ {
+		state := c.dirtyState[i]
+		if state != nil && state.Valid() {
+			dst = append(dst, state)
+		}
+	}
+	return dst
+}
+
 func (c *PagedKVCache) ReadState() ([]*Array, []*Array) {
 	k, v := c.concatenatedState()
 	if k == nil || v == nil {
@@ -1220,6 +1255,7 @@ func (c *PagedKVCache) Reset() {
 	c.visibleKScratch = nil
 	c.visibleVScratch = nil
 	c.visibleOwnedScratch = nil
+	c.resetDirtyState()
 	// kShapeScratchArr / vShapeScratchArr are fixed [4]int32 arrays — no
 	// nil-out needed (their slots get overwritten on next populateShapeScratch).
 	c.preallocStorage = false
@@ -1269,6 +1305,7 @@ func pagedOwnedExcept(owned []*Array, k, v *Array) []*Array {
 }
 
 func (c *PagedKVCache) appendPages(k, v *Array, seqLen int) int {
+	c.resetDirtyState()
 	// Slice-free storage conversion mirroring FixedKVCache.storageKVPair —
 	// avoids the per-Update `make([]*Array, 0, 2)` from cacheStorageKV when
 	// k/v are already in the storage dtype (the steady-state case after
@@ -1338,6 +1375,7 @@ func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {
 		c.kPages = append(c.kPages, k.Clone())
 		c.vPages = append(c.vPages, v.Clone())
 		c.pageLens = append(c.pageLens, seqLen)
+		c.markDirtyPage(len(c.kPages) - 1)
 		return seqLen
 	}
 	totalLen := int(kShape[2])
@@ -1369,6 +1407,7 @@ func (c *PagedKVCache) appendPagesConcat(k, v *Array, seqLen int) int {
 		c.vPages = append(c.vPages, pageV)
 		c.pageLens = append(c.pageLens, take)
 		c.recordPageShape(kShape, vShape)
+		c.markDirtyPage(len(c.kPages) - 1)
 		start += take
 	}
 	return seqLen
@@ -1472,6 +1511,7 @@ func (c *PagedKVCache) appendToLastPage(k, v *Array, kShape, vShape []int32, sta
 	c.vPages[last] = Concatenate([]*Array{oldV, pieceV}, 2)
 	c.pageLens[last] += take
 	c.recordPageShape(kShape, vShape)
+	c.markDirtyPage(last)
 	Free(oldK, oldV)
 	if ownedK {
 		Free(pieceK)
@@ -1495,6 +1535,7 @@ func (c *PagedKVCache) appendToLastPagePrealloc(k, v *Array, kShape, vShape []in
 	c.vPages[last] = SliceUpdateInplace4(oldV, pieceV, 0, 0, int32(writeStart), 0, vShape[0], vShape[1], int32(writeStart+take), vShape[3])
 	c.pageLens[last] = writeStart + take
 	c.recordPageShape(kShape, vShape)
+	c.markDirtyPage(last)
 	Free(oldK, oldV)
 	if ownedK {
 		Free(pieceK)
@@ -1520,6 +1561,7 @@ func (c *PagedKVCache) appendNewPagePrealloc(k, v *Array, kShape, vShape []int32
 	c.pageLens = append(c.pageLens, take)
 	c.recordPageShape(kShape, vShape)
 	c.preallocStorage = true
+	c.markDirtyPage(len(c.kPages) - 1)
 	Free(pageK, pageV)
 	if ownedK {
 		Free(pieceK)
@@ -1595,7 +1637,47 @@ func (c *PagedKVCache) trimFirstPage(tokens int) {
 		tailK, tailV = nil, nil
 	}
 	c.pageLens[0] = newLen
+	c.markDirtyPage(0)
 	Free(oldK, oldV, tailK, tailV)
+}
+
+func (c *PagedKVCache) resetDirtyState() {
+	for i := 0; i < c.dirtyStateLen; i++ {
+		c.dirtyState[i] = nil
+	}
+	c.dirtyStateLen = 0
+	c.dirtyStateAll = false
+}
+
+func (c *PagedKVCache) markDirtyPage(index int) {
+	if index < 0 || index >= len(c.kPages) || index >= len(c.vPages) {
+		return
+	}
+	c.markDirtyState(c.kPages[index], c.vPages[index])
+}
+
+func (c *PagedKVCache) markDirtyState(arrays ...*Array) {
+	for _, state := range arrays {
+		if state == nil || !state.Valid() {
+			continue
+		}
+		seen := false
+		for i := 0; i < c.dirtyStateLen; i++ {
+			if c.dirtyState[i] == state {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		if c.dirtyStateLen >= len(c.dirtyState) {
+			c.dirtyStateAll = true
+			return
+		}
+		c.dirtyState[c.dirtyStateLen] = state
+		c.dirtyStateLen++
+	}
 }
 
 func (c *PagedKVCache) recordPageShape(kShape, vShape []int32) {

@@ -203,5 +203,10 @@ new `prefetch` token-phase bucket prove the old large `other` bucket is the
 async next-logits materialisation boundary. On the 2026-05-24 two-turn
 request-context trace, `prefetch` averages about `6.33 ms/token`, while
 `sample_eval` is about `3.28 ms/token` and `forward` about `1.56 ms/token`.
-The next optimisation should target that MLX graph/eval boundary directly
-without changing the paged retained-State semantics.
+The dirty-KV prefetch pass now evaluates next logits with only the cache arrays
+touched by the most recent token update. This is accepted because it improves
+the same 10-turn retained request-context row from `84.633` to `86.125 tok/s`
+raw decode and from `72.744` to `73.839 tok/s` effective throughput while
+preserving paged K/V, bounded 512-token local windows, and no fixed caches.
+The next optimisation should still target the larger MLX graph/eval boundary
+directly without changing the paged retained-State semantics.
