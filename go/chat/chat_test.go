@@ -69,6 +69,18 @@ func TestFormat_Gemma4TemplateStripsAssistantThoughtHistory_Good(t *testing.T) {
 	}
 }
 
+func TestFormat_Gemma4TemplateContinuesAssistantRuns_Good(t *testing.T) {
+	got := Format([]Message{
+		{Role: "user", Content: "hi"},
+		{Role: "assistant", Content: "one"},
+		{Role: "assistant", Content: "two"},
+	}, Config{Architecture: "gemma4_text"})
+	want := "<bos><|turn>user\nhi<turn|>\n<|turn>model\none<turn|>\ntwo<turn|>\n<|turn>model\n"
+	if got != want {
+		t.Fatalf("Gemma4 assistant continuation = %q, want %q", got, want)
+	}
+}
+
 func TestFormat_QwenTemplate_Good(t *testing.T) {
 	got := Format([]Message{
 		{Role: "system", Content: "be helpful"},

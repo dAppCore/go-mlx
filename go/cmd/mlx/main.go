@@ -3253,6 +3253,9 @@ func stateRampProfileOutputIssues(output string) []string {
 	if core.Contains(text, "<|channel>") || core.Contains(text, "<channel|>") || core.Contains(text, "<turn|>") || core.Contains(text, "<|turn>") {
 		issues = append(issues, "visible_chat_control_token")
 	}
+	if stateRampProfileFenceOnlyOutput(text) {
+		issues = append(issues, "visible_fence_only")
+	}
 	if core.Contains(lower, "the user is asking") ||
 		core.Contains(lower, "the user's prompt") ||
 		core.Contains(lower, "this request asks") ||
@@ -3289,6 +3292,20 @@ func stateRampProfileOutputIssues(output string) []string {
 		issues = append(issues, "visible_false_completion_claim")
 	}
 	return issues
+}
+
+func stateRampProfileFenceOnlyOutput(text string) bool {
+	sawFence := false
+	for _, r := range text {
+		switch r {
+		case '`':
+			sawFence = true
+		case ' ', '\n', '\r', '\t':
+		default:
+			return false
+		}
+	}
+	return sawFence
 }
 
 func stateRampProfileAssistantCloseSuffix(template string) string {

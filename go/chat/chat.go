@@ -105,8 +105,10 @@ func formatGemma4(messages []Message, cfg Config) string {
 		builder.WriteString("<turn|>\n")
 	}
 
+	prevNonToolRole := ""
 	for _, msg := range messages[start:] {
-		role := gemma4Role(msg.Role)
+		normalisedRole := normaliseRole(msg.Role)
+		role := gemma4RoleFromNormalised(normalisedRole)
 		if role == "" {
 			continue
 		}
@@ -114,11 +116,15 @@ func formatGemma4(messages []Message, cfg Config) string {
 		if role == "model" {
 			content = stripGemma4Thinking(content)
 		}
-		builder.WriteString("<|turn>")
-		builder.WriteString(role)
-		builder.WriteString("\n")
+		continueSameModelTurn := role == "model" && prevNonToolRole == "assistant"
+		if !continueSameModelTurn {
+			builder.WriteString("<|turn>")
+			builder.WriteString(role)
+			builder.WriteString("\n")
+		}
 		builder.WriteString(content)
 		builder.WriteString("<turn|>\n")
+		prevNonToolRole = normalisedRole
 	}
 	if !cfg.NoGenerationPrompt {
 		builder.WriteString("<|turn>model\n")
@@ -134,7 +140,11 @@ func gemma4InitialSystemRole(messages []Message) bool {
 }
 
 func gemma4Role(role string) string {
-	switch normaliseRole(role) {
+	return gemma4RoleFromNormalised(normaliseRole(role))
+}
+
+func gemma4RoleFromNormalised(role string) string {
+	switch role {
 	case "assistant":
 		return "model"
 	case "system":

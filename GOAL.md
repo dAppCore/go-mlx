@@ -92,6 +92,28 @@ Verification:
 `go test ./go/cmd/mlx -run 'TestStateRampProfileTurnPromptGemma4|TestStateRampProfileInitialPrompt|TestRunCommand_DriverProfileFastGemma4Lane' -count=1`,
 and `python3 -m py_compile scripts/mlx_lm_opencode_workflow_bench.py scripts/llamacpp_opencode_workflow_bench.py scripts/state_ramp_prompts.py`.
 
+Latest chat-template parity check: the retained State prompt shape was compared
+against the local Gemma 4 `chat_template.jinja`; the current state-ramp seed
+and turn wrappers are valid native renderings for the message roles they use.
+One remaining shared formatter diff was found and fixed: consecutive assistant
+messages are now rendered as a continuation of the existing model turn, matching
+the Jinja rule that suppresses a duplicate `<|turn>model\n` block. The
+post-stop-fix retained workflow row
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-after-stopfix-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`
+completed `10/10` turns from `30k` to `61652` live tokens at `81.279 tok/s`
+raw decode, `58.767 tok/s` effective turn throughput, `73.066s` wall time,
+`3.834 GB` peak MLX memory, `10.046 GB` active-plus-cache, and an estimated
+`3.395x` retained-vs-replayed speedup. It is not an acceptance row: turn `7`
+returned only a Markdown fence, so `state-ramp-profile` now tags fence-only
+visible output as `visible_fence_only` instead of letting that content-quality
+failure hide behind a successful token stream. Focused verification:
+`go test ./go/chat -run 'TestFormat_Gemma4Template' -count=1`,
+`go test ./go/cmd/mlx -run 'TestStateRampProfileOutputIssues' -count=1`,
+and hot-path checks showing `BenchmarkChat_Format_Gemma4_5Turns` at
+`282.9-289.0 ns/op`, `2304 B/op`, `1 alloc/op`, and
+`BenchmarkStateRampProfileOutputIssues_FullResponse` at `1943-1947 ns/op`,
+`192 B/op`, `1 alloc/op`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

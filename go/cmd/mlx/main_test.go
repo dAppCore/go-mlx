@@ -1415,6 +1415,18 @@ func TestStateRampProfileOutputIssuesRejectsReadyEcho_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileOutputIssuesRejectsFenceOnly_Good(t *testing.T) {
+	issues := stateRampProfileOutputIssues("```\n```")
+
+	if !core.SliceContains(issues, "visible_fence_only") {
+		t.Fatalf("issues = %v, want visible_fence_only", issues)
+	}
+	issues = stateRampProfileOutputIssues("```go\nfmt.Println(1)\n```")
+	if core.SliceContains(issues, "visible_fence_only") {
+		t.Fatalf("issues = %v, want real fenced content allowed", issues)
+	}
+}
+
 func TestStateRampProfileTurnPromptGemma4_Good(t *testing.T) {
 	prompt := stateRampProfileTurnPrompt("gemma4", "User turn 3: Inspect the report.\n\n\treturn mem_", false)
 
