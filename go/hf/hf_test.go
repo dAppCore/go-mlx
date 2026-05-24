@@ -154,7 +154,7 @@ func TestPlanHFModelFits_QwenNextNestedTextConfig_Good(t *testing.T) {
 						NumHiddenLayers:       28,
 						NumAttentionHeads:     16,
 						NumKeyValueHeads:      8,
-						MaxPositionEmbeddings: 65536,
+						MaxPositionEmbeddings: 98304,
 						QuantizationConfig:    &QuantizationConfig{Bits: 4, GroupSize: 64},
 					},
 				},

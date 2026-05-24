@@ -134,7 +134,7 @@ func TestInspectModelPack_GGUFQwen3_Good(t *testing.T) {
 		},
 	)
 
-	pack, err := Inspect(ggufPath, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(65536))
+	pack, err := Inspect(ggufPath, mp.WithPackQuantization(4), mp.WithPackMaxContextLength(98304))
 	if err != nil {
 		t.Fatalf("Inspect() error = %v", err)
 	}

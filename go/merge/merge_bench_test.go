@@ -272,7 +272,7 @@ func BenchmarkWriteFloat32Values_1024(b *testing.B) {
 	}
 }
 
-func BenchmarkWriteFloat32Values_65536(b *testing.B) {
+func BenchmarkWriteFloat32Values_98304(b *testing.B) {
 	dir := b.TempDir()
 	created := core.Create(core.PathJoin(dir, "out.bin"))
 	if !created.OK {
@@ -281,7 +281,7 @@ func BenchmarkWriteFloat32Values_65536(b *testing.B) {
 	file := created.Value.(*core.OSFile)
 	defer file.Close()
 
-	values := make([]float32, 65536)
+	values := make([]float32, 98304)
 	for i := range values {
 		values[i] = float32(i % 1024)
 	}

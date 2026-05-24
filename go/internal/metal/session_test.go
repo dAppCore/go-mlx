@@ -28,7 +28,7 @@ func TestModelSession_RangeKVBlocksStreamsFullTokenTimeline_Good(t *testing.T) {
 	}
 	const (
 		tokenCount = 100000
-		cacheLen   = 65536
+		cacheLen   = 98304
 		blockSize  = 32768
 	)
 	tokens := make([]int32, tokenCount)

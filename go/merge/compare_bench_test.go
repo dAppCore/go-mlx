@@ -134,10 +134,10 @@ func BenchmarkCompareTensorRefs_4096Elements(b *testing.B) {
 	}
 }
 
-func BenchmarkCompareTensorRefs_65536Elements(b *testing.B) {
+func BenchmarkCompareTensorRefs_98304Elements(b *testing.B) {
 	name := "model.layers.0.mlp.gate_proj.weight"
-	left := benchCompareScratchPack(b, "qwen3", []string{name}, []int{65536}, 65536)
-	right := benchCompareScratchPack(b, "qwen3", []string{name}, []int{65536}, 65536)
+	left := benchCompareScratchPack(b, "qwen3", []string{name}, []int{98304}, 98304)
+	right := benchCompareScratchPack(b, "qwen3", []string{name}, []int{98304}, 98304)
 	leftIdx, err := safetensors.IndexFiles(left.WeightFiles)
 	if err != nil {
 		b.Fatal(err)
@@ -281,7 +281,7 @@ func BenchmarkRecordTensorDelta_Changed(b *testing.B) {
 	delta := TensorDelta{
 		Name:         "model.layers.0.self_attn.q_proj.weight",
 		Status:       CompareStatusChanged,
-		Elements:     65536,
+		Elements:     98304,
 		MeanAbsDelta: 0.01,
 		RMSDelta:     0.02,
 		MaxAbsDelta:  0.05,

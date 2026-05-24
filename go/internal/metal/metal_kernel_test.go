@@ -277,7 +277,7 @@ func TestMetalKernel_LargeArray_Ugly(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	// Kernel operating on a large array to verify grid/threadgroup scaling.
-	n := 65536
+	n := 100000
 	data := make([]float32, n)
 	for i := range data {
 		data[i] = float32(i)
