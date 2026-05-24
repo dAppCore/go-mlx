@@ -53,10 +53,8 @@ func BenchmarkProdLane_LongContextGemma4FastRuntimeGates(b *testing.B) {
 	}
 }
 
-// --- Gemma4FastRuntimeGatesForContext — context-conditional gate
-// resolver. Short-circuit branch (<= LongFormContextLength) returns
-// the default set as-is; the long-context branch rewrites the slice
-// by stripping fixed-cache gates and appending the paged-decode gate.
+// --- Gemma4FastRuntimeGatesForContext — context-agnostic gate resolver.
+// Context length must not rewrite the accepted fast gate set.
 
 func BenchmarkProdLane_GatesForContext_DefaultBranch(b *testing.B) {
 	// 4096 is the production driver default — hits the short-circuit
@@ -69,10 +67,9 @@ func BenchmarkProdLane_GatesForContext_DefaultBranch(b *testing.B) {
 	}
 }
 
-func BenchmarkProdLane_GatesForContext_LongFormBranch(b *testing.B) {
-	// 65536 — exactly at the LongFormContextLength boundary, still
-	// short-circuit.
-	contextLength := ProductionLaneLongFormContextLength
+func BenchmarkProdLane_GatesForContext_LongContextBranch(b *testing.B) {
+	// 32768 is the opencode-sized retained workflow target.
+	contextLength := ProductionLaneLongContextLength
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -81,7 +78,7 @@ func BenchmarkProdLane_GatesForContext_LongFormBranch(b *testing.B) {
 }
 
 func BenchmarkProdLane_GatesForContext_HyperLongBranch(b *testing.B) {
-	// 131072 — context length must not rewrite the fast gate set.
+	// 131072 is the stress ceiling and must not rewrite the fast gate set.
 	contextLength := ProductionLaneHyperLongContextLength
 	b.ReportAllocs()
 	b.ResetTimer()

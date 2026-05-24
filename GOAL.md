@@ -76,7 +76,12 @@ K/V. The fast lane keeps fixed K/V gates enabled unless the operator explicitly
 sets `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=0`; `state-ramp-profile` derives
 `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` from the requested run shape
 (`target/compaction threshold + max tokens`, rounded to `32`) rather than from
-the model context length. Two same-fixture diagnostics validate the correction:
+the model context length. Follow-up code also stops treating `65536` as a
+default or recommender boundary: `chapter-profile` now defaults to the
+opencode-sized `32768` lane, the 64GB memory plan no longer selects `65536`,
+the context ramp skips the `24:65536` step, and `kv.CompareModes` recommends
+from estimated K/V bytes rather than a context-token cutoff. Two same-fixture
+diagnostics validate the correction:
 `2026-05-24-state-ramp-request-context-fixed70000-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
 records `10/10`, `48712` final live tokens, `4292` generated/visible tokens,
 `66.219s` wall, `94.091` raw decode tok/s, `79.667` effective turn tok/s,

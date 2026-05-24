@@ -5127,7 +5127,7 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			cacheMode,
 			prefillChunkSize,
 			promptChunkBytes,
-			mlx.ProductionLaneLongFormContextLength,
+			mlx.ProductionLaneLongContextLength,
 		) {
 			defer restore()
 		}

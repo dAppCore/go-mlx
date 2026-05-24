@@ -506,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--max-tokens", type=int, default=8192)
     parser.add_argument("--min-tokens", type=int, default=768)
-    parser.add_argument("--context-tokens", type=int, default=65536)
+    parser.add_argument("--context-tokens", type=int, default=32768)
     parser.add_argument("--prompt-chunk-tokens", type=int, default=4096)
     parser.add_argument("--prefill-ms", type=float, default=9000.0)
     parser.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=True)

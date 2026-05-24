@@ -388,7 +388,7 @@ var classDefaultPlans = [...]Plan{
 	},
 	indexClassApple64GB: {
 		CachePolicy:           KVCacheRotating,
-		ContextLength:         65536,
+		ContextLength:         32768,
 		CacheMode:             KVCacheModePaged,
 		BatchSize:             2,
 		PrefillChunkSize:      4096,

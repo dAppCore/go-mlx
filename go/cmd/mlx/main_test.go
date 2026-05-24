@@ -68,7 +68,7 @@ func TestRunCommand_PackJSON_Good(t *testing.T) {
 	writeCLIPackFile(t, core.PathJoin(dir, "model.safetensors"), "stub")
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"pack", "-json", "-quantization", "4", "-max-context", "65536", dir}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"pack", "-json", "-quantization", "4", "-max-context", "131072", dir}, stdout, stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q", code, stderr.String())
 	}
@@ -822,7 +822,7 @@ func TestRunCommand_StateRampProfileFixedCacheEnvOverride_Good(t *testing.T) {
 	}
 }
 
-func TestRunCommand_StateRampProfileLongFormKeepsFixed_Good(t *testing.T) {
+func TestRunCommand_StateRampProfileTargetShapeKeepsFixed_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
 	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
@@ -838,7 +838,7 @@ func TestRunCommand_StateRampProfileLongFormKeepsFixed_Good(t *testing.T) {
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-target-tokens", "65536", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-target-tokens", "70000", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -847,7 +847,7 @@ func TestRunCommand_StateRampProfileLongFormKeepsFixed_Good(t *testing.T) {
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND": "1"`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK": "1"`,
-		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE": "66560"`,
+		`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE": "71040"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want state-ramp fixed-cache default %s", stdout.String(), want)
@@ -2563,7 +2563,7 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
 	}
-	if gotLoad.ContextLength != mlx.ProductionLaneLongFormContextLength ||
+	if gotLoad.ContextLength != mlx.ProductionLaneLongContextLength ||
 		gotLoad.CacheMode != memory.KVCacheModePaged ||
 		gotLoad.PrefillChunkSize != mlx.ProductionLaneLongContextPrefillChunkSize {
 		t.Fatalf("load = %+v, want long-form fast lane defaults", gotLoad)
@@ -2571,7 +2571,7 @@ func TestRunCommand_ChapterProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	for _, want := range []string{
 		`"chapter_max_tokens": 8192`,
 		`"prompt_chunk_bytes": 4096`,
-		`"context_length": 65536`,
+		`"context_length": 32768`,
 		`"cache_mode": "paged"`,
 		`"prefill_chunk_size": 512`,
 		`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`,

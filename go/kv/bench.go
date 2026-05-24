@@ -40,7 +40,7 @@ type ModeBench struct {
 
 // CompareModes estimates memory/performance tradeoffs for KV cache modes.
 //
-//	report := kv.CompareModes(kv.BenchConfig{ContextLength: 65536})
+//	report := kv.CompareModes(kv.BenchConfig{ContextLength: 131072})
 func CompareModes(cfg BenchConfig) BenchReport {
 	cfg = normalizeBenchConfig(cfg)
 	report := BenchReport{
@@ -167,8 +167,6 @@ func recommendMode(cfg BenchConfig) memory.KVCacheMode {
 		return memory.KVCacheModeKQ8VQ4
 	case fpBytes >= 2*memory.GiB:
 		return memory.KVCacheModeQ8
-	case cfg.ContextLength >= 65536:
-		return memory.KVCacheModePaged
 	default:
 		return memory.KVCacheModeFP16
 	}
