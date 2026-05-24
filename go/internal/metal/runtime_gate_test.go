@@ -185,6 +185,52 @@ func TestRuntimeGate_FixedGemma4ZeroOverrideWins_Good(t *testing.T) {
 	}
 }
 
+func TestRuntimeGate_FixedGemma4AmbientEnvIgnored_Good(t *testing.T) {
+	coverageTokens := "RuntimeGate FixedGemma4AmbientEnvIgnored"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	gates := []string{
+		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
+		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
+	}
+	for _, gate := range gates {
+		restore := SetRuntimeGate(gate, "")
+		t.Cleanup(restore)
+		t.Setenv(gate, "1")
+		if got := RuntimeGateValue(gate); got != "" {
+			t.Fatalf("RuntimeGateValue(%s) = %q from ambient env, want empty", gate, got)
+		}
+	}
+
+	if fixedGemma4CacheEnabled() {
+		t.Fatal("fixedGemma4CacheEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if fixedGemma4SlidingCacheBoundEnabled() {
+		t.Fatal("fixedGemma4SlidingCacheBoundEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if fixedGemma4SharedMaskEnabled() {
+		t.Fatal("fixedGemma4SharedMaskEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if nativeFixedSlidingAttentionEnabled() {
+		t.Fatal("nativeFixedSlidingAttentionEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if nativeGemma4FixedOwnerAttentionEnabled() {
+		t.Fatal("nativeGemma4FixedOwnerAttentionEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if nativeGemma4FixedOwnerAttentionResidualEnabled() {
+		t.Fatal("nativeGemma4FixedOwnerAttentionResidualEnabled() = true from ambient env, want explicit runtime override only")
+	}
+	if nativeGemma4ModelGreedyEnabled() {
+		t.Fatal("nativeGemma4ModelGreedyEnabled() = true from ambient env, want explicit runtime override only")
+	}
+}
+
 func TestRuntimeGate_KnownNativeFixedSlidingAttention_Good(t *testing.T) {
 	coverageTokens := "RuntimeGate KnownNativeFixedSlidingAttention"
 	if coverageTokens == "" {

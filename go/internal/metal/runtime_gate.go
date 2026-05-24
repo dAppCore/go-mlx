@@ -97,7 +97,25 @@ func RuntimeGateValue(name string) string {
 		return core.Trim(value)
 	}
 	runtimeGateOverrides.RUnlock()
+	if runtimeGateIgnoresAmbientEnv(name) {
+		return ""
+	}
 	return core.Trim(core.Env(name))
+}
+
+func runtimeGateIgnoresAmbientEnv(name string) bool {
+	switch name {
+	case "GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
+		"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE",
+		"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND",
+		"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK",
+		"GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL":
+		return true
+	default:
+		return false
+	}
 }
 
 func RuntimeGateEnabled(name string) bool {

@@ -129,19 +129,21 @@ import (
 )
 
 var (
-	enableNativeGemma4Layer                       = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER") == "1"
-	enableNativeGemma4MoELayer                    = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER") == "1"
-	enableNativeGemma4ModelGreedy                 = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY") == "1"
+	enableNativeGemma4Layer    = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER") == "1"
+	enableNativeGemma4MoELayer = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER") == "1"
+	// The fixed-cache/model-greedy family is diagnostic-only; use SetRuntimeGate
+	// for explicit probes so ambient env cannot select the old production path.
+	enableNativeGemma4ModelGreedy                 = false
 	enableCompiledGemma4Layer                     = core.Env("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER") == "1"
-	enableFixedGemma4Cache                        = core.Env("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE") == "1"
-	enableFixedGemma4SlidingCacheBound            = core.Env("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND") == "1"
-	enableFixedGemma4SharedMask                   = core.Env("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK") == "1"
+	enableFixedGemma4Cache                        = false
+	enableFixedGemma4SlidingCacheBound            = false
+	enableFixedGemma4SharedMask                   = false
 	enableDirectGreedyToken                       = core.Env("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN") == "1"
-	enableNativeGemma4FixedOwnerAttention         = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION") == "1"
-	enableNativeGemma4FixedOwnerAttentionResidual = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL") == "1"
+	enableNativeGemma4FixedOwnerAttention         = false
+	enableNativeGemma4FixedOwnerAttentionResidual = false
 	enableNativeGemma4AttentionOMatVec            = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC") == "1"
 	enableNativeGemma4ResidualNorm                = core.Env("GO_MLX_ENABLE_NATIVE_GEMMA4_RESIDUAL_NORM") == "1"
-	enableNativeFixedSlidingAttention             = core.Env("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION") == "1"
+	enableNativeFixedSlidingAttention             = false
 )
 
 func nativeGemma4LayerEnabled() bool {
