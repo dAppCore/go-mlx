@@ -99,7 +99,40 @@ The first full request-context retry after this correction wrote
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-default-paged-drainfix-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
 but did not produce timing evidence because `metal.LoadAndInit` reported
 `mlx: no usable Metal device available`; keep it as a gate-selection/error
-record only. While investigating that retry, the profile stream cancellation
+record only. The failure was reproduced only under the sandboxed `env GOWORK=...`
+or generic `env GO*=...` launch shape; the built runtime binary does not need
+Go tool workspace variables, and the Codex benchmark lane should launch it with
+`MLX_METALLIB_PATH` only so the process keeps native Metal access. The corrected
+smoke
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-smoke-paged-after-budget-removal-mlxenvonly.json`
+records `paged_caches=15`, `fixed_caches=0`, `local_window_leaked=false`, and
+`114.939 tok/s` decode.
+
+Latest paged/no-fixed request-context row after removing hidden fixed-budget
+synthesis, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-default-paged-after-budget-removal-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+uses the same `30k` seed, `10` request-context turns, `1024` max-token budget,
+Gemma 4 stops, and `temperature=1.0`, `top_p=0.95`, `top_k=64` as the
+llama.cpp anchor above. The run records no fixed Gemma 4 gates, no
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE`, `cache_mode=paged`, `context_length=131072`,
+`prefill_chunk_size=512`, and `GO_MLX_KV_CACHE_DTYPE=fp16`. It completes
+`10/10` turns, reaches `48380` live tokens, generates `3960` visible tokens,
+records `64.929s` retained wall, `88.001` raw decode tok/s, `75.103`
+effective turn tok/s, `2458.685 tok/s` first prefill, `1864.735 tok/s`
+average append/prefill, `3.219x` retained-vs-replay speedup estimate,
+`6492.909 J` at `100 W`, `9.711 GB` active-plus-cache, `3.153 GiB` RSS, and
+`507.388 GiB` virtual reservation. Cache profile stays bounded at
+`paged_caches=15`, `fixed_caches=0`, `max_local_tokens=512`,
+`max_local_capacity=512`, `max_global_tokens=32768`, and
+`local_window_leaked=false`, with no output-quality flags. Against the same
+llama.cpp Q4_K_M request-context anchor, go-mlx is `7.986s` / `10.95%` faster
+on wall and estimated energy and uses `1.178 GiB` less RSS, but llama.cpp is
+still `1.250x` faster on raw decode and returns `5607` visible tokens versus
+go-mlx's `3960`. Effective visible turn throughput is close but still behind:
+`75.103` versus llama.cpp's `76.898` wall-visible tok/s (`2.33%` gap). This is
+the current production-path evidence row, not final acceptance.
+
+While investigating that retry, the profile stream cancellation
 path was corrected: `driver-profile`, `state-ramp-profile`, and
 `chapter-profile` now cancel generation on live-memory/repetition/end-marker
 guards but continue draining the token channel until the generator closes
