@@ -36,10 +36,45 @@ The current q4 retained-State lane works, but the production benchmark lane is
 not accepted. Fresh 2026-05-24 evidence after the bounded fixed-cache
 state-ramp default shows a real decode recovery, but go-mlx is still behind
 llama.cpp on raw decode. The retained workflow wall-time comparison is useful,
-but must be read with the known llama.cpp thinking/control-channel skew: the
-llama.cpp anchor emits an orphan `<channel|>` marker in every visible turn and
-consumes the full `1024` token budget each time, so its generated and visible
-token counts are inflated relative to the intended answer stream.
+but must be read with visible output counts, output-quality flags, and memory
+figures beside the speed numbers rather than using any one metric as a rescue.
+The old llama.cpp control-channel leakage remains relevant to historical rows,
+but the current request-context comparator below no longer leaks visible
+control markers.
+
+Latest request-context parity row, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-current-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+and
+`/private/tmp/go-mlx-goal/reports/2026-05-24-llamacpp-request-context-memory-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`
+use the same `30k` seed, `10` retained request-context turns, `1024`
+max-token budget, Gemma 4 stop strings, `temperature=1.0`, `top_p=0.95`, and
+`top_k=64`. go-mlx completes `10/10` turns, reaches `48712` live tokens,
+generates `4292` visible tokens, records `71.728s` retained wall, `84.002`
+raw decode tok/s, `72.271` effective turn tok/s, `3.044x` retained-vs-replay
+speedup, `7.173 kJ` estimated energy at `100 W`, `9.948 GB`
+active-plus-cache, `3.155 GiB` RSS, and `568.232 GiB` process virtual
+reservation with no output-quality flags. The memory-capable llama.cpp
+Q4_K_M anchor completes `10/10`, reaches `50037` live tokens, generates
+`5617` tokens / `5607` visible tokens, records `72.915s` wall, `109.997`
+raw decode tok/s from llama.cpp timings, `76.898` wall-visible tok/s,
+`7.291 kJ`, `4.331 GiB` RSS, and `427.141 GiB` virtual, with no control-marker
+leak but one `visible_prompt_analysis` flag on turn 1. Interpretation: go-mlx
+is `1.187s` / `1.63%` faster on wall and estimated energy in this single
+same-shape pair and uses less RSS, but llama.cpp is still `1.309x` faster on
+raw decode and returns more visible content in roughly the same wall time.
+This is useful retained-State evidence, not production acceptance.
+
+Latest request-context token-phase trace, 2026-05-24:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-current-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+captures the same fixture with `-trace-token-phases` for two turns. It
+completes `2/2` turns, generates `1069` visible tokens, and records
+`87.814` raw decode tok/s. The phase summary shows steady token
+`total` at `11.364ms` average, `sample_eval` at `9.804ms`, and next-token
+`forward` graph construction at `1.514ms`. The `sample_eval` bucket is the
+lazy MLX materialisation of the current one-token forward graph plus sampler,
+not ordinary Go-side token sampling. This keeps the next optimisation target
+on a stable/fused one-token graph boundary and KV slotting, not CLI streaming,
+string handling, or visible-output accounting.
 
 Latest prompt-contract note: do not promote output token-count floors into
 acceptance criteria. If a fixture does not give the model enough real turn
@@ -1285,8 +1320,9 @@ Current open gates:
       thinking-channel leakage reported side by side rather than used to hide
       the speed result.
 - [ ] Raw decode is within the acceptable calibration band. The current gap is
-      `1.27x` versus llama.cpp on the clean request-only retained row, so this remains the
-      primary code gap.
+      `1.309x` versus llama.cpp on the fresh memory-capable request-context
+      retained row, so this remains the primary code gap even though go-mlx
+      narrowly wins wall/energy on that single pair.
 - [ ] The default CLI path uses the fastest safe settings without requiring
       hidden extra flags.
 - [ ] Long-output story/book turns remain coherent with `max_tokens` in the
