@@ -14,6 +14,8 @@ from transformers import AutoTokenizer
 from state_ramp_prompts import (
     gemma4_initial_prompt,
     gemma4_turn_prompt,
+    issue_counts,
+    output_issues as prompt_output_issues,
     visible_text,
 )
 
@@ -182,7 +184,7 @@ def main():
             + visible.count("<turn|>")
         )
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
-        output_issues = []
+        output_issues = prompt_output_issues(visible)
         error = ""
         if below_min:
             output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
@@ -278,6 +280,8 @@ def main():
             "peak_process_vsz_bytes": peak_memory.get("vsz_bytes", 0),
             "process_memory_probe_available": memory_available,
             "control_marker_count": sum(turn["control_marker_count"] for turn in turns),
+            "output_issue_turns": sum(1 for turn in turns if turn["output_issues"]),
+            "output_issue_counts": issue_counts(turns),
         },
         "estimated_energy": {
             "method": "estimated_wall_clock_seconds_times_average_active_watts",

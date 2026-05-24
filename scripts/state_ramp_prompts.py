@@ -63,3 +63,82 @@ def visible_text(text: str) -> str:
         _channel, after = rest.split("<channel|>", 1)
         text = before + after
     return text.strip()
+
+
+def output_issues(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    lower = text.lower()
+    issues: list[str] = []
+    if any(marker in text for marker in ("<|channel>", "<channel|>", "<turn|>", "<|turn>")):
+        issues.append("visible_chat_control_token")
+    if fence_only_output(text):
+        issues.append("visible_fence_only")
+    if text.startswith("```"):
+        issues.append("visible_code_fence_prefix")
+    prompt_markers = (
+        "the user is asking",
+        "the user's prompt",
+        "this request asks",
+        "this request is",
+        "the provided request is",
+        "the request is a directive",
+        "the previous turn material",
+        "the core objective is to",
+        "the analysis must focus on",
+        "the analysis must specifically address",
+        "the output should function as",
+        "based on the retained context",
+        "the instruction is to",
+        "this is an engineering session",
+        "the core instruction is to",
+        "seed prompt to preserve",
+        "constraint checklist",
+        "execution plan",
+    )
+    if any(marker in lower for marker in prompt_markers):
+        issues.append("visible_prompt_analysis")
+    if "self-correction" in lower or "self correction" in lower or "i need to act as if" in lower:
+        issues.append("visible_self_correction")
+    if "**Plan:**" in text or "Plan:\n" in text or "**Plan**" in text:
+        issues.append("visible_plan_scaffold")
+    if lower.rstrip(".").strip() == "ready":
+        issues.append("visible_seed_ready_echo")
+    if "i don't have the actual results" in lower or "i do not have the actual results" in lower:
+        issues.append("visible_missing_results_admission")
+    false_completion_markers = (
+        "officially complete",
+        "officially accepted",
+        "officially validated",
+        "is production-ready",
+        "now production-ready",
+        "deemed production-ready",
+        "the implementation is now officially",
+        "superior production candidate",
+        "superior production-ready runner",
+        "achieved a significant milestone",
+        "confirms successful implementation",
+        "validates the entire implementation path",
+    )
+    if any(marker in lower for marker in false_completion_markers):
+        issues.append("visible_false_completion_claim")
+    return issues
+
+
+def fence_only_output(text: str) -> bool:
+    saw_fence = False
+    for char in text:
+        if char == "`":
+            saw_fence = True
+        elif char not in " \n\r\t":
+            return False
+    return saw_fence
+
+
+def issue_counts(turns: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for turn in turns:
+        for issue in turn.get("output_issues") or []:
+            counts[issue] = counts.get(issue, 0) + 1
+    return counts

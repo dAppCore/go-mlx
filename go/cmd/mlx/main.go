@@ -634,6 +634,8 @@ type stateRampProfileSummary struct {
 	ProcessVirtualMemoryBytes  uint64                            `json:"process_virtual_memory_bytes,omitempty"`
 	ProcessResidentMemoryBytes uint64                            `json:"process_resident_memory_bytes,omitempty"`
 	ProcessPeakResidentBytes   uint64                            `json:"process_peak_resident_bytes,omitempty"`
+	OutputIssueTurns           int                               `json:"output_issue_turns,omitempty"`
+	OutputIssueCounts          map[string]int                    `json:"output_issue_counts,omitempty"`
 	TokenPhases                []driverProfileNativeEventSummary `json:"token_phase_summary,omitempty"`
 	NativeEvents               []driverProfileNativeEventSummary `json:"native_events,omitempty"`
 	NativeEventDetails         []driverProfileNativeEventSummary `json:"native_event_details,omitempty"`
@@ -3256,10 +3258,20 @@ func stateRampProfileOutputIssues(output string) []string {
 	if stateRampProfileFenceOnlyOutput(text) {
 		issues = append(issues, "visible_fence_only")
 	}
+	if core.HasPrefix(text, "```") {
+		issues = append(issues, "visible_code_fence_prefix")
+	}
 	if core.Contains(lower, "the user is asking") ||
 		core.Contains(lower, "the user's prompt") ||
 		core.Contains(lower, "this request asks") ||
 		core.Contains(lower, "this request is") ||
+		core.Contains(lower, "the provided request is") ||
+		core.Contains(lower, "the request is a directive") ||
+		core.Contains(lower, "the previous turn material") ||
+		core.Contains(lower, "the core objective is to") ||
+		core.Contains(lower, "the analysis must focus on") ||
+		core.Contains(lower, "the analysis must specifically address") ||
+		core.Contains(lower, "the output should function as") ||
 		core.Contains(lower, "based on the retained context") ||
 		core.Contains(lower, "the instruction is to") ||
 		core.Contains(lower, "this is an engineering session") ||
@@ -3288,7 +3300,12 @@ func stateRampProfileOutputIssues(output string) []string {
 		core.Contains(lower, "is production-ready") ||
 		core.Contains(lower, "now production-ready") ||
 		core.Contains(lower, "deemed production-ready") ||
-		core.Contains(lower, "the implementation is now officially") {
+		core.Contains(lower, "the implementation is now officially") ||
+		core.Contains(lower, "superior production candidate") ||
+		core.Contains(lower, "superior production-ready runner") ||
+		core.Contains(lower, "achieved a significant milestone") ||
+		core.Contains(lower, "confirms successful implementation") ||
+		core.Contains(lower, "validates the entire implementation path") {
 		issues = append(issues, "visible_false_completion_claim")
 	}
 	return issues
@@ -3678,6 +3695,15 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 		}
 		if turn.Metrics.ProcessPeakResidentBytes > summary.ProcessPeakResidentBytes {
 			summary.ProcessPeakResidentBytes = turn.Metrics.ProcessPeakResidentBytes
+		}
+		if len(turn.OutputIssues) > 0 {
+			summary.OutputIssueTurns++
+			if summary.OutputIssueCounts == nil {
+				summary.OutputIssueCounts = map[string]int{}
+			}
+			for _, issue := range turn.OutputIssues {
+				summary.OutputIssueCounts[issue]++
+			}
 		}
 		for _, phase := range turn.Metrics.TokenPhases {
 			accumulateStateRampProfileTokenPhase(&summary, tokenPhaseIndex, "total", phase.TotalDuration)

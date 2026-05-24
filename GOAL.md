@@ -114,6 +114,24 @@ and hot-path checks showing `BenchmarkChat_Format_Gemma4_5Turns` at
 `BenchmarkStateRampProfileOutputIssues_FullResponse` at `1943-1947 ns/op`,
 `192 B/op`, `1 alloc/op`.
 
+Latest benchmark-quality note: the same post-stop-fix row above was reclassified
+with stricter output-quality accounting before the next acceptance rerun. The
+old report carried `output_issues: null`, but the captured text shows `2`
+prompt-analysis turns, `2` false-completion/success-claim turns, `6`
+fence-prefixed turns despite the turn material saying "Do not output code
+blocks", and `1` fence-only turn. `state-ramp-profile` now emits
+`summary.output_issue_turns` and `summary.output_issue_counts`, and the
+llama.cpp / `mlx_lm` comparator harnesses import the same shared detector from
+`scripts/state_ramp_prompts.py`. Acceptance rows must report these counts
+side-by-side with decode, wall time, memory, and energy; a faster row with
+unexplained prompt-analysis or fence-only output is benchmark evidence, not
+product evidence. Verification:
+`go test ./go/cmd/mlx -run 'TestStateRampProfileOutputIssues|TestStateRampProfileSummary_OutputIssueCounts|TestStateRampProfileSummary_ReplayEstimate' -count=1`,
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`,
+and
+`go test ./go/cmd/mlx -bench 'BenchmarkStateRampProfileOutputIssues_FullResponse' -benchmem -run '^$' -count=3`
+(`2878-2892 ns/op`, `192 B/op`, `1 alloc/op`).
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

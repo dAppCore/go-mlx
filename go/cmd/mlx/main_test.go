@@ -1390,9 +1390,9 @@ func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 }
 
 func TestStateRampProfileOutputIssues_Good(t *testing.T) {
-	issues := stateRampProfileOutputIssues("This request asks for prompt analysis. Based on the retained context, the user is asking me for a result. This is an engineering session.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
+	issues := stateRampProfileOutputIssues("```text\nThe provided request is a directive to perform a comprehensive analysis. The output should function as a validation note.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
 
-	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
+	for _, want := range []string{"visible_chat_control_token", "visible_code_fence_prefix", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
 		if !core.SliceContains(issues, want) {
 			t.Fatalf("issues = %v, want %s", issues, want)
 		}
@@ -1424,6 +1424,24 @@ func TestStateRampProfileOutputIssuesRejectsFenceOnly_Good(t *testing.T) {
 	issues = stateRampProfileOutputIssues("```go\nfmt.Println(1)\n```")
 	if core.SliceContains(issues, "visible_fence_only") {
 		t.Fatalf("issues = %v, want real fenced content allowed", issues)
+	}
+	if !core.SliceContains(issues, "visible_code_fence_prefix") {
+		t.Fatalf("issues = %v, want fenced-prefix tag for benchmark-quality accounting", issues)
+	}
+}
+
+func TestStateRampProfileSummary_OutputIssueCounts_Good(t *testing.T) {
+	summary := summariseStateRampProfileTurns(0, 100, []stateRampProfileTurn{
+		{Index: 1, OutputIssues: []string{"visible_prompt_analysis", "visible_code_fence_prefix"}},
+		{Index: 2, OutputIssues: []string{"visible_prompt_analysis"}},
+		{Index: 3},
+	}, stateRampProfileOptions{})
+
+	if summary.OutputIssueTurns != 2 {
+		t.Fatalf("output issue turns = %d, want 2", summary.OutputIssueTurns)
+	}
+	if summary.OutputIssueCounts["visible_prompt_analysis"] != 2 || summary.OutputIssueCounts["visible_code_fence_prefix"] != 1 {
+		t.Fatalf("output issue counts = %+v, want prompt=2 fence=1", summary.OutputIssueCounts)
 	}
 }
 

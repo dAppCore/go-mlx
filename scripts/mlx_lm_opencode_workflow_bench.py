@@ -18,6 +18,8 @@ from mlx_lm.utils import load_model, load_tokenizer
 from state_ramp_prompts import (
     gemma4_initial_prompt,
     gemma4_turn_prompt,
+    issue_counts,
+    output_issues as prompt_output_issues,
     visible_text,
 )
 
@@ -229,7 +231,7 @@ def main():
         visible = visible_text(text)
         visible_tokens = generated_tokens
         below_min = bool(args.turn_min_tokens and visible_tokens < args.turn_min_tokens)
-        output_issues = []
+        output_issues = prompt_output_issues(visible)
         error = ""
         if below_min:
             output_issues.append(f"below_debug_visible_token_floor:{visible_tokens}/{args.turn_min_tokens}")
@@ -325,6 +327,8 @@ def main():
             "effective_turn_tokens_per_sec": generated / turn_wall_seconds if turn_wall_seconds > 0 else 0.0,
             "peak_memory_gb": max((turn["peak_memory_gb"] for turn in turns), default=mx.get_peak_memory() / 1e9),
             "peak_process_rss_bytes": peak_rss_bytes(),
+            "output_issue_turns": sum(1 for turn in turns if turn["output_issues"]),
+            "output_issue_counts": issue_counts(turns),
         },
         "estimated_energy": {
             "method": "estimated_wall_clock_seconds_times_average_active_watts",
