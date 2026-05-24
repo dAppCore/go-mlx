@@ -276,42 +276,6 @@ func TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good(t *testing.T) {
 	}
 }
 
-func TestPagedKVCache_BorrowedMaterializedStateReusesFullBacking_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache BorrowedMaterializedStateReusesFullBacking"
-	if coverageTokens == "" {
-		t.Fatalf("missing coverage tokens for %s", t.Name())
-	}
-	c := NewPagedKVCache(8, 2)
-	k, v := makeKV(4)
-	defer Free(k, v)
-	defer c.Reset()
-
-	state, fullK, fullV := c.UpdateBorrowedPagesMaterialized(k, v, 4)
-	defer state.Free()
-	defer Free(fullK, fullV)
-	if fullK == nil || fullV == nil || fullK.Shape()[2] != 4 || fullV.Shape()[2] != 4 {
-		t.Fatalf("materialized visible shape = %v/%v, want 4-token K/V", fullK, fullV)
-	}
-	if c.materializedKeys == nil || c.materializedVals == nil || c.materializedKeys.Shape()[2] != 8 || c.materializedVals.Shape()[2] != 8 {
-		t.Fatalf("materialized backing shape = %v/%v, want 8-token K/V", c.materializedKeys, c.materializedVals)
-	}
-
-	k1, v1 := makeSingleTokenKV(9)
-	defer Free(k1, v1)
-	next, nextK, nextV := c.UpdateBorrowedPagesMaterialized(k1, v1, 1)
-	defer next.Free()
-	defer Free(nextK, nextV)
-	if nextK == nil || nextV == nil || nextK.Shape()[2] != 5 || nextV.Shape()[2] != 5 {
-		t.Fatalf("next materialized visible shape = %v/%v, want 5-token K/V", nextK, nextV)
-	}
-	if c.materializedLength != 5 || c.Len() != 5 || c.Offset() != 5 {
-		t.Fatalf("materialized len/cache len/offset = %d/%d/%d, want 5/5/5", c.materializedLength, c.Len(), c.Offset())
-	}
-	if err := Eval(nextK, nextV); err != nil {
-		t.Fatalf("Eval materialized visible state: %v", err)
-	}
-}
-
 func TestPagedKVCache_BorrowedPageStateOwnsPartialPreallocSlices_Good(t *testing.T) {
 	coverageTokens := "PagedKVCache BorrowedPageStateOwnsPartialPreallocSlices"
 	if coverageTokens == "" {

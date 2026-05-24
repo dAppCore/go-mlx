@@ -3032,13 +3032,12 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 	}
 }
 
-func TestGemma4_AttentionPagedMaterializedFullKVForOwnerReuse_Good(t *testing.T) {
-	coverageTokens := "Gemma4Attention PagedMaterializedFullKVForOwnerReuse"
+func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T) {
+	coverageTokens := "Gemma4Attention PagedDoesNotRetainFullMaterializedKV"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
-	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE", "1"))
 
 	identity := func() *Array {
 		return FromValues([]float32{
@@ -3089,14 +3088,13 @@ func TestGemma4_AttentionPagedMaterializedFullKVForOwnerReuse_Good(t *testing.T)
 	if !kv2.hasPages() {
 		t.Fatal("owner paged attention did not keep page state")
 	}
-	if !gemma4ValidKV(kv2.Keys, kv2.Values) {
-		t.Fatal("owner paged attention did not return materialized K/V views")
+	if gemma4ValidKV(kv2.Keys, kv2.Values) {
+		t.Fatal("owner paged attention returned retained full-materialized K/V views")
 	}
-	if cache.materializedKeys == nil || cache.materializedVals == nil {
-		t.Fatal("owner paged cache did not retain materialized backing K/V")
-	}
-	if kv2.Keys.Shape()[2] != 2 || cache.materializedKeys.Shape()[2] != 8 {
-		t.Fatalf("materialized visible/backing lengths = %d/%d, want 2/8", kv2.Keys.Shape()[2], cache.materializedKeys.Shape()[2])
+	state := cache.BorrowedPageState()
+	defer state.Free()
+	if state.Length != 2 || len(state.Keys) != 2 || len(state.Values) != 2 {
+		t.Fatalf("paged state = len %d K pages %d V pages %d, want 2/2/2 without materialized backing", state.Length, len(state.Keys), len(state.Values))
 	}
 }
 

@@ -132,6 +132,20 @@ go-mlx's `3960`. Effective visible turn throughput is close but still behind:
 `75.103` versus llama.cpp's `76.898` wall-visible tok/s (`2.33%` gap). This is
 the current production-path evidence row, not final acceptance.
 
+Runtime correction, 2026-05-24: the rejected paged full-K/V materialise owner
+path has now been physically retired from the runtime, not merely left unused
+by benchmark flags. `GO_MLX_ENABLE_PAGED_FULL_KV_MATERIALIZE` is no longer a
+known runtime/reporting gate, Gemma 4 single-token paged attention always
+updates borrowed page state directly, and `PagedKVCache` no longer carries the
+full-materialised backing arrays/helper path that previously made this easy to
+re-enable. Focused verification: `go test ./go/internal/metal -run
+'TestPagedKVCache_BorrowedPageState|TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV|TestRuntimeGate_KnownNativePagedAttention|TestRuntimeGate_KnownPagedKVPrealloc'`,
+`go test ./go -run
+'TestProductionLane|TestRunCommand_ChapterProfileFastLaneDefaults|TestStateRampProfileDefaultCompactionThresholdUsesModelContext'`,
+and `go test ./go/internal/metal ./go/cmd/mlx ./go`. Hot-path check:
+`BenchmarkPagedKVCache_UpdateBorrowedPages_To128` reports `1185060 ns/op`,
+`40 B/op`, `5 allocs/op` on Apple M3 Ultra after the deletion.
+
 While investigating that retry, the profile stream cancellation
 path was corrected: `driver-profile`, `state-ramp-profile`, and
 `chapter-profile` now cancel generation on live-memory/repetition/end-marker
