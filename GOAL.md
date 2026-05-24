@@ -234,6 +234,31 @@ accepted as evidence because the current Homebrew/Python path imports a broken
 the comparator from the repaired parity environment before promoting a new
 external row.
 
+Chat-template diff follow-up: the immediate first-turn `<eos>` is not caused
+by a retained Gemma 4 template mismatch. Rendering the same seed and first turn
+through the local `chat_template.jinja` and through
+`AutoTokenizer.apply_chat_template(..., add_generation_prompt=true)` produces
+the exact byte stream used by the retained State prompt: one leading `<bos>`,
+the retained system turn, `Ready.<turn|>`, then the incremental user turn and
+`<|turn>model\n` suffix without a second BOS in the middle. Greedy diagnostics
+show the old opencode direct fixture is the problem shape, not the wrapper:
+the real first delimited section chooses token `1` (`<eos>`) immediately at
+both `30k` and `4k` live context, and sanitising the two literal
+`<|channel>` / `<channel|>` strings in the seed does not change that result.
+A request-only counterfactual using the same retained seed generates `781`
+visible tokens at `108.204 tok/s` on the `4k` diagnostic, while
+`-turn-prompt-mode reference` avoids the EOS but produces
+`visible_prompt_analysis`. Treat the old direct opencode fixture as rejected
+for product evidence: the next retained workflow benchmark should use a clean
+request-plus-context turn fixture that does not append truncated raw GOAL
+chunks as undifferentiated user text after the actual request. Relevant
+diagnostic artefacts:
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-after-stopset-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`,
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-after-stopset-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-delimited-4k-r1-g1024.json`,
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-reference-after-stopset-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-r1-g1024.json`,
+and
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-simpleturn-greedy-trace-turn1-go-mlx-gemma4-e2b-4bit-opencode-4k-r1-g1024.json`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing
