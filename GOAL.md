@@ -62,6 +62,18 @@ an external comparator issue rather than a go-mlx prompt shape. Verification:
 (`BenchmarkChat_Format_Gemma4_5Turns`: `300.2 ns/op`, `2304 B/op`,
 `1 alloc/op`), and focused state/chapter Gemma 4 prompt tests.
 
+Comparator prompt-contract follow-up: the llama.cpp and `mlx_lm` opencode
+workflow harnesses had drifted from the Go `state-ramp-profile` retained-turn
+wrapper. They still used the older "retained project context" wrapper while
+the Go path uses the stricter current prompt that suppresses scaffold output,
+false completion claims, and reference continuation. Both Python comparator
+harnesses now import `scripts/state_ramp_prompts.py`, sharing the retained
+system prompt, Gemma 4 turn wrappers, and visible-control-channel stripping.
+This does not close the raw decode gap by itself, but it removes a real
+same-workload benchmark skew before the next llama.cpp rerun. Verification:
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`
+and `go test ./go/cmd/mlx -run 'TestStateRampProfileTurnPromptGemma4|TestStateRampProfileInitialPrompt' -count=1`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

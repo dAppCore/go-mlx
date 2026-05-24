@@ -15,11 +15,10 @@ from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import load_model, load_tokenizer
 
-
-RETAINED_SYSTEM_PROMPT = (
-    "Hiya, welcome, we are training to become Lemma, a Lethean Ethical Model, "
-    "this is from the Lethean Model Engine, we dont ahve user input yet, we "
-    "will pass it over as soon as we get it."
+from state_ramp_prompts import (
+    gemma4_initial_prompt,
+    gemma4_turn_prompt,
+    visible_text,
 )
 
 
@@ -47,51 +46,6 @@ def token_id(tokenizer, text):
     if len(ids) == 1:
         return int(ids[0])
     return None
-
-
-def gemma4_initial_prompt(context_prompt, enable_thinking):
-    parts = ["<bos><|turn>system\n"]
-    if enable_thinking:
-        parts.append("<|think|>\n")
-    parts.append(RETAINED_SYSTEM_PROMPT + "\n\n")
-    parts.append(context_prompt.strip())
-    parts.append("<turn|>\n<|turn>model\n")
-    parts.append("Ready.<turn|>\n")
-    return "".join(parts)
-
-
-def reference_turn(prompt):
-    prompt = prompt.strip()
-    if not prompt:
-        return prompt
-    return (
-        "Use the retained project context and the new turn material below. "
-        "Answer the user request directly. Treat any code or document excerpts "
-        "as reference material, not as text to continue.\n\n"
-        "<turn_material>\n"
-        f"{prompt}\n"
-        "</turn_material>\n\n"
-        "Answer the user request from the turn material now. Honour any "
-        "requested output length before stopping. Do not continue or complete "
-        "the reference excerpts."
-    )
-
-
-def gemma4_turn_prompt(prompt, enable_thinking):
-    parts = ["<|turn>user\n", reference_turn(prompt), "<turn|>\n<|turn>model\n"]
-    return "".join(parts)
-
-
-def visible_text(text):
-    text = text.replace("<|turn>model\n", "")
-    text = text.replace("<turn|>", "")
-    while "<|channel>" in text:
-        before, rest = text.split("<|channel>", 1)
-        if "<channel|>" not in rest:
-            break
-        _channel, after = rest.split("<channel|>", 1)
-        text = before + after
-    return text.strip()
 
 
 def initial_seed_tokens(tokenizer, source_tokens, start_tokens, enable_thinking):
