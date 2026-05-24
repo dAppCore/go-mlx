@@ -81,8 +81,7 @@ func BenchmarkProdLane_GatesForContext_LongFormBranch(b *testing.B) {
 }
 
 func BenchmarkProdLane_GatesForContext_HyperLongBranch(b *testing.B) {
-	// 131072 — above LongFormContextLength so the helper rewrites
-	// the slice (drop fixed-cache gates, append paged-decode gate).
+	// 131072 — context length must not rewrite the fast gate set.
 	contextLength := ProductionLaneHyperLongContextLength
 	b.ReportAllocs()
 	b.ResetTimer()

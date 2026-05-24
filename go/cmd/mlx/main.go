@@ -1220,7 +1220,7 @@ func applyGemma4FastLaneDefaults(
 		resolvedContext = *contextLen
 	}
 	restores := []func(){}
-	hyperLongContext := resolvedContext > mlx.ProductionLaneLongFormContextLength
+	fixedCacheDisabled := driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) == "0"
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		if prefillChunkSize != nil && !visited["prefill-chunk-size"] {
 			*prefillChunkSize = mlx.ProductionLaneLongContextPrefillChunkSize
@@ -1229,31 +1229,85 @@ func applyGemma4FastLaneDefaults(
 			*promptChunkBytes = mlx.ProductionLaneLongContextPromptChunkBytes
 		}
 		for _, gate := range mlx.LongContextGemma4FastRuntimeGates() {
-			if hyperLongContext {
-				switch gate {
-				case mlx.Gemma4FastRuntimeGateFixedGemma4Sliding, mlx.Gemma4FastRuntimeGateNativeFixedSliding:
-					continue
-				}
+			if fixedCacheDisabled && gemma4FixedCacheRuntimeGate(gate) {
+				continue
 			}
 			if driverProfileRuntimeGateValue(gate) != "" {
 				continue
 			}
 			restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
 		}
-		if hyperLongContext && driverProfileRuntimeGateValue("GO_MLX_PAGED_KV_PAGE_SIZE") == "" {
-			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_PAGED_KV_PAGE_SIZE", core.Sprintf("%d", mlx.ProductionLaneHyperLongPagedKVPageSize)))
-		}
-		if hyperLongContext && driverProfileRuntimeGateValue("GO_MLX_KV_CACHE_DTYPE") == "" {
-			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneHyperLongKVCacheDType))
+		if driverProfileRuntimeGateValue("GO_MLX_KV_CACHE_DTYPE") == "" {
+			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneRetainedKVCacheDType))
 		}
 	}
 	for _, gate := range mlx.Gemma4FastRuntimeGatesForContext(resolvedContext) {
+		if fixedCacheDisabled && gemma4FixedCacheRuntimeGate(gate) {
+			continue
+		}
 		if driverProfileRuntimeGateValue(gate) != "" {
 			continue
 		}
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "1"))
 	}
 	return restores
+}
+
+func gemma4FixedCacheRuntimeGate(gate string) bool {
+	switch gate {
+	case mlx.Gemma4FastRuntimeGateFixedGemma4Cache,
+		mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		mlx.Gemma4FastRuntimeGateFixedGemma4Sliding,
+		mlx.Gemma4FastRuntimeGateNativeFixedSliding:
+		return true
+	default:
+		return false
+	}
+}
+
+func applyStateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens int) []func() {
+	if driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) == "0" {
+		return nil
+	}
+	if driverProfileRuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE") != "" {
+		return nil
+	}
+	size := stateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens)
+	if size <= 0 {
+		return nil
+	}
+	return []func(){setDriverProfileRuntimeGate("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", core.Sprintf("%d", size))}
+}
+
+func stateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens int) int {
+	limit := targetTokens
+	if compactionThresholdTokens > 0 && (limit <= 0 || compactionThresholdTokens < limit) {
+		limit = compactionThresholdTokens
+	}
+	if limit <= 0 {
+		limit = startTokens
+	}
+	if turnMaxTokens > 0 {
+		limit += turnMaxTokens
+	}
+	if limit < startTokens {
+		limit = startTokens
+	}
+	if limit <= 0 {
+		return 0
+	}
+	return roundUpStateRampPositive(limit, 32)
+}
+
+func roundUpStateRampPositive(value, multiple int) int {
+	if value <= 0 || multiple <= 0 {
+		return value
+	}
+	remainder := value % multiple
+	if remainder == 0 {
+		return value
+	}
+	return value + multiple - remainder
 }
 
 var runDriverProfile = defaultRunDriverProfile
@@ -2525,6 +2579,11 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	if *repeatedSentenceLoopLimit < 1 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated sentence loop limit must be >= 1\n", cliName()))
 		return 2
+	}
+	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
+		for _, restore := range applyStateRampFixedGemma4CacheBudget(*startTokens, *targetTokens, *compactionThresholdTokens, *turnMaxTokens) {
+			defer restore()
+		}
 	}
 
 	loadOptions := []mlx.LoadOption{}

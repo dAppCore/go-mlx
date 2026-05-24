@@ -25,13 +25,12 @@ const (
 	// ProductionLaneLongContextPromptChunkBytes is the proven large-context
 	// prompt chunk size for avoiding repeated giant-string tokenisation.
 	ProductionLaneLongContextPromptChunkBytes = 4096
-	// ProductionLaneHyperLongPagedKVPageSize is the current fastest recorded
-	// paged K/V block size for 100k retained-state runs.
-	ProductionLaneHyperLongPagedKVPageSize = 1024
-	// ProductionLaneHyperLongKVCacheDType is the accepted K/V storage dtype for
-	// hyper-long paged retained-state runs. Shorter fixed-cache lanes keep their
-	// native dtype unless explicitly overridden.
-	ProductionLaneHyperLongKVCacheDType = "fp16"
+	// ProductionLanePagedKVPageSize is the accepted paged K/V block size for
+	// retained-state runs. It is a storage-layout default, not a context cutoff.
+	ProductionLanePagedKVPageSize = 1024
+	// ProductionLaneRetainedKVCacheDType is the accepted K/V storage dtype for
+	// retained-state Gemma 4 runs.
+	ProductionLaneRetainedKVCacheDType = "fp16"
 	// ProductionLaneLongFormContextLength is the default chapter-profile
 	// context for retained long-form agentic generation.
 	ProductionLaneLongFormContextLength = 65536
@@ -77,30 +76,11 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateDirectGreedyToken,
 	Gemma4FastRuntimeGateGenerationStream,
 	Gemma4FastRuntimeGateAsyncDecodePrefetch,
+	Gemma4FastRuntimeGatePagedDecodeFastConcat,
 }
 
 var longContextGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateFixedGemma4Sliding,
-}
-
-// hyperLongGemma4FastRuntimeGates is the precomputed shape returned by
-// Gemma4FastRuntimeGatesForContext when contextLength exceeds the long-form
-// chapter ceiling: the default set with the three fixed-cache gates removed
-// and the paged-decode fast concat gate appended. Computed once at package
-// init so each per-dispatch call just slice-clones it.
-var hyperLongGemma4FastRuntimeGates = buildHyperLongGemma4FastRuntimeGates()
-
-func buildHyperLongGemma4FastRuntimeGates() []string {
-	out := make([]string, 0, len(defaultGemma4FastRuntimeGates)-1)
-	for _, gate := range defaultGemma4FastRuntimeGates {
-		switch gate {
-		case Gemma4FastRuntimeGateFixedGemma4Cache, Gemma4FastRuntimeGateFixedGemma4SharedMask, Gemma4FastRuntimeGateFixedGemma4Sliding:
-			continue
-		default:
-			out = append(out, gate)
-		}
-	}
-	return append(out, Gemma4FastRuntimeGatePagedDecodeFastConcat)
 }
 
 // ProductionLane describes the current package-owned local runtime target.
@@ -149,16 +129,14 @@ func DefaultGemma4FastRuntimeGates() []string {
 }
 
 // Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
-// requested context length. Contexts beyond the long-form chapter lane use
-// paged retained state instead of fixed full-capacity KV buffers.
+// requested context length. Context length alone must not disable fixed Gemma 4
+// K/V: retained workflows use a bounded cache size derived from the run shape
+// instead of falling back to paged state at an arbitrary threshold.
 //
 // Same read-only contract as DefaultGemma4FastRuntimeGates — the shared
 // package-init singletons are returned directly.
 func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
-	if contextLength <= ProductionLaneLongFormContextLength {
-		return defaultGemma4FastRuntimeGates
-	}
-	return hyperLongGemma4FastRuntimeGates
+	return defaultGemma4FastRuntimeGates
 }
 
 // LongContextGemma4FastRuntimeGates returns gates that are accepted only for

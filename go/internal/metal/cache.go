@@ -7,9 +7,7 @@ package metal
 import core "dappco.re/go"
 
 const (
-	defaultPagedKVPageSize       = 512
-	hyperLongPagedKVPageSize     = 1024
-	hyperLongPagedKVSizeBoundary = 65536
+	defaultPagedKVPageSize = 1024
 )
 
 var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"
@@ -1047,9 +1045,6 @@ func resolvePagedKVPageSize(maxSize, requested int) int {
 	pageSize := requested
 	if pageSize <= 0 {
 		pageSize = defaultPagedKVPageSize
-		if maxSize > hyperLongPagedKVSizeBoundary {
-			pageSize = hyperLongPagedKVPageSize
-		}
 	}
 	// Short-circuit the parse when the gate is unset.  In production the env
 	// var is almost always empty; core.ParseInt("", ...) allocates a

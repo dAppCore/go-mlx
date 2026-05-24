@@ -402,25 +402,25 @@ func TestPagedKVCache_PreallocRuntimeGate_Good(t *testing.T) {
 	}
 }
 
-func TestPagedKVCache_HyperLongDefaultPageSize_Good(t *testing.T) {
-	coverageTokens := "PagedKVCache HyperLongDefaultPageSize"
+func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) {
+	coverageTokens := "PagedKVCache DefaultPageSizeDoesNotUseContextCutoff"
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	t.Setenv("GO_MLX_PAGED_KV_PAGE_SIZE", "")
 
 	normal := NewPagedKVCache(32768, 0)
-	hyperLong := NewPagedKVCache(131072, 0)
+	retained := NewPagedKVCache(131072, 0)
 	sliding := NewPagedKVCache(512, 0)
 
 	if normal.pageSize != defaultPagedKVPageSize {
 		t.Fatalf("normal pageSize = %d, want %d", normal.pageSize, defaultPagedKVPageSize)
 	}
-	if hyperLong.pageSize != hyperLongPagedKVPageSize {
-		t.Fatalf("hyperLong pageSize = %d, want %d", hyperLong.pageSize, hyperLongPagedKVPageSize)
+	if retained.pageSize != defaultPagedKVPageSize {
+		t.Fatalf("retained pageSize = %d, want %d", retained.pageSize, defaultPagedKVPageSize)
 	}
-	if sliding.pageSize != defaultPagedKVPageSize {
-		t.Fatalf("sliding pageSize = %d, want %d", sliding.pageSize, defaultPagedKVPageSize)
+	if sliding.pageSize != 512 {
+		t.Fatalf("sliding pageSize = %d, want capped max size 512", sliding.pageSize)
 	}
 }
 

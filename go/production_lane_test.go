@@ -21,8 +21,8 @@ func TestProductionLane_DefaultGemma4E2B_Good(t *testing.T) {
 	if lane.ContextLength != 4096 || lane.MaxTokens != 128 || lane.Runs != 3 {
 		t.Fatalf("profile shape = context:%d tokens:%d runs:%d, want GOAL.md target shape", lane.ContextLength, lane.MaxTokens, lane.Runs)
 	}
-	if ProductionLaneLongContextLength != 32768 || ProductionLaneLongFormContextLength != 65536 || ProductionLaneHyperLongContextLength != 131072 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLaneHyperLongPagedKVPageSize != 1024 || ProductionLaneHyperLongKVCacheDType != "fp16" {
-		t.Fatalf("long context shape = context:%d longform:%d hyper:%d tokens:%d prefill:%d prompt:%d page:%d dtype:%s, want opencode-sized chunk defaults", ProductionLaneLongContextLength, ProductionLaneLongFormContextLength, ProductionLaneHyperLongContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLaneHyperLongPagedKVPageSize, ProductionLaneHyperLongKVCacheDType)
+	if ProductionLaneLongContextLength != 32768 || ProductionLaneLongFormContextLength != 65536 || ProductionLaneHyperLongContextLength != 131072 || ProductionLaneLongFormMaxTokens != 8192 || ProductionLaneLongContextPrefillChunkSize != 512 || ProductionLaneLongContextPromptChunkBytes != 4096 || ProductionLanePagedKVPageSize != 1024 || ProductionLaneRetainedKVCacheDType != "fp16" {
+		t.Fatalf("long context shape = context:%d longform:%d hyper:%d tokens:%d prefill:%d prompt:%d page:%d dtype:%s, want retained-state defaults", ProductionLaneLongContextLength, ProductionLaneLongFormContextLength, ProductionLaneHyperLongContextLength, ProductionLaneLongFormMaxTokens, ProductionLaneLongContextPrefillChunkSize, ProductionLaneLongContextPromptChunkBytes, ProductionLanePagedKVPageSize, ProductionLaneRetainedKVCacheDType)
 	}
 	if lane.IncludeOutput || !lane.TraceTokenPhases {
 		t.Fatalf("profile reporting = include_output:%v trace:%v, want hidden output plus token phase trace", lane.IncludeOutput, lane.TraceTokenPhases)
@@ -67,6 +67,7 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateDirectGreedyToken,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateAsyncDecodePrefetch,
+		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 	} {
 		if !seen[want] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, missing %s", gates, want)
@@ -92,24 +93,26 @@ func TestProductionLane_LongContextGemma4FastRuntimeGates_Good(t *testing.T) {
 	}
 }
 
-func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLong_Good(t *testing.T) {
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLongKeepsFixed_Good(t *testing.T) {
 	gates := Gemma4FastRuntimeGatesForContext(ProductionLaneLongFormContextLength + 1)
 	seen := map[string]bool{}
 	for _, gate := range gates {
 		seen[gate] = true
 	}
-	for _, rejected := range []string{
+	for _, want := range []string{
 		Gemma4FastRuntimeGateFixedGemma4Cache,
 		Gemma4FastRuntimeGateFixedGemma4SharedMask,
-		Gemma4FastRuntimeGateFixedGemma4Sliding,
-		Gemma4FastRuntimeGateNativeFixedSliding,
+		Gemma4FastRuntimeGateGenerationStream,
+		Gemma4FastRuntimeGateAsyncDecodePrefetch,
+		Gemma4FastRuntimeGateExpertIDMatVec,
+		Gemma4FastRuntimeGatePagedDecodeFastConcat,
 	} {
-		if seen[rejected] {
-			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, should exclude %s for hyper-long context", gates, rejected)
+		if !seen[want] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for hyper-long context", gates, want)
 		}
 	}
-	if !seen[Gemma4FastRuntimeGateGenerationStream] || !seen[Gemma4FastRuntimeGateAsyncDecodePrefetch] || !seen[Gemma4FastRuntimeGateExpertIDMatVec] || !seen[Gemma4FastRuntimeGatePagedDecodeFastConcat] {
-		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing non-fixed fast gates", gates)
+	if seen[Gemma4FastRuntimeGateFixedGemma4Sliding] || seen[Gemma4FastRuntimeGateNativeFixedSliding] {
+		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, context helper should not inject long-context-only gates", gates)
 	}
 }
 
