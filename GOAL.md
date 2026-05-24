@@ -74,8 +74,9 @@ Current no-cutoff paged-State correction, 2026-05-24: fixed Gemma 4 K/V is no
 longer a default fast-lane gate. `driver-profile`, `chapter-profile`, and
 `state-ramp-profile` now stay on paged K/V by default, and
 `state-ramp-profile` no longer synthesises
-`GO_MLX_FIXED_GEMMA4_CACHE_SIZE`; explicit fixed-cache settings remain manual
-diagnostic inputs only. The rebuilt smoke
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE`; the profile and bench harnesses now block the
+fixed-cache gates rather than offering a diagnostic shortcut back onto that
+path. The rebuilt smoke
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-smoke-paged-no-fixed-default.json`
 records runtime gates `GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH=1`,
 `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`,
@@ -108,18 +109,23 @@ smoke
 records `paged_caches=15`, `fixed_caches=0`, `local_window_leaked=false`, and
 `114.939 tok/s` decode.
 
-Follow-up sticky-env guard, 2026-05-24: the fast lane now actively writes
-runtime `0` overrides for `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE`,
+Follow-up sticky-env guard, 2026-05-24: the profile/bench harness now actively
+writes runtime `0` overrides for `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE`,
 `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND`,
 `GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK`,
 `GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION`, and
-`GO_MLX_FIXED_GEMMA4_CACHE_SIZE` unless an explicit fixed-cache diagnostic CLI
-flag is present. The native fixed Gemma 4 helpers also let runtime `0`
-override package-init env values, so a sticky shell env can no longer silently
-turn a paged production run back into the old fixed-cache threshold path.
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE` for `driver-profile`, `state-ramp-profile`,
+`state-wake-profile`, `chapter-profile`, and `bench`, including when
+`-fast-gemma4-lane=false`; the same block covers the fixed-owner/model-greedy
+native diagnostics and fixed wide-attention env gates. The old
+`driver-profile` fixed-cache and fixed-owner flags are rejected instead of
+acting as diagnostics. The native fixed Gemma 4 helpers also
+let runtime `0` override package-init env values, so a sticky shell env can no
+longer silently turn a paged production run back into the old fixed-cache
+threshold path.
 Regression coverage:
 `go test ./go/internal/metal -run 'TestRuntimeGate_FixedGemma4ZeroOverrideWins|TestSample_(NewSamplerWithSuppression|NewSamplerWithSuppressionBeforeTopPTopK|SuppressTokenLogits|SuppressTokenLogitsThenTopPTopK|SuppressionGuard)'`,
-`go test ./go/cmd/mlx -run 'TestRunCommand_(StateRampProfileFastLaneIgnoresFixedCacheEnv|StateRampProfileTargetShapeStaysPaged|DriverProfileFastGemma4LaneIgnoresFixedCacheEnv|DriverProfileFastGemma4LaneHyperLongContextStaysPaged|DriverProfileFastGemma4LaneLongContextDefaults)'`,
+`go test ./go/cmd/mlx -run 'TestRunCommand_(DriverProfileFastGemma4LaneCanDisable|DriverProfileGemma4DecodeGateFlags|DriverProfileRejectsFixedCacheFlags|DriverProfileFastGemma4LaneIgnoresFixedCacheEnv|StateRampProfileFastLaneIgnoresFixedCacheEnv)'`,
 and `go test ./go/internal/metal ./go/cmd/mlx ./go` all pass. The related
 suppress-token sampler cache benchmark records
 `BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k` at `3 allocs/op` and

@@ -861,18 +861,11 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	nativeGemma4FFNResidual := fs.Bool("native-gemma4-ffn-residual", false, "enable the opt-in native Gemma 4 MoE FFN residual path")
 	nativeGemma4RouterMatVec := fs.Bool("native-gemma4-router-matvec", false, "enable the opt-in native Gemma 4 router quantized matvec path")
 	nativeGemma4RouterTopK := fs.Bool("native-gemma4-router-topk", false, "enable the opt-in native Gemma 4 router top-k path")
-	nativeGemma4FixedOwnerAttention := fs.Bool("native-gemma4-fixed-owner-attention", false, "enable the opt-in native Gemma 4 fixed-cache owner attention path")
-	nativeGemma4FixedOwnerAttentionResidual := fs.Bool("native-gemma4-fixed-owner-attention-residual", false, "enable the opt-in native Gemma 4 fixed-cache owner attention plus residual path")
 	nativeGemma4AttentionOMatVec := fs.Bool("native-gemma4-attention-o-matvec", false, "enable the opt-in native Gemma 4 attention output matvec path")
 	nativeGemma4ResidualNorm := fs.Bool("native-gemma4-residual-norm", false, "enable the opt-in native Gemma 4 attention residual norm path")
 	nativeGemma4Layer := fs.Bool("native-gemma4-layer", false, "enable the opt-in native Gemma 4 one-token decode layer path")
 	nativeGemma4MoELayer := fs.Bool("native-gemma4-moe-layer", false, "enable the opt-in native Gemma 4 MoE layer path")
-	nativeGemma4ModelGreedy := fs.Bool("native-gemma4-model-greedy", false, "enable the opt-in native Gemma 4 fixed-cache model-level greedy decode path")
 	compiledGemma4Layer := fs.Bool("compiled-gemma4-layer", false, "enable the opt-in compiled Gemma 4 one-token decode layer path")
-	fixedGemma4Cache := fs.Bool("fixed-gemma4-cache", false, "diagnostic only: enable fixed-capacity Gemma 4 cache with -fast-gemma4-lane=false")
-	fixedGemma4SlidingCacheBound := fs.Bool("fixed-gemma4-sliding-cache-bound", false, "diagnostic only: keep Gemma 4 sliding fixed caches at their native window size with -fast-gemma4-lane=false")
-	fixedGemma4SharedMask := fs.Bool("fixed-gemma4-shared-mask", false, "diagnostic only: enable shared fixed-cache Gemma 4 decode mask with -fast-gemma4-lane=false")
-	nativeFixedSlidingAttention := fs.Bool("native-fixed-sliding-attention", false, "diagnostic only: enable native fixed-cache sliding-window attention with -fast-gemma4-lane=false")
 	directGreedyToken := fs.Bool("direct-greedy-token", false, "enable the opt-in direct greedy token decode path")
 	generationStream := fs.Bool("generation-stream", false, "enable the opt-in dedicated MLX stream for generation")
 	generationClearCache := fs.Bool("generation-clear-cache", false, "clear the MLX allocator cache after prefill chunks and periodically during decode")
@@ -899,6 +892,9 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
+	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
+		defer restore()
+	}
 	fastLaneEnabled := driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, *profilePath)
 	if fastLaneEnabled {
 		for _, restore := range applyGemma4FastLaneDefaults(
@@ -970,12 +966,6 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *nativeGemma4RouterTopK {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK", "1")()
 	}
-	if *nativeGemma4FixedOwnerAttention {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION", "1")()
-	}
-	if *nativeGemma4FixedOwnerAttentionResidual {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL", "1")()
-	}
 	if *nativeGemma4AttentionOMatVec {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_ATTENTION_O_MATVEC", "1")()
 	}
@@ -988,24 +978,8 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	if *nativeGemma4MoELayer {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MOE_LAYER", "1")()
 	}
-	if *nativeGemma4ModelGreedy {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY", "1")()
-	}
 	if *compiledGemma4Layer {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_COMPILED_GEMMA4_LAYER", "1")()
-	}
-	if *fixedGemma4Cache && !fastLaneEnabled {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")()
-	}
-	if *fixedGemma4SlidingCacheBound && !fastLaneEnabled {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")()
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND", "1")()
-	}
-	if *fixedGemma4SharedMask && !fastLaneEnabled {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK", "1")()
-	}
-	if *nativeFixedSlidingAttention && !fastLaneEnabled {
-		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_NATIVE_FIXED_SLIDING_ATTENTION", "1")()
 	}
 	if *directGreedyToken {
 		defer setDriverProfileRuntimeGate("GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN", "1")()
@@ -1222,7 +1196,7 @@ func applyGemma4FastLaneDefaults(
 	if contextLen != nil {
 		resolvedContext = *contextLen
 	}
-	restores := disableGemma4FixedCacheFastLaneDefaults()
+	restores := disableGemma4FixedCacheRuntimeGates()
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		if prefillChunkSize != nil && !visited["prefill-chunk-size"] {
 			*prefillChunkSize = mlx.ProductionLaneLongContextPrefillChunkSize
@@ -1249,13 +1223,19 @@ func applyGemma4FastLaneDefaults(
 	return restores
 }
 
-func disableGemma4FixedCacheFastLaneDefaults() []func() {
+func disableGemma4FixedCacheRuntimeGates() []func() {
 	restores := []func(){}
 	for _, gate := range []string{
 		mlx.Gemma4FastRuntimeGateFixedGemma4Cache,
 		mlx.Gemma4FastRuntimeGateFixedGemma4Sliding,
 		mlx.Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		mlx.Gemma4FastRuntimeGateNativeFixedSliding,
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION_RESIDUAL",
+		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
+		"GO_MLX_ENABLE_FIXED_WIDE_SDPA_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_WIDE_MATMUL_ATTENTION",
+		"GO_MLX_ENABLE_FIXED_ROW_CACHE_UPDATE",
 	} {
 		restores = append(restores, setDriverProfileRuntimeGate(gate, "0"))
 	}
@@ -2340,6 +2320,9 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
+	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
+		defer restore()
+	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -4544,6 +4527,9 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
+	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
+		defer restore()
+	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -5080,6 +5066,9 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
+	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
+		defer restore()
+	}
 	if *fastGemma4Lane {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
@@ -7904,6 +7893,9 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 2
 	}
 	visitedFlags := driverProfileVisitedFlags(fs)
+	for _, restore := range disableGemma4FixedCacheRuntimeGates() {
+		defer restore()
+	}
 	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, *profilePath) {
 		for _, restore := range applyGemma4FastLaneDefaults(
 			visitedFlags,
