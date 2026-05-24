@@ -155,6 +155,21 @@ focused region benchmark now records `BorrowRefBytes` at `29.71 ns/op`,
 `31.61 ns/op`, `0 B/op`, `0 allocs/op` versus `650.2 ns/op`, `64 B/op`,
 `1 alloc/op`.
 
+Third State restore code update, same date: partial-prefix
+`LoadPrefixFromStateBlocksWithOptions` now stream-assembles the covering State
+blocks instead of first retaining a `[]Block` and all per-block snapshots for
+`AssembleBlocks`. When the requested prefix lands inside the final covering
+block, that block is sliced before append, so the wake path does not copy the
+over-covering K/V bytes only to discard them in a second assembled snapshot
+slice. Focused hot-path deltas on the Apple M3 Ultra:
+`BenchmarkMultiblock_LoadPrefix_HalfBlocks` moved from `23802 ns/op`,
+`101632 B/op`, `39 allocs/op` to `19197 ns/op`, `78064 B/op`,
+`37 allocs/op`; `BenchmarkMultiblock_LoadPrefix_ThreeQuarterBlocks` moved from
+`30271 ns/op`, `139798 B/op`, `46 allocs/op` to `26940 ns/op`,
+`105430 B/op`, `44 allocs/op`; and the mixed save/load/slice/save lifecycle now
+records `53698 ns/op`, `193201 B/op`, `103 allocs/op`. This is a restore-path
+memory/copy reduction, not the final true mmap-to-MLX zero-copy handoff.
+
 The content caveat remains: the short wake output is prompt-analysis text, so
 this is format/continuity evidence only.
 

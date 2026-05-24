@@ -1520,6 +1520,108 @@ func loadAndAssembleStateBlocks(ctx context.Context, store state.Store, bundle *
 	return assembled, nil
 }
 
+func loadAndAssembleStateBlockPrefix(ctx context.Context, store state.Store, bundle *StateBlockBundle, prefixTokens int, opts LoadOptions) (*Snapshot, error) {
+	blockCount, err := stateBlockPrefixCoverage(bundle, prefixTokens)
+	if err != nil {
+		return nil, err
+	}
+	var assembled *Snapshot
+	var lastBlock *Snapshot
+	for index := range blockCount {
+		ref := bundle.Blocks[index]
+		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
+		if err != nil {
+			return nil, err
+		}
+		if block.Snapshot == nil {
+			return nil, errBlockNil
+		}
+		if block.Index != ref.Index || block.TokenStart != ref.TokenStart || block.TokenCount != ref.TokenCount {
+			return nil, errBlockMetadataMismatch
+		}
+		if len(block.Snapshot.Tokens) != ref.TokenCount {
+			return nil, errBlockTokenCountMismatch
+		}
+		blockSnapshot := block.Snapshot
+		if ref.TokenStart+ref.TokenCount > prefixTokens {
+			trimEnd := prefixTokens - ref.TokenStart
+			if trimEnd <= 0 {
+				break
+			}
+			baseOffset := EffectiveTokenOffset(blockSnapshot) - EffectiveSeqLen(blockSnapshot)
+			if baseOffset < 0 {
+				baseOffset = ref.TokenStart
+			}
+			blockSnapshot, err = blockSnapshot.SliceBlock(0, trimEnd, baseOffset, false)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if assembled == nil {
+			first := blockSnapshot
+			assembled = &Snapshot{
+				Version:       first.Version,
+				Architecture:  first.Architecture,
+				NumLayers:     first.NumLayers,
+				NumHeads:      first.NumHeads,
+				HeadDim:       first.HeadDim,
+				NumQueryHeads: first.NumQueryHeads,
+				Layers:        emptyKVSnapshotLayers(first.Layers),
+				Tokens:        make([]int32, 0, prefixTokens),
+			}
+			preSizeAssembledRawBytesFromFirst(assembled, first, blockCount)
+		}
+		if err := appendKVSnapshotBlock(assembled, blockSnapshot); err != nil {
+			return nil, err
+		}
+		lastBlock = blockSnapshot
+	}
+	if assembled == nil || lastBlock == nil {
+		return nil, errPrefixNoCoveringBlocks
+	}
+	assembled.Generated = core.SliceClone(lastBlock.Generated)
+	assembled.TokenOffset = lastBlock.TokenOffset
+	assembled.LogitShape = core.SliceClone(lastBlock.LogitShape)
+	assembled.Logits = core.SliceClone(lastBlock.Logits)
+	if assembled.TokenOffset == 0 {
+		assembled.TokenOffset = len(assembled.Tokens)
+	}
+	return assembled, nil
+}
+
+func stateBlockPrefixCoverage(bundle *StateBlockBundle, prefixTokens int) (int, error) {
+	if bundle == nil || len(bundle.Blocks) == 0 {
+		return 0, errPrefixNoCoveringBlocks
+	}
+	nextStart := 0
+	totalTokens := 0
+	blockCount := 0
+	for index, ref := range bundle.Blocks {
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
+		if ref.Index != index {
+			return 0, errBlocksOutOfOrder
+		}
+		if ref.TokenStart != nextStart || ref.TokenCount <= 0 {
+			return 0, errBlocksNotContiguous
+		}
+		nextStart += ref.TokenCount
+		totalTokens += ref.TokenCount
+		blockCount++
+		if totalTokens >= prefixTokens {
+			break
+		}
+	}
+	if blockCount == 0 {
+		return 0, errPrefixNoCoveringBlocks
+	}
+	if totalTokens < prefixTokens {
+		return 0, errPrefixBlocksNoCover
+	}
+	return blockCount, nil
+}
+
 // preSizeAssembledRawBytesFromFirst pre-allocates per-head KeyBytes /
 // ValueBytes buffers in assembled by extrapolating from the first
 // block's byte count × the block count — cheaper than the full-blocks
@@ -1598,19 +1700,7 @@ func LoadPrefixFromStateBlocksWithOptions(ctx context.Context, store state.Store
 	if prefixTokens > bundle.TokenCount {
 		return nil, errPrefixExceedsBundle
 	}
-	refs := stateBlockRefsForPrefix(bundle, prefixTokens)
-	if len(refs) == 0 {
-		return nil, errPrefixNoCoveringBlocks
-	}
-	blocks := make([]Block, 0, len(refs))
-	for _, ref := range refs {
-		block, err := LoadStateBlockWithOptions(ctx, store, ref, opts)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, block)
-	}
-	snapshot, err := AssembleBlocks(blocks)
+	snapshot, err := loadAndAssembleStateBlockPrefix(ctx, store, bundle, prefixTokens, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1731,20 +1821,6 @@ func LoadPrefixTokensFromStateBlocksWithOptions(ctx context.Context, store state
 		return nil, errTokenPrefixNoCover
 	}
 	return tokens[:prefixTokens], nil
-}
-
-func stateBlockRefsForPrefix(bundle *StateBlockBundle, prefixTokens int) []StateBlockRef {
-	refs := make([]StateBlockRef, 0, len(bundle.Blocks))
-	for _, ref := range bundle.Blocks {
-		if ref.TokenStart >= prefixTokens {
-			break
-		}
-		refs = append(refs, ref)
-		if ref.TokenStart+ref.TokenCount >= prefixTokens {
-			break
-		}
-	}
-	return refs
 }
 
 func ValidateStateBlockBundle(bundle *StateBlockBundle) error {

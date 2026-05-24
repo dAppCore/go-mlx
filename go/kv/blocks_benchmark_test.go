@@ -53,6 +53,23 @@ func BenchmarkLoadPrefixFromStateBlocks_NativeLayerSingleHeadSlabThreeBlocks(b *
 	}
 }
 
+func BenchmarkLoadPrefixFromStateBlocks_NativeLayerSingleHeadSlabPartialPrefix(b *testing.B) {
+	ctx := context.Background()
+	store, bundle := benchmarkNativeLayerSlabStateBlocksFixture(b)
+	prefixTokens := 1024
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		snapshot, err := LoadPrefixFromStateBlocksWithOptions(ctx, store, bundle, prefixTokens, LoadOptions{RawKVOnly: true})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(snapshot.Tokens) != prefixTokens {
+			b.Fatalf("tokens = %d, want %d", len(snapshot.Tokens), prefixTokens)
+		}
+		stateBlocksBenchmarkSnapshot = snapshot
+	}
+}
+
 func BenchmarkSaveStateBlocks_NativeLayerSingleHeadSlabThreeBlocks(b *testing.B) {
 	ctx := context.Background()
 	snapshot := benchmarkNativeLayerSlabSnapshot(1536, 1, 64)
