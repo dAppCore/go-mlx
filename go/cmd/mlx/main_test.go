@@ -1430,6 +1430,24 @@ func TestStateRampProfileOutputIssuesRejectsFenceOnly_Good(t *testing.T) {
 	}
 }
 
+func TestStateRampProfileOutputIssuesRejectsRepeatedTableCell_Good(t *testing.T) {
+	builder := core.NewBuilder()
+	builder.WriteString("| Llama.cpp | 1.14x")
+	for i := 0; i < profileRepeatedTableCellLoopLimit; i++ {
+		builder.WriteString(" | LLM")
+	}
+	builder.WriteString(" |")
+
+	issues := stateRampProfileOutputIssues(builder.String())
+	if !core.SliceContains(issues, "visible_repeated_table_cell") {
+		t.Fatalf("issues = %v, want visible_repeated_table_cell", issues)
+	}
+	issues = stateRampProfileOutputIssues("| runner | speed |\n| --- | ---: |\n| go-mlx | 1.0x |\n| llama.cpp | 1.1x |")
+	if core.SliceContains(issues, "visible_repeated_table_cell") {
+		t.Fatalf("issues = %v, want normal compact table allowed", issues)
+	}
+}
+
 func TestStateRampProfileSummary_OutputIssueCounts_Good(t *testing.T) {
 	summary := summariseStateRampProfileTurns(0, 100, []stateRampProfileTurn{
 		{Index: 1, OutputIssues: []string{"visible_prompt_analysis", "visible_code_fence_prefix"}},
@@ -1490,6 +1508,15 @@ func TestStateRampProfileTurnPromptDirectGemma_Good(t *testing.T) {
 		if core.Contains(prompt, rejected) {
 			t.Fatalf("prompt = %q, should not contain wrapper text %q", prompt, rejected)
 		}
+	}
+}
+
+func TestStateRampProfileInitialPromptGemma4MatchesModelTemplate_Good(t *testing.T) {
+	prompt := stateRampProfileInitialPrompt("gemma4", "Seed arc", false)
+	want := "<bos><|turn>system\n" + defaultStateRampRetainedSystemPrompt + "\n\nSeed arc<turn|>\n<|turn>model\nReady.<turn|>\n"
+
+	if prompt != want {
+		t.Fatalf("prompt = %q, want native Gemma 4 retained-template shape %q", prompt, want)
 	}
 }
 

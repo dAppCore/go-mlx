@@ -432,6 +432,7 @@ const (
 	chapterProfileDefaultMinTokens                = 0
 	profileDefaultRepeatedLineLoopLimit           = 24
 	profileDefaultRepeatedSentenceLoopLimit       = 4
+	profileRepeatedTableCellLoopLimit             = 24
 	profileFragmentedSentenceMinCount             = 12
 	profileFragmentedSentenceRatio                = 0.35
 	chapterProfileEndMarker                       = "[[END_CHAPTER]]"
@@ -3258,6 +3259,9 @@ func stateRampProfileOutputIssues(output string) []string {
 	if stateRampProfileFenceOnlyOutput(text) {
 		issues = append(issues, "visible_fence_only")
 	}
+	if _, _, ok := stateRampProfileRepeatedTableCellOutput(text); ok {
+		issues = append(issues, "visible_repeated_table_cell")
+	}
 	if core.HasPrefix(text, "```") {
 		issues = append(issues, "visible_code_fence_prefix")
 	}
@@ -3309,6 +3313,38 @@ func stateRampProfileOutputIssues(output string) []string {
 		issues = append(issues, "visible_false_completion_claim")
 	}
 	return issues
+}
+
+func stateRampProfileRepeatedTableCellOutput(text string) (string, int, bool) {
+	if !core.Contains(text, "|") {
+		return "", 0, false
+	}
+	counts := map[string]int{}
+	for _, raw := range core.Split(text, "|") {
+		cell := core.Lower(core.Trim(raw))
+		if cell == "" || len(cell) > 16 || stateRampProfileTableSeparatorCell(cell) {
+			continue
+		}
+		counts[cell]++
+		if counts[cell] >= profileRepeatedTableCellLoopLimit {
+			return cell, counts[cell], true
+		}
+	}
+	return "", 0, false
+}
+
+func stateRampProfileTableSeparatorCell(cell string) bool {
+	if cell == "" {
+		return false
+	}
+	for _, r := range cell {
+		switch r {
+		case '-', ':', ' ':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func stateRampProfileFenceOnlyOutput(text string) bool {

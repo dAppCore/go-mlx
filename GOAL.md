@@ -142,6 +142,27 @@ without changing any other benchmark dimension. Verification:
 `python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`
 and a local direct/reference prompt render check.
 
+Latest direct-mode quality rerun: the local Gemma 4 `chat_template.jinja` was
+checked against the state-ramp retained seed shape and full replay shape; the
+prompt template itself is not the current diff. A fresh direct-mode go-mlx row
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-direct-after-quality-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`
+completed `10/10` turns from `30k` to `62028` live tokens, generated `5495`
+tokens, and records `82.262 tok/s` raw decode, `66.360 tok/s` effective turn
+throughput, `95.142s` retained wall time, `2431.804 tok/s` cold prefill,
+`1657.532 tok/s` average append/prefill, `9.996 GB` active-plus-cache memory,
+and a `2.804x` retained-vs-replayed speedup estimate. It removes the previous
+reference-wrapper prompt-analysis and code-fence artefacts, but it is still not
+an acceptance row: turn `7` was asked for `700` to `1000` tokens of prose and
+instead looped a table cell (`LLM`) to the token budget. Both Go and Python
+quality accounting now tag this as `visible_repeated_table_cell`, so the row is
+benchmark evidence for direct-mode throughput only, not product evidence.
+Verification:
+`go test ./go/cmd/mlx -run 'TestStateRampProfile(OutputIssues|InitialPromptGemma4|Summary_OutputIssueCounts)' -count=1`,
+`python3 -m py_compile scripts/state_ramp_prompts.py scripts/llamacpp_opencode_workflow_bench.py scripts/mlx_lm_opencode_workflow_bench.py`,
+`go test ./go/cmd/mlx -bench 'BenchmarkStateRampProfileOutputIssues_FullResponse' -benchmem -run '^$' -count=3`
+(`3097-3194 ns/op`, `192 B/op`, `1 alloc/op`), `go test ./go/... -count=1`,
+`git diff --check`, and `go build -o /private/tmp/go-mlx-goal/bin/lthn-mlx ./go/cmd/mlx`.
+
 Latest State continuity note: `state-ramp-profile` now treats `-fold-store` as
 the append-only State log it claims to be. Folding opens an existing `.mvlog`
 and appends checkpoint/folded records instead of truncating it; only a missing

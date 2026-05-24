@@ -10,6 +10,8 @@ RETAINED_SYSTEM_PROMPT = (
     "will pass it over as soon as we get it."
 )
 
+REPEATED_TABLE_CELL_LOOP_LIMIT = 24
+
 
 def gemma4_initial_prompt(context_prompt: str, enable_thinking: bool, explicit_bos: bool = True) -> str:
     parts = []
@@ -77,6 +79,8 @@ def output_issues(text: str) -> list[str]:
         issues.append("visible_chat_control_token")
     if fence_only_output(text):
         issues.append("visible_fence_only")
+    if repeated_table_cell_output(text):
+        issues.append("visible_repeated_table_cell")
     if text.startswith("```"):
         issues.append("visible_code_fence_prefix")
     prompt_markers = (
@@ -126,6 +130,24 @@ def output_issues(text: str) -> list[str]:
     if any(marker in lower for marker in false_completion_markers):
         issues.append("visible_false_completion_claim")
     return issues
+
+
+def repeated_table_cell_output(text: str) -> bool:
+    if "|" not in text:
+        return False
+    counts: dict[str, int] = {}
+    for raw in text.split("|"):
+        cell = raw.strip().lower()
+        if not cell or len(cell) > 16 or table_separator_cell(cell):
+            continue
+        counts[cell] = counts.get(cell, 0) + 1
+        if counts[cell] >= REPEATED_TABLE_CELL_LOOP_LIMIT:
+            return True
+    return False
+
+
+def table_separator_cell(cell: str) -> bool:
+    return bool(cell) and all(char in "-: " for char in cell)
 
 
 def fence_only_output(text: str) -> bool:
