@@ -423,6 +423,21 @@ non-compiled sampler row despite a tiny `sample_eval` movement
 IDEAS.md compile-first lane, but do not route production sampling through a
 shape-specific compiled closure.
 
+Prepared-sampler prefetch diagnostic, 2026-05-24: a retained-session experiment
+split the deterministic top-k/top-p candidate work from the random categorical
+draw and queued those candidate tensors in the existing async next-logits
+prefetch. The microbench looked useful (`PreparedTopKThenTopPTokenOnly` at
+`244001 ns/op`, `0 B/op`, `0 allocs/op` versus the normal top-k/top-p row at
+`545400 ns/op`, `24 B/op`, `3 allocs/op`), but the real retained trace rejected
+it. `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-prepared-sampler-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+completed `2/2` turns with paged K/V, `fixed_caches=0`,
+`local_window_leaked=false`, and `831` visible tokens, but raw decode fell to
+`81.33817878691531 tok/s`; `prefetch` rose to `7352243 ns/token` and
+`sample_eval` stayed high at `3370402 ns/token`. Interpretation: prefetching
+the deterministic sampler candidate graph just moves more MLX work into the
+same next-token materialisation boundary; it is not the larger stable graph
+fix that IDEAS.md is pointing at. Do not keep this path in production code.
+
 Latest prompt-contract note: do not promote output token-count floors into
 acceptance criteria. If a fixture does not give the model enough real turn
 content to continue for ten turns, that is a fixture failure, not a model or

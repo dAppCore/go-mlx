@@ -212,5 +212,9 @@ touched by the most recent token update. This is accepted because it improves
 the same 10-turn retained request-context row from `84.633` to `86.125 tok/s`
 raw decode and from `72.744` to `73.839 tok/s` effective throughput while
 preserving paged K/V, bounded 512-token local windows, and no fixed caches.
-The next optimisation should still target the larger MLX graph/eval boundary
-directly without changing the paged retained-State semantics.
+The rejected prepared-sampler prefetch probe confirms that splitting the
+deterministic top-k/top-p candidate graph is still too small: it improved a
+sampler-only microbench but regressed the real retained trace to `81.338 tok/s`
+and left `sample_eval` around `3.37 ms/token`. The next optimisation should
+still target the larger MLX graph/eval boundary directly without changing the
+paged retained-State semantics.
