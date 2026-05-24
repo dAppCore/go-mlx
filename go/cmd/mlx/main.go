@@ -2271,7 +2271,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	enableThinking := fs.Bool("enable-thinking", false, "enable Gemma 4 thinking control token in the retained state ramp prompts")
 	startTokens := fs.Int("start-tokens", 30000, "initial warmed-state token target")
 	targetTokens := fs.Int("target-tokens", 100000, "final live-state token target")
-	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses target tokens")
+	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses the context window")
 	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
 	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
@@ -2286,7 +2286,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	suppressEOS := fs.Bool("suppress-eos", false, "suppress the tokenizer EOS token during generated turns")
 	includeOutput := fs.Bool("include-output", false, "include generated text in the report")
 	traceTokenPhases := fs.Bool("trace-token-phases", false, "include per-token retained decode phase timings in turn metrics and summary")
-	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold; deprecated because -fold-store enables overflow folding")
+	foldOnExhaustion := fs.Bool("fold-on-exhaustion", false, "checkpoint, fold, wake, and continue from a fresh state when the context reaches the compaction threshold/window; deprecated because -fold-store enables overflow folding")
 	foldOnDegradation := fs.Bool("fold-on-degradation", false, "checkpoint, fold, wake, and continue from a fresh state when inspected output degrades before the target")
 	degradationMinConsecutive := fs.Int("degradation-min-consecutive-turns", 2, "consecutive output-issue turns required before folding on retained-content degradation")
 	foldStorePath := fs.String("fold-store", "", "append-only state store path for folded-state checkpoint artefacts")
@@ -2421,8 +2421,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction threshold tokens must be >= 0\n", cliName()))
 		return 2
 	}
-	if *compactionThresholdTokens == 0 {
-		*compactionThresholdTokens = *targetTokens
+	if *compactionThresholdTokens == 0 && *contextLen > 0 {
+		*compactionThresholdTokens = *contextLen
 	}
 	if *compactionTailTokens < 0 {
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: compaction tail tokens must be >= 0\n", cliName()))
@@ -2773,7 +2773,12 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		report.Error = err.Error()
 		return report, err
 	}
-	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(model.Info()))
+	modelInfo := model.Info()
+	if opts.CompactionThresholdTokens <= 0 {
+		opts.CompactionThresholdTokens = stateRampProfileDefaultCompactionThreshold(opts, modelInfo)
+	}
+	report.CompactionThresholdTokens = opts.CompactionThresholdTokens
+	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(modelInfo))
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
 	report.SafetyLimits = opts.SafetyLimits
 	defer model.Close()
@@ -2781,7 +2786,7 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		report.Error = err.Error()
 		return report, err
 	}
-	opts.ChatTemplate = chapterProfileTemplate(opts.ChatTemplate, model.Info().Architecture)
+	opts.ChatTemplate = chapterProfileTemplate(opts.ChatTemplate, modelInfo.Architecture)
 	report.ChatTemplate = opts.ChatTemplate
 	tok := model.Tokenizer()
 	if tok == nil {
@@ -2945,8 +2950,8 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	if opts.TargetTokens <= 0 {
 		opts.TargetTokens = 100000
 	}
-	if opts.CompactionThresholdTokens <= 0 {
-		opts.CompactionThresholdTokens = opts.TargetTokens
+	if opts.CompactionThresholdTokens < 0 {
+		opts.CompactionThresholdTokens = 0
 	}
 	if opts.CompactionTailTokens < 0 {
 		opts.CompactionTailTokens = 0
@@ -3029,6 +3034,16 @@ func stateRampProfileLiveTokenLimit(opts stateRampProfileOptions) int {
 		limit = opts.CompactionThresholdTokens
 	}
 	return limit
+}
+
+func stateRampProfileDefaultCompactionThreshold(opts stateRampProfileOptions, info mlx.ModelInfo) int {
+	if opts.CompactionThresholdTokens > 0 {
+		return opts.CompactionThresholdTokens
+	}
+	if info.ContextLength > 0 {
+		return info.ContextLength
+	}
+	return opts.TargetTokens
 }
 
 func repeatedStateRampTokens(source []int32, offset, count int) []int32 {
@@ -4004,9 +4019,6 @@ func annotateStateRampProfileContextLifecycle(summary *stateRampProfileSummary, 
 		return
 	}
 	threshold := opts.CompactionThresholdTokens
-	if threshold <= 0 {
-		threshold = opts.TargetTokens
-	}
 	if threshold <= 0 {
 		return
 	}

@@ -583,6 +583,17 @@ next canonical runtime report set is regenerated:
   and the output issue detector now flags `this is an engineering session`,
   `seed prompt to preserve`, `this request asks`, `based on the retained
   context`, and checklist/plan scaffolds as `visible_prompt_analysis`.
+- `2026-05-24` scheduling correction: `state-ramp-profile` now resolves the
+  default compaction threshold from the configured/model context window, not
+  the benchmark `target-tokens`. With the Gemma 4 fast lane this keeps the
+  default overflow boundary at `131072` tokens, so a `100000` token benchmark
+  target can stop normally without creating a folded State. Explicit lower
+  `-compaction-threshold-tokens` values still set the overflow boundary for
+  diagnostics. Regression coverage:
+  `TestRunCommand_StateRampProfileJSON_Good`,
+  `TestRunCommand_StateRampProfileTurnForcedCompactionRemoved_Bad`,
+  `TestStateRampProfileContextLifecycle_TargetBelowWindowDoesNotFold_Good`,
+  and `TestStateRampProfileDefaultCompactionThresholdUsesModelContext_Good`.
 - Production folded-summary path, 2026-05-24: `state-ramp-profile` now exposes
   `-fold-summary-generate`, `-fold-summary-prompt[-file]`, and
   `-fold-summary-max-tokens`. When enabled, the live session generates a

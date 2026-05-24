@@ -726,8 +726,8 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
 		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
 	}
-	if gotCfg.CompactionThresholdTokens != 100000 || gotCfg.CompactionTailTokens != 8192 {
-		t.Fatalf("state ramp compaction cfg = threshold:%d tail:%d, want target-backed folded-state defaults", gotCfg.CompactionThresholdTokens, gotCfg.CompactionTailTokens)
+	if gotCfg.CompactionThresholdTokens != mlx.ProductionLaneHyperLongContextLength || gotCfg.CompactionTailTokens != 8192 {
+		t.Fatalf("state ramp compaction cfg = threshold:%d tail:%d, want context-window folded-state defaults", gotCfg.CompactionThresholdTokens, gotCfg.CompactionTailTokens)
 	}
 	if gotCfg.FoldContinuePrompt != defaultStateRampFoldContinuePrompt || !core.Contains(gotCfg.FoldContinuePrompt, "The compacted State is live") {
 		t.Fatalf("fold continue prompt = %q, want concise final-answer default", gotCfg.FoldContinuePrompt)
@@ -751,7 +751,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"model_path": "/models/demo"`,
 		`"start_tokens": 30000`,
 		`"target_tokens": 100000`,
-		`"compaction_threshold_tokens": 100000`,
+		`"compaction_threshold_tokens": 131072`,
 		`"compaction_tail_tokens": 8192`,
 		`"chat_template": "gemma4"`,
 		`"enable_thinking": true`,
@@ -1182,22 +1182,27 @@ func TestRunCommand_StateRampProfileFoldStoreValidation_Bad(t *testing.T) {
 	}
 }
 
-func TestRunCommand_StateRampProfileFoldAfterTurnRemoved_Bad(t *testing.T) {
+func TestRunCommand_StateRampProfileTurnForcedCompactionRemoved_Bad(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
 	runStateRampProfile = func(context.Context, string, []mlx.LoadOption, stateRampProfileOptions) (*stateRampProfileReport, error) {
-		t.Fatal("runStateRampProfile called for removed fold-after-turn flag")
+		t.Fatal("runStateRampProfile called for removed fixed-turn compaction flag")
 		return nil, nil
 	}
-	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	for _, flagName := range []string{"fold-after-turn", "compact-after-turn"} {
+		t.Run(flagName, func(t *testing.T) {
+			stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-fold-after-turn", "5", "/models/demo"}, stdout, stderr)
+			code := runCommand(context.Background(), []string{"state-ramp-profile", "-" + flagName, "5", "/models/demo"}, stdout, stderr)
 
-	if code != 2 {
-		t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
-	}
-	if !core.Contains(stderr.String(), "flag provided but not defined: -fold-after-turn") {
-		t.Fatalf("stderr = %q, want removed flag validation", stderr.String())
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+			want := "flag provided but not defined: -" + flagName
+			if !core.Contains(stderr.String(), want) {
+				t.Fatalf("stderr = %q, want removed flag validation %q", stderr.String(), want)
+			}
+		})
 	}
 }
 
@@ -1887,6 +1892,57 @@ func TestStateRampProfileContextLifecycle_Good(t *testing.T) {
 	}
 	if !core.Contains(summary.CompactionReason, "prefill a folded state") {
 		t.Fatalf("compaction reason = %q, want folded-state instruction", summary.CompactionReason)
+	}
+}
+
+func TestStateRampProfileContextLifecycle_TargetBelowWindowDoesNotFold_Good(t *testing.T) {
+	opts := stateRampProfileOptions{
+		TargetTokens:              100000,
+		CompactionThresholdTokens: mlx.ProductionLaneHyperLongContextLength,
+		CompactionTailTokens:      8192,
+		Turns:                     10,
+	}
+	if !shouldRunStateRampTurn(1, 99999, opts) {
+		t.Fatal("turn before benchmark target does not run")
+	}
+	if shouldRunStateRampTurn(2, 100000, opts) {
+		t.Fatal("turn at benchmark target still runs")
+	}
+
+	summary := summariseStateRampProfileTurns(time.Second, 90000, []stateRampProfileTurn{
+		{
+			Index:               1,
+			TokensAfterGenerate: 100000,
+			VisibleTokens:       100,
+			Metrics: mlx.Metrics{
+				GeneratedTokens: 100,
+				DecodeDuration:  time.Second,
+			},
+		},
+	}, opts)
+
+	if summary.ContextExhausted || summary.FoldedStateRequired {
+		t.Fatalf("summary lifecycle = exhausted:%v folded:%v, want benchmark target without overflow fold", summary.ContextExhausted, summary.FoldedStateRequired)
+	}
+	if summary.CompactionThresholdTokens != mlx.ProductionLaneHyperLongContextLength {
+		t.Fatalf("summary compaction threshold = %d, want context window", summary.CompactionThresholdTokens)
+	}
+	if summary.CompactionReason != "" {
+		t.Fatalf("compaction reason = %q, want no fold at benchmark target", summary.CompactionReason)
+	}
+}
+
+func TestStateRampProfileDefaultCompactionThresholdUsesModelContext_Good(t *testing.T) {
+	opts := stateRampProfileOptions{TargetTokens: 100000}
+
+	got := stateRampProfileDefaultCompactionThreshold(opts, mlx.ModelInfo{ContextLength: mlx.ProductionLaneHyperLongContextLength})
+
+	if got != mlx.ProductionLaneHyperLongContextLength {
+		t.Fatalf("default compaction threshold = %d, want model context window", got)
+	}
+	opts.CompactionThresholdTokens = 64000
+	if got := stateRampProfileDefaultCompactionThreshold(opts, mlx.ModelInfo{ContextLength: mlx.ProductionLaneHyperLongContextLength}); got != 64000 {
+		t.Fatalf("explicit compaction threshold = %d, want 64000", got)
 	}
 }
 
