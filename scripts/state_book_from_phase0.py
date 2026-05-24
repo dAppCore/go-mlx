@@ -96,26 +96,46 @@ def turn_request(
     turns: int,
     seed_prompt: dict[str, str],
     distractor: dict[str, str],
+    include_seed_contract: bool,
 ) -> str:
-    if chapter == 1:
-        continuity = "Begin the retained seed story arc."
-    elif chapter == turns:
+    if include_seed_contract:
+        if chapter == 1:
+            continuity = "Begin the retained seed story arc."
+        elif chapter == turns:
+            continuity = (
+                "End the retained seed story arc. The final movement must resolve "
+                f"the seed prompt id {seed_prompt['id']} and must not resolve the "
+                "distractor as the main plot."
+            )
+        else:
+            continuity = f"Continue the retained seed story arc from Chapter {chapter - 1}."
+        return (
+            f"Chapter {chapter} request:\n\n"
+            f"Write Chapter {chapter} only. {continuity} "
+            "The seed prompt remains the only plot. Use the distractor for "
+            "imagery, mood, pressure, or interference only. Do not retell the "
+            "distractor as the chapter plot.\n\n"
+            f"Seed prompt id to preserve: {seed_prompt['id']}\n\n"
+            "Seed prompt text to preserve:\n"
+            f"{seed_prompt['prompt']}\n\n"
+            "Distractor pressure for imagery only, not plot:\n"
+            f"{distractor['prompt']}\n"
+        )
+    if chapter == turns:
         continuity = (
-            "End the retained seed story arc. The final movement must resolve "
-            f"the seed prompt id {seed_prompt['id']} and must not resolve the "
-            "distractor as the main plot."
+            "End the retained story arc. The final movement must resolve the "
+            "opening arc without turning the pressure prompt into the main plot."
         )
     else:
-        continuity = f"Continue the retained seed story arc from Chapter {chapter - 1}."
+        continuity = f"Continue the existing book from Chapter {chapter - 1}."
     return (
-        f"Chapter {chapter} request:\n\n"
-        f"Write Chapter {chapter} only. {continuity} "
-        "The seed prompt remains the only plot. Use the distractor for "
-        "imagery, mood, pressure, or interference only. Do not retell the "
-        "distractor as the chapter plot.\n\n"
-        f"Seed prompt id to preserve: {seed_prompt['id']}\n\n"
-        "Distractor pressure for imagery only, not plot:\n"
-        f"{distractor['prompt']}\n"
+        f"**Chapter {chapter}**\n\n"
+        f"{continuity} This is chapter {chapter} of {turns}. "
+        "Use the following pressure as imagery, mood, or interference only; "
+        "do not retell it as the chapter plot:\n"
+        f"{distractor['prompt']}\n\n"
+        "Write only this chapter heading and prose. Do not include commentary, "
+        "planning, summaries, previous chapters, or prompt analysis.\n"
     )
 
 
@@ -123,9 +143,10 @@ def turn_sections_for(
     turns: int,
     seed_prompt: dict[str, str],
     distractors: list[dict[str, str]],
+    include_seed_contract: bool,
 ) -> list[str]:
     return [
-        turn_request(index + 1, turns, seed_prompt, distractor)
+        turn_request(index + 1, turns, seed_prompt, distractor, include_seed_contract)
         for index, distractor in enumerate(distractors)
     ]
 
@@ -288,6 +309,7 @@ def build_command(
     *,
     append_path: Path | None = None,
     turns: int | None = None,
+    include_prompt_file: bool = True,
     extra_flags: list[str] | None = None,
 ) -> list[str]:
     command = [
@@ -297,8 +319,6 @@ def build_command(
         "-include-output",
         "-report-file",
         str(report_path),
-        "-prompt-file",
-        str(paths["seed"]),
         "-append-file",
         str(append_path or paths["turns"]),
         "-append-turn-delimiter",
@@ -313,6 +333,8 @@ def build_command(
         str(args.turn_max_tokens),
         "-turns",
         str(turns if turns is not None else args.turns),
+        "-chat-template",
+        args.chat_template,
         "-context",
         str(args.context),
         "-cache-mode",
@@ -322,6 +344,11 @@ def build_command(
         "-turn-min-tokens",
         "0",
     ]
+    if include_prompt_file:
+        command[6:6] = [
+            "-prompt-file",
+            str(paths["seed"]),
+        ]
     if extra_flags:
         command.extend(extra_flags)
     command.append(str(args.model))
@@ -400,6 +427,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-tokens", type=int, default=30000)
     parser.add_argument("--append-tokens", type=int, default=2000)
     parser.add_argument("--turn-max-tokens", type=int, default=2048)
+    parser.add_argument("--chat-template", default="gemma4")
     parser.add_argument("--context", type=int, default=32768)
     parser.add_argument("--cache-mode", default="paged")
     parser.add_argument("--power-watts", type=float, default=100.0)
@@ -416,7 +444,7 @@ def prepare_book_run(
     rng = random.Random(random_seed)
     seed_prompt = choose_seed(prompts, rng, args.seed_id)
     distractors = choose_distractors(prompts, seed_prompt, rng, args.turns)
-    turn_sections = turn_sections_for(args.turns, seed_prompt, distractors)
+    turn_sections = turn_sections_for(args.turns, seed_prompt, distractors, True)
 
     run_slug = (
         time.strftime("%Y-%m-%d")
@@ -428,8 +456,9 @@ def prepare_book_run(
     if args.compact_after_turn > 0:
         stage1_turns = args.run_dir / f"{run_slug}.turns.1-{args.compact_after_turn}.txt"
         stage2_turns = args.run_dir / f"{run_slug}.turns.{args.compact_after_turn + 1}-{args.turns}.txt"
+        stage2_sections = turn_sections_for(args.turns, seed_prompt, distractors, False)
         write_turn_sections(stage1_turns, turn_sections[: args.compact_after_turn])
-        write_turn_sections(stage2_turns, turn_sections[args.compact_after_turn :])
+        write_turn_sections(stage2_turns, stage2_sections[args.compact_after_turn :])
         paths["stage1_turns"] = stage1_turns
         paths["stage2_turns"] = stage2_turns
     report_path = args.run_dir / f"{run_slug}.json"
@@ -451,6 +480,9 @@ def prepare_book_run(
                 str(args.compact_after_turn),
                 "-fold-store",
                 str(fold_store),
+                "-fold-summary-generate",
+                "-fold-summary-max-tokens",
+                "768",
                 "-fold-continue-max-tokens",
                 "0",
             ],
@@ -583,6 +615,7 @@ def run_compacted_book(args: argparse.Namespace, prepared: dict) -> tuple[int, d
         stage2_report_path,
         append_path=paths["stage2_turns"],
         turns=args.turns - args.compact_after_turn,
+        include_prompt_file=False,
         extra_flags=[
             "-wake-marker-file",
             str(compact_marker_path),

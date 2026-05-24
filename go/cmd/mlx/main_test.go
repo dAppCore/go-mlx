@@ -976,6 +976,72 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileFoldSummaryGenerate_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	var gotCfg stateRampProfileOptions
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		gotCfg = cfg
+		return &stateRampProfileReport{
+			Version:                1,
+			ModelPath:              modelPath,
+			FoldOnExhaustion:       cfg.FoldOnExhaustion,
+			FoldStorePath:          cfg.FoldStorePath,
+			FoldSummaryGenerate:    cfg.FoldSummaryGenerate,
+			FoldSummaryPromptBytes: len(cfg.FoldSummaryPrompt),
+			FoldSummaryMaxTokens:   cfg.FoldSummaryMaxTokens,
+			Summary: stateRampProfileSummary{
+				FinalStateTokens:    cfg.CompactionThresholdTokens,
+				ContextExhausted:    true,
+				FoldedStateRequired: true,
+			},
+			Fold: &stateRampProfileFold{
+				Attempted:          true,
+				StorePath:          cfg.FoldStorePath,
+				SummaryMode:        "generated",
+				SummaryPromptBytes: len(cfg.FoldSummaryPrompt),
+				SummaryMaxTokens:   cfg.FoldSummaryMaxTokens,
+				SummaryBytes:       512,
+			},
+		}, nil
+	}
+	dir := t.TempDir()
+	promptPath := core.PathJoin(dir, "summary-prompt.txt")
+	storePath := core.PathJoin(dir, "state.mvlog")
+	summaryPrompt := "Summarise the retained book state for a fresh folded State."
+	writeCLIPackFile(t, promptPath, summaryPrompt)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-ramp-profile",
+		"-json",
+		"-fold-on-exhaustion",
+		"-fold-store", storePath,
+		"-fold-summary-generate",
+		"-fold-summary-prompt-file", promptPath,
+		"-fold-summary-max-tokens", "333",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !gotCfg.FoldSummaryGenerate || gotCfg.FoldSummaryPrompt != summaryPrompt || gotCfg.FoldSummaryMaxTokens != 333 {
+		t.Fatalf("fold summary generation cfg = %+v, want generated prompt/max tokens", gotCfg)
+	}
+	for _, want := range []string{
+		`"fold_summary_generate": true`,
+		core.Sprintf(`"fold_summary_prompt_bytes": %d`, len(summaryPrompt)),
+		`"fold_summary_max_tokens": 333`,
+		`"summary_mode": "generated"`,
+		`"summary_bytes": 512`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_StateRampProfileWakeMarker_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
@@ -1278,7 +1344,7 @@ func TestRunCommand_StateWakeProfileValidation_Bad(t *testing.T) {
 }
 
 func TestStateRampProfileOutputIssues_Good(t *testing.T) {
-	issues := stateRampProfileOutputIssues("The user is asking me for a result. This is an engineering session.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
+	issues := stateRampProfileOutputIssues("This request asks for prompt analysis. Based on the retained context, the user is asking me for a result. This is an engineering session.\n\n**Plan:**\n1. Continue.<|channel>thought\nhidden\n\nThe implementation is now officially complete and production-ready.")
 
 	for _, want := range []string{"visible_chat_control_token", "visible_prompt_analysis", "visible_plan_scaffold", "visible_false_completion_claim"} {
 		if !core.SliceContains(issues, want) {

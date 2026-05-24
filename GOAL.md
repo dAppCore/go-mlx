@@ -276,12 +276,50 @@ next canonical runtime report set is regenerated:
   effective turn throughput, but a poor `34.776 GiB` active-plus-cache,
   about `4.688 GiB` RSS, and `543.264 GB` virtual. Mechanically this proves
   a chapter-5 compact marker can cross a `.kv` process boundary and still
-  finish chapter 10. Do not promote it to book-quality acceptance yet:
-  chapters `6`-`10` leaked visible prompt-analysis scaffolding before the
-  chapter text. The retained-turn prompt was tightened afterwards to stop
-  forcing creative material into engineering-analysis mode, and the output
-  issue detector now flags `this is an engineering session`, `seed prompt to
-  preserve`, and checklist/plan scaffolds as `visible_prompt_analysis`.
+  finish chapter 10. Follow-up external reading accepted the row as a real
+  cross-process continuity proof: chapter 6 carries the chapter-1 "fifth
+  direction" motif forward into the new cadence/material frame even though the
+  visible post-wake prompt does not name that motif, and the same voice and
+  boundary/structure vocabulary survive the wake boundary. Treat the doubled
+  active memory as a fixable implementation cost, not a proof failure. The
+  caveat is now narrower and more product-shaped: the artefact leaked prompt-analysis
+  scaffolding (`Constraint Checklist` / plan blocks), and the seasonal-form
+  seed lost form adherence because continuity pressure dominated the requested
+  autumn/winter/spring/summer register switch. Treat this as state-continuity
+  evidence, not final `book.md` polish. The retained-turn prompt was tightened
+  afterwards to stop forcing creative material into engineering-analysis mode,
+  and the output issue detector now flags `this is an engineering session`,
+  `seed prompt to preserve`, `this request asks`, `based on the retained
+  context`, and checklist/plan scaffolds as `visible_prompt_analysis`.
+- Production folded-summary path, 2026-05-24: `state-ramp-profile` now exposes
+  `-fold-summary-generate`, `-fold-summary-prompt[-file]`, and
+  `-fold-summary-max-tokens`. When enabled, the live session generates a
+  durable continuation brief at the compact boundary and the fresh folded State
+  is built from that model-generated summary plus recent tail. Fold reports
+  include `fold.summary_mode=generated`, summary prompt/max-token fields, and a
+  `fold.summary_generation` turn so compaction cost is visible instead of being
+  hidden inside decode throughput. Empty visible outputs in `state-ramp-profile`
+  now fail the turn with `empty_visible_output` instead of being counted as
+  successful turns. This is the production path for compacting into a new State
+  file; raw cross-session continuation from the old live window remains an R&D
+  lane.
+- Generated-summary compact-book smoke, same date:
+  `/private/tmp/go-mlx-goal/book-runs-prodsummary-seedtext/2026-05-24-c001-story-perspective-seed20260524.*`
+  uses `C001_STORY_PERSPECTIVE`, Gemma 4 chat template wrapping, a
+  model-generated folded summary, `.kv` packing, and a stage-2 command with no
+  seed prompt replay. Stage 1 records `5/5` turns, `3986` generated/visible
+  tokens, `98.007 tok/s` decode, `95.880 tok/s` effective turn throughput,
+  `10.065 GB` active-plus-cache, about `3.409 GB` RSS, and a generated summary
+  of `345` visible tokens. The generated folded prompt is `12130` bytes and
+  the fold lifecycle is `4.946s`. Stage 2 wakes from the `.kv` with
+  `restore_strategy=folded-prefill` in `896.781ms`, then records `5/5` turns,
+  `762` generated/visible tokens, `103.681 tok/s` decode, `95.104 tok/s`
+  effective turn throughput, `13.147 GB` active-plus-cache, about `4.432 GB`
+  RSS, and `498.287 GB` virtual. This proves the generated-summary folded
+  State path works mechanically with better bounded memory than the raw
+  high-water compact detour. Do not promote this row as final content quality:
+  stage-1 visible prompt analysis still appears in the artefact and stage-2
+  distractor pressure remains stronger than desired.
 - `2026-05-24-default-after-native-sliding-reject-go-mlx-gemma4-e2b-4bit-opencode-delimited-30k-to-70k-r10-g1024.json`:
   current no-floor default retained-State row after rejecting native fixed
   sliding attention as a production default. It completes `10/10` retained
