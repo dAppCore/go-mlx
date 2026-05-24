@@ -115,8 +115,8 @@ session. The wake report records `restore_strategy=folded-prefill`. Larger
 non-folded entries continue to use the K/V block restore path.
 
 The `state-ramp-profile` benchmark can exercise this lifecycle directly with
-`-fold-on-exhaustion -fold-store <path>`. When the ramp reaches its configured
-compaction threshold, the report includes the checkpoint and folded
+`-fold-store <path>`. When the live state reaches its configured compaction
+threshold, the report includes the checkpoint and folded
 `SleepReport`, folded wake latency, and an optional folded wake/continue turn.
 Pass `-fold-summary-file` and `-fold-tail-file` for semantic compaction; without
 them the harness uses a metric-only lifecycle summary so the state transition is

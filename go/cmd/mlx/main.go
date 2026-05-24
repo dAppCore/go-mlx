@@ -2480,8 +2480,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: degradation min consecutive turns must be >= 1\n", cliName()))
 		return 2
 	}
-	foldOnOverflow := *foldOnExhaustion || core.Trim(*foldStorePath) != ""
-	foldRequested := foldOnOverflow ||
+	foldRequested := *foldOnExhaustion ||
 		*foldOnDegradation ||
 		core.Trim(*foldSummary) != "" ||
 		*foldSummaryGenerate ||
@@ -2595,7 +2594,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		SuppressEOS:                 *suppressEOS,
 		IncludeOutput:               *includeOutput,
 		TraceTokenPhases:            *traceTokenPhases,
-		FoldOnExhaustion:            foldOnOverflow,
+		FoldOnExhaustion:            *foldOnExhaustion,
 		FoldOnDegradation:           *foldOnDegradation,
 		DegradationMinConsecutive:   *degradationMinConsecutive,
 		FoldStorePath:               core.Trim(*foldStorePath),
@@ -2657,7 +2656,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 				SuppressEOS:                 *suppressEOS,
 				IncludeOutput:               *includeOutput,
 				TraceTokenPhases:            *traceTokenPhases,
-				FoldOnExhaustion:            foldOnOverflow,
+				FoldOnExhaustion:            *foldOnExhaustion,
 				FoldOnDegradation:           *foldOnDegradation,
 				DegradationMinConsecutive:   *degradationMinConsecutive,
 				FoldStorePath:               core.Trim(*foldStorePath),

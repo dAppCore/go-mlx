@@ -972,8 +972,8 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if !gotCfg.FoldOnExhaustion || gotCfg.FoldStorePath != storePath {
-		t.Fatalf("fold cfg = %+v, want fold store to enable overflow folding", gotCfg)
+	if gotCfg.FoldOnExhaustion || gotCfg.FoldStorePath != storePath {
+		t.Fatalf("fold cfg = %+v, want fold store available without forcing exhaustion fold", gotCfg)
 	}
 	if gotCfg.FoldSummary != "summarised exhausted context" || gotCfg.FoldRecentTail != "recent continuation tail" {
 		t.Fatalf("fold text summary=%q tail=%q, want file contents", gotCfg.FoldSummary, gotCfg.FoldRecentTail)
@@ -982,7 +982,6 @@ func TestRunCommand_StateRampProfileFoldOptions_Good(t *testing.T) {
 		t.Fatalf("fold prefill/continue = %d/%d, want configured values", gotCfg.FoldPrefillChunkBytes, gotCfg.FoldContinueMaxTokens)
 	}
 	for _, want := range []string{
-		`"fold_on_exhaustion": true`,
 		`"fold_store_path": "` + storePath + `"`,
 		`"fold_summary_bytes": 28`,
 		`"fold_recent_tail_bytes": 24`,
