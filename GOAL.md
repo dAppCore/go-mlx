@@ -232,6 +232,21 @@ and `9.758ms` average `sample_eval` versus `9.787ms`. This is a correct
 production-path cleanup, not enough to close the llama.cpp raw-decode gap by
 itself.
 
+Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
+cannot cover this top-k/top-p sampler graph (`Slice cannot infer output
+shapes`). Shape-specific compile does run and is now tracked by
+`BenchmarkSampler_CompiledTopKThenTopP_Vocab262k`; the repeated bench records
+regular sampler rows at `547902`, `528375`, and `533011 ns/op` with `3 allocs`,
+versus compiled diagnostic rows at `484221`, `485097`, and `496835 ns/op` with
+`2 allocs`. A real two-turn retained trace at
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-compiled-standard-sampler-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+rejects promoting it by default: the same `1322` visible-token fixture records
+`88.081` raw decode tok/s and `80.473` effective turn tok/s, below the
+non-compiled sampler row despite a tiny `sample_eval` movement
+(`9.754ms` versus `9.758ms`). Keep the benchmark as a diagnostic for the
+IDEAS.md compile-first lane, but do not route production sampling through a
+shape-specific compiled closure.
+
 Latest prompt-contract note: do not promote output token-count floors into
 acceptance criteria. If a fixture does not give the model enough real turn
 content to continue for ten turns, that is a fixture failure, not a model or
