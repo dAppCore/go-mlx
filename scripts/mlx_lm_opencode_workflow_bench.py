@@ -114,7 +114,7 @@ def main():
     parser.add_argument("--append-turn-delimiter", default="---TURN---")
     parser.add_argument("--turn-prompt-mode", choices=["reference", "direct"], default="reference")
     parser.add_argument("--start-tokens", type=int, default=30000)
-    parser.add_argument("--target-tokens", type=int, default=70000)
+    parser.add_argument("--target-tokens", type=int, default=100000)
     parser.add_argument("--turns", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--turn-min-tokens", type=int, default=0)

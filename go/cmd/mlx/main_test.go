@@ -841,7 +841,7 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-target-tokens", "70000", "/models/demo"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"state-ramp-profile", "-json", "-target-tokens", "100000", "/models/demo"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -865,7 +865,7 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 	}{
 		{name: "normal", contextLen: mlx.ProductionLaneContextLength},
 		{name: "opencode", contextLen: mlx.ProductionLaneLongContextLength},
-		{name: "off_round", contextLen: 70000},
+		{name: "workflow_target", contextLen: 100000},
 		{name: "model_window", contextLen: mlx.ProductionLaneHyperLongContextLength},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -892,7 +892,7 @@ func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good
 				"-json",
 				"-context", contextText,
 				"-start-tokens", "30000",
-				"-target-tokens", "70000",
+				"-target-tokens", "100000",
 				"/models/demo",
 			}, stdout, stderr)
 

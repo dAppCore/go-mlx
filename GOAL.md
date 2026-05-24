@@ -38,6 +38,10 @@ default and no arbitrary context-family switch. Do not reintroduce a
 context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
 acceptance. Do not use the old 64Ki threshold branch as a current optimisation
 or comparator lane; historical rows that mention it are archive evidence only.
+Likewise, do not use the older `30k`-to-`70k`/rough-`65k` retained lane as the
+default benchmark target. Runnable harness defaults should use the production
+`100k` stress target or the model context window, with shorter rows labelled as
+smoke or archive evidence.
 Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx is still
 behind llama.cpp on raw decode. The retained workflow wall-time comparison is
 useful, but must be read with visible output counts, output-quality flags, and

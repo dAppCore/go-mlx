@@ -128,7 +128,7 @@ def main():
     parser.add_argument("--append-turn-delimiter", default="---TURN---")
     parser.add_argument("--turn-prompt-mode", choices=["reference", "direct"], default="reference")
     parser.add_argument("--start-tokens", type=int, default=30000)
-    parser.add_argument("--target-tokens", type=int, default=70000)
+    parser.add_argument("--target-tokens", type=int, default=100000)
     parser.add_argument("--turns", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--turn-min-tokens", type=int, default=0)
@@ -137,6 +137,7 @@ def main():
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=64)
     parser.add_argument("--repeat-penalty", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--power-watts", type=float, default=100.0)
     parser.add_argument("--enable-thinking", action="store_true")
     parser.add_argument("--explicit-bos", action="store_true")
@@ -189,6 +190,8 @@ def main():
             "stream": False,
             "stop": list(GEMMA4_STOP_TOKEN_TEXTS),
         }
+        if args.seed is not None:
+            payload["seed"] = args.seed
         start = time.perf_counter()
         response = request_json(args.base_url, "/completion", payload)
         wall = time.perf_counter() - start
@@ -292,6 +295,7 @@ def main():
                 "top_p": args.top_p,
                 "top_k": args.top_k,
                 "repeat_penalty": args.repeat_penalty,
+                "seed": args.seed,
                 "explicit_bos": args.explicit_bos,
             },
         },

@@ -111,8 +111,8 @@ func BenchmarkSummariseStateRampProfileTurns_TenTurns(b *testing.B) {
 		}
 	}
 	opts := stateRampProfileOptions{
-		TargetTokens:              70000,
-		CompactionThresholdTokens: 70000,
+		TargetTokens:              100000,
+		CompactionThresholdTokens: 100000,
 		CompactionTailTokens:      8192,
 	}
 	b.ReportAllocs()
