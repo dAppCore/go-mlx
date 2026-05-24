@@ -34,7 +34,7 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
 
 The current q4 retained-State lane works, but the production benchmark lane is
 not accepted. The production path is paged retained State with no fixed-cache
-default and no `65536`/65k context-family switch. Do not reintroduce a
+default and no arbitrary context-family switch. Do not reintroduce a
 context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
 acceptance. Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx
 is still behind llama.cpp on raw decode. The retained workflow wall-time

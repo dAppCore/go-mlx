@@ -858,13 +858,15 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	}
 }
 
-func TestRunCommand_StateRampProfileNoContextBoundaryAt65536_Good(t *testing.T) {
+func TestRunCommand_StateRampProfileRequestedContextDoesNotSelectFixedCache_Good(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		contextLen int
 	}{
-		{name: "at_boundary", contextLen: 65536},
-		{name: "above_boundary", contextLen: 65537},
+		{name: "normal", contextLen: mlx.ProductionLaneContextLength},
+		{name: "opencode", contextLen: mlx.ProductionLaneLongContextLength},
+		{name: "off_round", contextLen: 70000},
+		{name: "model_window", contextLen: mlx.ProductionLaneHyperLongContextLength},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			originalRun := runStateRampProfile
@@ -899,12 +901,14 @@ func TestRunCommand_StateRampProfileNoContextBoundaryAt65536_Good(t *testing.T) 
 			}
 			for _, want := range []string{
 				core.Sprintf(`"context_length": %d`, tc.contextLen),
-				`"prefill_chunk_size": 512`,
 				`"cache_mode": "paged"`,
 			} {
 				if !core.Contains(stdout.String(), want) {
 					t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 				}
+			}
+			if tc.contextLen > mlx.ProductionLaneContextLength && !core.Contains(stdout.String(), `"prefill_chunk_size": 512`) {
+				t.Fatalf("stdout = %q, want long-context prefill chunk", stdout.String())
 			}
 			for _, rejected := range []string{
 				`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
@@ -913,7 +917,7 @@ func TestRunCommand_StateRampProfileNoContextBoundaryAt65536_Good(t *testing.T) 
 				`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
 			} {
 				if core.Contains(stdout.String(), rejected) {
-					t.Fatalf("stdout = %q, should not contain 65k boundary fixed-cache gate %s", stdout.String(), rejected)
+					t.Fatalf("stdout = %q, should not contain context-selected fixed-cache gate %s", stdout.String(), rejected)
 				}
 			}
 		})

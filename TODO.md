@@ -193,8 +193,8 @@ the request-context traces still show the dominant per-token bucket in
 `sample_eval`, where lazy MLX materialises the current one-token forward graph
 and sampler.
 
-Do not reintroduce the old `65536`/65k context boundary or any production
-fixed-cache default while chasing this. Context size can select chunking and
+Do not reintroduce any arbitrary context boundary or production fixed-cache
+default while chasing this. Context size can select chunking and
 overflow/compact limits, but it must not select a different K/V family or
 invent a fixed-cache budget for benchmark convenience.
 
