@@ -2241,7 +2241,7 @@ func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 						PrefetchDuration:   time.Millisecond,
 						SampleEvalDuration: time.Millisecond,
 						NativeEvents: []mlx.NativePhaseTrace{
-							{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond},
+							{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond, Pages: 2, Tokens: 2048},
 						},
 					},
 					{
@@ -2250,7 +2250,7 @@ func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 						PrefetchDuration:   time.Millisecond,
 						SampleEvalDuration: time.Millisecond,
 						NativeEvents: []mlx.NativePhaseTrace{
-							{Name: "gemma4.layer.01.attention", Duration: 3 * time.Millisecond},
+							{Name: "gemma4.layer.01.attention", Duration: 3 * time.Millisecond, Pages: 4, Tokens: 4096},
 							{Name: "gemma4.layer.01.ffn_router", Duration: time.Millisecond},
 						},
 					},
@@ -2273,6 +2273,9 @@ func TestStateRampProfileSummary_TokenPhaseBuckets_Good(t *testing.T) {
 	}
 	if summary.NativeEvents[0].Name != "attention" || summary.NativeEvents[0].Duration != 5*time.Millisecond || summary.NativeEvents[0].AverageDuration != 2500*time.Microsecond {
 		t.Fatalf("attention events = %+v, want combined attention bucket", summary.NativeEvents[0])
+	}
+	if summary.NativeEvents[0].MaxPages != 4 || summary.NativeEvents[0].MaxTokens != 4096 {
+		t.Fatalf("attention event pages/tokens = %+v, want max 4 pages and 4096 tokens", summary.NativeEvents[0])
 	}
 	if len(summary.NativeEventDetails) != 3 {
 		t.Fatalf("native event details = %+v, want three layer-level events", summary.NativeEventDetails)
@@ -4702,8 +4705,8 @@ func TestDriverProfileSummary_NativeEventBuckets_Good(t *testing.T) {
 			GeneratedTokens: 1,
 			TokenPhases: []mlx.TokenPhaseTrace{{
 				NativeEvents: []mlx.NativePhaseTrace{
-					{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond},
-					{Name: "gemma4.layer.01.attention", Duration: 4 * time.Millisecond},
+					{Name: "gemma4.layer.00.attention", Duration: 2 * time.Millisecond, Pages: 2, Tokens: 2048},
+					{Name: "gemma4.layer.01.attention", Duration: 4 * time.Millisecond, Pages: 8, Tokens: 8192},
 					{Name: "gemma4.layer.01.ffn_router", Duration: 3 * time.Millisecond},
 					{Name: "custom.event", Duration: time.Millisecond},
 				},
@@ -4716,6 +4719,9 @@ func TestDriverProfileSummary_NativeEventBuckets_Good(t *testing.T) {
 	}
 	if summary.NativeEvents[0].Name != "attention" || summary.NativeEvents[0].Count != 2 || summary.NativeEvents[0].Duration != 6*time.Millisecond || summary.NativeEvents[0].AverageDuration != 3*time.Millisecond {
 		t.Fatalf("attention summary = %+v, want combined layer bucket", summary.NativeEvents[0])
+	}
+	if summary.NativeEvents[0].MaxPages != 8 || summary.NativeEvents[0].MaxTokens != 8192 {
+		t.Fatalf("attention summary pages/tokens = %+v, want max 8 pages and 8192 tokens", summary.NativeEvents[0])
 	}
 	if summary.NativeEvents[1].Name != "ffn_router" || summary.NativeEvents[1].Duration != 3*time.Millisecond {
 		t.Fatalf("router summary = %+v, want ffn_router bucket", summary.NativeEvents[1])

@@ -315,6 +315,8 @@ type driverProfileNativeEventSummary struct {
 	Count           int           `json:"count"`
 	Duration        time.Duration `json:"duration"`
 	AverageDuration time.Duration `json:"average_duration,omitempty"`
+	MaxPages        int           `json:"max_pages,omitempty"`
+	MaxTokens       int           `json:"max_tokens,omitempty"`
 }
 
 type driverProfileEnergy struct {
@@ -2062,8 +2064,8 @@ func summariseDriverProfileRuns(runs []driverProfileRun) driverProfileSummary {
 					continue
 				}
 				name := driverProfileNativeEventBucket(event.Name)
-				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event.Duration)
-				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event.Duration)
+				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event)
+				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event)
 			}
 		}
 	}
@@ -2126,8 +2128,8 @@ func accumulateDriverProfileTokenPhase(summary *driverProfileSummary, index map[
 	summary.TokenPhases[idx].Duration += duration
 }
 
-func accumulateDriverProfileNativeEvent(events *[]driverProfileNativeEventSummary, index map[string]int, name string, duration time.Duration) {
-	if events == nil || duration <= 0 || name == "" {
+func accumulateDriverProfileNativeEvent(events *[]driverProfileNativeEventSummary, index map[string]int, name string, event mlx.NativePhaseTrace) {
+	if events == nil || event.Duration <= 0 || name == "" {
 		return
 	}
 	idx, ok := index[name]
@@ -2137,7 +2139,13 @@ func accumulateDriverProfileNativeEvent(events *[]driverProfileNativeEventSummar
 		index[name] = idx
 	}
 	(*events)[idx].Count++
-	(*events)[idx].Duration += duration
+	(*events)[idx].Duration += event.Duration
+	if event.Pages > (*events)[idx].MaxPages {
+		(*events)[idx].MaxPages = event.Pages
+	}
+	if event.Tokens > (*events)[idx].MaxTokens {
+		(*events)[idx].MaxTokens = event.Tokens
+	}
 }
 
 func accumulateDriverProfileSummaryMemory(summary *driverProfileSummary, metrics mlx.Metrics) {
@@ -3935,8 +3943,8 @@ func summariseStateRampProfileTurns(initialPrefill time.Duration, initialTokens 
 					continue
 				}
 				name := driverProfileNativeEventBucket(event.Name)
-				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event.Duration)
-				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event.Duration)
+				accumulateDriverProfileNativeEvent(&summary.NativeEvents, nativeEventIndex, name, event)
+				accumulateDriverProfileNativeEvent(&summary.NativeEventDetails, nativeEventDetailIndex, event.Name, event)
 			}
 		}
 	}

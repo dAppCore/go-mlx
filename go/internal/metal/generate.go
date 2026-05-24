@@ -108,6 +108,8 @@ type NativePhaseTrace struct {
 	Name     string        `json:"name"`
 	Duration time.Duration `json:"duration"`
 	Error    string        `json:"error,omitempty"`
+	Pages    int           `json:"pages,omitempty"`
+	Tokens   int           `json:"tokens,omitempty"`
 }
 
 // AdapterInfo identifies an active LoRA inference adapter.

@@ -639,7 +639,8 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 	// Index iteration — metal.TokenPhaseTrace is ~192 B (19 duration
 	// + Step int + TokenID int32 + TokenText string + FinalToken bool
 	// + NativeEvents slice header).
-	// metal.NativePhaseTrace is ~48 B (string + duration + string).
+	// metal.NativePhaseTrace is small but contains strings and counters; avoid
+	// copying it through a range variable on long traced generations.
 	// TraceTokenPhases emits ONE phase trace per decoded token, so for
 	// long generations the range form was copying many KB of struct
 	// data into loop variables before re-emitting it via field rebuild.
@@ -656,6 +657,8 @@ func toRootTokenPhaseTraces(phases []metal.TokenPhaseTrace) []TokenPhaseTrace {
 					Name:     event.Name,
 					Duration: event.Duration,
 					Error:    event.Error,
+					Pages:    event.Pages,
+					Tokens:   event.Tokens,
 				}
 			}
 			nativeOffset = end
@@ -702,6 +705,8 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 			Name:     event.Name,
 			Duration: event.Duration,
 			Error:    event.Error,
+			Pages:    event.Pages,
+			Tokens:   event.Tokens,
 		}
 	}
 	return out

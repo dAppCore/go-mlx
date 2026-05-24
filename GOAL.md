@@ -250,6 +250,22 @@ keeps the fast lane paged (`fixed_caches=0`, `paged_caches=15`,
 `9.124 us`. That rules out the dirty K/V handoff as the current decode
 bottleneck and keeps the next optimisation pointed at logits/forward graph
 materialisation, not any archived 64Ki/fixed-cache lane.
+Follow-up trace attribution, 2026-05-24: native event capture is now armed by
+`-trace-token-phases` without requiring a `GO_MLX_*` environment variable. The
+expensive forced-eval trace remains behind `GO_MLX_TRACE_FORWARD_EVAL=1`, but
+normal token tracing can now record lightweight paged K/V concat events. Gemma 4
+multi-page decode emits `paged_kv.fast_concat.global`,
+`paged_kv.fast_concat.local`, or `paged_kv.contiguous.*` events with duration,
+page count, and token count, and the profile summaries carry `max_pages` and
+`max_tokens` for native event buckets. The next 100k boundary trace should use
+that evidence to decide whether the fast-concat view construction or its later
+lazy materialisation is the decode gap. The smoke report
+`/private/tmp/go-mlx-goal/reports/2026-05-24-paged-concat-trace-smoke-state-ramp-gemma4-e2b-4bit.json`
+proves the JSON surface: a 4-token retained turn records `95.495 tok/s`,
+`prefetch_logits=8.221 ms` on the first token, `fixed_caches=0`, and native
+event summaries for `paged_kv.fast_concat.local` (`max_pages=2`,
+`max_tokens=512`) and `paged_kv.fast_concat.global` (`max_pages=2`,
+`max_tokens=1568`).
 
 Strict eval-boundary cleanup, 2026-05-24: `Model.Generate` and retained
 `ModelSession.Generate` now detach the evaluated logits array at the same

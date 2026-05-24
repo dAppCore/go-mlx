@@ -6,6 +6,7 @@ package metal
 
 import (
 	"math"
+	"time"
 
 	"dappco.re/go"
 
@@ -2494,7 +2495,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
 		}
 	}()
-	traceEnabled := nativePhaseTraceEnabled()
+	traceEnabled := nativePhaseMaterializeTraceEnabled() && nativePhaseTraceArmed()
 	if out, kv, ok, err := compiledGemma4DecodeLayer(x, c, B, L, mask, perLayerInput, prev, l, cfg, fixedMask); ok {
 		if err == nil {
 			l.traceNativeMaterialize(traceEnabled, "compiled_layer", out)
@@ -2639,6 +2640,29 @@ func (l *Gemma4DecoderLayer) traceNativeMaterialize(enabled bool, phase string, 
 		return
 	}
 	traceNativeMaterialize(l.nativeTraceName(phase), arrays...)
+}
+
+func gemma4AttentionWindowTraceName(window int32) string {
+	if window > 0 {
+		return "local"
+	}
+	return "global"
+}
+
+func tracePagedKVConcat(name string, start time.Time, state PagedKVState) {
+	if !nativePhaseTraceArmed() || name == "" || start.IsZero() {
+		return
+	}
+	duration := time.Since(start)
+	if duration <= 0 {
+		duration = time.Nanosecond
+	}
+	appendNativePhaseTraceEvent(NativePhaseTrace{
+		Name:     name,
+		Duration: duration,
+		Pages:    len(state.Keys),
+		Tokens:   state.Length,
+	})
 }
 
 func (l *Gemma4DecoderLayer) nativeTraceName(phase string) string {
@@ -2838,7 +2862,12 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 				}
 			}
 			if out == nil && pagedDecodeFastConcatEnabled() && len(kv.Pages.Keys) > 1 {
+				traceStart := time.Time{}
+				if nativePhaseTraceArmed() {
+					traceStart = time.Now()
+				}
 				kBase, vBase := concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
+				tracePagedKVConcat("paged_kv.fast_concat."+gemma4AttentionWindowTraceName(window), traceStart, kv.Pages)
 				concatQ := attentionQ
 				var ownedConcatQ *Array
 				if ownedAttentionQ == nil {
@@ -2867,7 +2896,12 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			kBase, vBase := kv.Keys, kv.Values
 			var ownedContiguous []*Array
 			if (kBase == nil || vBase == nil) && kv.hasPages() {
+				traceStart := time.Time{}
+				if nativePhaseTraceArmed() {
+					traceStart = time.Now()
+				}
 				kBase, vBase = concatenatePagedState(kv.Pages.Keys, kv.Pages.Values)
+				tracePagedKVConcat("paged_kv.contiguous."+gemma4AttentionWindowTraceName(window), traceStart, kv.Pages)
 				ownedContiguous = append(ownedContiguous, kBase, vBase)
 			}
 			if !gemma4ValidKV(kBase, vBase) {

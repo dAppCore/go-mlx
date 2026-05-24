@@ -6,6 +6,7 @@ package metal
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dappco.re/go"
@@ -13,30 +14,31 @@ import (
 
 var nativePhaseTraceState struct {
 	sync.Mutex
-	armed  bool
+	armed  atomic.Bool
 	events []NativePhaseTrace
 }
 
-func nativePhaseTraceEnabled() bool {
+func nativePhaseMaterializeTraceEnabled() bool {
 	return core.Env("GO_MLX_TRACE_FORWARD_EVAL") == "1"
 }
 
+func nativePhaseTraceArmed() bool {
+	return nativePhaseTraceState.armed.Load()
+}
+
 func resetNativePhaseTraceEvents() {
-	if !nativePhaseTraceEnabled() {
-		return
-	}
 	nativePhaseTraceState.Lock()
 	nativePhaseTraceState.events = nativePhaseTraceState.events[:0]
-	nativePhaseTraceState.armed = true
+	nativePhaseTraceState.armed.Store(true)
 	nativePhaseTraceState.Unlock()
 }
 
 func appendNativePhaseTraceEvent(event NativePhaseTrace) {
-	if !nativePhaseTraceEnabled() {
+	if !nativePhaseTraceArmed() {
 		return
 	}
 	nativePhaseTraceState.Lock()
-	if !nativePhaseTraceState.armed {
+	if !nativePhaseTraceArmed() {
 		nativePhaseTraceState.Unlock()
 		return
 	}
@@ -45,22 +47,26 @@ func appendNativePhaseTraceEvent(event NativePhaseTrace) {
 }
 
 func takeNativePhaseTraceEvents() []NativePhaseTrace {
-	if !nativePhaseTraceEnabled() {
+	if !nativePhaseTraceArmed() {
 		return nil
 	}
 	nativePhaseTraceState.Lock()
 	defer nativePhaseTraceState.Unlock()
+	if !nativePhaseTraceArmed() {
+		return nil
+	}
 	if len(nativePhaseTraceState.events) == 0 {
+		nativePhaseTraceState.armed.Store(false)
 		return nil
 	}
 	events := append([]NativePhaseTrace(nil), nativePhaseTraceState.events...)
 	nativePhaseTraceState.events = nativePhaseTraceState.events[:0]
-	nativePhaseTraceState.armed = false
+	nativePhaseTraceState.armed.Store(false)
 	return events
 }
 
 func traceNativeMaterialize(name string, arrays ...*Array) {
-	if !nativePhaseTraceEnabled() {
+	if !nativePhaseMaterializeTraceEnabled() || !nativePhaseTraceArmed() {
 		return
 	}
 	start := time.Now()
@@ -76,7 +82,7 @@ func traceNativeMaterialize(name string, arrays ...*Array) {
 }
 
 func traceNativeSkip(name, reason string) {
-	if !nativePhaseTraceEnabled() || name == "" || reason == "" {
+	if !nativePhaseTraceArmed() || name == "" || reason == "" {
 		return
 	}
 	appendNativePhaseTraceEvent(NativePhaseTrace{Name: name, Error: reason})

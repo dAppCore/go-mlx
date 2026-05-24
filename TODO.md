@@ -233,6 +233,11 @@ combined prefetch call and must stay paged/no-fixed/no-64Ki-cutoff.
 
 The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while
-preserving the paged retained-State semantics. The next useful measurement is a
-matched 30k request-context retained run versus the llama.cpp anchor, not a
-small max-token smoke.
+preserving the paged retained-State semantics. The matched 30k request-context
+retained run and the uncapped 100k stress proof are now recorded in `GOAL.md`;
+the next useful measurement is a 100k boundary trace with the new paged-concat
+native event details enabled by `-trace-token-phases`, so the report shows
+whether `paged_kv.fast_concat.{global,local}` is firing on the slow tokens and
+how many pages/tokens each concat view covers. That keeps the next optimisation
+aimed at the logits/materialisation boundary instead of reviving fixed-cache or
+64Ki-family behaviour.

@@ -16,13 +16,12 @@ func TestTrace_NativePhaseTraceEvents_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_TRACE_FORWARD_EVAL", "1")
 	resetNativePhaseTraceEvents()
 
-	appendNativePhaseTraceEvent(NativePhaseTrace{Name: "gemma4.layer.00.attention", Duration: time.Millisecond})
+	appendNativePhaseTraceEvent(NativePhaseTrace{Name: "gemma4.layer.00.attention", Duration: time.Millisecond, Pages: 8, Tokens: 8192})
 	events := takeNativePhaseTraceEvents()
 
-	if len(events) != 1 || events[0].Name != "gemma4.layer.00.attention" || events[0].Duration != time.Millisecond {
+	if len(events) != 1 || events[0].Name != "gemma4.layer.00.attention" || events[0].Duration != time.Millisecond || events[0].Pages != 8 || events[0].Tokens != 8192 {
 		t.Fatalf("events = %+v, want one attention event", events)
 	}
 	if again := takeNativePhaseTraceEvents(); len(again) != 0 {
@@ -35,13 +34,10 @@ func TestTrace_NativePhaseTraceEvents_Bad(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_TRACE_FORWARD_EVAL", "0")
-	resetNativePhaseTraceEvents()
-
 	appendNativePhaseTraceEvent(NativePhaseTrace{Name: "disabled", Duration: time.Millisecond})
 
-	if events := takeNativePhaseTraceEvents(); len(events) != 0 {
-		t.Fatalf("events = %+v, want disabled trace to stay empty", events)
+	if events := takeNativePhaseTraceEvents(); len(events) != 0 || nativePhaseTraceArmed() {
+		t.Fatalf("events = %+v armed=%v, want unarmed trace to stay empty", events, nativePhaseTraceArmed())
 	}
 }
 
@@ -50,7 +46,6 @@ func TestTrace_NativePhaseTraceEvents_Ugly(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_TRACE_FORWARD_EVAL", "1")
 	resetNativePhaseTraceEvents()
 
 	appendNativePhaseTraceEvent(NativePhaseTrace{Name: core.Trim("  ffn  "), Error: "boom"})
@@ -66,7 +61,6 @@ func TestTrace_NativePhaseTraceSkip_Good(t *testing.T) {
 	if coverageTokens == "" {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
-	t.Setenv("GO_MLX_TRACE_FORWARD_EVAL", "1")
 	resetNativePhaseTraceEvents()
 
 	traceNativeSkip("gemma4.layer.00.native_layer.skip", "unsupported quantization")
