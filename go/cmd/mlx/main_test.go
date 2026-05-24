@@ -855,6 +855,44 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileFixedCacheDoesNotInventSize_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	t.Setenv("GO_MLX_ENABLE_FIXED_GEMMA4_CACHE", "1")
+	t.Setenv("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", "")
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		return &stateRampProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			TargetTokens: cfg.TargetTokens,
+			RuntimeGates: driverProfileRuntimeGates(),
+			Summary: stateRampProfileSummary{
+				SuccessfulTurns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-ramp-profile",
+		"-json",
+		"-start-tokens", "30000",
+		"-target-tokens", "100000",
+		"-turn-max-tokens", "1024",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if !core.Contains(stdout.String(), `"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE": "1"`) {
+		t.Fatalf("stdout = %q, want explicit diagnostic fixed-cache gate recorded", stdout.String())
+	}
+	if core.Contains(stdout.String(), `"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`) {
+		t.Fatalf("stdout = %q, should not invent a fixed-cache size for state-ramp", stdout.String())
+	}
+}
+
 func TestRunCommand_StateRampProfileValidation_Bad(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })
@@ -1952,41 +1990,6 @@ func TestStateRampProfileDefaultCompactionThresholdUsesModelContext_Good(t *test
 	opts.CompactionThresholdTokens = 64000
 	if got := stateRampProfileDefaultCompactionThreshold(opts, mlx.ModelInfo{ContextLength: mlx.ProductionLaneHyperLongContextLength}); got != 64000 {
 		t.Fatalf("explicit compaction threshold = %d, want 64000", got)
-	}
-}
-
-func TestStateRampProfileFixedGemma4CacheBudget_UsesRunShapeNotContextCutoff_Good(t *testing.T) {
-	got := stateRampFixedGemma4CacheBudget(30000, 70000, mlx.ProductionLaneHyperLongContextLength, 1024)
-
-	if got != 71040 {
-		t.Fatalf("fixed cache budget = %d, want target plus generation allowance rounded to 32", got)
-	}
-}
-
-func TestStateRampProfileFixedGemma4CacheBudget_RespectsLowerCompactionThreshold_Good(t *testing.T) {
-	got := stateRampFixedGemma4CacheBudget(30000, 100000, 90000, 1024)
-
-	if got != 91040 {
-		t.Fatalf("fixed cache budget = %d, want compaction threshold plus generation allowance", got)
-	}
-}
-
-func TestStateRampProfileApplyFixedGemma4CacheBudget_ExplicitOnly_Good(t *testing.T) {
-	restore := setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Cache, "")
-	t.Cleanup(restore)
-
-	if restores := applyStateRampFixedGemma4CacheBudget(30000, 70000, mlx.ProductionLaneHyperLongContextLength, 1024); len(restores) != 0 {
-		t.Fatalf("restores = %d, want no fixed-cache budget without explicit fixed gate", len(restores))
-	}
-	enableFixed := setDriverProfileRuntimeGate(mlx.Gemma4FastRuntimeGateFixedGemma4Cache, "1")
-	t.Cleanup(enableFixed)
-	restores := applyStateRampFixedGemma4CacheBudget(30000, 70000, mlx.ProductionLaneHyperLongContextLength, 1024)
-	if len(restores) != 1 {
-		t.Fatalf("restores = %d, want explicit fixed-cache budget", len(restores))
-	}
-	defer restores[0]()
-	if got := driverProfileRuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE"); got != "71040" {
-		t.Fatalf("fixed cache env = %q, want explicit budget 71040", got)
 	}
 }
 

@@ -1265,51 +1265,6 @@ func gemma4FixedCacheRuntimeGate(gate string) bool {
 	}
 }
 
-func applyStateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens int) []func() {
-	if driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) != "1" {
-		return nil
-	}
-	if driverProfileRuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE") != "" {
-		return nil
-	}
-	size := stateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens)
-	if size <= 0 {
-		return nil
-	}
-	return []func(){setDriverProfileRuntimeGate("GO_MLX_FIXED_GEMMA4_CACHE_SIZE", core.Sprintf("%d", size))}
-}
-
-func stateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens int) int {
-	limit := targetTokens
-	if compactionThresholdTokens > 0 && (limit <= 0 || compactionThresholdTokens < limit) {
-		limit = compactionThresholdTokens
-	}
-	if limit <= 0 {
-		limit = startTokens
-	}
-	if turnMaxTokens > 0 {
-		limit += turnMaxTokens
-	}
-	if limit < startTokens {
-		limit = startTokens
-	}
-	if limit <= 0 {
-		return 0
-	}
-	return roundUpStateRampPositive(limit, 32)
-}
-
-func roundUpStateRampPositive(value, multiple int) int {
-	if value <= 0 || multiple <= 0 {
-		return value
-	}
-	remainder := value % multiple
-	if remainder == 0 {
-		return value
-	}
-	return value + multiple - remainder
-}
-
 var runDriverProfile = defaultRunDriverProfile
 
 func runDriverProfileGuarded(ctx context.Context, modelPath string, loadOptions []mlx.LoadOption, opts driverProfileOptions) (report *driverProfileReport, err error) {
@@ -2587,12 +2542,6 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: repeated sentence loop limit must be >= 1\n", cliName()))
 		return 2
 	}
-	if driverProfileFastGemma4LaneEnabled(*fastGemma4Lane, visitedFlags, "") {
-		for _, restore := range applyStateRampFixedGemma4CacheBudget(*startTokens, *targetTokens, *compactionThresholdTokens, *turnMaxTokens) {
-			defer restore()
-		}
-	}
-
 	loadOptions := []mlx.LoadOption{}
 	var loadSettings *tuneProfileLoadSettings
 	if *contextLen > 0 {

@@ -73,9 +73,9 @@ This is useful retained-State evidence, not production acceptance.
 Current no-cutoff paged-State correction, 2026-05-24: fixed Gemma 4 K/V is no
 longer a default fast-lane gate. `driver-profile`, `chapter-profile`, and
 `state-ramp-profile` now stay on paged K/V by default, and
-`state-ramp-profile` only writes `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` when the
-operator explicitly opts into fixed K/V with
-`GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=1`. The rebuilt smoke
+`state-ramp-profile` no longer synthesises
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE`; explicit fixed-cache settings remain manual
+diagnostic inputs only. The rebuilt smoke
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-smoke-paged-no-fixed-default.json`
 records runtime gates `GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH=1`,
 `GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`,
@@ -109,6 +109,11 @@ with `TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics_Good`,
 `go test ./go/cmd/mlx -run 'TestDriverProfileGeneration_DrainsCancelledStreamBeforeMetrics|TestDriverProfileGeneration_ChatModeDoesNotStartRawStream|TestRunCommand_StateRampProfileTargetShapeStaysPaged' -count=1`,
 `go test ./go/cmd/mlx -bench='BenchmarkStateRampProfile|BenchmarkDriverProfile' -benchmem -run='^$'`,
 and `env MLX_METALLIB_PATH=/Users/snider/Code/core/go-mlx/dist/lib/mlx.metallib GOWORK=/Users/snider/Code/core/go-mlx/go.work GOCACHE=/private/tmp/codex-go-mlx-cache go test ./go/... -count=1`.
+Follow-up correction, 2026-05-24: `state-ramp-profile` no longer synthesises
+`GO_MLX_FIXED_GEMMA4_CACHE_SIZE` from target tokens, compaction threshold, or
+context window. Fixed Gemma 4 K/V remains a manual diagnostic opt-in only; the
+production state-ramp lane must stay paged/no-fixed unless an operator supplies
+explicit fixed-cache settings for an isolated experiment.
 
 Superseded fixed-cache diagnostic, 2026-05-24: the `65536` context boundary was
 removed as a cache-family switch, but the intermediate fix still used fixed K/V
@@ -985,10 +990,10 @@ next canonical runtime report set is regenerated:
   `12` (`92261571038 > 92261063065` bytes). Process RSS stayed bounded around
   `3404316672` bytes, but the fixed-cache active allocator spike prevented
   fold handoff.
-  This paged fallback row is now superseded by the no-cutoff fixed-cache
+  This fixed-cache failure row is now superseded by the paged/no-fixed
   correction above: the default retained path should not switch strategies at
-  the long-form chapter boundary, and fixed cache is no longer merely a manual
-  diagnostic option for state-ramp. The historical rebuilt default folded row
+  the long-form chapter boundary, and fixed cache stays a manual diagnostic
+  option only. The historical rebuilt default folded row
   `2026-05-24-state-ramp-default-paged-after-fixed-threshold-30k-to-100k-folded-g1024.json`
   completes with no error: `23/23` retained turns, `103187` final live tokens,
   `63973` appended tokens, `9148` generated/visible tokens, `77.509 tok/s`
@@ -1009,8 +1014,8 @@ next canonical runtime report set is regenerated:
   failed the active-memory guard on turn `3`
   (`92351224286 > 92261063065` bytes). That smoke reflects the pre-correction
   fixed-cache sizing bug, not current intended behaviour: the state-ramp fast
-  lane now keeps fixed-cache gates and right-sizes the fixed K/V budget from
-  the run shape.
+  lane now keeps fixed-cache gates out of the production defaults and no longer
+  invents a fixed K/V budget from the run shape.
   The corrected smoke
   `2026-05-24-state-ramp-replay-estimate-smoke-paged-10k-to-20k-g1024.json`
   then completes `3/3` turns at `94.636 tok/s` raw decode,
@@ -1556,7 +1561,7 @@ enough:
 | Current split fused-activation native MLP probe | `GO_MLX_ENABLE_NATIVE_MLP_GELU=1` is neutral-to-negative on the active 26B A4B q4 lane at `71.44678366026884 tok/s`, so standalone dense MLP wrapping is not the next parity boundary |
 | Current packed-column expert-ID lane vs same-prompt llama.cpp Q4_K_M | expert-ID q kernels now iterate packed q words instead of scalar input columns, avoiding repeated q4 word loads; the final 3-run README prompt-file lane records `1936.5495347431952 tok/s` prefill and `79.1105587686013 tok/s` decode, leaving llama.cpp `1.0892x` faster on prefill and `1.1560x` faster on decode |
 | Current right-sized fixed-cache packed expert-ID lane vs same-prompt llama.cpp Q4_K_M | setting `GO_MLX_FIXED_GEMMA4_CACHE_SIZE=2336` for the 2204-token README prompt plus 128-token decode avoids making attention scan the full 4096-slot fixed cache; the 3-run lane records `1937.0948107149452 tok/s` prefill and `84.23477753697784 tok/s` decode, leaving llama.cpp `1.0889x` faster on prefill and `1.0857x` faster on decode |
-| Current automatic right-sized fixed-cache packed expert-ID lane vs same-prompt llama.cpp Q4_K_M | the generation cache builder now derives the fixed-cache size from `prompt_tokens + max_tokens`, rounded to 32, when the fixed Gemma 4 cache gate is enabled and `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` is unset; the same README 3-run lane records `1935.3610403257746 tok/s` prefill and `84.01009717307203 tok/s` decode, leaving llama.cpp `1.0899x` faster on prefill and `1.0886x` faster on decode |
+| Superseded right-sized fixed-cache packed expert-ID diagnostic vs same-prompt llama.cpp Q4_K_M | the generation cache builder derived the fixed-cache size from `prompt_tokens + max_tokens`, rounded to 32, when the fixed Gemma 4 cache gate was enabled and `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` was unset; the same README 3-run lane recorded `1935.3610403257746 tok/s` prefill and `84.01009717307203 tok/s` decode, leaving llama.cpp `1.0899x` faster on prefill and `1.0886x` faster on decode. This is retained as diagnostic history only; production retained state is paged/no-fixed by default |
 | Agentic 10-run fixed-cache retained-prefix bench | on the active packed expert-ID lane, one cold README prompt prefill plus nine fixed-cache prompt-cache wakes records `84.98980513059084 tok/s` decode, `4.674699ms` average restore time for the 2204-token retained prefix, and `471474 tok/s` retained-prefix setup equivalent; compared with re-prefilling the same prefix every batch, prompt setup drops from `10.567751250s` to `1.098864083s` over ten batches |
 | Rejected native router top-k probe on fixed-cache packed expert-ID lane | the gated single-token router top-k/softmax Metal kernel proves fixed-cache prompt restore works, with run 2/3 restoring the 2204-token prompt in about `4.7ms`, but decode averages only `83.54086813967548 tok/s`; llama.cpp remains `1.0947x` faster on decode, so this is not the active parity lane |
 | Native fixed-owner attention boundary probe | `GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION=1` moves Q/K/V projection, Q/K RMSNorm, RoPE, fixed-cache update, masked SDPA, and O projection behind a stable `go/internal/metal` C++ wrapper, with a q4 compiled branch for the active fixed-mask path. It is correct but neutral on the same README 3-run lane: same-binary gate-off records `84.59149676385168 tok/s`, gate-on q4-compiled records `84.75303439310541 tok/s`, and same-prompt llama.cpp Q4_K_M remains `1.0790x` faster at `91.451031 tok/s`; keep it gated rather than default |
@@ -1584,7 +1589,7 @@ enough:
 | Prefill chunk-size `1024` large-context probe | lowering model prefill chunks from `4096` to `1024` on the `28612` token prompt improves cold model prefill from `87.872341208s` to `70.193964333s`, but cache-hit wall time remains `110.010683625s` with `105.659096458s` driver overhead. Smaller model prefill chunks help ingestion shape, but they do not solve repeated-turn overhead while the driver still tokenises one giant prompt each turn |
 | Raw chunked prompt stream large-context 10-turn probe | `driver-profile -chat=false -prompt-chunk-bytes 4096 -prefill-chunk-size 1024` feeds the same repeated README text as bounded prompt chunks. It records `28625` prompt tokens, `115.288840001s` total for ten 128-token turns, `33.48494955572712 tok/s` average raw decode, and empty stderr. The cold turn takes `78.403770292s`; warm turns are about `4.1s`, with restore averaging `280.517444ms` and warm driver overhead around `18ms` instead of `~105s`. At the normalised `100 W` estimate, the ten-turn run is `11528.8840001 J`, retained setup saves `626.183063256s` versus replayed cold prefill, and that setup saving is `62618.3063256 J`. This proves chunked prompt tokenisation removes the 29k repeated-turn cliff |
 | Chat-mode chunked prompt stream large-context 10-turn probe | `driver-profile -prompt-chunk-bytes 4096 -prefill-chunk-size 1024` now chunks the native chat template path instead of requiring raw `-chat=false` mode. The opencode-shaped repeated README chat run records `28637` prompt tokens, `115.247971709s` total for ten 128-token turns, `33.58024749556697 tok/s` average raw decode, and empty stderr. The cold turn takes `78.4869145s`; warm turns remain about `4.08-4.10s`, restore averages `278.342120ms`, and warm driver overhead stays around `18-22ms`. At the normalised `100 W` estimate, the run is `11524.7971709 J`, retained setup saves `626.722864295s`, or `62672.2864295 J`, versus replayed cold prefill. This makes the chunked large-context fix apply to normal chat-mode diagnostics |
-| Accepted Gemma 4 fast-lane shortcut | `driver-profile -fast-gemma4-lane` now applies the accepted runtime gate set in one place: expert-ID matvec, fused expert activation, sorted expert prefill, native MLP matvec, native router matvec/top-k, fixed Gemma 4 cache, shared fixed mask, direct greedy token, and the dedicated generation stream. It also defaults the diagnostic cache mode to `paged` and context to `4096` unless the operator overrides them; when the operator supplies a larger context, the shortcut defaults to the proven large-context shape of `-prefill-chunk-size 512` plus `-prompt-chunk-bytes 4096`, and enables the long-context sliding fixed-cache bound, unless those flags are explicitly supplied. Rejected broad wrappers such as native full layer, native model greedy, fixed-owner attention, attention O-proj matvec, and generic native linear matvec are intentionally excluded. The current restored shared-mask shortcut evidence records `88.5760834806412 tok/s` decode over three runs and `88.50777967819847 tok/s` over ten retained-state runs, with first-run prefill back above `1600 tok/s` at `2100.679478883641 tok/s` in the 10-run sample |
+| Superseded Gemma 4 fast-lane shortcut with fixed-cache gates | the old `driver-profile -fast-gemma4-lane` shortcut applied expert-ID matvec, fused expert activation, sorted expert prefill, native MLP matvec, native router matvec/top-k, fixed Gemma 4 cache, shared fixed mask, direct greedy token, and the dedicated generation stream. That fixed-cache default is rejected: the current fast lane keeps fixed Gemma 4 K/V and shared fixed masks out of production defaults, keeps paged K/V as the retained-State default, and only keeps the older rows as diagnostic history. Rejected broad wrappers such as native full layer, native model greedy, fixed-owner attention, attention O-proj matvec, and generic native linear matvec remain excluded |
 | Fast-lane long-context prefill-chunk sweep and default validation | the opencode-shaped `28637` token chat sweep with `-prompt-chunk-bytes 4096` records cold prefill `82.128389084s` at chunk `128`, `74.8167155s` at `256`, `67.631178917s` at `512`, `69.769200709s` at `1024`, `73.696338791s` at `2048`, and `85.410324s` at `4096`. The curve is not monotonic: `512` is the measured elbow where chunks are small enough for natural model ingestion but not so small that per-chunk overhead dominates. The first rebuilt no-explicit-chunk fast-lane validation recorded `load.prefill_chunk_size=512` and `prompt_chunk_bytes=4096` by default, with `84.995550583s` wall time, `33.22422183528957 tok/s` average raw decode, `298.090812ms` average restore, `8499.5550583 J` at the normalised `100 W` estimate, and empty stderr; it is now superseded by the promoted sliding-cache-bound long-context default. This supersedes the older `1024` default artefact, which took `86.433517249s` |
 | Same-length 29k llama.cpp calibration | the Metal comparator must run outside the sandbox and should not force `GGML_METAL_DEVICES=0`, which filters the device out for this build; the working invocation uses the embedded Metal library and reports `MTL0: Apple M3 Ultra`. On the same local Q4_K_M GGUF, `llama-bench -p 28637 -n 1 -r 1 -ngl 99 -fa 1` records `1525.801226 tok/s` prefill in `18.768499791s`, while `-pg 28637,128` records pure `tg128` decode at `92.211737 tok/s` and combined `pp28637+tg128` throughput at `1398.527504 tok/s` over `20.568061709s`. Against the current go-mlx long-context retained-state artefact, cold prefill is `419.11716620820545 tok/s`, warm retained decode is `33.91056160965191 tok/s`, and the cold prompt-plus-decode run takes `76.811422833s`, leaving llama.cpp `3.64x` faster on same-length cold prefill, `2.72x` faster on raw decode, and `3.73x` faster on the comparable cold wall-clock. The retained-state workflow still removes repeated prefix replay, but the next performance boundary is long-context fixed-cache/attention scaling rather than another `512` vs `640` default tweak |
 | Promoted sliding fixed-cache bound | `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND=1` keeps Gemma 4 sliding-attention fixed caches at their native window while full-attention layers remain request-sized. It was first promoted only for long-context `-fast-gemma4-lane` runs, but the 2026-05-24 `metrics.cache_profile` smoke proved the normal `4096` context shortcut still leaked local windows, so the gate is now part of the default Gemma 4 fast lane as well. The first diagnostic proved the performance shape but missed prompt-cache restore; after fixed-cache snapshots learned to store bounded tail state with the full logical prefix offset, the no-explicit-flag `context=32768` validation records `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND=1`, `prefill_chunk_size=512`, `prompt_chunk_bytes=4096`, `36.868437918s` total for three `28637` token turns, `62.51129327845945 tok/s` average decode, `62.63259219208622 tok/s` warm decode, `1094.4247968802333 tok/s` cold prefill, `21.757104ms` average restore, `3686.8437918 J` at `100 W`, and empty stderr. Compared with the previous long-context default this is `0.434x` the wall time and energy, `1.88x` raw decode, `1.85x` warm decode, `2.61x` cold prefill, and `13.70x` faster restore. The same-length llama.cpp gap shrinks to `1.39x` on cold prefill, `1.47x` on raw decode, and `1.59x` on cold prompt-plus-decode wall-clock |
@@ -1719,14 +1724,14 @@ agentic workflow win.
 	  deltas for retained-state versus replayed-prefill setup, and can use
 	  `-prompt-chunk-bytes N` to avoid tokenising one giant prompt string during
 	  large-context diagnostics. It also accepts `-prompt-repeat N` so the same
-	  prompt can be grown into 29k, 64k, and 100k-class diagnostic contexts while
+	  prompt can be grown into 29k, 32k, and 100k-class diagnostic contexts while
 	  keeping the repeat count in the JSON report. `-fast-gemma4-lane` applies
 	  the current accepted Gemma 4 fast runtime gate set without enabling
 	  rejected broad native wrappers, defaults larger-than-4096 contexts to the
 	  proven `512` token prefill chunk plus `4096` byte prompt chunk shape unless
-	  the operator overrides it, keeps fixed Gemma 4 K/V enabled for retained
-	  lanes, and right-sizes the fixed cache from the request shape instead of a
-	  context-length cutoff.
+	  the operator overrides it, keeps fixed Gemma 4 K/V out of retained
+	  production defaults, and does not derive cache-family or fixed-cache size
+	  from a context-length cutoff.
 - [x] Add or preserve a parity report under `docs/runtime/` for every meaningful
   optimisation round.
 - [x] Use this go-mlx command shape for the target Gemma 4 E2B lane:
@@ -2504,8 +2509,8 @@ stuffing convention.
 - [x] Wake the seed into a live session without replaying the whole seed text.
   `WakeAgentMemory` restores State KV blocks directly and the test generates
   from restored state without refeeding the seed prompt. The prompt-cache wake
-  path also restores fixed-cache Gemma 4 generation buffers now, so the current
-  production fixed-cache decode lane can reuse durable KV state instead of
+  path also restores fixed-cache Gemma 4 generation buffers now, so the
+  diagnostic fixed-cache decode lane can reuse durable KV state instead of
   falling back to a full prefix prefill. The router-topk probe run demonstrates
   the shape in a real driver profile: run 2/3 restored the 2204-token README
   prompt in about `4.7ms` instead of replaying the prefix through prefill. The

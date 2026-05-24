@@ -62,7 +62,7 @@ Per memory class, the planner returns conservative values that leave headroom. E
 
 - **16GB Air**: 4096 ctx / 1 slot / Q4 preferred / 12GB memory cap
 - **96GB Ultra**: 32k ctx / 4 slots / Q8 preferred / 80GB cap / 200 experts resident
-- **192GB Mac Pro**: 65k ctx / 8 slots / fp16 acceptable / 170GB cap
+- **192GB Mac Pro**: 128k ctx / 8 slots / fp16 acceptable / 170GB cap
 
 ## MemoryPlanInput
 
