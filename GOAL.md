@@ -33,14 +33,16 @@ Make go-mlx the production Apple Silicon runtime for LTHN agentic workflows:
 ## Current Status: Active Parity Gap; Production Path Not Yet Accepted
 
 The current q4 retained-State lane works, but the production benchmark lane is
-not accepted. Fresh 2026-05-24 evidence after the bounded fixed-cache
-state-ramp default shows a real decode recovery, but go-mlx is still behind
-llama.cpp on raw decode. The retained workflow wall-time comparison is useful,
-but must be read with visible output counts, output-quality flags, and memory
-figures beside the speed numbers rather than using any one metric as a rescue.
-The old llama.cpp control-channel leakage remains relevant to historical rows,
-but the current request-context comparator below no longer leaks visible
-control markers.
+not accepted. The production path is paged retained State with no fixed-cache
+default and no `65536`/65k context-family switch. Do not reintroduce a
+context-length cutoff to choose K/V behaviour, fixed-cache sizing, or benchmark
+acceptance. Fresh 2026-05-24 evidence shows a real decode recovery, but go-mlx
+is still behind llama.cpp on raw decode. The retained workflow wall-time
+comparison is useful, but must be read with visible output counts,
+output-quality flags, and memory figures beside the speed numbers rather than
+using any one metric as a rescue. The old llama.cpp control-channel leakage
+remains relevant to historical rows, but the current request-context comparator
+below no longer leaks visible control markers.
 
 Latest request-context parity row, 2026-05-24:
 `/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-request-context-sharedkv-move-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
@@ -235,9 +237,27 @@ wake-plus-turn wall. Interpretation: the packed `.kv` region path cuts the
 wake heap allocation by about `99.68%`, saves `102.214708ms` of wake time, and
 does not regress decode on this short continuation. Process RSS is effectively
 neutral in this pair (`3,712,368,640` bytes for `.mvlog` versus
-`3,712,090,112` bytes for `.kv`), while store-open still allocates about
-`481 MB` in both paths, exposing the next State-file hot path: index/store
-open hydration rather than KV block wake itself.
+`3,712,090,112` bytes for `.kv`).
+
+Follow-up State store-open fix, 2026-05-24: the `go-inference`
+`state/filestore` index rebuild no longer preallocates index maps from raw file
+byte size once the State payload is large. Large `.kv` containers often hold a
+few huge records, so the old `(file_bytes / 128)` hint allocated hundreds of
+MiB before wake could borrow mmap-backed blocks. The focused benchmark
+`BenchmarkFilestoreCapacity_Open_SingleLargePayload` records `15856 ns/op`,
+`1680 B/op`, and `10 allocs/op`, while
+`BenchmarkFilestoreCapacity_Open_10000Records` keeps the small-record reopen
+shape visible at `4793836 ns/op`, `2120132 B/op`, and `10075 allocs/op`.
+The real packed `.kv` wake retry
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-wake-memorydelta-kv-indexhint-rerun-g16.json`
+opens the same `440,038,885` byte State payload and drops `store_open`
+allocation from the earlier `481,103,232` total bytes / `309,535,144` live heap
+bytes to `17,056` total bytes / `17,056` live heap bytes, with RSS delta down
+from `285,851,648` bytes to `32,768` bytes. Decode remains in the same short
+continuation band at `104.82051534023674 tok/s`, `fixed_caches=0`, and
+`local_window_leaked=false`. The next hot path is therefore not State
+store-open hydration; it is the retained decode graph/materialisation path
+visible in the request-context `sample_eval` token phase.
 
 While investigating that retry, the profile stream cancellation
 path was corrected: `driver-profile`, `state-ramp-profile`, and

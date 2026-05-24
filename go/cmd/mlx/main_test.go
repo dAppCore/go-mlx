@@ -858,6 +858,68 @@ func TestRunCommand_StateRampProfileTargetShapeStaysPaged_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileNoContextBoundaryAt65536_Good(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		contextLen int
+	}{
+		{name: "at_boundary", contextLen: 65536},
+		{name: "above_boundary", contextLen: 65537},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalRun := runStateRampProfile
+			t.Cleanup(func() { runStateRampProfile = originalRun })
+			runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+				if cfg.CompactionThresholdTokens != tc.contextLen {
+					t.Fatalf("compaction threshold = %d, want requested context %d", cfg.CompactionThresholdTokens, tc.contextLen)
+				}
+				return &stateRampProfileReport{
+					Version:                   1,
+					ModelPath:                 modelPath,
+					TargetTokens:              cfg.TargetTokens,
+					CompactionThresholdTokens: cfg.CompactionThresholdTokens,
+					RuntimeGates:              driverProfileRuntimeGates(),
+					Summary:                   stateRampProfileSummary{SuccessfulTurns: 1},
+				}, nil
+			}
+			stdout, stderr := core.NewBuffer(), core.NewBuffer()
+			contextText := core.Sprintf("%d", tc.contextLen)
+
+			code := runCommand(context.Background(), []string{
+				"state-ramp-profile",
+				"-json",
+				"-context", contextText,
+				"-start-tokens", "30000",
+				"-target-tokens", "70000",
+				"/models/demo",
+			}, stdout, stderr)
+
+			if code != 0 {
+				t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+			}
+			for _, want := range []string{
+				core.Sprintf(`"context_length": %d`, tc.contextLen),
+				`"prefill_chunk_size": 512`,
+				`"cache_mode": "paged"`,
+			} {
+				if !core.Contains(stdout.String(), want) {
+					t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+				}
+			}
+			for _, rejected := range []string{
+				`"GO_MLX_ENABLE_FIXED_GEMMA4_CACHE":`,
+				`"GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND":`,
+				`"GO_MLX_ENABLE_FIXED_GEMMA4_SHARED_MASK":`,
+				`"GO_MLX_FIXED_GEMMA4_CACHE_SIZE":`,
+			} {
+				if core.Contains(stdout.String(), rejected) {
+					t.Fatalf("stdout = %q, should not contain 65k boundary fixed-cache gate %s", stdout.String(), rejected)
+				}
+			}
+		})
+	}
+}
+
 func TestRunCommand_StateRampProfileFastLaneIgnoresFixedCacheEnv_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })

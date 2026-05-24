@@ -66,7 +66,8 @@ regions were pushed at `e1ce07a`, and mapped borrowed chunks at `41a48af`. The
 current dev branch now has the read-only embedded-region path
 `OpenRegionWithSegmentAlias(ctx, path, payloadOffset, payloadBytes,
 canonicalSegment)` plus borrowed byte reads via `BorrowBytes` /
-`BorrowRefBytes`.
+`BorrowRefBytes`. The large-payload store-open allocation fix landed at
+`e05c165` as `perf(state): bound filestore open preallocation`.
 
 The current file-backed State store validates `ChunkRef.Segment` against the
 opened store path. That is correct for safety, but a `.kv` container extracted
@@ -106,10 +107,10 @@ uses borrowed bytes first, so native KV tensor slices parsed from a `.kv` region
 can flow into the existing pinned MLX array restore path without a per-block
 heap copy. The first real retained wake proof is now recorded in `GOAL.md`:
 the packed `.kv` wake cut wake-phase Go heap allocation from about `49.45 MB`
-to `157 KB` while keeping decode flat on the same 658-token folded state.
-The remaining production work is tightening the store/session lifetime contract
-and reducing the store-open/index hydration allocation that still appears before
-the block-load win.
+to `157 KB` while keeping decode flat on the same 658-token folded state. The
+follow-up store-open proof is also recorded in `GOAL.md`: the same packed
+`440 MB` State payload now opens with `17 KB` of total Go allocation instead of
+about `481 MB`.
 
 ## P1 - Enchantrix `pkg/trix`: no default transforms for State KV
 
@@ -186,6 +187,13 @@ through `OpenRegionWithSegmentAlias`, so it no longer creates a temporary
 `.mvlog` copy. Raw State block payloads are now borrowed from the mmap-backed
 region where the platform supports it and are handed into the existing pinned
 MLX array restore path. The next proof point is no longer "does `.kv` wake
-without copying blocks"; it does. The next useful target is the earlier
-store-open/index hydration path, which still allocates heavily before wake can
-use the mmap-backed State blocks.
+without copying blocks" or "does store-open avoid giant heap preallocation";
+both now do. The next useful target is retained decode graph/materialisation:
+the request-context traces still show the dominant per-token bucket in
+`sample_eval`, where lazy MLX materialises the current one-token forward graph
+and sampler.
+
+Do not reintroduce the old `65536`/65k context boundary or any production
+fixed-cache default while chasing this. Context size can select chunking and
+overflow/compact limits, but it must not select a different K/V family or
+invent a fixed-cache budget for benchmark convenience.
