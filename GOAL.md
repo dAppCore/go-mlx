@@ -300,9 +300,21 @@ next canonical runtime report set is regenerated:
   `fold.summary_generation` turn so compaction cost is visible instead of being
   hidden inside decode throughput. Empty visible outputs in `state-ramp-profile`
   now fail the turn with `empty_visible_output` instead of being counted as
-  successful turns. This is the production path for compacting into a new State
-  file; raw cross-session continuation from the old live window remains an R&D
-  lane.
+  successful turns. Follow-up hardening removed the hard-coded
+  "opencode-style engineering session" seed from retained chat-template
+  preambles and replaced it with the shared Lemma new-session default exposed
+  as `mlx.DefaultLemmaNewSessionText` / `mlx.DefaultNewSessionText`. The
+  go-mlx, llama.cpp, and mlx_lm workflow harnesses now use that same text, so
+  creative compact runs no longer start from an engineering-session scaffold
+  and runner anchors stay prompt-matched. Explicit empty seed contexts are now
+  valid with `-prompt "" -start-tokens 0`, letting frameworks lead with a
+  blank/new-session pack or use the first real user prompt instead of a
+  synthetic retained context. Generated folded summaries now fail the fold when
+  the summary turn carries non-debug output issues such as prompt analysis or
+  visible control tokens, preventing a bad summary from being accepted as a
+  clean compact State. This is the production path for compacting into a new
+  State file; raw cross-session continuation from the old live window remains
+  an R&D lane.
 - Generated-summary compact-book smoke, same date:
   `/private/tmp/go-mlx-goal/book-runs-prodsummary-seedtext/2026-05-24-c001-story-perspective-seed20260524.*`
   uses `C001_STORY_PERSPECTIVE`, Gemma 4 chat template wrapping, a

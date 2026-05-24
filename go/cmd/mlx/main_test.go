@@ -1042,6 +1042,52 @@ func TestRunCommand_StateRampProfileFoldSummaryGenerate_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_StateRampProfileEmptySeedContext_Good(t *testing.T) {
+	originalRun := runStateRampProfile
+	t.Cleanup(func() { runStateRampProfile = originalRun })
+	var gotCfg stateRampProfileOptions
+	runStateRampProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg stateRampProfileOptions) (*stateRampProfileReport, error) {
+		gotCfg = cfg
+		return &stateRampProfileReport{
+			Version:      1,
+			ModelPath:    modelPath,
+			PromptBytes:  len(cfg.Prompt),
+			StartTokens:  cfg.StartTokens,
+			TargetTokens: cfg.TargetTokens,
+			Summary: stateRampProfileSummary{
+				SuccessfulTurns: 1,
+			},
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"state-ramp-profile",
+		"-json",
+		"-prompt", "",
+		"-start-tokens", "0",
+		"-append-prompt", "Write the first answer from a blank session.",
+		"-target-tokens", "64",
+		"-turns", "1",
+		"/models/demo",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !gotCfg.PromptSet || gotCfg.Prompt != "" || gotCfg.StartTokens != 0 {
+		t.Fatalf("empty prompt cfg = %+v, want explicit empty seed context", gotCfg)
+	}
+	for _, want := range []string{
+		`"prompt_bytes": 0`,
+		`"start_tokens": 0`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_StateRampProfileWakeMarker_Good(t *testing.T) {
 	originalRun := runStateRampProfile
 	t.Cleanup(func() { runStateRampProfile = originalRun })

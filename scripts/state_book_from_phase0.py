@@ -312,6 +312,7 @@ def build_command(
     include_prompt_file: bool = True,
     extra_flags: list[str] | None = None,
 ) -> list[str]:
+    start_tokens = args.start_tokens if include_prompt_file else 0
     command = [
         str(args.bin),
         "state-ramp-profile",
@@ -324,7 +325,7 @@ def build_command(
         "-append-turn-delimiter",
         TURN_DELIMITER,
         "-start-tokens",
-        str(args.start_tokens),
+        str(start_tokens),
         "-target-tokens",
         str(args.target_tokens),
         "-append-tokens",
@@ -348,6 +349,11 @@ def build_command(
         command[6:6] = [
             "-prompt-file",
             str(paths["seed"]),
+        ]
+    else:
+        command[6:6] = [
+            "-prompt",
+            "",
         ]
     if extra_flags:
         command.extend(extra_flags)

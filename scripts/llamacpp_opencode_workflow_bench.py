@@ -12,6 +12,13 @@ from urllib.parse import urlparse
 from transformers import AutoTokenizer
 
 
+RETAINED_SYSTEM_PROMPT = (
+    "Hiya, welcome, we are training to become Lemma, a Lethean Ethical Model, "
+    "this is from the Lethean Model Engine, we dont ahve user input yet, we "
+    "will pass it over as soon as we get it."
+)
+
+
 def encode(tokenizer, text):
     return tokenizer.encode(text, add_special_tokens=False)
 
@@ -23,10 +30,7 @@ def gemma4_initial_prompt(context_prompt, enable_thinking, explicit_bos):
     parts.append("<|turn>system\n")
     if enable_thinking:
         parts.append("<|think|>\n")
-    parts.append(
-        "You are running an opencode-style engineering session. Use the "
-        "retained codebase context as memory for later user turns.\n\n"
-    )
+    parts.append(RETAINED_SYSTEM_PROMPT + "\n\n")
     parts.append(context_prompt.strip())
     parts.append("<turn|>\n<|turn>model\n")
     if not enable_thinking:

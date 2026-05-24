@@ -447,10 +447,13 @@ type chapterProfileEnergy struct {
 const defaultStateRampFoldContinuePrompt = "Return exactly one sentence starting with `The compacted State is live; next action:` and name this action: diagnose late-turn long-context content degradation before raising the stress target. " +
 	"Do not mention instructions, analysis, reasoning, plans, uncertainty, or report structure."
 
+const defaultStateRampRetainedSystemPrompt = mlx.DefaultNewSessionText
+
 const defaultStateRampFoldSummaryPrompt = "Write a durable continuation brief for a fresh folded State. Output 8 to 12 concise bullets, not prose. Preserve the original user task or seed story arc, hard constraints, required style or structure, named entities, unresolved threads, what has already happened, the current emotional/logical state, and the exact next continuation point. If the task is a book or story, state what must be resolved in the final chapter and what must not replace the main arc. Do not include prompt analysis, planning, uncertainty, implementation notes, or a checklist label."
 
 type stateRampProfileOptions struct {
 	Prompt                      string                    `json:"prompt,omitempty"`
+	PromptSet                   bool                      `json:"-"`
 	AppendPrompt                string                    `json:"append_prompt,omitempty"`
 	AppendTurnDelimiter         string                    `json:"append_turn_delimiter,omitempty"`
 	WakeMarkerFile              string                    `json:"wake_marker_file,omitempty"`
@@ -2400,8 +2403,8 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 		}
 		*foldRecentTail = string(read.Value.([]byte))
 	}
-	if *startTokens < 1 {
-		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: start tokens must be >= 1\n", cliName()))
+	if *startTokens < 0 {
+		core.WriteString(stderr, core.Sprintf("%s state-ramp-profile: start tokens must be >= 0\n", cliName()))
 		return 2
 	}
 	if *targetTokens <= *startTokens {
@@ -2557,6 +2560,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 
 	report, err := runStateRampProfileGuarded(ctx, fs.Arg(0), loadOptions, stateRampProfileOptions{
 		Prompt:                      *prompt,
+		PromptSet:                   visitedFlags["prompt"] || visitedFlags["prompt-file"],
 		AppendPrompt:                *appendPrompt,
 		AppendTurnDelimiter:         *appendTurnDelimiter,
 		WakeMarkerFile:              core.Trim(*wakeMarkerFile),
@@ -2785,11 +2789,6 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		report.Error = err.Error()
 		return report, err
 	}
-	if len(sourceTokens) == 0 {
-		err := core.NewError("state-ramp-profile: source prompt produced no tokens")
-		report.Error = err.Error()
-		return report, err
-	}
 	report.SourceTokens = len(sourceTokens)
 	appendText := opts.AppendPrompt
 	if appendText == "" {
@@ -2847,19 +2846,22 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 			report.Error = err.Error()
 			return report, err
 		}
-		seedTokens, err := stateRampProfileSeedTokens(tok, sourceTokens, opts)
-		if err != nil {
-			report.Error = err.Error()
-			return report, err
-		}
-		prefillStart := time.Now()
-		err = session.PrefillTokens(ctx, seedTokens)
-		report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
-		report.InitialPrefillTokens = len(seedTokens)
-		initialSetupDuration = report.InitialPrefillDuration
-		if err != nil {
-			report.Error = err.Error()
-			return report, err
+		if len(sourceTokens) > 0 {
+			seedTokens, err := stateRampProfileSeedTokens(tok, sourceTokens, opts)
+			if err != nil {
+				report.Error = err.Error()
+				return report, err
+			}
+			prefillStart := time.Now()
+			err = session.PrefillTokens(ctx, seedTokens)
+			report.InitialPrefillDuration = bench.NonZeroDuration(time.Since(prefillStart))
+			report.InitialPrefillTokens = len(seedTokens)
+			initialSetupDuration = report.InitialPrefillDuration
+			if err != nil {
+				report.Error = err.Error()
+				return report, err
+			}
+			currentTokens = len(seedTokens)
 		}
 		report.InitialSetupMetrics = profileLiveMetrics()
 		if err := driverProfileMetricsSafetyError("initial prefill", report.InitialSetupMetrics, opts.SafetyLimits); err != nil {
@@ -2868,7 +2870,6 @@ func defaultRunStateRampProfile(ctx context.Context, modelPath string, loadOptio
 		}
 		mlx.ClearCache()
 		report.InitialSetupPostClearMetrics = profileLiveMetrics()
-		currentTokens = len(seedTokens)
 	}
 	defer session.Close()
 
@@ -2931,10 +2932,10 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 	opts.WakeStateStorePath = core.Trim(opts.WakeStateStorePath)
 	opts.WakeStateStoreSegmentAlias = core.Trim(opts.WakeStateStoreSegmentAlias)
 	opts.WakeIndexURI = core.Trim(opts.WakeIndexURI)
-	if opts.Prompt == "" {
+	if opts.Prompt == "" && !opts.PromptSet {
 		opts.Prompt = "Answer in one short sentence: why does retained model state matter?"
 	}
-	if opts.StartTokens <= 0 {
+	if opts.StartTokens < 0 || (opts.StartTokens == 0 && opts.Prompt != "") {
 		opts.StartTokens = 30000
 	}
 	if opts.TargetTokens <= 0 {
@@ -3123,7 +3124,8 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 		if enableThinking {
 			builder.WriteString("<|think|>\n")
 		}
-		builder.WriteString("You are running an opencode-style engineering session. Use the retained codebase context as memory for later user turns.\n\n")
+		builder.WriteString(defaultStateRampRetainedSystemPrompt)
+		builder.WriteString("\n\n")
 		builder.WriteString(contextPrompt)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		if !enableThinking {
@@ -3132,11 +3134,11 @@ func stateRampProfileInitialPrompt(template, contextPrompt string, enableThinkin
 		builder.WriteString("Ready.<turn|>\n")
 		return builder.String()
 	case "gemma":
-		return "<start_of_turn>user\n" + contextPrompt + "\n\nRetain this project context for later engineering turns.<end_of_turn>\n<start_of_turn>model\nReady.<end_of_turn>\n"
+		return "<start_of_turn>user\n" + contextPrompt + "\n\n" + defaultStateRampRetainedSystemPrompt + "<end_of_turn>\n<start_of_turn>model\nReady.<end_of_turn>\n"
 	case "qwen":
-		return "<|im_start|>system\nRetain this project context for later engineering turns.\n\n" + contextPrompt + "<|im_end|>\n<|im_start|>assistant\nReady.<|im_end|>\n"
+		return "<|im_start|>system\n" + defaultStateRampRetainedSystemPrompt + "\n\n" + contextPrompt + "<|im_end|>\n<|im_start|>assistant\nReady.<|im_end|>\n"
 	case "llama":
-		return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nRetain this project context for later engineering turns.\n\n" + contextPrompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nReady.<|eot_id|>"
+		return "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n" + defaultStateRampRetainedSystemPrompt + "\n\n" + contextPrompt + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\nReady.<|eot_id|>"
 	default:
 		return contextPrompt
 	}
@@ -3978,13 +3980,23 @@ func stateRampProfileGenerateFoldSummary(ctx context.Context, model *mlx.Model, 
 	if !opts.IncludeOutput {
 		turn.Output = ""
 	}
-	if turn.Error != "" {
-		return summary, &turn, core.NewError(turn.Error)
-	}
-	if summary == "" {
-		return "", &turn, core.NewError("state-ramp-profile: generated folded summary was empty")
+	if err := stateRampProfileGeneratedSummaryError(turn, summary); err != nil {
+		return summary, &turn, err
 	}
 	return summary, &turn, nil
+}
+
+func stateRampProfileGeneratedSummaryError(turn stateRampProfileTurn, summary string) error {
+	if turn.Error != "" {
+		return core.NewError(turn.Error)
+	}
+	if core.Trim(summary) == "" {
+		return core.NewError("state-ramp-profile: generated folded summary was empty")
+	}
+	if stateRampProfileTurnHasContentIssue(turn) {
+		return core.NewError(core.Sprintf("state-ramp-profile: generated folded summary has output issues: %s", core.Join(", ", turn.OutputIssues...)))
+	}
+	return nil
 }
 
 func stateRampProfileFoldSummaryMode(opts stateRampProfileOptions) string {

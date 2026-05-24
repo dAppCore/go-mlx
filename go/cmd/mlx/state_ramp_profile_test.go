@@ -95,3 +95,32 @@ func TestStateRampProfileSeedTokens_RepeatsSourceForWrappedTemplate_Good(t *test
 		}
 	}
 }
+
+func TestStateRampProfileInitialPrompt_RetainedSystemPrompt_Good(t *testing.T) {
+	coverageTokens := "InitialPrompt RetainedSystemPrompt"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	for _, template := range []string{"gemma4", "gemma", "qwen", "llama"} {
+		prompt := stateRampProfileInitialPrompt(template, "context body", false)
+		if !core.Contains(prompt, defaultStateRampRetainedSystemPrompt) {
+			t.Fatalf("template %q prompt = %q, want retained system prompt", template, prompt)
+		}
+		if core.Contains(prompt, "opencode-style engineering session") || core.Contains(prompt, "later engineering turns") {
+			t.Fatalf("template %q prompt = %q, want Lemma retained context language", template, prompt)
+		}
+	}
+}
+
+func TestStateRampProfileGeneratedSummaryError_BadOutputIssues(t *testing.T) {
+	coverageTokens := "GeneratedSummaryError BadOutputIssues"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	err := stateRampProfileGeneratedSummaryError(stateRampProfileTurn{
+		OutputIssues: []string{"visible_prompt_analysis"},
+	}, "- summary")
+	if err == nil || !core.Contains(err.Error(), "generated folded summary has output issues") {
+		t.Fatalf("stateRampProfileGeneratedSummaryError() = %v, want output issue error", err)
+	}
+}
