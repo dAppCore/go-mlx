@@ -128,7 +128,7 @@ func DefaultGemma4FastRuntimeGates() []string {
 //
 // Same read-only contract as DefaultGemma4FastRuntimeGates — the shared
 // package-init singletons are returned directly.
-func Gemma4FastRuntimeGatesForContext(contextLength int) []string {
+func Gemma4FastRuntimeGatesForContext(_ int) []string {
 	return defaultGemma4FastRuntimeGates
 }
 

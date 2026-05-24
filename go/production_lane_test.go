@@ -145,3 +145,28 @@ func TestProductionLane_Gemma4FastRuntimeGatesForContext_LongContextStaysPaged_G
 		}
 	}
 }
+
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_NoSixtyFourKiBoundary_Good(t *testing.T) {
+	gates := Gemma4FastRuntimeGatesForContext(65536)
+	defaults := DefaultGemma4FastRuntimeGates()
+	if len(gates) != len(defaults) {
+		t.Fatalf("Gemma4FastRuntimeGatesForContext(65536) len = %d, want default len %d", len(gates), len(defaults))
+	}
+	for i, gate := range gates {
+		if gate != defaults[i] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext(65536)[%d] = %s, want default %s", i, gate, defaults[i])
+		}
+	}
+	for _, rejected := range []string{
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
+		Gemma4FastRuntimeGateNativeFixedSliding,
+	} {
+		for _, gate := range gates {
+			if gate == rejected {
+				t.Fatalf("Gemma4FastRuntimeGatesForContext(65536) = %v, should not select old fixed-cache boundary gate %s", gates, rejected)
+			}
+		}
+	}
+}
