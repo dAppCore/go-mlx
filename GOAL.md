@@ -988,6 +988,16 @@ The previous intermediate row was `19504 B/op` and
 `1536 allocs/op` after avoiding exact-token page slices, lazy `Owned` state
 allocation, and repeated page-shape queries.
 
+Latest native State restore source delta: `metalKVSnapshotBlockSource` no
+longer allocates and copies a second `[]kv.StateBlockRef` manifest for every
+native prompt-cache/session restore. It validates contiguous prefix coverage,
+stores only the covering block count, and indexes the original bundle slice
+from the per-block loader. `BenchmarkBackend_MetalKVSnapshotBlockSource_Construct96Blocks`
+improved from `2165 ns/op`, `18528 B/op`, `2 allocs/op` to `96.87 ns/op`,
+`96 B/op`, `1 alloc/op`. This is a restore-path allocation cleanup, not a raw
+decode fix; it keeps warm State restore closer to the intended streaming
+layout before the pinned/mmap handoff work.
+
 Current open gates:
 
 - [x] Retained State can wake, append, generate, and report wall/decode/append,

@@ -165,13 +165,13 @@ var (
 	// every WarmPromptCacheFromStateBlocks call (large prefixes mean dozens
 	// of invocations), so hoisting these to package-level drops a per-block
 	// core.NewError alloc on every load.
-	errMLXStateKVStoreNil           = core.NewError("mlx: state store is nil")
-	errMLXStateKVPrefixExceeds      = core.NewError("mlx: State KV prefix exceeds bundle token count")
-	errMLXStateKVPrefixNoCovering   = core.NewError("mlx: State KV prefix has no covering blocks")
-	errMLXStateKVBlockOutOfRange    = core.NewError("mlx: State KV block index is out of range")
-	errMLXStateKVBlockMetaMismatch  = core.NewError("mlx: State KV block metadata mismatch")
-	errMLXStateKVBlockSnapshotNil   = core.NewError("mlx: State KV block snapshot is nil")
-	errMLXStateKVPrefixInvalidTrim  = core.NewError("mlx: State KV prefix has invalid trim range")
+	errMLXStateKVStoreNil          = core.NewError("mlx: state store is nil")
+	errMLXStateKVPrefixExceeds     = core.NewError("mlx: State KV prefix exceeds bundle token count")
+	errMLXStateKVPrefixNoCovering  = core.NewError("mlx: State KV prefix has no covering blocks")
+	errMLXStateKVBlockOutOfRange   = core.NewError("mlx: State KV block index is out of range")
+	errMLXStateKVBlockMetaMismatch = core.NewError("mlx: State KV block metadata mismatch")
+	errMLXStateKVBlockSnapshotNil  = core.NewError("mlx: State KV block snapshot is nil")
+	errMLXStateKVPrefixInvalidTrim = core.NewError("mlx: State KV prefix has invalid trim range")
 )
 
 // closedTokenChan is the shared "no tokens, generation skipped" channel
@@ -674,11 +674,11 @@ func toRootNativePhaseTraces(events []metal.NativePhaseTrace) []NativePhaseTrace
 // root-facing lora.AdapterInfo. All four callers pass slices that the
 // metal side already cloned for caller isolation:
 //
-//   * toRootMetrics — metrics.Adapter comes from m.lastMetrics.Adapter
+//   - toRootMetrics — metrics.Adapter comes from m.lastMetrics.Adapter
 //     which is assigned via metal.(*Model).Adapter() (cloneMetalAdapterInfo).
-//   * adapterFromNativeInfo + (*Model).Adapter — info.Adapter likewise
+//   - adapterFromNativeInfo + (*Model).Adapter — info.Adapter likewise
 //     comes from m.Info() → m.Adapter() which clones.
-//   * inference_contract.go — passes adapter.model.Adapter() directly.
+//   - inference_contract.go — passes adapter.model.Adapter() directly.
 //
 // The previous core.SliceClone(info.TargetKeys) at this layer was a
 // redundant second clone — drops a 64 B / 1 alloc per call by sharing
@@ -1455,31 +1455,15 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 	if prefixTokens > bundle.TokenCount {
 		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixExceeds
 	}
-	// Index iteration — kv.StateBlockRef carries two strings + a nested
-	// state.ChunkRef (multiple string fields) per entry, so range-and-
-	// copy materialises a non-trivial struct into the loop variable
-	// each step before append re-copies it into refs. Pull a pointer-
-	// aliased read off bundle.Blocks[i] for the gating fields and
-	// append the source entry directly when we keep it.
 	blocks := bundle.Blocks
-	refs := make([]kv.StateBlockRef, 0, len(blocks))
-	for i := range blocks {
-		tokenStart := blocks[i].TokenStart
-		if tokenStart >= prefixTokens {
-			break
-		}
-		refs = append(refs, blocks[i])
-		if tokenStart+blocks[i].TokenCount >= prefixTokens {
-			break
-		}
-	}
-	if len(refs) == 0 {
-		return metal.KVSnapshotBlockSource{}, errMLXStateKVPrefixNoCovering
+	blockCount, err := metalKVSnapshotBlockSourceCoverage(blocks, prefixTokens)
+	if err != nil {
+		return metal.KVSnapshotBlockSource{}, err
 	}
 	source := metal.KVSnapshotBlockSource{
 		TokenCount:   bundle.TokenCount,
 		PrefixTokens: prefixTokens,
-		BlockCount:   len(refs),
+		BlockCount:   blockCount,
 	}
 	// Hoist invariants out of the per-block closure. KVEncoding is bundle-
 	// scoped — checking it once at construction lets each Load call use
@@ -1492,11 +1476,11 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		if loadCtx == nil {
 			loadCtx = ctx
 		}
-		if index < 0 || index >= len(refs) {
+		if index < 0 || index >= blockCount {
 			return metal.KVSnapshotBlock{}, errMLXStateKVBlockOutOfRange
 		}
-		ref := refs[index]
-		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, ref, loadOpts)
+		ref := &blocks[index]
+		block, err := kv.LoadStateBlockWithOptions(loadCtx, store, *ref, loadOpts)
 		if err != nil {
 			return metal.KVSnapshotBlock{}, err
 		}
@@ -1534,6 +1518,32 @@ func metalKVSnapshotBlockSource(ctx context.Context, store state.Store, bundle *
 		}, nil
 	}
 	return source, nil
+}
+
+func metalKVSnapshotBlockSourceCoverage(blocks []kv.StateBlockRef, prefixTokens int) (int, error) {
+	if len(blocks) == 0 {
+		return 0, errMLXStateKVPrefixNoCovering
+	}
+	nextStart := 0
+	blockCount := 0
+	for i := range blocks {
+		ref := &blocks[i]
+		if ref.TokenStart >= prefixTokens {
+			break
+		}
+		if ref.Index != i || ref.TokenStart != nextStart || ref.TokenCount <= 0 {
+			return 0, errMLXStateKVBlockMetaMismatch
+		}
+		nextStart += ref.TokenCount
+		blockCount++
+		if nextStart >= prefixTokens {
+			break
+		}
+	}
+	if blockCount == 0 || nextStart < prefixTokens {
+		return 0, errMLXStateKVPrefixNoCovering
+	}
+	return blockCount, nil
 }
 
 // GenerateStream streams tokens through a channel until generation completes or ctx is cancelled.

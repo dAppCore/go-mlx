@@ -10,26 +10,30 @@
 package mlx
 
 import (
+	"context"
 	"testing"
 
 	"dappco.re/go/inference"
 	"dappco.re/go/inference/parser"
+	state "dappco.re/go/inference/state"
 	"dappco.re/go/mlx/internal/metal"
+	"dappco.re/go/mlx/kv"
 	"dappco.re/go/mlx/lora"
 	"dappco.re/go/mlx/probe"
 )
 
 // Sinks defeat compiler DCE.
 var (
-	backendBenchSinkMetalCfg      metal.GenerateConfig
-	backendBenchSinkMetalSink     metal.ProbeSink
-	backendBenchSinkHint          parser.Hint
-	backendBenchSinkProbeLogits   []probe.Logit
-	backendBenchSinkProbeEvent    probe.Event
-	backendBenchSinkRootMetrics   Metrics
-	backendBenchSinkRootToken     Token
-	backendBenchSinkRootAdapter   lora.AdapterInfo
-	backendBenchSinkChatMessages  []metal.ChatMessage
+	backendBenchSinkMetalCfg     metal.GenerateConfig
+	backendBenchSinkMetalSink    metal.ProbeSink
+	backendBenchSinkHint         parser.Hint
+	backendBenchSinkProbeLogits  []probe.Logit
+	backendBenchSinkProbeEvent   probe.Event
+	backendBenchSinkRootMetrics  Metrics
+	backendBenchSinkRootToken    Token
+	backendBenchSinkRootAdapter  lora.AdapterInfo
+	backendBenchSinkChatMessages []metal.ChatMessage
+	backendBenchSinkBlockSource  metal.KVSnapshotBlockSource
 )
 
 // noopProbeSink is a minimal probe.Sink that drops every event — used by
@@ -145,6 +149,44 @@ func BenchmarkBackend_HintForParser_Build(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		backendBenchSinkHint = model.buildParserHint()
+	}
+}
+
+// --- metalKVSnapshotBlockSource ---
+// Retained-State prompt restore builds this source once per warm wake before
+// native code streams block payloads. Keep source construction allocation-free
+// so the restore path stays proportional to block payloads, not manifest size.
+
+func BenchmarkBackend_MetalKVSnapshotBlockSource_Construct96Blocks(b *testing.B) {
+	store := state.NewInMemoryStore(nil)
+	bundle := benchmarkBackendStateBlockBundle(96, 512)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		source, err := metalKVSnapshotBlockSource(context.Background(), store, bundle, bundle.TokenCount)
+		if err != nil {
+			b.Fatal(err)
+		}
+		backendBenchSinkBlockSource = source
+	}
+}
+
+func benchmarkBackendStateBlockBundle(blockCount, tokensPerBlock int) *kv.StateBlockBundle {
+	blocks := make([]kv.StateBlockRef, blockCount)
+	for i := range blocks {
+		blocks[i] = kv.StateBlockRef{
+			Index:      i,
+			TokenStart: i * tokensPerBlock,
+			TokenCount: tokensPerBlock,
+		}
+	}
+	return &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: blockCount * tokensPerBlock,
+		BlockSize:  tokensPerBlock,
+		Blocks:     blocks,
 	}
 }
 

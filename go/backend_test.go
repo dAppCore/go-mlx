@@ -1530,6 +1530,51 @@ func TestModelWarmPromptCacheFromMemvidBlocks_NativeRawOnly_Good(t *testing.T) {
 	}
 }
 
+func TestMetalKVSnapshotBlockSourcePartialPrefix_Good(t *testing.T) {
+	coverageTokens := "MetalKVSnapshotBlockSource PartialPrefix"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 6,
+		Blocks: []kv.StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2},
+			{Index: 1, TokenStart: 2, TokenCount: 2},
+			{Index: 2, TokenStart: 4, TokenCount: 2},
+		},
+	}
+
+	source, err := metalKVSnapshotBlockSource(context.Background(), memvid.NewInMemoryStore(nil), bundle, 3)
+	if err != nil {
+		t.Fatalf("metalKVSnapshotBlockSource() error = %v", err)
+	}
+	if source.BlockCount != 2 || source.PrefixTokens != 3 || source.TokenCount != 6 {
+		t.Fatalf("source = %+v, want two covering blocks for three-token prefix", source)
+	}
+}
+
+func TestMetalKVSnapshotBlockSourceRejectsNonContiguousBundle_Bad(t *testing.T) {
+	coverageTokens := "MetalKVSnapshotBlockSource RejectsNonContiguousBundle"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	bundle := &kv.StateBlockBundle{
+		Version:    kv.StateBlockVersion,
+		Kind:       kv.StateBlockBundleKind,
+		TokenCount: 4,
+		Blocks: []kv.StateBlockRef{
+			{Index: 0, TokenStart: 0, TokenCount: 2},
+			{Index: 1, TokenStart: 3, TokenCount: 1},
+		},
+	}
+
+	if _, err := metalKVSnapshotBlockSource(context.Background(), memvid.NewInMemoryStore(nil), bundle, 4); err != errMLXStateKVBlockMetaMismatch {
+		t.Fatalf("metalKVSnapshotBlockSource() error = %v, want metadata mismatch", err)
+	}
+}
+
 func TestModelGenerateBuffered_Error_Bad(t *testing.T) {
 	coverageTokens := "Error"
 	if coverageTokens == "" {
