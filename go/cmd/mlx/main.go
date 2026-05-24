@@ -1266,7 +1266,7 @@ func gemma4FixedCacheRuntimeGate(gate string) bool {
 }
 
 func applyStateRampFixedGemma4CacheBudget(startTokens, targetTokens, compactionThresholdTokens, turnMaxTokens int) []func() {
-	if driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) == "0" {
+	if driverProfileRuntimeGateValue(mlx.Gemma4FastRuntimeGateFixedGemma4Cache) != "1" {
 		return nil
 	}
 	if driverProfileRuntimeGateValue("GO_MLX_FIXED_GEMMA4_CACHE_SIZE") != "" {

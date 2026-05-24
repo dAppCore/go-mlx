@@ -70,10 +70,35 @@ same-shape pair and uses less RSS, but llama.cpp is still `1.300x` faster on
 raw decode and returns more visible content in roughly the same wall time.
 This is useful retained-State evidence, not production acceptance.
 
-Current no-cutoff fixed-cache correction, 2026-05-24: the `65536` context
-boundary is no longer allowed to switch retained Gemma 4 runs away from fixed
-K/V. The fast lane keeps fixed K/V gates enabled unless the operator explicitly
-sets `GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=0`; `state-ramp-profile` derives
+Current no-cutoff paged-State correction, 2026-05-24: fixed Gemma 4 K/V is no
+longer a default fast-lane gate. `driver-profile`, `chapter-profile`, and
+`state-ramp-profile` now stay on paged K/V by default, and
+`state-ramp-profile` only writes `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` when the
+operator explicitly opts into fixed K/V with
+`GO_MLX_ENABLE_FIXED_GEMMA4_CACHE=1`. The rebuilt smoke
+`/private/tmp/go-mlx-goal/reports/2026-05-24-state-ramp-smoke-paged-no-fixed-default.json`
+records runtime gates `GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH=1`,
+`GO_MLX_ENABLE_DIRECT_GREEDY_TOKEN=1`,
+`GO_MLX_ENABLE_EXPERT_ID_FUSED_ACTIVATION=1`,
+`GO_MLX_ENABLE_EXPERT_ID_MATVEC=1`,
+`GO_MLX_ENABLE_GENERATION_STREAM=1`,
+`GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_MATVEC=1`,
+`GO_MLX_ENABLE_NATIVE_GEMMA4_ROUTER_TOPK=1`,
+`GO_MLX_ENABLE_NATIVE_LINEAR_MATVEC=1`,
+`GO_MLX_ENABLE_NATIVE_MLP_MATVEC=1`,
+`GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT=1`,
+`GO_MLX_ENABLE_SORTED_EXPERT_PREFILL=1`, and
+`GO_MLX_KV_CACHE_DTYPE=fp16`, with no `GO_MLX_ENABLE_FIXED_GEMMA4_*` gates and
+no `GO_MLX_FIXED_GEMMA4_CACHE_SIZE`. Its cache profile records
+`paged_caches=15`, `fixed_caches=0`, `max_local_tokens=512`,
+`max_local_capacity=512`, `max_global_tokens=3298`,
+`max_global_capacity=32768`, and `local_window_leaked=false`; short smoke
+decode is `110.531 tok/s`. This is a default-path correction, not production
+acceptance, and the next real comparator run must use this paged-only default.
+
+Superseded fixed-cache diagnostic, 2026-05-24: the `65536` context boundary was
+removed as a cache-family switch, but the intermediate fix still used fixed K/V
+by default. That diagnostic kept fixed K/V gates enabled and derived
 `GO_MLX_FIXED_GEMMA4_CACHE_SIZE` from the requested run shape
 (`target/compaction threshold + max tokens`, rounded to `32`) rather than from
 the model context length. Follow-up code also stops treating `65536` as a
@@ -119,8 +144,8 @@ root metrics path remains `25.79 ns/op`, `0 B/op`, `0 allocs/op`. The first
 live 4096-context smoke with this metric exposed the remaining local-window
 leak (`max_local_tokens=1283`, `max_local_capacity=1440`,
 `local_window_leaked=true`) because `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND`
-was still long-context-only. The fixed sliding bound is now part of the default
-Gemma 4 fast gate set. Rebuilding and rerunning the same smoke at
+was still long-context-only. The diagnostic fixed-cache path then enabled the
+fixed sliding bound and reran the same smoke at
 `/private/tmp/go-mlx-goal/reports/2026-05-24-cache-profile-smoke-bounded.json`
 records `GO_MLX_ENABLE_FIXED_GEMMA4_SLIDING_CACHE_BOUND=1`,
 `max_local_tokens=512`, `max_local_capacity=512`, `max_global_tokens=1296`,

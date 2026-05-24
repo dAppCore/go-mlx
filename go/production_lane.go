@@ -68,18 +68,13 @@ var defaultGemma4FastRuntimeGates = []string{
 	Gemma4FastRuntimeGateNativeLinearMatVec,
 	Gemma4FastRuntimeGateNativeRouterMatVec,
 	Gemma4FastRuntimeGateNativeRouterTopK,
-	Gemma4FastRuntimeGateFixedGemma4Cache,
-	Gemma4FastRuntimeGateFixedGemma4SharedMask,
-	Gemma4FastRuntimeGateFixedGemma4Sliding,
 	Gemma4FastRuntimeGateDirectGreedyToken,
 	Gemma4FastRuntimeGateGenerationStream,
 	Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	Gemma4FastRuntimeGatePagedDecodeFastConcat,
 }
 
-var longContextGemma4FastRuntimeGates = []string{
-	Gemma4FastRuntimeGateFixedGemma4Sliding,
-}
+var longContextGemma4FastRuntimeGates = []string{}
 
 // ProductionLane describes the current package-owned local runtime target.
 type ProductionLane struct {
@@ -127,9 +122,9 @@ func DefaultGemma4FastRuntimeGates() []string {
 }
 
 // Gemma4FastRuntimeGatesForContext returns the accepted fast gates for the
-// requested context length. Context length alone must not disable fixed Gemma 4
-// K/V: retained workflows use a bounded cache size derived from the run shape
-// instead of falling back to paged state at an arbitrary threshold.
+// requested context length. Context length alone must not switch cache
+// families: retained workflows stay on paged K/V by default, and fixed Gemma 4
+// K/V remains an explicit diagnostic opt-in.
 //
 // Same read-only contract as DefaultGemma4FastRuntimeGates — the shared
 // package-init singletons are returned directly.

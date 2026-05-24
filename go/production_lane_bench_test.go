@@ -4,8 +4,8 @@
 // DefaultProductionLane + Gemma4FastRuntimeGates* helpers are queried
 // per dispatch by the agentic driver to determine what gates apply to
 // the requested context length. The cost is dominated by the per-call
-// slice clone (defensive copy) — important to know because some
-// callers query these on every prompt, not just at boot.
+// shared read-only gate slice — important to know because some callers
+// query these on every prompt, not just at boot.
 //
 // Run:    go test -bench='BenchmarkProdLane' -benchmem -run='^$' ./go
 
@@ -30,8 +30,8 @@ func BenchmarkProdLane_DefaultProductionLane(b *testing.B) {
 	}
 }
 
-// --- DefaultGemma4FastRuntimeGates — defensive slice clone over the
-// 10-element gate set. Hit on every dispatch decision.
+// --- DefaultGemma4FastRuntimeGates — read-only gate set. Hit on every
+// dispatch decision.
 
 func BenchmarkProdLane_DefaultGemma4FastRuntimeGates(b *testing.B) {
 	b.ReportAllocs()
@@ -41,9 +41,8 @@ func BenchmarkProdLane_DefaultGemma4FastRuntimeGates(b *testing.B) {
 	}
 }
 
-// --- LongContextGemma4FastRuntimeGates — single-element clone. Same
-// pattern as DefaultGemma4FastRuntimeGates but smaller; documents the
-// minimum-cost defensive-copy floor for this helper family.
+// --- LongContextGemma4FastRuntimeGates — currently empty by default.
+// Documents the minimum-cost helper floor for this family.
 
 func BenchmarkProdLane_LongContextGemma4FastRuntimeGates(b *testing.B) {
 	b.ReportAllocs()

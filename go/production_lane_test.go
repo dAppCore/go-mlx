@@ -62,9 +62,6 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		Gemma4FastRuntimeGateNativeLinearMatVec,
 		Gemma4FastRuntimeGateNativeRouterMatVec,
 		Gemma4FastRuntimeGateNativeRouterTopK,
-		Gemma4FastRuntimeGateFixedGemma4Cache,
-		Gemma4FastRuntimeGateFixedGemma4SharedMask,
-		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateDirectGreedyToken,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateAsyncDecodePrefetch,
@@ -78,6 +75,9 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_LAYER",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_MODEL_GREEDY",
 		"GO_MLX_ENABLE_NATIVE_GEMMA4_FIXED_OWNER_ATTENTION",
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
 		Gemma4FastRuntimeGateNativeFixedSliding,
 	} {
 		if seen[rejected] {
@@ -88,20 +88,18 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 
 func TestProductionLane_LongContextGemma4FastRuntimeGates_Good(t *testing.T) {
 	gates := LongContextGemma4FastRuntimeGates()
-	if len(gates) != 1 || gates[0] != Gemma4FastRuntimeGateFixedGemma4Sliding {
-		t.Fatalf("LongContextGemma4FastRuntimeGates() = %v, want sliding fixed cache bound", gates)
+	if len(gates) != 0 {
+		t.Fatalf("LongContextGemma4FastRuntimeGates() = %v, want no fixed-cache context gates", gates)
 	}
 }
 
-func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLongKeepsFixed_Good(t *testing.T) {
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLongStaysPaged_Good(t *testing.T) {
 	gates := Gemma4FastRuntimeGatesForContext(ProductionLaneHyperLongContextLength)
 	seen := map[string]bool{}
 	for _, gate := range gates {
 		seen[gate] = true
 	}
 	for _, want := range []string{
-		Gemma4FastRuntimeGateFixedGemma4Cache,
-		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 		Gemma4FastRuntimeGateExpertIDMatVec,
@@ -111,25 +109,39 @@ func TestProductionLane_Gemma4FastRuntimeGatesForContext_HyperLongKeepsFixed_Goo
 			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for hyper-long context", gates, want)
 		}
 	}
-	if !seen[Gemma4FastRuntimeGateFixedGemma4Sliding] || seen[Gemma4FastRuntimeGateNativeFixedSliding] {
-		t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, want fixed sliding bound and no native fixed sliding", gates)
+	for _, rejected := range []string{
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
+		Gemma4FastRuntimeGateNativeFixedSliding,
+	} {
+		if seen[rejected] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, should exclude fixed-cache gate %s", gates, rejected)
+		}
 	}
 }
 
-func TestProductionLane_Gemma4FastRuntimeGatesForContext_LongContextKeepsFixed_Good(t *testing.T) {
+func TestProductionLane_Gemma4FastRuntimeGatesForContext_LongContextStaysPaged_Good(t *testing.T) {
 	gates := Gemma4FastRuntimeGatesForContext(ProductionLaneLongContextLength)
 	seen := map[string]bool{}
 	for _, gate := range gates {
 		seen[gate] = true
 	}
 	for _, want := range []string{
-		Gemma4FastRuntimeGateFixedGemma4Cache,
-		Gemma4FastRuntimeGateFixedGemma4SharedMask,
 		Gemma4FastRuntimeGateGenerationStream,
 		Gemma4FastRuntimeGateAsyncDecodePrefetch,
 	} {
 		if !seen[want] {
 			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, missing %s for long context", gates, want)
+		}
+	}
+	for _, rejected := range []string{
+		Gemma4FastRuntimeGateFixedGemma4Cache,
+		Gemma4FastRuntimeGateFixedGemma4SharedMask,
+		Gemma4FastRuntimeGateFixedGemma4Sliding,
+	} {
+		if seen[rejected] {
+			t.Fatalf("Gemma4FastRuntimeGatesForContext() = %v, should exclude fixed-cache gate %s", gates, rejected)
 		}
 	}
 }
