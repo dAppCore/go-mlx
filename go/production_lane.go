@@ -58,6 +58,7 @@ const (
 	Gemma4FastRuntimeGateGenerationStream      = "GO_MLX_ENABLE_GENERATION_STREAM"
 	Gemma4FastRuntimeGateAsyncDecodePrefetch   = "GO_MLX_ENABLE_ASYNC_DECODE_PREFETCH"
 	Gemma4FastRuntimeGatePagedDecodeFastConcat = "GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT"
+	Gemma4FastRuntimeGateNativePagedAttention  = "GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION"
 )
 
 var defaultGemma4FastRuntimeGates = []string{

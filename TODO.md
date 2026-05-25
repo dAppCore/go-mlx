@@ -18,9 +18,10 @@ Status on `dev`, 2026-05-25: recent pushed handover commits include `463a072`
 (`perf(metal): share native paged scratch`). The current binary smoke is back
 above the old 90 tok/s band: the first short 60-token run recorded
 `120.145 tok/s`, this handoff rebuild rechecked the same short lane at
-`121.803 tok/s`, and a longer 2700-token hidden-output smoke recorded
-`112.672 tok/s`. The tree was clean after those pushes to `homelab`, `origin`,
-and `github`.
+`121.803 tok/s`, and this post-polish rebuild rechecked it at `122.5 tok/s`
+with `3.276 GB` active+cache memory. A longer 2700-token hidden-output smoke
+recorded `112.672 tok/s`. The tree was clean after those pushes to `homelab`,
+`origin`, and `github`.
 
 Use `GOAL.md` as the detailed historical ledger, but treat missing
 `docs/runtime/2026-*` artefact links as archived notes unless the report is
@@ -38,6 +39,13 @@ Default CLI polish in progress: keep `driver-profile` aligned with
 `DefaultProductionLane()` for the plain fast-lane shape unless a caller sets an
 explicit flag. Do not reintroduce the older one-run, 32-token smoke default as a
 production acceptance path.
+
+Native paged attention remains an explicit diagnostic gate, not a default
+fast-lane gate. The current focused fp16 SDPA bench still favours the native
+16-page path (`~500 us` vs `~596 us` fast-concat with lower MLX cache pressure),
+but the current `32768`-context driver smoke moved decode from `110.28 tok/s`
+to `109.68 tok/s` while only saving about `67 MB` active+cache. Keep it opt-in
+until a retained-State workflow win is measured.
 
 State naming polish: public State-named APIs are the active surface. Old
 `memvid` names remain only as deprecated compatibility shims for existing import
