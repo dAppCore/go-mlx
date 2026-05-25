@@ -11,6 +11,25 @@ the user explicitly asks to reproduce old diagnostic rows. Runtime and tests
 should describe accepted contexts by the real workflow shape: 32k opencode
 seeds, 100k retained-State growth, or the model window.
 
+## Current handover checkpoint
+
+Status on `dev`, 2026-05-25: the latest pushed handover commits are
+`ca0aad3` (`perf(metal): create decode token inputs directly`) and `ac64e4d`
+(`docs(runtime): clarify benchmark handover state`). The tree was clean after
+both pushes to `homelab`, `origin`, and `github`.
+
+Use `GOAL.md` as the detailed historical ledger, but treat missing
+`docs/runtime/2026-*` artefact links as archived notes unless the report is
+regenerated and checked in again. Fresh working reports may still live under
+`/private/tmp/go-mlx-goal/reports` during active tuning.
+
+Next code work should be one contained change at a time, with focused tests and
+benchmarks before commit. Stay on the accepted paged retained-State path:
+no fixed-cache default, no context-family cutoff, no forced compaction during
+benchmarks, no native paged-attention promotion without a real retained
+workflow win, and no sampler/lookahead changes unless the retained-session
+state-advance parity guard is extended first.
+
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 
 Status: landed on Enchantrix branch `dev/go-mlx-trix-stream` at `14d89c2`;
