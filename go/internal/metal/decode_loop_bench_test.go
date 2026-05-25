@@ -253,6 +253,77 @@ func BenchmarkDecodeLoop_OutputProjection_H3072_Vocab262k(b *testing.B) {
 	}
 }
 
+func BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k(b *testing.B) {
+	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
+	defer Free(hidden, normWeight)
+	defer freeLinear(output)
+	b.ReportAllocs()
+	for b.Loop() {
+		logits, ok, err := nativeLastTokenOutputLogits(hidden, normWeight, output, 1e-6, 30)
+		if err != nil {
+			b.Fatalf("nativeLastTokenOutputLogits: %v", err)
+		}
+		if !ok {
+			b.Fatal("nativeLastTokenOutputLogits unavailable")
+		}
+		if err := Eval(logits); err != nil {
+			Free(logits)
+			b.Fatalf("Eval(native logits): %v", err)
+		}
+		Free(logits)
+	}
+}
+
+func BenchmarkDecodeLoop_LastTokenOutputQ4GoGraph_H2048_Vocab262k(b *testing.B) {
+	hidden, normWeight, output := benchmarkDecodeLoopQ4OutputFixture(b, 2048, 262208)
+	defer Free(hidden, normWeight)
+	defer freeLinear(output)
+	b.ReportAllocs()
+	for b.Loop() {
+		normed := RMSNorm(hidden, normWeight, 1e-6)
+		logits := output.Forward(normed)
+		Free(normed)
+		capped := logitSoftcap(logits, 30)
+		Free(logits)
+		if err := Eval(capped); err != nil {
+			Free(capped)
+			b.Fatalf("Eval(graph logits): %v", err)
+		}
+		Free(capped)
+	}
+}
+
+func benchmarkDecodeLoopQ4OutputFixture(b *testing.B, hiddenDim, vocab int) (*Array, *Array, *Linear) {
+	b.Helper()
+	if hiddenDim%64 != 0 {
+		b.Fatalf("hiddenDim=%d must be divisible by group size 64", hiddenDim)
+	}
+	hidden := RandomUniform(-1, 1, []int32{1, 1, int32(hiddenDim)}, DTypeFloat32)
+	normWeight := RandomUniform(0.5, 1.5, []int32{int32(hiddenDim)}, DTypeFloat32)
+	packedWidth := hiddenDim / 8
+	groups := hiddenDim / 64
+	weightWords := make([]uint32, vocab*packedWidth)
+	for i := range weightWords {
+		weightWords[i] = uint32(i*1664525 + 1013904223)
+	}
+	scales := make([]float32, vocab*groups)
+	biases := make([]float32, vocab*groups)
+	for i := range scales {
+		scales[i] = 0.005 * float32((i%17)+1)
+		biases[i] = -0.03 + 0.002*float32(i%31)
+	}
+	output := NewQuantizedLinear(
+		FromValues(weightWords, vocab, packedWidth),
+		FromValues(scales, vocab, groups),
+		FromValues(biases, vocab, groups),
+		nil,
+		64,
+		4,
+	)
+	Materialize(hidden, normWeight, output.Weight, output.Scales, output.Biases)
+	return hidden, normWeight, output
+}
+
 // --- End-to-end logit compose (last hidden → token) ---
 
 // Compose the realistic per-token tail: matmul (output proj) + softcap

@@ -997,6 +997,23 @@ func TestGemma4_OutputLinear_UntiedMissingLMHead_Bad(t *testing.T) {
 	}
 }
 
+func TestGemma4_PreferNativeLastTokenOutputLogits_Good(t *testing.T) {
+	coverageTokens := "PreferNativeLastTokenOutputLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+
+	if gemma4PreferNativeLastTokenOutputLogits(nil) {
+		t.Fatal("nil output should not use native last-token logits")
+	}
+	if !gemma4PreferNativeLastTokenOutputLogits(NewLinear(&Array{}, nil)) {
+		t.Fatal("dense output should use native last-token logits")
+	}
+	if gemma4PreferNativeLastTokenOutputLogits(NewQuantizedLinear(&Array{}, &Array{}, &Array{}, nil, 64, 4)) {
+		t.Fatal("quantized output should stay on the graph path")
+	}
+}
+
 func TestGemma4_AttentionScale_Good(t *testing.T) {
 	coverageTokens := "AttentionScale"
 	if coverageTokens == "" {

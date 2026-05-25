@@ -2225,11 +2225,30 @@ func (m *Gemma4Model) ForwardLastTokenLogitsAndHidden(tokens *Array, mask *Array
 	h = gemma4LastSequenceHidden(h, L)
 	h = gemma4ProjectionHidden(h)
 	h = gemma4ContiguousHidden(h)
-	if out, ok, err := nativeLastTokenOutputLogits(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, m.Cfg.FinalLogitSoftcapping); ok {
-		if err == nil {
-			return out, h
+	if gemma4PreferNativeLastTokenOutputLogits(m.Output) {
+		if out, ok, err := nativeLastTokenOutputLogits(h, m.NormScaled, m.Output, m.Cfg.RMSNormEps, m.Cfg.FinalLogitSoftcapping); ok {
+			if err == nil {
+				return out, h
+			}
+			core.Error("mlx: native Gemma 4 last-token output failed; falling back to Go graph", "error", err)
 		}
-		core.Error("mlx: native Gemma 4 last-token output failed; falling back to Go graph", "error", err)
+	}
+	return m.forwardLastTokenOutputGraph(h), h
+}
+
+func gemma4PreferNativeLastTokenOutputLogits(output *Linear) bool {
+	if output == nil {
+		return false
+	}
+	if output.Scales != nil {
+		return false
+	}
+	return true
+}
+
+func (m *Gemma4Model) forwardLastTokenOutputGraph(h *Array) *Array {
+	if m == nil || m.Cfg == nil {
+		return nil
 	}
 	normed := RMSNorm(h, m.NormScaled, m.Cfg.RMSNormEps)
 	out := m.Output.Forward(normed)
@@ -2239,7 +2258,7 @@ func (m *Gemma4Model) ForwardLastTokenLogitsAndHidden(tokens *Array, mask *Array
 		Free(out)
 		out = softcapped
 	}
-	return out, h
+	return out
 }
 
 // ForwardGreedyToken runs a forward pass and returns the greedy next token

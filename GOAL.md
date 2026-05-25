@@ -538,6 +538,24 @@ and `9.758ms` average `sample_eval` versus `9.787ms`. This is a correct
 production-path cleanup, not enough to close the llama.cpp raw-decode gap by
 itself.
 
+Q4 last-logits graph-path correction, 2026-05-25: the Gemma-sized isolated
+tail bench rejects the native q4 last-token logits wrapper for production use.
+`BenchmarkDecodeLoop_LastTokenOutputQ4Native_H2048_Vocab262k` repeats at
+`726587`, `722748`, `716416`, `724500`, and `711984 ns/op`, while the MLX graph
+path repeats at `700215`, `702024`, `704036`, `700512`, and `689999 ns/op`;
+both paths report `0 B/op` and `0 allocs/op`, so the native wrapper is paying
+execution cost rather than Go allocation cost. Production now keeps dense
+last-token output on the native path, but leaves quantized q4 output on the MLX
+graph path. The same-seed two-turn retained trace at
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-q4-graph-last-logits-sameseed-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+completes `2/2` turns with `local_window_leaked=false`, `1069` generated and
+visible tokens, `90.256` raw decode tok/s, and `80.650` effective turn tok/s.
+The average token phase moves from `11.327ms` total, `9.758ms` sample_eval, and
+`1.523ms` prefetch_logits in the previous q4-native trace to `11.058ms` total,
+`3.362ms` sample_eval, and `6.169ms` prefetch_logits. This is a narrow
+production-path decode improvement; it does not replace the required full
+10-turn request-context row against llama.cpp.
+
 Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
 cannot cover this top-k/top-p sampler graph (`Slice cannot infer output
 shapes`). Shape-specific compile does run and is now tracked by
