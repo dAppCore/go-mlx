@@ -2177,14 +2177,18 @@ func TestGenerate_LastTokenLogits_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	oneDim := FromValues([]float32{1, 2, 3}, 3)
+	oneRow := FromValues([]float32{1, 2, 3}, 1, 3)
 	twoDim := FromValues([]float32{1, 2, 3, 4, 5, 6}, 2, 3)
+	singleStep := FromValues([]float32{1, 2, 3}, 1, 1, 3)
 	threeDim := FromValues([]float32{1, 2, 3, 4, 5, 6}, 1, 2, 3)
-	defer Free(oneDim, twoDim, threeDim)
+	defer Free(oneDim, oneRow, twoDim, singleStep, threeDim)
 
 	for name, logits := range map[string]*Array{
-		"one":   oneDim,
-		"two":   twoDim,
-		"three": threeDim,
+		"one":         oneDim,
+		"one-row":     oneRow,
+		"two":         twoDim,
+		"single-step": singleStep,
+		"three":       threeDim,
 	} {
 		last, err := lastTokenLogits(logits)
 		if err != nil {

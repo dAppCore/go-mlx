@@ -1898,6 +1898,9 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 		if rows <= 0 {
 			return nil, core.NewError("mlx: logits sequence is empty")
 		}
+		if rows == 1 {
+			return Reshape(logits, 1, int32(logits.Dim(1))), nil
+		}
 		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
 		out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
 		Free(last)
@@ -1908,10 +1911,22 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 	if seqLen <= 0 {
 		return nil, core.NewError("mlx: logits sequence is empty")
 	}
+	if seqLen == 1 && lastTokenLogitsSinglePosition(logits, ndim) {
+		return Reshape(logits, 1, int32(logits.Dim(ndim-1))), nil
+	}
 	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
 	out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
 	Free(last)
 	return out, nil
+}
+
+func lastTokenLogitsSinglePosition(logits *Array, ndim int) bool {
+	for axis := 0; axis < ndim-1; axis++ {
+		if logits.Dim(axis) != 1 {
+			return false
+		}
+	}
+	return true
 }
 
 func materializeLastTokenLogits(logits *Array) (*Array, error) {

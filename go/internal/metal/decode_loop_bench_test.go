@@ -30,7 +30,11 @@ package metal
 //   - End-to-end "next token" simulation at varying vocab sizes (the
 //     output projection cost dominates for large vocab).
 
-import "testing"
+import (
+	"testing"
+
+	core "dappco.re/go"
+)
 
 // --- Eval boundary cost (cgo + Metal graph flush) ---
 
@@ -163,6 +167,74 @@ func BenchmarkDecodeLoop_NativeGreedyDecode_Vocab256k(b *testing.B) {
 		Materialize(tok)
 		Free(tok)
 	}
+}
+
+func BenchmarkDecodeLoop_LastTokenLogitsSingleStep_FastReshape_Vocab262k(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	b.ReportAllocs()
+	for b.Loop() {
+		last, err := lastTokenLogits(logits)
+		if err != nil {
+			b.Fatalf("lastTokenLogits: %v", err)
+		}
+		if err := Eval(last); err != nil {
+			Free(last)
+			b.Fatalf("Eval(last): %v", err)
+		}
+		Free(last)
+	}
+}
+
+func BenchmarkDecodeLoop_LastTokenLogitsSingleStep_LegacySlice_Vocab262k(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	b.ReportAllocs()
+	for b.Loop() {
+		last, err := benchmarkDecodeLoopLegacyLastTokenLogits(logits)
+		if err != nil {
+			b.Fatalf("legacy last logits: %v", err)
+		}
+		if err := Eval(last); err != nil {
+			Free(last)
+			b.Fatalf("Eval(last): %v", err)
+		}
+		Free(last)
+	}
+}
+
+func benchmarkDecodeLoopLegacyLastTokenLogits(logits *Array) (*Array, error) {
+	if logits == nil || !logits.Valid() {
+		return nil, core.NewError("mlx: logits are empty")
+	}
+	ndim := logits.NumDims()
+	if ndim <= 0 {
+		return nil, core.NewError("mlx: logits rank is invalid")
+	}
+	if ndim == 1 {
+		return Reshape(logits, 1, int32(logits.Dim(0))), nil
+	}
+	if ndim == 2 {
+		rows := logits.Dim(0)
+		if rows <= 0 {
+			return nil, core.NewError("mlx: logits sequence is empty")
+		}
+		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
+		out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+		Free(last)
+		return out, nil
+	}
+	seqAxis := ndim - 2
+	seqLen := logits.Dim(seqAxis)
+	if seqLen <= 0 {
+		return nil, core.NewError("mlx: logits sequence is empty")
+	}
+	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
+	out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+	Free(last)
+	return out, nil
 }
 
 // --- logitSoftcap — Gemma's 30.0 tanh-softcap on output logits ---

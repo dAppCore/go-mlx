@@ -571,6 +571,18 @@ Q4_K_M request-context anchor still leads raw decode at `105.988 tok/s`, so
 the next optimisation remains the larger prefetch/logits materialisation
 boundary rather than declaring parity from this small production-path win.
 
+Last-token accessor cleanup, 2026-05-25: the normal single-token decode logits
+shape no longer builds a no-op `SliceAxis` node before reshaping to `[1,vocab]`.
+`BenchmarkDecodeLoop_LastTokenLogitsSingleStep_FastReshape_Vocab262k` repeats
+at `21407`-`22023 ns/op`, `8 B/op`, `1 alloc/op` versus the legacy slice helper
+at `22218`-`22759 ns/op`, `40 B/op`, `3 allocs/op`. The same two-turn
+request-context trace shape writes
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-last-token-reshape-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+with `1069` generated/visible tokens, `90.578` raw decode tok/s, `80.901`
+effective tok/s, and `25.404s` wall. The `logits` phase drops from `9.124us`
+to `4.121us` per token, while the dominant `prefetch_logits` and `sample_eval`
+buckets remain the real parity target.
+
 Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
 `BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
 page-reduction path against the accepted fast-concat lane. With float32 pages,
