@@ -239,6 +239,10 @@ The zero-empty-handle SDPA cleanup is also recorded in `GOAL.md`. It removes
 per-attention empty native handle allocation for absent masks/sinks, but the
 matched production-shaped trace is neutral (`91.599` raw tok/s versus
 `91.608` before), so it is a cleanup rather than a parity milestone.
+Two adjacent probes are rejected there too: zero-value random key handles
+regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
+tokens before async prefetch regressed it to `88.045` raw tok/s despite the
+nicer first-token timestamp. Do not revive either as a default-path cleanup.
 
 The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while

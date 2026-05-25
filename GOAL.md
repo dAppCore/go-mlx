@@ -285,6 +285,21 @@ a small native-handle cleanup only: `prefetch` moves from `6.093` to
 `3.413 ms/token`, so it is not a decode-parity claim. The next useful target
 remains fused logits/materialisation or sampler/eval boundary work.
 
+Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
+tested and reverted. First, passing a zero-value random key handle to
+`mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but
+the matched request-context trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-zero-random-key-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+regressed to `90.113` raw decode tok/s and `81.232` effective turn tok/s, with
+`prefetch` at `6.190 ms/token` and `forward` at `1.449 ms/token`, so the random
+key path keeps the explicit empty key handle. Second, yielding retained-session
+tokens after state advance but before async prefetch improved the first-token
+field (`7.49 ms` on turn 1) but regressed the real throughput in
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-yield-before-prefetch-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+to `88.045` raw decode tok/s and `79.482` effective turn tok/s, with
+`prefetch` at `6.350 ms/token`. Keep prefetch before the stream callback unless
+a future change preserves the current decode band.
+
 Follow-up trace attribution, 2026-05-24: native event capture is now armed by
 `-trace-token-phases` without requiring a `GO_MLX_*` environment variable. The
 expensive forced-eval trace remains behind `GO_MLX_TRACE_FORWARD_EVAL=1`, but
