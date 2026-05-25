@@ -245,6 +245,12 @@ only moved the suppressed Gemma-sized row from `516.277us` to `511.315us`, and
 the retained-shaped logits+dirty-K/V row from `517.691us` to `515.825us`. That
 is useful attribution but too small to justify a second runtime lookahead probe
 after the previous retained failure.
+The attention query dtype cast is also now defended by evidence. Mixed
+`Q=float32`, `K/V=float16` SDPA is correct, but the retained fast-concat shape
+is much slower without the cast (`8` pages: `435.944us` cast vs `640.400us`
+mixed; `16` pages: `645.359us` cast vs `995.736us` mixed) and uses more MLX
+active-cache memory. Do not remove `attentionQueryForKV` as apparent
+boilerplate.
 That harness now exists as `TestSample_PrefetchTokenEvalParity_Good`: it proves
 normal guarded sampling and combined `EvalAsync(logits, sampled_token)`
 materialisation return the same first token under the same seed. Future

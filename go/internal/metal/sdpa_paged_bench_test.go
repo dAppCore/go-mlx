@@ -245,6 +245,22 @@ func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_Q1_D128_F16(b *testing.B) {
 	benchmarkSDPAPagedFastConcat(b, 16, 1024, DTypeFloat16)
 }
 
+func BenchmarkSDPAPagedFastConcat_8Pages_Page1024_QF32KVF16_CastQ(b *testing.B) {
+	benchmarkSDPAPagedFastConcatMixedQuery(b, 8, 1024, true)
+}
+
+func BenchmarkSDPAPagedFastConcat_8Pages_Page1024_QF32KVF16_MixedQ(b *testing.B) {
+	benchmarkSDPAPagedFastConcatMixedQuery(b, 8, 1024, false)
+}
+
+func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_QF32KVF16_CastQ(b *testing.B) {
+	benchmarkSDPAPagedFastConcatMixedQuery(b, 16, 1024, true)
+}
+
+func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_QF32KVF16_MixedQ(b *testing.B) {
+	benchmarkSDPAPagedFastConcatMixedQuery(b, 16, 1024, false)
+}
+
 func BenchmarkSDPAPagedNative_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
 	benchmarkSDPAPagedNative(b, 8, 1024, DTypeFloat16)
 }
@@ -330,6 +346,33 @@ func benchmarkSDPAPagedFastConcat(b *testing.B, pageCount int, pageSize int32, d
 		y := ScaledDotProductAttention(q, kBase, vBase, scale, false)
 		Materialize(y)
 		Free(y, kBase, vBase)
+	}
+	reportMLXBenchMemory(b)
+}
+
+func benchmarkSDPAPagedFastConcatMixedQuery(b *testing.B, pageCount int, pageSize int32, castQuery bool) {
+	const B, H, D int32 = 1, 8, 128
+	q := RandomUniform(0, 1, []int32{B, H, 1, D}, DTypeFloat32)
+	keys, values := buildPagedKVWithDType(pageCount, B, H, pageSize, D, DTypeFloat16)
+	defer Free(q)
+	defer Free(keys...)
+	defer Free(values...)
+	all := append([]*Array{q}, keys...)
+	all = append(all, values...)
+	Materialize(all...)
+	resetMLXBenchMemoryCounters()
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	b.ReportAllocs()
+	for b.Loop() {
+		kBase, vBase := concatenatePagedState(keys, values)
+		attentionQ := q
+		var ownedQ *Array
+		if castQuery {
+			attentionQ, ownedQ = attentionQueryForKV(q, kBase)
+		}
+		y := ScaledDotProductAttention(attentionQ, kBase, vBase, scale, false)
+		Materialize(y)
+		Free(ownedQ, y, kBase, vBase)
 	}
 	reportMLXBenchMemory(b)
 }

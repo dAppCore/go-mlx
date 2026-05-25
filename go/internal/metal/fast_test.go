@@ -303,6 +303,30 @@ func TestFast_ScaledDotProductAttentionMixedKVBF16_Good(t *testing.T) {
 	floatSliceApprox(t, got.Floats(), want.Floats())
 }
 
+func TestFast_ScaledDotProductAttentionMixedKVF16_Good(t *testing.T) {
+	coverageTokens := "ScaledDotProductAttention MixedKVF16"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	q := FromValues([]float32{1, 0}, 1, 1, 1, 2)
+	kBase := FromValues([]float32{1, 0, 0, 1}, 1, 1, 2, 2)
+	vBase := FromValues([]float32{10, 0, 0, 10}, 1, 1, 2, 2)
+	k := AsType(kBase, DTypeFloat16)
+	v := AsType(vBase, DTypeFloat16)
+	defer Free(q, kBase, vBase, k, v)
+
+	scale := float32(1.0 / math.Sqrt(2.0))
+	got := ScaledDotProductAttention(q, k, v, scale, false)
+	want := ScaledDotProductAttention(q, kBase, vBase, scale, false)
+	defer Free(got, want)
+	if err := Eval(got, want); err != nil {
+		t.Fatalf("Eval mixed-KV f16 attention: %v", err)
+	}
+	floatSliceApprox(t, got.Floats(), want.Floats())
+}
+
 func TestFast_NativePagedSingleTokenAttentionMatchesGoPaged_Good(t *testing.T) {
 	coverageTokens := "NativePagedSingleTokenAttention MatchesGoPaged"
 	if coverageTokens == "" {

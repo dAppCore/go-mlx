@@ -984,6 +984,20 @@ runtime lookahead attempt after the previous retained trace failure; keep the
 benchmark rows as boundary evidence and leave production on logits-only
 prefetch plus explicit sampled-token eval.
 
+Attention dtype-alignment probe, 2026-05-25: the accepted fp16 retained-KV path
+keeps `attentionQueryForKV` casting float32 query tensors down to the K/V dtype
+before SDPA. A correctness guard now proves MLX can evaluate mixed
+`Q=float32`, `K/V=float16` directly:
+`TestFast_ScaledDotProductAttentionMixedKVF16_Good`. The focused fast-concat
+bench rejects removing the cast, though. On Apple M3 Ultra,
+`BenchmarkSDPAPagedFastConcat_8Pages_Page1024_QF32KVF16_CastQ` records
+`435944 ns/op` with `100946072 mlx_peak_B`, while the direct mixed row records
+`640400 ns/op` with `235958424 mlx_peak_B`. At 16 pages the cast row records
+`645359 ns/op` with `201875736 mlx_peak_B`, while mixed Q/KV records
+`995736 ns/op` with `269508888 mlx_peak_B`. Keep the query cast: MLX supports
+the mixed dtype shape, but it is slower and materially increases active-cache
+pressure in the retained attention path.
+
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building
 frequency state inside the decode path. A correctness guard now proves
