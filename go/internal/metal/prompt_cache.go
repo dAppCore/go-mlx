@@ -357,12 +357,12 @@ func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, 
 		Free(logits)
 		return core.NewError("Model.Generate: cache-only prefill returned nil logits")
 	}
-	cacheState := prefillCacheStateArrays(caches)
-	if len(cacheState) == 0 {
+	ok, err := evalPrefillCacheState(caches, false)
+	if !ok {
 		Free(logits)
 		return core.NewError("Model.Generate: cache-only prefill produced no cache state")
 	}
-	if err := Eval(cacheState...); err != nil {
+	if err != nil {
 		Free(logits)
 		return core.E("Model.Generate", "cache-only prefill", err)
 	}
@@ -382,10 +382,32 @@ func prefillCacheStateArrays(caches []Cache) []*Array {
 	// State() returns — on a 26-cache Gemma 4 fan-out that was 27 allocs
 	// (one per State()) plus the outer slice; now it's just the outer slice.
 	arrays := make([]*Array, 0, len(caches)*2)
+	return appendPrefillCacheStateArrays(arrays, caches, false)
+}
+
+func appendPrefillCacheStateArrays(dst []*Array, caches []Cache, skipPaged bool) []*Array {
+	arrays := dst
 	for _, cache := range caches {
+		if cache == nil {
+			continue
+		}
+		if skipPaged {
+			if _, paged := cache.(*PagedKVCache); paged {
+				continue
+			}
+		}
 		arrays = appendCacheState(arrays, cache)
 	}
 	return arrays
+}
+
+func evalPrefillCacheState(caches []Cache, skipPaged bool) (bool, error) {
+	var stack [64]*Array
+	state := appendPrefillCacheStateArrays(stack[:0], caches, skipPaged)
+	if len(state) == 0 {
+		return false, nil
+	}
+	return true, Eval(state...)
 }
 
 func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, caches []Cache) (*Array, error) {
@@ -427,25 +449,13 @@ func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, cache
 }
 
 func evalCachesBeforeDetach(caches []Cache) error {
-	state := cacheStateArraysForDetach(caches)
-	if len(state) == 0 {
-		return nil
-	}
-	return Eval(state...)
+	_, err := evalPrefillCacheState(caches, true)
+	return err
 }
 
 func cacheStateArraysForDetach(caches []Cache) []*Array {
 	arrays := make([]*Array, 0, len(caches)*2)
-	for _, cache := range caches {
-		if cache == nil {
-			continue
-		}
-		if _, paged := cache.(*PagedKVCache); paged {
-			continue
-		}
-		arrays = appendCacheState(arrays, cache)
-	}
-	return arrays
+	return appendPrefillCacheStateArrays(arrays, caches, true)
 }
 
 func (m *Model) forwardLastTokenLogits(tokens *Array, mask *Array, caches []Cache) (*Array, bool) {

@@ -387,6 +387,12 @@ Gemma 4 assistant continuation paths. Focused shape/continuation tests pass; the
 matched constructor microbench moves from about `745-760 ns/op`, `8 B/op`, and
 `1 alloc/op` to about `310-319 ns/op`, `0 B/op`, and `0 allocs/op`. This is a
 contained handover-safe cleanup, not a new runner-parity row.
+Prompt-cache cache-state evaluation now uses the same collector with a
+caller-owned stack slice for the production eval-before-detach/cache-only
+prefill path. The compatibility helper that returns a slice still records
+`153.6 ns/op`, `416 B/op`, and `1 alloc/op` for a 26-cache Gemma 4 fan-out,
+while the stack-fed collector records `109.1 ns/op`, `0 B/op`, and
+`0 allocs/op`. This is prefill/state plumbing hygiene, not decode parity.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

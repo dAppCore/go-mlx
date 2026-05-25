@@ -241,6 +241,8 @@ func BenchmarkPromptCache_KVConcat_16Pages_256Each(b *testing.B) {
 
 // --- prefillCacheStateArrays — bench against a few synthetic caches ---
 
+var promptCacheBenchStateLenSink int
+
 func BenchmarkPromptCache_PrefillCacheStateArrays_8Caches(b *testing.B) {
 	caches := make([]Cache, 8)
 	for i := range caches {
@@ -280,6 +282,33 @@ func BenchmarkPromptCache_PrefillCacheStateArrays_26Caches_Gemma4(b *testing.B) 
 	b.ReportAllocs()
 	for b.Loop() {
 		_ = prefillCacheStateArrays(caches)
+	}
+	for _, c := range caches {
+		c.Reset()
+	}
+}
+
+func BenchmarkPromptCache_AppendPrefillCacheStateArrays_26Caches_StackGemma4(b *testing.B) {
+	caches := make([]Cache, 26)
+	for i := range caches {
+		caches[i] = NewKVCache()
+	}
+	k, v := makeSingleTokenKVShape(1, 4, 64)
+	defer Free(k, v)
+	for _, c := range caches {
+		_, _ = c.Update(k, v, 1)
+	}
+	if err := Eval(caches[0].State()...); err != nil {
+		b.Fatalf("Eval: %v", err)
+	}
+	var stack [64]*Array
+	b.ReportAllocs()
+	for b.Loop() {
+		state := appendPrefillCacheStateArrays(stack[:0], caches, false)
+		promptCacheBenchStateLenSink = len(state)
+	}
+	if promptCacheBenchStateLenSink != 52 {
+		b.Fatalf("state len = %d, want 52", promptCacheBenchStateLenSink)
 	}
 	for _, c := range caches {
 		c.Reset()
