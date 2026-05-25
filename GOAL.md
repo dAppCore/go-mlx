@@ -706,6 +706,34 @@ The trace keeps the next optimisation target unchanged:
 `prefetch_logits=6.874ms/token`, `sample_eval=3.240ms/token`, and
 `forward=1.700ms/token`.
 
+Fused suppress-token sampler, 2026-05-25: the production Gemma 4 sampler shape
+(`temperature=1.0`, `top_p=0.95`, `top_k=64`, non-empty control-token
+suppression, no other sampler prefix) now folds suppression into the compiled
+top-k/top-p sampler closure instead of materialising a separate prefix
+`PutAlongAxis` graph before the compiled call. The unfused path remains for
+temperature, min-p, non-top-k/top-p, and fallback shapes. Focused validation:
+`go test ./go/internal/metal -run 'TestSample_|TestCompile_|TestModelSession_Generate|TestModel_Generate'`
+passes, and the sampler benchmark
+`go test ./go/internal/metal -run '^$' -bench 'BenchmarkSampler_TopKThenTopP(WithSuppression)?_Vocab262k|BenchmarkSampler_CompiledTopKThenTopPCallOne_Vocab262k' -benchmem -count 3`
+keeps the production suppressed sampler at `495-503us/op`, `10 B/op`, and
+`1 alloc/op`. The same full-output retained request-context row writes
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-fused-suppress-sampler-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+with identical output/token shape to the current baseline: `10/10` turns,
+`48896` final live tokens, `14400` appended tokens, and `4476` generated and
+visible tokens. Wall drops from `73.872368791s` to `73.261458999s`
+(`-0.82698%`), raw decode improves from `84.06360150221701` to
+`85.01050148275976 tok/s` (`+1.12641%`), effective turn throughput improves
+from `72.64194131583837` to `73.3508898684956` (`+0.97595%`), and estimated
+energy drops by `61.0909792 J` at `100 W`. Cache invariants hold:
+`paged_caches=15`, `fixed_caches=0`, `max_local_capacity=512`,
+`max_global_capacity=131072`, and `local_window_leaked=false`. Phase timing
+moves in the right direction but does not eliminate the boundary:
+`prefetch_logits=6.839ms/token`, `sample_eval=3.239ms/token`, and
+`forward=1.613ms/token`. Against the same llama.cpp Q4_K_M request-context
+anchor, go-mlx is now only `0.346s` slower on wall and still uses less RSS, but
+llama.cpp remains `1.294x` faster on raw decode and `1.048x` faster on
+wall-visible throughput, so the production gate remains open.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated

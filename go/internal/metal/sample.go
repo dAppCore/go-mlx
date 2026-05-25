@@ -62,14 +62,20 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 	if temp > 0 && temp != 1 {
 		samplers = append(samplers, Temperature(temp))
 	}
+	var fusedSuppress *SuppressTokensSampler
 	if len(suppressTokens) > 0 {
-		samplers = append(samplers, &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
+		if topK > 0 && topP > 0 && topP < 1 && minP <= 0 && len(samplers) == 0 {
+			fusedSuppress = &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)}
+		} else {
+			samplers = append(samplers, &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
+		}
 	}
 	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
 		return &topKTopPChain{
-			prefix: chain(samplers),
-			topK:   topK,
-			topP:   topP,
+			prefix:   chain(samplers),
+			suppress: fusedSuppress,
+			topK:     topK,
+			topP:     topP,
 		}
 	}
 	if topP > 0 && topP < 1 {
@@ -168,11 +174,16 @@ func (c chain) Close() {
 // candidates. That avoids sorting the full 256k-token Gemma vocabulary for
 // every sampled token when top_k is already small.
 type topKTopPChain struct {
-	prefix   chain
-	topK     int
-	topP     float32
-	mu       sync.Mutex
-	compiled *CompiledFunc
+	prefix              chain
+	suppress            *SuppressTokensSampler
+	topK                int
+	topP                float32
+	mu                  sync.Mutex
+	compiled            *CompiledFunc
+	compiledLastDim     int
+	compiledDType       DType
+	compiledSuppressID  *Array
+	compiledSuppressInf *Array
 }
 
 func (c *topKTopPChain) Sample(logits *Array) *Array {
@@ -201,12 +212,20 @@ func (c *topKTopPChain) Close() {
 	if c == nil {
 		return
 	}
-	closeSampler(c.prefix)
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.compiled != nil {
 		c.compiled.Free()
 		c.compiled = nil
+	}
+	c.compiledLastDim = 0
+	c.compiledDType = 0
+	c.compiledSuppressID = nil
+	c.compiledSuppressInf = nil
+	c.mu.Unlock()
+	closeSampler(c.prefix)
+	if c.suppress != nil {
+		c.suppress.Close()
+		c.suppress = nil
 	}
 }
 
@@ -238,24 +257,82 @@ func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
 func (c *topKTopPChain) sampleTopKTopPToken(logits *Array) *Array {
 	lastDim := logits.Dim(logits.NumDims() - 1)
 	if lastDim <= 0 || c.topK <= 0 || c.topK >= lastDim {
-		return sampleTopKTopPToken(logits, c.topK, c.topP)
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
 	}
-	compiled := c.compiledSampler()
+	if !c.ensureSuppressCache(lastDim, logits.Dtype()) && c.suppress != nil {
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
+	}
+	compiled := c.compiledSampler(lastDim, logits.Dtype())
 	if compiled == nil || !compiled.Valid() {
-		return sampleTopKTopPToken(logits, c.topK, c.topP)
+		return c.sampleTopKTopPTokenUncompiled(logits, lastDim)
 	}
 	return compiled.CallOne(logits)
 }
 
-func (c *topKTopPChain) compiledSampler() *CompiledFunc {
+func (c *topKTopPChain) sampleTopKTopPTokenUncompiled(logits *Array, lastDim int) *Array {
+	if c.suppress == nil || lastDim <= 0 || !c.suppress.ensureCache(lastDim, logits.Dtype()) {
+		return sampleTopKTopPToken(logits, c.topK, c.topP)
+	}
+	suppressed := c.suppress.suppress(logits)
+	token := sampleTopKTopPToken(suppressed, c.topK, c.topP)
+	Free(suppressed)
+	return token
+}
+
+func (c *topKTopPChain) ensureSuppressCache(lastDim int, dtype DType) bool {
+	if c.suppress == nil {
+		return true
+	}
+	if c.suppress.lastDim != 0 && (c.suppress.lastDim != lastDim || c.suppress.dtype != dtype) {
+		c.mu.Lock()
+		if c.compiled != nil {
+			c.compiled.Free()
+			c.compiled = nil
+		}
+		c.compiledLastDim = 0
+		c.compiledDType = 0
+		c.compiledSuppressID = nil
+		c.compiledSuppressInf = nil
+		c.mu.Unlock()
+	}
+	return c.suppress.ensureCache(lastDim, dtype)
+}
+
+func (c *topKTopPChain) compiledSampler(lastDim int, dtype DType) *CompiledFunc {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.compiled != nil && c.compiled.Valid() {
+	suppressID, suppressInf := (*Array)(nil), (*Array)(nil)
+	if c.suppress != nil {
+		suppressID = c.suppress.idx
+		suppressInf = c.suppress.inf
+		if suppressID == nil || suppressInf == nil || !suppressID.Valid() || !suppressInf.Valid() {
+			return nil
+		}
+	}
+	if c.compiled != nil && c.compiled.Valid() &&
+		c.compiledLastDim == lastDim && c.compiledDType == dtype &&
+		c.compiledSuppressID == suppressID && c.compiledSuppressInf == suppressInf {
 		return c.compiled
 	}
+	if c.compiled != nil {
+		c.compiled.Free()
+		c.compiled = nil
+	}
+	topK, topP := c.topK, c.topP
 	c.compiled = CompileShapeless(func(inputs []*Array) []*Array {
-		return []*Array{sampleTopKTopPToken(inputs[0], c.topK, c.topP)}
+		logits := inputs[0]
+		if suppressID != nil && suppressInf != nil {
+			suppressed := PutAlongAxis(logits, suppressID, suppressInf, -1)
+			token := sampleTopKTopPToken(suppressed, topK, topP)
+			Free(suppressed)
+			return []*Array{token}
+		}
+		return []*Array{sampleTopKTopPToken(logits, topK, topP)}
 	}, false)
+	c.compiledLastDim = lastDim
+	c.compiledDType = dtype
+	c.compiledSuppressID = suppressID
+	c.compiledSuppressInf = suppressInf
 	return c.compiled
 }
 

@@ -381,11 +381,14 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	if c.topP != 0.95 {
 		t.Fatalf("topP = %f, want 0.95", c.topP)
 	}
-	if len(c.prefix) != 1 {
-		t.Fatalf("len(prefix) = %d, want 1", len(c.prefix))
+	if len(c.prefix) != 0 {
+		t.Fatalf("len(prefix) = %d, want fused suppression without prefix", len(c.prefix))
 	}
-	if _, ok := c.prefix[0].(*SuppressTokensSampler); !ok {
-		t.Fatalf("prefix[0] = %T, want *SuppressTokensSampler", c.prefix[0])
+	if c.suppress == nil {
+		t.Fatal("suppress = nil, want fused suppress-token sampler")
+	}
+	if len(c.suppress.tokens) != 1 || c.suppress.tokens[0] != 0 {
+		t.Fatalf("suppress tokens = %v, want [0]", c.suppress.tokens)
 	}
 }
 
