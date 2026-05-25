@@ -51,7 +51,10 @@ func RandomCategorical(logprobs *Array) *Array {
 		&out.ctx,
 		logprobs.ctx,
 		C.int(-1), // axis
-		key,       // null key = use default RNG
+		// The MLX C API also accepts a zero-value key handle for the default
+		// RNG, but the retained request-context probe regressed with that
+		// shape. Keep the explicit empty key handle on the production path.
+		key,
 		DefaultStream().ctx,
 	)
 	return out

@@ -399,7 +399,11 @@ the matched request-context trace
 `/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-zero-random-key-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
 regressed to `90.113` raw decode tok/s and `81.232` effective turn tok/s, with
 `prefetch` at `6.190 ms/token` and `forward` at `1.449 ms/token`, so the random
-key path keeps the explicit empty key handle. Second, yielding retained-session
+key path keeps the explicit empty key handle. Follow-up direct bench coverage
+now records `BenchmarkRandomCategorical_Vocab32k` and
+`BenchmarkRandomCategorical_Vocab262k`; the local wrapper-only zero-key rows
+were slightly faster, but the retained request-context regression remains the
+production decision, so this benchmark is attribution only. Second, yielding retained-session
 tokens after state advance but before async prefetch improved the first-token
 field (`7.49 ms` on turn 1) but regressed the real throughput in
 `/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-yield-before-prefetch-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`

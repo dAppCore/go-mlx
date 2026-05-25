@@ -229,6 +229,10 @@ wrapper slightly helped one isolated suppressed microbench but regressed the
 same-output two-turn retained trace from `91.599` to `86.285` raw tok/s. Keep
 sampler changes inside the accepted Go/compiled sampler shape until a larger
 stable logits/eval boundary is available.
+Direct `RandomCategorical` benches now exist for the 32k and 262k vocab
+sampler edge. They are for attribution only: the zero-key handle probe remains
+rejected because the retained request-context row regressed even though the
+isolated wrapper benchmark moved slightly.
 The sampled-token lookahead variant is also rejected: trying to materialise the
 next sampled token inside the prefetch boundary caused the gated trace to end
 turn 1 with `empty_visible_output` and `0` generated tokens, while the same
