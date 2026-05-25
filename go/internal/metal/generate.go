@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unsafe"
 
 	"dappco.re/go"
 )
@@ -1924,39 +1925,40 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 	if ndim <= 0 {
 		return nil, core.NewError("mlx: logits rank is invalid")
 	}
+	shape := logits.ShapeRaw()
 	if ndim == 1 {
-		return Reshape2(logits, 1, int32(logits.Dim(0))), nil
+		return Reshape2(logits, 1, int32(shapeRawDim(shape, 0))), nil
 	}
 	if ndim == 2 {
-		rows := logits.Dim(0)
+		rows := shapeRawDim(shape, 0)
 		if rows <= 0 {
 			return nil, core.NewError("mlx: logits sequence is empty")
 		}
 		if rows == 1 {
-			return Reshape2(logits, 1, int32(logits.Dim(1))), nil
+			return Reshape2(logits, 1, int32(shapeRawDim(shape, 1))), nil
 		}
 		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
-		out := Reshape2(last, 1, int32(last.Dim(last.NumDims()-1)))
+		out := Reshape2(last, 1, int32(shapeRawDim(shape, 1)))
 		Free(last)
 		return out, nil
 	}
 	seqAxis := ndim - 2
-	seqLen := logits.Dim(seqAxis)
+	seqLen := shapeRawDim(shape, seqAxis)
 	if seqLen <= 0 {
 		return nil, core.NewError("mlx: logits sequence is empty")
 	}
-	if seqLen == 1 && lastTokenLogitsSinglePosition(logits, ndim) {
-		return Reshape2(logits, 1, int32(logits.Dim(ndim-1))), nil
+	if seqLen == 1 && lastTokenLogitsSinglePosition(shape, ndim) {
+		return Reshape2(logits, 1, int32(shapeRawDim(shape, ndim-1))), nil
 	}
 	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
-	out := Reshape2(last, 1, int32(last.Dim(last.NumDims()-1)))
+	out := Reshape2(last, 1, int32(shapeRawDim(shape, ndim-1)))
 	Free(last)
 	return out, nil
 }
 
-func lastTokenLogitsSinglePosition(logits *Array, ndim int) bool {
+func lastTokenLogitsSinglePosition(shape unsafe.Pointer, ndim int) bool {
 	for axis := 0; axis < ndim-1; axis++ {
-		if logits.Dim(axis) != 1 {
+		if shapeRawDim(shape, axis) != 1 {
 			return false
 		}
 	}

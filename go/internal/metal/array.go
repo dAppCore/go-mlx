@@ -531,6 +531,10 @@ func (t Array) ShapeRaw() unsafe.Pointer {
 	return unsafe.Pointer(C.mlx_array_shape(t.ctx))
 }
 
+func shapeRawDim(raw unsafe.Pointer, i int) int {
+	return int(*(*C.int)(unsafe.Add(raw, uintptr(i)*unsafe.Sizeof(C.int(0)))))
+}
+
 // IsRowContiguous reports whether the array's physical memory layout is
 // row-major contiguous. Non-contiguous arrays (from Transpose, BroadcastTo,
 // SliceAxis, etc.) must be made contiguous before reading raw data.
