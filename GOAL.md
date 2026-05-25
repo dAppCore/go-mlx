@@ -655,6 +655,26 @@ effective tok/s, and `25.404s` wall. The `logits` phase drops from `9.124us`
 to `4.121us` per token, while the dominant `prefetch_logits` and `sample_eval`
 buckets remain the real parity target.
 
+Scalar reshape cleanup, 2026-05-25: the remaining token input construction
+paths now use the fixed-rank `Reshape2` helper instead of variadic `Reshape`
+for `[1,len(tokens)]` and `[1,1]` token tensors. This covers retained
+generation, prompt-cache replay/append, Gemma 4 assistant draft/verify, and the
+Qwen split path without changing cache, sampling, or chat-template semantics.
+The focused tests for prompt-cache, Gemma 4 assistant, split, last-token, and
+`Reshape2` pass. A fresh `lthn-mlx` binary smoke at
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-smoke-scalar-reshape-current.json`
+uses the local Gemma 4 E2B 4bit pack, `context=4096`, `start=512`,
+`target=1024`, `turns=1`, `turn_max_tokens=256`, paged K/V, and no fixed-cache
+gates. It completes `1/1` retained turn with `1125` final live tokens, `99`
+generated/visible tokens, `108.517` raw decode tok/s, `72.906` effective turn
+tok/s, `3.978 GB` active-plus-cache, `3.390 GB` RSS, `465.540 GB` virtual
+reservation, `paged_caches=15`, `fixed_caches=0`, `max_local_capacity=512`,
+`max_global_capacity=4096`, and `local_window_leaked=false`. The phase summary
+still points at the same real bottleneck: `prefetch_logits=4.730ms/token`,
+`sample_eval=2.970ms/token`, and `forward=1.400ms/token`. Treat this as a
+current-binary smoke and allocation/cgo-shape cleanup only, not a replacement
+for the required 10-turn retained comparator against llama.cpp.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated
