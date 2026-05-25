@@ -340,6 +340,22 @@ The production-shaped suppressed rows moved from the latest pre-change refresh
 cleanup, but it is still a focused benchmark result; the next retained
 request-context run must prove the wall-clock effect before treating it as a
 parity milestone.
+Retained proof: rebuilt `lthn-mlx` and reran the same full-output
+request-context fixture at
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-callone-helper-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`.
+The run keeps the exact comparator output shape (`10/10` turns, `48896` final
+live tokens, `14400` appended tokens, `4476` generated/visible tokens, no
+output issues) and the production cache invariants (`fixed_caches=0`,
+`paged_caches=15`, `max_local_capacity=512`, `max_global_capacity=131072`,
+`local_window_leaked=false`). Raw decode moves from the prior compiled-sampler
+row's `87.48313854487908 tok/s` to `87.68683896696935 tok/s` (`+0.233%`);
+effective turn throughput moves from `75.25731884731685` to
+`75.38439382823918 tok/s` (`+0.169%`); wall drops only `16.075 ms` to
+`71.710519835s`; estimated energy drops by `1.607 J` at `100 W`. Token phases
+show the expected local effect (`sample_eval` down from `3.305ms/token` to
+`3.274ms/token` and `forward` down from `1.402ms/token` to `1.361ms/token`),
+while `prefetch_logits` remains dominant at `6.726ms/token`. Count this as an
+accepted sampler-boundary cleanup, not a closed parity gate.
 
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to

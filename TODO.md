@@ -310,6 +310,13 @@ into one C helper. The focused compiled sampler row improves from
 `475-486 us/op`, `7-8 B/op`, `1 alloc/op` band. This is accepted as a
 sampler/materialisation boundary cleanup, but still needs a retained
 request-context rerun before it can be counted as a workflow parity milestone.
+That retained rerun now exists:
+`2026-05-25-state-ramp-request-context-callone-helper-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`.
+It keeps the same `10/10`, `4476` visible-token output shape and paged/no-fixed
+cache invariants, improves raw decode from `87.483` to `87.687 tok/s`, and
+drops `sample_eval` from `3.305ms/token` to `3.274ms/token`. The wall delta is
+only `16ms`, so this is accepted cleanup evidence, not a parity close. The
+dominant remaining bucket is still `prefetch_logits` at about `6.726ms/token`.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the
