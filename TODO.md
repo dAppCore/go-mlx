@@ -325,6 +325,16 @@ allocation-neutral and moved from about `238.422 us/op` to `236.052 us/op`.
 Do not revive the broader Go handle-array `mlx_vector_array_new_data` attempt:
 it regressed the same benches to `1152 B/op` and `2305-2308 B/op`, so multi-page
 concat still needs a true C-side page-list owner rather than a Go slice handoff.
+Two scalar C-side page-list variants were also rejected: 64 slots was too heavy,
+and 32 slots covered the current `24` max-page request-context trace but left the
+actual 16-page fast-concat SDPA median around `623.972 us/op` versus the accepted
+two-array helper's `601.880 us/op` row. Prompt-cache-only concat wins do not
+justify a retained decode change.
+`PagedKVCache` dirty-state marking now uses a fixed pair helper instead of the
+old variadic helper on per-token updates. Focused tests pass, and
+`BenchmarkPagedKVCache_UpdateBorrowedPages_To128` is allocation-stable while
+moving from the sweep's `1129903 ns/op` to repeated rows around
+`1072846-1077538 ns/op`. This is small paged-State hygiene, not a parity close.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

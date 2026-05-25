@@ -369,6 +369,28 @@ median moved from about `238.422 us/op` to `236.052 us/op`. A broader multi-page
 Go handle array to C made it escape, regressing the same rows to `1152 B/op` and
 `2305-2308 B/op`. Keep multi-page concat on the existing append-vector path until
 there is a C-side page-list owner that avoids Go handle-array escape entirely.
+Follow-up scalar page-list helpers with 64 and 32 C-side slots were also tested
+and reverted. They preserved `0 allocs/op` and improved pure prompt-cache concat,
+but the actual fast-concat SDPA rows were neutral-to-negative; the 32-slot helper
+left the 16-page mixed-query fast-concat median around `623.972 us/op` versus the
+accepted two-array helper's `601.880 us/op` row. Do not promote prompt-cache-only
+concat wins into the retained decode path unless the SDPA fast-concat row moves
+with it.
+
+Dirty paged-State marker cleanup, 2026-05-25: `PagedKVCache` now marks the
+two dirty K/V arrays with a fixed pair helper instead of routing the per-token
+paged update through a variadic helper. This keeps the same dirty-state
+dedupe/overflow semantics and removes the now-unused variadic path. Focused
+Metal verification passed
+`TestPagedKVCache_AppendDirtyStateOnlyRecentPage_Good`,
+`TestPagedKVCache_BorrowedPageStateAvoidsFullPageClones_Good`, and
+`TestPagedKVCache_SlidingWindowStaysSinglePage_Good`. The retained hot-path
+bench remains allocation-stable while nudging
+`BenchmarkPagedKVCache_UpdateBorrowedPages_To128` from the sweep's
+`1129903 ns/op`, `43 B/op`, `5 allocs/op` to repeated rows around
+`1072846-1077538 ns/op`, `44 B/op`, `5 allocs/op`. Treat this as small
+graph-construction hygiene on the accepted paged State path, not raw-decode
+parity closure.
 
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to

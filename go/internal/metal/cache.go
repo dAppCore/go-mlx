@@ -1130,7 +1130,7 @@ func (c *PagedKVCache) ReplaceSinglePageFromNative(k, v *Array, seqLen int) Page
 	c.recordPageShape(k.Shape(), v.Shape())
 	c.offset += seqLen
 	c.length += seqLen
-	c.markDirtyState(k, v)
+	c.markDirtyPair(k, v)
 	return c.PageState()
 }
 
@@ -1716,7 +1716,7 @@ func (c *PagedKVCache) compactSingleWindowPages() {
 	}
 	c.pageLens[0] = c.length
 	c.recordPageShape(fullK.Shape(), fullV.Shape())
-	c.markDirtyState(fullK, fullV)
+	c.markDirtyPair(fullK, fullV)
 }
 
 func (c *PagedKVCache) trimFirstPage(tokens int) {
@@ -1762,31 +1762,29 @@ func (c *PagedKVCache) markDirtyPage(index int) {
 	if index < 0 || index >= len(c.kPages) || index >= len(c.vPages) {
 		return
 	}
-	c.markDirtyState(c.kPages[index], c.vPages[index])
+	c.markDirtyPair(c.kPages[index], c.vPages[index])
 }
 
-func (c *PagedKVCache) markDirtyState(arrays ...*Array) {
-	for _, state := range arrays {
-		if state == nil || !state.Valid() {
-			continue
-		}
-		seen := false
-		for i := 0; i < c.dirtyStateLen; i++ {
-			if c.dirtyState[i] == state {
-				seen = true
-				break
-			}
-		}
-		if seen {
-			continue
-		}
-		if c.dirtyStateLen >= len(c.dirtyState) {
-			c.dirtyStateAll = true
+func (c *PagedKVCache) markDirtyPair(left, right *Array) {
+	c.markDirtyOne(left)
+	c.markDirtyOne(right)
+}
+
+func (c *PagedKVCache) markDirtyOne(state *Array) {
+	if state == nil || !state.Valid() {
+		return
+	}
+	for i := 0; i < c.dirtyStateLen; i++ {
+		if c.dirtyState[i] == state {
 			return
 		}
-		c.dirtyState[c.dirtyStateLen] = state
-		c.dirtyStateLen++
 	}
+	if c.dirtyStateLen >= len(c.dirtyState) {
+		c.dirtyStateAll = true
+		return
+	}
+	c.dirtyState[c.dirtyStateLen] = state
+	c.dirtyStateLen++
 }
 
 func (c *PagedKVCache) recordPageShape(kShape, vShape []int32) {
