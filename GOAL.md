@@ -734,6 +734,31 @@ anchor, go-mlx is now only `0.346s` slower on wall and still uses less RSS, but
 llama.cpp remains `1.294x` faster on raw decode and `1.048x` faster on
 wall-visible throughput, so the production gate remains open.
 
+Fresh llama.cpp anchor refresh, 2026-05-25: reran the same request-context
+shape against `/opt/homebrew/bin/llama-server` version `9260 (3a6db741a)`,
+built with AppleClang `21.0.0.21000099`, using the same
+`gemma-4-E2B-it-Q4_K_M.gguf`, `30k` start tokens, `10` turns,
+`target_tokens=100000`, `max_tokens=1024`, Gemma 4 stop strings,
+`seed=240524`, `temperature=1.0`, `top_p=0.95`, `top_k=64`, and
+`repeat_penalty=1.0`. Report:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-llamacpp-request-context-refresh-seed240524-gemma4-e2b-q4km-opencode-30k-r10-g1024.json`.
+The refreshed llama.cpp row completes `10/10`, reaches `50248` final live
+tokens, appends `14400` tokens, generates `5828` tokens / `5818` visible
+tokens, records `75.161548416s` wall, `110.18737904534018` raw decode tok/s
+from llama.cpp timings, `77.40660114915106` wall-visible tok/s,
+`21.670089s` prompt timing, `7.516 kJ` estimated energy at `100 W`,
+`5.068 GB` peak RSS, `459.112 GB` peak virtual, no output-quality flags, and
+no visible control markers. Against the current fused-suppression go-mlx row
+above, go-mlx is `1.900089417s` faster on retained workflow wall and saves
+about `190.009 J` at `100 W`, while llama.cpp remains `1.29616197x` faster on
+raw decode and `1.05529192x` faster on visible wall throughput because it
+returns more visible content in the same shape. Interpretation: the retained
+State wall/energy lane now beats the current llama.cpp server build on this
+10-turn request-context row, but the production optimisation target remains
+the raw decode/materialisation gap visible in go-mlx
+`prefetch_logits=6.839ms/token`, `sample_eval=3.239ms/token`, and
+`forward=1.613ms/token`.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated
