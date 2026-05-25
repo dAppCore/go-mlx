@@ -726,7 +726,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 	if gotCfg.ChatTemplate != "gemma4" || !gotCfg.EnableThinking {
 		t.Fatalf("chat template = %q thinking=%v, want Gemma 4 thinking prompts", gotCfg.ChatTemplate, gotCfg.EnableThinking)
 	}
-	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != 1024 {
+	if gotCfg.StartTokens != 30000 || gotCfg.TargetTokens != 100000 || gotCfg.AppendTokens != 8192 || gotCfg.TurnMaxTokens != mlx.ProductionLaneLongFormMaxTokens {
 		t.Fatalf("state ramp cfg = %+v, want default warm build-up shape", gotCfg)
 	}
 	if gotCfg.CompactionThresholdTokens != mlx.ProductionLaneHyperLongContextLength || gotCfg.CompactionTailTokens != 8192 {
@@ -751,6 +751,7 @@ func TestRunCommand_StateRampProfileJSON_Good(t *testing.T) {
 		`"model_path": "/models/demo"`,
 		`"start_tokens": 30000`,
 		`"target_tokens": 100000`,
+		`"turn_max_tokens": 8192`,
 		`"compaction_threshold_tokens": 131072`,
 		`"compaction_tail_tokens": 8192`,
 		`"chat_template": "gemma4"`,

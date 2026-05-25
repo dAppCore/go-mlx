@@ -2312,7 +2312,7 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	compactionThresholdTokens := fs.Int("compaction-threshold-tokens", 0, "live-state token count that marks the context exhausted and requires a folded state; 0 uses the context window")
 	compactionTailTokens := fs.Int("compaction-tail-tokens", 8192, "recent live-state tail token budget to carry into the future folded-state summary")
 	appendTokens := fs.Int("append-tokens", 8192, "maximum source tokens to append before each generation turn")
-	turnMaxTokens := fs.Int("turn-max-tokens", 1024, "generated tokens per ramp turn")
+	turnMaxTokens := fs.Int("turn-max-tokens", mlx.ProductionLaneLongFormMaxTokens, "generated tokens per ramp turn")
 	turnMinTokens := fs.Int("turn-min-tokens", 0, "debug-only visible token annotation threshold; 0 disables the annotation")
 	turnMinTokensPolicy := fs.String("turn-min-tokens-policy", "mark", "debug handling for turns below the visible-token threshold: mark or fail")
 	turns := fs.Int("turns", 0, "maximum ramp turns; 0 runs until target tokens are reached")
@@ -2991,7 +2991,7 @@ func normalizeStateRampProfileOptions(opts stateRampProfileOptions) stateRampPro
 		opts.AppendTokens = 8192
 	}
 	if opts.TurnMaxTokens <= 0 {
-		opts.TurnMaxTokens = 1024
+		opts.TurnMaxTokens = mlx.ProductionLaneLongFormMaxTokens
 	}
 	if opts.TurnMinTokens < 0 {
 		opts.TurnMinTokens = 0
