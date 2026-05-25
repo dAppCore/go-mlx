@@ -309,6 +309,21 @@ bench remains effectively neutral at `483.996-506.989 us/op`, `10-11 B/op`,
 `1 alloc/op`. This is a cgo-boundary cleanup only; the next larger target
 remains logits/materialisation fusion.
 
+Prefetch benchmark-shape correction, 2026-05-25: the focused async prefetch
+bench now keeps the cache slice outside the hot loop and adds a production
+non-trace row beside the trace rows. The corrected Metal run
+(`go test ./go/internal/metal -run '^$' -bench
+'BenchmarkAsyncDecodePrefetch(_|Trace_)(CombinedDirtyKV|SplitDirtyKV)$'
+-benchmem -benchtime=700ms`) records
+`BenchmarkAsyncDecodePrefetch_CombinedDirtyKV` at `177.954 us/op`,
+`512 B/op`, `1 alloc/op`; trace combined at `175.221 us/op`, `512 B/op`,
+`1 alloc/op`; and trace split at `184.888 us/op`, `560 B/op`, `3 allocs/op`.
+An internal slice-only `EvalAsync`/prefetch patch was rejected before commit:
+the same combined trace row moved from `173.397 us/op` to `176.224 us/op` with
+the same `512 B/op`, `1 alloc/op`. Interpretation: the remaining allocation is
+not the benchmark cache-slice shape or the internal prefetch varargs hop; keep
+the next optimisation aimed at the larger MLX logits/materialisation boundary.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but

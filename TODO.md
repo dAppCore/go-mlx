@@ -294,6 +294,15 @@ variant keeps `BenchmarkAsyncDecodePrefetchTrace_CombinedDirtyKV` in the same
 `160.024-179.131 us/op` band to `164.487-165.937 us/op`. Treat it as cgo
 boundary hygiene only; it does not replace the larger logits/materialisation
 fusion target.
+The prefetch benchmark now also measures the production non-trace boundary and
+keeps the cache slice outside the hot loop. The corrected Metal row records
+production combined prefetch at `177.954 us/op`, `512 B/op`, `1 alloc/op`, trace
+combined at `175.221 us/op`, `512 B/op`, `1 alloc/op`, and trace split at
+`184.888 us/op`, `560 B/op`, `3 allocs/op`. A slice-only internal prefetch/eval
+patch was tested and reverted because it kept the same `512 B/op`, `1 alloc/op`
+while moving the combined trace row from `173.397 us/op` to `176.224 us/op`.
+Do not chase that varargs/cache-slice shape; the remaining target is still the
+larger MLX logits/materialisation boundary.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the
