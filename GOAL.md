@@ -949,6 +949,23 @@ lookahead experiment, without enabling lookahead in production. Verified with
 `GOCACHE=/private/tmp/codex-go-mlx-cache GO_MLX_RUN_METAL_TESTS=1 go test ./go/internal/metal -run 'TestModelSession_(PrefetchTokenStateAdvanceParity|Generate_AsyncDecodePrefetch|Generate_TraceTokenPhases)|TestSample_PrefetchTokenEvalParity'`
 and the same focused command without `GO_MLX_RUN_METAL_TESTS`.
 
+Rejected scalar sampled-token sync, 2026-05-25: replacing the explicit
+`Eval(next)` in the first guarded sampler path with direct `next.Int()` scalar
+materialisation looked good in isolation. The focused Metal bench recorded
+`BenchmarkSampler_TopKThenTopPTokenReadNoEvalChecked_Vocab262k` at
+`483482 ns/op`, versus `BenchmarkSampler_TopKThenTopP_Vocab262k` at
+`495797 ns/op` and the suppressed sampler row at `487873 ns/op`. The matched
+two-turn retained request-context trace rejected the runtime change:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-scalar-token-read-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+kept `2/2` turns, `1166` visible/generated tokens, `fixed_caches=0`, and
+`paged_caches=15`, but fell to `89.175` raw decode tok/s and `80.465`
+effective turn tok/s versus the current default row at `91.024` raw and
+`81.968` effective. The scalar-sync path also increased total token-phase
+duration from `10.967ms/token` to `11.194ms/token` and prefetch from
+`6.220ms/token` to `6.327ms/token`. Keep the benchmark as a hot-path probe, but
+do not replace explicit sampled-token eval with scalar-read synchronisation in
+the production retained path.
+
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building
 frequency state inside the decode path. A correctness guard now proves

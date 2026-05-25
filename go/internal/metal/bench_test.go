@@ -381,6 +381,38 @@ func BenchmarkSampler_TopKThenTopP_Vocab262k(b *testing.B) {
 	}
 }
 
+func BenchmarkSampler_TopKThenTopPTokenReadNoEval_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	s := newSampler(1.0, 0.95, 0, 64)
+	b.ResetTimer()
+	for b.Loop() {
+		tok := s.Sample(logits)
+		_ = tok.Int()
+		Free(tok)
+	}
+}
+
+func BenchmarkSampler_TopKThenTopPTokenReadNoEvalChecked_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	s := newSampler(1.0, 0.95, 0, 64)
+	b.ResetTimer()
+	for b.Loop() {
+		tok := s.Sample(logits)
+		_ = tok.Int()
+		if err := lastError(); err != nil {
+			Free(tok)
+			b.Fatalf("token read: %v", err)
+		}
+		Free(tok)
+	}
+}
+
 func BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k(b *testing.B) {
 	b.ReportAllocs()
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)

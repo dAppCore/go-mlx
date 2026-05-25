@@ -235,6 +235,11 @@ turn 1 with `empty_visible_output` and `0` generated tokens, while the same
 rebuilt binary with the gate off completed normally. Any future lookahead work
 needs a first-token token/RNG parity harness before it is allowed near the
 retained benchmark lane.
+The scalar sampled-token sync variant is also rejected for production: a direct
+`next.Int()` materialisation microbench beat the explicit `Eval(next)` row, but
+the matched two-turn retained trace regressed from `91.024` raw tok/s to
+`89.175` raw tok/s and from `81.968` effective tok/s to `80.465`. Keep the
+benchmark probe; keep production on explicit sampled-token eval.
 That harness now exists as `TestSample_PrefetchTokenEvalParity_Good`: it proves
 normal guarded sampling and combined `EvalAsync(logits, sampled_token)`
 materialisation return the same first token under the same seed. Future
