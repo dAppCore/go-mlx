@@ -583,6 +583,30 @@ effective tok/s, and `25.404s` wall. The `logits` phase drops from `9.124us`
 to `4.121us` per token, while the dominant `prefetch_logits` and `sample_eval`
 buckets remain the real parity target.
 
+Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
+cleanup ideas were measured and reverted because they did not improve the real
+retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated
+PLE view microbench (`BenchmarkPLE_PerLayerInputViewsStreamedRank4_Graph` at
+about `19.4-20.3us/op` versus the wrapper path at about `20.5-20.9us/op`), but
+the matched two-turn retained trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-ple-rank4-view-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+fell to `88.597` raw decode tok/s and `79.277` effective tok/s versus the
+accepted last-token-reshape trace at `90.578` / `80.901`. A host-side
+64-candidate top-k/top-p sampler similarly improved the isolated sampler row
+(`BenchmarkSampler_TopKThenTopP_Vocab262k` at about `461-481us/op` versus the
+normal `545-566us/op` band) by moving top-p and categorical sampling out of the
+MLX graph, but the retained trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-host-topk-topp-trace-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+rejected it: `88.769` raw decode tok/s, `79.019` effective tok/s, larger
+active-plus-cache memory, and `2` output-issue turns. The phase data was useful
+but not a win: `sample_eval` collapsed to `308ns/token`, while `sample` grew to
+`3.381ms/token`, proving the work merely moved buckets. Disabling the accepted
+async prefetch gate was also slower (`88.645` raw decode tok/s with
+`sample_eval=9.757ms/token`) than the same current-source default trace
+(`89.712` raw decode tok/s). Keep the next optimisation on a fused/stable MLX
+one-token graph boundary rather than host sampling, PLE rank checks, or
+turning off async decode prefetch.
+
 Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
 `BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
 page-reduction path against the accepted fast-concat lane. With float32 pages,
