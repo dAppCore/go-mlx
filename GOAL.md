@@ -2470,6 +2470,14 @@ Current open gates:
       stabilises. The old `docs/runtime/2026-*` report set is being removed from
       this commit candidate and must not be cited as current acceptance evidence.
 
+Default CLI tightening, 2026-05-25: `driver-profile` now seeds its public flag
+defaults from `DefaultProductionLane()` instead of the older smoke shape. A
+plain fast-lane profile therefore runs the production descriptor's `128` token
+budget, `3` runs, hidden output, and token-phase tracing by default. Explicit
+flags still override each field, including `-include-output` for captured text.
+This is a default-path correction only; it does not close the raw decode gap by
+itself.
+
 Treat `IDEAS.md` as the active optimisation brief. Its highest-priority path is
 strict MLX eval boundaries / graph lifetime control first, then pinned State
 memory and C++23 `std::mdspan` layout work. Gemma 4 local/global attention

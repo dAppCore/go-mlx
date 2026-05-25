@@ -460,7 +460,7 @@ func TestRunCommand_DriverProfileProfileJSON_Good(t *testing.T) {
 	}
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
-	code := runCommand(context.Background(), []string{"driver-profile", "-json", "-profile", profilePath, "-prompt", "Why does retained state matter?", "-max-tokens", "8", "-runs", "1"}, stdout, stderr)
+	code := runCommand(context.Background(), []string{"driver-profile", "-json", "-profile", profilePath, "-prompt", "Why does retained state matter?", "-max-tokens", "8", "-runs", "1", "-include-output"}, stdout, stderr)
 
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
@@ -3680,6 +3680,12 @@ func TestRunCommand_DriverProfileFastGemma4LaneDefault_Good(t *testing.T) {
 	}
 	if gotCfg.Prompt != mlx.DefaultNewSessionText {
 		t.Fatalf("driver profile default prompt = %q, want Lemma new-session default", gotCfg.Prompt)
+	}
+	if gotCfg.MaxTokens != mlx.ProductionLaneMaxTokens || gotCfg.Runs != mlx.ProductionLaneRuns {
+		t.Fatalf("driver profile default shape = max:%d runs:%d, want production lane max:%d runs:%d", gotCfg.MaxTokens, gotCfg.Runs, mlx.ProductionLaneMaxTokens, mlx.ProductionLaneRuns)
+	}
+	if gotCfg.IncludeOutput || !gotCfg.TraceTokenPhases {
+		t.Fatalf("driver profile default reporting = include_output:%v trace:%v, want hidden output plus token phase trace", gotCfg.IncludeOutput, gotCfg.TraceTokenPhases)
 	}
 	for _, want := range []string{
 		`"GO_MLX_ENABLE_EXPERT_ID_MATVEC": "1"`,

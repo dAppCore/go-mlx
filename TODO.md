@@ -13,10 +13,11 @@ seeds, 100k retained-State growth, or the model window.
 
 ## Current handover checkpoint
 
-Status on `dev`, 2026-05-25: the latest pushed handover commits are
-`ca0aad3` (`perf(metal): create decode token inputs directly`) and `ac64e4d`
-(`docs(runtime): clarify benchmark handover state`). The tree was clean after
-both pushes to `homelab`, `origin`, and `github`.
+Status on `dev`, 2026-05-25: recent pushed handover commits include `ca0aad3`
+(`perf(metal): create decode token inputs directly`), `ac64e4d`
+(`docs(runtime): clarify benchmark handover state`), and `138dec1`
+(`docs(todo): add current handover checkpoint`). The tree was clean after those
+pushes to `homelab`, `origin`, and `github`.
 
 Use `GOAL.md` as the detailed historical ledger, but treat missing
 `docs/runtime/2026-*` artefact links as archived notes unless the report is
@@ -29,6 +30,11 @@ no fixed-cache default, no context-family cutoff, no forced compaction during
 benchmarks, no native paged-attention promotion without a real retained
 workflow win, and no sampler/lookahead changes unless the retained-session
 state-advance parity guard is extended first.
+
+Default CLI polish in progress: keep `driver-profile` aligned with
+`DefaultProductionLane()` for the plain fast-lane shape unless a caller sets an
+explicit flag. Do not reintroduce the older one-run, 32-token smoke default as a
+production acceptance path.
 
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 
