@@ -691,7 +691,7 @@ func (s *ModelSession) advanceTokenLocked(ctx context.Context, id int32, step in
 	default:
 	}
 	vInput := fromSingleInt32(id)
-	input := Reshape(vInput, 1, 1)
+	input := Reshape2(vInput, 1, 1)
 	Free(vInput)
 
 	nextLogits, _ := s.model.forwardLastTokenLogits(input, nil, s.caches)

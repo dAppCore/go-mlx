@@ -903,7 +903,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			}
 
 			vNextInput := fromSingleInt32(id)
-			nextInput := Reshape(vNextInput, 1, 1)
+			nextInput := Reshape2(vNextInput, 1, 1)
 			Free(vNextInput)
 			if tracePhases {
 				phase.NextInputDuration = time.Since(phaseLast)
@@ -1925,7 +1925,7 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 		return nil, core.NewError("mlx: logits rank is invalid")
 	}
 	if ndim == 1 {
-		return Reshape(logits, 1, int32(logits.Dim(0))), nil
+		return Reshape2(logits, 1, int32(logits.Dim(0))), nil
 	}
 	if ndim == 2 {
 		rows := logits.Dim(0)
@@ -1933,10 +1933,10 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 			return nil, core.NewError("mlx: logits sequence is empty")
 		}
 		if rows == 1 {
-			return Reshape(logits, 1, int32(logits.Dim(1))), nil
+			return Reshape2(logits, 1, int32(logits.Dim(1))), nil
 		}
 		last := SliceAxis(logits, 0, int32(rows-1), int32(rows))
-		out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+		out := Reshape2(last, 1, int32(last.Dim(last.NumDims()-1)))
 		Free(last)
 		return out, nil
 	}
@@ -1946,10 +1946,10 @@ func lastTokenLogits(logits *Array) (*Array, error) {
 		return nil, core.NewError("mlx: logits sequence is empty")
 	}
 	if seqLen == 1 && lastTokenLogitsSinglePosition(logits, ndim) {
-		return Reshape(logits, 1, int32(logits.Dim(ndim-1))), nil
+		return Reshape2(logits, 1, int32(logits.Dim(ndim-1))), nil
 	}
 	last := SliceAxis(logits, seqAxis, int32(seqLen-1), int32(seqLen))
-	out := Reshape(last, 1, int32(last.Dim(last.NumDims()-1)))
+	out := Reshape2(last, 1, int32(last.Dim(last.NumDims()-1)))
 	Free(last)
 	return out, nil
 }
