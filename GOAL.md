@@ -357,6 +357,21 @@ show the expected local effect (`sample_eval` down from `3.305ms/token` to
 while `prefetch_logits` remains dominant at `6.726ms/token`. Count this as an
 accepted sampler-boundary cleanup, not a closed parity gate.
 
+Current binary health smoke, 2026-05-25: after the long-form default cleanup,
+`driver-profile` was rerun against the local
+`mlx-community/gemma-4-e2b-it-4bit` snapshot with hidden output and paged K/V.
+The very short three-run prompt produced only `60` generated/visible tokens but
+reported `120.145 tok/s`, so it is useful only as a binary-start smoke. A
+natural longer-output prompt then generated `2700` tokens across `3` runs with
+`112.67248123826435 tok/s` average decode, `65.765ms` first-token average,
+`3.248 GB` peak MLX memory, `4.588 GB` active-plus-cache,
+`3.397 GB` process RSS, `468.990 GB` virtual reservation, and no output capture.
+Its token phases still put the work where expected: `prefetch`/`prefetch_logits`
+around `4.384ms/token`, `sample_eval` around `3.098ms/token`, and `forward`
+around `1.349ms/token`. Keep these rows as current-binary health evidence only;
+the production gate remains the retained 10+ turn workflow versus llama.cpp.
+Report: `/private/tmp/go-mlx-goal/reports/2026-05-25-binary-smoke-long-output-gemma4-e2b-4bit.json`.
+
 Concat2 boundary cleanup, 2026-05-25: the two-array `concatenate2` helper now
 builds the temporary MLX vector on the C stack in one helper call instead of
 crossing cgo for vector create, two appends, concatenate, and vector free. This
