@@ -657,7 +657,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 		}
 		var genCount int
 		var firstTokenDuration time.Duration
-		var tokenPhases []TokenPhaseTrace
+		tokenPhases := newTokenPhaseTraceBuffer(cfg)
 
 		defer func() {
 			decodeDur := time.Since(totalStart) - prefillDur
@@ -1198,6 +1198,13 @@ func appendTokenPhaseTrace(phases []TokenPhaseTrace, phase TokenPhaseTrace, star
 		phase.OtherDuration = phase.TotalDuration - accounted
 	}
 	return append(phases, phase)
+}
+
+func newTokenPhaseTraceBuffer(cfg GenerateConfig) []TokenPhaseTrace {
+	if !cfg.TraceTokenPhases || cfg.MaxTokens <= 0 {
+		return nil
+	}
+	return make([]TokenPhaseTrace, 0, cfg.MaxTokens)
 }
 
 func tokenPhaseAccountedDuration(phase TokenPhaseTrace) time.Duration {

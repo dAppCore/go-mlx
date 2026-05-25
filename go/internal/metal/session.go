@@ -459,7 +459,7 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 	if cfg.RepeatPenalty > 1.0 {
 		history = append([]int32(nil), s.generated...)
 	}
-	var tokenPhases []TokenPhaseTrace
+	tokenPhases := newTokenPhaseTraceBuffer(cfg)
 	emitProbeCachePressure(cfg.ProbeSink, ProbePhasePrefill, promptLen, len(s.generated), -1, s.caches)
 	emitProbeMemoryPressure(cfg.ProbeSink, ProbePhasePrefill, -1)
 
