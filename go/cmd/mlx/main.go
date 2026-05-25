@@ -1227,7 +1227,12 @@ func applyGemma4FastLaneDefaults(
 	if contextLen != nil {
 		resolvedContext = *contextLen
 	}
-	restores := []func(){}
+	gates := mlx.DefaultGemma4FastRuntimeGates()
+	restoreCap := len(gates)
+	if resolvedContext > mlx.ProductionLaneContextLength {
+		restoreCap++
+	}
+	restores := make([]func(), 0, restoreCap)
 	if resolvedContext > mlx.ProductionLaneContextLength {
 		if prefillChunkSize != nil && !visited["prefill-chunk-size"] {
 			*prefillChunkSize = mlx.ProductionLaneLongContextPrefillChunkSize
@@ -1239,7 +1244,7 @@ func applyGemma4FastLaneDefaults(
 			restores = append(restores, setDriverProfileRuntimeGate("GO_MLX_KV_CACHE_DTYPE", mlx.ProductionLaneRetainedKVCacheDType))
 		}
 	}
-	for _, gate := range mlx.DefaultGemma4FastRuntimeGates() {
+	for _, gate := range gates {
 		if driverProfileRuntimeGateValue(gate) != "" {
 			continue
 		}
