@@ -911,7 +911,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlock_Good(t *testing.T) {
 	if !ok {
 		t.Fatal("nativeGemma4FixedOwnerAttentionBlock() ok = false, want true")
 	}
-	want, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	want, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer Free(got, want)
 	defer gotKV.free()
 	defer wantKV.free()
@@ -984,7 +984,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionBlockQ4_Good(t *testing.T) {
 	if !ok {
 		t.Fatal("nativeGemma4FixedOwnerAttentionBlock(q4) ok = false, want true")
 	}
-	want, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	want, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer Free(got, want)
 	defer gotKV.free()
 	defer wantKV.free()
@@ -1046,7 +1046,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlock_Good(t *testing.T) 
 	if !ok {
 		t.Fatal("nativeGemma4FixedOwnerAttentionResidualBlock() ok = false, want true")
 	}
-	attnOut, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	attnOut, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	attnNormed := RMSNorm(attnOut, postNorm, 1e-6)
 	want := Add(residual, attnNormed)
 	defer Free(got, attnOut, attnNormed, want)
@@ -1123,7 +1123,7 @@ func TestDecode_nativeGemma4FixedOwnerAttentionResidualBlockQ4_Good(t *testing.T
 	if !ok {
 		t.Fatal("nativeGemma4FixedOwnerAttentionResidualBlock(q4) ok = false, want true")
 	}
-	attnOut, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	attnOut, wantKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	attnNormed := RMSNorm(attnOut, postNorm, 1e-6)
 	want := Add(residual, attnNormed)
 	defer Free(got, attnOut, attnNormed, want)
@@ -1268,7 +1268,7 @@ func TestDecode_nativeGemma4DecodeLayer_Good(t *testing.T) {
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
 	wantCache := NewPagedKVCache(0, 2)
-	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil)
+	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.free()
 	defer wantCache.Reset()
@@ -1415,7 +1415,7 @@ func TestDecode_nativeGemma4DecodeLayer_MoEGood(t *testing.T) {
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
 	wantCache := NewPagedKVCache(0, 2)
-	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil)
+	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.free()
 	defer wantCache.Reset()
@@ -1468,7 +1468,7 @@ func TestDecode_nativeGemma4DecodeLayer_FixedCacheMoEGood(t *testing.T) {
 	wantCache := NewFixedKVCache(4)
 	wantCacheK, wantCacheV := wantCache.Update(prevK, prevV, 1)
 	Free(wantCacheK, wantCacheV)
-	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil)
+	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.free()
 	defer wantCache.Reset()
@@ -1550,7 +1550,7 @@ func TestDecode_nativeGemma4FixedGreedyToken_Good(t *testing.T) {
 			prev = intermediates[int(model.PreviousKVs[i])]
 		}
 		fixedMask := wantMasks.ForLayer(cache, prev)
-		nextH, kv := layer.forward(wantH, cache, 1, 1, nil, perLayerInputs[i], prev, cfg, fixedMask, nil)
+		nextH, kv := layer.forward(wantH, cache, 1, 1, nil, perLayerInputs[i], prev, cfg, fixedMask, nil, false)
 		Free(wantH)
 		wantH = nextH
 		intermediates[i] = kv
@@ -1619,7 +1619,7 @@ func TestDecode_nativeGemma4FixedGreedyToken_NoPerLayerInputs_Good(t *testing.T)
 	wantMasks := newFixedGemma4AttentionMaskSet(1, 1, nil)
 	wantInput := hidden.Clone()
 	fixedMask := wantMasks.ForLayer(wantCache, sharedKV{})
-	wantH, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, nil, sharedKV{}, cfg, fixedMask, nil)
+	wantH, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, nil, sharedKV{}, cfg, fixedMask, nil, false)
 	Free(wantInput)
 	defer Free(hidden, wantH)
 	defer wantKV.free()
@@ -1729,7 +1729,7 @@ func TestDecode_compiledGemma4DecodeLayer_Good(t *testing.T) {
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
 	wantPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
-	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil)
+	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 
 	enableCompiledGemma4Layer = true
@@ -1778,7 +1778,7 @@ func TestDecode_compiledGemma4DecodeLayer_UseKEqVGood(t *testing.T) {
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
 	wantPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
-	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil)
+	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 
 	enableCompiledGemma4Layer = true
@@ -1826,7 +1826,7 @@ func TestDecode_compiledGemma4DecodeLayer_FixedCacheGood(t *testing.T) {
 	wantCache := NewFixedKVCache(4)
 	wantCacheK, wantCacheV := wantCache.Update(prevK, prevV, 1)
 	Free(wantCacheK, wantCacheV)
-	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil)
+	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.free()
 	defer wantCache.Reset()
@@ -1884,7 +1884,7 @@ func TestDecode_compiledGemma4DecodeLayer_MoEGood(t *testing.T) {
 	wantInput := input.Clone()
 	wantPerLayer := perLayer.Clone()
 	wantPrev := sharedKV{Keys: prevK, Values: prevV, Offset: 1}
-	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil)
+	want, _ := layer.forward(wantInput, nil, 1, 1, nil, wantPerLayer, wantPrev, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 
 	enableCompiledGemma4Layer = true
@@ -1932,7 +1932,7 @@ func TestDecode_compiledGemma4DecodeLayer_FixedCacheSharedMaskGood(t *testing.T)
 	wantCache := NewFixedKVCache(4)
 	wantCacheK, wantCacheV := wantCache.Update(prevK, prevV, 1)
 	Free(wantCacheK, wantCacheV)
-	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil)
+	want, wantKV := layer.forward(wantInput, wantCache, 1, 1, nil, wantPerLayer, sharedKV{}, cfg, nil, nil, false)
 	defer Free(wantInput, wantPerLayer, want)
 	defer wantKV.free()
 	defer wantCache.Reset()

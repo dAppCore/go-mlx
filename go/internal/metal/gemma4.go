@@ -2485,7 +2485,8 @@ func (m *Gemma4Model) forwardHidden(tokens *Array, mask *Array, caches []Cache) 
 
 		fixedMask := fixedMasks.ForLayer(cache, prev)
 		prevAvailable := prev.hasState()
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask, runtimeMasks)
+		materializePagedKVForReuse := m.PreviousKVs[i] == int32(i) && sharedSources[i]
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, fixedMask, runtimeMasks, materializePagedKVForReuse)
 		Free(pli)
 		Free(h)
 		h = nextH
@@ -2508,7 +2509,7 @@ func logitSoftcap(x *Array, softcap float32) *Array {
 	return out
 }
 
-func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache) (*Array, sharedKV) {
+func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array, perLayerInput *Array, prev sharedKV, cfg *Gemma4TextConfig, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache, materializePagedKVForReuse bool) (*Array, sharedKV) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			panic(core.Sprintf("Gemma 4 layer %d %s: %v", l.LayerIdx, l.LayerType, recovered))
@@ -2551,7 +2552,7 @@ func (l *Gemma4DecoderLayer) forward(x *Array, c Cache, B, L int32, mask *Array,
 		}
 	}
 	if h == nil {
-		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks)
+		attnOut, nativeKV := l.Attention.forward(normed, c, B, L, mask, prev, cfg, window, fixedMask, runtimeMasks, materializePagedKVForReuse)
 		kv = nativeKV
 		l.traceNativeMaterialize(traceEnabled, "attention", attnOut)
 		if nativeGemma4ResidualNormEnabled() {
@@ -2712,7 +2713,7 @@ func attentionQueryForKV(query, key *Array) (*Array, *Array) {
 	}
 }
 
-func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache) (*Array, sharedKV) {
+func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, prev sharedKV, cfg *Gemma4TextConfig, window int32, fixedMask *Array, runtimeMasks *gemma4RuntimeMaskCache, materializePagedKVForReuse bool) (*Array, sharedKV) {
 	if nativeGemma4FixedOwnerAttentionEnabled() && window == 0 && !prev.hasState() && L == 1 && mask == nil {
 		if fixed, ok := c.(*FixedKVCache); ok {
 			if out, kv, ok, err := nativeGemma4FixedOwnerAttentionBlock(x, fixed, fixedMask, a, cfg); ok {
@@ -2869,7 +2870,7 @@ func (a *Gemma4Attention) forward(x *Array, c Cache, B, L int32, mask *Array, pr
 			if gemma4ValidKV(kv.Keys, kv.Values) {
 				out = ScaledDotProductAttention(attentionQ, kv.Keys, kv.Values, a.Scale, false)
 			}
-			if out == nil && nativePagedAttentionEnabled() && len(kv.Pages.Keys) > 1 {
+			if out == nil && nativePagedAttentionEnabled() && !materializePagedKVForReuse && len(kv.Pages.Keys) > 1 {
 				var ok bool
 				var err error
 				out, ok, err = nativePagedSingleTokenAttention(attentionQ, kv.Pages.Keys, kv.Pages.Values, a.Scale)

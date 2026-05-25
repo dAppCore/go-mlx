@@ -2581,7 +2581,7 @@ func TestGemma4_DecoderLayer_MoEAppliesFinalPostFFNorm_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.3, -0.2}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil, false)
 	defer Free(kv.Keys, kv.Values)
 
 	h1In := RMSNorm(x, layer.PreFFNormScaled, cfg.RMSNormEps)
@@ -2696,7 +2696,7 @@ func TestGemma4_DecoderLayer_MoERouterUsesAttentionResidualInput_Good(t *testing
 	}
 	x := FromValues([]float32{2, 1}, 1, 1, 2)
 
-	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil)
+	got, kv := layer.forward(x, nil, 1, 1, nil, nil, sharedKV{}, cfg, nil, nil, false)
 	defer Free(kv.Keys, kv.Values)
 
 	h2InForCheck := RMSNorm(x, layer.PreFFNorm2Scaled, cfg.RMSNormEps)
@@ -2774,7 +2774,7 @@ func TestGemma4_AttentionPagedCacheReturnsSharedPages_Good(t *testing.T) {
 	defer cache.Reset()
 	x := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
 
-	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out, kv := attention.forward(x, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -2835,8 +2835,8 @@ func TestGemma4_AttentionFixedCacheUsesNativeBridge_Good(t *testing.T) {
 	pagedX := fixedX.Clone()
 	defer Free(fixedX, pagedX)
 
-	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
-	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	fixedOut, fixedKV := attention.forward(fixedX, fixed, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
+	pagedOut, pagedKV := attention.forward(pagedX, paged, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer Free(fixedOut, pagedOut)
 	defer fixedKV.free()
 	defer pagedKV.free()
@@ -2902,7 +2902,7 @@ func TestGemma4_AttentionSharedPagedKVSkipsKVProjection_Good(t *testing.T) {
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
 
-	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil, nil)
+	out, kv := attention.forward(x, nil, 1, 1, nil, prev, cfg, 0, nil, nil, false)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -2922,6 +2922,7 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	}
 	requireMetalRuntime(t)
 	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_PAGED_DECODE_FAST_CONCAT", "1"))
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
 
 	identity := func() *Array {
 		return FromValues([]float32{
@@ -2955,7 +2956,7 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	defer cache.Reset()
 
 	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
-	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	if err := Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
@@ -2963,7 +2964,7 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	kv1.free()
 
 	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
-	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, true)
 	defer kv2.free()
 	if err := Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
@@ -2977,7 +2978,7 @@ func TestGemma4_AttentionPagedFastConcatCachesFullKVForSharedReuse_Good(t *testi
 	}
 
 	x3 := FromValues([]float32{-0.25, 0.75}, 1, 1, 2)
-	out3, kv3 := attention.forward(x3, nil, 1, 1, nil, kv2, cfg, 0, nil, nil)
+	out3, kv3 := attention.forward(x3, nil, 1, 1, nil, kv2, cfg, 0, nil, nil, false)
 	defer Free(x3, out3)
 	if err := Eval(out3); err != nil {
 		t.Fatalf("Eval(out3): %v", err)
@@ -3027,7 +3028,7 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 	defer cache.Reset()
 
 	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
-	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	if err := Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
@@ -3035,7 +3036,7 @@ func TestGemma4_AttentionPagedStorageDTypeKeepsAttentionEvaluable_Good(t *testin
 	kv1.free()
 
 	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
-	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer kv2.free()
 	defer Free(x2, out2)
 	if err := Eval(out2); err != nil {
@@ -3055,6 +3056,7 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	requireMetalRuntime(t)
+	t.Cleanup(SetRuntimeGate("GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION", "1"))
 
 	identity := func() *Array {
 		return FromValues([]float32{
@@ -3088,7 +3090,7 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 	defer cache.Reset()
 
 	x1 := FromValues([]float32{0.25, -0.5}, 1, 1, 2)
-	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out1, kv1 := attention.forward(x1, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	if err := Eval(out1); err != nil {
 		t.Fatalf("Eval(out1): %v", err)
 	}
@@ -3096,7 +3098,7 @@ func TestGemma4_AttentionPagedDoesNotRetainFullMaterializedKV_Good(t *testing.T)
 	kv1.free()
 
 	x2 := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
-	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out2, kv2 := attention.forward(x2, cache, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer kv2.free()
 	if err := Eval(out2); err != nil {
 		t.Fatalf("Eval(out2): %v", err)
@@ -3150,7 +3152,7 @@ func TestGemma4_AttentionForward_FallsBackWhenCacheUpdateReturnsNil_Ugly(t *test
 		RMSNormEps:        1e-6,
 	}
 	x := FromValues([]float32{0.5, 0.25}, 1, 1, 2)
-	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil)
+	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 1, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		Free(x, out)
 		kv.free()
@@ -3202,7 +3204,7 @@ func TestGemma4_AttentionKEqVDoesNotAliasFinalCache_Good(t *testing.T) {
 		1, 0,
 		0, 1,
 	}, 1, 2, 2)
-	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 2, nil, sharedKV{}, cfg, 0, nil, nil)
+	out, kv := attention.forward(x, &fakeDetachCache{}, 1, 2, nil, sharedKV{}, cfg, 0, nil, nil, false)
 	defer func() {
 		Free(x, out)
 		kv.free()

@@ -772,6 +772,15 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 	defer Free(ownedMasks...)
 
 	intermediates := make([]sharedKV, len(m.Layers))
+	sharedSources := make([]bool, len(m.Layers))
+	for i, prevIdx := range m.PreviousKVs {
+		if i >= len(sharedSources) {
+			break
+		}
+		if prevIdx != int32(i) && prevIdx >= 0 && prevIdx < int32(len(sharedSources)) {
+			sharedSources[prevIdx] = true
+		}
+	}
 	for i, layer := range m.Layers {
 		var prev sharedKV
 		if prevIdx := m.PreviousKVs[i]; prevIdx != int32(i) && prevIdx >= 0 && prevIdx < int32(len(intermediates)) {
@@ -795,7 +804,8 @@ func (m *Gemma4Model) forwardGemma4EmbeddingsMasked(tokens *Array, h *Array, mas
 			pli = perLayerInputs[i]
 		}
 
-		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil, nil)
+		materializePagedKVForReuse := m.PreviousKVs[i] == int32(i) && sharedSources[i]
+		nextH, kv := layer.forward(h, cache, B, L, layerMask, pli, prev, m.Cfg, nil, nil, materializePagedKVForReuse)
 		Free(h)
 		h = nextH
 		intermediates[i] = kv

@@ -606,6 +606,24 @@ shape, but using it as a separate compiled side graph breaks the larger lazy
 decode boundary. The next implementation must keep this memory shape inside the
 single-token model graph rather than replacing fast-concat with the current
 native gate.
+Shared-owner guard follow-up, 2026-05-25: the first native-paged retained
+rejection was partly self-inflicted. When the native side graph handled a full
+owner layer that later Gemma 4 shared-KV layers reused, it returned only the
+page-state output and did not populate `kv.Keys`/`kv.Values`; the later shared
+layers therefore lost the owner fast-concat handles and kept traversing pages.
+The Go graph now threads a `materializePagedKVForReuse` bit from the
+`PreviousKVs`/`sharedSources` layout into attention, so native paged attention
+cannot steal an owner path that must publish reusable K/V handles. The guarded
+diagnostic run
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-native-paged-attn-shared-owner-guard-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+improves the native-paged opt-in lane from `53.200` to `78.105` raw decode
+tok/s and from `50.277` to `70.542` effective turn tok/s, while reducing total
+wall from `38.162s` to `26.885s`. It is still rejected for production because
+the accepted q4 graph-path trace remains faster at `90.256` raw decode tok/s,
+`80.650` effective tok/s, and `25.443s`; `prefetch_logits` is still
+`7.860ms/token` with the native guard versus `6.169ms/token` on the accepted
+path. Keep the guard because it fixes the diagnostic branch and encodes the
+shared-KV invariant, but do not enable native paged attention by default.
 
 Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
 cannot cover this top-k/top-p sampler graph (`Slice cannot infer output
