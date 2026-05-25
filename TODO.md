@@ -303,6 +303,13 @@ patch was tested and reverted because it kept the same `512 B/op`, `1 alloc/op`
 while moving the combined trace row from `173.397 us/op` to `176.224 us/op`.
 Do not chase that varargs/cache-slice shape; the remaining target is still the
 larger MLX logits/materialisation boundary.
+`CompiledFunc.CallOne` now moves the one-input/one-output closure apply path
+into one C helper. The focused compiled sampler row improves from
+`496.546 us/op`, `8 B/op`, `1 alloc/op` to `450.085 us/op`, `0 B/op`,
+`0 allocs/op`; production-shaped suppressed sampler rows improve to the
+`475-486 us/op`, `7-8 B/op`, `1 alloc/op` band. This is accepted as a
+sampler/materialisation boundary cleanup, but still needs a retained
+request-context rerun before it can be counted as a workflow parity milestone.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

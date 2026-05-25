@@ -5,7 +5,32 @@
 package metal
 
 /*
+#include <stdbool.h>
 #include "mlx/c/mlx.h"
+
+static int mlx_go_closure_call_one(mlx_array *out, mlx_closure cls, mlx_array input, bool has_input) {
+	mlx_array inputs[1] = {input};
+	mlx_vector_array inputVec = has_input ? mlx_vector_array_new_data(inputs, 1) : mlx_vector_array_new();
+	mlx_vector_array outVec = mlx_vector_array_new();
+	int rc = mlx_closure_apply(&outVec, cls, inputVec);
+	int input_free_rc = mlx_vector_array_free(inputVec);
+	if (rc != 0) {
+		mlx_vector_array_free(outVec);
+		return rc;
+	}
+	if (input_free_rc != 0) {
+		mlx_vector_array_free(outVec);
+		return input_free_rc;
+	}
+	size_t count = mlx_vector_array_size(outVec);
+	if (count == 1) {
+		rc = mlx_vector_array_get(out, outVec, 0);
+	} else {
+		rc = -1001;
+	}
+	int output_free_rc = mlx_vector_array_free(outVec);
+	return rc != 0 ? rc : output_free_rc;
+}
 */
 import "C"
 
@@ -88,26 +113,22 @@ func (cf *CompiledFunc) CallOne(input *Array) *Array {
 		panic(core.NewError("mlx.CompiledFunc.CallOne: invalid compiled closure"))
 	}
 
-	inputVec := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(inputVec)
+	var in C.mlx_array
+	hasInput := C.bool(false)
 	if input != nil && input.Valid() {
-		C.mlx_vector_array_append_value(inputVec, input.ctx)
+		in = input.ctx
+		hasInput = true
 	}
-
-	outVec := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(outVec)
-	rc := C.mlx_closure_apply(&outVec, cf.cls, inputVec)
+	out := newArray("VEC_OUT")
+	rc := C.mlx_go_closure_call_one(&out.ctx, cf.cls, in, hasInput)
 	if rc != 0 {
+		Free(out)
 		if err := lastError(); err != nil {
 			panic(err)
 		}
 		panic(core.E("mlx.CompiledFunc.CallOne", core.Sprintf("closure apply failed (rc=%d)", rc), nil))
 	}
-	if n := int(C.mlx_vector_array_size(outVec)); n != 1 {
-		panic(core.E("mlx.CompiledFunc.CallOne", core.Sprintf("closure returned %d outputs, want 1", n), nil))
-	}
-	out := newArray("VEC_OUT")
-	C.mlx_vector_array_get(&out.ctx, outVec, C.size_t(0))
+	runtime.KeepAlive(input)
 	return out
 }
 

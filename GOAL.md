@@ -324,6 +324,23 @@ the same `512 B/op`, `1 alloc/op`. Interpretation: the remaining allocation is
 not the benchmark cache-slice shape or the internal prefetch varargs hop; keep
 the next optimisation aimed at the larger MLX logits/materialisation boundary.
 
+Compiled sampler boundary cleanup, 2026-05-25: `CompiledFunc.CallOne` now
+collapses one-input/one-output compiled closure invocation into a single C
+helper that builds the input vector from a C-stack array, applies the closure,
+checks the one-output contract, extracts the output handle, and frees both MLX
+vectors before returning to Go. This preserves the public Go API while removing
+the per-call Go-side `mlx_vector_array_new` / append / size / get sequence from
+the compiled sampler path. The focused Metal bench moved
+`BenchmarkSampler_CompiledTopKThenTopPCallOne_Vocab262k` from `496.546 us/op`,
+`8 B/op`, `1 alloc/op` to `450.085 us/op`, `0 B/op`, `0 allocs/op`.
+The production-shaped suppressed rows moved from the latest pre-change refresh
+(`516.694`, `517.472`, `515.892`, and `532.456 us/op`, `16-17 B/op`,
+`2 allocs/op`) to `486.107`, `483.077`, `475.959`, and `479.901 us/op`,
+`7-8 B/op`, `1 alloc/op`. This is a real sampler/materialisation boundary
+cleanup, but it is still a focused benchmark result; the next retained
+request-context run must prove the wall-clock effect before treating it as a
+parity milestone.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but
