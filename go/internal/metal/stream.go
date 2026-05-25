@@ -263,6 +263,10 @@ func ClearCache() {
 	if !MetalAvailable() {
 		return
 	}
+	clearCacheNoCheck()
+}
+
+func clearCacheNoCheck() {
 	C.mlx_clear_cache()
 }
 

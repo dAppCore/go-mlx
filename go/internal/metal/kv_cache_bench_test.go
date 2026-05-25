@@ -57,6 +57,13 @@ func makeMultiTokenKVShape(B, H, L, D int32) (*Array, *Array) {
 	return k, v
 }
 
+func clearMetalCacheAfterBenchIteration(b *testing.B) {
+	b.Helper()
+	b.StopTimer()
+	clearCacheNoCheck()
+	b.StartTimer()
+}
+
 // --- KVCache (unbounded) ---
 
 func BenchmarkKVCache_Append_SingleToken_FromEmpty(b *testing.B) {
@@ -349,6 +356,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize256_To128(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -367,6 +375,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PageSize64_To512(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -387,6 +396,7 @@ func BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage(b *testing.B) {
 			b.Fatalf("Eval dirty compacted state: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -406,6 +416,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOn(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -425,6 +436,7 @@ func BenchmarkPagedKVCache_Append_SingleToken_PreallocOff(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -445,6 +457,7 @@ func BenchmarkPagedKVCache_Append_4096Tokens_PageSize256_Prealloc(b *testing.B) 
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -462,6 +475,7 @@ func BenchmarkPagedKVCache_Append_BoundedTo1024_PastCap(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 
@@ -481,6 +495,7 @@ func BenchmarkPagedKVCache_UpdateBorrowedPages_To128(b *testing.B) {
 			b.Fatalf("Eval: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
 

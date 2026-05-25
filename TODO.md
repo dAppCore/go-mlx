@@ -393,6 +393,11 @@ prefill path. The compatibility helper that returns a slice still records
 `153.6 ns/op`, `416 B/op`, and `1 alloc/op` for a 26-cache Gemma 4 fan-out,
 while the stack-fed collector records `109.1 ns/op`, `0 B/op`, and
 `0 allocs/op`. This is prefill/state plumbing hygiene, not decode parity.
+Paged-cache benchmarks now clear MLX allocator cache pressure between heavy
+iterations via the raw cache-clear helper, outside the timed section. This is a
+benchmark harness safety fix after broad paged-cache sweeps caused excessive
+active/cache memory during measurement; it does not change runtime generation
+behaviour or promote prealloc/native-paged gates.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

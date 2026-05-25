@@ -33,5 +33,6 @@ func benchmarkPagedKVCacheAppendSingleTokenPage(b *testing.B, prealloc string, t
 			b.Fatalf("Eval cache state: %v", err)
 		}
 		cache.Reset()
+		clearMetalCacheAfterBenchIteration(b)
 	}
 }
