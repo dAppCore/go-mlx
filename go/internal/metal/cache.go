@@ -7,7 +7,9 @@ package metal
 import core "dappco.re/go"
 
 const (
-	defaultPagedKVPageSize = 1024
+	// 2048 halves global page count on opencode-sized retained Gemma 4 turns
+	// while local sliding caches still cap to their 512-token window.
+	defaultPagedKVPageSize = 2048
 )
 
 var enablePagedKVPrealloc = core.Env("GO_MLX_ENABLE_PAGED_KV_PREALLOC") == "1"

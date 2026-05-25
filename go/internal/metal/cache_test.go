@@ -418,11 +418,11 @@ func TestPagedKVCache_DefaultPageSizeDoesNotUseContextCutoff_Good(t *testing.T) 
 	retained := NewPagedKVCache(131072, 0)
 	sliding := NewPagedKVCache(512, 0)
 
-	if normal.pageSize != defaultPagedKVPageSize {
-		t.Fatalf("normal pageSize = %d, want %d", normal.pageSize, defaultPagedKVPageSize)
+	if normal.pageSize != 2048 {
+		t.Fatalf("normal pageSize = %d, want 2048", normal.pageSize)
 	}
-	if retained.pageSize != defaultPagedKVPageSize {
-		t.Fatalf("retained pageSize = %d, want %d", retained.pageSize, defaultPagedKVPageSize)
+	if retained.pageSize != 2048 {
+		t.Fatalf("retained pageSize = %d, want 2048", retained.pageSize)
 	}
 	if sliding.pageSize != 512 {
 		t.Fatalf("sliding pageSize = %d, want capped max size 512", sliding.pageSize)

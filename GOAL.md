@@ -759,6 +759,29 @@ the raw decode/materialisation gap visible in go-mlx
 `prefetch_logits=6.839ms/token`, `sample_eval=3.239ms/token`, and
 `forward=1.613ms/token`.
 
+Promoted paged K/V page geometry, 2026-05-25: the current retained
+request-context path now defaults paged K/V blocks to `2048` tokens while local
+Gemma 4 sliding-window layers still cap at their `512`-token window. The full
+same-shape retained row
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-page2048-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+keeps the same output shape as the fused-suppression baseline (`10/10`,
+`48896` final live tokens, `14400` appended tokens, `4476` generated/visible
+tokens), drops wall from `73.261458999s` to `72.438651539s`, improves raw
+decode from `85.01050148275976` to `86.29148713681721 tok/s`, improves
+effective turn throughput from `73.3508898684956` to `74.3326950892093 tok/s`,
+and saves `82.280746 J` at `100 W`. RSS is slightly lower (`3.388 GB` versus
+`3.409 GB`) while virtual reservation rises by about `16.84 GB`, so this is a
+retained-workflow speed/default cleanup rather than a memory-only win. The
+no-env default check
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-default-page2048-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+confirms the binary uses the `2048` code default without emitting
+`GO_MLX_PAGED_KV_PAGE_SIZE`; native events report `17` max pages and
+`local_window_leaked=false`. The older archived 100k page-geometry rejection
+remains useful historical evidence for the former path, but it does not veto
+this current request-context default. The remaining raw-decode gap is still the
+global owner attention materialisation/sampler-eval boundary, not a fixed cache
+or context-cutoff problem.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated

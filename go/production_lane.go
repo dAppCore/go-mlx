@@ -27,7 +27,7 @@ const (
 	ProductionLaneLongContextPromptChunkBytes = 4096
 	// ProductionLanePagedKVPageSize is the accepted paged K/V block size for
 	// retained-state runs. It is a storage-layout default, not a context cutoff.
-	ProductionLanePagedKVPageSize = 1024
+	ProductionLanePagedKVPageSize = 2048
 	// ProductionLaneRetainedKVCacheDType is the accepted K/V storage dtype for
 	// retained-state Gemma 4 runs.
 	ProductionLaneRetainedKVCacheDType = "fp16"
