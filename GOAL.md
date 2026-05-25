@@ -630,6 +630,31 @@ and `70.031s`. Keep the code for the sharply lower local-window allocation
 surface and simpler state mutation, but do not count it as closing the
 llama.cpp raw decode gap.
 
+Compiled sampler cleanup, 2026-05-25: the default top-k/top-p sampler now uses a
+per-generation compiled MLX closure for the bounded-candidate sampling graph and
+`CompiledFunc.CallOne` for the one-input/one-output call shape. This avoids a
+global compiled-closure mutex that would serialize parallel agents while still
+removing the per-token variadic/output-slice allocation from the compiled call
+path. The focused sampler bench moved the production `top_k=64`, `top_p=0.95`
+shape into the compiled/CallOne band: `BenchmarkSampler_TopKThenTopP_Vocab262k`
+records repeated rows around `462-492us/op`, `8 B/op`, and `1 alloc/op`, and
+`BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k` records about
+`466-485us/op`, `10 B/op`, and `1 alloc/op`, versus the previous uncompiled
+rows in the `478-519us/op`, `24 B/op`, `3 alloc/op` band and suppressed rows
+around `528-530us/op`, `26-27 B/op`, `3 alloc/op`. The retained request-context
+proof
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-compiled-sampler-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+keeps the production invariants (`fixed_caches=0`, `paged_caches=15`,
+`max_local_capacity=512`, `max_global_capacity=131072`,
+`local_window_leaked=false`) and records `87.483` raw decode tok/s plus
+`75.257` effective turn tok/s over `10/10` turns. Against the previous
+local-window cleanup row this is a `+1.063%` raw decode improvement and
+`+1.506%` effective-throughput improvement, but not a wall-time win: the same
+seed generated `4476` visible tokens instead of `4292`, so total wall rose to
+`71.727s`. Keep this as a default sampler/runtime cleanup, not as production
+completion or as a replacement for the remaining llama.cpp raw-decode parity
+work.
+
 Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
 `BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
 page-reduction path against the accepted fast-concat lane. With float32 pages,

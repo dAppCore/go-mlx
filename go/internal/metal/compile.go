@@ -78,6 +78,39 @@ func (cf *CompiledFunc) Call(inputs ...*Array) []*Array {
 	return vectorToArrays(outVec)
 }
 
+// CallOne executes a one-input compiled function that returns one array.
+// It avoids the variadic input slice and output []*Array allocation in Call,
+// which matters for per-token compiled decode helpers.
+func (cf *CompiledFunc) CallOne(input *Array) *Array {
+	cf.mu.Lock()
+	defer cf.mu.Unlock()
+	if !cf.Valid() {
+		panic(core.NewError("mlx.CompiledFunc.CallOne: invalid compiled closure"))
+	}
+
+	inputVec := C.mlx_vector_array_new()
+	defer C.mlx_vector_array_free(inputVec)
+	if input != nil && input.Valid() {
+		C.mlx_vector_array_append_value(inputVec, input.ctx)
+	}
+
+	outVec := C.mlx_vector_array_new()
+	defer C.mlx_vector_array_free(outVec)
+	rc := C.mlx_closure_apply(&outVec, cf.cls, inputVec)
+	if rc != 0 {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic(core.E("mlx.CompiledFunc.CallOne", core.Sprintf("closure apply failed (rc=%d)", rc), nil))
+	}
+	if n := int(C.mlx_vector_array_size(outVec)); n != 1 {
+		panic(core.E("mlx.CompiledFunc.CallOne", core.Sprintf("closure returned %d outputs, want 1", n), nil))
+	}
+	out := newArray("VEC_OUT")
+	C.mlx_vector_array_get(&out.ctx, outVec, C.size_t(0))
+	return out
+}
+
 // Valid reports whether the compiled closure still owns a native handle.
 func (cf *CompiledFunc) Valid() bool {
 	return cf != nil && cf.cls.ctx != nil

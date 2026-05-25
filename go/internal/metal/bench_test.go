@@ -420,6 +420,26 @@ func BenchmarkSampler_CompiledTopKThenTopP_Vocab262k(b *testing.B) {
 	}
 }
 
+func BenchmarkSampler_CompiledTopKThenTopPCallOne_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	compiled := CompileShapeless(func(inputs []*Array) []*Array {
+		return []*Array{sampleTopKTopPToken(inputs[0], 64, 0.95)}
+	}, false)
+	defer compiled.Free()
+	b.ResetTimer()
+	for b.Loop() {
+		tok := compiled.CallOne(logits)
+		if err := Eval(tok); err != nil {
+			Free(tok)
+			b.Fatalf("Eval(compiled sample): %v", err)
+		}
+		Free(tok)
+	}
+}
+
 // BenchmarkSampler_MinP01_Temp1 isolates min-p path which uses Softmax + MaxAxis
 // + MulScalar + Greater(scalar) + Where.  Targets W11-R inline-Greater opportunity.
 func BenchmarkSampler_MinP01_Temp1(b *testing.B) {

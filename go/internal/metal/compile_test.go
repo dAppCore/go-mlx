@@ -84,6 +84,34 @@ func TestCompile_CompiledFunc_Call_Good(t *testing.T) {
 	floatSliceApprox(t, y.Floats(), []float32{1, 2})
 }
 
+func TestCompile_CompiledFunc_CallOne_Good(t *testing.T) {
+	coverageTokens := "CompiledFunc CallOne"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	target := "CompiledFunc_CallOne"
+	variant := "Good"
+	if target == "" {
+		t.Fatalf("missing compliance target for %s", t.Name())
+	}
+	if variant != "Good" {
+		t.Fatalf("variant mismatch for %s", target)
+	}
+
+	x := FromValues([]float32{2, 4}, 2)
+	defer Free(x)
+	compiled := CompileShapeless(func(inputs []*Array) []*Array {
+		return []*Array{MulScalar(inputs[0], 0.25)}
+	}, false)
+	defer compiled.Free()
+	y := compiled.CallOne(x)
+	defer Free(y)
+	if err := Eval(y); err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	floatSliceApprox(t, y.Floats(), []float32{0.5, 1})
+}
+
 func TestCompile_GELUGateMul_Good(t *testing.T) {
 	gate := FromValues([]float32{0, 1}, 2)
 	up := FromValues([]float32{2, 3}, 2)

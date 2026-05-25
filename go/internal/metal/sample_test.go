@@ -371,7 +371,7 @@ func TestSample_NewSamplerWithSuppressionBeforeTopPTopK_Good(t *testing.T) {
 	}
 	s := newSamplerWithSuppression(1.0, 0.95, 0, 3, []int32{0})
 	defer closeSampler(s)
-	c, ok := s.(topKTopPChain)
+	c, ok := s.(*topKTopPChain)
 	if !ok {
 		t.Fatalf("newSamplerWithSuppression returned %T, want topKTopPChain", s)
 	}
@@ -395,7 +395,7 @@ func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
 		t.Fatalf("missing coverage tokens for %s", t.Name())
 	}
 	s := newSampler(1.0, 0.95, 0, 64)
-	c, ok := s.(topKTopPChain)
+	c, ok := s.(*topKTopPChain)
 	if !ok {
 		t.Fatalf("newSampler returned %T, want topKTopPChain", s)
 	}

@@ -66,7 +66,7 @@ func newSamplerWithSuppression(temp, topP, minP float32, topK int, suppressToken
 		samplers = append(samplers, &SuppressTokensSampler{tokens: append([]int32(nil), suppressTokens...)})
 	}
 	if topK > 0 && topP > 0 && topP < 1 && minP <= 0 {
-		return topKTopPChain{
+		return &topKTopPChain{
 			prefix: chain(samplers),
 			topK:   topK,
 			topP:   topP,
@@ -168,12 +168,20 @@ func (c chain) Close() {
 // candidates. That avoids sorting the full 256k-token Gemma vocabulary for
 // every sampled token when top_k is already small.
 type topKTopPChain struct {
-	prefix chain
-	topK   int
-	topP   float32
+	prefix   chain
+	topK     int
+	topP     float32
+	mu       sync.Mutex
+	compiled *CompiledFunc
 }
 
-func (c topKTopPChain) Sample(logits *Array) *Array {
+func (c *topKTopPChain) Sample(logits *Array) *Array {
+	if c == nil {
+		if logits == nil {
+			return nil
+		}
+		return RandomCategorical(logits)
+	}
 	curr := logits
 	for _, s := range c.prefix {
 		next := s.Sample(curr)
@@ -182,15 +190,24 @@ func (c topKTopPChain) Sample(logits *Array) *Array {
 		}
 		curr = next
 	}
-	token := sampleTopKTopPToken(curr, c.topK, c.topP)
+	token := c.sampleTopKTopPToken(curr)
 	if curr != logits {
 		Free(curr)
 	}
 	return token
 }
 
-func (c topKTopPChain) Close() {
+func (c *topKTopPChain) Close() {
+	if c == nil {
+		return
+	}
 	closeSampler(c.prefix)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.compiled != nil {
+		c.compiled.Free()
+		c.compiled = nil
+	}
 }
 
 func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
@@ -216,6 +233,30 @@ func sampleTopKTopPToken(logits *Array, topK int, topP float32) *Array {
 	globalToken := Reshape1(globalToken2D, 1)
 	Free(topIndices, topLogits, filtered, localToken, localTokenExpanded, globalToken2D)
 	return globalToken
+}
+
+func (c *topKTopPChain) sampleTopKTopPToken(logits *Array) *Array {
+	lastDim := logits.Dim(logits.NumDims() - 1)
+	if lastDim <= 0 || c.topK <= 0 || c.topK >= lastDim {
+		return sampleTopKTopPToken(logits, c.topK, c.topP)
+	}
+	compiled := c.compiledSampler()
+	if compiled == nil || !compiled.Valid() {
+		return sampleTopKTopPToken(logits, c.topK, c.topP)
+	}
+	return compiled.CallOne(logits)
+}
+
+func (c *topKTopPChain) compiledSampler() *CompiledFunc {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.compiled != nil && c.compiled.Valid() {
+		return c.compiled
+	}
+	c.compiled = CompileShapeless(func(inputs []*Array) []*Array {
+		return []*Array{sampleTopKTopPToken(inputs[0], c.topK, c.topP)}
+	}, false)
+	return c.compiled
 }
 
 // greedy returns the argmax token (deterministic, no sampling).
