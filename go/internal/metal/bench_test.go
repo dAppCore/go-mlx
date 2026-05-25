@@ -432,6 +432,132 @@ func BenchmarkSampler_TopKThenTopPWithSuppression_Vocab262k(b *testing.B) {
 	}
 }
 
+func BenchmarkSampler_PrefetchLogitsThenSampleEval_WithSuppression_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	base := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	zero := Zeros([]int32{1, 262208}, DTypeFloat32)
+	defer Free(base, zero)
+	Materialize(base, zero)
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer closeSampler(s)
+	b.ResetTimer()
+	for b.Loop() {
+		logits := Add(base, zero)
+		if err := EvalAsync(logits); err != nil {
+			Free(logits)
+			b.Fatalf("EvalAsync(logits): %v", err)
+		}
+		tok := s.Sample(logits)
+		if err := Eval(tok); err != nil {
+			Free(logits, tok)
+			b.Fatalf("Eval(sample): %v", err)
+		}
+		_ = tok.Int()
+		Detach(logits, tok)
+		Free(logits, tok)
+	}
+}
+
+func BenchmarkSampler_CombinedLogitsSampleEval_WithSuppression_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	base := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	zero := Zeros([]int32{1, 262208}, DTypeFloat32)
+	defer Free(base, zero)
+	Materialize(base, zero)
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer closeSampler(s)
+	b.ResetTimer()
+	for b.Loop() {
+		logits := Add(base, zero)
+		tok := s.Sample(logits)
+		if err := EvalAsync(logits, tok); err != nil {
+			Free(logits, tok)
+			b.Fatalf("EvalAsync(logits, sample): %v", err)
+		}
+		_ = tok.Int()
+		Detach(logits, tok)
+		Free(logits, tok)
+	}
+}
+
+func BenchmarkSampler_PrefetchLogitsDirtyThenSampleEval_WithSuppression_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	base := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	zero := Zeros([]int32{1, 262208}, DTypeFloat32)
+	defer Free(base, zero)
+	Materialize(base, zero)
+	cache := NewPagedKVCache(0, 256)
+	defer cache.Reset()
+	k, v := makeSingleTokenKVShape(1, 2, 16)
+	defer Free(k, v)
+	state := cache.UpdateBorrowedPages(k, v, 1)
+	state.Free()
+	if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+		b.Fatalf("Eval dirty state: %v", err)
+	}
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer closeSampler(s)
+	var stack [8]*Array
+	b.ResetTimer()
+	for b.Loop() {
+		logits := Add(base, zero)
+		eval := stack[:0]
+		eval = append(eval, logits)
+		eval = appendCacheDirtyState(eval, cache)
+		if err := EvalAsync(eval...); err != nil {
+			Free(logits)
+			b.Fatalf("EvalAsync(logits, dirty): %v", err)
+		}
+		tok := s.Sample(logits)
+		if err := Eval(tok); err != nil {
+			Free(logits, tok)
+			b.Fatalf("Eval(sample): %v", err)
+		}
+		_ = tok.Int()
+		Detach(logits, tok)
+		Free(logits, tok)
+	}
+}
+
+func BenchmarkSampler_CombinedLogitsSampleDirtyEval_WithSuppression_Vocab262k(b *testing.B) {
+	b.ReportAllocs()
+	base := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	zero := Zeros([]int32{1, 262208}, DTypeFloat32)
+	defer Free(base, zero)
+	Materialize(base, zero)
+	cache := NewPagedKVCache(0, 256)
+	defer cache.Reset()
+	k, v := makeSingleTokenKVShape(1, 2, 16)
+	defer Free(k, v)
+	state := cache.UpdateBorrowedPages(k, v, 1)
+	state.Free()
+	if err := Eval(cache.AppendDirtyState(nil)...); err != nil {
+		b.Fatalf("Eval dirty state: %v", err)
+	}
+	suppress := []int32{0, 2, 3, 4, 46, 47, 48, 49, 51, 52, 98, 100, 101, 105, 255999, 256000, 258880, 258881, 258882, 258883, 258884}
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 64, suppress)
+	defer closeSampler(s)
+	var stack [8]*Array
+	b.ResetTimer()
+	for b.Loop() {
+		logits := Add(base, zero)
+		tok := s.Sample(logits)
+		eval := stack[:0]
+		eval = append(eval, logits, tok)
+		eval = appendCacheDirtyState(eval, cache)
+		if err := EvalAsync(eval...); err != nil {
+			Free(logits, tok)
+			b.Fatalf("EvalAsync(logits, sample, dirty): %v", err)
+		}
+		_ = tok.Int()
+		Detach(logits, tok)
+		Free(logits, tok)
+	}
+}
+
 func BenchmarkSampler_CompiledTopKThenTopP_Vocab262k(b *testing.B) {
 	b.ReportAllocs()
 	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)

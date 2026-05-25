@@ -240,6 +240,11 @@ The scalar sampled-token sync variant is also rejected for production: a direct
 the matched two-turn retained trace regressed from `91.024` raw tok/s to
 `89.175` raw tok/s and from `81.968` effective tok/s to `80.465`. Keep the
 benchmark probe; keep production on explicit sampled-token eval.
+The guarded combined sample/logits eval boundary is now benchmarked too. It
+only moved the suppressed Gemma-sized row from `516.277us` to `511.315us`, and
+the retained-shaped logits+dirty-K/V row from `517.691us` to `515.825us`. That
+is useful attribution but too small to justify a second runtime lookahead probe
+after the previous retained failure.
 That harness now exists as `TestSample_PrefetchTokenEvalParity_Good`: it proves
 normal guarded sampling and combined `EvalAsync(logits, sampled_token)`
 materialisation return the same first token under the same seed. Future

@@ -966,6 +966,24 @@ duration from `10.967ms/token` to `11.194ms/token` and prefetch from
 do not replace explicit sampled-token eval with scalar-read synchronisation in
 the production retained path.
 
+Sample/logits eval-boundary benchmark, 2026-05-25: the next safe lookahead
+shape was measured as a benchmark-only probe before touching the retained
+runtime loop. `BenchmarkSampler_PrefetchLogitsThenSampleEval_WithSuppression_Vocab262k`
+models the current boundary of prefetching logits first, then evaluating the
+sampled token; `BenchmarkSampler_CombinedLogitsSampleEval_WithSuppression_Vocab262k`
+models building the sampled token before the eval boundary and prefetching
+logits plus sampled token together. On Apple M3 Ultra these rows were
+`516277 ns/op`, `18 B/op`, `2 allocs/op` versus `511315 ns/op`, `17 B/op`,
+`2 allocs/op`. Adding a dirty paged K/V cache to match the retained production
+prefetch boundary gives
+`BenchmarkSampler_PrefetchLogitsDirtyThenSampleEval_WithSuppression_Vocab262k`
+at `517691 ns/op`, `17 B/op`, `2 allocs/op` versus
+`BenchmarkSampler_CombinedLogitsSampleDirtyEval_WithSuppression_Vocab262k` at
+`515825 ns/op`, `18 B/op`, `2 allocs/op`. This is too small to justify another
+runtime lookahead attempt after the previous retained trace failure; keep the
+benchmark rows as boundary evidence and leave production on logits-only
+prefetch plus explicit sampled-token eval.
+
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building
 frequency state inside the decode path. A correctness guard now proves
