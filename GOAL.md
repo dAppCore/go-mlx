@@ -807,6 +807,25 @@ generated/visible tokens, but regresses to `26.517627915s` wall,
 not the next retained-decode fix even though the native concat micro-event gets
 shorter.
 
+Rejected flat-logits handle clone, 2026-05-25: replacing the normal
+single-token `[1,vocab]` `lastTokenLogits` no-op `Reshape2` with a retained
+handle clone looked attractive in isolation, and the new focused bench
+`BenchmarkDecodeLoop_LastTokenLogitsAlreadyFlat_Vocab262k` records the flat
+case explicitly. The real retained workflow rejected the runtime change. The
+matched trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-flat-lastlogits-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+keeps the same `2/2` turns, `33825` final live tokens, and `1166`
+generated/visible tokens as the default 2048-token page row, but regresses wall
+from `26.430020416s` to `26.808138414s`, raw decode from
+`91.0239815475048` to `88.68742375156263 tok/s`, and effective throughput
+from `81.96795883694631` to `80.03241840637767 tok/s`. The phase split shows
+why this cannot be promoted: `sample_eval` improves slightly
+(`3.291352ms/token` to `3.260448ms/token`), but `prefetch` worsens
+(`6.219972ms/token` to `6.331789ms/token`), `forward` worsens
+(`1.440422ms/token` to `1.618338ms/token`), and the native global concat event
+average rises from `4047ns` to `5908ns`. Keep the existing `Reshape2` path;
+the benchmark remains only to make this tempting flat-logits shape measurable.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated

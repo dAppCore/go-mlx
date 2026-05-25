@@ -187,6 +187,24 @@ func BenchmarkDecodeLoop_LastTokenLogitsSingleStep_FastReshape_Vocab262k(b *test
 	}
 }
 
+func BenchmarkDecodeLoop_LastTokenLogitsAlreadyFlat_Vocab262k(b *testing.B) {
+	logits := RandomUniform(-5, 5, []int32{1, 262208}, DTypeFloat32)
+	defer Free(logits)
+	Materialize(logits)
+	b.ReportAllocs()
+	for b.Loop() {
+		last, err := lastTokenLogits(logits)
+		if err != nil {
+			b.Fatalf("lastTokenLogits: %v", err)
+		}
+		if err := Eval(last); err != nil {
+			Free(last)
+			b.Fatalf("Eval(last): %v", err)
+		}
+		Free(last)
+	}
+}
+
 func BenchmarkDecodeLoop_LastTokenLogitsSingleStep_LegacySlice_Vocab262k(b *testing.B) {
 	logits := RandomUniform(-5, 5, []int32{1, 1, 262208}, DTypeFloat32)
 	defer Free(logits)
