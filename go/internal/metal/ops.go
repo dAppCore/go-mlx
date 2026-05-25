@@ -721,13 +721,11 @@ func Concatenate(arrays []*Array, axis int) *Array {
 	vector := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(vector)
 
-	inputs := make([]*Array, len(arrays))
-	for i, a := range arrays {
+	for _, a := range arrays {
 		C.mlx_vector_array_append_value(vector, a.ctx)
-		inputs[i] = a
 	}
 
-	out := newArray("CONCAT", inputs...)
+	out := newArray("CONCAT")
 	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
 	return out
 }
@@ -739,7 +737,7 @@ func concatenate2(left, right *Array, axis int) *Array {
 	C.mlx_vector_array_append_value(vector, left.ctx)
 	C.mlx_vector_array_append_value(vector, right.ctx)
 
-	out := newArray("CONCAT", left, right)
+	out := newArray("CONCAT")
 	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
 	return out
 }

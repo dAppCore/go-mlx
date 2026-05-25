@@ -285,6 +285,16 @@ a small native-handle cleanup only: `prefetch` moves from `6.093` to
 `3.413 ms/token`, so it is not a decode-parity claim. The next useful target
 remains fused logits/materialisation or sampler/eval boundary work.
 
+Concat parent-slice cleanup, 2026-05-25: `Concatenate` no longer builds a Go
+`inputs` slice for `newArray`, because `newArray` no longer stores parent
+references and MLX owns the graph edges through the native op handles. Focused
+Metal benches moved `BenchmarkPromptCache_KVConcat_16Pages_256Each` from
+`128 B/op` and `1 alloc/op` to `0 B/op` and `0 allocs/op`; the paged
+fast-concat K+V benches moved from `2 allocs/op` (`128 B/op` at 8 pages and
+`256 B/op` at 16 pages) to `0 B/op` and `0 allocs/op`. The timing stayed within
+run noise, so this is a retained hot-path allocation cleanup, not a claim that
+the owner-layer full-attention materialisation gap is closed.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but

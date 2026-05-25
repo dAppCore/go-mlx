@@ -262,6 +262,14 @@ The zero-empty-handle SDPA cleanup is also recorded in `GOAL.md`. It removes
 per-attention empty native handle allocation for absent masks/sinks, but the
 matched production-shaped trace is neutral (`91.599` raw tok/s versus
 `91.608` before), so it is a cleanup rather than a parity milestone.
+The concat parent-slice cleanup follows the same pattern: `Concatenate` no
+longer allocates a Go `inputs` slice for `newArray`, because `newArray` no
+longer stores parent references. Focused Metal benches moved
+`BenchmarkPromptCache_KVConcat_16Pages_256Each` from `128 B/op` and
+`1 alloc/op` to `0 B/op` and `0 allocs/op`; paged fast-concat K+V moved from
+`2 allocs/op` (`128 B/op` at 8 pages, `256 B/op` at 16 pages) to `0 allocs/op`.
+This is retained as a hot-path allocation cleanup, not as evidence that the
+owner-layer attention materialisation gap is closed.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the
