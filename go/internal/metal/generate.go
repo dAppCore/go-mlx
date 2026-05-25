@@ -903,9 +903,7 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 				return
 			}
 
-			vNextInput := fromSingleInt32(id)
-			nextInput := Reshape2(vNextInput, 1, 1)
-			Free(vNextInput)
+			nextInput := fromSingleInt32Matrix(id)
 			if tracePhases {
 				phase.NextInputDuration = time.Since(phaseLast)
 				phaseLast = time.Now()

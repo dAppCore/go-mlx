@@ -552,11 +552,10 @@ func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEn
 		default:
 		}
 
-		vInput := fromSingleInt32(id)
-		input := Reshape2(vInput, 1, 1)
+		input := fromSingleInt32Matrix(id)
 		oldLogits := logits
 		nextLogits := m.model.Forward(input, caches)
-		Free(vInput, input, oldLogits)
+		Free(input, oldLogits)
 		logits, err = materializeLastTokenLogits(nextLogits)
 		if err != nil {
 			freeCaches(caches)

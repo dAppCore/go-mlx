@@ -150,11 +150,10 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 		}
 	}()
 
-	tokenValue := fromSingleInt32(lastToken)
-	tokenInput := Reshape2(tokenValue, 1, 1)
+	tokenInput := fromSingleInt32Matrix(lastToken)
 	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
 	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
-	Free(tokenValue, tokenInput, tokenEmbedding)
+	Free(tokenInput, tokenEmbedding)
 
 	backboneHidden, ownBackboneHidden, err := gemma4AssistantBackboneHidden(previousHidden, pair.Assistant.BackboneHiddenSize)
 	if err != nil {
@@ -305,10 +304,9 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftToke
 		}
 
 		result.AcceptedTokens = append(result.AcceptedTokens, draftToken)
-		tokenArray := fromSingleInt32(draftToken)
-		tokenInput := Reshape2(tokenArray, 1, 1)
+		tokenInput := fromSingleInt32Matrix(draftToken)
 		nextLogits, nextHidden := pair.Target.ForwardLastTokenLogitsAndHidden(tokenInput, nil, verifyCaches)
-		Free(tokenArray, tokenInput)
+		Free(tokenInput)
 		if err := Eval(nextLogits, nextHidden); err != nil {
 			result.Close()
 			Free(nextLogits, nextHidden)

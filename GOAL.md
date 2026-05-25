@@ -392,6 +392,23 @@ bench remains allocation-stable while nudging
 graph-construction hygiene on the accepted paged State path, not raw-decode
 parity closure.
 
+Decode continuation input cleanup, 2026-05-25: single-token continuation paths
+now construct the `[1,1]` int32 input array directly with a C-inline
+`fromSingleInt32Matrix` helper instead of building a rank-1 token array and
+reshaping it. This removes one reshape graph node from `Model.Generate`,
+retained `ModelSession.Generate`, exact prompt-cache replay, split continuation,
+and Gemma 4 assistant draft/verify continuation without changing K/V policy,
+sampler ordering, or paged-State semantics. Focused verification:
+`go test ./go/internal/metal -run
+'TestArray_FromSingleInt32Matrix_Good|TestModel_Generate_TraceTokenPhases_Good|TestModelSession_Generate_TraceTokenPhases_Good'
+-count=1` and `go test ./go/internal/metal -run
+'TestPromptCache_(MatchesExactNoLogitsByReplayingFinalToken_Good|RestoreFromKVBlocksZeroCopyPagedRestore_Good)|TestGemma4AssistantDecode_(DraftStep_Good|VerifyDraftBlock_Good)|TestGemma4AssistantGenerate_ReplaysLastTokenForKVOnlyPromptCache_Good|TestSplit_Qwen3SplitPrefillAndAttention_Good'
+-count=1`. Hot-path check:
+`BenchmarkFromSingleInt32_Reshape2_1x1` reports about `745-760 ns/op`,
+`8 B/op`, and `1 alloc/op`; `BenchmarkFromSingleInt32Matrix` reports about
+`310-319 ns/op`, `0 B/op`, and `0 allocs/op`. This is a contained handover-safe
+decode-construction cleanup, not a new external-runner parity row.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but

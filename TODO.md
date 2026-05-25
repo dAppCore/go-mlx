@@ -339,6 +339,14 @@ old variadic helper on per-token updates. Focused tests pass, and
 `BenchmarkPagedKVCache_UpdateBorrowedPages_To128` is allocation-stable while
 moving from the sweep's `1129903 ns/op` to repeated rows around
 `1072846-1077538 ns/op`. This is small paged-State hygiene, not a parity close.
+Decode continuation inputs now use a direct rank-2 int32 constructor instead of
+`fromSingleInt32` followed by `Reshape2(..., 1, 1)`. This removes the
+per-token reshape graph node from `Model.Generate`, retained
+`ModelSession.Generate`, prompt-cache exact replay, split continuation, and the
+Gemma 4 assistant continuation paths. Focused shape/continuation tests pass; the
+matched constructor microbench moves from about `745-760 ns/op`, `8 B/op`, and
+`1 alloc/op` to about `310-319 ns/op`, `0 B/op`, and `0 allocs/op`. This is a
+contained handover-safe cleanup, not a new runner-parity row.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

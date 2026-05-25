@@ -60,6 +60,11 @@ static inline mlx_array mlx_array_new_data_inline_ll(
     for (int i = 0; i < shape_num; ++i) shape_buf[i] = (int)shape_in[i];
     return mlx_array_new_data(data, shape_buf, shape_num, dtype);
 }
+
+static inline mlx_array mlx_array_new_i32_matrix_1x1(int32_t value, mlx_dtype dtype) {
+    int shape_buf[2] = {1, 1};
+    return mlx_array_new_data(&value, shape_buf, 2, dtype);
+}
 */
 import "C"
 
@@ -303,6 +308,21 @@ func fromSingleInt32(value int32) *Array {
 		panic("mlx: array data creation failed")
 	}
 	runtime.KeepAlive(value)
+	return tt
+}
+
+// fromSingleInt32Matrix fast-paths the decode continuation shape [1,1].
+// Creating the rank-2 array directly avoids a per-token reshape graph node.
+func fromSingleInt32Matrix(value int32) *Array {
+	Init()
+	tt := newArray("")
+	tt.ctx = C.mlx_array_new_i32_matrix_1x1(C.int32_t(value), C.mlx_dtype(DTypeInt32))
+	if tt.ctx.ctx == nil {
+		if err := lastError(); err != nil {
+			panic(err)
+		}
+		panic("mlx: array data creation failed")
+	}
 	return tt
 }
 

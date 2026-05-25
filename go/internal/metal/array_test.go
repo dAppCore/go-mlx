@@ -53,6 +53,29 @@ func TestArray_FromValue_Int_Good(t *testing.T) {
 	}
 }
 
+func TestArray_FromSingleInt32Matrix_Good(t *testing.T) {
+	coverageTokens := "Array fromSingleInt32Matrix"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	a := fromSingleInt32Matrix(42)
+	defer Free(a)
+	Materialize(a)
+
+	if a.Dtype() != DTypeInt32 {
+		t.Errorf("dtype = %v, want int32", a.Dtype())
+	}
+	if a.NumDims() != 2 {
+		t.Fatalf("ndim = %d, want 2", a.NumDims())
+	}
+	if a.Dim(0) != 1 || a.Dim(1) != 1 {
+		t.Fatalf("shape = %v, want [1 1]", a.Shape())
+	}
+	if a.Int() != 42 {
+		t.Errorf("value = %d, want 42", a.Int())
+	}
+}
+
 func TestArray_FromValue_Bool_Good(t *testing.T) {
 	a := FromValue(true)
 	Materialize(a)

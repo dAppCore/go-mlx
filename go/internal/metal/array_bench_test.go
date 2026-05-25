@@ -31,6 +31,23 @@ func BenchmarkFromSingleInt32(b *testing.B) {
 	}
 }
 
+func BenchmarkFromSingleInt32_Reshape2_1x1(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		array := fromSingleInt32(42)
+		matrix := Reshape2(array, 1, 1)
+		Free(array, matrix)
+	}
+}
+
+func BenchmarkFromSingleInt32Matrix(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		array := fromSingleInt32Matrix(42)
+		Free(array)
+	}
+}
+
 func BenchmarkFromValues_Int32_512(b *testing.B) {
 	values := make([]int32, 512)
 	for i := range values {
