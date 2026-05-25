@@ -1447,14 +1447,14 @@ func driverProfileRuntimeGateIgnoresAmbientEnv(name string) bool {
 }
 
 func driverProfileRuntimeGates() map[string]string {
-	gates := map[string]string{}
+	var gates map[string]string
 	for _, name := range driverProfileRuntimeGateNames() {
 		if value := driverProfileRuntimeGateValue(name); value != "" && value != "0" {
+			if gates == nil {
+				gates = make(map[string]string, len(mlx.DefaultGemma4FastRuntimeGates())+1)
+			}
 			gates[name] = value
 		}
-	}
-	if len(gates) == 0 {
-		return nil
 	}
 	return gates
 }
