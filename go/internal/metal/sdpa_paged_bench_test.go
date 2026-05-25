@@ -221,6 +221,14 @@ func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_Q1_D128(b *testing.B) {
 	benchmarkSDPAPagedFastConcat(b, 16, 1024, DTypeFloat32)
 }
 
+func BenchmarkSDPAPagedNative_8Pages_Page1024_Q1_D128(b *testing.B) {
+	benchmarkSDPAPagedNative(b, 8, 1024, DTypeFloat32)
+}
+
+func BenchmarkSDPAPagedNative_16Pages_Page1024_Q1_D128(b *testing.B) {
+	benchmarkSDPAPagedNative(b, 16, 1024, DTypeFloat32)
+}
+
 func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
 	benchmarkSDPAPagedDType(b, 8, 1024, DTypeFloat16)
 }
@@ -235,6 +243,14 @@ func BenchmarkSDPAPagedFastConcat_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
 
 func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_Q1_D128_F16(b *testing.B) {
 	benchmarkSDPAPagedFastConcat(b, 16, 1024, DTypeFloat16)
+}
+
+func BenchmarkSDPAPagedNative_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedNative(b, 8, 1024, DTypeFloat16)
+}
+
+func BenchmarkSDPAPagedNative_16Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedNative(b, 16, 1024, DTypeFloat16)
 }
 
 func benchmarkSDPAPagedDType(b *testing.B, pageCount int, pageSize int32, dtype DType) {
@@ -252,6 +268,44 @@ func benchmarkSDPAPagedDType(b *testing.B, pageCount int, pageSize int32, dtype 
 	b.ReportAllocs()
 	for b.Loop() {
 		y := ScaledDotProductAttentionPaged(q, keys, values, scale)
+		Materialize(y)
+		Free(y)
+	}
+	reportMLXBenchMemory(b)
+}
+
+func benchmarkSDPAPagedNative(b *testing.B, pageCount int, pageSize int32, dtype DType) {
+	const B, H, D int32 = 1, 8, 128
+	q := RandomUniform(0, 1, []int32{B, H, 1, D}, dtype)
+	keys, values := buildPagedKVWithDType(pageCount, B, H, pageSize, D, dtype)
+	defer Free(q)
+	defer Free(keys...)
+	defer Free(values...)
+	all := append([]*Array{q}, keys...)
+	all = append(all, values...)
+	Materialize(all...)
+
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	warm, ok, err := nativePagedSingleTokenAttention(q, keys, values, scale)
+	if err != nil {
+		b.Fatalf("nativePagedSingleTokenAttention warmup: %v", err)
+	}
+	if !ok {
+		b.Fatal("nativePagedSingleTokenAttention warmup did not accept input")
+	}
+	Materialize(warm)
+	Free(warm)
+
+	resetMLXBenchMemoryCounters()
+	b.ReportAllocs()
+	for b.Loop() {
+		y, ok, err := nativePagedSingleTokenAttention(q, keys, values, scale)
+		if err != nil {
+			b.Fatalf("nativePagedSingleTokenAttention: %v", err)
+		}
+		if !ok {
+			b.Fatal("nativePagedSingleTokenAttention did not accept input")
+		}
 		Materialize(y)
 		Free(y)
 	}

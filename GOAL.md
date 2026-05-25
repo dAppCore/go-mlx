@@ -583,6 +583,29 @@ the old page path and `2 allocs/op` on the concat wrapper. This confirms the
 current production choice is better than the old slow path for q4/fp16 retained
 State, while also confirming the finite next target: keep fast-concat-like
 runtime without paying the larger materialised active-cache footprint.
+Native paged-attention follow-up, 2026-05-25: warmed standalone native C++
+attention has the desired isolated shape but still rejects as a production
+graph path. The same bench family now records warmed native rows at `401042
+ns/op` for `8` float32 pages and `561197 ns/op` for `16`, both with
+`0 allocs/op` and without the fast-concat active-cache footprint. On the
+production retained `fp16` K/V shape, warmed native is also faster than
+fast-concat: `8` pages records `366340 ns/op` versus `407679 ns/op`, and `16`
+pages records `485718 ns/op` versus `610271 ns/op`, again at `0 allocs/op`.
+The real retained run rejects flipping the gate:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-native-paged-attn-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+sets `GO_MLX_ENABLE_NATIVE_PAGED_ATTENTION=1`, completes `2/2` turns, reaches
+`33963` live tokens, generates `1304` visible tokens, but falls to `53.200`
+raw decode tok/s and `50.277` effective turn tok/s over `38.162s`. The matched
+q4 graph-path trace generated `1069` visible tokens at `90.256` raw decode
+tok/s and `80.650` effective tok/s over `25.443s`. Token phases explain the
+rejection: native paged attention moves the retained path to `14.475ms/token`
+average `prefetch_logits` versus `6.169ms/token` on the accepted q4 graph row,
+while `forward` only moves from `1.470ms` to `1.787ms`. Interpretation: the
+C++ native paged-attention closure is useful evidence for the target memory
+shape, but using it as a separate compiled side graph breaks the larger lazy
+decode boundary. The next implementation must keep this memory shape inside the
+single-token model graph rather than replacing fast-concat with the current
+native gate.
 
 Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
 cannot cover this top-k/top-p sampler graph (`Slice cannot infer output
