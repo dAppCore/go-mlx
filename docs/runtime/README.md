@@ -13,11 +13,9 @@ The **load-and-call surface** of the package. How Metal gets registered with go-
 | File | Doc | Role |
 |------|-----|------|
 | `register_metal.go` | [register_metal.md](register_metal.md) | Backend registration + metaladapter + Metal allocator controls |
-| `production_lane.go` | [2026-05-16-gemma4-e2b-driver-profile.md](2026-05-16-gemma4-e2b-driver-profile.md) | Package-owned Gemma 4 E2B q4 production target and driver-profile shape |
+| `production_lane.go` | `GOAL.md` / `TODO.md` | Package-owned Gemma 4 production target and driver-profile shape |
 | `local_tuning.go` | [local_autotune.md](local_autotune.md) | Machine/model discovery + opt-in streamed autotune candidates |
-| runtime benchmark artefacts | [2026-05-16-gemma4-e2b-driver-profile.md](2026-05-16-gemma4-e2b-driver-profile.md) | Persisted discovery/profile commands, environment, blockers, and next native boundary |
-| native greedy rerun | [2026-05-16-gemma4-e2b-native-greedy-rerun.json](2026-05-16-gemma4-e2b-native-greedy-rerun.json) | Post-boundary profile rerun after the compiled greedy decode-tail and session path |
-| archived mlx-lm stderr | [2026-05-16-mlx-lm-gemma4-e2b-parity-attempt.txt](2026-05-16-mlx-lm-gemma4-e2b-parity-attempt.txt) | Historical runner stderr for the exact Gemma 4 E2B snapshot; not an active benchmark target |
+| runtime benchmark artefacts | `GOAL.md` / `/private/tmp/go-mlx-goal/reports` | Current measurements are summarised in the goal doc; fresh accepted artefacts should be regenerated after code stabilises |
 | `register_metal_cache.go` | (planned) | Mount `CacheService` onto metaladapter |
 | `register_metal_parser.go` | (planned) | Mount `ReasoningParser` + `ToolParser` onto metaladapter |
 | `register_metal_scheduler.go` | (planned) | Mount `SchedulerModel` + `CancellableModel` |
