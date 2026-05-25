@@ -743,6 +743,16 @@ token/RNG equivalence required before any future lookahead or fused sampler/eval
 boundary can be benchmarked in retained State. Verified with
 `GOCACHE=/private/tmp/codex-go-mlx-cache GO_MLX_RUN_METAL_TESTS=1 go test ./go/internal/metal -run 'TestSample_(PrefetchTokenEvalParity|NewSamplerWithSuppressionBeforeTopPTopK|NewSamplerSkipsUnitTemperature)'`
 and the same focused command without `GO_MLX_RUN_METAL_TESTS`.
+Retained-session follow-up guard, 2026-05-25:
+`TestModelSession_PrefetchTokenStateAdvanceParity_Good` now extends that check
+through the retained state-advance boundary. It compares normal two-token
+`ModelSession.Generate` against a manual path that samples the first token,
+calls `advanceTokenLocked`, then evaluates the next logits, next sampled token,
+and paged dirty K/V handles together before reading the second token. This
+proves the first retained-session state-advance shape needed for a future
+lookahead experiment, without enabling lookahead in production. Verified with
+`GOCACHE=/private/tmp/codex-go-mlx-cache GO_MLX_RUN_METAL_TESTS=1 go test ./go/internal/metal -run 'TestModelSession_(PrefetchTokenStateAdvanceParity|Generate_AsyncDecodePrefetch|Generate_TraceTokenPhases)|TestSample_PrefetchTokenEvalParity'`
+and the same focused command without `GO_MLX_RUN_METAL_TESTS`.
 
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building

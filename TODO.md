@@ -240,6 +240,12 @@ normal guarded sampling and combined `EvalAsync(logits, sampled_token)`
 materialisation return the same first token under the same seed. Future
 lookahead work must extend this guard to the retained-session state-advance
 boundary before running full request-context traces.
+`TestModelSession_PrefetchTokenStateAdvanceParity_Good` now covers that
+retained-session boundary with a paged cache: normal two-token generation must
+match a manual path that advances state and evaluates next logits, the next
+sampled token, and dirty K/V together. Future lookahead work can build on this
+guard, but still must prove the full retained request-context trace before it
+is considered for production.
 
 Trace timing now keeps the default `TraceTokenPhases` path on the same combined
 `EvalAsync(logits + dirty K/V)` boundary as production generation. The older

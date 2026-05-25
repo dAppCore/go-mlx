@@ -567,6 +567,198 @@ func TestModelSession_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	}
 }
 
+func TestModelSession_PrefetchTokenStateAdvanceParity_Good(t *testing.T) {
+	coverageTokens := "ModelSession PrefetchTokenStateAdvanceParity"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	const seed = 240524
+	suppress := []int32{0, 7}
+	direct := retainedStateAdvanceParityDirectIDs(t, seed, suppress)
+	prefetched := retainedStateAdvanceParityPrefetchedIDs(t, seed, suppress)
+	if len(prefetched) != len(direct) {
+		t.Fatalf("prefetched ids = %v, want %v", prefetched, direct)
+	}
+	for i := range direct {
+		if prefetched[i] != direct[i] {
+			t.Fatalf("prefetched ids = %v, want %v", prefetched, direct)
+		}
+	}
+}
+
+func retainedStateAdvanceParityDirectIDs(t *testing.T, seed uint64, suppress []int32) []int32 {
+	t.Helper()
+	inner := &stateAdvanceParityModel{}
+	model := &Model{model: inner, tokenizer: stateAdvanceParityTokenizer()}
+	session := stateAdvanceParitySession(model, inner)
+	defer func() {
+		session.resetState()
+		inner.resetOwned()
+	}()
+
+	var ids []int32
+	for token := range session.Generate(context.Background(), GenerateConfig{
+		MaxTokens:      2,
+		Temperature:    1,
+		TopP:           0.95,
+		TopK:           4,
+		Seed:           seed,
+		SeedSet:        true,
+		SuppressTokens: suppress,
+	}) {
+		ids = append(ids, token.ID)
+	}
+	if session.Err() != nil {
+		t.Fatalf("Generate() error = %v", session.Err())
+	}
+	if len(ids) != 2 {
+		t.Fatalf("generated ids = %v, want two retained-session tokens", ids)
+	}
+	return ids
+}
+
+func retainedStateAdvanceParityPrefetchedIDs(t *testing.T, seed uint64, suppress []int32) []int32 {
+	t.Helper()
+	inner := &stateAdvanceParityModel{}
+	model := &Model{model: inner, tokenizer: stateAdvanceParityTokenizer()}
+	session := stateAdvanceParitySession(model, inner)
+	defer func() {
+		session.resetState()
+		inner.resetOwned()
+	}()
+
+	if err := model.withDevice(func() {
+		if seedErr := SeedRandom(seed); seedErr != nil {
+			t.Fatalf("SeedRandom: %v", seedErr)
+		}
+	}); err != nil {
+		t.Fatalf("withDevice seed: %v", err)
+	}
+
+	var ids []int32
+	if err := model.withDevice(func() {
+		sampler := newSamplerWithSuppression(1, 0.95, 0, 4, suppress)
+		defer closeSampler(sampler)
+
+		lastPos, err := lastTokenLogits(session.logits)
+		if err != nil {
+			t.Fatalf("lastTokenLogits first: %v", err)
+		}
+		firstToken, firstID, _, err := sampleTokenIDWithSuppressionGuard(lastPos, sampler, suppress, false)
+		Free(lastPos)
+		if err != nil {
+			t.Fatalf("sample first token: %v", err)
+		}
+		Free(firstToken)
+		ids = append(ids, firstID)
+
+		detachEvalState(session.logits, session.caches)
+		if err := session.advanceTokenLocked(context.Background(), firstID, 0); err != nil {
+			t.Fatalf("advanceTokenLocked: %v", err)
+		}
+
+		lastPos, err = lastTokenLogits(session.logits)
+		if err != nil {
+			t.Fatalf("lastTokenLogits second: %v", err)
+		}
+		secondToken := sampler.Sample(lastPos)
+		Free(lastPos)
+		var stack [8]*Array
+		eval := stack[:0]
+		eval = append(eval, session.logits, secondToken)
+		for _, cache := range session.caches {
+			eval = appendCacheDirtyState(eval, cache)
+		}
+		if err := EvalAsync(eval...); err != nil {
+			Free(secondToken)
+			t.Fatalf("EvalAsync retained sampled token: %v", err)
+		}
+		secondID := int32(secondToken.Int())
+		Free(secondToken)
+		if tokenIDSuppressed(secondID, suppress) {
+			t.Fatalf("prefetched second token = %d, want unsuppressed token", secondID)
+		}
+		ids = append(ids, secondID)
+	}); err != nil {
+		t.Fatalf("withDevice parity: %v", err)
+	}
+	return ids
+}
+
+func stateAdvanceParitySession(model *Model, inner *stateAdvanceParityModel) *ModelSession {
+	return &ModelSession{
+		model:       model,
+		logits:      inner.logits(),
+		caches:      []Cache{NewPagedKVCache(0, 2)},
+		tokens:      []int32{42},
+		tokenOffset: 1,
+	}
+}
+
+func stateAdvanceParityTokenizer() *Tokenizer {
+	return &Tokenizer{invVocab: map[int32]string{
+		1: "a",
+		2: "b",
+		3: "c",
+		4: "d",
+		5: "e",
+		6: "f",
+	}}
+}
+
+type stateAdvanceParityModel struct {
+	forwardCalls int
+	owned        []*Array
+}
+
+func (m *stateAdvanceParityModel) Forward(tokens *Array, caches []Cache) *Array {
+	m.forwardCalls++
+	m.updatePagedCache(tokens, caches)
+	return m.logits()
+}
+
+func (m *stateAdvanceParityModel) ForwardMasked(tokens *Array, _ *Array, caches []Cache) *Array {
+	return m.Forward(tokens, caches)
+}
+
+func (m *stateAdvanceParityModel) NewCache() []Cache { return []Cache{NewPagedKVCache(0, 2)} }
+
+func (m *stateAdvanceParityModel) NumLayers() int { return 1 }
+
+func (m *stateAdvanceParityModel) Tokenizer() *Tokenizer { return nil }
+
+func (m *stateAdvanceParityModel) ModelType() string { return "state-advance-parity-test" }
+
+func (m *stateAdvanceParityModel) ApplyLoRA(_ LoRAConfig) *LoRAAdapter { return nil }
+
+func (m *stateAdvanceParityModel) logits() *Array {
+	base := FromValues([]float32{9.0, 3.4, 3.2, 3.0, 2.8, 2.6, 2.4, 9.0}, 1, 1, 8)
+	zero := Zeros([]int32{1, 1, 8}, DTypeFloat32)
+	m.owned = append(m.owned, base, zero)
+	return Add(base, zero)
+}
+
+func (m *stateAdvanceParityModel) updatePagedCache(tokens *Array, caches []Cache) {
+	if len(caches) == 0 || caches[0] == nil {
+		return
+	}
+	seqLen := 1
+	if tokens != nil && tokens.Valid() && tokens.NumDims() >= 2 {
+		seqLen = int(tokens.Dim(1))
+	}
+	k := Zeros([]int32{1, 1, int32(seqLen), 1}, DTypeFloat32)
+	v := Zeros([]int32{1, 1, int32(seqLen), 1}, DTypeFloat32)
+	fullK, fullV := caches[0].Update(k, v, seqLen)
+	Free(k, v, fullK, fullV)
+}
+
+func (m *stateAdvanceParityModel) resetOwned() {
+	Free(m.owned...)
+	m.owned = nil
+}
+
 func TestModelSession_Generate_BadRequiresGenerationState(t *testing.T) {
 	coverageTokens := "ModelSession Generate RequiresGenerationState"
 	if coverageTokens == "" {
