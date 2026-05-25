@@ -4515,8 +4515,52 @@ func TestDriverProfileGeneration_TraceTokenPhasesOption_Good(t *testing.T) {
 	if !model.lastConfig.TraceTokenPhases {
 		t.Fatalf("TraceTokenPhases = false, want true; cfg=%+v", model.lastConfig)
 	}
+	if model.lastConfig.TraceTokenText {
+		t.Fatalf("TraceTokenText = true, want hidden-output profiles to keep phase traces timing-only; cfg=%+v", model.lastConfig)
+	}
 	if model.lastConfig.ProbeSink != nil {
 		t.Fatalf("ProbeSink = %T, want nil so driver-profile keeps the direct greedy path", model.lastConfig.ProbeSink)
+	}
+}
+
+func TestDriverProfileGeneration_TraceTextFollowsOutput_Good(t *testing.T) {
+	model := &fakeDriverProfileModel{}
+
+	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
+		Prompt:           "hello",
+		MaxTokens:        2,
+		Runs:             1,
+		IncludeOutput:    true,
+		TraceTokenPhases: true,
+		Chat:             true,
+	})
+
+	if !model.lastConfig.TraceTokenText {
+		t.Fatalf("TraceTokenText = false, want token text only when output is already included; cfg=%+v", model.lastConfig)
+	}
+	if got := core.Join("", run.SampledTokenTexts...); got != "chat ok" {
+		t.Fatalf("sampled token text = %q, want text retained with include-output", got)
+	}
+}
+
+func TestDriverProfileGeneration_HiddenOutputOmitsSampledText_Good(t *testing.T) {
+	model := &fakeDriverProfileModel{}
+
+	run := profileLoadedModelGeneration(context.Background(), model, 1, driverProfileOptions{
+		Prompt:    "hello",
+		MaxTokens: 2,
+		Runs:      1,
+		Chat:      true,
+	})
+
+	if run.Output != "" {
+		t.Fatalf("output = %q, want hidden output", run.Output)
+	}
+	if len(run.SampledTokenTexts) != 0 {
+		t.Fatalf("sampled token text = %+v, want hidden-output profile to carry IDs only", run.SampledTokenTexts)
+	}
+	if len(run.SampledTokenIDs) != 2 {
+		t.Fatalf("sampled token ids = %+v, want IDs kept for loop diagnostics", run.SampledTokenIDs)
 	}
 }
 

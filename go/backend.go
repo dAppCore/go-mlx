@@ -389,6 +389,7 @@ func toMetalGenerateConfig(cfg GenerateConfig) metal.GenerateConfig {
 		RepeatPenalty:       cfg.RepeatPenalty,
 		ProbeSink:           toMetalProbeSink(cfg.ProbeSink),
 		TraceTokenPhases:    cfg.TraceTokenPhases,
+		TraceTokenText:      cfg.TraceTokenText,
 	}
 }
 

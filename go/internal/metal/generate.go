@@ -49,6 +49,7 @@ type GenerateConfig struct {
 	RepeatPenalty       float32
 	ProbeSink           ProbeSink
 	TraceTokenPhases    bool
+	TraceTokenText      bool
 }
 
 // Metrics holds performance metrics from the last inference operation.
@@ -851,7 +852,9 @@ func (m *Model) generateTokens(ctx context.Context, tokens []int32, cfg Generate
 			text := m.tokenizer.DecodeToken(id)
 			if tracePhases {
 				phase.TokenID = id
-				phase.TokenText = text
+				if cfg.TraceTokenText {
+					phase.TokenText = text
+				}
 				phase.DecodeTextDuration = time.Since(phaseLast)
 				phaseLast = time.Now()
 			}

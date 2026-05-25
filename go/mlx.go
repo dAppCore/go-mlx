@@ -306,6 +306,7 @@ type GenerateConfig struct {
 	RepeatPenalty       float32
 	ProbeSink           probe.Sink
 	TraceTokenPhases    bool
+	TraceTokenText      bool
 	Thinking            parser.Config
 }
 
@@ -365,6 +366,10 @@ func WithSeed(seed uint64) GenerateOption {
 var (
 	withLogitsOption          GenerateOption = func(c *GenerateConfig) { c.ReturnLogits = true }
 	withTokenPhaseTraceOption GenerateOption = func(c *GenerateConfig) { c.TraceTokenPhases = true }
+	withTokenPhaseTextOption  GenerateOption = func(c *GenerateConfig) {
+		c.TraceTokenPhases = true
+		c.TraceTokenText = true
+	}
 )
 
 // WithLogits requests classification logits when the called API supports them.
@@ -401,6 +406,11 @@ func WithRepeatPenalty(p float32) GenerateOption {
 // WithTokenPhaseTrace records per-token decode-loop timings in Metrics.
 func WithTokenPhaseTrace() GenerateOption {
 	return withTokenPhaseTraceOption
+}
+
+// WithTokenPhaseTraceText records decoded token text alongside phase timings.
+func WithTokenPhaseTraceText() GenerateOption {
+	return withTokenPhaseTextOption
 }
 
 // withNoopGenerateOption is the no-op closure returned by WithProbeSink and

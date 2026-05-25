@@ -1680,7 +1680,9 @@ func profileLoadedModelGeneration(ctx context.Context, model driverProfileModel,
 		visibleTokens++
 		if len(sampledTokenIDs) < 32 {
 			sampledTokenIDs = append(sampledTokenIDs, token.ID)
-			sampledTokenTexts = append(sampledTokenTexts, token.Text)
+			if opts.IncludeOutput {
+				sampledTokenTexts = append(sampledTokenTexts, token.Text)
+			}
 		}
 		if probeErr == nil {
 			if err := driverProfileMetricsSafetyError(core.Sprintf("run %d stream", index), profileLiveMetrics(), opts.SafetyLimits); err != nil {
@@ -1774,7 +1776,11 @@ func driverProfileGenerateOptions(opts driverProfileOptions) []mlx.GenerateOptio
 		mlx.WithTemperature(0),
 	}
 	if opts.TraceTokenPhases {
-		generateOptions = append(generateOptions, mlx.WithTokenPhaseTrace())
+		if opts.IncludeOutput {
+			generateOptions = append(generateOptions, mlx.WithTokenPhaseTraceText())
+		} else {
+			generateOptions = append(generateOptions, mlx.WithTokenPhaseTrace())
+		}
 	}
 	if len(opts.StopTokenIDs) > 0 {
 		generateOptions = append(generateOptions, mlx.WithStopTokens(opts.StopTokenIDs...))
@@ -3742,7 +3748,9 @@ func stateRampProfileGenerateTurn(ctx context.Context, model *mlx.Model, session
 	if opts.TraceTokenPhases {
 		if phaseIDs, phaseTexts := stateRampProfileSampledTokensFromPhases(turn.Metrics.TokenPhases, 32); len(phaseIDs) > 0 {
 			turn.SampledTokenIDs = phaseIDs
-			turn.SampledTokenTexts = phaseTexts
+			if len(phaseTexts) > 0 {
+				turn.SampledTokenTexts = phaseTexts
+			}
 		}
 	}
 	turn.DriverOverheadDuration = driverRunOverhead(turn.Duration, turn.Metrics)
@@ -3817,9 +3825,16 @@ func stateRampProfileSampledTokensFromPhases(phases []mlx.TokenPhaseTrace, limit
 	count := min(limit, len(phases))
 	ids := make([]int32, 0, count)
 	texts := make([]string, 0, count)
+	hasText := false
 	for i := 0; i < count; i++ {
 		ids = append(ids, phases[i].TokenID)
+		if phases[i].TokenText != "" {
+			hasText = true
+		}
 		texts = append(texts, phases[i].TokenText)
+	}
+	if !hasText {
+		return ids, nil
 	}
 	return ids, texts
 }

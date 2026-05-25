@@ -26,13 +26,13 @@ import (
 // Sinks defeat compiler DCE. Names disjoint from root_bench_test.go's
 // rootBench* set so the two files coexist in the same package.
 var (
-	mlxBenchSinkGenConfig   GenerateConfig
-	mlxBenchSinkLoadConfig  LoadConfig
-	mlxBenchSinkErr         error
-	mlxBenchSinkBool        bool
-	mlxBenchSinkSplitPlan   *inference.SplitInferencePlan
-	mlxBenchSinkGenOption   GenerateOption
-	mlxBenchSinkLoadOption  LoadOption
+	mlxBenchSinkGenConfig  GenerateConfig
+	mlxBenchSinkLoadConfig LoadConfig
+	mlxBenchSinkErr        error
+	mlxBenchSinkBool       bool
+	mlxBenchSinkSplitPlan  *inference.SplitInferencePlan
+	mlxBenchSinkGenOption  GenerateOption
+	mlxBenchSinkLoadOption LoadOption
 )
 
 // --- DefaultGenerateConfig / DefaultLoadConfig — struct construction ---
@@ -111,6 +111,14 @@ func BenchmarkMlxRoot_WithTokenPhaseTrace(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		mlxBenchSinkGenOption = WithTokenPhaseTrace()
+	}
+}
+
+func BenchmarkMlxRoot_WithTokenPhaseTraceText(b *testing.B) {
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		mlxBenchSinkGenOption = WithTokenPhaseTraceText()
 	}
 }
 

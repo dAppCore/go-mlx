@@ -417,7 +417,7 @@ func TestModelSession_Generate_StopTokenDoesNotAdvanceRetainedState_Good(t *test
 	defer session.resetState()
 
 	var got []Token
-	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, StopTokens: []int32{0}, TraceTokenPhases: true}) {
+	for token := range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, StopTokens: []int32{0}, TraceTokenPhases: true, TraceTokenText: true}) {
 		got = append(got, token)
 	}
 	if session.Err() != nil {
@@ -506,7 +506,7 @@ func TestModelSession_Generate_TraceTokenPhases_Good(t *testing.T) {
 	}
 	defer session.resetState()
 
-	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, TraceTokenPhases: true}) {
+	for range session.Generate(context.Background(), GenerateConfig{MaxTokens: 1, TraceTokenPhases: true, TraceTokenText: true}) {
 	}
 	if session.Err() != nil {
 		t.Fatalf("Generate() error = %v", session.Err())

@@ -1224,7 +1224,7 @@ func TestModel_Generate_TraceTokenPhases_Good(t *testing.T) {
 		model:     inner,
 		tokenizer: &Tokenizer{invVocab: map[int32]string{0: "x"}},
 	}
-	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true}) {
+	for range model.generateTokens(context.Background(), []int32{1}, GenerateConfig{MaxTokens: 2, TraceTokenPhases: true, TraceTokenText: true}) {
 	}
 	if model.Err() != nil {
 		t.Fatalf("Generate() error = %v", model.Err())
@@ -1270,6 +1270,9 @@ func TestModel_Generate_TraceTokenPhasesNoProbeSink_Good(t *testing.T) {
 	for _, phase := range model.LastMetrics().TokenPhases {
 		if phase.CacheProbeDuration != 0 {
 			t.Fatalf("phase %d cache probe duration = %s, want zero without a probe sink", phase.Step, phase.CacheProbeDuration)
+		}
+		if phase.TokenText != "" {
+			t.Fatalf("phase %d token text = %q, want text omitted unless TraceTokenText is enabled", phase.Step, phase.TokenText)
 		}
 	}
 }

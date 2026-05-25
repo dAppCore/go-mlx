@@ -1040,6 +1040,7 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 		WithMinTokensBeforeStop(1),
 		WithRepeatPenalty(1.1),
 		WithTokenPhaseTrace(),
+		WithTokenPhaseTraceText(),
 	})
 	if cfg.MaxTokens != 64 || cfg.Temperature != 0.7 || cfg.TopK != 20 || cfg.TopP != 0.9 || cfg.MinP != 0.05 {
 		t.Fatalf("unexpected generate config: %+v", cfg)
@@ -1061,6 +1062,9 @@ func TestAPIGenerateOptions_Good(t *testing.T) {
 	}
 	if !cfg.TraceTokenPhases {
 		t.Fatal("TraceTokenPhases = false, want true")
+	}
+	if !cfg.TraceTokenText {
+		t.Fatal("TraceTokenText = false, want true")
 	}
 }
 

@@ -603,7 +603,9 @@ func (s *ModelSession) generateLocked(ctx context.Context, cfg GenerateConfig, y
 		text := s.model.tokenizer.DecodeToken(id)
 		if tracePhases {
 			phase.TokenID = id
-			phase.TokenText = text
+			if cfg.TraceTokenText {
+				phase.TokenText = text
+			}
 			phase.DecodeTextDuration = time.Since(phaseLast)
 			phaseLast = time.Now()
 		}
