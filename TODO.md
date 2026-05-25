@@ -223,6 +223,12 @@ sampler-only microbench but regressed the real retained trace to `81.338 tok/s`
 and left `sample_eval` around `3.37 ms/token`. The next optimisation should
 still target the larger MLX graph/eval boundary directly without changing the
 paged retained-State semantics.
+The 2026-05-25 native suppressed top-k/top-p sampler wrapper confirms the same
+boundary issue from the other direction: a C++ compiled sampler/suppression
+wrapper slightly helped one isolated suppressed microbench but regressed the
+same-output two-turn retained trace from `91.599` to `86.285` raw tok/s. Keep
+sampler changes inside the accepted Go/compiled sampler shape until a larger
+stable logits/eval boundary is available.
 
 Trace timing now keeps the default `TraceTokenPhases` path on the same combined
 `EvalAsync(logits + dirty K/V)` boundary as production generation. The older

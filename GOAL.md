@@ -703,6 +703,23 @@ seed generated `4476` visible tokens instead of `4292`, so total wall rose to
 completion or as a replacement for the remaining llama.cpp raw-decode parity
 work.
 
+Rejected native sampler fusion, 2026-05-25: moving suppress-token filtering,
+top-k/top-p, and categorical sampling behind a new C++ `mlx::core::compile`
+wrapper improved the suppressed sampler microbench only marginally
+(`497510 ns/op` versus the normal compiled suppressed row around `466-485us/op`
+and `0` visible Go allocs), while making the real retained decode path slower.
+The matched two-turn request-context trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-native-suppressed-topk-topp-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+kept the same `1166` generated/visible tokens and paged invariants
+(`fixed_caches=0`, `paged_caches=15`, `max_local_capacity=512`,
+`local_window_leaked=false`) but fell to `86.285` raw decode tok/s and
+`77.998` effective turn tok/s versus the accepted zero-empty-SDPA row at
+`91.599` raw and `82.476` effective. The phase summary also moved `forward`
+from about `1.398ms/token` to `1.714ms/token` and `prefetch` from about
+`6.073ms/token` to `6.397ms/token`. Do not revive this sampler shape as a
+native boundary; the useful target remains a larger stable logits/eval boundary
+that does not perturb the one-token forward graph.
+
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building
 frequency state inside the decode path. A correctness guard now proves
