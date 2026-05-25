@@ -350,7 +350,7 @@ func (m *Model) prefillTokenBlockCacheOnly(ctx context.Context, tokens []int32, 
 		return core.NewError("Model.Generate: empty prefill cache-only block")
 	}
 	vInput := FromValues(tokens, len(tokens))
-	input := Reshape(vInput, 1, int32(len(tokens)))
+	input := Reshape2(vInput, 1, int32(len(tokens)))
 	logits := m.model.Forward(input, caches)
 	Free(vInput, input)
 	if logits == nil || !logits.Valid() {
@@ -396,7 +396,7 @@ func (m *Model) prefillTokenBlockOnce(ctx context.Context, tokens []int32, cache
 	}
 
 	vInput := FromValues(tokens, len(tokens))
-	input := Reshape(vInput, 1, int32(len(tokens)))
+	input := Reshape2(vInput, 1, int32(len(tokens)))
 	logits, usedLastTokenPath := m.forwardLastTokenLogits(input, nil, caches)
 	if logits == nil || !logits.Valid() {
 		_ = lastError()
@@ -553,7 +553,7 @@ func (m *Model) prefillFromPromptCache(ctx context.Context, entry *promptCacheEn
 		}
 
 		vInput := fromSingleInt32(id)
-		input := Reshape(vInput, 1, 1)
+		input := Reshape2(vInput, 1, 1)
 		oldLogits := logits
 		nextLogits := m.model.Forward(input, caches)
 		Free(vInput, input, oldLogits)

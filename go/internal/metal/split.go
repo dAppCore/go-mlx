@@ -122,7 +122,7 @@ func splitPrefillQwen3Tokens(ctx context.Context, qwen *Qwen3Model, tokens []int
 		return nil, core.NewError("mlx: qwen split prefill missing embeddings")
 	}
 	vInput := FromValues(tokens, len(tokens))
-	input := Reshape(vInput, 1, int32(len(tokens)))
+	input := Reshape2(vInput, 1, int32(len(tokens)))
 	Free(vInput)
 	hidden := qwen.EmbedTokens.Forward(input)
 	Free(input)
@@ -350,7 +350,7 @@ func splitQwen3EmbedNextToken(ctx context.Context, qwen *Qwen3Model, id int32) (
 		return nil, nil, core.NewError("mlx: qwen split sample missing embeddings")
 	}
 	vInput := fromSingleInt32(id)
-	input := Reshape(vInput, 1, 1)
+	input := Reshape2(vInput, 1, 1)
 	Free(vInput)
 	hidden := qwen.EmbedTokens.Forward(input)
 	Free(input)

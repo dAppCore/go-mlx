@@ -151,7 +151,7 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	}()
 
 	tokenValue := fromSingleInt32(lastToken)
-	tokenInput := Reshape(tokenValue, 1, 1)
+	tokenInput := Reshape2(tokenValue, 1, 1)
 	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
 	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
 	Free(tokenValue, tokenInput, tokenEmbedding)
@@ -306,7 +306,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftToke
 
 		result.AcceptedTokens = append(result.AcceptedTokens, draftToken)
 		tokenArray := fromSingleInt32(draftToken)
-		tokenInput := Reshape(tokenArray, 1, 1)
+		tokenInput := Reshape2(tokenArray, 1, 1)
 		nextLogits, nextHidden := pair.Target.ForwardLastTokenLogitsAndHidden(tokenInput, nil, verifyCaches)
 		Free(tokenArray, tokenInput)
 		if err := Eval(nextLogits, nextHidden); err != nil {

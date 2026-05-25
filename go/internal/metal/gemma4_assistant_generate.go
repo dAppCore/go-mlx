@@ -267,7 +267,7 @@ func (m *Model) prefillGemma4AssistantPromptOnce(ctx context.Context, pair *Gemm
 	default:
 	}
 	vInput := FromValues(tokens, len(tokens))
-	input := Reshape(vInput, 1, int32(len(tokens)))
+	input := Reshape2(vInput, 1, int32(len(tokens)))
 	Free(vInput)
 	logits, hidden := pair.Target.ForwardLastTokenLogitsAndHidden(input, nil, caches)
 	Free(input)
@@ -387,7 +387,7 @@ func (m *Model) storeGemma4AssistantPromptCache(tokens []int32, caches []Cache, 
 
 func (pair *Gemma4AssistantPair) forwardGemma4AssistantAcceptedToken(token int32, caches []Cache) (*Array, *Array, error) {
 	vInput := fromSingleInt32(token)
-	input := Reshape(vInput, 1, 1)
+	input := Reshape2(vInput, 1, 1)
 	Free(vInput)
 	logits, hidden := pair.Target.ForwardLastTokenLogitsAndHidden(input, nil, caches)
 	Free(input)

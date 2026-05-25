@@ -1254,7 +1254,7 @@ func (m *Model) inspectAttention(ctx context.Context, prompt string) (*Attention
 	defer freeCaches(caches)
 
 	vInput := FromValues(tokens, len(tokens))
-	input := Reshape(vInput, 1, int32(len(tokens)))
+	input := Reshape2(vInput, 1, int32(len(tokens)))
 	Free(vInput)
 	logits := m.model.Forward(input, caches)
 	defer Free(logits)
