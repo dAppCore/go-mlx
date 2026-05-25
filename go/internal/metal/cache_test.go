@@ -465,6 +465,16 @@ func TestPagedKVCache_SlidingWindowStaysSinglePage_Good(t *testing.T) {
 	if err := Eval(state.Keys[0], state.Values[0], dirty[0], dirty[1]); err != nil {
 		t.Fatalf("Eval compacted sliding state: %v", err)
 	}
+	got := state.Keys[0].Floats()
+	if len(got) < 13 {
+		t.Fatalf("sliding page floats len = %d, want at least 13", len(got))
+	}
+	if got[0] < 0.39 || got[0] > 0.41 {
+		t.Fatalf("sliding page first token = %.3f, want old token 1 after dropping token 0", got[0])
+	}
+	if got[12] < 8.99 || got[12] > 9.01 {
+		t.Fatalf("sliding page last token = %.3f, want appended token", got[12])
+	}
 }
 
 func TestPagedKVCache_StoresRequestedDType_Good(t *testing.T) {

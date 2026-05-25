@@ -607,6 +607,29 @@ async prefetch gate was also slower (`88.645` raw decode tok/s with
 one-token graph boundary rather than host sampling, PLE rank checks, or
 turning off async decode prefetch.
 
+Local-window paged overflow cleanup, 2026-05-25: the bounded local Gemma 4
+window path no longer appends a one-token second page, trims the first page,
+then compacts both pages back into a single page after the 512-token cap is
+full. The paged cache now handles the exact local-window single-token overflow
+case directly as drop-first-plus-append, preserving temporal order and keeping
+one visible K/V page. The focused bench
+`BenchmarkPagedKVCache_BorrowedSlidingWindow512_SinglePage` moved from about
+`10.8-11.1ms/op`, `32.9-33.0KB/op`, and `2061 allocs/op` to repeated rows
+around `9.98-10.09ms/op`, `68-70 B/op`, and `7 allocs/op`. Correctness is
+covered by `TestPagedKVCache_SlidingWindowStaysSinglePage_Good`, which now
+checks token order after overflow, not just page count. Retained workflow
+evidence classifies this as an allocation/GC-pressure cleanup, not a decode-gap
+breakthrough: the same-seed two-turn trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-local-window-fast-overflow-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+records `90.792` raw decode tok/s and `81.038` effective tok/s with
+`local_window_leaked=false`, but the full rerun
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-local-window-fast-overflow-rerun2-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+is effectively neutral against the accepted q4 graph row: `86.563` raw decode
+tok/s, `74.140` effective tok/s, and `70.119s` wall versus `86.610`, `74.211`,
+and `70.031s`. Keep the code for the sharply lower local-window allocation
+surface and simpler state mutation, but do not count it as closing the
+llama.cpp raw decode gap.
+
 Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
 `BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
 page-reduction path against the accepted fast-concat lane. With float32 pages,

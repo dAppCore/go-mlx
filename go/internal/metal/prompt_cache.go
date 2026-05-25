@@ -975,8 +975,8 @@ func appendCacheSnapshotBlock(dst *cacheSnapshot, block cacheSnapshot) error {
 		return err
 	}
 
-	mergedK := Concatenate([]*Array{leftK, rightK}, 2)
-	mergedV := Concatenate([]*Array{leftV, rightV}, 2)
+	mergedK := concatenate2(leftK, rightK, 2)
+	mergedV := concatenate2(leftV, rightV, 2)
 	Free(leftK, leftV, rightK, rightV)
 	mode := dst.mode
 	keyDtype := dst.keyDtype
@@ -1095,8 +1095,8 @@ func appendPagedCacheSnapshotPage(dst *cacheSnapshot, keyPage, valuePage *Array,
 func appendPagedCacheSnapshotPiece(dst *cacheSnapshot, last int, keyPage, valuePage *Array, start, take int) {
 	kPiece, vPiece := slicePagedCacheSnapshotPiece(keyPage, valuePage, start, take)
 	oldK, oldV := dst.kPages[last], dst.vPages[last]
-	dst.kPages[last] = Concatenate([]*Array{oldK, kPiece}, 2)
-	dst.vPages[last] = Concatenate([]*Array{oldV, vPiece}, 2)
+	dst.kPages[last] = concatenate2(oldK, kPiece, 2)
+	dst.vPages[last] = concatenate2(oldV, vPiece, 2)
 	Free(oldK, oldV, kPiece, vPiece)
 }
 

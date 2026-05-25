@@ -1612,8 +1612,8 @@ func gemma4AttentionGraph(x, prevKeys, prevValues, offset, fixedMask *Array, att
 			}
 			Free(k, v)
 		} else {
-			keys = Concatenate([]*Array{prevKeys, k}, 2)
-			values = Concatenate([]*Array{prevValues, v}, 2)
+			keys = concatenate2(prevKeys, k, 2)
+			values = concatenate2(prevValues, v, 2)
 			Free(k, v)
 		}
 	} else {

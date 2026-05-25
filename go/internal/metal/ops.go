@@ -715,6 +715,9 @@ func Squeeze(a *Array, axes ...int) *Array {
 
 // Concatenate joins arrays along the given axis.
 func Concatenate(arrays []*Array, axis int) *Array {
+	if len(arrays) == 2 {
+		return concatenate2(arrays[0], arrays[1], axis)
+	}
 	vector := C.mlx_vector_array_new()
 	defer C.mlx_vector_array_free(vector)
 
@@ -725,6 +728,18 @@ func Concatenate(arrays []*Array, axis int) *Array {
 	}
 
 	out := newArray("CONCAT", inputs...)
+	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
+	return out
+}
+
+func concatenate2(left, right *Array, axis int) *Array {
+	vector := C.mlx_vector_array_new()
+	defer C.mlx_vector_array_free(vector)
+
+	C.mlx_vector_array_append_value(vector, left.ctx)
+	C.mlx_vector_array_append_value(vector, right.ctx)
+
+	out := newArray("CONCAT", left, right)
 	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
 	return out
 }

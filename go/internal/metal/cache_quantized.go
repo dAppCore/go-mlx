@@ -75,8 +75,8 @@ func (c *QuantizedKVCache) Update(k, v *Array, seqLen int) (*Array, *Array) {
 		fullK = k.Clone()
 		fullV = v.Clone()
 	} else {
-		fullK = Concatenate([]*Array{prevK, k}, 2)
-		fullV = Concatenate([]*Array{prevV, v}, 2)
+		fullK = concatenate2(prevK, k, 2)
+		fullV = concatenate2(prevV, v, 2)
 		Free(prevK, prevV)
 	}
 	c.offset += seqLen
@@ -395,7 +395,7 @@ func packQ4Cached(q, offsetI8, shiftU8 *Array) *Array {
 	nP := n
 	if n%2 != 0 {
 		zero := Zeros([]int32{1}, DTypeUint8)
-		padded = Concatenate([]*Array{shiftedU, zero}, 0)
+		padded = concatenate2(shiftedU, zero, 0)
 		Free(shiftedU, zero)
 		nP = n + 1
 	}
@@ -451,7 +451,7 @@ func unpackQ4(packed *Array, shape []int32) *Array {
 	lowE := ExpandDims(low, 1)
 	highE := ExpandDims(high, 1)
 	Free(low, high)
-	stacked := Concatenate([]*Array{lowE, highE}, 1)
+	stacked := concatenate2(lowE, highE, 1)
 	Free(lowE, highE)
 
 	flatLen := pairs * 2

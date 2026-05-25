@@ -161,7 +161,7 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 		Free(scaledTokenEmbedding)
 		return nil, err
 	}
-	combined := Concatenate([]*Array{scaledTokenEmbedding, backboneHidden}, 2)
+	combined := concatenate2(scaledTokenEmbedding, backboneHidden, 2)
 	Free(scaledTokenEmbedding)
 	if ownBackboneHidden {
 		Free(backboneHidden)

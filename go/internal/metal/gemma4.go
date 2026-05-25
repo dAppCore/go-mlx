@@ -1301,7 +1301,7 @@ func gemma4ProportionalFreqs(headDim int32, rotatedDims int32, base float32, fac
 			extra[i] = float32(math.Inf(1))
 		}
 		inf := FromValues(extra, len(extra))
-		combined := Concatenate([]*Array{freqs, inf}, 0)
+		combined := concatenate2(freqs, inf, 0)
 		Free(freqs, inf)
 		freqs = combined
 	}

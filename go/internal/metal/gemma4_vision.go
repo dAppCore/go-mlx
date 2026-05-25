@@ -1218,7 +1218,7 @@ func gemma4VisionRotatePart(x, cos, sin *Array) *Array {
 	first := Slice4(x, 0, 0, 0, 0, shape[0], shape[1], shape[2], half)
 	second := Slice4(x, 0, 0, 0, half, shape[0], shape[1], shape[2], D)
 	negativeSecond := Negative(second)
-	rotated := Concatenate([]*Array{negativeSecond, first}, 3)
+	rotated := concatenate2(negativeSecond, first, 3)
 	scaled := Mul(x, cos)
 	rotatedScaled := Mul(rotated, sin)
 	out := Add(scaled, rotatedScaled)
