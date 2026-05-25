@@ -53,6 +53,26 @@ static const char* get_and_clear_last_error() {
     return atomic_exchange_explicit(&last_mlx_error, NULL, memory_order_acquire);
 }
 
+static int mlx_go_eval_data(const mlx_array *data, size_t n) {
+    if (data == NULL || n == 0) {
+        return 0;
+    }
+    mlx_vector_array vector = mlx_vector_array_new_data(data, n);
+    int rc = mlx_eval(vector);
+    int free_rc = mlx_vector_array_free(vector);
+    return rc != 0 ? rc : free_rc;
+}
+
+static int mlx_go_async_eval_data(const mlx_array *data, size_t n) {
+    if (data == NULL || n == 0) {
+        return 0;
+    }
+    mlx_vector_array vector = mlx_vector_array_new_data(data, n);
+    int rc = mlx_async_eval(vector);
+    int free_rc = mlx_vector_array_free(vector);
+    return rc != 0 ? rc : free_rc;
+}
+
 static bool mlx_go_metal_has_usable_device(void) {
     @autoreleasepool {
         id<MTLDevice> defaultDevice = MTLCreateSystemDefaultDevice();
@@ -161,6 +181,7 @@ static mlx_go_host_device_info_t mlx_go_host_device_info(void) {
 import "C"
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -169,6 +190,16 @@ import (
 )
 
 var initOnce sync.Once
+
+// evalOutputCtxPool holds temporary mlx_array handle buffers for Eval/EvalAsync.
+// The native helper copies the handles into an MLX vector synchronously, so the
+// backing slice can be reused as soon as the cgo call returns.
+var evalOutputCtxPool = sync.Pool{
+	New: func() any {
+		buf := make([]C.mlx_array, 0, 64)
+		return &buf
+	},
+}
 
 func defaultMetallibPath() string {
 	const metallib = "mlx.metallib"
@@ -288,16 +319,7 @@ func lastError() error {
 //	if err := metal.Eval(logits); err != nil { return err }
 func Eval(outputs ...*Array) error {
 	Init()
-	vector := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(vector)
-
-	for _, output := range outputs {
-		if output != nil && output.Valid() {
-			C.mlx_vector_array_append_value(vector, output.ctx)
-		}
-	}
-
-	rc := C.mlx_eval(vector)
+	rc := evalOutputs(outputs, false)
 	if rc != 0 {
 		if err := lastError(); err != nil {
 			return err
@@ -312,16 +334,7 @@ func Eval(outputs ...*Array) error {
 //	if err := metal.EvalAsync(output); err != nil { return err }
 func EvalAsync(outputs ...*Array) error {
 	Init()
-	vector := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(vector)
-
-	for _, output := range outputs {
-		if output != nil && output.Valid() {
-			C.mlx_vector_array_append_value(vector, output.ctx)
-		}
-	}
-
-	rc := C.mlx_async_eval(vector)
+	rc := evalOutputs(outputs, true)
 	if rc != 0 {
 		if err := lastError(); err != nil {
 			return err
@@ -329,6 +342,35 @@ func EvalAsync(outputs ...*Array) error {
 		return core.E("mlx.EvalAsync", core.Sprintf("async eval failed (rc=%d)", rc), nil)
 	}
 	return nil
+}
+
+func evalOutputs(outputs []*Array, async bool) C.int {
+	bufPtr := evalOutputCtxPool.Get().(*[]C.mlx_array)
+	handles := (*bufPtr)[:0]
+	for _, output := range outputs {
+		if output != nil && output.Valid() {
+			handles = append(handles, output.ctx)
+		}
+	}
+	if len(handles) == 0 {
+		*bufPtr = handles
+		evalOutputCtxPool.Put(bufPtr)
+		return 0
+	}
+	n := len(handles)
+	ptr := &handles[0]
+	var rc C.int
+	if async {
+		rc = C.mlx_go_async_eval_data(ptr, C.size_t(n))
+	} else {
+		rc = C.mlx_go_eval_data(ptr, C.size_t(n))
+	}
+	runtime.KeepAlive(outputs)
+	runtime.KeepAlive(handles)
+	handles = handles[:0]
+	*bufPtr = handles
+	evalOutputCtxPool.Put(bufPtr)
+	return rc
 }
 
 // Materialize synchronously evaluates arrays on the GPU; errors are logged only.

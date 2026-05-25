@@ -270,6 +270,14 @@ longer stores parent references. Focused Metal benches moved
 `2 allocs/op` (`128 B/op` at 8 pages, `256 B/op` at 16 pages) to `0 allocs/op`.
 This is retained as a hot-path allocation cleanup, not as evidence that the
 owner-layer attention materialisation gap is closed.
+`Eval`/`EvalAsync` also now hand a pooled contiguous run of output handles to a
+native helper instead of issuing one cgo append call per output. The stack
+buffer variant was rejected because it regressed Go allocations; the pooled
+variant keeps `BenchmarkAsyncDecodePrefetchTrace_CombinedDirtyKV` in the same
+`1 alloc/op` profile and moves the focused prefetch bench from the previous
+`160.024-179.131 us/op` band to `164.487-165.937 us/op`. Treat it as cgo
+boundary hygiene only; it does not replace the larger logits/materialisation
+fusion target.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

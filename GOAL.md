@@ -295,6 +295,20 @@ fast-concat K+V benches moved from `2 allocs/op` (`128 B/op` at 8 pages and
 run noise, so this is a retained hot-path allocation cleanup, not a claim that
 the owner-layer full-attention materialisation gap is closed.
 
+Eval-vector cgo-boundary cleanup, 2026-05-25: `Eval` and `EvalAsync` now build
+the MLX output vector through one native handoff from a pooled handle buffer
+instead of calling `mlx_vector_array_append_value` once per output from Go. This
+keeps the production `EvalAsync(logits + dirty K/V)` boundary intact while
+removing per-output cgo calls. A stack-backed variant was rejected because cgo
+forced the handle buffer to escape and regressed the sampler/prefetch
+allocation profile. The retained pooled version keeps allocations flat:
+`BenchmarkAsyncDecodePrefetchTrace_CombinedDirtyKV` moves from the pre-change
+`160.024-179.131 us/op`, `512 B/op`, `1 alloc/op` band to
+`164.487-165.937 us/op`, `513 B/op`, `1 alloc/op`; the Gemma-sized sampler
+bench remains effectively neutral at `483.996-506.989 us/op`, `10-11 B/op`,
+`1 alloc/op`. This is a cgo-boundary cleanup only; the next larger target
+remains logits/materialisation fusion.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but
