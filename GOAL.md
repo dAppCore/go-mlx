@@ -788,6 +788,25 @@ not veto this current request-context default. The remaining raw-decode gap is
 still the global owner attention materialisation/sampler-eval boundary, not a
 fixed cache, hidden page-size flag, or context-cutoff problem.
 
+Rejected wider-page follow-up, 2026-05-25: forcing
+`GO_MLX_PAGED_KV_PAGE_SIZE=4096` on the same two-turn request-context shape
+halves the global fast-concat page count (`17` max pages to `9`) but worsens
+the real workflow row. The default 2048-token page report
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-default-page2048-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+records `26.430020416s` wall, `91.0239815475048` raw decode tok/s,
+`81.96795883694631` effective tok/s, `9827367654` active-plus-cache bytes,
+`3389947904` RSS bytes, `522658332672` virtual bytes, and
+`paged_kv.fast_concat.global` at `4047ns` average duration. The matched
+4096-token diagnostic
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-page4096-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+records the same `2/2` turns, `33825` final live tokens, and `1166`
+generated/visible tokens, but regresses to `26.517627915s` wall,
+`90.45554345018256` raw decode tok/s, `81.49816578484192` effective tok/s,
+`9849196746` active-plus-cache bytes, `3391078400` RSS bytes, and
+`522818568192` virtual bytes. Keep 2048 as the code default; larger pages are
+not the next retained-decode fix even though the native concat micro-event gets
+shorter.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated
