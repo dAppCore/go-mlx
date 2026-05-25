@@ -224,14 +224,16 @@ and left `sample_eval` around `3.37 ms/token`. The next optimisation should
 still target the larger MLX graph/eval boundary directly without changing the
 paged retained-State semantics.
 
-Trace-only split timing now separates async prefetch into `prefetch_logits` and
-`prefetch_cache`. The tiny 2026-05-24 smoke at
+Trace timing now keeps the default `TraceTokenPhases` path on the same combined
+`EvalAsync(logits + dirty K/V)` boundary as production generation. The older
+split timing smoke at
 `/private/tmp/go-mlx-goal/reports/2026-05-24-trace-prefetch-split-smoke.json`
-shows `prefetch_logits` carries `16.597 ms` of the `16.618 ms` prefetch total
-over three non-final tokens, while dirty-cache prefetch costs only `9.124 us`.
-Treat that as attribution evidence only because trace mode uses split
-`EvalAsync` calls for measurement; production generation still uses the
-combined prefetch call and must stay paged/no-fixed/no-context-cutoff.
+remains useful attribution evidence only: it showed dirty-cache prefetch was
+about `9.124 us`, but it measured a split eval shape that production does not
+use. Current trace rows should read `prefetch_logits` as the whole combined
+prefetch boundary when logits are present; `prefetch_cache` is reserved for
+cache-only diagnostics. The two-turn opencode proof is recorded in `GOAL.md`
+and keeps paged/no-fixed/no-context-cutoff invariants.
 
 The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while

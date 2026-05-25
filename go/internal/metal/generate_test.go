@@ -1329,8 +1329,15 @@ func TestModel_Generate_AsyncDecodePrefetch_Good(t *testing.T) {
 	if err != nil {
 		t.Fatalf("asyncDecodePrefetchWithCachesTrace() error = %v", err)
 	}
-	if timings.Logits <= 0 || timings.Cache <= 0 {
-		t.Fatalf("async prefetch timings = %+v, want logits and dirty-cache timing", timings)
+	if timings.Logits <= 0 || timings.Cache != 0 {
+		t.Fatalf("async prefetch timings = %+v, want production-shaped combined logits timing", timings)
+	}
+	splitTimings, err := asyncDecodePrefetchWithCachesTraceSplit("Model.Generate", 0, "test split", out, []Cache{cache})
+	if err != nil {
+		t.Fatalf("asyncDecodePrefetchWithCachesTraceSplit() error = %v", err)
+	}
+	if splitTimings.Logits <= 0 || splitTimings.Cache <= 0 {
+		t.Fatalf("async split prefetch timings = %+v, want diagnostic logits and dirty-cache timing", splitTimings)
 	}
 
 	inner := &boundedGenerateModel{}

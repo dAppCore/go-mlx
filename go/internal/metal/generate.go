@@ -1117,6 +1117,40 @@ func asyncDecodePrefetchWithCachesTrace(scope string, step int, label string, ou
 	if !asyncDecodePrefetchEnabled() {
 		return timings, nil
 	}
+	var stack [64]*Array
+	outputs := stack[:0]
+	hasLogits := false
+	if out != nil && out.Valid() {
+		outputs = append(outputs, out)
+		hasLogits = true
+	}
+	for _, cache := range caches {
+		outputs = appendCacheDirtyState(outputs, cache)
+	}
+	if len(outputs) == 0 {
+		return timings, nil
+	}
+	start := time.Now()
+	if err := asyncDecodePrefetchArraysFor(scope, step, label, outputs...); err != nil {
+		return timings, err
+	}
+	elapsed := nonZeroTraceDuration(time.Since(start))
+	if hasLogits {
+		// Keep trace mode on the same combined eval boundary as production.
+		// Splitting logits and dirty K/V into separate EvalAsync calls gives
+		// cleaner attribution but changes the graph shape being measured.
+		timings.Logits = elapsed
+	} else {
+		timings.Cache = elapsed
+	}
+	return timings, nil
+}
+
+func asyncDecodePrefetchWithCachesTraceSplit(scope string, step int, label string, out *Array, caches []Cache) (asyncDecodePrefetchTimings, error) {
+	var timings asyncDecodePrefetchTimings
+	if !asyncDecodePrefetchEnabled() {
+		return timings, nil
+	}
 	if out != nil && out.Valid() {
 		start := time.Now()
 		if err := asyncDecodePrefetchArraysFor(scope, step, label+" logits", out); err != nil {

@@ -240,7 +240,7 @@ turn tok/s, `9.711 GB` active-plus-cache, `3.151 GiB` RSS,
 `max_global_tokens=33726`, and `max_global_capacity=131072`. This removes the
 hidden context cutoff; it does not close the llama.cpp raw-decode gap.
 
-Trace attribution update, 2026-05-24: `TraceTokenPhases` now splits async
+Trace attribution update, 2026-05-24: `TraceTokenPhases` originally split async
 prefetch into diagnostic `prefetch_logits` and `prefetch_cache` buckets while
 leaving the production, non-trace prefetch path as one combined call. The smoke
 report
@@ -251,7 +251,25 @@ keeps the fast lane paged (`fixed_caches=0`, `paged_caches=15`,
 `16.618 ms` across three non-final tokens), with dirty-cache prefetch only
 `9.124 us`. That rules out the dirty K/V handoff as the current decode
 bottleneck and keeps the next optimisation pointed at logits/forward graph
-materialisation, not any archived context-cutoff or fixed-cache lane.
+materialisation, not any archived context-cutoff or fixed-cache lane. Superseding
+correction, 2026-05-25: the default trace path now uses the same combined
+`EvalAsync(logits + dirty K/V)` boundary as production generation, so timing
+rows no longer measure a split graph shape. The split helper remains only as an
+internal diagnostic. Focused bench evidence records
+`BenchmarkAsyncDecodePrefetchTrace_CombinedDirtyKV` at `179966 ns/op`,
+`513 B/op`, and `1 alloc/op`, versus the diagnostic split row at
+`162819 ns/op`, `560 B/op`, and `3 allocs/op`; this is a fidelity correction
+rather than a speed claim. The same opencode request-context two-turn trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-production-trace-prefetch-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+uses the real opencode seed and records `2/2` turns, `33825` final live tokens,
+`1166` generated/visible tokens, `91.608` raw decode tok/s, `82.494` effective
+turn tok/s, `9.861 GB` active-plus-cache, `3.404 GB` RSS, `518.254 GB`
+virtual reservation, `fixed_caches=0`, `paged_caches=15`,
+`max_local_capacity=512`, and `local_window_leaked=false`. Its token phases
+show production-shaped `prefetch` at `6.093 ms/token`, `sample_eval` at
+`3.398 ms/token`, and `forward` at `1.394 ms/token`; `prefetch_cache` is no
+longer separately reported on the default trace because separating it changes
+the eval boundary being benchmarked.
 Follow-up trace attribution, 2026-05-24: native event capture is now armed by
 `-trace-token-phases` without requiring a `GO_MLX_*` environment variable. The
 expensive forced-eval trace remains behind `GO_MLX_TRACE_FORWARD_EVAL=1`, but
