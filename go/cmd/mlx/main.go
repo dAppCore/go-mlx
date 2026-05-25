@@ -81,6 +81,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runProfileSelectCommand(ctx, args[1:], stdout, stderr)
 	case "replace-plan":
 		return runReplacePlanCommand(ctx, args[1:], stdout, stderr)
+	case "serve":
+		return runServeCommand(ctx, args[1:], stdout, stderr)
 	case "slice":
 		return runSliceCommand(ctx, args[1:], stdout, stderr)
 	case "slice-smoke":
@@ -8360,6 +8362,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  profile-list  list saved tuning profiles for a machine/model/workload\n")
 	core.WriteString(w, "  profile-select  select the best saved tuning profile for a machine/model/workload\n")
 	core.WriteString(w, "  replace-plan  plan state handling for a profile/model reload\n")
+	core.WriteString(w, "  serve   host OpenAI/Anthropic/Ollama-compatible HTTP API for a loaded model\n")
 	core.WriteString(w, "  slice   materialise a local model slice for split/reload tests\n")
 	core.WriteString(w, "  slice-smoke  materialise, reload, and benchmark a model slice\n")
 	core.WriteString(w, "  state-ramp-profile  measure warm retained-state growth across append/generate turns\n")
