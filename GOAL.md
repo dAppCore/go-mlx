@@ -762,25 +762,31 @@ the raw decode/materialisation gap visible in go-mlx
 Promoted paged K/V page geometry, 2026-05-25: the current retained
 request-context path now defaults paged K/V blocks to `2048` tokens while local
 Gemma 4 sliding-window layers still cap at their `512`-token window. The full
-same-shape retained row
-`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-page2048-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
-keeps the same output shape as the fused-suppression baseline (`10/10`,
-`48896` final live tokens, `14400` appended tokens, `4476` generated/visible
-tokens), drops wall from `73.261458999s` to `72.438651539s`, improves raw
-decode from `85.01050148275976` to `86.29148713681721 tok/s`, improves
-effective turn throughput from `73.3508898684956` to `74.3326950892093 tok/s`,
-and saves `82.280746 J` at `100 W`. RSS is slightly lower (`3.388 GB` versus
-`3.409 GB`) while virtual reservation rises by about `16.84 GB`, so this is a
-retained-workflow speed/default cleanup rather than a memory-only win. The
-no-env default check
-`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-default-page2048-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
-confirms the binary uses the `2048` code default without emitting
-`GO_MLX_PAGED_KV_PAGE_SIZE`; native events report `17` max pages and
-`local_window_leaked=false`. The older archived 100k page-geometry rejection
-remains useful historical evidence for the former path, but it does not veto
-this current request-context default. The remaining raw-decode gap is still the
-global owner attention materialisation/sampler-eval boundary, not a fixed cache
-or context-cutoff problem.
+no-env default row
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-default-page2048-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+uses only the normal fast-lane runtime gates plus `GO_MLX_KV_CACHE_DTYPE=fp16`;
+it does not emit `GO_MLX_PAGED_KV_PAGE_SIZE`, proving the wider page geometry is
+the code default rather than a hidden CLI/env override. It keeps the same output
+shape as the fused-suppression baseline (`10/10`, `48896` final live tokens,
+`14400` appended tokens, `4476` generated/visible tokens), drops wall from
+`73.261458999s` to `71.73144004s` (`-2.088%`), improves raw decode from
+`85.01050148275976` to `87.44275487305373 tok/s` (`+2.861%`), improves
+effective turn throughput from `73.3508898684956` to
+`75.21070749898786 tok/s` (`+2.536%`), and saves `153.0018959 J` at `100 W`.
+RSS is slightly lower (`3.377 GB` versus `3.409 GB`) while virtual reservation
+rises by about `16.40 GB`, so this is a retained-workflow speed/default cleanup
+rather than a memory-only win. Native events report
+`paged_kv.fast_concat.global` at `13428` calls, `24` max pages, and `48894`
+max tokens; cache invariants remain `fixed_caches=0`, `paged_caches=15`,
+`max_local_capacity=512`, `max_global_capacity=131072`, and
+`local_window_leaked=false`. Against the refreshed llama.cpp Q4_K_M server row,
+the no-env go-mlx default is `3.430108376s` faster on retained workflow wall and
+saves `343.0108376 J`, while llama.cpp still leads raw decode by `1.2601x` and
+visible wall throughput by `1.0292x`. The older archived 100k page-geometry
+rejection remains useful historical evidence for the former path, but it does
+not veto this current request-context default. The remaining raw-decode gap is
+still the global owner attention materialisation/sampler-eval boundary, not a
+fixed cache, hidden page-size flag, or context-cutoff problem.
 
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
@@ -2253,9 +2259,9 @@ Current open gates:
       thinking-channel leakage reported side by side rather than used to hide
       the speed result.
 - [ ] Raw decode is within the acceptable calibration band. The current gap is
-      `1.300x` versus llama.cpp on the fresh memory-capable request-context
-      retained row, so this remains the primary code gap even though go-mlx
-      narrowly wins wall/energy on that single pair.
+      `1.260x` versus llama.cpp on the no-env default `2048`-page
+      request-context retained row, so this remains the primary code gap even
+      though go-mlx now wins wall/energy on that same-shape pair.
 - [ ] The default CLI path uses the fastest safe settings without requiring
       hidden extra flags.
 - [ ] Long-output story/book turns remain coherent with `max_tokens` in the
