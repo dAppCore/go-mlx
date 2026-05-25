@@ -555,6 +555,34 @@ The average token phase moves from `11.327ms` total, `9.758ms` sample_eval, and
 `3.362ms` sample_eval, and `6.169ms` prefetch_logits. This is a narrow
 production-path decode improvement; it does not replace the required full
 10-turn request-context row against llama.cpp.
+Full-row follow-up for the same q4 graph-path correction:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-q4-graph-last-logits-sameseed-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+uses the same `30k` opencode seed, `10` request-context turns, `1024`
+max-token budget, `seed=240524`, paged K/V, and no fixed-cache gates. It
+completes `10/10` turns, reaches `48712` live tokens, generates `4292`
+visible tokens, records `70.031s` retained wall, `86.610` raw decode tok/s,
+`74.211` effective turn tok/s, `3.074x` retained-vs-replay speedup,
+`7003.057 J` at `100 W`, `9.259 GiB` active-plus-cache, `3.171 GiB` RSS, and
+`568.230 GiB` process virtual reservation, with `local_window_leaked=false`.
+Against the same-output dirty-K/V prefetch row, raw decode improves by
+`0.563%`, effective throughput by `0.503%`, wall drops by `0.336s`, and
+estimated energy drops by `33.622 J`. The current llama.cpp
+Q4_K_M request-context anchor still leads raw decode at `105.988 tok/s`, so
+the next optimisation remains the larger prefetch/logits materialisation
+boundary rather than declaring parity from this small production-path win.
+
+Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
+`BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
+page-reduction path against the accepted fast-concat lane. With float32 pages,
+fast-concat is only modestly faster (`8` pages: `560786 ns/op` to
+`511595 ns/op`; `16` pages: `858594 ns/op` to `839743 ns/op`) and carries a
+larger active-cache footprint. With the production retained `fp16` K/V shape,
+the win is material: `8` pages moves from `616440 ns/op` to `402212 ns/op`, and
+`16` pages moves from `966353 ns/op` to `606435 ns/op`, with `0 allocs/op` on
+the old page path and `2 allocs/op` on the concat wrapper. This confirms the
+current production choice is better than the old slow path for q4/fp16 retained
+State, while also confirming the finite next target: keep fast-concat-like
+runtime without paying the larger materialised active-cache footprint.
 
 Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
 cannot cover this top-k/top-p sampler graph (`Slice cannot infer output

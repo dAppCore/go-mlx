@@ -26,11 +26,15 @@ import (
 
 // buildPagedKV constructs n pages of shape [B, H, pageSize, D].
 func buildPagedKV(n int, B, H, pageSize, D int32) (keys, values []*Array) {
+	return buildPagedKVWithDType(n, B, H, pageSize, D, DTypeFloat32)
+}
+
+func buildPagedKVWithDType(n int, B, H, pageSize, D int32, dtype DType) (keys, values []*Array) {
 	keys = make([]*Array, n)
 	values = make([]*Array, n)
 	for i := 0; i < n; i++ {
-		keys[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, DTypeFloat32)
-		values[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, DTypeFloat32)
+		keys[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, dtype)
+		values[i] = RandomUniform(0, 1, []int32{B, H, pageSize, D}, dtype)
 	}
 	return
 }
@@ -184,6 +188,94 @@ func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128(b *testing.B) {
 		y := ScaledDotProductAttentionPaged(q, keys, values, scale)
 		Materialize(y)
 		Free(y)
+	}
+	reportMLXBenchMemory(b)
+}
+
+func BenchmarkSDPAPaged_16Pages_Page1024_Q1_D128(b *testing.B) {
+	const B, H, P, D int32 = 1, 8, 1024, 128
+	q := RandomUniform(0, 1, []int32{B, H, 1, D}, DTypeFloat32)
+	keys, values := buildPagedKV(16, B, H, P, D)
+	defer Free(q)
+	defer Free(keys...)
+	defer Free(values...)
+	all := append([]*Array{q}, keys...)
+	all = append(all, values...)
+	Materialize(all...)
+	resetMLXBenchMemoryCounters()
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	b.ReportAllocs()
+	for b.Loop() {
+		y := ScaledDotProductAttentionPaged(q, keys, values, scale)
+		Materialize(y)
+		Free(y)
+	}
+	reportMLXBenchMemory(b)
+}
+
+func BenchmarkSDPAPagedFastConcat_8Pages_Page1024_Q1_D128(b *testing.B) {
+	benchmarkSDPAPagedFastConcat(b, 8, 1024, DTypeFloat32)
+}
+
+func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_Q1_D128(b *testing.B) {
+	benchmarkSDPAPagedFastConcat(b, 16, 1024, DTypeFloat32)
+}
+
+func BenchmarkSDPAPaged_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedDType(b, 8, 1024, DTypeFloat16)
+}
+
+func BenchmarkSDPAPaged_16Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedDType(b, 16, 1024, DTypeFloat16)
+}
+
+func BenchmarkSDPAPagedFastConcat_8Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedFastConcat(b, 8, 1024, DTypeFloat16)
+}
+
+func BenchmarkSDPAPagedFastConcat_16Pages_Page1024_Q1_D128_F16(b *testing.B) {
+	benchmarkSDPAPagedFastConcat(b, 16, 1024, DTypeFloat16)
+}
+
+func benchmarkSDPAPagedDType(b *testing.B, pageCount int, pageSize int32, dtype DType) {
+	const B, H, D int32 = 1, 8, 128
+	q := RandomUniform(0, 1, []int32{B, H, 1, D}, dtype)
+	keys, values := buildPagedKVWithDType(pageCount, B, H, pageSize, D, dtype)
+	defer Free(q)
+	defer Free(keys...)
+	defer Free(values...)
+	all := append([]*Array{q}, keys...)
+	all = append(all, values...)
+	Materialize(all...)
+	resetMLXBenchMemoryCounters()
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	b.ReportAllocs()
+	for b.Loop() {
+		y := ScaledDotProductAttentionPaged(q, keys, values, scale)
+		Materialize(y)
+		Free(y)
+	}
+	reportMLXBenchMemory(b)
+}
+
+func benchmarkSDPAPagedFastConcat(b *testing.B, pageCount int, pageSize int32, dtype DType) {
+	const B, H, D int32 = 1, 8, 128
+	q := RandomUniform(0, 1, []int32{B, H, 1, D}, dtype)
+	keys, values := buildPagedKVWithDType(pageCount, B, H, pageSize, D, dtype)
+	defer Free(q)
+	defer Free(keys...)
+	defer Free(values...)
+	all := append([]*Array{q}, keys...)
+	all = append(all, values...)
+	Materialize(all...)
+	resetMLXBenchMemoryCounters()
+	scale := float32(1.0 / math.Sqrt(float64(D)))
+	b.ReportAllocs()
+	for b.Loop() {
+		kBase, vBase := concatenatePagedState(keys, values)
+		y := ScaledDotProductAttention(q, kBase, vBase, scale, false)
+		Materialize(y)
+		Free(y, kBase, vBase)
 	}
 	reportMLXBenchMemory(b)
 }
