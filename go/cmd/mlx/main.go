@@ -6367,20 +6367,57 @@ func chapterProfileVisibleText(template, text string) string {
 	if template != "gemma4" || text == "" {
 		return text
 	}
-	text = core.Replace(text, "<|turn>model\n", "")
-	text = core.Replace(text, "<turn|>", "")
-	for core.Contains(text, "<|channel>") {
-		parts := core.SplitN(text, "<|channel>", 2)
-		if len(parts) != 2 {
+	const (
+		modelTag     = "<|turn>model\n"
+		turnEndTag   = "<turn|>"
+		channelOpen  = "<|channel>"
+		channelClose = "<channel|>"
+	)
+	if !core.Contains(text, modelTag) && !core.Contains(text, turnEndTag) && !core.Contains(text, channelOpen) {
+		return core.Trim(text)
+	}
+	builder := core.NewBuilder()
+	builder.Grow(len(text))
+	for len(text) > 0 {
+		modelIdx := core.Index(text, modelTag)
+		turnEndIdx := core.Index(text, turnEndTag)
+		channelIdx := core.Index(text, channelOpen)
+		nextIdx := -1
+		nextKind := 0
+		if modelIdx >= 0 {
+			nextIdx = modelIdx
+			nextKind = 1
+		}
+		if turnEndIdx >= 0 && (nextIdx < 0 || turnEndIdx < nextIdx) {
+			nextIdx = turnEndIdx
+			nextKind = 2
+		}
+		if channelIdx >= 0 && (nextIdx < 0 || channelIdx < nextIdx) {
+			nextIdx = channelIdx
+			nextKind = 3
+		}
+		if nextIdx < 0 {
+			builder.WriteString(text)
 			break
 		}
-		after := core.SplitN(parts[1], "<channel|>", 2)
-		if len(after) != 2 {
-			return parts[0]
+		builder.WriteString(text[:nextIdx])
+		switch nextKind {
+		case 1:
+			text = text[nextIdx+len(modelTag):]
+		case 2:
+			text = text[nextIdx+len(turnEndTag):]
+		case 3:
+			afterOpen := text[nextIdx+len(channelOpen):]
+			closeIdx := core.Index(afterOpen, channelClose)
+			if closeIdx < 0 {
+				return builder.String()
+			}
+			text = afterOpen[closeIdx+len(channelClose):]
+		default:
+			return core.Trim(builder.String())
 		}
-		text = parts[0] + after[1]
 	}
-	return core.Trim(text)
+	return core.Trim(builder.String())
 }
 
 func chapterProfileVisibleTextForChapter(template, text string, chapter int) string {
