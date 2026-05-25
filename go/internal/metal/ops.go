@@ -224,6 +224,22 @@ static inline int mlx_where_scalar_array_inline(
     return rc;
 }
 
+// mlx_concatenate_axis_2 builds the temporary MLX vector on the C stack for the
+// common two-array concat path. Multi-page concat keeps the append-vector path:
+// passing a Go handle array into C makes it escape and regresses Go heap use.
+static inline int mlx_concatenate_axis_2(
+    mlx_array* res,
+    mlx_array left,
+    mlx_array right,
+    int axis,
+    mlx_stream s) {
+    mlx_array arrays[2] = {left, right};
+    mlx_vector_array vector = mlx_vector_array_new_data(arrays, 2);
+    int rc = mlx_concatenate_axis(res, vector, axis, s);
+    int free_rc = mlx_vector_array_free(vector);
+    return rc != 0 ? rc : free_rc;
+}
+
 */
 import "C"
 
@@ -731,14 +747,8 @@ func Concatenate(arrays []*Array, axis int) *Array {
 }
 
 func concatenate2(left, right *Array, axis int) *Array {
-	vector := C.mlx_vector_array_new()
-	defer C.mlx_vector_array_free(vector)
-
-	C.mlx_vector_array_append_value(vector, left.ctx)
-	C.mlx_vector_array_append_value(vector, right.ctx)
-
 	out := newArray("CONCAT")
-	C.mlx_concatenate_axis(&out.ctx, vector, C.int(axis), DefaultStream().ctx)
+	C.mlx_concatenate_axis_2(&out.ctx, left.ctx, right.ctx, C.int(axis), DefaultStream().ctx)
 	return out
 }
 

@@ -317,6 +317,14 @@ cache invariants, improves raw decode from `87.483` to `87.687 tok/s`, and
 drops `sample_eval` from `3.305ms/token` to `3.274ms/token`. The wall delta is
 only `16ms`, so this is accepted cleanup evidence, not a parity close. The
 dominant remaining bucket is still `prefetch_logits` at about `6.726ms/token`.
+The next concat cleanup is now accepted at the two-array boundary only:
+`concatenate2` builds its temporary MLX vector on the C stack and keeps the same
+graph. The 16-page fast-concat mixed-query bench median moved from about
+`627.381 us/op` to `601.880 us/op`, while the prompt-cache concat median stayed
+allocation-neutral and moved from about `238.422 us/op` to `236.052 us/op`.
+Do not revive the broader Go handle-array `mlx_vector_array_new_data` attempt:
+it regressed the same benches to `1152 B/op` and `2305-2308 B/op`, so multi-page
+concat still needs a true C-side page-list owner rather than a Go slice handoff.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

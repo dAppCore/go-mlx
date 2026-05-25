@@ -357,6 +357,19 @@ show the expected local effect (`sample_eval` down from `3.305ms/token` to
 while `prefetch_logits` remains dominant at `6.726ms/token`. Count this as an
 accepted sampler-boundary cleanup, not a closed parity gate.
 
+Concat2 boundary cleanup, 2026-05-25: the two-array `concatenate2` helper now
+builds the temporary MLX vector on the C stack in one helper call instead of
+crossing cgo for vector create, two appends, concatenate, and vector free. This
+preserves the same MLX concatenate graph and is useful for token append, page
+merge, and several prompt-cache/state edges. Focused Metal benches stayed
+allocation-neutral and moved the 16-page fast-concat mixed-query row's median
+from about `627.381 us/op` to `601.880 us/op`; the 16-page prompt-cache concat
+median moved from about `238.422 us/op` to `236.052 us/op`. A broader multi-page
+`mlx_vector_array_new_data` attempt was rejected before commit because passing a
+Go handle array to C made it escape, regressing the same rows to `1152 B/op` and
+`2305-2308 B/op`. Keep multi-page concat on the existing append-vector path until
+there is a C-side page-list owner that avoids Go handle-array escape entirely.
+
 Rejected adjacent probes, 2026-05-25: two superficially similar cleanups were
 tested and reverted. First, passing a zero-value random key handle to
 `mlx_random_categorical`/`mlx_random_uniform` is correct in focused tests, but
