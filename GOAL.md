@@ -675,6 +675,37 @@ still points at the same real bottleneck: `prefetch_logits=4.730ms/token`,
 current-binary smoke and allocation/cgo-shape cleanup only, not a replacement
 for the required 10-turn retained comparator against llama.cpp.
 
+Current full-output request-context row, 2026-05-25:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-scalar-reshape-current-include-output-go-mlx-gemma4-e2b-4bit-opencode-30k-r10-g1024.json`
+reruns the accepted `request-context` fixture with generated text captured in
+the report. It uses the local Gemma 4 E2B 4bit pack, `30k` seed,
+`context=131072`, `10` turns, `1024` max generated tokens per turn,
+`append_tokens=8192`, `prefill_chunk_size=512`, `temperature=1.0`,
+`top_p=0.95`, `top_k=64`, no visible-token floor, no forced compaction, paged
+fp16 K/V, and the default fast Gemma 4 gates. It completes `10/10` turns with
+`48896` final live tokens, `14400` appended tokens, `4476` generated and
+visible tokens, `73.872368791s` wall, `84.06360150221701 tok/s` raw decode,
+`72.64194131583837` effective turn tok/s, `2447.9658757787 tok/s` initial
+prefill, `2.9776898258175146x` retained-vs-replay speedup, `7.3872368791 kJ`
+estimated energy at `100 W`, and `14.6096632167 kJ` saved versus replayed
+prefill. Memory is bounded on the real resident side: `3.746 GB` MLX peak,
+`9.932 GB` active-plus-cache, `3.388 GB` process RSS, and `612.837 GB` process
+virtual reservation. The final cache profile keeps the intended Gemma 4 shape:
+`paged_caches=15`, `fixed_caches=0`, `local_caches=12`, `global_caches=3`,
+`max_local_capacity=512`, `max_global_capacity=131072`, and
+`local_window_leaked=false`. The captured text is topical for all ten turns and
+has no harness-reported output issues, but turn `10` is concise (`116` visible
+tokens) against its own `700`-`1000` token request, so this row is performance
+evidence plus captured-output evidence rather than a closed quality gate. The
+matched llama.cpp Q4_K_M request-context memory anchor still records
+`109.99746968612104 tok/s` raw decode and `76.89775797091058` wall-visible
+tok/s over `72.91499970806763s` wall, so go-mlx is only about `0.957s` slower
+on total wall and uses about `1.262 GB` less RSS, but llama.cpp remains
+`1.309x` faster on raw decode and `1.059x` faster on wall-visible throughput.
+The trace keeps the next optimisation target unchanged:
+`prefetch_logits=6.874ms/token`, `sample_eval=3.240ms/token`, and
+`forward=1.700ms/token`.
+
 Rejected follow-up probes, 2026-05-25: several small materialisation-boundary
 cleanup ideas were measured and reverted because they did not improve the real
 retained workflow. A rank-known Gemma 4 PLE view helper improved the isolated
