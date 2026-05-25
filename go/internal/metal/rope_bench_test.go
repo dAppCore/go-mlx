@@ -72,6 +72,19 @@ func BenchmarkRoPE_Decode_BaseLocal10k(b *testing.B) {
 	}
 }
 
+func BenchmarkRoPE_Decode_BaseLocal10k_WithFreqs(b *testing.B) {
+	x := RandomUniform(0, 1, []int32{1, 8, 1, 128}, DTypeFloat32)
+	freqs := gemma4ProportionalFreqs(128, 128, 10000.0, 1.0)
+	defer Free(x, freqs)
+	Materialize(x, freqs)
+	b.ReportAllocs()
+	for b.Loop() {
+		y := RoPEWithFreqs(x, 128, false, 0, 1.0, 0, freqs)
+		Materialize(y)
+		Free(y)
+	}
+}
+
 func BenchmarkRoPE_Decode_BaseGlobal1M(b *testing.B) {
 	x := RandomUniform(0, 1, []int32{1, 8, 1, 128}, DTypeFloat32)
 	Materialize(x)

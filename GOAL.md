@@ -655,6 +655,22 @@ seed generated `4476` visible tokens instead of `4292`, so total wall rose to
 completion or as a replacement for the remaining llama.cpp raw-decode parity
 work.
 
+Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
+suggested checking whether local/default Gemma 4 RoPE was still building
+frequency state inside the decode path. A correctness guard now proves
+`RoPEWithFreqs` using the default 10k frequency tensor matches the existing
+base-driven local RoPE path at non-zero offset:
+`TestFast_RoPE_DefaultFreqsMatchesBasePath_Good`. The focused bench rejects
+using it as a runtime optimisation, though:
+`BenchmarkRoPE_Decode_BaseLocal10k` stays in the `169-172us/op` band and
+`BenchmarkRoPE_Decode_BaseLocal10k_WithFreqs` records the same `168-171us/op`
+band, both at `0 allocs/op`. The p-RoPE global shape remains the fast explicit
+frequency case (`BenchmarkRoPE_WithFreqs_Decode_D256` around `6.6us/op`), but
+local/default RoPE does not get that benefit. Keep Gemma 4 runtime construction
+on precomputed `RopeFreqs` only for proportional p-RoPE; do not add load-time
+frequency tensors for local/default layers unless a future MLX kernel changes
+this result.
+
 Slow-vs-fast attention microbench follow-up, 2026-05-25: the new
 `BenchmarkSDPAPaged*Page1024_Q1_D128(_F16)` rows pin down the known old
 page-reduction path against the accepted fast-concat lane. With float32 pages,
