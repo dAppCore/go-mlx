@@ -229,6 +229,12 @@ wrapper slightly helped one isolated suppressed microbench but regressed the
 same-output two-turn retained trace from `91.599` to `86.285` raw tok/s. Keep
 sampler changes inside the accepted Go/compiled sampler shape until a larger
 stable logits/eval boundary is available.
+The sampled-token lookahead variant is also rejected: trying to materialise the
+next sampled token inside the prefetch boundary caused the gated trace to end
+turn 1 with `empty_visible_output` and `0` generated tokens, while the same
+rebuilt binary with the gate off completed normally. Any future lookahead work
+needs a first-token token/RNG parity harness before it is allowed near the
+retained benchmark lane.
 
 Trace timing now keeps the default `TraceTokenPhases` path on the same combined
 `EvalAsync(logits + dirty K/V)` boundary as production generation. The older

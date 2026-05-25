@@ -720,6 +720,22 @@ from about `1.398ms/token` to `1.714ms/token` and `prefetch` from about
 native boundary; the useful target remains a larger stable logits/eval boundary
 that does not perturb the one-token forward graph.
 
+Rejected sampled-token lookahead prefetch, 2026-05-25: a retained-session probe
+tried to build the next sampled token immediately after next-logits construction
+and include that token in the existing async prefetch/eval boundary, so the next
+loop could consume a materialised token instead of paying `sample_eval`. The
+gate-on trace
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-prefetch-sampled-token-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+failed before speed was meaningful: turn 1 produced `empty_visible_output`,
+`0` generated tokens, and stopped at `31186` live tokens. The same rebuilt
+binary with the gate off completed the matched two-turn run at
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-prefetch-sampled-token-gateoff-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+with `1166` generated/visible tokens, `89.023` raw decode tok/s, `80.311`
+effective turn tok/s, and the same paged invariants. Do not ship sampled-token
+lookahead without first proving token/RNG equivalence on the first sampled step;
+the current production path stays on logits-only async prefetch plus the
+accepted compiled sampler.
+
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building
 frequency state inside the decode path. A correctness guard now proves
