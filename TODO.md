@@ -19,9 +19,10 @@ Status on `dev`, 2026-05-25: recent pushed handover commits include `463a072`
 above the old 90 tok/s band: the first short 60-token run recorded
 `120.145 tok/s`, this handoff rebuild rechecked the same short lane at
 `121.803 tok/s`, and this post-polish rebuild rechecked it at `122.5 tok/s`
-with `3.276 GB` active+cache memory. A longer 2700-token hidden-output smoke
-recorded `112.672 tok/s`. The tree was clean after those pushes to `homelab`,
-`origin`, and `github`.
+with `3.276 GB` active+cache memory. The current post-MoE split cleanup rebuild
+smoke records `118.2 tok/s` with the same `3.276 GB` active+cache memory. A
+longer 2700-token hidden-output smoke recorded `112.672 tok/s`. The tree was
+clean after those pushes to `homelab`, `origin`, and `github`.
 
 Use `GOAL.md` as the detailed historical ledger, but treat missing
 `docs/runtime/2026-*` artefact links as archived notes unless the report is
@@ -398,6 +399,12 @@ iterations via the raw cache-clear helper, outside the timed section. This is a
 benchmark harness safety fix after broad paged-cache sweeps caused excessive
 active/cache memory during measurement; it does not change runtime generation
 behaviour or promote prealloc/native-paged gates.
+Gemma 4 gate/up split helpers now reuse stack-backed start/end slices instead
+of allocating per split. The focused decode-shaped split benchmark records
+`BenchmarkExpertIDSplitLastDimArray_Gemma4Decode` at `2 allocs/op` after the
+patch versus `3 allocs/op` before. Treat this as MoE hot-path allocation
+cleanup only; it does not change routing, sampler, K/V, or retained-State
+semantics.
 Two adjacent probes are rejected there too: zero-value random key handles
 regressed the matched trace to `90.113` raw tok/s, and yielding retained-session
 tokens before async prefetch regressed it to `88.045` raw tok/s despite the

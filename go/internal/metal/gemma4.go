@@ -920,7 +920,8 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	if a == nil || !a.Valid() {
 		return nil, nil, false
 	}
-	shape := a.Shape()
+	var shapeBuf [maxTensorRank]int32
+	shape := a.ShapeInto(shapeBuf[:0])
 	if len(shape) == 0 {
 		return nil, nil, false
 	}
@@ -936,8 +937,10 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 	if mid <= 0 || shape[axis]%2 != 0 {
 		return nil, nil, false
 	}
-	starts := make([]int32, len(shape))
-	ends := append([]int32(nil), shape...)
+	var startsBuf, endsBuf [maxTensorRank]int32
+	starts := startsBuf[:len(shape)]
+	ends := endsBuf[:len(shape)]
+	copy(ends, shape)
 	ends[axis] = mid
 	left := Slice(a, starts, ends)
 	if !left.IsRowContiguous() {
@@ -947,7 +950,7 @@ func splitGemma4GateUpArray(a *Array) (*Array, *Array, bool) {
 		left = contiguous
 	}
 	starts[axis] = mid
-	ends = append([]int32(nil), shape...)
+	ends[axis] = shape[axis]
 	right := Slice(a, starts, ends)
 	if !right.IsRowContiguous() {
 		contiguous := Contiguous(right)
@@ -3370,12 +3373,14 @@ func splitLastDimArray(a *Array) (*Array, *Array, bool) {
 	if mid <= 0 || shape[axis]%2 != 0 {
 		return nil, nil, false
 	}
-	starts := make([]int32, len(shape))
-	ends := append([]int32(nil), shape...)
+	var startsBuf, endsBuf [maxTensorRank]int32
+	starts := startsBuf[:len(shape)]
+	ends := endsBuf[:len(shape)]
+	copy(ends, shape)
 	ends[axis] = mid
 	left := Slice(a, starts, ends)
 	starts[axis] = mid
-	ends = append([]int32(nil), shape...)
+	ends[axis] = shape[axis]
 	right := Slice(a, starts, ends)
 	return left, right, true
 }
