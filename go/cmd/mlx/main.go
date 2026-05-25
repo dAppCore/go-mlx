@@ -3216,43 +3216,50 @@ func stateRampProfileTurnPromptWithMode(template, prompt string, enableThinking 
 	if mode != "direct" {
 		mode = "reference"
 	}
-	turnText := prompt
-	if mode == "reference" {
-		turnText = stateRampProfileReferenceTurn(prompt, minVisibleTokens...)
-	}
-	_ = minVisibleTokens
+	referenceMode := mode == "reference"
 	switch template {
 	case "gemma4":
 		builder := core.NewBuilder()
-		builder.Grow(len(turnText) + 256)
+		builder.Grow(len(prompt) + 768)
 		builder.WriteString("<|turn>user\n")
-		builder.WriteString(turnText)
+		writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
 		builder.WriteString("<turn|>\n<|turn>model\n")
 		return builder.String()
 	case "gemma":
 		builder := core.NewBuilder()
-		builder.Grow(len(turnText) + 128)
+		builder.Grow(len(prompt) + 768)
 		builder.WriteString("<start_of_turn>user\n")
-		builder.WriteString(turnText)
+		writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
 		builder.WriteString("<end_of_turn>\n<start_of_turn>model\n")
 		return builder.String()
 	case "qwen":
 		builder := core.NewBuilder()
-		builder.Grow(len(turnText) + 128)
+		builder.Grow(len(prompt) + 768)
 		builder.WriteString("<|im_start|>user\n")
-		builder.WriteString(turnText)
+		writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
 		builder.WriteString("<|im_end|>\n<|im_start|>assistant\n")
 		return builder.String()
 	case "llama":
 		builder := core.NewBuilder()
-		builder.Grow(len(turnText) + 128)
+		builder.Grow(len(prompt) + 768)
 		builder.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
-		builder.WriteString(turnText)
+		writeStateRampProfileTurnMaterial(builder, prompt, referenceMode)
 		builder.WriteString("<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n")
 		return builder.String()
 	default:
-		return turnText
+		if referenceMode {
+			return stateRampProfileReferenceTurn(prompt, minVisibleTokens...)
+		}
+		return prompt
 	}
+}
+
+func writeStateRampProfileTurnMaterial(builder interface{ WriteString(string) (int, error) }, prompt string, referenceMode bool) {
+	if referenceMode {
+		writeStateRampProfileReferenceTurn(builder, prompt)
+		return
+	}
+	builder.WriteString(prompt)
 }
 
 func stateRampProfileReferenceTurn(prompt string, minVisibleTokens ...int) string {
