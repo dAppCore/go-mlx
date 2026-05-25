@@ -270,6 +270,21 @@ show production-shaped `prefetch` at `6.093 ms/token`, `sample_eval` at
 `3.398 ms/token`, and `forward` at `1.394 ms/token`; `prefetch_cache` is no
 longer separately reported on the default trace because separating it changes
 the eval boundary being benchmarked.
+
+Empty SDPA handle cleanup, 2026-05-25: absent mask/sink inputs now pass the
+zero-value `mlx_array` handle instead of allocating and freeing empty native
+handles on every unmasked attention call. Focused attention tests pass, and the
+same production-shaped two-turn trace at
+`/private/tmp/go-mlx-goal/reports/2026-05-25-state-ramp-request-context-zero-empty-sdpa-opencode-turn2-go-mlx-gemma4-e2b-4bit-opencode-30k-r2-g1024.json`
+records `2/2` turns, `33825` final live tokens, `1166` generated/visible
+tokens, `91.599` raw decode tok/s, `82.476` effective turn tok/s, `9.861 GB`
+active-plus-cache, `3.401 GB` RSS, `fixed_caches=0`, `paged_caches=15`,
+`max_local_capacity=512`, and `local_window_leaked=false`. This is retained as
+a small native-handle cleanup only: `prefetch` moves from `6.093` to
+`6.073 ms/token`, while `sample_eval` moves from `3.398` to
+`3.413 ms/token`, so it is not a decode-parity claim. The next useful target
+remains fused logits/materialisation or sampler/eval boundary work.
+
 Follow-up trace attribution, 2026-05-24: native event capture is now armed by
 `-trace-token-phases` without requiring a `GO_MLX_*` environment variable. The
 expensive forced-eval trace remains behind `GO_MLX_TRACE_FORWARD_EVAL=1`, but

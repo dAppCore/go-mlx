@@ -151,10 +151,8 @@ func ScaledDotProductAttention(query, key, value *Array, scale float32, causal b
 		cMode = sdpaModeCausal
 	}
 
-	maskArr := C.mlx_array_new()
-	defer C.mlx_array_free(maskArr)
-	sinksArr := C.mlx_array_new()
-	defer C.mlx_array_free(sinksArr)
+	var maskArr C.mlx_array
+	var sinksArr C.mlx_array
 
 	out := newArray("FAST_SDPA", query, key, value)
 	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), cMode, maskArr, sinksArr, DefaultStream().ctx)
@@ -357,8 +355,7 @@ func fixedSingleTokenAttention(query, keyCache, valueCache, key, value, offset *
 //
 //	out := metal.ScaledDotProductAttentionWithMask(q, k, v, batchMask, cfg.Scale)
 func ScaledDotProductAttentionWithMask(query, key, value, mask *Array, scale float32) *Array {
-	sinksArr := C.mlx_array_new()
-	defer C.mlx_array_free(sinksArr)
+	var sinksArr C.mlx_array
 
 	out := newArray("FAST_SDPA", query, key, value, mask)
 	C.mlx_fast_scaled_dot_product_attention(&out.ctx, query.ctx, key.ctx, value.ctx, C.float(scale), sdpaModeArray, mask.ctx, sinksArr, DefaultStream().ctx)

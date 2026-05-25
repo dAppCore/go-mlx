@@ -235,6 +235,11 @@ prefetch boundary when logits are present; `prefetch_cache` is reserved for
 cache-only diagnostics. The two-turn opencode proof is recorded in `GOAL.md`
 and keeps paged/no-fixed/no-context-cutoff invariants.
 
+The zero-empty-handle SDPA cleanup is also recorded in `GOAL.md`. It removes
+per-attention empty native handle allocation for absent masks/sinks, but the
+matched production-shaped trace is neutral (`91.599` raw tok/s versus
+`91.608` before), so it is a cleanup rather than a parity milestone.
+
 The per-token eval boundary now detaches logits together with caches after the
 sampled token is materialised. That should reduce graph lifetime pressure while
 preserving the paged retained-State semantics. The matched 30k request-context
