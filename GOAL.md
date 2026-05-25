@@ -735,6 +735,14 @@ effective turn tok/s, and the same paged invariants. Do not ship sampled-token
 lookahead without first proving token/RNG equivalence on the first sampled step;
 the current production path stays on logits-only async prefetch plus the
 accepted compiled sampler.
+Follow-up guard, 2026-05-25: `TestSample_PrefetchTokenEvalParity_Good` now
+seeds MLX, samples from lazy logits through the normal
+`sampleTokenIDWithSuppressionGuard` path, then re-seeds and samples while
+evaluating logits plus the sampled token together. This guards the first-token
+token/RNG equivalence required before any future lookahead or fused sampler/eval
+boundary can be benchmarked in retained State. Verified with
+`GOCACHE=/private/tmp/codex-go-mlx-cache GO_MLX_RUN_METAL_TESTS=1 go test ./go/internal/metal -run 'TestSample_(PrefetchTokenEvalParity|NewSamplerWithSuppressionBeforeTopPTopK|NewSamplerSkipsUnitTemperature)'`
+and the same focused command without `GO_MLX_RUN_METAL_TESTS`.
 
 Rejected local RoPE precompute probe, 2026-05-25: the IDEAS.md dual-RoPE note
 suggested checking whether local/default Gemma 4 RoPE was still building

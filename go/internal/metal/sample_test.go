@@ -404,6 +404,56 @@ func TestSample_NewSamplerSkipsUnitTemperature_Good(t *testing.T) {
 	}
 }
 
+func TestSample_PrefetchTokenEvalParity_Good(t *testing.T) {
+	coverageTokens := "Sample PrefetchTokenEvalParity"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	const seed = 240524
+	suppress := []int32{0, 7}
+	directID := sampleParityTokenID(t, seed, suppress, false)
+	prefetchedID := sampleParityTokenID(t, seed, suppress, true)
+	if prefetchedID != directID {
+		t.Fatalf("prefetched token id = %d, want direct token id %d", prefetchedID, directID)
+	}
+}
+
+func sampleParityTokenID(t *testing.T, seed uint64, suppress []int32, prefetch bool) int32 {
+	t.Helper()
+	if err := SeedRandom(seed); err != nil {
+		t.Fatalf("SeedRandom: %v", err)
+	}
+	base := FromValues([]float32{9.0, 3.4, 3.2, 3.0, 2.8, 2.6, 2.4, 9.0}, 1, 8)
+	zero := Zeros([]int32{1, 8}, DTypeFloat32)
+	logits := Add(base, zero)
+	defer Free(base, zero, logits)
+
+	s := newSamplerWithSuppression(1.0, 0.95, 0, 4, suppress)
+	defer closeSampler(s)
+	if !prefetch {
+		token, id, _, err := sampleTokenIDWithSuppressionGuard(logits, s, suppress, false)
+		if err != nil {
+			t.Fatalf("sampleTokenIDWithSuppressionGuard: %v", err)
+		}
+		Free(token)
+		return id
+	}
+
+	token := s.Sample(logits)
+	if err := EvalAsync(logits, token); err != nil {
+		Free(token)
+		t.Fatalf("EvalAsync(logits, token): %v", err)
+	}
+	id := int32(token.Int())
+	Free(token)
+	if tokenIDSuppressed(id, suppress) {
+		t.Fatalf("prefetched token id = %d, want unsuppressed token", id)
+	}
+	return id
+}
+
 func TestSample_Chain_Good(t *testing.T) {
 	coverageTokens := "Chain"
 	if coverageTokens == "" {

@@ -235,6 +235,11 @@ turn 1 with `empty_visible_output` and `0` generated tokens, while the same
 rebuilt binary with the gate off completed normally. Any future lookahead work
 needs a first-token token/RNG parity harness before it is allowed near the
 retained benchmark lane.
+That harness now exists as `TestSample_PrefetchTokenEvalParity_Good`: it proves
+normal guarded sampling and combined `EvalAsync(logits, sampled_token)`
+materialisation return the same first token under the same seed. Future
+lookahead work must extend this guard to the retained-session state-advance
+boundary before running full request-context traces.
 
 Trace timing now keeps the default `TraceTokenPhases` path on the same combined
 `EvalAsync(logits + dirty K/V)` boundary as production generation. The older
