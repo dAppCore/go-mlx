@@ -1187,6 +1187,25 @@ the accepted q4 graph-path trace remains faster at `90.256` raw decode tok/s,
 path. Keep the guard because it fixes the diagnostic branch and encodes the
 shared-KV invariant, but do not enable native paged attention by default.
 
+Native paged scratch cleanup, 2026-05-25: the opt-in
+`nativePagedSingleTokenAttention` handoff now reuses one pooled scratch object
+for both key and value C-handle runs instead of taking two separate pool slots.
+This is only a future-target cleanup for the native paged/global attention
+path; it does not change default gates. Focused tests pass and the native SDPA
+rows remain allocation-free: current `Page1024` benches record float32 `8`
+pages at `390.815-424.552us/op`, float32 `16` pages at
+`554.077-561.655us/op`, fp16 `8` pages at `351.951-355.548us/op`, and fp16
+`16` pages at `474.716-516.944us/op`, all with `0 allocs/op`. A same-binary
+32k-shaped driver smoke confirms the gate is still neutral rather than
+promotable: default fast lane records `116.588 tok/s`, while
+`-native-paged-attention` records `115.457 tok/s`, both generating `1024`
+tokens with comparable memory. Keep native paged out of
+`DefaultGemma4FastRuntimeGates()` until a retained 10-turn request-context row
+beats the current fast-concat path. Reports:
+`/private/tmp/go-mlx-goal/reports/2026-05-25-native-paged-scratch-control-gemma4-e2b-4bit-r8-g512.json`
+and
+`/private/tmp/go-mlx-goal/reports/2026-05-25-native-paged-scratch-enabled-gemma4-e2b-4bit-r8-g512.json`.
+
 Compiled-sampler diagnostic, 2026-05-24: MLX `CompileShapeless(..., true)`
 cannot cover this top-k/top-p sampler graph (`Slice cannot infer output
 shapes`). Shape-specific compile does run and is now tracked by

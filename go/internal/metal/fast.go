@@ -174,19 +174,33 @@ var scorePagesPool = sync.Pool{
 	},
 }
 
-// nativePagedCtxPool is a sync.Pool of *[]C.mlx_array slices used by
-// nativePagedSingleTokenAttention to hand a contiguous run of mlx_array
-// handles across the cgo boundary without paying two C.calloc/C.free
-// trips per decode step. The native wrapper consumes the buffer
-// synchronously, so the slice can be returned to the pool once the cgo
-// call returns, the same way W11-T pools scorePages. The 16-capacity
-// matches typical PagedKVCache page counts during decode; larger page
-// counts grow the backing array and the pool reuses the grown slot.
+type nativePagedScratch struct {
+	keys   []C.mlx_array
+	values []C.mlx_array
+}
+
+// nativePagedCtxPool is a sync.Pool of key/value C-handle buffers used by
+// nativePagedSingleTokenAttention to hand a contiguous run of mlx_array handles
+// across the cgo boundary without paying C allocations per decode step. The
+// native wrapper consumes the buffers synchronously, so the scratch can be
+// returned to the pool once the cgo call returns. The 16-capacity matches
+// typical PagedKVCache page counts during decode; larger page counts grow the
+// backing arrays and the pool reuses the grown slot.
 var nativePagedCtxPool = sync.Pool{
 	New: func() any {
-		buf := make([]C.mlx_array, 0, 16)
-		return &buf
+		return &nativePagedScratch{
+			keys:   make([]C.mlx_array, 0, 16),
+			values: make([]C.mlx_array, 0, 16),
+		}
 	},
+}
+
+func putNativePagedScratch(scratch *nativePagedScratch, keys, values []C.mlx_array) {
+	keys = keys[:0]
+	values = values[:0]
+	scratch.keys = keys
+	scratch.values = values
+	nativePagedCtxPool.Put(scratch)
 }
 
 func ScaledDotProductAttentionPaged(query *Array, keyPages, valuePages []*Array, scale float32) *Array {
@@ -260,15 +274,12 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 	}
 	pageCount := len(keyPages)
 
-	// Pooled C-pointer scratch — the native wrapper copies the
-	// page-handle run synchronously, so the slice goes back into
-	// nativePagedCtxPool once the cgo call returns. This removes
-	// the 2 × C.calloc / C.free trips per decode step that the
-	// SDPAPaged_*_Pages benches still show as the residual cost.
-	keysBufPtr := nativePagedCtxPool.Get().(*[]C.mlx_array)
-	valuesBufPtr := nativePagedCtxPool.Get().(*[]C.mlx_array)
-	keysBuf := *keysBufPtr
-	valuesBuf := *valuesBufPtr
+	// Pooled C-pointer scratch: the native wrapper consumes the page-handle
+	// runs synchronously, so the buffers go back to nativePagedCtxPool once the
+	// cgo call returns.
+	scratch := nativePagedCtxPool.Get().(*nativePagedScratch)
+	keysBuf := scratch.keys
+	valuesBuf := scratch.values
 	if cap(keysBuf) < pageCount {
 		keysBuf = make([]C.mlx_array, pageCount)
 	} else {
@@ -281,14 +292,7 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 	}
 	for i := 0; i < pageCount; i++ {
 		if keyPages[i] == nil || valuePages[i] == nil || !keyPages[i].Valid() || !valuePages[i].Valid() {
-			// Restore pool slot before bailing out (no growth survives the
-			// abort branch beyond the local re-slicing).
-			keysBuf = keysBuf[:0]
-			valuesBuf = valuesBuf[:0]
-			*keysBufPtr = keysBuf
-			*valuesBufPtr = valuesBuf
-			nativePagedCtxPool.Put(keysBufPtr)
-			nativePagedCtxPool.Put(valuesBufPtr)
+			putNativePagedScratch(scratch, keysBuf, valuesBuf)
 			return nil, false, nil
 		}
 		keysBuf[i] = keyPages[i].ctx
@@ -303,14 +307,7 @@ func nativePagedSingleTokenAttention(query *Array, keyPages, valuePages []*Array
 	runtime.KeepAlive(keysBuf)
 	runtime.KeepAlive(valuesBuf)
 
-	// Reset to zero length and put back the (possibly grown) slice so
-	// subsequent calls reuse the same backing array.
-	keysBuf = keysBuf[:0]
-	valuesBuf = valuesBuf[:0]
-	*keysBufPtr = keysBuf
-	*valuesBufPtr = valuesBuf
-	nativePagedCtxPool.Put(keysBufPtr)
-	nativePagedCtxPool.Put(valuesBufPtr)
+	putNativePagedScratch(scratch, keysBuf, valuesBuf)
 
 	if rc != 0 {
 		Free(out)

@@ -34,8 +34,8 @@ func reportMLXBenchMemory(b *testing.B) {
 // --- nativePagedSingleTokenAttention ---
 //
 // Decode-step native paged attention. Each invocation crosses cgo with a
-// run of K/V page handles. The W11-Y pool of *[]C.mlx_array converts the
-// two per-call C.calloc/C.free trips into a sync.Pool round-trip.
+// run of K/V page handles. The native scratch pool keeps the key/value handle
+// slices reusable without C allocations on the decode path.
 
 func benchNativePagedSingleToken(b *testing.B, pageCount int, pageSize int32) {
 	const B, H, D int32 = 1, 8, 128
