@@ -1,7 +1,8 @@
 // SPDX-Licence-Identifier: EUPL-1.2
 
 // Package memvid keeps the old go-mlx import path as a compatibility shim.
-// New code should import dappco.re/go/inference/state directly.
+//
+// Deprecated: import dappco.re/go/inference/state directly for State stores.
 package memvid
 
 import "dappco.re/go/inference/state"

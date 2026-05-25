@@ -14,7 +14,7 @@ All Go code lives under `go/`:
   `nomlxlm` removes it)
 - `go/cmd/violet/` and `go/pkg/daemon/` — local Violet Unix-socket sidecar
 - `cpp/` — C++ side companion (CLion-side worktree)
-- `lib/mlx/` — upstream MLX submodule pinned at `v0.30.1`
+- `lib/mlx/` — upstream MLX submodule pinned at `v0.31.1`
 - `patches/` — local patches against `lib/mlx` (manual apply only)
 - `docs/`, `examples/` — markdown documentation and per-feature usage examples
 

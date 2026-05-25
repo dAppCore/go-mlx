@@ -55,7 +55,7 @@ cpp/                         C++ side (CLion-side companion)
 docs/                        Markdown documentation
 examples/                    Per-feature usage examples (markdown)
 external/                    Vendored core libraries
-lib/mlx/                     Upstream mlx submodule (pinned at v0.30.1)
+lib/mlx/                     Upstream mlx submodule (pinned at v0.31.1)
 patches/                     Local patches to lib/mlx (not auto-applied)
 ```
 
@@ -128,7 +128,7 @@ Architecture is detected from `config.json` (`model_type`) for safetensors and f
 
 ## Submodule Patches
 
-`lib/mlx` is pinned at upstream tag `v0.30.1`. Local patches that we do not upstream live in `patches/` as standalone diff files (e.g. `patches/mlx-metallib-path.patch` for the `MLX_METALLIB_PATH` env-var override). Patches are not auto-applied — run them inside the submodule manually when their function is needed:
+`lib/mlx` is pinned at upstream tag `v0.31.1`. Local patches that we do not upstream live in `patches/` as standalone diff files (e.g. `patches/mlx-metallib-path.patch` for the `MLX_METALLIB_PATH` env-var override). Patches are not auto-applied — run them inside the submodule manually when their function is needed:
 
 ```bash
 git -C lib/mlx apply ../../patches/mlx-metallib-path.patch

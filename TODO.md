@@ -13,11 +13,14 @@ seeds, 100k retained-State growth, or the model window.
 
 ## Current handover checkpoint
 
-Status on `dev`, 2026-05-25: recent pushed handover commits include `ca0aad3`
-(`perf(metal): create decode token inputs directly`), `ac64e4d`
-(`docs(runtime): clarify benchmark handover state`), and `138dec1`
-(`docs(todo): add current handover checkpoint`). The tree was clean after those
-pushes to `homelab`, `origin`, and `github`.
+Status on `dev`, 2026-05-25: recent pushed handover commits include `463a072`
+(`docs(goal): record current binary smoke`) and `6c5b1cd`
+(`perf(metal): share native paged scratch`). The current binary smoke is back
+above the old 90 tok/s band: the first short 60-token run recorded
+`120.145 tok/s`, this handoff rebuild rechecked the same short lane at
+`121.803 tok/s`, and a longer 2700-token hidden-output smoke recorded
+`112.672 tok/s`. The tree was clean after those pushes to `homelab`, `origin`,
+and `github`.
 
 Use `GOAL.md` as the detailed historical ledger, but treat missing
 `docs/runtime/2026-*` artefact links as archived notes unless the report is
@@ -35,6 +38,10 @@ Default CLI polish in progress: keep `driver-profile` aligned with
 `DefaultProductionLane()` for the plain fast-lane shape unless a caller sets an
 explicit flag. Do not reintroduce the older one-run, 32-token smoke default as a
 production acceptance path.
+
+State naming polish: public State-named APIs are the active surface. Old
+`memvid` names remain only as deprecated compatibility shims for existing import
+paths, CLI aliases, and older bundle JSON fields.
 
 ## P0 - Enchantrix `pkg/trix`: streaming container API
 
