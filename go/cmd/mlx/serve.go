@@ -38,7 +38,13 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	writeTimeout := fs.Duration("write-timeout", 5*time.Minute, "HTTP write timeout (covers full streaming response)")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown deadline after SIGINT/SIGTERM")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s serve [flags]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s serve --model <path> [flags]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Host an OpenAI / Anthropic / Ollama-compatible HTTP API for a model.\n")
+		core.WriteString(stderr, "Default port (11434) mirrors Ollama so existing clients work unchanged.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -46,6 +52,22 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default OpenAI HTTP on :11434, model loaded at startup\n"))
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --addr 127.0.0.1:8080\n", name))
+		core.WriteString(stderr, core.Sprintf("    # loopback-only, custom port\n"))
+		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --context 8192\n", name))
+		core.WriteString(stderr, core.Sprintf("    # cap context length to save KV cache memory\n"))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Routes (all relative to the listen address):\n")
+		core.WriteString(stderr, "  POST /v1/chat/completions    OpenAI chat (streaming + non-streaming)\n")
+		core.WriteString(stderr, "  POST /v1/completions         OpenAI legacy completion\n")
+		core.WriteString(stderr, "  POST /v1/messages            Anthropic Messages\n")
+		core.WriteString(stderr, "  POST /api/chat               Ollama chat\n")
+		core.WriteString(stderr, "  GET  /v1/models              list loaded models\n")
+		core.WriteString(stderr, "  GET  /v1/health              process health probe\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
