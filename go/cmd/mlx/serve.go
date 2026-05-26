@@ -10,7 +10,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
-	"dappco.re/go/inference"
+	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/openai"
 )
 
@@ -169,26 +169,26 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		}
 	}
 
-	loadOpts := []inference.LoadOption{}
-	profileContextLen := 0
+	// Build the full mlx.LoadOption set so every tuned-profile field
+	// (CacheMode, BatchSize, PromptCache, memory caps, etc.) reaches the
+	// load — the inference.LoadOption boundary only carries ContextLength,
+	// so auto-tune output was previously silently dropped at load time.
+	mlxOpts := []mlx.LoadOption{}
 	if resolvedProfile != "" {
 		report, err := readTuneProfileReport(resolvedProfile)
 		if err != nil {
 			core.Print(stderr, "%s serve: profile read failed (%v) — falling through to defaults", cliName(), err)
-		} else if report.Profile != nil && report.Profile.Candidate.ContextLength > 0 {
-			profileContextLen = report.Profile.Candidate.ContextLength
+		} else if report.Profile != nil {
+			mlxOpts = append(mlxOpts, candidateToMLXLoadOpts(report.Profile.Candidate)...)
 		}
 	}
-	// Explicit --context flag overrides the profile's context length.
-	effectiveContextLen := profileContextLen
+	// Explicit --context flag overrides any profile-supplied context length
+	// by appending last (later With* overwrites earlier values in apply).
 	if *contextLen > 0 {
-		effectiveContextLen = *contextLen
-	}
-	if effectiveContextLen > 0 {
-		loadOpts = append(loadOpts, inference.WithContextLen(effectiveContextLen))
+		mlxOpts = append(mlxOpts, mlx.WithContextLength(*contextLen))
 	}
 
-	resolver := openai.NewResolver(*modelPath, loadOpts...)
+	resolver := mlxResolverFunc(*modelPath, mlxOpts)
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
 			return openai.Health{

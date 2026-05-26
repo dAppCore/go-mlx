@@ -84,6 +84,55 @@ var loadBackendModel = func(modelPath string, cfg metal.LoadConfig) (*metal.Mode
 	return metal.LoadAndInit(modelPath, cfg)
 }
 
+// LoadModelAsTextModel loads modelPath with the rich mlx.LoadOption
+// surface and returns it as an inference.TextModel ready for the
+// openai/anthropic/ollama compat handlers (drop into an
+// openaicompat.ResolverFunc).
+//
+// Bridge for cmd/mlx's `serve` command: the standard inference.LoadOption
+// boundary (via inference.LoadModel + metalbackend.LoadModel) only flows
+// ContextLength + ParallelSlots + AdapterPath + GPULayers from caller
+// inputs; tuned profiles' CacheMode, CachePolicy, BatchSize, PromptCache,
+// memory caps, etc. get filled in by PlanMemory() defaults and the
+// caller-supplied values get silently dropped. This bridge skips that
+// narrowing by translating mlx.LoadOption → metal.LoadConfig directly,
+// preserving all 13 candidate fields the auto-tune profile encodes.
+//
+//	model, err := mlx.LoadModelAsTextModel(modelPath,
+//	    mlx.WithContextLength(8192),
+//	    mlx.WithKVCacheMode(memory.KVCacheModeStreaming),
+//	    mlx.WithBatchSize(64),
+//	)
+func LoadModelAsTextModel(modelPath string, opts ...LoadOption) (inference.TextModel, error) {
+	cfg, err := normalizeLoadConfig(applyLoadOptions(opts))
+	if err != nil {
+		return nil, err
+	}
+	cfg = applyMemoryPlanToLoadConfig(modelPath, cfg)
+	metalCfg := metal.LoadConfig{
+		ContextLen:           cfg.ContextLength,
+		Gemma4SlidingWindow:  cfg.Gemma4SlidingWindow,
+		ParallelSlots:        cfg.ParallelSlots,
+		DisablePromptCache:   !cfg.PromptCache,
+		PromptCacheMinTokens: cfg.PromptCacheMinTokens,
+		AdapterPath:          cfg.AdapterPath,
+		Device:               metal.DeviceType(cfg.Device),
+		CachePolicy:          string(cfg.CachePolicy),
+		KVCacheMode:          string(cfg.CacheMode),
+		BatchSize:            cfg.BatchSize,
+		PrefillChunkSize:     cfg.PrefillChunkSize,
+		ExpectedQuantization: cfg.ExpectedQuantization,
+		MemoryLimitBytes:     cfg.MemoryLimitBytes,
+		CacheLimitBytes:      cfg.CacheLimitBytes,
+		WiredLimitBytes:      cfg.WiredLimitBytes,
+	}
+	nativeModel, err := loadBackendModel(modelPath, metalCfg)
+	if err != nil {
+		return nil, err
+	}
+	return &metaladapter{model: nativeModel, schedulerMaxConcurrent: cfg.ParallelSlots}, nil
+}
+
 func (backend *metalbackend) LoadModel(modelPath string, opts ...inference.LoadOption) (inference.TextModel, error) {
 	loadOptions := inference.ApplyLoadOpts(opts)
 	deviceName, partialOffloadUnsupported := backendDeviceForGPULayers(loadOptions.GPULayers)
