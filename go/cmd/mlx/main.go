@@ -6688,7 +6688,16 @@ func runTunePlanCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	maxCandidates := fs.Int("max-candidates", 0, "maximum candidates to return")
 	splitFFNCaches := fs.String("split-ffn-caches", "", "comma-separated CPU FFN cache layer counts to rank; 0 caches all, negative disables cache")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s tune-plan [flags] <model-path>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s tune-plan [flags] <model-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Step 1 of the auto-tune workflow. Generates a set of candidate\n")
+		core.WriteString(stderr, "load configurations (context length, batch size, cache mode,\n")
+		core.WriteString(stderr, "split-FFN cache layer count) for a model under a target workload —\n")
+		core.WriteString(stderr, "chat / coding / long_context / agent_state / throughput / low_latency.\n")
+		core.WriteString(stderr, "Output is the candidate list; tune-run executes them.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -6696,6 +6705,16 @@ func runTunePlanCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s tune-plan ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default workload (chat), all candidates\n"))
+		core.WriteString(stderr, core.Sprintf("  %s tune-plan -workload coding -max-candidates 5 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # coding workload, top 5 candidates only\n"))
+		core.WriteString(stderr, core.Sprintf("  %s tune-plan -workload long_context -split-ffn-caches 0,8,16 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # also rank split-FFN cache layer counts (0=all cached, 8/16=partial)\n"))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Next: pipe the model + workload into `tune-run` to actually measure candidates.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -6758,7 +6777,15 @@ func runTuneProfileCommand(_ context.Context, args []string, stdout, stderr io.W
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "print JSON profile load settings")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s tune-profile [flags] <profile-path>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s tune-profile [flags] <profile-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Read a saved tuning profile JSON (the output of `tune-run` or\n")
+		core.WriteString(stderr, "`profile-select`) and print the reusable load settings it encodes:\n")
+		core.WriteString(stderr, "model path, context length, batch size, cache mode, runtime backend.\n")
+		core.WriteString(stderr, "Mostly for verification before piping the same profile into bench / serve.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -6766,6 +6793,12 @@ func runTuneProfileCommand(_ context.Context, args []string, stdout, stderr io.W
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s tune-profile ~/profiles/lemer-lite-m3ultra-chat.json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # human-readable settings table\n"))
+		core.WriteString(stderr, core.Sprintf("  %s tune-profile -json ~/profiles/lemer-lite-m3ultra-chat.json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # JSON output for scripting (model path, ctx, batch, cache)\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -6869,7 +6902,16 @@ func runProfileListCommand(ctx context.Context, args []string, stdout, stderr io
 	workload := fs.String("workload", "", "workload to match: chat, coding, long_context, agent_state, throughput, or low_latency")
 	modelPath := fs.String("model-path", "", "model path to match")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s profile-list [flags] <profile-dir>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s profile-list [flags] <profile-dir>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "List the tuning profiles saved under a directory, optionally\n")
+		core.WriteString(stderr, "filtered by machine hash, model path, or workload. Use\n")
+		core.WriteString(stderr, "-current-machine to auto-discover this machine's stable hash.\n")
+		core.WriteString(stderr, "Pairs with `profile-select` (best match) and `tune-run` (saves\n")
+		core.WriteString(stderr, "the profiles being listed).\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -6877,6 +6919,14 @@ func runProfileListCommand(ctx context.Context, args []string, stdout, stderr io
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s profile-list ~/profiles\n", name))
+		core.WriteString(stderr, core.Sprintf("    # everything in the directory\n"))
+		core.WriteString(stderr, core.Sprintf("  %s profile-list -current-machine -model-path ~/models/lemer-lite ~/profiles\n", name))
+		core.WriteString(stderr, core.Sprintf("    # profiles for this machine + this model\n"))
+		core.WriteString(stderr, core.Sprintf("  %s profile-list -best-per-workload -current-machine ~/profiles\n", name))
+		core.WriteString(stderr, core.Sprintf("    # one row per workload — the best score wins\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -6933,7 +6983,15 @@ func runProfileSelectCommand(ctx context.Context, args []string, stdout, stderr 
 	workload := fs.String("workload", "", "workload to match: chat, coding, long_context, agent_state, throughput, or low_latency")
 	modelPath := fs.String("model-path", "", "model path to match")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s profile-select [flags] <profile-dir>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s profile-select [flags] <profile-dir>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Pick the highest-scored saved tuning profile matching a machine\n")
+		core.WriteString(stderr, "hash + model + workload. Returns the profile JSON (or the file\n")
+		core.WriteString(stderr, "path with -path-only) — feed it to `bench -profile <path>` or\n")
+		core.WriteString(stderr, "`serve --profile <path>` to load the model with those settings.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -6941,6 +6999,12 @@ func runProfileSelectCommand(ctx context.Context, args []string, stdout, stderr 
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s profile-select -current-machine -workload chat -model-path ~/models/lemer-lite ~/profiles\n", name))
+		core.WriteString(stderr, core.Sprintf("    # best chat profile for this machine + model\n"))
+		core.WriteString(stderr, core.Sprintf("  %s profile-select -current-machine -workload long_context ~/profiles\n", name))
+		core.WriteString(stderr, core.Sprintf("    # best long-context profile for this machine, any model\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -7329,7 +7393,18 @@ func runTuneRunCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	maxTokens := fs.Int("max-tokens", defaultBench.MaxTokens, "generated tokens per candidate measurement")
 	runs := fs.Int("runs", defaultBench.Runs, "measurement runs per candidate")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s tune-run [flags] <model-path>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s tune-run [flags] <model-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Step 2 of the auto-tune workflow. Builds the candidate plan (same\n")
+		core.WriteString(stderr, "shape as tune-plan), runs each candidate against the model with a\n")
+		core.WriteString(stderr, "real generation pass, and records the per-candidate score. The best\n")
+		core.WriteString(stderr, "candidate per workload is saved to a profile JSON that bench / serve\n")
+		core.WriteString(stderr, "can later consume via -profile / --profile.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Streams JSONL events with -jsonl (one event per candidate measurement).\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -7337,6 +7412,16 @@ func runTuneRunCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s tune-run -workload chat -current-machine -profile-dir ~/profiles ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # tune for chat on this machine, save best to ~/profiles/<hash>.json\n"))
+		core.WriteString(stderr, core.Sprintf("  %s tune-run -workload long_context -max-tokens 256 -runs 3 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # long-context workload, 256-token measurements averaged over 3 runs\n"))
+		core.WriteString(stderr, core.Sprintf("  %s tune-run -jsonl -workload coding ~/models/lemer-lite | tee tune.jsonl\n", name))
+		core.WriteString(stderr, core.Sprintf("    # stream events for offline analysis\n"))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Next: `profile-list` to see what landed, `profile-select` to pick the best.\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
