@@ -29,11 +29,11 @@ Once Path B bundling lands, the metallib disappears into the binary and you ship
 
 ### What the binary is
 
-`lthn-mlx` is `dappco.re/go/mlx/cmd/mlx` built and renamed. Default upstream output name is `core-mlx`; consumers (this includes the desktop app, this includes ops-side deployments) build with `-o lthn-mlx`. The binary embeds the full MLX runtime via CGO and links `libmlx.dylib` + `libmlxc.dylib` from `dist/lib/`. **Both dylibs are statically linked into the binary at build time on the install host** — they don't ship as runtime dependencies. The metallib is the only external file the binary needs at runtime today.
+`lthn-mlx` is `dappco.re/go/mlx/cmd/mlx` built and renamed. Default upstream output name is `core-mlx`; consumers (this includes the desktop app, this includes ops-side deployments) build with `-o lthn-mlx`. The binary embeds the full MLX runtime via cgo: 187 `mlx_*.cpp` files vendored at `go/internal/metal/` are compiled inline during `go build`, so the lthn-mlx executable has **zero non-system runtime dependencies** — `otool -L bin/lthn-mlx` shows only macOS frameworks (Foundation, Metal, Accelerate, QuartzCore, libSystem, libc++). The metallib is the only external file the binary needs at runtime today; Path B (Mantis #1779) folds it into the binary as well.
 
 ### Platform requirement
 
-**darwin/arm64 only.** Apple Silicon M1/M2/M3/M4. The CGO files carry `//go:build darwin && arm64`. On any other platform the binary will not build, and pre-built `lthn-mlx` artefacts are not produced for Linux or Intel macOS. If you need inference on a non-Apple host, you want a different backend (e.g. `go-rocm` for AMD GPUs); the surface is the same go-inference interfaces.
+**darwin/arm64 only.** Apple Silicon M1/M2/M3/M4/M5. The CGO files carry `//go:build darwin && arm64`. On any other platform the binary will not build, and pre-built `lthn-mlx` artefacts are not produced for Linux or Intel macOS. If you need inference on a non-Apple host, you want a different backend (e.g. `go-rocm` for AMD GPUs); the surface is the same go-inference interfaces.
 
 ## The serve command
 

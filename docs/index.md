@@ -7,7 +7,7 @@ description: Native Metal GPU inference and training for Go on Apple Silicon.
 
 `dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/core/inference` and an RFC-style direct root-package API.
 
-**Platform:** darwin/arm64 only (Apple Silicon M1-M4). A stub provides `MetalAvailable() bool` returning false on all other platforms.
+**Platform:** darwin/arm64 only (Apple Silicon M1-M5). A stub provides `MetalAvailable() bool` returning false on all other platforms.
 
 ## Quick Start
 

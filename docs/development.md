@@ -59,10 +59,10 @@ cmake --install build
 CMake fetches mlx-c v0.4.1 from GitHub, builds it with:
 - `MLX_BUILD_SAFETENSORS=ON` (model loading)
 - `MLX_BUILD_GGUF=ON` (GGUF load/save support)
-- `BUILD_SHARED_LIBS=ON`
-- macOS deployment target: 13.3 (minimum required by MLX)
+- `BUILD_SHARED_LIBS=OFF` (cgo inlines the MLX C++ tree; CMake builds static archives + the metallib only)
+- macOS deployment target: 26.0
 
-The built library installs to `dist/include/` and `dist/lib/`. Build time is approximately 2 minutes on M3 Ultra.
+The built artefacts install to `dist/include/` (headers cgo references) and `dist/lib/` (precompiled Metal shader library `mlx.metallib`). Build time is approximately 2 minutes on M3 Ultra.
 
 The `dist/` directory is gitignored and must be rebuilt on each fresh checkout.
 
@@ -87,15 +87,15 @@ GOWORK=off go test ./...
 The `#cgo` directives in `internal/metal/metal.go` set all required flags automatically when building on darwin/arm64:
 
 ```c
-#cgo CXXFLAGS: -std=c++17
+#cgo CXXFLAGS: -std=gnu++23 -mmacosx-version-min=26.0 -O2 -DNDEBUG ...
 #cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
-#cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
-#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
+#cgo darwin CFLAGS: -x objective-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx -I${SRCDIR}/../../../lib/mlx-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include
+#cgo darwin LDFLAGS: -mmacosx-version-min=26.0 -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 ```
 
-`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`), so the `../../dist/` path resolves to the module root `dist/`.
+`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The MLX C++ implementation is vendored as `mlx_*.cpp` files alongside `metal.go` and cgo compiles them inline — no `-L${SRCDIR}/../../dist/lib -lmlxc -lmlx` link step. The full directive set is in `go/internal/metal/metal.go`.
 
 No manual environment variables are needed for `go build` or `go test`.
 

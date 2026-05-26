@@ -5,7 +5,7 @@ description: CGO binding layer, lazy evaluation, memory model, and internal stru
 
 # Architecture
 
-go-mlx is a Go package that wraps Apple's MLX framework via the mlx-c C API. It runs LLM inference and LoRA fine-tuning on Apple Silicon GPUs (M1-M4) using Metal compute shaders.
+go-mlx is a Go package that wraps Apple's MLX framework via the mlx-c C API. It runs LLM inference and LoRA fine-tuning on Apple Silicon GPUs (M1-M5) using Metal compute shaders.
 
 ## Layer Diagram
 
@@ -60,13 +60,11 @@ FetchContent_Declare(
 )
 ```
 
-After the CMake build, headers land in `dist/include/` and shared libraries in `dist/lib/`. The `#cgo` directives in `internal/metal/metal.go` reference these paths:
+After the CMake build, headers land in `dist/include/` and the precompiled Metal shader library lands at `dist/lib/mlx.metallib`. The full MLX C++ implementation is also vendored in-tree at `go/internal/metal/` as 187 `mlx_*.cpp` files, which cgo compiles inline during `go build` — there is no `-lmlx` / `-lmlxc` link step. The `#cgo` directives in `internal/metal/metal.go` reference only headers + system frameworks:
 
 ```
 CPPFLAGS: -I${SRCDIR}/../../dist/include
-LDFLAGS:  -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-darwin:   -framework Foundation -framework Metal -framework Accelerate
-          -Wl,-rpath,${SRCDIR}/../../dist/lib
+darwin:   -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 ```
 
 Every Go source file in `internal/metal/` carries `//go:build darwin && arm64`. The root package compiles on all platforms; the blank import `_ "dappco.re/go/mlx"` only triggers Metal backend registration on supported hardware.

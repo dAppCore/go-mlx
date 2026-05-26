@@ -52,10 +52,10 @@ patched `lib/mlx` submodule with:
 
 - `MLX_BUILD_SAFETENSORS=ON` -- required for model loading
 - `MLX_BUILD_GGUF=ON` -- enables GGUF load/save support
-- `BUILD_SHARED_LIBS=ON` -- shared `.dylib` for rpath loading
+- `BUILD_SHARED_LIBS=OFF` -- static archives only (cgo doesn't link these; see below)
 - `CMAKE_OSX_DEPLOYMENT_TARGET=26.0`
 
-Headers install to `dist/include/`, shared libraries to `dist/lib/`. Build time is approximately 2 minutes on M3 Ultra.
+Headers install to `dist/include/`, the precompiled Metal shader library lands at `dist/lib/mlx.metallib`. The MLX C++ implementation is vendored in-tree at `go/internal/metal/` (187 `mlx_*.cpp` files) and cgo compiles it inline — the CMake-side static archives are configuration scaffolding, not runtime link artefacts. Build time is approximately 2 minutes on M3 Ultra.
 
 The `dist/` directory is gitignored and must be rebuilt on each fresh checkout.
 
@@ -72,15 +72,15 @@ Tests that require model files on disk (e.g. `/Volumes/Data/lem/safetensors/...`
 The `#cgo` directives in `internal/metal/metal.go` set all required flags automatically:
 
 ```c
-#cgo CXXFLAGS: -std=c++17
+#cgo CXXFLAGS: -std=gnu++23 -mmacosx-version-min=26.0 -O2 -DNDEBUG ...
 #cgo CFLAGS: -mmacosx-version-min=26.0
-#cgo CPPFLAGS: -I${SRCDIR}/../../dist/include
-#cgo LDFLAGS: -L${SRCDIR}/../../dist/lib -lmlxc -lmlx
-#cgo darwin LDFLAGS: -framework Foundation -framework Metal -framework Accelerate
-#cgo darwin LDFLAGS: -Wl,-rpath,${SRCDIR}/../../dist/lib
+#cgo darwin CFLAGS: -x objective-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../lib/mlx -I${SRCDIR}/../../../lib/mlx-c
+#cgo CPPFLAGS: -I${SRCDIR}/../../../dist/include
+#cgo darwin LDFLAGS: -mmacosx-version-min=26.0 -framework Foundation -framework Metal -framework Accelerate -framework QuartzCore
 ```
 
-`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`), so `../../dist/` resolves to the module root `dist/`.
+`${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The full file at `go/internal/metal/metal.go` has the complete set. Notably absent: any `-L` or `-l` for libmlx/libmlxc — the implementation `.cpp` files sit alongside `metal.go` and cgo picks them up directly.
 
 No manual environment variables are needed for `go build` or `go test`.
 
@@ -130,7 +130,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version")
 set(MLX_BUILD_GGUF ON CACHE BOOL "" FORCE)
 set(MLX_BUILD_SAFETENSORS ON CACHE BOOL "" FORCE)
 set(MLX_C_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(CMAKE_INSTALL_RPATH "@loader_path")
 
 include(FetchContent)
@@ -144,7 +144,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(mlx-c)
 ```
 
-The `CMAKE_INSTALL_RPATH` of `@loader_path` ensures the built binary finds `libmlxc.dylib` and `libmlx.dylib` relative to the Go binary at runtime.
+The `CMAKE_INSTALL_RPATH` of `@loader_path` is legacy from when the CMake build produced shared libraries that cgo linked against; with `BUILD_SHARED_LIBS=OFF` and cgo compiling the C++ tree inline, the rpath setting is inert. It is retained for future contributors who may use the standalone `cpp/` CLion build that still links against the static archives.
 
 ## Testing
 

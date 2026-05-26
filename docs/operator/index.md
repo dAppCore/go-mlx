@@ -29,7 +29,7 @@ These slots exist in the operator mental model but aren't drafted yet. If you re
 | `observability.md` | `docs/observability/probe.md`, `/v1/cache/stats`, `mlx.GetActiveMemory`, `mlx.GetPeakMemory` | What to log, what to scrape, what alarms to set. Cache hit rate, generation latency p50/p95, memory peaks. |
 | `model-management.md` | `docs/model/`, `docs/model-operations.md` | The lifecycle from HuggingFace download → quantisation → on-disk layout → ready-to-load. Includes the `pack` and `gguf-quantize` CLI subcommands. |
 | `upgrade-runbook.md` | The deployment doc + this index | Step-by-step for replacing a running `lthn-mlx` binary in place: which file to replace first, when to bounce, how to roll back if the new binary panics. |
-| `hardware-matrix.md` | The serve binary's published baselines, plus per-chip-family observed numbers | What to expect on M1 / M2 / M3 / M4 (base / Pro / Max / Ultra) for the common model sizes. Operators provisioning hardware need this. |
+| `hardware-matrix.md` | The serve binary's published baselines, plus per-chip-family observed numbers | What to expect on M1 / M2 / M3 / M4 / M5 (base / Pro / Max / Ultra) for the common model sizes. Operators provisioning hardware need this. |
 
 Author convention for new operator docs: lead with the operator's question, not the system's structure. "How do I tune memory" beats "Memory architecture overview." If you find yourself writing a long lead-in before getting to the answer, the doc shape is wrong.
 
