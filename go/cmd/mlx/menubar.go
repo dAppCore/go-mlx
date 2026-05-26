@@ -29,6 +29,7 @@ import (
 	"context"
 	"embed"
 	"io"
+	"io/fs"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -78,6 +79,17 @@ func savePrefs(p menubarPrefs) {
 //go:embed assets/tray.png assets/app-icon.png
 var menubarAssets embed.FS
 
+// frontendDist embeds the lthn/desktop Vite-built frontend. Copied
+// into go/cmd/mlx/frontend/dist/ at build time by
+// scripts/make-app-bundle.sh — the lthn/desktop frontend repo is the
+// single source of truth. Surfaces that depend on lthn-desktop-only
+// services won't function from inside lthn-mlx; the lemma surface
+// (added in lthn/desktop/frontend/src/lit/ext/lemma-window.ts) is
+// purpose-built to use only the OpenAI HTTP endpoints lthn-mlx exposes.
+//
+//go:embed all:frontend/dist
+var frontendDist embed.FS
+
 // isInsideAppBundle returns true when this binary is running inside a
 // macOS .app bundle (as set by the Info.plist bundle identifier). The
 // CLI dispatch uses this to choose the default subcommand: menubar when
@@ -120,12 +132,20 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	appIcon, _ := menubarAssets.ReadFile("assets/app-icon.png")
 	trayIcon, _ := menubarAssets.ReadFile("assets/tray.png")
 
+	frontendFS, _ := fs.Sub(frontendDist, "frontend/dist")
+
 	app := application.New(application.Options{
 		Name:        "lthn-mlx",
 		Description: "Lethean Lemma — local AI engine",
 		Icon:        appIcon,
 		Mac: application.MacOptions{
 			ActivationPolicy: application.ActivationPolicyAccessory,
+			// Without this Wails quits when the lemma window closes —
+			// but the tray IS the app's lifetime anchor, not any window.
+			ApplicationShouldTerminateAfterLastWindowClosed: false,
+		},
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(frontendFS),
 		},
 	})
 
@@ -152,6 +172,7 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	stopItem.SetEnabled(false)
 
 	menu.AddSeparator()
+	lemmaWindowItem := menu.Add("Open Lemma window")
 	openItem := menu.Add("Open endpoint in browser")
 	copyItem := menu.Add("Copy endpoint URL")
 
@@ -210,6 +231,33 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 		}
 		stopMenubarServe(state)
 		refresh()
+	})
+
+	// Window opener — mirrors lthn/desktop's openWindowSpec pattern:
+	// a frameless lighter-shell window pointing at ?surface=lemma in
+	// the embedded frontend. Tray is the lifetime anchor (closing the
+	// window doesn't quit the app, only the Quit menu item does).
+	var lemmaWindow application.Window
+	lemmaWindowItem.OnClick(func(_ *application.Context) {
+		if lemmaWindow != nil {
+			lemmaWindow.Show()
+			lemmaWindow.Focus()
+			return
+		}
+		lemmaWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+			Name:             "lemma",
+			Title:            "Lemma",
+			Width:            720,
+			Height:           480,
+			MinWidth:         480,
+			MinHeight:        360,
+			Frameless:        true,
+			URL:              "/?surface=lemma",
+			BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+			Mac: application.MacWindow{
+				InvisibleTitleBarHeight: 40,
+			},
+		})
 	})
 
 	endpoint := "http://localhost" + state.addr

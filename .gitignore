@@ -23,6 +23,11 @@ dist/*
 # macOS
 .DS_Store
 
+# lthn/desktop frontend dist — copied at build time by
+# scripts/make-app-bundle.sh, embedded in cmd/mlx via go:embed.
+# Single source of truth lives in lthn/desktop/frontend/.
+go/cmd/mlx/frontend/dist/
+
 # Knowledge base
 KB/
 .core/
