@@ -39,6 +39,8 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	readTimeout := fs.Duration("read-timeout", 30*time.Second, "HTTP read header timeout")
 	writeTimeout := fs.Duration("write-timeout", 5*time.Minute, "HTTP write timeout (covers full streaming response)")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown deadline after SIGINT/SIGTERM")
+	printAdminToken := fs.Bool("print-admin-token", false, "print the admin Bearer token and exit (generates if absent, mode 0600 at ~/Lethean/data/admin.token)")
+	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
 	fs.Usage = func() {
 		name := cliName()
 		core.WriteString(stderr, core.Sprintf("Usage: %s serve --model <path> [flags]\n", name))
@@ -80,13 +82,19 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  GET  /v1/models              list loaded models\n")
 		core.WriteString(stderr, "  GET  /v1/health              process health probe\n")
 		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Admin routes (orchestrator surface — no auth in v1):\n")
+		core.WriteString(stderr, "Admin routes (Bearer auth required — see --print-admin-token):\n")
 		core.WriteString(stderr, "  GET  /v1/admin/machine        current machine identity (hash + runtime)\n")
 		core.WriteString(stderr, "  GET  /v1/admin/profiles       list saved tuning profiles\n")
 		core.WriteString(stderr, "  POST /v1/admin/auto-tune      kick off async auto-tune job\n")
 		core.WriteString(stderr, "  GET  /v1/admin/auto-tune?job=ID poll job status / result\n")
 		core.WriteString(stderr, "  POST /v1/admin/models/download    501 (needs shared HF downloader)\n")
 		core.WriteString(stderr, "  POST /v1/admin/serve/reload       501 (needs hot-swap runtime)\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Admin token (auto-managed):\n")
+		core.WriteString(stderr, "  Stored at ~/Lethean/data/admin.token (mode 0600), generated on first\n")
+		core.WriteString(stderr, "  serve boot. Reveal it with `lthn-mlx serve --print-admin-token`;\n")
+		core.WriteString(stderr, "  rotate with `--rotate-admin-token`. Send as:\n")
+		core.WriteString(stderr, "    curl -H 'Authorization: Bearer <token>' http://127.0.0.1:11434/v1/admin/machine\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -95,10 +103,53 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 2
 	}
 
+	// Token-management subcommands — handled BEFORE the --model check
+	// so operators can reveal / rotate without a model loaded.
+	tokenPath := standardAdminTokenPath()
+	if *rotateAdminToken {
+		tok, err := generateAdminToken()
+		if err != nil {
+			core.Print(stderr, "%s serve: token rotation failed: %v", cliName(), err)
+			return 1
+		}
+		if err := writeAdminToken(tokenPath, tok); err != nil {
+			core.Print(stderr, "%s serve: token write failed: %v", cliName(), err)
+			return 1
+		}
+		core.Print(stderr, "%s admin token (rotated):\n  %s\n  saved to %s (mode 0600)", cliName(), tok, tokenPath)
+		return 0
+	}
+	if *printAdminToken {
+		tok, generated, err := ensureAdminToken(tokenPath)
+		if err != nil {
+			core.Print(stderr, "%s serve: token init failed: %v", cliName(), err)
+			return 1
+		}
+		label := "loaded"
+		if generated {
+			label = "newly generated"
+		}
+		core.Print(stderr, "%s admin token (%s):\n  %s\n  at %s (mode 0600)", cliName(), label, tok, tokenPath)
+		return 0
+	}
+
 	if core.Trim(*modelPath) == "" {
 		core.Print(stderr, "%s serve: --model is required", cliName())
 		fs.Usage()
 		return 2
+	}
+
+	// Admin token — load existing or generate fresh. Fail-closed:
+	// if the token file can't be written, serve refuses to boot
+	// rather than binding a listener with an unprotected admin
+	// surface (Cerberus DREAD §5.1).
+	adminToken, generated, err := ensureAdminToken(tokenPath)
+	if err != nil {
+		core.Print(stderr, "%s serve: admin token init failed (fail-closed): %v", cliName(), err)
+		return 1
+	}
+	if generated {
+		core.Print(stderr, "%s serve: fresh admin token generated at %s — run `%s serve --print-admin-token` to reveal", cliName(), tokenPath, cliName())
 	}
 
 	// Profile resolution — explicit --profile wins, otherwise auto-
@@ -155,9 +206,13 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr))
 	rootMux.Handle("/", openaiMux)
 
+	// Bearer auth on /v1/admin/* only — inference paths pass through.
+	// Middleware mounted at rootMux per Cerberus DREAD §5.3 (mounting
+	// it inside openaiMux instead would leave admin handlers
+	// unauthenticated by composition order).
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           rootMux,
+		Handler:           requireBearerOnAdmin(rootMux, adminToken, stderr),
 		ReadHeaderTimeout: *readTimeout,
 		WriteTimeout:      *writeTimeout,
 	}
