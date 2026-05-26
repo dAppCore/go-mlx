@@ -61,8 +61,8 @@ Two variants cover everything we currently care about:
 
 | Variant | Build conditions | Runs on | Use case |
 |---------|------------------|---------|----------|
-| **`mlx-nax.metallib`** | Metal ≥4.0 + SDK ≥26.2 (Xcode 26+), macOS deployment-min 26 | M1/M2/M3/M4/M5 on macOS 26+ (NAX kernels dispatch on M4 + M5 only) | **Default ship.** macOS 26 is mainstream as of 2026; NAX dispatches on the current two chip generations. What every public binary should carry. |
-| **`mlx-legacy.metallib`** | Metal ≥3.2 toolchain, macOS deployment-min 13 | M1/M2/M3/M4/M5 on macOS 13-25 | Legacy fallback for operators still on macOS 13-25. Ship only when you have explicit telemetry showing those operators exist. |
+| **`mlx-nax.metallib`** | Metal ≥4.0 + SDK ≥26.2 (Xcode 26+), macOS deployment-min 26 | M1/M2/M3/M4/M5 on macOS 26+ ; NAX kernels dispatch on M4 + M5 | **Default ship.** M4 and M5 must dispatch tensor-coprocessor kernels — that's the entire perf advantage of the current two generations. Without NAX present, M4/M5 run M1-class kernels and the customer paid for hardware they don't get to use. |
+| **`mlx-legacy.metallib`** | Metal ≥3.2 toolchain, macOS deployment-min 13 | M1/M2/M3/M4/M5 on macOS 13-25 | Legacy fallback for operators on macOS 13-25. Ship alongside NAX only when those operators exist. |
 
 **Chip-family note:** there is no per-chip variant within a metallib. The Metal driver picks the right kernel encoding for the chip the program is running on; one archive serves M1 through M5. The NAX kernels in the default variant only *dispatch* on M4 + M5, but their presence/absence is a build-toolchain decision, not a runtime-target decision.
 
@@ -70,8 +70,8 @@ Two variants cover everything we currently care about:
 
 This matrix is **~85% confidence**. Three unknowns remain:
 
-1. **Does the Metal driver refuse to load an entire metallib whose `-mmacosx-version-min` is higher than the runtime OS, or does it just refuse the affected kernels?** I'm 70% it's whole-library reject. If it's per-kernel reject, the two-variant split could collapse to one fat variant.
-2. **NAX kernel dispatch on non-M4/M5 hardware** — does MLX gate at dispatch time, or would a NAX kernel reach an M1-M3 device and crash? Reading `lib/mlx/mlx/backend/metal/` dispatch code resolves it in ~20 min. Becomes load-bearing if we choose to ship M1-M3 on macOS 26.
+1. **Does the Metal driver refuse to load an entire metallib whose `-mmacosx-version-min` is higher than the runtime OS, or does it just refuse the affected kernels?** Likely whole-library reject; resolves if/when we encounter it.
+2. **NAX kernel dispatch on M1-M3 hardware running the NAX metallib** — MLX must gate at dispatch time so M1-M3 chips fall back to the standard kernel path. Read of `lib/mlx/mlx/backend/metal/` dispatch code resolves it in ~20 min.
 3. **M5 tensor-kernel API delta vs M4 NAX** — Apple shipped M5 with refined Neural Accelerators. The Metal-4 NAX symbol set is forward-compatible (M5 runs M4-generated NAX kernels), but if SDK 27+ exposes M5-specific kernels with measurable wins, a third variant could be warranted. Open until perf data justifies the split.
 
 ### How to identify what you have
