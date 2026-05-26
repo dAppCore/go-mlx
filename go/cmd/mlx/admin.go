@@ -253,8 +253,25 @@ func adminProfilesHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	// Resolve dir once for the loop — used to bound resolved entry
+	// paths so a symlink can't trick us into parsing a JSON file
+	// outside the profiles tree.
+	dirPrefix := dir
+	if r := core.PathEvalSymlinks(dir); r.OK {
+		dirPrefix = r.Value.(string)
+	}
+	if !core.HasSuffix(dirPrefix, "/") {
+		dirPrefix += "/"
+	}
 	for _, entry := range dirEntries {
 		if entry.IsDir() {
+			continue
+		}
+		// Skip non-regular files (symlinks, devices, sockets, fifos)
+		// — an attacker with FS write access to dir could otherwise
+		// drop a symlink pointing at any JSON-shaped file on disk and
+		// leak its ModelPath + MachineHash via this response.
+		if !entry.Type().IsRegular() {
 			continue
 		}
 		name := entry.Name()
@@ -262,6 +279,12 @@ func adminProfilesHandler(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		path := core.PathJoin(dir, name)
+		// Belt-and-braces: verify the resolved path stays under dir.
+		// Defends against cwd-relative resolution differences or
+		// dir-level path-aliasing the IsRegular check can't catch.
+		if r := core.PathEvalSymlinks(path); !r.OK || !core.HasPrefix(r.Value.(string), dirPrefix) {
+			continue
+		}
 		report, err := readTuneProfileReport(path)
 		if err != nil || report.Profile == nil {
 			continue
