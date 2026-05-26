@@ -99,6 +99,23 @@ typedef struct {
     size_t memory_size;
 } mlx_go_host_device_info_t;
 
+// Returns a strdup'd path to mlx.metallib resolved via NSBundle when the
+// process runs inside a .app/.framework bundle; NULL otherwise. NSBundle
+// handles the Apple-canonical Contents/Resources/ layout natively, so a
+// .app shipped with the metallib at the conventional location resolves
+// without any path-walking heuristics on the Go side. Caller frees.
+static char* mlx_go_bundle_metallib_path(void) {
+    @autoreleasepool {
+        NSBundle *bundle = [NSBundle mainBundle];
+        if (bundle == nil) { return NULL; }
+        NSString *path = [bundle pathForResource:@"mlx" ofType:@"metallib"];
+        if (path == nil) { return NULL; }
+        const char *raw = [path UTF8String];
+        if (raw == NULL) { return NULL; }
+        return strdup(raw);
+    }
+}
+
 static void mlx_go_copy_nsstring(char *dst, size_t dst_len, NSString *value) {
     if (dst == NULL || dst_len == 0 || value == nil) {
         return;
@@ -203,6 +220,18 @@ var evalOutputCtxPool = sync.Pool{
 
 func defaultMetallibPath() string {
 	const metallib = "mlx.metallib"
+	// Preferred: NSBundle resolution. When this binary runs inside a
+	// .app bundle (or framework) with the metallib at the Apple-canonical
+	// Contents/Resources/mlx.metallib location, NSBundle returns the
+	// full path directly. The CWD-walk fallback below covers dev mode
+	// where the binary runs from the source tree.
+	if bundled := C.mlx_go_bundle_metallib_path(); bundled != nil {
+		path := C.GoString(bundled)
+		C.free(unsafe.Pointer(bundled))
+		if path != "" {
+			return path
+		}
+	}
 	var candidates []string
 	if wd := core.Getwd(); wd.OK {
 		root := wd.Value.(string)
