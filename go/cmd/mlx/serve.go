@@ -152,7 +152,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// else falls through to the openai mux. See admin.go for the
 	// admin endpoint surface (machine / profiles / auto-tune / etc).
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/v1/admin/", newAdminMux())
+	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr))
 	rootMux.Handle("/", openaiMux)
 
 	srv := &http.Server{

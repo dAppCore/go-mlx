@@ -100,24 +100,99 @@ type adminAutoTuneJob struct {
 	Error        string    `json:"error,omitempty"`
 }
 
+// Auto-tune resource caps — defend against adversarial request
+// inputs that would monopolise the GPU or grow the registry without
+// bound. Tuning is single-machine, GPU-bound; one job at a time is
+// the only sane policy.
+const (
+	maxAutoTuneCandidates = 32
+	maxAutoTuneTokens     = 4096
+	maxAutoTuneRuns       = 10
+	maxJobAge             = time.Hour
+)
+
 // adminJobRegistry holds in-process auto-tune job state. Jobs are
 // lost on restart — that's acceptable for v1 because auto-tune is
 // idempotent (re-trigger if needed). Future: persist via go-store.
+//
+// activeSlots is a counting semaphore (size 1) that caps concurrent
+// kickoffs. ctx is the server-shutdown context; tuning goroutines
+// derive their ctx from this so SIGTERM cancels in-flight runs
+// instead of letting them burn GPU after the process is asked to
+// quit. stderr is the audit-emit destination for kickoff lines.
 type adminJobRegistry struct {
-	mu   sync.Mutex
-	jobs map[string]*adminAutoTuneJob
+	mu          sync.Mutex
+	jobs        map[string]*adminAutoTuneJob
+	activeSlots chan struct{}
+	ctx         context.Context
+	stderr      io.Writer
 }
 
-func newAdminJobRegistry() *adminJobRegistry {
-	return &adminJobRegistry{jobs: make(map[string]*adminAutoTuneJob)}
+func newAdminJobRegistry(ctx context.Context, stderr io.Writer) *adminJobRegistry {
+	return &adminJobRegistry{
+		jobs:        make(map[string]*adminAutoTuneJob),
+		activeSlots: make(chan struct{}, 1),
+		ctx:         ctx,
+		stderr:      stderr,
+	}
+}
+
+// tryAcquireSlot non-blocking acquires the auto-tune semaphore.
+// Returns false when another job is already in flight; caller must
+// refuse the new request with 429.
+func (r *adminJobRegistry) tryAcquireSlot() bool {
+	select {
+	case r.activeSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseSlot frees the auto-tune semaphore. Called from the
+// goroutine that finishes a tuning job (success or failure).
+func (r *adminJobRegistry) releaseSlot() {
+	<-r.activeSlots
+}
+
+// prune evicts completed jobs older than maxJobAge. Caller MUST
+// hold r.mu. In-flight jobs (status "pending" or "running") are
+// never evicted — the semaphore caps the in-flight count at 1.
+func (r *adminJobRegistry) prune() {
+	cutoff := time.Now().Add(-maxJobAge)
+	for id, job := range r.jobs {
+		if job.Status == "pending" || job.Status == "running" {
+			continue
+		}
+		if job.StartedAt.Before(cutoff) {
+			delete(r.jobs, id)
+		}
+	}
+}
+
+// clampAutoTuneRequest caps user-supplied numeric ceilings to defend
+// against resource-exhaustion via gigantic candidate/token/run counts.
+func clampAutoTuneRequest(req adminAutoTuneRequest) adminAutoTuneRequest {
+	if req.MaxCandidates > maxAutoTuneCandidates {
+		req.MaxCandidates = maxAutoTuneCandidates
+	}
+	if req.MaxTokens > maxAutoTuneTokens {
+		req.MaxTokens = maxAutoTuneTokens
+	}
+	if req.Runs > maxAutoTuneRuns {
+		req.Runs = maxAutoTuneRuns
+	}
+	return req
 }
 
 // newAdminMux mounts the /v1/admin/* handlers. Returns a Handler that
 // only knows the admin paths — compose with the openai mux via a
-// root mux for end-to-end serve.
-func newAdminMux() *http.ServeMux {
+// root mux for end-to-end serve. ctx is the server-shutdown context
+// (cancellation propagates into tuning goroutines); stderr is where
+// admin-level audit lines emit.
+func newAdminMux(ctx context.Context, stderr io.Writer) *http.ServeMux {
 	mux := http.NewServeMux()
-	registry := newAdminJobRegistry()
+	registry := newAdminJobRegistry(ctx, stderr)
 
 	mux.HandleFunc(adminPathMachine, adminMachineHandler)
 	mux.HandleFunc(adminPathProfiles, adminProfilesHandler)
@@ -242,9 +317,14 @@ func adminAutoTuneHandler(w http.ResponseWriter, r *http.Request, registry *admi
 		if len(workloads) == 0 {
 			workloads = []inference.TuningWorkload{inference.TuningWorkloadChat}
 		}
+		req = clampAutoTuneRequest(req)
 		machineHash, err := currentMachineProfileHash(r.Context())
 		if err != nil {
 			http.Error(w, "machine hash: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !registry.tryAcquireSlot() {
+			http.Error(w, "auto-tune busy — another job in flight", http.StatusTooManyRequests)
 			return
 		}
 		jobID := nowJobID()
@@ -257,10 +337,17 @@ func adminAutoTuneHandler(w http.ResponseWriter, r *http.Request, registry *admi
 			StartedAt:   time.Now().UTC(),
 		}
 		registry.mu.Lock()
+		registry.prune()
 		registry.jobs[jobID] = job
 		registry.mu.Unlock()
 
-		go runAutoTuneJob(job, req, workloads[0], registry)
+		core.Print(registry.stderr, "%s admin: auto-tune kickoff job=%s model=%s machine=%s remote=%s",
+			cliName(), jobID, req.Model, machineHash, r.RemoteAddr)
+
+		go func() {
+			defer registry.releaseSlot()
+			runAutoTuneJob(job, req, workloads[0], registry)
+		}()
 		writeJSON(w, http.StatusAccepted, job)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -281,7 +368,7 @@ func runAutoTuneJob(job *adminAutoTuneJob, req adminAutoTuneRequest, workload in
 	job.Status = "running"
 	registry.mu.Unlock()
 
-	ctx := context.Background()
+	ctx := registry.ctx
 	defaultBench := bench.DefaultConfig()
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
