@@ -223,7 +223,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr, serveStatus))
+	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr, serveStatus, standardAdminJobsPath()))
 	rootMux.Handle("/", openaiMux)
 
 	// Bearer auth on /v1/admin/* only — inference paths pass through.

@@ -113,30 +113,140 @@ const (
 	maxJobAge             = time.Hour
 )
 
-// adminJobRegistry holds in-process auto-tune job state. Jobs are
-// lost on restart — that's acceptable for v1 because auto-tune is
-// idempotent (re-trigger if needed). Future: persist via go-store.
+// adminJobRegistry holds in-process auto-tune job state. Persisted
+// to persistPath as JSON after every mutation so jobs survive serve
+// restarts — caller polling a job that started before the restart
+// can still GET /v1/admin/auto-tune?job=ID and see a definitive
+// status (jobs that were in flight at restart are restored as
+// failed with a "serve restart" message).
 //
 // activeSlots is a counting semaphore (size 1) that caps concurrent
 // kickoffs. ctx is the server-shutdown context; tuning goroutines
 // derive their ctx from this so SIGTERM cancels in-flight runs
 // instead of letting them burn GPU after the process is asked to
 // quit. stderr is the audit-emit destination for kickoff lines.
+// persistPath is the JSON snapshot path; empty disables persistence
+// (test paths use this).
 type adminJobRegistry struct {
 	mu          sync.Mutex
 	jobs        map[string]*adminAutoTuneJob
 	activeSlots chan struct{}
 	ctx         context.Context
 	stderr      io.Writer
+	persistPath string
 }
 
-func newAdminJobRegistry(ctx context.Context, stderr io.Writer) *adminJobRegistry {
-	return &adminJobRegistry{
+// standardAdminJobsPath returns ~/Lethean/data/admin-jobs.json —
+// the canonical persistence location, sibling of admin.token.
+func standardAdminJobsPath() string {
+	return core.PathJoin(core.Env("HOME"), "Lethean", "data", "admin-jobs.json")
+}
+
+func newAdminJobRegistry(ctx context.Context, stderr io.Writer, persistPath string) *adminJobRegistry {
+	r := &adminJobRegistry{
 		jobs:        make(map[string]*adminAutoTuneJob),
 		activeSlots: make(chan struct{}, 1),
 		ctx:         ctx,
 		stderr:      stderr,
+		persistPath: persistPath,
 	}
+	if persistPath != "" {
+		if loaded, ok := loadPersistedAdminJobs(persistPath); ok && len(loaded) > 0 {
+			r.jobs = loaded
+			// Any pending/running on disk are stale — we just booted, no
+			// goroutine is actually running them. Mark them failed with a
+			// definitive reason so polling consumers see a resolved state.
+			now := time.Now().UTC()
+			rewrote := false
+			for _, job := range r.jobs {
+				if job.Status == "pending" || job.Status == "running" {
+					job.Status = "failed"
+					job.Error = "serve restart while job in flight; re-trigger to retry"
+					if job.FinishedAt == nil {
+						finishedAt := now
+						job.FinishedAt = &finishedAt
+					}
+					rewrote = true
+				}
+			}
+			if rewrote {
+				_ = r.persistLocked()
+			}
+			core.Print(stderr, "%s admin: restored %d auto-tune job(s) from %s", cliName(), len(r.jobs), persistPath)
+		}
+	}
+	return r
+}
+
+// persistLocked atomically writes r.jobs to r.persistPath as JSON.
+// Caller MUST hold r.mu. Best-effort: errors are logged to stderr;
+// the in-memory state stays the source of truth for the running
+// process — disk is a restart-survival snapshot, not a transaction
+// log.
+func (r *adminJobRegistry) persistLocked() error {
+	if r.persistPath == "" {
+		return nil
+	}
+	encoded := core.JSONMarshal(r.jobs)
+	if !encoded.OK {
+		err, _ := encoded.Value.(error)
+		core.Print(r.stderr, "%s admin: persist failed (marshal): %v", cliName(), err)
+		return err
+	}
+	if dir := core.PathDir(r.persistPath); dir != "" {
+		if res := core.MkdirAll(dir, 0o755); !res.OK {
+			err, _ := res.Value.(error)
+			core.Print(r.stderr, "%s admin: persist failed (mkdir): %v", cliName(), err)
+			return err
+		}
+	}
+	tmpPath := r.persistPath + ".tmp"
+	if res := core.WriteFile(tmpPath, encoded.Value.([]byte), 0o600); !res.OK {
+		err, _ := res.Value.(error)
+		core.Print(r.stderr, "%s admin: persist failed (write): %v", cliName(), err)
+		return err
+	}
+	if res := core.Rename(tmpPath, r.persistPath); !res.OK {
+		err, _ := res.Value.(error)
+		core.Print(r.stderr, "%s admin: persist failed (rename): %v", cliName(), err)
+		return err
+	}
+	return nil
+}
+
+// loadPersistedAdminJobs reads the JSON snapshot at path. Returns
+// (nil, false) for any read / parse failure — caller treats as
+// "no prior state" rather than fatal.
+func loadPersistedAdminJobs(path string) (map[string]*adminAutoTuneJob, bool) {
+	res := core.ReadFile(path)
+	if !res.OK {
+		return nil, false
+	}
+	data, ok := res.Value.([]byte)
+	if !ok || len(data) == 0 {
+		return nil, false
+	}
+	var jobs map[string]*adminAutoTuneJob
+	if r := core.JSONUnmarshal(data, &jobs); !r.OK {
+		return nil, false
+	}
+	return jobs, true
+}
+
+// commitLocked runs fn under r.mu + persists the post-fn state to
+// disk. Centralises the lock + mutate + persist pattern so every
+// status change automatically survives restart. Callers describe
+// the mutation in fn; the helper handles lock + persist + unlock.
+//
+//	registry.commitLocked(func() {
+//	    job.Status = "failed"
+//	    job.Error = "plan: " + err.Error()
+//	})
+func (r *adminJobRegistry) commitLocked(fn func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fn()
+	_ = r.persistLocked()
 }
 
 // tryAcquireSlot non-blocking acquires the auto-tune semaphore.
@@ -195,9 +305,9 @@ func clampAutoTuneRequest(req adminAutoTuneRequest) adminAutoTuneRequest {
 // of what serve was configured with (model path + resolved profile +
 // applied config) — captured once so the /v1/admin/serve/status
 // endpoint reports the effective config without recomputation.
-func newAdminMux(ctx context.Context, stderr io.Writer, serveStatus adminServeStatus) *http.ServeMux {
+func newAdminMux(ctx context.Context, stderr io.Writer, serveStatus adminServeStatus, jobsPath string) *http.ServeMux {
 	mux := http.NewServeMux()
-	registry := newAdminJobRegistry(ctx, stderr)
+	registry := newAdminJobRegistry(ctx, stderr, jobsPath)
 
 	mux.HandleFunc(adminPathMachine, adminMachineHandler)
 	mux.HandleFunc(adminPathProfiles, adminProfilesHandler)
@@ -365,10 +475,10 @@ func adminAutoTuneHandler(w http.ResponseWriter, r *http.Request, registry *admi
 			MachineHash: machineHash,
 			StartedAt:   time.Now().UTC(),
 		}
-		registry.mu.Lock()
-		registry.prune()
-		registry.jobs[jobID] = job
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			registry.prune()
+			registry.jobs[jobID] = job
+		})
 
 		core.Print(registry.stderr, "%s admin: auto-tune kickoff job=%s model=%s machine=%s remote=%s",
 			cliName(), jobID, req.Model, machineHash, r.RemoteAddr)
@@ -388,14 +498,14 @@ func adminAutoTuneHandler(w http.ResponseWriter, r *http.Request, registry *admi
 // its own goroutine; callers poll via GET /v1/admin/auto-tune?job=ID.
 func runAutoTuneJob(job *adminAutoTuneJob, req adminAutoTuneRequest, workload inference.TuningWorkload, registry *adminJobRegistry) {
 	defer func() {
-		registry.mu.Lock()
-		finishedAt := time.Now().UTC()
-		job.FinishedAt = &finishedAt
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			finishedAt := time.Now().UTC()
+			job.FinishedAt = &finishedAt
+		})
 	}()
-	registry.mu.Lock()
-	job.Status = "running"
-	registry.mu.Unlock()
+	registry.commitLocked(func() {
+		job.Status = "running"
+	})
 
 	ctx := registry.ctx
 	defaultBench := bench.DefaultConfig()
@@ -420,18 +530,18 @@ func runAutoTuneJob(job *adminAutoTuneJob, req adminAutoTuneRequest, workload in
 		},
 	})
 	if err != nil {
-		registry.mu.Lock()
-		job.Status = "failed"
-		job.Error = "plan: " + err.Error()
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			job.Status = "failed"
+			job.Error = "plan: " + err.Error()
+		})
 		return
 	}
 	candidates := cliLimitTuningCandidates(plan.Candidates, req.MaxCandidates)
 	if len(candidates) == 0 {
-		registry.mu.Lock()
-		job.Status = "failed"
-		job.Error = "no tuning candidates"
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			job.Status = "failed"
+			job.Error = "no tuning candidates"
+		})
 		return
 	}
 
@@ -448,34 +558,34 @@ func runAutoTuneJob(job *adminAutoTuneJob, req adminAutoTuneRequest, workload in
 		Bench:      benchCfg,
 	})
 	if err != nil {
-		registry.mu.Lock()
-		job.Status = "failed"
-		job.Error = err.Error()
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			job.Status = "failed"
+			job.Error = err.Error()
+		})
 		return
 	}
 	selected, ok := cliSelectTuningResult(results)
 	if !ok {
-		registry.mu.Lock()
-		job.Status = "failed"
-		job.Error = "no successful tuning result"
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			job.Status = "failed"
+			job.Error = "no successful tuning result"
+		})
 		return
 	}
 	selectionLabels := cliTuningSelectionLabels(results, selected)
 	profile := cliBuildTuningProfile(plan, req.Model, job.MachineHash, workload, selected, selectionLabels, time.Now())
 	profilePath := cliTuningProfilePath(standardProfileDir(), profile)
 	if err := writeTuningProfile(profilePath, profile); err != nil {
-		registry.mu.Lock()
-		job.Status = "failed"
-		job.Error = "write profile: " + err.Error()
-		registry.mu.Unlock()
+		registry.commitLocked(func() {
+			job.Status = "failed"
+			job.Error = "write profile: " + err.Error()
+		})
 		return
 	}
-	registry.mu.Lock()
-	job.Status = "done"
-	job.ProfilePath = profilePath
-	registry.mu.Unlock()
+	registry.commitLocked(func() {
+		job.Status = "done"
+		job.ProfilePath = profilePath
+	})
 }
 
 // adminNotImplementedHandler is the placeholder for /v1/admin/models/

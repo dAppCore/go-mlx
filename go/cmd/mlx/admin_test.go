@@ -72,7 +72,7 @@ func TestClampAutoTuneRequest_PreservesSmallValues(t *testing.T) {
 // auto-tune kickoff must fail-fast, not block. Tuning is GPU-bound
 // and single-instance; refusing the second is the right answer.
 func TestAdminJobRegistry_Semaphore_RefusesSecond(t *testing.T) {
-	reg := newAdminJobRegistry(context.Background(), io.Discard)
+	reg := newAdminJobRegistry(context.Background(), io.Discard, "")
 	if !reg.tryAcquireSlot() {
 		t.Fatal("first acquire should succeed on a fresh registry")
 	}
@@ -90,7 +90,7 @@ func TestAdminJobRegistry_Semaphore_RefusesSecond(t *testing.T) {
 // older than maxJobAge must be evicted. Keeps the registry bounded
 // across long-running serve processes.
 func TestAdminJobRegistry_Prune_EvictsOldFinished(t *testing.T) {
-	reg := newAdminJobRegistry(context.Background(), io.Discard)
+	reg := newAdminJobRegistry(context.Background(), io.Discard, "")
 	reg.jobs["old-done"] = &adminAutoTuneJob{
 		ID: "old-done", Status: "done", StartedAt: time.Now().Add(-2 * maxJobAge),
 	}
@@ -116,11 +116,82 @@ func TestAdminJobRegistry_Prune_EvictsOldFinished(t *testing.T) {
 	}
 }
 
+// TestAdminJobRegistry_PersistRoundtrip — a job written to the
+// registry's persistPath must reload into a fresh registry pointed
+// at the same path. Survives serve restarts.
+func TestAdminJobRegistry_PersistRoundtrip(t *testing.T) {
+	tmp := t.TempDir() + "/admin-jobs.json"
+
+	reg := newAdminJobRegistry(context.Background(), io.Discard, tmp)
+	reg.commitLocked(func() {
+		reg.jobs["job-1"] = &adminAutoTuneJob{
+			ID: "job-1", Status: "done", Model: "/some/model",
+			StartedAt: time.Now().UTC().Add(-5 * time.Minute),
+		}
+	})
+
+	// Fresh registry — must load the persisted job.
+	reg2 := newAdminJobRegistry(context.Background(), io.Discard, tmp)
+	job, ok := reg2.jobs["job-1"]
+	if !ok {
+		t.Fatal("expected job-1 to load from persistence, got nothing")
+	}
+	if job.Status != "done" || job.Model != "/some/model" {
+		t.Errorf("loaded job state wrong: %+v", job)
+	}
+}
+
+// TestAdminJobRegistry_RestoreMarksInFlightAsFailed — jobs that
+// were "pending" or "running" at write time must restore as "failed"
+// with a clear restart message (the goroutine that would have
+// completed them no longer exists post-restart).
+func TestAdminJobRegistry_RestoreMarksInFlightAsFailed(t *testing.T) {
+	tmp := t.TempDir() + "/admin-jobs.json"
+
+	// Seed a registry with an in-flight job + persist it.
+	seed := newAdminJobRegistry(context.Background(), io.Discard, tmp)
+	seed.commitLocked(func() {
+		seed.jobs["in-flight"] = &adminAutoTuneJob{
+			ID: "in-flight", Status: "running", Model: "/m",
+			StartedAt: time.Now().UTC().Add(-10 * time.Minute),
+		}
+	})
+
+	// Restore — the in-flight job must come back as failed.
+	restored := newAdminJobRegistry(context.Background(), io.Discard, tmp)
+	job, ok := restored.jobs["in-flight"]
+	if !ok {
+		t.Fatal("in-flight job not restored")
+	}
+	if job.Status != "failed" {
+		t.Errorf("expected status=failed, got %q", job.Status)
+	}
+	if job.Error == "" {
+		t.Error("expected non-empty Error explaining the restart")
+	}
+	if job.FinishedAt == nil {
+		t.Error("expected FinishedAt to be set on restored-failed job")
+	}
+}
+
+// TestAdminJobRegistry_PersistEmpty — when persistPath is empty
+// (test mode), all helpers stay no-op without error.
+func TestAdminJobRegistry_PersistEmpty(t *testing.T) {
+	reg := newAdminJobRegistry(context.Background(), io.Discard, "")
+	if err := reg.persistLocked(); err != nil {
+		t.Errorf("expected nil error on empty persistPath, got %v", err)
+	}
+	// commitLocked must not panic.
+	reg.commitLocked(func() {
+		reg.jobs["x"] = &adminAutoTuneJob{ID: "x", Status: "done", StartedAt: time.Now()}
+	})
+}
+
 // TestAdminJobRegistry_Prune_KeepsInFlight — pending/running jobs
 // must never be evicted regardless of age. They're load-bearing
 // references for in-flight goroutines.
 func TestAdminJobRegistry_Prune_KeepsInFlight(t *testing.T) {
-	reg := newAdminJobRegistry(context.Background(), io.Discard)
+	reg := newAdminJobRegistry(context.Background(), io.Discard, "")
 	reg.jobs["old-running"] = &adminAutoTuneJob{
 		ID: "old-running", Status: "running", StartedAt: time.Now().Add(-2 * maxJobAge),
 	}
