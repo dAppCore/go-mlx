@@ -72,6 +72,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runBenchCommand(ctx, args[1:], stdout, stderr)
 	case "chapter-profile":
 		return runChapterProfileCommand(ctx, args[1:], stdout, stderr)
+	case "auto-tune":
+		return runAutoTuneCommand(ctx, args[1:], stdout, stderr)
 	case "menubar":
 		return runMenubarCommand(ctx, args[1:], stdout, stderr)
 	case "discover":
@@ -8610,6 +8612,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "  slice-smoke         materialise + reload + benchmark a slice in one pass\n")
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Tune for this machine\n")
+	core.WriteString(w, "  auto-tune           one-shot: plan + run + save best profile to standard dir\n")
 	core.WriteString(w, "  tune-plan           plan tuning candidates for a model\n")
 	core.WriteString(w, "  tune-run            run + stream tuning candidate measurements\n")
 	core.WriteString(w, "  tune-profile        read a saved tuning profile + print load settings\n")
