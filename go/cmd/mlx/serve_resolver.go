@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 
 	"dappco.re/go/inference"
 	openaicompat "dappco.re/go/inference/openai"
@@ -21,7 +22,7 @@ import (
 // express them. Bridged via mlx.LoadModelAsTextModel.
 //
 //	opts := candidateToMLXLoadOpts(report.Profile.Candidate)
-//	resolver := mlxResolverFunc(modelPath, opts)
+//	resolver := newHotSwapResolver(modelPath, opts)
 func candidateToMLXLoadOpts(c inference.TuningCandidate) []mlx.LoadOption {
 	opts := []mlx.LoadOption{}
 	if c.ContextLength > 0 {
@@ -58,24 +59,113 @@ func candidateToMLXLoadOpts(c inference.TuningCandidate) []mlx.LoadOption {
 	return opts
 }
 
-// mlxResolverFunc returns an openaicompat.Resolver that lazily loads
-// modelPath via mlx.LoadModelAsTextModel — the rich-options path that
-// preserves all 13 metal.LoadConfig fields the tuned profile carries.
-// First ResolveModel call triggers the actual load; subsequent calls
-// return the cached model + any load error.
+// loadedModel is the snapshot the hotSwapResolver hands back to
+// callers. modelPath stamps which weights are in use so
+// /v1/admin/serve/status + reload audit lines can name the source.
+type loadedModel struct {
+	model     inference.TextModel
+	modelPath string
+}
+
+// hotSwapResolver is the openaicompat.Resolver that backs
+// /v1/admin/serve/reload (F-7). The active model lives in an
+// atomic.Pointer so ResolveModel reads are lock-free on the hot
+// path (every chat/completions call hits this); Replace serialises
+// swaps under swapMu so two concurrent reloads can't race.
 //
-//	resolver := mlxResolverFunc(modelPath, candidateToMLXLoadOpts(candidate))
-//	openaiMux := openai.NewMuxWithAdmin(resolver, adminCfg)
-func mlxResolverFunc(modelPath string, opts []mlx.LoadOption) openaicompat.Resolver {
-	var (
-		once    sync.Once
-		model   inference.TextModel
-		loadErr error
-	)
-	return openaicompat.ResolverFunc(func(_ context.Context, _ string) (inference.TextModel, error) {
-		once.Do(func() {
-			model, loadErr = mlx.LoadModelAsTextModel(modelPath, opts...)
-		})
-		return model, loadErr
+// First-call lazy load: the boot-time model isn't loaded eagerly —
+// the first ResolveModel triggers the load via initial.Do. That keeps
+// `serve --model X` from blocking on a multi-GB load before binding
+// the listener, matching the pre-F-7 closure behaviour.
+//
+// Drain policy (audited per §4.F-7.5): in-flight Generate/Chat calls
+// keep their TextModel reference and complete on old weights. New
+// calls hit new weights. Old model is NOT explicitly Closed — Go GC
+// reclaims when the last in-flight reference drops. Operator running
+// many reloads should restart serve to reclaim GPU memory
+// deterministically.
+//
+//	r := newHotSwapResolver(modelPath, opts)
+//	openaiMux := openai.NewMuxWithAdmin(r, adminCfg)
+//	// later, on /v1/admin/serve/reload:
+//	old, err := r.Replace(newPath, newOpts)
+type hotSwapResolver struct {
+	active   atomic.Pointer[loadedModel]
+	initial  sync.Once
+	initErr  error
+	initPath string
+	initOpts []mlx.LoadOption
+	swapMu   sync.Mutex
+}
+
+// newHotSwapResolver returns a resolver staged with the initial model
+// path + options. The model is NOT loaded until first ResolveModel
+// call.
+func newHotSwapResolver(modelPath string, opts []mlx.LoadOption) *hotSwapResolver {
+	return &hotSwapResolver{
+		initPath: modelPath,
+		initOpts: opts,
+	}
+}
+
+// ResolveModel returns the active model. First call loads the initial
+// model; subsequent calls return whatever's currently active
+// (possibly swapped via Replace). modelName is the OpenAI-API
+// `model` field from the request, ignored — lthn-mlx serves one
+// model at a time.
+func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.TextModel, error) {
+	r.initial.Do(func() {
+		m, err := mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
+		if err != nil {
+			r.initErr = err
+			return
+		}
+		r.active.Store(&loadedModel{model: m, modelPath: r.initPath})
 	})
+	if r.initErr != nil {
+		return nil, r.initErr
+	}
+	cur := r.active.Load()
+	if cur == nil {
+		return nil, r.initErr
+	}
+	return cur.model, nil
+}
+
+// Replace loads a new model at newPath with newOpts and atomically
+// swaps it in. Returns the previously-active loadedModel (caller may
+// inspect modelPath for audit logging; do NOT Close it — see drain
+// policy above) plus the new active path. swapMu serialises swaps so
+// two concurrent reloads can't race.
+//
+//	prev, newPath, err := r.Replace(modelPath, opts)
+//	if err != nil { return err }
+//	core.Print(stderr, "reload %s → %s", prev.modelPath, newPath)
+func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (prev *loadedModel, newActive string, err error) {
+	r.swapMu.Lock()
+	defer r.swapMu.Unlock()
+	loaded, err := mlx.LoadModelAsTextModel(newPath, newOpts...)
+	if err != nil {
+		return nil, "", err
+	}
+	next := &loadedModel{model: loaded, modelPath: newPath}
+	prev = r.active.Swap(next)
+	return prev, newPath, nil
+}
+
+// CurrentPath returns the modelPath of the active model, or the
+// initial path if no load has happened yet. Used by handlers that
+// need to render the active source (e.g. /v1/admin/serve/status).
+func (r *hotSwapResolver) CurrentPath() string {
+	if cur := r.active.Load(); cur != nil {
+		return cur.modelPath
+	}
+	return r.initPath
+}
+
+// openaiResolver returns r as an openaicompat.Resolver. Useful at
+// wire-up sites that want to keep the interface narrow without
+// exposing the hot-swap surface.
+func (r *hotSwapResolver) openaiResolver() openaicompat.Resolver {
+	return openaicompat.ResolverFunc(r.ResolveModel)
 }

@@ -26,8 +26,10 @@ import (
 //	GET  /v1/admin/profiles           list saved tuning profiles in standard dir
 //	POST /v1/admin/auto-tune          kick off async auto-tune job, returns job id
 //	GET  /v1/admin/auto-tune?job=ID   poll the job's status / result
-//	POST /v1/admin/models/download    501 — needs shared HF downloader extraction
-//	POST /v1/admin/serve/reload       501 — needs hot-swap runtime support
+//	GET  /v1/admin/serve/status       snapshot of model + profile + applied config
+//	POST /v1/admin/models/download    HF download into ~/Lethean/data/models/, allowlist-gated
+//	GET  /v1/admin/models/download?job=ID  poll a download job
+//	POST /v1/admin/serve/reload       hot-swap loaded model, confirmation + sha-manifest gated
 //
 // Bearer auth (admin_auth.go) gates /v1/admin/* on the lthn-mlx_-
 // prefixed 256-bit token at ~/Lethean/data/admin.token (mode 0600).
@@ -297,26 +299,49 @@ func clampAutoTuneRequest(req adminAutoTuneRequest) adminAutoTuneRequest {
 	return req
 }
 
+// adminMuxConfig bundles the dependencies newAdminMux needs. Pulled
+// out of a positional parameter list so future surfaces (per-orchestrator
+// tokens, audit-sink registration, future endpoints) can attach without
+// breaking call sites.
+type adminMuxConfig struct {
+	Stderr        io.Writer
+	ServeStatus   adminServeStatus
+	JobsPath      string
+	Resolver      *hotSwapResolver
+	HFTreeAPI     hfTreeAPI
+}
+
 // newAdminMux mounts the /v1/admin/* handlers. Returns a Handler that
 // only knows the admin paths — compose with the openai mux via a
 // root mux for end-to-end serve. ctx is the server-shutdown context
-// (cancellation propagates into tuning goroutines); stderr is where
-// admin-level audit lines emit; serveStatus is the boot-time snapshot
-// of what serve was configured with (model path + resolved profile +
-// applied config) — captured once so the /v1/admin/serve/status
-// endpoint reports the effective config without recomputation.
-func newAdminMux(ctx context.Context, stderr io.Writer, serveStatus adminServeStatus, jobsPath string) *http.ServeMux {
+// (cancellation propagates into tuning + download goroutines);
+// cfg.Stderr is where admin-level audit lines emit; cfg.ServeStatus is
+// the boot-time snapshot of what serve was configured with — captured
+// once so the /v1/admin/serve/status endpoint reports the effective
+// config without recomputation; cfg.Resolver is the hot-swap resolver
+// reload mutates; cfg.HFTreeAPI is the HF tree-API seam (production
+// path = newHFTreeClient, tests substitute).
+func newAdminMux(ctx context.Context, cfg adminMuxConfig) *http.ServeMux {
 	mux := http.NewServeMux()
-	registry := newAdminJobRegistry(ctx, stderr, jobsPath)
+	registry := newAdminJobRegistry(ctx, cfg.Stderr, cfg.JobsPath)
+	downloads := newAdminDownloadRegistry(ctx, cfg.Stderr)
+	hf := cfg.HFTreeAPI
+	if hf == nil {
+		hf = newHFTreeClient()
+	}
 
 	mux.HandleFunc(adminPathMachine, adminMachineHandler)
 	mux.HandleFunc(adminPathProfiles, adminProfilesHandler)
 	mux.HandleFunc(adminPathAutoTune, func(w http.ResponseWriter, r *http.Request) {
 		adminAutoTuneHandler(w, r, registry)
 	})
-	mux.HandleFunc(adminPathServeStatus, adminServeStatusHandler(serveStatus))
-	mux.HandleFunc(adminPathDownload, adminNotImplementedHandler("models/download", "needs shared HF downloader extraction from lthn/desktop pkg"))
-	mux.HandleFunc(adminPathReload, adminNotImplementedHandler("serve/reload", "needs hot-swap runtime support in lthn-mlx; replace-plan computes the plan but applying it requires resolver-level work"))
+	mux.HandleFunc(adminPathServeStatus, adminServeStatusHandler(cfg.ServeStatus))
+	mux.HandleFunc(adminPathDownload, adminDownloadHandler(downloads, hf))
+	if cfg.Resolver != nil {
+		mux.HandleFunc(adminPathReload, adminReloadHandler(cfg.Resolver, cfg.Stderr))
+	} else {
+		mux.HandleFunc(adminPathReload, adminNotImplementedHandler("serve/reload", "no resolver wired — caller built admin mux without hotSwapResolver"))
+	}
 	return mux
 }
 

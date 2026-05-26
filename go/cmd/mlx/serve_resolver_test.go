@@ -68,12 +68,15 @@ func TestCandidateToMLXLoadOpts_OnlyContextLength(t *testing.T) {
 	}
 }
 
-// TestMLXResolverFunc_NotNil — the resolver factory always returns a
+// TestHotSwapResolver_NotNil — the resolver factory always returns a
 // usable resolver (no panic on construction). The actual load is
 // lazy on ResolveModel; this test exercises the factory only.
-func TestMLXResolverFunc_NotNil(t *testing.T) {
-	r := mlxResolverFunc("/nonexistent/path", nil)
+func TestHotSwapResolver_NotNil(t *testing.T) {
+	r := newHotSwapResolver("/nonexistent/path", nil)
 	if r == nil {
-		t.Fatal("mlxResolverFunc returned nil")
+		t.Fatal("newHotSwapResolver returned nil")
+	}
+	if r.CurrentPath() != "/nonexistent/path" {
+		t.Errorf("CurrentPath before load: got %q want %q", r.CurrentPath(), "/nonexistent/path")
 	}
 }

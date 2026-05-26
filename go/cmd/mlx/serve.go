@@ -88,8 +88,9 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  POST /v1/admin/auto-tune      kick off async auto-tune job\n")
 		core.WriteString(stderr, "  GET  /v1/admin/auto-tune?job=ID poll job status / result\n")
 		core.WriteString(stderr, "  GET  /v1/admin/serve/status   snapshot of model + profile + applied config\n")
-		core.WriteString(stderr, "  POST /v1/admin/models/download    501 (needs shared HF downloader)\n")
-		core.WriteString(stderr, "  POST /v1/admin/serve/reload       501 (needs hot-swap runtime)\n")
+		core.WriteString(stderr, "  POST /v1/admin/models/download    HF download into ~/Lethean/data/models/ (allowlist-gated)\n")
+		core.WriteString(stderr, "  GET  /v1/admin/models/download?job=ID  poll a download job\n")
+		core.WriteString(stderr, "  POST /v1/admin/serve/reload       hot-swap loaded model (confirmation + sha-manifest gated)\n")
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Admin token (auto-managed):\n")
 		core.WriteString(stderr, "  Stored at ~/Lethean/data/admin.token (mode 0600), generated on first\n")
@@ -192,7 +193,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		statusConfig.ContextLength = *contextLen
 	}
 
-	resolver := mlxResolverFunc(*modelPath, mlxOpts)
+	hotSwap := newHotSwapResolver(*modelPath, mlxOpts)
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
 			return openai.Health{
@@ -203,7 +204,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			}, nil
 		},
 	}
-	openaiMux := openai.NewMuxWithAdmin(resolver, admin)
+	openaiMux := openai.NewMuxWithAdmin(hotSwap.openaiResolver(), admin)
 
 	// Compose the OpenAI/Anthropic/Ollama compatibility surface with
 	// the /v1/admin/* admin API. http.ServeMux uses longest-prefix
@@ -223,7 +224,12 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	}
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr, serveStatus, standardAdminJobsPath()))
+	rootMux.Handle("/v1/admin/", newAdminMux(ctx, adminMuxConfig{
+		Stderr:      stderr,
+		ServeStatus: serveStatus,
+		JobsPath:    standardAdminJobsPath(),
+		Resolver:    hotSwap,
+	}))
 	rootMux.Handle("/", openaiMux)
 
 	// Bearer auth on /v1/admin/* only — inference paths pass through.

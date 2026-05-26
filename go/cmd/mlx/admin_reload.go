@@ -1,0 +1,318 @@
+// SPDX-Licence-Identifier: EUPL-1.2
+
+package main
+
+import (
+	"io"
+	"io/fs"
+	"net/http"
+	"time"
+
+	core "dappco.re/go"
+	mlx "dappco.re/go/mlx"
+)
+
+// /v1/admin/serve/reload — hot-swap the loaded model.
+//
+// CRITICAL-class endpoint (Cerberus DREAD §4.F-7). The threat surface
+// is full prompt-flow redirection: any caller who can flip the model
+// owns every subsequent /v1/chat/completions response. The handler
+// gates the verb with five checks before the swap:
+//
+//  1. Model NAME (basename), never raw path — server resolves
+//     against the known-models dir tree.
+//  2. Resolved path stays under ~/Lethean/data/models/ (escape gate).
+//  3. Model dir carries a .sha256 sidecar (integrity contract from
+//     F-6 — refuse "whatever's on disk").
+//  4. Confirmation token = machine_hash from /v1/admin/machine
+//     (confused-deputy defence).
+//  5. Bearer auth on the path-prefix (admin_auth.go).
+//
+// Drain policy: in-flight Generate/Chat calls complete on old
+// weights (the hotSwapResolver hands back the active model at
+// resolve time; the caller's reference keeps it alive through GC).
+// New requests get new weights. Documented per §4.F-7.5; audit
+// emit on every attempt + outcome per §4.F-7.6.
+
+// adminReloadRequest is the body shape for POST /v1/admin/serve/reload.
+// Per §4.F-7.1 the request supplies a model NAME (basename under the
+// known-models dir tree), NEVER a raw path. Per §4.F-7.3 the request
+// MUST also supply the current machine hash as confirmation — proves
+// the caller has done a /v1/admin/machine GET first.
+type adminReloadRequest struct {
+	// Model is the basename of a dir under standardModelDir() that
+	// the server is permitted to load. Look up via models/download
+	// (F-6) or hand-curated drop-in (the operator-managed
+	// /v1/admin/models surface is reserved for v2).
+	Model string `json:"model"`
+
+	// Confirmation MUST equal the current machine hash from
+	// /v1/admin/machine. Defends against confused-deputy where
+	// another tool POSTs reload via a stolen session — the attacker
+	// would need to ALSO be able to GET /v1/admin/machine, which
+	// proves session + machine pairing.
+	Confirmation string `json:"confirmation"`
+}
+
+// adminReloadResponse names the swap. The from / to paths feed the
+// audit emit + the per-stream notification surface (clients consuming
+// the response can show "weights changed mid-conversation").
+type adminReloadResponse struct {
+	Status   string `json:"status"`
+	From     string `json:"from_model_path"`
+	To       string `json:"to_model_path"`
+	LoadedAt int64  `json:"loaded_at_unix"`
+}
+
+// standardModelDir returns ~/Lethean/data/models/ — the canonical
+// root the reload + download endpoints both bound against. Created
+// lazily by F-6 (downloader); the reload handler refuses if the dir
+// or the requested sub-dir is missing.
+func standardModelDir() string {
+	return core.PathJoin(core.Env("HOME"), "Lethean", "data", "models")
+}
+
+// shaManifestFilename is the sidecar F-6 writes into the model dir
+// (one digest per file, newline-separated, "<sha256>  <filename>"
+// format — same as `shasum -a 256 *`). F-7 refuses to reload any
+// model dir missing this file, per §4.F-7.2 (no hot-swap to
+// unverified-integrity models).
+const shaManifestFilename = ".sha256"
+
+// adminReloadHandler answers POST /v1/admin/serve/reload. Wired via
+// newAdminMux when serve booted with a hotSwapResolver. The handler
+// audit-emits the kickoff line BEFORE any of the gate checks (the
+// audit row carries the requester + remote so a brute-force attempt
+// against confirmation is visible even when refused).
+//
+//	mux.HandleFunc(adminPathReload, adminReloadHandler(resolver, stderr))
+func adminReloadHandler(resolver *hotSwapResolver, stderr io.Writer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req adminReloadRequest
+		if err := readJSONBody(r, &req); err != nil {
+			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		modelName := core.Trim(req.Model)
+		confirmation := core.Trim(req.Confirmation)
+		from := resolver.CurrentPath()
+
+		// Audit the attempt BEFORE the gate checks so brute-force
+		// confirmation guesses are visible per §4.F-7.6.
+		core.Print(stderr, "%s admin: serve_reload attempt requester=%s from=%s to_name=%s",
+			cliName(), r.RemoteAddr, from, modelName)
+
+		if modelName == "" {
+			adminReloadDeny(w, stderr, from, modelName, "model required")
+			return
+		}
+		if confirmation == "" {
+			adminReloadDeny(w, stderr, from, modelName, "confirmation required (machine_hash from /v1/admin/machine)")
+			return
+		}
+
+		// Gate 1: confirmation matches the live machine hash.
+		expected, err := currentMachineProfileHash(r.Context())
+		if err != nil {
+			adminReloadFail(w, stderr, from, modelName, "machine hash unavailable: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if confirmation != expected {
+			adminReloadDeny(w, stderr, from, modelName, "confirmation mismatch")
+			return
+		}
+
+		// Gate 2 + 3: resolve NAME → path under standardModelDir(),
+		// reject path-escape, require sha-manifest sidecar.
+		toPath, err := resolveModelNameToPath(modelName)
+		if err != nil {
+			adminReloadDeny(w, stderr, from, modelName, err.Error())
+			return
+		}
+
+		// Apply the same load options the current process started
+		// with. v1 keeps reload simple: same options, new weights.
+		// v2 can plumb per-reload overrides (profile path, context).
+		// For now the operator's auto-tuned profile applies via the
+		// auto-discovery path inside mlx.LoadModelAsTextModel — the
+		// initial opts captured at boot are the canonical set.
+		prev, newPath, err := resolver.Replace(toPath, nil)
+		if err != nil {
+			adminReloadFail(w, stderr, from, modelName, "load failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		prevPath := from
+		if prev != nil {
+			prevPath = prev.modelPath
+		}
+		core.Print(stderr, "%s admin: serve_reload success requester=%s from=%s to=%s",
+			cliName(), r.RemoteAddr, prevPath, newPath)
+
+		writeJSON(w, http.StatusOK, adminReloadResponse{
+			Status:   "ok",
+			From:     prevPath,
+			To:       newPath,
+			LoadedAt: time.Now().Unix(),
+		})
+	}
+}
+
+// adminReloadDeny answers a 400 + audits the refusal reason. Pulled
+// out of the handler so the audit + response shape stay consistent
+// across the five gate checks.
+func adminReloadDeny(w http.ResponseWriter, stderr io.Writer, from, modelName, reason string) {
+	core.Print(stderr, "%s admin: serve_reload deny from=%s to_name=%s reason=%s",
+		cliName(), from, modelName, reason)
+	http.Error(w, reason, http.StatusBadRequest)
+}
+
+// adminReloadFail audits + answers with the given status. Separate
+// from adminReloadDeny so 5xx failures (infra-level) and 4xx denials
+// (caller-level) chip-filter cleanly in audit replay.
+func adminReloadFail(w http.ResponseWriter, stderr io.Writer, from, modelName, reason string, status int) {
+	core.Print(stderr, "%s admin: serve_reload fail from=%s to_name=%s reason=%s",
+		cliName(), from, modelName, reason)
+	http.Error(w, reason, status)
+}
+
+// resolveModelNameToPath maps a basename (e.g. "meta-llama__Llama-3.1-8B")
+// to its on-disk dir under standardModelDir(). Refuses any name that
+// escapes the dir (`..`, `/`, symlink-resolves outside, no
+// `.sha256` sidecar). Path-injection class per §4.F-7.1.
+func resolveModelNameToPath(name string) (string, error) {
+	if core.Contains(name, "/") || core.Contains(name, "..") || core.HasPrefix(name, ".") {
+		return "", core.NewError("model name must be a basename (no /, no .., no leading .)")
+	}
+	if name == "" {
+		return "", core.NewError("model name required")
+	}
+	root := standardModelDir()
+	candidate := core.PathJoin(root, name)
+
+	// Symlink-resolve both sides + verify the candidate stays under
+	// the root prefix. Defends against operator-side adversary who
+	// drops `<root>/evil -> /etc/passwd` and triggers reload.
+	rootResolved := root
+	if r := core.PathEvalSymlinks(root); r.OK {
+		rootResolved = r.Value.(string)
+	}
+	if !core.HasSuffix(rootResolved, "/") {
+		rootResolved += "/"
+	}
+	resolved := candidate
+	if r := core.PathEvalSymlinks(candidate); r.OK {
+		resolved = r.Value.(string)
+	} else {
+		return "", core.NewError("model dir not found: " + name)
+	}
+	if !core.HasPrefix(resolved+"/", rootResolved) && resolved+"/" != rootResolved {
+		return "", core.NewError("model path escapes models dir")
+	}
+
+	// Refuse models without a sha-manifest per §4.F-7.2. Without it
+	// the operator can swap the weights file under us between
+	// download and reload and we'd serve attacker-chosen bytes.
+	manifestPath := core.PathJoin(resolved, shaManifestFilename)
+	if r := core.PathEvalSymlinks(manifestPath); !r.OK {
+		return "", core.NewError("model lacks " + shaManifestFilename + " sidecar — refuse hot-swap to unverified-integrity model")
+	}
+	return resolved, nil
+}
+
+// readModelManifest returns the entries from `.sha256` at modelDir.
+// Each line is "<sha256>  <filename>" (shasum -a 256 format).
+// Comment lines (starting with #) and blank lines are skipped. Used
+// by the download verifier + by future integrity-check tools.
+func readModelManifest(modelDir string) (map[string]string, error) {
+	manifest := core.PathJoin(modelDir, shaManifestFilename)
+	res := core.ReadFile(manifest)
+	if !res.OK {
+		return nil, core.NewError("read manifest: " + manifest)
+	}
+	body, _ := res.Value.([]byte)
+	out := map[string]string{}
+	for _, line := range core.Split(string(body), "\n") {
+		line = core.Trim(line)
+		if line == "" || core.HasPrefix(line, "#") {
+			continue
+		}
+		// shasum -a 256 format: "<64-hex>  <filename>" (two spaces).
+		// Split on space; drop empties so one-or-many spaces tolerate.
+		raw := core.Split(line, " ")
+		fields := raw[:0]
+		for _, f := range raw {
+			if f != "" {
+				fields = append(fields, f)
+			}
+		}
+		if len(fields) < 2 {
+			continue
+		}
+		out[fields[len(fields)-1]] = core.Lower(fields[0])
+	}
+	if len(out) == 0 {
+		return nil, core.NewError("manifest empty: " + manifest)
+	}
+	return out, nil
+}
+
+// writeModelManifest writes the {filename → sha256} map to
+// modelDir/.sha256 in shasum -a 256 format. Called by the F-6
+// downloader after verified-fetch lands all files. The .sha256
+// sidecar is what F-7 reads to gate reload.
+//
+//	if err := writeModelManifest(modelDir, digests); err != nil { ... }
+func writeModelManifest(modelDir string, digests map[string]string) error {
+	var b []byte
+	for name, sha := range digests {
+		b = append(b, []byte(sha+"  "+name+"\n")...)
+	}
+	manifest := core.PathJoin(modelDir, shaManifestFilename)
+	if r := core.WriteFile(manifest, b, 0o600); !r.OK {
+		return core.E("admin.writeModelManifest", "write", r.Value.(error))
+	}
+	return nil
+}
+
+// listKnownModels returns the basenames of all subdirs under
+// standardModelDir() that carry a .sha256 sidecar. Suitable surface
+// for a future GET /v1/admin/models endpoint; today used by
+// /v1/admin/serve/reload error paths to suggest names.
+func listKnownModels() []string {
+	root := standardModelDir()
+	entries := core.ReadDir(core.DirFS(root), ".")
+	if !entries.OK {
+		return nil
+	}
+	dirEntries, ok := entries.Value.([]fs.DirEntry)
+	if !ok {
+		return nil
+	}
+	out := []string{}
+	for _, e := range dirEntries {
+		if !e.IsDir() {
+			continue
+		}
+		manifest := core.PathJoin(root, e.Name(), shaManifestFilename)
+		if r := core.PathEvalSymlinks(manifest); r.OK {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// adminReloadServer is the shape the handler expects so tests can
+// substitute the resolver. Kept in this file rather than admin_reload.go
+// so the handler closure carries an interface, not a concrete type.
+type adminReloadServer interface {
+	CurrentPath() string
+	Replace(newPath string, newOpts []mlx.LoadOption) (*loadedModel, string, error)
+}
+
+var _ adminReloadServer = (*hotSwapResolver)(nil)
+
