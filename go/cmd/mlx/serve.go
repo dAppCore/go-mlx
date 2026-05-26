@@ -72,13 +72,21 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, core.Sprintf("  %s serve --model ~/models/lemer-lite --no-auto-profile\n", name))
 		core.WriteString(stderr, core.Sprintf("    # skip auto-discovery — use bare defaults\n"))
 		core.WriteString(stderr, "\n")
-		core.WriteString(stderr, "Routes (all relative to the listen address):\n")
+		core.WriteString(stderr, "Inference routes (all relative to the listen address):\n")
 		core.WriteString(stderr, "  POST /v1/chat/completions    OpenAI chat (streaming + non-streaming)\n")
 		core.WriteString(stderr, "  POST /v1/completions         OpenAI legacy completion\n")
 		core.WriteString(stderr, "  POST /v1/messages            Anthropic Messages\n")
 		core.WriteString(stderr, "  POST /api/chat               Ollama chat\n")
 		core.WriteString(stderr, "  GET  /v1/models              list loaded models\n")
 		core.WriteString(stderr, "  GET  /v1/health              process health probe\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Admin routes (orchestrator surface — no auth in v1):\n")
+		core.WriteString(stderr, "  GET  /v1/admin/machine        current machine identity (hash + runtime)\n")
+		core.WriteString(stderr, "  GET  /v1/admin/profiles       list saved tuning profiles\n")
+		core.WriteString(stderr, "  POST /v1/admin/auto-tune      kick off async auto-tune job\n")
+		core.WriteString(stderr, "  GET  /v1/admin/auto-tune?job=ID poll job status / result\n")
+		core.WriteString(stderr, "  POST /v1/admin/models/download    501 (needs shared HF downloader)\n")
+		core.WriteString(stderr, "  POST /v1/admin/serve/reload       501 (needs hot-swap runtime)\n")
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -136,11 +144,20 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			}, nil
 		},
 	}
-	mux := openai.NewMuxWithAdmin(resolver, admin)
+	openaiMux := openai.NewMuxWithAdmin(resolver, admin)
+
+	// Compose the OpenAI/Anthropic/Ollama compatibility surface with
+	// the /v1/admin/* admin API. http.ServeMux uses longest-prefix
+	// match, so /v1/admin/ routes hit the admin handlers and everything
+	// else falls through to the openai mux. See admin.go for the
+	// admin endpoint surface (machine / profiles / auto-tune / etc).
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/v1/admin/", newAdminMux())
+	rootMux.Handle("/", openaiMux)
 
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           mux,
+		Handler:           rootMux,
 		ReadHeaderTimeout: *readTimeout,
 		WriteTimeout:      *writeTimeout,
 	}
