@@ -799,7 +799,15 @@ func runDiscoverCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 	probeDevice := fs.Bool("probe-device", false, "probe native Metal device facts")
 	workload := fs.String("workload", "", "workload to optimise: chat, coding, long_context, agent_state, throughput, or low_latency")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s discover [flags]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s discover [flags]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Report what MLX runtime + GPU device is available, and (optionally)\n")
+		core.WriteString(stderr, "scan a directory for model packs without loading their weights. The\n")
+		core.WriteString(stderr, "go-to first command on a new machine — answers \"do I have everything\n")
+		core.WriteString(stderr, "I need to run inference here?\"\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -807,6 +815,16 @@ func runDiscoverCommand(ctx context.Context, args []string, stdout, stderr io.Wr
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s discover\n", name))
+		core.WriteString(stderr, core.Sprintf("    # runtime + device only — quickest possible check\n"))
+		core.WriteString(stderr, core.Sprintf("  %s discover -model-dir ~/models -include-models\n", name))
+		core.WriteString(stderr, core.Sprintf("    # also list model packs found under the directory\n"))
+		core.WriteString(stderr, core.Sprintf("  %s discover -probe-device -json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # detailed Metal device facts as JSON (memory, capabilities)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s discover -model-dir ~/models -include-candidates -workload chat\n", name))
+		core.WriteString(stderr, core.Sprintf("    # add first-pass tuning candidates for each model under a workload\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -8041,7 +8059,15 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	memvidKVPrefixTokens := fs.Int("memvid-kv-prefix-tokens", 0, "deprecated alias for -state-kv-prefix-tokens")
 	memvidKVStore := fs.String("memvid-kv-store", "", "deprecated alias for -state-kv-store")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s bench [flags] [model-path]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s bench [flags] <model-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Single-shot benchmark against a model — measures prefill / decode\n")
+		core.WriteString(stderr, "throughput, prompt-cache hit rate, KV-restore latency, and state-bundle\n")
+		core.WriteString(stderr, "round-trip. Use this to verify a model loads and to compare runtime\n")
+		core.WriteString(stderr, "settings before running tune-plan.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -8049,6 +8075,16 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s bench ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default 32 tokens, baseline prompt — quick sanity check\n"))
+		core.WriteString(stderr, core.Sprintf("  %s bench -max-tokens 256 -runs 3 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # longer generations, 3-pass average\n"))
+		core.WriteString(stderr, core.Sprintf("  %s bench -json -no-bundle ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # machine-readable output, skip state-bundle round trip\n"))
+		core.WriteString(stderr, core.Sprintf("  %s bench -profile ~/profiles/lemer-lite-m3ultra.json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # apply a saved tune profile (model path embedded in profile)\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -8279,7 +8315,16 @@ func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) 
 	expectedQuant := fs.Int("quantization", 0, "required quantization bits")
 	maxContext := fs.Int("max-context", 0, "maximum allowed context length")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s pack [flags] <model-path>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s pack [flags] <model-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Validate a model pack on disk without loading weights — reads the\n")
+		core.WriteString(stderr, "config + tokenizer + safetensors index, reports architecture, layer\n")
+		core.WriteString(stderr, "count, embedding size, quantization, context length, and any sentinel\n")
+		core.WriteString(stderr, "validation errors. Cheap (no GPU work) — run before serve/bench to\n")
+		core.WriteString(stderr, "catch a corrupt download or wrong architecture before allocating VRAM.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -8287,6 +8332,16 @@ func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) 
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s pack ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # validate + print summary table\n"))
+		core.WriteString(stderr, core.Sprintf("  %s pack -json ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # machine-readable output (for CI / scripts)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s pack -quantization 4 ~/models/lemer-lite-q4\n", name))
+		core.WriteString(stderr, core.Sprintf("    # require q4 (fails non-zero if not)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s pack -max-context 8192 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # require context <= 8192 (fails non-zero if exceeds)\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
