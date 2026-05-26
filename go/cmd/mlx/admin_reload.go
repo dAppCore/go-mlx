@@ -41,17 +41,46 @@ import (
 // the caller has done a /v1/admin/machine GET first.
 type adminReloadRequest struct {
 	// Model is the basename of a dir under standardModelDir() that
-	// the server is permitted to load. Look up via models/download
-	// (F-6) or hand-curated drop-in (the operator-managed
-	// /v1/admin/models surface is reserved for v2).
-	Model string `json:"model"`
+	// the server is permitted to load. Backwards-compat field —
+	// new callers should send ModelPath instead. When both are set,
+	// ModelPath wins.
+	Model string `json:"model,omitempty"`
+
+	// ModelPath is the absolute path of the dir to load. Must
+	// resolve under standardModelDir() — path-escape outside is
+	// rejected. Preferred over the basename-only Model field so
+	// callers (model-browser-window, lemma-window) can pass back
+	// the Models.List() entry verbatim without a separate basename
+	// derivation.
+	ModelPath string `json:"model_path,omitempty"`
 
 	// Confirmation MUST equal the current machine hash from
 	// /v1/admin/machine. Defends against confused-deputy where
 	// another tool POSTs reload via a stolen session — the attacker
 	// would need to ALSO be able to GET /v1/admin/machine, which
 	// proves session + machine pairing.
-	Confirmation string `json:"confirmation"`
+	Confirmation string `json:"confirmation,omitempty"`
+
+	// ConfirmMachine is the modern field name for Confirmation —
+	// matches the pkg/lemma client convention (confirm_machine in
+	// JSON). Either is accepted; ConfirmMachine wins when both set.
+	ConfirmMachine string `json:"confirm_machine,omitempty"`
+
+	// ProfilePath is an optional tuning profile applied alongside
+	// the model. Empty → fall through to the auto-tune profile
+	// discovered for the model dir; explicit → override.
+	ProfilePath string `json:"profile_path,omitempty"`
+
+	// AdapterPath is an optional LoRA adapter file (or dir) to
+	// overlay on the base model. Empty → load model bare. The
+	// Fine-tune surface uses this for the A/B "test with this
+	// adapter" flow — Lemma.SFTStart writes the adapter dir; the
+	// caller passes the resulting path back to Reload here.
+	AdapterPath string `json:"adapter_path,omitempty"`
+
+	// ContextLength overrides the model's default context length
+	// for this reload. Zero → use the profile's value.
+	ContextLength int `json:"context_length,omitempty"`
 }
 
 // adminReloadResponse names the swap. The from / to paths feed the
@@ -97,52 +126,83 @@ func adminReloadHandler(resolver *hotSwapResolver, stderr io.Writer) http.Handle
 			http.Error(w, "invalid body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		// Modern field names (model_path / confirm_machine) win when
+		// both are present. The legacy basename + confirmation fields
+		// stay accepted for backward compat with v1 callers.
 		modelName := core.Trim(req.Model)
-		confirmation := core.Trim(req.Confirmation)
+		modelPath := core.Trim(req.ModelPath)
+		confirmation := core.Trim(req.ConfirmMachine)
+		if confirmation == "" {
+			confirmation = core.Trim(req.Confirmation)
+		}
 		from := resolver.CurrentPath()
 
 		// Audit the attempt BEFORE the gate checks so brute-force
 		// confirmation guesses are visible per §4.F-7.6.
-		core.Print(stderr, "%s admin: serve_reload attempt requester=%s from=%s to_name=%s",
-			cliName(), r.RemoteAddr, from, modelName)
+		auditTarget := modelName
+		if modelPath != "" {
+			auditTarget = modelPath
+		}
+		core.Print(stderr, "%s admin: serve_reload attempt requester=%s from=%s to=%s adapter=%s",
+			cliName(), r.RemoteAddr, from, auditTarget, req.AdapterPath)
 
-		if modelName == "" {
-			adminReloadDeny(w, stderr, from, modelName, "model required")
+		if modelName == "" && modelPath == "" {
+			adminReloadDeny(w, stderr, from, auditTarget, "model or model_path required")
 			return
 		}
 		if confirmation == "" {
-			adminReloadDeny(w, stderr, from, modelName, "confirmation required (machine_hash from /v1/admin/machine)")
+			adminReloadDeny(w, stderr, from, auditTarget, "confirm_machine required (machine_hash from /v1/admin/machine)")
 			return
 		}
 
 		// Gate 1: confirmation matches the live machine hash.
 		expected, err := currentMachineProfileHash(r.Context())
 		if err != nil {
-			adminReloadFail(w, stderr, from, modelName, "machine hash unavailable: "+err.Error(), http.StatusInternalServerError)
+			adminReloadFail(w, stderr, from, auditTarget, "machine hash unavailable: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if confirmation != expected {
-			adminReloadDeny(w, stderr, from, modelName, "confirmation mismatch")
+			adminReloadDeny(w, stderr, from, auditTarget, "confirm_machine mismatch")
 			return
 		}
 
-		// Gate 2 + 3: resolve NAME → path under standardModelDir(),
-		// reject path-escape, require sha-manifest sidecar.
-		toPath, err := resolveModelNameToPath(modelName)
-		if err != nil {
-			adminReloadDeny(w, stderr, from, modelName, err.Error())
-			return
+		// Gate 2 + 3: resolve target → on-disk path. When ModelPath
+		// is supplied it must canonicalise to a child of
+		// standardModelDir() (no path-escape); when only Model is set
+		// we go through the basename resolver as v1 did.
+		var toPath string
+		if modelPath != "" {
+			toPath, err = bindModelPathToStandardDir(modelPath)
+			if err != nil {
+				adminReloadDeny(w, stderr, from, auditTarget, err.Error())
+				return
+			}
+		} else {
+			toPath, err = resolveModelNameToPath(modelName)
+			if err != nil {
+				adminReloadDeny(w, stderr, from, auditTarget, err.Error())
+				return
+			}
 		}
 
-		// Apply the same load options the current process started
-		// with. v1 keeps reload simple: same options, new weights.
-		// v2 can plumb per-reload overrides (profile path, context).
-		// For now the operator's auto-tuned profile applies via the
-		// auto-discovery path inside mlx.LoadModelAsTextModel — the
-		// initial opts captured at boot are the canonical set.
-		prev, newPath, err := resolver.Replace(toPath, nil)
+		// Build the per-reload load options. v1 always passed nil
+		// (inheriting boot opts); v2 plumbs ContextLength + AdapterPath
+		// here so the Fine-tune A/B flow can overlay an adapter and
+		// the operator can pick a different context on hot-swap.
+		// ProfilePath is reserved — auto-discovery via mlx.LoadModelAsTextModel
+		// already finds the standard profile for the target dir; an
+		// explicit override is the next pass.
+		var opts []mlx.LoadOption
+		if req.ContextLength > 0 {
+			opts = append(opts, mlx.WithContextLength(req.ContextLength))
+		}
+		if core.Trim(req.AdapterPath) != "" {
+			opts = append(opts, mlx.WithAdapterPath(req.AdapterPath))
+		}
+
+		prev, newPath, err := resolver.Replace(toPath, opts)
 		if err != nil {
-			adminReloadFail(w, stderr, from, modelName, "load failed: "+err.Error(), http.StatusInternalServerError)
+			adminReloadFail(w, stderr, from, auditTarget, "load failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
@@ -184,6 +244,40 @@ func adminReloadFail(w http.ResponseWriter, stderr io.Writer, from, modelName, r
 // to its on-disk dir under standardModelDir(). Refuses any name that
 // escapes the dir (`..`, `/`, symlink-resolves outside, no
 // `.sha256` sidecar). Path-injection class per §4.F-7.1.
+// bindModelPathToStandardDir accepts an absolute model path and
+// verifies it canonicalises to a child of standardModelDir(). Returns
+// the resolved on-disk path on success. Used by the v2 reload shape
+// where callers supply the full path (matches Models.List() entries)
+// instead of a basename. Same security envelope as
+// resolveModelNameToPath — escape-prefix check + sha-manifest gate.
+func bindModelPathToStandardDir(path string) (string, error) {
+	if path == "" {
+		return "", core.NewError("model_path required")
+	}
+	root := standardModelDir()
+	rootResolved := root
+	if r := core.PathEvalSymlinks(root); r.OK {
+		rootResolved = r.Value.(string)
+	}
+	if !core.HasSuffix(rootResolved, "/") {
+		rootResolved += "/"
+	}
+	resolved := path
+	if r := core.PathEvalSymlinks(path); r.OK {
+		resolved = r.Value.(string)
+	} else {
+		return "", core.NewError("model dir not found: " + path)
+	}
+	if !core.HasPrefix(resolved+"/", rootResolved) && resolved+"/" != rootResolved {
+		return "", core.NewError("model path escapes models dir")
+	}
+	manifestPath := core.PathJoin(resolved, shaManifestFilename)
+	if r := core.PathEvalSymlinks(manifestPath); !r.OK {
+		return "", core.NewError("model has no sha manifest: " + path)
+	}
+	return resolved, nil
+}
+
 func resolveModelNameToPath(name string) (string, error) {
 	if core.Contains(name, "/") || core.Contains(name, "..") || core.HasPrefix(name, ".") {
 		return "", core.NewError("model name must be a basename (no /, no .., no leading .)")
