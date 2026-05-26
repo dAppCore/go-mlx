@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"io"
 	"net/http"
+	"syscall"
 
 	core "dappco.re/go"
 )
@@ -53,6 +54,30 @@ type hfFileEntry struct {
 	URL    string // composed resolve URL
 	Size   int64  // bytes
 	Digest string // lowercase sha256 hex, empty for non-LFS
+}
+
+// isSafeHFEntryPath enforces the contract that the HF tree API
+// returns repo-relative paths with no traversal sequences. Refuses
+// `..`, absolute paths, NUL bytes, and leading `/`. The PathDir +
+// MkdirAll + OpenFile in the download worker would otherwise honour
+// a tree response like `{"path":"../../etc/passwd"}` and write
+// outside the quarantine dir.
+func isSafeHFEntryPath(p string) bool {
+	if p == "" {
+		return false
+	}
+	if core.HasPrefix(p, "/") {
+		return false
+	}
+	if core.Contains(p, "\x00") {
+		return false
+	}
+	for _, seg := range core.Split(p, "/") {
+		if seg == ".." || seg == "." {
+			return false
+		}
+	}
+	return true
 }
 
 // hfTreeAPI is the seam the download handler depends on. Production
@@ -134,6 +159,15 @@ func (c *hfTreeClient) ResolveTree(ctx context.Context, repo, revision string) (
 		if e.Type != "file" {
 			continue
 		}
+		// Cerberus pass-3 N-8: validate HF-supplied file path before
+		// trusting it. The tree API SHOULD return repo-relative paths,
+		// but a malicious/compromised mirror could inject `../etc` or
+		// `/absolute/path` to escape the dest dir during write. Reject
+		// any path with `..`, leading `/`, or NUL bytes — the per-file
+		// MkdirAll + OpenFile downstream would otherwise honour them.
+		if !isSafeHFEntryPath(e.Path) {
+			continue
+		}
 		entry := hfFileEntry{
 			Path: e.Path,
 			URL:  hfHostResolve + repo + "/resolve/" + revision + "/" + e.Path,
@@ -189,9 +223,24 @@ func fetchAndVerify(ctx context.Context, url, destPath, expectedDigest string, e
 		return 0, "", core.NewError(core.Sprintf("Content-Length %d exceeds cap %d", resp.ContentLength, hfFileCap))
 	}
 
-	createR := core.Create(destPath)
+	// Symlink-safe create per Cerberus pass-3 N-1: O_CREATE|O_EXCL|
+	// O_WRONLY|O_NOFOLLOW refuses pre-existing entries (race against
+	// another download) AND refuses if destPath is a symlink. Defends
+	// against operator-side adversary with FS write access to the
+	// quarantine dir pre-planting `<quarantine>/weights.bin ->
+	// ~/.ssh/authorized_keys` and having the downloader truncate-write
+	// through it. Pattern mirrors lthn/desktop pkg/downloader F-4.
+	flag := core.O_CREATE | core.O_EXCL | core.O_WRONLY | syscall.O_NOFOLLOW
+	createR := core.OpenFile(destPath, flag, core.FileMode(0o600))
 	if !createR.OK {
-		return 0, "", core.E("admin.hf.fetch", "create dest", createR.Value.(error))
+		err, _ := createR.Value.(error)
+		if core.Is(err, syscall.ELOOP) {
+			return 0, "", core.E("admin.hf.fetch", "quarantine_symlink_refused: "+destPath, err)
+		}
+		if core.IsExist(err) {
+			return 0, "", core.E("admin.hf.fetch", "quarantine_exists: "+destPath, err)
+		}
+		return 0, "", core.E("admin.hf.fetch", "create dest", err)
 	}
 	file := createR.Value.(*core.OSFile)
 

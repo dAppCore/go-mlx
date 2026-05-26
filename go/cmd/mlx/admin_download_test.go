@@ -352,3 +352,90 @@ func TestDiskFreeBytes_ReturnsPositive(t *testing.T) {
 		t.Skip("Statfs returned 0 — non-Unix or restricted FS, skipping sanity check")
 	}
 }
+
+// TestIsSafeHFEntryPath_RejectsTraversal — Cerberus N-8: paths from
+// the HF tree API must NOT contain `..` / leading `/` / NUL / `.`
+// segments. A malicious mirror returning `{"path":"../../etc/passwd"}`
+// must be filtered out before MkdirAll honours it.
+func TestIsSafeHFEntryPath_RejectsTraversal(t *testing.T) {
+	bad := []string{
+		"",
+		"../etc/passwd",
+		"/absolute/path",
+		"weights/../../etc",
+		"a/./b",
+		"with\x00nul",
+		"..",
+	}
+	for _, p := range bad {
+		if isSafeHFEntryPath(p) {
+			t.Errorf("expected %q to refuse, got accept", p)
+		}
+	}
+}
+
+// TestIsSafeHFEntryPath_AcceptsNormal — repo-relative paths with
+// sub-dirs pass.
+func TestIsSafeHFEntryPath_AcceptsNormal(t *testing.T) {
+	good := []string{
+		"weights.bin",
+		"config.json",
+		"tokenizer/special_tokens_map.json",
+		"model.safetensors.index.json",
+	}
+	for _, p := range good {
+		if !isSafeHFEntryPath(p) {
+			t.Errorf("expected %q to accept, got refuse", p)
+		}
+	}
+}
+
+// TestFetchAndVerify_RefusesPreExistingFile — Cerberus N-1: the
+// quarantine open uses O_CREATE|O_EXCL|O_NOFOLLOW, so a pre-existing
+// file at destPath must refuse. Defends against parallel-create race
+// + pre-planted-content attacks.
+func TestFetchAndVerify_RefusesPreExistingFile(t *testing.T) {
+	tmp := t.TempDir()
+	dest := filepath.Join(tmp, "exists.bin")
+	if err := os.WriteFile(dest, []byte("pre-planted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Use the HF resolve prefix so we get past the URL allowlist
+	// gate; the real network call would fail later but the create
+	// refusal fires before that.
+	url := hfHostResolve + "fake/model/resolve/main/exists.bin"
+	_, _, err := fetchAndVerify(context.Background(), url, dest, "", 0)
+	if err == nil {
+		t.Fatal("expected refusal for pre-existing destPath, got nil")
+	}
+	if !strings.Contains(err.Error(), "quarantine_exists") &&
+		!strings.Contains(err.Error(), "exist") {
+		t.Errorf("error should name the pre-existing-file refusal: %v", err)
+	}
+}
+
+// TestFetchAndVerify_RefusesSymlinkDest — Cerberus N-1: a symlink
+// at destPath must refuse (O_NOFOLLOW → ELOOP). Defends against
+// attacker pre-planting `<quarantine>/weights.bin -> ~/.ssh/...`.
+func TestFetchAndVerify_RefusesSymlinkDest(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.txt")
+	if err := os.WriteFile(target, []byte("victim"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "weights.bin")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported on this FS: %v", err)
+	}
+	url := hfHostResolve + "fake/model/resolve/main/weights.bin"
+	_, _, err := fetchAndVerify(context.Background(), url, link, "", 0)
+	if err == nil {
+		t.Fatal("expected refusal for symlink destPath, got nil")
+	}
+	// Target must still exist + still contain original content
+	// (write didn't follow the symlink).
+	got, _ := os.ReadFile(target)
+	if string(got) != "victim" {
+		t.Errorf("symlink target was modified — O_NOFOLLOW failed; target now %q", got)
+	}
+}
