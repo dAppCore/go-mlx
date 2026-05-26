@@ -396,9 +396,11 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 // readJSONBody decodes the request body into target via core.JSONUnmarshal.
+// Body is capped at 64KB — legitimate admin payloads serialise to <1KB; the
+// cap prevents memory-exhaustion DoS via adversarial multi-GB POST.
 func readJSONBody(r *http.Request, target any) error {
 	defer r.Body.Close()
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, 64*1024))
 	if err != nil {
 		return err
 	}
