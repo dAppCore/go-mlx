@@ -325,6 +325,7 @@ func newAdminMux(ctx context.Context, cfg adminMuxConfig) *http.ServeMux {
 	mux := http.NewServeMux()
 	registry := newAdminJobRegistry(ctx, cfg.Stderr, cfg.JobsPath)
 	downloads := newAdminDownloadRegistry(ctx, cfg.Stderr)
+	sft := newAdminSFTRegistry()
 	hf := cfg.HFTreeAPI
 	if hf == nil {
 		hf = newHFTreeClient()
@@ -342,6 +343,14 @@ func newAdminMux(ctx context.Context, cfg adminMuxConfig) *http.ServeMux {
 	} else {
 		mux.HandleFunc(adminPathReload, adminNotImplementedHandler("serve/reload", "no resolver wired — caller built admin mux without hotSwapResolver"))
 	}
+	// SFT — native LoRA supervised fine-tuning. Single-flight; the
+	// registry rejects concurrent Start calls (returns 409). Loads
+	// its own model copy independent of cfg.Resolver so a running job
+	// doesn't perturb the serve model's KV state. See admin_sft.go.
+	mux.HandleFunc(adminPathSFTStart, adminSFTStartHandler(sft))
+	mux.HandleFunc(adminPathSFTStatus, adminSFTStatusHandler(sft))
+	mux.HandleFunc(adminPathSFTStop, adminSFTStopHandler(sft))
+	mux.HandleFunc(adminPathSFTAdapters, adminSFTAdaptersHandler())
 	return mux
 }
 
