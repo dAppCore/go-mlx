@@ -191,8 +191,11 @@ func clampAutoTuneRequest(req adminAutoTuneRequest) adminAutoTuneRequest {
 // only knows the admin paths — compose with the openai mux via a
 // root mux for end-to-end serve. ctx is the server-shutdown context
 // (cancellation propagates into tuning goroutines); stderr is where
-// admin-level audit lines emit.
-func newAdminMux(ctx context.Context, stderr io.Writer) *http.ServeMux {
+// admin-level audit lines emit; serveStatus is the boot-time snapshot
+// of what serve was configured with (model path + resolved profile +
+// applied config) — captured once so the /v1/admin/serve/status
+// endpoint reports the effective config without recomputation.
+func newAdminMux(ctx context.Context, stderr io.Writer, serveStatus adminServeStatus) *http.ServeMux {
 	mux := http.NewServeMux()
 	registry := newAdminJobRegistry(ctx, stderr)
 
@@ -201,6 +204,7 @@ func newAdminMux(ctx context.Context, stderr io.Writer) *http.ServeMux {
 	mux.HandleFunc(adminPathAutoTune, func(w http.ResponseWriter, r *http.Request) {
 		adminAutoTuneHandler(w, r, registry)
 	})
+	mux.HandleFunc(adminPathServeStatus, adminServeStatusHandler(serveStatus))
 	mux.HandleFunc(adminPathDownload, adminNotImplementedHandler("models/download", "needs shared HF downloader extraction from lthn/desktop pkg"))
 	mux.HandleFunc(adminPathReload, adminNotImplementedHandler("serve/reload", "needs hot-swap runtime support in lthn-mlx; replace-plan computes the plan but applying it requires resolver-level work"))
 	return mux

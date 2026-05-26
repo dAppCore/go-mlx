@@ -87,6 +87,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "  GET  /v1/admin/profiles       list saved tuning profiles\n")
 		core.WriteString(stderr, "  POST /v1/admin/auto-tune      kick off async auto-tune job\n")
 		core.WriteString(stderr, "  GET  /v1/admin/auto-tune?job=ID poll job status / result\n")
+		core.WriteString(stderr, "  GET  /v1/admin/serve/status   snapshot of model + profile + applied config\n")
 		core.WriteString(stderr, "  POST /v1/admin/models/download    501 (needs shared HF downloader)\n")
 		core.WriteString(stderr, "  POST /v1/admin/serve/reload       501 (needs hot-swap runtime)\n")
 		core.WriteString(stderr, "\n")
@@ -174,18 +175,21 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// load — the inference.LoadOption boundary only carries ContextLength,
 	// so auto-tune output was previously silently dropped at load time.
 	mlxOpts := []mlx.LoadOption{}
+	var statusConfig adminServeStatusConfig
 	if resolvedProfile != "" {
 		report, err := readTuneProfileReport(resolvedProfile)
 		if err != nil {
 			core.Print(stderr, "%s serve: profile read failed (%v) — falling through to defaults", cliName(), err)
 		} else if report.Profile != nil {
 			mlxOpts = append(mlxOpts, candidateToMLXLoadOpts(report.Profile.Candidate)...)
+			statusConfig = buildAdminServeStatusConfig(report.Profile.Candidate, *contextLen)
 		}
 	}
 	// Explicit --context flag overrides any profile-supplied context length
 	// by appending last (later With* overwrites earlier values in apply).
 	if *contextLen > 0 {
 		mlxOpts = append(mlxOpts, mlx.WithContextLength(*contextLen))
+		statusConfig.ContextLength = *contextLen
 	}
 
 	resolver := mlxResolverFunc(*modelPath, mlxOpts)
@@ -206,8 +210,20 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// match, so /v1/admin/ routes hit the admin handlers and everything
 	// else falls through to the openai mux. See admin.go for the
 	// admin endpoint surface (machine / profiles / auto-tune / etc).
+	// Snapshot the effective config at boot for /v1/admin/serve/status.
+	// Captured once so the response reflects what actually got applied
+	// after profile resolution + --context override, not recomputed per
+	// request (and resilient if profile files mutate post-boot).
+	serveStatus := adminServeStatus{
+		ModelPath:    *modelPath,
+		ProfilePath:  resolvedProfile,
+		Runtime:      adminRuntimeMetal,
+		LoadedAtUnix: time.Now().Unix(),
+		Config:       statusConfig,
+	}
+
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr))
+	rootMux.Handle("/v1/admin/", newAdminMux(ctx, stderr, serveStatus))
 	rootMux.Handle("/", openaiMux)
 
 	// Bearer auth on /v1/admin/* only — inference paths pass through.
