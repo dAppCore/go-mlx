@@ -92,8 +92,12 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Admin token (auto-managed):\n")
 		core.WriteString(stderr, "  Stored at ~/Lethean/data/admin.token (mode 0600), generated on first\n")
-		core.WriteString(stderr, "  serve boot. Reveal it with `lthn-mlx serve --print-admin-token`;\n")
-		core.WriteString(stderr, "  rotate with `--rotate-admin-token`. Send as:\n")
+		core.WriteString(stderr, "  serve boot. Reveal with `lthn-mlx serve --print-admin-token` (note this\n")
+		core.WriteString(stderr, "  prints to stderr — survives in shell scrollback + launchctl logs; for\n")
+		core.WriteString(stderr, "  safer capture use `pbcopy < ~/Lethean/data/admin.token`).\n")
+		core.WriteString(stderr, "  Rotate with `--rotate-admin-token`. Rotation does NOT live-reload —\n")
+		core.WriteString(stderr, "  restart any running serve for the new token to take effect.\n")
+		core.WriteString(stderr, "  Send as:\n")
 		core.WriteString(stderr, "    curl -H 'Authorization: Bearer <token>' http://127.0.0.1:11434/v1/admin/machine\n")
 	}
 	if err := fs.Parse(args); err != nil {
@@ -116,7 +120,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			core.Print(stderr, "%s serve: token write failed: %v", cliName(), err)
 			return 1
 		}
-		core.Print(stderr, "%s admin token (rotated):\n  %s\n  saved to %s (mode 0600)", cliName(), tok, tokenPath)
+		core.Print(stderr, "%s admin token (rotated):\n  %s\n  saved to %s (mode 0600)\n  any running serve still holds the old token — restart to apply", cliName(), tok, tokenPath)
 		return 0
 	}
 	if *printAdminToken {

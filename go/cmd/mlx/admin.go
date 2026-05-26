@@ -29,11 +29,13 @@ import (
 //	POST /v1/admin/models/download    501 — needs shared HF downloader extraction
 //	POST /v1/admin/serve/reload       501 — needs hot-swap runtime support
 //
-// v1 has NO auth. Endpoints are reachable by anyone who can connect to
-// the serve --addr. For local serve (default 127.0.0.1:11434) this is
-// the same machine only. For tunnel-exposed serve (Owlet's setup) this
-// is the tunneled user. Future: Authorization: Bearer token check
-// gated on a serve flag — defer until the tunnel setup proves the need.
+// Bearer auth (admin_auth.go) gates /v1/admin/* on the lthn-mlx_-
+// prefixed 256-bit token at ~/Lethean/data/admin.token (mode 0600).
+// Reveal the token with `lthn-mlx serve --print-admin-token`; rotate
+// with `--rotate-admin-token`. Middleware mounts at the rootMux layer
+// in serve.go so inference paths (/v1/chat/completions, /v1/messages,
+// etc.) pass through unauthenticated under the localhost / tunnel-
+// trust model. Audit emit on every 401 surfaces brute-force attempts.
 
 const (
 	adminPathMachine     = "/v1/admin/machine"

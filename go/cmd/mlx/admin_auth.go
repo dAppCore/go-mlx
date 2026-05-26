@@ -77,6 +77,12 @@ func writeAdminToken(path, token string) error {
 // ensureAdminToken loads the existing token or generates + writes a
 // fresh one. Returns the token + whether it was freshly generated
 // (so serve can print a one-line notice the first time).
+//
+// TOCTOU defence: re-read after write. If two serve processes race on
+// first boot, both see "absent", both generate, both write — last-
+// writer-wins on the file content (same length, atomic-enough). The
+// loser converges to the winning token via this re-read instead of
+// returning a token nobody else will accept.
 func ensureAdminToken(path string) (token string, generated bool, err error) {
 	existing, exists, err := loadAdminToken(path)
 	if err != nil {
@@ -91,6 +97,13 @@ func ensureAdminToken(path string) (token string, generated bool, err error) {
 	}
 	if err := writeAdminToken(path, tok); err != nil {
 		return "", false, err
+	}
+	after, afterExists, err := loadAdminToken(path)
+	if err != nil {
+		return "", false, err
+	}
+	if afterExists && after != tok {
+		return after, false, nil
 	}
 	return tok, true, nil
 }
