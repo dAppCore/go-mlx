@@ -6673,7 +6673,16 @@ func runFFNEstimateCommand(ctx context.Context, args []string, stdout, stderr io
 	jsonOut := fs.Bool("json", false, "print JSON CPU FFN memory estimate")
 	cpuFFNCache := fs.Int("cpu-ffn-cache", 0, "max CPU FFN layers to cache; 0 caches all, negative disables cache")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s ffn-estimate [flags] <model-path>\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s ffn-estimate [flags] <model-path>\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Estimate the CPU FFN cache memory footprint for a model without\n")
+		core.WriteString(stderr, "loading its weights. Reads the model config + safetensors index\n")
+		core.WriteString(stderr, "and projects memory based on the requested CPU FFN cache layer\n")
+		core.WriteString(stderr, "count. Cheap pre-flight check — answers \"will this fit?\" before\n")
+		core.WriteString(stderr, "spending real GPU/RAM on a load attempt.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -6681,6 +6690,14 @@ func runFFNEstimateCommand(ctx context.Context, args []string, stdout, stderr io
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default: cache all FFN layers, full memory projection\n"))
+		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate -cpu-ffn-cache 8 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # cap CPU FFN cache at 8 layers (smaller footprint, more recompute)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s ffn-estimate -json -cpu-ffn-cache -1 ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # disable cache entirely; JSON output for memory-budgeting scripts\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
