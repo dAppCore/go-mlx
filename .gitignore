@@ -5,6 +5,11 @@ bin/
 *.so
 *.a
 
+# `go build ./go/cmd/mlx/` without -o lands the binary at repo root.
+# Convention is `go build -o bin/mlx` (bin/ already ignored above);
+# this catches the shortcut form too.
+/mlx
+
 # CMake
 CMakeCache.txt
 CMakeFiles/
