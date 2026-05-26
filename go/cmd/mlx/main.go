@@ -59,6 +59,11 @@ func cliCommandName(command string) string {
 
 func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
+		// Launched from Finder via the .app bundle → default to menubar.
+		// CLI invocation with no args → show help.
+		if isInsideAppBundle() {
+			return runMenubarCommand(ctx, args, stdout, stderr)
+		}
 		printUsage(stdout)
 		return 0
 	}
@@ -67,6 +72,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runBenchCommand(ctx, args[1:], stdout, stderr)
 	case "chapter-profile":
 		return runChapterProfileCommand(ctx, args[1:], stdout, stderr)
+	case "menubar":
+		return runMenubarCommand(ctx, args[1:], stdout, stderr)
 	case "discover":
 		return runDiscoverCommand(ctx, args[1:], stdout, stderr)
 	case "driver-profile":
@@ -8410,6 +8417,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, core.Sprintf("Usage: %s <command> [flags]\n", name))
 	core.WriteString(w, "\n")
 	core.WriteString(w, "Run inference\n")
+	core.WriteString(w, "  menubar             tray-only macOS app — start/stop serve from the menu bar\n")
 	core.WriteString(w, "  serve               host OpenAI/Anthropic/Ollama HTTP API for a loaded model\n")
 	core.WriteString(w, "  bench               single-shot eval against a model (latency + cache + state)\n")
 	core.WriteString(w, "\n")
