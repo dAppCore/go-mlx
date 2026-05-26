@@ -40,6 +40,41 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
+// menubarPrefs persists user choices across launches so the tray
+// picks up where it left off. JSON at the macOS-conventional
+// Application Support path; missing file = empty zero-value prefs.
+type menubarPrefs struct {
+	Model string `json:"model,omitempty"`
+}
+
+func prefsPath() string {
+	return core.PathJoin(core.Env("HOME"), "Library", "Application Support", "lthn-mlx", "preferences.json")
+}
+
+func loadPrefs() menubarPrefs {
+	var p menubarPrefs
+	data := core.ReadFile(prefsPath())
+	if !data.OK {
+		return p
+	}
+	raw, _ := data.Value.([]byte)
+	if r := core.JSONUnmarshal(raw, &p); !r.OK {
+		return menubarPrefs{}
+	}
+	return p
+}
+
+func savePrefs(p menubarPrefs) {
+	dir := core.PathJoin(core.Env("HOME"), "Library", "Application Support", "lthn-mlx")
+	_ = core.MkdirAll(dir, 0o755)
+	encoded := core.JSONMarshal(p)
+	if !encoded.OK {
+		return
+	}
+	raw, _ := encoded.Value.([]byte)
+	_ = core.WriteFile(prefsPath(), raw, 0o644)
+}
+
 //go:embed assets/tray.png assets/app-icon.png
 var menubarAssets embed.FS
 
@@ -53,13 +88,15 @@ func isInsideAppBundle() bool {
 
 // menubarState tracks the serve lifecycle for the menubar's start/stop
 // menu items. Atomic Bool covers concurrent access from the UI thread
-// (tray clicks) and the server goroutine.
+// (tray clicks) and the server goroutine. lastErr surfaces ListenAndServe
+// failures (port in use, etc) back into the status line.
 type menubarState struct {
 	mu      sync.Mutex
 	serving atomic.Bool
 	server  *http.Server
 	model   string
 	addr    string
+	lastErr string
 }
 
 // runMenubarCommand drives the lthn-mlx tray-only macOS app. Wails
@@ -74,13 +111,10 @@ type menubarState struct {
 //	lthn-mlx menubar                       # explicit invocation
 //	# (also the default when Finder launches lthn-mlx.app)
 func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	prefs := loadPrefs()
 	state := &menubarState{
-		model: core.Env("LTHN_MLX_MODEL"),
+		model: pickModelPath(prefs),
 		addr:  ":11434",
-	}
-	if core.Trim(state.model) == "" {
-		// Default to the lemer-lite snapshot if installed locally.
-		state.model = core.PathJoin(core.Env("HOME"), ".cache", "huggingface", "hub", "models--lthn--lemer-lite")
 	}
 
 	appIcon, _ := menubarAssets.ReadFile("assets/app-icon.png")
@@ -110,6 +144,9 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	addrItem.SetEnabled(false)
 
 	menu.AddSeparator()
+	chooseItem := menu.Add("Choose model…")
+
+	menu.AddSeparator()
 	startItem := menu.Add("Start serve")
 	stopItem := menu.Add("Stop serve")
 	stopItem.SetEnabled(false)
@@ -122,16 +159,38 @@ func runMenubarCommand(ctx context.Context, args []string, stdout, stderr io.Wri
 	quitItem := menu.Add("Quit lthn-mlx")
 
 	refresh := func() {
-		if state.serving.Load() {
+		modelItem.SetLabel(core.Sprintf("Model: %s", shortPath(state.model)))
+		switch {
+		case state.serving.Load():
 			statusItem.SetLabel(core.Sprintf("Lemma — serving %s", state.addr))
 			startItem.SetEnabled(false)
 			stopItem.SetEnabled(true)
-		} else {
+		case state.lastErr != "":
+			statusItem.SetLabel(core.Sprintf("Lemma — failed: %s", state.lastErr))
+			startItem.SetEnabled(true)
+			stopItem.SetEnabled(false)
+		default:
 			statusItem.SetLabel("Lemma — idle")
 			startItem.SetEnabled(true)
 			stopItem.SetEnabled(false)
 		}
 	}
+
+	chooseItem.OnClick(func(_ *application.Context) {
+		dialog := app.Dialog.OpenFile().
+			CanChooseDirectories(true).
+			CanChooseFiles(false).
+			SetTitle("Choose a model directory")
+		path, err := dialog.PromptForSingleSelection()
+		if err != nil || core.Trim(path) == "" {
+			return
+		}
+		state.mu.Lock()
+		state.model = path
+		savePrefs(menubarPrefs{Model: path})
+		state.mu.Unlock()
+		refresh()
+	})
 
 	startItem.OnClick(func(_ *application.Context) {
 		state.mu.Lock()
@@ -200,11 +259,17 @@ func startMenubarServe(state *menubarState, refresh func()) {
 		WriteTimeout:      5 * time.Minute,
 	}
 	state.server = srv
+	state.lastErr = ""
 	state.serving.Store(true)
 
 	go func() {
-		_ = srv.ListenAndServe()
+		err := srv.ListenAndServe()
+		state.mu.Lock()
 		state.serving.Store(false)
+		if err != nil && err != http.ErrServerClosed {
+			state.lastErr = err.Error()
+		}
+		state.mu.Unlock()
 		refresh()
 	}()
 }
@@ -217,6 +282,18 @@ func stopMenubarServe(state *menubarState) {
 		state.server = nil
 	}
 	state.serving.Store(false)
+}
+
+// pickModelPath resolves the initial model: saved prefs win, then env
+// var, then the default lemer-lite snapshot. Used at boot only.
+func pickModelPath(prefs menubarPrefs) string {
+	if core.Trim(prefs.Model) != "" {
+		return prefs.Model
+	}
+	if env := core.Trim(core.Env("LTHN_MLX_MODEL")); env != "" {
+		return env
+	}
+	return core.PathJoin(core.Env("HOME"), ".cache", "huggingface", "hub", "models--lthn--lemer-lite")
 }
 
 func shortPath(p string) string {
