@@ -937,7 +937,17 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
 	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one output")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s driver-profile [flags] [model-path]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s driver-profile [flags] [model-path]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Measure end-to-end timings for one prompt: model load, first-token\n")
+		core.WriteString(stderr, "latency, decode throughput, optional per-token native phase trace.\n")
+		core.WriteString(stderr, "The single-prompt diagnostic for understanding whether a model + cfg\n")
+		core.WriteString(stderr, "combination is fast enough; the long list of `-native-*` and\n")
+		core.WriteString(stderr, "`-expert-*` flags toggles opt-in runtime gates for A/B testing\n")
+		core.WriteString(stderr, "individual fast-path implementations against the baseline.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -945,6 +955,14 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s driver-profile ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default prompt, production lane settings\n"))
+		core.WriteString(stderr, core.Sprintf("  %s driver-profile -json -trace-token-phases ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # JSON output + per-token phase breakdown (prefetch / sample_eval / forward)\n"))
+		core.WriteString(stderr, core.Sprintf("  %s driver-profile -profile ~/profiles/lemer-lite-chat.json -prompt-file ~/test.txt\n", name))
+		core.WriteString(stderr, core.Sprintf("    # apply saved tune profile + run a custom prompt file\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -2380,7 +2398,16 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
 	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one output")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s state-ramp-profile [flags] [model-path]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s state-ramp-profile [flags] [model-path]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Measure how retained State grows across multi-turn generation —\n")
+		core.WriteString(stderr, "per-turn KV cache size, decode throughput as State accumulates,\n")
+		core.WriteString(stderr, "memory growth curve. Used to characterise long-conversation\n")
+		core.WriteString(stderr, "behaviour without the State-wake/restore round-trip that\n")
+		core.WriteString(stderr, "state-wake-profile covers.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -2388,6 +2415,12 @@ func runStateRampProfileCommand(ctx context.Context, args []string, stdout, stde
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s state-ramp-profile ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # default ramp shape, production lane\n"))
+		core.WriteString(stderr, core.Sprintf("  %s state-ramp-profile -json -trace-token-phases ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # JSON + per-token phase trace across every turn\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -4607,7 +4640,15 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
 	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one output")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s state-wake-profile [flags] [model-path]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s state-wake-profile [flags] [model-path]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Wake an existing State index (the persisted KV-cache snapshot of a\n")
+		core.WriteString(stderr, "prior session) and measure one continuation turn — restore latency,\n")
+		core.WriteString(stderr, "first-token-after-wake, decode throughput. Pairs with state-pack\n")
+		core.WriteString(stderr, "(which writes the State container being woken).\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -4615,6 +4656,12 @@ func runStateWakeProfileCommand(ctx context.Context, args []string, stdout, stde
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s state-wake-profile -state-index ~/sessions/session-1/folded ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # wake the folded State + run a continuation turn\n"))
+		core.WriteString(stderr, core.Sprintf("  %s state-wake-profile -json -trace-token-phases -state-index ~/sessions/s1/folded ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # JSON + per-token phase trace of the wake + continuation\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -5205,7 +5252,15 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 	repeatedLineLoopLimit := fs.Int("repeated-line-loop-limit", profileDefaultRepeatedLineLoopLimit, "abort when this many consecutive visible non-empty lines repeat")
 	repeatedSentenceLoopLimit := fs.Int("repeated-sentence-loop-limit", profileDefaultRepeatedSentenceLoopLimit, "abort when the same visible sentence repeats this many times in one chapter")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s chapter-profile [flags] [model-path]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s chapter-profile [flags] [model-path]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Walk a long prompt in 256-token chapters, measuring prefill +\n")
+		core.WriteString(stderr, "first-decode timings at each chapter boundary. Finds where in a\n")
+		core.WriteString(stderr, "long context (32k+, opencode-shaped) latency degrades, exposing\n")
+		core.WriteString(stderr, "KV growth costs that single-prompt driver-profile misses.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -5213,6 +5268,12 @@ func runChapterProfileCommand(ctx context.Context, args []string, stdout, stderr
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s chapter-profile -prompt-file ~/longprompt.txt ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # walk the long prompt in 256-token chapters, default cfg\n"))
+		core.WriteString(stderr, core.Sprintf("  %s chapter-profile -json -context 32768 -prompt-file ~/opencode-seed.txt ~/models/lemer-lite\n", name))
+		core.WriteString(stderr, core.Sprintf("    # 32k context window, JSON output for analysis\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
@@ -7224,7 +7285,17 @@ func runReplacePlanCommand(_ context.Context, args []string, stdout, stderr io.W
 	currentProfile := fs.String("current-profile", "", "current saved tuning profile")
 	nextProfile := fs.String("next-profile", "", "next saved tuning profile")
 	fs.Usage = func() {
-		core.WriteString(stderr, core.Sprintf("Usage: %s replace-plan [flags]\n", cliName()))
+		name := cliName()
+		core.WriteString(stderr, core.Sprintf("Usage: %s replace-plan [flags]\n", name))
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Given two saved tuning profiles (current + next), compute the\n")
+		core.WriteString(stderr, "State-handling plan for a hot model swap — what KV cache state\n")
+		core.WriteString(stderr, "must be invalidated vs preserved, whether the new cfg requires\n")
+		core.WriteString(stderr, "a full reload or can stream into the existing process. Used by\n")
+		core.WriteString(stderr, "lthn-mlx serve / lthn-desktop before applying a profile change\n")
+		core.WriteString(stderr, "to a live session.\n")
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Flags:\n")
 		fs.VisitAll(func(f *flag.Flag) {
 			if f.DefValue == "" {
 				core.WriteString(stderr, core.Sprintf("  -%s\n\t%s\n", f.Name, f.Usage))
@@ -7232,6 +7303,12 @@ func runReplacePlanCommand(_ context.Context, args []string, stdout, stderr io.W
 			}
 			core.WriteString(stderr, core.Sprintf("  -%s\n\t%s (default %q)\n", f.Name, f.Usage, f.DefValue))
 		})
+		core.WriteString(stderr, "\n")
+		core.WriteString(stderr, "Examples:\n")
+		core.WriteString(stderr, core.Sprintf("  %s replace-plan -current-profile ~/profiles/chat.json -next-profile ~/profiles/long_context.json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # plan the transition from chat → long_context, human-readable\n"))
+		core.WriteString(stderr, core.Sprintf("  %s replace-plan -json -current-profile ~/profiles/v1.json -next-profile ~/profiles/v2.json\n", name))
+		core.WriteString(stderr, core.Sprintf("    # JSON output (for serve-side automation)\n"))
 	}
 	if err := fs.Parse(args); err != nil {
 		if core.Is(err, flag.ErrHelp) {
