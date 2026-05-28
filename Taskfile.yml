@@ -10,11 +10,22 @@ tasks:
       - mkdir -p ../bin {{.GO_BUILD_CACHE}}
       - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/core-mlx ./cmd/mlx/
   build:lthn:
-    desc: Build lthn-mlx bundle binary to bin/
+    desc: "Build lthn-mlx to bin/ — self-contained (embeds gzipped metallib) when dist/lib/mlx.metallib is present, else lean (external metallib resolution)"
     dir: go
     cmds:
       - mkdir -p ../bin {{.GO_BUILD_CACHE}}
-      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx/
+      - |-
+        set -e
+        if [ -f ../dist/lib/mlx.metallib ]; then
+          if [ ! -f cmd/mlx/mlx.metallib.gz ] || [ ../dist/lib/mlx.metallib -nt cmd/mlx/mlx.metallib.gz ]; then
+            gzip -9 -c ../dist/lib/mlx.metallib > cmd/mlx/mlx.metallib.gz
+          fi
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -tags embed_metallib -o ../bin/lthn-mlx ./cmd/mlx/
+          echo "  lthn-mlx: self-contained ($(du -h cmd/mlx/mlx.metallib.gz | cut -f1) metallib embedded)"
+        else
+          echo "  lthn-mlx: no metallib at dist/lib/mlx.metallib — building lean (external resolution)"
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx/
+        fi
   build:violet:
     desc: Build violet sidecar daemon to bin/
     dir: go
