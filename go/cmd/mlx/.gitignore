@@ -1,0 +1,4 @@
+# Self-contained metallib — gzipped from dist/lib/mlx.metallib by
+# `task build:lthn` and embedded via go:embed under -tags embed_metallib.
+# Build artefact (~41MB); regenerated from the cmake metallib, never committed.
+mlx.metallib.gz

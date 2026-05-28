@@ -33,11 +33,6 @@ dist/*
 # Single source of truth lives in lthn/desktop/frontend/.
 go/cmd/mlx/frontend/dist/
 
-# Self-contained metallib — gzipped from dist/lib/mlx.metallib by
-# `task build:lthn` and embedded via go:embed under -tags embed_metallib.
-# Build artifact (~41MB); regenerated from the cmake metallib, never committed.
-go/cmd/mlx/mlx.metallib.gz
-
 # Knowledge base
 KB/
 .core/
