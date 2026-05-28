@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference"
 	openaicompat "dappco.re/go/inference/openai"
 	mlx "dappco.re/go/mlx"
@@ -67,6 +68,13 @@ type loadedModel struct {
 	modelPath string
 }
 
+// errNoModelLoaded is returned by ResolveModel when the driver started
+// model-less (serve with no --model) and nothing has been loaded via
+// /v1/admin/serve/reload yet. The openai mux surfaces it to inference
+// callers; admin + health endpoints stay reachable so a model can be
+// loaded.
+var errNoModelLoaded = core.NewError("no model loaded — POST /v1/admin/serve/reload to load a model")
+
 // hotSwapResolver is the openaicompat.Resolver that backs
 // /v1/admin/serve/reload (F-7). The active model lives in an
 // atomic.Pointer so ResolveModel reads are lock-free on the hot
@@ -114,6 +122,21 @@ func newHotSwapResolver(modelPath string, opts []mlx.LoadOption) *hotSwapResolve
 // `model` field from the request, ignored — lthn-mlx serves one
 // model at a time.
 func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.TextModel, error) {
+	// Already-active model wins — covers both the lazy-loaded boot model
+	// and one swapped in via Replace (/v1/admin/serve/reload). Lock-free
+	// hot path: every chat/completions call lands here. Checked first so a
+	// reload-loaded model is never shadowed by a stale boot-load initErr.
+	if cur := r.active.Load(); cur != nil {
+		return cur.model, nil
+	}
+	// Model-less start: no boot model was staged. Inference is unavailable
+	// until a model is loaded via Replace; admin + health stay reachable.
+	if r.initPath == "" {
+		return nil, errNoModelLoaded
+	}
+	// First call with a staged boot model: load it now. Lazy so
+	// `serve --model X` binds the listener before paying the multi-GB
+	// load; initial.Do guarantees exactly one load attempt.
 	r.initial.Do(func() {
 		m, err := mlx.LoadModelAsTextModel(r.initPath, r.initOpts...)
 		if err != nil {
@@ -125,11 +148,10 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 	if r.initErr != nil {
 		return nil, r.initErr
 	}
-	cur := r.active.Load()
-	if cur == nil {
-		return nil, r.initErr
+	if cur := r.active.Load(); cur != nil {
+		return cur.model, nil
 	}
-	return cur.model, nil
+	return nil, r.initErr
 }
 
 // Replace loads a new model at newPath with newOpts and atomically

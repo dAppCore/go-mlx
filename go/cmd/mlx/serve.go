@@ -32,7 +32,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	fs := flag.NewFlagSet(cliCommandName("serve"), flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	addr := fs.String("addr", ":11434", "listen address (default mirrors Ollama's port)")
-	modelPath := fs.String("model", "", "model path to load (required)")
+	modelPath := fs.String("model", "", "model path to load; empty starts the driver model-less (load a model later via POST /v1/admin/serve/reload)")
 	contextLen := fs.Int("context", 0, "override context length; 0 uses the model's default")
 	profilePath := fs.String("profile", "", "saved tuning profile JSON to apply; empty auto-discovers from ~/Lethean/data/profiles for this machine + model")
 	noAutoProfile := fs.Bool("no-auto-profile", false, "skip auto-discovery of a saved tuning profile even when --profile is empty")
@@ -43,7 +43,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	rotateAdminToken := fs.Bool("rotate-admin-token", false, "regenerate the admin Bearer token, print it, and exit")
 	fs.Usage = func() {
 		name := cliName()
-		core.WriteString(stderr, core.Sprintf("Usage: %s serve --model <path> [flags]\n", name))
+		core.WriteString(stderr, core.Sprintf("Usage: %s serve [--model <path>] [flags]\n", name))
 		core.WriteString(stderr, "\n")
 		core.WriteString(stderr, "Host an OpenAI / Anthropic / Ollama-compatible HTTP API for a model.\n")
 		core.WriteString(stderr, "Default port (11434) mirrors Ollama so existing clients work unchanged.\n")
@@ -139,10 +139,16 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 0
 	}
 
-	if core.Trim(*modelPath) == "" {
-		core.Print(stderr, "%s serve: --model is required", cliName())
-		fs.Usage()
-		return 2
+	// --model is optional. An empty path starts the driver model-less: it
+	// binds the listener + /v1/admin surface immediately and waits for a
+	// model via POST /v1/admin/serve/reload. Inference calls return "no
+	// model loaded" until one arrives. This is the crew/fleet boot path —
+	// the supervisor brings the engine up and the app loads a model on
+	// demand. A non-empty --model keeps the eager-bind, lazy-first-load
+	// behaviour below.
+	modelless := core.Trim(*modelPath) == ""
+	if modelless {
+		core.Print(stderr, "%s serve: starting model-less — POST /v1/admin/serve/reload to load a model", cliName())
 	}
 
 	// Admin token — load existing or generate fresh. Fail-closed:
@@ -162,7 +168,7 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	// discover from the standard ~/Lethean/data/profiles dir for this
 	// machine + model. --no-auto-profile bypasses discovery entirely.
 	resolvedProfile := core.Trim(*profilePath)
-	if resolvedProfile == "" && !*noAutoProfile {
+	if resolvedProfile == "" && !*noAutoProfile && !modelless {
 		if discovered, ok := findStandardProfileForModel(ctx, *modelPath); ok {
 			resolvedProfile = discovered
 			core.Print(stderr, "%s serve: auto-discovered tuned profile: %s", cliName(), resolvedProfile)
@@ -196,10 +202,17 @@ func runServeCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	hotSwap := newHotSwapResolver(*modelPath, mlxOpts)
 	admin := openai.AdminConfig{
 		Health: func(_ context.Context) (openai.Health, error) {
+			// Report the currently-loaded model (post-reload), or no
+			// models when the driver started model-less and none has
+			// been loaded yet.
+			models := []string{}
+			if p := hotSwap.CurrentPath(); p != "" {
+				models = append(models, p)
+			}
 			return openai.Health{
 				Status:  "ok",
 				Runtime: "go-mlx",
-				Models:  []string{*modelPath},
+				Models:  models,
 				Time:    time.Now().Unix(),
 			}, nil
 		},
