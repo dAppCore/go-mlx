@@ -58,10 +58,15 @@ type hfFileEntry struct {
 
 // isSafeHFEntryPath enforces the contract that the HF tree API
 // returns repo-relative paths with no traversal sequences. Refuses
-// `..`, absolute paths, NUL bytes, and leading `/`. The PathDir +
-// MkdirAll + OpenFile in the download worker would otherwise honour
-// a tree response like `{"path":"../../etc/passwd"}` and write
-// outside the quarantine dir.
+// `..`, absolute paths, NUL bytes, leading `/`, and any dotfile
+// segment (a segment beginning with `.`). The PathDir + MkdirAll +
+// OpenFile in the download worker would otherwise honour a tree
+// response like `{"path":"../../etc/passwd"}` and write outside the
+// quarantine dir; rejecting dotfile segments (F-6 N-9) keeps a
+// compromised mirror from planting `.git/`, `.ssh/`, or other hidden
+// config into the model tree. Genuine model artefacts are never
+// dotfiles — git metadata like .gitattributes is filtered out as
+// non-model content rather than refused.
 func isSafeHFEntryPath(p string) bool {
 	if p == "" {
 		return false
@@ -74,6 +79,9 @@ func isSafeHFEntryPath(p string) bool {
 	}
 	for _, seg := range core.Split(p, "/") {
 		if seg == ".." || seg == "." {
+			return false
+		}
+		if core.HasPrefix(seg, ".") {
 			return false
 		}
 	}

@@ -368,6 +368,12 @@ func TestIsSafeHFEntryPath_RejectsTraversal(t *testing.T) {
 		"a/./b",
 		"with\x00nul",
 		"..",
+		// Mantis #1786 (F-6 N-9): dotfile segments rejected so a
+		// compromised mirror can't plant hidden config into the tree.
+		".gitattributes",
+		".git/config",
+		".ssh/authorized_keys",
+		"weights/.hidden",
 	}
 	for _, p := range bad {
 		if isSafeHFEntryPath(p) {
