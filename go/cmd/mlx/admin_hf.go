@@ -272,8 +272,10 @@ func fetchAndVerify(ctx context.Context, url, destPath, expectedDigest string, e
 	if expectedSize > 0 && written != expectedSize {
 		// Size drift is informational rather than fatal — the HF
 		// tree may report stale sizes during repo rewrites. Sha is
-		// the load-bearing integrity check.
-		_ = expectedSize
+		// the load-bearing integrity check, so we emit a warning the
+		// operator can correlate rather than refusing the file.
+		core.Warn("mlx: admin model_download size drift vs HF manifest",
+			"url", url, "expected_size", expectedSize, "written", written)
 	}
 	return written, computed, nil
 }
