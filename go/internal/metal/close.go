@@ -53,6 +53,9 @@ func freeCaches(caches []Cache) {
 
 // closeGemma releases all Metal arrays held by a GemmaModel.
 func closeGemma(m *GemmaModel) {
+	if m == nil {
+		return
+	}
 	freeEmbedding(m.EmbedTokens)
 	freeRMSNorm(m.Norm)
 	Free(m.NormScaled)
@@ -64,6 +67,9 @@ func closeGemma(m *GemmaModel) {
 	}
 
 	for _, layer := range m.Layers {
+		if layer == nil {
+			continue
+		}
 		freeRMSNorm(layer.InputNorm)
 		freeRMSNorm(layer.PostAttnNorm)
 		freeRMSNorm(layer.PreFFNorm)
@@ -93,6 +99,9 @@ func closeGemma(m *GemmaModel) {
 
 // closeGemma4 releases all Metal arrays held by a Gemma4Model.
 func closeGemma4(m *Gemma4Model) {
+	if m == nil {
+		return
+	}
 	freeEmbedding(m.EmbedTokens)
 	freeEmbedding(m.EmbedTokensPerLayer)
 	closeGemma4Vision(m.VisionTower, m.MultiModalProjector)
@@ -110,6 +119,9 @@ func closeGemma4(m *Gemma4Model) {
 	}
 
 	for _, layer := range m.Layers {
+		if layer == nil {
+			continue
+		}
 		if layer.compiledNativeOwnerDecode != nil {
 			layer.compiledNativeOwnerDecode.Free()
 		}
@@ -185,6 +197,9 @@ func closeGemma4(m *Gemma4Model) {
 
 // closeQwen3 releases all Metal arrays held by a Qwen3Model.
 func closeQwen3(m *Qwen3Model) {
+	if m == nil {
+		return
+	}
 	freeEmbedding(m.EmbedTokens)
 	freeRMSNorm(m.Norm)
 
@@ -194,6 +209,9 @@ func closeQwen3(m *Qwen3Model) {
 	}
 
 	for _, layer := range m.Layers {
+		if layer == nil {
+			continue
+		}
 		freeRMSNorm(layer.InputNorm)
 		freeRMSNorm(layer.PostAttnNorm)
 
