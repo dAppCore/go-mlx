@@ -258,6 +258,46 @@ func TestWriteAndReadModelManifest_Roundtrip(t *testing.T) {
 	}
 }
 
+// TestWriteModelManifest_Deterministic guards Mantis #1784 (F-6 N-6):
+// the .sha256 sidecar must be byte-identical across writes of the same
+// digest set, regardless of map range order.
+func TestWriteModelManifest_Deterministic(t *testing.T) {
+	digests := map[string]string{
+		"weights.bin":         "a1b2c3",
+		"config.json":         "d4e5f6",
+		"tokenizer.json":      "fedcba",
+		"model.safetensors":   "0011223344",
+		"special_tokens.json": "deadbeef",
+	}
+	var first []byte
+	for i := 0; i < 8; i++ {
+		tmp := t.TempDir()
+		if err := writeModelManifest(tmp, digests); err != nil {
+			t.Fatalf("write iter %d: %v", i, err)
+		}
+		got, err := os.ReadFile(filepath.Join(tmp, shaManifestFilename))
+		if err != nil {
+			t.Fatalf("read iter %d: %v", i, err)
+		}
+		if i == 0 {
+			first = got
+			continue
+		}
+		if string(got) != string(first) {
+			t.Fatalf("manifest not deterministic:\niter0=%q\niter%d=%q", first, i, got)
+		}
+	}
+	// Confirm it is actually sorted by filename, not just stable.
+	want := "d4e5f6  config.json\n" +
+		"0011223344  model.safetensors\n" +
+		"deadbeef  special_tokens.json\n" +
+		"fedcba  tokenizer.json\n" +
+		"a1b2c3  weights.bin\n"
+	if string(first) != want {
+		t.Errorf("manifest not sorted by filename:\ngot  %q\nwant %q", first, want)
+	}
+}
+
 // TestAdminReload_MissingConfirmation — request without
 // confirmation must 400 + audit. The handler must NOT reach the
 // resolver.Replace call.

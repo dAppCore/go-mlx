@@ -386,9 +386,18 @@ func readModelManifest(modelDir string) (map[string]string, error) {
 //
 //	if err := writeModelManifest(modelDir, digests); err != nil { ... }
 func writeModelManifest(modelDir string, digests map[string]string) error {
+	// Sort filenames so the .sha256 sidecar is byte-deterministic across
+	// runs (Mantis #1784 F-6 N-6) — map range order is randomised, which
+	// would otherwise produce a different file on every download and defeat
+	// diffing / reproducibility checks against the manifest.
+	names := make([]string, 0, len(digests))
+	for name := range digests {
+		names = append(names, name)
+	}
+	core.SliceSort(names)
 	var b []byte
-	for name, sha := range digests {
-		b = append(b, []byte(sha+"  "+name+"\n")...)
+	for _, name := range names {
+		b = append(b, []byte(digests[name]+"  "+name+"\n")...)
 	}
 	manifest := core.PathJoin(modelDir, shaManifestFilename)
 	if r := core.WriteFile(manifest, b, 0o600); !r.OK {
