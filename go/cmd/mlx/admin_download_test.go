@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeHFTreeAPI — test seam for the download handler. Lets us
@@ -437,5 +439,62 @@ func TestFetchAndVerify_RefusesSymlinkDest(t *testing.T) {
 	got, _ := os.ReadFile(target)
 	if string(got) != "victim" {
 		t.Errorf("symlink target was modified — O_NOFOLLOW failed; target now %q", got)
+	}
+}
+
+// TestDownloadRegistry_EvictsFinishedJobs guards Mantis #1781 (F-6 N-3):
+// the job map is bounded — finished jobs beyond the retention cap are
+// evicted oldest-first so the registry can't grow unbounded over the
+// process lifetime.
+func TestDownloadRegistry_EvictsFinishedJobs(t *testing.T) {
+	r := newAdminDownloadRegistry(context.Background(), io.Discard)
+	base := time.Now().UTC()
+	total := maxDownloadJobsRetained + 10
+	r.mu.Lock()
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("download-%d", i)
+		r.jobs[id] = &adminDownloadJob{
+			ID:        id,
+			Status:    "done",
+			StartedAt: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	r.evictOldDownloadJobsLocked()
+	r.mu.Unlock()
+
+	if len(r.jobs) != maxDownloadJobsRetained {
+		t.Fatalf("expected %d jobs retained after eviction, got %d", maxDownloadJobsRetained, len(r.jobs))
+	}
+	// The oldest IDs (0..9) should be gone; the newest must survive.
+	if _, ok := r.jobs["download-0"]; ok {
+		t.Error("oldest job download-0 should have been evicted")
+	}
+	if _, ok := r.jobs[fmt.Sprintf("download-%d", total-1)]; !ok {
+		t.Error("newest job should be retained")
+	}
+}
+
+// TestDownloadRegistry_NeverEvictsInFlight guards #1781: a running or
+// pending job is never evicted regardless of age, even when the map is
+// already over the cap with no other evictable entries.
+func TestDownloadRegistry_NeverEvictsInFlight(t *testing.T) {
+	r := newAdminDownloadRegistry(context.Background(), io.Discard)
+	base := time.Now().UTC()
+	r.mu.Lock()
+	for i := 0; i <= maxDownloadJobsRetained; i++ {
+		id := fmt.Sprintf("running-%d", i)
+		r.jobs[id] = &adminDownloadJob{
+			ID:        id,
+			Status:    "running",
+			StartedAt: base.Add(time.Duration(i) * time.Second),
+		}
+	}
+	r.evictOldDownloadJobsLocked()
+	got := len(r.jobs)
+	r.mu.Unlock()
+
+	// Nothing evictable → map stays put rather than dropping in-flight work.
+	if got != maxDownloadJobsRetained+1 {
+		t.Fatalf("in-flight jobs must not be evicted; expected %d, got %d", maxDownloadJobsRetained+1, got)
 	}
 }

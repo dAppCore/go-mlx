@@ -74,6 +74,13 @@ type adminDownloadJob struct {
 	Error      string     `json:"error,omitempty"`
 }
 
+// maxDownloadJobsRetained bounds the in-memory job map (F-6 N-3). Each
+// download leaves one job record behind; without eviction the map grows
+// for the process lifetime. Only one job runs at a time, so a small cap
+// keeps enough recent history for polling while staying bounded. The
+// in-flight job is never evicted.
+const maxDownloadJobsRetained = 32
+
 // adminDownloadRegistry — single in-flight job, semaphore-gated.
 // Pattern mirrors adminJobRegistry (F-1) but simpler (one slot, no
 // persistence — restarted downloads start over).
@@ -83,6 +90,31 @@ type adminDownloadRegistry struct {
 	activeSlots chan struct{}
 	ctx         context.Context
 	stderr      io.Writer
+}
+
+// evictOldDownloadJobsLocked prunes finished jobs (done/failed) oldest-
+// first until the map is back under maxDownloadJobsRetained. Caller must
+// hold r.mu. Running/pending jobs are never evicted regardless of age.
+func (r *adminDownloadRegistry) evictOldDownloadJobsLocked() {
+	for len(r.jobs) > maxDownloadJobsRetained {
+		var oldestID string
+		var oldest time.Time
+		for id, j := range r.jobs {
+			if j.Status != "done" && j.Status != "failed" {
+				continue
+			}
+			if oldestID == "" || j.StartedAt.Before(oldest) {
+				oldestID = id
+				oldest = j.StartedAt
+			}
+		}
+		if oldestID == "" {
+			// Nothing evictable (all remaining jobs are in flight) —
+			// stop rather than spin.
+			return
+		}
+		delete(r.jobs, oldestID)
+	}
 }
 
 func newAdminDownloadRegistry(ctx context.Context, stderr io.Writer) *adminDownloadRegistry {
@@ -273,6 +305,7 @@ func adminDownloadHandler(registry *adminDownloadRegistry, hf hfTreeAPI) http.Ha
 			}
 			registry.mu.Lock()
 			registry.jobs[jobID] = job
+			registry.evictOldDownloadJobsLocked()
 			registry.mu.Unlock()
 
 			core.Print(registry.stderr, "%s admin: model_download kickoff job=%s repo=%s revision=%s remote=%s",
