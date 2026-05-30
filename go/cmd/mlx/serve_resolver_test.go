@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"dappco.re/go/inference"
+	mlx "dappco.re/go/mlx"
 )
 
 // TestCandidateToMLXLoadOpts_AllFields — every tuned-profile field
@@ -65,6 +66,42 @@ func TestCandidateToMLXLoadOpts_OnlyContextLength(t *testing.T) {
 	opts := candidateToMLXLoadOpts(c)
 	if len(opts) != 2 {
 		t.Errorf("got %d options for ContextLength-only candidate, want 2 (ContextLength + PromptCache)", len(opts))
+	}
+}
+
+// TestHotSwapResolver_ReloadPreservesTunedOpts guards Mantis #1785
+// (F-7 N-7): a reload that only carries a per-request option (e.g.
+// ContextLength) must keep the auto-tuned boot options rather than
+// reloading with bare defaults. reloadLoadOpts overlays the new opts on
+// top of initOpts, so the merged slice contains every base option plus
+// the overlay (last-wins).
+func TestHotSwapResolver_ReloadPreservesTunedOpts(t *testing.T) {
+	base := candidateToMLXLoadOpts(inference.TuningCandidate{
+		ContextLength: 4096,
+		BatchSize:     32,
+		CacheMode:     "fp16",
+		PromptCache:   true,
+	})
+	r := newHotSwapResolver("/nonexistent/path", base)
+
+	// Reload carries only a new context length.
+	overlay := []mlx.LoadOption{mlx.WithContextLength(8192)}
+	merged := r.reloadLoadOpts(overlay)
+
+	if len(merged) != len(base)+len(overlay) {
+		t.Fatalf("merged opts dropped the tuned base: got %d, want %d", len(merged), len(base)+len(overlay))
+	}
+	// The overlay must come last so it wins on apply.
+	last := merged[len(merged)-1]
+	var cfg mlx.LoadConfig
+	last(&cfg)
+	if cfg.ContextLength != 8192 {
+		t.Errorf("overlay option not applied last: ContextLength=%d, want 8192", cfg.ContextLength)
+	}
+
+	// A nil overlay (no per-reload opts) must still preserve the full base.
+	if got := len(r.reloadLoadOpts(nil)); got != len(base) {
+		t.Errorf("nil overlay dropped base opts: got %d, want %d", got, len(base))
 	}
 }
 

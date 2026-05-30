@@ -163,16 +163,38 @@ func (r *hotSwapResolver) ResolveModel(_ context.Context, _ string) (inference.T
 //	prev, newPath, err := r.Replace(modelPath, opts)
 //	if err != nil { return err }
 //	core.Print(stderr, "reload %s → %s", prev.modelPath, newPath)
+//
+// The auto-tuned boot options (initOpts — CacheMode, BatchSize,
+// PromptCache, allocator limits, etc. from the tuning profile) are
+// preserved across reload (Mantis #1785 F-7 N-7): newOpts is overlaid
+// on top of initOpts so a reload that only carries ContextLength +
+// AdapterPath keeps every tuned field rather than reloading the model
+// with bare defaults. LoadOption application is last-wins, so the
+// overlay correctly overrides any base field it sets.
 func (r *hotSwapResolver) Replace(newPath string, newOpts []mlx.LoadOption) (prev *loadedModel, newActive string, err error) {
 	r.swapMu.Lock()
 	defer r.swapMu.Unlock()
-	loaded, err := mlx.LoadModelAsTextModel(newPath, newOpts...)
+	loaded, err := mlx.LoadModelAsTextModel(newPath, r.reloadLoadOpts(newOpts)...)
 	if err != nil {
 		return nil, "", err
 	}
 	next := &loadedModel{model: loaded, modelPath: newPath}
 	prev = r.active.Swap(next)
 	return prev, newPath, nil
+}
+
+// reloadLoadOpts overlays the per-reload options on top of the auto-tuned
+// boot options (Mantis #1785 F-7 N-7). LoadOption application is last-wins,
+// so initOpts establishes the tuned baseline (CacheMode, BatchSize,
+// PromptCache, allocator limits, …) and newOpts overrides only the fields
+// the reload explicitly carries.
+//
+//	merged := r.reloadLoadOpts([]mlx.LoadOption{mlx.WithContextLength(8192)})
+func (r *hotSwapResolver) reloadLoadOpts(newOpts []mlx.LoadOption) []mlx.LoadOption {
+	merged := make([]mlx.LoadOption, 0, len(r.initOpts)+len(newOpts))
+	merged = append(merged, r.initOpts...)
+	merged = append(merged, newOpts...)
+	return merged
 }
 
 // CurrentPath returns the modelPath of the active model, or the
