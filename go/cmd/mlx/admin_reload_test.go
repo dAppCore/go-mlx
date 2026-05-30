@@ -118,6 +118,29 @@ func withModelsDir(t *testing.T, modelNames ...string) (root string, cleanup fun
 // TestResolveModelNameToPath_RejectsTraversal — `..` / `/` / leading
 // `.` in the model name must be rejected before any filesystem
 // lookup. Path-injection class per §4.F-7.1.
+// TestPathWithinDir guards Mantis #1780 (F-7 N-2): containment uses
+// filepath.Rel semantics, not a raw byte prefix, so a sibling dir that
+// merely shares a prefix is correctly rejected while a real child passes.
+func TestPathWithinDir_Good(t *testing.T) {
+	cases := []struct {
+		root, target string
+		want         bool
+	}{
+		{"/m/models", "/m/models", true},
+		{"/m/models", "/m/models/gemma", true},
+		{"/m/models", "/m/models/a/b/c", true},
+		{"/m/models", "/m/models-evil", false},   // sibling sharing prefix
+		{"/m/models", "/m/models-evil/x", false}, // sibling subtree
+		{"/m/models", "/etc/passwd", false},      // outside tree
+		{"/m/models", "/m", false},               // parent
+	}
+	for _, c := range cases {
+		if got := pathWithinDir(c.root, c.target); got != c.want {
+			t.Errorf("pathWithinDir(%q, %q) = %v, want %v", c.root, c.target, got, c.want)
+		}
+	}
+}
+
 func TestResolveModelNameToPath_RejectsTraversal(t *testing.T) {
 	_, cleanup := withModelsDir(t)
 	defer cleanup()

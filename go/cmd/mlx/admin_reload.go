@@ -249,6 +249,36 @@ func adminReloadFail(w http.ResponseWriter, stderr io.Writer, from, modelName, r
 // the resolved on-disk path on success. Used by the v2 reload shape
 // where callers supply the full path (matches Models.List() entries)
 // instead of a basename. Same security envelope as
+// pathWithinDir reports whether resolved lives inside rootResolved, using a
+// filepath.Rel-based containment test rather than a raw string prefix. On a
+// case-insensitive filesystem (macOS default) PathEvalSymlinks can hand back a
+// different casing than the configured root, which a byte-prefix check rejects
+// as an escape even though the path is genuinely inside the tree; Rel computes
+// containment over cleaned path semantics and avoids that false negative.
+//
+//	pathWithinDir("/m/models", "/m/models/gemma") // true
+//	pathWithinDir("/m/models", "/m/models-evil")  // false (sibling, not child)
+//	pathWithinDir("/m/models", "/etc/passwd")     // false (relative starts ..)
+func pathWithinDir(rootResolved, resolved string) bool {
+	if resolved == rootResolved {
+		return true
+	}
+	rel := core.PathRel(rootResolved, resolved)
+	if !rel.OK {
+		return false
+	}
+	r, _ := rel.Value.(string)
+	if r == "" || r == "." {
+		return true
+	}
+	// Any path that has to climb out of root (".." segment) or is absolute
+	// is not contained.
+	if r == ".." || core.HasPrefix(r, "../") || core.PathIsAbs(r) {
+		return false
+	}
+	return true
+}
+
 // resolveModelNameToPath — escape-prefix check + sha-manifest gate.
 func bindModelPathToStandardDir(path string) (string, error) {
 	if path == "" {
@@ -259,16 +289,13 @@ func bindModelPathToStandardDir(path string) (string, error) {
 	if r := core.PathEvalSymlinks(root); r.OK {
 		rootResolved = r.Value.(string)
 	}
-	if !core.HasSuffix(rootResolved, "/") {
-		rootResolved += "/"
-	}
 	resolved := path
 	if r := core.PathEvalSymlinks(path); r.OK {
 		resolved = r.Value.(string)
 	} else {
 		return "", core.NewError("model dir not found: " + path)
 	}
-	if !core.HasPrefix(resolved+"/", rootResolved) && resolved+"/" != rootResolved {
+	if !pathWithinDir(rootResolved, resolved) {
 		return "", core.NewError("model path escapes models dir")
 	}
 	manifestPath := core.PathJoin(resolved, shaManifestFilename)
@@ -295,16 +322,13 @@ func resolveModelNameToPath(name string) (string, error) {
 	if r := core.PathEvalSymlinks(root); r.OK {
 		rootResolved = r.Value.(string)
 	}
-	if !core.HasSuffix(rootResolved, "/") {
-		rootResolved += "/"
-	}
 	resolved := candidate
 	if r := core.PathEvalSymlinks(candidate); r.OK {
 		resolved = r.Value.(string)
 	} else {
 		return "", core.NewError("model dir not found: " + name)
 	}
-	if !core.HasPrefix(resolved+"/", rootResolved) && resolved+"/" != rootResolved {
+	if !pathWithinDir(rootResolved, resolved) {
 		return "", core.NewError("model path escapes models dir")
 	}
 
