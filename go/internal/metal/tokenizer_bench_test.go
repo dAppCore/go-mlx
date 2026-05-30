@@ -182,6 +182,37 @@ func BenchmarkTokenizer_DecodeToken_SentencePieceSpace(b *testing.B) {
 	}
 }
 
+// --- DecodeOne benches ------------------------------------------------
+// DecodeOne fires once per emitted generation token via the root-package
+// IDToken wrapper. The two dominant shapes are continuation pieces (no ▁
+// marker — must stay zero-alloc) and word-leading pieces (leading ▁ — the
+// ▁→space→strip round-trip is identity on a substring view, so also
+// zero-alloc after the AX-11 marker-aware rewrite).
+
+func BenchmarkTokenizer_DecodeOne_Regular(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = tok.DecodeOne(5) // "he" (no marker — continuation piece)
+	}
+}
+
+func BenchmarkTokenizer_DecodeOne_WordBoundary(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = tok.DecodeOne(7) // "▁h" → "h" (leading marker stripped)
+	}
+}
+
+func BenchmarkTokenizer_DecodeOne_Special(b *testing.B) {
+	tok := benchTokenizerSP(b)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = tok.DecodeOne(100) // <bos>, returns ""
+	}
+}
+
 // --- Vocab probe benches ----------------------------------------------
 
 func BenchmarkTokenizer_TokenID_Hit(b *testing.B) {

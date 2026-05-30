@@ -831,8 +831,31 @@ func (t *Tokenizer) DecodeToken(id int32) string {
 		return t.decodeGPT2Bytes(text)
 	}
 
-	// SentencePiece: replace with space but keep it (it's the word boundary)
-	return core.Replace(text, "▁", " ")
+	// SentencePiece: translate ▁ → space, keeping it (it's the word boundary).
+	// Replaces core.Replace, which allocated a fresh string on every token that
+	// carried a marker (1 alloc/8 B per word-leading token in generation).
+	// indexBytePrefix lets the no-marker continuation tokens (the common mid-
+	// word case) return text unchanged with zero allocations, while marker
+	// tokens take a single Builder pass instead of strings.ReplaceAll's
+	// internal allocation + scan.
+	idx := indexBytePrefix(text)
+	if idx < 0 {
+		return text
+	}
+	sb := core.NewBuilder()
+	for {
+		if idx > 0 {
+			sb.WriteString(text[:idx])
+		}
+		sb.WriteByte(' ')
+		text = text[idx+3:]
+		idx = indexBytePrefix(text)
+		if idx < 0 {
+			sb.WriteString(text)
+			break
+		}
+	}
+	return sb.String()
 }
 
 // DecodeOne mirrors Decode([]int32{id}) semantics for a single token without
@@ -856,15 +879,59 @@ func (t *Tokenizer) DecodeOne(id int32) string {
 		return t.decodeGPT2Bytes(text)
 	}
 
-	// SentencePiece: replace ▁ with space, then strip a single leading space
-	// to match Decode([]int32{id}) exactly. A solo "▁" therefore returns ""
-	// — the root wrapper substitutes a bare space for that case from its
-	// inverse-vocab fallback.
-	result := core.Replace(text, "▁", " ")
-	if core.HasPrefix(result, " ") {
-		return result[1:]
+	// SentencePiece: translate ▁ → space, then strip a single leading space to
+	// match Decode([]int32{id}) exactly. A solo "▁" therefore returns "" — the
+	// root wrapper substitutes a bare space for that case from its inverse-vocab
+	// fallback.
+	//
+	// Zero-alloc fast paths replace the prior core.Replace (1 alloc/8 B on every
+	// marker-bearing token, fired once per emitted generation token):
+	//   - no marker            → return text (continuation pieces, unchanged)
+	//   - leading marker only  → return text[3:] (drop ▁; the ▁→space→strip
+	//                            round-trip is identity on a substring view)
+	// Only the rare interior-marker token (e.g. "▁a▁b") takes a Builder pass.
+	idx := indexBytePrefix(text)
+	if idx < 0 {
+		return text
 	}
-	return result
+	rest := text[idx+3:]
+	next := indexBytePrefix(rest)
+	if idx == 0 && next < 0 {
+		// Leading "▁" + remainder with no further marker: ▁→space gives
+		// " "+rest, and stripping the single leading space yields rest.
+		return rest
+	}
+	if idx > 0 && next < 0 {
+		// No leading marker, single interior marker: text[:idx] + " " + rest.
+		// HasPrefix(" ") is false (text[0] != ▁), so no leading strip.
+		sb := core.NewBuilder()
+		sb.WriteString(text[:idx])
+		sb.WriteByte(' ')
+		sb.WriteString(rest)
+		return sb.String()
+	}
+	// General case: multiple markers. Translate inline then strip a leading
+	// space if present.
+	sb := core.NewBuilder()
+	work := text
+	mIdx := idx
+	for {
+		if mIdx > 0 {
+			sb.WriteString(work[:mIdx])
+		}
+		sb.WriteByte(' ')
+		work = work[mIdx+3:]
+		mIdx = indexBytePrefix(work)
+		if mIdx < 0 {
+			sb.WriteString(work)
+			break
+		}
+	}
+	out := sb.String()
+	if len(out) > 0 && out[0] == ' ' {
+		return out[1:]
+	}
+	return out
 }
 
 // decodeGPT2Bytes converts GPT-2 byte-level BPE Unicode back to real bytes.

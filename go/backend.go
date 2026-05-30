@@ -1074,6 +1074,17 @@ func toRootKVSnapshot(result *metal.KVSnapshot) *kv.Snapshot {
 	}
 }
 
+// kvLayerHasNativeSlab reports whether a layer carries native K/V slab
+// bytes. When true the metal restorer pins those bytes zero-copy and never
+// reads the layer's per-head float32, so toMetalKVSnapshot can skip the
+// per-head materialisation. Both K and V must be present — a half-native
+// layer would still hit the heads decode path on the missing side.
+//
+//	kvLayerHasNativeSlab(&kv.LayerSnapshot{KeyBytes: b, ValueBytes: b}) // true
+func kvLayerHasNativeSlab(layer *kv.LayerSnapshot) bool {
+	return len(layer.KeyBytes) > 0 && len(layer.ValueBytes) > 0
+}
+
 func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 	if result == nil {
 		return nil
@@ -1102,6 +1113,16 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 		heads := layer.Heads
 		totalHeads += len(heads)
 		totalInt32 += len(layer.KeyShape) + len(layer.ValueShape)
+		// When a layer carries native K/V slab bytes the metal restorer
+		// reads ONLY those bytes (kvLayerArrays takes the native-slab
+		// branch and ignores per-head Key/Value); the decoded per-head
+		// float32 are dead weight. A v4 snapshot loaded with the default
+		// (non-RawKVOnly) options populates BOTH — copying the heads here
+		// would materialise the entire prefix cache a second time alongside
+		// the byte slab the restorer actually pins zero-copy. Skip them.
+		if kvLayerHasNativeSlab(layer) {
+			continue
+		}
 		for j := range heads {
 			head := &heads[j]
 			totalKey += len(head.Key)
@@ -1169,6 +1190,12 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			ValueShape: valueShape,
 			Heads:      layerHeads,
 		}
+		// Native-slab layers never have their per-head float32 read by the
+		// restorer (see the sizing-loop note), so pass the source slices
+		// through by reference — same ownership contract as KeyBytes above,
+		// where the source snapshot already outlives the metal snapshot for
+		// the duration of the restore call. Zero copy, zero slab footprint.
+		layerNative := kvLayerHasNativeSlab(layer)
 		for j := range layerHeadsSrc {
 			head := &layerHeadsSrc[j]
 			// Allocate per-head Key + Value out of the pre-sized arenas;
@@ -1177,6 +1204,8 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			// behavioural change.
 			var headKey []float32
 			switch {
+			case layerNative:
+				headKey = head.Key
 			case head.Key == nil:
 				// nil in -> nil out
 			case len(head.Key) == 0:
@@ -1189,6 +1218,8 @@ func toMetalKVSnapshot(result *kv.Snapshot) *metal.KVSnapshot {
 			}
 			var headValue []float32
 			switch {
+			case layerNative:
+				headValue = head.Value
 			case head.Value == nil:
 			case len(head.Value) == 0:
 				headValue = []float32{}
