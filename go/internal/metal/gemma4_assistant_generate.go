@@ -128,7 +128,7 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		remaining := cfg.MaxTokens - len(result.Tokens)
 		blockSize := min(draftTokens, remaining)
 		draftStart := time.Now()
-		draft, err := pair.DraftBlock(lastToken, hidden, caches, blockSize)
+		draft, err := pair.DraftBlockWithSuppression(lastToken, hidden, caches, blockSize, cfg.SuppressTokens)
 		result.DraftDuration += time.Since(draftStart)
 		result.DraftCalls++
 		if err != nil {
@@ -138,7 +138,7 @@ func (m *Model) generateGemma4Assistant(ctx context.Context, pair *Gemma4Assista
 		result.DraftTokenSchedule = append(result.DraftTokenSchedule, blockSize)
 
 		targetStart := time.Now()
-		verify, err := pair.VerifyDraftBlock(logits, draft.Tokens, caches)
+		verify, err := pair.VerifyDraftBlockWithSuppression(logits, draft.Tokens, caches, cfg.SuppressTokens)
 		verifyDuration := time.Since(targetStart)
 		result.TargetVerifyDuration += verifyDuration
 		result.TargetDuration += verifyDuration

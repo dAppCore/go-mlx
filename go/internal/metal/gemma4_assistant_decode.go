@@ -291,6 +291,12 @@ func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Arr
 // DraftBlock chains assistant MTP steps and returns a CPU-visible draft token
 // block. Verification still belongs to the target-side accept/reject path.
 func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Array, targetCaches []Cache, maxDraftTokens int) (*Gemma4AssistantDraftBlockResult, error) {
+	return pair.DraftBlockWithSuppression(lastToken, previousHidden, targetCaches, maxDraftTokens, nil)
+}
+
+// DraftBlockWithSuppression chains assistant MTP steps while preserving the
+// generation token-suppression policy used by the target decoder.
+func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, previousHidden *Array, targetCaches []Cache, maxDraftTokens int, suppressTokens []int32) (*Gemma4AssistantDraftBlockResult, error) {
 	if maxDraftTokens <= 0 {
 		return nil, errAsstDraftBlockMaxZero
 	}
@@ -312,12 +318,11 @@ func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Arr
 			step.Close()
 			return nil, core.E("gemma4.assistant draft block", "eval draft step", err)
 		}
-		values := step.Token.DataInt32()
-		if len(values) == 0 {
+		currentToken, err = gemma4AssistantDraftStepToken(step, suppressTokens)
+		if err != nil {
 			step.Close()
-			return nil, errAsstDraftBlockNoToken
+			return nil, err
 		}
-		currentToken = values[0]
 		tokens = append(tokens, currentToken)
 		currentHidden = step.Hidden
 		step.Hidden = nil
@@ -327,10 +332,38 @@ func (pair *Gemma4AssistantPair) DraftBlock(lastToken int32, previousHidden *Arr
 	return &Gemma4AssistantDraftBlockResult{Tokens: tokens, Hidden: currentHidden}, nil
 }
 
+func gemma4AssistantDraftStepToken(step *Gemma4AssistantDraftStepResult, suppressTokens []int32) (int32, error) {
+	if step == nil || step.Token == nil {
+		return 0, errAsstDraftBlockNoToken
+	}
+	values := step.Token.DataInt32()
+	if len(values) == 0 {
+		return 0, errAsstDraftBlockNoToken
+	}
+	id := values[0]
+	if !tokenIDSuppressed(id, suppressTokens) {
+		return id, nil
+	}
+	replacement, replacementID, _, err := sampleTokenIDWithSuppressionGuard(step.Logits, greedy{}, suppressTokens, false)
+	if err != nil {
+		return 0, err
+	}
+	Free(step.Token)
+	step.Token = replacement
+	return replacementID, nil
+}
+
 // VerifyDraftBlock compares an assistant draft block against greedy target
 // predictions. The caller's target caches are cloned before verification, so
 // rejected draft tokens never pollute the live generation cache.
 func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftTokens []int32, targetCaches []Cache) (*Gemma4AssistantVerifyResult, error) {
+	return pair.VerifyDraftBlockWithSuppression(targetLogits, draftTokens, targetCaches, nil)
+}
+
+// VerifyDraftBlockWithSuppression compares assistant proposals against target
+// greedy predictions after applying the same token-suppression policy used by
+// normal generation.
+func (pair *Gemma4AssistantPair) VerifyDraftBlockWithSuppression(targetLogits *Array, draftTokens []int32, targetCaches []Cache, suppressTokens []int32) (*Gemma4AssistantVerifyResult, error) {
 	if pair == nil || pair.Target == nil {
 		return nil, errAsstVerifyNeedTargetModel
 	}
@@ -358,7 +391,7 @@ func (pair *Gemma4AssistantPair) VerifyDraftBlock(targetLogits *Array, draftToke
 	currentHiddenOwned := false
 
 	for idx, draftToken := range draftTokens {
-		targetToken, err := gemma4AssistantGreedyToken(currentLogits)
+		targetToken, err := gemma4AssistantGreedyToken(currentLogits, suppressTokens)
 		if err != nil {
 			result.Close()
 			if currentLogitsOwned {
@@ -654,7 +687,12 @@ func cloneGemma4AssistantCacheState(keys, values *Array, tokenLen int) (*Array, 
 	return keyCopy, valueCopy, nil
 }
 
-func gemma4AssistantGreedyToken(logits *Array) (int32, error) {
+func gemma4AssistantGreedyToken(logits *Array, suppressTokens ...[]int32) (int32, error) {
+	if len(suppressTokens) > 0 && len(suppressTokens[0]) > 0 {
+		token, id, _, err := sampleTokenIDWithSuppressionGuard(logits, greedy{}, suppressTokens[0], false)
+		Free(token)
+		return id, err
+	}
 	token := Argmax(logits, -1, false)
 	defer Free(token)
 	if err := Eval(token); err != nil {

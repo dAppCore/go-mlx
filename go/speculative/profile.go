@@ -9,8 +9,10 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	"dappco.re/go/inference"
 	"dappco.re/go/inference/decode"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/chat"
 )
 
 // Pair is the minimal target/draft runtime surface needed to profile one run.
@@ -22,10 +24,13 @@ type Pair interface {
 
 // ProfileConfig configures one profiled target/draft generation.
 type ProfileConfig struct {
-	Prompt        string
-	MaxTokens     int
-	DraftTokens   int
-	IncludeOutput bool
+	Prompt         string
+	MaxTokens      int
+	DraftTokens    int
+	IncludeOutput  bool
+	Chat           bool
+	Architecture   string
+	GenerateConfig mlx.GenerateConfig
 }
 
 // ProfileRun records one target/draft generation with sampled token IDs,
@@ -62,13 +67,19 @@ func RunPairProfile(ctx context.Context, pair Pair, cfg ProfileConfig) (ProfileR
 	if cfg.DraftTokens <= 0 {
 		cfg.DraftTokens = 1
 	}
-	result, err := pair.Generate(ctx, cfg.Prompt, mlx.SpeculativeDecodeConfig{
-		MaxTokens:   cfg.MaxTokens,
-		DraftTokens: cfg.DraftTokens,
-		GenerateConfig: mlx.GenerateConfig{
-			MaxTokens:   cfg.MaxTokens,
-			Temperature: 0,
-		},
+	prompt := cfg.Prompt
+	if cfg.Chat {
+		prompt = chat.Format([]inference.Message{{Role: "user", Content: cfg.Prompt}}, chat.Config{
+			Architecture: cfg.Architecture,
+		})
+	}
+	generateConfig := cfg.GenerateConfig
+	generateConfig.MaxTokens = cfg.MaxTokens
+	generateConfig.Temperature = 0
+	result, err := pair.Generate(ctx, prompt, mlx.SpeculativeDecodeConfig{
+		MaxTokens:      cfg.MaxTokens,
+		DraftTokens:    cfg.DraftTokens,
+		GenerateConfig: generateConfig,
 	})
 	run := ProfileRun{
 		Duration:          nonZeroProfileDuration(time.Since(start)),

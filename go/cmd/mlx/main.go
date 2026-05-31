@@ -943,7 +943,7 @@ func runDriverProfileCommand(ctx context.Context, args []string, stdout, stderr 
 	chat := fs.Bool("chat", true, "run the prompt through the model chat template")
 	traceTokenPhases := fs.Bool("trace-token-phases", productionLane.TraceTokenPhases, "include per-token native decode phase timings")
 	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for attached-assistant MTP profile metrics")
-	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 2, "draft tokens proposed per attached-assistant MTP pass")
+	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 1, "draft tokens proposed per attached-assistant MTP pass")
 	contextLen := fs.Int("context", 0, "override context length")
 	prefillChunkSize := fs.Int("prefill-chunk-size", 0, "override long-prompt prefill chunk size in tokens")
 	cacheMode := fs.String("cache-mode", "", cacheModeFlagUsage)
@@ -1438,6 +1438,14 @@ func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, l
 	report.Load = mergeDriverProfileLoadSettings(report.Load, loadSettingsFromModelInfo(pair.Target.Info()))
 	opts.SafetyLimits = resolveDriverProfileSafetyLimits(opts.SafetyLimits, report.Load)
 	report.SafetyLimits = opts.SafetyLimits
+	if opts.Chat {
+		template := chapterProfileTemplate("", pair.Target.Info().Architecture)
+		stopTokenIDs, suppressTokenIDs := chapterProfileTemplateTokenControls(template, pair.Target.Tokenizer())
+		opts.StopTokenIDs = stopTokenIDs
+		opts.SuppressTokenIDs = suppressTokenIDs
+		report.StopTokenIDs = stopTokenIDs
+		report.SuppressTokenIDs = suppressTokenIDs
+	}
 	if err := driverProfileMetricsSafetyError("load", pair.Target.Metrics(), opts.SafetyLimits); err != nil {
 		report.Error = err.Error()
 		return report, err
@@ -1450,6 +1458,12 @@ func defaultRunDriverProfileSpeculative(ctx context.Context, modelPath string, l
 			MaxTokens:     opts.MaxTokens,
 			DraftTokens:   opts.SpeculativeDraftTokens,
 			IncludeOutput: opts.IncludeOutput,
+			Chat:          opts.Chat,
+			Architecture:  pair.Target.Info().Architecture,
+			GenerateConfig: mlx.GenerateConfig{
+				StopTokens:     opts.StopTokenIDs,
+				SuppressTokens: opts.SuppressTokenIDs,
+			},
 		})
 		run := driverProfileRunFromSpeculativeProfile(i+1, profileRun, opts)
 		if runErr != nil && run.Error == "" {
@@ -8413,7 +8427,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 	device := fs.String("device", "", "execution device: gpu or cpu")
 	fastGemma4Lane := fs.Bool("fast-gemma4-lane", true, "enable the accepted Gemma 4 fast runtime gates by default; set false for baseline diagnostics")
 	speculativeDraftModel := fs.String("speculative-draft-model", "", "assistant/draft model path for speculative decode metrics")
-	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 2, "draft tokens proposed per speculative decode pass")
+	speculativeDraftTokens := fs.Int("speculative-draft-tokens", 1, "draft tokens proposed per speculative decode pass")
 	noCache := fs.Bool("no-cache", false, "skip prompt-cache warm/hit check")
 	noRestore := fs.Bool("no-restore", false, "skip KV restore latency check")
 	noBundle := fs.Bool("no-bundle", false, "skip state-bundle round trip check")

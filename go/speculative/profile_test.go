@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	core "dappco.re/go"
 	"dappco.re/go/inference/decode"
 	mlx "dappco.re/go/mlx"
 )
@@ -59,6 +60,39 @@ func TestRunPairProfile_Good(t *testing.T) {
 	}
 	if run.Metrics.MTP == nil || run.Metrics.MTP.ProposedTokens != 2 || run.Metrics.MTP.WarmDecodeTokensPerSec != 100 {
 		t.Fatalf("run metrics = %+v, want MTP counters from target", run.Metrics.MTP)
+	}
+}
+
+func TestRunPairProfile_ChatControls_Good(t *testing.T) {
+	pair := &fakeProfilePair{
+		result: mlx.SpeculativeDecodeResult{
+			Tokens: []decode.Token{{ID: 9, Text: "A"}},
+			Text:   "A",
+		},
+	}
+
+	_, err := RunPairProfile(context.Background(), pair, ProfileConfig{
+		Prompt:       "state smoke",
+		MaxTokens:    1,
+		DraftTokens:  1,
+		Chat:         true,
+		Architecture: "gemma4_text",
+		GenerateConfig: mlx.GenerateConfig{
+			StopTokens:     []int32{1, 106},
+			SuppressTokens: []int32{0, 2, 3},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunPairProfile() error = %v", err)
+	}
+	if !core.Contains(pair.prompt, "<|turn>user\nstate smoke<turn|>\n<|turn>model\n") {
+		t.Fatalf("prompt = %q, want Gemma 4 chat-formatted prompt", pair.prompt)
+	}
+	if got := pair.config.GenerateConfig.StopTokens; len(got) != 2 || got[0] != 1 || got[1] != 106 {
+		t.Fatalf("StopTokens = %v, want [1 106]", got)
+	}
+	if got := pair.config.GenerateConfig.SuppressTokens; len(got) != 3 || got[0] != 0 || got[2] != 3 {
+		t.Fatalf("SuppressTokens = %v, want [0 2 3]", got)
 	}
 }
 

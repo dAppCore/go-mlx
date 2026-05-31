@@ -259,6 +259,52 @@ func TestRunCommand_BenchSpeculativeDraftModel_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_BenchSpeculativeDraftTokensDefault_Good(t *testing.T) {
+	originalLoadPair := loadSpeculativePair
+	originalRunDraft := runBenchReportWithDraft
+	originalRun := runBenchReport
+	t.Cleanup(func() {
+		loadSpeculativePair = originalLoadPair
+		runBenchReportWithDraft = originalRunDraft
+		runBenchReport = originalRun
+	})
+
+	var gotCfg bench.Config
+	loadSpeculativePair = func(string, string, mlx.SpeculativePairConfig) (*mlx.SpeculativePair, error) {
+		return &mlx.SpeculativePair{Target: &mlx.Model{}, Draft: &mlx.Model{}}, nil
+	}
+	runBenchReport = func(context.Context, *mlx.Model, bench.Config) (*bench.Report, error) {
+		t.Fatal("runBenchReport called for speculative pair; want draft-aware runner")
+		return nil, nil
+	}
+	runBenchReportWithDraft = func(_ context.Context, target, draft *mlx.Model, cfg bench.Config) (*bench.Report, error) {
+		if target == nil || draft == nil {
+			t.Fatalf("target/draft = %v/%v, want both models", target, draft)
+		}
+		gotCfg = cfg
+		return &bench.Report{
+			Version:   bench.ReportVersion,
+			Model:     cfg.Model,
+			ModelPath: cfg.ModelPath,
+			Config:    cfg,
+		}, nil
+	}
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"bench",
+		"-json",
+		"-speculative-draft-model", "/models/target-assistant",
+		"/models/target",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.SpeculativeDraftTokens != 1 {
+		t.Fatalf("speculative draft tokens = %d, want conservative default 1", gotCfg.SpeculativeDraftTokens)
+	}
+}
+
 func TestRunCommand_BenchSpeculativeDraftTokens_Bad(t *testing.T) {
 	originalLoadPair := loadSpeculativePair
 	t.Cleanup(func() { loadSpeculativePair = originalLoadPair })
@@ -626,6 +672,56 @@ func TestRunCommand_DriverProfileSpeculativeDraftModel_Good(t *testing.T) {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
 		}
+	}
+}
+
+func TestRunCommand_DriverProfileSpeculativeDraftTokensDefault_Good(t *testing.T) {
+	originalRun := runDriverProfile
+	t.Cleanup(func() { runDriverProfile = originalRun })
+	var gotCfg driverProfileOptions
+	runDriverProfile = func(_ context.Context, modelPath string, _ []mlx.LoadOption, cfg driverProfileOptions) (*driverProfileReport, error) {
+		gotCfg = cfg
+		runs := []driverProfileRun{{
+			Index:         1,
+			Duration:      100 * time.Millisecond,
+			VisibleTokens: 1,
+			Metrics: mlx.Metrics{
+				GeneratedTokens:      1,
+				DecodeTokensPerSec:   50,
+				PeakMemoryBytes:      2048,
+				ActiveMemoryBytes:    1024,
+				PromptCacheHitTokens: 1,
+			},
+		}}
+		return &driverProfileReport{
+			Version:                   1,
+			ModelPath:                 modelPath,
+			PromptBytes:               len(cfg.Prompt),
+			MaxTokens:                 cfg.MaxTokens,
+			RequestedRuns:             cfg.Runs,
+			SpeculativeDraftModelPath: cfg.SpeculativeDraftModelPath,
+			SpeculativeDraftTokens:    cfg.SpeculativeDraftTokens,
+			Runs:                      runs,
+			Summary:                   summariseDriverProfileRuns(runs),
+		}, nil
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"driver-profile",
+		"-json",
+		"-speculative-draft-model", "/models/target-assistant",
+		"/models/target",
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if gotCfg.SpeculativeDraftTokens != 1 {
+		t.Fatalf("speculative draft tokens = %d, want conservative default 1", gotCfg.SpeculativeDraftTokens)
+	}
+	if !core.Contains(stdout.String(), `"speculative_draft_tokens": 1`) {
+		t.Fatalf("stdout = %q, want default draft token count", stdout.String())
 	}
 }
 

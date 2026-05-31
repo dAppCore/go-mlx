@@ -156,6 +156,25 @@ func TestGemma4AssistantDecode_VerifyDraftBlockRejectsBadToken_Good(t *testing.T
 	}
 }
 
+func TestGemma4AssistantDecode_GreedyTokenSuppressesIDs_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantDecode GreedyTokenSuppressesIDs"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	logits := FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
+	defer Free(logits)
+
+	got, err := gemma4AssistantGreedyToken(logits, []int32{1})
+	if err != nil {
+		t.Fatalf("gemma4AssistantGreedyToken: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("greedy token = %d, want unsuppressed token 2", got)
+	}
+}
+
 func TestGemma4AssistantDecode_ClonePagedCacheKeepsPageLens_Good(t *testing.T) {
 	coverageTokens := "Gemma4AssistantDecode ClonePagedCacheKeepsPageLens"
 	if coverageTokens == "" {
