@@ -377,6 +377,85 @@ func TestKVSnapshotStateBlocks_Good_SaveNativeLayerRawOnlyWithoutHeadDuplication
 	}
 }
 
+func TestKVSnapshotStateBlocks_Good_NativeLayerRawPayloadBytesAreState(t *testing.T) {
+	store := state.NewInMemoryStore(nil)
+	keyBytes := []byte{
+		1, 0, 2, 0, 3, 0, 4, 0,
+		5, 0, 6, 0, 7, 0, 8, 0,
+	}
+	valueBytes := []byte{
+		11, 0, 12, 0, 13, 0, 14, 0,
+		15, 0, 16, 0, 17, 0, 18, 0,
+	}
+	snapshot := &Snapshot{
+		Version:       SnapshotVersion,
+		Architecture:  "gemma4_text",
+		Tokens:        []int32{1, 2, 3, 4},
+		TokenOffset:   4,
+		NumLayers:     1,
+		NumHeads:      2,
+		SeqLen:        4,
+		HeadDim:       1,
+		NumQueryHeads: 2,
+		Layers: []LayerSnapshot{{
+			Layer:      0,
+			CacheIndex: 0,
+			KeyDType:   "float16",
+			KeyBytes:   keyBytes,
+			KeyShape:   []int32{1, 2, 4, 1},
+			ValueDType: "float16",
+			ValueBytes: valueBytes,
+			ValueShape: []int32{1, 2, 4, 1},
+			Heads:      make([]HeadSnapshot, 2),
+		}},
+	}
+	wantBlocks, err := snapshot.SplitBlocks(2)
+	if err != nil {
+		t.Fatalf("SplitBlocks(native payload contract) error = %v", err)
+	}
+	bundle, err := snapshot.SaveStateBlocks(context.Background(), store, StateBlockOptions{
+		BlockSize:  2,
+		KVEncoding: EncodingNative,
+	})
+	if err != nil {
+		t.Fatalf("SaveStateBlocks(native payload contract) error = %v", err)
+	}
+	if len(bundle.Blocks) != len(wantBlocks) {
+		t.Fatalf("saved blocks = %d, want %d", len(bundle.Blocks), len(wantBlocks))
+	}
+	for i, wantBlock := range wantBlocks {
+		wantPayload, err := wantBlock.Snapshot.bytesWithOptions(SaveOptions{KVEncoding: EncodingNative})
+		if err != nil {
+			t.Fatalf("bytesWithOptions(block %d) error = %v", i, err)
+		}
+		ref := bundle.Blocks[i]
+		if ref.PayloadEncoding != kvSnapshotStatePayloadRaw {
+			t.Fatalf("block %d payload encoding = %q, want raw bytes", i, ref.PayloadEncoding)
+		}
+		if ref.PayloadByteCount != len(wantPayload) {
+			t.Fatalf("block %d payload bytes = %d, want exact native block bytes %d", i, ref.PayloadByteCount, len(wantPayload))
+		}
+		chunk, err := state.ResolveBytes(context.Background(), store, ref.State.ChunkID)
+		if err != nil {
+			t.Fatalf("ResolveBytes(block %d) error = %v", i, err)
+		}
+		if !equalBytes(chunk.Data, wantPayload) {
+			t.Fatalf("block %d raw payload diverged from native block bytes", i)
+		}
+	}
+	loaded, err := LoadFromStateBlocksWithOptions(context.Background(), store, bundle, LoadOptions{RawKVOnly: true})
+	if err != nil {
+		t.Fatalf("LoadFromStateBlocksWithOptions(native payload contract) error = %v", err)
+	}
+	layer := loaded.Layers[0]
+	if !equalBytes(layer.KeyBytes, keyBytes) || !equalBytes(layer.ValueBytes, valueBytes) {
+		t.Fatalf("loaded native slabs = %v/%v, want original State bytes", layer.KeyBytes, layer.ValueBytes)
+	}
+	if len(layer.Heads) != 2 || len(layer.Heads[0].KeyBytes) != 0 || len(layer.Heads[0].Key) != 0 {
+		t.Fatalf("loaded heads = %+v, want native slabs without duplicated head payload", layer.Heads)
+	}
+}
+
 func TestKVSnapshotStateBlocks_Good_SaveNativeLayerSingleHeadRawOnly(t *testing.T) {
 	store := state.NewInMemoryStore(nil)
 	keyBytes := []byte{1, 0, 2, 0, 3, 0, 4, 0}
