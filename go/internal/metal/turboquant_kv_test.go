@@ -228,6 +228,36 @@ func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *te
 	}
 }
 
+func TestTurboQuantKVProdReferenceVector_SeededErrorIsCentred_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmProd,
+		NormalBits:   4,
+		RotationSeed: 0x6b,
+		QJLSeed:      0x7c,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	const samples = 64
+	const dim = 32
+	var signedError float64
+	for idx := 0; idx < samples; idx++ {
+		key := turboQuantKVReferenceSeededVector(dim, 17+idx*3)
+		query := turboQuantKVReferenceSeededVector(dim, 41+idx*5)
+		encoded, err := EncodeTurboQuantKVProdReference(key, codec)
+		if err != nil {
+			t.Fatalf("EncodeTurboQuantKVProdReference(%d) error = %v", idx, err)
+		}
+		estimated, err := encoded.EstimateInnerProduct(query)
+		if err != nil {
+			t.Fatalf("EstimateInnerProduct(%d) error = %v", idx, err)
+		}
+		signedError += float64(estimated - dotProduct(query, key))
+	}
+	meanError := signedError / samples
+	if math.Abs(meanError) > 0.05 {
+		t.Fatalf("mean signed inner-product error = %.6f, want centred within 0.05", meanError)
+	}
+}
+
 func TestTurboQuantKVReferencePage_EncodeDecodeBase_Good(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)
@@ -351,6 +381,16 @@ func turboQuantKVReferencePageValues(layout TurboQuantKVPageLayout, seed int) []
 	values := make([]float32, layout.PageElementCount())
 	for idx := range values {
 		values[idx] = float32(((idx*seed)%97)-48) / 59
+	}
+	return values
+}
+
+func turboQuantKVReferenceSeededVector(dim, seed int) []float32 {
+	values := make([]float32, dim)
+	state := uint32(seed)
+	for idx := range values {
+		state = state*1664525 + 1013904223
+		values[idx] = float32(int(state%2001)-1000) / 997
 	}
 	return values
 }
