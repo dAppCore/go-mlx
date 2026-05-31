@@ -45,7 +45,10 @@ func TestBenchSummary_WriteMTPMetrics_Good(t *testing.T) {
 		},
 	})
 	got := out.String()
-	if !core.Contains(got, "mtp: 75.0% accepted (4 proposed, 3 accepted, 1 rejected), 132.0 visible tok/s") {
+	if !core.Contains(got, "target-only: prefill 1500.0 tok/s, raw decode 120.0 tok/s") {
+		t.Fatalf("summary = %q, want target-only raw decode line", got)
+	}
+	if !core.Contains(got, "mtp: 75.0% accepted (4 proposed, 3 accepted, 1 rejected), 132.0 visible tok/s, wall 1s") {
 		t.Fatalf("summary = %q, want MTP proposed/accepted/rejected line", got)
 	}
 	if !core.Contains(got, "target: 180.0 tok/s across 2 calls, draft: 320.0 tok/s across 2 calls") {
