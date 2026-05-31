@@ -14,11 +14,12 @@ import (
 type productionQuantizationReport struct {
 	Version int `json:"version"`
 
-	Policy    mlx.ProductionQuantizationPolicy  `json:"policy"`
-	MTPPolicy mlx.ProductionMTPPolicy           `json:"mtp_policy"`
-	Input     productionQuantizationInputReport `json:"input"`
-	Choice    mlx.ProductionQuantizationChoice  `json:"choice"`
-	Command   string                            `json:"command,omitempty"`
+	Policy    mlx.ProductionQuantizationPolicy     `json:"policy"`
+	PackLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
+	MTPPolicy mlx.ProductionMTPPolicy              `json:"mtp_policy"`
+	Input     productionQuantizationInputReport    `json:"input"`
+	Choice    mlx.ProductionQuantizationChoice     `json:"choice"`
+	Command   string                               `json:"command,omitempty"`
 }
 
 type productionQuantizationInputReport struct {
@@ -96,6 +97,7 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 	report := productionQuantizationReport{
 		Version:   1,
 		Policy:    mlx.DefaultProductionQuantizationPolicy(),
+		PackLocks: mlx.DefaultProductionQuantizationPackLocks(),
 		MTPPolicy: mlx.DefaultProductionMTPPolicy(),
 		Input:     productionQuantizationInput(input),
 		Choice:    mlx.SelectProductionQuantizationTier(input),
@@ -169,6 +171,9 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		report.Input.ContextLength,
 	))
 	core.WriteString(stdout, "  ladder: q8 quality, q6 default, q4 constrained fallback\n")
+	for _, lock := range report.PackLocks {
+		core.WriteString(stdout, core.Sprintf("  locked pack: q%d %s@%s\n", lock.QuantBits, lock.ModelID, lock.Revision))
+	}
 	core.WriteString(stdout, core.Sprintf(
 		"  mtp: default=%v, draft_tokens=%d, promotion=%d retained turns plus side-by-side greedy-parity win\n",
 		report.MTPPolicy.EnabledByDefault,
