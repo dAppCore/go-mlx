@@ -107,6 +107,96 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testi
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsMissingThroughputAndCounters_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Summary.MTPTargetTokensPerSecAverage = 0
+	mtpReport.Summary.MTPWarmDecodeTokensPerSecAverage = 0
+	mtpReport.Summary.MTPProposedTokens = 0
+	mtpReport.Summary.MTPAcceptedTokens = 0
+	mtpReport.Summary.MTPRejectedTokens = 0
+	mtpReport.Summary.MTPTargetVerifyCalls = 0
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"mtp_target_throughput_missing"`,
+		`"mtp_warm_decode_missing"`,
+		`"mtp_proposed_tokens_missing"`,
+		`"mtp_target_verify_calls_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsMissingVisibleThroughput_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	targetReport.Summary.DecodeTokensPerSecAverage = 0
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Summary.DecodeTokensPerSecAverage = 0
+	mtpReport.Summary.MTPVisibleTokensPerSecAverage = 0
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"target_only_visible_throughput_missing"`,
+		`"mtp_visible_throughput_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsDraftAccountingMismatch_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Summary.MTPProposedTokens = 40
+	mtpReport.Summary.MTPAcceptedTokens = 0
+	mtpReport.Summary.MTPRejectedTokens = 39
+	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"mtp_draft_accounting_mismatch"`,
+		`"mtp_accepted_tokens_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 	report := driverProfileReport{
 		Version:       1,

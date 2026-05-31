@@ -212,7 +212,7 @@ func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 }
 
 func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule []int) []string {
-	flags := make([]string, 0, 4)
+	flags := make([]string, 0, 12)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
 			flag := core.Trim(part)
@@ -238,6 +238,30 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 	}
 	if len(mtpDraftSchedule) == 0 {
 		flags = append(flags, "mtp_draft_schedule_missing")
+	}
+	if target.Summary.DecodeTokensPerSecAverage <= 0 {
+		flags = append(flags, "target_only_visible_throughput_missing")
+	}
+	if productionMTPCompareMTPVisibleTokensPerSec(mtp.Summary) <= 0 {
+		flags = append(flags, "mtp_visible_throughput_missing")
+	}
+	if mtp.Summary.MTPTargetTokensPerSecAverage <= 0 {
+		flags = append(flags, "mtp_target_throughput_missing")
+	}
+	if mtp.Summary.MTPWarmDecodeTokensPerSecAverage <= 0 {
+		flags = append(flags, "mtp_warm_decode_missing")
+	}
+	if mtp.Summary.MTPProposedTokens <= 0 {
+		flags = append(flags, "mtp_proposed_tokens_missing")
+	}
+	if mtp.Summary.MTPTargetVerifyCalls <= 0 {
+		flags = append(flags, "mtp_target_verify_calls_missing")
+	}
+	if mtp.Summary.MTPProposedTokens > 0 && mtp.Summary.MTPAcceptedTokens+mtp.Summary.MTPRejectedTokens != mtp.Summary.MTPProposedTokens {
+		flags = append(flags, "mtp_draft_accounting_mismatch")
+	}
+	if mtp.Summary.MTPProposedTokens > 0 && mtp.Summary.MTPAcceptedTokens == 0 {
+		flags = append(flags, "mtp_accepted_tokens_missing")
 	}
 	return flags
 }
