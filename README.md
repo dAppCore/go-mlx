@@ -40,7 +40,7 @@ import (
 
 model, err := mlx.LoadModel("/path/to/model",
     mlx.WithContextLength(8192),
-    mlx.WithQuantization(4),
+    mlx.WithQuantization(6), // Gemma 4 small-model product default when it fits
     mlx.WithDevice("gpu"),
 )
 if err != nil {

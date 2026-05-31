@@ -7,7 +7,7 @@ description: Native Metal GPU inference and training for Go on Apple Silicon.
 
 `dappco.re/go/mlx` provides native Apple Metal GPU inference and LoRA fine-tuning for Go. It wraps Apple's [MLX](https://github.com/ml-explore/mlx) framework through the [mlx-c](https://github.com/ml-explore/mlx-c) C API, implementing the `inference.Backend` interface from `dappco.re/go/core/inference` and an RFC-style direct root-package API.
 
-**Platform:** darwin/arm64 only (Apple Silicon M1-M5). A stub provides `MetalAvailable() bool` returning false on all other platforms.
+**Platform:** darwin/arm64 on [macOS Tahoe 26.0+](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes) (Apple Silicon M1-M5). A stub provides `MetalAvailable() bool` returning false on all other platforms.
 
 ## Quick Start
 
@@ -69,7 +69,7 @@ fmt.Println(text)
 - **Batch inference** -- `Classify` (prefill-only) and `BatchGenerate` (autoregressive) for multiple prompts
 - **Frame compute sessions** -- non-LLM pixel-buffer pipelines for scaling, swizzling, palette expansion, and format conversion
 - **LoRA fine-tuning** -- low-rank adaptation with AdamW optimiser and gradient checkpointing
-- **Quantisation** -- transparent support for 4-bit and 8-bit quantised models via `QuantizedMatmul`
+- **Quantisation** -- transparent support for MLX 4-bit, 6-bit, and 8-bit quantised models via `QuantizedMatmul`; Gemma 4 small-model policy is q6 default, q8 quality, q4 constrained fallback
 - **Attention inspection** -- extract post-RoPE K vectors from the KV cache for analysis
 - **Performance metrics** -- prefill/decode tokens per second, GPU memory usage
 
