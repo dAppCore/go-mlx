@@ -629,6 +629,8 @@ func modelPackUnsupportedRuntimeMessage(architecture string) string {
 func modelPackUnsupportedRuntimeMessageFor(profile *profile.ModelArchitectureProfile, architecture string) string {
 	if profile != nil {
 		switch {
+		case profile.ID == "gemma4_assistant":
+			return "Gemma 4 assistant is an attached MTP drafter; use LoadSpeculativePair or LoadGemma4AssistantPair with a Gemma 4 target: " + architecture
 		case profile.ID == "qwen3_6":
 			return "architecture is recognized, but native hybrid linear-attention loading is not implemented yet; use mlx_lm fallback: " + architecture
 		case profile.ID == "qwen3_6_moe":

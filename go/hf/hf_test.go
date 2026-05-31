@@ -183,6 +183,54 @@ func TestPlanHFModelFits_QwenNextNestedTextConfig_Good(t *testing.T) {
 	}
 }
 
+func TestPlanHFModelFits_Gemma4AssistantUsesOuterArchitecture_Good(t *testing.T) {
+	source := &fakeHFModelSource{
+		byID: map[string]ModelMetadata{
+			"google/gemma-4-E2B-it-assistant": {
+				ID: "google/gemma-4-E2B-it-assistant",
+				Config: ModelConfig{
+					ModelType:     "gemma4_assistant",
+					Architectures: []string{"Gemma4AssistantForCausalLM"},
+					TextConfig: &ModelConfig{
+						ModelType:             "gemma4_text",
+						VocabSize:             262144,
+						HiddenSize:            256,
+						NumHiddenLayers:       4,
+						NumAttentionHeads:     4,
+						NumKeyValueHeads:      1,
+						MaxPositionEmbeddings: 131072,
+						QuantizationConfig:    &QuantizationConfig{Bits: 16, GroupSize: 64},
+					},
+				},
+				Files: []ModelFile{{Name: "model.safetensors", Size: 2 * 1024 * 1024 * 1024}},
+			},
+		},
+	}
+
+	report, err := PlanFits(context.Background(), FitConfig{
+		ModelIDs: []string{"google/gemma-4-E2B-it-assistant"},
+		Device:   memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 86 * memory.GiB},
+		Source:   source,
+	})
+	if err != nil {
+		t.Fatalf("PlanFits() error = %v", err)
+	}
+	if len(report.Models) != 1 {
+		t.Fatalf("models = %d, want 1", len(report.Models))
+	}
+	plan := report.Models[0]
+	if plan.Architecture != "gemma4_assistant" || !plan.SupportedArchitecture || plan.NativeLoadable || plan.InferenceFits {
+		t.Fatalf("assistant plan = arch:%q supported:%v native:%v inference:%v, want attachable-only assistant", plan.Architecture, plan.SupportedArchitecture, plan.NativeLoadable, plan.InferenceFits)
+	}
+	if plan.ContextLimit != 131072 || plan.QuantBits != 16 {
+		t.Fatalf("assistant metadata = ctx:%d quant:%d, want text_config metadata retained", plan.ContextLimit, plan.QuantBits)
+	}
+	noteText := core.Join("\n", plan.Notes...)
+	if !core.Contains(noteText, "attached MTP drafter") || !core.Contains(noteText, "LoadSpeculativePair") {
+		t.Fatalf("assistant notes = %q, want attached drafter guidance", noteText)
+	}
+}
+
 func TestPlanHFModelFits_BertEmbeddingUsesEncoderMemoryPlan_Good(t *testing.T) {
 	source := &fakeHFModelSource{
 		byID: map[string]ModelMetadata{

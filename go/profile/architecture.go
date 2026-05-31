@@ -198,7 +198,7 @@ func buildBuiltinArchitectureProfiles() []ModelArchitectureProfile {
 		nativeProfile("gemma3_text", "gemma", "gemma", []string{"Gemma3TextForCausalLM"}),
 		nativeProfile("gemma4", "gemma", "gemma", []string{"Gemma4ForConditionalGeneration"}),
 		nativeProfile("gemma4_text", "gemma", "gemma", []string{"Gemma4ForCausalLM", "Gemma4TextForCausalLM"}),
-		metadataProfile("gemma4_assistant", "gemma", "gemma", "gemma", false, false, []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter graph pending; standalone generation unsupported"}),
+		metadataProfile("gemma4_assistant", "gemma", "gemma", "gemma", false, false, []string{"Gemma4AssistantForCausalLM"}, []string{"attached MTP drafter; standalone generation unsupported; load beside a Gemma 4 target"}),
 		nativeProfile("llama", "llama", "llama", []string{"LlamaForCausalLM"}),
 		nativeProfile("qwen2", "qwen", "qwen", []string{"Qwen2ForCausalLM", "Qwen2.5ForCausalLM", "Qwen2_5ForCausalLM"}),
 		nativeProfile("qwen3", "qwen", "qwen", []string{"Qwen3ForCausalLM"}),

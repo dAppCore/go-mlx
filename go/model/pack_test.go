@@ -145,6 +145,16 @@ func TestInspectModelPack_Gemma4AssistantAlias_Good(t *testing.T) {
 	if pack.Architecture != "gemma4_assistant" || !pack.SupportedArchitecture || pack.NativeLoadable || !pack.HasIssue(mp.ModelPackIssueUnsupportedRuntime) {
 		t.Fatalf("architecture = %q supported=%v native=%v issues=%+v, want metadata-only gemma4_assistant", pack.Architecture, pack.SupportedArchitecture, pack.NativeLoadable, pack.Issues)
 	}
+	assistantIssue := ""
+	for _, issue := range pack.Issues {
+		if issue.Code == mp.ModelPackIssueUnsupportedRuntime {
+			assistantIssue = issue.Message
+			break
+		}
+	}
+	if !core.Contains(assistantIssue, "attached MTP drafter") || !core.Contains(assistantIssue, "LoadSpeculativePair") {
+		t.Fatalf("assistant runtime issue = %q, want attached drafter guidance", assistantIssue)
+	}
 	if pack.NumLayers != 4 || pack.HiddenSize != 256 || pack.ContextLength != 131072 {
 		t.Fatalf("metadata = layers:%d hidden:%d ctx:%d, want assistant text_config metadata", pack.NumLayers, pack.HiddenSize, pack.ContextLength)
 	}

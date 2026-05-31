@@ -900,7 +900,11 @@ func fitNotes(plan FitPlan, memoryLimit uint64, nativeRuntime bool) []string {
 		notes = append(notes, "architecture is not currently supported by native go-mlx loaders")
 	}
 	if notNative {
-		notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
+		if plan.Architecture == "gemma4_assistant" {
+			notes = append(notes, "Gemma 4 assistant is an attached MTP drafter; load with LoadSpeculativePair beside a Gemma 4 target")
+		} else {
+			notes = append(notes, "architecture is recognized, but native runtime kernels are not implemented yet")
+		}
 	}
 	if unknownBytes {
 		notes = append(notes, "weight byte size is unknown")
@@ -922,7 +926,9 @@ func (config ModelConfig) normalized() ModelConfig {
 		return config
 	}
 	text := *config.TextConfig
-	if text.ModelType == "" {
+	if isGemma4AssistantConfig(config) {
+		text.ModelType = "gemma4_assistant"
+	} else if text.ModelType == "" {
 		text.ModelType = config.ModelType
 	}
 	if len(text.Architectures) == 0 && len(config.Architectures) > 0 {
@@ -934,6 +940,18 @@ func (config ModelConfig) normalized() ModelConfig {
 		text.Architectures = core.SliceClone(config.Architectures)
 	}
 	return text
+}
+
+func isGemma4AssistantConfig(config ModelConfig) bool {
+	if normalizeKnownArchitecture(config.ModelType) == "gemma4_assistant" {
+		return true
+	}
+	for _, arch := range config.Architectures {
+		if architectureFromTransformersName(arch) == "gemma4_assistant" {
+			return true
+		}
+	}
+	return false
 }
 
 func (config ModelConfig) architecture() string {
@@ -1087,9 +1105,9 @@ func InferJANG(meta ModelMetadata) *jang.Info {
 type jangPresence uint8
 
 const (
-	jangNone   jangPresence = 0
-	jangBasic  jangPresence = 1 // "jang" present, "jangtq" not
-	jangTQ     jangPresence = 2 // "jangtq" present (implies "jang")
+	jangNone  jangPresence = 0
+	jangBasic jangPresence = 1 // "jang" present, "jangtq" not
+	jangTQ    jangPresence = 2 // "jangtq" present (implies "jang")
 )
 
 // inferJANGNeedlePresent classifies the strongest JANG token present in
