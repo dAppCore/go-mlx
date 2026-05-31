@@ -84,6 +84,45 @@ func TestTurboQuantKVReferencePage_PackedPayloadRoundTrip_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVReferencePage_PackedPayloadDecodeBaseArrays_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v, want nil", err)
+	}
+
+	keyArray, valueArray, err := payload.DecodeBaseArrays()
+	if err != nil {
+		t.Fatalf("DecodeBaseArrays() error = %v, want nil", err)
+	}
+	defer Free(keyArray, valueArray)
+
+	if shape := keyArray.Shape(); len(shape) != 4 ||
+		shape[0] != layout.Shape.Batch || shape[1] != layout.Shape.Heads ||
+		shape[2] != int32(layout.PageTokens) || shape[3] != layout.Shape.HeadDim {
+		t.Fatalf("key array shape = %v, want [%d %d %d %d]",
+			shape, layout.Shape.Batch, layout.Shape.Heads, layout.PageTokens, layout.Shape.HeadDim)
+	}
+	if shape := valueArray.Shape(); len(shape) != 4 ||
+		shape[0] != layout.Shape.Batch || shape[1] != layout.Shape.Heads ||
+		shape[2] != int32(layout.PageTokens) || shape[3] != layout.Shape.HeadDim {
+		t.Fatalf("value array shape = %v, want [%d %d %d %d]",
+			shape, layout.Shape.Batch, layout.Shape.Heads, layout.PageTokens, layout.Shape.HeadDim)
+	}
+	if got := cosineSimilarity(keys, keyArray.Floats()); got < 0.99 {
+		t.Fatalf("key array cosine = %.6f, want >= 0.99", got)
+	}
+	if got := cosineSimilarity(values, valueArray.Floats()); got < 0.99 {
+		t.Fatalf("value array cosine = %.6f, want >= 0.99", got)
+	}
+}
+
 func TestTurboQuantKVReferencePage_RejectsShortPayloadSection_Bad(t *testing.T) {
 	layout := validTurboQuantKVReferencePageLayout()
 	keys := turboQuantKVReferencePageValues(layout, 37)

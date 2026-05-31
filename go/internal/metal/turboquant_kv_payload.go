@@ -174,6 +174,33 @@ func DecodeTurboQuantKVReferencePagePayload(payload TurboQuantKVReferencePagePay
 	return page, nil
 }
 
+// DecodeBaseArrays restores the packed reference payload into MLX arrays shaped
+// [batch, heads, page_tokens, head_dim].
+func (payload TurboQuantKVReferencePagePayload) DecodeBaseArrays() (*Array, *Array, error) {
+	page, err := DecodeTurboQuantKVReferencePagePayload(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	decodedKeys, decodedValues, err := page.DecodeBase()
+	if err != nil {
+		return nil, nil, err
+	}
+	shape := payload.Layout.Shape
+	keyArray := FromValues(decodedKeys,
+		int(shape.Batch),
+		int(shape.Heads),
+		int(payload.Layout.PageTokens),
+		int(shape.HeadDim),
+	)
+	valueArray := FromValues(decodedValues,
+		int(shape.Batch),
+		int(shape.Heads),
+		int(payload.Layout.PageTokens),
+		int(shape.HeadDim),
+	)
+	return keyArray, valueArray, nil
+}
+
 func (payload TurboQuantKVReferencePagePayload) UnpaddedByteCount() uint64 {
 	var total uint64
 	for _, section := range payload.Sections {

@@ -159,6 +159,31 @@ func BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		b.Fatalf("PackedPayload() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		keyArray, valueArray, err := payload.DecodeBaseArrays()
+		if err != nil {
+			b.Fatalf("DecodeBaseArrays() error = %v", err)
+		}
+		if keyArray.Dim(3) != int(layout.Shape.HeadDim) || valueArray.Dim(3) != int(layout.Shape.HeadDim) {
+			b.Fatalf("restored array head dim = %d/%d, want %d", keyArray.Dim(3), valueArray.Dim(3), layout.Shape.HeadDim)
+		}
+		Free(keyArray, valueArray)
+	}
+}
+
 func turboQuantKVReferenceBenchMSECodec() TurboQuantKVCodec {
 	return TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
