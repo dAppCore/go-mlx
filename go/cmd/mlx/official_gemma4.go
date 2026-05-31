@@ -20,10 +20,12 @@ var officialGemma4ControlCompare = func(targetDir, controlDir string) (mlx.Offic
 }
 
 type officialGemma4LocksReport struct {
-	Version         int                         `json:"version"`
-	Kind            string                      `json:"kind"`
-	SourceCheckedAt string                      `json:"source_checked_at,omitempty"`
-	Locks           []mlx.OfficialGemma4E2BLock `json:"locks"`
+	Version              int                                  `json:"version"`
+	Kind                 string                               `json:"kind"`
+	SourceCheckedAt      string                               `json:"source_checked_at,omitempty"`
+	Locks                []mlx.OfficialGemma4E2BLock          `json:"locks"`
+	QuantizedTargetLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
+	PlatformAPILocks     []mlx.OfficialPlatformAPILock        `json:"platform_api_locks"`
 }
 
 type officialGemma4VerifyReport struct {
@@ -58,6 +60,12 @@ func runOfficialGemma4LocksCommand(args []string, stdout, stderr io.Writer) int 
 	for _, lock := range report.Locks {
 		core.WriteString(stdout, core.Sprintf("  %s: %s @ %s (%s, gated=%t)\n", lock.Role, lock.ModelID, lock.Revision, lock.Licence, lock.Gated))
 	}
+	for _, lock := range report.QuantizedTargetLocks {
+		core.WriteString(stdout, core.Sprintf("  q%d target: %s @ %s (%s)\n", lock.QuantBits, lock.ModelID, lock.Revision, lock.ConversionTool))
+	}
+	for _, lock := range report.PlatformAPILocks {
+		core.WriteString(stdout, core.Sprintf("  platform: %s %s (%s)\n", lock.MinimumOS, lock.Name, lock.SourceURL))
+	}
 	return 0
 }
 
@@ -68,10 +76,12 @@ func officialGemma4LocksReportFromDefaults() officialGemma4LocksReport {
 		sourceCheckedAt = locks[0].SourceCheckedAt
 	}
 	return officialGemma4LocksReport{
-		Version:         1,
-		Kind:            "official-gemma4-e2b-source-lock",
-		SourceCheckedAt: sourceCheckedAt,
-		Locks:           locks,
+		Version:              1,
+		Kind:                 "official-gemma4-e2b-source-lock",
+		SourceCheckedAt:      sourceCheckedAt,
+		Locks:                locks,
+		QuantizedTargetLocks: mlx.DefaultProductionQuantizationPackLocks(),
+		PlatformAPILocks:     mlx.DefaultOfficialPlatformAPILocks(),
 	}
 }
 
