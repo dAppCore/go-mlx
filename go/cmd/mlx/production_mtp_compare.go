@@ -27,6 +27,8 @@ type productionMTPCompareReport struct {
 
 type productionMTPCompareSummary struct {
 	ModelPath                     string        `json:"model_path,omitempty"`
+	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
 	PromptBytes                   int           `json:"prompt_bytes,omitempty"`
 	PromptSuffixBytes             int           `json:"prompt_suffix_bytes,omitempty"`
 	PromptChunkBytes              int           `json:"prompt_chunk_bytes,omitempty"`
@@ -39,7 +41,15 @@ type productionMTPCompareSummary struct {
 	GeneratedTokens               int           `json:"generated_tokens,omitempty"`
 	TotalDuration                 time.Duration `json:"total_duration,omitempty"`
 	DecodeTokensPerSecAverage     float64       `json:"decode_tokens_per_sec_average,omitempty"`
+	PeakMemoryBytes               uint64        `json:"peak_memory_bytes,omitempty"`
+	ActiveMemoryBytes             uint64        `json:"active_memory_bytes,omitempty"`
+	CacheMemoryBytes              uint64        `json:"cache_memory_bytes,omitempty"`
+	ActivePlusCacheMemoryBytes    uint64        `json:"active_plus_cache_memory_bytes,omitempty"`
 	MTPVisibleTokensPerSecAverage float64       `json:"mtp_visible_tokens_per_sec_average,omitempty"`
+	MTPTargetTokensPerSecAverage  float64       `json:"mtp_target_tokens_per_sec_average,omitempty"`
+	MTPWarmDecodeTokensPerSec     float64       `json:"mtp_warm_decode_tokens_per_sec_average,omitempty"`
+	MTPAcceptanceRateAverage      float64       `json:"mtp_acceptance_rate_average,omitempty"`
+	MTPDraftTokenSchedule         []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPProposedTokens             int           `json:"mtp_proposed_tokens,omitempty"`
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
@@ -204,6 +214,8 @@ func productionMTPCompareMTPVisibleTokensPerSec(summary driverProfileSummary) fl
 func productionMTPCompareSummaryFromDriver(report driverProfileReport) productionMTPCompareSummary {
 	return productionMTPCompareSummary{
 		ModelPath:                     report.ModelPath,
+		SpeculativeDraftModelPath:     report.SpeculativeDraftModelPath,
+		SpeculativeDraftTokens:        report.SpeculativeDraftTokens,
 		PromptBytes:                   report.PromptBytes,
 		PromptSuffixBytes:             report.PromptSuffixBytes,
 		PromptChunkBytes:              report.PromptChunkBytes,
@@ -216,7 +228,15 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport) productio
 		GeneratedTokens:               report.Summary.GeneratedTokens,
 		TotalDuration:                 report.Summary.TotalDuration,
 		DecodeTokensPerSecAverage:     report.Summary.DecodeTokensPerSecAverage,
+		PeakMemoryBytes:               report.Summary.PeakMemoryBytes,
+		ActiveMemoryBytes:             report.Summary.ActiveMemoryBytes,
+		CacheMemoryBytes:              report.Summary.CacheMemoryBytes,
+		ActivePlusCacheMemoryBytes:    report.Summary.ActivePlusCacheMemoryBytes,
 		MTPVisibleTokensPerSecAverage: report.Summary.MTPVisibleTokensPerSecAverage,
+		MTPTargetTokensPerSecAverage:  report.Summary.MTPTargetTokensPerSecAverage,
+		MTPWarmDecodeTokensPerSec:     report.Summary.MTPWarmDecodeTokensPerSecAverage,
+		MTPAcceptanceRateAverage:      report.Summary.MTPAcceptanceRateAverage,
+		MTPDraftTokenSchedule:         productionMTPCompareDraftTokenSchedule(report),
 		MTPProposedTokens:             report.Summary.MTPProposedTokens,
 		MTPAcceptedTokens:             report.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:             report.Summary.MTPRejectedTokens,
@@ -225,16 +245,33 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport) productio
 	}
 }
 
+func productionMTPCompareDraftTokenSchedule(report driverProfileReport) []int {
+	for _, run := range report.Runs {
+		if run.Metrics.MTP == nil || len(run.Metrics.MTP.DraftTokenSchedule) == 0 {
+			continue
+		}
+		return append([]int(nil), run.Metrics.MTP.DraftTokenSchedule...)
+	}
+	return nil
+}
+
 func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompareReport) {
 	core.WriteString(stdout, core.Sprintf("production MTP comparison: promote=%t (%s)\n", report.Decision.EnableByDefault, report.Decision.Reason))
-	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s\n", report.Evidence.TargetOnlyVisibleTokensPerSec, report.Evidence.TargetOnlyWallDuration))
-	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, proposed/accepted/rejected %d/%d/%d, target verifies %d\n",
+	core.WriteString(stdout, core.Sprintf("target-only: %.1f visible tok/s, wall %s, peak memory %d bytes\n",
+		report.Evidence.TargetOnlyVisibleTokensPerSec,
+		report.Evidence.TargetOnlyWallDuration,
+		report.TargetOnlySummary.PeakMemoryBytes,
+	))
+	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, peak memory %d bytes\n",
 		report.Evidence.MTPVisibleTokensPerSec,
 		report.Evidence.MTPWallDuration,
+		report.MTPSummary.SpeculativeDraftTokens,
+		report.MTPSummary.MTPTargetTokensPerSecAverage,
 		report.Evidence.MTPProposedTokens,
 		report.Evidence.MTPAcceptedTokens,
 		report.Evidence.MTPRejectedTokens,
 		report.Evidence.MTPTargetVerifyCalls,
+		report.MTPSummary.PeakMemoryBytes,
 	))
 	if len(report.Evidence.QualityFlags) > 0 {
 		core.WriteString(stdout, core.Sprintf("quality flags: %s\n", core.Join(", ", report.Evidence.QualityFlags...)))

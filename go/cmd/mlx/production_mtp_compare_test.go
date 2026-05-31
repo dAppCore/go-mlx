@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "dappco.re/go"
+	mlx "dappco.re/go/mlx"
 )
 
 func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
@@ -28,8 +29,14 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"same_prompt_shape": true`,
 		`"target_only_visible_tokens_per_sec": 100`,
 		`"mtp_visible_tokens_per_sec": 125`,
+		`"speculative_draft_tokens": 2`,
+		`"mtp_draft_token_schedule": [`,
+		`"mtp_target_tokens_per_sec_average": 110`,
+		`"mtp_acceptance_rate_average": 0.75`,
 		`"mtp_proposed_tokens": 40`,
 		`"mtp_target_verify_calls": 20`,
+		`"peak_memory_bytes": 4096`,
+		`"active_memory_bytes": 2048`,
 		`"enable_by_default": true`,
 		`"reason": "MTP retained workflow is faster than target-only with greedy parity"`,
 	} {
@@ -78,6 +85,10 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 			DecodeTokensPerSecAverage:  100,
 			TotalDuration:              10 * time.Second,
 			PrefillTokensPerSecAverage: 2000,
+			PeakMemoryBytes:            4096,
+			ActiveMemoryBytes:          2048,
+			CacheMemoryBytes:           512,
+			ActivePlusCacheMemoryBytes: 2560,
 		},
 	}
 	if mtp {
@@ -86,12 +97,23 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		report.Summary.TotalDuration = 8 * time.Second
 		report.Summary.DecodeTokensPerSecAverage = 120
 		report.Summary.MTPVisibleTokensPerSecAverage = 125
+		report.Summary.MTPTargetTokensPerSecAverage = 110
 		report.Summary.MTPWarmDecodeTokensPerSecAverage = 123
 		report.Summary.MTPProposedTokens = 40
 		report.Summary.MTPAcceptedTokens = 30
 		report.Summary.MTPRejectedTokens = 10
 		report.Summary.MTPTargetVerifyCalls = 20
 		report.Summary.MTPDraftCalls = 20
+		report.Summary.MTPAcceptanceRateAverage = 0.75
+		report.Runs = []driverProfileRun{
+			{
+				Metrics: mlx.Metrics{
+					MTP: &mlx.MTPMetrics{
+						DraftTokenSchedule: []int{2, 2},
+					},
+				},
+			},
+		}
 	}
 	return report
 }
