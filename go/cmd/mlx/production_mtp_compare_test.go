@@ -38,6 +38,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 		`"mtp_restore_duration": 80000000`,
 		`"target_only_peak_memory_bytes": 4096`,
 		`"mtp_peak_memory_bytes": 3584`,
+		`"target_only_active_plus_cache_memory_bytes": 2560`,
+		`"mtp_active_plus_cache_memory_bytes": 2304`,
 		`"target_only_energy_joules": 1000`,
 		`"mtp_energy_joules": 760`,
 		`"estimated_power_watts": 100`,
@@ -223,11 +225,13 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *test
 	targetReport.Summary.TotalDuration = 0
 	targetReport.Summary.RestoreAvgDuration = 0
 	targetReport.Summary.PeakMemoryBytes = 0
+	targetReport.Summary.ActivePlusCacheMemoryBytes = 0
 	targetReport.EstimatedEnergy = nil
 	mtpReport := productionMTPCompareTestReport(true)
 	mtpReport.Summary.TotalDuration = 0
 	mtpReport.Summary.RestoreAvgDuration = 0
 	mtpReport.Summary.PeakMemoryBytes = 0
+	mtpReport.Summary.ActivePlusCacheMemoryBytes = 0
 	mtpReport.EstimatedEnergy = nil
 	writeProductionMTPCompareReport(t, targetPath, targetReport)
 	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
@@ -246,6 +250,8 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *test
 		`"mtp_restore_duration_missing"`,
 		`"target_only_peak_memory_missing"`,
 		`"mtp_peak_memory_missing"`,
+		`"target_only_active_plus_cache_memory_missing"`,
+		`"mtp_active_plus_cache_memory_missing"`,
 		`"target_only_energy_missing"`,
 		`"mtp_energy_missing"`,
 		`"estimated_power_watts_missing"`,
@@ -347,6 +353,9 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		report.Summary.RestoreAvgDuration = 80 * time.Millisecond
 		report.Summary.DecodeTokensPerSecAverage = 120
 		report.Summary.PeakMemoryBytes = 3584
+		report.Summary.ActiveMemoryBytes = 1792
+		report.Summary.CacheMemoryBytes = 512
+		report.Summary.ActivePlusCacheMemoryBytes = 2304
 		report.Summary.MTPVisibleTokensPerSecAverage = 125
 		report.Summary.MTPTargetTokensPerSecAverage = 110
 		report.Summary.MTPWarmDecodeTokensPerSecAverage = 123
