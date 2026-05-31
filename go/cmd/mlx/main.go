@@ -8422,6 +8422,11 @@ var (
 	runBenchReportWithSpeculativePair = mlx.RunFastEvalBenchWithSpeculativePair
 )
 
+type benchCommandReport struct {
+	*bench.Report
+	SpeculativeAssistantLayout *mlx.SpeculativeAssistantLayout `json:"speculative_assistant_layout,omitempty"`
+}
+
 func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cfg := bench.DefaultConfig()
 	fs := flag.NewFlagSet(cliCommandName("bench"), flag.ContinueOnError)
@@ -8626,16 +8631,18 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			return 1
 		}
 		defer pair.Close()
-		report, err := runBenchReportWithDraft(ctx, pair.Target, pair.Draft, cfg)
+		var report *bench.Report
 		if pair.Gemma4Assistant != nil {
 			report, err = runBenchReportWithSpeculativePair(ctx, pair, cfg)
+		} else {
+			report, err = runBenchReportWithDraft(ctx, pair.Target, pair.Draft, cfg)
 		}
 		if err != nil {
 			core.Print(stderr, "%s bench: %v", cliName(), err)
 			return 1
 		}
 		if *jsonOut {
-			data := core.JSONMarshalIndent(report, "", "  ")
+			data := core.JSONMarshalIndent(benchCommandJSONReport(report, pair.Report.AssistantLayout), "", "  ")
 			if !data.OK {
 				core.Print(stderr, "%s bench: marshal report failed", cliName())
 				return 1
@@ -8644,7 +8651,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			core.WriteString(stdout, "\n")
 			return 0
 		}
-		benchsummary.Write(stdout, report)
+		writeBenchCommandSummary(stdout, report, pair.Report.AssistantLayout)
 		return 0
 	}
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -8660,7 +8667,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 1
 	}
 	if *jsonOut {
-		data := core.JSONMarshalIndent(report, "", "  ")
+		data := core.JSONMarshalIndent(benchCommandJSONReport(report, nil), "", "  ")
 		if !data.OK {
 			core.Print(stderr, "%s bench: marshal report failed", cliName())
 			return 1
@@ -8669,8 +8676,32 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stdout, "\n")
 		return 0
 	}
-	benchsummary.Write(stdout, report)
+	writeBenchCommandSummary(stdout, report, nil)
 	return 0
+}
+
+func benchCommandJSONReport(report *bench.Report, layout *mlx.SpeculativeAssistantLayout) any {
+	if layout == nil {
+		return report
+	}
+	return benchCommandReport{
+		Report:                     report,
+		SpeculativeAssistantLayout: layout,
+	}
+}
+
+func writeBenchCommandSummary(stdout io.Writer, report *bench.Report, layout *mlx.SpeculativeAssistantLayout) {
+	benchsummary.Write(stdout, report)
+	if layout == nil {
+		return
+	}
+	core.WriteString(stdout, core.Sprintf("  assistant: %s, ordered embeddings %t, centroids %d, centroid top-k %d, four-layer %t\n",
+		layout.Architecture,
+		layout.OrderedEmbeddings,
+		layout.Centroids,
+		layout.CentroidIntermediateTopK,
+		layout.FourLayerDrafter,
+	))
 }
 
 func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) int {

@@ -14,6 +14,7 @@ import (
 	"dappco.re/go/inference/bench"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/safetensors"
 )
@@ -256,6 +257,85 @@ func TestRunCommand_BenchSpeculativeDraftModel_Good(t *testing.T) {
 	if !core.Contains(stdout.String(), `"speculative_draft_model_path": "/models/target-assistant"`) ||
 		!core.Contains(stdout.String(), `"visible_tokens_per_sec": 12.5`) {
 		t.Fatalf("stdout = %q, want speculative config and metrics", stdout.String())
+	}
+}
+
+func TestRunCommand_BenchGemma4AssistantPairUsesSpeculativePairRunner_Good(t *testing.T) {
+	originalLoadPair := loadSpeculativePair
+	originalRunDraft := runBenchReportWithDraft
+	originalRunPair := runBenchReportWithSpeculativePair
+	t.Cleanup(func() {
+		loadSpeculativePair = originalLoadPair
+		runBenchReportWithDraft = originalRunDraft
+		runBenchReportWithSpeculativePair = originalRunPair
+	})
+
+	assistantLayout := &mlx.SpeculativeAssistantLayout{
+		Architecture:             "gemma4_assistant",
+		OrderedEmbeddings:        true,
+		Centroids:                2048,
+		CentroidIntermediateTopK: 32,
+		FourLayerDrafter:         true,
+	}
+	loadSpeculativePair = func(targetPath, draftPath string, cfg mlx.SpeculativePairConfig) (*mlx.SpeculativePair, error) {
+		if targetPath != "/models/target" || draftPath != "/models/target-assistant" {
+			t.Fatalf("speculative paths target=%q draft=%q", targetPath, draftPath)
+		}
+		return &mlx.SpeculativePair{
+			Target:          &mlx.Model{},
+			Gemma4Assistant: &metal.Gemma4AssistantPair{},
+			Report:          mlx.SpeculativePairReport{AssistantLayout: assistantLayout},
+		}, nil
+	}
+	runBenchReportWithDraft = func(context.Context, *mlx.Model, *mlx.Model, bench.Config) (*bench.Report, error) {
+		t.Fatal("runBenchReportWithDraft called for attached assistant; want speculative pair runner")
+		return nil, nil
+	}
+	runBenchReportWithSpeculativePair = func(_ context.Context, pair *mlx.SpeculativePair, cfg bench.Config) (*bench.Report, error) {
+		if pair == nil || pair.Gemma4Assistant == nil {
+			t.Fatalf("pair = %+v, want attached Gemma 4 assistant", pair)
+		}
+		return &bench.Report{
+			Version:   bench.ReportVersion,
+			Model:     cfg.Model,
+			ModelPath: cfg.ModelPath,
+			Config:    cfg,
+			SpeculativeDecode: bench.DecodeOptimisationReport{
+				Attempted: true,
+				Result:    bench.DecodeOptimisationResult{Mode: mlx.SpeculativeDecodeModeMTP},
+				Metrics: bench.DecodeOptimisationMetrics{
+					DraftTokens:         2,
+					AcceptedTokens:      1,
+					RejectedTokens:      1,
+					AcceptanceRate:      0.5,
+					VisibleTokensPerSec: 12.5,
+				},
+			},
+		}, nil
+	}
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{
+		"bench",
+		"-json",
+		"-speculative-draft-model", "/models/target-assistant",
+		"-speculative-draft-tokens", "2",
+		"/models/target",
+	}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"mode": "mtp"`,
+		`"speculative_assistant_layout": {`,
+		`"architecture": "gemma4_assistant"`,
+		`"ordered_embeddings": true`,
+		`"centroids": 2048`,
+		`"centroid_intermediate_top_k": 32`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
 	}
 }
 
