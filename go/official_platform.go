@@ -2,7 +2,7 @@
 
 package mlx
 
-const officialPlatformSourceCheckedAt = "2026-05-31"
+const officialPlatformSourceCheckedAt = "2026-06-01"
 
 // OfficialPlatformAPILock records the OS/API provenance for native Metal
 // features that define the production binary floor.
@@ -31,6 +31,16 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			SourceURL:       "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
 			APIClass:        "operating-system-floor",
 			Notes:           "Apple documents the macOS 26 SDK and Metal 4 support on the Tahoe 26 release; this is the production OS floor for APIs introduced with that release.",
+		},
+		{
+			Name:            "SwiftPM macOSVersion.v26",
+			MinimumOS:       "macOS 26.0",
+			SDK:             "macOS 26 SDK",
+			IntroducedIn:    "macOS 26.0",
+			SourceCheckedAt: officialPlatformSourceCheckedAt,
+			SourceURL:       "https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26",
+			APIClass:        "deployment-target-symbol",
+			Notes:           "Apple's SupportedPlatform macOSVersion.v26 symbol is the direct package/deployment-target source for the macOS 26.0 floor.",
 		},
 		{
 			Name:            "What's new in macOS 26",

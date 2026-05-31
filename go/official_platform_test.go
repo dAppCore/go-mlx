@@ -15,8 +15,9 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	var macOSOverviewNotes string
 	for _, lock := range locks {
-		if lock.MinimumOS != "macOS 26.0" || lock.SourceCheckedAt != "2026-05-31" {
+		if lock.MinimumOS != "macOS 26.0" || lock.SourceCheckedAt != "2026-06-01" {
 			t.Fatalf("lock provenance = %+v, want macOS 26.0 checked source", lock)
 		}
 		if lock.IntroducedIn != "macOS 26.0" {
@@ -26,10 +27,14 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 			t.Fatalf("lock is incomplete: %+v", lock)
 		}
 		seen[lock.SourceURL] = true
+		if lock.APIClass == "macos-26-api-generation" {
+			macOSOverviewNotes = lock.Notes
+		}
 	}
 
 	for _, want := range []string{
 		"https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes",
+		"https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26",
 		"https://developer.apple.com/macos/whats-new/",
 		"https://developer.apple.com/metal/whats-new/",
 		"https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
@@ -41,7 +46,7 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 			t.Fatalf("locks = %+v, want source URL %s", locks, want)
 		}
 	}
-	if !core.Contains(locks[1].Notes, "Metal 4") {
-		t.Fatalf("overview notes = %q, want Metal 4 provenance", locks[1].Notes)
+	if !core.Contains(macOSOverviewNotes, "Metal 4") {
+		t.Fatalf("overview notes = %q, want Metal 4 provenance", macOSOverviewNotes)
 	}
 }

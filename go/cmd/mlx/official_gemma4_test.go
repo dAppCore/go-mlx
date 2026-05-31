@@ -38,6 +38,7 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 		`"minimum_os": "macOS 26.0"`,
 		`"introduced_in": "macOS 26.0"`,
 		`"source_url": "https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes"`,
+		`"source_url": "https://developer.apple.com/documentation/packagedescription/supportedplatform/macosversion/v26"`,
 		`"source_url": "https://developer.apple.com/macos/whats-new/"`,
 		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
 		`"source_url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf"`,
