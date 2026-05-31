@@ -66,7 +66,7 @@ func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (
 	rotated := make([]float64, len(values))
 	turboQuantKVReferenceRotate(rotated, normalised, codec.RotationSeed, false)
 	for idx, value := range rotated {
-		encoded.CentroidCodes[idx] = turboQuantKVReferenceQuantizeUniform(value, codec.NormalBits)
+		encoded.CentroidCodes[idx] = turboQuantKVReferenceQuantizeUniform(value, codec.bitsForChannel(int32(idx)))
 	}
 	return encoded, nil
 }
@@ -180,7 +180,7 @@ func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 	}
 	rotated := make([]float64, encoded.HeadDim)
 	for idx, code := range encoded.CentroidCodes {
-		rotated[idx] = turboQuantKVReferenceDequantizeUniform(code, encoded.Codec.NormalBits)
+		rotated[idx] = turboQuantKVReferenceDequantizeUniform(code, encoded.Codec.bitsForChannel(int32(idx)))
 	}
 	normalised := make([]float64, encoded.HeadDim)
 	turboQuantKVReferenceRotate(normalised, rotated, encoded.Codec.RotationSeed, true)
@@ -194,7 +194,7 @@ func (encoded TurboQuantKVMSEReferenceVector) PackedCentroidBytes() ([]byte, err
 	if err := encoded.validatePackedMSEReference(); err != nil {
 		return nil, err
 	}
-	return turboQuantKVReferencePackBits(encoded.CentroidCodes, encoded.Codec.NormalBits), nil
+	return turboQuantKVReferencePackCodecCentroids(encoded.CentroidCodes, encoded.Codec, encoded.HeadDim), nil
 }
 
 func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim int32, norm float32, packedCentroids []byte) (TurboQuantKVMSEReferenceVector, error) {
@@ -213,7 +213,7 @@ func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim i
 	if !turboQuantKVReferenceHeadDimSupported(int(headDim)) {
 		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid requires a power-of-two head dimension")
 	}
-	wantBytes := int(turboQuantKVPackedBytes(uint64(headDim) * uint64(codec.NormalBits)))
+	wantBytes := int(turboQuantKVPackedBytes(codec.centroidBitsPerVector(headDim)))
 	if len(packedCentroids) != wantBytes {
 		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid byte length is invalid")
 	}
@@ -221,7 +221,7 @@ func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim i
 		Codec:         codec,
 		HeadDim:       headDim,
 		Norm:          norm,
-		CentroidCodes: turboQuantKVReferenceUnpackBits(packedCentroids, int(headDim), codec.NormalBits),
+		CentroidCodes: turboQuantKVReferenceUnpackCodecCentroids(packedCentroids, int(headDim), codec),
 	}, nil
 }
 
@@ -402,6 +402,31 @@ func turboQuantKVReferencePackBits(values []byte, bits int) []byte {
 	return packed
 }
 
+func turboQuantKVReferencePackCodecCentroids(values []byte, codec TurboQuantKVCodec, headDim int32) []byte {
+	if len(values) == 0 || headDim <= 0 {
+		return nil
+	}
+	packed := make([]byte, int(turboQuantKVPackedBytes(codec.centroidBitsPerVector(headDim))))
+	bitOffset := 0
+	for idx, raw := range values {
+		bits := codec.bitsForChannel(int32(idx))
+		var mask uint16
+		if bits >= 8 {
+			mask = 0xff
+		} else {
+			mask = uint16((1 << uint(bits)) - 1)
+		}
+		value := uint16(raw) & mask
+		for bit := 0; bit < bits; bit++ {
+			if value&(1<<uint(bit)) != 0 {
+				packed[bitOffset/8] |= 1 << uint(bitOffset%8)
+			}
+			bitOffset++
+		}
+	}
+	return packed
+}
+
 func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
 	if bits <= 0 || count <= 0 {
 		return nil
@@ -409,6 +434,26 @@ func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
 	values := make([]byte, count)
 	bitOffset := 0
 	for idx := range values {
+		var value byte
+		for bit := 0; bit < bits; bit++ {
+			if packed[bitOffset/8]&(1<<uint(bitOffset%8)) != 0 {
+				value |= 1 << uint(bit)
+			}
+			bitOffset++
+		}
+		values[idx] = value
+	}
+	return values
+}
+
+func turboQuantKVReferenceUnpackCodecCentroids(packed []byte, count int, codec TurboQuantKVCodec) []byte {
+	if count <= 0 {
+		return nil
+	}
+	values := make([]byte, count)
+	bitOffset := 0
+	for idx := range values {
+		bits := codec.bitsForChannel(int32(idx))
 		var value byte
 		for bit := 0; bit < bits; bit++ {
 			if packed[bitOffset/8]&(1<<uint(bitOffset%8)) != 0 {

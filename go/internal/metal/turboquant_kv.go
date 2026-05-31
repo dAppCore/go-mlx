@@ -60,8 +60,14 @@ func (codec TurboQuantKVCodec) Validate(kind string, headDim int32) error {
 	if codec.NormalBits <= 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " normal bit width is invalid")
 	}
+	if codec.NormalBits > 8 {
+		return core.NewError("mlx: TurboQuant " + kind + " normal bit width exceeds byte storage")
+	}
 	if len(codec.OutlierMask) > 0 && codec.OutlierBits <= 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " outlier bit width is invalid")
+	}
+	if codec.OutlierBits > 8 {
+		return core.NewError("mlx: TurboQuant " + kind + " outlier bit width exceeds byte storage")
 	}
 	if headDim <= 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " head dimension is invalid")
@@ -106,6 +112,18 @@ func (codec TurboQuantKVCodec) EffectiveBitsMilli(headDim int32) int {
 	}
 	totalMilli := (normal*codec.NormalBits + outliers*outlierBits) * 1000
 	return totalMilli / int(headDim)
+}
+
+func (codec TurboQuantKVCodec) bitsForChannel(channel int32) int {
+	if channel < 0 || len(codec.OutlierMask) == 0 {
+		return codec.NormalBits
+	}
+	byteIndex := channel / 8
+	bitIndex := uint(channel % 8)
+	if int(byteIndex) < len(codec.OutlierMask) && codec.OutlierMask[byteIndex]&(1<<bitIndex) != 0 && codec.OutlierBits > 0 {
+		return codec.OutlierBits
+	}
+	return codec.NormalBits
 }
 
 // TurboQuantKVPageLayout is the versioned metadata contract for one compressed
@@ -260,4 +278,19 @@ func turboQuantKVMaskBytes(headDim int32) int {
 		return 0
 	}
 	return int((headDim + 7) / 8)
+}
+
+func turboQuantKVOutlierMask(headDim int32, outlierChannels int32) []byte {
+	if headDim <= 0 || outlierChannels <= 0 {
+		return nil
+	}
+	if outlierChannels > headDim {
+		outlierChannels = headDim
+	}
+	mask := make([]byte, turboQuantKVMaskBytes(headDim))
+	start := headDim - outlierChannels
+	for channel := start; channel < headDim; channel++ {
+		mask[channel/8] |= 1 << uint(channel%8)
+	}
+	return mask
 }

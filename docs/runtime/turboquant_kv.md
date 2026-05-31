@@ -3,10 +3,11 @@
 # TurboQuant KV Implementation Note
 
 Status: research implementation for the explicit `turboquant` cache mode. This
-is not a default path. The current code has a versioned page payload and a
-reference restore bridge that dequantizes compressed pages back into MLX arrays
-before attention. Pinned restore and compressed-attention kernels are still open
-work.
+is not a default path. The current code has a versioned page payload, a
+physical 3.5-bit/channel reference layout using a 3-bit regular / 4-bit outlier
+split, and a reference restore bridge that dequantizes compressed pages back
+into MLX arrays before attention. Pinned restore and compressed-attention
+kernels are still open work.
 
 Source basis: `/Users/snider/Downloads/2504.19874v1.pdf`, especially Algorithm
 1 `TurboQuantmse`, Algorithm 2 `TurboQuantprod`, and the KV-cache compression
@@ -174,7 +175,11 @@ growth.
   norms, QJL residual norms, seeds/codebook ids, outlier masks, and page index
   overhead.
 - `go/internal/metal.TurboQuantKVCache` exists beside `PagedKVCache`, not hidden
-  inside q8. It is selected only by the explicit `turboquant` cache mode.
+  inside q8. It is selected only by the explicit `turboquant` cache mode. The
+  reference cache now emits K=`TurboQuantprod` and V=`TurboQuantmse` payloads
+  with deterministic 3-bit regular channels and 4-bit outlier channels over the
+  high half of the head dimension, giving `3500` effective bits/milli for both
+  K and V in the stored layout.
 - Snapshot, prompt-cache, and public State restore accept TurboQuant only when
   the page schema version matches exactly; older, empty, or partial snapshots
   fail clearly. `kv.Snapshot` v5 keeps compressed page payloads opaque at the
@@ -185,11 +190,14 @@ growth.
 Current focused benchmark on the M3 Ultra dev target:
 
 ```text
-BenchmarkTurboQuantKVCache_Update_D128_T8             85861 ns/op  165465 B/op  232 allocs/op
-BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8    34309 ns/op   66271 B/op   86 allocs/op
-BenchmarkTurboQuantKVReferencePage_PackedPayload      15412 ns/op    8416 B/op   46 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayload      13731 ns/op    6144 B/op   26 allocs/op
-BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays 33398 ns/op  63657 B/op   80 allocs/op
+BenchmarkTurboQuantKVCache_Update_D128_T8              88428 ns/op 165193 B/op 234 allocs/op
+BenchmarkTurboQuantKVCache_SnapshotRestore_D128_T8     34084 ns/op  65806 B/op  86 allocs/op
+BenchmarkTurboQuantKVReferencePage_Encode_D128_T8      31623 ns/op  75776 B/op  98 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8  15903 ns/op  49152 B/op  50 allocs/op
+BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8 14493 ns/op 36896 B/op  41 allocs/op
+BenchmarkTurboQuantKVReferencePage_PackedPayload       15227 ns/op   8416 B/op  46 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayload       13602 ns/op   6144 B/op  26 allocs/op
+BenchmarkTurboQuantKVReferencePage_DecodePayloadArrays 33574 ns/op  63657 B/op  80 allocs/op
 ```
 
 These are reference-path costs, not production-kernel targets.

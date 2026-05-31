@@ -110,9 +110,9 @@ func DecodeTurboQuantKVReferencePagePayload(payload TurboQuantKVReferencePagePay
 		return TurboQuantKVReferencePage{}, err
 	}
 
-	keyCentroidBytes := int(turboQuantKVPackedBytes(uint64(headDim) * uint64(layout.Key.NormalBits)))
+	keyCentroidBytes := int(turboQuantKVPackedBytes(layout.Key.centroidBitsPerVector(layout.Shape.HeadDim)))
 	keyQJLBytes := int(turboQuantKVPackedBytes(uint64(headDim)))
-	valueCentroidBytes := int(turboQuantKVPackedBytes(uint64(headDim) * uint64(layout.Value.NormalBits)))
+	valueCentroidBytes := int(turboQuantKVPackedBytes(layout.Value.centroidBitsPerVector(layout.Shape.HeadDim)))
 	if err := turboQuantKVReferenceCheckPayloadLength(TurboQuantKVReferencePayloadKeyCentroids, len(keyCentroids), pageVectors*keyCentroidBytes); err != nil {
 		return TurboQuantKVReferencePage{}, err
 	}

@@ -256,6 +256,7 @@ func (c *TurboQuantKVCache) encodePayloads(keys, values []float32, batch, heads 
 }
 
 func (c *TurboQuantKVCache) referencePageLayout(batch, heads, seqLen, headDim int32, tokenOffset, pageTokens int) TurboQuantKVPageLayout {
+	outlierMask := turboQuantKVOutlierMask(headDim, headDim/2)
 	return TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,
 		Codec:       TurboQuantKVCodecName,
@@ -270,14 +271,18 @@ func (c *TurboQuantKVCache) referencePageLayout(batch, heads, seqLen, headDim in
 		LocalWindow: c.maxSize,
 		Key: TurboQuantKVCodec{
 			Algorithm:    TurboQuantKVAlgorithmProd,
-			NormalBits:   5,
+			NormalBits:   3,
+			OutlierBits:  4,
+			OutlierMask:  outlierMask,
 			RotationSeed: 0x54514b0000000001,
 			QJLSeed:      0x5451510000000001,
 			CodebookID:   TurboQuantKVReferenceCodebookUniform,
 		},
 		Value: TurboQuantKVCodec{
 			Algorithm:    TurboQuantKVAlgorithmMSE,
-			NormalBits:   5,
+			NormalBits:   3,
+			OutlierBits:  4,
+			OutlierMask:  outlierMask,
 			RotationSeed: 0x5451560000000001,
 			CodebookID:   TurboQuantKVReferenceCodebookUniform,
 		},

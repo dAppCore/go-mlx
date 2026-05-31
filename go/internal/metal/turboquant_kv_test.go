@@ -123,6 +123,68 @@ func TestTurboQuantKVPageLayout_EstimatePayloadBytes_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVReferencePage_PackedPayloadUsesOutlierBitBudget_Good(t *testing.T) {
+	coverageTokens := "TurboQuantKVReferencePage PackedPayload UsesOutlierBitBudget"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	layout := validTurboQuantKVTestPageLayout()
+	layout.Shape = TurboQuantKVShape{Batch: 1, Heads: 1, SeqLen: 1, HeadDim: 8}
+	layout.PageTokens = 1
+	layout.PageSize = 1
+	layout.Key.NormalBits = 3
+	layout.Key.OutlierBits = 4
+	layout.Key.OutlierMask = turboQuantKVTestMask(8, 4)
+	layout.Key.CodebookID = TurboQuantKVReferenceCodebookUniform
+	layout.Value.NormalBits = 3
+	layout.Value.OutlierBits = 4
+	layout.Value.OutlierMask = turboQuantKVTestMask(8, 4)
+	layout.Value.CodebookID = TurboQuantKVReferenceCodebookUniform
+	keys := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
+	values := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
+
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		t.Fatalf("PackedPayload() error = %v, want nil", err)
+	}
+
+	keyCentroids, ok := payload.SectionBytes(TurboQuantKVReferencePayloadKeyCentroids)
+	if !ok {
+		t.Fatal("key centroid section missing")
+	}
+	valueCentroids, ok := payload.SectionBytes(TurboQuantKVReferencePayloadValueCentroids)
+	if !ok {
+		t.Fatal("value centroid section missing")
+	}
+	if len(keyCentroids) != 4 || len(valueCentroids) != 4 {
+		t.Fatalf("centroid bytes = key %d value %d, want 4 each for 8 channels at 3.5 effective bits", len(keyCentroids), len(valueCentroids))
+	}
+	restored, err := DecodeTurboQuantKVReferencePagePayload(payload)
+	if err != nil {
+		t.Fatalf("DecodeTurboQuantKVReferencePagePayload() error = %v, want nil", err)
+	}
+	if got := restored.Layout.Key.EffectiveBitsMilli(restored.Layout.Shape.HeadDim); got != 3500 {
+		t.Fatalf("restored key effective bits = %d, want 3500", got)
+	}
+	if got := restored.Layout.Value.EffectiveBitsMilli(restored.Layout.Shape.HeadDim); got != 3500 {
+		t.Fatalf("restored value effective bits = %d, want 3500", got)
+	}
+	decodedKeys, decodedValues, err := restored.DecodeBase()
+	if err != nil {
+		t.Fatalf("DecodeBase() error = %v, want nil", err)
+	}
+	if got := cosineSimilarity(keys, decodedKeys); got < 0.96 {
+		t.Fatalf("decoded key cosine = %.6f, want >= 0.96", got)
+	}
+	if got := cosineSimilarity(values, decodedValues); got < 0.96 {
+		t.Fatalf("decoded value cosine = %.6f, want >= 0.96", got)
+	}
+}
+
 func TestTurboQuantKVMSEReferenceVector_RoundTrip_Good(t *testing.T) {
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
