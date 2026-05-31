@@ -5,6 +5,7 @@ package mlx
 import (
 	core "dappco.re/go"
 	mp "dappco.re/go/mlx/pack"
+	"dappco.re/go/mlx/safetensors"
 )
 
 // OfficialGemma4E2BPairReport validates the official Google E2B target and
@@ -27,6 +28,10 @@ type OfficialGemma4E2BPairReport struct {
 	AssistantOrderedEmbeddings         bool     `json:"assistant_ordered_embeddings"`
 	AssistantNumCentroids              int      `json:"assistant_num_centroids,omitempty"`
 	AssistantCentroidIntermediateTopK  int      `json:"assistant_centroid_intermediate_top_k,omitempty"`
+	AssistantProjectionTensorsOK       bool     `json:"assistant_projection_tensors_ok"`
+	AssistantOrderedEmbeddingTensorsOK bool     `json:"assistant_ordered_embedding_tensors_ok"`
+	AssistantMissingTensorNames        []string `json:"assistant_missing_tensor_names,omitempty"`
+	AssistantInvalidTensorShapes       []string `json:"assistant_invalid_tensor_shapes,omitempty"`
 	AssistantLayerCount                int      `json:"assistant_layer_count,omitempty"`
 	AssistantFourLayerDrafter          bool     `json:"assistant_four_layer_drafter"`
 	TargetKVLayerTypes                 []string `json:"target_kv_layer_types,omitempty"`
@@ -87,6 +92,14 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 	report.AssistantOrderedEmbeddings = summary.UseOrderedEmbeddings
 	report.AssistantNumCentroids = summary.NumCentroids
 	report.AssistantCentroidIntermediateTopK = summary.CentroidIntermediateTopK
+	tensorEvidence, err := inspectOfficialGemma4AssistantTensorEvidence(report.AssistantPath, assistant.Lock.WeightFile, summary, assistant.Pack.HiddenSize, assistant.Pack.VocabSize)
+	if err != nil {
+		return officialGemma4PairReportError(report, err)
+	}
+	report.AssistantProjectionTensorsOK = tensorEvidence.ProjectionTensorsOK
+	report.AssistantOrderedEmbeddingTensorsOK = tensorEvidence.OrderedEmbeddingTensorsOK
+	report.AssistantMissingTensorNames = tensorEvidence.MissingTensorNames
+	report.AssistantInvalidTensorShapes = tensorEvidence.InvalidTensorShapes
 	report.AssistantLayerCount = firstPositiveLocal(assistantShape.LayerCount, assistant.Pack.NumLayers)
 	report.AssistantFourLayerDrafter = report.AssistantLayerCount == 4
 	report.TargetKVLayerTypes = officialGemma4UniqueLayerTypes(targetShape.LayerTypes)
@@ -103,6 +116,8 @@ func InspectOfficialGemma4E2BPairLocalSnapshots(targetDir, assistantDir string, 
 		report.AssistantOrderedEmbeddings &&
 		report.AssistantNumCentroids > 0 &&
 		report.AssistantCentroidIntermediateTopK > 0 &&
+		report.AssistantProjectionTensorsOK &&
+		report.AssistantOrderedEmbeddingTensorsOK &&
 		report.AssistantFourLayerDrafter &&
 		report.AssistantLayerTypesCoveredByTarget
 	report.PairOK = target.Verified &&
@@ -129,6 +144,13 @@ type officialGemma4PairTextSummary struct {
 	LayerTypes []string
 }
 
+type officialGemma4AssistantTensorEvidence struct {
+	ProjectionTensorsOK       bool
+	OrderedEmbeddingTensorsOK bool
+	MissingTensorNames        []string
+	InvalidTensorShapes       []string
+}
+
 func readOfficialGemma4AssistantSummary(assistantDir string) (officialGemma4AssistantSummary, error) {
 	read := core.ReadFile(core.PathJoin(assistantDir, "config.json"))
 	if !read.OK {
@@ -139,6 +161,77 @@ func readOfficialGemma4AssistantSummary(assistantDir string) (officialGemma4Assi
 		return officialGemma4AssistantSummary{}, core.E("mlx: official Gemma 4 E2B pair", "parse assistant config", officialGemma4ResultError(result))
 	}
 	return summary, nil
+}
+
+func inspectOfficialGemma4AssistantTensorEvidence(assistantDir, weightFile string, summary officialGemma4AssistantSummary, hiddenSize, vocabSize int) (officialGemma4AssistantTensorEvidence, error) {
+	if core.Trim(weightFile) == "" {
+		weightFile = "model.safetensors"
+	}
+	index, err := safetensors.ReadIndex(core.PathJoin(assistantDir, weightFile))
+	if err != nil {
+		return officialGemma4AssistantTensorEvidence{}, core.E("mlx: official Gemma 4 E2B pair", "read assistant safetensors header", err)
+	}
+	evidence := officialGemma4AssistantTensorEvidence{}
+	evidence.ProjectionTensorsOK = officialGemma4TensorHasShape(index, &evidence, "pre_projection.weight", uint64(hiddenSize), uint64(summary.BackboneHiddenSize*2)) &&
+		officialGemma4TensorHasShape(index, &evidence, "post_projection.weight", uint64(summary.BackboneHiddenSize), uint64(hiddenSize))
+	if summary.UseOrderedEmbeddings {
+		evidence.OrderedEmbeddingTensorsOK = officialGemma4TensorHasShape(index, &evidence, "masked_embedding.centroids.weight", uint64(summary.NumCentroids), uint64(hiddenSize)) &&
+			officialGemma4TokenOrderingHasShape(index, &evidence, "masked_embedding.token_ordering", summary.NumCentroids, vocabSize)
+	} else {
+		evidence.OrderedEmbeddingTensorsOK = true
+	}
+	return evidence, nil
+}
+
+func officialGemma4TensorHasShape(index safetensors.Index, evidence *officialGemma4AssistantTensorEvidence, name string, want ...uint64) bool {
+	ref, ok := index.Tensors[name]
+	if !ok {
+		evidence.MissingTensorNames = append(evidence.MissingTensorNames, name)
+		return false
+	}
+	if !officialGemma4Uint64SlicesEqual(ref.Shape, want) {
+		evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s=%v want %v", name, ref.Shape, want))
+		return false
+	}
+	return true
+}
+
+func officialGemma4TokenOrderingHasShape(index safetensors.Index, evidence *officialGemma4AssistantTensorEvidence, name string, numCentroids, vocabSize int) bool {
+	ref, ok := index.Tensors[name]
+	if !ok {
+		evidence.MissingTensorNames = append(evidence.MissingTensorNames, name)
+		return false
+	}
+	if numCentroids <= 0 || vocabSize <= 0 {
+		evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s=%v want positive num_centroids and vocab_size", name, ref.Shape))
+		return false
+	}
+	tokensPerCentroid := 0
+	if numCentroids > 0 {
+		tokensPerCentroid = vocabSize / numCentroids
+	}
+	flatOK := len(ref.Shape) == 1 && int(ref.Shape[0]) == vocabSize
+	matrixOK := numCentroids > 0 && vocabSize%numCentroids == 0 &&
+		len(ref.Shape) == 2 &&
+		int(ref.Shape[0]) == numCentroids &&
+		int(ref.Shape[1]) == tokensPerCentroid
+	if flatOK || matrixOK {
+		return true
+	}
+	evidence.InvalidTensorShapes = append(evidence.InvalidTensorShapes, core.Sprintf("%s=%v want [%d] or [%d %d]", name, ref.Shape, vocabSize, numCentroids, tokensPerCentroid))
+	return false
+}
+
+func officialGemma4Uint64SlicesEqual(a, b []uint64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func readOfficialGemma4PairTextSummary(snapshotDir string) (officialGemma4PairTextSummary, error) {

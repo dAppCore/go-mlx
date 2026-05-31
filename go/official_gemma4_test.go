@@ -3,9 +3,11 @@
 package mlx
 
 import (
+	"encoding/binary"
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/safetensors"
 )
 
 func TestOfficialGemma4E2BLocks_Good(t *testing.T) {
@@ -244,6 +246,9 @@ func TestOfficialGemma4E2BPairPreflight_TargetAssistantContract_Good(t *testing.
 	if !report.AssistantOrderedEmbeddings || report.AssistantNumCentroids != 2048 || report.AssistantCentroidIntermediateTopK != 32 {
 		t.Fatalf("assistant ordered embedding = ordered:%v centroids:%d topk:%d, want official ordered centroid path", report.AssistantOrderedEmbeddings, report.AssistantNumCentroids, report.AssistantCentroidIntermediateTopK)
 	}
+	if !report.AssistantProjectionTensorsOK || !report.AssistantOrderedEmbeddingTensorsOK || len(report.AssistantMissingTensorNames) != 0 || len(report.AssistantInvalidTensorShapes) != 0 {
+		t.Fatalf("assistant tensor evidence = projection:%v ordered:%v missing:%v invalid:%v, want clean pre/post and ordered-embedding tensor evidence", report.AssistantProjectionTensorsOK, report.AssistantOrderedEmbeddingTensorsOK, report.AssistantMissingTensorNames, report.AssistantInvalidTensorShapes)
+	}
 	if report.AssistantLayerCount != 4 || !report.AssistantFourLayerDrafter {
 		t.Fatalf("assistant layer shape = count:%d four:%v, want official four-layer drafter", report.AssistantLayerCount, report.AssistantFourLayerDrafter)
 	}
@@ -280,6 +285,22 @@ func TestOfficialGemma4E2BPairPreflight_CacheRoots_Good(t *testing.T) {
 	}
 	if report.TargetPath != targetSnapshotDir || report.AssistantPath != assistantSnapshotDir {
 		t.Fatalf("pair paths = %q %q, want resolved snapshots %q %q", report.TargetPath, report.AssistantPath, targetSnapshotDir, assistantSnapshotDir)
+	}
+}
+
+func TestOfficialGemma4E2BPairPreflight_RejectsZeroCentroidTokenOrdering_Bad(t *testing.T) {
+	evidence := officialGemma4AssistantTensorEvidence{}
+	ok := officialGemma4TokenOrderingHasShape(safetensors.Index{
+		Tensors: map[string]safetensors.TensorRef{
+			"masked_embedding.token_ordering": {
+				Name:  "masked_embedding.token_ordering",
+				Shape: []uint64{16},
+			},
+		},
+	}, &evidence, "masked_embedding.token_ordering", 0, 16)
+
+	if ok || len(evidence.InvalidTensorShapes) != 1 {
+		t.Fatalf("token ordering ok=%v invalid=%v, want fail-closed invalid shape for zero centroids", ok, evidence.InvalidTensorShapes)
 	}
 }
 
@@ -512,7 +533,7 @@ func officialGemma4InspectableAssistantSnapshot(t *testing.T) (OfficialGemma4E2B
 	}`)
 	tokenizerConfig := []byte(`{"model_max_length": 131072}`)
 	generationConfig := []byte(`{"max_new_tokens": 8192}`)
-	weights := []byte("assistant-weights")
+	weights := officialGemma4AssistantTensorFixture(t)
 	lock := OfficialGemma4E2BLock{
 		Role:                   OfficialGemma4E2BRoleAssistant,
 		ModelID:                "google/gemma-4-E2B-it-assistant",
@@ -537,6 +558,39 @@ func officialGemma4InspectableAssistantSnapshot(t *testing.T) (OfficialGemma4E2B
 	writeOfficialGemma4TestFile(t, dir, "generation_config.json", generationConfig)
 	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
+}
+
+func officialGemma4AssistantTensorFixture(t *testing.T) []byte {
+	t.Helper()
+	return officialGemma4SafetensorsHeaderOnly(t, map[string][]int64{
+		"pre_projection.weight":                  {256, 3072},
+		"post_projection.weight":                 {1536, 256},
+		"masked_embedding.centroids.weight":      {2048, 256},
+		"masked_embedding.token_ordering":        {2048, 128},
+		"model.layers.0.self_attn.q_proj.weight": {1024, 256},
+	})
+}
+
+func officialGemma4SafetensorsHeaderOnly(t *testing.T, shapes map[string][]int64) []byte {
+	t.Helper()
+	type headerEntry struct {
+		DType       string  `json:"dtype"`
+		Shape       []int64 `json:"shape"`
+		DataOffsets []int64 `json:"data_offsets"`
+	}
+	header := make(map[string]headerEntry, len(shapes))
+	for name, shape := range shapes {
+		header[name] = headerEntry{DType: "F32", Shape: shape, DataOffsets: []int64{0, 0}}
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		t.Fatalf("JSONMarshal safetensors fixture: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+	copy(out[8:], headerBytes)
+	return out
 }
 
 func writeOfficialGemma4TestFile(t *testing.T, dir, name string, data []byte) {

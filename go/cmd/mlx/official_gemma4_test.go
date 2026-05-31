@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"testing"
 
 	core "dappco.re/go"
@@ -169,6 +170,8 @@ func TestRunCommand_OfficialGemma4PairVerifyJSON_Good(t *testing.T) {
 	for _, want := range []string{
 		`"assistant_layer_count": 4`,
 		`"assistant_four_layer_drafter": true`,
+		`"assistant_projection_tensors_ok": true`,
+		`"assistant_ordered_embedding_tensors_ok": true`,
 		`"target_kv_layer_types": [`,
 		`"assistant_layer_types": [`,
 		`"assistant_layer_types_covered_by_target": true`,
@@ -458,7 +461,7 @@ func officialGemma4VerifyAssistantTestSnapshot(t *testing.T) (mlx.OfficialGemma4
 	}`)
 	tokenizerConfig := []byte(`{"model_max_length": 131072}`)
 	generationConfig := []byte(`{"max_new_tokens": 8192}`)
-	weights := []byte("assistant-weights")
+	weights := officialGemma4VerifyAssistantTensorFixture(t)
 	lock := mlx.OfficialGemma4E2BLock{
 		Role:                   mlx.OfficialGemma4E2BRoleAssistant,
 		ModelID:                "google/gemma-4-E2B-it-assistant",
@@ -481,6 +484,38 @@ func officialGemma4VerifyAssistantTestSnapshot(t *testing.T) (mlx.OfficialGemma4
 	writeOfficialGemma4VerifyTestFile(t, dir, "generation_config.json", generationConfig)
 	writeOfficialGemma4VerifyTestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
+}
+
+func officialGemma4VerifyAssistantTensorFixture(t *testing.T) []byte {
+	t.Helper()
+	return officialGemma4VerifySafetensorsHeaderOnly(t, map[string][]int64{
+		"pre_projection.weight":             {256, 3072},
+		"post_projection.weight":            {1536, 256},
+		"masked_embedding.centroids.weight": {2048, 256},
+		"masked_embedding.token_ordering":   {2048, 128},
+	})
+}
+
+func officialGemma4VerifySafetensorsHeaderOnly(t *testing.T, shapes map[string][]int64) []byte {
+	t.Helper()
+	type headerEntry struct {
+		DType       string  `json:"dtype"`
+		Shape       []int64 `json:"shape"`
+		DataOffsets []int64 `json:"data_offsets"`
+	}
+	header := make(map[string]headerEntry, len(shapes))
+	for name, shape := range shapes {
+		header[name] = headerEntry{DType: "F32", Shape: shape, DataOffsets: []int64{0, 0}}
+	}
+	encoded := core.JSONMarshal(header)
+	if !encoded.OK {
+		t.Fatalf("JSONMarshal safetensors fixture: %v", encoded.Value)
+	}
+	headerBytes := encoded.Value.([]byte)
+	out := make([]byte, 8+len(headerBytes))
+	binary.LittleEndian.PutUint64(out[:8], uint64(len(headerBytes)))
+	copy(out[8:], headerBytes)
+	return out
 }
 
 func writeOfficialGemma4VerifyTestFile(t *testing.T, dir, name string, data []byte) {
