@@ -25,6 +25,15 @@ Unsupported builds compile against the `*_stub.go` files and a stub
 `MetalAvailable() bool` that returns false. Do not move CGO code out of
 `go/internal/metal/`.
 
+The native path targets [macOS Tahoe 26.0+](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes)
+on Apple Silicon. The floor is intentional: the Metal 4 API generation this
+runner is built around shipped with macOS 26, including lower-overhead command
+encoding, explicit compilation control, tensor resources, and machine-learning
+passes. Keep build and test invocations aligned with that floor by passing
+`-ldflags "-extldflags=-mmacosx-version-min=26.0"` when compiling native code.
+See `docs/operator/deployment.md` and `docs/operator/metallib-and-variants.md`
+for the full reference chain.
+
 ## Conventions
 
 - UK English in code, comments, and docs (colour, organisation, behaviour)
@@ -47,10 +56,11 @@ model downloads.
 
 ## Sandboxing Notes
 
-Before handing off, run the repository gates from the brief with `GOWORK=off`.
-On sandboxed systems, set `GOCACHE` to a writable directory such as
-`/tmp/codex-go-mlx-cache` so Go can compile without touching the user
-cache. If the sandbox cannot resolve the bundled `mlx.metallib`, apply
+Before handing off, run the repository gates from the checked-in workspace; do
+not use `GOWORK=off` unless the user explicitly asks for an isolated module
+check. On sandboxed systems, set `GOCACHE` to a writable directory such as
+`/tmp/codex-go-mlx-cache` so Go can compile without touching the user cache.
+If the sandbox cannot resolve the bundled `mlx.metallib`, apply
 `patches/mlx-metallib-path.patch` inside `lib/mlx` to enable the
 `MLX_METALLIB_PATH` env-var override (not auto-applied).
 
