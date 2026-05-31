@@ -190,6 +190,41 @@ func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 	return decoded, nil
 }
 
+func (encoded TurboQuantKVMSEReferenceVector) PackedCentroidBytes() ([]byte, error) {
+	if err := encoded.validatePackedMSEReference(); err != nil {
+		return nil, err
+	}
+	return turboQuantKVReferencePackBits(encoded.CentroidCodes, encoded.Codec.NormalBits), nil
+}
+
+func DecodeTurboQuantKVMSEReferenceFromPacked(codec TurboQuantKVCodec, headDim int32, norm float32, packedCentroids []byte) (TurboQuantKVMSEReferenceVector, error) {
+	if codec.Algorithm != TurboQuantKVAlgorithmMSE {
+		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid decode requires TurboQuantmse codec")
+	}
+	if err := codec.Validate("packed centroid reference", headDim); err != nil {
+		return TurboQuantKVMSEReferenceVector{}, err
+	}
+	if codec.CodebookID != TurboQuantKVReferenceCodebookUniform {
+		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid codebook is unsupported")
+	}
+	if codec.NormalBits > 8 {
+		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid bit width exceeds byte storage")
+	}
+	if !turboQuantKVReferenceHeadDimSupported(int(headDim)) {
+		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid requires a power-of-two head dimension")
+	}
+	wantBytes := int(turboQuantKVPackedBytes(uint64(headDim) * uint64(codec.NormalBits)))
+	if len(packedCentroids) != wantBytes {
+		return TurboQuantKVMSEReferenceVector{}, core.NewError("mlx: TurboQuant MSE packed centroid byte length is invalid")
+	}
+	return TurboQuantKVMSEReferenceVector{
+		Codec:         codec,
+		HeadDim:       headDim,
+		Norm:          norm,
+		CentroidCodes: turboQuantKVReferenceUnpackBits(packedCentroids, int(headDim), codec.NormalBits),
+	}, nil
+}
+
 func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []float32) (float32, error) {
 	if len(query) != int(encoded.Base.HeadDim) {
 		return 0, core.NewError("mlx: TurboQuantprod reference query shape is invalid")
@@ -220,6 +255,38 @@ func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []floa
 		estimate += float32(scale * sign * value)
 	}
 	return estimate, nil
+}
+
+func (encoded TurboQuantKVProdReferenceVector) PackedQJLSignBytes() ([]byte, error) {
+	if err := encoded.validatePackedProdReference(); err != nil {
+		return nil, err
+	}
+	return turboQuantKVReferencePackBits(encoded.QJLSigns, 1), nil
+}
+
+func DecodeTurboQuantKVProdReferenceFromPacked(codec TurboQuantKVCodec, base TurboQuantKVMSEReferenceVector, residualNorm float32, packedQJLSigns []byte) (TurboQuantKVProdReferenceVector, error) {
+	if codec.Algorithm != TurboQuantKVAlgorithmProd {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod packed QJL decode requires TurboQuantprod codec")
+	}
+	if err := codec.Validate("packed QJL reference", base.HeadDim); err != nil {
+		return TurboQuantKVProdReferenceVector{}, err
+	}
+	if base.Codec.Algorithm != TurboQuantKVAlgorithmMSE {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod packed QJL base requires TurboQuantmse codec")
+	}
+	if err := base.validatePackedMSEReference(); err != nil {
+		return TurboQuantKVProdReferenceVector{}, err
+	}
+	wantBytes := int(turboQuantKVPackedBytes(uint64(base.HeadDim)))
+	if len(packedQJLSigns) != wantBytes {
+		return TurboQuantKVProdReferenceVector{}, core.NewError("mlx: TurboQuantprod packed QJL sign byte length is invalid")
+	}
+	return TurboQuantKVProdReferenceVector{
+		Codec:        codec,
+		Base:         base,
+		ResidualNorm: residualNorm,
+		QJLSigns:     turboQuantKVReferenceUnpackBits(packedQJLSigns, int(base.HeadDim), 1),
+	}, nil
 }
 
 func (page TurboQuantKVReferencePage) DecodeBase() ([]float32, []float32, error) {
@@ -274,6 +341,84 @@ func (page TurboQuantKVReferencePage) validateReferencePage() error {
 		return core.NewError("mlx: TurboQuant reference page vector count is invalid")
 	}
 	return nil
+}
+
+func (encoded TurboQuantKVMSEReferenceVector) validatePackedMSEReference() error {
+	if encoded.HeadDim <= 0 || len(encoded.CentroidCodes) != int(encoded.HeadDim) {
+		return core.NewError("mlx: TurboQuant MSE packed centroid shape is invalid")
+	}
+	if encoded.Codec.Algorithm != TurboQuantKVAlgorithmMSE {
+		return core.NewError("mlx: TurboQuant MSE packed centroid requires TurboQuantmse codec")
+	}
+	if encoded.Codec.CodebookID != TurboQuantKVReferenceCodebookUniform {
+		return core.NewError("mlx: TurboQuant MSE packed centroid codebook is unsupported")
+	}
+	if encoded.Codec.NormalBits <= 0 || encoded.Codec.NormalBits > 8 {
+		return core.NewError("mlx: TurboQuant MSE packed centroid bit width is invalid")
+	}
+	if !turboQuantKVReferenceHeadDimSupported(int(encoded.HeadDim)) {
+		return core.NewError("mlx: TurboQuant MSE packed centroid requires a power-of-two head dimension")
+	}
+	return nil
+}
+
+func (encoded TurboQuantKVProdReferenceVector) validatePackedProdReference() error {
+	if encoded.Codec.Algorithm != TurboQuantKVAlgorithmProd {
+		return core.NewError("mlx: TurboQuantprod packed QJL requires TurboQuantprod codec")
+	}
+	if err := encoded.Codec.Validate("packed QJL reference", encoded.Base.HeadDim); err != nil {
+		return err
+	}
+	if err := encoded.Base.validatePackedMSEReference(); err != nil {
+		return err
+	}
+	if len(encoded.QJLSigns) != int(encoded.Base.HeadDim) {
+		return core.NewError("mlx: TurboQuantprod packed QJL sign shape is invalid")
+	}
+	return nil
+}
+
+func turboQuantKVReferencePackBits(values []byte, bits int) []byte {
+	if bits <= 0 {
+		return nil
+	}
+	packed := make([]byte, int(turboQuantKVPackedBytes(uint64(len(values))*uint64(bits))))
+	var mask uint16
+	if bits >= 8 {
+		mask = 0xff
+	} else {
+		mask = uint16((1 << uint(bits)) - 1)
+	}
+	bitOffset := 0
+	for _, raw := range values {
+		value := uint16(raw) & mask
+		for bit := 0; bit < bits; bit++ {
+			if value&(1<<uint(bit)) != 0 {
+				packed[bitOffset/8] |= 1 << uint(bitOffset%8)
+			}
+			bitOffset++
+		}
+	}
+	return packed
+}
+
+func turboQuantKVReferenceUnpackBits(packed []byte, count, bits int) []byte {
+	if bits <= 0 || count <= 0 {
+		return nil
+	}
+	values := make([]byte, count)
+	bitOffset := 0
+	for idx := range values {
+		var value byte
+		for bit := 0; bit < bits; bit++ {
+			if packed[bitOffset/8]&(1<<uint(bitOffset%8)) != 0 {
+				value |= 1 << uint(bit)
+			}
+			bitOffset++
+		}
+		values[idx] = value
+	}
+	return values
 }
 
 func turboQuantKVReferenceHeadDimSupported(dim int) bool {

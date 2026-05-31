@@ -177,6 +177,53 @@ func TestTurboQuantKVMSEReferenceVector_ZeroVector_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVMSEReferenceVector_PackedCentroidsRoundTrip_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmMSE,
+		NormalBits:   5,
+		RotationSeed: 0x5150,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	input := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
+	encoded, err := EncodeTurboQuantKVMSEReference(input, codec)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVMSEReference() error = %v, want nil", err)
+	}
+
+	packed, err := encoded.PackedCentroidBytes()
+	if err != nil {
+		t.Fatalf("PackedCentroidBytes() error = %v, want nil", err)
+	}
+	if len(packed) != 5 {
+		t.Fatalf("packed centroid bytes = %d, want 5 for 8 x 5-bit codes", len(packed))
+	}
+	restored, err := DecodeTurboQuantKVMSEReferenceFromPacked(codec, encoded.HeadDim, encoded.Norm, packed)
+	if err != nil {
+		t.Fatalf("DecodeTurboQuantKVMSEReferenceFromPacked() error = %v, want nil", err)
+	}
+	decoded, err := restored.DecodeMSE()
+	if err != nil {
+		t.Fatalf("DecodeMSE(restored) error = %v, want nil", err)
+	}
+	if got := cosineSimilarity(input, decoded); got < 0.995 {
+		t.Fatalf("restored cosine = %.6f, want >= 0.995", got)
+	}
+}
+
+func TestTurboQuantKVMSEReferenceVector_RejectsShortPackedCentroids_Bad(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmMSE,
+		NormalBits:   5,
+		RotationSeed: 0x5150,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+
+	_, err := DecodeTurboQuantKVMSEReferenceFromPacked(codec, 8, 1, []byte{0x01, 0x02})
+	if err == nil || !core.Contains(err.Error(), "packed centroid") {
+		t.Fatalf("DecodeTurboQuantKVMSEReferenceFromPacked(short) error = %v, want packed centroid diagnostic", err)
+	}
+}
+
 func TestTurboQuantKVMSEReferenceVector_RejectsUnsupportedCodebook_Bad(t *testing.T) {
 	codec := TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
@@ -225,6 +272,45 @@ func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *te
 	}
 	if gotErr := math.Abs(float64(estimated - exact)); gotErr > 0.2 {
 		t.Fatalf("estimated dot = %.6f exact=%.6f base=%.6f error=%.6f, want bounded QJL estimate", estimated, exact, baseDot, gotErr)
+	}
+}
+
+func TestTurboQuantKVProdReferenceVector_PackedQJLRoundTrip_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmProd,
+		NormalBits:   4,
+		RotationSeed: 0x6b,
+		QJLSeed:      0x7c,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	key := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
+	query := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
+	encoded, err := EncodeTurboQuantKVProdReference(key, codec)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVProdReference() error = %v, want nil", err)
+	}
+
+	packed, err := encoded.PackedQJLSignBytes()
+	if err != nil {
+		t.Fatalf("PackedQJLSignBytes() error = %v, want nil", err)
+	}
+	if len(packed) != 1 {
+		t.Fatalf("packed QJL sign bytes = %d, want 1 for 8 signs", len(packed))
+	}
+	restored, err := DecodeTurboQuantKVProdReferenceFromPacked(codec, encoded.Base, encoded.ResidualNorm, packed)
+	if err != nil {
+		t.Fatalf("DecodeTurboQuantKVProdReferenceFromPacked() error = %v, want nil", err)
+	}
+	got, err := restored.EstimateInnerProduct(query)
+	if err != nil {
+		t.Fatalf("EstimateInnerProduct(restored) error = %v, want nil", err)
+	}
+	want, err := encoded.EstimateInnerProduct(query)
+	if err != nil {
+		t.Fatalf("EstimateInnerProduct(original) error = %v, want nil", err)
+	}
+	if got != want {
+		t.Fatalf("restored estimate = %.6f, want original %.6f", got, want)
 	}
 }
 
