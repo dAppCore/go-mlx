@@ -5,6 +5,7 @@
 package metal
 
 import (
+	"math"
 	"testing"
 
 	core "dappco.re/go"
@@ -122,6 +123,74 @@ func TestTurboQuantKVPageLayout_EstimatePayloadBytes_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVMSEReferenceVector_RoundTrip_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmMSE,
+		NormalBits:   5,
+		RotationSeed: 0x5150,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	input := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
+
+	encoded, err := EncodeTurboQuantKVMSEReference(input, codec)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVMSEReference() error = %v, want nil", err)
+	}
+	if encoded.Norm <= 0 || len(encoded.CentroidCodes) != len(input) || encoded.HeadDim != int32(len(input)) {
+		t.Fatalf("encoded = %+v, want norm and one centroid code per input value", encoded)
+	}
+
+	decoded, err := encoded.DecodeMSE()
+	if err != nil {
+		t.Fatalf("DecodeMSE() error = %v, want nil", err)
+	}
+	if got := cosineSimilarity(input, decoded); got < 0.995 {
+		t.Fatalf("cosine similarity = %.6f, want >= 0.995; decoded=%v", got, decoded)
+	}
+	if got, want := vectorNorm(decoded), vectorNorm(input); math.Abs(float64(got-want)) > 0.03 {
+		t.Fatalf("decoded norm = %.6f, want within 0.03 of %.6f", got, want)
+	}
+}
+
+func TestTurboQuantKVMSEReferenceVector_ZeroVector_Good(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmMSE,
+		NormalBits:   5,
+		RotationSeed: 0x5150,
+		CodebookID:   TurboQuantKVReferenceCodebookUniform,
+	}
+	encoded, err := EncodeTurboQuantKVMSEReference([]float32{0, 0, 0, 0}, codec)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVMSEReference(zero) error = %v, want nil", err)
+	}
+	decoded, err := encoded.DecodeMSE()
+	if err != nil {
+		t.Fatalf("DecodeMSE(zero) error = %v, want nil", err)
+	}
+	if encoded.Norm != 0 || len(decoded) != 4 {
+		t.Fatalf("zero encoded = %+v decoded=%v, want zero norm and four decoded values", encoded, decoded)
+	}
+	for idx, got := range decoded {
+		if got != 0 {
+			t.Fatalf("decoded[%d] = %v, want 0", idx, got)
+		}
+	}
+}
+
+func TestTurboQuantKVMSEReferenceVector_RejectsUnsupportedCodebook_Bad(t *testing.T) {
+	codec := TurboQuantKVCodec{
+		Algorithm:    TurboQuantKVAlgorithmMSE,
+		NormalBits:   5,
+		RotationSeed: 0x5150,
+		CodebookID:   "learned-beta-d8-b5",
+	}
+
+	_, err := EncodeTurboQuantKVMSEReference([]float32{1, 0, 0, 0}, codec)
+	if err == nil || !core.Contains(err.Error(), "codebook") {
+		t.Fatalf("EncodeTurboQuantKVMSEReference(unsupported codebook) error = %v, want codebook diagnostic", err)
+	}
+}
+
 func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 	return TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,
@@ -161,4 +230,30 @@ func turboQuantKVTestMask(headDim, outliers int32) []byte {
 		mask[i/8] |= 1 << uint(i%8)
 	}
 	return mask
+}
+
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) {
+		return 0
+	}
+	var dot, normA, normB float64
+	for idx := range a {
+		av := float64(a[idx])
+		bv := float64(b[idx])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func vectorNorm(values []float32) float32 {
+	var sum float64
+	for _, value := range values {
+		sum += float64(value) * float64(value)
+	}
+	return float32(math.Sqrt(sum))
 }
