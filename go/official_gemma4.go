@@ -120,3 +120,42 @@ func DefaultOfficialGemma4E2BLocks() []OfficialGemma4E2BLock {
 		},
 	}
 }
+
+var officialGemma4E2BLocks = DefaultOfficialGemma4E2BLocks()
+
+// OfficialGemma4E2BTargetLock returns the official Google E2B target snapshot
+// lock used by the production policy.
+func OfficialGemma4E2BTargetLock() OfficialGemma4E2BLock {
+	lock, _ := OfficialGemma4E2BLockByRole(OfficialGemma4E2BRoleTarget)
+	return lock
+}
+
+// OfficialGemma4E2BAssistantLock returns the official Google E2B MTP assistant
+// snapshot lock paired with the target model.
+func OfficialGemma4E2BAssistantLock() OfficialGemma4E2BLock {
+	lock, _ := OfficialGemma4E2BLockByRole(OfficialGemma4E2BRoleAssistant)
+	return lock
+}
+
+// OfficialGemma4E2BLockByRole finds an official Google E2B lock by its package
+// role. It deliberately excludes derived MLX quant packs; those live in the
+// production quantisation policy.
+func OfficialGemma4E2BLockByRole(role string) (OfficialGemma4E2BLock, bool) {
+	for _, lock := range officialGemma4E2BLocks {
+		if lock.Role == role {
+			return lock, true
+		}
+	}
+	return OfficialGemma4E2BLock{}, false
+}
+
+// OfficialGemma4E2BLockByModelID finds an official Google E2B lock by HF model
+// ID. It does not resolve quantised derivatives from mlx-community.
+func OfficialGemma4E2BLockByModelID(modelID string) (OfficialGemma4E2BLock, bool) {
+	for _, lock := range officialGemma4E2BLocks {
+		if lock.ModelID == modelID {
+			return lock, true
+		}
+	}
+	return OfficialGemma4E2BLock{}, false
+}

@@ -60,3 +60,44 @@ func TestOfficialGemma4E2BLocks_Good(t *testing.T) {
 		t.Fatalf("assistant hashes = %+v", assistant)
 	}
 }
+
+func TestOfficialGemma4E2BLocks_ByRoleAndModelID_Good(t *testing.T) {
+	target, ok := OfficialGemma4E2BLockByRole(OfficialGemma4E2BRoleTarget)
+	if !ok {
+		t.Fatal("OfficialGemma4E2BLockByRole(target) = false, want official target lock")
+	}
+	if target != OfficialGemma4E2BTargetLock() {
+		t.Fatalf("OfficialGemma4E2BTargetLock() = %+v, want role lookup target", OfficialGemma4E2BTargetLock())
+	}
+	if target.ModelID != DefaultProductionQuantizationPolicy().TargetModelID {
+		t.Fatalf("target ModelID = %q, want production policy target %q", target.ModelID, DefaultProductionQuantizationPolicy().TargetModelID)
+	}
+
+	assistant, ok := OfficialGemma4E2BLockByModelID("google/gemma-4-E2B-it-assistant")
+	if !ok {
+		t.Fatal("OfficialGemma4E2BLockByModelID(assistant) = false, want official assistant lock")
+	}
+	if assistant != OfficialGemma4E2BAssistantLock() {
+		t.Fatalf("OfficialGemma4E2BAssistantLock() = %+v, want model lookup assistant", OfficialGemma4E2BAssistantLock())
+	}
+	if assistant.ModelType != "gemma4_assistant" || assistant.Role != OfficialGemma4E2BRoleAssistant {
+		t.Fatalf("assistant lock = %+v, want assistant role/model type", assistant)
+	}
+
+	if _, ok := OfficialGemma4E2BLockByRole("draft"); ok {
+		t.Fatal("OfficialGemma4E2BLockByRole(draft) = true, want false for non-official role")
+	}
+	if _, ok := OfficialGemma4E2BLockByModelID("mlx-community/gemma-4-e2b-it-6bit"); ok {
+		t.Fatal("OfficialGemma4E2BLockByModelID(mlx-community q6) = true, want false for derived quant pack")
+	}
+}
+
+func BenchmarkOfficialGemma4E2BLockByRole_Target(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		lock, ok := OfficialGemma4E2BLockByRole(OfficialGemma4E2BRoleTarget)
+		if !ok || lock.ModelID != "google/gemma-4-E2B-it" {
+			b.Fatalf("OfficialGemma4E2BLockByRole(target) = %+v %v", lock, ok)
+		}
+	}
+}
