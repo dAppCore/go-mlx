@@ -153,7 +153,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule)
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule, powerWatts)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
 		RetainedWorkflow:              sameModel && sameShape,
@@ -211,8 +211,8 @@ func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 		target.Chat == mtp.Chat
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule []int) []string {
-	flags := make([]string, 0, 12)
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule []int, powerWatts float64) []string {
+	flags := make([]string, 0, 24)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
 			flag := core.Trim(part)
@@ -262,6 +262,27 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 	}
 	if mtp.Summary.MTPProposedTokens > 0 && mtp.Summary.MTPAcceptedTokens == 0 {
 		flags = append(flags, "mtp_accepted_tokens_missing")
+	}
+	flags = productionMTPCompareMetricEvidenceFlags(flags, "target_only", target, powerWatts)
+	flags = productionMTPCompareMetricEvidenceFlags(flags, "mtp", mtp, powerWatts)
+	if productionMTPComparePowerWatts(target, mtp, powerWatts) <= 0 {
+		flags = append(flags, "estimated_power_watts_missing")
+	}
+	return flags
+}
+
+func productionMTPCompareMetricEvidenceFlags(flags []string, prefix string, report driverProfileReport, powerWatts float64) []string {
+	if report.Summary.TotalDuration <= 0 {
+		flags = append(flags, prefix+"_wall_duration_missing")
+	}
+	if report.Summary.RestoreAvgDuration <= 0 {
+		flags = append(flags, prefix+"_restore_duration_missing")
+	}
+	if report.Summary.PeakMemoryBytes == 0 {
+		flags = append(flags, prefix+"_peak_memory_missing")
+	}
+	if productionMTPCompareEnergyJoules(report, powerWatts) <= 0 {
+		flags = append(flags, prefix+"_energy_missing")
 	}
 	return flags
 }

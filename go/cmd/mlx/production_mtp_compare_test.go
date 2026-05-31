@@ -169,6 +169,47 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingVisibleThroughput_Bad(t *t
 	}
 }
 
+func TestRunCommand_ProductionMTPCompareRejectsMissingMetricEvidence_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	targetReport.Summary.TotalDuration = 0
+	targetReport.Summary.RestoreAvgDuration = 0
+	targetReport.Summary.PeakMemoryBytes = 0
+	targetReport.EstimatedEnergy = nil
+	mtpReport := productionMTPCompareTestReport(true)
+	mtpReport.Summary.TotalDuration = 0
+	mtpReport.Summary.RestoreAvgDuration = 0
+	mtpReport.Summary.PeakMemoryBytes = 0
+	mtpReport.EstimatedEnergy = nil
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"enable_by_default": false`,
+		`"target_only_wall_duration_missing"`,
+		`"mtp_wall_duration_missing"`,
+		`"target_only_restore_duration_missing"`,
+		`"mtp_restore_duration_missing"`,
+		`"target_only_peak_memory_missing"`,
+		`"mtp_peak_memory_missing"`,
+		`"target_only_energy_missing"`,
+		`"mtp_energy_missing"`,
+		`"estimated_power_watts_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionMTPCompareRejectsDraftAccountingMismatch_Bad(t *testing.T) {
 	dir := t.TempDir()
 	targetPath := core.PathJoin(dir, "target.json")
