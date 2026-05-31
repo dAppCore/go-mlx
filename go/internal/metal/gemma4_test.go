@@ -1356,6 +1356,17 @@ func TestGemma4_ValidateQuantizationConfig_Bad(t *testing.T) {
 	}
 }
 
+func TestGemma4_ValidLayerQuantization_AllowsQ6Default_Good(t *testing.T) {
+	coverageTokens := "ValidLayerQuantization AllowsQ6Default"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+
+	if !validGemma4LayerQuantization(64, 6) {
+		t.Fatal("validGemma4LayerQuantization(64, 6) = false, want q6 product default accepted")
+	}
+}
+
 func TestGemma4_Linear_Infers8BitOverrideFromScales_Good(t *testing.T) {
 	coverageTokens := "Linear Infers8BitOverrideFromScales"
 	if coverageTokens == "" {

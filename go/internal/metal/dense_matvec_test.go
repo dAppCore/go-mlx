@@ -105,6 +105,47 @@ func TestDenseMatVec_NativeLinearForwardMatchesQuantizedMatmul_Good(t *testing.T
 	}
 }
 
+func TestDenseMatVec_NativeLinearForwardSupportsQ6Default_Good(t *testing.T) {
+	coverageTokens := "DenseMatVec NativeLinearForwardSupportsQ6Default"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	const (
+		inDim     = 10
+		outDim    = 4
+		groupSize = 5
+		bits      = 6
+	)
+	inputValues := []float32{0.25, -0.5, 1.25, 0.75, -1.5, 0.5, 0.125, -0.875, 1.75, -0.25}
+	fixture := quantizedLinearDenseMatVecFixture(t, outDim, inDim, groupSize, bits, 13)
+	linear := fixture.linear
+	denseMatVecSidecarsAsType(linear, DTypeBFloat16)
+	defer freeLinear(linear)
+
+	x := FromValues(inputValues, 1, 1, inDim)
+	defer Free(x)
+
+	got, ok, err := quantizedDenseMatVec(x, linear)
+	if err != nil {
+		t.Fatalf("quantizedDenseMatVec(q6) error = %v", err)
+	}
+	if !ok {
+		t.Fatal("quantizedDenseMatVec(q6) ok = false, want native q6 path for product default")
+	}
+	defer Free(got)
+	if err := Eval(got); err != nil {
+		t.Fatalf("Eval(native q6 linear matvec) error = %v", err)
+	}
+
+	want := quantizedDenseMatVecCPUReference(inputValues, fixture.quantized, fixture.scales, fixture.biases, outDim, inDim, groupSize)
+	assertFloat32SliceClose(t, got.Floats(), want, 2e-1)
+	if shape := got.Shape(); len(shape) != 3 || shape[0] != 1 || shape[1] != 1 || shape[2] != outDim {
+		t.Fatalf("shape = %+v, want [1 1 %d]", shape, outDim)
+	}
+}
+
 type denseMatVecLinearFixture struct {
 	linear    *Linear
 	quantized []uint8
@@ -118,12 +159,14 @@ func quantizedLinearDenseMatVecTest(t *testing.T, outDim, inDim, groupSize, bits
 
 func quantizedLinearDenseMatVecFixture(t *testing.T, outDim, inDim, groupSize, bits, seed int) denseMatVecLinearFixture {
 	t.Helper()
-	if bits != 4 {
-		t.Fatalf("test helper currently packs q4 only, got bits=%d", bits)
+	packFactor := 32 / bits
+	if bits <= 0 || packFactor <= 0 || inDim%packFactor != 0 {
+		t.Fatalf("test helper cannot pack bits=%d inDim=%d", bits, inDim)
 	}
 	quantized := make([]uint8, outDim*inDim)
+	maxValue := uint8((1 << bits) - 1)
 	for i := range quantized {
-		quantized[i] = uint8((i*seed + 5) & 15)
+		quantized[i] = uint8((i*seed + 5) & int(maxValue))
 	}
 	groups := inDim / groupSize
 	scales := make([]float32, outDim*groups)
@@ -134,7 +177,7 @@ func quantizedLinearDenseMatVecFixture(t *testing.T, outDim, inDim, groupSize, b
 	}
 	return denseMatVecLinearFixture{
 		linear: NewQuantizedLinear(
-			FromValues(packMLXAffineQ4TestRows(t, quantized), outDim, inDim/(32/bits)),
+			FromValues(packMLXAffineTestRows(t, quantized, bits), outDim, inDim/packFactor),
 			FromValues(scales, outDim, groups),
 			FromValues(biases, outDim, groups),
 			nil,
@@ -145,6 +188,23 @@ func quantizedLinearDenseMatVecFixture(t *testing.T, outDim, inDim, groupSize, b
 		scales:    scales,
 		biases:    biases,
 	}
+}
+
+func packMLXAffineTestRows(t *testing.T, values []uint8, bits int) []uint32 {
+	t.Helper()
+	packFactor := 32 / bits
+	if bits <= 0 || packFactor <= 0 || len(values)%packFactor != 0 {
+		t.Fatalf("q%d test rows must have a multiple of %d values, got %d", bits, packFactor, len(values))
+	}
+	maxValue := uint8((1 << bits) - 1)
+	packed := make([]uint32, len(values)/packFactor)
+	for i, value := range values {
+		if value > maxValue {
+			t.Fatalf("q%d value %d exceeds %d", bits, value, maxValue)
+		}
+		packed[i/packFactor] |= uint32(value) << uint((i%packFactor)*bits)
+	}
+	return packed
 }
 
 func quantizedDenseMatVecCPUReference(input []float32, quantized []uint8, scales, biases []float32, outDim, inDim, groupSize int) []float32 {

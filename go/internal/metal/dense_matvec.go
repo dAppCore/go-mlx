@@ -100,7 +100,7 @@ func validateQuantizedDenseMatVec(input *Array, linear *Linear) (quantizedDenseM
 	if linear.Bias != nil && linear.Bias.Valid() {
 		return meta, false
 	}
-	if linear.GroupSize <= 0 || (linear.Bits != 4 && linear.Bits != 8) {
+	if linear.GroupSize <= 0 || (linear.Bits != 4 && linear.Bits != 6 && linear.Bits != 8) {
 		return meta, false
 	}
 	shape := input.Shape()
