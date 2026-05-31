@@ -45,6 +45,38 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_ProductionQuantizationDefaultContext_Good(t *testing.T) {
+	originalDeviceInfo := runGetDeviceInfo
+	t.Cleanup(func() { runGetDeviceInfo = originalDeviceInfo })
+	runGetDeviceInfo = func() mlx.DeviceInfo {
+		return mlx.DeviceInfo{
+			Architecture:                 "apple9",
+			MemorySize:                   96 * memory.GiB,
+			MaxRecommendedWorkingSetSize: 90 * memory.GiB,
+		}
+	}
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-quantization", "-json"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"context_length": 32768`,
+		`"long_context_selection": true`,
+		`"bits": 6`,
+		`"model_id": "mlx-community/gemma-4-e2b-it-6bit"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestRunCommand_ProductionQuantizationQualityJSON_Good(t *testing.T) {
 	originalDeviceInfo := runGetDeviceInfo
 	t.Cleanup(func() { runGetDeviceInfo = originalDeviceInfo })
