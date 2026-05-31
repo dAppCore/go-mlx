@@ -172,6 +172,17 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		choice.Tier.ModelID,
 	))
 	core.WriteString(stdout, core.Sprintf("  fits: %v, reason: %s\n", choice.Fits, choice.Reason))
+	if choice.RequestedBits > 0 {
+		core.WriteString(stdout, core.Sprintf("  requested: q%d\n", choice.RequestedBits))
+	}
+	if choice.StepDownFromBits > 0 {
+		core.WriteString(stdout, core.Sprintf(
+			"  step-down: q%d required %d bytes at working set %d bytes\n",
+			choice.StepDownFromBits,
+			choice.StepDownRequiredWorkingSet,
+			choice.StepDownWorkingSetBytes,
+		))
+	}
 	core.WriteString(stdout, core.Sprintf(
 		"  working set: %d bytes, required: %d bytes, context: %d\n",
 		choice.WorkingSetBytes,

@@ -180,3 +180,26 @@ func TestRunCommand_ProductionQuantizationConstrainedFallback_Good(t *testing.T)
 		}
 	}
 }
+
+func TestRunCommand_ProductionQuantizationPlainStepDown_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-quantization", "-memory-gib", "16", "-working-set-gib", "13", "-context", "32768"}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"production quantisation: q4 constrained",
+		"requested: q6",
+		"step-down: q6 required 25769803776 bytes at working set 13958643712 bytes",
+		"ladder: q8 quality, q6 default, q4 constrained fallback",
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
