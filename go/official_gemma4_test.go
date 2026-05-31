@@ -234,6 +234,12 @@ func TestOfficialGemma4E2BPairPreflight_CacheRoots_Good(t *testing.T) {
 	targetLock, targetCacheRoot, targetSnapshotDir := officialGemma4InspectableTargetCacheRoot(t)
 	assistantLock, assistantCacheRoot, assistantSnapshotDir := officialGemma4InspectableAssistantCacheRoot(t)
 
+	if core.PathBase(targetCacheRoot) != "models--google--gemma-4-E2B-it" {
+		t.Fatalf("target cache root = %q, want official target HF cache basename", targetCacheRoot)
+	}
+	if core.PathBase(assistantCacheRoot) != "models--google--gemma-4-E2B-it-assistant" {
+		t.Fatalf("assistant cache root = %q, want official assistant HF cache basename", assistantCacheRoot)
+	}
 	report, err := InspectOfficialGemma4E2BPairLocalSnapshots(targetCacheRoot, assistantCacheRoot, targetLock, assistantLock)
 	if err != nil {
 		t.Fatalf("InspectOfficialGemma4E2BPairLocalSnapshots(cache roots) error = %v", err)
@@ -324,7 +330,7 @@ func officialGemma4InspectableAssistantCacheRoot(t *testing.T) (OfficialGemma4E2
 
 func officialGemma4TestCacheRootFrom(t *testing.T, lock OfficialGemma4E2BLock, sourceDir string) (OfficialGemma4E2BLock, string, string) {
 	t.Helper()
-	cacheRoot := core.PathJoin(t.TempDir(), "models--google--gemma-4-E2B-it")
+	cacheRoot := core.PathJoin(t.TempDir(), "models--"+core.Replace(lock.ModelID, "/", "--"))
 	snapshotDir := core.PathJoin(cacheRoot, "snapshots", lock.Revision)
 	if result := core.MkdirAll(snapshotDir, 0o755); !result.OK {
 		t.Fatalf("MkdirAll cache snapshot: %v", result.Value)
