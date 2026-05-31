@@ -46,6 +46,9 @@ type ProductionMTPPromotionEvidence struct {
 	TargetOnlyEnergyJoules        float64       `json:"target_only_energy_joules,omitempty"`
 	MTPEnergyJoules               float64       `json:"mtp_energy_joules,omitempty"`
 	EstimatedPowerWatts           float64       `json:"estimated_power_watts,omitempty"`
+	SpeculativeDraftModelPath     string        `json:"speculative_draft_model_path,omitempty"`
+	SpeculativeDraftTokens        int           `json:"speculative_draft_tokens,omitempty"`
+	MTPDraftTokenSchedule         []int         `json:"mtp_draft_token_schedule,omitempty"`
 	MTPProposedTokens             int           `json:"mtp_proposed_tokens,omitempty"`
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
@@ -136,6 +139,16 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 	if policy.RequiresSideBySideBenchmark && (decision.WallSpeedup == 0 || decision.VisibleSpeedup == 0) {
 		decision.Reason = "side-by-side target-only and MTP wall/visible metrics are required"
 		return decision
+	}
+	if evidence.SpeculativeDraftModelPath == "" || evidence.SpeculativeDraftTokens <= 0 || len(evidence.MTPDraftTokenSchedule) == 0 {
+		decision.Reason = "MTP draft model, draft token count, and schedule evidence are required"
+		return decision
+	}
+	for _, draftTokens := range evidence.MTPDraftTokenSchedule {
+		if draftTokens <= 0 {
+			decision.Reason = "MTP draft token schedule must contain positive draft counts"
+			return decision
+		}
 	}
 	if evidence.MTPProposedTokens <= 0 || evidence.MTPTargetVerifyCalls <= 0 {
 		decision.Reason = "MTP proposed-token and target-verify counters are required"

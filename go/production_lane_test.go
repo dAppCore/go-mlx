@@ -259,6 +259,9 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		TargetOnlyEnergyJoules:        1000,
 		MTPEnergyJoules:               1000,
 		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -279,6 +282,9 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPVisibleTokensPerSec:        120,
 		TargetOnlyWallDuration:        10 * time.Second,
 		MTPWallDuration:               8 * time.Second,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
 	})
@@ -294,6 +300,9 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPVisibleTokensPerSec:        125,
 		TargetOnlyWallDuration:        10 * time.Second,
 		MTPWallDuration:               8 * time.Second,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
@@ -301,6 +310,30 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 	})
 	if missingOperationalEvidence.EnableByDefault || !core.Contains(missingOperationalEvidence.Reason, "restore, memory, and energy") {
 		t.Fatalf("missing operational evidence decision = %+v, want restore/memory/energy gate", missingOperationalEvidence)
+	}
+
+	missingDraftIdentity := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+	})
+	if missingDraftIdentity.EnableByDefault || !core.Contains(missingDraftIdentity.Reason, "draft model") {
+		t.Fatalf("missing draft identity decision = %+v, want draft model/schedule gate", missingDraftIdentity)
 	}
 
 	missingAcceptanceAccounting := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
@@ -318,6 +351,9 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		TargetOnlyEnergyJoules:        1000,
 		MTPEnergyJoules:               760,
 		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
 	})
@@ -340,6 +376,9 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		TargetOnlyEnergyJoules:        1000,
 		MTPEnergyJoules:               760,
 		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPRejectedTokens:             40,
 		MTPTargetVerifyCalls:          20,
@@ -367,6 +406,9 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		TargetOnlyEnergyJoules:        1000,
 		MTPEnergyJoules:               760,
 		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
 		MTPProposedTokens:             40,
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
