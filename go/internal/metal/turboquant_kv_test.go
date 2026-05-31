@@ -30,21 +30,23 @@ func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
 		PageSize:    2048,
 		LocalWindow: 512,
 		Key: TurboQuantKVCodec{
-			Algorithm:    TurboQuantKVAlgorithmProd,
-			NormalBits:   3,
-			OutlierBits:  4,
-			OutlierMask:  turboQuantKVTestMask(128, 64),
-			RotationSeed: 0x4b,
-			QJLSeed:      0x51,
-			CodebookID:   "beta-d128-b3",
+			Algorithm:     TurboQuantKVAlgorithmProd,
+			NormalBits:    3,
+			OutlierBits:   4,
+			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			RotationSeed:  0x4b,
+			QJLSeed:       0x51,
+			CodebookID:    "beta-d128-b3",
 		},
 		Value: TurboQuantKVCodec{
-			Algorithm:    TurboQuantKVAlgorithmMSE,
-			NormalBits:   3,
-			OutlierBits:  4,
-			OutlierMask:  turboQuantKVTestMask(128, 64),
-			RotationSeed: 0x56,
-			CodebookID:   "beta-d128-b3",
+			Algorithm:     TurboQuantKVAlgorithmMSE,
+			NormalBits:    3,
+			OutlierBits:   4,
+			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			RotationSeed:  0x56,
+			CodebookID:    "beta-d128-b3",
 		},
 	}
 
@@ -59,6 +61,25 @@ func TestTurboQuantKVPageLayout_ValidateReferenceMetadata_Good(t *testing.T) {
 	}
 	if got := layout.Shape.ElementCount(); got != 1*8*2048*128 {
 		t.Fatalf("shape elements = %d, want %d", got, 1*8*2048*128)
+	}
+}
+
+func TestTurboQuantKVPageLayout_JSONRecordsOutlierPolicy_Good(t *testing.T) {
+	coverageTokens := "TurboQuantKVPageLayout JSON RecordsOutlierPolicy"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	layout := validTurboQuantKVTestPageLayout()
+
+	encoded := core.JSONMarshalString(layout)
+
+	for _, want := range []string{
+		`"outlier_policy":"high-half-head-dim-v1"`,
+		`"outlier_mask":`,
+	} {
+		if !core.Contains(encoded, want) {
+			t.Fatalf("encoded layout = %s, want %s", encoded, want)
+		}
 	}
 }
 
@@ -134,11 +155,13 @@ func TestTurboQuantKVReferencePage_PackedPayloadUsesOutlierBitBudget_Good(t *tes
 	layout.PageSize = 1
 	layout.Key.NormalBits = 3
 	layout.Key.OutlierBits = 4
-	layout.Key.OutlierMask = turboQuantKVTestMask(8, 4)
+	layout.Key.OutlierPolicy = TurboQuantKVOutlierPolicyHighHalfHeadDimV1
+	layout.Key.OutlierMask = turboQuantKVOutlierMask(8, 4)
 	layout.Key.CodebookID = TurboQuantKVReferenceCodebookUniform
 	layout.Value.NormalBits = 3
 	layout.Value.OutlierBits = 4
-	layout.Value.OutlierMask = turboQuantKVTestMask(8, 4)
+	layout.Value.OutlierPolicy = TurboQuantKVOutlierPolicyHighHalfHeadDimV1
+	layout.Value.OutlierMask = turboQuantKVOutlierMask(8, 4)
 	layout.Value.CodebookID = TurboQuantKVReferenceCodebookUniform
 	keys := []float32{0.42, -0.31, 0.18, 0.77, -0.56, 0.09, 0.23, -0.64}
 	values := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
@@ -470,21 +493,23 @@ func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 		PageSize:    512,
 		LocalWindow: 512,
 		Key: TurboQuantKVCodec{
-			Algorithm:    TurboQuantKVAlgorithmProd,
-			NormalBits:   3,
-			OutlierBits:  4,
-			OutlierMask:  turboQuantKVTestMask(128, 64),
-			RotationSeed: 1,
-			QJLSeed:      2,
-			CodebookID:   "beta-d128-b3",
+			Algorithm:     TurboQuantKVAlgorithmProd,
+			NormalBits:    3,
+			OutlierBits:   4,
+			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			RotationSeed:  1,
+			QJLSeed:       2,
+			CodebookID:    "beta-d128-b3",
 		},
 		Value: TurboQuantKVCodec{
-			Algorithm:    TurboQuantKVAlgorithmMSE,
-			NormalBits:   3,
-			OutlierBits:  4,
-			OutlierMask:  turboQuantKVTestMask(128, 64),
-			RotationSeed: 3,
-			CodebookID:   "beta-d128-b3",
+			Algorithm:     TurboQuantKVAlgorithmMSE,
+			NormalBits:    3,
+			OutlierBits:   4,
+			OutlierPolicy: TurboQuantKVOutlierPolicyHighHalfHeadDimV1,
+			OutlierMask:   turboQuantKVOutlierMask(128, 64),
+			RotationSeed:  3,
+			CodebookID:    "beta-d128-b3",
 		},
 	}
 }

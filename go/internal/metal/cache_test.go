@@ -855,6 +855,12 @@ func TestTurboQuantKVCache_UpdateStoresCompressedPages_Good(t *testing.T) {
 	if got := c.payloads[0].Layout.Value.EffectiveBitsMilli(c.payloads[0].Layout.Shape.HeadDim); got != 3500 {
 		t.Fatalf("value effective bits milli = %d, want 3500", got)
 	}
+	if got := c.payloads[0].Layout.Key.OutlierPolicy; got != TurboQuantKVOutlierPolicyHighHalfHeadDimV1 {
+		t.Fatalf("key outlier policy = %q, want %q", got, TurboQuantKVOutlierPolicyHighHalfHeadDimV1)
+	}
+	if got := c.payloads[0].Layout.Value.OutlierPolicy; got != TurboQuantKVOutlierPolicyHighHalfHeadDimV1 {
+		t.Fatalf("value outlier policy = %q, want %q", got, TurboQuantKVOutlierPolicyHighHalfHeadDimV1)
+	}
 	if shape := outK.Shape(); len(shape) != 4 || shape[0] != 1 || shape[1] != 2 || shape[2] != 3 || shape[3] != 4 {
 		t.Fatalf("outK shape = %v, want [1 2 3 4]", shape)
 	}

@@ -21,6 +21,11 @@ const (
 	TurboQuantKVAlgorithmProd TurboQuantKVAlgorithm = "turboquantprod"
 )
 
+const (
+	TurboQuantKVOutlierPolicyHighHalfHeadDimV1 = "high-half-head-dim-v1"
+	TurboQuantKVOutlierPolicyExplicitMaskV1    = "explicit-mask-v1"
+)
+
 // TurboQuantKVShape is the logical MLX cache tensor shape. Compression changes
 // the physical payload, not this rank-4 view.
 type TurboQuantKVShape struct {
@@ -44,13 +49,14 @@ func (shape TurboQuantKVShape) Valid() bool {
 // TurboQuantKVCodec describes one side of a compressed K/V page. Keys should
 // use TurboQuantprod; values start with TurboQuantmse.
 type TurboQuantKVCodec struct {
-	Algorithm    TurboQuantKVAlgorithm `json:"algorithm"`
-	NormalBits   int                   `json:"normal_bits"`
-	OutlierBits  int                   `json:"outlier_bits,omitempty"`
-	OutlierMask  []byte                `json:"outlier_mask,omitempty"`
-	RotationSeed uint64                `json:"rotation_seed"`
-	QJLSeed      uint64                `json:"qjl_seed,omitempty"`
-	CodebookID   string                `json:"codebook_id"`
+	Algorithm     TurboQuantKVAlgorithm `json:"algorithm"`
+	NormalBits    int                   `json:"normal_bits"`
+	OutlierBits   int                   `json:"outlier_bits,omitempty"`
+	OutlierPolicy string                `json:"outlier_policy,omitempty"`
+	OutlierMask   []byte                `json:"outlier_mask,omitempty"`
+	RotationSeed  uint64                `json:"rotation_seed"`
+	QJLSeed       uint64                `json:"qjl_seed,omitempty"`
+	CodebookID    string                `json:"codebook_id"`
 }
 
 func (codec TurboQuantKVCodec) Validate(kind string, headDim int32) error {
@@ -69,11 +75,23 @@ func (codec TurboQuantKVCodec) Validate(kind string, headDim int32) error {
 	if codec.OutlierBits > 8 {
 		return core.NewError("mlx: TurboQuant " + kind + " outlier bit width exceeds byte storage")
 	}
+	if len(codec.OutlierMask) > 0 && codec.OutlierPolicy == "" {
+		return core.NewError("mlx: TurboQuant " + kind + " outlier policy is missing")
+	}
 	if headDim <= 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " head dimension is invalid")
 	}
 	if len(codec.OutlierMask) > 0 && len(codec.OutlierMask) != turboQuantKVMaskBytes(headDim) {
 		return core.NewError("mlx: TurboQuant " + kind + " outlier mask length is invalid")
+	}
+	if codec.OutlierPolicy != "" && codec.OutlierPolicy != TurboQuantKVOutlierPolicyHighHalfHeadDimV1 && codec.OutlierPolicy != TurboQuantKVOutlierPolicyExplicitMaskV1 {
+		return core.NewError("mlx: TurboQuant " + kind + " outlier policy is unsupported")
+	}
+	if codec.OutlierPolicy == TurboQuantKVOutlierPolicyHighHalfHeadDimV1 {
+		want := turboQuantKVOutlierMask(headDim, codec.OutlierChannels(headDim))
+		if !turboQuantKVBytesEqual(codec.OutlierMask, want) {
+			return core.NewError("mlx: TurboQuant " + kind + " outlier mask does not match high-half policy")
+		}
 	}
 	if codec.RotationSeed == 0 {
 		return core.NewError("mlx: TurboQuant " + kind + " rotation seed is missing")
@@ -293,4 +311,16 @@ func turboQuantKVOutlierMask(headDim int32, outlierChannels int32) []byte {
 		mask[channel/8] |= 1 << uint(channel%8)
 	}
 	return mask
+}
+
+func turboQuantKVBytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for idx := range a {
+		if a[idx] != b[idx] {
+			return false
+		}
+	}
+	return true
 }

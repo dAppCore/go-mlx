@@ -178,8 +178,9 @@ growth.
   inside q8. It is selected only by the explicit `turboquant` cache mode. The
   reference cache now emits K=`TurboQuantprod` and V=`TurboQuantmse` payloads
   with deterministic 3-bit regular channels and 4-bit outlier channels over the
-  high half of the head dimension, giving `3500` effective bits/milli for both
-  K and V in the stored layout.
+  high half of the head dimension. The stored codec metadata names this as
+  `outlier_policy=high-half-head-dim-v1`, giving `3500` effective bits/milli
+  for both K and V in the stored layout.
 - Snapshot, prompt-cache, and public State restore accept TurboQuant only when
   the page schema version matches exactly; older, empty, or partial snapshots
   fail clearly. `kv.Snapshot` v5 keeps compressed page payloads opaque at the
