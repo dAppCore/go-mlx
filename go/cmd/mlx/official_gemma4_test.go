@@ -38,6 +38,31 @@ func TestRunCommand_OfficialGemma4VerifyJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_OfficialGemma4VerifyCacheRootJSON_Good(t *testing.T) {
+	lock, cacheRoot, snapshotDir := officialGemma4VerifyTestCacheRoot(t)
+	originalLookup := officialGemma4VerifyLockByRole
+	officialGemma4VerifyLockByRole = func(role string) (mlx.OfficialGemma4E2BLock, bool) {
+		if role != lock.Role {
+			return mlx.OfficialGemma4E2BLock{}, false
+		}
+		return lock, true
+	}
+	t.Cleanup(func() { officialGemma4VerifyLockByRole = originalLookup })
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-verify", "-json", "-role", lock.Role, cacheRoot}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	if !core.Contains(out, core.Sprintf(`"snapshot_dir": %q`, snapshotDir)) || !core.Contains(out, `"verified": true`) {
+		t.Fatalf("stdout = %q, want verified JSON report for resolved locked snapshot %q", out, snapshotDir)
+	}
+}
+
 func TestRunCommand_OfficialGemma4VerifyInvalidRole_Bad(t *testing.T) {
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
 
@@ -186,6 +211,31 @@ func officialGemma4VerifyTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, 
 	writeOfficialGemma4VerifyTestFile(t, dir, "chat_template.jinja", chatTemplate)
 	writeOfficialGemma4VerifyTestFile(t, dir, lock.WeightFile, weights)
 	return lock, dir
+}
+
+func officialGemma4VerifyTestCacheRoot(t *testing.T) (mlx.OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	lock, sourceDir := officialGemma4VerifyTestSnapshot(t)
+	cacheRoot := core.PathJoin(t.TempDir(), "models--google--gemma-4-E2B-it")
+	snapshotDir := core.PathJoin(cacheRoot, "snapshots", lock.Revision)
+	if result := core.MkdirAll(snapshotDir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll cache snapshot: %v", result.Value)
+	}
+	for _, name := range []string{
+		"config.json",
+		"tokenizer.json",
+		"tokenizer_config.json",
+		"generation_config.json",
+		"chat_template.jinja",
+		lock.WeightFile,
+	} {
+		read := core.ReadFile(core.PathJoin(sourceDir, name))
+		if !read.OK {
+			t.Fatalf("ReadFile %s: %v", name, read.Value)
+		}
+		writeOfficialGemma4VerifyTestFile(t, snapshotDir, name, read.Value.([]byte))
+	}
+	return lock, cacheRoot, snapshotDir
 }
 
 func officialGemma4VerifyAssistantTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, string) {

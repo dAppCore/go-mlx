@@ -63,11 +63,14 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 	if *jsonOut {
 		return writeOfficialGemma4VerifyJSON(stdout, stderr, report)
 	}
-	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B %s verified: %s\n", report.Role, snapshotDir))
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B %s verified: %s\n", report.Role, report.SnapshotDir))
 	return 0
 }
 
 func officialGemma4VerifyReportFromPreflight(snapshotDir string, preflight mlx.OfficialGemma4E2BSnapshotReport) officialGemma4VerifyReport {
+	if preflight.SnapshotDir != "" {
+		snapshotDir = preflight.SnapshotDir
+	}
 	return officialGemma4VerifyReport{
 		Version:              1,
 		SnapshotDir:          snapshotDir,

@@ -12,6 +12,7 @@ import (
 // model-pack inspection. It is intentionally metadata-only: callers can run it
 // before a heavyweight native load.
 type OfficialGemma4E2BSnapshotReport struct {
+	SnapshotDir          string                `json:"snapshot_dir"`
 	Role                 string                `json:"role"`
 	ModelID              string                `json:"model_id"`
 	Revision             string                `json:"revision"`
@@ -54,6 +55,13 @@ func InspectOfficialGemma4E2BLocalSnapshot(snapshotDir string, lock OfficialGemm
 		ExpectedArchitecture: officialGemma4ExpectedPackArchitecture(lock),
 		Lock:                 lock,
 	}
+
+	resolvedDir, err := ResolveOfficialGemma4E2BLocalSnapshot(snapshotDir, lock)
+	if err != nil {
+		return officialGemma4SnapshotReportError(report, err)
+	}
+	snapshotDir = resolvedDir
+	report.SnapshotDir = snapshotDir
 
 	pack, err := modelinspect.Inspect(snapshotDir, opts...)
 	report.Pack = pack

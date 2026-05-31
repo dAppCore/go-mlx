@@ -155,6 +155,29 @@ func TestOfficialGemma4E2BLocalSnapshot_VerifiesHashes_Good(t *testing.T) {
 	}
 }
 
+func TestOfficialGemma4E2BLocalSnapshot_VerifiesCacheRoot_Good(t *testing.T) {
+	lock, cacheRoot, snapshotDir := officialGemma4TestCacheRoot(t)
+
+	if err := VerifyOfficialGemma4E2BLocalSnapshot(cacheRoot, lock); err != nil {
+		t.Fatalf("VerifyOfficialGemma4E2BLocalSnapshot(cache root) error = %v", err)
+	}
+
+	inspectLock, inspectCacheRoot, inspectSnapshotDir := officialGemma4InspectableTargetCacheRoot(t)
+	report, err := InspectOfficialGemma4E2BLocalSnapshot(inspectCacheRoot, inspectLock)
+	if err != nil {
+		t.Fatalf("InspectOfficialGemma4E2BLocalSnapshot(cache root) error = %v", err)
+	}
+	if !report.Verified {
+		t.Fatalf("report verified = false, want verified report")
+	}
+	if core.PathBase(snapshotDir) != lock.Revision {
+		t.Fatalf("test cache root snapshot = %q, want basename to match lock revision %q", snapshotDir, lock.Revision)
+	}
+	if report.SnapshotDir != inspectSnapshotDir {
+		t.Fatalf("report SnapshotDir = %q, want resolved locked snapshot %q", report.SnapshotDir, inspectSnapshotDir)
+	}
+}
+
 func TestOfficialGemma4E2BLocalSnapshotReport_TargetPreflight_Good(t *testing.T) {
 	lock, dir := officialGemma4InspectableTargetSnapshot(t)
 
@@ -263,6 +286,42 @@ func officialGemma4TestSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {
 	writeOfficialGemma4TestFile(t, dir, "chat_template.jinja", []byte("chat-template"))
 	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, []byte("weights"))
 	return lock, dir
+}
+
+func officialGemma4TestCacheRoot(t *testing.T) (OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	lock, sourceDir := officialGemma4TestSnapshot(t)
+	return officialGemma4TestCacheRootFrom(t, lock, sourceDir)
+}
+
+func officialGemma4InspectableTargetCacheRoot(t *testing.T) (OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	lock, sourceDir := officialGemma4InspectableTargetSnapshot(t)
+	return officialGemma4TestCacheRootFrom(t, lock, sourceDir)
+}
+
+func officialGemma4TestCacheRootFrom(t *testing.T, lock OfficialGemma4E2BLock, sourceDir string) (OfficialGemma4E2BLock, string, string) {
+	t.Helper()
+	cacheRoot := core.PathJoin(t.TempDir(), "models--google--gemma-4-E2B-it")
+	snapshotDir := core.PathJoin(cacheRoot, "snapshots", lock.Revision)
+	if result := core.MkdirAll(snapshotDir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll cache snapshot: %v", result.Value)
+	}
+	for _, name := range []string{
+		"config.json",
+		"tokenizer.json",
+		"tokenizer_config.json",
+		"generation_config.json",
+		"chat_template.jinja",
+		lock.WeightFile,
+	} {
+		read := core.ReadFile(core.PathJoin(sourceDir, name))
+		if !read.OK {
+			t.Fatalf("ReadFile %s: %v", name, read.Value)
+		}
+		writeOfficialGemma4TestFile(t, snapshotDir, name, read.Value.([]byte))
+	}
+	return lock, cacheRoot, snapshotDir
 }
 
 func officialGemma4InspectableTargetSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {

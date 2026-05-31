@@ -9,11 +9,40 @@ import (
 
 const officialGemma4SafetensorsIndexFile = "model.safetensors.index.json"
 
-// VerifyLocalSnapshot checks a downloaded HF snapshot directory against the
-// exact official Gemma 4 E2B target/assistant lock. The directory must be the
-// concrete HF snapshot path whose basename is the locked revision.
+// VerifyLocalSnapshot checks a downloaded HF snapshot directory or cache root
+// against the exact official Gemma 4 E2B target/assistant lock.
 func (lock OfficialGemma4E2BLock) VerifyLocalSnapshot(snapshotDir string) error {
 	return VerifyOfficialGemma4E2BLocalSnapshot(snapshotDir, lock)
+}
+
+// ResolveOfficialGemma4E2BLocalSnapshot returns the concrete locked HF snapshot
+// directory from either an exact snapshot path, a snapshots directory, or a HF
+// cache repo root such as models--google--gemma-4-E2B-it.
+func ResolveOfficialGemma4E2BLocalSnapshot(snapshotDir string, lock OfficialGemma4E2BLock) (string, error) {
+	snapshotDir = core.Trim(snapshotDir)
+	if snapshotDir == "" {
+		return "", core.NewError("mlx: official Gemma 4 E2B snapshot directory is empty")
+	}
+	if lock.Revision == "" {
+		return "", core.NewError("mlx: official Gemma 4 E2B lock revision is empty")
+	}
+	if core.PathBase(snapshotDir) == lock.Revision {
+		return snapshotDir, nil
+	}
+
+	for _, candidate := range officialGemma4LocalSnapshotCandidates(snapshotDir, lock.Revision) {
+		if result := core.Stat(candidate); result.OK {
+			return candidate, nil
+		}
+	}
+	return "", core.NewError(core.Sprintf("mlx: official Gemma 4 E2B locked snapshot %q not found below %q", lock.Revision, snapshotDir))
+}
+
+func officialGemma4LocalSnapshotCandidates(snapshotDir, revision string) []string {
+	if core.PathBase(snapshotDir) == "snapshots" {
+		return []string{core.PathJoin(snapshotDir, revision)}
+	}
+	return []string{core.PathJoin(snapshotDir, "snapshots", revision)}
 }
 
 // VerifyOfficialGemma4E2BLocalSnapshot fails closed when a local official
@@ -21,12 +50,11 @@ func (lock OfficialGemma4E2BLock) VerifyLocalSnapshot(snapshotDir string) error 
 // hashes. This is a lightweight identity gate; it does not prove native-load
 // semantics or benchmark quality.
 func VerifyOfficialGemma4E2BLocalSnapshot(snapshotDir string, lock OfficialGemma4E2BLock) error {
-	if snapshotDir == "" {
-		return core.NewError("mlx: official Gemma 4 E2B snapshot directory is empty")
+	resolvedDir, err := ResolveOfficialGemma4E2BLocalSnapshot(snapshotDir, lock)
+	if err != nil {
+		return err
 	}
-	if lock.Revision == "" {
-		return core.NewError("mlx: official Gemma 4 E2B lock revision is empty")
-	}
+	snapshotDir = resolvedDir
 	if core.PathBase(snapshotDir) != lock.Revision {
 		return core.NewError(core.Sprintf("mlx: official Gemma 4 E2B snapshot revision = %q, want %q", core.PathBase(snapshotDir), lock.Revision))
 	}
