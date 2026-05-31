@@ -228,6 +228,56 @@ func TestTurboQuantKVProdReferenceVector_EstimatesInnerProductWithQJL_Good(t *te
 	}
 }
 
+func TestTurboQuantKVReferencePage_EncodeDecodeBase_Good(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		t.Fatalf("EncodeTurboQuantKVReferencePage() error = %v, want nil", err)
+	}
+	if len(page.Keys) != int(layout.PageVectorCount()) || len(page.Values) != int(layout.PageVectorCount()) {
+		t.Fatalf("page vectors = %d/%d, want %d", len(page.Keys), len(page.Values), layout.PageVectorCount())
+	}
+
+	decodedKeys, decodedValues, err := page.DecodeBase()
+	if err != nil {
+		t.Fatalf("DecodeBase() error = %v, want nil", err)
+	}
+	if cosineSimilarity(keys, decodedKeys) < 0.99 {
+		t.Fatalf("decoded key cosine = %.6f, want >= 0.99", cosineSimilarity(keys, decodedKeys))
+	}
+	if cosineSimilarity(values, decodedValues) < 0.99 {
+		t.Fatalf("decoded value cosine = %.6f, want >= 0.99", cosineSimilarity(values, decodedValues))
+	}
+
+	query := []float32{-0.12, 0.44, 0.37, -0.21, 0.68, -0.15, 0.51, 0.08}
+	estimates, err := page.EstimateKeyInnerProducts(query)
+	if err != nil {
+		t.Fatalf("EstimateKeyInnerProducts() error = %v, want nil", err)
+	}
+	if len(estimates) != len(page.Keys) {
+		t.Fatalf("estimate count = %d, want %d", len(estimates), len(page.Keys))
+	}
+	for idx, estimate := range estimates {
+		if estimate == 0 {
+			t.Fatalf("estimate[%d] = 0, want non-zero diagnostic value", idx)
+		}
+	}
+}
+
+func TestTurboQuantKVReferencePage_RejectsPayloadShape_Bad(t *testing.T) {
+	layout := validTurboQuantKVReferencePageLayout()
+	keys := turboQuantKVReferencePageValues(layout, 37)
+	values := turboQuantKVReferencePageValues(layout, 53)
+
+	_, err := EncodeTurboQuantKVReferencePage(keys[:len(keys)-1], values, layout)
+	if err == nil || !core.Contains(err.Error(), "payload shape") {
+		t.Fatalf("EncodeTurboQuantKVReferencePage(short keys) error = %v, want payload shape diagnostic", err)
+	}
+}
+
 func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 	return TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,
@@ -261,12 +311,48 @@ func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 	}
 }
 
+func validTurboQuantKVReferencePageLayout() TurboQuantKVPageLayout {
+	return TurboQuantKVPageLayout{
+		Version:     TurboQuantKVLayoutVersion,
+		Codec:       TurboQuantKVCodecName,
+		CacheIndex:  1,
+		Layer:       5,
+		LayerType:   "full_attention",
+		SharedOwner: 5,
+		Shape:       TurboQuantKVShape{Batch: 1, Heads: 2, SeqLen: 2, HeadDim: 8},
+		TokenOffset: 16,
+		PageTokens:  2,
+		PageSize:    2,
+		Key: TurboQuantKVCodec{
+			Algorithm:    TurboQuantKVAlgorithmProd,
+			NormalBits:   5,
+			RotationSeed: 0x6b,
+			QJLSeed:      0x7c,
+			CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		},
+		Value: TurboQuantKVCodec{
+			Algorithm:    TurboQuantKVAlgorithmMSE,
+			NormalBits:   5,
+			RotationSeed: 0x56,
+			CodebookID:   TurboQuantKVReferenceCodebookUniform,
+		},
+	}
+}
+
 func turboQuantKVTestMask(headDim, outliers int32) []byte {
 	mask := make([]byte, (headDim+7)/8)
 	for i := int32(0); i < outliers; i++ {
 		mask[i/8] |= 1 << uint(i%8)
 	}
 	return mask
+}
+
+func turboQuantKVReferencePageValues(layout TurboQuantKVPageLayout, seed int) []float32 {
+	values := make([]float32, layout.PageElementCount())
+	for idx := range values {
+		values[idx] = float32(((idx*seed)%97)-48) / 59
+	}
+	return values
 }
 
 func cosineSimilarity(a, b []float32) float64 {

@@ -58,6 +58,63 @@ func BenchmarkTurboQuantKVProdReference_Estimate_D128(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVReferencePage_Encode_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	b.ReportAllocs()
+	for b.Loop() {
+		page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+		if err != nil {
+			b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+		}
+		if len(page.Keys) != int(layout.PageVectorCount()) {
+			b.Fatalf("encoded key vectors = %d, want %d", len(page.Keys), layout.PageVectorCount())
+		}
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_DecodeBase_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		decodedKeys, decodedValues, err := page.DecodeBase()
+		if err != nil {
+			b.Fatalf("DecodeBase() error = %v", err)
+		}
+		if len(decodedKeys) != len(keys) || len(decodedValues) != len(values) {
+			b.Fatalf("decoded lengths = %d/%d, want %d/%d", len(decodedKeys), len(decodedValues), len(keys), len(values))
+		}
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	query := turboQuantKVReferenceBenchQuery(int(layout.Shape.HeadDim))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		estimates, err := page.EstimateKeyInnerProducts(query)
+		if err != nil {
+			b.Fatalf("EstimateKeyInnerProducts() error = %v", err)
+		}
+		if len(estimates) != int(layout.PageVectorCount()) {
+			b.Fatalf("estimates = %d, want %d", len(estimates), layout.PageVectorCount())
+		}
+	}
+}
+
 func turboQuantKVReferenceBenchMSECodec() TurboQuantKVCodec {
 	return TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
@@ -75,6 +132,14 @@ func turboQuantKVReferenceBenchProdCodec() TurboQuantKVCodec {
 		QJLSeed:      0x7c,
 		CodebookID:   TurboQuantKVReferenceCodebookUniform,
 	}
+}
+
+func turboQuantKVReferenceBenchPageLayout() TurboQuantKVPageLayout {
+	layout := validTurboQuantKVReferencePageLayout()
+	layout.Shape = TurboQuantKVShape{Batch: 1, Heads: 2, SeqLen: 4, HeadDim: 128}
+	layout.PageTokens = 4
+	layout.PageSize = 4
+	return layout
 }
 
 func turboQuantKVReferenceBenchVector(dim int) []float32 {

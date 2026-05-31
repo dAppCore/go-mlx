@@ -26,6 +26,12 @@ type TurboQuantKVProdReferenceVector struct {
 	QJLSigns     []byte                         `json:"qjl_signs"`
 }
 
+type TurboQuantKVReferencePage struct {
+	Layout TurboQuantKVPageLayout            `json:"layout"`
+	Keys   []TurboQuantKVProdReferenceVector `json:"keys"`
+	Values []TurboQuantKVMSEReferenceVector  `json:"values"`
+}
+
 func EncodeTurboQuantKVMSEReference(values []float32, codec TurboQuantKVCodec) (TurboQuantKVMSEReferenceVector, error) {
 	headDim := int32(len(values))
 	if codec.Algorithm != TurboQuantKVAlgorithmMSE {
@@ -120,6 +126,38 @@ func EncodeTurboQuantKVProdReference(values []float32, codec TurboQuantKVCodec) 
 	return encoded, nil
 }
 
+func EncodeTurboQuantKVReferencePage(keys, values []float32, layout TurboQuantKVPageLayout) (TurboQuantKVReferencePage, error) {
+	if err := layout.Validate(); err != nil {
+		return TurboQuantKVReferencePage{}, err
+	}
+	pageElements := int(layout.PageElementCount())
+	if len(keys) != pageElements || len(values) != pageElements {
+		return TurboQuantKVReferencePage{}, core.NewError("mlx: TurboQuant reference page payload shape is invalid")
+	}
+	headDim := int(layout.Shape.HeadDim)
+	pageVectors := int(layout.PageVectorCount())
+	page := TurboQuantKVReferencePage{
+		Layout: layout,
+		Keys:   make([]TurboQuantKVProdReferenceVector, pageVectors),
+		Values: make([]TurboQuantKVMSEReferenceVector, pageVectors),
+	}
+	for idx := 0; idx < pageVectors; idx++ {
+		start := idx * headDim
+		end := start + headDim
+		key, err := EncodeTurboQuantKVProdReference(keys[start:end], layout.Key)
+		if err != nil {
+			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode key", err)
+		}
+		value, err := EncodeTurboQuantKVMSEReference(values[start:end], layout.Value)
+		if err != nil {
+			return TurboQuantKVReferencePage{}, core.E("mlx: TurboQuant reference page", "encode value", err)
+		}
+		page.Keys[idx] = key
+		page.Values[idx] = value
+	}
+	return page, nil
+}
+
 func (encoded TurboQuantKVMSEReferenceVector) DecodeMSE() ([]float32, error) {
 	if encoded.HeadDim <= 0 || len(encoded.CentroidCodes) != int(encoded.HeadDim) {
 		return nil, core.NewError("mlx: TurboQuant MSE reference vector shape is invalid")
@@ -182,6 +220,60 @@ func (encoded TurboQuantKVProdReferenceVector) EstimateInnerProduct(query []floa
 		estimate += float32(scale * sign * value)
 	}
 	return estimate, nil
+}
+
+func (page TurboQuantKVReferencePage) DecodeBase() ([]float32, []float32, error) {
+	if err := page.validateReferencePage(); err != nil {
+		return nil, nil, err
+	}
+	pageElements := int(page.Layout.PageElementCount())
+	headDim := int(page.Layout.Shape.HeadDim)
+	keys := make([]float32, pageElements)
+	values := make([]float32, pageElements)
+	for idx := range page.Keys {
+		start := idx * headDim
+		end := start + headDim
+		key, err := page.Keys[idx].Base.DecodeMSE()
+		if err != nil {
+			return nil, nil, core.E("mlx: TurboQuant reference page", "decode key", err)
+		}
+		value, err := page.Values[idx].DecodeMSE()
+		if err != nil {
+			return nil, nil, core.E("mlx: TurboQuant reference page", "decode value", err)
+		}
+		copy(keys[start:end], key)
+		copy(values[start:end], value)
+	}
+	return keys, values, nil
+}
+
+func (page TurboQuantKVReferencePage) EstimateKeyInnerProducts(query []float32) ([]float32, error) {
+	if err := page.validateReferencePage(); err != nil {
+		return nil, err
+	}
+	if len(query) != int(page.Layout.Shape.HeadDim) {
+		return nil, core.NewError("mlx: TurboQuant reference page query shape is invalid")
+	}
+	estimates := make([]float32, len(page.Keys))
+	for idx := range page.Keys {
+		estimate, err := page.Keys[idx].EstimateInnerProduct(query)
+		if err != nil {
+			return nil, core.E("mlx: TurboQuant reference page", "estimate key", err)
+		}
+		estimates[idx] = estimate
+	}
+	return estimates, nil
+}
+
+func (page TurboQuantKVReferencePage) validateReferencePage() error {
+	if err := page.Layout.Validate(); err != nil {
+		return err
+	}
+	pageVectors := int(page.Layout.PageVectorCount())
+	if len(page.Keys) != pageVectors || len(page.Values) != pageVectors {
+		return core.NewError("mlx: TurboQuant reference page vector count is invalid")
+	}
+	return nil
 }
 
 func turboQuantKVReferenceHeadDimSupported(dim int) bool {
