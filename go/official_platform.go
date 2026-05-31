@@ -71,7 +71,7 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			MinimumOS:       "macOS 26.0",
 			SDK:             "Metal 4",
 			SourceCheckedAt: officialPlatformSourceCheckedAt,
-			SourceURL:       "https://developer.apple.com/metal/capabilities/",
+			SourceURL:       "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
 			APIClass:        "metal-4-feature-availability",
 			Notes:           "Apple's feature tables list command allocators, decoupled command queues, dedicated compilation contexts, machine-learning encoding, and tensors as Metal 4 feature-family entries.",
 		},

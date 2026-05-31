@@ -251,7 +251,7 @@
       "minimum_os": "macOS 26.0",
       "sdk": "Metal 4",
       "source_checked_at": "2026-05-31",
-      "source_url": "https://developer.apple.com/metal/capabilities/",
+      "source_url": "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
       "api_class": "metal-4-feature-availability",
       "notes": "Apple's feature tables list command allocators, decoupled command queues, dedicated compilation contexts, machine-learning encoding, and tensors as Metal 4 feature-family entries."
     }
