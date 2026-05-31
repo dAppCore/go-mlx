@@ -10,6 +10,37 @@ import (
 	mlx "dappco.re/go/mlx"
 )
 
+func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"official-gemma4-locks", "-json"}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		`"kind": "official-gemma4-e2b-source-lock"`,
+		`"source_checked_at": "2026-05-31"`,
+		`"model_id": "google/gemma-4-E2B-it"`,
+		`"revision": "905e84b50c4d2a365ebde34e685027578e6728db"`,
+		`"model_id": "google/gemma-4-E2B-it-assistant"`,
+		`"revision": "5810c41a67974da9c7bd6f3e6c69d5d13854d9f0"`,
+		`"licence": "apache-2.0"`,
+		`"gated": false`,
+		`"config_sha256":`,
+		`"tokenizer_sha256":`,
+		`"safetensors_index_present": false`,
+		`"safetensors_index_notes": "HF snapshot lists a single model.safetensors file and no model.safetensors.index.json."`,
+	} {
+		if !core.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %s", out, want)
+		}
+	}
+}
+
 func TestRunCommand_OfficialGemma4VerifyJSON_Good(t *testing.T) {
 	lock, dir := officialGemma4VerifyTestSnapshot(t)
 	originalLookup := officialGemma4VerifyLockByRole

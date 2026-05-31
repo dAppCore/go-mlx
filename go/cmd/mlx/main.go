@@ -86,6 +86,8 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 		return runFFNEstimateCommand(ctx, args[1:], stdout, stderr)
 	case "pack":
 		return runPackCommand(ctx, args[1:], stdout, stderr)
+	case "official-gemma4-locks":
+		return runOfficialGemma4LocksCommand(args[1:], stdout, stderr)
 	case "official-gemma4-pair-verify":
 		return runOfficialGemma4PairVerifyCommand(args[1:], stdout, stderr)
 	case "official-gemma4-control-compare":
@@ -8769,6 +8771,7 @@ func printUsage(w io.Writer) {
 	core.WriteString(w, "Inspect what is installed\n")
 	core.WriteString(w, "  discover            report local MLX runtime + optional model candidates\n")
 	core.WriteString(w, "  pack                validate a local native model pack\n")
+	core.WriteString(w, "  official-gemma4-locks  print official Google Gemma 4 E2B source locks\n")
 	core.WriteString(w, "  official-gemma4-pair-verify  verify official Google Gemma 4 E2B target+assistant pair metadata\n")
 	core.WriteString(w, "  official-gemma4-control-compare  compare official Google Gemma 4 E2B target metadata with archived q4 control\n")
 	core.WriteString(w, "  official-gemma4-verify  verify an official Google Gemma 4 E2B snapshot lock\n")

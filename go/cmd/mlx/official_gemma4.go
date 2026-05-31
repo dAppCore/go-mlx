@@ -19,6 +19,13 @@ var officialGemma4ControlCompare = func(targetDir, controlDir string) (mlx.Offic
 	return mlx.CompareOfficialGemma4E2BControlSnapshots(targetDir, controlDir, mlx.OfficialGemma4E2BTargetLock())
 }
 
+type officialGemma4LocksReport struct {
+	Version         int                         `json:"version"`
+	Kind            string                      `json:"kind"`
+	SourceCheckedAt string                      `json:"source_checked_at,omitempty"`
+	Locks           []mlx.OfficialGemma4E2BLock `json:"locks"`
+}
+
 type officialGemma4VerifyReport struct {
 	Version              int          `json:"version"`
 	SnapshotDir          string       `json:"snapshot_dir"`
@@ -30,6 +37,53 @@ type officialGemma4VerifyReport struct {
 	Verified             bool         `json:"verified"`
 	Pack                 mp.ModelPack `json:"pack"`
 	Error                string       `json:"error,omitempty"`
+}
+
+func runOfficialGemma4LocksCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("official-gemma4-locks", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "write JSON source-lock report")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		core.Print(stderr, "%s official-gemma4-locks: expected no positional arguments", cliName())
+		return 2
+	}
+	report := officialGemma4LocksReportFromDefaults()
+	if *jsonOut {
+		return writeOfficialGemma4LocksJSON(stdout, stderr, report)
+	}
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B locks checked %s\n", report.SourceCheckedAt))
+	for _, lock := range report.Locks {
+		core.WriteString(stdout, core.Sprintf("  %s: %s @ %s (%s, gated=%t)\n", lock.Role, lock.ModelID, lock.Revision, lock.Licence, lock.Gated))
+	}
+	return 0
+}
+
+func officialGemma4LocksReportFromDefaults() officialGemma4LocksReport {
+	locks := mlx.DefaultOfficialGemma4E2BLocks()
+	sourceCheckedAt := ""
+	if len(locks) > 0 {
+		sourceCheckedAt = locks[0].SourceCheckedAt
+	}
+	return officialGemma4LocksReport{
+		Version:         1,
+		Kind:            "official-gemma4-e2b-source-lock",
+		SourceCheckedAt: sourceCheckedAt,
+		Locks:           locks,
+	}
+}
+
+func writeOfficialGemma4LocksJSON(stdout, stderr io.Writer, report officialGemma4LocksReport) int {
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		core.Print(stderr, "%s official-gemma4-locks: marshal report failed", cliName())
+		return 1
+	}
+	core.WriteString(stdout, string(data.Value.([]byte)))
+	core.WriteString(stdout, "\n")
+	return 0
 }
 
 func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int {
