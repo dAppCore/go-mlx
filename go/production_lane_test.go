@@ -294,3 +294,129 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		t.Fatalf("speedups = wall:%f visible:%f, want both > 1", decision.WallSpeedup, decision.VisibleSpeedup)
 	}
 }
+
+func TestProductionLane_DefaultTurboQuantPolicy_ResearchOptIn_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	if policy.CacheMode != memory.KVCacheModeTurboQuant || policy.TargetModelID != OfficialGemma4E2BTargetLock().ModelID {
+		t.Fatalf("policy identity = %+v, want official target plus turboquant cache mode", policy)
+	}
+	if policy.EnabledByDefault {
+		t.Fatalf("EnabledByDefault = true, want TurboQuant opt-in until retained workflow validation")
+	}
+	if policy.TargetEffectiveBitsMilli != 3500 {
+		t.Fatalf("TargetEffectiveBitsMilli = %d, want 3500 for 3.5 bits/channel research target", policy.TargetEffectiveBitsMilli)
+	}
+	if !policy.RequiresExplicitOptIn || !policy.RequiresRetainedWorkflow || !policy.RequiresQualityParity ||
+		!policy.RequiresSideBySideBenchmark || !policy.RequiresNormalContextValidation || !policy.RequiresStressContextValidation {
+		t.Fatalf("policy requirements = %+v, want explicit retained-workflow quality-gated research mode", policy)
+	}
+	for _, mode := range []memory.KVCacheMode{
+		memory.KVCacheModeFP16,
+		memory.KVCacheModePaged,
+		memory.KVCacheModeQ8,
+		memory.KVCacheModeKQ8VQ4,
+	} {
+		if !kvCacheModeSliceContains(policy.CompareAgainstCacheModes, mode) {
+			t.Fatalf("CompareAgainstCacheModes = %v, missing %q", policy.CompareAgainstCacheModes, mode)
+		}
+	}
+	for _, metric := range []string{
+		"baseline_cache_mode",
+		"candidate_cache_mode",
+		"normal_context_validated",
+		"stress_context_validated",
+		"candidate_peak_memory_bytes",
+		"baseline_peak_memory_bytes",
+		"candidate_wall_duration",
+		"baseline_wall_duration",
+		"candidate_restore_duration",
+		"baseline_restore_duration",
+		"candidate_energy_joules",
+		"baseline_energy_joules",
+		"estimated_power_watts",
+		"quality_flags",
+	} {
+		if !stringSliceContains(policy.RequiredMetrics, metric) {
+			t.Fatalf("RequiredMetrics = %v, missing %q", policy.RequiredMetrics, metric)
+		}
+	}
+}
+
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsIncompleteValidation_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:             true,
+		Turns:                        ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:               true,
+		BaselineCacheMode:            memory.KVCacheModePaged,
+		CandidateCacheMode:           memory.KVCacheModeTurboQuant,
+		ComparedCacheModes:           policy.CompareAgainstCacheModes,
+		NormalContextValidated:       true,
+		StressContextValidated:       false,
+		BaselineWallDuration:         10 * time.Second,
+		CandidateWallDuration:        8 * time.Second,
+		BaselinePeakMemoryBytes:      10 * memory.GiB,
+		CandidatePeakMemoryBytes:     7 * memory.GiB,
+		BaselineEnergyJoules:         1000,
+		CandidateEnergyJoules:        800,
+		EstimatedPowerWatts:          100,
+		BaselineRestoreDuration:      100 * time.Millisecond,
+		CandidateRestoreDuration:     80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:  80,
+		CandidateVisibleTokensPerSec: 80,
+	})
+
+	if decision.ProductionCandidate {
+		t.Fatalf("decision = %+v, want rejection until 100k stress lane is validated", decision)
+	}
+	if !core.Contains(decision.Reason, "stress") {
+		t.Fatalf("decision reason = %q, want stress-context validation failure", decision.Reason)
+	}
+}
+
+func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:             true,
+		Turns:                        ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:               true,
+		BaselineCacheMode:            memory.KVCacheModePaged,
+		CandidateCacheMode:           memory.KVCacheModeTurboQuant,
+		ComparedCacheModes:           policy.CompareAgainstCacheModes,
+		NormalContextValidated:       true,
+		StressContextValidated:       true,
+		BaselineWallDuration:         10 * time.Second,
+		CandidateWallDuration:        8 * time.Second,
+		BaselinePeakMemoryBytes:      10 * memory.GiB,
+		CandidatePeakMemoryBytes:     7 * memory.GiB,
+		BaselineEnergyJoules:         1000,
+		CandidateEnergyJoules:        800,
+		EstimatedPowerWatts:          100,
+		BaselineRestoreDuration:      100 * time.Millisecond,
+		CandidateRestoreDuration:     80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:  80,
+		CandidateVisibleTokensPerSec: 80,
+	})
+
+	if !decision.ProductionCandidate {
+		t.Fatalf("decision = %+v, want TurboQuant production candidate after full retained validation", decision)
+	}
+	if decision.EnableByDefault {
+		t.Fatalf("EnableByDefault = true, want TurboQuant still explicit/non-default after candidate promotion")
+	}
+	if decision.WallSpeedup <= 1 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 {
+		t.Fatalf("decision metrics = %+v, want wall, memory, and energy savings recorded", decision)
+	}
+}
+
+func kvCacheModeSliceContains(values []memory.KVCacheMode, needle memory.KVCacheMode) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
