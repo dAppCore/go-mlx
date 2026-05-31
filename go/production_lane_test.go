@@ -914,6 +914,48 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 	}
 }
 
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsNoActiveCacheMemoryWin_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:                    true,
+		Turns:                               ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:                      true,
+		BaselineCacheMode:                   memory.KVCacheModePaged,
+		CandidateCacheMode:                  memory.KVCacheModeTurboQuant,
+		SameLoadPolicy:                      true,
+		BaselineCachePolicy:                 "full",
+		CandidateCachePolicy:                "full",
+		BaselineContextLength:               ProductionLaneLongContextLength,
+		CandidateContextLength:              ProductionLaneLongContextLength,
+		ComparedCacheModes:                  policy.CompareAgainstCacheModes,
+		NormalContextValidated:              true,
+		StressContextValidated:              true,
+		BaselineWallDuration:                10 * time.Second,
+		CandidateWallDuration:               8 * time.Second,
+		BaselinePeakMemoryBytes:             10 * memory.GiB,
+		CandidatePeakMemoryBytes:            7 * memory.GiB,
+		BaselineActivePlusCacheMemoryBytes:  5 * memory.GiB,
+		CandidateActivePlusCacheMemoryBytes: 6 * memory.GiB,
+		BaselineEnergyJoules:                1000,
+		CandidateEnergyJoules:               800,
+		EstimatedPowerWatts:                 100,
+		BaselineRestoreDuration:             100 * time.Millisecond,
+		CandidateRestoreDuration:            80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:         80,
+		CandidateVisibleTokensPerSec:        80,
+		BaselineInputOutputTokensPerSec:     33000,
+		CandidateInputOutputTokensPerSec:    36000,
+	})
+
+	if decision.ProductionCandidate || !core.Contains(decision.Reason, "active+cache memory savings") {
+		t.Fatalf("decision = %+v, want active+cache memory-savings gate", decision)
+	}
+	if decision.MemorySavingsRatio != 0 {
+		t.Fatalf("memory savings ratio = %f, want no active+cache savings recorded", decision.MemorySavingsRatio)
+	}
+}
+
 func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingInputOutputEvidence_Good(t *testing.T) {
 	policy := DefaultProductionTurboQuantPolicy()
 

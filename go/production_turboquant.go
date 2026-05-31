@@ -146,9 +146,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		WallSpeedup:        durationSpeedup(evidence.BaselineWallDuration, evidence.CandidateWallDuration),
 		VisibleSpeedup:     ratioSpeedup(evidence.CandidateVisibleTokensPerSec, evidence.BaselineVisibleTokensPerSec),
 		RestoreSpeedup:     durationSpeedup(evidence.BaselineRestoreDuration, evidence.CandidateRestoreDuration),
-		MemorySavingsRatio: byteSavingsRatio(evidence.BaselinePeakMemoryBytes, evidence.CandidatePeakMemoryBytes),
+		MemorySavingsRatio: byteSavingsRatio(evidence.BaselineActivePlusCacheMemoryBytes, evidence.CandidateActivePlusCacheMemoryBytes),
 		EnergySavingsRatio: ratioSavings(evidence.BaselineEnergyJoules, evidence.CandidateEnergyJoules),
 	}
+	peakMemorySavingsRatio := byteSavingsRatio(evidence.BaselinePeakMemoryBytes, evidence.CandidatePeakMemoryBytes)
 	if policy.RequiresExplicitOptIn && policy.EnabledByDefault {
 		decision.Reason = "TurboQuant policy must remain explicit opt-in"
 		return decision
@@ -189,12 +190,24 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "100k stress-context validation is required before TurboQuant promotion"
 		return decision
 	}
-	if decision.WallSpeedup == 0 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 || evidence.EstimatedPowerWatts <= 0 {
-		decision.Reason = "TurboQuant wall, memory, and estimated-energy evidence are required"
+	if evidence.BaselinePeakMemoryBytes == 0 || evidence.CandidatePeakMemoryBytes == 0 {
+		decision.Reason = "TurboQuant peak memory evidence is required"
 		return decision
 	}
 	if evidence.BaselineActivePlusCacheMemoryBytes == 0 || evidence.CandidateActivePlusCacheMemoryBytes == 0 {
 		decision.Reason = "TurboQuant active+cache memory evidence is required"
+		return decision
+	}
+	if decision.WallSpeedup == 0 || decision.EnergySavingsRatio <= 0 || evidence.EstimatedPowerWatts <= 0 {
+		decision.Reason = "TurboQuant wall and estimated-energy evidence are required"
+		return decision
+	}
+	if peakMemorySavingsRatio <= 0 {
+		decision.Reason = "TurboQuant peak memory savings are required"
+		return decision
+	}
+	if decision.MemorySavingsRatio <= 0 {
+		decision.Reason = "TurboQuant active+cache memory savings are required"
 		return decision
 	}
 	if evidence.BaselineVisibleTokensPerSec <= 0 || evidence.CandidateVisibleTokensPerSec <= 0 {

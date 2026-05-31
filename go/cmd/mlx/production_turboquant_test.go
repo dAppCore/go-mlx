@@ -145,6 +145,52 @@ func TestRunCommand_ProductionTurboQuantCompareRejectsMissingSideBySideModes_Bad
 	}
 }
 
+func TestRunCommand_ProductionTurboQuantCompareRejectsActiveCacheRegression_Bad(t *testing.T) {
+	dir := t.TempDir()
+	baselinePath := core.PathJoin(dir, "paged.json")
+	candidatePath := core.PathJoin(dir, "turboquant.json")
+	fp16Path := core.PathJoin(dir, "fp16.json")
+	q8Path := core.PathJoin(dir, "q8.json")
+	kq8vq4Path := core.PathJoin(dir, "k-q8-v-q4.json")
+	baselineReport := productionTurboQuantCompareTestReport(memory.KVCacheModePaged)
+	candidateReport := productionTurboQuantCompareTestReport(memory.KVCacheModeTurboQuant)
+	candidateReport.Summary.ActivePlusCacheMemoryBytes = baselineReport.Summary.ActivePlusCacheMemoryBytes
+	writeProductionMTPCompareReport(t, baselinePath, baselineReport)
+	writeProductionMTPCompareReport(t, candidatePath, candidateReport)
+	writeProductionMTPCompareReport(t, fp16Path, productionTurboQuantCompareTestReport(memory.KVCacheModeFP16))
+	writeProductionMTPCompareReport(t, q8Path, productionTurboQuantCompareTestReport(memory.KVCacheModeQ8))
+	writeProductionMTPCompareReport(t, kq8vq4Path, productionTurboQuantCompareTestReport(memory.KVCacheModeKQ8VQ4))
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{
+		"production-turboquant-compare",
+		"-json",
+		"-turns", "10",
+		"-quality-match",
+		"-normal-context",
+		"-stress-context",
+		baselinePath,
+		candidatePath,
+		fp16Path,
+		q8Path,
+		kq8vq4Path,
+	}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"production_candidate": false`,
+		`active+cache memory savings`,
+		`"baseline_active_plus_cache_memory_bytes": 7500`,
+		`"candidate_active_plus_cache_memory_bytes": 7500`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
 func TestRunCommand_ProductionTurboQuantCompareRejectsLoadPolicyMismatch_Bad(t *testing.T) {
 	dir := t.TempDir()
 	baselinePath := core.PathJoin(dir, "paged.json")

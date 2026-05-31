@@ -229,5 +229,6 @@ Minimum pre-promotion checks:
   memory across unrelated cases.
 
 Promotion requires TurboQuant to beat the accepted retained-State baseline on
-memory or wall-clock without visible quality drift. It should not be promoted
-for a short-context decode number alone.
+active-plus-cache memory after metadata is counted, while also preserving
+retained wall/restore behaviour and visible quality. It should not be promoted
+for a short-context decode number or a peak-memory-only improvement.
