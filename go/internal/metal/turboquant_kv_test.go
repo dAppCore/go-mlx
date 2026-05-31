@@ -98,6 +98,30 @@ func TestTurboQuantKVCodec_EffectiveBitsCountsMask_Good(t *testing.T) {
 	}
 }
 
+func TestTurboQuantKVPageLayout_EstimatePayloadBytes_Good(t *testing.T) {
+	layout := validTurboQuantKVTestPageLayout()
+
+	estimate, err := layout.EstimatePayloadBytes()
+	if err != nil {
+		t.Fatalf("EstimatePayloadBytes() error = %v, want nil", err)
+	}
+	if estimate.PageVectors != 2048 || estimate.PageElements != 262144 {
+		t.Fatalf("estimate shape = %+v, want 2048 vectors and 262144 elements", estimate)
+	}
+	if estimate.KeyCentroidBytes != 114688 || estimate.ValueCentroidBytes != 114688 {
+		t.Fatalf("centroid bytes = key %d value %d, want 114688 each", estimate.KeyCentroidBytes, estimate.ValueCentroidBytes)
+	}
+	if estimate.KeyQJLSignBytes != 32768 || estimate.KeyNormBytes != 4096 || estimate.KeyResidualNormBytes != 4096 || estimate.ValueNormBytes != 4096 {
+		t.Fatalf("side-channel bytes = %+v, want QJL signs plus fp16 norms accounted", estimate)
+	}
+	if estimate.OutlierMaskBytes != 32 || estimate.TotalBytes != 274464 {
+		t.Fatalf("total bytes = %+v, want masks included and total 274464", estimate)
+	}
+	if estimate.FP16BaselineBytes != 1048576 || estimate.SavingsRatio <= 0 || estimate.SavingsRatio >= 0.27 {
+		t.Fatalf("baseline/savings = %+v, want visible saving against fp16 K+V payload", estimate)
+	}
+}
+
 func validTurboQuantKVTestPageLayout() TurboQuantKVPageLayout {
 	return TurboQuantKVPageLayout{
 		Version:     TurboQuantKVLayoutVersion,

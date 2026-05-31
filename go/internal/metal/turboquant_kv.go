@@ -127,6 +127,72 @@ type TurboQuantKVPageLayout struct {
 	Value       TurboQuantKVCodec `json:"value"`
 }
 
+// TurboQuantKVPagePayloadEstimate counts the compressed binary payload for one
+// K/V page. It includes the side channels needed by the paper path (QJL signs
+// and norms) so memory reports do not compare centroid bytes against fp16.
+type TurboQuantKVPagePayloadEstimate struct {
+	PageVectors          uint64  `json:"page_vectors"`
+	PageElements         uint64  `json:"page_elements"`
+	KeyCentroidBytes     uint64  `json:"key_centroid_bytes"`
+	KeyQJLSignBytes      uint64  `json:"key_qjl_sign_bytes,omitempty"`
+	KeyNormBytes         uint64  `json:"key_norm_bytes"`
+	KeyResidualNormBytes uint64  `json:"key_residual_norm_bytes,omitempty"`
+	ValueCentroidBytes   uint64  `json:"value_centroid_bytes"`
+	ValueNormBytes       uint64  `json:"value_norm_bytes"`
+	OutlierMaskBytes     uint64  `json:"outlier_mask_bytes,omitempty"`
+	TotalBytes           uint64  `json:"total_bytes"`
+	FP16BaselineBytes    uint64  `json:"fp16_baseline_bytes"`
+	SavingsRatio         float64 `json:"savings_ratio,omitempty"`
+}
+
+func (layout TurboQuantKVPageLayout) PageVectorCount() uint64 {
+	if !layout.Shape.Valid() || layout.PageTokens <= 0 {
+		return 0
+	}
+	return uint64(layout.Shape.Batch) * uint64(layout.Shape.Heads) * uint64(layout.PageTokens)
+}
+
+func (layout TurboQuantKVPageLayout) PageElementCount() uint64 {
+	vectors := layout.PageVectorCount()
+	if vectors == 0 || layout.Shape.HeadDim <= 0 {
+		return 0
+	}
+	return vectors * uint64(layout.Shape.HeadDim)
+}
+
+func (layout TurboQuantKVPageLayout) EstimatePayloadBytes() (TurboQuantKVPagePayloadEstimate, error) {
+	if err := layout.Validate(); err != nil {
+		return TurboQuantKVPagePayloadEstimate{}, err
+	}
+	vectors := layout.PageVectorCount()
+	elements := layout.PageElementCount()
+	estimate := TurboQuantKVPagePayloadEstimate{
+		PageVectors:        vectors,
+		PageElements:       elements,
+		KeyCentroidBytes:   turboQuantKVPackedBytes(vectors * layout.Key.centroidBitsPerVector(layout.Shape.HeadDim)),
+		KeyNormBytes:       vectors * turboQuantKVNormBytesPerVector,
+		ValueCentroidBytes: turboQuantKVPackedBytes(vectors * layout.Value.centroidBitsPerVector(layout.Shape.HeadDim)),
+		ValueNormBytes:     vectors * turboQuantKVNormBytesPerVector,
+		OutlierMaskBytes:   uint64(len(layout.Key.OutlierMask) + len(layout.Value.OutlierMask)),
+		FP16BaselineBytes:  elements * 2 * 2,
+	}
+	if layout.Key.Algorithm == TurboQuantKVAlgorithmProd {
+		estimate.KeyQJLSignBytes = turboQuantKVPackedBytes(elements)
+		estimate.KeyResidualNormBytes = vectors * turboQuantKVNormBytesPerVector
+	}
+	estimate.TotalBytes = estimate.KeyCentroidBytes +
+		estimate.KeyQJLSignBytes +
+		estimate.KeyNormBytes +
+		estimate.KeyResidualNormBytes +
+		estimate.ValueCentroidBytes +
+		estimate.ValueNormBytes +
+		estimate.OutlierMaskBytes
+	if estimate.FP16BaselineBytes > 0 {
+		estimate.SavingsRatio = float64(estimate.TotalBytes) / float64(estimate.FP16BaselineBytes)
+	}
+	return estimate, nil
+}
+
 func (layout TurboQuantKVPageLayout) Validate() error {
 	if layout.Version != TurboQuantKVLayoutVersion {
 		return core.NewError(core.Sprintf("mlx: TurboQuant KV layout version %d is unsupported", layout.Version))
@@ -165,6 +231,28 @@ func (layout TurboQuantKVPageLayout) Validate() error {
 		return err
 	}
 	return nil
+}
+
+const turboQuantKVNormBytesPerVector = 2
+
+func (codec TurboQuantKVCodec) centroidBitsPerVector(headDim int32) uint64 {
+	if headDim <= 0 || codec.NormalBits <= 0 {
+		return 0
+	}
+	outliers := uint64(codec.OutlierChannels(headDim))
+	normal := uint64(headDim) - outliers
+	outlierBits := codec.OutlierBits
+	if outlierBits <= 0 {
+		outlierBits = codec.NormalBits
+	}
+	return normal*uint64(codec.NormalBits) + outliers*uint64(outlierBits)
+}
+
+func turboQuantKVPackedBytes(bits uint64) uint64 {
+	if bits == 0 {
+		return 0
+	}
+	return (bits + 7) / 8
 }
 
 func turboQuantKVMaskBytes(headDim int32) int {
