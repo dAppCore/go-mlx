@@ -57,6 +57,7 @@ type ProductionMTPPromotionEvidence struct {
 	MTPAcceptedTokens             int           `json:"mtp_accepted_tokens,omitempty"`
 	MTPRejectedTokens             int           `json:"mtp_rejected_tokens,omitempty"`
 	MTPTargetVerifyCalls          int           `json:"mtp_target_verify_calls,omitempty"`
+	MTPDraftCalls                 int           `json:"mtp_draft_calls,omitempty"`
 }
 
 // ProductionMTPPromotionDecision is the audited promotion result. A false
@@ -108,6 +109,7 @@ func DefaultProductionMTPPolicy() ProductionMTPPolicy {
 			"mtp_accepted_tokens",
 			"mtp_rejected_tokens",
 			"mtp_target_verify_calls",
+			"mtp_draft_calls",
 			"quality_flags",
 		},
 	}
@@ -166,8 +168,8 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP target-verify and warm-decode throughput evidence are required"
 		return decision
 	}
-	if evidence.MTPProposedTokens <= 0 || evidence.MTPTargetVerifyCalls <= 0 {
-		decision.Reason = "MTP proposed-token and target-verify counters are required"
+	if evidence.MTPProposedTokens <= 0 || evidence.MTPTargetVerifyCalls <= 0 || evidence.MTPDraftCalls <= 0 {
+		decision.Reason = "MTP proposed-token, target-verify, and draft-call counters are required"
 		return decision
 	}
 	if evidence.MTPAcceptedTokens < 0 || evidence.MTPRejectedTokens < 0 || evidence.MTPAcceptedTokens+evidence.MTPRejectedTokens != evidence.MTPProposedTokens {

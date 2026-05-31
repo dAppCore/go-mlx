@@ -120,6 +120,7 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingThroughputAndCounters_Bad(
 	mtpReport.Summary.MTPAcceptedTokens = 0
 	mtpReport.Summary.MTPRejectedTokens = 0
 	mtpReport.Summary.MTPTargetVerifyCalls = 0
+	mtpReport.Summary.MTPDraftCalls = 0
 	writeProductionMTPCompareReport(t, targetPath, productionMTPCompareTestReport(false))
 	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
 	stdout, stderr := core.NewBuffer(), core.NewBuffer()
@@ -135,6 +136,7 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingThroughputAndCounters_Bad(
 		`"mtp_warm_decode_missing"`,
 		`"mtp_proposed_tokens_missing"`,
 		`"mtp_target_verify_calls_missing"`,
+		`"mtp_draft_calls_missing"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)

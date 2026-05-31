@@ -188,6 +188,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		MTPAcceptedTokens:             mtp.Summary.MTPAcceptedTokens,
 		MTPRejectedTokens:             mtp.Summary.MTPRejectedTokens,
 		MTPTargetVerifyCalls:          mtp.Summary.MTPTargetVerifyCalls,
+		MTPDraftCalls:                 mtp.Summary.MTPDraftCalls,
 	}
 	return productionMTPCompareReport{
 		Version:              1,
@@ -266,6 +267,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 	}
 	if mtp.Summary.MTPTargetVerifyCalls <= 0 {
 		flags = append(flags, "mtp_target_verify_calls_missing")
+	}
+	if mtp.Summary.MTPDraftCalls <= 0 {
+		flags = append(flags, "mtp_draft_calls_missing")
 	}
 	if mtp.Summary.MTPProposedTokens > 0 && mtp.Summary.MTPAcceptedTokens+mtp.Summary.MTPRejectedTokens != mtp.Summary.MTPProposedTokens {
 		flags = append(flags, "mtp_draft_accounting_mismatch")
@@ -437,7 +441,7 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.TargetOnlySummary.PeakMemoryBytes,
 		report.Evidence.TargetOnlyEnergyJoules,
 	))
-	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, peak memory %d bytes, energy %.1f J\n",
+	core.WriteString(stdout, core.Sprintf("mtp: %.1f visible tok/s, wall %s, restore %s, draft_tokens %d, target %.1f tok/s, proposed/accepted/rejected %d/%d/%d, target verifies %d, draft calls %d, peak memory %d bytes, energy %.1f J\n",
 		report.Evidence.MTPVisibleTokensPerSec,
 		report.Evidence.MTPWallDuration,
 		report.Evidence.MTPRestoreDuration,
@@ -447,6 +451,7 @@ func printProductionMTPCompareReport(stdout io.Writer, report productionMTPCompa
 		report.Evidence.MTPAcceptedTokens,
 		report.Evidence.MTPRejectedTokens,
 		report.Evidence.MTPTargetVerifyCalls,
+		report.Evidence.MTPDraftCalls,
 		report.MTPSummary.PeakMemoryBytes,
 		report.Evidence.MTPEnergyJoules,
 	))

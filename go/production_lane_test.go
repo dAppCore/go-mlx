@@ -269,6 +269,7 @@ func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *
 		"mtp_accepted_tokens",
 		"mtp_rejected_tokens",
 		"mtp_target_verify_calls",
+		"mtp_draft_calls",
 		"quality_flags",
 	} {
 		if !stringSliceContains(policy.RequiredMetrics, metric) {
@@ -305,6 +306,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if decision.EnableByDefault {
 		t.Fatalf("decision = %+v, want MTP rejected when slower than target-only", decision)
@@ -329,6 +331,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if unproven.EnableByDefault || !core.Contains(unproven.Reason, "retained") {
 		t.Fatalf("unproven decision = %+v, want retained-workflow gate", unproven)
@@ -352,6 +355,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if missingOperationalEvidence.EnableByDefault || !core.Contains(missingOperationalEvidence.Reason, "restore, memory, and energy") {
 		t.Fatalf("missing operational evidence decision = %+v, want restore/memory/energy gate", missingOperationalEvidence)
@@ -378,6 +382,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if missingDraftIdentity.EnableByDefault || !core.Contains(missingDraftIdentity.Reason, "draft model") {
 		t.Fatalf("missing draft identity decision = %+v, want draft model/schedule gate", missingDraftIdentity)
@@ -408,6 +413,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if missingDraftSweep.EnableByDefault || !core.Contains(missingDraftSweep.Reason, "draft-token sweep") {
 		t.Fatalf("missing draft-token sweep decision = %+v, want required 1/2/4 sweep gate", missingDraftSweep)
@@ -436,6 +442,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if missingThroughputBreakdown.EnableByDefault || !core.Contains(missingThroughputBreakdown.Reason, "target-verify and warm-decode") {
 		t.Fatalf("missing throughput breakdown decision = %+v, want target-verify/warm-decode gate", missingThroughputBreakdown)
@@ -464,9 +471,40 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
 		MTPProposedTokens:             40,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if missingAcceptanceAccounting.EnableByDefault || !core.Contains(missingAcceptanceAccounting.Reason, "accepted/rejected") {
 		t.Fatalf("missing acceptance accounting decision = %+v, want accepted/rejected counter gate", missingAcceptanceAccounting)
+	}
+
+	missingDraftCalls := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		MTPTargetTokensPerSec:         110,
+		MTPWarmDecodeTokensPerSec:     123,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+	})
+	if missingDraftCalls.EnableByDefault || !core.Contains(missingDraftCalls.Reason, "draft-call") {
+		t.Fatalf("missing draft-call decision = %+v, want draft-call counter gate", missingDraftCalls)
 	}
 
 	noAcceptedDraftTokens := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
@@ -493,6 +531,7 @@ func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *tes
 		MTPProposedTokens:             40,
 		MTPRejectedTokens:             40,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 	if noAcceptedDraftTokens.EnableByDefault || !core.Contains(noAcceptedDraftTokens.Reason, "accepted draft tokens") {
 		t.Fatalf("zero accepted draft decision = %+v, want accepted-token gate", noAcceptedDraftTokens)
@@ -527,6 +566,7 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		MTPAcceptedTokens:             30,
 		MTPRejectedTokens:             10,
 		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
 	})
 
 	if !decision.EnableByDefault {
