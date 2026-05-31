@@ -115,6 +115,50 @@ func BenchmarkTurboQuantKVReferencePage_EstimateKeys_D128_T8(b *testing.B) {
 	}
 }
 
+func BenchmarkTurboQuantKVReferencePage_PackedPayload_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		payload, err := page.PackedPayload()
+		if err != nil {
+			b.Fatalf("PackedPayload() error = %v", err)
+		}
+		if payload.UnpaddedByteCount() == 0 {
+			b.Fatal("payload bytes = 0, want packed page payload")
+		}
+	}
+}
+
+func BenchmarkTurboQuantKVReferencePage_DecodePayload_D128_T8(b *testing.B) {
+	layout := turboQuantKVReferenceBenchPageLayout()
+	keys := turboQuantKVReferenceBenchVector(int(layout.PageElementCount()))
+	values := turboQuantKVReferenceBenchQuery(int(layout.PageElementCount()))
+	page, err := EncodeTurboQuantKVReferencePage(keys, values, layout)
+	if err != nil {
+		b.Fatalf("EncodeTurboQuantKVReferencePage() error = %v", err)
+	}
+	payload, err := page.PackedPayload()
+	if err != nil {
+		b.Fatalf("PackedPayload() error = %v", err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		restored, err := DecodeTurboQuantKVReferencePagePayload(payload)
+		if err != nil {
+			b.Fatalf("DecodeTurboQuantKVReferencePagePayload() error = %v", err)
+		}
+		if len(restored.Keys) != int(layout.PageVectorCount()) {
+			b.Fatalf("restored keys = %d, want %d", len(restored.Keys), layout.PageVectorCount())
+		}
+	}
+}
+
 func turboQuantKVReferenceBenchMSECodec() TurboQuantKVCodec {
 	return TurboQuantKVCodec{
 		Algorithm:    TurboQuantKVAlgorithmMSE,
