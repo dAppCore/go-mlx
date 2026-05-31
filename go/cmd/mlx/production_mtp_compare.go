@@ -126,6 +126,10 @@ func runProductionMTPCompareCommand(args []string, stdout, stderr io.Writer) int
 }
 
 func readProductionMTPCompareDriverReport(path string) (driverProfileReport, error) {
+	return readProductionDriverProfileReport(path)
+}
+
+func readProductionDriverProfileReport(path string) (driverProfileReport, error) {
 	read := core.ReadFile(path)
 	if !read.OK {
 		return driverProfileReport{}, core.Errorf("read %s: %v", path, read.Value)
