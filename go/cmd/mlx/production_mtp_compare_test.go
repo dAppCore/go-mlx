@@ -9,6 +9,7 @@ import (
 
 	core "dappco.re/go"
 	mlx "dappco.re/go/mlx"
+	"dappco.re/go/mlx/memory"
 )
 
 func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
@@ -27,6 +28,8 @@ func TestRunCommand_ProductionMTPCompareJSON_Good(t *testing.T) {
 	for _, want := range []string{
 		`"same_model_path": true`,
 		`"same_prompt_shape": true`,
+		`"same_load_policy": true`,
+		`"cache_mode": "paged"`,
 		`"target_only_visible_tokens_per_sec": 100`,
 		`"mtp_visible_tokens_per_sec": 125`,
 		`"target_only_restore_duration": 100000000`,
@@ -102,6 +105,37 @@ func TestRunCommand_ProductionMTPCompareRejectsMissingDraftEvidence_Bad(t *testi
 		`"mtp_draft_model_missing"`,
 		`"mtp_draft_tokens_missing"`,
 		`"mtp_draft_schedule_missing"`,
+	} {
+		if !core.Contains(stdout.String(), want) {
+			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
+		}
+	}
+}
+
+func TestRunCommand_ProductionMTPCompareRejectsLoadPolicyMismatch_Bad(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := core.PathJoin(dir, "target.json")
+	mtpPath := core.PathJoin(dir, "mtp.json")
+	targetReport := productionMTPCompareTestReport(false)
+	mtpReport := productionMTPCompareTestReport(true)
+	targetReport.Load = productionMTPCompareTestLoadPolicy(memory.KVCacheModePaged)
+	mtpReport.Load = productionMTPCompareTestLoadPolicy(memory.KVCacheModePaged)
+	mtpReport.Load.CacheMode = string(memory.KVCacheModeTurboQuant)
+	writeProductionMTPCompareReport(t, targetPath, targetReport)
+	writeProductionMTPCompareReport(t, mtpPath, mtpReport)
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+
+	code := runCommand(context.Background(), []string{"production-mtp-compare", "-json", "-turns", "10", "-greedy-match", "-draft-token-sweeps", "1,2,4", targetPath, mtpPath}, stdout, stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 for an auditable rejection report; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		`"same_load_policy": false`,
+		`"load_policy_mismatch"`,
+		`"cache_mode": "paged"`,
+		`"cache_mode": "turboquant"`,
+		`"enable_by_default": false`,
 	} {
 		if !core.Contains(stdout.String(), want) {
 			t.Fatalf("stdout = %q, want %s", stdout.String(), want)
@@ -296,6 +330,7 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 			PowerWatts:  100,
 			TotalJoules: 1000,
 		},
+		Load: productionMTPCompareTestLoadPolicy(memory.KVCacheModePaged),
 	}
 	if mtp {
 		report.SpeculativeDraftModelPath = "/models/gemma4-e2b-assistant"
@@ -325,6 +360,18 @@ func productionMTPCompareTestReport(mtp bool) driverProfileReport {
 		}
 	}
 	return report
+}
+
+func productionMTPCompareTestLoadPolicy(mode memory.KVCacheMode) *tuneProfileLoadSettings {
+	return &tuneProfileLoadSettings{
+		ContextLength:        mlx.ProductionLaneLongContextLength,
+		PromptCache:          true,
+		PromptCacheMinTokens: 512,
+		CachePolicy:          string(memory.KVCacheFull),
+		CacheMode:            string(mode),
+		BatchSize:            1,
+		PrefillChunkSize:     mlx.ProductionLaneLongContextPrefillChunkSize,
+	}
 }
 
 func writeProductionMTPCompareReport(t *testing.T, path string, report driverProfileReport) {

@@ -19,6 +19,7 @@ type productionMTPCompareReport struct {
 	Policy               mlx.ProductionMTPPolicy            `json:"policy"`
 	SameModelPath        bool                               `json:"same_model_path"`
 	SamePromptShape      bool                               `json:"same_prompt_shape"`
+	SameLoadPolicy       bool                               `json:"same_load_policy"`
 	TargetOnlySummary    productionMTPCompareSummary        `json:"target_only_summary"`
 	MTPSummary           productionMTPCompareSummary        `json:"mtp_summary"`
 	Evidence             mlx.ProductionMTPPromotionEvidence `json:"evidence"`
@@ -36,6 +37,13 @@ type productionMTPCompareSummary struct {
 	MaxTokens                     int           `json:"max_tokens,omitempty"`
 	RequestedRuns                 int           `json:"requested_runs,omitempty"`
 	Chat                          bool          `json:"chat,omitempty"`
+	ContextLength                 int           `json:"context_length,omitempty"`
+	PromptCache                   bool          `json:"prompt_cache,omitempty"`
+	PromptCacheMinTokens          int           `json:"prompt_cache_min_tokens,omitempty"`
+	CachePolicy                   string        `json:"cache_policy,omitempty"`
+	CacheMode                     string        `json:"cache_mode,omitempty"`
+	BatchSize                     int           `json:"batch_size,omitempty"`
+	PrefillChunkSize              int           `json:"prefill_chunk_size,omitempty"`
 	SuccessfulRuns                int           `json:"successful_runs,omitempty"`
 	VisibleTokens                 int           `json:"visible_tokens,omitempty"`
 	GeneratedTokens               int           `json:"generated_tokens,omitempty"`
@@ -158,12 +166,13 @@ func readProductionDriverProfileReport(path string) (driverProfileReport, error)
 func newProductionMTPCompareReport(targetPath string, target driverProfileReport, mtpPath string, mtp driverProfileReport, turns int, greedyMatch bool, qualityFlags string, observedDraftSweeps []int, powerWatts float64) productionMTPCompareReport {
 	sameModel := productionMTPCompareSameModelPath(target, mtp)
 	sameShape := productionMTPCompareSamePromptShape(target, mtp)
+	sameLoad := productionMTPCompareSameLoadPolicy(target, mtp)
 	mtpDraftSchedule := productionMTPCompareDraftTokenSchedule(mtp)
 	policy := mlx.DefaultProductionMTPPolicy()
-	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
+	flags := productionMTPCompareQualityFlags(qualityFlags, sameModel, sameShape, sameLoad, target, mtp, mtpDraftSchedule, observedDraftSweeps, policy.RequiredDraftTokenSweeps, powerWatts)
 	evidencePowerWatts := productionMTPComparePowerWatts(target, mtp, powerWatts)
 	evidence := mlx.ProductionMTPPromotionEvidence{
-		RetainedWorkflow:              sameModel && sameShape,
+		RetainedWorkflow:              sameModel && sameShape && sameLoad,
 		Turns:                         turns,
 		GreedyOutputMatches:           greedyMatch,
 		QualityFlags:                  flags,
@@ -198,6 +207,7 @@ func newProductionMTPCompareReport(targetPath string, target driverProfileReport
 		Policy:               policy,
 		SameModelPath:        sameModel,
 		SamePromptShape:      sameShape,
+		SameLoadPolicy:       sameLoad,
 		TargetOnlySummary:    productionMTPCompareSummaryFromDriver(target, powerWatts),
 		MTPSummary:           productionMTPCompareSummaryFromDriver(mtp, powerWatts),
 		Evidence:             evidence,
@@ -219,7 +229,20 @@ func productionMTPCompareSamePromptShape(target, mtp driverProfileReport) bool {
 		target.Chat == mtp.Chat
 }
 
-func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
+func productionMTPCompareSameLoadPolicy(target, mtp driverProfileReport) bool {
+	if target.Load == nil || mtp.Load == nil {
+		return false
+	}
+	return target.Load.ContextLength == mtp.Load.ContextLength &&
+		target.Load.PromptCache == mtp.Load.PromptCache &&
+		target.Load.PromptCacheMinTokens == mtp.Load.PromptCacheMinTokens &&
+		target.Load.CachePolicy == mtp.Load.CachePolicy &&
+		target.Load.CacheMode == mtp.Load.CacheMode &&
+		target.Load.BatchSize == mtp.Load.BatchSize &&
+		target.Load.PrefillChunkSize == mtp.Load.PrefillChunkSize
+}
+
+func productionMTPCompareQualityFlags(raw string, sameModel, sameShape, sameLoad bool, target, mtp driverProfileReport, mtpDraftSchedule, observedDraftSweeps, requiredDraftSweeps []int, powerWatts float64) []string {
 	flags := make([]string, 0, 24)
 	if trimmed := core.Trim(raw); trimmed != "" {
 		for _, part := range core.Split(trimmed, ",") {
@@ -234,6 +257,9 @@ func productionMTPCompareQualityFlags(raw string, sameModel, sameShape bool, tar
 	}
 	if !sameShape {
 		flags = append(flags, "prompt_shape_mismatch")
+	}
+	if !sameLoad {
+		flags = append(flags, "load_policy_mismatch")
 	}
 	if core.Trim(target.SpeculativeDraftModelPath) != "" || target.SpeculativeDraftTokens > 0 || len(productionMTPCompareDraftTokenSchedule(target)) > 0 {
 		flags = append(flags, "target_only_has_speculative_draft")
@@ -386,7 +412,7 @@ func productionMTPComparePowerWatts(first, second driverProfileReport, fallbackP
 }
 
 func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatts float64) productionMTPCompareSummary {
-	return productionMTPCompareSummary{
+	summary := productionMTPCompareSummary{
 		ModelPath:                     report.ModelPath,
 		SpeculativeDraftModelPath:     report.SpeculativeDraftModelPath,
 		SpeculativeDraftTokens:        report.SpeculativeDraftTokens,
@@ -420,6 +446,16 @@ func productionMTPCompareSummaryFromDriver(report driverProfileReport, powerWatt
 		MTPTargetVerifyCalls:          report.Summary.MTPTargetVerifyCalls,
 		MTPDraftCalls:                 report.Summary.MTPDraftCalls,
 	}
+	if report.Load != nil {
+		summary.ContextLength = report.Load.ContextLength
+		summary.PromptCache = report.Load.PromptCache
+		summary.PromptCacheMinTokens = report.Load.PromptCacheMinTokens
+		summary.CachePolicy = report.Load.CachePolicy
+		summary.CacheMode = report.Load.CacheMode
+		summary.BatchSize = report.Load.BatchSize
+		summary.PrefillChunkSize = report.Load.PrefillChunkSize
+	}
+	return summary
 }
 
 func productionMTPCompareDraftTokenSchedule(report driverProfileReport) []int {
