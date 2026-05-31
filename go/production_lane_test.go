@@ -4,6 +4,7 @@ package mlx
 
 import (
 	"testing"
+	"time"
 
 	core "dappco.re/go"
 	"dappco.re/go/mlx/memory"
@@ -148,5 +149,98 @@ func TestProductionLane_DefaultGemma4FastRuntimeGates_Good(t *testing.T) {
 		if seen[rejected] {
 			t.Fatalf("DefaultGemma4FastRuntimeGates() = %v, should exclude rejected gate %s", gates, rejected)
 		}
+	}
+}
+
+func TestProductionLane_DefaultMTPPolicy_OptInUntilRetainedBenchmarkWin_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	if policy.TargetModelID != OfficialGemma4E2BTargetLock().ModelID || policy.AssistantModelID != OfficialGemma4E2BAssistantLock().ModelID {
+		t.Fatalf("policy identity = %+v, want official target+assistant IDs", policy)
+	}
+	if policy.EnabledByDefault {
+		t.Fatalf("EnabledByDefault = true, want MTP opt-in until retained benchmark promotion")
+	}
+	if policy.DefaultDraftTokens != 2 || policy.MinimumRetainedTurns != 10 {
+		t.Fatalf("policy defaults = draft:%d turns:%d, want draft=2 and retained 10-turn evidence", policy.DefaultDraftTokens, policy.MinimumRetainedTurns)
+	}
+	if !policy.RequiresGreedyParity || !policy.RequiresRetainedWorkflow || policy.RequiresSideBySideBenchmark == false {
+		t.Fatalf("policy requirements = %+v, want side-by-side retained greedy-parity benchmark", policy)
+	}
+	for _, metric := range []string{
+		"target_only_visible_tokens_per_sec",
+		"mtp_visible_tokens_per_sec",
+		"target_only_wall_duration",
+		"mtp_wall_duration",
+		"mtp_proposed_tokens",
+		"mtp_accepted_tokens",
+		"mtp_rejected_tokens",
+		"quality_flags",
+	} {
+		if !stringSliceContains(policy.RequiredMetrics, metric) {
+			t.Fatalf("RequiredMetrics = %v, missing %q", policy.RequiredMetrics, metric)
+		}
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_RejectsSlowerOrUnproven_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        95,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               11 * time.Second,
+		MTPProposedTokens:             40,
+		MTPTargetVerifyCalls:          20,
+	})
+	if decision.EnableByDefault {
+		t.Fatalf("decision = %+v, want MTP rejected when slower than target-only", decision)
+	}
+	if !core.Contains(decision.Reason, "faster") {
+		t.Fatalf("decision reason = %q, want faster-than-target-only failure", decision.Reason)
+	}
+
+	unproven := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              false,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        120,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		MTPProposedTokens:             40,
+		MTPTargetVerifyCalls:          20,
+	})
+	if unproven.EnableByDefault || !core.Contains(unproven.Reason, "retained") {
+		t.Fatalf("unproven decision = %+v, want retained-workflow gate", unproven)
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+	})
+
+	if !decision.EnableByDefault {
+		t.Fatalf("decision = %+v, want MTP promotion when retained wall and visible speed both win", decision)
+	}
+	if decision.WallSpeedup <= 1 || decision.VisibleSpeedup <= 1 {
+		t.Fatalf("speedups = wall:%f visible:%f, want both > 1", decision.WallSpeedup, decision.VisibleSpeedup)
 	}
 }
