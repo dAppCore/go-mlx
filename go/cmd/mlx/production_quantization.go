@@ -14,12 +14,14 @@ import (
 type productionQuantizationReport struct {
 	Version int `json:"version"`
 
-	Policy    mlx.ProductionQuantizationPolicy     `json:"policy"`
-	PackLocks []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
-	MTPPolicy mlx.ProductionMTPPolicy              `json:"mtp_policy"`
-	Input     productionQuantizationInputReport    `json:"input"`
-	Choice    mlx.ProductionQuantizationChoice     `json:"choice"`
-	Command   string                               `json:"command,omitempty"`
+	Policy      mlx.ProductionQuantizationPolicy     `json:"policy"`
+	SourceLocks []mlx.OfficialGemma4E2BLock          `json:"official_source_locks"`
+	PackLocks   []mlx.ProductionQuantizationPackLock `json:"quantized_target_locks"`
+	MTPPolicy   mlx.ProductionMTPPolicy              `json:"mtp_policy"`
+	TurboQuant  mlx.ProductionTurboQuantPolicy       `json:"turboquant_policy"`
+	Input       productionQuantizationInputReport    `json:"input"`
+	Choice      mlx.ProductionQuantizationChoice     `json:"choice"`
+	Command     string                               `json:"command,omitempty"`
 }
 
 type productionQuantizationInputReport struct {
@@ -95,13 +97,15 @@ func runProductionQuantizationCommand(args []string, stdout, stderr io.Writer) i
 		ConstrainedFallback: *constrainedFallback,
 	}
 	report := productionQuantizationReport{
-		Version:   1,
-		Policy:    mlx.DefaultProductionQuantizationPolicy(),
-		PackLocks: mlx.DefaultProductionQuantizationPackLocks(),
-		MTPPolicy: mlx.DefaultProductionMTPPolicy(),
-		Input:     productionQuantizationInput(input),
-		Choice:    mlx.SelectProductionQuantizationTier(input),
-		Command:   "production-quantization",
+		Version:     1,
+		Policy:      mlx.DefaultProductionQuantizationPolicy(),
+		SourceLocks: mlx.DefaultOfficialGemma4E2BLocks(),
+		PackLocks:   mlx.DefaultProductionQuantizationPackLocks(),
+		MTPPolicy:   mlx.DefaultProductionMTPPolicy(),
+		TurboQuant:  mlx.DefaultProductionTurboQuantPolicy(),
+		Input:       productionQuantizationInput(input),
+		Choice:      mlx.SelectProductionQuantizationTier(input),
+		Command:     "production-quantization",
 	}
 
 	if *jsonOut {
@@ -171,6 +175,9 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		report.Input.ContextLength,
 	))
 	core.WriteString(stdout, "  ladder: q8 quality, q6 default, q4 constrained fallback\n")
+	for _, lock := range report.SourceLocks {
+		core.WriteString(stdout, core.Sprintf("  official source: %s %s@%s\n", lock.Role, lock.ModelID, lock.Revision))
+	}
 	for _, lock := range report.PackLocks {
 		core.WriteString(stdout, core.Sprintf("  locked pack: q%d %s@%s\n", lock.QuantBits, lock.ModelID, lock.Revision))
 	}
@@ -179,5 +186,12 @@ func printProductionQuantizationReport(stdout io.Writer, report productionQuanti
 		report.MTPPolicy.EnabledByDefault,
 		report.MTPPolicy.DefaultDraftTokens,
 		report.MTPPolicy.MinimumRetainedTurns,
+	))
+	core.WriteString(stdout, core.Sprintf(
+		"  turboquant: default=%v, cache=%s, explicit_opt_in=%v, stress_ctx=%d\n",
+		report.TurboQuant.EnabledByDefault,
+		report.TurboQuant.CacheMode,
+		report.TurboQuant.RequiresExplicitOptIn,
+		report.TurboQuant.StressContextLength,
 	))
 }
