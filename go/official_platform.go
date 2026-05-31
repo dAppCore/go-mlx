@@ -66,5 +66,14 @@ func DefaultOfficialPlatformAPILocks() []OfficialPlatformAPILock {
 			APIClass:        "metal-machine-learning",
 			Notes:           "Metal 4 machine-learning passes and tensor resources are the relevant Apple API family for future native ML integration.",
 		},
+		{
+			Name:            "Metal feature set tables",
+			MinimumOS:       "macOS 26.0",
+			SDK:             "Metal 4",
+			SourceCheckedAt: officialPlatformSourceCheckedAt,
+			SourceURL:       "https://developer.apple.com/metal/capabilities/",
+			APIClass:        "metal-4-feature-availability",
+			Notes:           "Apple's feature tables list command allocators, decoupled command queues, dedicated compilation contexts, machine-learning encoding, and tensors as Metal 4 feature-family entries.",
+		},
 	}
 }

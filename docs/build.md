@@ -109,6 +109,7 @@ Reference links:
 - [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
 - [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
 - [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes)
+- [Metal feature set tables](https://developer.apple.com/metal/capabilities/)
 
 ## Build Tags
 

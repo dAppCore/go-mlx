@@ -41,6 +41,7 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
 		`"source_url": "https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api"`,
 		`"source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes"`,
+		`"source_url": "https://developer.apple.com/metal/capabilities/"`,
 		`"quantized_target_locks": [`,
 		`"revision": "48ef0737faea4e72556670e49da0ba421027a545"`,
 		`"revision": "40d43b05f94ee798c0e40fe19fcd9ef49928486b"`,

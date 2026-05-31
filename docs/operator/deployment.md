@@ -35,7 +35,7 @@ Once Path B bundling lands, the metallib disappears into the binary and you ship
 
 **darwin/arm64 only, macOS 26.0+.** Apple Silicon M1/M2/M3/M4/M5. The CGO files carry `//go:build darwin && arm64`. The 26.0 operating-system floor is intentional: the native path is built against the Metal 4 API generation shipped with macOS Tahoe 26, including the lower-overhead command API, explicit compilation API, tensors, and machine-learning passes documented by Apple. On any other platform the binary will not build, and pre-built `lthn-mlx` artefacts are not produced for Linux or Intel macOS. If you need inference on a non-Apple host, you want a different backend (e.g. `go-rocm` for AMD GPUs); the surface is the same go-inference interfaces.
 
-References: [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes), [What's new in Metal](https://developer.apple.com/metal/whats-new/), [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api), [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api), and [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes).
+References: [macOS Tahoe 26 release notes](https://developer.apple.com/documentation/macos-release-notes/macos-26-release-notes), [What's new in Metal](https://developer.apple.com/metal/whats-new/), [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api), [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api), [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes), and [Metal feature set tables](https://developer.apple.com/metal/capabilities/).
 
 ## The serve command
 
@@ -228,6 +228,7 @@ For tuning the Metal cache and memory limits (the runtime-side knobs that affect
 - [Understanding the Metal 4 core API](https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api)
 - [Using the Metal 4 compilation API](https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api)
 - [Metal machine learning passes](https://developer.apple.com/documentation/metal/machine-learning-passes)
+- [Metal feature set tables](https://developer.apple.com/metal/capabilities/)
 
 ## Cross-references
 

@@ -36,6 +36,7 @@ func TestRunCommand_OfficialGemma4LocksJSON_Good(t *testing.T) {
 		`"platform_api_locks": [`,
 		`"minimum_os": "macOS 26.0"`,
 		`"source_url": "https://developer.apple.com/metal/whats-new/"`,
+		`"source_url": "https://developer.apple.com/metal/capabilities/"`,
 		`"licence": "apache-2.0"`,
 		`"gated": false`,
 		`"config_sha256":`,

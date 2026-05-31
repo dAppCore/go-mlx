@@ -31,6 +31,7 @@ func TestOfficialPlatform_DefaultAPILocks_Good(t *testing.T) {
 		"https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api",
 		"https://developer.apple.com/documentation/metal/using-the-metal-4-compilation-api",
 		"https://developer.apple.com/documentation/metal/machine-learning-passes",
+		"https://developer.apple.com/metal/capabilities/",
 	} {
 		if !seen[want] {
 			t.Fatalf("locks = %+v, want source URL %s", locks, want)

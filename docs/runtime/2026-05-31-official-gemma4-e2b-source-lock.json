@@ -245,6 +245,15 @@
       "source_url": "https://developer.apple.com/documentation/metal/machine-learning-passes",
       "api_class": "metal-machine-learning",
       "notes": "Metal 4 machine-learning passes and tensor resources are the relevant Apple API family for future native ML integration."
+    },
+    {
+      "name": "Metal feature set tables",
+      "minimum_os": "macOS 26.0",
+      "sdk": "Metal 4",
+      "source_checked_at": "2026-05-31",
+      "source_url": "https://developer.apple.com/metal/capabilities/",
+      "api_class": "metal-4-feature-availability",
+      "notes": "Apple's feature tables list command allocators, decoupled command queues, dedicated compilation contexts, machine-learning encoding, and tensors as Metal 4 feature-family entries."
     }
   ],
   "validation_gates": [
