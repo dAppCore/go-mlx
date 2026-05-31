@@ -902,6 +902,13 @@ func Greater(a, b *Array) *Array {
 	return out
 }
 
+// Equal returns element-wise a == b as a bool array.
+func Equal(a, b *Array) *Array {
+	out := newArray("EQUAL", a, b)
+	C.mlx_equal(&out.ctx, a.ctx, b.ctx, DefaultStream().ctx)
+	return out
+}
+
 // greaterScalar returns element-wise a > scalar.
 //
 // Routes through mlx_greater_scalar_inline — single cgo crossing covers

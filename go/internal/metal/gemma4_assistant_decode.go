@@ -30,6 +30,7 @@ var (
 	errAsstOrderedNeedTokenOrdering  = core.NewError("gemma4.assistant ordered embeddings require masked_embedding.token_ordering")
 	errAsstOrderedTopKInvalid        = core.NewError("gemma4.assistant ordered embeddings centroid_intermediate_top_k is invalid")
 	errAsstOrderedVocabInvalid       = core.NewError("gemma4.assistant ordered embeddings vocab_size is invalid")
+	errAsstOrderedAllCandidatesMuted = core.NewError("gemma4.assistant ordered embeddings produced no unsuppressed candidate")
 	errAsstDraftStepTokenInvalid     = core.NewError("gemma4.assistant draft step token is invalid")
 	errAsstDraftStepNeedTargetCaches = core.NewError("gemma4.assistant draft step requires populated target caches")
 	errAsstDraftStepNeedPair         = core.NewError("gemma4.assistant draft step requires a validated pair")
@@ -126,67 +127,10 @@ func (targetKV gemma4AssistantTargetKV) free() {
 // DraftStep proposes one token from the assistant using the target model's
 // existing K/V cache streams and the previous target-backbone hidden state.
 func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Array, targetCaches []Cache) (*Gemma4AssistantDraftStepResult, error) {
-	if pair == nil || pair.Target == nil || pair.Assistant == nil {
-		return nil, errAsstDraftStepNeedPair
-	}
-	if lastToken < 0 {
-		return nil, errAsstDraftStepTokenInvalid
-	}
-	if previousHidden == nil || !previousHidden.Valid() {
-		return nil, errAsstDraftStepHiddenInvalid
-	}
-	if len(targetCaches) == 0 {
-		return nil, errAsstDraftStepNeedTargetCaches
-	}
-	if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
-		return nil, err
-	}
-
-	targetKVs, err := pair.targetKVByLayerType(targetCaches)
+	normed, hidden, err := pair.draftStepActivations(lastToken, previousHidden, targetCaches)
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		for _, targetKV := range targetKVs {
-			targetKV.free()
-		}
-	}()
-
-	tokenInput := fromSingleInt32Matrix(lastToken)
-	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
-	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
-	Free(tokenInput, tokenEmbedding)
-
-	backboneHidden, ownBackboneHidden, err := gemma4AssistantBackboneHidden(previousHidden, pair.Assistant.BackboneHiddenSize)
-	if err != nil {
-		Free(scaledTokenEmbedding)
-		return nil, err
-	}
-	combined := concatenate2(scaledTokenEmbedding, backboneHidden, 2)
-	Free(scaledTokenEmbedding)
-	if ownBackboneHidden {
-		Free(backboneHidden)
-	}
-
-	h := pair.Assistant.PreProjection.Forward(combined)
-	Free(combined)
-	for _, layer := range pair.Assistant.Layers {
-		targetKV, ok := targetKVs[layer.LayerType]
-		if !ok || !targetKV.kv.hasState() {
-			Free(h)
-			return nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layer.LayerType)
-		}
-		next, err := layer.forwardDraftStep(h, targetKV.kv, pair.Assistant.Cfg)
-		Free(h)
-		if err != nil {
-			return nil, err
-		}
-		h = next
-	}
-
-	normed := pair.Assistant.Norm.Forward(h, pair.Assistant.Cfg.RMSNormEps)
-	Free(h)
-	hidden := pair.Assistant.PostProjection.Forward(normed)
 	logits, err := pair.Assistant.outputLogits(normed)
 	Free(normed)
 	if err != nil {
@@ -202,6 +146,101 @@ func (pair *Gemma4AssistantPair) DraftStep(lastToken int32, previousHidden *Arra
 	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
 }
 
+func (pair *Gemma4AssistantPair) draftStepGreedy(lastToken int32, previousHidden *Array, targetCaches []Cache, suppressTokens []int32) (*Gemma4AssistantDraftStepResult, error) {
+	normed, hidden, err := pair.draftStepActivations(lastToken, previousHidden, targetCaches)
+	if err != nil {
+		return nil, err
+	}
+	if pair.Assistant.UseOrderedEmbeddings {
+		token, err := pair.Assistant.orderedEmbeddingGreedyToken(normed, suppressTokens)
+		Free(normed)
+		if err != nil {
+			Free(hidden)
+			return nil, err
+		}
+		return &Gemma4AssistantDraftStepResult{Token: token, Hidden: hidden}, nil
+	}
+
+	logits, err := pair.Assistant.outputLogits(normed)
+	Free(normed)
+	if err != nil {
+		Free(hidden)
+		return nil, err
+	}
+	if pair.Assistant.Cfg.FinalLogitSoftcapping > 0 {
+		softcapped := logitSoftcap(logits, pair.Assistant.Cfg.FinalLogitSoftcapping)
+		Free(logits)
+		logits = softcapped
+	}
+	token := Argmax(logits, -1, false)
+	return &Gemma4AssistantDraftStepResult{Logits: logits, Token: token, Hidden: hidden}, nil
+}
+
+func (pair *Gemma4AssistantPair) draftStepActivations(lastToken int32, previousHidden *Array, targetCaches []Cache) (*Array, *Array, error) {
+	if pair == nil || pair.Target == nil || pair.Assistant == nil {
+		return nil, nil, errAsstDraftStepNeedPair
+	}
+	if lastToken < 0 {
+		return nil, nil, errAsstDraftStepTokenInvalid
+	}
+	if previousHidden == nil || !previousHidden.Valid() {
+		return nil, nil, errAsstDraftStepHiddenInvalid
+	}
+	if len(targetCaches) == 0 {
+		return nil, nil, errAsstDraftStepNeedTargetCaches
+	}
+	if err := validateGemma4AssistantPair(pair.Target, pair.Assistant); err != nil {
+		return nil, nil, err
+	}
+
+	targetKVs, err := pair.targetKVByLayerType(targetCaches)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		for _, targetKV := range targetKVs {
+			targetKV.free()
+		}
+	}()
+
+	tokenInput := fromSingleInt32Matrix(lastToken)
+	tokenEmbedding := pair.Target.EmbedTokens.Forward(tokenInput)
+	scaledTokenEmbedding := MulScalar(tokenEmbedding, pair.Target.Cfg.EmbeddingScale)
+	Free(tokenInput, tokenEmbedding)
+
+	backboneHidden, ownBackboneHidden, err := gemma4AssistantBackboneHidden(previousHidden, pair.Assistant.BackboneHiddenSize)
+	if err != nil {
+		Free(scaledTokenEmbedding)
+		return nil, nil, err
+	}
+	combined := concatenate2(scaledTokenEmbedding, backboneHidden, 2)
+	Free(scaledTokenEmbedding)
+	if ownBackboneHidden {
+		Free(backboneHidden)
+	}
+
+	h := pair.Assistant.PreProjection.Forward(combined)
+	Free(combined)
+	for _, layer := range pair.Assistant.Layers {
+		targetKV, ok := targetKVs[layer.LayerType]
+		if !ok || !targetKV.kv.hasState() {
+			Free(h)
+			return nil, nil, core.NewError("gemma4.assistant draft step missing target K/V stream for " + layer.LayerType)
+		}
+		next, err := layer.forwardDraftStep(h, targetKV.kv, pair.Assistant.Cfg)
+		Free(h)
+		if err != nil {
+			return nil, nil, err
+		}
+		h = next
+	}
+
+	normed := pair.Assistant.Norm.Forward(h, pair.Assistant.Cfg.RMSNormEps)
+	Free(h)
+	hidden := pair.Assistant.PostProjection.Forward(normed)
+	return normed, hidden, nil
+}
+
 func (m *Gemma4AssistantModel) outputLogits(hiddenStates *Array) (*Array, error) {
 	if m == nil || !m.UseOrderedEmbeddings {
 		return m.EmbedTokens.AsLinear().Forward(hiddenStates), nil
@@ -209,7 +248,108 @@ func (m *Gemma4AssistantModel) outputLogits(hiddenStates *Array) (*Array, error)
 	return m.orderedEmbeddingLogits(hiddenStates)
 }
 
+type gemma4AssistantOrderedEmbeddingCandidates struct {
+	batch         int32
+	seqLen        int32
+	vocabSize     int32
+	tokenCount    int32
+	selectedCount int32
+	selectedFlat  *Array
+	sparseLogits  *Array
+}
+
+func (c *gemma4AssistantOrderedEmbeddingCandidates) free() {
+	if c == nil {
+		return
+	}
+	Free(c.selectedFlat, c.sparseLogits)
+	c.selectedFlat = nil
+	c.sparseLogits = nil
+}
+
 func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Array, error) {
+	candidates, err := m.orderedEmbeddingCandidates(hiddenStates)
+	if err != nil {
+		return nil, err
+	}
+	defer candidates.free()
+
+	fillScalar := FromValue(float32(gemma4AssistantLogitsFloor))
+	if dtype := candidates.sparseLogits.Dtype(); dtype != DTypeFloat32 {
+		typedFill := AsType(fillScalar, dtype)
+		Free(fillScalar)
+		fillScalar = typedFill
+	}
+	fullFlat := BroadcastTo(fillScalar, []int32{candidates.tokenCount, candidates.vocabSize})
+	Free(fillScalar)
+	scattered := PutAlongAxis(fullFlat, candidates.selectedFlat, candidates.sparseLogits, -1)
+	Free(fullFlat)
+	logits := Reshape3(scattered, candidates.batch, candidates.seqLen, candidates.vocabSize)
+	Free(scattered)
+	return logits, nil
+}
+
+func (m *Gemma4AssistantModel) orderedEmbeddingGreedyToken(hiddenStates *Array, suppressTokens []int32) (*Array, error) {
+	candidates, err := m.orderedEmbeddingCandidates(hiddenStates)
+	if err != nil {
+		return nil, err
+	}
+	defer candidates.free()
+
+	sparseLogits := candidates.sparseLogits
+	filteredLogits, filteredOwned, err := suppressOrderedEmbeddingSparseLogits(candidates.selectedFlat, sparseLogits, suppressTokens)
+	if err != nil {
+		return nil, err
+	}
+	if filteredOwned {
+		sparseLogits = filteredLogits
+		defer Free(filteredLogits)
+	}
+
+	indices := Argmax(sparseLogits, -1, true)
+	tokenFlat := TakeAlongAxis(candidates.selectedFlat, indices, -1)
+	Free(indices)
+	token := Reshape2(tokenFlat, candidates.batch, candidates.seqLen)
+	Free(tokenFlat)
+	return token, nil
+}
+
+func suppressOrderedEmbeddingSparseLogits(selectedFlat, sparseLogits *Array, suppressTokens []int32) (*Array, bool, error) {
+	if len(suppressTokens) == 0 {
+		return sparseLogits, false, nil
+	}
+
+	scratchPtr := suppressIDsScratch.Get().(*[]int32)
+	scratch := (*scratchPtr)[:0]
+	if cap(scratch) < len(suppressTokens) {
+		scratch = make([]int32, 0, len(suppressTokens))
+	}
+	for _, id := range suppressTokens {
+		if id >= 0 {
+			scratch = append(scratch, id)
+		}
+	}
+	if len(scratch) == 0 {
+		*scratchPtr = scratch
+		suppressIDsScratch.Put(scratchPtr)
+		return sparseLogits, false, nil
+	}
+
+	suppressIDs := FromValues(scratch, 1, 1, len(scratch))
+	expandedSelected := ExpandDims(selectedFlat, -1)
+	matches := Equal(expandedSelected, suppressIDs)
+	Free(expandedSelected, suppressIDs)
+	suppressed := AnyAxis(matches, -1, false)
+	Free(matches)
+	filtered := whereScalarArray(suppressed, float32(gemma4AssistantLogitsFloor), sparseLogits)
+	Free(suppressed)
+
+	*scratchPtr = scratch
+	suppressIDsScratch.Put(scratchPtr)
+	return filtered, true, nil
+}
+
+func (m *Gemma4AssistantModel) orderedEmbeddingCandidates(hiddenStates *Array) (*gemma4AssistantOrderedEmbeddingCandidates, error) {
 	if m.MaskedCentroids == nil || m.MaskedCentroids.Weight == nil || !m.MaskedCentroids.Weight.Valid() {
 		return nil, errAsstOrderedNeedCentroids
 	}
@@ -272,20 +412,15 @@ func (m *Gemma4AssistantModel) orderedEmbeddingLogits(hiddenStates *Array) (*Arr
 	products := Mul(expandedHidden, candidateEmbeddings)
 	sparseLogits := Sum(products, -1, false)
 	Free(flatHidden, candidateEmbeddings, expandedHidden, products)
-
-	fillScalar := FromValue(float32(gemma4AssistantLogitsFloor))
-	if dtype := sparseLogits.Dtype(); dtype != DTypeFloat32 {
-		typedFill := AsType(fillScalar, dtype)
-		Free(fillScalar)
-		fillScalar = typedFill
-	}
-	fullFlat := BroadcastTo(fillScalar, []int32{tokenCount, vocabSize})
-	Free(fillScalar)
-	scattered := PutAlongAxis(fullFlat, selectedFlat, sparseLogits, -1)
-	Free(fullFlat, selectedFlat, sparseLogits)
-	logits := Reshape3(scattered, batch, seqLen, vocabSize)
-	Free(scattered)
-	return logits, nil
+	return &gemma4AssistantOrderedEmbeddingCandidates{
+		batch:         batch,
+		seqLen:        seqLen,
+		vocabSize:     vocabSize,
+		tokenCount:    tokenCount,
+		selectedCount: selectedCount,
+		selectedFlat:  selectedFlat,
+		sparseLogits:  sparseLogits,
+	}, nil
 }
 
 // DraftBlock chains assistant MTP steps and returns a CPU-visible draft token
@@ -305,7 +440,7 @@ func (pair *Gemma4AssistantPair) DraftBlockWithSuppression(lastToken int32, prev
 	currentHidden := previousHidden
 	ownsCurrentHidden := false
 	for len(tokens) < maxDraftTokens {
-		step, err := pair.DraftStep(currentToken, currentHidden, targetCaches)
+		step, err := pair.draftStepGreedy(currentToken, currentHidden, targetCaches, suppressTokens)
 		if ownsCurrentHidden {
 			Free(currentHidden)
 			currentHidden = nil
@@ -343,6 +478,9 @@ func gemma4AssistantDraftStepToken(step *Gemma4AssistantDraftStepResult, suppres
 	id := values[0]
 	if !tokenIDSuppressed(id, suppressTokens) {
 		return id, nil
+	}
+	if step.Logits == nil || !step.Logits.Valid() {
+		return 0, errAsstOrderedAllCandidatesMuted
 	}
 	replacement, replacementID, _, err := sampleTokenIDWithSuppressionGuard(step.Logits, greedy{}, suppressTokens, false)
 	if err != nil {

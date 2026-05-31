@@ -124,7 +124,13 @@ func suppressTokenLogits(logits *Array, ids []int32) *Array {
 	slices.Sort(scratch)
 	valid := slices.Compact(scratch)
 
-	idx := FromValues(valid, 1, len(valid))
+	var idxShape [maxTensorRank]int
+	rank := logits.NumDims()
+	for i := 0; i < rank; i++ {
+		idxShape[i] = 1
+	}
+	idxShape[rank-1] = len(valid)
+	idx := FromValues(valid, idxShape[:rank]...)
 	inf := FromValue(float32(math.Inf(-1)))
 	if dtype := logits.Dtype(); dtype != DTypeFloat32 {
 		cast := AsType(inf, dtype)

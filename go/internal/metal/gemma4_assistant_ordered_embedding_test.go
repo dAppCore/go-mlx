@@ -86,6 +86,78 @@ func TestGemma4AssistantOrderedEmbedding_MatrixTokenOrdering_Good(t *testing.T) 
 	}
 }
 
+func TestGemma4AssistantOrderedEmbedding_GreedyTokenMatchesFullLogits_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantOrderedEmbedding GreedyTokenMatchesFullLogits"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := newTinyOrderedEmbeddingAssistant()
+	defer model.Close()
+	originalOrdering := model.TokenOrdering
+	model.TokenOrdering = normalizeGemma4AssistantTokenOrdering(model.TokenOrdering, model.NumCentroids, model.Cfg.VocabSize)
+	if model.TokenOrdering != originalOrdering {
+		defer Free(originalOrdering)
+	}
+	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
+	defer Free(hidden)
+
+	logits, err := model.outputLogits(hidden)
+	if err != nil {
+		t.Fatalf("outputLogits ordered embeddings: %v", err)
+	}
+	defer Free(logits)
+	want, err := gemma4AssistantGreedyToken(logits)
+	if err != nil {
+		t.Fatalf("full greedy token: %v", err)
+	}
+
+	token, err := model.orderedEmbeddingGreedyToken(hidden, nil)
+	if err != nil {
+		t.Fatalf("orderedEmbeddingGreedyToken: %v", err)
+	}
+	defer Free(token)
+	if err := Eval(token); err != nil {
+		t.Fatalf("Eval greedy token: %v", err)
+	}
+	values := token.DataInt32()
+	if len(values) != 1 || values[0] != want {
+		t.Fatalf("greedy token = %v, want [%d]", values, want)
+	}
+}
+
+func TestGemma4AssistantOrderedEmbedding_GreedyTokenSuppressesCandidate_Good(t *testing.T) {
+	coverageTokens := "Gemma4AssistantOrderedEmbedding GreedyTokenSuppressesCandidate"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage token for %s", t.Name())
+	}
+	requireMetalRuntime(t)
+
+	model := newTinyOrderedEmbeddingAssistant()
+	defer model.Close()
+	originalOrdering := model.TokenOrdering
+	model.TokenOrdering = normalizeGemma4AssistantTokenOrdering(model.TokenOrdering, model.NumCentroids, model.Cfg.VocabSize)
+	if model.TokenOrdering != originalOrdering {
+		defer Free(originalOrdering)
+	}
+	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
+	defer Free(hidden)
+
+	token, err := model.orderedEmbeddingGreedyToken(hidden, []int32{1})
+	if err != nil {
+		t.Fatalf("orderedEmbeddingGreedyToken: %v", err)
+	}
+	defer Free(token)
+	if err := Eval(token); err != nil {
+		t.Fatalf("Eval greedy token: %v", err)
+	}
+	values := token.DataInt32()
+	if len(values) != 1 || values[0] != 0 {
+		t.Fatalf("suppressed greedy token = %v, want [0]", values)
+	}
+}
+
 func TestGemma4AssistantOrderedEmbedding_NonDivisibleTokenOrdering_Bad(t *testing.T) {
 	coverageTokens := "Gemma4AssistantOrderedEmbedding NonDivisibleTokenOrdering"
 	if coverageTokens == "" {

@@ -18,6 +18,14 @@ func BenchmarkGemma4AssistantOrderedEmbedding_LoadNormalisedTokenOrdering(b *tes
 	benchmarkGemma4AssistantOrderedEmbeddingLoadNormalised(b)
 }
 
+func BenchmarkGemma4AssistantOrderedEmbedding_GreedyToken(b *testing.B) {
+	benchmarkGemma4AssistantOrderedEmbeddingGreedyToken(b, nil)
+}
+
+func BenchmarkGemma4AssistantOrderedEmbedding_GreedyTokenSuppressed(b *testing.B) {
+	benchmarkGemma4AssistantOrderedEmbeddingGreedyToken(b, []int32{1})
+}
+
 func benchmarkGemma4AssistantOrderedEmbedding(b *testing.B, matrixOrdering bool) {
 	requireMetalRuntime(b)
 
@@ -51,6 +59,43 @@ func benchmarkGemma4AssistantOrderedEmbedding(b *testing.B, matrixOrdering bool)
 			b.Fatalf("Eval: %v", err)
 		}
 		Free(logits)
+	}
+}
+
+func benchmarkGemma4AssistantOrderedEmbeddingGreedyToken(b *testing.B, suppressTokens []int32) {
+	requireMetalRuntime(b)
+
+	model := newTinyOrderedEmbeddingAssistant()
+	defer model.Close()
+	originalOrdering := model.TokenOrdering
+	model.TokenOrdering = normalizeGemma4AssistantTokenOrdering(model.TokenOrdering, model.NumCentroids, model.Cfg.VocabSize)
+	if model.TokenOrdering != originalOrdering {
+		defer Free(originalOrdering)
+	}
+	hidden := FromValues([]float32{2, 1}, 1, 1, 2)
+	defer Free(hidden)
+
+	warm, err := model.orderedEmbeddingGreedyToken(hidden, suppressTokens)
+	if err != nil {
+		b.Fatalf("warmup orderedEmbeddingGreedyToken: %v", err)
+	}
+	if err := Eval(warm); err != nil {
+		Free(warm)
+		b.Fatalf("warmup Eval: %v", err)
+	}
+	Free(warm)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		token, err := model.orderedEmbeddingGreedyToken(hidden, suppressTokens)
+		if err != nil {
+			b.Fatalf("orderedEmbeddingGreedyToken: %v", err)
+		}
+		if err := Eval(token); err != nil {
+			Free(token)
+			b.Fatalf("Eval: %v", err)
+		}
+		Free(token)
 	}
 }
 

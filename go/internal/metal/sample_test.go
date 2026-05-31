@@ -145,6 +145,23 @@ func TestSample_SuppressTokenLogits_Good(t *testing.T) {
 	}
 }
 
+func TestSample_SuppressTokenLogits3D_Good(t *testing.T) {
+	coverageTokens := "SuppressTokenLogits 3D"
+	if coverageTokens == "" {
+		t.Fatalf("missing coverage tokens for %s", t.Name())
+	}
+	logits := FromValues([]float32{0.1, 9, 3, 2}, 1, 1, 4)
+	filtered := suppressTokenLogits(logits, []int32{1})
+	defer Free(logits, filtered)
+	if err := Eval(filtered); err != nil {
+		t.Fatalf("Eval(suppressTokenLogits) error = %v", err)
+	}
+	got := filtered.Floats()
+	if got[1] >= got[2] {
+		t.Fatalf("suppressed 3D logits = %v, want token 1 below token 2", got)
+	}
+}
+
 func TestSample_SuppressTokenLogitsThenTopK_Good(t *testing.T) {
 	coverageTokens := "SuppressTokenLogits TopK"
 	if coverageTokens == "" {
