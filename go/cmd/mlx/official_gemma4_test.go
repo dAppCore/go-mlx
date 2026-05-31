@@ -36,6 +36,33 @@ func TestRunCommand_OfficialGemma4VerifyJSON_Good(t *testing.T) {
 	if !core.Contains(out, `"architecture_ok": true`) || !core.Contains(out, `"native_loadable": true`) || !core.Contains(out, `"architecture": "gemma4_text"`) {
 		t.Fatalf("stdout = %q, want official Gemma 4 pack preflight in JSON report", out)
 	}
+	if core.Contains(out, "{{ bos_token }}") {
+		t.Fatalf("stdout = %q, want default report to omit raw chat template body", out)
+	}
+}
+
+func TestRunCommand_OfficialGemma4VerifyJSONIncludesChatTemplateWhenRequested_Good(t *testing.T) {
+	lock, dir := officialGemma4VerifyTestSnapshot(t)
+	originalLookup := officialGemma4VerifyLockByRole
+	officialGemma4VerifyLockByRole = func(role string) (mlx.OfficialGemma4E2BLock, bool) {
+		if role != lock.Role {
+			return mlx.OfficialGemma4E2BLock{}, false
+		}
+		return lock, true
+	}
+	t.Cleanup(func() { officialGemma4VerifyLockByRole = originalLookup })
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-verify", "-json", "-include-chat-template", "-role", lock.Role, dir}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	if !core.Contains(stdout.String(), "{{ bos_token }}") {
+		t.Fatalf("stdout = %q, want raw chat template when explicitly requested", stdout.String())
+	}
 }
 
 func TestRunCommand_OfficialGemma4VerifyCacheRootJSON_Good(t *testing.T) {
@@ -98,6 +125,9 @@ func TestRunCommand_OfficialGemma4PairVerifyJSON_Good(t *testing.T) {
 	}
 	if !core.Contains(out, `"assistant_ordered_embeddings": true`) || !core.Contains(out, `"assistant_num_centroids": 2048`) || !core.Contains(out, `"assistant_centroid_intermediate_top_k": 32`) {
 		t.Fatalf("stdout = %q, want official ordered-embedding assistant metadata", out)
+	}
+	if core.Contains(out, "{{ bos_token }}") {
+		t.Fatalf("stdout = %q, want default pair report to omit raw chat template body", out)
 	}
 }
 

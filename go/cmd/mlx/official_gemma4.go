@@ -37,6 +37,7 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 	fs.SetOutput(stderr)
 	role := fs.String("role", mlx.OfficialGemma4E2BRoleTarget, "official Gemma 4 E2B role: target or assistant")
 	jsonOut := fs.Bool("json", false, "write JSON verification report")
+	includeChatTemplate := fs.Bool("include-chat-template", false, "include raw chat template bodies in JSON reports")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -51,7 +52,7 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 	}
 	snapshotDir := fs.Arg(0)
 	preflight, err := lock.InspectLocalSnapshot(snapshotDir)
-	report := officialGemma4VerifyReportFromPreflight(snapshotDir, preflight)
+	report := officialGemma4VerifyReportFromPreflight(snapshotDir, preflight, *includeChatTemplate)
 	if err != nil {
 		if report.Error == "" {
 			report.Error = err.Error()
@@ -70,7 +71,7 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 	return 0
 }
 
-func officialGemma4VerifyReportFromPreflight(snapshotDir string, preflight mlx.OfficialGemma4E2BSnapshotReport) officialGemma4VerifyReport {
+func officialGemma4VerifyReportFromPreflight(snapshotDir string, preflight mlx.OfficialGemma4E2BSnapshotReport, includeChatTemplate bool) officialGemma4VerifyReport {
 	if preflight.SnapshotDir != "" {
 		snapshotDir = preflight.SnapshotDir
 	}
@@ -83,7 +84,7 @@ func officialGemma4VerifyReportFromPreflight(snapshotDir string, preflight mlx.O
 		ExpectedArchitecture: preflight.ExpectedArchitecture,
 		ArchitectureOK:       preflight.ArchitectureOK,
 		Verified:             preflight.Verified,
-		Pack:                 preflight.Pack,
+		Pack:                 officialGemma4PackForReport(preflight.Pack, includeChatTemplate),
 		Error:                preflight.Error,
 	}
 }
@@ -103,6 +104,7 @@ func runOfficialGemma4PairVerifyCommand(args []string, stdout, stderr io.Writer)
 	fs := flag.NewFlagSet("official-gemma4-pair-verify", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jsonOut := fs.Bool("json", false, "write JSON pair verification report")
+	includeChatTemplate := fs.Bool("include-chat-template", false, "include raw chat template bodies in JSON reports")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -117,17 +119,30 @@ func runOfficialGemma4PairVerifyCommand(args []string, stdout, stderr io.Writer)
 			report.Error = err.Error()
 		}
 		if *jsonOut {
-			writeOfficialGemma4PairVerifyJSON(stdout, stderr, report)
+			writeOfficialGemma4PairVerifyJSON(stdout, stderr, officialGemma4PairReportForOutput(report, *includeChatTemplate))
 			return 1
 		}
 		core.Print(stderr, "%s official-gemma4-pair-verify: %v", cliName(), err)
 		return 1
 	}
 	if *jsonOut {
-		return writeOfficialGemma4PairVerifyJSON(stdout, stderr, report)
+		return writeOfficialGemma4PairVerifyJSON(stdout, stderr, officialGemma4PairReportForOutput(report, *includeChatTemplate))
 	}
 	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B target+assistant pair verified: %s %s\n", targetDir, assistantDir))
 	return 0
+}
+
+func officialGemma4PairReportForOutput(report mlx.OfficialGemma4E2BPairReport, includeChatTemplate bool) mlx.OfficialGemma4E2BPairReport {
+	report.Target.Pack = officialGemma4PackForReport(report.Target.Pack, includeChatTemplate)
+	report.Assistant.Pack = officialGemma4PackForReport(report.Assistant.Pack, includeChatTemplate)
+	return report
+}
+
+func officialGemma4PackForReport(pack mp.ModelPack, includeChatTemplate bool) mp.ModelPack {
+	if !includeChatTemplate {
+		pack.ChatTemplate = ""
+	}
+	return pack
 }
 
 func writeOfficialGemma4PairVerifyJSON(stdout, stderr io.Writer, report mlx.OfficialGemma4E2BPairReport) int {
