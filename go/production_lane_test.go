@@ -158,6 +158,21 @@ func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
 	if quality.Tier.Bits != 8 || quality.Tier.ModelID != "mlx-community/gemma-4-e2b-it-8bit" || !quality.Fits {
 		t.Fatalf("quality wide choice = %+v, want fitting q8", quality)
 	}
+	if quality.RequestedBits != 8 || quality.StepDownFromBits != 0 || quality.StepDownWorkingSetBytes != 0 || quality.StepDownRequiredWorkingSet != 0 {
+		t.Fatalf("quality step-down evidence = %+v, want requested q8 with no step-down", quality)
+	}
+
+	qualityStepDown := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		Device:        memory.DeviceInfo{MemorySize: 64 * memory.GiB, MaxRecommendedWorkingSetSize: 48 * memory.GiB},
+		ContextLength: ProductionLaneLongContextLength,
+		QualityFirst:  true,
+	})
+	if qualityStepDown.Tier.Bits != 6 || qualityStepDown.Tier.ModelID != "mlx-community/gemma-4-e2b-it-6bit" || !qualityStepDown.Fits {
+		t.Fatalf("quality step-down choice = %+v, want fitting q6", qualityStepDown)
+	}
+	if qualityStepDown.RequestedBits != 8 || qualityStepDown.StepDownFromBits != 8 || qualityStepDown.StepDownWorkingSetBytes != 48*memory.GiB || qualityStepDown.StepDownRequiredWorkingSet != 64*memory.GiB {
+		t.Fatalf("quality step-down evidence = %+v, want q8 required 64GiB stepping down at 48GiB working set", qualityStepDown)
+	}
 
 	constrained := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
 		Device:        memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 13 * memory.GiB},
@@ -165,6 +180,9 @@ func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
 	})
 	if constrained.Tier.Bits != 4 || constrained.Tier.ModelID != "mlx-community/gemma-4-e2b-it-4bit" || !constrained.Fits {
 		t.Fatalf("constrained long-context choice = %+v, want fitting q4 fallback", constrained)
+	}
+	if constrained.RequestedBits != 6 || constrained.StepDownFromBits != 6 || constrained.StepDownWorkingSetBytes != 13*memory.GiB || constrained.StepDownRequiredWorkingSet != 24*memory.GiB {
+		t.Fatalf("constrained step-down evidence = %+v, want q6 required 24GiB stepping down at 13GiB working set", constrained)
 	}
 
 	forced := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
@@ -174,6 +192,9 @@ func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
 	})
 	if forced.Tier.Bits != 4 || !forced.Tier.ConstrainedOnly {
 		t.Fatalf("forced constrained choice = %+v, want q4 fallback", forced)
+	}
+	if forced.RequestedBits != 4 || forced.StepDownFromBits != 0 {
+		t.Fatalf("forced constrained evidence = %+v, want requested q4 without step-down", forced)
 	}
 }
 

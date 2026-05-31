@@ -158,12 +158,16 @@ type ProductionQuantizationSelectionInput struct {
 // ProductionQuantizationChoice is the app-facing selected tier plus the
 // memory-fit decision that led to it.
 type ProductionQuantizationChoice struct {
-	Tier                 ProductionQuantizationTier `json:"tier"`
-	Fits                 bool                       `json:"fits"`
-	WorkingSetBytes      uint64                     `json:"working_set_bytes,omitempty"`
-	RequiredWorkingSet   uint64                     `json:"required_working_set_bytes,omitempty"`
-	LongContextSelection bool                       `json:"long_context_selection,omitempty"`
-	Reason               string                     `json:"reason"`
+	Tier                       ProductionQuantizationTier `json:"tier"`
+	Fits                       bool                       `json:"fits"`
+	RequestedBits              int                        `json:"requested_bits,omitempty"`
+	WorkingSetBytes            uint64                     `json:"working_set_bytes,omitempty"`
+	RequiredWorkingSet         uint64                     `json:"required_working_set_bytes,omitempty"`
+	LongContextSelection       bool                       `json:"long_context_selection,omitempty"`
+	StepDownFromBits           int                        `json:"step_down_from_bits,omitempty"`
+	StepDownWorkingSetBytes    uint64                     `json:"step_down_working_set_bytes,omitempty"`
+	StepDownRequiredWorkingSet uint64                     `json:"step_down_required_working_set_bytes,omitempty"`
+	Reason                     string                     `json:"reason"`
 }
 
 // DefaultProductionLane returns the Gemma 4 E2B q6 target used for production
@@ -267,21 +271,29 @@ func SelectProductionQuantizationTier(input ProductionQuantizationSelectionInput
 
 	workingSet := productionQuantizationWorkingSet(input.Device)
 	longContext := input.ContextLength >= ProductionLaneLongContextLength
+	requestedBits := policy.DefaultBits
+	if input.QualityFirst {
+		requestedBits = policy.QualityBits
+	}
 
 	if input.ConstrainedFallback {
-		return productionQuantizationChoice(constrainedTier, workingSet, longContext, "constrained fallback requested")
+		return productionQuantizationChoice(constrainedTier, workingSet, longContext, policy.ConstrainedBits, "constrained fallback requested")
 	}
 	if input.QualityFirst {
-		choice := productionQuantizationChoice(qualityTier, workingSet, longContext, "quality tier selected with sufficient headroom")
+		choice := productionQuantizationChoice(qualityTier, workingSet, longContext, requestedBits, "quality tier selected with sufficient headroom")
 		if choice.Fits {
 			return choice
 		}
+		defaultChoice := productionQuantizationStepDownChoice(defaultTier, qualityTier, workingSet, longContext, requestedBits, "quality q8 does not fit requested memory/context; using q6 default")
+		if defaultChoice.Fits {
+			return defaultChoice
+		}
 	}
-	choice := productionQuantizationChoice(defaultTier, workingSet, longContext, "default q6 tier selected")
+	choice := productionQuantizationChoice(defaultTier, workingSet, longContext, requestedBits, "default q6 tier selected")
 	if choice.Fits {
 		return choice
 	}
-	fallback := productionQuantizationChoice(constrainedTier, workingSet, longContext, "q6 does not fit requested memory/context; using q4 fallback")
+	fallback := productionQuantizationStepDownChoice(constrainedTier, defaultTier, workingSet, longContext, requestedBits, "q6 does not fit requested memory/context; using q4 fallback")
 	if fallback.Fits {
 		return fallback
 	}
@@ -298,20 +310,34 @@ func productionQuantizationTierByBits(policy ProductionQuantizationPolicy, bits 
 	return ProductionQuantizationTier{}
 }
 
-func productionQuantizationChoice(tier ProductionQuantizationTier, workingSet uint64, longContext bool, reason string) ProductionQuantizationChoice {
-	required := tier.MinimumWorkingSetBytes
-	if longContext && tier.LongContextMinimumWorkingSetBytes > required {
-		required = tier.LongContextMinimumWorkingSetBytes
-	}
+func productionQuantizationChoice(tier ProductionQuantizationTier, workingSet uint64, longContext bool, requestedBits int, reason string) ProductionQuantizationChoice {
+	required := productionQuantizationRequiredWorkingSet(tier, longContext)
 	fits := workingSet == 0 || required == 0 || workingSet >= required
 	return ProductionQuantizationChoice{
 		Tier:                 tier,
 		Fits:                 fits,
+		RequestedBits:        requestedBits,
 		WorkingSetBytes:      workingSet,
 		RequiredWorkingSet:   required,
 		LongContextSelection: longContext,
 		Reason:               reason,
 	}
+}
+
+func productionQuantizationStepDownChoice(tier, failedTier ProductionQuantizationTier, workingSet uint64, longContext bool, requestedBits int, reason string) ProductionQuantizationChoice {
+	choice := productionQuantizationChoice(tier, workingSet, longContext, requestedBits, reason)
+	choice.StepDownFromBits = failedTier.Bits
+	choice.StepDownWorkingSetBytes = workingSet
+	choice.StepDownRequiredWorkingSet = productionQuantizationRequiredWorkingSet(failedTier, longContext)
+	return choice
+}
+
+func productionQuantizationRequiredWorkingSet(tier ProductionQuantizationTier, longContext bool) uint64 {
+	required := tier.MinimumWorkingSetBytes
+	if longContext && tier.LongContextMinimumWorkingSetBytes > required {
+		required = tier.LongContextMinimumWorkingSetBytes
+	}
+	return required
 }
 
 func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {

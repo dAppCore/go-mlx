@@ -85,6 +85,7 @@ func TestRunCommand_ProductionQuantizationDefaultJSON_Good(t *testing.T) {
 		`"requires_turboquant_promotion": true`,
 		`"bits": 6`,
 		`"model_id": "mlx-community/gemma-4-e2b-it-6bit"`,
+		`"requested_bits": 6`,
 		`"reason": "default q6 tier selected"`,
 	} {
 		if !core.Contains(stdout.String(), want) {
@@ -167,6 +168,10 @@ func TestRunCommand_ProductionQuantizationConstrainedFallback_Good(t *testing.T)
 	for _, want := range []string{
 		`"bits": 4`,
 		`"model_id": "mlx-community/gemma-4-e2b-it-4bit"`,
+		`"requested_bits": 6`,
+		`"step_down_from_bits": 6`,
+		`"step_down_working_set_bytes": 13958643712`,
+		`"step_down_required_working_set_bytes": 25769803776`,
 		`"reason": "q6 does not fit requested memory/context; using q4 fallback"`,
 		`"working_set_bytes": 13958643712`,
 	} {
