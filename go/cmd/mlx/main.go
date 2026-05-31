@@ -20,6 +20,7 @@ import (
 	statefile "dappco.re/go/inference/state/filestore"
 	mlx "dappco.re/go/mlx"
 	"dappco.re/go/mlx/agent"
+	"dappco.re/go/mlx/benchsummary"
 	"dappco.re/go/mlx/internal/metal"
 	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/model"
@@ -8621,7 +8622,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			core.WriteString(stdout, "\n")
 			return 0
 		}
-		printBenchSummary(stdout, report)
+		benchsummary.Write(stdout, report)
 		return 0
 	}
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -8646,37 +8647,8 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stdout, "\n")
 		return 0
 	}
-	printBenchSummary(stdout, report)
+	benchsummary.Write(stdout, report)
 	return 0
-}
-
-func printBenchSummary(stdout io.Writer, report *bench.Report) {
-	if report == nil {
-		return
-	}
-	core.WriteString(stdout, core.Sprintf("fast eval: %s\n", report.ModelPath))
-	core.WriteString(stdout, core.Sprintf("  prefill: %.1f tok/s, decode: %.1f tok/s\n", report.Generation.PrefillTokensPerSec, report.Generation.DecodeTokensPerSec))
-	core.WriteString(stdout, core.Sprintf("  peak memory: %d MB, active memory: %d MB\n", report.Generation.PeakMemoryBytes/1024/1024, report.Generation.ActiveMemoryBytes/1024/1024))
-	if report.PromptCache.Attempted {
-		core.WriteString(stdout, core.Sprintf("  prompt cache: %.0f%% hit rate (%d hit, %d miss)\n", report.PromptCache.HitRate*100, report.PromptCache.Hits, report.PromptCache.Misses))
-	}
-	if report.KVRestore.Attempted {
-		core.WriteString(stdout, core.Sprintf("  KV restore: %s\n", report.KVRestore.Duration))
-	}
-	if report.StateBundle.Attempted {
-		core.WriteString(stdout, core.Sprintf("  state bundle: %d bytes, %s round trip\n", report.StateBundle.Bytes, report.StateBundle.Duration))
-	}
-	if report.Probes.Attempted {
-		core.WriteString(stdout, core.Sprintf("  probes: %d events, %.1f%% overhead\n", report.Probes.EventCount, report.Probes.OverheadRatio*100))
-	}
-	if report.SpeculativeDecode.Attempted {
-		core.WriteString(stdout, core.Sprintf("  speculative: %.1f%% accepted (%d accepted, %d rejected), %.1f visible tok/s\n",
-			report.SpeculativeDecode.Metrics.AcceptanceRate*100,
-			report.SpeculativeDecode.Metrics.AcceptedTokens,
-			report.SpeculativeDecode.Metrics.RejectedTokens,
-			report.SpeculativeDecode.Metrics.VisibleTokensPerSec,
-		))
-	}
 }
 
 func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) int {

@@ -184,6 +184,9 @@ func TestModelBenchSpeculativePairDecode_UsesNativeAssistantPair_Good(t *testing
 	if report.Error != "" {
 		t.Fatalf("Error = %q, want empty", report.Error)
 	}
+	if report.Result.Mode != SpeculativeDecodeModeMTP {
+		t.Fatalf("Mode = %q, want %q", report.Result.Mode, SpeculativeDecodeModeMTP)
+	}
 	if native.gemma4AssistantPair != assistant {
 		t.Fatal("native assistant pair was not used")
 	}
@@ -192,6 +195,9 @@ func TestModelBenchSpeculativePairDecode_UsesNativeAssistantPair_Good(t *testing
 	}
 	if report.Metrics.AcceptedTokens != 1 || report.Metrics.RejectedTokens != 1 || report.Metrics.VisibleTokensPerSec != 1 {
 		t.Fatalf("Metrics = %+v, want native assistant metrics", report.Metrics)
+	}
+	if report.Metrics.DraftTokens != 2 || report.Metrics.TargetCalls != 2 || report.Metrics.TargetTokensPerSec != 2 || report.Metrics.DraftTokensPerSec != 8 {
+		t.Fatalf("Metrics = %+v, want proposed draft tokens and target/draft throughput", report.Metrics)
 	}
 }
 

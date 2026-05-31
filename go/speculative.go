@@ -20,6 +20,12 @@ type SpeculativeDecodeResult = decode.Result
 // counters for a target/draft decode attempt.
 type SpeculativeDecodeMetrics = decode.Metrics
 
+// SpeculativeDecodeModeMTP marks attached Gemma 4 multi-token-prediction
+// assistant results. It stays distinct from generic target/draft speculative
+// decode so reports can compare raw decode, speculative decode, and MTP without
+// folding different algorithms into one bucket.
+const SpeculativeDecodeModeMTP = "mtp"
+
 // SpeculativeDecodeConfig configures the package-first target/draft reference
 // path. Native block verification is intentionally separate from this API.
 type SpeculativeDecodeConfig struct {
@@ -287,7 +293,7 @@ func gemma4AssistantGenerateResultToDecode(prompt string, result metal.Gemma4Ass
 		acceptanceRate = float64(result.AcceptedTokens) / float64(result.DraftTokens)
 	}
 	return decode.Result{
-		Mode:   decode.ModeSpeculative,
+		Mode:   SpeculativeDecodeModeMTP,
 		Prompt: prompt,
 		Text:   result.Text,
 		Tokens: tokens,

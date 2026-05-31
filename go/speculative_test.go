@@ -174,6 +174,9 @@ func TestSpeculative_LoadSpeculativePair_Gemma4Assistant_Good(t *testing.T) {
 	if result.Text != "A" || result.Metrics.AcceptedTokens != 1 || result.Metrics.RejectedTokens != 1 {
 		t.Fatalf("pair.Generate() = %+v, want native Gemma 4 assistant decode result", result)
 	}
+	if result.Mode != SpeculativeDecodeModeMTP {
+		t.Fatalf("pair.Generate() mode = %q, want %q", result.Mode, SpeculativeDecodeModeMTP)
+	}
 	if targetNative.gemma4AssistantPair != pair.Gemma4Assistant {
 		t.Fatal("GenerateGemma4Assistant did not receive attached assistant pair")
 	}
