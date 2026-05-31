@@ -124,6 +124,35 @@ func TestRunCommand_OfficialGemma4PairVerifyCacheRootJSON_Good(t *testing.T) {
 	}
 }
 
+func TestRunCommand_OfficialGemma4ControlCompareJSON_Good(t *testing.T) {
+	targetLock, targetDir := officialGemma4VerifyTestSnapshot(t)
+	controlDir := officialGemma4VerifyControlSnapshotFromTarget(t, targetDir)
+	originalCompare := officialGemma4ControlCompare
+	officialGemma4ControlCompare = func(targetDir, controlDir string) (mlx.OfficialGemma4E2BControlComparison, error) {
+		return mlx.CompareOfficialGemma4E2BControlSnapshots(targetDir, controlDir, targetLock)
+	}
+	t.Cleanup(func() { officialGemma4ControlCompare = originalCompare })
+
+	stdout, stderr := core.NewBuffer(), core.NewBuffer()
+	code := runCommand(context.Background(), []string{"official-gemma4-control-compare", "-json", targetDir, controlDir}, stdout, stderr)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if stderr.String() != "" {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+	out := stdout.String()
+	if !core.Contains(out, `"compatible": true`) || !core.Contains(out, `"quantization_differs": true`) {
+		t.Fatalf("stdout = %q, want compatible official-vs-q4 comparison JSON", out)
+	}
+	if !core.Contains(out, `"model_id": "google/gemma-4-E2B-it"`) || !core.Contains(out, `"model_id": "mlx-community/gemma-4-e2b-it-4bit"`) {
+		t.Fatalf("stdout = %q, want official target and archived q4 model IDs", out)
+	}
+	if !core.Contains(out, `"full_attention_interval": 5`) || !core.Contains(out, `"proportional_rope": true`) {
+		t.Fatalf("stdout = %q, want attention and p-RoPE comparison fields", out)
+	}
+}
+
 func TestRunCommand_OfficialGemma4VerifyHashMismatch_Bad(t *testing.T) {
 	lock, dir := officialGemma4VerifyTestSnapshot(t)
 	writeOfficialGemma4VerifyTestFile(t, dir, "config.json", []byte(`{
@@ -158,6 +187,34 @@ func TestRunCommand_OfficialGemma4VerifyHashMismatch_Bad(t *testing.T) {
 	if !core.Contains(stderr.String(), "config.json") || !core.Contains(stderr.String(), "SHA-256") {
 		t.Fatalf("stderr = %q, want config SHA-256 mismatch", stderr.String())
 	}
+}
+
+func officialGemma4VerifyControlSnapshotFromTarget(t *testing.T, targetDir string) string {
+	t.Helper()
+	controlDir := core.PathJoin(t.TempDir(), "q4-control")
+	if result := core.MkdirAll(controlDir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll control snapshot: %v", result.Value)
+	}
+	for _, name := range []string{
+		"tokenizer.json",
+		"tokenizer_config.json",
+		"generation_config.json",
+		"chat_template.jinja",
+		"model.safetensors",
+	} {
+		read := core.ReadFile(core.PathJoin(targetDir, name))
+		if !read.OK {
+			t.Fatalf("ReadFile %s: %v", name, read.Value)
+		}
+		writeOfficialGemma4VerifyTestFile(t, controlDir, name, read.Value.([]byte))
+	}
+	read := core.ReadFile(core.PathJoin(targetDir, "config.json"))
+	if !read.OK {
+		t.Fatalf("ReadFile config.json: %v", read.Value)
+	}
+	config := core.Replace(core.AsString(read.Value.([]byte)), `"bits": 6`, `"bits": 4`)
+	writeOfficialGemma4VerifyTestFile(t, controlDir, "config.json", []byte(config))
+	return controlDir
 }
 
 func officialGemma4VerifyTestSnapshot(t *testing.T) (mlx.OfficialGemma4E2BLock, string) {

@@ -15,6 +15,9 @@ var officialGemma4VerifyLockByRole = mlx.OfficialGemma4E2BLockByRole
 var officialGemma4PairInspect = func(targetDir, assistantDir string) (mlx.OfficialGemma4E2BPairReport, error) {
 	return mlx.InspectOfficialGemma4E2BPairSnapshots(targetDir, assistantDir)
 }
+var officialGemma4ControlCompare = func(targetDir, controlDir string) (mlx.OfficialGemma4E2BControlComparison, error) {
+	return mlx.CompareOfficialGemma4E2BControlSnapshots(targetDir, controlDir, mlx.OfficialGemma4E2BTargetLock())
+}
 
 type officialGemma4VerifyReport struct {
 	Version              int          `json:"version"`
@@ -131,6 +134,45 @@ func writeOfficialGemma4PairVerifyJSON(stdout, stderr io.Writer, report mlx.Offi
 	data := core.JSONMarshalIndent(report, "", "  ")
 	if !data.OK {
 		core.Print(stderr, "%s official-gemma4-pair-verify: marshal report failed", cliName())
+		return 1
+	}
+	core.WriteString(stdout, string(data.Value.([]byte)))
+	core.WriteString(stdout, "\n")
+	return 0
+}
+
+func runOfficialGemma4ControlCompareCommand(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("official-gemma4-control-compare", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	jsonOut := fs.Bool("json", false, "write JSON control comparison report")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 2 {
+		core.Print(stderr, "%s official-gemma4-control-compare: expected target and q4 control snapshot directories", cliName())
+		return 2
+	}
+	targetDir, controlDir := fs.Arg(0), fs.Arg(1)
+	report, err := officialGemma4ControlCompare(targetDir, controlDir)
+	if err != nil {
+		if *jsonOut {
+			writeOfficialGemma4ControlCompareJSON(stdout, stderr, report)
+			return 1
+		}
+		core.Print(stderr, "%s official-gemma4-control-compare: %v", cliName(), err)
+		return 1
+	}
+	if *jsonOut {
+		return writeOfficialGemma4ControlCompareJSON(stdout, stderr, report)
+	}
+	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B target matches archived q4 control metadata: %s %s\n", targetDir, controlDir))
+	return 0
+}
+
+func writeOfficialGemma4ControlCompareJSON(stdout, stderr io.Writer, report mlx.OfficialGemma4E2BControlComparison) int {
+	data := core.JSONMarshalIndent(report, "", "  ")
+	if !data.OK {
+		core.Print(stderr, "%s official-gemma4-control-compare: marshal report failed", cliName())
 		return 1
 	}
 	core.WriteString(stdout, string(data.Value.([]byte)))
