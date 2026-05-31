@@ -62,7 +62,7 @@ The `dist/` directory is gitignored and must be rebuilt on each fresh checkout.
 ### Step 2: Run Tests
 
 ```bash
-go test ./...
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 Tests that require model files on disk (e.g. `/Volumes/Data/lem/safetensors/...`) are skipped automatically when the paths are absent. CI runs without model files.
@@ -82,7 +82,21 @@ The `#cgo` directives in `internal/metal/metal.go` set all required flags automa
 
 `${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The full file at `go/internal/metal/metal.go` has the complete set. Notably absent: any `-L` or `-l` for libmlx/libmlxc — the implementation `.cpp` files sit alongside `metal.go` and cgo picks them up directly.
 
-No manual environment variables are needed for `go build` or `go test`.
+The final Go executable/test link also needs the macOS 26 floor because the
+runtime APIs used by the native path are macOS 26-era APIs. The canonical
+Taskfile passes this automatically:
+
+```bash
+task build:lthn
+task test
+```
+
+When invoking Go directly, pass the same external linker floor:
+
+```bash
+go build -trimpath -ldflags "-extldflags=-mmacosx-version-min=26.0" -o ../bin/lthn-mlx ./cmd/mlx
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
+```
 
 ## Build Tags
 
@@ -151,7 +165,7 @@ The `CMAKE_INSTALL_RPATH` of `@loader_path` is legacy from when the CMake build 
 ### Running All Tests
 
 ```bash
-go test ./...
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 ### Running a Single Test
@@ -244,5 +258,5 @@ The root package and `mlxlm/` have no CGO dependency. Only `internal/metal/` lin
 - **UK English** throughout: colour, organisation, centre, initialise
 - **EUPL-1.2 licence** -- every new file must carry `// SPDX-Licence-Identifier: EUPL-1.2`
 - **Conventional commits**: `type(scope): description` (scopes: metal, api, mlxlm, cpp, docs)
-- **Tests must pass**: `go test ./...` before every commit
+- **Tests must pass**: `go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...` before every commit
 - **Co-Author**: `Co-Authored-By: Virgil <virgil@lethean.io>`

@@ -15,7 +15,7 @@
 # operator-side metallib shipping.
 #
 # Prerequisites (script aborts if any missing):
-#   - bin/lthn-mlx          (run: cd go && go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx)
+#   - bin/lthn-mlx          (run: cd go && go build -trimpath -ldflags "-extldflags=-mmacosx-version-min=26.0" -o ../bin/lthn-mlx ./cmd/mlx)
 #   - dist/lib/mlx.metallib (run: cmake --build build --target install)
 #
 # Signing + notarisation are out of scope; this script produces the bundle
@@ -30,7 +30,7 @@ BIN="$REPO_ROOT/bin/lthn-mlx"
 METALLIB="$REPO_ROOT/dist/lib/mlx.metallib"
 APP="$REPO_ROOT/bin/lthn-mlx.app"
 
-[[ -f "$BIN" ]] || { echo "missing $BIN — build first with: cd go && go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx" >&2; exit 1; }
+[[ -f "$BIN" ]] || { echo "missing $BIN — build first with: cd go && go build -trimpath -ldflags \"-extldflags=-mmacosx-version-min=26.0\" -o ../bin/lthn-mlx ./cmd/mlx" >&2; exit 1; }
 [[ -f "$METALLIB" ]] || { echo "missing $METALLIB — build first with: cmake --build build --target install" >&2; exit 1; }
 
 rm -rf "$APP"

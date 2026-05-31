@@ -22,7 +22,7 @@ mkdir -p "$OUT_DIR"
 
 if [[ ! -x "$BIN" ]]; then
   echo "missing executable: $BIN" >&2
-  echo "build it with: (cd $ROOT && go build -trimpath -o bin/lthn-mlx ./go/cmd/mlx)" >&2
+  echo "build it with: (cd $ROOT/go && go build -trimpath -ldflags \"-extldflags=-mmacosx-version-min=26.0\" -o ../bin/lthn-mlx ./cmd/mlx)" >&2
   exit 2
 fi
 

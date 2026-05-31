@@ -69,15 +69,17 @@ The `dist/` directory is gitignored and must be rebuilt on each fresh checkout.
 ### Step 2: Run Tests
 
 ```bash
-go test ./...
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 Tests require a working mlx-c build. Integration tests that load model files are skipped automatically when model paths are absent (`/Volumes/Data/lem/safetensors/...`).
 
-If you are running inside a larger parent workspace whose `go.work` does not include `go-mlx`, use:
+If you are running inside a larger parent workspace whose `go.work` does not
+include `go-mlx`, run from the repository root or point `GOWORK` at this
+checkout's workspace so `external/` dev branches stay active:
 
 ```bash
-GOWORK=off go test ./...
+GOWORK=/path/to/go-mlx/go.work go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
 ```
 
 ---
@@ -97,7 +99,14 @@ The `#cgo` directives in `internal/metal/metal.go` set all required flags automa
 
 `${SRCDIR}` is the directory containing `metal.go` at build time (`internal/metal/`). The MLX C++ implementation is vendored as `mlx_*.cpp` files alongside `metal.go` and cgo compiles them inline — no `-L${SRCDIR}/../../dist/lib -lmlxc -lmlx` link step. The full directive set is in `go/internal/metal/metal.go`.
 
-No manual environment variables are needed for `go build` or `go test`.
+The final Go executable/test link also needs the macOS 26 floor because the
+native runtime uses macOS 26-era APIs. Use the Taskfile when possible; it passes
+the linker floor automatically. For direct Go invocations, include:
+
+```bash
+go build -trimpath -ldflags "-extldflags=-mmacosx-version-min=26.0" ./cmd/mlx
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...
+```
 
 ---
 
@@ -202,7 +211,7 @@ UK English throughout: colour, organisation, centre, initialise, behaviour. Neve
 
 - `declare(strict_types=1)` equivalent: all parameters and return types must be explicitly typed
 - PSR-12 equivalent: `gofmt` + `goimports`; run before committing
-- `go test ./...` must pass before every commit; no red tests in main
+- `go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./...` must pass before every commit; no red tests in main
 
 ### Licence Header
 

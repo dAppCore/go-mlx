@@ -2,13 +2,14 @@
 version: '3'
 vars:
   GO_BUILD_CACHE: '{{default "/private/tmp/codex-go-mlx-cache" .GOCACHE}}'
+  GO_DARWIN_LDFLAGS: '-extldflags=-mmacosx-version-min=26.0'
 tasks:
   build:
     desc: Build core-mlx CLI to bin/
     dir: go
     cmds:
       - mkdir -p ../bin {{.GO_BUILD_CACHE}}
-      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/core-mlx ./cmd/mlx/
+      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/core-mlx ./cmd/mlx/
   build:lthn:
     desc: "Build lthn-mlx to bin/ — self-contained (embeds gzipped metallib) when dist/lib/mlx.metallib is present, else lean (external metallib resolution)"
     dir: go
@@ -20,18 +21,18 @@ tasks:
           if [ ! -f cmd/mlx/mlx.metallib.gz ] || [ ../dist/lib/mlx.metallib -nt cmd/mlx/mlx.metallib.gz ]; then
             gzip -9 -c ../dist/lib/mlx.metallib > cmd/mlx/mlx.metallib.gz
           fi
-          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -tags embed_metallib -o ../bin/lthn-mlx ./cmd/mlx/
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -tags embed_metallib -o ../bin/lthn-mlx ./cmd/mlx/
           echo "  lthn-mlx: self-contained ($(du -h cmd/mlx/mlx.metallib.gz | cut -f1) metallib embedded)"
         else
           echo "  lthn-mlx: no metallib at dist/lib/mlx.metallib — building lean (external resolution)"
-          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/lthn-mlx ./cmd/mlx/
+          env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/lthn-mlx ./cmd/mlx/
         fi
   build:violet:
     desc: Build violet sidecar daemon to bin/
     dir: go
     cmds:
       - mkdir -p ../bin {{.GO_BUILD_CACHE}}
-      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -o ../bin/violet ./cmd/violet/
+      - env GOCACHE={{.GO_BUILD_CACHE}} go build -trimpath -ldflags "{{.GO_DARWIN_LDFLAGS}}" -o ../bin/violet ./cmd/violet/
   build:bundle:
     desc: Build binaries for the LTHN app/CLI/server bundle
     cmds:
@@ -40,7 +41,7 @@ tasks:
   test:
     dir: go
     cmds:
-      - env GOCACHE={{.GO_BUILD_CACHE}} go test ./...
+      - env GOCACHE={{.GO_BUILD_CACHE}} go test -ldflags "{{.GO_DARWIN_LDFLAGS}}" ./...
   qa:
     dir: go
     cmds:

@@ -57,7 +57,7 @@ If you're running Ollama alongside `lthn-mlx` deliberately, give `lthn-mlx` a di
 
 **Cause.** The binary was built against the locally-built dylibs at `dist/lib/`, and was then copied somewhere else without those dylibs being available at the install-time linker search path. **This should not normally happen** — the build pipeline statically links these into the binary. If you see this, the binary was built with a non-default configuration that left them as dynamic dependencies.
 
-**Fix.** Rebuild with the standard pipeline (`go generate ./... && go build -o lthn-mlx ./go/cmd/mlx`). If you must run a dynamic-link build, either:
+**Fix.** Rebuild with the standard pipeline (`task build:lthn`, or `go build -ldflags "-extldflags=-mmacosx-version-min=26.0" -o lthn-mlx ./go/cmd/mlx`). If you must run a dynamic-link build, either:
 
 1. `install_name_tool -change` the dylib paths to point at where they live on the target host, or
 2. Set `DYLD_LIBRARY_PATH=/opt/lthn-mlx/lib` before invoking (fragile; not recommended).

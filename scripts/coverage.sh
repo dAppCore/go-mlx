@@ -5,11 +5,10 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 COVERPROFILE=${COVERPROFILE:-/tmp/go-mlx-coverage.out}
 THRESHOLD=${COVERAGE_THRESHOLD:-80.0}
 
-export GOWORK=off
 export GOCACHE=${GOCACHE:-/tmp/codex-go-mlx-cache}
 
 cd "$ROOT/go"
-go test ./... -coverprofile="$COVERPROFILE" -covermode=atomic
+go test -ldflags "-extldflags=-mmacosx-version-min=26.0" ./... -coverprofile="$COVERPROFILE" -covermode=atomic
 
 awk -v threshold="$THRESHOLD" '
 NR == 1 { next }
