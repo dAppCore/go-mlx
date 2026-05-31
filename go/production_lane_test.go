@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	core "dappco.re/go"
+	"dappco.re/go/mlx/memory"
 	"dappco.re/go/mlx/profile"
 )
 
@@ -47,14 +48,51 @@ func TestProductionLane_DefaultProductionQuantizationPolicy_Good(t *testing.T) {
 	if len(policy.Tiers) != 3 {
 		t.Fatalf("tiers = %+v, want quality/default/constrained", policy.Tiers)
 	}
-	if policy.Tiers[0].Bits != 8 || !policy.Tiers[0].QualityFirst {
+	if policy.Tiers[0].Bits != 8 || policy.Tiers[0].ModelID != "mlx-community/gemma-4-e2b-it-8bit" || !policy.Tiers[0].QualityFirst {
 		t.Fatalf("quality tier = %+v, want q8 quality-first", policy.Tiers[0])
 	}
-	if policy.Tiers[1].Bits != 6 || !policy.Tiers[1].ProductDefault {
+	if policy.Tiers[1].Bits != 6 || policy.Tiers[1].ModelID != "mlx-community/gemma-4-e2b-it-6bit" || !policy.Tiers[1].ProductDefault {
 		t.Fatalf("default tier = %+v, want q6 product default", policy.Tiers[1])
 	}
-	if policy.Tiers[2].Bits != 4 || !policy.Tiers[2].ConstrainedOnly || !policy.Tiers[2].ArchivedControl {
+	if policy.Tiers[2].Bits != 4 || policy.Tiers[2].ModelID != "mlx-community/gemma-4-e2b-it-4bit" || !policy.Tiers[2].ConstrainedOnly || !policy.Tiers[2].ArchivedControl {
 		t.Fatalf("constrained tier = %+v, want q4 constrained archived control", policy.Tiers[2])
+	}
+}
+
+func TestProductionLane_SelectProductionQuantizationTier_Good(t *testing.T) {
+	wide := memory.DeviceInfo{MemorySize: 96 * memory.GiB, MaxRecommendedWorkingSetSize: 90 * memory.GiB}
+	choice := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		Device:        wide,
+		ContextLength: ProductionLaneLongContextLength,
+	})
+	if choice.Tier.Bits != 6 || choice.Tier.ModelID != "mlx-community/gemma-4-e2b-it-6bit" || !choice.Fits {
+		t.Fatalf("default wide choice = %+v, want fitting q6", choice)
+	}
+
+	quality := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		Device:        wide,
+		ContextLength: ProductionLaneLongContextLength,
+		QualityFirst:  true,
+	})
+	if quality.Tier.Bits != 8 || quality.Tier.ModelID != "mlx-community/gemma-4-e2b-it-8bit" || !quality.Fits {
+		t.Fatalf("quality wide choice = %+v, want fitting q8", quality)
+	}
+
+	constrained := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		Device:        memory.DeviceInfo{MemorySize: 16 * memory.GiB, MaxRecommendedWorkingSetSize: 13 * memory.GiB},
+		ContextLength: ProductionLaneLongContextLength,
+	})
+	if constrained.Tier.Bits != 4 || constrained.Tier.ModelID != "mlx-community/gemma-4-e2b-it-4bit" || !constrained.Fits {
+		t.Fatalf("constrained long-context choice = %+v, want fitting q4 fallback", constrained)
+	}
+
+	forced := SelectProductionQuantizationTier(ProductionQuantizationSelectionInput{
+		Device:              wide,
+		ContextLength:       ProductionLaneContextLength,
+		ConstrainedFallback: true,
+	})
+	if forced.Tier.Bits != 4 || !forced.Tier.ConstrainedOnly {
+		t.Fatalf("forced constrained choice = %+v, want q4 fallback", forced)
 	}
 }
 

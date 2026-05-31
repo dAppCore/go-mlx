@@ -2,6 +2,8 @@
 
 package mlx
 
+import "dappco.re/go/mlx/memory"
+
 const (
 	// ProductionLaneName is the local agentic runtime lane exercised by the
 	// driver-profile benchmark artefacts.
@@ -104,13 +106,16 @@ type ProductionLane struct {
 // remains available as a constrained fallback and benchmark control, while the
 // default user path should prefer q6 once that pack is validated.
 type ProductionQuantizationTier struct {
-	Name            string `json:"name"`
-	Bits            int    `json:"bits"`
-	Purpose         string `json:"purpose"`
-	ProductDefault  bool   `json:"product_default,omitempty"`
-	QualityFirst    bool   `json:"quality_first,omitempty"`
-	ConstrainedOnly bool   `json:"constrained_only,omitempty"`
-	ArchivedControl bool   `json:"archived_control,omitempty"`
+	Name                              string `json:"name"`
+	ModelID                           string `json:"model_id"`
+	Bits                              int    `json:"bits"`
+	Purpose                           string `json:"purpose"`
+	MinimumWorkingSetBytes            uint64 `json:"minimum_working_set_bytes,omitempty"`
+	LongContextMinimumWorkingSetBytes uint64 `json:"long_context_minimum_working_set_bytes,omitempty"`
+	ProductDefault                    bool   `json:"product_default,omitempty"`
+	QualityFirst                      bool   `json:"quality_first,omitempty"`
+	ConstrainedOnly                   bool   `json:"constrained_only,omitempty"`
+	ArchivedControl                   bool   `json:"archived_control,omitempty"`
 }
 
 // ProductionQuantizationPolicy is the machine-readable ladder the app can use
@@ -122,6 +127,26 @@ type ProductionQuantizationPolicy struct {
 	ConstrainedBits  int                          `json:"constrained_bits"`
 	ArchivedBaseline string                       `json:"archived_baseline,omitempty"`
 	Tiers            []ProductionQuantizationTier `json:"tiers"`
+}
+
+// ProductionQuantizationSelectionInput carries the app's current hardware and
+// workload preference into the Gemma 4 E2B quantisation chooser.
+type ProductionQuantizationSelectionInput struct {
+	Device              memory.DeviceInfo `json:"device"`
+	ContextLength       int               `json:"context_length,omitempty"`
+	QualityFirst        bool              `json:"quality_first,omitempty"`
+	ConstrainedFallback bool              `json:"constrained_fallback,omitempty"`
+}
+
+// ProductionQuantizationChoice is the app-facing selected tier plus the
+// memory-fit decision that led to it.
+type ProductionQuantizationChoice struct {
+	Tier                 ProductionQuantizationTier `json:"tier"`
+	Fits                 bool                       `json:"fits"`
+	WorkingSetBytes      uint64                     `json:"working_set_bytes,omitempty"`
+	RequiredWorkingSet   uint64                     `json:"required_working_set_bytes,omitempty"`
+	LongContextSelection bool                       `json:"long_context_selection,omitempty"`
+	Reason               string                     `json:"reason"`
 }
 
 // DefaultProductionLane returns the Gemma 4 E2B q4 target used for production
@@ -156,27 +181,102 @@ func DefaultProductionQuantizationPolicy() ProductionQuantizationPolicy {
 		ArchivedBaseline: ProductionLaneModelID,
 		Tiers: []ProductionQuantizationTier{
 			{
-				Name:           "quality",
-				Bits:           ProductionLaneQualityQuantBits,
-				Purpose:        "prefer when hardware and retained-context memory headroom allow it",
-				QualityFirst:   true,
-				ProductDefault: false,
+				Name:                              "quality",
+				ModelID:                           "mlx-community/gemma-4-e2b-it-8bit",
+				Bits:                              ProductionLaneQualityQuantBits,
+				Purpose:                           "prefer when hardware and retained-context memory headroom allow it",
+				MinimumWorkingSetBytes:            32 * memory.GiB,
+				LongContextMinimumWorkingSetBytes: 64 * memory.GiB,
+				QualityFirst:                      true,
+				ProductDefault:                    false,
 			},
 			{
-				Name:           "default",
-				Bits:           ProductionLaneProductDefaultQuantBits,
-				Purpose:        "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
-				ProductDefault: true,
+				Name:                              "default",
+				ModelID:                           "mlx-community/gemma-4-e2b-it-6bit",
+				Bits:                              ProductionLaneProductDefaultQuantBits,
+				Purpose:                           "normal app default; lowest tier expected to avoid consistent 4-bit quality loss",
+				MinimumWorkingSetBytes:            16 * memory.GiB,
+				LongContextMinimumWorkingSetBytes: 24 * memory.GiB,
+				ProductDefault:                    true,
 			},
 			{
-				Name:            "constrained",
-				Bits:            ProductionLaneConstrainedQuantBits,
-				Purpose:         "explicit low-memory fallback for phones, older machines, or very long retained contexts",
-				ConstrainedOnly: true,
-				ArchivedControl: true,
+				Name:                              "constrained",
+				ModelID:                           "mlx-community/gemma-4-e2b-it-4bit",
+				Bits:                              ProductionLaneConstrainedQuantBits,
+				Purpose:                           "explicit low-memory fallback for phones, older machines, or very long retained contexts",
+				MinimumWorkingSetBytes:            8 * memory.GiB,
+				LongContextMinimumWorkingSetBytes: 12 * memory.GiB,
+				ConstrainedOnly:                   true,
+				ArchivedControl:                   true,
 			},
 		},
 	}
+}
+
+// SelectProductionQuantizationTier chooses the app-facing Gemma 4 E2B tier.
+// The normal path is q6; q8 is opt-in for quality when memory headroom allows,
+// and q4 is used only for explicit constrained mode or when q6 does not fit the
+// requested retained-context shape.
+func SelectProductionQuantizationTier(input ProductionQuantizationSelectionInput) ProductionQuantizationChoice {
+	policy := DefaultProductionQuantizationPolicy()
+	defaultTier := productionQuantizationTierByBits(policy, policy.DefaultBits)
+	qualityTier := productionQuantizationTierByBits(policy, policy.QualityBits)
+	constrainedTier := productionQuantizationTierByBits(policy, policy.ConstrainedBits)
+
+	workingSet := productionQuantizationWorkingSet(input.Device)
+	longContext := input.ContextLength >= ProductionLaneLongContextLength
+
+	if input.ConstrainedFallback {
+		return productionQuantizationChoice(constrainedTier, workingSet, longContext, "constrained fallback requested")
+	}
+	if input.QualityFirst {
+		choice := productionQuantizationChoice(qualityTier, workingSet, longContext, "quality tier selected with sufficient headroom")
+		if choice.Fits {
+			return choice
+		}
+	}
+	choice := productionQuantizationChoice(defaultTier, workingSet, longContext, "default q6 tier selected")
+	if choice.Fits {
+		return choice
+	}
+	fallback := productionQuantizationChoice(constrainedTier, workingSet, longContext, "q6 does not fit requested memory/context; using q4 fallback")
+	if fallback.Fits {
+		return fallback
+	}
+	fallback.Reason = "q4 is the smallest supported tier but still exceeds the measured working set"
+	return fallback
+}
+
+func productionQuantizationTierByBits(policy ProductionQuantizationPolicy, bits int) ProductionQuantizationTier {
+	for _, tier := range policy.Tiers {
+		if tier.Bits == bits {
+			return tier
+		}
+	}
+	return ProductionQuantizationTier{}
+}
+
+func productionQuantizationChoice(tier ProductionQuantizationTier, workingSet uint64, longContext bool, reason string) ProductionQuantizationChoice {
+	required := tier.MinimumWorkingSetBytes
+	if longContext && tier.LongContextMinimumWorkingSetBytes > required {
+		required = tier.LongContextMinimumWorkingSetBytes
+	}
+	fits := workingSet == 0 || required == 0 || workingSet >= required
+	return ProductionQuantizationChoice{
+		Tier:                 tier,
+		Fits:                 fits,
+		WorkingSetBytes:      workingSet,
+		RequiredWorkingSet:   required,
+		LongContextSelection: longContext,
+		Reason:               reason,
+	}
+}
+
+func productionQuantizationWorkingSet(device memory.DeviceInfo) uint64 {
+	if device.MaxRecommendedWorkingSetSize > 0 {
+		return device.MaxRecommendedWorkingSetSize
+	}
+	return device.MemorySize
 }
 
 // DefaultGemma4FastRuntimeGates returns the accepted Gemma 4 runtime gates used
