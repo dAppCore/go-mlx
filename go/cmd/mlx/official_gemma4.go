@@ -8,18 +8,22 @@ import (
 
 	core "dappco.re/go"
 	mlx "dappco.re/go/mlx"
+	mp "dappco.re/go/mlx/pack"
 )
 
 var officialGemma4VerifyLockByRole = mlx.OfficialGemma4E2BLockByRole
 
 type officialGemma4VerifyReport struct {
-	Version     int    `json:"version"`
-	SnapshotDir string `json:"snapshot_dir"`
-	Role        string `json:"role"`
-	ModelID     string `json:"model_id"`
-	Revision    string `json:"revision"`
-	Verified    bool   `json:"verified"`
-	Error       string `json:"error,omitempty"`
+	Version              int          `json:"version"`
+	SnapshotDir          string       `json:"snapshot_dir"`
+	Role                 string       `json:"role"`
+	ModelID              string       `json:"model_id"`
+	Revision             string       `json:"revision"`
+	ExpectedArchitecture string       `json:"expected_architecture,omitempty"`
+	ArchitectureOK       bool         `json:"architecture_ok"`
+	Verified             bool         `json:"verified"`
+	Pack                 mp.ModelPack `json:"pack"`
+	Error                string       `json:"error,omitempty"`
 }
 
 func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int {
@@ -40,15 +44,12 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 		return 2
 	}
 	snapshotDir := fs.Arg(0)
-	report := officialGemma4VerifyReport{
-		Version:     1,
-		SnapshotDir: snapshotDir,
-		Role:        lock.Role,
-		ModelID:     lock.ModelID,
-		Revision:    lock.Revision,
-	}
-	if err := lock.VerifyLocalSnapshot(snapshotDir); err != nil {
-		report.Error = err.Error()
+	preflight, err := lock.InspectLocalSnapshot(snapshotDir)
+	report := officialGemma4VerifyReportFromPreflight(snapshotDir, preflight)
+	if err != nil {
+		if report.Error == "" {
+			report.Error = err.Error()
+		}
 		if *jsonOut {
 			writeOfficialGemma4VerifyJSON(stdout, stderr, report)
 			return 1
@@ -56,12 +57,26 @@ func runOfficialGemma4VerifyCommand(args []string, stdout, stderr io.Writer) int
 		core.Print(stderr, "%s official-gemma4-verify: %v", cliName(), err)
 		return 1
 	}
-	report.Verified = true
 	if *jsonOut {
 		return writeOfficialGemma4VerifyJSON(stdout, stderr, report)
 	}
 	core.WriteString(stdout, core.Sprintf("official Gemma 4 E2B %s verified: %s\n", report.Role, snapshotDir))
 	return 0
+}
+
+func officialGemma4VerifyReportFromPreflight(snapshotDir string, preflight mlx.OfficialGemma4E2BSnapshotReport) officialGemma4VerifyReport {
+	return officialGemma4VerifyReport{
+		Version:              1,
+		SnapshotDir:          snapshotDir,
+		Role:                 preflight.Role,
+		ModelID:              preflight.ModelID,
+		Revision:             preflight.Revision,
+		ExpectedArchitecture: preflight.ExpectedArchitecture,
+		ArchitectureOK:       preflight.ArchitectureOK,
+		Verified:             preflight.Verified,
+		Pack:                 preflight.Pack,
+		Error:                preflight.Error,
+	}
 }
 
 func writeOfficialGemma4VerifyJSON(stdout, stderr io.Writer, report officialGemma4VerifyReport) int {
