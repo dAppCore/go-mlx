@@ -83,6 +83,21 @@ func TestNewPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
 	if !hasNote(plan, "defaults to q6") || !hasNote(plan, "model quantization is below machine-class preference") {
 		t.Fatalf("Notes = %+v, want Gemma 4 q6 policy plus q4 warning", plan.Notes)
 	}
+	if len(plan.QuantizationCandidates) != 3 {
+		t.Fatalf("QuantizationCandidates = %+v, want q8/q6/q4 ladder", plan.QuantizationCandidates)
+	}
+	q8, ok := quantizationCandidateByBits(plan, 8)
+	if !ok || q8.Role != QuantizationRoleQuality || !q8.RequiresHeadroom || q8.Selected {
+		t.Fatalf("q8 candidate = %+v, want quality/headroom candidate not selected by default", q8)
+	}
+	q6, ok := quantizationCandidateByBits(plan, 6)
+	if !ok || q6.Role != QuantizationRoleDefault || !q6.Selected {
+		t.Fatalf("q6 candidate = %+v, want selected normal default", q6)
+	}
+	q4, ok := quantizationCandidateByBits(plan, 4)
+	if !ok || q4.Role != QuantizationRoleFallback || q4.Selected {
+		t.Fatalf("q4 candidate = %+v, want unselected constrained fallback", q4)
+	}
 }
 
 func TestNewPlan_Gemma4SmallConstrainedQuantizationPolicy_Good(t *testing.T) {
@@ -100,6 +115,23 @@ func TestNewPlan_Gemma4SmallConstrainedQuantizationPolicy_Good(t *testing.T) {
 	if !hasNote(plan, "constrained-memory fallback") {
 		t.Fatalf("Notes = %+v, want constrained fallback note", plan.Notes)
 	}
+	q4, ok := quantizationCandidateByBits(plan, 4)
+	if !ok || q4.Role != QuantizationRoleFallback || !q4.Selected {
+		t.Fatalf("q4 candidate = %+v, want selected constrained fallback", q4)
+	}
+	q6, ok := quantizationCandidateByBits(plan, 6)
+	if !ok || q6.Role != QuantizationRoleDefault || q6.Selected || q6.MinimumMachineClass != ClassApple64GB {
+		t.Fatalf("q6 candidate = %+v, want normal default gated behind 64GB class", q6)
+	}
+}
+
+func quantizationCandidateByBits(plan Plan, bits int) (QuantizationCandidate, bool) {
+	for _, candidate := range plan.QuantizationCandidates {
+		if candidate.Bits == bits {
+			return candidate, true
+		}
+	}
+	return QuantizationCandidate{}, false
 }
 
 func TestNewPlan_Apple64GBUsesWidePrefill_Good(t *testing.T) {

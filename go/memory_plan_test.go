@@ -89,6 +89,9 @@ func TestMemoryPlan_Gemma4SmallDefaultQuantizationPolicy_Good(t *testing.T) {
 	if plan.PreferredQuantization != 6 || plan.QualityQuantization != 8 || plan.FallbackQuantization != 4 {
 		t.Fatalf("Gemma 4 quantisation policy = preferred:%d quality:%d fallback:%d, want 6/8/4", plan.PreferredQuantization, plan.QualityQuantization, plan.FallbackQuantization)
 	}
+	if len(plan.QuantizationCandidates) != 3 {
+		t.Fatalf("Gemma 4 quantisation candidates = %+v, want machine-readable q8/q6/q4 ladder", plan.QuantizationCandidates)
+	}
 
 	cfg := applyLoadOptions([]LoadOption{WithMemoryPlan(plan)})
 	got := applyMemoryPlanToLoadConfig("", cfg)
