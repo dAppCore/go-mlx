@@ -209,6 +209,10 @@ func EvaluateProductionMTPPromotion(policy ProductionMTPPolicy, evidence Product
 		decision.Reason = "MTP must not increase estimated energy before promotion"
 		return decision
 	}
+	if !productionMTPHasLoadPolicyEvidence(evidence) {
+		decision.Reason = "MTP load policy evidence is required"
+		return decision
+	}
 	decision.EnableByDefault = true
 	decision.Reason = "MTP retained workflow is faster than target-only with greedy parity"
 	return decision
@@ -226,6 +230,16 @@ func ratioSpeedup(candidate, baseline float64) float64 {
 		return 0
 	}
 	return candidate / baseline
+}
+
+func productionMTPHasLoadPolicyEvidence(evidence ProductionMTPPromotionEvidence) bool {
+	return evidence.SameLoadPolicy &&
+		evidence.TargetOnlyCachePolicy != "" &&
+		evidence.TargetOnlyCachePolicy == evidence.MTPCachePolicy &&
+		evidence.TargetOnlyCacheMode != "" &&
+		evidence.TargetOnlyCacheMode == evidence.MTPCacheMode &&
+		evidence.TargetOnlyContextLength > 0 &&
+		evidence.TargetOnlyContextLength == evidence.MTPContextLength
 }
 
 func defaultProductionMTPDraftTokenSweeps() []int {

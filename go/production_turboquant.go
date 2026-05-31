@@ -189,6 +189,10 @@ func EvaluateProductionTurboQuantPromotion(policy ProductionTurboQuantPolicy, ev
 		decision.Reason = "TurboQuant visible throughput evidence is required"
 		return decision
 	}
+	if !productionTurboQuantHasLoadPolicyEvidence(evidence) {
+		decision.Reason = "TurboQuant load policy evidence is required"
+		return decision
+	}
 	if decision.WallSpeedup <= 1 && decision.RestoreSpeedup <= 1 {
 		decision.Reason = "TurboQuant must improve retained wall time or restore time before promotion"
 		return decision
@@ -221,6 +225,14 @@ func turboQuantModeInSlice(values []memory.KVCacheMode, needle memory.KVCacheMod
 		}
 	}
 	return false
+}
+
+func productionTurboQuantHasLoadPolicyEvidence(evidence ProductionTurboQuantPromotionEvidence) bool {
+	return evidence.SameLoadPolicy &&
+		evidence.BaselineCachePolicy != "" &&
+		evidence.BaselineCachePolicy == evidence.CandidateCachePolicy &&
+		evidence.BaselineContextLength > 0 &&
+		evidence.BaselineContextLength == evidence.CandidateContextLength
 }
 
 func byteSavingsRatio(baseline, candidate uint64) float64 {

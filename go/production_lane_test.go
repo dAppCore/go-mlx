@@ -565,6 +565,13 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 		TargetOnlyEnergyJoules:        1000,
 		MTPEnergyJoules:               760,
 		EstimatedPowerWatts:           100,
+		SameLoadPolicy:                true,
+		TargetOnlyCachePolicy:         "full",
+		MTPCachePolicy:                "full",
+		TargetOnlyCacheMode:           "paged",
+		MTPCacheMode:                  "paged",
+		TargetOnlyContextLength:       ProductionLaneLongContextLength,
+		MTPContextLength:              ProductionLaneLongContextLength,
 		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
 		SpeculativeDraftTokens:        2,
 		MTPDraftTokenSchedule:         []int{2, 2},
@@ -584,6 +591,42 @@ func TestProductionLane_EvaluateMTPPromotion_AcceptsFasterGreedyParityEvidence_G
 	}
 	if decision.RestoreSpeedup <= 1 || decision.EnergySavings <= 0 {
 		t.Fatalf("operational ratios = restore:%f energy:%f, want restore speedup and energy savings recorded", decision.RestoreSpeedup, decision.EnergySavings)
+	}
+}
+
+func TestProductionLane_EvaluateMTPPromotion_RejectsMissingLoadPolicyEvidence_Good(t *testing.T) {
+	policy := DefaultProductionMTPPolicy()
+
+	decision := EvaluateProductionMTPPromotion(policy, ProductionMTPPromotionEvidence{
+		RetainedWorkflow:              true,
+		Turns:                         10,
+		GreedyOutputMatches:           true,
+		TargetOnlyVisibleTokensPerSec: 100,
+		MTPVisibleTokensPerSec:        125,
+		MTPTargetTokensPerSec:         110,
+		MTPWarmDecodeTokensPerSec:     123,
+		TargetOnlyWallDuration:        10 * time.Second,
+		MTPWallDuration:               8 * time.Second,
+		TargetOnlyRestoreDuration:     100 * time.Millisecond,
+		MTPRestoreDuration:            80 * time.Millisecond,
+		TargetOnlyPeakMemoryBytes:     4096,
+		MTPPeakMemoryBytes:            3584,
+		TargetOnlyEnergyJoules:        1000,
+		MTPEnergyJoules:               760,
+		EstimatedPowerWatts:           100,
+		SpeculativeDraftModelPath:     OfficialGemma4E2BAssistantLock().ModelID,
+		SpeculativeDraftTokens:        2,
+		MTPDraftTokenSchedule:         []int{2, 2},
+		MTPObservedDraftTokenSweeps:   []int{1, 2, 4},
+		MTPProposedTokens:             40,
+		MTPAcceptedTokens:             30,
+		MTPRejectedTokens:             10,
+		MTPTargetVerifyCalls:          20,
+		MTPDraftCalls:                 20,
+	})
+
+	if decision.EnableByDefault || !core.Contains(decision.Reason, "load policy") {
+		t.Fatalf("decision = %+v, want load-policy evidence gate", decision)
 	}
 }
 
@@ -731,6 +774,11 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 		QualityMatches:               true,
 		BaselineCacheMode:            memory.KVCacheModePaged,
 		CandidateCacheMode:           memory.KVCacheModeTurboQuant,
+		SameLoadPolicy:               true,
+		BaselineCachePolicy:          "full",
+		CandidateCachePolicy:         "full",
+		BaselineContextLength:        ProductionLaneLongContextLength,
+		CandidateContextLength:       ProductionLaneLongContextLength,
 		ComparedCacheModes:           policy.CompareAgainstCacheModes,
 		NormalContextValidated:       true,
 		StressContextValidated:       true,
@@ -755,6 +803,36 @@ func TestProductionLane_EvaluateTurboQuantPromotion_AllowsMeasuredCandidate_Good
 	}
 	if decision.WallSpeedup <= 1 || decision.MemorySavingsRatio <= 0 || decision.EnergySavingsRatio <= 0 {
 		t.Fatalf("decision metrics = %+v, want wall, memory, and energy savings recorded", decision)
+	}
+}
+
+func TestProductionLane_EvaluateTurboQuantPromotion_RejectsMissingLoadPolicyEvidence_Good(t *testing.T) {
+	policy := DefaultProductionTurboQuantPolicy()
+
+	decision := EvaluateProductionTurboQuantPromotion(policy, ProductionTurboQuantPromotionEvidence{
+		RetainedWorkflow:             true,
+		Turns:                        ProductionMTPPromotionMinRetainedTurns,
+		QualityMatches:               true,
+		BaselineCacheMode:            memory.KVCacheModePaged,
+		CandidateCacheMode:           memory.KVCacheModeTurboQuant,
+		ComparedCacheModes:           policy.CompareAgainstCacheModes,
+		NormalContextValidated:       true,
+		StressContextValidated:       true,
+		BaselineWallDuration:         10 * time.Second,
+		CandidateWallDuration:        8 * time.Second,
+		BaselinePeakMemoryBytes:      10 * memory.GiB,
+		CandidatePeakMemoryBytes:     7 * memory.GiB,
+		BaselineEnergyJoules:         1000,
+		CandidateEnergyJoules:        800,
+		EstimatedPowerWatts:          100,
+		BaselineRestoreDuration:      100 * time.Millisecond,
+		CandidateRestoreDuration:     80 * time.Millisecond,
+		BaselineVisibleTokensPerSec:  80,
+		CandidateVisibleTokensPerSec: 80,
+	})
+
+	if decision.ProductionCandidate || !core.Contains(decision.Reason, "load policy") {
+		t.Fatalf("decision = %+v, want load-policy evidence gate", decision)
 	}
 }
 
