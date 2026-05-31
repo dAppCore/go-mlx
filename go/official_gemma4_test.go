@@ -2,7 +2,11 @@
 
 package mlx
 
-import "testing"
+import (
+	"testing"
+
+	core "dappco.re/go"
+)
 
 func TestOfficialGemma4E2BLocks_Good(t *testing.T) {
 	locks := DefaultOfficialGemma4E2BLocks()
@@ -92,6 +96,34 @@ func TestOfficialGemma4E2BLocks_ByRoleAndModelID_Good(t *testing.T) {
 	}
 }
 
+func TestOfficialGemma4E2BLocalSnapshot_VerifiesHashes_Good(t *testing.T) {
+	lock, dir := officialGemma4TestSnapshot(t)
+
+	if err := VerifyOfficialGemma4E2BLocalSnapshot(dir, lock); err != nil {
+		t.Fatalf("VerifyOfficialGemma4E2BLocalSnapshot() error = %v", err)
+	}
+}
+
+func TestOfficialGemma4E2BLocalSnapshot_RejectsHashMismatch_Bad(t *testing.T) {
+	lock, dir := officialGemma4TestSnapshot(t)
+	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("changed"))
+
+	err := VerifyOfficialGemma4E2BLocalSnapshot(dir, lock)
+	if err == nil || !core.Contains(err.Error(), "config.json") || !core.Contains(err.Error(), "SHA-256") {
+		t.Fatalf("VerifyOfficialGemma4E2BLocalSnapshot(hash mismatch) error = %v, want config SHA-256 mismatch", err)
+	}
+}
+
+func TestOfficialGemma4E2BLocalSnapshot_RejectsUnexpectedSafetensorsIndex_Ugly(t *testing.T) {
+	lock, dir := officialGemma4TestSnapshot(t)
+	writeOfficialGemma4TestFile(t, dir, "model.safetensors.index.json", []byte("{}"))
+
+	err := VerifyOfficialGemma4E2BLocalSnapshot(dir, lock)
+	if err == nil || !core.Contains(err.Error(), "model.safetensors.index.json") {
+		t.Fatalf("VerifyOfficialGemma4E2BLocalSnapshot(unexpected index) error = %v, want explicit index rejection", err)
+	}
+}
+
 func BenchmarkOfficialGemma4E2BLockByRole_Target(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -99,5 +131,40 @@ func BenchmarkOfficialGemma4E2BLockByRole_Target(b *testing.B) {
 		if !ok || lock.ModelID != "google/gemma-4-E2B-it" {
 			b.Fatalf("OfficialGemma4E2BLockByRole(target) = %+v %v", lock, ok)
 		}
+	}
+}
+
+func officialGemma4TestSnapshot(t *testing.T) (OfficialGemma4E2BLock, string) {
+	t.Helper()
+	lock := OfficialGemma4E2BLock{
+		Role:                   OfficialGemma4E2BRoleTarget,
+		ModelID:                "google/gemma-4-E2B-it",
+		Revision:               "test-revision",
+		ConfigSHA256:           core.SHA256Hex([]byte("config")),
+		TokenizerSHA256:        core.SHA256Hex([]byte("tokenizer")),
+		TokenizerConfigSHA256:  core.SHA256Hex([]byte("tokenizer-config")),
+		GenerationConfigSHA256: core.SHA256Hex([]byte("generation-config")),
+		ChatTemplateSHA256:     core.SHA256Hex([]byte("chat-template")),
+		WeightFile:             "model.safetensors",
+		WeightSHA256:           core.SHA256Hex([]byte("weights")),
+		WeightBytes:            uint64(len("weights")),
+	}
+	dir := core.PathJoin(t.TempDir(), lock.Revision)
+	if result := core.MkdirAll(dir, 0o755); !result.OK {
+		t.Fatalf("MkdirAll snapshot: %v", result.Value)
+	}
+	writeOfficialGemma4TestFile(t, dir, "config.json", []byte("config"))
+	writeOfficialGemma4TestFile(t, dir, "tokenizer.json", []byte("tokenizer"))
+	writeOfficialGemma4TestFile(t, dir, "tokenizer_config.json", []byte("tokenizer-config"))
+	writeOfficialGemma4TestFile(t, dir, "generation_config.json", []byte("generation-config"))
+	writeOfficialGemma4TestFile(t, dir, "chat_template.jinja", []byte("chat-template"))
+	writeOfficialGemma4TestFile(t, dir, lock.WeightFile, []byte("weights"))
+	return lock, dir
+}
+
+func writeOfficialGemma4TestFile(t *testing.T, dir, name string, data []byte) {
+	t.Helper()
+	if result := core.WriteFile(core.PathJoin(dir, name), data, 0o644); !result.OK {
+		t.Fatalf("WriteFile %s: %v", name, result.Value)
 	}
 }
