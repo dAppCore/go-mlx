@@ -8425,6 +8425,29 @@ var (
 type benchCommandReport struct {
 	*bench.Report
 	SpeculativeAssistantLayout *mlx.SpeculativeAssistantLayout `json:"speculative_assistant_layout,omitempty"`
+	SpeculativeMTPMetrics      *benchCommandMTPMetrics         `json:"speculative_mtp_metrics,omitempty"`
+}
+
+type benchCommandMTPMetrics struct {
+	TargetOnlyTokensPerSec float64       `json:"target_only_tokens_per_sec,omitempty"`
+	DraftTokenSchedule     []int         `json:"draft_token_schedule,omitempty"`
+	ProposedTokens         int           `json:"proposed_tokens,omitempty"`
+	AcceptedTokens         int           `json:"accepted_tokens,omitempty"`
+	RejectedTokens         int           `json:"rejected_tokens,omitempty"`
+	TargetVerifyCalls      int           `json:"target_verify_calls,omitempty"`
+	TargetCalls            int           `json:"target_calls,omitempty"`
+	DraftCalls             int           `json:"draft_calls,omitempty"`
+	AcceptanceRate         float64       `json:"acceptance_rate,omitempty"`
+	VisibleTokensPerSec    float64       `json:"visible_tokens_per_sec,omitempty"`
+	TargetTokensPerSec     float64       `json:"target_tokens_per_sec,omitempty"`
+	WarmDecodeTokensPerSec float64       `json:"warm_decode_tokens_per_sec,omitempty"`
+	WallDuration           time.Duration `json:"wall_duration,omitempty"`
+	RestoreDuration        time.Duration `json:"restore_duration,omitempty"`
+	TargetVerifyDuration   time.Duration `json:"target_verify_duration,omitempty"`
+	TargetDuration         time.Duration `json:"target_duration,omitempty"`
+	DraftDuration          time.Duration `json:"draft_duration,omitempty"`
+	PeakMemoryBytes        uint64        `json:"peak_memory_bytes,omitempty"`
+	QualityFlags           []string      `json:"quality_flags"`
 }
 
 func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -8642,7 +8665,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			return 1
 		}
 		if *jsonOut {
-			data := core.JSONMarshalIndent(benchCommandJSONReport(report, pair.Report.AssistantLayout), "", "  ")
+			data := core.JSONMarshalIndent(benchCommandJSONReport(report, pair.Report.AssistantLayout, pair.Metrics()), "", "  ")
 			if !data.OK {
 				core.Print(stderr, "%s bench: marshal report failed", cliName())
 				return 1
@@ -8651,7 +8674,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 			core.WriteString(stdout, "\n")
 			return 0
 		}
-		writeBenchCommandSummary(stdout, report, pair.Report.AssistantLayout)
+		writeBenchCommandSummary(stdout, report, pair.Report.AssistantLayout, pair.Metrics())
 		return 0
 	}
 	model, err := loadBenchModel(modelPath, loadOptions...)
@@ -8667,7 +8690,7 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		return 1
 	}
 	if *jsonOut {
-		data := core.JSONMarshalIndent(benchCommandJSONReport(report, nil), "", "  ")
+		data := core.JSONMarshalIndent(benchCommandJSONReport(report, nil, mlx.Metrics{}), "", "  ")
 		if !data.OK {
 			core.Print(stderr, "%s bench: marshal report failed", cliName())
 			return 1
@@ -8676,21 +8699,71 @@ func runBenchCommand(ctx context.Context, args []string, stdout, stderr io.Write
 		core.WriteString(stdout, "\n")
 		return 0
 	}
-	writeBenchCommandSummary(stdout, report, nil)
+	writeBenchCommandSummary(stdout, report, nil, mlx.Metrics{})
 	return 0
 }
 
-func benchCommandJSONReport(report *bench.Report, layout *mlx.SpeculativeAssistantLayout) any {
-	if layout == nil {
+func benchCommandJSONReport(report *bench.Report, layout *mlx.SpeculativeAssistantLayout, metrics mlx.Metrics) any {
+	mtpMetrics := benchCommandMTPMetricsFromReport(report, metrics.MTP)
+	if layout == nil && mtpMetrics == nil {
 		return report
 	}
 	return benchCommandReport{
 		Report:                     report,
 		SpeculativeAssistantLayout: layout,
+		SpeculativeMTPMetrics:      mtpMetrics,
 	}
 }
 
-func writeBenchCommandSummary(stdout io.Writer, report *bench.Report, layout *mlx.SpeculativeAssistantLayout) {
+func benchCommandMTPMetricsFromReport(report *bench.Report, metrics *mlx.MTPMetrics) *benchCommandMTPMetrics {
+	if metrics == nil {
+		return nil
+	}
+	out := &benchCommandMTPMetrics{
+		DraftTokenSchedule:     core.SliceClone(metrics.DraftTokenSchedule),
+		ProposedTokens:         metrics.ProposedTokens,
+		AcceptedTokens:         metrics.AcceptedTokens,
+		RejectedTokens:         metrics.RejectedTokens,
+		TargetVerifyCalls:      metrics.TargetVerifyCalls,
+		TargetCalls:            metrics.TargetCalls,
+		DraftCalls:             metrics.DraftCalls,
+		AcceptanceRate:         metrics.AcceptanceRate,
+		VisibleTokensPerSec:    metrics.VisibleTokensPerSec,
+		TargetTokensPerSec:     metrics.TargetTokensPerSec,
+		WarmDecodeTokensPerSec: metrics.WarmDecodeTokensPerSec,
+		WallDuration:           metrics.WallDuration,
+		RestoreDuration:        metrics.RestoreDuration,
+		TargetVerifyDuration:   metrics.TargetVerifyDuration,
+		TargetDuration:         metrics.TargetDuration,
+		DraftDuration:          metrics.DraftDuration,
+		PeakMemoryBytes:        metrics.PeakMemoryBytes,
+		QualityFlags:           benchCommandQualityFlags(report),
+	}
+	if report != nil {
+		out.TargetOnlyTokensPerSec = report.Generation.DecodeTokensPerSec
+	}
+	return out
+}
+
+func benchCommandQualityFlags(report *bench.Report) []string {
+	flags := []string{}
+	if report == nil {
+		return flags
+	}
+	for _, check := range report.Quality.Checks {
+		if check.Pass {
+			continue
+		}
+		name := core.Trim(check.Name)
+		if name == "" {
+			name = "quality_check_failed"
+		}
+		flags = append(flags, name)
+	}
+	return flags
+}
+
+func writeBenchCommandSummary(stdout io.Writer, report *bench.Report, layout *mlx.SpeculativeAssistantLayout, metrics mlx.Metrics) {
 	benchsummary.Write(stdout, report)
 	if layout == nil {
 		return
@@ -8702,6 +8775,15 @@ func writeBenchCommandSummary(stdout io.Writer, report *bench.Report, layout *ml
 		layout.CentroidIntermediateTopK,
 		layout.FourLayerDrafter,
 	))
+	if metrics.MTP != nil {
+		core.WriteString(stdout, core.Sprintf("    MTP evidence: schedule %v, warm decode %.1f tok/s, restore %s, verify calls %d, peak memory %d MB\n",
+			metrics.MTP.DraftTokenSchedule,
+			metrics.MTP.WarmDecodeTokensPerSec,
+			metrics.MTP.RestoreDuration,
+			metrics.MTP.TargetVerifyCalls,
+			metrics.MTP.PeakMemoryBytes/1024/1024,
+		))
+	}
 }
 
 func runPackCommand(_ context.Context, args []string, stdout, stderr io.Writer) int {

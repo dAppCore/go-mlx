@@ -339,6 +339,82 @@ func TestRunCommand_BenchGemma4AssistantPairUsesSpeculativePairRunner_Good(t *te
 	}
 }
 
+func TestBenchCommandJSONReportCopiesMTPMetrics_Good(t *testing.T) {
+	report := &bench.Report{
+		Version:   bench.ReportVersion,
+		ModelPath: "/models/target",
+		Config: bench.Config{
+			SpeculativeDraftModelPath: "/models/target-assistant",
+			SpeculativeDraftTokens:    2,
+		},
+		Generation: bench.GenerationSummary{
+			DecodeTokensPerSec: 120,
+			PeakMemoryBytes:    4096,
+		},
+		SpeculativeDecode: bench.DecodeOptimisationReport{
+			Attempted: true,
+			Result:    bench.DecodeOptimisationResult{Mode: mlx.SpeculativeDecodeModeMTP},
+			Metrics: bench.DecodeOptimisationMetrics{
+				VisibleTokensPerSec: 125,
+				Duration:            time.Second,
+			},
+		},
+	}
+	layout := &mlx.SpeculativeAssistantLayout{
+		Architecture:             "gemma4_assistant",
+		OrderedEmbeddings:        true,
+		Centroids:                2048,
+		CentroidIntermediateTopK: 32,
+		FourLayerDrafter:         true,
+	}
+	metrics := mlx.Metrics{
+		MTP: &mlx.MTPMetrics{
+			DraftTokenSchedule:     []int{1, 2, 4},
+			ProposedTokens:         7,
+			AcceptedTokens:         5,
+			RejectedTokens:         2,
+			TargetVerifyCalls:      3,
+			TargetCalls:            4,
+			DraftCalls:             3,
+			AcceptanceRate:         5.0 / 7.0,
+			VisibleTokensPerSec:    125,
+			TargetTokensPerSec:     140,
+			WarmDecodeTokensPerSec: 123,
+			WallDuration:           time.Second,
+			RestoreDuration:        25 * time.Millisecond,
+			TargetVerifyDuration:   300 * time.Millisecond,
+			PeakMemoryBytes:        3584,
+		},
+	}
+
+	data := core.JSONMarshalIndent(benchCommandJSONReport(report, layout, metrics), "", "  ")
+	if !data.OK {
+		t.Fatalf("JSONMarshalIndent: %v", data.Value)
+	}
+	got := string(data.Value.([]byte))
+	for _, want := range []string{
+		`"speculative_assistant_layout": {`,
+		`"speculative_mtp_metrics": {`,
+		`"target_only_tokens_per_sec": 120`,
+		`"draft_token_schedule": [`,
+		`"proposed_tokens": 7`,
+		`"accepted_tokens": 5`,
+		`"rejected_tokens": 2`,
+		`"target_verify_calls": 3`,
+		`"visible_tokens_per_sec": 125`,
+		`"target_tokens_per_sec": 140`,
+		`"warm_decode_tokens_per_sec": 123`,
+		`"wall_duration": 1000000000`,
+		`"restore_duration": 25000000`,
+		`"peak_memory_bytes": 3584`,
+		`"quality_flags": []`,
+	} {
+		if !core.Contains(got, want) {
+			t.Fatalf("JSON = %q, want %s", got, want)
+		}
+	}
+}
+
 func TestRunCommand_BenchSpeculativeDraftTokensDefault_Good(t *testing.T) {
 	originalLoadPair := loadSpeculativePair
 	originalRunDraft := runBenchReportWithDraft
